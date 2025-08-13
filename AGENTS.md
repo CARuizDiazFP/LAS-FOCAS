@@ -39,3 +39,14 @@ Este documento está diseñado para orientar a **CODEX** en la comprensión del 
 # Descripción: Archivo Main, en este se centralizan las funciones y operaciones del bot
 ```
 
+📌 Instrucciones Generales
+1.	Estructura de carpetas: Respetar la organización definida en el README. evita crear carpetas fuera de la estructura en el caso que no se pueda evitar informar y documentar.
+2.	Estilo de código: Seguir PEP8 para Python. Nombres descriptivos, comentarios claros y docstrings en funciones y clases.
+3.	Commits: Usar mensajes de commit descriptivos en español, siguiendo formato "[módulo] Acción realizada".
+4.	Logs: Incluir logging en puntos clave del código. No usar print() en producción.
+5.	Variables sensibles: Nunca commitear .env ni credenciales. Usar .env y Docker Secrets cuando corresponda.
+6.	Documentación: Cualquier módulo nuevo debe tener su documentación en /docs.
+7.	Pruebas: Crear o actualizar tests para cualquier cambio funcional. Los tests deben pasar antes de mergear.
+8.	Docker: Mantener imágenes ligeras y basadas en versiones específicas, no usar latest.
+9.	Dependencias: Actualizar requirements.txt al añadir librerías y verificar compatibilidad.
+10.	Integraciones externas: Probar en entornos de staging antes de aplicar a producción.
