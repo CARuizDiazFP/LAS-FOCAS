@@ -1,0 +1,12 @@
+# Nombre de archivo: .dockerignore
+# Ubicación de archivo: api/.dockerignore
+# Descripción: Ignorar archivos no necesarios en el build de la imagen
+__pycache__/
+*.py[cod]
+*.log
+*.sqlite3
+.venv/
+.env
+.git/
+.gitignore
+tests/

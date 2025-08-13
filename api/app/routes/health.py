@@ -2,16 +2,29 @@
 # Ubicación de archivo: api/app/routes/health.py
 # Descripción: Define la ruta de verificación del servicio
 
+from datetime import datetime, timezone
 import logging
+
 from fastapi import APIRouter
 
+from app.db import db_health
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-@router.get("/health", summary="Verifica el estado del servicio")
-def health_check() -> dict[str, str]:
+@router.get("/health")
+def health():
     """Devuelve el estado básico del servicio."""
-    logger.debug("Chequeo de salud solicitado")
-    return {"status": "ok"}
+    logger.info("Verificación de estado solicitada")
+    return {
+        "status": "ok",
+        "service": "api",
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/db-check")
+def db_check():
+    """Verifica conectividad con la base de datos."""
+    logger.info("Verificación de base de datos solicitada")
+    return db_health()
