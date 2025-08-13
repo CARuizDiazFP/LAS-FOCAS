@@ -1,0 +1,48 @@
+# Nombre de archivo: .gitignore
+# Ubicación de archivo: ./
+# Descripción: Ignora archivos temporales, entornos locales, artefactos y secretos
+
+# Entornos y secretos
+.env
+.env.*
+
+!.env.sample
+.envrc
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Build/Dist
+build/
+dist/
+wheelhouse/
+
+# Logs y cache
+*.log
+logs/
+tmp/
+.cache/
+.ipynb_checkpoints/
+
+# Node/Front
+node_modules/
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-data/
+.docker/
