@@ -1,17 +1,16 @@
 # Nombre de archivo: health.py
 # Ubicación de archivo: api/app/routes/health.py
-# Descripción: Endpoints de health y verificación de DB
+# Descripción: Define la ruta de verificación del servicio
+
 from datetime import datetime, timezone
 import logging
 
 from fastapi import APIRouter
 
 from app.db import db_health
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
 
 @router.get("/health")
 def health():
