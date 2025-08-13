@@ -1,0 +1,15 @@
+# Nombre de archivo: db.md
+# Ubicación de archivo: docs/db.md
+# Descripción: Documentación del módulo de conexión a PostgreSQL
+
+El módulo `api/app/db.py` establece una conexión a PostgreSQL utilizando SQLAlchemy y Psycopg 3.
+La cadena DSN se construye a partir de variables de entorno:
+
+- `POSTGRES_HOST`: dirección del servidor de base de datos.
+- `POSTGRES_PORT`: puerto del servicio.
+- `POSTGRES_DB`: nombre de la base de datos.
+- `POSTGRES_USER`: usuario para la conexión.
+- `POSTGRES_PASSWORD`: contraseña del usuario.
+
+La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la versión del servidor
+para verificar el estado de la base de datos.

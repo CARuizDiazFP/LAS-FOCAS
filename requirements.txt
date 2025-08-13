@@ -1,0 +1,6 @@
+# Nombre de archivo: requirements.txt
+# Ubicación de archivo: requirements.txt
+# Descripción: Dependencias del proyecto LAS-FOCAS
+
+sqlalchemy
+psycopg[binary]
