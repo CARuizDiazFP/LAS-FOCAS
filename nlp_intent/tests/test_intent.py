@@ -11,7 +11,7 @@ import pathlib
 import sys
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
-from nlp_intent.app.service import classify_text
+from nlp_intent.app.service import classify_text, cache
 
 TEST_DATA = [
     ("hola", "Otros"),
@@ -31,6 +31,7 @@ TEST_DATA = [
 
 def test_dataset_accuracy(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "heuristic")
+    cache.clear()
 
     async def _run():
         hits = 0

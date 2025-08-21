@@ -9,6 +9,7 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
 ## Endpoint
 
 - `POST /v1/intent:classify`
+- `GET /metrics`
 
 ### Request
 ```json
@@ -32,6 +33,23 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
 3. OpenAI API.
 
 El servicio intenta cada proveedor en ese orden mientras la confianza sea menor al umbral configurado (`INTENT_THRESHOLD`, por defecto **0.7**).
+
+## Caché
+
+Las respuestas de clasificación se almacenan en memoria durante `CACHE_TTL` segundos (300 por defecto). Si un texto se repite dentro de ese período, la respuesta se devuelve desde caché evitando recalcularla.
+
+## Métricas
+
+El endpoint `GET /metrics` devuelve estadísticas básicas:
+
+```json
+{
+  "total_requests": 42,
+  "average_latency_ms": 12.5
+}
+```
+
+`total_requests` cuenta las llamadas a `/v1/intent:classify` y `average_latency_ms` es la latencia promedio.
 
 ## Baja confianza
 
