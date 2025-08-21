@@ -4,6 +4,7 @@
 
 ## Insumos requeridos
 - Excel "Casos" en formato `.xlsx`.
+- Tamaño máximo permitido: 10MB.
 - Columnas mínimas: `CLIENTE`, `SERVICIO`, `FECHA` y opcional `ID_SERVICIO`.
 - Los datos del cliente **BANCO MACRO SA** nunca se filtran automáticamente.
 
