@@ -79,3 +79,22 @@ Registrar métricas de uso y logs estructurados.
 Añadir menú de comandos y ayudas contextuales.
 
 (Luego) migrar a webhooks detrás de un reverse proxy (cuando haya URL pública/SSL).
+
+## Flujos unificados (comando y botón)
+
+Los comandos `/sla` y `/repetitividad` ejecutan exactamente las mismas funciones que los botones del menú principal. De esta manera se evita duplicar lógica y se puede diagnosticar fácilmente cualquier problema de callbacks.
+
+Ejemplos:
+
+- `/sla` y botón **📈 Análisis de SLA** comparten `start_sla_flow`.
+- `/repetitividad` y botón **📊 Informe de Repetitividad** comparten `start_repetitividad_flow`.
+
+Para un diagnóstico rápido está disponible `/diag`, que muestra los contadores de invocaciones recibidas:
+
+```
+/diag
+commands_sla: X | callbacks_sla: Y
+commands_rep: A | callbacks_rep: B
+```
+
+Los registros (`logging`) incluyen `route`, `cmd` o `data`, y `tg_user_id` para facilitar el seguimiento.

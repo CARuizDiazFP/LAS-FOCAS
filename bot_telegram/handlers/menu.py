@@ -7,6 +7,9 @@ import logging
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
+from bot_telegram.diag.counters import inc
+from bot_telegram.flows.repetitividad import start_repetitividad_flow
+from bot_telegram.flows.sla import start_sla_flow
 from bot_telegram.ui.menu import build_main_menu
 
 router = Router()
@@ -16,39 +19,45 @@ logger = logging.getLogger(__name__)
 @router.message(commands={"menu"})
 async def cmd_menu(msg: Message) -> None:
     """Muestra el menú principal cuando se usa /menu."""
-    logger.info("Usuario %s abrió el menú con /menu", msg.from_user.id)
+    logger.info(
+        "service=bot route=command cmd=/menu tg_user_id=%s",
+        msg.from_user.id,
+    )
     await msg.answer("Seleccioná una opción:", reply_markup=build_main_menu())
 
 
-@router.callback_query(F.data.in_({"menu_sla", "menu_repetitividad", "menu_close"}))
-async def on_menu_callback(cb: CallbackQuery) -> None:
-    """Gestiona las opciones del menú principal."""
-    if cb.data == "menu_sla":
-        logger.info("Usuario %s seleccionó Análisis de SLA", cb.from_user.id)
-        await cb.message.edit_text(
-            "📈 Análisis de SLA — implementación pendiente. Se agregará el flujo."
-        )
-        await start_sla_flow(cb)
-    elif cb.data == "menu_repetitividad":
-        logger.info("Usuario %s seleccionó Informe de Repetitividad", cb.from_user.id)
-        await cb.message.edit_text(
-            "📊 Informe de Repetitividad — implementación pendiente. Se agregará el flujo."
-        )
-        await start_repetitividad_flow(cb)
-    elif cb.data == "menu_close":
-        logger.info("Usuario %s cerró el menú", cb.from_user.id)
-        await cb.message.edit_text("Menú cerrado")
-    await cb.answer()
-
-
-async def start_sla_flow(cb: CallbackQuery) -> None:
-    """Hook para conectar con el flujo real de SLA."""
-    logger.info("start_sla_flow llamado para %s (pendiente de implementación)", cb.from_user.id)
-
-
-async def start_repetitividad_flow(cb: CallbackQuery) -> None:
-    """Hook para conectar con el flujo real de Repetitividad."""
+@router.callback_query(F.data == "menu_sla")
+async def on_menu_sla(cb: CallbackQuery) -> None:
+    """Gestiona la opción del menú para SLA."""
+    tg_user_id = cb.from_user.id
     logger.info(
-        "start_repetitividad_flow llamado para %s (pendiente de implementación)",
+        "service=bot route=callback data=menu_sla tg_user_id=%s",
+        tg_user_id,
+    )
+    inc("callbacks_sla")
+    await cb.answer()
+    await start_sla_flow(cb.message, origin="callback")
+
+
+@router.callback_query(F.data == "menu_repetitividad")
+async def on_menu_repetitividad(cb: CallbackQuery) -> None:
+    """Gestiona la opción del menú para Repetitividad."""
+    tg_user_id = cb.from_user.id
+    logger.info(
+        "service=bot route=callback data=menu_repetitividad tg_user_id=%s",
+        tg_user_id,
+    )
+    inc("callbacks_rep")
+    await cb.answer()
+    await start_repetitividad_flow(cb.message, origin="callback")
+
+
+@router.callback_query(F.data == "menu_close")
+async def on_menu_close(cb: CallbackQuery) -> None:
+    """Cierra el mensaje de menú."""
+    logger.info(
+        "service=bot route=callback data=menu_close tg_user_id=%s",
         cb.from_user.id,
     )
+    await cb.answer()
+    await cb.message.edit_text("Menú cerrado")

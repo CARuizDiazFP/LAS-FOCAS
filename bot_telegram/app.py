@@ -12,6 +12,7 @@ from aiogram.enums import ParseMode
 
 from bot_telegram.filters.allowlist import AllowlistMiddleware
 from bot_telegram.handlers.basic import router as basic_router
+from bot_telegram.handlers.commands import router as commands_router
 from bot_telegram.handlers.intent import router as intent_router
 from bot_telegram.handlers.menu import router as menu_router
 
@@ -29,15 +30,21 @@ async def main():
     dp = Dispatcher()
 
     # Allowlist
-    dp.message.middleware(AllowlistMiddleware())
+    allowlist = AllowlistMiddleware()
+    dp.message.middleware(allowlist)
+    dp.callback_query.middleware(allowlist)
 
     # Routers
     dp.include_router(menu_router)
+    dp.include_router(commands_router)
     dp.include_router(intent_router)
     dp.include_router(basic_router)
 
-    logger.info("Iniciando bot LAS-FOCAS (long polling)…")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    allowed_updates = dp.resolve_used_update_types()
+    logger.info(
+        "service=bot action=start_polling allowed_updates=%s", allowed_updates
+    )
+    await dp.start_polling(bot, allowed_updates=allowed_updates)
 
 
 if __name__ == "__main__":
