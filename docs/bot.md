@@ -18,7 +18,7 @@ Enviar /start desde un ID permitido.
 
 Probar /ping y /help.
 
-Ver logs para validar que usuarios no permitidos no reciben respuesta.
+Los intentos de acceso de usuarios no incluidos en `TELEGRAM_ALLOWED_IDS` generan un log `acceso_denegado` con el `tg_user_id` y se responde "Acceso no autorizado" al remitente.
 
 ## Clasificación de intención
 

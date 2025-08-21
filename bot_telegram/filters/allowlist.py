@@ -2,9 +2,13 @@
 # Ubicación de archivo: bot_telegram/filters/allowlist.py
 # Descripción: Filtro/Middleware que limita el uso del bot a IDs permitidos desde TELEGRAM_ALLOWED_IDS
 
+import logging
+import os
+
 from aiogram import BaseMiddleware
 from aiogram.types import Message, Update
-import os
+
+logger = logging.getLogger(__name__)
 
 
 class AllowlistMiddleware(BaseMiddleware):
@@ -21,6 +25,13 @@ class AllowlistMiddleware(BaseMiddleware):
             user_id = event.callback_query.from_user.id
 
         if user_id is None or (self.allowed_ids and user_id not in self.allowed_ids):
-            # Silencioso: no responde a usuarios no permitidos
+            # Registrar intentos de acceso no autorizados incluyendo el ID de Telegram
+            logger.warning(
+                "acceso_denegado", extra={"tg_user_id": user_id}
+            )
+            if hasattr(event, "message") and isinstance(event.message, Message):
+                await event.message.answer("Acceso no autorizado")
+            elif hasattr(event, "callback_query") and event.callback_query is not None:
+                await event.callback_query.answer("Acceso no autorizado")
             return
         return await handler(event, data)
