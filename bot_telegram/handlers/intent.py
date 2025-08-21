@@ -5,19 +5,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from collections import defaultdict
 
 import httpx
 import psycopg
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.types import Message
 
+from bot_telegram.ui.menu import build_main_menu
 from core.repositories.conversations import insert_conversation
 from core.repositories.messages import insert_message
 
 router = Router()
+logger = logging.getLogger(__name__)
 _rate_limit: dict[int, list[float]] = defaultdict(list)
 _conversations: dict[int, int] = {}
 
@@ -39,6 +42,12 @@ def _get_conn() -> psycopg.Connection:
         user=os.getenv("POSTGRES_USER"),
         password=os.getenv("POSTGRES_PASSWORD"),
     )
+
+
+def _has_menu_keyword(text: str) -> bool:
+    """Verifica si el texto normalizado solicita abrir el menú."""
+    lowered = text.lower()
+    return "menu" in lowered or "menú" in lowered
 
 
 @router.message(F.text)
@@ -75,6 +84,9 @@ async def classify_message(msg: Message):
     threshold = float(os.getenv("INTENT_THRESHOLD", "0.7"))
     if data["confidence"] < threshold:
         await msg.answer("No estoy 100% seguro 🤔 ¿Querías hacer una acción o consultar algo?\n" + summary)
+    elif data["intent"] == "Acción" and _has_menu_keyword(data["normalized_text"]):
+        logger.info("Usuario %s abrió el menú por intención", user_id)
+        await msg.answer("Seleccioná una opción:", reply_markup=build_main_menu())
     elif data["intent"] == "Acción":
         await msg.answer(
             "📋 Acción detectada. Implementación pendiente. En breve se habilitará este flujo.\n" + summary

@@ -25,6 +25,24 @@ Ver logs para validar que usuarios no permitidos no reciben respuesta.
 Cada mensaje de texto se envía al microservicio `nlp_intent` para determinar si es una **Consulta**, una **Acción** u **Otros**.
 El bot responde con un resumen de la intención detectada. Si la confianza es baja, solicita una aclaración al usuario.
 
+## Menú principal
+
+El bot ofrece un menú accesible por el comando `/menu` o mediante mensajes clasificados como **Acción** que contengan la intención de abrirlo.
+
+Botones disponibles:
+
+- 📈 Análisis de SLA
+- 📊 Informe de Repetitividad
+- ❌ Cerrar
+
+Actualmente, cada opción responde “implementación pendiente” y deja listo el hook para integrar el flujo real.
+
+Ejemplos de frases que abren el menú por intención:
+
+- "bot abrí el menú"
+- "abrir menú"
+- "mostrar menú"
+
 ## Notas
 
 Modo: long polling (no requiere URL pública).
