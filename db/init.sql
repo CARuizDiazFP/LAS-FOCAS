@@ -36,3 +36,12 @@ CREATE TABLE IF NOT EXISTS app.messages (
 CREATE INDEX IF NOT EXISTS idx_messages_user ON app.messages(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON app.messages(created_at);
 
+-- Usuario de solo lectura para consultas
+CREATE USER lasfocas_readonly WITH ENCRYPTED PASSWORD 'readonly';
+
+-- Revocar y otorgar privilegios mínimos
+REVOKE ALL PRIVILEGES ON DATABASE lasfocas FROM lasfocas_readonly;
+GRANT CONNECT ON DATABASE lasfocas TO lasfocas_readonly;
+GRANT USAGE ON SCHEMA app TO lasfocas_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO lasfocas_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO lasfocas_readonly;

@@ -1,17 +1,25 @@
 # Nombre de archivo: main.py
 # Ubicación de archivo: nlp_intent/app/main.py
-# Descripción: Servidor FastAPI para clasificación de intención de mensajes
+# Descripción: Servidor FastAPI para clasificación de intención con limitación de tasa
 
-from __future__ import annotations
 
 from fastapi import FastAPI, Request
+import os
+from slowapi.middleware import SlowAPIMiddleware
 import time
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .schemas import IntentRequest, IntentResponse
 from .service import classify_text
 from .metrics import metrics
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="nlp_intent")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 
 @app.middleware("http")
@@ -25,7 +33,8 @@ async def collect_metrics(request: Request, call_next):
 
 
 @app.post("/v1/intent:classify", response_model=IntentResponse)
-async def classify_endpoint(req: IntentRequest) -> IntentResponse:
+@limiter.limit(os.getenv("NLP_RATE_LIMIT", "60/minute"))
+async def classify_endpoint(request: Request, req: IntentRequest) -> IntentResponse:
     """Clasifica el texto recibido en una intención."""
     return await classify_text(req.text)
 

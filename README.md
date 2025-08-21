@@ -209,8 +209,8 @@ La base de datos PostgreSQL no publica su puerto en el host; se expone únicamen
 - Allowlist de IDs Telegram.
 - Login básico en Web.
 - Tokens rotados.
-- Usuario DB de mínimos privilegios.
-
+- Usuario DB de mínimos privilegios (incluye cuenta de solo lectura).
+- Rate limiting configurable en API y nlp_intent.
 ---
 
 ## 🧠 Agente autónomo (futuro)
