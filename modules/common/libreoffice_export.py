@@ -45,8 +45,20 @@ def convert_to_pdf(docx_path: str, soffice_bin: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+    except FileNotFoundError as exc:  # pragma: no cover - logging
+        logger.exception(
+            "action=convert_to_pdf error=soffice_no_encontrado path=%s", soffice_bin
+        )
+        raise
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - logging
+        logger.exception(
+            "action=convert_to_pdf error=conversion_fallida code=%s stderr=%s",
+            exc.returncode,
+            exc.stderr.decode(errors="ignore") if exc.stderr else "",
+        )
+        raise
     except Exception as exc:  # pragma: no cover - logging
-        logger.exception("action=convert_to_pdf error=%s", exc)
+        logger.exception("action=convert_to_pdf error_desconocido=%s", exc)
         raise
 
     pdf_path = out_dir / (Path(docx_path).stem + ".pdf")

@@ -3,6 +3,7 @@
 # Descripción: Generación de archivos DOCX y PDF para el informe de SLA
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -106,6 +107,9 @@ def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str
         return None
     try:
         return convert_to_pdf(docx_path, soffice_bin)
-    except Exception:  # pragma: no cover - logging
+    except (FileNotFoundError, subprocess.CalledProcessError):  # pragma: no cover - logging
         logger.exception("action=maybe_export_pdf error")
+        return None
+    except Exception:  # pragma: no cover - logging
+        logger.exception("action=maybe_export_pdf error_desconocido")
         return None

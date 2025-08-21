@@ -3,6 +3,7 @@
 # Descripción: Pruebas del procesamiento y KPIs del informe de SLA
 
 import pandas as pd
+import pytest
 
 from modules.informes_sla import processor
 
@@ -85,3 +86,38 @@ def test_normalize_with_work_hours_flag():
     df_cal = processor.normalize(df.copy())
     df_laboral = processor.normalize(df.copy(), work_hours=True)
     assert df_laboral.loc[0, "TTR_h"] == df_cal.loc[0, "TTR_h"] * 0.5
+
+
+def test_normalize_rechaza_texto_largo():
+    datos = [{
+        "ID": "1" * 101,
+        "CLIENTE": "A",
+        "SERVICIO": "VIP",
+        "FECHA_APERTURA": "2024-07-01 00:00",
+        "FECHA_CIERRE": "2024-07-01 10:00",
+    }]
+    df = pd.DataFrame(datos)
+    with pytest.raises(ValueError):
+        processor.normalize(df)
+
+
+def test_normalize_rechaza_fecha_invalida():
+    datos = [{
+        "ID": "1",
+        "CLIENTE": "A",
+        "SERVICIO": "VIP",
+        "FECHA_APERTURA": "no-fecha",
+        "FECHA_CIERRE": "2024-07-01 10:00",
+    }]
+    df = pd.DataFrame(datos)
+    with pytest.raises(ValueError):
+        processor.normalize(df)
+
+
+def test_apply_sla_target_rechaza_valores_invalidos():
+    df = pd.DataFrame({
+        "SERVICIO": ["VIP"],
+        "SLA_OBJETIVO_HORAS": [2000],
+    })
+    with pytest.raises(ValueError):
+        processor.apply_sla_target(df)

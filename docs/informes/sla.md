@@ -12,6 +12,11 @@
 
 Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`FECHA_CIERRE`, `SLA`→`SLA_OBJETIVO_HORAS`.
 
+## Validaciones
+- Las columnas de texto no pueden superar los 100 caracteres.
+- Las fechas deben ser válidas; `FECHA_CIERRE` permite valores vacíos pero no inválidos.
+- `SLA_OBJETIVO_HORAS` debe ser numérico y no mayor a 1000.
+
 ## Cálculo
 - Se normalizan las columnas y se calcula `TTR_h = (FECHA_CIERRE - FECHA_APERTURA) / 3600`.
 - Si `WORK_HOURS=true` se aplica un cálculo alternativo de TTR basado en horario laboral (por ahora reducido al 50 % como *placeholder*).
