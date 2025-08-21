@@ -5,6 +5,7 @@
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -17,7 +18,7 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-@router.message(commands={"menu"})
+@router.message(Command("menu"))
 async def cmd_menu(msg: Message) -> None:
     """Muestra el menú principal cuando se usa /menu."""
     logger.info(
