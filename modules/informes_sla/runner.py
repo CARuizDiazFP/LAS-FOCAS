@@ -22,7 +22,7 @@ def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict
 
     params = Params(periodo_mes=mes, periodo_anio=anio)
     docx_path = report.export_docx(resultado, params, str(BASE_REPORTS))
-    pdf_path = report.maybe_export_pdf(docx_path, str(BASE_REPORTS), soffice_bin)
+    pdf_path = report.maybe_export_pdf(docx_path, soffice_bin)
 
     logger.info(
         "action=run mes=%s anio=%s docx=%s pdf=%s total=%s incumplidos=%s pct_cumplimiento=%.2f excluidos=%s",

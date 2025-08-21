@@ -147,6 +147,13 @@ OLLAMA_URL=http://ollama:11434
 INTENT_THRESHOLD=0.7
 LANG=es
 LOG_RAW_TEXT=false
+SLA_TEMPLATE_PATH=/app/templates/sla.docx
+REP_TEMPLATE_PATH=/app/templates/repetitividad.docx
+REPORTS_DIR=/app/data/reports
+UPLOADS_DIR=/app/data/uploads
+SOFFICE_BIN=/usr/bin/soffice
+MAPS_ENABLED=false
+MAPS_LIGHTWEIGHT=true
 ```
 
 ---

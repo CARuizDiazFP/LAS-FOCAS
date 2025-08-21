@@ -3,7 +3,6 @@
 # Descripción: Flujo para recibir Excel y generar el informe de repetitividad
 
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, Message
 
-from modules.informes_repetitividad.config import BASE_UPLOADS
+from modules.informes_repetitividad.config import BASE_UPLOADS, SOFFICE_BIN
 from modules.informes_repetitividad.runner import run
 
 router = Router()
@@ -81,7 +80,7 @@ async def on_period(msg: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     file_path = data.get("file_path")
-    soffice_bin = os.getenv("SOFFICE_BIN")
+    soffice_bin = SOFFICE_BIN
     paths = run(file_path, mes, anio, soffice_bin)
 
     await msg.answer_document(FSInputFile(paths["docx"]))
