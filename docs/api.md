@@ -5,14 +5,16 @@
 ## Endpoint de salud
 
 - **Ruta:** `GET /health`
-- **Descripción:** Verifica el estado del servicio.
+- **Descripción:** Verifica el estado del servicio y la conexión a la base de datos.
 - **Respuesta:**
 
   ```json
   {
     "status": "ok",
     "service": "api",
-    "time": "2024-01-01T00:00:00+00:00"
+    "time": "2024-01-01T00:00:00+00:00",
+    "db": "ok",
+    "server_version": "16.0"
   }
   ```
 
@@ -20,7 +22,7 @@
 
 - **Ruta:** `GET /db-check`
 - **Descripción:** Ejecuta un `SELECT 1` y devuelve la versión del servidor PostgreSQL.
-- **Respuesta:**
+- **Respuesta exitosa:**
 
   ```json
   {
@@ -28,4 +30,15 @@
     "server_version": "16.0"
   }
   ```
+
+- **Respuesta con error:**
+
+  ```json
+  {
+    "db": "error",
+    "detail": "detalle del error"
+  }
+  ```
+
+  El campo `detail` incluye el mensaje original de la excepción capturada.
 
