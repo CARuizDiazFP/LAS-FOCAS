@@ -19,6 +19,15 @@ Proveer una interfaz web interna para ejecutar tareas y visualizar informes gene
 - `POST /login` → valida credenciales y crea cookie de sesión.
 - `GET /dashboard` → menú principal con enlaces a informes y acciones.
 
+## Servicio base implementado
+
+El repositorio incluye un microservicio inicial en `web/main.py` que utiliza **FastAPI** y expone dos rutas básicas:
+
+- `GET /` devuelve un mensaje de bienvenida.
+- `GET /health` responde con `{"status": "ok"}` para verificaciones de salud.
+
+Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, publicando el puerto `8080` al host.
+
 ## Autenticación
 
 - Credenciales básicas definidas en variables de entorno (`WEB_USER`, `WEB_PASS`).
