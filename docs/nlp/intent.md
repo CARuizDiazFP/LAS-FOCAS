@@ -70,3 +70,8 @@ Si `confidence < INTENT_THRESHOLD`, el bot pedirá una aclaración al usuario pa
 - "¿cómo genero el reporte de repetitividad?" → Consulta
 - "generá el reporte de repetitividad de agosto 2025" → Acción
 
+
+## Rate limiting
+
+- **Variable:** `NLP_RATE_LIMIT` (por defecto `60/minute`).
+- **Descripción:** Controla cuántas clasificaciones puede hacer una misma IP en un período dado. Al excederlo, se responde con `429 Too Many Requests`.

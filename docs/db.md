@@ -17,3 +17,12 @@ La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la vers
 para verificar el estado de la base de datos.
 
 Se limpiaron imports innecesarios en los repositorios de conversaciones y mensajes para mantener el código conforme a PEP8.
+
+## Usuario de solo lectura
+
+El script `db/init.sql` crea el usuario `lasfocas_readonly` con permisos restringidos:
+
+- Conexión únicamente a la base `lasfocas`.
+- Acceso `SELECT` sobre todas las tablas del esquema `app`.
+
+Este usuario permite realizar consultas y dashboards sin riesgo de modificación de datos.

@@ -42,3 +42,8 @@
 
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
+
+## Rate limiting
+
+- **Variable:** `API_RATE_LIMIT` (por defecto `60/minute`).
+- **Descripción:** Limita la cantidad de solicitudes que puede realizar un mismo origen. Si se supera el límite, el servicio responde con `429 Too Many Requests`.
