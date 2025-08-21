@@ -35,7 +35,7 @@ Botones disponibles:
 - 📊 Informe de Repetitividad
 - ❌ Cerrar
 
-Actualmente, el flujo de **Repetitividad** está operativo mientras que **SLA** continúa en desarrollo.
+Los flujos de **Repetitividad** y **SLA** están operativos.
 
 Ejemplos de frases que abren el menú por intención:
 

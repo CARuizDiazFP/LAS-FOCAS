@@ -26,7 +26,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 
 - **Interfaces**
 
-  - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye el flujo `/repetitividad` y un teclado opcional con atajos a `/sla` y `/repetitividad`. Ver [docs/bot.md](docs/bot.md) para guía rápida.
+  - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye los flujos `/repetitividad` y `/sla` y un teclado opcional con atajos a ambos comandos. Ver [docs/bot.md](docs/bot.md) para guía rápida.
   - **Web Panel** (autenticación simple, accesible por IP interna .28).
   - **nlp_intent** (microservicio NLP para clasificación de intención).
   - CLI opcional para utilidades.

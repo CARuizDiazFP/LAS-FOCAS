@@ -28,7 +28,7 @@ async def cmd_menu(msg: Message) -> None:
 
 
 @router.callback_query(F.data == "menu_sla")
-async def on_menu_sla(cb: CallbackQuery) -> None:
+async def on_menu_sla(cb: CallbackQuery, state: FSMContext) -> None:
     """Gestiona la opción del menú para SLA."""
     tg_user_id = cb.from_user.id
     logger.info(
@@ -37,7 +37,7 @@ async def on_menu_sla(cb: CallbackQuery) -> None:
     )
     inc("callbacks_sla")
     await cb.answer()
-    await start_sla_flow(cb.message, origin="callback")
+    await start_sla_flow(cb.message, state, origin="callback")
 
 
 @router.callback_query(F.data == "menu_repetitividad")

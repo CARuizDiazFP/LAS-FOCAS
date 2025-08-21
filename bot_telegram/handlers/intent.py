@@ -13,8 +13,11 @@ from collections import defaultdict
 import httpx
 import psycopg
 from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from bot_telegram.flows.repetitividad import start_repetitividad_flow
+from bot_telegram.flows.sla import start_sla_flow
 from bot_telegram.ui.menu import build_main_menu
 from core.repositories.conversations import insert_conversation
 from core.repositories.messages import insert_message
@@ -51,7 +54,7 @@ def _has_menu_keyword(text: str) -> bool:
 
 
 @router.message(F.text)
-async def classify_message(msg: Message):
+async def classify_message(msg: Message, state: FSMContext):
     user_id = msg.from_user.id
     if not _check_rate(user_id):
         await msg.answer("Rate limit alcanzado. Esperá un momento ⏳")
@@ -88,9 +91,16 @@ async def classify_message(msg: Message):
         logger.info("Usuario %s abrió el menú por intención", user_id)
         await msg.answer("Seleccioná una opción:", reply_markup=build_main_menu())
     elif data["intent"] == "Acción":
-        await msg.answer(
-            "📋 Acción detectada. Implementación pendiente. En breve se habilitará este flujo.\n" + summary
-        )
+        normalized = data["normalized_text"].lower()
+        if "sla" in normalized:
+            await start_sla_flow(msg, state, origin="intent")
+        elif "repetitividad" in normalized:
+            await start_repetitividad_flow(msg, state, origin="intent")
+        else:
+            await msg.answer(
+                "📋 Acción detectada. Implementación pendiente. En breve se habilitará este flujo.\n"
+                + summary
+            )
     else:
         await msg.answer(summary)
 
