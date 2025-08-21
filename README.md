@@ -28,6 +28,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 
   - **Telegram Bot** (primer canal de operación). Ver [docs/bot.md](docs/bot.md) para guía rápida.
   - **Web Panel** (autenticación simple, accesible por IP interna .28).
+  - **nlp_intent** (microservicio NLP para clasificación de intención).
   - CLI opcional para utilidades.
 
 - **Integraciones externas**
@@ -69,6 +70,10 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
         │ Telegram Bot   │  ← Allowlist de IDs
         └─────────┘
 
+        ┌───────────────┐
+        │ nlp_intent    │  ← Clasificación de intención
+        └───────────────┘
+
         ┌─────────┐
         │ Notion/Email   │  (Integraciones)
         └─────────┘
@@ -96,6 +101,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 las-focas/
 ├─ api/
 ├─ bot_telegram/
+├─ nlp_intent/
 ├─ core/
 ├─ modules/
 ├─ workers/
@@ -134,6 +140,13 @@ SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USER=notificaciones@example.com
 SMTP_PASS=secret
+# NLP / LLM
+LLM_PROVIDER=auto
+OPENAI_API_KEY=
+OLLAMA_URL=http://ollama:11434
+INTENT_THRESHOLD=0.7
+LANG=es
+LOG_RAW_TEXT=false
 ```
 
 ---

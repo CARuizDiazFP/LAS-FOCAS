@@ -50,3 +50,8 @@ Este documento está diseñado para orientar a **CODEX** en la comprensión del 
 8.	Docker: Mantener imágenes ligeras y basadas en versiones específicas, no usar latest.
 9.	Dependencias: Actualizar requirements.txt al añadir librerías y verificar compatibilidad.
 10.	Integraciones externas: Probar en entornos de staging antes de aplicar a producción.
+
+## 🆕 Módulo nlp_intent
+
+Microservicio FastAPI para clasificación de intención (Consulta, Acción, Otros). Ver `docs/nlp/intent.md` para detalles.
+
