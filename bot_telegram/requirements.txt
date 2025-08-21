@@ -1,0 +1,5 @@
+# Nombre de archivo: requirements.txt
+# Ubicación de archivo: bot_telegram/requirements.txt
+# Descripción: Dependencias específicas del bot de Telegram
+
+aiogram==3.13.1
