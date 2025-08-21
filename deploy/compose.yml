@@ -84,6 +84,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    networks:
+      - lasfocas_net
 
   # (Opcional) pgAdmin. Levantar con: docker compose -f deploy/compose.yml --profile pgadmin up -d
   pgadmin:
