@@ -7,6 +7,9 @@
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
 
 ## Arranque con Docker
+
+La imagen del bot copia los directorios `bot_telegram`, `modules` y `core` para
+que los flujos `/sla` y `/repetitividad` funcionen correctamente.
 ```bash
 docker compose -f deploy/compose.yml up -d --build bot
 docker compose -f deploy/compose.yml logs -f bot
