@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import psycopg
 
@@ -16,12 +15,14 @@ def insert_conversation(conn: psycopg.Connection, tg_user_id: int) -> int:
     """Inserta una nueva conversación y devuelve su ID."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO app.conversations (tg_user_id) VALUES (%s) RETURNING id",
+            "INSERT INTO app.conversations (tg_user_id) "
+            "VALUES (%s) RETURNING id",
             (tg_user_id,),
         )
         new_id = cur.fetchone()[0]
         conn.commit()
-    logger.info("conversación creada", extra={"tg_user_id": tg_user_id, "conversation_id": new_id})
+    logger.info(
+        "conversación creada",
+        extra={"tg_user_id": tg_user_id, "conversation_id": new_id},
+    )
     return new_id
-
-
