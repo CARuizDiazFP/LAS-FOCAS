@@ -258,7 +258,7 @@ docker compose -f deploy/compose.yml up -d --build
 
 ## 📓 Licencia
 
-MIT: libre uso/modificación con aviso de copyright.
+Este proyecto se distribuye bajo la [Licencia MIT](LICENSE).
 
 ---
 
