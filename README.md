@@ -199,7 +199,7 @@ La base de datos PostgreSQL no publica su puerto en el host; se expone únicamen
 
 ## 📪 CI/CD
 
-**CI (Integración Continua):** test, lint, build docker en cada push/PR.\
+**CI (Integración Continua):** `pytest` y `ruff` se ejecutan en cada push o pull request mediante [GitHub Actions](docs/ci.md).\
 **CD (Entrega Continua):** despliegue automático opcional.
 
 ---
