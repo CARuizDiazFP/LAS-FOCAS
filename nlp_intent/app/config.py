@@ -16,6 +16,7 @@ class Settings:
     intent_threshold: float = float(os.getenv("INTENT_THRESHOLD", "0.7"))
     lang: str = os.getenv("LANG", "es")
     log_raw_text: bool = os.getenv("LOG_RAW_TEXT", "false").lower() == "true"
+    cache_ttl: int = int(os.getenv("CACHE_TTL", "300"))
 
 
 settings = Settings()
