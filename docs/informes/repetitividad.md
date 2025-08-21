@@ -11,6 +11,7 @@
 - Se normalizan las columnas y se genera `PERIODO = YYYY-MM`.
 - Se filtra por período indicado (mes/año).
 - Se agrupan casos por `SERVICIO` y se consideran repetitivos aquellos con **2 o más** casos.
+- El conteo de servicios repetitivos se realiza con operaciones vectorizadas (`groupby().size()`), lo que mejora el rendimiento.
 - Se genera una tabla con servicio, cantidad y detalles/IDs.
 
 ## Uso por Telegram

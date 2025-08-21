@@ -63,24 +63,32 @@ def _detalles(grupo: pd.DataFrame) -> list[str]:
 
 def compute_repetitividad(df: pd.DataFrame) -> ResultadoRepetitividad:
     """Calcula servicios con casos repetidos (>=2 en el período)."""
-    total_servicios = df["SERVICIO"].nunique()
-    items: list[ItemSalida] = []
+    grupos = df.groupby("SERVICIO", sort=True)
+    conteos = grupos.size()
+    repetitivos = conteos[conteos >= 2]
 
-    for servicio, grupo in df.groupby("SERVICIO"):
-        conteo = len(grupo)
-        if conteo >= 2:
-            items.append(
-                ItemSalida(servicio=servicio, casos=conteo, detalles=_detalles(grupo))
+    items: list[ItemSalida] = []
+    for servicio in repetitivos.index:
+        grupo = grupos.get_group(servicio)
+        items.append(
+            ItemSalida(
+                servicio=servicio,
+                casos=int(repetitivos[servicio]),
+                detalles=_detalles(grupo),
             )
+        )
+
+    total_servicios = len(conteos)
+    total_repetitivos = len(repetitivos)
 
     resultado = ResultadoRepetitividad(
         items=items,
         total_servicios=total_servicios,
-        total_repetitivos=len(items),
+        total_repetitivos=total_repetitivos,
     )
     logger.info(
         "action=compute_repetitividad total_servicios=%s total_repetitivos=%s",
         total_servicios,
-        len(items),
+        total_repetitivos,
     )
     return resultado

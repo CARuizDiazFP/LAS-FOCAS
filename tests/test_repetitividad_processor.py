@@ -22,3 +22,22 @@ def test_compute_repetitividad_preserva_macro():
     assert res.total_repetitivos == 1
     assert res.items[0].servicio == "S1"
     assert "BANCO MACRO SA" in df["CLIENTE"].unique()
+
+
+def test_compute_repetitividad_varios_servicios():
+    datos = [
+        {"CLIENTE": "A", "SERVICIO": "S1", "FECHA": "2024-07-01", "ID_SERVICIO": "1"},
+        {"CLIENTE": "A", "SERVICIO": "S1", "FECHA": "2024-07-02", "ID_SERVICIO": "2"},
+        {"CLIENTE": "B", "SERVICIO": "S2", "FECHA": "2024-07-03", "ID_SERVICIO": "3"},
+        {"CLIENTE": "B", "SERVICIO": "S2", "FECHA": "2024-07-04", "ID_SERVICIO": "4"},
+        {"CLIENTE": "C", "SERVICIO": "S3", "FECHA": "2024-07-05", "ID_SERVICIO": "5"},
+    ]
+    df = pd.DataFrame(datos)
+    df = processor.normalize(df)
+    df = processor.filter_period(df, 7, 2024)
+    res = processor.compute_repetitividad(df)
+
+    assert res.total_servicios == 3
+    assert res.total_repetitivos == 2
+    servicios = {item.servicio: item.casos for item in res.items}
+    assert servicios == {"S1": 2, "S2": 2}
