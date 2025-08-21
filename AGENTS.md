@@ -132,6 +132,7 @@ Todos los prompts deben seguir este esquema **en este orden**:
 
 * **Baja confianza (<0.7)**: solicitar aclaración corta para elevar confianza (botones “Acción”/“Consulta” cuando aplique).
 * **Acción detectada**: si el flujo no existe, responder “implementación pendiente” y registrar intención para backlog.
+* **Menú principal**: cuando la intención sea "Acción" y el mensaje contenga palabras clave de menú, abrir el menú principal.
 * **Mensajes de sistema**: ser claros, breves y accionables.
 
 ### 10) Rendimiento y resiliencia

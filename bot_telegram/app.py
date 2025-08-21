@@ -11,8 +11,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from bot_telegram.filters.allowlist import AllowlistMiddleware
-from bot_telegram.handlers.intent import router as intent_router
 from bot_telegram.handlers.basic import router as basic_router
+from bot_telegram.handlers.intent import router as intent_router
+from bot_telegram.handlers.menu import router as menu_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 logger = logging.getLogger("bot")
@@ -31,6 +32,7 @@ async def main():
     dp.message.middleware(AllowlistMiddleware())
 
     # Routers
+    dp.include_router(menu_router)
     dp.include_router(intent_router)
     dp.include_router(basic_router)
 
