@@ -193,6 +193,8 @@ curl -sS http://localhost:8000/health
 curl -sS http://localhost:8000/db-check
 ```
 
+La base de datos PostgreSQL no publica su puerto en el host; se expone únicamente a otros servicios del stack mediante `expose: 5432`.
+
 ---
 
 ## 📪 CI/CD

@@ -11,6 +11,8 @@ La cadena DSN se construye a partir de variables de entorno:
 - `POSTGRES_USER`: usuario para la conexión.
 - `POSTGRES_PASSWORD`: contraseña del usuario.
 
+En `deploy/compose.yml` la base de datos solo se expone a otros contenedores mediante `expose: 5432`, evitando publicar el puerto en el host.
+
 La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la versión del servidor
 para verificar el estado de la base de datos.
 
