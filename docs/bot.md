@@ -20,6 +20,11 @@ Probar /ping y /help.
 
 Ver logs para validar que usuarios no permitidos no reciben respuesta.
 
+## Clasificación de intención
+
+Cada mensaje de texto se envía al microservicio `nlp_intent` para determinar si es una **Consulta**, una **Acción** u **Otros**.
+El bot responde con un resumen de la intención detectada. Si la confianza es baja, solicita una aclaración al usuario.
+
 ## Notas
 
 Modo: long polling (no requiere URL pública).

@@ -51,6 +51,18 @@ services:
     networks:
       - lasfocas_net
 
+  nlp_intent:
+    build:
+      context: ..
+      dockerfile: deploy/docker/nlp_intent.Dockerfile
+    env_file:
+      - ../.env
+    expose:
+      - "8100"
+    restart: unless-stopped
+    networks:
+      - lasfocas_net
+
   bot:
     build:
       context: ..
