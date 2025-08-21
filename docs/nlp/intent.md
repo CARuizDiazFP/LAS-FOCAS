@@ -36,7 +36,7 @@ El servicio intenta cada proveedor en ese orden mientras la confianza sea menor 
 
 ## Caché
 
-Las respuestas de clasificación se almacenan en memoria durante `CACHE_TTL` segundos (300 por defecto). Si un texto se repite dentro de ese período, la respuesta se devuelve desde caché evitando recalcularla.
+Las respuestas de clasificación se almacenan en memoria durante `CACHE_TTL` segundos (300 por defecto). Esta duración se configura con la variable de entorno `CACHE_TTL`. Si un texto se repite dentro de ese período, la respuesta se devuelve desde caché evitando recalcularla.
 
 ## Métricas
 
@@ -50,6 +50,10 @@ El endpoint `GET /metrics` devuelve estadísticas básicas:
 ```
 
 `total_requests` cuenta las llamadas a `/v1/intent:classify` y `average_latency_ms` es la latencia promedio.
+
+## Resiliencia ante fallos
+
+Cada proveedor externo mantiene un contador de errores. Tras **3** fallos consecutivos, ese proveedor se desactiva y el servicio se degrada a la heurística local para evitar más errores.
 
 ## Baja confianza
 
