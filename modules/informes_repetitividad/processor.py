@@ -16,6 +16,8 @@ from .schemas import ItemSalida, ResultadoRepetitividad
 
 logger = logging.getLogger(__name__)
 
+MAX_STR_LEN = 100
+
 
 def load_excel(path: str) -> pd.DataFrame:
     """Carga un archivo Excel en un DataFrame."""
@@ -35,14 +37,23 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Faltan columnas requeridas: {', '.join(missing)}")
 
-    df["CLIENTE"] = df["CLIENTE"].astype(str).str.upper()
-    df["SERVICIO"] = df["SERVICIO"].astype(str).str.strip()
+    for col in ["CLIENTE", "SERVICIO"]:
+        df[col] = df[col].astype(str)
+        if df[col].str.len().gt(MAX_STR_LEN).any():
+            raise ValueError(f"Valores demasiado largos en {col}")
+
+    df["CLIENTE"] = df["CLIENTE"].str.upper()
+    df["SERVICIO"] = df["SERVICIO"].str.strip()
+    if df["SERVICIO"].str.len().eq(0).any():
+        raise ValueError("SERVICIO contiene valores vacíos")
+
+    fechas = pd.to_datetime(df["FECHA"], errors="coerce")
+    if fechas.isna().any():
+        raise ValueError("FECHA contiene valores inválidos")
+    df["FECHA"] = fechas
 
     # Eliminamos filas con datos faltantes, preservando clientes críticos
     df = df[df["CLIENTE"].notna() | df["CLIENTE"].isin(CLIENTES_PRESERVAR)]
-
-    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
-    df = df.dropna(subset=["FECHA", "SERVICIO"])
 
     df["PERIODO"] = df["FECHA"].dt.strftime("%Y-%m")
     return df

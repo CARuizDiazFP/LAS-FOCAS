@@ -7,6 +7,8 @@ import pandas as pd
 from .config import COLUMNAS_MAPPER, COLUMNAS_OBLIGATORIAS, SLA_POR_SERVICIO
 from .schemas import FilaDetalle, KPI, ResultadoSLA
 
+MAX_STR_LEN = 100
+
 
 def load_excel(path: str) -> pd.DataFrame:
     """Carga un archivo Excel en un DataFrame."""
@@ -31,8 +33,21 @@ def normalize(df: pd.DataFrame, work_hours: bool = False) -> pd.DataFrame:
     if faltantes:
         raise ValueError(f"Faltan columnas requeridas: {', '.join(faltantes)}")
 
-    df["FECHA_APERTURA"] = pd.to_datetime(df["FECHA_APERTURA"], errors="coerce")
-    df["FECHA_CIERRE"] = pd.to_datetime(df["FECHA_CIERRE"], errors="coerce")
+    for col in ["ID", "CLIENTE", "SERVICIO"]:
+        df[col] = df[col].astype(str)
+        if df[col].str.len().gt(MAX_STR_LEN).any():
+            raise ValueError(f"Valores demasiado largos en {col}")
+
+    apertura = pd.to_datetime(df["FECHA_APERTURA"], errors="coerce")
+    if apertura.isna().any():
+        raise ValueError("FECHA_APERTURA contiene valores inválidos")
+    cierre = pd.to_datetime(df["FECHA_CIERRE"], errors="coerce")
+    invalid_cierre = cierre.isna() & df["FECHA_CIERRE"].notna()
+    if invalid_cierre.any():
+        raise ValueError("FECHA_CIERRE contiene valores inválidos")
+    df["FECHA_APERTURA"] = apertura
+    df["FECHA_CIERRE"] = cierre
+
     df["TTR_h"] = (df["FECHA_CIERRE"] - df["FECHA_APERTURA"]).dt.total_seconds() / 3600
     if work_hours:
         df["TTR_h"] *= 0.5
@@ -66,6 +81,10 @@ def apply_sla_target(df: pd.DataFrame) -> pd.DataFrame:
             df["SERVICIO"].map(SLA_POR_SERVICIO)
         )
         df["SLA_OBJETIVO_HORAS"].fillna(SLA_POR_SERVICIO.get("Default", 24.0), inplace=True)
+    if not pd.api.types.is_numeric_dtype(df["SLA_OBJETIVO_HORAS"]):
+        raise TypeError("SLA_OBJETIVO_HORAS debe ser numérica")
+    if df["SLA_OBJETIVO_HORAS"].gt(1000).any():
+        raise ValueError("SLA_OBJETIVO_HORAS excede el máximo permitido (1000)")
     return df
 
 

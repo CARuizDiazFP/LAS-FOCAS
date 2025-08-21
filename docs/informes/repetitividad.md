@@ -8,6 +8,10 @@
 - Columnas mínimas: `CLIENTE`, `SERVICIO`, `FECHA` y opcional `ID_SERVICIO`.
 - Los datos del cliente **BANCO MACRO SA** nunca se filtran automáticamente.
 
+## Validaciones
+- `CLIENTE` y `SERVICIO` deben ser texto de hasta 100 caracteres.
+- `FECHA` debe contener valores de fecha válidos.
+
 ## Cálculo
 - Se normalizan las columnas y se genera `PERIODO = YYYY-MM`.
 - Se filtra por período indicado (mes/año).

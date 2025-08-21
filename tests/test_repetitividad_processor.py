@@ -3,6 +3,7 @@
 # Descripción: Pruebas del procesamiento de repetitividad
 
 import pandas as pd
+import pytest
 
 from modules.informes_repetitividad import processor
 
@@ -41,3 +42,17 @@ def test_compute_repetitividad_varios_servicios():
     assert res.total_repetitivos == 2
     servicios = {item.servicio: item.casos for item in res.items}
     assert servicios == {"S1": 2, "S2": 2}
+
+
+def test_normalize_rechaza_texto_largo():
+    datos = [{"CLIENTE": "A" * 101, "SERVICIO": "S1", "FECHA": "2024-07-01"}]
+    df = pd.DataFrame(datos)
+    with pytest.raises(ValueError):
+        processor.normalize(df)
+
+
+def test_normalize_rechaza_fecha_invalida():
+    datos = [{"CLIENTE": "A", "SERVICIO": "S1", "FECHA": "no-fecha"}]
+    df = pd.DataFrame(datos)
+    with pytest.raises(ValueError):
+        processor.normalize(df)
