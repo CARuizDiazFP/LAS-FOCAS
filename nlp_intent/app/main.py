@@ -14,12 +14,17 @@ from slowapi.errors import RateLimitExceeded
 from .schemas import IntentRequest, IntentResponse
 from .service import classify_text
 from .metrics import metrics
+from core.logging import configure_logging
+from core.middlewares import RequestIDMiddleware
+
+configure_logging("nlp_intent")
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="nlp_intent")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 
 @app.middleware("http")

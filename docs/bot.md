@@ -27,6 +27,11 @@ Probar /ping y /help.
 
 Los intentos de acceso de usuarios no incluidos en `TELEGRAM_ALLOWED_IDS` generan un log `acceso_denegado` con el `tg_user_id` y se responde "Acceso no autorizado" al remitente.
 
+## Logging y `request_id`
+
+- Cada actualización del bot genera un `request_id` único que se adjunta a los logs.
+- La salida de `logging` está en formato JSON con los campos `service`, `action`, `tg_user_id` y `request_id`.
+
 ## Clasificación de intención
 
 Cada mensaje de texto se envía al microservicio `nlp_intent` para determinar si es una **Consulta**, una **Acción** u **Otros**.
@@ -107,5 +112,3 @@ Para un diagnóstico rápido está disponible `/diag`, que muestra los contadore
 commands_sla: X | callbacks_sla: Y
 commands_rep: A | callbacks_rep: B
 ```
-
-Los registros (`logging`) incluyen `route`, `cmd` o `data`, y `tg_user_id` para facilitar el seguimiento.
