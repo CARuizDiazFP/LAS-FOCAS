@@ -69,3 +69,19 @@ def test_compute_kpis_sla():
     assert abs(detalle["1"].ttr_h - 10) < 0.1
     assert detalle["2"].sla_objetivo_h == 12.0
     assert detalle["6"].sla_objetivo_h == 8
+
+
+def test_normalize_with_work_hours_flag():
+    datos = [
+        {
+            "ID": "1",
+            "CLIENTE": "A",
+            "SERVICIO": "VIP",
+            "FECHA_APERTURA": "2024-07-01 08:00",
+            "FECHA_CIERRE": "2024-07-01 18:00",
+        }
+    ]
+    df = pd.DataFrame(datos)
+    df_cal = processor.normalize(df.copy())
+    df_laboral = processor.normalize(df.copy(), work_hours=True)
+    assert df_laboral.loc[0, "TTR_h"] == df_cal.loc[0, "TTR_h"] * 0.5

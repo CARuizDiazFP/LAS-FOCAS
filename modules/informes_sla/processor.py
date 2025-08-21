@@ -13,8 +13,18 @@ def load_excel(path: str) -> pd.DataFrame:
     return pd.read_excel(path, engine="openpyxl")
 
 
-def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza nombres de columnas y calcula TTR en horas."""
+def normalize(df: pd.DataFrame, work_hours: bool = False) -> pd.DataFrame:
+    """Normaliza nombres de columnas y calcula TTR en horas.
+
+    Parameters
+    ----------
+    df:
+        Datos originales del informe.
+    work_hours:
+        Si es ``True`` aplica un cálculo de TTR basado en horario laboral.
+        Actualmente se trata de un *placeholder* que reduce el TTR al 50 %.
+        # TODO: implementar cálculo real de horario laboral.
+    """
     df = df.rename(columns={k: v for k, v in COLUMNAS_MAPPER.items() if k in df.columns})
 
     faltantes = [c for c in COLUMNAS_OBLIGATORIAS if c not in df.columns]
@@ -24,6 +34,8 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df["FECHA_APERTURA"] = pd.to_datetime(df["FECHA_APERTURA"], errors="coerce")
     df["FECHA_CIERRE"] = pd.to_datetime(df["FECHA_CIERRE"], errors="coerce")
     df["TTR_h"] = (df["FECHA_CIERRE"] - df["FECHA_APERTURA"]).dt.total_seconds() / 3600
+    if work_hours:
+        df["TTR_h"] *= 0.5
     return df
 
 

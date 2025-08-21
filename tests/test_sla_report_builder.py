@@ -4,8 +4,10 @@
 
 from pathlib import Path
 
+import pandas as pd
 from docx import Document
 
+from modules.informes_sla import processor, runner, report
 from modules.informes_sla.report import export_docx
 from modules.informes_sla.schemas import (
     FilaDetalle,
@@ -45,3 +47,30 @@ def test_export_docx_crea_archivo(tmp_path):
     assert Path(path).exists()
     doc = Document(path)
     assert "Julio 2024" in doc.paragraphs[0].text
+
+
+def test_run_informa_error_pdf(monkeypatch, tmp_path):
+    df = pd.DataFrame(
+        {
+            "ID": ["1"],
+            "CLIENTE": ["A"],
+            "SERVICIO": ["VIP"],
+            "FECHA_APERTURA": ["2024-07-01 00:00"],
+            "FECHA_CIERRE": ["2024-07-01 10:00"],
+        }
+    )
+
+    monkeypatch.setattr(processor, "load_excel", lambda _: df)
+
+    dummy_docx = tmp_path / "out.docx"
+    dummy_docx.write_text("doc")
+    monkeypatch.setattr(report, "export_docx", lambda *a, **k: str(dummy_docx))
+
+    def fake_pdf(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(report, "maybe_export_pdf", fake_pdf)
+
+    res = runner.run("archivo.xlsx", 7, 2024, "/usr/bin/soffice")
+    assert "error" in res
+    assert "No se pudo convertir a PDF" in res["error"]

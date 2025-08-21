@@ -87,6 +87,8 @@ async def on_period(msg: Message, state: FSMContext) -> None:
     await msg.answer_document(FSInputFile(resultado["docx"]))
     if resultado.get("pdf"):
         await msg.answer_document(FSInputFile(resultado["pdf"]))
+    if resultado.get("error"):
+        await msg.answer(resultado["error"])
     if resultado["resultado"].sin_cierre:
         await msg.answer(
             f"Se excluyeron {resultado['resultado'].sin_cierre} casos sin fecha de cierre",
