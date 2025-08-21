@@ -46,3 +46,7 @@ Thumbs.db
 # Docker
 docker-data/
 .docker/
+
+# Datos de informes
+data/uploads/
+data/reports/

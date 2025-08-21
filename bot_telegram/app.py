@@ -13,6 +13,7 @@ from aiogram.enums import ParseMode
 from bot_telegram.filters.allowlist import AllowlistMiddleware
 from bot_telegram.handlers.basic import router as basic_router
 from bot_telegram.handlers.commands import router as commands_router
+from bot_telegram.flows.repetitividad import router as rep_router
 from bot_telegram.handlers.intent import router as intent_router
 from bot_telegram.handlers.menu import router as menu_router
 
@@ -35,6 +36,7 @@ async def main():
     dp.callback_query.middleware(allowlist)
 
     # Routers
+    dp.include_router(rep_router)
     dp.include_router(menu_router)
     dp.include_router(commands_router)
     dp.include_router(intent_router)

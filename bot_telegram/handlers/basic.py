@@ -5,12 +5,18 @@
 from aiogram import Router
 from aiogram.types import Message
 
+from bot_telegram.ui.reply_keyboard import get_main_reply_keyboard
+
 router = Router()
 
 
 @router.message(commands={"start"})
 async def cmd_start(msg: Message):
-    await msg.answer("🦭 ¡Hola! Soy el bot de LAS-FOCAS. Probá /ping o /help.")
+    """Mensaje de bienvenida opcional mostrando el teclado de atajos."""
+    await msg.answer(
+        "🦭 ¡Hola! Soy el bot de LAS-FOCAS. Probá /ping o /help.",
+        reply_markup=get_main_reply_keyboard(),
+    )
 
 
 @router.message(commands={"help"})

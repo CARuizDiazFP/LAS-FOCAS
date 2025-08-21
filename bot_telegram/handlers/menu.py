@@ -5,6 +5,7 @@
 import logging
 
 from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot_telegram.diag.counters import inc
@@ -40,7 +41,7 @@ async def on_menu_sla(cb: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "menu_repetitividad")
-async def on_menu_repetitividad(cb: CallbackQuery) -> None:
+async def on_menu_repetitividad(cb: CallbackQuery, state: FSMContext) -> None:
     """Gestiona la opción del menú para Repetitividad."""
     tg_user_id = cb.from_user.id
     logger.info(
@@ -49,7 +50,7 @@ async def on_menu_repetitividad(cb: CallbackQuery) -> None:
     )
     inc("callbacks_rep")
     await cb.answer()
-    await start_repetitividad_flow(cb.message, origin="callback")
+    await start_repetitividad_flow(cb.message, state, origin="callback")
 
 
 @router.callback_query(F.data == "menu_close")
