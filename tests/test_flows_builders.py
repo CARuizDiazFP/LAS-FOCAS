@@ -9,4 +9,4 @@ def test_build_sla_response() -> None:
     """Verifica que el builder de SLA contiene el texto esperado."""
     text = build_sla_response()
     assert "📈" in text
-    assert "implementación pendiente" in text
+    assert "Excel" in text

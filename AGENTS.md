@@ -119,6 +119,7 @@ Todos los prompts deben seguir este esquema **en este orden**:
 
 * Actualizar **README**, **AGENTS.md** y **requirements** cuando corresponda.
 * En `/docs/` crear/actualizar la documentación específica del módulo tocado (ej.: `docs/bot.md`, `docs/nlp/intent.md`, `docs/db.md`).
+* `docs/informes/sla.md` documenta el informe de SLA y debe mantenerse al día.
 * Mantener un registro de decisiones técnicas en `docs/decisiones.md` (formato breve: contexto → decisión → alternativas → impactos).
 
 ### 8) Docker/Infra
@@ -135,6 +136,7 @@ Todos los prompts deben seguir este esquema **en este orden**:
 * **Menú principal**: cuando la intención sea "Acción" y el mensaje contenga palabras clave de menú, abrir el menú principal.
 * **Mensajes de sistema**: ser claros, breves y accionables.
 * **ReplyKeyboard**: disponible con atajos `/sla`, `/repetitividad`, `/menu` y `/hide` como alternativa a callbacks.
+* **Flujo SLA**: operativo; ver `docs/informes/sla.md` para insumos y alcance.
 
 ### 10) Rendimiento y resiliencia
 

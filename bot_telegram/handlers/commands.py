@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.message(Command("sla"))
-async def cmd_sla(message: Message) -> None:
+async def cmd_sla(message: Message, state: FSMContext) -> None:
     """Inicia el flujo de SLA desde el comando /sla."""
     tg_user_id = message.from_user.id
     logger.info(
@@ -29,7 +29,7 @@ async def cmd_sla(message: Message) -> None:
         tg_user_id,
     )
     inc("commands_sla")
-    await start_sla_flow(message, origin="command")
+    await start_sla_flow(message, state, origin="command")
 
 
 @router.message(Command("repetitividad"))
