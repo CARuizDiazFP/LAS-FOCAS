@@ -2,8 +2,19 @@
 # Ubicación de archivo: modules/informes_sla/config.py
 # Descripción: Configuración y constantes para el informe de SLA
 
+import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+# Paths configurables mediante variables de entorno
+SLA_TEMPLATE_PATH = Path(os.getenv("SLA_TEMPLATE_PATH", "/app/templates/sla.docx"))
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
+SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
+
+# Alias para compatibilidad con módulos existentes
+BASE_UPLOADS = UPLOADS_DIR
+BASE_REPORTS = REPORTS_DIR
 
 # Mapeo de nombres de columnas crudas a nombres canónicos
 COLUMNAS_MAPPER: Dict[str, str] = {
@@ -53,7 +64,3 @@ MESES_ES: List[str] = [
     "noviembre",
     "diciembre",
 ]
-
-# Directorios de trabajo dentro del contenedor del bot
-BASE_UPLOADS = Path("/app/data/uploads")
-BASE_REPORTS = Path("/app/data/reports")

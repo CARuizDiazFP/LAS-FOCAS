@@ -2,8 +2,21 @@
 # Ubicación de archivo: modules/informes_repetitividad/config.py
 # Descripción: Configuración y constantes para el informe de repetitividad
 
+import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+# Paths configurables mediante variables de entorno
+REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", "/app/templates/repetitividad.docx"))
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
+SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
+MAPS_ENABLED: bool = os.getenv("MAPS_ENABLED", "false").lower() == "true"
+MAPS_LIGHTWEIGHT: bool = os.getenv("MAPS_LIGHTWEIGHT", "true").lower() == "true"
+
+# Alias para compatibilidad con otros módulos
+BASE_UPLOADS = UPLOADS_DIR
+BASE_REPORTS = REPORTS_DIR
 
 # Mapeo de columnas esperadas en el Excel de casos
 COLUMNAS_MAPPER: Dict[str, str] = {
@@ -38,7 +51,3 @@ MESES_ES: List[str] = [
     "noviembre",
     "diciembre",
 ]
-
-# Directorios base de trabajo dentro del contenedor del bot
-BASE_UPLOADS = Path("/app/data/uploads")
-BASE_REPORTS = Path("/app/data/reports")

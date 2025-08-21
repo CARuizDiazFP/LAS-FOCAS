@@ -3,7 +3,6 @@
 # Descripción: Generación de archivos DOCX y PDF para el informe de SLA
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +11,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+from modules.common.libreoffice_export import convert_to_pdf
 from .config import MESES_ES
 from .schemas import Params, ResultadoSLA
 
@@ -100,34 +100,12 @@ def export_docx(data: ResultadoSLA, periodo: Params, out_dir: str) -> str:
     return str(docx_path)
 
 
-def maybe_export_pdf(docx_path: str, out_dir: str, soffice_bin: Optional[str]) -> Optional[str]:
+def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
     """Convierte el DOCX a PDF si LibreOffice está disponible."""
     if not soffice_bin:
         return None
-
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(
-            [
-                soffice_bin,
-                "--headless",
-                "--convert-to",
-                "pdf",
-                docx_path,
-                "--outdir",
-                str(out_path),
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except Exception as exc:  # pragma: no cover
-        logger.exception("action=maybe_export_pdf error=%s", exc)
+        return convert_to_pdf(docx_path, soffice_bin)
+    except Exception:  # pragma: no cover - logging
+        logger.exception("action=maybe_export_pdf error")
         return None
-
-    pdf_path = out_path / (Path(docx_path).stem + ".pdf")
-    if pdf_path.exists():
-        logger.info("action=maybe_export_pdf path=%s", pdf_path)
-        return str(pdf_path)
-    return None

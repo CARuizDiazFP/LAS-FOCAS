@@ -24,4 +24,9 @@
 - Archivos generados en `/app/data/reports/` dentro del contenedor del bot.
 
 ## Variables de entorno
+- `REP_TEMPLATE_PATH=/app/templates/repetitividad.docx` ruta de la plantilla.
+- `REPORTS_DIR=/app/data/reports` destino de los informes.
+- `UPLOADS_DIR=/app/data/uploads` ubicación temporal de archivos subidos.
 - `SOFFICE_BIN=/usr/bin/soffice` para habilitar la conversión a PDF (opcional).
+- `MAPS_ENABLED=false` habilita mapas cuando es `true`.
+- `MAPS_LIGHTWEIGHT=true` usa Matplotlib sin stack geoespacial.
