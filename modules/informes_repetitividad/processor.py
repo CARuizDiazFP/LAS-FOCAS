@@ -3,7 +3,6 @@
 # Descripción: Funciones de carga, normalización y cálculo de repetitividad
 
 import logging
-from typing import Optional
 
 import pandas as pd
 

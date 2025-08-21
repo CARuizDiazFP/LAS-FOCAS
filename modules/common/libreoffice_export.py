@@ -45,7 +45,7 @@ def convert_to_pdf(docx_path: str, soffice_bin: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-    except FileNotFoundError as exc:  # pragma: no cover - logging
+    except FileNotFoundError:  # pragma: no cover - logging
         logger.exception(
             "action=convert_to_pdf error=soffice_no_encontrado path=%s", soffice_bin
         )

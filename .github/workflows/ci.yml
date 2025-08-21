@@ -1,0 +1,28 @@
+# Nombre de archivo: ci.yml
+# Ubicación de archivo: .github/workflows/ci.yml
+# Descripción: Ejecución de pruebas y linting en cada push o pull request
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Ejecutar pytest
+        run: pytest
+      - name: Ejecutar ruff
+        run: ruff check .
