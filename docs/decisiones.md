@@ -2,6 +2,13 @@
 # Ubicación de archivo: docs/decisiones.md
 # Descripción: Registro de decisiones técnicas del proyecto
 
+## 2025-08-21 — Fijación de versiones de dependencias
+
+- **Contexto:** Las dependencias `sqlalchemy`, `psycopg[binary]` y `orjson` no tenían versiones fijas, lo que provocaba diferencias entre entornos.
+- **Decisión:** Establecer versiones explícitas en `requirements.txt` para asegurar un entorno replicable.
+- **Alternativas:** Mantener versiones flotantes y resolver conflictos cuando aparezcan.
+- **Impacto:** Facilita la reproducción de entornos y reduce fallos por cambios inesperados en las dependencias.
+
 ## 2025-08-21 — Unificación de flujos del bot
 
 - **Contexto:** Los comandos y botones del bot ejecutaban lógica separada, lo que dificultaba diagnosticar problemas con `callback_query` y generaba duplicidad de código.
