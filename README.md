@@ -26,7 +26,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 
 - **Interfaces**
 
-  - **Telegram Bot** (primer canal de operación).
+  - **Telegram Bot** (primer canal de operación). Ver [docs/bot.md](docs/bot.md) para guía rápida.
   - **Web Panel** (autenticación simple, accesible por IP interna .28).
   - CLI opcional para utilidades.
 
