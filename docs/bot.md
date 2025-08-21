@@ -35,7 +35,7 @@ Botones disponibles:
 - 📊 Informe de Repetitividad
 - ❌ Cerrar
 
-Actualmente, cada opción responde “implementación pendiente” y deja listo el hook para integrar el flujo real.
+Actualmente, el flujo de **Repetitividad** está operativo mientras que **SLA** continúa en desarrollo.
 
 Ejemplos de frases que abren el menú por intención:
 
@@ -88,6 +88,10 @@ Ejemplos:
 
 - `/sla` y botón **📈 Análisis de SLA** comparten `start_sla_flow`.
 - `/repetitividad` y botón **📊 Informe de Repetitividad** comparten `start_repetitividad_flow`.
+
+### ReplyKeyboard
+El comando `/keyboard` muestra un teclado con atajos (`/sla`, `/repetitividad`, `/menu`, `/hide`).
+El comando `/hide` lo oculta.
 
 Para un diagnóstico rápido está disponible `/diag`, que muestra los contadores de invocaciones recibidas:
 
