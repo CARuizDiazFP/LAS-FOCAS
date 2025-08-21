@@ -3,6 +3,7 @@
 # Descripción: Comandos básicos (/start, /help, /ping) y handler de fallback
 
 from aiogram import Router
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
 from bot_telegram.ui.reply_keyboard import get_main_reply_keyboard
@@ -10,7 +11,7 @@ from bot_telegram.ui.reply_keyboard import get_main_reply_keyboard
 router = Router()
 
 
-@router.message(commands={"start"})
+@router.message(CommandStart())
 async def cmd_start(msg: Message):
     """Mensaje de bienvenida opcional mostrando el teclado de atajos."""
     await msg.answer(
@@ -19,12 +20,12 @@ async def cmd_start(msg: Message):
     )
 
 
-@router.message(commands={"help"})
+@router.message(Command("help"))
 async def cmd_help(msg: Message):
     await msg.answer("Comandos disponibles:\n/start – bienvenida\n/ping – prueba de latencia\n/help – esta ayuda")
 
 
-@router.message(commands={"ping"})
+@router.message(Command("ping"))
 async def cmd_ping(msg: Message):
     await msg.answer("pong 🏓")
 
