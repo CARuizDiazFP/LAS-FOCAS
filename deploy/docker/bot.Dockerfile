@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r /app/bot_requirements.txt
 
 # Copiamos solo lo necesario del proyecto
 COPY bot_telegram /app/bot_telegram
+COPY modules /app/modules
+COPY core /app/core
 
 # Usuario no root opcional (hardening)
 # RUN useradd -m bot && chown -R bot:bot /app && USER bot
