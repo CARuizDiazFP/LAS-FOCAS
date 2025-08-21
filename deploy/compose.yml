@@ -14,8 +14,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432" # Cambiar host-port si está ocupado
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
@@ -60,6 +60,11 @@ services:
     expose:
       - "8100"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "sh /app/app/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     networks:
       - lasfocas_net
 
@@ -74,6 +79,11 @@ services:
     restart: unless-stopped
     volumes:
       - bot_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "sh /app/bot_telegram/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   # (Opcional) pgAdmin. Levantar con: docker compose -f deploy/compose.yml --profile pgadmin up -d
   pgadmin:

@@ -15,6 +15,10 @@ docker compose -f deploy/compose.yml up -d --build bot
 docker compose -f deploy/compose.yml logs -f bot
 ```
 
+## Healthcheck
+
+El contenedor ejecuta `bot_telegram/healthcheck.sh` para comprobar que el proceso siga enviando latidos. Si el script falla, Docker reinicia el servicio.
+
 ## Prueba
 
 Enviar /start desde un ID permitido.

@@ -51,6 +51,11 @@ El endpoint `GET /metrics` devuelve estadísticas básicas:
 
 `total_requests` cuenta las llamadas a `/v1/intent:classify` y `average_latency_ms` es la latencia promedio.
 
+## Healthcheck
+
+El contenedor ejecuta `app/healthcheck.sh` que consulta `http://localhost:8100/health` para asegurar que el servicio responda.
+
+
 ## Resiliencia ante fallos
 
 Cada proveedor externo mantiene un contador de errores. Tras **3** fallos consecutivos, ese proveedor se desactiva y el servicio se degrada a la heurística local para evitar más errores.
