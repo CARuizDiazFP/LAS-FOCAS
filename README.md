@@ -27,7 +27,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 - **Interfaces**
 
   - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye los flujos `/repetitividad` y `/sla` y un teclado opcional con atajos a ambos comandos. Ver [docs/bot.md](docs/bot.md) para guía rápida.
-  - **Web Panel** (autenticación simple, accesible por IP interna .28).
+  - **Web Panel** (autenticación simple, accesible por IP interna .28). Ver [docs/web.md](docs/web.md) para el plan del módulo.
   - **nlp_intent** (microservicio NLP para clasificación de intención).
   - CLI opcional para utilidades.
 
@@ -168,7 +168,7 @@ MAPS_LIGHTWEIGHT=true
 
 ## 🛥️ Despliegue
 
-Se recomienda **docker-compose** desde el inicio para reproducibilidad.
+Se recomienda **docker-compose** desde el inicio para reproducibilidad. Los detalles de redes, puertos y volúmenes están en [docs/infra.md](docs/infra.md).
 
 **Requisitos (Debian 12.4)**
 
@@ -211,6 +211,7 @@ La base de datos PostgreSQL no publica su puerto en el host; se expone únicamen
 - Tokens rotados.
 - Usuario DB de mínimos privilegios (incluye cuenta de solo lectura).
 - Rate limiting configurable en API y nlp_intent.
+- Políticas detalladas en [docs/security.md](docs/security.md).
 ---
 
 ## 🧠 Agente autónomo (futuro)
