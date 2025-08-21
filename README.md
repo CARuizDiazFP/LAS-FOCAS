@@ -152,6 +152,7 @@ REP_TEMPLATE_PATH=/app/templates/repetitividad.docx
 REPORTS_DIR=/app/data/reports
 UPLOADS_DIR=/app/data/uploads
 SOFFICE_BIN=/usr/bin/soffice
+WORK_HOURS=false
 MAPS_ENABLED=false
 MAPS_LIGHTWEIGHT=true
 ```
