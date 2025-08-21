@@ -10,11 +10,12 @@ router = APIRouter()
 
 @router.get("/health")
 def health():
-    return {
+    base_response = {
         "status": "ok",
         "service": "api",
-        "time": datetime.now(timezone.utc).isoformat()
+        "time": datetime.now(timezone.utc).isoformat(),
     }
+    return {**base_response, **db_health()}
 
 @router.get("/db-check")
 def db_check():
