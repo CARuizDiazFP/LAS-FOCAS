@@ -10,6 +10,10 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.routes.health import router as health_router
+from core.logging import configure_logging
+from core.middlewares import RequestIDMiddleware
+
+configure_logging("api")
 
 
 def create_app() -> FastAPI:
@@ -21,6 +25,7 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
+    app.add_middleware(RequestIDMiddleware)
     app.include_router(health_router, tags=["health"])
     return app
 

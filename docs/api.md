@@ -47,3 +47,8 @@
 
 - **Variable:** `API_RATE_LIMIT` (por defecto `60/minute`).
 - **Descripción:** Limita la cantidad de solicitudes que puede realizar un mismo origen. Si se supera el límite, el servicio responde con `429 Too Many Requests`.
+
+## Logging y `request_id`
+
+- Cada solicitud genera un encabezado `X-Request-ID` y se propaga en los logs.
+- Los registros se emiten en formato JSON con los campos `service`, `action`, `tg_user_id` y `request_id` para facilitar la trazabilidad.

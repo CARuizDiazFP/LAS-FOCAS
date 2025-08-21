@@ -17,8 +17,10 @@ from bot_telegram.flows.repetitividad import router as rep_router
 from bot_telegram.flows.sla import router as sla_router
 from bot_telegram.handlers.intent import router as intent_router
 from bot_telegram.handlers.menu import router as menu_router
+from bot_telegram.middlewares.request_id import RequestContextMiddleware
+from core.logging import configure_logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+configure_logging("bot")
 logger = logging.getLogger("bot")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -31,10 +33,11 @@ async def main():
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # Allowlist
+    # Middlewares
     allowlist = AllowlistMiddleware()
     dp.message.middleware(allowlist)
     dp.callback_query.middleware(allowlist)
+    dp.update.middleware(RequestContextMiddleware())
 
     # Routers
     dp.include_router(sla_router)
@@ -46,7 +49,8 @@ async def main():
 
     allowed_updates = dp.resolve_used_update_types()
     logger.info(
-        "service=bot action=start_polling allowed_updates=%s", allowed_updates
+        "inicio_polling",
+        extra={"action": "start_polling", "allowed_updates": allowed_updates},
     )
     await dp.start_polling(bot, allowed_updates=allowed_updates)
 

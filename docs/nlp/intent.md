@@ -75,3 +75,8 @@ Si `confidence < INTENT_THRESHOLD`, el bot pedirá una aclaración al usuario pa
 
 - **Variable:** `NLP_RATE_LIMIT` (por defecto `60/minute`).
 - **Descripción:** Controla cuántas clasificaciones puede hacer una misma IP en un período dado. Al excederlo, se responde con `429 Too Many Requests`.
+
+## Logging y `request_id`
+
+- Cada solicitud genera un encabezado `X-Request-ID` y se registra en los logs.
+- Los logs se emiten en formato JSON con los campos `service`, `action`, `tg_user_id` y `request_id`.
