@@ -5,10 +5,10 @@
 from pathlib import Path
 import sys
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "api"))
 
 from fastapi.testclient import TestClient
-from api.app.main import app
+from app.main import app
 
 client = TestClient(app)
 
@@ -17,4 +17,8 @@ def test_health_returns_ok() -> None:
     """Verifica que el endpoint /health responde correctamente."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["service"] == "api"
+    assert "time" in data
+

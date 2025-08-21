@@ -1,3 +1,7 @@
+# Nombre de archivo: README.md
+# Ubicación de archivo: README.md
+# Descripción: Información general del proyecto
+
 # LAS-FOCAS
 
 Automatizaciones operativas para Metrotel: generación de informes, asistente conversacional para tareas repetitivas y base técnica para integrar sistemas internos a futuro.
@@ -159,6 +163,13 @@ sudo usermod -aG docker "$USER"
 ```bash
 cp deploy/env.sample .env
 docker compose -f deploy/compose.yml up -d --build
+```
+
+Luego de iniciar los contenedores, puede verificarse el estado del servicio:
+
+```bash
+curl -sS http://localhost:8000/health
+curl -sS http://localhost:8000/db-check
 ```
 
 ---
