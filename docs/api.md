@@ -46,7 +46,8 @@
 ## Rate limiting
 
 - **Variable:** `API_RATE_LIMIT` (por defecto `60/minute`).
-- **Descripción:** Limita la cantidad de solicitudes que puede realizar un mismo origen. Si se supera el límite, el servicio responde con `429 Too Many Requests`.
+- **Clave:** encabezado `X-API-Key`.
+- **Descripción:** Cada clave cuenta con su propio límite. Si no se envía, se utiliza la IP remota. Al superar el límite se responde con `429 Too Many Requests`.
 
 ## Logging y `request_id`
 
