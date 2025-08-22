@@ -160,6 +160,9 @@ API_RATE_LIMIT=60/minute
 NLP_RATE_LIMIT=60/minute
 ```
 
+La imagen del servicio `bot` incluye LibreOffice, por lo que al definir
+`SOFFICE_BIN=/usr/bin/soffice` se habilita la exportación de informes a PDF.
+
 ---
 
 ## 🗳️ Logging & Métricas

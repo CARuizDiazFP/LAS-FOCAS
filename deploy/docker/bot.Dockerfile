@@ -9,6 +9,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Instalación de LibreOffice para exportar informes a PDF
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice \
+    && rm -rf /var/lib/apt/lists/*
+
 # Instalación de dependencias del bot
 COPY bot_telegram/requirements.txt /app/bot_requirements.txt
 RUN pip install --no-cache-dir -r /app/bot_requirements.txt
