@@ -33,7 +33,8 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 
 - **Integraciones externas**
 
-  - **Notion**, **Correo** (SMTP).
+  - **Notion** (token `NOTION_TOKEN`).
+  - **Correo** SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`).
   - A futuro: **APIs internas**, Slack, Salesforce.
 
 - **Autenticación**
