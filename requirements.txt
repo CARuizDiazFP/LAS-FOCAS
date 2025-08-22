@@ -8,6 +8,7 @@ pytest==8.3.2  # Marco de pruebas
 httpx==0.27.0  # Cliente HTTP asíncrono
 sqlalchemy==2.0.32  # ORM para interactuar con la base de datos
 psycopg[binary]==3.1.19  # Driver PostgreSQL en formato binario
+alembic==1.13.1  # Herramienta de migraciones para SQLAlchemy
 orjson==3.10.3  # Serializador JSON de alto rendimiento
 slowapi==0.1.9  # Limitador de tasa para FastAPI
 ruff==0.12.7  # Linter para mantener calidad de código
