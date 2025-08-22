@@ -140,6 +140,7 @@ TELEGRAM_ALLOWED_IDS=11111111,22222222
 # NLP / LLM
 LLM_PROVIDER=auto
 OPENAI_API_KEY=
+# URL base para el servicio Ollama interno
 OLLAMA_URL=http://ollama:11434
 INTENT_THRESHOLD=0.7
 LANG=es
@@ -200,6 +201,7 @@ curl -sS http://localhost:8000/db-check
 ```
 
 La base de datos PostgreSQL no publica su puerto en el host; se expone únicamente a otros servicios del stack mediante `expose: 5432`.
+De igual forma, el servicio `ollama` expone `11434` solo dentro de la red interna.
 
 ---
 
