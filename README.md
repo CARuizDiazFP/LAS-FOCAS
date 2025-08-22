@@ -112,6 +112,7 @@ las-focas/
 ├─ deploy/
 ├─ docs/
 ├─ tests/
+├─ .env.sample
 ├─ .env
 ├─ .gitignore
 ├─ LICENSE
@@ -122,24 +123,20 @@ las-focas/
 
 ## 🔐 Configuración y credenciales
 
-**.env (ejemplo)**
+**.env.sample**
 
 ```
+# Base de datos
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_DB=lasfocas
 POSTGRES_USER=lasfocas
 POSTGRES_PASSWORD=superseguro
-APP_SECRET_KEY=change-me
-ENV=development
-TELEGRAM_BOT_TOKEN=123456:ABC...
+
+# Bot de Telegram
+TELEGRAM_BOT_TOKEN=
 TELEGRAM_ALLOWED_IDS=11111111,22222222
-NOTION_TOKEN=secret_notion
-NOTION_DB_ID=xxxxx
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=notificaciones@example.com
-SMTP_PASS=secret
+
 # NLP / LLM
 LLM_PROVIDER=auto
 OPENAI_API_KEY=
@@ -147,14 +144,20 @@ OLLAMA_URL=http://ollama:11434
 INTENT_THRESHOLD=0.7
 LANG=es
 LOG_RAW_TEXT=false
+CACHE_TTL=300
+
+# Informes
 SLA_TEMPLATE_PATH=/app/templates/sla.docx
 REP_TEMPLATE_PATH=/app/templates/repetitividad.docx
 REPORTS_DIR=/app/data/reports
 UPLOADS_DIR=/app/data/uploads
 SOFFICE_BIN=/usr/bin/soffice
-WORK_HOURS=false
 MAPS_ENABLED=false
 MAPS_LIGHTWEIGHT=true
+
+# Rate limiting
+API_RATE_LIMIT=60/minute
+NLP_RATE_LIMIT=60/minute
 ```
 
 ---
@@ -182,7 +185,7 @@ sudo usermod -aG docker "$USER"
 **Primer arranque**
 
 ```bash
-cp deploy/env.sample .env
+cp .env.sample .env
 docker compose -f deploy/compose.yml up -d --build
 ```
 
@@ -238,7 +241,7 @@ Modelos sugeridos para 32 GB RAM:
 ```bash
 git clone https://github.com/CARuizDiazFP/LAS-FOCAS
 cd LAS-FOCAS
-cp deploy/env.sample .env
+cp .env.sample .env
 docker compose -f deploy/compose.yml up -d --build
 ```
 
