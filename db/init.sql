@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS app.messages (
     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
 );
 
+-- Tabla de API Keys
+CREATE TABLE IF NOT EXISTS app.api_keys (
+    id SERIAL PRIMARY KEY,
+    api_key TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_user ON app.messages(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON app.messages(created_at);
 

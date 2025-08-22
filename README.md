@@ -160,6 +160,7 @@ MAPS_LIGHTWEIGHT=true
 API_RATE_LIMIT=60/minute
 NLP_RATE_LIMIT=60/minute
 ```
+Las solicitudes a la API deben incluir el encabezado `X-API-Key`; el límite se calcula por clave (o por IP si falta).
 
 La imagen del servicio `bot` incluye LibreOffice, por lo que al definir
 `SOFFICE_BIN=/usr/bin/soffice` se habilita la exportación de informes a PDF.

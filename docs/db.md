@@ -27,6 +27,14 @@ El script `db/init.sql` crea el usuario `lasfocas_readonly` con permisos restrin
 
 Este usuario permite realizar consultas y dashboards sin riesgo de modificación de datos.
 
+## Tabla api_keys
+
+Esta tabla almacena las claves de acceso utilizadas por la API.
+Campos:
+- `id`: identificador interno.
+- `api_key`: clave única para autenticar y aplicar rate limiting.
+- `created_at`: fecha de creación.
+
 ## Migraciones con Alembic
 
 Las migraciones del esquema se gestionan con **Alembic**. La configuración principal se encuentra en `alembic.ini` y los scripts se almacenan en `db/migrations`.
