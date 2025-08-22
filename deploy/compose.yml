@@ -57,6 +57,8 @@ services:
       dockerfile: Dockerfile
     container_name: lasfocas-web
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "8080:8080"
     healthcheck:

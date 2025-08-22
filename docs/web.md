@@ -30,7 +30,7 @@ Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-sli
 
 ## Autenticación
 
-- Credenciales básicas definidas en variables de entorno (`WEB_USER`, `WEB_PASS`).
+- Credenciales básicas definidas en variables de entorno (`WEB_USERNAME`, `WEB_PASSWORD`).
 - Cookies firmadas para mantener la sesión activa.
 - Futuro: integrar SSO interno y gestión de roles.
 
