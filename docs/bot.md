@@ -10,6 +10,10 @@
 
 La imagen del bot copia los directorios `bot_telegram`, `modules` y `core` para
 que los flujos `/sla` y `/repetitividad` funcionen correctamente.
+
+La imagen incluye LibreOffice en modo headless, lo que permite convertir los
+reportes a PDF siempre que se defina `SOFFICE_BIN=/usr/bin/soffice` en el
+entorno.
 ```bash
 docker compose -f deploy/compose.yml up -d --build bot
 docker compose -f deploy/compose.yml logs -f bot

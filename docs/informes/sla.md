@@ -47,5 +47,5 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 - `SLA_TEMPLATE_PATH=/app/templates/sla.docx` ruta de la plantilla.
 - `REPORTS_DIR=/app/data/reports` destino de los informes.
 - `UPLOADS_DIR=/app/data/uploads` ubicación temporal de archivos subidos.
-- `SOFFICE_BIN=/usr/bin/soffice` para habilitar PDF (opcional).
+- `SOFFICE_BIN=/usr/bin/soffice` habilita la exportación a PDF. LibreOffice ya está instalado en la imagen del bot.
 - `WORK_HOURS=true` habilita cálculo de TTR en horario laboral (placeholder).
