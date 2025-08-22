@@ -1,0 +1,23 @@
+<!-- Nombre de archivo: index.html -->
+<!-- Ubicación de archivo: web/templates/index.html -->
+<!-- Descripción: Página inicial con React mínimo y rol del usuario -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Panel LAS-FOCAS</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+</head>
+<body>
+  <h1>Bienvenido, {{ role }}</h1>
+  <div id="root"></div>
+  <script>
+    const e = React.createElement;
+    function App() {
+      return e('p', null, 'Componente React mínimo');
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(e(App));
+  </script>
+</body>
+</html>

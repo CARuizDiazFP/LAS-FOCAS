@@ -12,3 +12,4 @@ alembic==1.13.1  # Herramienta de migraciones para SQLAlchemy
 orjson==3.10.3  # Serializador JSON de alto rendimiento
 slowapi==0.1.9  # Limitador de tasa para FastAPI
 ruff==0.12.7  # Linter para mantener calidad de código
+Jinja2==3.1.4  # Motor de plantillas para FastAPI

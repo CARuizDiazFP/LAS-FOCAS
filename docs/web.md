@@ -21,21 +21,23 @@ Proveer una interfaz web interna para ejecutar tareas y visualizar informes gene
 
 ## Servicio base implementado
 
-El repositorio incluye un microservicio inicial en `web/main.py` que utiliza **FastAPI** y expone dos rutas básicas:
+El repositorio incluye un microservicio en `web/main.py` que utiliza **FastAPI** con plantillas **Jinja2** y un componente **React** mínimo. Las rutas básicas son:
 
-- `GET /` devuelve un mensaje de bienvenida.
+- `GET /` renderiza `index.html` mostrando el rol del usuario.
 - `GET /health` responde con `{"status": "ok"}` para verificaciones de salud.
+- `GET /admin` accesible solo para usuarios con rol `admin`.
 
 Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, publicando el puerto `8080` al host.
 
 ## Autenticación
 
-- Credenciales básicas definidas en variables de entorno (`WEB_USERNAME`, `WEB_PASSWORD`).
-- Cookies firmadas para mantener la sesión activa.
-- Futuro: integrar SSO interno y gestión de roles.
+- Credenciales diferenciadas por rol:
+  - `WEB_ADMIN_USERNAME` / `WEB_ADMIN_PASSWORD`.
+  - `WEB_LECTOR_USERNAME` / `WEB_LECTOR_PASSWORD`.
+- Las rutas pueden restringirse según el rol detectado.
+- Futuro: integrar SSO interno.
 
 ## Tareas pendientes
 
-- Definir diseño mínimo responsivo.
-- Incorporar permisos por rol cuando se amplíe el sistema.
+- Ajustar diseño mínimo responsivo.
 - Integrar generación y descarga de informes.
