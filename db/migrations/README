@@ -1,0 +1,5 @@
+# Nombre de archivo: README
+# Ubicación de archivo: db/migrations/README
+# Descripción: Descripción del entorno de migraciones de Alembic
+
+Este directorio contiene la configuración y los scripts de Alembic que permiten versionar el esquema de la base de datos.

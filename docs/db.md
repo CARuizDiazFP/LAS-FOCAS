@@ -26,3 +26,15 @@ El script `db/init.sql` crea el usuario `lasfocas_readonly` con permisos restrin
 - Acceso `SELECT` sobre todas las tablas del esquema `app`.
 
 Este usuario permite realizar consultas y dashboards sin riesgo de modificación de datos.
+
+## Migraciones con Alembic
+
+Las migraciones del esquema se gestionan con **Alembic**. La configuración principal se encuentra en `alembic.ini` y los scripts se almacenan en `db/migrations`.
+
+Pasos básicos para trabajar con migraciones:
+
+1. Generar una revisión: `alembic revision -m "descripcion"`.
+2. Editar el archivo creado en `db/migrations/versions/` agregando el encabezado requerido y las operaciones deseadas.
+3. Aplicar los cambios: `alembic upgrade head`.
+
+La revisión inicial ejecuta el contenido de `db/init.sql`, creando el esquema `app` junto con el usuario de solo lectura.
