@@ -15,10 +15,12 @@ from fastapi.testclient import TestClient
 sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 
-def get_client(username: str, password: str) -> TestClient:
+def get_client(admin_user: str, admin_pass: str) -> TestClient:
     """Crea un cliente de pruebas con credenciales específicas."""
-    os.environ["WEB_USERNAME"] = username
-    os.environ["WEB_PASSWORD"] = password
+    os.environ["WEB_ADMIN_USERNAME"] = admin_user
+    os.environ["WEB_ADMIN_PASSWORD"] = admin_pass
+    os.environ["WEB_LECTOR_USERNAME"] = "lector"
+    os.environ["WEB_LECTOR_PASSWORD"] = "lectura"
     module = importlib.reload(importlib.import_module("main"))
     return TestClient(module.app)
 
@@ -35,8 +37,7 @@ def test_authorized_access() -> None:
     client = get_client("user", "pass")
     response = client.get("/", auth=("user", "pass"))
     assert response.status_code == 200
-    data = response.json()
-    assert data["message"] == "Hola desde el servicio web"
+    assert "Bienvenido" in response.text
 
 
 def test_denied_with_invalid_credentials() -> None:

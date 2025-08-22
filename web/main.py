@@ -7,23 +7,28 @@
 import base64
 import logging
 import os
-from fastapi import FastAPI, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("web")
 
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
-    """Aplica autenticación HTTP básica basada en variables de entorno."""
+    """Aplica autenticación HTTP básica con soporte de roles."""
 
     def __init__(self, app: FastAPI) -> None:
         super().__init__(app)
-        self.username = os.getenv("WEB_USERNAME", "")
-        self.password = os.getenv("WEB_PASSWORD", "")
-        if not self.username or not self.password:
+        self.admin_user = os.getenv("WEB_ADMIN_USERNAME") or os.getenv("WEB_USERNAME", "")
+        self.admin_pass = os.getenv("WEB_ADMIN_PASSWORD") or os.getenv("WEB_PASSWORD", "")
+        self.reader_user = os.getenv("WEB_LECTOR_USERNAME", "")
+        self.reader_pass = os.getenv("WEB_LECTOR_PASSWORD", "")
+        if not self.admin_user or not self.admin_pass:
             logger.warning(
-                "Variables WEB_USERNAME/WEB_PASSWORD no configuradas; el acceso quedará bloqueado"
+                "Variables WEB_ADMIN_USERNAME/WEB_ADMIN_PASSWORD no configuradas; el acceso quedará bloqueado",
             )
 
     async def dispatch(self, request: Request, call_next):
@@ -48,19 +53,34 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Basic"},
             )
 
-        if user != self.username or pwd != self.password:
+        if user == self.admin_user and pwd == self.admin_pass:
+            request.state.role = "admin"
+        elif self.reader_user and user == self.reader_user and pwd == self.reader_pass:
+            request.state.role = "lector"
+        else:
             logger.warning("Credenciales inválidas para usuario '%s'", user)
             return Response(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 headers={"WWW-Authenticate": "Basic"},
             )
 
-        logger.info("Usuario '%s' autorizado", user)
+        logger.info("Usuario '%s' autorizado con rol '%s'", user, request.state.role)
         return await call_next(request)
+
+
+def require_role(expected: str):
+    """Genera una dependencia que valida el rol esperado."""
+
+    async def checker(request: Request) -> None:
+        if getattr(request.state, "role", None) != expected:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acceso denegado")
+
+    return checker
 
 
 app = FastAPI(title="Servicio Web LAS-FOCAS")
 app.add_middleware(BasicAuthMiddleware)
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 @app.get("/health")
@@ -70,9 +90,16 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/")
-async def read_root() -> dict[str, str]:
-    """Retorna un mensaje inicial."""
-    logger.info("Solicitud recibida en la ruta raíz")
-    return {"message": "Hola desde el servicio web"}
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request) -> HTMLResponse:
+    """Renderiza la página principal con el rol del usuario."""
+    role = getattr(request.state, "role", "desconocido")
+    logger.info("Solicitud recibida en la ruta raíz por rol '%s'", role)
+    return templates.TemplateResponse("index.html", {"request": request, "role": role})
 
+
+@app.get("/admin", dependencies=[Depends(require_role("admin"))])
+async def admin_panel() -> dict[str, str]:
+    """Endpoint restringido al rol de administrador."""
+    logger.info("Acceso al panel de administración")
+    return {"message": "Panel de administración"}
