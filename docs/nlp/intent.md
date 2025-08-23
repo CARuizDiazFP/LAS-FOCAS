@@ -26,6 +26,13 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
 }
 ```
 
+## Integración con el bot de Telegram
+
+El bot de Telegram consume `POST /v1/intent:classify` mediante `httpx` para
+analizar los mensajes de los usuarios. Si la confianza devuelta es menor que
+`INTENT_THRESHOLD` (0.7 por defecto), responde pidiendo una aclaración para
+comprender mejor la intención.
+
 ## Orden de proveedores
 
 1. Heurística local (rápida).

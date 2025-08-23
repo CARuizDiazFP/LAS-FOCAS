@@ -62,8 +62,23 @@ async def classify_message(msg: Message, state: FSMContext):
         return
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post("http://nlp_intent:8100/v1/intent:classify", json={"text": msg.text})
-        data = resp.json()
+        try:
+            resp = await client.post(
+                "http://nlp_intent:8100/v1/intent:classify", json={"text": msg.text}
+            )
+            data = resp.json()
+        except httpx.HTTPError as exc:
+            logger.error("Error al consultar nlp_intent", exc_info=exc)
+            await msg.answer(
+                "No pude analizar tu mensaje. Intentá nuevamente más tarde."
+            )
+            return
+        except Exception as exc:  # pragma: no cover - protección adicional
+            logger.error("Respuesta inválida de nlp_intent", exc_info=exc)
+            await msg.answer(
+                "Ocurrió un problema al interpretar tu mensaje. Probá más tarde."
+            )
+            return
 
     conn = await asyncio.to_thread(_get_conn)
     conversation_id = _conversations.get(user_id)
