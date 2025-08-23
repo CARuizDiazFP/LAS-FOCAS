@@ -3,7 +3,7 @@
 # Descripción: Guía rápida de uso del bot de Telegram
 
 ## Variables requeridas (.env)
-- TELEGRAM_BOT_TOKEN=...
+- TELEGRAM_BOT_TOKEN=... (o Docker Secret `telegram_bot_token`)
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
 
 ## Arranque con Docker

@@ -6,6 +6,7 @@ import logging
 import os
 import smtplib
 from email.message import EmailMessage
+from core import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +23,11 @@ class EmailClient:
         sender: str | None = None,
         use_tls: bool = True,
     ) -> None:
-        self.host = host or os.getenv("SMTP_HOST", "")
+        self.host = host or get_secret("SMTP_HOST") or ""
         self.port = port or int(os.getenv("SMTP_PORT", "587"))
-        self.user = user or os.getenv("SMTP_USER", "")
-        self.password = password or os.getenv("SMTP_PASSWORD", "")
-        self.sender = sender or os.getenv("SMTP_FROM", self.user)
+        self.user = user or get_secret("SMTP_USER") or ""
+        self.password = password or get_secret("SMTP_PASSWORD") or ""
+        self.sender = sender or get_secret("SMTP_FROM") or self.user
         self.use_tls = use_tls
 
     def send_mail(self, to: str, subject: str, body: str) -> None:

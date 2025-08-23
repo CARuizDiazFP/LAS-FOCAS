@@ -6,6 +6,7 @@ from logging.config import fileConfig
 import os
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+from core import get_secret
 
 # Objeto de configuración de Alembic
 config = context.config
@@ -15,7 +16,7 @@ if config.config_file_name is not None:
 
 # Construir la URL de conexión desde variables de entorno
 _db_user = os.getenv("POSTGRES_USER", "lasfocas")
-_db_password = os.getenv("POSTGRES_PASSWORD", "lasfocas")
+_db_password = get_secret("POSTGRES_PASSWORD", "lasfocas")
 _db_host = os.getenv("POSTGRES_HOST", "localhost")
 _db_port = os.getenv("POSTGRES_PORT", "5432")
 _db_name = os.getenv("POSTGRES_DB", "lasfocas")

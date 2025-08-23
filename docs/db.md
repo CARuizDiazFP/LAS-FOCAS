@@ -10,6 +10,7 @@ La cadena DSN se construye a partir de variables de entorno:
 - `POSTGRES_DB`: nombre de la base de datos.
 - `POSTGRES_USER`: usuario para la conexión.
 - `POSTGRES_PASSWORD`: contraseña del usuario.
+  Se lee desde la variable de entorno o el archivo `/run/secrets/postgres_password`.
 
 En `deploy/compose.yml` la base de datos solo se expone a otros contenedores mediante `expose: 5432`, evitando publicar el puerto en el host.
 
