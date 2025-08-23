@@ -43,6 +43,22 @@
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
 
+
+
+## Métricas
+
+- **Ruta:** `GET /metrics`
+- **Descripción:** expone contadores básicos del servicio.
+- **Respuesta:**
+
+```json
+{
+  "total_requests": 0,
+  "average_latency_ms": 0.0
+}
+```
+
+
 ## Rate limiting
 
 - **Variable:** `API_RATE_LIMIT` (por defecto `60/minute`).

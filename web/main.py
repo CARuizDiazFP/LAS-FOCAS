@@ -6,19 +6,22 @@
 
 import base64
 import logging
+import time
 from pathlib import Path
-from core import get_secret
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from core import get_secret
 from core.logging import configure_logging
 from core.middlewares import RequestIDMiddleware
+from core.metrics import Metrics
 
 configure_logging("web")
 logger = logging.getLogger("web")
+metrics = Metrics()
 
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
@@ -36,7 +39,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             )
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in {"/health", "/login"}:
+        if request.url.path in {"/health", "/login", "/metrics"}:
             return await call_next(request)
 
         auth = request.headers.get("Authorization")
@@ -90,6 +93,21 @@ app = FastAPI(title="Servicio Web LAS-FOCAS")
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(BasicAuthMiddleware)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+@app.middleware("http")
+async def collect_metrics(request: Request, call_next):
+    inicio = time.perf_counter()
+    response = await call_next(request)
+    metrics.record(time.perf_counter() - inicio)
+    return response
+
+
+@app.get("/metrics")
+async def metrics_endpoint() -> dict[str, float]:
+    """Devuelve métricas básicas del servicio web."""
+    return metrics.snapshot()
+
 
 
 @app.get("/health")
