@@ -25,6 +25,7 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
   "normalized_text": "generá el informe sla de julio"
 }
 ```
+`confidence` se valida para permanecer entre `0` y `1`.
 
 ## Integración con el bot de Telegram
 
