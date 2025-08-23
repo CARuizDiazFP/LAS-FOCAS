@@ -3,7 +3,7 @@
 # Descripción: Servidor FastAPI para clasificación de intención con limitación de tasa
 
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 import os
 from slowapi.middleware import SlowAPIMiddleware
 import time
@@ -13,7 +13,11 @@ from slowapi.errors import RateLimitExceeded
 
 from .schemas import IntentRequest, IntentResponse
 from .service import classify_text
-from .metrics import metrics
+from .metrics import (
+    CONTENT_TYPE_LATEST,
+    export_metrics,
+    record_request,
+)
 from core.logging import configure_logging
 from core.middlewares import RequestIDMiddleware
 
@@ -33,7 +37,7 @@ async def collect_metrics(request: Request, call_next):
     inicio = time.perf_counter()
     response = await call_next(request)
     if request.url.path == "/v1/intent:classify":
-        metrics.record(time.perf_counter() - inicio)
+        record_request(time.perf_counter() - inicio)
     return response
 
 
@@ -45,9 +49,9 @@ async def classify_endpoint(request: Request, req: IntentRequest) -> IntentRespo
 
 
 @app.get("/metrics")
-async def metrics_endpoint() -> dict[str, float]:
-    """Devuelve métricas básicas del servicio."""
-    return metrics.snapshot()
+async def metrics_endpoint() -> Response:
+    """Exposición de métricas en formato Prometheus."""
+    return Response(export_metrics(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")
