@@ -3,16 +3,42 @@
 # Descripción: Funciones de procesamiento de datos para el informe de SLA
 
 import pandas as pd
+from datetime import datetime, time, timedelta
 
 from .config import COLUMNAS_MAPPER, COLUMNAS_OBLIGATORIAS, SLA_POR_SERVICIO
 from .schemas import FilaDetalle, KPI, ResultadoSLA
 
 MAX_STR_LEN = 100
+WORKDAY_START = time(9, 0)
+WORKDAY_END = time(18, 0)
 
 
 def load_excel(path: str) -> pd.DataFrame:
     """Carga un archivo Excel en un DataFrame."""
     return pd.read_excel(path, engine="openpyxl")
+
+
+def _business_hours_diff(start: datetime, end: datetime) -> float:
+    """Devuelve horas laborales entre dos fechas.
+
+    Se consideran únicamente los días de lunes a viernes
+    entre las 09:00 y las 18:00.
+    """
+    if end <= start:
+        return 0.0
+
+    total = 0.0
+    current = start
+    while current < end:
+        day_start = datetime.combine(current.date(), WORKDAY_START)
+        day_end = datetime.combine(current.date(), WORKDAY_END)
+        if current.weekday() < 5:
+            period_start = max(current, day_start)
+            period_end = min(end, day_end)
+            if period_start < period_end:
+                total += (period_end - period_start).total_seconds() / 3600
+        current = day_start + timedelta(days=1)
+    return total
 
 
 def normalize(df: pd.DataFrame, work_hours: bool = False) -> pd.DataFrame:
@@ -23,9 +49,8 @@ def normalize(df: pd.DataFrame, work_hours: bool = False) -> pd.DataFrame:
     df:
         Datos originales del informe.
     work_hours:
-        Si es ``True`` aplica un cálculo de TTR basado en horario laboral.
-        Actualmente se trata de un *placeholder* que reduce el TTR al 50 %.
-        # TODO: implementar cálculo real de horario laboral.
+        Si es ``True`` el TTR se calcula considerando sólo el
+        horario laboral (lunes a viernes, 09:00–18:00).
     """
     df = df.rename(columns={k: v for k, v in COLUMNAS_MAPPER.items() if k in df.columns})
 
@@ -48,9 +73,17 @@ def normalize(df: pd.DataFrame, work_hours: bool = False) -> pd.DataFrame:
     df["FECHA_APERTURA"] = apertura
     df["FECHA_CIERRE"] = cierre
 
-    df["TTR_h"] = (df["FECHA_CIERRE"] - df["FECHA_APERTURA"]).dt.total_seconds() / 3600
     if work_hours:
-        df["TTR_h"] *= 0.5
+        df["TTR_h"] = [
+            _business_hours_diff(a, b)
+            if pd.notna(a) and pd.notna(b)
+            else float("nan")
+            for a, b in zip(df["FECHA_APERTURA"], df["FECHA_CIERRE"])
+        ]
+    else:
+        df["TTR_h"] = (
+            df["FECHA_CIERRE"] - df["FECHA_APERTURA"]
+        ).dt.total_seconds() / 3600
     return df
 
 
