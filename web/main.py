@@ -7,13 +7,17 @@
 import base64
 import logging
 import os
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
-from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
+from core.logging import configure_logging
+from core.middlewares import RequestIDMiddleware
+
+configure_logging("web")
 logger = logging.getLogger("web")
 
 
@@ -28,7 +32,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         self.reader_pass = os.getenv("WEB_LECTOR_PASSWORD", "")
         if not self.admin_user or not self.admin_pass:
             logger.warning(
-                "Variables WEB_ADMIN_USERNAME/WEB_ADMIN_PASSWORD no configuradas; el acceso quedará bloqueado",
+                "action=init_basic_auth falta_env=credenciales_admin",
             )
 
     async def dispatch(self, request: Request, call_next):
@@ -37,7 +41,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Basic "):
-            logger.warning("Solicitud no autorizada sin credenciales")
+            logger.warning("action=basic_auth sin_credenciales")
             return Response(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 headers={"WWW-Authenticate": "Basic"},
@@ -47,7 +51,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             decoded = base64.b64decode(auth.split(" ")[1]).decode("utf-8")
             user, pwd = decoded.split(":", 1)
         except Exception:  # noqa: BLE001
-            logger.warning("Error al decodificar credenciales básicas")
+            logger.warning("action=basic_auth error_decodificar")
             return Response(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 headers={"WWW-Authenticate": "Basic"},
@@ -58,13 +62,17 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         elif self.reader_user and user == self.reader_user and pwd == self.reader_pass:
             request.state.role = "lector"
         else:
-            logger.warning("Credenciales inválidas para usuario '%s'", user)
+            logger.warning("action=basic_auth credenciales_invalidas usuario=%s", user)
             return Response(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 headers={"WWW-Authenticate": "Basic"},
             )
 
-        logger.info("Usuario '%s' autorizado con rol '%s'", user, request.state.role)
+        logger.info(
+            "action=basic_auth usuario_autorizado usuario=%s rol=%s",
+            user,
+            request.state.role,
+        )
         return await call_next(request)
 
 
@@ -79,6 +87,7 @@ def require_role(expected: str):
 
 
 app = FastAPI(title="Servicio Web LAS-FOCAS")
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(BasicAuthMiddleware)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -86,13 +95,13 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Verifica que el servicio esté disponible."""
-    logger.info("Chequeo de salud del servicio web")
+    logger.info("action=health_check status=ok")
     return {"status": "ok"}
 
 
 def login_stub(request: Request) -> HTMLResponse:
     """Stub temporal que devuelve una página de login básica."""
-    logger.info("Respuesta del stub de login")
+    logger.info("action=login_stub")
     return templates.TemplateResponse("login.html", {"request": request})
 
 
@@ -106,12 +115,12 @@ async def login(request: Request) -> HTMLResponse:
 async def read_root(request: Request) -> HTMLResponse:
     """Renderiza la página principal con el rol del usuario."""
     role = getattr(request.state, "role", "desconocido")
-    logger.info("Solicitud recibida en la ruta raíz por rol '%s'", role)
+    logger.info("action=read_root rol=%s", role)
     return templates.TemplateResponse("index.html", {"request": request, "role": role})
 
 
 @app.get("/admin", dependencies=[Depends(require_role("admin"))])
 async def admin_panel() -> dict[str, str]:
     """Endpoint restringido al rol de administrador."""
-    logger.info("Acceso al panel de administración")
+    logger.info("action=admin_panel")
     return {"message": "Panel de administración"}
