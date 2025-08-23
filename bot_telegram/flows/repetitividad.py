@@ -2,6 +2,7 @@
 # Ubicación de archivo: bot_telegram/flows/repetitividad.py
 # Descripción: Flujo para recibir Excel y generar el informe de repetitividad
 
+import asyncio
 import json
 import logging
 import re
@@ -16,6 +17,7 @@ from aiogram.types import Document, FSInputFile, Message
 
 from modules.informes_repetitividad.config import BASE_UPLOADS, SOFFICE_BIN
 from modules.informes_repetitividad.runner import run
+from core.logging import request_id_var
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ def cleanup_files(*paths: str) -> None:
                         "event": "cleanup_error",
                         "file": p,
                         "error": str(exc),
+                        "request_id": request_id_var.get(),
                     }
                 )
             )
@@ -87,6 +90,7 @@ async def start_repetitividad_flow(msg: Message, state: FSMContext, origin: str)
                 "tg_user_id": tg_user_id,
                 "event": "start",
                 "origin": origin,
+                "request_id": request_id_var.get(),
             }
         )
     )
@@ -109,6 +113,7 @@ async def on_file(msg: Message, state: FSMContext) -> None:
                     "tg_user_id": msg.from_user.id,
                     "event": "invalid_file",
                     "reason": error,
+                    "request_id": request_id_var.get(),
                 }
             )
         )
@@ -129,6 +134,7 @@ async def on_file(msg: Message, state: FSMContext) -> None:
                 "tg_user_id": msg.from_user.id,
                 "event": "file_received",
                 "file": document.file_name,
+                "request_id": request_id_var.get(),
             }
         )
     )
@@ -160,11 +166,52 @@ async def on_period(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     file_path = data.get("file_path")
     soffice_bin = SOFFICE_BIN
-    paths = run(file_path, mes, anio, soffice_bin)
+    try:
+        paths = run(file_path, mes, anio, soffice_bin)
+    except ValueError as exc:
+        logger.warning(
+            json.dumps(
+                {
+                    "service": "bot",
+                    "flow": "repetitividad",
+                    "tg_user_id": msg.from_user.id,
+                    "event": "invalid_excel",
+                    "error": str(exc),
+                    "request_id": request_id_var.get(),
+                }
+            )
+        )
+        await msg.answer("El Excel no tiene el formato esperado o contiene datos inválidos")
+        cleanup_files(file_path)
+        await state.clear()
+        return
+    except Exception as exc:  # pragma: no cover - logging
+        logger.exception(
+            json.dumps(
+                {
+                    "service": "bot",
+                    "flow": "repetitividad",
+                    "tg_user_id": msg.from_user.id,
+                    "event": "processing_error",
+                    "error": str(exc),
+                    "request_id": request_id_var.get(),
+                }
+            )
+        )
+        await msg.answer("Ocurrió un error al generar el informe")
+        cleanup_files(file_path)
+        await state.clear()
+        return
 
     await msg.answer_document(FSInputFile(paths["docx"]))
     if paths.get("pdf"):
         await msg.answer_document(FSInputFile(paths["pdf"]))
+
+    enlaces = [f"DOCX: file://{paths['docx']}"]
+    if paths.get("pdf"):
+        enlaces.append(f"PDF: file://{paths['pdf']}")
+    await msg.answer("Informe generado\n" + "\n".join(enlaces))
+
     logger.info(
         json.dumps(
             {
@@ -174,10 +221,15 @@ async def on_period(msg: Message, state: FSMContext) -> None:
                 "event": "report_generated",
                 "file": Path(file_path).name,
                 "periodo": f"{mes:02d}/{anio:04d}",
+                "request_id": request_id_var.get(),
             }
         )
     )
-    cleanup_files(file_path, *paths.values())
+
+    async def _cleanup() -> None:
+        cleanup_files(file_path, *paths.values())
+
+    asyncio.create_task(_cleanup())
     await state.clear()
 
 
@@ -199,6 +251,7 @@ async def on_cancel(msg: Message, state: FSMContext) -> None:
                     "flow": "repetitividad",
                     "tg_user_id": msg.from_user.id,
                     "event": "cancel",
+                    "request_id": request_id_var.get(),
                 }
             )
         )

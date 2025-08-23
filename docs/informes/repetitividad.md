@@ -13,6 +13,7 @@
 - `CLIENTE` y `SERVICIO` deben ser texto de hasta 100 caracteres.
 - `FECHA` debe contener valores de fecha válidos.
 - El período debe ingresarse en formato `mm/aaaa` y estar dentro del rango desde 2000.
+- Se rechazan archivos que no puedan abrirse como Excel.
 
 ## Cálculo
 - Se normalizan las columnas y se genera `PERIODO = YYYY-MM`.
@@ -26,6 +27,7 @@
 2. Subir el Excel.
 3. Indicar el período `mm/aaaa`.
 4. El bot devuelve un archivo `.docx` y opcionalmente `.pdf`.
+5. Finalmente, envía un mensaje con enlaces a los archivos generados.
 
 ## Paths de salida
 - Archivos generados en `/app/data/reports/` dentro del contenedor del bot.
