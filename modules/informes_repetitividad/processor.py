@@ -24,7 +24,7 @@ def load_excel(path: str) -> pd.DataFrame:
         return pd.read_excel(path, engine="openpyxl")
     except Exception as exc:  # pragma: no cover - logging
         logger.exception("action=load_excel error=%s path=%s", exc, path)
-        raise
+        raise ValueError("Archivo Excel inválido") from exc
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:

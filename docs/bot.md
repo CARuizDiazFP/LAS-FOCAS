@@ -60,6 +60,10 @@ Botones disponibles:
 
 Los flujos de **Repetitividad** y **SLA** están operativos.
 
+El comando `/repetitividad` valida la estructura del Excel recibido y genera un
+DOCX. Si se define `SOFFICE_BIN`, también genera un PDF. Tras enviar los
+archivos, el bot responde con enlaces a cada formato.
+
 Ejemplos de frases que abren el menú por intención:
 
 - "bot abrí el menú"
