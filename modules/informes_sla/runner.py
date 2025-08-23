@@ -39,6 +39,8 @@ def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict
         except Exception:
             logger.exception("action=run error_pdf")
             error_pdf = "No se pudo convertir a PDF"
+    else:
+        error_pdf = "LibreOffice no configurado; se omitió el PDF"
 
     logger.info(
         "action=run mes=%s anio=%s docx=%s pdf=%s total=%s incumplidos=%s pct_cumplimiento=%.2f excluidos=%s",

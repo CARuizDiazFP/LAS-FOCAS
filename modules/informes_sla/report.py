@@ -97,6 +97,7 @@ def export_docx(data: ResultadoSLA, periodo: Params, out_dir: str) -> str:
     out_path.mkdir(parents=True, exist_ok=True)
     docx_path = out_path / f"sla_{periodo.periodo_anio}{periodo.periodo_mes:02d}.docx"
     doc.save(docx_path)
+    docx_path.chmod(0o600)
     logger.info("action=export_docx path=%s", docx_path)
     return str(docx_path)
 
@@ -106,7 +107,9 @@ def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str
     if not soffice_bin:
         return None
     try:
-        return convert_to_pdf(docx_path, soffice_bin)
+        pdf_path = convert_to_pdf(docx_path, soffice_bin)
+        Path(pdf_path).chmod(0o600)
+        return pdf_path
     except (FileNotFoundError, subprocess.CalledProcessError):  # pragma: no cover - logging
         logger.exception("action=maybe_export_pdf error")
         return None

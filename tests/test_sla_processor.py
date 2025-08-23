@@ -5,7 +5,9 @@
 import pandas as pd
 import pytest
 
-from modules.informes_sla import processor
+from pathlib import Path
+
+from modules.informes_sla import processor, runner, report
 
 
 def test_compute_kpis_sla():
@@ -83,9 +85,8 @@ def test_normalize_with_work_hours_flag():
         }
     ]
     df = pd.DataFrame(datos)
-    df_cal = processor.normalize(df.copy())
     df_laboral = processor.normalize(df.copy(), work_hours=True)
-    assert df_laboral.loc[0, "TTR_h"] == df_cal.loc[0, "TTR_h"] * 0.5
+    assert df_laboral.loc[0, "TTR_h"] == pytest.approx(9)
 
 
 def test_normalize_rechaza_texto_largo():
@@ -121,3 +122,66 @@ def test_apply_sla_target_rechaza_valores_invalidos():
     })
     with pytest.raises(ValueError):
         processor.apply_sla_target(df)
+
+
+def test_business_hours_excluye_fines_de_semana():
+    datos = [
+        {
+            "ID": "1",
+            "CLIENTE": "A",
+            "SERVICIO": "VIP",
+            "FECHA_APERTURA": "2024-07-05 17:00",
+            "FECHA_CIERRE": "2024-07-08 10:00",
+        }
+    ]
+    df = pd.DataFrame(datos)
+    df_laboral = processor.normalize(df, work_hours=True)
+    assert df_laboral.loc[0, "TTR_h"] == pytest.approx(2)
+
+
+def test_run_sin_soffice_bin_informa_error(monkeypatch, tmp_path):
+    df = pd.DataFrame(
+        {
+            "ID": ["1"],
+            "CLIENTE": ["A"],
+            "SERVICIO": ["VIP"],
+            "FECHA_APERTURA": ["2024-07-01 00:00"],
+            "FECHA_CIERRE": ["2024-07-01 10:00"],
+        }
+    )
+    monkeypatch.setattr(processor, "load_excel", lambda _: df)
+    monkeypatch.setattr(runner, "BASE_REPORTS", tmp_path)
+
+    dummy_docx = tmp_path / "out.docx"
+    monkeypatch.setattr(report, "export_docx", lambda *a, **k: str(dummy_docx))
+
+    res = runner.run("archivo.xlsx", 7, 2024, None)
+    assert "error" in res
+    assert "LibreOffice no configurado" in res["error"]
+
+
+def test_run_aplica_permisos_archivos(monkeypatch, tmp_path):
+    df = pd.DataFrame(
+        {
+            "ID": ["1"],
+            "CLIENTE": ["A"],
+            "SERVICIO": ["VIP"],
+            "FECHA_APERTURA": ["2024-07-01 00:00"],
+            "FECHA_CIERRE": ["2024-07-01 10:00"],
+        }
+    )
+    monkeypatch.setattr(processor, "load_excel", lambda _: df)
+    monkeypatch.setattr(runner, "BASE_REPORTS", tmp_path)
+
+    def fake_convert(docx_path, _):
+        pdf = Path(docx_path).with_suffix(".pdf")
+        pdf.write_text("pdf")
+        return str(pdf)
+
+    monkeypatch.setattr(report, "convert_to_pdf", fake_convert)
+
+    res = runner.run("archivo.xlsx", 7, 2024, "/usr/bin/soffice")
+    docx_mode = Path(res["docx"]).stat().st_mode & 0o777
+    pdf_mode = Path(res["pdf"]).stat().st_mode & 0o777
+    assert docx_mode == 0o600
+    assert pdf_mode == 0o600

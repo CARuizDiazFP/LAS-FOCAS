@@ -9,6 +9,8 @@
 - INTENT_THRESHOLD=0.7  # Umbral mínimo de confianza para aceptar una intención
 - BOT_RATE_LIMIT=20       # Máximo de mensajes por usuario
 - BOT_RATE_INTERVAL=60    # Ventana en segundos para el límite
+- WORK_HOURS=false        # "true" calcula SLA en horario laboral
+- SOFFICE_BIN=/usr/bin/soffice  # Opcional, habilita PDF
 
 ## Arranque con Docker
 
@@ -17,7 +19,7 @@ que los flujos `/sla` y `/repetitividad` funcionen correctamente.
 
 La imagen incluye LibreOffice en modo headless, lo que permite convertir los
 reportes a PDF siempre que se defina `SOFFICE_BIN=/usr/bin/soffice` en el
-entorno.
+entorno. Si falta, el bot informa que no se generará PDF.
 
 ```bash
 docker compose -f deploy/compose.yml up -d --build bot

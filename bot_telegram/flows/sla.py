@@ -54,6 +54,7 @@ async def on_file(msg: Message, state: FSMContext) -> None:
     user_dir.mkdir(parents=True, exist_ok=True)
     file_path = user_dir / document.file_name
     await document.download(destination=file_path)
+    file_path.chmod(0o600)
     await state.update_data(file_path=str(file_path))
 
     prev_month = datetime.now().replace(day=1) - timedelta(days=1)
@@ -82,7 +83,18 @@ async def on_period(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     file_path = data.get("file_path")
     soffice_bin = SOFFICE_BIN
-    resultado = run(file_path, mes, anio, soffice_bin)
+    try:
+        resultado = run(file_path, mes, anio, soffice_bin)
+    except ValueError as exc:
+        await msg.answer(str(exc))
+        logger.warning("service=bot flow=sla error=%s", exc)
+        await state.clear()
+        return
+    except Exception:
+        logger.exception("service=bot flow=sla error=unknown")
+        await msg.answer("Ocurrió un error al procesar el informe")
+        await state.clear()
+        return
 
     await msg.answer_document(FSInputFile(resultado["docx"]))
     if resultado.get("pdf"):
