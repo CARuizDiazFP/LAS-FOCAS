@@ -5,7 +5,7 @@
 ## Secrets
 
 - Las credenciales se gestionan mediante **Docker Secrets** montados en `/run/secrets/*`.
-- Secretos usados: `postgres_password`, `telegram_bot_token`, `openai_api_key`, `smtp_host`, `smtp_user`, `smtp_password` y `smtp_from`.
+- Secretos usados: `postgres_password`, `telegram_bot_token`, `openai_api_key`, `smtp_host`, `smtp_user`, `smtp_password`, `smtp_from`, `web_admin_username`, `web_admin_password`, `web_lector_username`, `web_lector_password` y `notion_token`.
 - Para crear un secreto, generar el archivo en `deploy/secrets/<nombre>`:
   ```bash
   echo "valor" > deploy/secrets/postgres_password
