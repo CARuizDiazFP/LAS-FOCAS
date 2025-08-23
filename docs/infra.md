@@ -11,6 +11,7 @@
 - `postgres` expone `5432` solo a la red interna mediante `expose`.
 - `api` publica `8000:8000` para acceso HTTP desde el host.
 - `nlp_intent` expone `8100` únicamente a la red interna.
+- `redis` expone `6379` solo a la red interna y se activa con el perfil `worker`.
 - `ollama` expone `11434` solo a la red interna.
 - `pgadmin` (perfil opcional) publica `5050:80` para administración de PostgreSQL.
 
@@ -23,17 +24,22 @@
 
 ## Recursos
 
+- `postgres`: límite de `0.5` CPU y `512MB` de RAM para contener el uso de la base.
 - `api`: límite de `1` CPU y `512MB` de RAM para evitar que una carga intensa afecte al resto de servicios.
+- `web`: límite de `0.5` CPU y `256MB` de RAM para servir contenido estático con bajo consumo.
 - `bot`: límite de `0.5` CPU y `256MB` de RAM, suficiente para manejar mensajes sin consumir recursos excesivos.
+- `worker`: límite de `0.5` CPU y `256MB` de RAM destinado a tareas en segundo plano.
+- `redis`: límite de `0.25` CPU y `128MB` de RAM; solo se inicia con el perfil `worker`.
 - `nlp_intent`: límite de `1` CPU y `1GB` de RAM debido al procesamiento de lenguaje natural.
+- `ollama`: límite de `1` CPU y `2GB` de RAM para el servicio de modelos LLM.
 
 ## Seguridad
 
-- `api` y `bot` se ejecutan con un usuario no root dentro de sus contenedores, aplicando el principio de mínimos privilegios.
+- `api`, `bot`, `web` y `worker` se ejecutan con un usuario no root dentro de sus contenedores, aplicando el principio de mínimos privilegios.
 
 ## Variables de entorno
 
-Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` y `SMTP_*`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
+Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
 
 ### Base de datos
 - `POSTGRES_HOST`: host del contenedor de PostgreSQL.

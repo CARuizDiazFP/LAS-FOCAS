@@ -26,6 +26,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "512M"
     networks:
       - lasfocas_net
 
@@ -63,6 +68,7 @@ services:
       - smtp_user
       - smtp_password
       - smtp_from
+      - notion_token
 
   web:
     build:
@@ -79,8 +85,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
     networks:
       - lasfocas_net
+    secrets:
+      - web_admin_username
+      - web_admin_password
+      - web_lector_username
+      - web_lector_password
+      - notion_token
 
   nlp_intent:
     build:
@@ -133,6 +150,43 @@ services:
     networks:
       - lasfocas_net
 
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker.Dockerfile
+    env_file:
+      - ../.env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+    networks:
+      - lasfocas_net
+    secrets:
+      - postgres_password
+      - notion_token
+    profiles: ["worker"]
+
+  redis:
+    image: redis:7-alpine
+    container_name: lasfocas-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "128M"
+    networks:
+      - lasfocas_net
+    profiles: ["worker"]
+
   ollama:
     image: ollama/ollama:0.11.6
     container_name: lasfocas-ollama
@@ -146,6 +200,11 @@ services:
       retries: 12
     volumes:
       - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "2G"
     networks:
       - lasfocas_net
 
@@ -185,8 +244,17 @@ secrets:
     file: ./secrets/smtp_password
   smtp_from:
     file: ./secrets/smtp_from
+  web_admin_username:
+    file: ./secrets/web_admin_username
+  web_admin_password:
+    file: ./secrets/web_admin_password
+  web_lector_username:
+    file: ./secrets/web_lector_username
+  web_lector_password:
+    file: ./secrets/web_lector_password
+  notion_token:
+    file: ./secrets/notion_token
 
 networks:
   lasfocas_net:
     driver: bridge
-

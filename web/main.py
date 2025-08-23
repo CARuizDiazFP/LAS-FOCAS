@@ -6,8 +6,8 @@
 
 import base64
 import logging
-import os
 from pathlib import Path
+from core import get_secret
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
@@ -26,10 +26,10 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: FastAPI) -> None:
         super().__init__(app)
-        self.admin_user = os.getenv("WEB_ADMIN_USERNAME") or os.getenv("WEB_USERNAME", "")
-        self.admin_pass = os.getenv("WEB_ADMIN_PASSWORD") or os.getenv("WEB_PASSWORD", "")
-        self.reader_user = os.getenv("WEB_LECTOR_USERNAME", "")
-        self.reader_pass = os.getenv("WEB_LECTOR_PASSWORD", "")
+        self.admin_user = get_secret("WEB_ADMIN_USERNAME") or get_secret("WEB_USERNAME", "")
+        self.admin_pass = get_secret("WEB_ADMIN_PASSWORD") or get_secret("WEB_PASSWORD", "")
+        self.reader_user = get_secret("WEB_LECTOR_USERNAME", "")
+        self.reader_pass = get_secret("WEB_LECTOR_PASSWORD", "")
         if not self.admin_user or not self.admin_pass:
             logger.warning(
                 "action=init_basic_auth falta_env=credenciales_admin",
