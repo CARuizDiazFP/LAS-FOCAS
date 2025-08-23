@@ -32,7 +32,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             )
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in {"/health", "/login"}:
             return await call_next(request)
 
         auth = request.headers.get("Authorization")
@@ -88,6 +88,18 @@ async def health() -> dict[str, str]:
     """Verifica que el servicio esté disponible."""
     logger.info("Chequeo de salud del servicio web")
     return {"status": "ok"}
+
+
+def login_stub(request: Request) -> HTMLResponse:
+    """Stub temporal que devuelve una página de login básica."""
+    logger.info("Respuesta del stub de login")
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login(request: Request) -> HTMLResponse:
+    """Ruta de acceso al formulario de login."""
+    return login_stub(request)
 
 
 @app.get("/", response_class=HTMLResponse)
