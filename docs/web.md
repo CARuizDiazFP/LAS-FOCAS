@@ -30,6 +30,10 @@ El repositorio incluye un microservicio en `web/main.py` que utiliza **FastAPI**
 
 Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, publicando el puerto `8080` al host.
 
+## Logging
+
+El servicio inicializa el log mediante `configure_logging("web")`, lo que emite registros en formato JSON con campos `action`, `request_id` y demás metadatos. Además, se inyecta `RequestIDMiddleware` para generar el encabezado `X-Request-ID` en cada respuesta.
+
 ## Autenticación
 
 - Credenciales diferenciadas por rol:
