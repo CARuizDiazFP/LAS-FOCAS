@@ -29,7 +29,10 @@ _rate_limit: dict[int, list[float]] = defaultdict(list)
 _conversations: dict[int, int] = {}
 
 
-def _check_rate(user_id: int, limit: int = 20, interval: int = 60) -> bool:
+def _check_rate(user_id: int) -> bool:
+    """Aplica un límite simple de mensajes por usuario."""
+    limit = int(os.getenv("BOT_RATE_LIMIT", "20"))
+    interval = int(os.getenv("BOT_RATE_INTERVAL", "60"))
     now = time.time()
     times = _rate_limit[user_id]
     times[:] = [t for t in times if now - t < interval]
@@ -66,7 +69,23 @@ async def classify_message(msg: Message, state: FSMContext):
             resp = await client.post(
                 "http://nlp_intent:8100/v1/intent:classify", json={"text": msg.text}
             )
+            resp.raise_for_status()
             data = resp.json()
+            confidence = float(data["confidence"])
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError("confianza fuera de rango")
+            data["confidence"] = confidence
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                await msg.answer(
+                    "Servicio saturado. Intentá nuevamente más tarde."
+                )
+            else:
+                logger.error("Error al consultar nlp_intent", exc_info=exc)
+                await msg.answer(
+                    "No pude analizar tu mensaje. Intentá nuevamente más tarde."
+                )
+            return
         except httpx.HTTPError as exc:
             logger.error("Error al consultar nlp_intent", exc_info=exc)
             await msg.answer(

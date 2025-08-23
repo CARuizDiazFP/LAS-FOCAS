@@ -68,6 +68,10 @@ def test_conversacion_sla(tmp_path, monkeypatch, sla_sample_file):
         monkeypatch.setattr("modules.informes_sla.report.convert_to_pdf", fake_convert)
 
         class FakeResp:
+            """Simula la respuesta del servicio nlp_intent."""
+
+            status_code = 200
+
             def json(self):
                 return {
                     "normalized_text": "sla",
@@ -75,6 +79,9 @@ def test_conversacion_sla(tmp_path, monkeypatch, sla_sample_file):
                     "confidence": 0.99,
                     "provider": "mock",
                 }
+
+            def raise_for_status(self):  # pragma: no cover - no levanta errores
+                return None
 
         async def fake_post(self, url, json):
             return FakeResp()
@@ -135,6 +142,10 @@ def test_conversacion_repetitividad(tmp_path, monkeypatch, repetitividad_sample_
         monkeypatch.setattr("modules.informes_repetitividad.report.convert_to_pdf", fake_convert)
 
         class FakeResp:
+            """Simula la respuesta del servicio nlp_intent."""
+
+            status_code = 200
+
             def json(self):
                 return {
                     "normalized_text": "repetitividad",
@@ -142,6 +153,9 @@ def test_conversacion_repetitividad(tmp_path, monkeypatch, repetitividad_sample_
                     "confidence": 0.99,
                     "provider": "mock",
                 }
+
+            def raise_for_status(self):  # pragma: no cover - no levanta errores
+                return None
 
         async def fake_post(self, url, json):
             return FakeResp()

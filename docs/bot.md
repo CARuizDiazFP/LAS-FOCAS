@@ -7,6 +7,8 @@
 ## Variables requeridas (.env)
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
 - INTENT_THRESHOLD=0.7  # Umbral mínimo de confianza para aceptar una intención
+- BOT_RATE_LIMIT=20       # Máximo de mensajes por usuario
+- BOT_RATE_INTERVAL=60    # Ventana en segundos para el límite
 
 ## Arranque con Docker
 
@@ -42,7 +44,9 @@ Los intentos de acceso de usuarios no incluidos en `TELEGRAM_ALLOWED_IDS` genera
 ## Clasificación de intención
 
 Cada mensaje de texto se envía mediante `httpx` al microservicio `nlp_intent` para determinar si es una **Consulta**, una **Acción** u **Otros**.
-El bot responde con un resumen de la intención detectada. Si la confianza devuelta es menor que `INTENT_THRESHOLD` (0.7 por defecto), solicita una aclaración al usuario antes de continuar.
+Se valida que la confianza esté entre `0` y `1` y se respeta el `INTENT_THRESHOLD` (0.7 por defecto): si la confianza devuelta es menor, se solicita una aclaración al usuario antes de continuar.
+El bot aplica un límite de `BOT_RATE_LIMIT` mensajes por `BOT_RATE_INTERVAL` segundos por usuario; si se excede, responde "Rate limit alcanzado".
+Cuando el microservicio devuelve `429 Too Many Requests`, se informa "Servicio saturado".
 
 ## Menú principal
 

@@ -15,7 +15,9 @@ class IntentRequest(BaseModel):
 
 class IntentResponse(BaseModel):
     intent: Literal["Consulta", "Acción", "Otros"]
-    confidence: float
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Nivel de confianza devuelto por el proveedor"
+    )
     provider: str
     normalized_text: str
 
