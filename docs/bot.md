@@ -6,6 +6,7 @@
 
 ## Variables requeridas (.env)
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
+- INTENT_THRESHOLD=0.7  # Umbral mínimo de confianza para aceptar una intención
 
 ## Arranque con Docker
 
@@ -40,8 +41,8 @@ Los intentos de acceso de usuarios no incluidos en `TELEGRAM_ALLOWED_IDS` genera
 
 ## Clasificación de intención
 
-Cada mensaje de texto se envía al microservicio `nlp_intent` para determinar si es una **Consulta**, una **Acción** u **Otros**.
-El bot responde con un resumen de la intención detectada. Si la confianza es baja, solicita una aclaración al usuario.
+Cada mensaje de texto se envía mediante `httpx` al microservicio `nlp_intent` para determinar si es una **Consulta**, una **Acción** u **Otros**.
+El bot responde con un resumen de la intención detectada. Si la confianza devuelta es menor que `INTENT_THRESHOLD` (0.7 por defecto), solicita una aclaración al usuario antes de continuar.
 
 ## Menú principal
 
