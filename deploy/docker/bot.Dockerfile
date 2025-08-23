@@ -23,7 +23,8 @@ COPY bot_telegram /app/bot_telegram
 COPY modules /app/modules
 COPY core /app/core
 
-# Usuario no root opcional (hardening)
-# RUN useradd -m bot && chown -R bot:bot /app && USER bot
+# Usuario no root para ejecutar el bot y reducir riesgos de privilegios
+RUN useradd -m bot && chown -R bot:bot /app
+USER bot
 
 CMD ["python", "-m", "bot_telegram.app"]

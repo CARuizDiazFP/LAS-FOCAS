@@ -22,6 +22,10 @@ RUN python -m pip install --upgrade pip && pip install -r requirements.txt
 # Copiamos el código de la app
 COPY app /app/app
 
+# Crear usuario no root para ejecutar la API y aplicar principio de mínimos privilegios
+RUN useradd -m api && chown -R api:api /app
+USER api
+
 EXPOSE 8000
 
 # Arranque de la API

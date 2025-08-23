@@ -48,6 +48,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "512M"
     networks:
       - lasfocas_net
 
@@ -83,6 +88,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "1G"
     networks:
       - lasfocas_net
 
@@ -102,6 +112,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
     networks:
       - lasfocas_net
 
