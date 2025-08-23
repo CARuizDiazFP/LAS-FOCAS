@@ -1,8 +1,11 @@
 # Nombre de archivo: bot.md
+
 # Ubicación de archivo: docs/bot.md
+
 # Descripción: Guía rápida de uso del bot de Telegram
 
 ## Variables requeridas (.env)
+
 - TELEGRAM_BOT_TOKEN=...
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
 
@@ -14,6 +17,7 @@ que los flujos `/sla` y `/repetitividad` funcionen correctamente.
 La imagen incluye LibreOffice en modo headless, lo que permite convertir los
 reportes a PDF siempre que se defina `SOFFICE_BIN=/usr/bin/soffice` en el
 entorno.
+
 ```bash
 docker compose -f deploy/compose.yml up -d --build bot
 docker compose -f deploy/compose.yml logs -f bot
@@ -65,9 +69,10 @@ Modo: long polling (no requiere URL pública).
 
 Futuro: migrar a webhooks (reverse proxy + TLS) si se necesita menor latencia.
 
----
+______________________________________________________________________
 
 ## Acciones para el Usuario (VM)
+
 1. **Agregar variables al `.env`** (si no están):
 
 ```
@@ -76,6 +81,7 @@ TELEGRAM_ALLOWED_IDS=11111111,22222222
 ```
 
 2. **Levantar el servicio del bot**:
+
 ```bash
 cd ~/proyectos/LAS-FOCAS
 docker compose -f deploy/compose.yml up -d --build bot
@@ -106,6 +112,7 @@ Ejemplos:
 - `/repetitividad` y botón **📊 Informe de Repetitividad** comparten `start_repetitividad_flow`.
 
 ### ReplyKeyboard
+
 El comando `/keyboard` muestra un teclado con atajos (`/sla`, `/repetitividad`, `/menu`, `/hide`).
 El comando `/hide` lo oculta.
 
@@ -116,3 +123,8 @@ Para un diagnóstico rápido está disponible `/diag`, que muestra los contadore
 commands_sla: X | callbacks_sla: Y
 commands_rep: A | callbacks_rep: B
 ```
+
+## Casos de prueba automatizados
+
+Las pruebas `tests/test_bot_conversations.py` cubren conversaciones completas de los flujos `/sla` y `/repetitividad`.
+Se simulan respuestas del microservicio `nlp_intent` y se generan archivos de ejemplo en tiempo de prueba para verificar la creación de reportes en formatos DOCX y PDF.
