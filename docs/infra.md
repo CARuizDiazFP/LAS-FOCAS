@@ -21,7 +21,19 @@
 - `./db/init.sql` se monta de forma de solo lectura para inicializar la base.
 - `ollama_data`: guarda los modelos descargados en `/root/.ollama`.
 
+## Recursos
+
+- `api`: límite de `1` CPU y `512MB` de RAM para evitar que una carga intensa afecte al resto de servicios.
+- `bot`: límite de `0.5` CPU y `256MB` de RAM, suficiente para manejar mensajes sin consumir recursos excesivos.
+- `nlp_intent`: límite de `1` CPU y `1GB` de RAM debido al procesamiento de lenguaje natural.
+
+## Seguridad
+
+- `api` y `bot` se ejecutan con un usuario no root dentro de sus contenedores, aplicando el principio de mínimos privilegios.
+
 ## Variables de entorno
+
+Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` y `SMTP_*`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
 
 ### Base de datos
 - `POSTGRES_HOST`: host del contenedor de PostgreSQL.

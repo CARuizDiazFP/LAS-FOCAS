@@ -4,8 +4,14 @@
 
 ## Secrets
 
-- Las credenciales se gestionan mediante variables de entorno definidas en `.env` y no se versionan.
-- Para producción se recomienda migrar a **Docker Secrets** o gestores como Vault.
+- Las credenciales se gestionan mediante **Docker Secrets** montados en `/run/secrets/*`.
+- Secretos usados: `postgres_password`, `telegram_bot_token`, `openai_api_key`, `smtp_host`, `smtp_user`, `smtp_password` y `smtp_from`.
+- Para crear un secreto, generar el archivo en `deploy/secrets/<nombre>`:
+  ```bash
+  echo "valor" > deploy/secrets/postgres_password
+  ```
+  Luego reiniciar los servicios con `docker compose -f deploy/compose.yml up -d`.
+- Para rotar un secreto, actualizar el archivo correspondiente y volver a desplegar el servicio que lo consume.
 - No se deben exponer tokens ni contraseñas en logs ni commits.
 
 ## Rate limiting

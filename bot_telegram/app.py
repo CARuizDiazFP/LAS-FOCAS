@@ -4,7 +4,6 @@
 
 import asyncio
 import logging
-import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -19,11 +18,12 @@ from bot_telegram.handlers.intent import router as intent_router
 from bot_telegram.handlers.menu import router as menu_router
 from bot_telegram.middlewares.request_id import RequestContextMiddleware
 from core.logging import configure_logging
+from core import get_secret
 
 configure_logging("bot")
 logger = logging.getLogger("bot")
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
 
 
 async def main():
