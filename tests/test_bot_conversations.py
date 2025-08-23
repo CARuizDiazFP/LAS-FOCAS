@@ -1,6 +1,6 @@
 # Nombre de archivo: test_bot_conversations.py
 # Ubicación de archivo: tests/test_bot_conversations.py
-# Descripción: Simula conversaciones completas de los flujos /sla y /repetitividad del bot
+# Descripción: Pruebas de conversaciones del bot de Telegram
 
 import asyncio
 import sys
@@ -191,5 +191,58 @@ def test_conversacion_repetitividad(tmp_path, monkeypatch, repetitividad_sample_
         docx = next(p for p in paths if p.suffix == ".docx")
         pdf = next(p for p in paths if p.suffix == ".pdf")
         assert docx.exists() and pdf.exists()
+
+    asyncio.run(run())
+
+
+def test_rate_limit(monkeypatch):
+    """El bot limita mensajes por usuario según las variables de entorno."""
+
+    async def run() -> None:
+        from collections import defaultdict
+
+        monkeypatch.setenv("BOT_RATE_LIMIT", "1")
+        monkeypatch.setenv("BOT_RATE_INTERVAL", "60")
+        monkeypatch.setattr(
+            "bot_telegram.handlers.intent._rate_limit", defaultdict(list)
+        )
+
+        class FakeResp:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "normalized_text": "hola",
+                    "intent": "Otros",
+                    "confidence": 0.99,
+                    "provider": "mock",
+                }
+
+            def raise_for_status(self):  # pragma: no cover - simple
+                return None
+
+        async def fake_post(self, url, json):
+            return FakeResp()
+
+        monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+        monkeypatch.setattr(
+            "bot_telegram.handlers.intent._get_conn", lambda: SimpleNamespace(close=lambda: None)
+        )
+        monkeypatch.setattr(
+            "bot_telegram.handlers.intent.insert_conversation", lambda conn, user_id: 1
+        )
+        monkeypatch.setattr(
+            "bot_telegram.handlers.intent.insert_message", lambda *a, **k: None
+        )
+
+        storage = MemoryStorage()
+        ctx = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+
+        msg1 = DummyMessage(text="hola")
+        await classify_message(msg1, ctx)
+
+        msg2 = DummyMessage(text="hola")
+        await classify_message(msg2, ctx)
+        assert msg2.answers[-1] == "Rate limit alcanzado. Esperá un momento ⏳"
 
     asyncio.run(run())

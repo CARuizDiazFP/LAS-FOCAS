@@ -169,6 +169,8 @@ WORK_HOURS=false
 # Rate limiting
 API_RATE_LIMIT=60/minute
 NLP_RATE_LIMIT=60/minute
+BOT_RATE_LIMIT=20
+BOT_RATE_INTERVAL=60
 
 # Integraciones
 NOTION_TOKEN=
@@ -184,6 +186,8 @@ SMTP_FROM=
 ```
 La variable `WORK_HOURS` permite ajustar el cálculo del TTR al horario laboral; en `false` se usa el total de horas calendario.
 Las solicitudes a la API deben incluir el encabezado `X-API-Key`; el límite se calcula por clave (o por IP si falta).
+
+El bot aplica `BOT_RATE_LIMIT` mensajes por usuario dentro de `BOT_RATE_INTERVAL` segundos.
 
 La imagen del servicio `bot` incluye LibreOffice, por lo que al definir
 `SOFFICE_BIN=/usr/bin/soffice` se habilita la exportación de informes a PDF.
@@ -242,7 +246,7 @@ De igual forma, el servicio `ollama` expone `11434` solo dentro de la red intern
 - Login básico en Web.
 - Tokens rotados.
 - Usuario DB de mínimos privilegios (incluye cuenta de solo lectura).
-- Rate limiting configurable en API y nlp_intent.
+- Rate limiting configurable en API, bot y nlp_intent.
 - Políticas detalladas en [docs/security.md](docs/security.md).
 ---
 

@@ -1,7 +1,5 @@
 # Nombre de archivo: bot.md
-
 # Ubicación de archivo: docs/bot.md
-
 # Descripción: Guía rápida de uso del bot de Telegram
 
 ## Variables requeridas (.env)
