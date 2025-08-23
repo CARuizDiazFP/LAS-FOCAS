@@ -156,11 +156,14 @@ UPLOADS_DIR=/app/data/uploads
 SOFFICE_BIN=/usr/bin/soffice
 MAPS_ENABLED=false
 MAPS_LIGHTWEIGHT=true
+# Cálculo de TTR en horario laboral (true) o 24/7 (false)
+WORK_HOURS=false
 
 # Rate limiting
 API_RATE_LIMIT=60/minute
 NLP_RATE_LIMIT=60/minute
 ```
+La variable `WORK_HOURS` permite ajustar el cálculo del TTR al horario laboral; en `false` se usa el total de horas calendario.
 Las solicitudes a la API deben incluir el encabezado `X-API-Key`; el límite se calcula por clave (o por IP si falta).
 
 La imagen del servicio `bot` incluye LibreOffice, por lo que al definir
