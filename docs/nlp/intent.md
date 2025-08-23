@@ -26,6 +26,12 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
 }
 ```
 `confidence` se valida para permanecer entre `0` y `1`.
+Campos devueltos:
+
+- `intent`: intención detectada (`Consulta`, `Acción` u `Otros`).
+- `confidence`: confianza del modelo en el rango `[0, 1]`.
+- `provider`: proveedor que clasificó el texto.
+- `normalized_text`: texto transformado previo a la inferencia.
 
 ## Integración con el bot de Telegram
 
@@ -48,16 +54,15 @@ Las respuestas de clasificación se almacenan en memoria durante `CACHE_TTL` seg
 
 ## Métricas
 
-El endpoint `GET /metrics` devuelve estadísticas básicas:
+El endpoint `GET /metrics` expone estadísticas en formato **Prometheus**. Ejemplo truncado:
 
-```json
-{
-  "total_requests": 42,
-  "average_latency_ms": 12.5
-}
+```
+# HELP nlp_intent_requests_total Total de solicitudes de clasificación procesadas
+# TYPE nlp_intent_requests_total counter
+nlp_intent_requests_total 2.0
 ```
 
-`total_requests` cuenta las llamadas a `/v1/intent:classify` y `average_latency_ms` es la latencia promedio.
+Actualmente se registran el total de solicitudes y un histograma de latencias.
 
 ## Healthcheck
 

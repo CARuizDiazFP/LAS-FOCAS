@@ -12,12 +12,12 @@ from httpx import AsyncClient, ASGITransport
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 from nlp_intent.app.main import app
-from nlp_intent.app.metrics import metrics
+from nlp_intent.app.metrics import reset_metrics
 
 
 def test_metrics_endpoint(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "heuristic")
-    metrics.reset()
+    reset_metrics()
 
     async def _run():
         transport = ASGITransport(app=app)
@@ -25,8 +25,10 @@ def test_metrics_endpoint(monkeypatch):
             await client.post("/v1/intent:classify", json={"text": "hola"})
             await client.post("/v1/intent:classify", json={"text": "chau"})
             resp = await client.get("/metrics")
-        return resp.json()
+        return resp
 
-    datos = asyncio.run(_run())
-    assert datos["total_requests"] == 2
-    assert datos["average_latency_ms"] >= 0
+    resp = asyncio.run(_run())
+    assert resp.status_code == 200
+    cuerpo = resp.text
+    assert "nlp_intent_requests_total 2.0" in cuerpo
+    assert "nlp_intent_request_latency_seconds" in cuerpo

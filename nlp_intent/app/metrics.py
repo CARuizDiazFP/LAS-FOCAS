@@ -1,35 +1,57 @@
 # Nombre de archivo: metrics.py
 # Ubicación de archivo: nlp_intent/app/metrics.py
-# Descripción: Métricas simples de uso del servicio nlp_intent
+# Descripción: Exposición de métricas Prometheus para nlp_intent
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    CONTENT_TYPE_LATEST,
+    generate_latest,
+)
+
+REGISTRY = CollectorRegistry()
+
+REQUEST_COUNT = Counter(
+    "nlp_intent_requests_total",
+    "Total de solicitudes de clasificación procesadas",
+    registry=REGISTRY,
+)
+REQUEST_LATENCY = Histogram(
+    "nlp_intent_request_latency_seconds",
+    "Latencia de las solicitudes de clasificación en segundos",
+    registry=REGISTRY,
+)
 
 
-@dataclass
-class Metrics:
-    """Acumulador básico de métricas del servicio."""
-
-    total_requests: int = 0
-    total_latency: float = 0.0
-
-    def record(self, latency: float) -> None:
-        self.total_requests += 1
-        self.total_latency += latency
-
-    def snapshot(self) -> dict[str, float]:
-        promedio = (
-            self.total_latency / self.total_requests if self.total_requests else 0.0
-        )
-        return {
-            "total_requests": self.total_requests,
-            "average_latency_ms": promedio * 1000,
-        }
-
-    def reset(self) -> None:
-        self.total_requests = 0
-        self.total_latency = 0.0
+def record_request(latency: float) -> None:
+    """Registra una solicitud y su latencia."""
+    REQUEST_COUNT.inc()
+    REQUEST_LATENCY.observe(latency)
 
 
-metrics = Metrics()
+def export_metrics() -> bytes:
+    """Devuelve las métricas en formato Prometheus."""
+    return generate_latest(REGISTRY)
+
+
+def reset_metrics() -> None:
+    """Restablece los contadores; se usa solo en las pruebas."""
+    global REQUEST_COUNT, REQUEST_LATENCY
+    REGISTRY.unregister(REQUEST_COUNT)
+    REGISTRY.unregister(REQUEST_LATENCY)
+    REQUEST_COUNT = Counter(
+        "nlp_intent_requests_total",
+        "Total de solicitudes de clasificación procesadas",
+        registry=REGISTRY,
+    )
+    REQUEST_LATENCY = Histogram(
+        "nlp_intent_request_latency_seconds",
+        "Latencia de las solicitudes de clasificación en segundos",
+        registry=REGISTRY,
+    )
+
+
+__all__ = ["record_request", "export_metrics", "reset_metrics", "CONTENT_TYPE_LATEST"]
