@@ -26,6 +26,7 @@ El repositorio incluye un microservicio en `web/main.py` que utiliza **FastAPI**
 - `GET /` renderiza `index.html` mostrando el rol del usuario.
 - `GET /health` responde con `{"status": "ok"}` para verificaciones de salud.
 - `GET /admin` accesible solo para usuarios con rol `admin`.
+- `GET /login` entrega un formulario de acceso aún en desarrollo.
 
 Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, publicando el puerto `8080` al host.
 
