@@ -5,12 +5,14 @@
 ## Insumos requeridos
 - Excel "Casos" en formato `.xlsx`.
 - Tamaño máximo permitido: 10MB.
+- El nombre del archivo no debe contener rutas ni caracteres especiales.
 - Columnas mínimas: `CLIENTE`, `SERVICIO`, `FECHA` y opcional `ID_SERVICIO`.
 - Los datos del cliente **BANCO MACRO SA** nunca se filtran automáticamente.
 
 ## Validaciones
 - `CLIENTE` y `SERVICIO` deben ser texto de hasta 100 caracteres.
 - `FECHA` debe contener valores de fecha válidos.
+- El período debe ingresarse en formato `mm/aaaa` y estar dentro del rango desde 2000.
 
 ## Cálculo
 - Se normalizan las columnas y se genera `PERIODO = YYYY-MM`.
@@ -27,6 +29,9 @@
 
 ## Paths de salida
 - Archivos generados en `/app/data/reports/` dentro del contenedor del bot.
+
+## Limpieza de archivos
+- Los archivos subidos y los informes generados se eliminan automáticamente luego de ser enviados al usuario.
 
 ## Variables de entorno
 - `REP_TEMPLATE_PATH=/app/templates/repetitividad.docx` ruta de la plantilla.

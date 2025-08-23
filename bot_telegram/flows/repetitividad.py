@@ -4,6 +4,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,7 +29,9 @@ def build_repetitividad_prompt() -> str:
 
 
 def validate_document(document: Document) -> tuple[bool, str]:
-    """Valida extensión y tamaño del archivo recibido."""
+    """Valida nombre, extensión y tamaño del archivo recibido."""
+    if Path(document.file_name).name != document.file_name:
+        return False, "El nombre del archivo es inválido. Intentá nuevamente"
     if not document.file_name.lower().endswith(".xlsx"):
         return False, "El archivo debe tener extensión .xlsx. Intentá nuevamente"
     if document.file_size and document.file_size > 10 * 1024 * 1024:
@@ -37,6 +40,35 @@ def validate_document(document: Document) -> tuple[bool, str]:
             "El archivo excede el tamaño máximo de 10MB. Intentá nuevamente",
         )
     return True, ""
+
+
+def validate_period(texto: str) -> tuple[bool, str, int, int]:
+    """Valida el período en formato mm/aaaa y devuelve mes y año."""
+    if not re.fullmatch(r"\d{2}/\d{4}", texto):
+        return False, "Formato inválido. Usá mm/aaaa, ej: 07/2024", 0, 0
+    mes, anio = map(int, texto.split("/"))
+    if not (1 <= mes <= 12 and anio >= 2000):
+        return False, "Período fuera de rango. Usá mm/aaaa, ej: 07/2024", 0, 0
+    return True, "", mes, anio
+
+
+def cleanup_files(*paths: str) -> None:
+    """Elimina archivos temporales y registra errores si los hubiera."""
+    for p in paths:
+        try:
+            Path(p).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                json.dumps(
+                    {
+                        "service": "bot",
+                        "flow": "repetitividad",
+                        "event": "cleanup_error",
+                        "file": p,
+                        "error": str(exc),
+                    }
+                )
+            )
 
 
 class RepetitividadStates(StatesGroup):
@@ -120,12 +152,9 @@ async def on_invalid_file(msg: Message) -> None:
 async def on_period(msg: Message, state: FSMContext) -> None:
     """Procesa el período y genera el informe."""
     texto = msg.text.strip()
-    try:
-        mes, anio = map(int, texto.split("/"))
-        if not (1 <= mes <= 12 and anio >= 2000):
-            raise ValueError
-    except ValueError:
-        await msg.answer("Formato inválido. Usá mm/aaaa, ej: 07/2024")
+    valido, error, mes, anio = validate_period(texto)
+    if not valido:
+        await msg.answer(error)
         return
 
     data = await state.get_data()
@@ -148,6 +177,7 @@ async def on_period(msg: Message, state: FSMContext) -> None:
             }
         )
     )
+    cleanup_files(file_path, *paths.values())
     await state.clear()
 
 
