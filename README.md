@@ -132,15 +132,18 @@ POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_DB=lasfocas
 POSTGRES_USER=lasfocas
-POSTGRES_PASSWORD=superseguro
+POSTGRES_PASSWORD=
+# Se carga desde /run/secrets/postgres_password cuando está disponible
 
 # Bot de Telegram
 TELEGRAM_BOT_TOKEN=
+# Se carga desde /run/secrets/telegram_bot_token cuando está disponible
 TELEGRAM_ALLOWED_IDS=11111111,22222222
 
 # NLP / LLM
 LLM_PROVIDER=auto
 OPENAI_API_KEY=
+# Se carga desde /run/secrets/openai_api_key cuando está disponible
 # URL base para el servicio Ollama interno
 OLLAMA_URL=http://ollama:11434
 INTENT_THRESHOLD=0.7
@@ -162,6 +165,18 @@ WORK_HOURS=false
 # Rate limiting
 API_RATE_LIMIT=60/minute
 NLP_RATE_LIMIT=60/minute
+
+# Integraciones
+NOTION_TOKEN=
+SMTP_HOST=
+# Se carga desde /run/secrets/smtp_host cuando está disponible
+SMTP_PORT=587
+SMTP_USER=
+# Se carga desde /run/secrets/smtp_user cuando está disponible
+SMTP_PASSWORD=
+# Se carga desde /run/secrets/smtp_password cuando está disponible
+SMTP_FROM=
+# Se carga desde /run/secrets/smtp_from cuando está disponible
 ```
 La variable `WORK_HOURS` permite ajustar el cálculo del TTR al horario laboral; en `false` se usa el total de horas calendario.
 Las solicitudes a la API deben incluir el encabezado `X-API-Key`; el límite se calcula por clave (o por IP si falta).

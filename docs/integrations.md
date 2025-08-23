@@ -18,7 +18,8 @@ cliente.create_page({"parent": {"database_id": "db"}, "properties": {}})
 
 Cliente para el envío de correos electrónicos.
 Utiliza las variables `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`
-y `SMTP_FROM` para autenticarse y definir el remitente.
+y `SMTP_FROM` para autenticarse y definir el remitente. Estas credenciales
+pueden suministrarse mediante Docker Secrets montados en `/run/secrets/`.
 
 ```python
 from integrations.email import EmailClient

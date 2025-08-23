@@ -33,6 +33,8 @@
 
 ## Variables de entorno
 
+Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` y `SMTP_*`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
+
 ### Base de datos
 - `POSTGRES_HOST`: host del contenedor de PostgreSQL.
 - `POSTGRES_PORT`: puerto interno donde escucha PostgreSQL.

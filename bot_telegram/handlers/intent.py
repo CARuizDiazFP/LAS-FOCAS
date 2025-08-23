@@ -1,6 +1,6 @@
 # Nombre de archivo: intent.py
 # Ubicación de archivo: bot_telegram/handlers/intent.py
-# Descripción: Manejo de mensajes de texto con clasificación de intención y persistencia
+# Descripción: Manejo de mensajes con clasificación de intención y persistencia
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from bot_telegram.flows.sla import start_sla_flow
 from bot_telegram.ui.menu import build_main_menu
 from core.repositories.conversations import insert_conversation
 from core.repositories.messages import insert_message
+from core import get_secret
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def _get_conn() -> psycopg.Connection:
         host=os.getenv("POSTGRES_HOST", "localhost"),
         dbname=os.getenv("POSTGRES_DB"),
         user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD"),
+        password=get_secret("POSTGRES_PASSWORD"),
     )
 
 
@@ -103,5 +104,3 @@ async def classify_message(msg: Message, state: FSMContext):
             )
     else:
         await msg.answer(summary)
-
-
