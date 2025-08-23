@@ -120,6 +120,10 @@ las-focas/
 └─ README.md
 ```
 
+## 📘 Guías por módulo
+
+Cada directorio principal incluye un archivo `AGENTS.md` con lineamientos específicos. Revísalo antes de modificar cualquier código. Para más detalles ver [docs/agents.md](docs/agents.md).
+
 ---
 
 ## 🔐 Configuración y credenciales
