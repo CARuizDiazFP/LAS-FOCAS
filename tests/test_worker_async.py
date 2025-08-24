@@ -29,3 +29,15 @@ def test_worker_procesa_job(monkeypatch):
 
     job.refresh()
     assert job.result == 3
+
+
+def test_enqueue_informe_devuelve_job(monkeypatch):
+    """Verifica que la función retorne un job en la cola correcta."""
+    redis = fakeredis.FakeRedis()
+    queue = Queue("informes", connection=redis)
+    monkeypatch.setattr(worker, "redis_conn", redis)
+    monkeypatch.setattr(worker, "queue", queue)
+
+    job = worker.enqueue_informe(sumar, 5, 6)
+    assert job.get_status() == "queued"
+    assert job.origin == "informes"
