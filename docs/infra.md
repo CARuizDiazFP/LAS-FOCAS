@@ -9,12 +9,12 @@
 ## Puertos
 
 - `postgres` expone `5432` solo a la red interna mediante `expose`.
-- `api` publica `8000:8000` para acceso HTTP desde el host.
+- `api` expone `8000` únicamente a la red interna; para acceder desde fuera se requiere un proxy inverso.
 - `nlp_intent` expone `8100` únicamente a la red interna.
 - `redis` expone `6379` solo a la red interna y se activa con el perfil `worker`.
   Requiere autenticación con contraseña y se utiliza como backend de la cola RQ que procesa informes de manera asíncrona.
 - `ollama` expone `11434` solo a la red interna.
-- `pgadmin` (perfil opcional) publica `5050:80` para administración de PostgreSQL.
+- `pgadmin` (perfil opcional) publica `5050:80` para administración de PostgreSQL; usar solo en desarrollo y con credenciales gestionadas como secrets.
 
 ## Volúmenes
 
@@ -73,7 +73,8 @@ Para más detalles consultar `docs/security.md`.
 ## Seguridad
 
 - `api`, `bot`, `web` y `worker` se ejecutan con un usuario no root dentro de sus contenedores, aplicando el principio de mínimos privilegios.
-- El servicio `web` solo expone el puerto `8080` dentro de la red interna; para publicarlo externamente se debe configurar un proxy inverso.
+- Los servicios `api` y `web` solo exponen sus puertos dentro de la red interna; para publicarlos externamente se debe configurar un proxy inverso que gestione TLS.
+- `pgadmin` se recomienda únicamente en desarrollo y sus credenciales se montan como secrets.
 
 ## Variables de entorno
 

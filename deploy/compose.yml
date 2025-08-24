@@ -53,8 +53,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    # Expuesto solo en la red interna; requerir proxy inverso para acceso externo
+    expose:
+      - "8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
       interval: 10s
@@ -227,16 +228,20 @@ services:
       - lasfocas_net
 
   # (Opcional) pgAdmin. Levantar con: docker compose -f deploy/compose.yml --profile pgadmin up -d
+  # Solo para desarrollo
   pgadmin:
     image: dpage/pgadmin4:8
     container_name: lasfocas-pgadmin
     profiles: ["pgadmin"]
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@local
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL_FILE: /run/secrets/pgadmin_default_email
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_default_password
     ports:
       - "5050:80"
+    secrets:
+      - pgadmin_default_email
+      - pgadmin_default_password
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:80/login || exit 1"]
       interval: 10s
@@ -288,6 +293,10 @@ secrets:
     file: ./secrets/web_lector_password
   notion_token:
     file: ./secrets/notion_token
+  pgadmin_default_email:
+    file: ./secrets/pgadmin_default_email
+  pgadmin_default_password:
+    file: ./secrets/pgadmin_default_password
 
 networks:
   lasfocas_net:
