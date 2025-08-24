@@ -29,6 +29,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
   - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye los flujos `/repetitividad` y `/sla` y un teclado opcional con atajos a ambos comandos. Ver [docs/bot.md](docs/bot.md) para guía rápida.
   - **Web Panel** (roles `admin`/`lector` configurables vía variables `WEB_ADMIN_USERNAME`/`WEB_ADMIN_PASSWORD` y `WEB_LECTOR_USERNAME`/`WEB_LECTOR_PASSWORD`, accesible por IP interna .28). Ver [docs/web.md](docs/web.md) para el plan del módulo.
   - **nlp_intent** (microservicio NLP para clasificación de intención).
+  - **Worker** para procesar tareas en segundo plano. Ver [docs/worker.md](docs/worker.md).
   - CLI opcional para utilidades.
 
 - **Integraciones externas**
