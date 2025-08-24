@@ -5,12 +5,14 @@
 ## Secrets
 
 - Las credenciales se gestionan mediante **Docker Secrets** montados en `/run/secrets/*`.
-- Secretos usados: `postgres_password`, `postgres_app_password`, `postgres_readonly_password`, `telegram_bot_token`, `openai_api_key`, `smtp_host`, `smtp_user`, `smtp_password`, `smtp_from`, `web_admin_username`, `web_admin_password`, `web_lector_username`, `web_lector_password` y `notion_token`.
+- Secretos usados: `postgres_password`, `postgres_app_password`, `postgres_readonly_password`, `telegram_bot_token`, `openai_api_key`, `smtp_host`, `smtp_user`, `smtp_password`, `smtp_from`, `web_admin_username`, `web_admin_password`, `web_lector_username`, `web_lector_password`, `notion_token`, `pgadmin_default_email` y `pgadmin_default_password`.
 - Para crear un secreto, generar el archivo en `deploy/secrets/<nombre>`:
   ```bash
   echo "valor" > deploy/secrets/postgres_password
   echo "valor" > deploy/secrets/postgres_app_password
   echo "valor" > deploy/secrets/postgres_readonly_password
+  echo "correo" > deploy/secrets/pgadmin_default_email
+  echo "clave" > deploy/secrets/pgadmin_default_password
   ```
   Luego reiniciar los servicios con `docker compose -f deploy/compose.yml up -d`.
 - Para rotar un secreto, actualizar el archivo correspondiente y volver a desplegar el servicio que lo consume.
@@ -32,4 +34,5 @@
 - Los contenedores deben ejecutarse con usuarios no root cuando sea posible.
 - La base de datos utiliza usuarios específicos por servicio y roles de solo lectura cuando aplique.
 - Los puertos publicados al host se restringen únicamente a los necesarios.
-- El servicio `web` requiere un proxy inverso si se desea exponerlo fuera de la red interna.
+- La API y el servicio `web` deben estar detrás de un proxy inverso (como Nginx) para terminar TLS y aplicar filtros.
+- El servicio `pgadmin` se considera solo para desarrollo y sus credenciales se montan como secrets.
