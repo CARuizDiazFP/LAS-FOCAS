@@ -8,7 +8,7 @@ import sys
 
 from fastapi.testclient import TestClient
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / 'api'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'api'))
 os.environ['API_RATE_LIMIT'] = '2/minute'
 
 from app.main import create_app

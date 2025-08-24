@@ -7,8 +7,8 @@ import sys
 
 from fastapi.testclient import TestClient
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-sys.path.append(str(Path(__file__).resolve().parents[1] / "api"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from app.main import create_app
 
@@ -22,3 +22,14 @@ def test_metrics_endpoint_muestra_datos() -> None:
     data = resp.json()
     assert "total_requests" in data
     assert "average_latency_ms" in data
+
+
+def test_metrics_incrementa_con_cada_solicitud() -> None:
+    app = create_app()
+    client = TestClient(app)
+    app.state.metrics.reset()
+    client.get("/health")
+    primera = client.get("/metrics").json()["total_requests"]
+    client.get("/health")
+    segunda = client.get("/metrics").json()["total_requests"]
+    assert segunda == primera + 2

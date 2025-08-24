@@ -1,13 +1,19 @@
 # Nombre de archivo: test_request_id.py
+# Nombre de archivo: test_request_id.py
 # Ubicación de archivo: tests/test_request_id.py
 # Descripción: Verifica que los servicios FastAPI generen X-Request-ID
 
 import uuid
+from pathlib import Path
+import sys
 
 from fastapi.testclient import TestClient
 
-from api.app.main import app as api_app
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+from app.main import create_app
 from nlp_intent.app.main import app as nlp_app
+
+api_app = create_app()
 
 
 def _assert_request_id(client: TestClient, path: str) -> None:

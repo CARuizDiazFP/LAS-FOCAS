@@ -11,5 +11,10 @@ El proyecto ejecuta un flujo de **integración continua** mediante GitHub Action
 3. Ejecución de las **pruebas** con `pytest` generando reporte de cobertura.
 4. **Carga** del archivo `coverage.xml` como artefacto de la ejecución.
 5. Análisis de estilo y calidad de código con **`ruff`**.
+6. Construcción de las imágenes Docker de **API** y **Web**.
 
 La finalidad es garantizar que el código pase las pruebas automatizadas y cumpla las reglas de estilo antes de integrarse en la rama principal.
+
+## Pruebas en contenedores
+
+El job `build-images` compila las imágenes `las-focas-api:ci` y `las-focas-web:ci` usando `docker build`. Este paso detecta de forma temprana errores en los `Dockerfile` y asegura que los servicios puedan ejecutarse en contenedores.
