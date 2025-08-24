@@ -23,6 +23,7 @@ def test_convert_to_pdf_crea_archivo(monkeypatch, tmp_path):
         pdf_esperado.write_text("pdf")
 
     monkeypatch.setattr("modules.common.libreoffice_export.subprocess.run", fake_run)
+    monkeypatch.setattr("modules.common.libreoffice_export.shutil.which", lambda _: "soffice")
 
     ruta_pdf = convert_to_pdf(str(docx), "soffice")
     assert Path(ruta_pdf) == pdf_esperado
@@ -33,10 +34,9 @@ def test_convert_to_pdf_levanta_file_not_found(monkeypatch, tmp_path):
     docx = tmp_path / "archivo.docx"
     docx.write_text("contenido")
 
-    def fake_run(cmd, check, stdout, stderr):  # pragma: no cover - logging
-        raise FileNotFoundError("soffice")
-
-    monkeypatch.setattr("modules.common.libreoffice_export.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "modules.common.libreoffice_export.shutil.which", lambda _: None
+    )
     with pytest.raises(FileNotFoundError):
         convert_to_pdf(str(docx), "soffice")
 
@@ -49,6 +49,7 @@ def test_convert_to_pdf_levanta_called_process_error(monkeypatch, tmp_path):
         raise subprocess.CalledProcessError(1, cmd, stderr=b"fallo")
 
     monkeypatch.setattr("modules.common.libreoffice_export.subprocess.run", fake_run)
+    monkeypatch.setattr("modules.common.libreoffice_export.shutil.which", lambda _: "soffice")
     with pytest.raises(subprocess.CalledProcessError):
         convert_to_pdf(str(docx), "soffice")
 
@@ -60,5 +61,6 @@ def test_convert_to_pdf_falla_si_no_se_genero_pdf(monkeypatch, tmp_path):
         pass
 
     monkeypatch.setattr("modules.common.libreoffice_export.subprocess.run", fake_run)
+    monkeypatch.setattr("modules.common.libreoffice_export.shutil.which", lambda _: "soffice")
     with pytest.raises(FileNotFoundError):
         convert_to_pdf(str(docx), "soffice")
