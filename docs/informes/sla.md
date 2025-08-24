@@ -34,7 +34,8 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 1. Enviar comando `/sla` o usar el botón correspondiente.
 2. Subir el Excel `.xlsx`.
 3. Indicar el período `mm/aaaa`.
-4. El bot devuelve un `.docx` y opcionalmente `.pdf`.
+4. La solicitud se encola y un worker genera el informe en segundo plano.
+5. El bot devuelve un `.docx` y opcionalmente `.pdf` al completarse.
    Si la conversión a PDF falla se informa al usuario y solo se entrega el `.docx`.
 
 ## Límites y notas

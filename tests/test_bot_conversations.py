@@ -97,6 +97,14 @@ def test_conversacion_sla(tmp_path, monkeypatch, sla_sample_file):
             "bot_telegram.handlers.intent.insert_message", lambda *a, **k: None
         )
 
+        monkeypatch.setattr(
+            sla_flow,
+            "enqueue_informe",
+            lambda func, *a, **k: SimpleNamespace(
+                is_finished=True, is_failed=False, result=func(*a, **k)
+            ),
+        )
+
         storage = MemoryStorage()
         ctx = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=1))
 
@@ -169,6 +177,14 @@ def test_conversacion_repetitividad(tmp_path, monkeypatch, repetitividad_sample_
         )
         monkeypatch.setattr(
             "bot_telegram.handlers.intent.insert_message", lambda *a, **k: None
+        )
+
+        monkeypatch.setattr(
+            rep_flow,
+            "enqueue_informe",
+            lambda func, *a, **k: SimpleNamespace(
+                is_finished=True, is_failed=False, result=func(*a, **k)
+            ),
         )
 
         storage = MemoryStorage()
