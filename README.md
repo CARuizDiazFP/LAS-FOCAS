@@ -240,7 +240,7 @@ De igual forma, el servicio `ollama` expone `11434` solo dentro de la red intern
 
 ## 📪 CI/CD
 
-**CI (Integración Continua):** `pytest` y `ruff` se ejecutan en cada push o pull request mediante [GitHub Actions](docs/ci.md).\
+**CI (Integración Continua):** `pytest`, `ruff` y `pip-audit` se ejecutan en cada push o pull request mediante [GitHub Actions](docs/ci.md). El escaneo de imágenes con `trivy` puede activarse manualmente.
 **CD (Entrega Continua):** despliegue automático opcional.
 
 ---
