@@ -2,9 +2,11 @@
 # Ubicación de archivo: bot_telegram/flows/sla.py
 # Descripción: Flujo para recibir Excel y generar el informe de SLA
 
-import logging
+"""Flujo de generación de informes de SLA."""
+
 from datetime import datetime, timedelta
 from pathlib import Path
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -14,6 +16,7 @@ from aiogram.types import FSInputFile, Message
 
 from modules.informes_sla.config import BASE_UPLOADS, SOFFICE_BIN
 from modules.informes_sla.runner import run
+from modules.worker import enqueue_informe
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -83,19 +86,19 @@ async def on_period(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     file_path = data.get("file_path")
     soffice_bin = SOFFICE_BIN
-    try:
-        resultado = run(file_path, mes, anio, soffice_bin)
-    except ValueError as exc:
-        await msg.answer(str(exc))
-        logger.warning("service=bot flow=sla error=%s", exc)
+    job = enqueue_informe(run, file_path, mes, anio, soffice_bin)
+    if not job.is_finished:
+        await msg.answer("Informe en proceso. Te avisaremos al finalizar")
+        Path(file_path).unlink(missing_ok=True)
         await state.clear()
         return
-    except Exception:
-        logger.exception("service=bot flow=sla error=unknown")
+    if job.is_failed:  # pragma: no cover - logging
+        logger.warning("service=bot flow=sla error=%s", job.exc_info)
         await msg.answer("Ocurrió un error al procesar el informe")
         await state.clear()
         return
 
+    resultado = job.result
     await msg.answer_document(FSInputFile(resultado["docx"]))
     if resultado.get("pdf"):
         await msg.answer_document(FSInputFile(resultado["pdf"]))

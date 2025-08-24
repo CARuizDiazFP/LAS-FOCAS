@@ -69,3 +69,13 @@
 
 - Cada solicitud genera un encabezado `X-Request-ID` y se propaga en los logs.
 - Los registros se emiten en formato JSON con los campos `service`, `action`, `tg_user_id` y `request_id` para facilitar la trazabilidad.
+
+## Informes asíncronos
+
+- **Ruta:** `POST /informes/repetitividad`
+- **Descripción:** encola la generación del informe de repetitividad y devuelve el identificador del job.
+- **Respuesta:** `{ "job_id": "<id>" }`
+
+- **Ruta:** `GET /informes/jobs/{job_id}`
+- **Descripción:** consulta el estado de un job previamente encolado.
+- **Respuesta:** `{ "status": "queued" | "finished" | "failed" }`

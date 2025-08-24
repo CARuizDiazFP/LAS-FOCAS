@@ -12,6 +12,7 @@
 - `api` publica `8000:8000` para acceso HTTP desde el host.
 - `nlp_intent` expone `8100` únicamente a la red interna.
 - `redis` expone `6379` solo a la red interna y se activa con el perfil `worker`.
+  Se utiliza como backend de la cola RQ que procesa informes de manera asíncrona.
 - `ollama` expone `11434` solo a la red interna.
 - `pgadmin` (perfil opcional) publica `5050:80` para administración de PostgreSQL.
 
@@ -33,6 +34,11 @@
 - `nlp_intent`: límite de `1` CPU y `1GB` de RAM debido al procesamiento de lenguaje natural.
 - `ollama`: límite de `1` CPU y `2GB` de RAM para el servicio de modelos LLM.
 - `pgadmin`: límite de `0.25` CPU y `256MB` de RAM; se usa solo para administración.
+
+## Cola de tareas
+
+La API y el bot encolan trabajos en Redis mediante RQ. El servicio `worker` toma los
+jobs de la cola `informes` y genera los documentos sin bloquear a los clientes.
 
 ## Healthchecks
 

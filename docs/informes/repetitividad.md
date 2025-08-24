@@ -26,8 +26,9 @@
 1. Enviar comando `/repetitividad` o usar el botón correspondiente.
 2. Subir el Excel.
 3. Indicar el período `mm/aaaa`.
-4. El bot devuelve un archivo `.docx` y opcionalmente `.pdf`.
-5. Finalmente, envía un mensaje con enlaces a los archivos generados.
+4. La generación se encola y el worker procesa el informe en segundo plano.
+5. El bot devuelve un archivo `.docx` y opcionalmente `.pdf` al finalizar.
+6. Finalmente, envía un mensaje con enlaces a los archivos generados.
 
 ## Paths de salida
 - Archivos generados en `/app/data/reports/` dentro del contenedor del bot.

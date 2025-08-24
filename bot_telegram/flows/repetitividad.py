@@ -18,6 +18,7 @@ from aiogram.types import Document, FSInputFile, Message
 from modules.informes_repetitividad.config import BASE_UPLOADS, SOFFICE_BIN
 from modules.informes_repetitividad.runner import run
 from core.logging import request_id_var
+from modules.worker import enqueue_informe
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -166,42 +167,36 @@ async def on_period(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     file_path = data.get("file_path")
     soffice_bin = SOFFICE_BIN
-    try:
-        paths = run(file_path, mes, anio, soffice_bin)
-    except ValueError as exc:
+    job = enqueue_informe(run, file_path, mes, anio, soffice_bin)
+    if not job.is_finished:
+        await msg.answer("Informe en proceso. Te avisaremos al finalizar")
+        cleanup_files(file_path)
+        await state.clear()
+        return
+    if job.is_failed:  # pragma: no cover - logging
         logger.warning(
             json.dumps(
                 {
                     "service": "bot",
                     "flow": "repetitividad",
                     "tg_user_id": msg.from_user.id,
-                    "event": "invalid_excel",
-                    "error": str(exc),
-                    "request_id": request_id_var.get(),
-                }
-            )
-        )
-        await msg.answer("El Excel no tiene el formato esperado o contiene datos inválidos")
-        cleanup_files(file_path)
-        await state.clear()
-        return
-    except Exception as exc:  # pragma: no cover - logging
-        logger.exception(
-            json.dumps(
-                {
-                    "service": "bot",
-                    "flow": "repetitividad",
-                    "tg_user_id": msg.from_user.id,
                     "event": "processing_error",
-                    "error": str(exc),
+                    "error": job.exc_info,
                     "request_id": request_id_var.get(),
                 }
             )
         )
-        await msg.answer("Ocurrió un error al generar el informe")
+        if "ValueError" in (job.exc_info or ""):
+            await msg.answer(
+                "El Excel no tiene el formato esperado o contiene datos inválidos"
+            )
+        else:
+            await msg.answer("Ocurrió un error al generar el informe")
         cleanup_files(file_path)
         await state.clear()
         return
+
+    paths = job.result
 
     await msg.answer_document(FSInputFile(paths["docx"]))
     if paths.get("pdf"):

@@ -114,6 +114,15 @@ def test_on_period_invalid_excel(tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(
             rep_flow, "run", lambda *a, **k: (_ for _ in ()).throw(ValueError("err"))
         )
+        monkeypatch.setattr(
+            rep_flow,
+            "enqueue_informe",
+            lambda func, *a, **k: SimpleNamespace(
+                is_finished=True,
+                is_failed=True,
+                exc_info="ValueError: err",
+            ),
+        )
         await on_period(msg, ctx)
         assert any("Excel" in ans for ans in msg.answers)
 

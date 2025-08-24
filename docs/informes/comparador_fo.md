@@ -14,6 +14,7 @@
 1. Proveer las rutas de los dos archivos a comparar.
 2. El módulo calcula el hash de cada archivo.
 3. Se informa si las trazas son idénticas mediante el campo `iguales`.
+4. Las comparaciones extensas pueden encolarse para ser procesadas por el worker.
 
 ## Paths de salida
 - No se generan archivos nuevos; solo se devuelve un diccionario con resultados.
