@@ -2,7 +2,7 @@
 # Ubicación de archivo: requirements.txt
 # Descripción: Dependencias del proyecto
 
-fastapi==0.110.1  # Framework web para APIs
+fastapi==0.116.1  # Framework web para APIs
 uvicorn[standard]==0.29.0  # Servidor ASGI para FastAPI
 pytest==8.3.2  # Marco de pruebas
 pytest-cov==5.0.0  # Plugin de cobertura para pytest
@@ -13,6 +13,14 @@ alembic==1.13.1  # Herramienta de migraciones para SQLAlchemy
 orjson==3.10.3  # Serializador JSON de alto rendimiento
 slowapi==0.1.9  # Limitador de tasa para FastAPI
 ruff==0.12.7  # Linter para mantener calidad de código
-Jinja2==3.1.4  # Motor de plantillas para FastAPI
+Jinja2==3.1.6  # Motor de plantillas para FastAPI
 rq==1.15.1  # Cola de trabajos basada en Redis
 fakeredis==2.20.0  # Redis simulado para pruebas
+pandas==2.2.2  # Manipulación y análisis de datos
+aiogram==3.13.1  # Framework para bots de Telegram
+openpyxl==3.1.2  # Manejo de archivos Excel
+python-docx==0.8.11  # Creación de documentos Word
+prometheus-client==0.20.0  # Métricas para Prometheus
+packaging==24.1  # Manejo de versiones y dependencias
+Pygments==2.17.2  # Resaltado de sintaxis
+urllib3==2.5.0  # Cliente HTTP de bajo nivel
