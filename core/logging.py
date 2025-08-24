@@ -4,7 +4,9 @@
 
 import contextvars
 import logging
+import os
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict
 
 import orjson
@@ -61,10 +63,28 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(service: str) -> None:
-    """Configura logging básico con salida JSON."""
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter(service))
+    """Configura logging con salida JSON y parámetros desde el entorno."""
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, level_name, logging.INFO)
+    log_dir = os.getenv("LOG_DIR")
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(JsonFormatter(service))
+    handlers = [stream_handler]
+
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        file_path = os.path.join(log_dir, f"{service}.log")
+        file_handler = RotatingFileHandler(
+            file_path,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(JsonFormatter(service))
+        handlers.append(file_handler)
+
     root = logging.getLogger()
-    root.handlers = [handler]
-    root.setLevel(logging.INFO)
+    root.handlers = handlers
+    root.setLevel(log_level)
 

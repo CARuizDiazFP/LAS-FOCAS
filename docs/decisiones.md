@@ -15,3 +15,10 @@
 - **Decisión:** Aplicar el middleware de allowlist también a `callback_query`, resolver `allowed_updates` automáticamente y unificar comandos y botones en funciones comunes (`start_sla_flow`, `start_repetitividad_flow`).
 - **Alternativas:** Mantener handlers separados o posponer la unificación.
 - **Impacto:** Logs más consistentes, menor duplicación de código y posibilidad de diagnosticar rápidamente con `/diag` los eventos recibidos.
+
+## 2025-08-24 — Configuración dinámica de logging
+
+- **Contexto:** El nivel de logging estaba fijado en `INFO` y no se guardaban archivos de log.
+- **Decisión:** Exponer `LOG_LEVEL` y `LOG_DIR` para ajustar el nivel y habilitar un `RotatingFileHandler` opcional.
+- **Alternativas:** Mantener solo salida a `stdout` con nivel fijo.
+- **Impacto:** Permite depurar con mayor detalle y conservar registros de manera controlada.

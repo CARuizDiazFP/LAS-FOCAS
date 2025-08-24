@@ -69,6 +69,8 @@
 
 - Cada solicitud genera un encabezado `X-Request-ID` y se propaga en los logs.
 - Los registros se emiten en formato JSON con los campos `service`, `action`, `tg_user_id` y `request_id` para facilitar la trazabilidad.
+- El nivel de detalle se define mediante `LOG_LEVEL`.
+- Si `LOG_DIR` está configurado, los registros también se almacenan en archivos rotativos.
 
 ## Informes asíncronos
 

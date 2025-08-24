@@ -98,6 +98,10 @@ Las credenciales sensibles (`POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `POSTG
 - `LOG_RAW_TEXT`: habilita el registro del texto completo recibido.
 - `CACHE_TTL`: tiempo en segundos para mantener en caché respuestas del NLP.
 
+### Logging
+- `LOG_LEVEL`: nivel global de los registros (`DEBUG`, `INFO`, `WARNING`, etc.).
+- `LOG_DIR`: carpeta opcional donde se guardarán los logs con rotación automática.
+
 ### Informes
 - `SLA_TEMPLATE_PATH`: ruta al archivo de plantilla para informes de SLA.
 - `REP_TEMPLATE_PATH`: ruta a la plantilla de informes de repetitividad.
