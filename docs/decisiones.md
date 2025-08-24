@@ -22,3 +22,10 @@
 - **Decisión:** Exponer `LOG_LEVEL` y `LOG_DIR` para ajustar el nivel y habilitar un `RotatingFileHandler` opcional.
 - **Alternativas:** Mantener solo salida a `stdout` con nivel fijo.
 - **Impacto:** Permite depurar con mayor detalle y conservar registros de manera controlada.
+
+## 2025-08-24 — Actualización de dependencias vulnerables
+
+- **Contexto:** `pip-audit` detectó vulnerabilidades en `Jinja2`, `packaging`, `Pygments` y `urllib3`.
+- **Decisión:** Actualizar `requirements.txt` a `Jinja2==3.1.6`, `packaging==24.1`, `Pygments==2.17.2` y `urllib3==2.5.0`.
+- **Alternativas:** Mantener versiones vulnerables y aplicar mitigaciones manuales.
+- **Impacto:** Mejora la seguridad al eliminar CVEs conocidos y mantiene el pipeline de CI en verde.
