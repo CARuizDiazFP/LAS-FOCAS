@@ -7,6 +7,7 @@ import fakeredis
 from rq import Queue, SimpleWorker
 
 from modules import worker
+import importlib
 
 
 def sumar(x: int, y: int) -> int:
@@ -41,3 +42,13 @@ def test_enqueue_informe_devuelve_job(monkeypatch):
     job = worker.enqueue_informe(sumar, 5, 6)
     assert job.get_status() == "queued"
     assert job.origin == "informes"
+
+
+def test_worker_usa_password_en_url(monkeypatch):
+    """Confirma que REDIS_URL incorpora la contraseña cuando está definida."""
+    monkeypatch.setenv("REDIS_PASSWORD", "secreto")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    importlib.reload(worker)
+    assert worker.REDIS_URL == "redis://:secreto@redis:6379/0"
+    monkeypatch.delenv("REDIS_PASSWORD", raising=False)
+    importlib.reload(worker)

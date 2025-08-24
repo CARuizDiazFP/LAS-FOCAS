@@ -186,6 +186,7 @@ services:
     image: redis:7-alpine
     container_name: lasfocas-redis
     restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     expose:
       - "6379"
     healthcheck:
@@ -200,6 +201,8 @@ services:
           memory: "128M"
     networks:
       - lasfocas_net
+    secrets:
+      - redis_password
     profiles: ["worker"]
 
   ollama:
@@ -261,6 +264,8 @@ secrets:
     file: ./secrets/postgres_app_password
   postgres_readonly_password:
     file: ./secrets/postgres_readonly_password
+  redis_password:
+    file: ./secrets/redis_password
   telegram_bot_token:
     file: ./secrets/telegram_bot_token
   openai_api_key:
