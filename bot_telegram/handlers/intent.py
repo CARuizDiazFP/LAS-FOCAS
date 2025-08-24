@@ -46,8 +46,8 @@ def _get_conn() -> psycopg.Connection:
     return psycopg.connect(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         dbname=os.getenv("POSTGRES_DB"),
-        user=os.getenv("POSTGRES_USER"),
-        password=get_secret("POSTGRES_PASSWORD"),
+        user=os.getenv("POSTGRES_APP_USER", os.getenv("POSTGRES_USER")),
+        password=get_secret("POSTGRES_APP_PASSWORD"),
     )
 
 

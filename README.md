@@ -138,6 +138,10 @@ POSTGRES_DB=lasfocas
 POSTGRES_USER=lasfocas
 POSTGRES_PASSWORD=
 # Se carga desde /run/secrets/postgres_password cuando está disponible
+POSTGRES_APP_USER=lasfocas_app
+POSTGRES_APP_PASSWORD=
+POSTGRES_READONLY_PASSWORD=
+# Se cargan desde /run/secrets/postgres_app_password y postgres_readonly_password
 
 # Bot de Telegram
 TELEGRAM_BOT_TOKEN=

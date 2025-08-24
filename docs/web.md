@@ -9,7 +9,7 @@ Proveer una interfaz web interna para ejecutar tareas y visualizar informes gene
 ## Stack propuesto
 
 - **FastAPI** con plantillas Jinja2 para renderizado de páginas.
-- Servidor **Uvicorn** detrás de un proxy opcional.
+- Servidor **Uvicorn** detrás de un proxy inverso opcional.
 - Consumo de la API interna mediante llamadas HTTP.
 
 ## Rutas iniciales
@@ -29,7 +29,7 @@ El repositorio incluye un microservicio en `web/main.py` que utiliza **FastAPI**
 - `GET /login` entrega un formulario de acceso aún en desarrollo.
 - `GET /metrics` expone métricas simples sin autenticación.
 
-Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, publicando el puerto `8080` al host.
+Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, exponiendo el puerto `8080` solo a la red interna. Para publicar externamente se requiere un proxy inverso.
 
 ## Logging
 
