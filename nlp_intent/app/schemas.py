@@ -25,3 +25,9 @@ class IntentResponse(BaseModel):
         orm_mode = True
 
 
+class ProviderConfig(BaseModel):
+    llm_provider: Literal["auto", "heuristic", "ollama", "openai"] = Field(
+        ..., description="Proveedor LLM activo"
+    )
+
+

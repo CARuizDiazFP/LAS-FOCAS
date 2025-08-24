@@ -9,7 +9,9 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
 ## Endpoint
 
 - `POST /v1/intent:classify`
+- `GET /config` y `POST /config`
 - `GET /metrics`
+- `GET /health`
 
 ### Request
 ```json
@@ -47,6 +49,29 @@ comprender mejor la intención.
 3. OpenAI API.
 
 El servicio intenta cada proveedor en ese orden mientras la confianza sea menor al umbral configurado (`INTENT_THRESHOLD`, por defecto **0.7**).
+
+## Configuración del proveedor LLM
+
+El proveedor por defecto se define mediante la variable `LLM_PROVIDER`.
+Valores admitidos: `auto`, `heuristic`, `ollama` y `openai`.
+
+El endpoint `/config` permite consultar o modificar este valor en tiempo de ejecución.
+
+### `GET /config`
+
+Devuelve el proveedor configurado:
+
+```json
+{ "llm_provider": "heuristic" }
+```
+
+### `POST /config`
+
+Actualiza el proveedor activo:
+
+```json
+{ "llm_provider": "openai" }
+```
 
 ## Caché
 
