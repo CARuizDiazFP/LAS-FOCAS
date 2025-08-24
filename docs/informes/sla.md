@@ -50,3 +50,8 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 - `UPLOADS_DIR=/app/data/uploads` ubicación temporal de archivos subidos.
 - `SOFFICE_BIN=/usr/bin/soffice` habilita la exportación a PDF. Si falta, se informa que sólo se genera DOCX.
 - `WORK_HOURS=false` usa horas calendario; en `true` habilita cálculo de TTR en horario laboral.
+
+## Habilitar exportación a PDF
+1. Instalar LibreOffice: `apt-get install -y libreoffice`.
+2. Confirmar la ruta del binario con `which soffice`.
+3. Definir `SOFFICE_BIN` con la ruta verificada.

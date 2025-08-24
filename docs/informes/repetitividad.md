@@ -42,3 +42,8 @@
 - `SOFFICE_BIN=/usr/bin/soffice` habilita la conversión a PDF. LibreOffice ya está instalado en la imagen del bot.
 - `MAPS_ENABLED=false` habilita mapas cuando es `true`.
 - `MAPS_LIGHTWEIGHT=true` usa Matplotlib sin stack geoespacial.
+
+## Habilitar exportación a PDF
+1. Instalar LibreOffice: `apt-get install -y libreoffice`.
+2. Verificar la ruta del binario con `which soffice`.
+3. Definir la variable de entorno `SOFFICE_BIN` con la ruta obtenida.

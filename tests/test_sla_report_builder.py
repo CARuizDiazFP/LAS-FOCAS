@@ -8,7 +8,7 @@ import pandas as pd
 from docx import Document
 
 from modules.informes_sla import processor, runner, report
-from modules.informes_sla.report import export_docx
+from modules.informes_sla.report import export_docx, maybe_export_pdf
 from modules.informes_sla.schemas import (
     FilaDetalle,
     KPI,
@@ -74,3 +74,21 @@ def test_run_informa_error_pdf(monkeypatch, tmp_path):
     res = runner.run("archivo.xlsx", 7, 2024, "/usr/bin/soffice")
     assert "error" in res
     assert "No se pudo convertir a PDF" in res["error"]
+
+
+def test_maybe_export_pdf_sin_soffice(tmp_path):
+    docx = tmp_path / "archivo.docx"
+    docx.write_text("doc")
+    assert maybe_export_pdf(str(docx), None) is None
+
+
+def test_maybe_export_pdf_ok(monkeypatch, tmp_path):
+    docx = tmp_path / "archivo.docx"
+    docx.write_text("doc")
+    pdf = tmp_path / "archivo.pdf"
+    def fake_convert(d, s):
+        pdf.write_text("pdf")
+        return str(pdf)
+
+    monkeypatch.setattr("modules.informes_sla.report.convert_to_pdf", fake_convert)
+    assert maybe_export_pdf(str(docx), "soffice") == str(pdf)

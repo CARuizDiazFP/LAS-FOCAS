@@ -3,6 +3,7 @@
 # Descripción: Conversión de archivos DOCX a PDF usando LibreOffice en modo headless
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,11 @@ def convert_to_pdf(docx_path: str, soffice_bin: str) -> str:
         Propaga cualquier error ocurrido durante la conversión.
     """
     out_dir = Path(docx_path).parent
+    if not shutil.which(soffice_bin):
+        logger.error(
+            "action=convert_to_pdf error=soffice_no_encontrado path=%s", soffice_bin
+        )
+        raise FileNotFoundError(soffice_bin)
     try:
         subprocess.run(
             [
