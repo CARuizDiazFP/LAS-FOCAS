@@ -43,6 +43,19 @@ CREATE TABLE IF NOT EXISTS app.api_keys (
 CREATE INDEX IF NOT EXISTS idx_messages_user ON app.messages(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON app.messages(created_at);
 
+-- Usuario de aplicación con privilegios mínimos
+CREATE USER lasfocas_app WITH ENCRYPTED PASSWORD 'app';
+
+-- Revocar privilegios por defecto
+REVOKE ALL PRIVILEGES ON DATABASE lasfocas FROM PUBLIC;
+REVOKE ALL ON SCHEMA app FROM PUBLIC;
+
+-- Otorgar privilegios mínimos al usuario de aplicación
+GRANT CONNECT ON DATABASE lasfocas TO lasfocas_app;
+GRANT USAGE ON SCHEMA app TO lasfocas_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO lasfocas_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO lasfocas_app;
+
 -- Usuario de solo lectura para consultas
 CREATE USER lasfocas_readonly WITH ENCRYPTED PASSWORD 'readonly';
 

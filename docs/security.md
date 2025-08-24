@@ -14,6 +14,12 @@
 - Para rotar un secreto, actualizar el archivo correspondiente y volver a desplegar el servicio que lo consume.
 - No se deben exponer tokens ni contraseñas en logs ni commits.
 
+### Política de rotación
+
+- Todos los secretos y credenciales deben rotarse al menos cada 90 días.
+- La rotación incluye los servicios activados mediante perfiles opcionales como `worker` o `pgadmin`.
+- Registrar en `docs/decisiones.md` cualquier rotación que implique cambios operativos.
+
 ## Rate limiting
 
 - Cada servicio debe definir límites de solicitudes por origen. Ejemplo: `API_RATE_LIMIT=60/minute`.
