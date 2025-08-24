@@ -32,6 +32,19 @@
 - `redis`: límite de `0.25` CPU y `128MB` de RAM; solo se inicia con el perfil `worker`.
 - `nlp_intent`: límite de `1` CPU y `1GB` de RAM debido al procesamiento de lenguaje natural.
 - `ollama`: límite de `1` CPU y `2GB` de RAM para el servicio de modelos LLM.
+- `pgadmin`: límite de `0.25` CPU y `256MB` de RAM; se usa solo para administración.
+
+## Healthchecks
+
+- `postgres`: ejecuta `pg_isready` para confirmar que la base responde.
+- `api`: solicita `http://localhost:8000/health`.
+- `web`: consulta `http://localhost:8080/health`.
+- `nlp_intent`: corre `healthcheck.sh` interno.
+- `bot`: ejecuta `healthcheck.sh` propio del bot.
+- `worker`: realiza `python -c 'import os'` como verificación simple del intérprete.
+- `redis`: usa `redis-cli ping` para confirmar disponibilidad.
+- `ollama`: consulta `http://localhost:11434/api/tags`.
+- `pgadmin`: consulta `http://localhost:80/login`.
 
 ## Perfiles opcionales
 
