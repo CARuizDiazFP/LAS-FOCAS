@@ -19,14 +19,14 @@ para verificar el estado de la base de datos.
 
 Se limpiaron imports innecesarios en los repositorios de conversaciones y mensajes para mantener el código conforme a PEP8.
 
-## Usuario de solo lectura
+## Usuarios de la base
 
-El script `db/init.sql` crea el usuario `lasfocas_readonly` con permisos restringidos:
+El script `db/init.sql` define dos roles diferenciados:
 
-- Conexión únicamente a la base `lasfocas`.
-- Acceso `SELECT` sobre todas las tablas del esquema `app`.
+- `lasfocas_app`: usuario de aplicación con privilegios `SELECT`, `INSERT`, `UPDATE` y `DELETE` sobre el esquema `app`.
+- `lasfocas_readonly`: usuario con acceso exclusivo de lectura para consultas y dashboards.
 
-Este usuario permite realizar consultas y dashboards sin riesgo de modificación de datos.
+Ambos usuarios solo pueden conectarse a la base `lasfocas` y se revocan los permisos predeterminados a `PUBLIC` para aplicar el principio de mínimo privilegio.
 
 ## Tabla api_keys
 
@@ -46,4 +46,4 @@ Pasos básicos para trabajar con migraciones:
 2. Editar el archivo creado en `db/migrations/versions/` agregando el encabezado requerido y las operaciones deseadas.
 3. Aplicar los cambios: `alembic upgrade head`.
 
-La revisión inicial ejecuta el contenido de `db/init.sql`, creando el esquema `app` junto con el usuario de solo lectura.
+La revisión inicial ejecuta el contenido de `db/init.sql`, creando el esquema `app` y los usuarios de aplicación y solo lectura.

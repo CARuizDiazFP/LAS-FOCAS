@@ -33,6 +33,18 @@
 - `nlp_intent`: límite de `1` CPU y `1GB` de RAM debido al procesamiento de lenguaje natural.
 - `ollama`: límite de `1` CPU y `2GB` de RAM para el servicio de modelos LLM.
 
+## Perfiles opcionales
+
+- `worker`: habilita `redis` y el servicio de tareas en segundo plano.
+- `pgadmin`: expone una interfaz web para administración de PostgreSQL.
+  Se activa con `docker compose -f deploy/compose.yml --profile pgadmin up -d`.
+
+## Política de rotación
+
+Las credenciales montadas como secrets deben rotarse cada 90 días.
+La actualización del archivo en `deploy/secrets/` y el redeploy del servicio bastan para aplicar la rotación.
+Para más detalles consultar `docs/security.md`.
+
 ## Seguridad
 
 - `api`, `bot`, `web` y `worker` se ejecutan con un usuario no root dentro de sus contenedores, aplicando el principio de mínimos privilegios.
