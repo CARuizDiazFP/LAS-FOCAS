@@ -15,7 +15,10 @@ from core.logging import configure_logging
 configure_logging("worker")
 logger = logging.getLogger("worker")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv(
+    "REDIS_URL",
+    f"redis://:{os.getenv('REDIS_PASSWORD', '')}@redis:6379/0",
+)
 IS_ASYNC = os.getenv("WORKER_ASYNC", "true").lower() == "true"
 redis_conn = Redis.from_url(REDIS_URL)
 queue = Queue("informes", connection=redis_conn, is_async=IS_ASYNC)

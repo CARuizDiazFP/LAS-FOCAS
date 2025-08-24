@@ -12,7 +12,7 @@
 - `api` publica `8000:8000` para acceso HTTP desde el host.
 - `nlp_intent` expone `8100` únicamente a la red interna.
 - `redis` expone `6379` solo a la red interna y se activa con el perfil `worker`.
-  Se utiliza como backend de la cola RQ que procesa informes de manera asíncrona.
+  Requiere autenticación con contraseña y se utiliza como backend de la cola RQ que procesa informes de manera asíncrona.
 - `ollama` expone `11434` solo a la red interna.
 - `pgadmin` (perfil opcional) publica `5050:80` para administración de PostgreSQL.
 
@@ -38,7 +38,8 @@
 ## Cola de tareas
 
 La API y el bot encolan trabajos en Redis mediante RQ. El servicio `worker` toma los
-jobs de la cola `informes` y genera los documentos sin bloquear a los clientes.
+jobs de la cola `informes` y genera los documentos sin bloquear a los clientes. El
+acceso a Redis está protegido mediante contraseña gestionada como secret.
 
 ## Healthchecks
 
@@ -78,7 +79,7 @@ Para más detalles consultar `docs/security.md`.
 
 El archivo `.env.sample` es la fuente única de verdad para todas las variables de entorno. Este listado resume su propósito y origen.
 
-Las credenciales sensibles (`POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `POSTGRES_READONLY_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*`, `WEB_PASSWORD` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
+Las credenciales sensibles (`POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `POSTGRES_READONLY_PASSWORD`, `REDIS_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*`, `WEB_PASSWORD` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
 
 ### Base de datos
 - `POSTGRES_HOST`: host del contenedor de PostgreSQL.
@@ -102,6 +103,10 @@ Las credenciales sensibles (`POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `POSTG
 - `LANG`: código de idioma por defecto.
 - `LOG_RAW_TEXT`: habilita el registro del texto completo recibido.
 - `CACHE_TTL`: tiempo en segundos para mantener en caché respuestas del NLP.
+
+### Redis
+- `REDIS_PASSWORD`: contraseña de acceso al servicio Redis.
+- `REDIS_URL`: dirección de conexión que incluye la contraseña y el puerto del servicio.
 
 ### Logging
 - `LOG_LEVEL`: nivel global de los registros (`DEBUG`, `INFO`, `WARNING`, etc.).
