@@ -40,6 +40,7 @@ Los intentos de acceso de usuarios no incluidos en `TELEGRAM_ALLOWED_IDS` genera
 
 - Cada actualización del bot genera un `request_id` único que se adjunta a los logs.
 - La salida de `logging` está en formato JSON con los campos `service`, `action`, `tg_user_id` y `request_id`.
+- Las excepciones capturadas en los flujos se registran con `logger.exception`, lo que permite conservar la traza completa.
 
 ## Clasificación de intención
 

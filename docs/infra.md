@@ -52,6 +52,11 @@ jobs de la cola `informes` y genera los documentos sin bloquear a los clientes.
 - `ollama`: consulta `http://localhost:11434/api/tags`.
 - `pgadmin`: consulta `http://localhost:80/login`.
 
+## Diagnóstico
+
+- La API dispone de un manejador global de excepciones que registra la traza completa con `logger.exception`.
+- Los servicios deben emplear `logger.exception` dentro de los bloques `except` para facilitar la detección de fallos.
+
 ## Perfiles opcionales
 
 - `worker`: habilita `redis` y el servicio de tareas en segundo plano.

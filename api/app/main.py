@@ -3,6 +3,8 @@
 # Descripción: Aplicación FastAPI principal con limitación de tasa y métricas
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import logging
 import os
 import time
 from slowapi.middleware import SlowAPIMiddleware
@@ -17,6 +19,7 @@ from core.middlewares import RequestIDMiddleware
 from core.metrics import Metrics
 
 configure_logging("api")
+logger = logging.getLogger("api")
 metrics = Metrics()
 
 
@@ -38,6 +41,12 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     app.include_router(health_router, tags=["health"])
     app.include_router(reports_router)
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        """Intercepta errores no controlados y registra la traza completa."""
+        logger.exception("action=unhandled_exception path=%s", request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "Error interno del servidor"})
 
     @app.middleware("http")
     async def collect_metrics(request: Request, call_next):
