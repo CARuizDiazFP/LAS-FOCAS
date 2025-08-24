@@ -64,7 +64,9 @@ Para más detalles consultar `docs/security.md`.
 
 ## Variables de entorno
 
-Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
+El archivo `.env.sample` es la fuente única de verdad para todas las variables de entorno. Este listado resume su propósito y origen.
+
+Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*`, `WEB_PASSWORD` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
 
 ### Base de datos
 - `POSTGRES_HOST`: host del contenedor de PostgreSQL.
@@ -98,3 +100,21 @@ Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_A
 ### Rate limiting
 - `API_RATE_LIMIT`: límite de peticiones por minuto para la API.
 - `NLP_RATE_LIMIT`: límite de peticiones por minuto para nlp_intent.
+- `BOT_RATE_LIMIT`: cantidad de mensajes permitidos por intervalo para el bot.
+- `BOT_RATE_INTERVAL`: intervalo en segundos asociado a `BOT_RATE_LIMIT`.
+
+### Web Panel
+- `WEB_ADMIN_USERNAME`: usuario con permisos de administrador.
+- `WEB_ADMIN_PASSWORD`: contraseña del administrador.
+- `WEB_LECTOR_USERNAME`: usuario con permisos de lectura.
+- `WEB_LECTOR_PASSWORD`: contraseña del usuario de lectura.
+- `WEB_USERNAME`: usuario heredado para compatibilidad; equivale a `WEB_ADMIN_USERNAME`.
+- `WEB_PASSWORD`: contraseña heredada para compatibilidad; equivale a `WEB_ADMIN_PASSWORD`.
+
+### Integraciones
+- `NOTION_TOKEN`: token de acceso para la API de Notion.
+- `SMTP_HOST`: servidor SMTP utilizado para enviar correos.
+- `SMTP_PORT`: puerto del servidor SMTP.
+- `SMTP_USER`: usuario para autenticación SMTP.
+- `SMTP_PASSWORD`: contraseña del usuario SMTP.
+- `SMTP_FROM`: dirección de correo remitente por defecto.
