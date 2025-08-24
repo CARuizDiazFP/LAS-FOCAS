@@ -14,13 +14,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_APP_PASSWORD_FILE: /run/secrets/postgres_app_password
+      POSTGRES_READONLY_PASSWORD_FILE: /run/secrets/postgres_readonly_password
     expose:
       - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - ./db/init_users.sh:/docker-entrypoint-initdb.d/01-users.sh:ro
     secrets:
       - postgres_password
+      - postgres_app_password
+      - postgres_readonly_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost"]
       interval: 5s
@@ -63,7 +68,7 @@ services:
     networks:
       - lasfocas_net
     secrets:
-      - postgres_password
+      - postgres_app_password
       - smtp_host
       - smtp_user
       - smtp_password
@@ -78,8 +83,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -136,7 +141,7 @@ services:
       - bot_data:/app/data
     secrets:
       - telegram_bot_token
-      - postgres_password
+      - postgres_app_password
     healthcheck:
       test: ["CMD-SHELL", "sh /app/bot_telegram/healthcheck.sh"]
       interval: 10s
@@ -173,7 +178,7 @@ services:
     networks:
       - lasfocas_net
     secrets:
-      - postgres_password
+      - postgres_app_password
       - notion_token
     profiles: ["worker"]
 
@@ -252,6 +257,10 @@ volumes:
 secrets:
   postgres_password:
     file: ./secrets/postgres_password
+  postgres_app_password:
+    file: ./secrets/postgres_app_password
+  postgres_readonly_password:
+    file: ./secrets/postgres_readonly_password
   telegram_bot_token:
     file: ./secrets/telegram_bot_token
   openai_api_key:

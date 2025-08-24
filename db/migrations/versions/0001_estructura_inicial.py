@@ -30,4 +30,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Eliminar esquema y usuario creados en la migración."""
     op.execute("DROP SCHEMA IF EXISTS app CASCADE;")
+    op.execute("DROP USER IF EXISTS lasfocas_app;")
     op.execute("DROP USER IF EXISTS lasfocas_readonly;")

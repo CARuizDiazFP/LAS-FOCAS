@@ -19,7 +19,7 @@
 
 - `postgres_data`: persiste los datos de la base en `/var/lib/postgresql/data`.
 - `bot_data`: almacena archivos y estados del bot en `/app/data`.
-- `./db/init.sql` se monta de forma de solo lectura para inicializar la base.
+- `./db/init.sql` y `./db/init_users.sh` se montan de forma de solo lectura para inicializar la base y crear usuarios.
 - `ollama_data`: guarda los modelos descargados en `/root/.ollama`.
 
 ## Recursos
@@ -61,19 +61,23 @@ Para más detalles consultar `docs/security.md`.
 ## Seguridad
 
 - `api`, `bot`, `web` y `worker` se ejecutan con un usuario no root dentro de sus contenedores, aplicando el principio de mínimos privilegios.
+- El servicio `web` solo expone el puerto `8080` dentro de la red interna; para publicarlo externamente se debe configurar un proxy inverso.
 
 ## Variables de entorno
 
 El archivo `.env.sample` es la fuente única de verdad para todas las variables de entorno. Este listado resume su propósito y origen.
 
-Las credenciales sensibles (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*`, `WEB_PASSWORD` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
+Las credenciales sensibles (`POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `POSTGRES_READONLY_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*`, `WEB_PASSWORD` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
 
 ### Base de datos
 - `POSTGRES_HOST`: host del contenedor de PostgreSQL.
 - `POSTGRES_PORT`: puerto interno donde escucha PostgreSQL.
 - `POSTGRES_DB`: nombre de la base de datos principal.
-- `POSTGRES_USER`: usuario con permisos completos.
-- `POSTGRES_PASSWORD`: contraseña del usuario de la base.
+- `POSTGRES_USER`: usuario administrador del contenedor.
+- `POSTGRES_PASSWORD`: contraseña del usuario administrador.
+- `POSTGRES_APP_USER`: usuario de aplicación con permisos mínimos.
+- `POSTGRES_APP_PASSWORD`: contraseña del usuario de aplicación.
+- `POSTGRES_READONLY_PASSWORD`: contraseña del usuario de solo lectura.
 
 ### Bot de Telegram
 - `TELEGRAM_BOT_TOKEN`: token otorgado por BotFather.
