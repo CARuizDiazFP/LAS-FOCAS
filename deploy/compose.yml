@@ -157,6 +157,7 @@ services:
           memory: "256M"
     networks:
       - lasfocas_net
+    profiles: ["bot"]
 
   worker:
     build:

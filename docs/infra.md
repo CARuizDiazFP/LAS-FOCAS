@@ -71,6 +71,8 @@ acceso a Redis está protegido mediante contraseña gestionada como secret.
 
 ## Perfiles opcionales
 
+- `bot`: inicia el servicio de Telegram Bot.
+  Se activa con `docker compose -f deploy/compose.yml --profile bot up -d`.
 - `worker`: habilita `redis` y el servicio de tareas en segundo plano.
 - `pgadmin`: expone una interfaz web para administración de PostgreSQL.
   Se activa con `docker compose -f deploy/compose.yml --profile pgadmin up -d`.

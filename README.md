@@ -179,6 +179,12 @@ sudo usermod -aG docker "$USER"
    docker compose -f deploy/compose.yml up -d --build
    ```
 
+   El bot de Telegram se inicia solo cuando se especifica el perfil `bot`:
+
+   ```bash
+   docker compose -f deploy/compose.yml --profile bot up -d
+   ```
+
    Para pruebas rápidas, puede comentarse la referencia a `secrets` en `deploy/compose.yml` y utilizar las variables definidas en `.env`.
 
 Luego de iniciar los contenedores, puede verificarse el estado del servicio:
@@ -237,7 +243,10 @@ cd LAS-FOCAS
 cp .env.sample .env
 cp .env deploy/.env
 docker compose -f deploy/compose.yml up -d --build
+docker compose -f deploy/compose.yml --profile bot up -d
 ```
+
+El segundo comando levanta el bot de Telegram.
 
 ---
 
