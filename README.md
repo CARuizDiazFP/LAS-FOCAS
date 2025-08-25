@@ -106,11 +106,10 @@ las-focas/
 ├─ nlp_intent/
 ├─ core/
 ├─ modules/
-├─ workers/
+│  └─ worker.py  ← lógica del worker
 ├─ db/
 ├─ web/
 ├─ integrations/
-├─ scripts/
 ├─ deploy/
 ├─ docs/
 ├─ tests/
@@ -128,67 +127,11 @@ Cada directorio principal incluye un archivo `AGENTS.md` con lineamientos espec�
 ---
 
 ## 🔐 Configuración y credenciales
+La lista completa de variables de entorno se encuentra en [.env.sample](.env.sample). Se destacan:
 
-**.env.sample**
+- **Redis**: `REDIS_PASSWORD` y `REDIS_URL`, necesarias para habilitar la caché y las colas internas.
+- **Panel Web**: credenciales `WEB_ADMIN_USERNAME` / `WEB_ADMIN_PASSWORD` y `WEB_LECTOR_USERNAME` / `WEB_LECTOR_PASSWORD` para los roles administrativos y de lectura.
 
-```
-# Base de datos
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DB=lasfocas
-POSTGRES_USER=lasfocas
-POSTGRES_PASSWORD=
-# Se carga desde /run/secrets/postgres_password cuando está disponible
-POSTGRES_APP_USER=lasfocas_app
-POSTGRES_APP_PASSWORD=
-POSTGRES_READONLY_PASSWORD=
-# Se cargan desde /run/secrets/postgres_app_password y postgres_readonly_password
-
-# Bot de Telegram
-TELEGRAM_BOT_TOKEN=
-# Se carga desde /run/secrets/telegram_bot_token cuando está disponible
-TELEGRAM_ALLOWED_IDS=11111111,22222222
-
-# NLP / LLM
-LLM_PROVIDER=auto
-OPENAI_API_KEY=
-# Se carga desde /run/secrets/openai_api_key cuando está disponible
-# URL base para el servicio Ollama interno
-OLLAMA_URL=http://ollama:11434
-INTENT_THRESHOLD=0.7
-LANG=es
-LOG_RAW_TEXT=false
-CACHE_TTL=300
-
-# Informes
-SLA_TEMPLATE_PATH=/app/templates/sla.docx
-REP_TEMPLATE_PATH=/app/templates/repetitividad.docx
-REPORTS_DIR=/app/data/reports
-UPLOADS_DIR=/app/data/uploads
-SOFFICE_BIN=/usr/bin/soffice
-MAPS_ENABLED=false
-MAPS_LIGHTWEIGHT=true
-# Cálculo de TTR en horario laboral (true) o 24/7 (false)
-WORK_HOURS=false
-
-# Rate limiting
-API_RATE_LIMIT=60/minute
-NLP_RATE_LIMIT=60/minute
-BOT_RATE_LIMIT=20
-BOT_RATE_INTERVAL=60
-
-# Integraciones
-NOTION_TOKEN=
-SMTP_HOST=
-# Se carga desde /run/secrets/smtp_host cuando está disponible
-SMTP_PORT=587
-SMTP_USER=
-# Se carga desde /run/secrets/smtp_user cuando está disponible
-SMTP_PASSWORD=
-# Se carga desde /run/secrets/smtp_password cuando está disponible
-SMTP_FROM=
-# Se carga desde /run/secrets/smtp_from cuando está disponible
-```
 La variable `WORK_HOURS` permite ajustar el cálculo del TTR al horario laboral; en `false` se usa el total de horas calendario.
 Las solicitudes a la API deben incluir el encabezado `X-API-Key`; el límite se calcula por clave (o por IP si falta).
 
