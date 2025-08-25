@@ -41,7 +41,7 @@ services:
 
   api:
     build:
-      context: ./api
+      context: ../api
       dockerfile: Dockerfile
     container_name: lasfocas-api
     restart: unless-stopped
@@ -78,7 +78,7 @@ services:
 
   web:
     build:
-      context: ./web
+      context: ../web
       dockerfile: Dockerfile
     container_name: lasfocas-web
     restart: unless-stopped
