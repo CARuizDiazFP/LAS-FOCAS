@@ -166,6 +166,8 @@ sudo usermod -aG docker "$USER"
 
 **Primer arranque**
 
+Antes de iniciar los contenedores, coloca las credenciales en `deploy/secrets/`. El repositorio versiona esta carpeta vacía mediante un archivo `.gitkeep` para conservarla.
+
 1. Copiar el archivo de variables de entorno de ejemplo y replicarlo para `deploy`:
 
    ```bash
