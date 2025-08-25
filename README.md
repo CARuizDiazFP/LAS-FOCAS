@@ -221,10 +221,21 @@ sudo usermod -aG docker "$USER"
 
 **Primer arranque**
 
-```bash
-cp .env.sample .env
-docker compose -f deploy/compose.yml up -d --build
-```
+1. Copiar el archivo de variables de entorno de ejemplo:
+
+   ```bash
+   cp .env.sample .env
+   ```
+
+2. Crear los archivos de texto en `deploy/secrets/` que contendrán las credenciales. El nombre del archivo identifica la variable que se inyectará (por ejemplo: `postgres_password`, `web_admin_password`). Cada archivo debe incluir únicamente el valor de la clave y nada más.
+
+3. Iniciar el stack de contenedores:
+
+   ```bash
+   docker compose -f deploy/compose.yml up -d --build
+   ```
+
+   Para pruebas rápidas, puede comentarse la referencia a `secrets` en `deploy/compose.yml` y utilizar las variables definidas en `.env`.
 
 Luego de iniciar los contenedores, puede verificarse el estado del servicio:
 

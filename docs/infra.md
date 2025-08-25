@@ -23,6 +23,12 @@
 - `./db/init.sql` y `./db/init_users.sh` se montan de forma de solo lectura para inicializar la base y crear usuarios.
 - `ollama_data`: guarda los modelos descargados en `/root/.ollama`.
 
+## Secrets
+
+- Los secretos se almacenan como archivos de texto en `deploy/secrets/`. El nombre de cada archivo coincide con la variable que el servicio espera (ej.: `postgres_password`, `web_admin_password`).
+- Para pruebas rápidas puede comentarse la referencia a `secrets` en `deploy/compose.yml` y utilizar las variables definidas en `.env`.
+- En el servicio `postgres`, si `POSTGRES_PASSWORD_FILE` no está definido, la imagen utilizará el valor de `POSTGRES_PASSWORD`.
+
 ## Contextos de build
 
 - `api`: utiliza `../api` como contexto de compilación ya que el archivo `compose.yml` se ubica en `deploy/`.
