@@ -29,3 +29,10 @@
 - **Decisión:** Actualizar `requirements.txt` a `Jinja2==3.1.6`, `packaging==24.1`, `Pygments==2.17.2` y `urllib3==2.5.0`.
 - **Alternativas:** Mantener versiones vulnerables y aplicar mitigaciones manuales.
 - **Impacto:** Mejora la seguridad al eliminar CVEs conocidos y mantiene el pipeline de CI en verde.
+
+## 2025-08-25 — Instalación de dependencias desde requirements en el servicio web
+
+- **Contexto:** El `Dockerfile` del servicio web instalaba `fastapi` y `uvicorn` manualmente.
+- **Decisión:** Copiar `requirements.txt` al contenedor e instalarlo con `pip install --no-cache-dir -r requirements.txt`.
+- **Alternativas:** Mantener la instalación manual de paquetes base.
+- **Impacto:** Centraliza las versiones en el archivo de dependencias y simplifica futuras actualizaciones.

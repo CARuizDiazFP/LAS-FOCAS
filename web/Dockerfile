@@ -6,9 +6,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi==0.110.1 uvicorn[standard]==0.29.0 \
+# Copiamos el archivo de dependencias compartido y lo instalamos sin caché
+COPY ../requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
     && useradd -ms /bin/bash appuser
 
+# Incorporamos el código fuente del servicio
 COPY . /app
 
 USER appuser

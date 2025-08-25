@@ -29,7 +29,9 @@ El repositorio incluye un microservicio en `web/main.py` que utiliza **FastAPI**
 - `GET /login` entrega un formulario de acceso aún en desarrollo.
 - `GET /metrics` expone métricas simples sin autenticación.
 
-Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, exponiendo el puerto `8080` solo a la red interna. Para publicar externamente se requiere un proxy inverso.
+ Este servicio se construye con `web/Dockerfile` sobre la imagen `python:3.11-slim` y se despliega mediante `deploy/compose.yml` como servicio `web`, exponiendo el puerto `8080` solo a la red interna. Para publicar externamente se requiere un proxy inverso.
+
+Durante la etapa de construcción, el contenedor copia el `requirements.txt` del proyecto e instala sus dependencias con `pip install --no-cache-dir -r requirements.txt`, evitando la instalación manual de **FastAPI** y **Uvicorn** y garantizando que las versiones provengan del archivo de dependencias compartido.
 
 ## Logging
 
