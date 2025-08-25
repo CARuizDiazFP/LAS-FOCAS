@@ -132,6 +132,8 @@ La lista completa de variables de entorno se encuentra en [.env.sample](.env.sam
 - **Redis**: `REDIS_PASSWORD` y `REDIS_URL`, necesarias para habilitar la caché y las colas internas.
 - **Panel Web**: credenciales `WEB_ADMIN_USERNAME` / `WEB_ADMIN_PASSWORD` y `WEB_LECTOR_USERNAME` / `WEB_LECTOR_PASSWORD` para los roles administrativos y de lectura.
 
+Las credenciales definidas en este archivo (por ejemplo `WEB_LECTOR_PASSWORD=lectura`) son exclusivas para pruebas y deben sustituirse antes de cualquier despliegue en producción.
+
 La variable `WORK_HOURS` permite ajustar el cálculo del TTR al horario laboral; en `false` se usa el total de horas calendario.
 Las solicitudes a la API deben incluir el encabezado `X-API-Key`; el límite se calcula por clave (o por IP si falta).
 
