@@ -127,7 +127,7 @@ Cada directorio principal incluye un archivo `AGENTS.md` con lineamientos espec�
 ---
 
 ## 🔐 Configuración y credenciales
-La lista completa de variables de entorno se encuentra en [.env.sample](.env.sample). Se destacan:
+La lista completa de variables de entorno se encuentra en [.env.sample](.env.sample). Tanto `.env` como `deploy/.env` deben copiarse desde allí para mantenerse idénticos. Se destacan:
 
 - **Redis**: `REDIS_PASSWORD` y `REDIS_URL`, necesarias para habilitar la caché y las colas internas.
 - **Panel Web**: credenciales `WEB_ADMIN_USERNAME` / `WEB_ADMIN_PASSWORD` y `WEB_LECTOR_USERNAME` / `WEB_LECTOR_PASSWORD` para los roles administrativos y de lectura.
@@ -164,10 +164,11 @@ sudo usermod -aG docker "$USER"
 
 **Primer arranque**
 
-1. Copiar el archivo de variables de entorno de ejemplo:
+1. Copiar el archivo de variables de entorno de ejemplo y replicarlo para `deploy`:
 
    ```bash
    cp .env.sample .env
+   cp .env deploy/.env
    ```
 
 2. Crear los archivos de texto en `deploy/secrets/` que contendrán las credenciales. El nombre del archivo identifica la variable que se inyectará (por ejemplo: `postgres_password`, `web_admin_password`). Cada archivo debe incluir únicamente el valor de la clave y nada más.
@@ -234,6 +235,7 @@ Modelos sugeridos para 32 GB RAM:
 git clone https://github.com/CARuizDiazFP/LAS-FOCAS
 cd LAS-FOCAS
 cp .env.sample .env
+cp .env deploy/.env
 docker compose -f deploy/compose.yml up -d --build
 ```
 

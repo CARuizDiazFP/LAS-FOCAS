@@ -89,7 +89,7 @@ Para más detalles consultar `docs/security.md`.
 
 ## Variables de entorno
 
-El archivo `.env.sample` es la fuente única de verdad para todas las variables de entorno. Este listado resume su propósito y origen.
+El archivo `.env.sample` es la fuente única de verdad para todas las variables de entorno. Para el despliegue con Docker Compose, `.env` debe copiarse también a `deploy/.env` y mantenerse sincronizado. Este listado resume su propósito y origen.
 
 Las credenciales sensibles (`POSTGRES_PASSWORD`, `POSTGRES_APP_PASSWORD`, `POSTGRES_READONLY_PASSWORD`, `REDIS_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `SMTP_*`, `WEB_ADMIN_*`, `WEB_LECTOR_*`, `WEB_PASSWORD` y `NOTION_TOKEN`) se obtienen desde archivos en `/run/secrets/` cuando se utilizan Docker Secrets.
 
