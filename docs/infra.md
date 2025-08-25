@@ -23,6 +23,11 @@
 - `./db/init.sql` y `./db/init_users.sh` se montan de forma de solo lectura para inicializar la base y crear usuarios.
 - `ollama_data`: guarda los modelos descargados en `/root/.ollama`.
 
+## Contextos de build
+
+- `api`: utiliza `../api` como contexto de compilación ya que el archivo `compose.yml` se ubica en `deploy/`.
+- `web`: emplea `../web` como contexto de compilación por la misma razón.
+
 ## Recursos
 
 - `postgres`: límite de `0.5` CPU y `512MB` de RAM para contener el uso de la base.
