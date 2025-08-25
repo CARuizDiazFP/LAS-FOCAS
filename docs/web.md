@@ -40,6 +40,8 @@ El servicio inicializa el log mediante `configure_logging("web")`, lo que emite 
 - Credenciales diferenciadas por rol:
   - `WEB_ADMIN_USERNAME` / `WEB_ADMIN_PASSWORD`.
   - `WEB_LECTOR_USERNAME` / `WEB_LECTOR_PASSWORD`.
+- Si no se envían credenciales o el encabezado es inválido, el servicio redirige a `/login`.
+- Solo cuando las credenciales son erróneas se devuelve 401 con `WWW-Authenticate`.
 - Las rutas pueden restringirse según el rol detectado.
 - Futuro: integrar SSO interno.
 

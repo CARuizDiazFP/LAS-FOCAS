@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -45,20 +45,14 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Basic "):
             logger.warning("action=basic_auth sin_credenciales")
-            return Response(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                headers={"WWW-Authenticate": "Basic"},
-            )
+            return RedirectResponse(url="/login")
 
         try:
             decoded = base64.b64decode(auth.split(" ")[1]).decode("utf-8")
             user, pwd = decoded.split(":", 1)
         except Exception:  # noqa: BLE001
             logger.warning("action=basic_auth error_decodificar")
-            return Response(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                headers={"WWW-Authenticate": "Basic"},
-            )
+            return RedirectResponse(url="/login")
 
         if user == self.admin_user and pwd == self.admin_pass:
             request.state.role = "admin"

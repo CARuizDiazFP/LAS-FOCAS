@@ -25,11 +25,12 @@ def get_client(admin_user: str, admin_pass: str) -> TestClient:
     return TestClient(module.app)
 
 
-def test_denied_without_credentials() -> None:
-    """El acceso sin credenciales debe ser rechazado."""
+def test_redirect_without_credentials() -> None:
+    """El acceso sin credenciales redirige al formulario de login."""
     client = get_client("user", "pass")
-    response = client.get("/")
-    assert response.status_code == 401
+    response = client.get("/", allow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/login"
 
 
 def test_authorized_access() -> None:
@@ -45,4 +46,12 @@ def test_denied_with_invalid_credentials() -> None:
     client = get_client("user", "pass")
     response = client.get("/", auth=("user", "wrong"))
     assert response.status_code == 401
+
+
+def test_redirect_on_malformed_header() -> None:
+    """Un encabezado Authorization inválido redirige a /login."""
+    client = get_client("user", "pass")
+    response = client.get("/", headers={"Authorization": "Basic ???"}, allow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/login"
 
