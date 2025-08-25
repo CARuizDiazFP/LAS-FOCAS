@@ -26,6 +26,7 @@
 ## Secrets
 
 - Los secretos se almacenan como archivos de texto en `deploy/secrets/`. El nombre de cada archivo coincide con la variable que el servicio espera (ej.: `postgres_password`, `web_admin_password`).
+- El repositorio conserva esta carpeta vacía mediante un archivo `.gitkeep` para que exista antes de cargar las credenciales.
 - Para pruebas rápidas puede comentarse la referencia a `secrets` en `deploy/compose.yml` y utilizar las variables definidas en `.env`.
 - En el servicio `postgres`, si `POSTGRES_PASSWORD_FILE` no está definido, la imagen utilizará el valor de `POSTGRES_PASSWORD`.
 
