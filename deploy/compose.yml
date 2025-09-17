@@ -34,7 +34,7 @@ services:
     container_name: lasfocas-api
     restart: unless-stopped
     env_file:
-      - .env
+      - ../.env
     environment:
       # Aseguramos que el host de DB sea el nombre del servicio de compose
       POSTGRES_HOST: postgres
@@ -42,12 +42,55 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "8001:8000" # 8000 ocupado por otro servicio externo a este stack
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
+    networks:
+      - lasfocas_net
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    container_name: lasfocas-web
+    env_file:
+      - ../.env
+    environment:
+      NLP_INTENT_URL: http://nlp_intent:8100
+      OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+      - nlp_intent
+      - postgres
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - lasfocas_net
+
+  ollama:
+    image: ollama/ollama:0.3.12
+    container_name: lasfocas-ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
     networks:
       - lasfocas_net
 
@@ -57,11 +100,22 @@ services:
       dockerfile: deploy/docker/nlp_intent.Dockerfile
     env_file:
       - ../.env
+    environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     expose:
       - "8100"
     restart: unless-stopped
+    depends_on:
+      - ollama
     networks:
       - lasfocas_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8100/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   bot:
     build:
@@ -94,6 +148,7 @@ services:
 volumes:
   postgres_data:
   bot_data:
+  ollama_data:
 
 networks:
   lasfocas_net:

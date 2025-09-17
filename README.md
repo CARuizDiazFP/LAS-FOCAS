@@ -182,14 +182,18 @@ sudo usermod -aG docker "$USER"
 
 ```bash
 cp deploy/env.sample .env
-docker compose -f deploy/compose.yml up -d --build
+./Start  # levanta Postgres, NLP, API (8001) y Web (8080) usando el Ollama externo de la VM (host:11434)
+# Para levantar también un Ollama interno del stack (opcional):
+# ./Start --with-internal-ollama
 ```
 
 Luego de iniciar los contenedores, puede verificarse el estado del servicio:
 
 ```bash
-curl -sS http://localhost:8000/health
+curl -sS http://localhost:8001/health   # API (remapeada)
 curl -sS http://localhost:8000/db-check
+curl -sS http://localhost:8080/health   # Web UI
+curl -sS http://localhost:11434/api/tags # Ollama (externo o interno si se usó --with-internal-ollama)
 ```
 
 ---

@@ -36,3 +36,25 @@ CREATE TABLE IF NOT EXISTS app.messages (
 CREATE INDEX IF NOT EXISTS idx_messages_user ON app.messages(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON app.messages(created_at);
 
+-- Usuarios del panel web
+CREATE TABLE IF NOT EXISTS app.web_users (
+    id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'user',
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+);
+
+-- Usuario inicial opcional (admin/admin) — se recomienda cambiar en producción
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM app.web_users WHERE username = 'admin') THEN
+        INSERT INTO app.web_users (username, password_hash, role)
+        VALUES (
+            'admin',
+            '$2b$12$FzYm7mA3xJm2A3lVf2A1nO7cS26o8u2H7m2UvRnl8F3Pj4eQq9fZK', -- bcrypt("admin")
+            'admin'
+        );
+    END IF;
+END$$;
+

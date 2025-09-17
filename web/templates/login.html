@@ -1,0 +1,41 @@
+<!--
+# Nombre de archivo: login.html
+# Ubicación de archivo: web/templates/login.html
+# Descripción: Página de login (tema oscuro, centrado)
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Iniciar sesión — LAS-FOCAS</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .login-wrapper { display:flex; align-items:center; justify-content:center; height:100vh; }
+    .card { background: var(--surface); border:1px solid var(--border); border-radius: 8px; padding: 20px; width: 360px; }
+    .card h1 { margin-top:0; }
+    .field { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+    .field input { background:#0c1117; color: var(--text); border:1px solid var(--border); border-radius:6px; padding:10px; }
+    .error { color:#fca5a5; margin-bottom: 8px; }
+  </style>
+</head>
+<body class="dark">
+  <div class="login-wrapper">
+    <div class="card">
+      <h1>Acceso</h1>
+      {% if error %}<div class="error">{{ error }}</div>{% endif %}
+      <form method="post" action="/login">
+        <div class="field">
+          <label>Usuario</label>
+          <input name="username" type="text" required autofocus />
+        </div>
+        <div class="field">
+          <label>Contraseña</label>
+          <input name="password" type="password" required />
+        </div>
+        <button class="btn primary" type="submit">Ingresar</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

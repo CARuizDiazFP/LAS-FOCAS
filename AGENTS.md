@@ -4,7 +4,7 @@
 
 # AGENTS.md
 
-Este documento está diseñado para orientar a **CODEX** en la comprensión del proyecto **LAS-FOCAS** y establecer las directrices para el desarrollo, asegurando consistencia en la estructura y propósito del código.
+Este documento está diseñado para orientar a Agentes en la comprensión del proyecto **LAS-FOCAS** y establecer las directrices para el desarrollo, asegurando consistencia en la estructura y propósito del código.
 
 ## 🎯 Objetivo del Proyecto
 
@@ -94,11 +94,17 @@ Todos los prompts deben seguir este esquema **en este orden**:
 
 ### 4) Seguridad y confidencialidad
 
+> Entorno operativo: VM Debian 12.4 con salida a Internet y acceso a red local. Toda implementación debe evaluar riesgos de exposición (servicios, puertos, dependencias, archivos) en este contexto mixto.
+
 * **Principio de mínimos privilegios** (DB, contenedores, archivos). Usuario no root cuando sea viable.
 * **Secrets:** nunca exponer claves/tokens en el código ni en logs. Usar `.env` y planificar migración a Docker Secrets.
 * **Red interna:** servicios internos con `expose`, evitar `ports` hacia el host salvo interfaces públicas controladas.
 * **Rate limiting** por ID en superficies expuestas (ej: bot), y validación/escape de entradas.
-* **Dependabot/actualizaciones**: fijar versiones y programar revisiones periódicas.
+* **Versionado estricto:** no usar `latest`; fijar versiones y programar revisiones periódicas de seguridad.
+* **Logs prudentes:** por defecto no registrar texto íntegro del usuario salvo `LOG_RAW_TEXT=true`.
+* **Auditoría de dependencias:** revisar vulnerabilidades antes de incorporar paquetes.
+
+Documento ampliado con lineamientos, checklist y controles: ver `docs/Seguridad.md`.
 
 ### 5) Logs, métricas y trazabilidad
 
@@ -129,19 +135,33 @@ Todos los prompts deben seguir este esquema **en este orden**:
 * **Recursos**: límites razonables de CPU/RAM en servicios no críticos.
 * **Migraciones DB**: con Alembic (planificar e integrar); no romper esquemas en caliente.
 
-### 9) Interacción del Bot
+### 9) PRs diarios y registro de cambios
 
-* **Baja confianza (<0.7)**: solicitar aclaración corta para elevar confianza (botones “Acción”/“Consulta” cuando aplique).
-* **Acción detectada**: si el flujo no existe, responder “implementación pendiente” y registrar intención para backlog.
-* **Menú principal**: cuando la intención sea "Acción" y el mensaje contenga palabras clave de menú, abrir el menú principal.
-* **Mensajes de sistema**: ser claros, breves y accionables.
-* **ReplyKeyboard**: disponible con atajos `/sla`, `/repetitividad`, `/menu` y `/hide` como alternativa a callbacks.
-* **Flujo SLA**: operativo; ver `docs/informes/sla.md` para insumos y alcance.
+En cada interacción de desarrollo (por Agentes/CODEX), se debe crear o actualizar un PR de la fecha actual bajo `docs/PR/YYYY-MM-DD.md` con el siguiente contenido mínimo:
 
-### 10) Rendimiento y resiliencia
+1. Resumen de cambios (alto nivel) y objetivo.
+2. Contexto y alcance (módulos afectados, supuestos, riesgos conocidos).
+3. Cambios realizados (archivos, endpoints, comandos, esquemas, docs).
+4. Tareas realizadas y pendientes (con `# TODO:` cuando aplique).
+5. Criterios de aceptación y validación (tests, linters, healthchecks).
+6. Impacto en seguridad y datos (referenciar `docs/Seguridad.md`).
+7. Compatibilidad y migraciones (DB/Alembic, versiones, flags).
+8. Evidencia de validación manual (pasos, capturas si aplica).
+9. Próximos pasos.
 
-* **Latencia objetivo (MVP):** flexible; priorizar estabilidad sobre velocidad en desarrollo.
-* **Cache**/colas opcionales para tareas pesadas (Redis/Celery) conforme se necesite.
-* **Circuit breaker** simplificado para proveedores externos (cortar tras N fallos y degradar a heurística/local).
+Requisitos del PR diario:
 
----
+* Encabezado obligatorio de 3 líneas al inicio del archivo.
+* Formato de nombre: `docs/PR/YYYY-MM-DD.md` (una única nota por fecha, que se va actualizando en la misma jornada).
+* Idioma español y estilo conciso, accionable.
+* No incluir secretos; referencias a `.env`/Secrets cuando corresponda.
+
+### 10) Documento de planeación vivo (Mate y Ruta)
+
+Además del PR diario, mantener actualizado el documento de plan y estado general:
+
+* Archivo: `docs/Mate_y_Ruta.md`.
+* Contenido mínimo: Estado actual, Próximas implementaciones, Roadmap por iteraciones, Checklist (Realizado/Pendiente), Referencias.
+* Frecuencia: actualizar en cada hito relevante y al menos una vez por jornada.
+* Vincular decisiones no triviales a `docs/decisiones.md` y referenciarlas en este archivo.
+* Aplicar la regla del encabezado obligatorio de 3 líneas.

@@ -1,0 +1,64 @@
+# Nombre de archivo: Start
+# Ubicación de archivo: Start
+# Descripción: Script para levantar el stack mínimo (DB, Ollama, NLP, API y Web)
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Colores simples
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$ROOT_DIR/deploy/compose.yml"
+
+echo -e "${GREEN}=== LAS-FOCAS :: Start ===${NC}"
+
+# 1) Verificaciones rápidas
+command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker no está instalado en el PATH${NC}"; exit 1; }
+
+if [ ! -f "$ROOT_DIR/.env" ]; then
+  echo -e "${YELLOW}No existe .env en la raíz. Creando desde deploy/env.sample...${NC}"
+  cp "$ROOT_DIR/deploy/env.sample" "$ROOT_DIR/.env"
+  echo -e "${YELLOW}Revisá y ajustá credenciales en .env antes de producción.${NC}"
+fi
+
+WITH_INTERNAL_OLLAMA=${1:-}
+
+# 2) Levantar stack mínimo: postgres, nlp_intent, api, web (ollama externo por default)
+echo -e "${GREEN}Levantando servicios mínimos (usa Ollama externo en host:11434 por defecto)${NC}"
+
+docker compose -f "$COMPOSE_FILE" up -d --build postgres
+
+if [ "$WITH_INTERNAL_OLLAMA" = "--with-internal-ollama" ]; then
+  echo -e "${YELLOW}Levantando servicio Ollama interno (profile: ollama)...${NC}"
+  docker compose -f "$COMPOSE_FILE" --profile ollama up -d --build ollama
+fi
+
+docker compose -f "$COMPOSE_FILE" up -d --build nlp_intent
+docker compose -f "$COMPOSE_FILE" up -d --build api
+docker compose -f "$COMPOSE_FILE" up -d --build web
+
+echo -e "${GREEN}Servicios solicitados levantados. Comprobando health...${NC}"
+
+check() {
+  local name="$1" url="$2" max=20 delay=3
+  for i in $(seq 1 $max); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      echo -e "${GREEN}OK${NC} $name -> $url"
+      return 0
+    fi
+    echo -e "${YELLOW}Esperando $name... ($i/$max)${NC}"; sleep "$delay"
+  done
+  echo -e "${RED}Timeout esperando $name en $url${NC}"; return 1
+}
+
+check "API" "http://localhost:8001/health" || true
+check "WEB" "http://localhost:8080/health" || true
+check "NLP" "http://localhost:8100/health" || true
+check "Ollama" "http://localhost:11434/api/tags" || true
+
+echo -e "${GREEN}Listo. UI: http://localhost:8080/  |  API: http://localhost:8001/docs${NC}"
+echo -e "${YELLOW}Nota:${NC} por defecto se usa el contenedor de Ollama externo en la VM (host:11434). Para levantar el interno: ./Start --with-internal-ollama"

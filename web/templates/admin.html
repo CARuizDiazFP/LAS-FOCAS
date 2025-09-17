@@ -1,0 +1,60 @@
+<!--
+# Nombre de archivo: admin.html
+# Ubicación de archivo: web/templates/admin.html
+# Descripción: Página de administración: crear usuarios y cambiar contraseña
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin — LAS-FOCAS</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="dark">
+  <header class="topbar">
+    <div class="brand">LAS-FOCAS</div>
+    <nav class="actions">
+      <a class="btn" href="/">Panel</a>
+      <a class="btn" href="/logout">Salir</a>
+      <span style="margin-left:12px;color:var(--muted)">Usuario: {{ username }} ({{ role }})</span>
+    </nav>
+  </header>
+  <main class="container">
+    <section class="panel">
+      <h1>Administración</h1>
+      <div class="grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+        <div>
+          <h2>Crear usuario</h2>
+          <form method="post" action="/api/admin/users">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}" />
+            <label>Usuario</label>
+            <input type="text" name="username" required />
+            <label>Contraseña</label>
+            <input type="password" name="password" required />
+            <label>Rol</label>
+            <select name="role">
+              <option value="admin">Admin</option>
+              <option value="ownergroup">OwnerGroup</option>
+              <option value="invitado">Invitado</option>
+            </select>
+            <p class="muted">Roles válidos: Admin, OwnerGroup, Invitado.</p>
+            <button type="submit" class="btn primary">Crear</button>
+          </form>
+        </div>
+        <div>
+          <h2>Cambiar mi contraseña</h2>
+          <form method="post" action="/api/users/change-password">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}" />
+            <label>Actual</label>
+            <input type="password" name="current_password" required />
+            <label>Nueva</label>
+            <input type="password" name="new_password" required />
+            <button type="submit" class="btn primary">Cambiar</button>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

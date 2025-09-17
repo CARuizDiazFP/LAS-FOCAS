@@ -1,0 +1,48 @@
+# Nombre de archivo: ci.yml
+# Ubicación de archivo: .github/workflows/ci.yml
+# Descripción: CI con tests y verificación de seguridad (pip-audit)
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install root dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run pytest (repo tests)
+        run: |
+          pytest -q tests nlp_intent/tests
+
+  security-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+      - name: Audit root requirements
+        run: pip-audit -r requirements.txt
+      - name: Audit web requirements
+        run: pip-audit -r web/requirements.txt
+      - name: Audit api requirements
+        run: pip-audit -r api/requirements.txt
+      - name: Audit nlp_intent requirements
+        run: pip-audit -r nlp_intent/requirements.txt

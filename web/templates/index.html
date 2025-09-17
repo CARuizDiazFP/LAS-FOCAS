@@ -1,0 +1,119 @@
+<!--
+# Nombre de archivo: index.html
+# Ubicación de archivo: web/templates/index.html
+# Descripción: Página principal de la UI (tema oscuro, barra de botones y chat REST)
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAS-FOCAS — Panel</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <!-- Los assets de Vite se copian a /static/assets en build -->
+  <script defer src="/static/assets/main.js"></script>
+  <script>
+    window.API_BASE = "{{ api_base }}";
+    window.CSRF_TOKEN = "{{ csrf }}";
+  </script>
+</head>
+<body class="dark">
+  <header class="topbar">
+    <div class="brand">LAS-FOCAS</div>
+    <nav class="actions">
+      <button class="btn" id="btn-sla">SLA</button>
+      <button class="btn" id="btn-rep">Repetitividad</button>
+      <button class="btn" id="btn-fo">Comparador FO</button>
+      <button class="btn">Modo oscuro</button>
+      {% if username %}
+      <span style="margin-left:12px;color:var(--muted)">Usuario: {{ username }}</span>
+      <a class="btn" href="/admin">Admin</a>
+      <a class="btn" href="/logout">Salir</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="container">
+    <section class="panel">
+      <h1>Panel</h1>
+      <p>Subí un archivo y ejecutá los flujos con los botones superiores. Los resultados aparecerán abajo.</p>
+      <form id="flow-form" class="flow-form" enctype="multipart/form-data">
+        <input type="file" name="file" id="file" required />
+        <input type="number" name="mes" id="mes" placeholder="Mes (1-12)" min="1" max="12" required />
+        <input type="number" name="anio" id="anio" placeholder="Año (YYYY)" min="2000" max="2100" required />
+      </form>
+      <div id="flow-result" class="muted" style="margin-top:8px"></div>
+      <div class="chat">
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" name="text" type="text" placeholder="Escribí un mensaje" required />
+          <button type="submit" class="btn primary">Enviar</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('chat-input');
+    const log = document.getElementById('chat-log');
+
+    function append(role, text) {
+      const el = document.createElement('div');
+      el.className = 'msg ' + role;
+      el.textContent = text;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      append('user', text);
+      input.value = '';
+      const formData = new FormData();
+      formData.append('text', text);
+      try {
+        const res = await fetch('/api/chat/message', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error('Error HTTP ' + res.status);
+        const data = await res.json();
+        append('assistant', `${data.reply} (Intent: ${data.intent} • ${Math.round((data.confidence||0)*100)}%)`);
+      } catch (err) {
+        append('assistant', 'Ocurrió un error al enviar el mensaje.');
+        console.error(err);
+      }
+    });
+
+    async function runFlow(path) {
+      const f = document.getElementById('flow-form');
+      const file = document.getElementById('file');
+      const mes = document.getElementById('mes');
+      const anio = document.getElementById('anio');
+      const out = document.getElementById('flow-result');
+      if (!file.files.length) { out.textContent = 'Seleccioná un archivo.'; return; }
+      const data = new FormData();
+      data.append('file', file.files[0]);
+      data.append('mes', mes.value);
+      data.append('anio', anio.value);
+      if (window.CSRF_TOKEN) data.append('csrf_token', window.CSRF_TOKEN);
+      out.textContent = 'Procesando...';
+      try {
+        const res = await fetch(path, { method: 'POST', body: data, credentials: 'include' });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || 'Error');
+        let links = [];
+        if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
+        if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
+        out.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
+      } catch (err) {
+        out.textContent = 'Error: ' + err.message;
+        console.error(err);
+      }
+    }
+
+    document.getElementById('btn-sla').addEventListener('click', () => runFlow('/api/flows/sla'));
+    document.getElementById('btn-rep').addEventListener('click', () => runFlow('/api/flows/repetitividad'));
+    document.getElementById('btn-fo').addEventListener('click', () => runFlow('/api/flows/comparador-fo'));
+  </script>
+</body>
+</html>
