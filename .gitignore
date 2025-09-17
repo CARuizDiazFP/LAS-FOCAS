@@ -9,6 +9,9 @@
 !.env.sample
 .envrc
 
+# Entorno virtual Python
+.venv/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -36,6 +39,9 @@ tmp/
 
 # Node/Front
 node_modules/
+web/frontend/node_modules/
+web/frontend/dist/
+web/static/assets/
 
 # IDE/OS
 .vscode/
