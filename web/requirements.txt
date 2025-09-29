@@ -13,6 +13,6 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.1.2  # Fijado explícitamente para evitar backend py-bcrypt y errores de __about__
 pydantic==2.9.2
 pandas==2.2.2
-openpyxl==3.1.2
+openpyxl==3.1.5
 python-docx==0.8.11
 psycopg[binary]==3.2.1

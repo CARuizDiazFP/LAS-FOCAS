@@ -4,5 +4,5 @@
 
 aiogram==3.13.1
 pandas==2.2.2
-openpyxl==3.1.2
+openpyxl==3.1.5
 python-docx==0.8.11
