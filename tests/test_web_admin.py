@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient  # type: ignore
 from passlib.hash import bcrypt  # type: ignore
-from app.main import app  # type: ignore
+from web_app.main import app  # type: ignore
 
 
 class _Cur:
@@ -78,7 +78,7 @@ def _connect_user_ok(password: str = "userpass"):
 
 
 def test_admin_create_user(monkeypatch):
-    from app import main as web_main
+    from web_app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     # Login admin
@@ -93,7 +93,7 @@ def test_admin_create_user(monkeypatch):
 
 
 def test_admin_create_user_forbidden_for_non_admin(monkeypatch):
-    from app import main as web_main
+    from web_app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
     client = TestClient(app)
     # Login user normal
@@ -105,7 +105,7 @@ def test_admin_create_user_forbidden_for_non_admin(monkeypatch):
 
 
 def test_change_password_happy_path(monkeypatch):
-    from app import main as web_main
+    from web_app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("oldpass"))
     client = TestClient(app)
     # Login con oldpass
@@ -121,7 +121,7 @@ def test_change_password_happy_path(monkeypatch):
 
 
 def test_admin_create_user_invalid_role(monkeypatch):
-    from app import main as web_main
+    from web_app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})
@@ -131,7 +131,7 @@ def test_admin_create_user_invalid_role(monkeypatch):
 
 
 def test_admin_create_user_guest_role(monkeypatch):
-    from app import main as web_main
+    from web_app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})

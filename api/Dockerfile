@@ -21,6 +21,7 @@ RUN python -m pip install --upgrade pip && pip install -r requirements.txt
 
 # Copiamos el código de la app
 COPY app /app/app
+COPY api_app /app/api_app
 
 EXPOSE 8000
 

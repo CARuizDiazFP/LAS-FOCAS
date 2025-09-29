@@ -192,7 +192,7 @@ Luego de iniciar los contenedores, puede verificarse el estado del servicio:
 ```bash
 curl -sS http://localhost:8001/health   # API (remapeada)
 curl -sS http://localhost:8000/db-check
-curl -sS http://localhost:8080/health   # Web UI
+curl -sS http://192.168.241.28:8080/health   # Web UI (IP privada de la VM)
 curl -sS http://localhost:11434/api/tags # Ollama (externo o interno si se usó --with-internal-ollama)
 ```
 

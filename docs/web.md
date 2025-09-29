@@ -10,6 +10,28 @@ Servicio FastAPI que expone:
 - UI dark-style con barra de botones (SLA, Repetitividad, Comparador FO).
 - Chat REST que integra `nlp_intent` para clasificación de intención.
 
+## Estructura y archivo principal
+
+La implementación única de la aplicación vive en `web/web_app/main.py` y el contenedor la lanza con:
+```
+uvicorn web_app.main:app --host 0.0.0.0 --port 8080
+```
+Anteriormente existía un duplicado en `web/app/main.py` que fue eliminado (se dejó un stub temporal hasta su retiro definitivo). Cualquier referencia antigua debe migrarse a `web_app.main`.
+
+## Logging
+
+Centralizado vía `core.logging.setup_logging`.
+
+- Formato: `timestamp service=<servicio> level=<nivel> msg=<mensaje>`.
+- Variable `LOG_LEVEL` (ej: DEBUG, INFO, WARNING) controla el nivel base.
+- En `ENV=development` se escribe además a `Logs/web.log` (rotativo 5MB x3). En otros entornos sólo stdout.
+- Archivos ignorados por git (`Logs/`).
+- Eventos clave:
+  - `action=login result=success|fail|error ...`
+  - Errores de bcrypt / DB → nivel ERROR / stacktrace con `logger.exception`.
+  - Futuro: métricas y auditoría podrán centralizarse en `api`.
+
+
 ## Endpoints
 
 - GET /health → status simple.
@@ -39,7 +61,7 @@ Respuesta típica de /api/chat/message:
 
 - El bundle se copia a /static/assets con nombre estable `assets/main.js`.
 - La plantilla `web/templates/index.html` inyecta variables globales:
-  - `window.API_BASE` (default `http://localhost:8080`).
+  - `window.API_BASE` (default `http://192.168.241.28:8080`).
   - `window.CSRF_TOKEN` (token actual de sesión).
 - El cliente TS envía `credentials: 'include'` y adjunta `csrf_token` en POST al chat.
 
@@ -57,6 +79,16 @@ Respuesta típica de /api/chat/message:
 - Por defecto, la UI y `nlp_intent` usan Ollama externo vía `http://host.docker.internal:11434` (se añade `extra_hosts` al compose).
 - Alternativa: ejecutar `./Start --with-internal-ollama` para levantar un servicio `ollama` interno al stack.
  - El servicio `web` expone `/reports` como estático para descargar los resultados.
+
+## Conectividad y troubleshooting
+
+- Acceso por IP privada: la política por defecto usa `http://192.168.241.28:8080` como URL de la UI. Si desde el propio host puedes hacer `curl http://localhost:8080/health` pero falla `curl http://192.168.241.28:8080/health`, revisa:
+  - Reglas de firewall (ufw/iptables/nftables) permitiendo inbound a 8080/8001 en la interfaz de la VM.
+  - Modo de red de Docker (bridge por defecto expone en 0.0.0.0; verificar con `ss -ltnp | grep 8080`).
+  - Que la IP privada sea la correcta (`ip -4 addr`). Si cambia, actualiza `API_BASE` en `.env` y recompila el servicio web.
+  - Si hay proxy/restricciones en tu red corporativa.
+
+- Nota: la aplicación server-side no necesita conocer la IP privada para escuchar; Docker mapea `0.0.0.0:8080->8080`. La variable `API_BASE` se usa para que el frontend sepa a qué host hablar.
 
 ## Seguridad
 

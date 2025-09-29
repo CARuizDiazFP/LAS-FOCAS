@@ -1,0 +1,26 @@
+# Nombre de archivo: dependabot.yml
+# Ubicación de archivo: .github/dependabot.yml
+# Descripción: Configuración de Dependabot para Python (pip) y Node (npm)
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/api"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/nlp_intent"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/web/frontend"
+    schedule:
+      interval: "weekly"

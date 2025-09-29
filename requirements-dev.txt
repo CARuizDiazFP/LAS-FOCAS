@@ -1,0 +1,8 @@
+# Nombre de archivo: requirements-dev.txt
+# Ubicación de archivo: requirements-dev.txt
+# Descripción: Dependencias de desarrollo (tests, linters, auditorías)
+
+pytest==8.3.2
+pip-audit==2.7.3
+ruff==0.6.8
+mypy==1.11.2

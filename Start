@@ -1,6 +1,6 @@
 # Nombre de archivo: Start
 # Ubicación de archivo: Start
-# Descripción: Script para levantar el stack mínimo (DB, Ollama, NLP, API y Web)
+# Descripción: Script para levantar el stack mínimo (DB, NLP, API y Web). Ollama debe existir externamente.
 
 #!/usr/bin/env bash
 set -euo pipefail
@@ -25,17 +25,10 @@ if [ ! -f "$ROOT_DIR/.env" ]; then
   echo -e "${YELLOW}Revisá y ajustá credenciales en .env antes de producción.${NC}"
 fi
 
-WITH_INTERNAL_OLLAMA=${1:-}
-
-# 2) Levantar stack mínimo: postgres, nlp_intent, api, web (ollama externo por default)
-echo -e "${GREEN}Levantando servicios mínimos (usa Ollama externo en host:11434 por defecto)${NC}"
+# 2) Levantar stack mínimo: postgres, nlp_intent, api, web (se usa Ollama externo existente)
+echo -e "${GREEN}Levantando servicios mínimos (usa Ollama externo existente en host:11434)${NC}"
 
 docker compose -f "$COMPOSE_FILE" up -d --build postgres
-
-if [ "$WITH_INTERNAL_OLLAMA" = "--with-internal-ollama" ]; then
-  echo -e "${YELLOW}Levantando servicio Ollama interno (profile: ollama)...${NC}"
-  docker compose -f "$COMPOSE_FILE" --profile ollama up -d --build ollama
-fi
 
 docker compose -f "$COMPOSE_FILE" up -d --build nlp_intent
 docker compose -f "$COMPOSE_FILE" up -d --build api
@@ -56,9 +49,9 @@ check() {
 }
 
 check "API" "http://localhost:8001/health" || true
-check "WEB" "http://localhost:8080/health" || true
+check "WEB" "http://192.168.241.28:8080/health" || true
 check "NLP" "http://localhost:8100/health" || true
 check "Ollama" "http://localhost:11434/api/tags" || true
 
-echo -e "${GREEN}Listo. UI: http://localhost:8080/  |  API: http://localhost:8001/docs${NC}"
-echo -e "${YELLOW}Nota:${NC} por defecto se usa el contenedor de Ollama externo en la VM (host:11434). Para levantar el interno: ./Start --with-internal-ollama"
+echo -e "${GREEN}Listo. UI: http://192.168.241.28:8080/  |  API: http://localhost:8001/docs${NC}"
+echo -e "${YELLOW}Nota:${NC} se utiliza un servicio Ollama externo (host:11434). Verificá que esté en ejecución."

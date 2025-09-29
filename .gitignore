@@ -33,6 +33,7 @@ wheelhouse/
 # Logs y cache
 *.log
 logs/
+Logs/
 tmp/
 .cache/
 .ipynb_checkpoints/

@@ -44,7 +44,7 @@ form.addEventListener('submit', async (e) => {
   append('user', text);
   input.value = '';
   try {
-    const API_BASE = (window as any).API_BASE || 'http://localhost:8080';
+  const API_BASE = (window as any).API_BASE || 'http://192.168.241.28:8080';
     const CSRF = (window as any).CSRF_TOKEN || '';
     const body = new FormData();
     body.append('text', text);

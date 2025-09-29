@@ -1,7 +1,7 @@
 # Nombre de archivo: compose.yml
 # Ubicación de archivo: deploy/compose.yml
 # Descripción: Stack base con PostgreSQL + API FastAPI + healthchecks y volumen persistente
-version: "3.9"
+ 
 
 name: lasfocas
 
@@ -18,7 +18,7 @@ services:
       - "5432:5432" # Cambiar host-port si está ocupado
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - ../db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost"]
       interval: 5s
@@ -29,7 +29,7 @@ services:
 
   api:
     build:
-      context: ./api
+      context: ../api
       dockerfile: Dockerfile
     container_name: lasfocas-api
     restart: unless-stopped
@@ -44,7 +44,7 @@ services:
     ports:
       - "8001:8000" # 8000 ocupado por otro servicio externo a este stack
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || curl -fsS http://192.168.241.28:8001/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -53,14 +53,17 @@ services:
 
   web:
     build:
-      context: ../web
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: web/Dockerfile
     container_name: lasfocas-web
     env_file:
       - ../.env
     environment:
       NLP_INTENT_URL: http://nlp_intent:8100
+      # Nota: Se usa un Ollama externo ya existente en la VM/host
       OLLAMA_URL: http://host.docker.internal:11434
+      API_BASE: http://192.168.241.28:8080
+      # LOG_LEVEL se toma de .env; si se desea sobreescribir aquí se puede definir.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -69,28 +72,13 @@ services:
       - postgres
     ports:
       - "8080:8080"
+    volumes:
+      - ../Logs:/app/Logs
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || curl -fsS http://192.168.241.28:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
-    networks:
-      - lasfocas_net
-
-  ollama:
-    image: ollama/ollama:0.3.12
-    container_name: lasfocas-ollama
-    profiles: ["ollama"]
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:11434/api/tags || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
     networks:
       - lasfocas_net
 
@@ -101,18 +89,17 @@ services:
     env_file:
       - ../.env
     environment:
+      # Nota: Se usa un Ollama externo ya existente en la VM/host
       OLLAMA_URL: http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
     expose:
       - "8100"
     restart: unless-stopped
-    depends_on:
-      - ollama
     networks:
       - lasfocas_net
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8100/health || exit 1"]
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\ntry:\n  with urllib.request.urlopen('http://localhost:8100/health', timeout=5) as r:\n    exit(0 if r.status==200 else 1)\nexcept Exception:\n  exit(1)\nPY"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -148,7 +135,6 @@ services:
 volumes:
   postgres_data:
   bot_data:
-  ollama_data:
 
 networks:
   lasfocas_net:

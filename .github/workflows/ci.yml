@@ -14,12 +14,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install root dependencies
         run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run pytest (API)
+        working-directory: api
+        run: |
+          pytest -q ../tests/test_health.py
+      - name: Run pytest (NLP)
+        run: |
+          pytest -q nlp_intent/tests
+      - name: Run pytest (Web)
+        working-directory: web
+        run: |
+          pytest -q ../tests/test_web_*.py
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run pytest (repo tests)
@@ -37,7 +45,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install pip-audit
-        run: pip install pip-audit==2.7.3
+        run: pip install -r requirements-dev.txt
       - name: Audit root requirements
         run: pip-audit -r requirements.txt
       - name: Audit web requirements
@@ -46,3 +54,23 @@ jobs:
         run: pip-audit -r api/requirements.txt
       - name: Audit nlp_intent requirements
         run: pip-audit -r nlp_intent/requirements.txt
+
+  frontend-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/frontend/package.json
+      - name: Install Node deps
+        working-directory: web/frontend
+        run: |
+          npm ci || npm i
+      - name: Run npm audit (informativo)
+        working-directory: web/frontend
+        run: |
+          npm audit --audit-level=high || true

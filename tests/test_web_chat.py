@@ -9,7 +9,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient
-from app.main import app
+from web_app.main import app
 
 client = TestClient(app)
 
@@ -23,10 +23,10 @@ def test_health_ok() -> None:
 def test_chat_message_returns_json(monkeypatch) -> None:
     # Mock del clasificador para evitar IO
     async def _fake_classify(text: str):
-        from app.main import IntentResponse
+        from web_app.main import IntentResponse
         return IntentResponse(intent="Consulta", confidence=0.9, provider="heuristic", normalized_text=text)
 
-    from app import main as web_main
+    from web_app import main as web_main
     web_main.classify_text = _fake_classify
 
     res = client.post("/api/chat/message", data={"text": "¿Cómo genero el SLA?"})

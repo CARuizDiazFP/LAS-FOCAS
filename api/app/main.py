@@ -3,7 +3,7 @@
 # Descripción: Aplicación FastAPI principal (incluye rutas de health)
 
 from fastapi import FastAPI
-from app.routes.health import router as health_router
+from api_app.routes.health import router as health_router
 
 
 def create_app() -> FastAPI:

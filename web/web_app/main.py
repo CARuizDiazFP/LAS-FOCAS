@@ -1,5 +1,5 @@
 # Nombre de archivo: main.py
-# Ubicación de archivo: web/app/main.py
+# Ubicación de archivo: web/web_app/main.py
 # Descripción: Aplicación FastAPI para la UI (página dark, barra y chat REST)
 
 from __future__ import annotations
@@ -18,10 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from passlib.hash import bcrypt
+from core.logging import setup_logging
 import psycopg
 from pathlib import Path
 import shutil
-from starlette.datastructures import UploadFile
+from fastapi import UploadFile, File
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
@@ -35,10 +36,30 @@ DB_USER = os.getenv("POSTGRES_USER", "lasfocas")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "superseguro")
 DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logger = setup_logging("web", LOG_LEVEL, enable_file=None, filename="web.log")
+
 app = FastAPI(title="LAS-FOCAS Web UI", version="0.1.0")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("WEB_SECRET_KEY", "dev-secret-change"))
 
-# Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/app/main.py)
+# Middleware de trazabilidad de requests (ayuda a depurar ERR_INVALID_HTTP_RESPONSE en navegador)
+@app.middleware("http")
+async def log_requests(request, call_next):  # type: ignore
+    try:
+        logger.debug("action=request_start path=%s client=%s", request.url.path, request.client.host if request.client else "?")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        response = await call_next(request)
+        logger.debug(
+            "action=request_end path=%s status=%s len=%s", request.url.path, getattr(response, "status_code", "?"), getattr(response, "body", None) and len(getattr(response, "body"))
+        )
+        return response
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=request_error path=%s error=%s", getattr(request, 'url', '?'), exc)
+        raise
+
+# Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/web_app/main.py)
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = str(BASE_DIR / "static")
 TEMPLATES_DIR = str(BASE_DIR / "templates")
@@ -109,10 +130,37 @@ async def do_login(request: Request, username: str = Form(...), password: str = 
             with conn.cursor() as cur:
                 cur.execute("SELECT password_hash, role FROM app.web_users WHERE username=%s", (username,))
                 row = cur.fetchone()
-                if not row or not bcrypt.verify(password, row[0]):
+                bcrypt_ok = False
+                if row:
+                    try:
+                        bcrypt_ok = bcrypt.verify(password, row[0])
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(f"action=login bcrypt_error username={username} error={exc}")
+                if not row or not bcrypt_ok:
+                    # Hash truncado a 20 chars para diagnóstico (sin exponer todo si se hacen logs externos)
+                    stored_hash_preview = row[0][:20] + "..." if row else None
+                    logger.warning(
+                        "action=login result=fail reason=%s username=%s found_user=%s bcrypt_ok=%s hash_preview=%s ip=%s rl_count=%s",
+                        "no_user" if not row else "bad_password",
+                        username,
+                        bool(row),
+                        bcrypt_ok,
+                        stored_hash_preview,
+                        ip,
+                        rl["count"],
+                    )
                     return templates.TemplateResponse(request, "login.html", {"error": "Credenciales inválidas"}, status_code=400)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"action=login result=error username={username} ip={ip} error={exc}")
         return templates.TemplateResponse(request, "login.html", {"error": "Error de autenticación"}, status_code=500)
+
+    logger.info(
+        "action=login result=success username=%s role=%s ip=%s rl_count=%s",
+        username,
+        row[1] if row else "?",
+        ip,
+        rl["count"],
+    )
 
     request.session["username"] = username
     request.session["role"] = row[1] if row else "user"
@@ -137,7 +185,7 @@ async def index(request: Request) -> HTMLResponse:
         {
             "username": get_current_user(request),
             "csrf": request.session.get("csrf"),
-            "api_base": os.getenv("API_BASE", "http://localhost:8080"),
+            "api_base": os.getenv("API_BASE", "http://192.168.241.28:8080"),
         },
     )
 
@@ -289,7 +337,7 @@ def _save_upload(file: UploadFile) -> Path:
 
 
 @app.post("/api/flows/sla")
-async def flow_sla(request: Request, file: UploadFile, mes: int = Form(...), anio: int = Form(...), csrf_token: str = Form(...)):
+async def flow_sla(request: Request, file: UploadFile = File(...), mes: int = Form(...), anio: int = Form(...), csrf_token: str = Form(...)):
     # Autenticación + CSRF
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
@@ -313,7 +361,7 @@ async def flow_sla(request: Request, file: UploadFile, mes: int = Form(...), ani
 
 
 @app.post("/api/flows/repetitividad")
-async def flow_repetitividad(request: Request, file: UploadFile, mes: int = Form(...), anio: int = Form(...), csrf_token: str = Form(...)):
+async def flow_repetitividad(request: Request, file: UploadFile = File(...), mes: int = Form(...), anio: int = Form(...), csrf_token: str = Form(...)):
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
