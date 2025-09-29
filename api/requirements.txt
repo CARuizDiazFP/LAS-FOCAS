@@ -1,7 +1,7 @@
 # Nombre de archivo: requirements.txt
 # Ubicación de archivo: api/requirements.txt
 # Descripción: Dependencias de la API base (FastAPI + SQLAlchemy + Psycopg 3)
-fastapi==0.112.2
+fastapi==0.118.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 SQLAlchemy==2.0.36
