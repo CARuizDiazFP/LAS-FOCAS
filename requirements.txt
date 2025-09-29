@@ -14,5 +14,5 @@ passlib[bcrypt]==1.7.4  # Hash de contraseñas para login
 itsdangerous==2.2.0  # Firmas para sesiones (SessionMiddleware)
 pydantic==2.9.2  # Modelos y validación (usado en schemas de módulos)
 pandas==2.2.2  # Procesamiento de datos para informes
-openpyxl==3.1.2  # Lectura de Excel para pandas
+openpyxl==3.1.5  # Lectura de Excel para pandas
 python-docx==0.8.11  # Generación de documentos DOCX para informes
