@@ -3,7 +3,7 @@
 # Descripción: Dependencias de la API base (FastAPI + SQLAlchemy + Psycopg 3)
 fastapi==0.112.2
 uvicorn[standard]==0.30.6
-pydantic==2.9.2
+pydantic==2.11.9
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.1
 python-dotenv==1.0.1
