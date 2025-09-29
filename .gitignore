@@ -10,7 +10,7 @@
 .envrc
 
 # Entorno virtual Python
-.venv/
+.venv*/
 
 # Python
 __pycache__/
