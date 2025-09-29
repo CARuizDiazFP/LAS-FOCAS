@@ -10,7 +10,7 @@ itsdangerous==2.2.0
 python-multipart==0.0.9
 orjson==3.10.6
 passlib[bcrypt]==1.7.4
-bcrypt==4.1.2  # Fijado explícitamente para evitar backend py-bcrypt y errores de __about__
+bcrypt==5.0.0  # Fijado explícitamente para evitar backend py-bcrypt y errores de __about__
 pydantic==2.9.2
 pandas==2.2.2
 openpyxl==3.1.2
