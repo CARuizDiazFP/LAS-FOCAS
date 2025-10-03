@@ -4,7 +4,7 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2025-09-18
+Fecha de última actualización: 2025-10-03
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
@@ -18,6 +18,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - `api` (FastAPI): endpoints `/health` y `/db-check` (SQLAlchemy a PostgreSQL). Dockerfile propio.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` con proveedores `heuristic | ollama | openai`. Usa `OLLAMA_URL` (default `http://ollama:11434`).
   - `bot` (Telegram): definido en `deploy/compose.yml`.
+  - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
   - DB: `db/init.sql` incluye `app.conversations` y `app.messages` para trazabilidad de diálogos.
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
@@ -84,18 +85,29 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Servicio `nlp_intent` con proveedores `heuristic/ollama/openai`.
 - [x] Esquema de conversaciones y mensajes en DB.
 - [x] Modelo `llama3` presente en contenedor de Ollama.
- - [x] Servicio `web` (UI) con login básico, sesiones y CSRF.
- - [x] Contrato del chat `POST /api/chat/message` (REST) con rate limiting.
+- [x] Servicio `web` (UI) con login básico, sesiones y CSRF.
+- [x] Contrato del chat `POST /api/chat/message` (REST) con rate limiting.
+- [x] Repositorio Sandy clonado en `Legacy/` para referencia.
+- [x] Microservicio LibreOffice/UNO inicializado (`office_service/`) con Dockerfile y health check básico.
 - [x] Endpoints admin: crear usuario y cambiar contraseña (roles: admin/ownergroup/invitado).
 - [x] UI mínima /admin y tests de login/admin (8 pruebas).
+- [x] Hashing centralizado en `core/password.py` para el panel web y scripts (bcrypt only).
 
 ### Pendiente (prioridad)
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [ ] Disparadores de flujos desde la UI.
 - [ ] Documentación específica `docs/web.md` y README (agregar ejemplos de admin y variables).
+- [ ] Unificar versiones FastAPI/pydantic (root vs `office_service`).
+- [ ] Validaciones de tamaño y tipo en `/reports/repetitividad`.
+- [ ] Test para rama `incluir_pdf` (mock).
+- [ ] Documentar endpoint `/reports/repetitividad` en `docs/api.md`.
+- [ ] Entrada decisiones sobre hashes de plantillas y versión unificada FastAPI.
+- [ ] Auth (API key) básica para `/reports/*`.
+- [ ] Tests dedicados `core/password.needs_rehash`.
 
 ### Notas operativas
 - Script `./Start` disponible en la raíz para levantar el stack mínimo (Postgres, Ollama, NLP, API en 8001 y Web en 8080).
+- Carpeta `Legacy/` reservada para referencias del proyecto Sandy; está excluida de git mediante `.gitignore`.
 
 ## Cómo actualizar este documento
 
@@ -110,3 +122,5 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - `deploy/compose.yml` — servicios, redes, puertos y healthchecks.
 - `docs/decisiones.md` — registro de decisiones técnicas.
 - `docs/PR/` — PR diario con cambios y validaciones.
+- `docs/office_service.md` — detalles del microservicio LibreOffice/UNO.
+- `Templates/` — repositorio centralizado de plantillas (SLA, Repetitividad y futuras).
