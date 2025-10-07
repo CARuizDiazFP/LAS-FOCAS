@@ -43,6 +43,77 @@
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
 ## Informes
+### POST `/reports/repetitividad`
+
+Genera el informe de Repetitividad para un mes/año determinado a partir de un archivo Excel cargado por el usuario.
+
+#### Descripción general
+Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Opcionalmente, intenta generar un PDF (vía LibreOffice / `SOFFICE_BIN`) y, de ser exitoso, devuelve ambos archivos comprimidos en un ZIP.
+
+#### Parámetros (multipart/form-data)
+| Campo | Tipo | Requerido | Validación | Descripción |
+|-------|------|-----------|------------|-------------|
+| `file` | UploadFile (.xlsx) | Sí | Extensión `.xlsx` obligatoria | Archivo Excel con columnas mínimas: `CLIENTE`, `SERVICIO`, `FECHA` (YYYY-MM-DD). Columnas adicionales se ignoran. |
+| `periodo_mes` | int | Sí | 1 ≤ mes ≤ 12 | Mes del período a procesar |
+| `periodo_anio` | int | Sí | 2000 ≤ año ≤ 2100 | Año del período |
+| `incluir_pdf` | bool | No | Default `false` | Si es `true`, intenta adjuntar PDF (requiere LibreOffice disponible) |
+
+#### Respuestas
+1. 200 OK (DOCX)
+  - `Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+  - Devuelve directamente el archivo generado `repetitividad_<YYYY><MM>.docx`.
+2. 200 OK (ZIP cuando `incluir_pdf=true` y PDF generado)
+  - `Content-Type: application/zip`
+  - Contiene: `repetitividad_<YYYY><MM>.docx` y `repetitividad_<YYYY><MM>.pdf`.
+3. 400 Bad Request
+  - Archivo sin extensión `.xlsx` o parámetros inválidos.
+4. 500 Internal Server Error
+  - Errores de procesamiento (por ejemplo columnas faltantes o fallo en normalización) retornan detalle controlado.
+
+#### Encabezados personalizados
+| Header | Valores | Significado |
+|--------|---------|-------------|
+| `X-PDF-Requested` | `true` / `false` | Indica si el cliente solicitó PDF (`incluir_pdf=true`). |
+| `X-PDF-Generated` | `true` / `false` | Indica si el PDF fue efectivamente generado y agregado al ZIP. |
+
+#### Ejemplos
+Solicitud (cURL ilustrativo):
+```
+curl -X POST \
+  -F "file=@casos_julio.xlsx" \
+  -F "periodo_mes=7" \
+  -F "periodo_anio=2024" \
+  -F "incluir_pdf=true" \
+  http://localhost:8000/reports/repetitividad -OJ
+```
+
+Respuesta (ZIP) con encabezados:
+```
+HTTP/1.1 200 OK
+Content-Type: application/zip
+Content-Disposition: attachment; filename=repetitividad_202407.zip
+X-PDF-Requested: true
+X-PDF-Generated: true
+```
+
+#### Notas de implementación
+- La conversión a PDF se realiza sólo si `incluir_pdf=true` y `SOFFICE_BIN` apunta a un binario válido (modo directo) o se integra a futuro con `office_service`.
+- Si la conversión falla, se devuelve el DOCX sin elevar excepción (fail-safe) y `X-PDF-Generated=false`.
+- Los archivos se escriben en el directorio configurado (`REPORTS_DIR`). Limpiar o rotar periódicamente para evitar acumulación.
+- Validar tamaño máximo del Excel (pendiente: establecer límite y documentación — TODO).
+
+#### Seguridad y consideraciones
+- El endpoint no exige aún autenticación ni rate limiting: agregar API key / token interno (TODO) antes de exponer en ambientes sensibles.
+- Los datos cargados se procesan con `pandas` (openpyxl). No se evalúa código embebido en el XLSX.
+- Se recomienda escanear/limitar tamaño de archivo para mitigar ataques de compresión o payloads muy grandes.
+
+#### Códigos de error resumidos
+| Código | Causa principal | Mitigación |
+|--------|-----------------|------------|
+| 400 | Extensión distinta a `.xlsx` / parámetros fuera de rango | Corregir entrada |
+| 500 | Error de parsing / columnas faltantes / fallo en pipeline interno | Revisar formato de columnas requeridas |
+
+---
 ## NLP Intención
 
 ### POST `/v1/intent:classify` (DEPRECADO)
