@@ -86,3 +86,11 @@
 - Decisión: Cambiar el valor por defecto de `LLM_PROVIDER` a `openai` en `nlp_intent/app/config.py` y agregar validación fail-fast: si `OPENAI_API_KEY` no está presente y el proveedor es OpenAI el servicio aborta al iniciar. No se expone la clave en el repositorio; sigue suministrándose vía `.env` / secret.
 - Alternativas: Mantener "auto" y priorizar heurística; forzar uso de Ollama local (requiere modelo cargado y latencia variable); posponer hasta introducir generación completa. Se elige OpenAI para maximizar calidad inicial y reducir lógica condicional en esta fase.
 - Impacto: Despliegues sin `OPENAI_API_KEY` fallarán rápido (visibilidad operativa). Tests que dependan de `LLM_PROVIDER=heuristic` deberán fijar explícitamente la variable de entorno en el entorno de CI. Próximo paso: introducir endpoint de generación y memoria conversacional con almacenamiento en DB.
+
+## 2025-10-07 — Estado DEPRECATED del árbol `Legacy/`
+
+- **Contexto:** Se incorporó un árbol `Legacy/` (ej. código histórico de Sandy) únicamente para consulta offline y referencia durante la migración de informes. Este contenido no debe mezclarse ni evolucionar dentro del repositorio principal para evitar deuda técnica y riesgos de licenciamiento o incoherencias arquitectónicas.
+- **Decisión:** Marcar formalmente `Legacy/` como DEPRECATED y congelado. No se aceptarán PRs que modifiquen archivos bajo `Legacy/`. La carpeta permanece ignorada en `.gitignore` para nuevos archivos; los existentes no se alteran. No se harán copias directas de lógica sin: (1) revisión de licencias, (2) refactor a estándares actuales (PEP8, logging estructurado, tests), (3) documentación en `/docs`.
+- **Alternativas:** Eliminar completamente el árbol (perdería valor de referencia) o moverlo a un repositorio separado de solo lectura. Se pospone esa separación hasta finalizar la migración de todos los informes críticos.
+- **Impacto:** Reduce riesgo de reintroducir patrones obsoletos, clarifica el alcance para colaboradores y auditores. Facilita auditoría de cambios: cualquier modificación en `Legacy/` se considera señal de posible error de procedimiento.
+- **Acciones complementarias:** Añadir hook pre-commit (pendiente) que bloquee modificaciones futuras; actualizar `README.md` para informar el estado DEPRECATED. (Se añadirá en una iteración futura si se aprueba.)
