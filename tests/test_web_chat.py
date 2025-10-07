@@ -23,6 +23,7 @@ def test_health_ok() -> None:
 def test_chat_message_returns_json(monkeypatch) -> None:
     # Mock del clasificador para evitar IO
     async def _fake_classify(text: str):
+        # Simula respuesta antigua para endpoint deprecado; el nuevo endpoint de analyze se consume internamente.
         from web_app.main import IntentResponse
         return IntentResponse(intent="Consulta", confidence=0.9, provider="heuristic", normalized_text=text)
 
@@ -32,5 +33,7 @@ def test_chat_message_returns_json(monkeypatch) -> None:
     res = client.post("/api/chat/message", data={"text": "¿Cómo genero el SLA?"})
     assert res.status_code == 200
     data = res.json()
-    assert set(["reply", "intent", "confidence", "provider"]).issubset(data.keys())
-    assert data["intent"] in ("Consulta", "Acción", "Otros")
+    required = {"reply", "intention_raw", "intention", "confidence", "provider"}
+    assert required.issubset(data.keys())
+    assert data["intention_raw"] in ("Consulta", "Acción", "Otros")
+    assert data["intention"] in ("Consulta/Generico", "Solicitud de acción", "Otros")

@@ -8,7 +8,7 @@
 
 Servicio FastAPI que expone:
 - UI dark-style con barra de botones (SLA, Repetitividad, Comparador FO).
-- Chat REST que integra `nlp_intent` para clasificación de intención.
+- Chat REST que integra `nlp_intent` para clasificación de intención y persistencia de conversación.
 
 ## Estructura y archivo principal
 
@@ -39,21 +39,37 @@ Centralizado vía `core.logging.setup_logging`.
 - POST /login → autentica con app.web_users (bcrypt). Rate limit: 5/min por sesión.
 - GET /logout → cierra sesión.
 - GET / → panel (requiere sesión). Inyecta API_BASE y CSRF en la plantilla.
-- POST /api/chat/message → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min por sesión.
+- POST /api/chat/message → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min por sesión. Devuelve `conversation_id` y `history` (≤6 últimos mensajes) cuando hay sesión.
+- GET /api/chat/history?limit=N → devuelve últimos N (máx 100) mensajes y `conversation_id` del usuario autenticado.
+- GET /api/chat/metrics → métricas simples en memoria (`intent_counts`). Uso interno/debug, se reinicia al reiniciar el contenedor.
 - POST /api/users/change-password → Cambiar contraseña del usuario autenticado. Form fields: current_password, new_password, csrf_token. Respuestas: {status:"ok"} o {error}.
 - POST /api/admin/users → Crear usuario (sólo admin). Form fields: username, password, role?, csrf_token. Respuestas: {status:"ok"} o {error}.
  - POST /api/flows/sla → Ejecuta flujo de SLA. FormData: file, mes, anio, csrf_token. Responde enlaces /reports/*.docx[.pdf].
- - POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad. FormData: file, mes, anio, csrf_token.
+- POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad usando `modules.informes_repetitividad.service.generate_report` (FormData: file, mes, anio, csrf_token).
  - POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
 
-Respuesta típica de /api/chat/message:
+Respuesta típica de /api/chat/message (nuevo pipeline):
 
 ```json
 {
-  "reply": "string",
-  "intent": "Consulta|Acción|Otros",
-  "confidence": 0.0,
-  "provider": "heuristic|ollama|openai"
+  "reply": "texto placeholder o pregunta",
+  "intention_raw": "Consulta|Acción|Otros",
+  "intention": "Consulta/Generico|Solicitud de acción|Otros",
+  "confidence": 0.88,
+  "provider": "openai",
+  "normalized_text": "...",
+  "need_clarification": false,
+  "clarification_question": null,
+  "next_action": null,
+  "action_code": "repetitividad_report|unsupported|null",
+  "action_supported": true,
+  "action_reason": "keyword:repetitividad,verb:accion",
+  "answer": "(si es consulta)",
+  "answer_source": "faq|openai|ollama|heuristic|disabled",
+  "domain_confidence": 0.9,
+  "schema_version": 2,
+  "conversation_id": 12,
+  "history": [ {"role":"user", "text":"hola"}, {"role":"assistant", "text":"¿Podrías ampliar?"} ]
 }
 ```
 
@@ -71,6 +87,30 @@ Respuesta típica de /api/chat/message:
 - `LOG_RAW_TEXT` ("true"/"false")
 - `WEB_SECRET_KEY` (secreto para la cookie de sesión; obligatorio en prod)
 - `API_BASE` (opcional; base usada por la plantilla para el frontend)
+- `TEMPLATES_DIR` (ruta interna a las plantillas de informes; por convención apuntar a `Templates/` en la raíz del repo o al volumen montado en Docker).
+- `REPORTS_API_BASE` (base del servicio API para `POST /reports/*`; default `http://api:8000`).
+- `REPORTS_API_TIMEOUT` (timeout en segundos para la consulta al servicio de reportes; default `60`).
+
+### Nota sobre OpenAI (clasificación de intención)
+### Memoria conversacional (persistencia)
+
+El endpoint `/api/chat/message` persiste mensajes (rol `user` y `assistant`) en las tablas `app.conversations` y `app.messages` reutilizando un pseudo-id derivado del `username` (hash sha256 truncado). Esto permite en iteraciones futuras:
+- Recuperar contexto para generación de respuestas.
+- Auditar interacciones.
+- Extender a analíticas (tiempo entre turnos, intents frecuentes).
+
+El payload ahora incluye `conversation_id` y `history` (últimos ≤6 mensajes) cuando el usuario está autenticado. `conversation_id` permite correlación y posteriores recuperaciones vía `/api/chat/history`.
+
+Sanitización: antes de enviar el texto al servicio NLP se filtran caracteres de control Unicode (categoría C) excepto salto de línea y tabulaciones para reducir ruido y riesgos de logs corruptos.
+
+Métricas: contador en memoria `INTENT_COUNTER` incrementa por intención mapeada y se expone en `/api/chat/metrics` (reinicia en cada despliegue; persistencia futura pendiente).
+Persistencia de métricas (MVP): si `METRICS_PERSIST_PATH` está definido (default `data/intent_metrics.json`) se guarda el JSON tras cada incremento mediante reemplazo atómico (archivo `.tmp`).
+
+El servicio `nlp_intent` ahora arranca con `LLM_PROVIDER=openai` por defecto. Esto implica:
+- Debe definirse `OPENAI_API_KEY` en `.env` / secretos antes de levantar el contenedor.
+- Si la clave falta, el servicio falla en el arranque (fail-fast) para evitar clasificaciones inconsistentes.
+- Para pruebas sin costo o sin conectividad se puede exportar temporalmente `LLM_PROVIDER=heuristic` o `LLM_PROVIDER=auto` (con fallback a heurística) siempre que se ajusten los tests a esa configuración.
+- `OLLAMA_URL` sigue presente para futura generación local o fallback manual, pero no se usa mientras `LLM_PROVIDER=openai`.
 
 ## Docker/Compose
 
@@ -78,7 +118,8 @@ Respuesta típica de /api/chat/message:
 - `api` remapeado a `8001:8000` para evitar conflicto en la VM.
 - Por defecto, la UI y `nlp_intent` usan Ollama externo vía `http://host.docker.internal:11434` (se añade `extra_hosts` al compose).
 - Alternativa: ejecutar `./Start --with-internal-ollama` para levantar un servicio `ollama` interno al stack.
- - El servicio `web` expone `/reports` como estático para descargar los resultados.
+- El servicio `web` expone `/reports` como estático para descargar los resultados.
+- `web` monta `../Templates:/app/Templates:ro` para consumir las plantillas oficiales al invocar la API de reportes.
 
 ## Conectividad y troubleshooting
 

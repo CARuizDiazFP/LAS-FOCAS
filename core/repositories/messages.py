@@ -52,3 +52,31 @@ def insert_message(
             "confidence": confidence,
         },
     )
+
+
+def get_last_messages(conn: psycopg.Connection, conversation_id: int, limit: int = 10) -> list[dict]:
+    """Recupera los últimos mensajes de una conversación (orden cronológico)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT role, text, intent, confidence, provider, created_at
+            FROM app.messages
+            WHERE conversation_id=%s
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (conversation_id, limit),
+        )
+        rows = cur.fetchall()
+    result = [
+        {
+            "role": r[0],
+            "text": r[1],
+            "intent": r[2],
+            "confidence": float(r[3]) if r[3] is not None else None,
+            "provider": r[4],
+            "created_at": r[5].isoformat() if r[5] else None,
+        }
+        for r in reversed(rows)
+    ]
+    return result

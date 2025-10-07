@@ -27,3 +27,13 @@ def classify(text: str) -> Tuple[str, float]:
     return "Otros", 0.5
 
 
+def clarify_question(text: str, max_words: int = 6) -> str:
+    """Genera una pregunta simple de aclaración basada en un fragmento inicial.
+
+    No usa LLM; útil como fallback económico.
+    """
+    words = [w for w in re.split(r"\s+", text.strip()) if w]
+    fragment = " ".join(words[:max_words]) if words else "tu mensaje"
+    return f"¿Podrías dar más detalles sobre '{fragment}'?"
+
+

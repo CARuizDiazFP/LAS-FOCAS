@@ -1,6 +1,6 @@
 # Nombre de archivo: Start
 # Ubicación de archivo: Start
-# Descripción: Script para levantar el stack mínimo (DB, NLP, API y Web). Ollama debe existir externamente.
+# Descripción: Script mejorado para reiniciar stack mínimo (DB, NLP, API, Web, Office) con validaciones y healthchecks internos. IP fija 192.168.241.28 requerida en VM.
 
 #!/usr/bin/env bash
 set -euo pipefail
@@ -14,10 +14,57 @@ NC='\033[0m'
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$ROOT_DIR/deploy/compose.yml"
 
-echo -e "${GREEN}=== LAS-FOCAS :: Start ===${NC}"
+HOST_IP="192.168.241.28" # Requerido según infraestructura de la VM
 
-# 1) Verificaciones rápidas
+SERVICES=(postgres nlp_intent api web office)
+CRITICAL=(postgres api web nlp_intent office)
+
+DO_DOWN=true
+PURGE=false
+REBUILD_FRONTEND=false
+NO_COLOR=false
+
+usage() {
+  cat <<EOF
+Uso: ./Start [opciones]
+
+Opciones:
+  --no-down             No ejecutar 'docker compose down' previo (reutiliza contenedores existentes)
+  --purge               Down + elimina volúmenes e imágenes locales de servicios mínimos
+  --rebuild-frontend    Fuerza rebuild sin cache de la imagen web (frontend npm)
+  --no-color            Deshabilita colores en salida
+  -h, --help            Muestra esta ayuda
+
+Ejemplos:
+  ./Start                 Reinicia limpio y levanta stack mínimo
+  ./Start --rebuild-frontend  Fuerza recompilación del frontend
+  ./Start --purge         Reinicio completo (pierde datos de DB)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-down) DO_DOWN=false ;;
+    --purge) PURGE=true ;;
+    --rebuild-frontend) REBUILD_FRONTEND=true ;;
+    --no-color) NO_COLOR=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo -e "${YELLOW}Opción desconocida: $1${NC}"; usage; exit 1 ;;
+  esac
+  shift
+done
+
+if $NO_COLOR; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
+
+echo -e "${GREEN}=== LAS-FOCAS :: Start (stack mínimo) ===${NC}"
+
+########################################
+# 1) Verificaciones rápidas del host   #
+########################################
 command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker no está instalado en el PATH${NC}"; exit 1; }
+if ! docker compose version >/dev/null 2>&1; then
+  echo -e "${RED}No se encontró 'docker compose' plugin (v2).${NC}"; exit 1
+fi
 
 if [ ! -f "$ROOT_DIR/.env" ]; then
   echo -e "${YELLOW}No existe .env en la raíz. Creando desde deploy/env.sample...${NC}"
@@ -25,33 +72,130 @@ if [ ! -f "$ROOT_DIR/.env" ]; then
   echo -e "${YELLOW}Revisá y ajustá credenciales en .env antes de producción.${NC}"
 fi
 
-# 2) Levantar stack mínimo: postgres, nlp_intent, api, web (se usa Ollama externo existente)
-echo -e "${GREEN}Levantando servicios mínimos (usa Ollama externo existente en host:11434)${NC}"
+########################################
+# 2) Reinicio / Limpieza                #
+########################################
+if $DO_DOWN; then
+  echo -e "${GREEN}Deteniendo stack anterior...${NC}"
+  if $PURGE; then
+    echo -e "${YELLOW}PURGE activado: se eliminarán volúmenes e imágenes locales de servicios mínimos.${NC}"
+    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans || true
+    # Limpieza de imágenes locales (scope limitado a nombre de proyecto lasfocas)
+    for s in "${SERVICES[@]}"; do
+      img_id=$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '/lasfocas/ && /'"$s"'/ {print $2}' | head -n1)
+      if [ -n "$img_id" ]; then docker rmi "$img_id" >/dev/null 2>&1 || true; fi
+    done
+  else
+    docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
+  fi
+fi
 
-docker compose -f "$COMPOSE_FILE" up -d --build postgres
+########################################
+# 3) Build & Up                         #
+########################################
+UP_CMD=(docker compose -f "$COMPOSE_FILE" up -d --build)
+if $REBUILD_FRONTEND; then
+  echo -e "${YELLOW}Forzando rebuild sin cache para servicio web (frontend)...${NC}"
+  docker compose -f "$COMPOSE_FILE" build --no-cache web
+fi
 
-docker compose -f "$COMPOSE_FILE" up -d --build nlp_intent
-docker compose -f "$COMPOSE_FILE" up -d --build api
-docker compose -f "$COMPOSE_FILE" up -d --build web
+echo -e "${GREEN}Levantando servicios mínimos: ${SERVICES[*]}${NC}"
+"${UP_CMD[@]}" "${SERVICES[@]}"
 
-echo -e "${GREEN}Servicios solicitados levantados. Comprobando health...${NC}"
+########################################
+# 4) Health checks                      #
+########################################
+declare -A HEALTH_RESULTS
 
-check() {
-  local name="$1" url="$2" max=20 delay=3
+check_http() {
+  local name="$1" url="$2" max=30 delay=3
   for i in $(seq 1 $max); do
     if curl -fsS "$url" >/dev/null 2>&1; then
       echo -e "${GREEN}OK${NC} $name -> $url"
+      HEALTH_RESULTS[$name]=OK
       return 0
     fi
-    echo -e "${YELLOW}Esperando $name... ($i/$max)${NC}"; sleep "$delay"
+    echo -e "${YELLOW}Esperando $name (externo) $i/$max...${NC}"; sleep "$delay"
   done
-  echo -e "${RED}Timeout esperando $name en $url${NC}"; return 1
+  echo -e "${RED}Timeout $name (${url})${NC}"; HEALTH_RESULTS[$name]=FAIL; return 1
 }
 
-check "API" "http://localhost:8001/health" || true
-check "WEB" "http://192.168.241.28:8080/health" || true
-check "NLP" "http://localhost:8100/health" || true
-check "Ollama" "http://localhost:11434/api/tags" || true
+# Fallback: intenta localhost primero y si falla reintenta con IP fija
+check_http_dual() {
+  local name="$1" primary="$2" fallback="$3" max=30 delay=3
+  for i in $(seq 1 $max); do
+    if curl -fsS "$primary" >/dev/null 2>&1; then
+      echo -e "${GREEN}OK${NC} $name -> $primary"
+      HEALTH_RESULTS[$name]=OK; return 0
+    fi
+    # A partir del intento 6 probar también fallback
+    if [ $i -ge 6 ]; then
+      if curl -fsS "$fallback" >/dev/null 2>&1; then
+        echo -e "${GREEN}OK${NC} $name -> $fallback (fallback)"
+        HEALTH_RESULTS[$name]=OK; return 0
+      fi
+    fi
+    echo -e "${YELLOW}Esperando $name (dual) $i/$max...${NC}"; sleep "$delay"
+  done
+  echo -e "${RED}Timeout $name (${primary} / ${fallback})${NC}"; HEALTH_RESULTS[$name]=FAIL; return 1
+}
 
-echo -e "${GREEN}Listo. UI: http://192.168.241.28:8080/  |  API: http://localhost:8001/docs${NC}"
-echo -e "${YELLOW}Nota:${NC} se utiliza un servicio Ollama externo (host:11434). Verificá que esté en ejecución."
+# Chequeo interno usando Python (urllib) dentro del contenedor, evita dependencia de curl
+check_internal() {
+  local name="$1" service="$2" url="$3" max=30 delay=3
+  for i in $(seq 1 $max); do
+    if docker compose -f "$COMPOSE_FILE" exec -T "$service" python - "$url" <<'PY' >/dev/null 2>&1; then
+import sys, urllib.request
+url = sys.argv[1]
+try:
+    with urllib.request.urlopen(url, timeout=5) as r:
+        if r.status == 200:
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+      echo -e "${GREEN}OK${NC} $name (interno $service -> $url)"
+      HEALTH_RESULTS[$name]=OK; return 0
+    fi
+    echo -e "${YELLOW}Esperando $name (interno) $i/$max...${NC}"; sleep "$delay"
+  done
+  echo -e "${RED}Timeout $name (interno $service -> $url)${NC}"; HEALTH_RESULTS[$name]=FAIL; return 1
+}
+
+echo -e "${GREEN}Comprobando health de servicios...${NC}"
+check_http    "API"        "http://localhost:8001/health" || true
+check_http_dual "WEB"      "http://localhost:8080/health" "http://$HOST_IP:8080/health" || true
+check_internal "NLP"        "nlp_intent"  "http://localhost:8100/health" || true
+check_internal "LibreOffice" "office"     "http://localhost:8090/health" || true
+
+# Ollama externo (warning si falla)
+if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
+  echo -e "${GREEN}OK${NC} Ollama externo"; HEALTH_RESULTS[Ollama]=OK
+else
+  echo -e "${YELLOW}WARN${NC} Ollama no respondió en http://localhost:11434 (modo degradado NLP)"; HEALTH_RESULTS[Ollama]=WARN
+fi
+
+########################################
+# 5) Resumen                            #
+########################################
+echo -e "\n${GREEN}Resumen de health:${NC}"
+FAIL_COUNT=0
+for comp in API WEB NLP LibreOffice; do
+  state=${HEALTH_RESULTS[$comp]:-FAIL}
+  if [ "$state" = "OK" ]; then
+    echo -e "  $comp: ${GREEN}OK${NC}"
+  else
+    echo -e "  $comp: ${RED}FAIL${NC}"; ((FAIL_COUNT++)) || true
+  fi
+done
+echo -e "  Ollama: ${HEALTH_RESULTS[Ollama]:-NOCHK}"
+
+if [ $FAIL_COUNT -gt 0 ]; then
+  echo -e "${RED}Uno o más servicios críticos no pasaron health. Revisar logs con:${NC}"
+  echo "  docker compose -f deploy/compose.yml logs -f"
+  exit 2
+fi
+
+echo -e "${GREEN}Listo.${NC} UI: http://$HOST_IP:8080/  |  API: http://localhost:8001/docs"
+echo -e "${YELLOW}Nota:${NC} IP fija forzada ($HOST_IP). Ollama externo en :11434."

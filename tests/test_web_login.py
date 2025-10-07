@@ -10,7 +10,7 @@ from typing import Any, Optional
 sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient  # type: ignore
-from passlib.hash import bcrypt  # type: ignore
+from core.password import hash_password
 from web_app.main import app  # type: ignore
 
 
@@ -52,7 +52,7 @@ class _Conn:
 
 
 def _mock_connect_ok(username: str, password: str, role: str = "admin"):
-    pwd_hash = bcrypt.hash(password)
+    pwd_hash = hash_password(password)
 
     def _connect(dsn: str):  # type: ignore
         # Devuelve fila si username coincide

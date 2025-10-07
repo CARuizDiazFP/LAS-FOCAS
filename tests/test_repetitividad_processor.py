@@ -41,3 +41,27 @@ def test_compute_repetitividad_varios_servicios():
     assert res.total_repetitivos == 2
     servicios = {item.servicio: item.casos for item in res.items}
     assert servicios == {"S1": 2, "S2": 2}
+
+
+def test_normalize_falla_si_faltan_columnas():
+    datos = [{"CLIENTE": "A", "OTRA": "x"}]
+    df = pd.DataFrame(datos)
+    try:
+        processor.normalize(df)
+    except ValueError as exc:
+        assert "Faltan columnas requeridas" in str(exc)
+    else:  # pragma: no cover - sanity
+        raise AssertionError("normalize debería fallar")
+
+
+def test_detalles_sin_id_servicio_usa_indice():
+    datos = [
+        {"CLIENTE": "A", "SERVICIO": "S1", "FECHA": "2024-07-01"},
+        {"CLIENTE": "A", "SERVICIO": "S1", "FECHA": "2024-07-05"},
+    ]
+    df = pd.DataFrame(datos)
+    df = processor.normalize(df)
+    df = processor.filter_period(df, 7, 2024)
+    res = processor.compute_repetitividad(df)
+
+    assert res.items[0].detalles == ["0", "1"]

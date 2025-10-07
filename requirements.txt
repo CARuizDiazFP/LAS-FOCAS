@@ -10,9 +10,10 @@ psycopg[binary]==3.1.19  # Driver PostgreSQL en formato binario
 orjson==3.10.6  # Serializador JSON de alto rendimiento (unificado)
 jinja2==3.1.4  # Motor de plantillas para UI
 python-multipart==0.0.9  # Soporte de formularios para FastAPI
-passlib[bcrypt]==1.7.4  # Hash de contraseñas para login
+bcrypt==4.1.2  # Hash de contraseñas (uso directo sin Passlib)
 itsdangerous==2.2.0  # Firmas para sesiones (SessionMiddleware)
 pydantic==2.9.2  # Modelos y validación (usado en schemas de módulos)
+pydantic-settings==2.4.0  # Configuración basada en BaseSettings (PYD v2)
 pandas==2.2.2  # Procesamiento de datos para informes
 openpyxl==3.1.2  # Lectura de Excel para pandas
 python-docx==0.8.11  # Generación de documentos DOCX para informes

@@ -10,7 +10,7 @@ from typing import Any, Optional
 sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient  # type: ignore
-from passlib.hash import bcrypt  # type: ignore
+from core.password import hash_password
 from web_app.main import app  # type: ignore
 
 
@@ -59,7 +59,7 @@ class _Conn:
 
 
 def _connect_admin_ok(password: str = "admin"):
-    pwd_hash = bcrypt.hash(password)
+    pwd_hash = hash_password(password)
 
     def _connect(dsn: str):  # type: ignore
         # Devuelve fila de admin al consultar web_users
@@ -69,7 +69,7 @@ def _connect_admin_ok(password: str = "admin"):
 
 
 def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = bcrypt.hash(password)
+    pwd_hash = hash_password(password)
 
     def _connect(dsn: str):  # type: ignore
         return _Conn({"default": (pwd_hash, "user")})

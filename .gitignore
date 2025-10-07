@@ -57,3 +57,7 @@ docker-data/
 # Datos de informes
 data/uploads/
 data/reports/
+Reports/
+
+# Repositorios legacy
+Legacy/

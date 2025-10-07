@@ -5,6 +5,8 @@
 ## Variables requeridas (.env)
 - TELEGRAM_BOT_TOKEN=...
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
+- REPORTS_API_BASE=http://api:8000 *(endpoint REST para generar informes)*
+- REPORTS_API_TIMEOUT=60 *(opcional, segundos de espera para la llamada)*
 
 ## Arranque con Docker
 ```bash
@@ -35,7 +37,7 @@ Botones disponibles:
 - 📊 Informe de Repetitividad
 - ❌ Cerrar
 
-Los flujos de **Repetitividad** y **SLA** están operativos.
+Los flujos de **Repetitividad** y **SLA** están operativos. Repetitividad consume el endpoint `POST /reports/repetitividad` de la API y reutiliza el mismo backend que la UI web.
 
 Ejemplos de frases que abren el menú por intención:
 

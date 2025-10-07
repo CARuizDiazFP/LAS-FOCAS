@@ -92,18 +92,23 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Endpoints admin: crear usuario y cambiar contraseña (roles: admin/ownergroup/invitado).
 - [x] UI mínima /admin y tests de login/admin (8 pruebas).
 - [x] Hashing centralizado en `core/password.py` para el panel web y scripts (bcrypt only).
+- [x] Flujos de repetitividad (web y bot) delegan en `modules.informes_repetitividad.service.generate_report` con pruebas para PDF/DOCX (2025-10-03).
 
 ### Pendiente (prioridad)
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [ ] Disparadores de flujos desde la UI.
-- [ ] Documentación específica `docs/web.md` y README (agregar ejemplos de admin y variables).
+- [ ] Documentar en `docs/api.md` y `docs/web.md` los headers `X-PDF-*` y el nuevo comportamiento opcional del PDF.
 - [ ] Unificar versiones FastAPI/pydantic (root vs `office_service`).
 - [ ] Validaciones de tamaño y tipo en `/reports/repetitividad`.
-- [ ] Test para rama `incluir_pdf` (mock).
+- [x] Pruebas automatizadas para `POST /api/flows/repetitividad` (web) cubriendo paths feliz y errores.
+- [ ] Pruebas FSM del flujo Telegram de repetitividad (aiogram) con escenarios de error/éxito.
 - [ ] Documentar endpoint `/reports/repetitividad` en `docs/api.md`.
 - [ ] Entrada decisiones sobre hashes de plantillas y versión unificada FastAPI.
 - [ ] Auth (API key) básica para `/reports/*`.
 - [ ] Tests dedicados `core/password.needs_rehash`.
+- [x] Casos negativos del endpoint `/reports/repetitividad` (extensiones inválidas, fallos del runner, `incluir_pdf` sin PDF).
+- [x] Cobertura adicional para `modules.informes_repetitividad.processor.normalize` y `_detalles`.
+- [ ] Autenticación / limits adicionales para `/reports/repetitividad` (API key, tamaño máximo) y pruebas asociadas.
 
 ### Notas operativas
 - Script `./Start` disponible en la raíz para levantar el stack mínimo (Postgres, Ollama, NLP, API en 8001 y Web en 8080).
@@ -124,3 +129,4 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - `docs/PR/` — PR diario con cambios y validaciones.
 - `docs/office_service.md` — detalles del microservicio LibreOffice/UNO.
 - `Templates/` — repositorio centralizado de plantillas (SLA, Repetitividad y futuras).
+- `docs/api.md` — endpoints disponibles (incluye `/reports/repetitividad`).

@@ -74,6 +74,10 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
         │ nlp_intent    │  ← Clasificación de intención
         └───────────────┘
 
+        ┌────────────────────────┐
+        │ LibreOffice Service    │ ← Conversión de documentos vía UNO
+        └────────────────────────┘
+
         ┌─────────┐
         │ Notion/Email   │  (Integraciones)
         └─────────┘
@@ -112,11 +116,21 @@ las-focas/
 ├─ deploy/
 ├─ docs/
 ├─ tests/
+├─ Templates/
+├─ office_service/
 ├─ .env
 ├─ .gitignore
 ├─ LICENSE
 └─ README.md
 ```
+
+**Plantillas**
+
+- `Templates/` concentra todas las plantillas productivas (SLA, Repetitividad y futuras). Mantener los archivos maestros en este directorio y versionar cambios junto con la documentación del flujo correspondiente.
+
+**Workers**
+
+- `repetitividad_worker` (perfil `reports-worker`) encapsula `geopandas/contextily` para generar mapas sin incrementar el tamaño de los servicios principales.
 
 ---
 
@@ -147,13 +161,24 @@ OLLAMA_URL=http://ollama:11434
 INTENT_THRESHOLD=0.7
 LANG=es
 LOG_RAW_TEXT=false
-SLA_TEMPLATE_PATH=/app/templates/sla.docx
-REP_TEMPLATE_PATH=/app/templates/repetitividad.docx
+TEMPLATES_DIR=/app/Templates
+SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx
+REP_TEMPLATE_PATH=${TEMPLATES_DIR}/Plantilla_Informe_Repetitividad.docx
 REPORTS_DIR=/app/data/reports
 UPLOADS_DIR=/app/data/uploads
 SOFFICE_BIN=/usr/bin/soffice
 MAPS_ENABLED=false
 MAPS_LIGHTWEIGHT=true
+# Plantillas (host)
+# TEMPLATES_HOST_DIR=./Templates
+# LibreOffice Service
+OFFICE_ENABLE_UNO=true
+OFFICE_LOG_LEVEL=INFO
+OFFICE_SOFFICE_PORT=2002
+OFFICE_SOFFICE_CONNECT_HOST=127.0.0.1
+# API de reportes
+REPORTS_API_BASE=http://api:8000
+REPORTS_API_TIMEOUT=60
 ```
 
 ---
@@ -261,4 +286,3 @@ docker compose -f deploy/compose.yml up -d --build
 MIT: libre uso/modificación con aviso de copyright.
 
 ---
-

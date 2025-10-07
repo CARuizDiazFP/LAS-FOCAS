@@ -7,12 +7,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # Paths configurables mediante variables de entorno
-REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", "/app/templates/repetitividad.docx"))
+TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", "/app/Templates"))
+REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", TEMPLATES_DIR / "Plantilla_Informe_Repetitividad.docx"))
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
 SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
 MAPS_ENABLED: bool = os.getenv("MAPS_ENABLED", "false").lower() == "true"
 MAPS_LIGHTWEIGHT: bool = os.getenv("MAPS_LIGHTWEIGHT", "true").lower() == "true"
+REPORTS_API_BASE = os.getenv("REPORTS_API_BASE", "http://api:8000")
+REPORTS_API_TIMEOUT = float(os.getenv("REPORTS_API_TIMEOUT", "60"))
 
 # Alias para compatibilidad con otros módulos
 BASE_UPLOADS = UPLOADS_DIR

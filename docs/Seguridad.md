@@ -32,6 +32,7 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Tratamiento de errores con timeouts (HTTP 15s por defecto) y reintentos con backoff.
 - Logs estructurados con metadatos (service, action, request_id, timestamps) y prudencia en datos sensibles.
 - Auditoría básica de dependencias antes de incorporarlas.
+- Servicios web/bot llaman al API de reportes mediante `REPORTS_API_BASE`; asegúrese de que apunte a la red interna (`http://api:8000`).
 
 ## Riesgos comunes a considerar
 
@@ -84,3 +85,4 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Automatizar escaneo de vulnerabilidades en CI.
 - Endurecer headers/CORS en servicios web.
 - Revisión periódica de permisos en DB y contenedores.
+- Definir controles de validación/sandbox para el microservicio LibreOffice (`office_service`).

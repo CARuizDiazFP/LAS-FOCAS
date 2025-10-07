@@ -20,8 +20,11 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip && pip install -r requirements.txt
 
 # Copiamos el código de la app
-COPY app /app/app
-COPY api_app /app/api_app
+COPY api/app /app/app
+COPY api/api_app /app/api_app
+# Incluir módulos compartidos y core (logging, servicios comunes)
+COPY modules /app/modules
+COPY core /app/core
 
 EXPOSE 8000
 

@@ -12,7 +12,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 from modules.common.libreoffice_export import convert_to_pdf
-from .config import MESES_ES
+from .config import MESES_ES, REP_TEMPLATE_PATH
 from .schemas import Params, ResultadoRepetitividad
 
 logger = logging.getLogger(__name__)
@@ -25,11 +25,29 @@ def _header_cell(cell, text: str) -> None:
     cell._tc.get_or_add_tcPr().append(shading)
 
 
+def _load_template() -> Document:
+    """Carga la plantilla oficial o crea un documento vacío como fallback."""
+
+    if REP_TEMPLATE_PATH.exists():
+        try:
+            return Document(str(REP_TEMPLATE_PATH))
+        except Exception:  # pragma: no cover - logging
+            logger.exception("action=load_template error path=%s", REP_TEMPLATE_PATH)
+    else:
+        logger.warning("Plantilla de repetitividad no encontrada en %s", REP_TEMPLATE_PATH)
+    return Document()
+
+
 def export_docx(data: ResultadoRepetitividad, periodo: Params, out_dir: str) -> str:
     """Genera el archivo DOCX con la tabla de repetitividad."""
+
     mes_nombre = MESES_ES[periodo.periodo_mes - 1].capitalize()
-    doc = Document()
-    doc.add_heading(f"Informe de Repetitividad — {mes_nombre} {periodo.periodo_anio}", level=1)
+    doc = _load_template()
+
+    doc.add_heading(
+        f"Informe de Repetitividad — {mes_nombre} {periodo.periodo_anio}",
+        level=1,
+    )
 
     doc.add_paragraph(
         f"Servicios analizados: {data.total_servicios} | Servicios con repetitividad: {data.total_repetitivos}",
@@ -63,8 +81,19 @@ def export_docx(data: ResultadoRepetitividad, periodo: Params, out_dir: str) -> 
 
 def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
     """Convierte el DOCX a PDF si LibreOffice está disponible."""
+
     if not soffice_bin:
+        logger.debug("action=maybe_export_pdf reason=missing_binary")
         return None
+
+    binary_path = Path(soffice_bin)
+    if not binary_path.exists():
+        logger.info(
+            "action=maybe_export_pdf reason=binary_not_found soffice_bin=%s",
+            soffice_bin,
+        )
+        return None
+
     try:
         return convert_to_pdf(docx_path, soffice_bin)
     except Exception:  # pragma: no cover - logging

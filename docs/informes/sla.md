@@ -37,7 +37,8 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 - Archivos en `/app/data/reports/` dentro del contenedor.
 
 ## Variables de entorno
-- `SLA_TEMPLATE_PATH=/app/templates/sla.docx` ruta de la plantilla.
+- `TEMPLATES_DIR=/app/Templates` (opcional) ruta base de plantillas.
+- `SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx` ruta de la plantilla oficial.
 - `REPORTS_DIR=/app/data/reports` destino de los informes.
 - `UPLOADS_DIR=/app/data/uploads` ubicación temporal de archivos subidos.
 - `SOFFICE_BIN=/usr/bin/soffice` para habilitar PDF (opcional).

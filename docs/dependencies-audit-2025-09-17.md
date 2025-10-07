@@ -11,6 +11,8 @@ Este reporte resume el estado de dependencias Python por servicio, cambios aplic
 
 - Importaciones detectadas en el workspace: fastapi, starlette, httpx, sqlalchemy, psycopg, passlib[bcrypt], jinja2, orjson, pydantic, pandas, openpyxl, python-docx.
 - `modules/` usa: pandas, pydantic (modelos), python-docx (generación .docx) y `modules/common/libreoffice_export.py` para convertir a PDF con LibreOffice.
+- **Actualización 2025-09-29:** `passlib` se retiró del stack; el hashing queda a cargo de `core/password.py` usando `bcrypt` nativo.
+- **Actualización 2025-09-29:** el bot incorpora `httpx` para consumir la API de reportes.
 - `bot_telegram/` usa: aiogram, pandas, openpyxl, python-docx (alineado con su requirements).
 
 ## Cambios aplicados

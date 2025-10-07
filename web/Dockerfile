@@ -31,6 +31,7 @@ COPY web/static /app/static
 COPY web/tools /app/tools
 # Incluir paquete core para logging centralizado
 COPY core /app/core
+COPY modules /app/modules
 COPY --from=web-build /frontend/dist /app/static/assets
 
 EXPOSE 8080

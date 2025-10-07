@@ -53,7 +53,9 @@ def apply_sla_target(df: pd.DataFrame) -> pd.DataFrame:
         df["SLA_OBJETIVO_HORAS"] = df["SLA_OBJETIVO_HORAS"].fillna(
             df["SERVICIO"].map(SLA_POR_SERVICIO)
         )
-        df["SLA_OBJETIVO_HORAS"].fillna(SLA_POR_SERVICIO.get("Default", 24.0), inplace=True)
+        df["SLA_OBJETIVO_HORAS"] = df["SLA_OBJETIVO_HORAS"].fillna(
+            SLA_POR_SERVICIO.get("Default", 24.0)
+        )
     return df
 
 

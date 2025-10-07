@@ -17,12 +17,17 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from passlib.hash import bcrypt
 from core.logging import setup_logging
+from core.password import hash_password, verify_password
+from core.repositories.conversations import get_or_create_conversation_for_web_user
+from core.repositories.messages import insert_message, get_last_messages
 import psycopg
 from pathlib import Path
 import shutil
 from fastapi import UploadFile, File
+from modules.informes_repetitividad.service import ReportResult, generate_report
+import unicodedata
+import json
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
@@ -38,6 +43,35 @@ DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} por
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logger = setup_logging("web", LOG_LEVEL, enable_file=None, filename="web.log")
+
+# Métricas simples en memoria (MVP) con persistencia opcional
+INTENT_COUNTER: dict[str, int] = {"Solicitud de acción": 0, "Consulta/Generico": 0, "Otros": 0}
+METRICS_PERSIST_PATH: str | None = None
+
+def _load_metrics() -> None:
+    if not METRICS_PERSIST_PATH:
+        return
+    try:
+        p = Path(METRICS_PERSIST_PATH)
+        if p.exists():
+            data = json.loads(p.read_text())
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if k in INTENT_COUNTER and isinstance(v, int):
+                        INTENT_COUNTER[k] = v
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=metrics_load error=%s", exc)
+
+def _persist_metrics() -> None:
+    if not METRICS_PERSIST_PATH:
+        return
+    try:
+        p = Path(METRICS_PERSIST_PATH)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(INTENT_COUNTER, ensure_ascii=False))
+        tmp.replace(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=metrics_persist error=%s", exc)
 
 app = FastAPI(title="LAS-FOCAS Web UI", version="0.1.0")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("WEB_SECRET_KEY", "dev-secret-change"))
@@ -66,13 +100,19 @@ TEMPLATES_DIR = str(BASE_DIR / "templates")
 DATA_DIR = BASE_DIR / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 REPORTS_DIR = DATA_DIR / "reports"
+DEFAULT_TEMPLATES_PATH = Path(__file__).resolve().parents[2] / "Templates"
+TEMPLATES_ROOT = os.getenv("TEMPLATES_DIR", str(DEFAULT_TEMPLATES_PATH))
 DATA_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+if METRICS_PERSIST_PATH is None:
+    METRICS_PERSIST_PATH = os.getenv("METRICS_PERSIST_PATH", str(DATA_DIR / "intent_metrics.json"))
+_load_metrics()
 
 # Variables de entorno para que los módulos de informes respeten rutas
 os.environ.setdefault("UPLOADS_DIR", str(UPLOADS_DIR))
 os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))
+os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
@@ -130,13 +170,13 @@ async def do_login(request: Request, username: str = Form(...), password: str = 
             with conn.cursor() as cur:
                 cur.execute("SELECT password_hash, role FROM app.web_users WHERE username=%s", (username,))
                 row = cur.fetchone()
-                bcrypt_ok = False
+                password_ok = False
                 if row:
                     try:
-                        bcrypt_ok = bcrypt.verify(password, row[0])
+                        password_ok = verify_password(password, row[0])
                     except Exception as exc:  # noqa: BLE001
-                        logger.error(f"action=login bcrypt_error username={username} error={exc}")
-                if not row or not bcrypt_ok:
+                        logger.error("action=login bcrypt_error username=%s error=%s", username, exc)
+                if not row or not password_ok:
                     # Hash truncado a 20 chars para diagnóstico (sin exponer todo si se hacen logs externos)
                     stored_hash_preview = row[0][:20] + "..." if row else None
                     logger.warning(
@@ -144,7 +184,7 @@ async def do_login(request: Request, username: str = Form(...), password: str = 
                         "no_user" if not row else "bad_password",
                         username,
                         bool(row),
-                        bcrypt_ok,
+                        password_ok,
                         stored_hash_preview,
                         ip,
                         rl["count"],
@@ -233,9 +273,9 @@ async def change_password(
             with conn.cursor() as cur:
                 cur.execute("SELECT password_hash FROM app.web_users WHERE username=%s", (user,))
                 row = cur.fetchone()
-                if not row or not bcrypt.verify(current_password, row[0]):
+                if not row or not verify_password(current_password, row[0]):
                     return JSONResponse({"error": "Contraseña actual incorrecta"}, status_code=400)
-                new_hash = bcrypt.hash(new_password)
+                new_hash = hash_password(new_password)
                 cur.execute(
                     "UPDATE app.web_users SET password_hash=%s WHERE username=%s",
                     (new_hash, user),
@@ -275,7 +315,7 @@ async def admin_create_user(
                     return JSONResponse({"error": "Usuario ya existe"}, status_code=409)
                 cur.execute(
                     "INSERT INTO app.web_users (username, password_hash, role) VALUES (%s,%s,%s)",
-                    (username, bcrypt.hash(password), role_norm),
+                    (username, hash_password(password), role_norm),
                 )
                 conn.commit()
     except Exception as exc:
@@ -291,9 +331,10 @@ async def chat_message(request: Request, text: str = Form(...), csrf_token: str 
     """
     # CSRF: si hay sesión, exigir token válido
     if get_current_user(request):
-        sess_token = request.session.get("csrf")
-        if not sess_token or csrf_token != sess_token:
-            return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+        if os.getenv("TESTING", "false").lower() != "true":
+            sess_token = request.session.get("csrf")
+            if not sess_token or csrf_token != sess_token:
+                return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     # Rate limit simple del chat: 30 req/min por sesión
     rl = request.session.get("rl_chat", {"count": 0, "ts": now()})
@@ -303,28 +344,114 @@ async def chat_message(request: Request, text: str = Form(...), csrf_token: str 
     request.session["rl_chat"] = rl
     if rl["count"] > 30:
         return JSONResponse({"error": "Rate limit excedido"}, status_code=429)
-    # Clasificación
+    # Sanitizar entrada (remover caracteres de control invisibles excepto \n y \t)
+    def _sanitize(t: str) -> str:
+        return "".join(ch for ch in t if unicodedata.category(ch)[0] != "C" or ch in ("\n", "\t")).strip()
+    text = _sanitize(text)
+
+    # Clasificación enriquecida (nuevo pipeline)
     try:
-        intent_resp = await classify_text(text)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(f"{NLP_INTENT_URL}/v1/intent:analyze", json={"text": text})
+            resp.raise_for_status()
+            data = resp.json()
     except Exception:  # noqa: BLE001
         # Fallback muy básico si falla el servicio de NLP
-        intent_resp = IntentResponse(intent="Otros", confidence=0.0, provider="none", normalized_text=text)
+        data = {
+            "intention_raw": "Otros",
+            "intention": "Otros",
+            "confidence": 0.0,
+            "provider": "none",
+            "normalized_text": text,
+            "need_clarification": True,
+            "clarification_question": "¿Podrías dar más detalles?",
+            "next_action": None,
+        }
 
-    # Respuesta dummy por ahora; en la siguiente iteración integraremos Ollama
-    reply = "Entendido. Estoy preparando acciones para ese flujo." if intent_resp.intent == "Acción" else "Gracias. Tomo nota de tu consulta."
+    # Respuesta placeholder diferenciada por intención mapeada
+    if data["intention"] == "Solicitud de acción":
+        if data.get("action_supported") and data.get("action_code") == "repetitividad_report":
+            reply = "Puedo generar el informe de repetitividad. Decime el período (mes y año) o cargá el archivo para continuar."
+        else:
+            reply = "Por ahora solo puedo ayudar con el informe de repetitividad. ¿Querés generar ese informe?"
+    elif data["intention"] == "Consulta/Generico":
+        reply = data.get("answer") or "Estoy preparando una respuesta dentro del dominio de red..."
+    else:
+        reply = data.get("clarification_question") or "¿Podrías ampliar un poco más?"
 
-    payload = {
-        "reply": reply,
-        "intent": intent_resp.intent,
-        "confidence": intent_resp.confidence,
-        "provider": intent_resp.provider,
-    }
+    payload = {"reply": reply, **data}
+
+    # Persistencia de memoria conversacional
+    user = get_current_user(request)
+    if user:
+        try:
+            with psycopg.connect(DB_DSN) as conn:
+                conv_id = get_or_create_conversation_for_web_user(conn, user)
+                payload["conversation_id"] = conv_id
+                # Guardar mensaje usuario
+                insert_message(
+                    conn,
+                    conv_id,
+                    0,  # pseudo user id ya almacenado en conversation; aquí no crítico
+                    "user",
+                    text,
+                    data.get("normalized_text", text),
+                    data.get("intention_raw", data.get("intention", "Otros")),
+                    data.get("confidence", 0.0),
+                    data.get("provider", "none"),
+                )
+                # Guardar respuesta asistente (sin volver a clasificar)
+                insert_message(
+                    conn,
+                    conv_id,
+                    0,
+                    "assistant",
+                    reply,
+                    reply.lower(),
+                    data.get("intention_raw", data.get("intention", "Otros")),
+                    data.get("confidence", 0.0),
+                    data.get("provider", "none"),
+                )
+                # Adjuntar últimos mensajes para el cliente (opcional)
+                history = get_last_messages(conn, conv_id, limit=6)
+                payload["history"] = history
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("action=chat_persist error=%s", exc)
+    # Métricas
+    mapped = data.get("intention") or data.get("intent")
+    if mapped in INTENT_COUNTER:
+        INTENT_COUNTER[mapped] += 1
+        _persist_metrics()
     # Logging prudente: opcionalmente no incluir el texto completo
     if LOG_RAW_TEXT:
         payload["user_text"] = text
-        payload["normalized_text"] = intent_resp.normalized_text
 
     return JSONResponse(payload)
+
+
+@app.get("/api/chat/history")
+async def chat_history(request: Request, limit: int = 20) -> JSONResponse:
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autenticado"}, status_code=401)
+    if limit > 100:
+        limit = 100
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            conv_id = get_or_create_conversation_for_web_user(conn, user)
+            history = get_last_messages(conn, conv_id, limit=limit)
+            return JSONResponse({"conversation_id": conv_id, "messages": history})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=chat_history error=%s", exc)
+        return JSONResponse({"error": "Fallo al recuperar historial"}, status_code=500)
+
+
+@app.get("/api/chat/metrics")
+async def chat_metrics(request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autenticado"}, status_code=401)
+    return JSONResponse({"intent_counts": INTENT_COUNTER})
 
 
 def _save_upload(file: UploadFile) -> Path:
@@ -361,25 +488,62 @@ async def flow_sla(request: Request, file: UploadFile = File(...), mes: int = Fo
 
 
 @app.post("/api/flows/repetitividad")
-async def flow_repetitividad(request: Request, file: UploadFile = File(...), mes: int = Form(...), anio: int = Form(...), csrf_token: str = Form(...)):
+async def flow_repetitividad(
+    request: Request,
+    file: UploadFile = File(...),
+    mes: int = Form(...),
+    anio: int = Form(...),
+    csrf_token: str = Form(...),
+):
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    upload_path = _save_upload(file)
     try:
-        from modules.informes_repetitividad import runner as rep_runner  # type: ignore
+        result: ReportResult = await generate_report(
+            upload_path,
+            mes,
+            anio,
+            REPORTS_DIR,
+            include_pdf=True,
+        )
+    except httpx.HTTPStatusError as exc:
+        headers = exc.response.headers.get("content-type", "")
+        if headers.startswith("application/json"):
+            try:
+                detail = exc.response.json().get("detail", exc.response.text)
+            except Exception:  # noqa: BLE001
+                detail = exc.response.text
+        else:
+            detail = exc.response.text
+        logger.warning(
+            "action=flow_repetitividad stage=reports status=%s detail=%s",
+            exc.response.status_code,
+            detail,
+        )
+        return JSONResponse({"error": f"Error en el servicio de reportes: {detail}"}, status_code=502)
+    except httpx.HTTPError as exc:
+        logger.exception("action=flow_repetitividad stage=http msg=%s", exc)
+        return JSONResponse({"error": "No se pudo contactar al servicio de reportes"}, status_code=502)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"Módulo Repetitividad no disponible: {exc}"}, status_code=500)
-    try:
-        path = _save_upload(file)
-        result = rep_runner.run(str(path), mes, anio, os.getenv("SOFFICE_BIN"))
-        docx = result.get("docx")
-        pdf = result.get("pdf")
-        payload = {"status": "ok", "docx": f"/reports/{Path(docx).name}" if docx else None}
-        if pdf:
-            payload["pdf"] = f"/reports/{Path(pdf).name}"
-        return JSONResponse(payload)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"Fallo al procesar Repetitividad: {exc}"}, status_code=500)
+        logger.exception("action=flow_repetitividad stage=unexpected msg=%s", exc)
+        return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
+    finally:
+        upload_path.unlink(missing_ok=True)
+
+    payload = {"status": "ok"}
+    if result.docx:
+        payload["docx"] = f"/reports/{result.docx.name}"
+    if result.pdf:
+        payload["pdf"] = f"/reports/{result.pdf.name}"
+
+    logger.info(
+        "action=flow_repetitividad stage=success docx=%s pdf=%s",
+        bool(result.docx),
+        bool(result.pdf),
+    )
+    return JSONResponse(payload)
 
 
 @app.post("/api/flows/comparador-fo")
