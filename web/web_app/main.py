@@ -28,6 +28,7 @@ from fastapi import UploadFile, File
 from modules.informes_repetitividad.service import ReportResult, generate_report
 import unicodedata
 import json
+import pandas as pd
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
@@ -530,6 +531,16 @@ async def flow_repetitividad(
             include_pdf,
             size_bytes,
         )
+        # Inspección rápida de columnas para diagnóstico antes de enviar a servicio API
+        try:
+            df_head = pd.read_excel(upload_path, nrows=1, engine="openpyxl")
+            logger.info(
+                "action=flow_repetitividad stage=inspect columns_raw=%s", list(df_head.columns)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "action=flow_repetitividad stage=inspect error=%s", exc
+            )
         result: ReportResult = await generate_report(
             upload_path,
             mes,

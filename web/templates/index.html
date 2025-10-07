@@ -22,7 +22,7 @@
     <div class="brand">LAS-FOCAS</div>
     <nav class="actions">
       <button class="btn" id="btn-sla">SLA</button>
-      <button class="btn" id="btn-rep">Repetitividad</button>
+  <button class="btn" id="btn-rep">Repetitividad</button>
       <button class="btn" id="btn-fo">Comparador FO</button>
       <button class="btn">Modo oscuro</button>
       {% if username %}
@@ -33,19 +33,9 @@
     </nav>
   </header>
   <main class="container">
-    <section class="panel">
+  <section class="panel">
       <h1>Panel</h1>
       <p>Subí un archivo y ejecutá los flujos con los botones superiores. Los resultados aparecerán abajo.</p>
-      <form id="flow-form" class="flow-form" enctype="multipart/form-data" onsubmit="return false;">
-        <label style="display:block;margin-bottom:4px;font-weight:600;">Informe de Repetitividad</label>
-        <input type="file" name="file" id="file" accept=".xlsx" required />
-        <input type="number" name="mes" id="mes" placeholder="Mes (1-12)" min="1" max="12" required />
-        <input type="number" name="anio" id="anio" placeholder="Año (YYYY)" min="2000" max="2100" required />
-        <label style="margin-top:4px;display:flex;align-items:center;gap:4px;font-size:0.9rem;">
-          <input type="checkbox" id="incluir_pdf" name="include_pdf" checked /> Generar PDF (si LibreOffice está disponible)
-        </label>
-        <small class="muted">Subí un .xlsx con columnas CLIENTE, SERVICIO, FECHA (YYYY-MM-DD). El PDF es opcional.</small>
-      </form>
       <div id="flow-result" class="muted" style="margin-top:8px"></div>
       <div class="chat">
         <div id="chat-log" class="chat-log"></div>
@@ -58,6 +48,86 @@
   </main>
 
   <script>
+    // --- POPUP MODAL REPE - UI -------------------------------------------------
+    const modalHtml = `
+      <div id="rep-modal" class="modal-overlay" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:1200;">
+        <div class="modal" style="background:#1e1f23;padding:20px;border-radius:8px;max-width:460px;width:100%;box-shadow:0 4px 18px rgba(0,0,0,.5);">
+          <h2 style="margin-top:0">Informe de Repetitividad</h2>
+          <form id="rep-form" enctype="multipart/form-data" onsubmit="return false;" style="display:flex;flex-direction:column;gap:8px;">
+            <input type="file" name="file" id="rep-file" accept=".xlsx" required />
+            <div style="display:flex;gap:8px;">
+              <input type="number" name="mes" id="rep-mes" placeholder="Mes" min="1" max="12" required style="flex:1;" />
+              <input type="number" name="anio" id="rep-anio" placeholder="Año" min="2000" max="2100" required style="flex:1;" />
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
+              <input type="checkbox" id="rep-pdf" name="include_pdf" checked /> Generar PDF (si disponible)
+            </label>
+            <div id="rep-hint" class="muted" style="font-size:0.7rem;line-height:1.2;">Columnas requeridas: CLIENTE, SERVICIO, FECHA. Se aceptan variaciones como FECHA_APERTURA o SERVICE (se normalizan).</div>
+            <div id="rep-error" style="display:none;color:#ff6b6b;font-size:0.8rem;"></div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px;">
+              <button type="button" id="rep-cancel" class="btn" style="background:#444;">Cancelar</button>
+              <button type="submit" id="rep-submit" class="btn primary">Generar</button>
+            </div>
+          </form>
+          <div id="rep-links" style="margin-top:10px;font-size:0.85rem;"></div>
+        </div>
+      </div>`;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const repModal = document.getElementById('rep-modal');
+    const repForm = document.getElementById('rep-form');
+    const repCancel = document.getElementById('rep-cancel');
+    const repLinks = document.getElementById('rep-links');
+    const repError = document.getElementById('rep-error');
+    function openRepModal(){
+      repError.style.display='none';
+      repLinks.textContent='';
+      repForm.reset();
+      document.getElementById('rep-pdf').checked = true;
+      repModal.style.display='flex';
+    }
+    function closeRepModal(){ repModal.style.display='none'; }
+    repCancel.addEventListener('click', closeRepModal);
+    document.getElementById('btn-rep').addEventListener('click', openRepModal);
+    repForm.addEventListener('submit', async ()=>{
+      repError.style.display='none';
+      repLinks.textContent='Procesando...';
+      const fileEl = document.getElementById('rep-file');
+      if(!fileEl.files.length){ repLinks.textContent='Seleccioná un archivo'; return; }
+      const mes = document.getElementById('rep-mes').value;
+      const anio = document.getElementById('rep-anio').value;
+      const pdf = document.getElementById('rep-pdf').checked;
+      const data = new FormData();
+      data.append('file', fileEl.files[0]);
+      data.append('mes', mes);
+      data.append('anio', anio);
+      if(pdf) data.append('include_pdf','true');
+      if(window.CSRF_TOKEN) data.append('csrf_token', window.CSRF_TOKEN);
+      try {
+        const res = await fetch('/api/flows/repetitividad', { method:'POST', body:data, credentials:'include'});
+        const j = await res.json();
+        if(!res.ok){
+          repError.textContent = j.error || 'Error desconocido';
+          repError.style.display='block';
+          repLinks.textContent='';
+          console.error('Repetitividad error', j);
+          return;
+        }
+        let links = [];
+        if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
+        if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
+        if (!j.pdf && j.pdf_requested) {
+          links.push('<span class="warn">PDF no generado</span>');
+        }
+        repLinks.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
+      } catch(err){
+        repError.textContent = 'Fallo de red o parseo';
+        repError.style.display='block';
+        repLinks.textContent='';
+        console.error(err);
+      }
+    });
+
+    // --- CHAT EXISTENTE --------------------------------------------------------
     const form = document.getElementById('chat-form');
     const input = document.getElementById('chat-input');
     const log = document.getElementById('chat-log');
@@ -121,9 +191,8 @@
       }
     }
 
-    document.getElementById('btn-sla').addEventListener('click', () => runFlow('/api/flows/sla'));
-    document.getElementById('btn-rep').addEventListener('click', () => runFlow('/api/flows/repetitividad'));
-    document.getElementById('btn-fo').addEventListener('click', () => runFlow('/api/flows/comparador-fo'));
+  document.getElementById('btn-sla').addEventListener('click', () => runFlow('/api/flows/sla'));
+  document.getElementById('btn-fo').addEventListener('click', () => runFlow('/api/flows/comparador-fo'));
   </script>
 </body>
 </html>
