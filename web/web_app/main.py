@@ -493,20 +493,49 @@ async def flow_repetitividad(
     file: UploadFile = File(...),
     mes: int = Form(...),
     anio: int = Form(...),
+    include_pdf: bool = Form(True),  # mantenemos True para no romper tests existentes
     csrf_token: str = Form(...),
 ):
+    """Flujo Web para generar Informe de Repetitividad.
+
+    - Valida CSRF y autenticación.
+    - Verifica extensión .xlsx (case-insensitive).
+    - Limita tamaño (soft) a 10 MB.
+    - Invoca helper asíncrono que llama a la API de reportes.
+    - Devuelve JSON con links relativos a /reports.
+    """
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
+    original_name = file.filename or "archivo.xlsx"
+    if not original_name.lower().endswith(".xlsx"):
+        return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
+
     upload_path = _save_upload(file)
+    size_bytes = 0
     try:
+        size_bytes = upload_path.stat().st_size
+        MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+        if size_bytes > MAX_BYTES:
+            upload_path.unlink(missing_ok=True)
+            return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
+
+        start = time.time()
+        logger.info(
+            "action=flow_repetitividad stage=start filename=%s mes=%s anio=%s include_pdf=%s size=%s",  # noqa: E501
+            original_name,
+            mes,
+            anio,
+            include_pdf,
+            size_bytes,
+        )
         result: ReportResult = await generate_report(
             upload_path,
             mes,
             anio,
             REPORTS_DIR,
-            include_pdf=True,
+            include_pdf=include_pdf,
         )
     except httpx.HTTPStatusError as exc:
         headers = exc.response.headers.get("content-type", "")
@@ -518,30 +547,39 @@ async def flow_repetitividad(
         else:
             detail = exc.response.text
         logger.warning(
-            "action=flow_repetitividad stage=reports status=%s detail=%s",
+            "action=flow_repetitividad stage=reports status=%s detail=%s mes=%s anio=%s",  # noqa: E501
             exc.response.status_code,
             detail,
+            mes,
+            anio,
         )
         return JSONResponse({"error": f"Error en el servicio de reportes: {detail}"}, status_code=502)
     except httpx.HTTPError as exc:
-        logger.exception("action=flow_repetitividad stage=http msg=%s", exc)
+        logger.exception("action=flow_repetitividad stage=http mes=%s anio=%s error=%s", mes, anio, exc)
         return JSONResponse({"error": "No se pudo contactar al servicio de reportes"}, status_code=502)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=flow_repetitividad stage=unexpected msg=%s", exc)
+        logger.exception("action=flow_repetitividad stage=unexpected mes=%s anio=%s error=%s", mes, anio, exc)
         return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
     finally:
         upload_path.unlink(missing_ok=True)
 
-    payload = {"status": "ok"}
+    payload = {"status": "ok", "pdf_requested": include_pdf}
     if result.docx:
         payload["docx"] = f"/reports/{result.docx.name}"
     if result.pdf:
         payload["pdf"] = f"/reports/{result.pdf.name}"
+    else:
+        if include_pdf:
+            payload["pdf_generated"] = False
 
+    elapsed = round((time.time() - start) * 1000)
     logger.info(
-        "action=flow_repetitividad stage=success docx=%s pdf=%s",
+        "action=flow_repetitividad stage=success mes=%s anio=%s docx=%s pdf=%s ms=%s",  # noqa: E501
+        mes,
+        anio,
         bool(result.docx),
         bool(result.pdf),
+        elapsed,
     )
     return JSONResponse(payload)
 

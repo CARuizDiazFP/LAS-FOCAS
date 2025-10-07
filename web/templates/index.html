@@ -36,10 +36,15 @@
     <section class="panel">
       <h1>Panel</h1>
       <p>Subí un archivo y ejecutá los flujos con los botones superiores. Los resultados aparecerán abajo.</p>
-      <form id="flow-form" class="flow-form" enctype="multipart/form-data">
-        <input type="file" name="file" id="file" required />
+      <form id="flow-form" class="flow-form" enctype="multipart/form-data" onsubmit="return false;">
+        <label style="display:block;margin-bottom:4px;font-weight:600;">Informe de Repetitividad</label>
+        <input type="file" name="file" id="file" accept=".xlsx" required />
         <input type="number" name="mes" id="mes" placeholder="Mes (1-12)" min="1" max="12" required />
         <input type="number" name="anio" id="anio" placeholder="Año (YYYY)" min="2000" max="2100" required />
+        <label style="margin-top:4px;display:flex;align-items:center;gap:4px;font-size:0.9rem;">
+          <input type="checkbox" id="incluir_pdf" name="include_pdf" checked /> Generar PDF (si LibreOffice está disponible)
+        </label>
+        <small class="muted">Subí un .xlsx con columnas CLIENTE, SERVICIO, FECHA (YYYY-MM-DD). El PDF es opcional.</small>
       </form>
       <div id="flow-result" class="muted" style="margin-top:8px"></div>
       <div class="chat">
@@ -89,12 +94,14 @@
       const file = document.getElementById('file');
       const mes = document.getElementById('mes');
       const anio = document.getElementById('anio');
+      const pdf = document.getElementById('incluir_pdf');
       const out = document.getElementById('flow-result');
       if (!file.files.length) { out.textContent = 'Seleccioná un archivo.'; return; }
       const data = new FormData();
       data.append('file', file.files[0]);
       data.append('mes', mes.value);
       data.append('anio', anio.value);
+      if (pdf && pdf.checked) { data.append('include_pdf', 'true'); }
       if (window.CSRF_TOKEN) data.append('csrf_token', window.CSRF_TOKEN);
       out.textContent = 'Procesando...';
       try {
@@ -104,6 +111,9 @@
         let links = [];
         if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
         if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
+        if (!j.pdf && j.pdf_requested) {
+          links.push('<span class="warn">PDF no generado</span>');
+        }
         out.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
       } catch (err) {
         out.textContent = 'Error: ' + err.message;
