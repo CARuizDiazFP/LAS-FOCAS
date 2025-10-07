@@ -16,11 +16,12 @@ def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict
     """Ejecuta el flujo completo de cálculo y exportación del informe."""
     df = processor.load_excel(file_path)
     df = processor.normalize(df)
-    df = processor.filter_period(df, mes, anio)
-    resultado = processor.compute_repetitividad(df)
+    df_filtered = processor.filter_period(df, mes, anio)
+    resultado = processor.compute_repetitividad(df_filtered)
 
     params = Params(periodo_mes=mes, periodo_anio=anio)
-    docx_path = report.export_docx(resultado, params, str(BASE_REPORTS))
+    # Pasar el DataFrame filtrado para generar el informe detallado
+    docx_path = report.export_docx(resultado, params, str(BASE_REPORTS), df_raw=df_filtered)
     pdf_path = report.maybe_export_pdf(docx_path, soffice_bin)
 
     logger.info(
