@@ -67,58 +67,46 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     Estrategia:
     1. Aplana MultiIndex si existe.
-    2. Genera una versión estandarizada de cada nombre (upper, espacios->_, quita tildes simples si aparecen).
-    3. Aplica un diccionario de sinónimos y el mapeo existente.
-    4. Valida columnas obligatorias, agregando logging diagnóstico si faltan.
+    2. Para cada columna, se genera una clave de búsqueda (minúsculas, sin acentos, sin espacios).
+    3. Se busca esta clave en el `COLUMNAS_MAPPER` y se renombra la columna.
+    4. Valida que todas las columnas obligatorias estén presentes después del mapeo.
     """
     import unicodedata
 
-    # Flatten MultiIndex si fuese el caso
-    if isinstance(df.columns, pd.MultiIndex):  # pragma: no cover - raro pero defensivo
-        df.columns = ["_".join([str(p) for p in tup if p not in (None, '')]) for tup in df.columns]
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ["_".join(map(str, col)).strip() for col in df.columns.values]
 
-    original_cols: List[str] = [str(c) for c in df.columns]
+    original_cols = df.columns.tolist()
+    rename_map = {}
 
-    def _std(s: str) -> str:
-        s2 = ''.join(ch for ch in unicodedata.normalize('NFKD', s) if not unicodedata.combining(ch))
-        return s2.strip().upper().replace(" ", "_")
+    def clean_key(s: str) -> str:
+        """Crea una clave de búsqueda normalizada a partir de un nombre de columna."""
+        s = str(s)
+        # Quitar acentos
+        s_no_accents = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+        # Convertir a minúsculas y reemplazar espacios/guiones bajos/saltos de línea
+        return s_no_accents.lower().replace(" ", "").replace("_", "").replace("\n", "").replace("\r", "")
 
-    std_map: Dict[str, str] = {_std(c): c for c in original_cols}
+    # Invertir el mapper para que las claves sean los nombres normalizados
+    # Esto permite tener múltiples variantes en el archivo de config apuntando al mismo destino
+    mapper_keys_cleaned = {clean_key(k): v for k, v in COLUMNAS_MAPPER.items()}
 
-    # Sinónimos ampliados (upper ya estandarizados)
-    SYNONYMS = {
-        "CLIENTE": "CLIENTE",
-        "CLIENT": "CLIENTE",
-        "CLIENTE_NOMBRE": "CLIENTE",
-        "SERVICIO": "SERVICIO",
-        "SERVICE": "SERVICIO",
-        "ID_SERVICIO": "ID_SERVICIO",
-        "ID-SERVICIO": "ID_SERVICIO",
-        "FECHA": "FECHA",
-        "FECHA_APERTURA": "FECHA",
-        "FECHA-APERTURA": "FECHA",
-        "DATE": "FECHA",
-    }
-
-    rename_map: Dict[str, str] = {}
-    for std_key, original in std_map.items():
-        target = SYNONYMS.get(std_key, std_key)
-        # Aplicar mapeo explícito si existiese (COLUMNAS_MAPPER claves exactas)
-        if original in COLUMNAS_MAPPER:
-            target = COLUMNAS_MAPPER[original]
-        rename_map[original] = target
+    for col in original_cols:
+        cleaned_col = clean_key(col)
+        if cleaned_col in mapper_keys_cleaned:
+            target_name = mapper_keys_cleaned[cleaned_col]
+            rename_map[col] = target_name
+            logger.info(f"Mapeando columna: '{col}' -> '{target_name}' (clave: '{cleaned_col}')")
 
     df = df.rename(columns=rename_map)
-    # Upper final
-    df.columns = [c.upper() for c in df.columns]
 
     missing = [c for c in COLUMNAS_OBLIGATORIAS if c not in df.columns]
     if missing:
         logger.warning(
-            "action=repetitividad_normalize level=warning missing=%s original_cols=%s renamed_cols=%s",  # noqa: E501
+            "action=repetitividad_normalize level=warning missing=%s original_cols=%s final_cols=%s",
             missing,
             original_cols,
-            list(df.columns),
+            df.columns.tolist(),
         )
         raise ValueError(f"Faltan columnas requeridas: {', '.join(missing)}")
 
@@ -129,8 +117,17 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Filtrado filas: remover nulos salvo clientes preservados
     df = df[df["CLIENTE"].notna() | df["CLIENTE"].isin(CLIENTES_PRESERVAR)]
 
-    # Parse fecha
-    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+    # Parse fecha: intentar con FECHA principal, o usar alternativas
+    if "FECHA" in df.columns:
+        df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+    elif "FECHA_CIERRE_PROBLEMA" in df.columns:
+        df["FECHA"] = pd.to_datetime(df["FECHA_CIERRE_PROBLEMA"], errors="coerce")
+        logger.info("Usando FECHA_CIERRE_PROBLEMA como FECHA principal")
+    elif "FECHA_INICIO" in df.columns:
+        df["FECHA"] = pd.to_datetime(df["FECHA_INICIO"], errors="coerce")
+        logger.info("Usando FECHA_INICIO como FECHA principal")
+    else:
+        raise ValueError("No se encontró ninguna columna de fecha válida")
     antes = len(df)
     df = df.dropna(subset=["FECHA", "SERVICIO"])
     logger.debug(

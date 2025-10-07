@@ -58,6 +58,7 @@ docker-data/
 data/uploads/
 data/reports/
 Reports/
+devs/
 
 # Repositorios legacy
 Legacy/

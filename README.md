@@ -118,6 +118,7 @@ las-focas/
 ├─ tests/
 ├─ Templates/
 ├─ office_service/
+├─ devs/
 ├─ .env
 ├─ .gitignore
 ├─ LICENSE
@@ -127,6 +128,10 @@ las-focas/
 **Plantillas**
 
 - `Templates/` concentra todas las plantillas productivas (SLA, Repetitividad y futuras). Mantener los archivos maestros en este directorio y versionar cambios junto con la documentación del flujo correspondiente.
+
+**Recursos locales de desarrollo**
+
+- `devs/` queda reservado para materiales de apoyo en desarrollo (datasets de prueba, informes generados localmente, etc.). El directorio completo está en `.gitignore`, por lo que su contenido no se versiona.
 
 **Workers**
 
