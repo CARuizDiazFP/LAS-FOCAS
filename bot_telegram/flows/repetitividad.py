@@ -133,17 +133,23 @@ async def on_period(msg: Message, state: FSMContext) -> None:
             await msg.answer_document(FSInputFile(result.docx))
         if result.pdf:
             await msg.answer_document(FSInputFile(result.pdf))
+        if result.map_html:
+            try:
+                await msg.answer_document(FSInputFile(result.map_html))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("service=bot flow=repetitividad map_send_failed path=%s error=%s", result.map_html, exc)
         if not result.docx and not result.pdf:
             await msg.answer("El servicio no devolvió archivos para descargar.")
             await state.clear()
             return
 
     logger.info(
-        "service=bot flow=repetitividad tg_user_id=%s file=%s periodo=%02d/%04d",
+        "service=bot flow=repetitividad tg_user_id=%s file=%s periodo=%02d/%04d map=%s",
         msg.from_user.id,
         original_name,
         mes,
         anio,
+        bool(result.map_html),
     )
     await state.clear()
 

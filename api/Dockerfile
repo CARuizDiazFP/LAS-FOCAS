@@ -25,6 +25,7 @@ COPY api/api_app /app/api_app
 # Incluir módulos compartidos y core (logging, servicios comunes)
 COPY modules /app/modules
 COPY core /app/core
+COPY Templates /app/Templates
 
 EXPOSE 8000
 

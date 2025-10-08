@@ -3,6 +3,7 @@
 # Descripción: Funciones de carga, normalización y cálculo de repetitividad
 
 import logging
+import zipfile
 from typing import Optional, List, Dict
 
 import pandas as pd
@@ -12,7 +13,7 @@ from .config import (
     COLUMNAS_MAPPER,
     COLUMNAS_OBLIGATORIAS,
 )
-from .schemas import ItemSalida, ResultadoRepetitividad
+from .schemas import GeoPoint, ItemSalida, ResultadoRepetitividad
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ def load_excel(path: str) -> pd.DataFrame:
     obligatorias, reintenta explorando las primeras 10 filas en busca de una fila
     candidata que contenga al menos 2 de las columnas requeridas.
     """
+    if not zipfile.is_zipfile(path):
+        logger.warning("action=load_excel level=warning reason=bad_signature path=%s", path)
+        raise ValueError("Archivo inválido: el contenido no corresponde a un Excel .xlsx")
+
     try:
         df = pd.read_excel(path, engine="openpyxl")
     except Exception as exc:  # pragma: no cover - logging
@@ -100,7 +105,20 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns=rename_map)
 
-    missing = [c for c in COLUMNAS_OBLIGATORIAS if c not in df.columns]
+    fecha_source_col = None
+    if "FECHA" in df.columns:
+        fecha_source_col = "FECHA"
+    elif "FECHA_CIERRE_PROBLEMA" in df.columns:
+        fecha_source_col = "FECHA_CIERRE_PROBLEMA"
+    elif "FECHA_INICIO" in df.columns:
+        fecha_source_col = "FECHA_INICIO"
+
+    missing = [
+        c for c in COLUMNAS_OBLIGATORIAS if c != "FECHA" and c not in df.columns
+    ]
+    if fecha_source_col is None:
+        missing.append("FECHA")
+
     if missing:
         logger.warning(
             "action=repetitividad_normalize level=warning missing=%s original_cols=%s final_cols=%s",
@@ -117,17 +135,11 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Filtrado filas: remover nulos salvo clientes preservados
     df = df[df["CLIENTE"].notna() | df["CLIENTE"].isin(CLIENTES_PRESERVAR)]
 
-    # Parse fecha: intentar con FECHA principal, o usar alternativas
-    if "FECHA" in df.columns:
-        df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
-    elif "FECHA_CIERRE_PROBLEMA" in df.columns:
-        df["FECHA"] = pd.to_datetime(df["FECHA_CIERRE_PROBLEMA"], errors="coerce")
-        logger.info("Usando FECHA_CIERRE_PROBLEMA como FECHA principal")
-    elif "FECHA_INICIO" in df.columns:
-        df["FECHA"] = pd.to_datetime(df["FECHA_INICIO"], errors="coerce")
-        logger.info("Usando FECHA_INICIO como FECHA principal")
-    else:
-        raise ValueError("No se encontró ninguna columna de fecha válida")
+    # Parse fecha: usar columna primaria o alternativas ya detectadas
+    if fecha_source_col != "FECHA":
+        df["FECHA"] = df[fecha_source_col].copy()
+        logger.info("Usando %s como FECHA principal", fecha_source_col)
+    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
     antes = len(df)
     df = df.dropna(subset=["FECHA", "SERVICIO"])
     logger.debug(
@@ -137,6 +149,20 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     df["PERIODO"] = df["FECHA"].dt.strftime("%Y-%m")
+
+    # Normalizar datos geoespaciales opcionales
+    for geo_col in ("GEO_LABEL", "GEO_REGION"):
+        if geo_col in df.columns:
+            df[geo_col] = df[geo_col].astype(str).str.strip()
+
+    for geo_col in ("GEO_LAT", "GEO_LON"):
+        if geo_col in df.columns:
+            df[geo_col] = pd.to_numeric(df[geo_col], errors="coerce")
+            logger.debug(
+                "action=repetitividad_normalize stage=geo_clean column=%s valid=%s",
+                geo_col,
+                int(df[geo_col].notna().sum()),
+            )
     return df
 
 
@@ -156,31 +182,74 @@ def _detalles(grupo: pd.DataFrame) -> list[str]:
 def compute_repetitividad(df: pd.DataFrame) -> ResultadoRepetitividad:
     """Calcula servicios con casos repetidos (>=2 en el período)."""
     grupos = df.groupby("SERVICIO", sort=True)
-    conteos = grupos.size()
+
+    if "ID_SERVICIO" in df.columns:
+        conteos = grupos["ID_SERVICIO"].nunique(dropna=True)
+    else:
+        conteos = grupos.size()
+
     repetitivos = conteos[conteos >= 2]
 
     items: list[ItemSalida] = []
     for servicio in repetitivos.index:
         grupo = grupos.get_group(servicio)
+        if "ID_SERVICIO" in grupo.columns:
+            detalles = (
+                grupo["ID_SERVICIO"].dropna().astype(str).str.strip().unique().tolist()
+            )
+        else:
+            detalles = _detalles(grupo)
         items.append(
             ItemSalida(
                 servicio=servicio,
                 casos=int(repetitivos[servicio]),
-                detalles=_detalles(grupo),
+                detalles=detalles,
             )
         )
 
     total_servicios = len(conteos)
     total_repetitivos = len(repetitivos)
 
+    if "PERIODO" in df.columns:
+        periodos_presentes = sorted({str(p) for p in df["PERIODO"].dropna().unique()})
+    else:
+        periodos_presentes = []
+
+    geo_points: list[GeoPoint] = []
+    if {"GEO_LAT", "GEO_LON"}.issubset(df.columns):
+        df_geo = df[df["GEO_LAT"].notna() & df["GEO_LON"].notna()].copy()
+        if not df_geo.empty:
+            repetitivos_servicios = set(repetitivos.index)
+            df_geo = df_geo[df_geo["SERVICIO"].isin(repetitivos_servicios)]
+            for servicio, grupo in df_geo.groupby("SERVICIO"):
+                lat = float(grupo["GEO_LAT"].mean())
+                lon = float(grupo["GEO_LON"].mean())
+                primer = grupo.iloc[0]
+                geo_points.append(
+                    GeoPoint(
+                        servicio=servicio,
+                        casos=int(repetitivos[servicio]),
+                        lat=lat,
+                        lon=lon,
+                        cliente=str(primer.get("CLIENTE")) if pd.notna(primer.get("CLIENTE")) else None,
+                        label=str(primer.get("GEO_LABEL")) if "GEO_LABEL" in grupo.columns and pd.notna(primer.get("GEO_LABEL")) else None,
+                        region=str(primer.get("GEO_REGION")) if "GEO_REGION" in grupo.columns and pd.notna(primer.get("GEO_REGION")) else None,
+                    )
+                )
+
     resultado = ResultadoRepetitividad(
         items=items,
         total_servicios=total_servicios,
         total_repetitivos=total_repetitivos,
+        periodos=periodos_presentes,
+        geo_points=geo_points,
     )
     logger.info(
         "action=compute_repetitividad total_servicios=%s total_repetitivos=%s",
         total_servicios,
         total_repetitivos,
     )
+    if total_repetitivos:
+        top = repetitivos.sort_values(ascending=False).head(5)
+        logger.debug("action=compute_repetitividad leaders=%s", top.to_dict())
     return resultado

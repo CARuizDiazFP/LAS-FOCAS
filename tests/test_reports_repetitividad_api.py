@@ -26,6 +26,35 @@ def _sample_excel() -> bytes:
     return buffer.getvalue()
 
 
+def _sample_excel_geo() -> bytes:
+    df = pd.DataFrame(
+        [
+            {
+                "CLIENTE": "Geo A",
+                "SERVICIO": "Servicio Geo",
+                "FECHA": "2024-07-01",
+                "ID_SERVICIO": "11",
+                "Latitud": -34.6037,
+                "Longitud": -58.3816,
+                "Provincia": "Buenos Aires",
+            },
+            {
+                "CLIENTE": "Geo A",
+                "SERVICIO": "Servicio Geo",
+                "FECHA": "2024-08-05",
+                "ID_SERVICIO": "12",
+                "Latitud": -34.6037,
+                "Longitud": -58.3816,
+                "Provincia": "Buenos Aires",
+            },
+        ]
+    )
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
     plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
@@ -34,7 +63,7 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
-    from api_app.routes import reports as api_reports
+    from api_app.routes import reports as api_reports  # type: ignore[import-not-found]
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
@@ -56,6 +85,7 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
     assert response.headers["content-disposition"].endswith('.docx"')
     assert response.headers["x-pdf-requested"] == "false"
     assert response.headers["x-pdf-generated"] == "false"
+    assert response.headers.get("x-map-generated") == "false"
     assert len(list(tmp_path.glob("*.docx"))) == 1
 
 
@@ -70,7 +100,7 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
-    from api_app.routes import reports as api_reports
+    from api_app.routes import reports as api_reports  # type: ignore[import-not-found]
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
@@ -96,7 +126,7 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
     app = create_app()
     client = TestClient(app, raise_server_exceptions=False)
 
-    files = {"file": ("casos.xlsx", _sample_excel(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "true"}
 
     response = client.post("/reports/repetitividad", data=data, files=files)
@@ -108,12 +138,60 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
     assert disposition.endswith(".zip")
     assert response.headers["x-pdf-requested"] == "true"
     assert response.headers["x-pdf-generated"] == "true"
+    assert response.headers.get("x-map-generated") == "true"
+    map_filename = response.headers.get("x-map-filename")
+    assert map_filename and map_filename.endswith(".html")
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         filenames = {Path(name).name for name in archive.namelist()}
 
     assert "repetitividad_202407.docx" in filenames
     assert "repetitividad_202407.pdf" in filenames
+    assert map_filename in filenames
+
+
+def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
+    plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
+    monkeypatch.setenv("REP_TEMPLATE_PATH", str(plantilla_path))
+    monkeypatch.setenv("SOFFICE_BIN", "")
+
+    from modules.informes_repetitividad import config as repet_config
+    from modules.informes_repetitividad import report as report_module
+    from api_app.routes import reports as api_reports  # type: ignore[import-not-found]
+
+    repet_config.REPORTS_DIR = Path(tmp_path)
+    repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
+    repet_config.SOFFICE_BIN = None
+    report_module.REP_TEMPLATE_PATH = Path(plantilla_path)
+    api_reports.REPORTS_DIR = Path(tmp_path)
+    api_reports.SOFFICE_BIN = None
+
+    def fake_geo_map(data, params, out_dir):  # noqa: ANN001
+        path = Path(out_dir) / "repetitividad_202407_map.html"
+        path.write_text("<html></html>")
+        return str(path)
+
+    monkeypatch.setattr(api_reports.report, "generate_geo_map", fake_geo_map)
+
+    app = create_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    data = {"periodo_mes": 7, "periodo_anio": 2024}
+
+    response = client.post("/reports/repetitividad", data=data, files=files)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers.get("x-map-generated") == "true"
+    assert response.headers.get("x-map-filename") == "repetitividad_202407_map.html"
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        filenames = {Path(name).name for name in archive.namelist()}
+
+    assert "repetitividad_202407.docx" in filenames
+    assert "repetitividad_202407_map.html" in filenames
 
 
 def test_reporte_repetitividad_rechaza_extension_incorrecta(tmp_path, monkeypatch):
@@ -161,5 +239,5 @@ def test_reporte_repetitividad_error_en_procesamiento(tmp_path, monkeypatch):
 
     response = client.post("/reports/repetitividad", data=data, files=files)
 
-    assert response.status_code == 500
+    assert response.status_code == 422
     assert "Faltan columnas" in response.text

@@ -4,25 +4,27 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2025-10-03
+Fecha de última actualización: 2025-10-08
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2025-09-17)
+## Estado actual (al 2025-10-08)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
   - Contenedor de Ollama activo (`ollama-llama3`) con modelo disponible: `llama3:latest` (4.7 GB).
   - Nota: el puerto 11434 no está publicado al host en el contenedor observado; evaluar exposición o incorporación de Ollama al `compose` del proyecto.
 - Servicios del repo
-  - `api` (FastAPI): endpoints `/health` y `/db-check` (SQLAlchemy a PostgreSQL). Dockerfile propio.
+  - `api` (FastAPI): endpoints `/health`, `/db-check` y `/reports/repetitividad` (generación DOCX/PDF).
+  - `web` (FastAPI): login básico, barra de acciones, chat WebSocket `/ws/chat` con streaming, reconexión exponencial, validación de adjuntos y persistencia en `app.chat_sessions/app.chat_messages`.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` con proveedores `heuristic | ollama | openai`. Usa `OLLAMA_URL` (default `http://ollama:11434`).
   - `bot` (Telegram): definido en `deploy/compose.yml`.
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
-  - DB: `db/init.sql` incluye `app.conversations` y `app.messages` para trazabilidad de diálogos.
+  - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
+  - Volúmenes `reports_data` y `uploads_data` montados en `web` para compartir reportes y adjuntos; parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
   - Pruebas en `nlp_intent/tests/test_intent.py` (heurística) y en `tests/` para módulos de informes y utilidades.
 - Documentación
@@ -32,42 +34,41 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 
 ## Próximas implementaciones (prioridad)
 
-1) Web Panel (UI) con chat y barra de acciones
-- Nuevo microservicio `web` (FastAPI + plantillas/HTMX o similar):
-  - Página principal dark-style con barra superior (botones: SLA, Repetitividad, Comparador FO, etc.).
-  - Área de chat (MVP REST; iteración 2 con WebSocket/streaming).
-  - Integración con `nlp_intent` para clasificación y con Ollama para generación (cuando aplique).
-  - Persistencia de conversaciones/mensajes en Postgres.
-- Seguridad básica: cookie de sesión firmada, rate limiting por IP/ID de sesión, sanitización de entradas.
+1) MCP completo + herramientas
+- Implementar lógica real de `CompararTrazasFO` y `RegistrarEnNotion`.
+- Completar integración de `ConvertirDocAPdf` con `office_service` (manejo de errores y colas si es necesario).
+- Definir taxonomía de mensajes/errores estandarizados para herramientas.
 
-2) Integración con flujos (SLA, Repetitividad, Comparador FO)
-- Botones disparan endpoints backend que invocan los runners de `modules/informes_*`.
-- Feedback de progreso (long running): planificar cola/worker (Celery/RQ) a mediano plazo.
+2) Gestión de adjuntos y almacenamiento
+- Políticas de retención/borrado para archivos de `/api/chat/uploads`.
+- Auditoría de descargas y permisos (evaluar endpoint autenticado o URLs firmadas).
 
-3) Conectividad con Ollama
-- Opción A (rápida): publicar 11434 del contenedor actual y setear `OLLAMA_URL=http://host.docker.internal:11434` en servicios dockerizados (agregar `extra_hosts` host-gateway).
-- Opción B (recomendada): añadir servicio `ollama` al `deploy/compose.yml` dentro de la misma red.
+3) Flujos SLA y comparador desde UI
+- Botones del panel deben disparar endpoints backend que invocan `modules/informes_*` (con feedback de progreso y uso potencial de workers).
 
-4) Observabilidad y calidad
-- Healthchecks para `web`, métricas simples (latencias, mensajes procesados).
-- Tests de UI/backend (mínimo 60% cobertura en módulo nuevo).
+4) Conectividad Ollama y respuestas generativas
+- Unificar consumo de Ollama entre `web` y `nlp_intent` (service mesh o contenedor dedicado).
+- Afinar prompts e indicadores de intención para decidir cuándo invocar herramientas vs. respuestas generativas.
 
-5) Autenticación Web
-- Login básico para el panel (roles mínimos), guardias por endpoint.
+5) Observabilidad y seguridad
+- Métricas Prometheus para WS y MCP (latencias, tool-calls, errores).
+- Rate limiting específico para WebSocket y endpoints de uploads.
+- Checklist de seguridad para publicar `/ws/chat` detrás de proxy (CSP, headers, logs).
 
 ## Roadmap por iteraciones
 
 - I1 (MVP UI)
-  - [ ] Servicio `web` con página dark, barra de botones y chat (REST).
-  - [ ] Endpoint `POST /api/chat/message` con clasificación por `nlp_intent` y respuesta dummy si no hay LLM.
-  - [ ] Persistencia de mensajes/sesiones en DB.
-  - [ ] Healthcheck y logging estructurado.
-  - [ ] Documentación `docs/web.md` y actualización de `README.md`.
+  - [x] Servicio `web` con página dark, barra de botones y chat REST.
+  - [x] Endpoint `POST /api/chat/message` con clasificación por `nlp_intent`.
+  - [x] Persistencia de mensajes/sesiones en DB (conversaciones legacy).
+  - [x] Healthcheck y logging estructurado.
+  - [x] Documentación base (`docs/web.md`, README actualizado).
 
 - I2 (Chat avanzado + flujos)
-  - [ ] WebSocket/streaming desde Ollama.
-  - [ ] Botones que invocan flujos (SLA/Repetitividad) vía endpoints backend.
-  - [ ] Tests de integración básicos (WS, flujos).
+  - [x] WebSocket/streaming en el panel y orquestador MCP con persistencia dedicada.
+  - [ ] Botones que invocan flujos (SLA/Repetitividad) vía endpoints backend (con feedback UI).
+  - [x] Tests de integración WS end-to-end (cliente WebSocket + herramientas reales).
+  - [ ] Métricas y rate limiting específico del chat MCP.
 
 - I3 (Trabajos asíncronos y rendimiento)
   - [ ] Worker de tareas (Celery/RQ) y colas para procesos pesados.
@@ -93,6 +94,9 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] UI mínima /admin y tests de login/admin (8 pruebas).
 - [x] Hashing centralizado en `core/password.py` para el panel web y scripts (bcrypt only).
 - [x] Flujos de repetitividad (web y bot) delegan en `modules.informes_repetitividad.service.generate_report` con pruebas para PDF/DOCX (2025-10-03).
+- [x] Chat WebSocket del panel conectado a MCP, con almacenamiento en `app.chat_sessions/app.chat_messages` y cliente streaming (2025-10-07).
+- [x] Validación de adjuntos y drag & drop en el chat WebSocket, con control de MIME y límite de 15 MB (2025-10-08).
+- [x] Pruebas de integración WebSocket (`tests/test_web_chat.py`) y ampliación de cobertura del orquestador/mcp (2025-10-08).
 
 ### Pendiente (prioridad)
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
@@ -109,6 +113,9 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Casos negativos del endpoint `/reports/repetitividad` (extensiones inválidas, fallos del runner, `incluir_pdf` sin PDF).
 - [x] Cobertura adicional para `modules.informes_repetitividad.processor.normalize` y `_detalles`.
 - [ ] Autenticación / limits adicionales para `/reports/repetitividad` (API key, tamaño máximo) y pruebas asociadas.
+- [ ] Completar implementación de herramientas MCP (`CompararTrazasFO`, `ConvertirDocAPdf`, `RegistrarEnNotion`).
+- [ ] Definir estrategia de limpieza programada para archivos subidos en `/api/chat/uploads`.
+- [ ] Añadir métricas/observabilidad específicas del chat MCP (contador de tool-calls, errores, latencias).
 
 ### Notas operativas
 - Script `./Start` disponible en la raíz para levantar el stack mínimo (Postgres, Ollama, NLP, API en 8001 y Web en 8080).

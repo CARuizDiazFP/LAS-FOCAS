@@ -2,7 +2,7 @@
 # Ubicación de archivo: modules/informes_repetitividad/schemas.py
 # Descripción: Modelos de datos para el informe de repetitividad
 
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -21,9 +21,23 @@ class ItemSalida(BaseModel):
     detalles: List[str]
 
 
+class GeoPoint(BaseModel):
+    """Información geoespacial asociada a un servicio repetitivo."""
+
+    servicio: str
+    casos: int
+    lat: float
+    lon: float
+    cliente: Optional[str] = None
+    label: Optional[str] = None
+    region: Optional[str] = None
+
+
 class ResultadoRepetitividad(BaseModel):
     """Resultado completo del cálculo de repetitividad."""
 
     items: List[ItemSalida]
     total_servicios: int
     total_repetitivos: int
+    periodos: List[str]
+    geo_points: List[GeoPoint] = []

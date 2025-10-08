@@ -12,9 +12,18 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 from modules.common.libreoffice_export import convert_to_pdf
-from .config import MESES_ES, REP_TEMPLATE_PATH
+from .config import (
+    MAPS_DEFAULT_ZOOM,
+    MAPS_ENABLED,
+    MAPS_LIGHTWEIGHT,
+    MAPS_MARKER_BORDER,
+    MAPS_MARKER_COLOR,
+    MESES_ES,
+    REP_TEMPLATE_PATH,
+)
 from .schemas import Params, ResultadoRepetitividad
 
 logger = logging.getLogger(__name__)
@@ -40,11 +49,37 @@ def _load_template() -> Document:
     return Document()
 
 
+def _add_hyperlink(paragraph, text: str, url: str) -> None:
+    """Inserta un hipervínculo externo en un párrafo."""
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True))
+
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")  # azul clásico
+    r_pr.append(color)
+
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+
+    new_run.append(r_pr)
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    new_run.append(text_element)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+
 def export_docx(
     data: ResultadoRepetitividad,
     periodo: Params,
     out_dir: str,
     df_raw: Optional[pd.DataFrame] = None,
+    map_path: Optional[str] = None,
 ) -> str:
     """Genera el archivo DOCX con el detalle completo de repetitividad.
     
@@ -70,6 +105,13 @@ def export_docx(
         f"Servicios con repetitividad: {data.total_repetitivos} "
         f"({100 * data.total_repetitivos / max(data.total_servicios, 1):.1f}%)"
     )
+
+    if data.periodos:
+        doc.add_paragraph(
+            "Períodos presentes en el dataset: " + ", ".join(data.periodos)
+        )
+
+    _export_geo_summary(doc, data, map_path)
 
     # Si no tenemos el DataFrame raw, generamos una tabla simple (modo legacy)
     if df_raw is None or df_raw.empty:
@@ -217,6 +259,57 @@ def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.
         doc.add_paragraph()
 
 
+def _export_geo_summary(doc: Document, data: ResultadoRepetitividad, map_path: Optional[str]) -> None:
+    """Agrega una sección con el resumen geográfico y enlace al mapa."""
+
+    doc.add_heading("Cobertura geográfica", level=2)
+
+    if map_path:
+        para = doc.add_paragraph("Mapa interactivo: ")
+        try:
+            _add_hyperlink(para, "Abrir mapa", Path(map_path).name)
+        except Exception:  # noqa: BLE001
+            logger.warning("action=geo_summary hyperlink_failed map=%s", map_path)
+            para.add_run(Path(map_path).name)
+    else:
+        doc.add_paragraph("Mapa interactivo: No disponible (sin datos georreferenciados)")
+
+    if not data.geo_points:
+        doc.add_paragraph("El conjunto de datos no incluye coordenadas para los servicios repetitivos.")
+        return
+
+    table = doc.add_table(rows=1, cols=7)
+    table.style = 'Table Grid'
+    headers = [
+        "Servicio",
+        "Cliente",
+        "Etiqueta",
+        "Región",
+        "Latitud",
+        "Longitud",
+        "Casos",
+    ]
+    hdr_cells = table.rows[0].cells
+    for idx, header in enumerate(headers):
+        _header_cell(hdr_cells[idx], header)
+
+    for point in data.geo_points:
+        row = table.add_row().cells
+        row[0].text = point.servicio
+        row[1].text = point.cliente or "-"
+        row[2].text = point.label or "-"
+        row[3].text = point.region or "-"
+        row[4].text = f"{point.lat:.5f}"
+        row[5].text = f"{point.lon:.5f}"
+        row[6].text = str(point.casos)
+
+    for row in table.rows:
+        for cell in row.cells:
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    doc.add_paragraph()
+
+
 def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
     """Convierte el DOCX a PDF si LibreOffice está disponible."""
 
@@ -237,3 +330,65 @@ def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str
     except Exception:  # pragma: no cover - logging
         logger.exception("action=maybe_export_pdf error")
         return None
+
+
+def generate_geo_map(
+    data: ResultadoRepetitividad,
+    periodo: Params,
+    out_dir: str,
+) -> Optional[str]:
+    """Genera un mapa interactivo en HTML con los servicios repetitivos."""
+
+    if not MAPS_ENABLED or not data.geo_points:
+        return None
+
+    try:
+        import folium  # type: ignore[import-untyped]
+    except ImportError:  # pragma: no cover - dependencia externa
+        logger.warning("action=generate_geo_map reason=missing_folium")
+        return None
+
+    avg_lat = sum(point.lat for point in data.geo_points) / len(data.geo_points)
+    avg_lon = sum(point.lon for point in data.geo_points) / len(data.geo_points)
+
+    fmap = folium.Map(location=[avg_lat, avg_lon], zoom_start=MAPS_DEFAULT_ZOOM, tiles="CartoDB positron")
+
+    for point in data.geo_points:
+        popup_lines = [
+            f"<strong>{point.servicio}</strong>",
+            f"Casos repetidos: {point.casos}",
+        ]
+        if point.cliente:
+            popup_lines.append(f"Cliente: {point.cliente}")
+        if point.region:
+            popup_lines.append(f"Región: {point.region}")
+        if point.label and point.label != point.servicio:
+            popup_lines.append(f"Ubicación: {point.label}")
+
+        popup_html = "<br/>".join(popup_lines)
+
+        if MAPS_LIGHTWEIGHT:
+            folium.CircleMarker(
+                location=[point.lat, point.lon],
+                radius=6 + min(point.casos, 6),
+                color=MAPS_MARKER_BORDER,
+                weight=2,
+                fill=True,
+                fill_color=MAPS_MARKER_COLOR,
+                fill_opacity=0.85,
+                tooltip=point.servicio,
+                popup=folium.Popup(popup_html, max_width=280),
+            ).add_to(fmap)
+        else:
+            folium.Marker(
+                location=[point.lat, point.lon],
+                tooltip=point.servicio,
+                popup=folium.Popup(popup_html, max_width=280),
+            ).add_to(fmap)
+
+    out_dir_path = Path(out_dir)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    map_path = out_dir_path / f"repetitividad_{periodo.periodo_anio}{periodo.periodo_mes:02d}_map.html"
+    fmap.save(map_path)
+    logger.info("action=generate_geo_map path=%s markers=%s", map_path, len(data.geo_points))
+    return str(map_path)

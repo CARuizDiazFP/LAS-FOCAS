@@ -21,9 +21,8 @@
   <header class="topbar">
     <div class="brand">LAS-FOCAS</div>
     <nav class="actions">
-      <button class="btn" id="btn-sla">SLA</button>
-  <button class="btn" id="btn-rep">Repetitividad</button>
-      <button class="btn" id="btn-fo">Comparador FO</button>
+      <button class="btn" id="open-rep-modal">Informe Repetitividad</button>
+      <button class="btn" id="scroll-rep-card">Ver panel</button>
       <button class="btn">Modo oscuro</button>
       {% if username %}
       <span style="margin-left:12px;color:var(--muted)">Usuario: {{ username }}</span>
@@ -33,17 +32,74 @@
     </nav>
   </header>
   <main class="container">
-  <section class="panel">
-      <h1>Panel</h1>
-      <p>Subí un archivo y ejecutá los flujos con los botones superiores. Los resultados aparecerán abajo.</p>
-      <div id="flow-result" class="muted" style="margin-top:8px"></div>
-      <div class="chat">
-        <div id="chat-log" class="chat-log"></div>
-        <form id="chat-form" class="chat-form">
-          <input id="chat-input" name="text" type="text" placeholder="Escribí un mensaje" required />
-          <button type="submit" class="btn primary">Enviar</button>
+    <section class="grid">
+      <article class="card" id="card-rep">
+        <header class="card-header">
+          <h1>Informe de Repetitividad</h1>
+          <span class="badge">FO Legacy+</span>
+        </header>
+        <p class="muted">Generá el reporte con columnas normalizadas, metadatos GEO y período decorativo sin filtros agresivos.</p>
+        <ul class="pill-list">
+          <li>CLIENTE</li>
+          <li>SERVICIO / NÚMERO LÍNEA</li>
+          <li>FECHA o FECHA CIERRE PROBLEMA</li>
+        </ul>
+        <p class="muted small">Las variantes más comunes (<strong>Nombre Cliente</strong>, <strong>Fecha Cierre Problema Reclamo</strong>, etc.) se mapean automáticamente.</p>
+        <div class="card-actions">
+          <button type="button" class="btn primary" id="launch-rep-modal">Generar informe</button>
+          <a class="btn subtle" href="/reports" target="_blank" rel="noopener">Abrir carpeta</a>
+        </div>
+        <div id="rep-summary" class="result-box muted">Aún no se generó ningún informe.</div>
+        <div id="rep-map-container" class="map-container" hidden>
+          <iframe id="rep-map-preview" title="Mapa de repetitividad"></iframe>
+        </div>
+      </article>
+
+      <article class="card" id="card-flows">
+        <h2>Flujos adicionales</h2>
+        <p class="muted">Ejecutá SLA o Comparador FO reutilizando el mismo archivo de casos.</p>
+        <form id="flow-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
+          <label class="form-label" for="file">Archivo fuente (.xlsx)</label>
+          <input type="file" id="file" name="file" accept=".xlsx" required />
+          <div class="form-grid">
+            <div class="field">
+              <label class="form-label" for="mes">Mes</label>
+              <input type="number" id="mes" name="mes" min="1" max="12" required />
+            </div>
+            <div class="field">
+              <label class="form-label" for="anio">Año</label>
+              <input type="number" id="anio" name="anio" min="2000" max="2100" required />
+            </div>
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" id="incluir_pdf" name="include_pdf" checked /> Generar PDF cuando aplique
+          </label>
+          <div class="card-actions">
+            <button type="button" class="btn" id="run-sla-btn">Ejecutar SLA</button>
+            <button type="button" class="btn" id="run-fo-btn">Comparador FO</button>
+          </div>
         </form>
-      </div>
+        <div id="flow-result" class="result-box muted">Subí un archivo y elegí el flujo para ejecutarlo.</div>
+      </article>
+
+      <article class="card" id="card-chat">
+        <h2>Asistente conversacional</h2>
+        <p class="muted">Consultá métricas, pedí reportes o dejá feedback para el equipo.</p>
+        <div class="chat">
+          <div id="chat-status" class="chat-status muted"></div>
+          <div id="chat-log" class="chat-log"></div>
+          <div id="chat-attachments" class="chat-attachments"></div>
+          <div id="chat-dropzone" class="chat-dropzone">
+            Arrastrá archivos o <button type="button" id="chat-attachment-browse" class="link-button">buscá en tu equipo</button>
+            <small class="muted">Límite 15 MB por archivo</small>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" name="text" type="text" placeholder="Escribí un mensaje" required />
+            <button type="submit" class="btn primary">Enviar</button>
+          </form>
+        </div>
+        <input id="chat-attachment-input" type="file" multiple hidden />
+      </article>
     </section>
   </main>
 
@@ -78,6 +134,9 @@
     const repCancel = document.getElementById('rep-cancel');
     const repLinks = document.getElementById('rep-links');
     const repError = document.getElementById('rep-error');
+  const repSummary = document.getElementById('rep-summary');
+  const repMapContainer = document.getElementById('rep-map-container');
+  const repMapFrame = document.getElementById('rep-map-preview');
     function openRepModal(){
       repError.style.display='none';
       repLinks.textContent='';
@@ -87,10 +146,27 @@
     }
     function closeRepModal(){ repModal.style.display='none'; }
     repCancel.addEventListener('click', closeRepModal);
-    document.getElementById('btn-rep').addEventListener('click', openRepModal);
+    const repOpenButtons = [
+      document.getElementById('open-rep-modal'),
+      document.getElementById('launch-rep-modal')
+    ].filter(Boolean);
+    repOpenButtons.forEach(btn => btn.addEventListener('click', openRepModal));
+    const scrollRep = document.getElementById('scroll-rep-card');
+    if (scrollRep) {
+      scrollRep.addEventListener('click', () => document.getElementById('card-rep')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    }
     repForm.addEventListener('submit', async ()=>{
       repError.style.display='none';
       repLinks.textContent='Procesando...';
+      if (repSummary) {
+        repSummary.classList.remove('success', 'error');
+        repSummary.classList.add('info');
+        repSummary.classList.add('muted');
+        repSummary.innerHTML = 'Procesando informe...';
+      }
+      if (repMapContainer) {
+        repMapContainer.setAttribute('hidden', '');
+      }
       const fileEl = document.getElementById('rep-file');
       if(!fileEl.files.length){ repLinks.textContent='Seleccioná un archivo'; return; }
       const mes = document.getElementById('rep-mes').value;
@@ -110,52 +186,47 @@
           repError.style.display='block';
           repLinks.textContent='';
           console.error('Repetitividad error', j);
+          if (repSummary) {
+            repSummary.classList.remove('info', 'success', 'muted');
+            repSummary.classList.add('error');
+            repSummary.textContent = j.error || 'Error desconocido';
+          }
           return;
         }
         let links = [];
         if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
         if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
+        if (j.map) links.push(`<a href="${j.map}" target="_blank">Mapa</a>`);
         if (!j.pdf && j.pdf_requested) {
           links.push('<span class="warn">PDF no generado</span>');
         }
-        repLinks.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
+        const joined = links.join(' · ') || 'sin archivos';
+        repLinks.innerHTML = 'Listo: ' + joined;
+        if (repSummary) {
+          const periodo = `${anio}-${String(mes).padStart(2, '0')}`;
+          repSummary.classList.remove('muted', 'info', 'error');
+          repSummary.classList.add('success');
+          repSummary.innerHTML = `<strong>Período ${periodo}</strong><br>${joined}`;
+        }
+        if (repMapFrame && repMapContainer) {
+          if (j.map) {
+            repMapFrame.src = j.map;
+            repMapContainer.removeAttribute('hidden');
+          } else {
+            repMapFrame.removeAttribute('src');
+            repMapContainer.setAttribute('hidden', '');
+          }
+        }
       } catch(err){
         repError.textContent = 'Fallo de red o parseo';
         repError.style.display='block';
         repLinks.textContent='';
         console.error(err);
-      }
-    });
-
-    // --- CHAT EXISTENTE --------------------------------------------------------
-    const form = document.getElementById('chat-form');
-    const input = document.getElementById('chat-input');
-    const log = document.getElementById('chat-log');
-
-    function append(role, text) {
-      const el = document.createElement('div');
-      el.className = 'msg ' + role;
-      el.textContent = text;
-      log.appendChild(el);
-      log.scrollTop = log.scrollHeight;
-    }
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const text = input.value.trim();
-      if (!text) return;
-      append('user', text);
-      input.value = '';
-      const formData = new FormData();
-      formData.append('text', text);
-      try {
-        const res = await fetch('/api/chat/message', { method: 'POST', body: formData });
-        if (!res.ok) throw new Error('Error HTTP ' + res.status);
-        const data = await res.json();
-        append('assistant', `${data.reply} (Intent: ${data.intent} • ${Math.round((data.confidence||0)*100)}%)`);
-      } catch (err) {
-        append('assistant', 'Ocurrió un error al enviar el mensaje.');
-        console.error(err);
+        if (repSummary) {
+          repSummary.classList.remove('success', 'info', 'muted');
+          repSummary.classList.add('error');
+          repSummary.textContent = 'Fallo de red o parseo';
+        }
       }
     });
 
@@ -166,14 +237,25 @@
       const anio = document.getElementById('anio');
       const pdf = document.getElementById('incluir_pdf');
       const out = document.getElementById('flow-result');
-      if (!file.files.length) { out.textContent = 'Seleccioná un archivo.'; return; }
+      if (!file.files.length) {
+        if (out) {
+          out.classList.remove('success', 'info');
+          out.classList.add('error');
+          out.textContent = 'Seleccioná un archivo.';
+        }
+        return;
+      }
       const data = new FormData();
       data.append('file', file.files[0]);
       data.append('mes', mes.value);
       data.append('anio', anio.value);
       if (pdf && pdf.checked) { data.append('include_pdf', 'true'); }
       if (window.CSRF_TOKEN) data.append('csrf_token', window.CSRF_TOKEN);
-      out.textContent = 'Procesando...';
+      if (out) {
+        out.classList.remove('success', 'error');
+        out.classList.add('info');
+        out.textContent = 'Procesando...';
+      }
       try {
         const res = await fetch(path, { method: 'POST', body: data, credentials: 'include' });
         const j = await res.json();
@@ -181,18 +263,33 @@
         let links = [];
         if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
         if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
+        if (j.map) links.push(`<a href="${j.map}" target="_blank">Mapa</a>`);
         if (!j.pdf && j.pdf_requested) {
           links.push('<span class="warn">PDF no generado</span>');
         }
-        out.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
+        if (out) {
+          out.classList.remove('info', 'error');
+          out.classList.add('success');
+          out.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
+        }
       } catch (err) {
-        out.textContent = 'Error: ' + err.message;
+        if (out) {
+          out.classList.remove('info', 'success');
+          out.classList.add('error');
+          out.textContent = 'Error: ' + err.message;
+        }
         console.error(err);
       }
     }
 
-  document.getElementById('btn-sla').addEventListener('click', () => runFlow('/api/flows/sla'));
-  document.getElementById('btn-fo').addEventListener('click', () => runFlow('/api/flows/comparador-fo'));
+  const slaBtn = document.getElementById('run-sla-btn');
+  if (slaBtn) {
+    slaBtn.addEventListener('click', () => runFlow('/api/flows/sla'));
+  }
+  const foBtn = document.getElementById('run-fo-btn');
+  if (foBtn) {
+    foBtn.addEventListener('click', () => runFlow('/api/flows/comparador-fo'));
+  }
   </script>
 </body>
 </html>

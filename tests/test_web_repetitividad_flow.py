@@ -12,6 +12,7 @@ import sys
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
@@ -20,6 +21,15 @@ from web_app import main as web_main  # type: ignore  # noqa: E402
 from web_app.main import app  # type: ignore  # noqa: E402
 
 from tests.test_web_admin import _connect_user_ok  # noqa: E402
+
+
+def _excel_bytes() -> bytes:
+    df = pd.DataFrame({"CLIENTE": ["A"], "SERVICIO": ["S1"], "FECHA": ["2024-07-01"], "ID_SERVICIO": ["1"]})
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def _login_as_user(client: TestClient, monkeypatch, password: str = "userpass") -> str:
@@ -42,15 +52,17 @@ def test_flow_repetitividad_success(monkeypatch, tmp_path):
     docx_path.write_bytes(b"DOCX")
     pdf_path = reports_dir / "reporte.pdf"
     pdf_path.write_bytes(b"PDF")
+    map_path = reports_dir / "reporte_map.html"
+    map_path.write_text("<html></html>")
 
     async def _fake_generate_report(file_path, mes, anio, output_dir, include_pdf=True):  # noqa: FBT002
         assert include_pdf is True
         assert file_path.exists()
-        return ReportResult(docx=docx_path, pdf=pdf_path if include_pdf else None)
+        return ReportResult(docx=docx_path, pdf=pdf_path if include_pdf else None, map_html=map_path)
 
     monkeypatch.setattr(web_main, "generate_report", _fake_generate_report)
 
-    files = {"file": ("casos.xlsx", io.BytesIO(b"excel"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
     response = client.post("/api/flows/repetitividad", data=data, files=files)
 
@@ -59,13 +71,14 @@ def test_flow_repetitividad_success(monkeypatch, tmp_path):
     assert body["status"] == "ok"
     assert body.get("docx") == f"/reports/{docx_path.name}"
     assert body.get("pdf") == f"/reports/{pdf_path.name}"
+    assert body.get("map") == f"/reports/{map_path.name}"
 
 
 def test_flow_repetitividad_invalid_csrf(monkeypatch):
     client = TestClient(app)
     _login_as_user(client, monkeypatch)
 
-    files = {"file": ("casos.xlsx", io.BytesIO(b"excel"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": "malo"}
     response = client.post("/api/flows/repetitividad", data=data, files=files)
 
@@ -88,10 +101,33 @@ def test_flow_repetitividad_http_status_error(monkeypatch, tmp_path):
 
     monkeypatch.setattr(web_main, "generate_report", _fake_generate_report)
 
-    files = {"file": ("casos.xlsx", io.BytesIO(b"excel"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
 
     resp = client.post("/api/flows/repetitividad", data=data, files=files)
 
     assert resp.status_code == 502
     assert "Archivo inválido" in resp.json()["error"]
+
+
+def test_flow_repetitividad_rechaza_archivo_no_xlsx(monkeypatch):
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+
+    called = False
+
+    async def _should_not_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal called
+        called = True
+        raise AssertionError("generate_report no debería ejecutarse si el archivo es inválido")
+
+    monkeypatch.setattr(web_main, "generate_report", _should_not_run)
+
+    files = {"file": ("casos.xlsx", io.BytesIO(b"not-a-zip"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
+
+    resp = client.post("/api/flows/repetitividad", data=data, files=files)
+
+    assert resp.status_code == 400
+    assert "no es un Excel" in resp.json()["error"]
+    assert called is False

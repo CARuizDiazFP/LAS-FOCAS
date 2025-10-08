@@ -6,14 +6,20 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_TEMPLATES_DIR = _PROJECT_ROOT / "Templates"
+
 # Paths configurables mediante variables de entorno
-TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", "/app/Templates"))
-REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", TEMPLATES_DIR / "Plantilla_Informe_Repetitividad.docx"))
+TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", str(_DEFAULT_TEMPLATES_DIR)))
+REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", str(TEMPLATES_DIR / "Plantilla_Informe_Repetitividad.docx")))
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
 SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
-MAPS_ENABLED: bool = os.getenv("MAPS_ENABLED", "false").lower() == "true"
+MAPS_ENABLED: bool = os.getenv("MAPS_ENABLED", "true").lower() == "true"
 MAPS_LIGHTWEIGHT: bool = os.getenv("MAPS_LIGHTWEIGHT", "true").lower() == "true"
+MAPS_DEFAULT_ZOOM: int = int(os.getenv("MAPS_DEFAULT_ZOOM", "5"))
+MAPS_MARKER_COLOR: str = os.getenv("MAPS_MARKER_COLOR", "#d72638")
+MAPS_MARKER_BORDER: str = os.getenv("MAPS_MARKER_BORDER", "#2d3142")
 REPORTS_API_BASE = os.getenv("REPORTS_API_BASE", "http://api:8000")
 REPORTS_API_TIMEOUT = float(os.getenv("REPORTS_API_TIMEOUT", "60"))
 
@@ -65,6 +71,22 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "id_servicio": "ID_SERVICIO",
     "numero reclamo": "ID_SERVICIO",   # 'Número Reclamo' es el ID de cada caso
     "numero_reclamo": "ID_SERVICIO",
+
+    # Datos geoespaciales (opcionales)
+    "latitud": "GEO_LAT",
+    "latitude": "GEO_LAT",
+    "coord lat": "GEO_LAT",
+    "coord_lat": "GEO_LAT",
+    "longitud": "GEO_LON",
+    "longitude": "GEO_LON",
+    "coord lon": "GEO_LON",
+    "coord_lon": "GEO_LON",
+    "ubicacion": "GEO_LABEL",
+    "ubicación": "GEO_LABEL",
+    "localidad": "GEO_LABEL",
+    "provincia": "GEO_REGION",
+    "departamento": "GEO_REGION",
+    "region": "GEO_REGION",
 }
 
 # Columnas obligatorias para procesar el informe
@@ -76,6 +98,14 @@ COLUMNAS_OBLIGATORIAS: List[str] = [
 
 # Clientes que nunca deben ser excluidos por filtros
 CLIENTES_PRESERVAR: List[str] = ["BANCO MACRO SA"]
+
+# Columnas geoespaciales opcionales normalizadas
+GEO_OPTIONAL_COLUMNS: List[str] = [
+    "GEO_LAT",
+    "GEO_LON",
+    "GEO_LABEL",
+    "GEO_REGION",
+]
 
 # Lista de meses en español para formatear encabezados
 MESES_ES: List[str] = [

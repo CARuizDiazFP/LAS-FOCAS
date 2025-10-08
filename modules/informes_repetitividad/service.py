@@ -24,6 +24,7 @@ class ReportResult:
 
     docx: Path | None
     pdf: Path | None
+    map_html: Path | None = None
 
 
 def _extract_filename(content_disposition: str | None, fallback: str) -> str:
@@ -103,6 +104,7 @@ async def generate_report(
     disposition = response.headers.get("content-disposition")
     docx_file: Path | None = None
     pdf_file: Path | None = None
+    map_file: Path | None = None
 
     if "zip" in content_type:
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
@@ -115,6 +117,8 @@ async def generate_report(
                     docx_file = dest
                 elif filename.lower().endswith(".pdf"):
                     pdf_file = dest
+                elif filename.lower().endswith(".html"):
+                    map_file = dest
     else:
         filename = _extract_filename(
             disposition,
@@ -124,7 +128,13 @@ async def generate_report(
         dest.write_bytes(response.content)
         docx_file = dest
 
-    return ReportResult(docx=docx_file, pdf=pdf_file)
+        map_hint = response.headers.get("x-map-filename")
+        if map_hint:
+            candidate = out_dir / map_hint
+            if candidate.exists():
+                map_file = candidate
+
+    return ReportResult(docx=docx_file, pdf=pdf_file, map_html=map_file)
 
 
 __all__: Iterable[str] = ["ReportResult", "generate_report"]

@@ -36,6 +36,33 @@ CREATE TABLE IF NOT EXISTS app.messages (
 CREATE INDEX IF NOT EXISTS idx_messages_user ON app.messages(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON app.messages(created_at);
 
+-- Chat del panel web (MCP)
+CREATE TABLE IF NOT EXISTS app.chat_sessions (
+    id SERIAL PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+    last_activity TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_id_last_activity
+    ON app.chat_sessions (user_id, last_activity);
+
+CREATE TABLE IF NOT EXISTS app.chat_messages (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES app.chat_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tool_name TEXT,
+    tool_args JSONB,
+    attachments JSONB,
+    error_code TEXT,
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_chat_messages_session_created
+    ON app.chat_messages (session_id, created_at);
+
 -- Usuarios del panel web
 CREATE TABLE IF NOT EXISTS app.web_users (
     id SERIAL PRIMARY KEY,

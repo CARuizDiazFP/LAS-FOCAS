@@ -16,8 +16,9 @@ def test_export_docx_crea_archivo(tmp_path):
         items=[ItemSalida(servicio="S1", casos=2, detalles=["1", "2"])],
         total_servicios=1,
         total_repetitivos=1,
+        periodos=["2024-07"],
     )
     path = export_docx(data, params, tmp_path)
     assert Path(path).exists()
     doc = Document(path)
-    assert "Julio 2024" in doc.paragraphs[0].text
+    assert any("Julio 2024" in p.text for p in doc.paragraphs)

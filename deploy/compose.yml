@@ -63,6 +63,10 @@ services:
       # Nota: Se usa un Ollama externo ya existente en la VM/host
       OLLAMA_URL: http://host.docker.internal:11434
       API_BASE: http://192.168.241.28:8080
+      REPORTS_DIR: /app/web_app/data/reports
+      UPLOADS_DIR: /app/web_app/data/uploads
+      WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
+      OFFICE_SERVICE_BASE: http://office:8090
       # LOG_LEVEL se toma de .env; si se desea sobreescribir aquí se puede definir.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -75,6 +79,8 @@ services:
     volumes:
       - ../Logs:/app/Logs
       - ../Templates:/app/Templates:ro
+      - reports_data:/app/web_app/data/reports
+      - uploads_data:/app/web_app/data/uploads
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || curl -fsS http://192.168.241.28:8080/health || exit 1"]
       interval: 10s
@@ -172,6 +178,8 @@ services:
 volumes:
   postgres_data:
   bot_data:
+  reports_data:
+  uploads_data:
 
 networks:
   lasfocas_net:

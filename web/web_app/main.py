@@ -7,9 +7,10 @@ from __future__ import annotations
 import os
 import secrets
 import time
+import zipfile
 from dataclasses import dataclass
 from time import time as now
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import httpx
 from fastapi import FastAPI, Form, Request, status
@@ -17,13 +18,17 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from pydantic import BaseModel, Field
 from core.logging import setup_logging
 from core.password import hash_password, verify_password
 from core.repositories.conversations import get_or_create_conversation_for_web_user
 from core.repositories.messages import insert_message, get_last_messages
+from core.chatbot import ChatMessage
+from web.chat_ws import ChatWebSocketSettings, mount_chat_websocket
 import psycopg
 from pathlib import Path
 import shutil
+from mimetypes import guess_type
 from fastapi import UploadFile, File
 from modules.informes_repetitividad.service import ReportResult, generate_report
 import unicodedata
@@ -106,6 +111,25 @@ TEMPLATES_ROOT = os.getenv("TEMPLATES_DIR", str(DEFAULT_TEMPLATES_PATH))
 DATA_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_CHAT_UPLOAD_BYTES = int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(15 * 1024 * 1024)))
+ALLOWED_CHAT_EXTENSIONS = {
+    ".xlsx",
+    ".xlsm",
+    ".csv",
+    ".txt",
+    ".json",
+    ".pdf",
+    ".docx",
+}
+ALLOWED_CHAT_MIME_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+    "application/json",
+    "text/plain",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
 if METRICS_PERSIST_PATH is None:
     METRICS_PERSIST_PATH = os.getenv("METRICS_PERSIST_PATH", str(DATA_DIR / "intent_metrics.json"))
 _load_metrics()
@@ -120,12 +144,41 @@ app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
+def _parse_allowed_origins(raw: str | None) -> List[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+CHAT_ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("WEB_CHAT_ALLOWED_ORIGINS"))
+if not CHAT_ALLOWED_ORIGINS:
+    inferred_origin = os.getenv("WEB_INFERRED_ORIGIN")
+    if inferred_origin:
+        CHAT_ALLOWED_ORIGINS = [inferred_origin]
+
+mount_chat_websocket(
+    app,
+    settings=ChatWebSocketSettings(
+        dsn=DB_DSN,
+        allowed_origins=CHAT_ALLOWED_ORIGINS,
+        uploads_dir=str(UPLOADS_DIR),
+    ),
+    logger=logger,
+)
+
+
 @dataclass
 class IntentResponse:
     intent: str
     confidence: float
     provider: str
     normalized_text: str
+
+
+class MCPInvokeRequest(BaseModel):
+    tool: str = Field(..., description="Nombre de la herramienta MCP")
+    args: Dict[str, Any] = Field(default_factory=dict, description="Argumentos para la herramienta")
+    attachments: List[Dict[str, Any]] = Field(default_factory=list, description="Adjuntos opcionales")
 
 
 async def classify_text(text: str) -> IntentResponse:
@@ -447,12 +500,148 @@ async def chat_history(request: Request, limit: int = 20) -> JSONResponse:
         return JSONResponse({"error": "Fallo al recuperar historial"}, status_code=500)
 
 
+@app.post("/api/chat/uploads")
+async def chat_upload_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+    csrf_token: str | None = Form(None),
+) -> JSONResponse:
+    username = get_current_user(request)
+    if not username:
+        return JSONResponse({"error": "No autenticado"}, status_code=401)
+    session_token = request.session.get("csrf")
+    if session_token and csrf_token != session_token and os.getenv("TESTING", "false").lower() != "true":
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    if not file.filename:
+        return JSONResponse({"error": "Archivo sin nombre"}, status_code=400)
+    safe_name = Path(file.filename).name
+    ext = Path(safe_name).suffix.lower()
+    raw_content_type = file.content_type or guess_type(safe_name)[0]
+    normalized_content_type = (raw_content_type or "").lower()
+
+    if ext not in ALLOWED_CHAT_EXTENSIONS:
+        logger.warning(
+            "action=chat_upload_blocked reason=extension user=%s filename=%s",
+            username,
+            safe_name,
+        )
+        return JSONResponse({"error": "Extensión de archivo no permitida"}, status_code=415)
+    if normalized_content_type and normalized_content_type not in ALLOWED_CHAT_MIME_TYPES:
+        logger.warning(
+            "action=chat_upload_blocked reason=mime user=%s filename=%s content_type=%s",
+            username,
+            safe_name,
+            raw_content_type,
+        )
+        return JSONResponse({"error": "Tipo de archivo no permitido"}, status_code=415)
+    token = secrets.token_urlsafe(6)
+    stored_name = f"chat_{int(time.time())}_{token}_{safe_name}"
+    dest = UPLOADS_DIR / stored_name
+    size = 0
+    try:
+        with dest.open("wb") as buffer:
+            while True:
+                chunk = await file.read(512 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_CHAT_UPLOAD_BYTES:
+                    buffer.close()
+                    dest.unlink(missing_ok=True)
+                    return JSONResponse({"error": "Adjunto supera el límite permitido"}, status_code=413)
+                buffer.write(chunk)
+    finally:
+        await file.close()
+    logger.info(
+        "action=chat_upload user=%s filename=%s size_bytes=%s stored=%s",
+        username,
+        safe_name,
+        size,
+        stored_name,
+    )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "name": safe_name,
+            "path": stored_name,
+            "size": size,
+            "content_type": raw_content_type,
+        }
+    )
+
+
 @app.get("/api/chat/metrics")
 async def chat_metrics(request: Request) -> JSONResponse:
     user = get_current_user(request)
     if not user:
         return JSONResponse({"error": "No autenticado"}, status_code=401)
     return JSONResponse({"intent_counts": INTENT_COUNTER})
+
+
+@app.get("/api/chat/ws-history")
+async def chat_ws_history(request: Request, limit: int = 40) -> JSONResponse:
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autenticado"}, status_code=401)
+    orchestrator = getattr(app.state, "chat_orchestrator", None)
+    if orchestrator is None:
+        return JSONResponse({"error": "Chat no disponible"}, status_code=503)
+    if limit > 100:
+        limit = 100
+    session_id = await orchestrator.ensure_session(user)
+    history = await orchestrator.history(session_id, limit)
+    return JSONResponse({"session_id": session_id, "messages": history})
+
+
+@app.post("/mcp/invoke")
+async def mcp_invoke(request: Request, payload: MCPInvokeRequest) -> JSONResponse:
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autenticado"}, status_code=401)
+    orchestrator = getattr(app.state, "chat_orchestrator", None)
+    if orchestrator is None:
+        return JSONResponse({"error": "Chat no disponible"}, status_code=503)
+    role = request.session.get("role", "user")
+    session_id = await orchestrator.ensure_session(user)
+    events: List[Dict[str, Any]] = []
+    logger.info(
+        "action=mcp_http_invoke user=%s role=%s tool=%s session_id=%s",
+        user,
+        role,
+        payload.tool,
+        session_id,
+    )
+    incoming = ChatMessage(
+        type="tool_call",
+        tool=payload.tool,
+        args=payload.args,
+        attachments=payload.attachments,
+    )
+    try:
+        async for event in orchestrator.handle_message(
+            user_id=user,
+            role="user",
+            session_id=session_id,
+            message=incoming,
+            user_role=role,
+        ):
+            events.append(event.to_json())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=mcp_http_invoke_error user=%s session_id=%s tool=%s error=%s",
+            user,
+            session_id,
+            payload.tool,
+            exc,
+        )
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": "Fallo ejecutando la herramienta",
+            },
+            status_code=500,
+        )
+    return JSONResponse({"status": "ok", "events": events})
 
 
 def _save_upload(file: UploadFile) -> Path:
@@ -531,6 +720,9 @@ async def flow_repetitividad(
             include_pdf,
             size_bytes,
         )
+        if not zipfile.is_zipfile(upload_path):
+            upload_path.unlink(missing_ok=True)
+            return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
         # Inspección rápida de columnas para diagnóstico antes de enviar a servicio API
         try:
             df_head = pd.read_excel(upload_path, nrows=1, engine="openpyxl")
@@ -579,17 +771,20 @@ async def flow_repetitividad(
         payload["docx"] = f"/reports/{result.docx.name}"
     if result.pdf:
         payload["pdf"] = f"/reports/{result.pdf.name}"
+    if result.map_html:
+        payload["map"] = f"/reports/{result.map_html.name}"
     else:
         if include_pdf:
             payload["pdf_generated"] = False
 
     elapsed = round((time.time() - start) * 1000)
     logger.info(
-        "action=flow_repetitividad stage=success mes=%s anio=%s docx=%s pdf=%s ms=%s",  # noqa: E501
+        "action=flow_repetitividad stage=success mes=%s anio=%s docx=%s pdf=%s map=%s ms=%s",  # noqa: E501
         mes,
         anio,
         bool(result.docx),
         bool(result.pdf),
+        bool(result.map_html),
         elapsed,
     )
     return JSONResponse(payload)

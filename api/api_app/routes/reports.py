@@ -40,26 +40,37 @@ async def generar_informe_repetitividad(
     try:
         df = processor.load_excel(tmp_path)
         df = processor.normalize(df)
-        df = processor.filter_period(df, periodo_mes, periodo_anio)
         resultado = processor.compute_repetitividad(df)
     except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         os.remove(tmp_path)
 
     params = Params(periodo_mes=periodo_mes, periodo_anio=periodo_anio)
-    docx_path = report.export_docx(resultado, params, str(REPORTS_DIR))
+    map_path = report.generate_geo_map(resultado, params, str(REPORTS_DIR))
+    docx_path = report.export_docx(resultado, params, str(REPORTS_DIR), df_raw=df, map_path=map_path)
 
     pdf_requested = incluir_pdf
     pdf_path = None
     if incluir_pdf:
         pdf_path = report.maybe_export_pdf(docx_path, SOFFICE_BIN)
 
-    if pdf_path:
+    response_headers = {
+        "X-PDF-Requested": str(pdf_requested).lower(),
+        "X-PDF-Generated": "true" if pdf_path else "false",
+        "X-Map-Generated": str(bool(map_path)).lower(),
+    }
+    if map_path:
+        response_headers["X-Map-Filename"] = Path(map_path).name
+
+    if pdf_path or map_path:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(docx_path, Path(docx_path).name)
-            archive.write(pdf_path, Path(pdf_path).name)
+            if pdf_path:
+                archive.write(pdf_path, Path(pdf_path).name)
+            if map_path:
+                archive.write(map_path, Path(map_path).name)
         zip_buffer.seek(0)
         filename = f"repetitividad_{periodo_anio}{periodo_mes:02d}.zip"
         return StreamingResponse(
@@ -67,8 +78,7 @@ async def generar_informe_repetitividad(
             media_type="application/zip",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
-                "X-PDF-Requested": str(pdf_requested).lower(),
-                "X-PDF-Generated": "true",
+                **response_headers,
             },
         )
 
@@ -76,8 +86,5 @@ async def generar_informe_repetitividad(
         path=docx_path,
         filename=Path(docx_path).name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "X-PDF-Requested": str(pdf_requested).lower(),
-            "X-PDF-Generated": "true" if pdf_path else "false",
-        },
+        headers=response_headers,
     )
