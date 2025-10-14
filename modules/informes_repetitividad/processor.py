@@ -155,9 +155,21 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         if geo_col in df.columns:
             df[geo_col] = df[geo_col].astype(str).str.strip()
 
+    # Limpieza y parse robusto de lat/lon (admite comas como separador decimal y texto mezclado)
+    import re as _re
+    def _to_float_series(s: pd.Series) -> pd.Series:
+        # Convierte a string, reemplaza comas por puntos y extrae el primer número con signo y decimal
+        s_str = s.astype(str).str.replace(",", ".", regex=False)
+        # Extraer patrón de número (e.g., -31.42)
+        pattern = _re.compile(r"[-+]?\d{1,3}(?:\.\d+)?")
+        def _extract(v: str):
+            m = pattern.search(v)
+            return float(m.group(0)) if m else None
+        return s_str.map(_extract)
+
     for geo_col in ("GEO_LAT", "GEO_LON"):
         if geo_col in df.columns:
-            df[geo_col] = pd.to_numeric(df[geo_col], errors="coerce")
+            df[geo_col] = _to_float_series(df[geo_col])
             logger.debug(
                 "action=repetitividad_normalize stage=geo_clean column=%s valid=%s",
                 geo_col,

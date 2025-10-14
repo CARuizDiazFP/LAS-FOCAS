@@ -153,35 +153,25 @@ def _export_simple_table(doc: Document, data: ResultadoRepetitividad) -> None:
 
 def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.DataFrame) -> None:
     """Genera un informe detallado al estilo del legacy, con tablas por servicio."""
-    
-    # Agrupar por servicio y generar una sección para cada uno
+
     for item in data.items:
         servicio_id = item.servicio
-        
+
         # Filtrar los casos de este servicio
         df_servicio = df[df["SERVICIO"] == servicio_id].copy()
-        
         if df_servicio.empty:
             continue
-        
-        # Obtener información del servicio
+
+        # Encabezado del servicio
         primer_caso = df_servicio.iloc[0]
         cliente = primer_caso.get("CLIENTE", "N/A")
         tipo_servicio = primer_caso.get("TIPO_SERVICIO", "Servicio")
-        
-        # Encabezado del servicio
-        doc.add_heading(
-            f"{tipo_servicio}: {servicio_id} - {cliente}",
-            level=2,
-        )
-        
-        # Crear tabla de detalle
-        # Columnas: Reclamo, Tipo Solución, Fecha Inicio, Fecha Cierre, Horas, Descripción
-        num_cols = 6
-        table = doc.add_table(rows=1, cols=num_cols)
-        table.style = 'Table Grid'
-        
-        # Encabezados
+        doc.add_heading(f"{tipo_servicio}: {servicio_id} - {cliente}", level=2)
+
+        # Tabla de detalle
+        table = doc.add_table(rows=1, cols=6)
+        table.style = "Table Grid"
+
         hdr_cells = table.rows[0].cells
         headers = [
             "Reclamo",
@@ -193,20 +183,20 @@ def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.
         ]
         for idx, header in enumerate(headers):
             _header_cell(hdr_cells[idx], header)
-        
+
         # Llenar filas con datos
         for _, fila in df_servicio.iterrows():
             row_cells = table.add_row().cells
-            
+
             # Número de reclamo/ID
             id_caso = fila.get("ID_SERVICIO", fila.name)
             row_cells[0].text = str(id_caso)
-            
-            # Tipo de solución
-            tipo_solucion = fila.get("Tipo Solución Reclamo", "-")
+
+            # Tipo de solución (preferir nueva cabecera, fallback legacy)
+            tipo_solucion = fila.get("Tipo Solución") or fila.get("Tipo Solución Reclamo") or "-"
             row_cells[1].text = str(tipo_solucion) if pd.notna(tipo_solucion) else "-"
-            
-            # Fecha de inicio
+
+            # Fecha de inicio (FECHA_INICIO si existe, fallback FECHA)
             fecha_inicio = fila.get("FECHA_INICIO") or fila.get("FECHA")
             if pd.notna(fecha_inicio):
                 try:
@@ -215,8 +205,8 @@ def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.
                     row_cells[2].text = str(fecha_inicio)
             else:
                 row_cells[2].text = "-"
-            
-            # Fecha de cierre
+
+            # Fecha de cierre (FECHA)
             fecha_cierre = fila.get("FECHA")
             if pd.notna(fecha_cierre):
                 try:
@@ -225,9 +215,13 @@ def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.
                     row_cells[3].text = str(fecha_cierre)
             else:
                 row_cells[3].text = "-"
-            
-            # Horas netas
-            horas = fila.get("Horas Netas Problema Reclamo") or fila.get("Horas Netas Reclamo")
+
+            # Horas netas (nueva cabecera o variantes legacy)
+            horas = (
+                fila.get("Horas Netas")
+                or fila.get("Horas Netas Problema Reclamo")
+                or fila.get("Horas Netas Reclamo")
+            )
             if pd.notna(horas):
                 if isinstance(horas, pd.Timedelta):
                     total_min = int(horas.total_seconds() // 60)
@@ -238,23 +232,21 @@ def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.
                     row_cells[4].text = str(horas)
             else:
                 row_cells[4].text = "-"
-            
+
             # Descripción de solución
-            desc = fila.get("Descripción Solución Reclamo", "-")
+            desc = fila.get("Descripción Solución") or fila.get("Descripción Solución Reclamo") or "-"
             if pd.notna(desc):
-                # Limitar a 200 caracteres para no romper el layout
-                desc_text = str(desc)[:200]
-                row_cells[5].text = desc_text
+                row_cells[5].text = str(desc)[:200]
             else:
                 row_cells[5].text = "-"
-        
+
         # Ajustar tamaño de fuente de la tabla (opcional, para mejor lectura)
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.font.size = Pt(9)
-        
+
         # Espacio antes de la siguiente sección
         doc.add_paragraph()
 

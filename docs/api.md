@@ -16,6 +16,14 @@
     "db": "ok",
     "server_version": "16.0"
   }
+
+### Versión
+
+- **Ruta:** `GET /health/version`
+- **Descripción:** Devuelve la versión de build del servicio (cuando está habilitado).
+  ```json
+  { "status": "ok", "service": "api", "version": "2025-10-14T12:00:00Z" }
+  ```
   ```
 
 ## Verificación de base de datos
@@ -101,6 +109,22 @@ X-PDF-Generated: true
 - Si la conversión falla, se devuelve el DOCX sin elevar excepción (fail-safe) y `X-PDF-Generated=false`.
 - Los archivos se escriben en el directorio configurado (`REPORTS_DIR`). Limpiar o rotar periódicamente para evitar acumulación.
 - Validar tamaño máximo del Excel (pendiente: establecer límite y documentación — TODO).
+
+### Ingesta de reclamos (nuevo, WIP)
+
+- **Ruta:** `POST /ingest/reclamos`
+- **Descripción:** Normaliza y resume un archivo XLSX/CSV con reclamos (fechas, duraciones, GEO opcional). Útil para prevalidar datasets antes de generar reportes.
+- **Respuesta (ejemplo):**
+  ```json
+  {
+    "rows_ok": 1200,
+    "rows_bad": 14,
+    "date_min": "2025-07-01",
+    "date_max": "2025-07-31",
+    "geo_available": true,
+    "geo_pct": 77.4
+  }
+  ```
 
 #### Seguridad y consideraciones
 - El endpoint no exige aún autenticación ni rate limiting: agregar API key / token interno (TODO) antes de exponer en ambientes sensibles.

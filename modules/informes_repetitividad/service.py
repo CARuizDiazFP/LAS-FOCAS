@@ -1,140 +1,181 @@
 # Nombre de archivo: service.py
 # Ubicación de archivo: modules/informes_repetitividad/service.py
-# Descripción: Helper asíncrono para invocar la API de reportes y almacenar resultados
+# Descripción: Servicio central para generar informes de repetitividad a partir de Excel en memoria
 
-"""Servicios auxiliares para generar informes de repetitividad vía API REST."""
+"""Servicios compartidos para el informe de repetitividad."""
 
 from __future__ import annotations
 
-import io
-import shutil
-import zipfile
+import logging
+import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
-import httpx
+from . import processor, report
+from .config import (
+    MAPS_ENABLED,
+    REPORTS_DIR,
+    SOFFICE_BIN,
+)
+from .schemas import Params, ResultadoRepetitividad
 
-from .config import REPORTS_API_BASE, REPORTS_API_TIMEOUT
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class ReportConfig:
+    """Parámetros de configuración para la generación del informe."""
+
+    reports_dir: Path
+    soffice_bin: str | None = None
+    maps_enabled: bool = MAPS_ENABLED
+
+    @classmethod
+    def from_settings(cls) -> "ReportConfig":
+        """Construye la configuración a partir de las variables globales del módulo."""
+
+        return cls(
+            reports_dir=Path(REPORTS_DIR),
+            soffice_bin=SOFFICE_BIN,
+            maps_enabled=MAPS_ENABLED,
+        )
 
 
 @dataclass(slots=True)
 class ReportResult:
-    """Resultado de la generación de reportes (paths en disco)."""
+    """Resultado de la generación del informe."""
 
-    docx: Path | None
-    pdf: Path | None
+    docx: Path
+    pdf: Path | None = None
     map_html: Path | None = None
+    total_filas: int = 0
+    total_repetitivos: int = 0
+    periodos_detectados: List[str] | None = None
 
 
-def _extract_filename(content_disposition: str | None, fallback: str) -> str:
-    if not content_disposition:
-        return fallback
-    import re as _re
+def _infer_periodo(periodo_titulo: str, periodos_detectados: List[str]) -> tuple[int, int]:
+    """Obtiene un período (mes, año) razonable para usar en el informe."""
 
-    match = _re.search(r'filename="?([^";]+)', content_disposition)
+    match = re.search(r"(?P<mes>0?[1-9]|1[0-2])\D+(?P<anio>\d{4})", periodo_titulo)
     if match:
-        return match.group(1)
-    return fallback
+        mes = int(match.group("mes"))
+        anio = int(match.group("anio"))
+        return mes, anio
+
+    for periodo in reversed(periodos_detectados or []):
+        detected = re.match(r"(?P<anio>\d{4})-(?P<mes>\d{2})", periodo)
+        if detected:
+            mes = max(1, min(12, int(detected.group("mes"))))
+            return mes, int(detected.group("anio"))
+
+    logger.warning(
+        "action=repetitividad_service stage=periodo_fallback reason=unparsable titulo=%s",
+        periodo_titulo,
+    )
+    return 1, 1970
 
 
-async def _post_request(
-    url: str,
-    *,
-    data: dict[str, str],
-    files: dict[str, tuple[str, object, str]],
-    timeout: float,
-    client: httpx.AsyncClient | None = None,
-) -> httpx.Response:
-    close_client = False
-    if client is None:
-        client = httpx.AsyncClient(timeout=timeout)
-        close_client = True
-    try:
-        response = await client.post(url, data=data, files=files)
-    finally:
-        files["file"][1].close()
-        if close_client:
-            await client.aclose()
-    response.raise_for_status()
-    return response
-
-
-async def generate_report(
-    file_path: Path,
-    mes: int,
-    anio: int,
-    output_dir: Path | str,
-    *,
-    include_pdf: bool = True,
-    api_base: str | None = None,
-    timeout: float | None = None,
-    client: httpx.AsyncClient | None = None,
+def generar_informe_desde_excel(
+    excel_bytes: bytes,
+    periodo_titulo: str,
+    export_pdf: bool,
+    config: ReportConfig,
 ) -> ReportResult:
-    """Invoca la API de repetitividad y almacena los archivos generados."""
+    """Genera el informe de repetitividad a partir de un Excel en memoria.
 
-    api_base = (api_base or REPORTS_API_BASE).rstrip("/")
-    timeout = timeout or REPORTS_API_TIMEOUT
+    La función centraliza el flujo de carga → normalización → cálculo de repetitividad →
+    exportación (DOCX/PDF/mapa). Es utilizada por CLI, API y UI para asegurar
+    consistencia en los resultados.
+    """
 
-    files = {
-        "file": (
-            file_path.name,
-            file_path.open("rb"),
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-    }
-    data = {
-        "periodo_mes": str(mes),
-        "periodo_anio": str(anio),
-        "incluir_pdf": "true" if include_pdf else "false",
-    }
+    if not excel_bytes:
+        raise ValueError("El archivo recibido está vacío")
 
-    response = await _post_request(
-        f"{api_base}/reports/repetitividad",
-        data=data,
-        files=files,
-        timeout=timeout,
-        client=client,
+    reports_dir = config.reports_dir
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "action=repetitividad_service stage=start bytes=%s periodo_titulo=%s export_pdf=%s",
+        len(excel_bytes),
+        periodo_titulo,
+        export_pdf,
     )
 
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_in:
+        tmp_in.write(excel_bytes)
+        tmp_path = Path(tmp_in.name)
 
-    content_type = response.headers.get("content-type", "")
-    disposition = response.headers.get("content-disposition")
-    docx_file: Path | None = None
-    pdf_file: Path | None = None
-    map_file: Path | None = None
+    try:
+        df = processor.load_excel(str(tmp_path))
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
-    if "zip" in content_type:
-        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-            for member in archive.infolist():
-                filename = Path(member.filename).name
-                dest = out_dir / filename
-                with archive.open(member) as src, dest.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                if filename.lower().endswith(".docx"):
-                    docx_file = dest
-                elif filename.lower().endswith(".pdf"):
-                    pdf_file = dest
-                elif filename.lower().endswith(".html"):
-                    map_file = dest
-    else:
-        filename = _extract_filename(
-            disposition,
-            f"repetitividad_{anio}{mes:02d}.docx",
+    total_filas = len(df)
+    logger.info(
+        "action=repetitividad_service stage=load_ok filas=%s columnas=%s",
+        total_filas,
+        list(df.columns),
+    )
+
+    df_normalizado = processor.normalize(df)
+    logger.info(
+        "action=repetitividad_service stage=normalize_ok filas=%s",
+        len(df_normalizado),
+    )
+
+    resultado: ResultadoRepetitividad = processor.compute_repetitividad(df_normalizado)
+    logger.info(
+        "action=repetitividad_service stage=compute_ok total_servicios=%s repetitivos=%s",
+        resultado.total_servicios,
+        resultado.total_repetitivos,
+    )
+
+    mes, anio = _infer_periodo(periodo_titulo, resultado.periodos)
+    params = Params(periodo_mes=mes, periodo_anio=anio)
+
+    map_path: Path | None = None
+    if config.maps_enabled:
+        map_result = report.generate_geo_map(resultado, params, str(reports_dir))
+        if map_result:
+            map_path = Path(map_result)
+
+    docx_path = Path(
+        report.export_docx(
+            resultado,
+            params,
+            str(reports_dir),
+            df_raw=df_normalizado,
+            map_path=str(map_path) if map_path else None,
         )
-        dest = out_dir / filename
-        dest.write_bytes(response.content)
-        docx_file = dest
+    )
 
-        map_hint = response.headers.get("x-map-filename")
-        if map_hint:
-            candidate = out_dir / map_hint
-            if candidate.exists():
-                map_file = candidate
+    pdf_path: Path | None = None
+    if export_pdf and config.soffice_bin:
+        pdf_result = report.maybe_export_pdf(str(docx_path), config.soffice_bin)
+        if pdf_result:
+            pdf_path = Path(pdf_result)
 
-    return ReportResult(docx=docx_file, pdf=pdf_file, map_html=map_file)
+    logger.info(
+        "action=repetitividad_service stage=success docx=%s pdf=%s map=%s",
+        docx_path,
+        pdf_path,
+        map_path,
+    )
+
+    return ReportResult(
+        docx=docx_path,
+        pdf=pdf_path,
+        map_html=map_path,
+        total_filas=total_filas,
+        total_repetitivos=resultado.total_repetitivos,
+        periodos_detectados=resultado.periodos,
+    )
 
 
-__all__: Iterable[str] = ["ReportResult", "generate_report"]
+__all__: Iterable[str] = [
+    "ReportConfig",
+    "ReportResult",
+    "generar_informe_desde_excel",
+]

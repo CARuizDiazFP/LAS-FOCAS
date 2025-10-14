@@ -27,7 +27,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 - **Interfaces**
 
   - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye los flujos `/repetitividad` y `/sla` y un teclado opcional con atajos a ambos comandos. Ver [docs/bot.md](docs/bot.md) para guía rápida.
-  - **Web Panel** (autenticación simple, accesible por IP interna .28).
+  - **Web Panel** (autenticación simple, Panel con Chat por defecto, accesible por IP interna .28).
   - **nlp_intent** (microservicio NLP para clasificación de intención).
   - CLI opcional para utilidades.
 
@@ -213,6 +213,8 @@ sudo usermod -aG docker "$USER"
 ```bash
 cp deploy/env.sample .env
 ./Start  # levanta Postgres, NLP, API (8001) y Web (8080) usando el Ollama externo de la VM (host:11434)
+# Reconstruir sólo el front (estáticos/JS/CSS del panel):
+./Start --rebuild-frontend
 # Para levantar también un Ollama interno del stack (opcional):
 # ./Start --with-internal-ollama
 ```
@@ -223,6 +225,7 @@ Luego de iniciar los contenedores, puede verificarse el estado del servicio:
 curl -sS http://localhost:8001/health   # API (remapeada)
 curl -sS http://localhost:8000/db-check
 curl -sS http://192.168.241.28:8080/health   # Web UI (IP privada de la VM)
+curl -sS http://192.168.241.28:8080/health/version  # versión de build del Web UI
 curl -sS http://localhost:11434/api/tags # Ollama (externo o interno si se usó --with-internal-ollama)
 ```
 
@@ -270,6 +273,10 @@ git clone https://github.com/CARuizDiazFP/LAS-FOCAS
 cd LAS-FOCAS
 cp deploy/env.sample .env
 docker compose -f deploy/compose.yml up -d --build
+
+# Notas de UI:
+# - La carpeta histórica de reportes se navega en /reports-history (los archivos se sirven en /reports).
+# - En el panel, Repetitividad/SLA muestran enlaces directos a /reports/*.docx|.pdf|.html.
 ```
 
 ---

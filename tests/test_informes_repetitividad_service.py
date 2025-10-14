@@ -1,186 +1,121 @@
-# Nombre de archivo: test_informes_repetitividad_service.py
-# Ubicación de archivo: tests/test_informes_repetitividad_service.py
-# Descripción: Pruebas unitarias del helper generate_report para repetitividad
+"""Pruebas del servicio local de informes de repetitividad."""
+
+from __future__ import annotations
 
 import io
-import zipfile
 from pathlib import Path
 
-import httpx
+import pandas as pd
 import pytest
 
-from modules.informes_repetitividad.service import generate_report
+from modules.informes_repetitividad import processor, report
+from modules.informes_repetitividad.schemas import ResultadoRepetitividad
+from modules.informes_repetitividad.service import (
+    ReportConfig,
+    ReportResult,
+    generar_informe_desde_excel,
+)
 
 
-@pytest.mark.asyncio
-async def test_generate_report_docx(tmp_path):
-    input_file = tmp_path / "casos.xlsx"
-    input_file.write_bytes(b"dummy-excel")
-    out_dir = tmp_path / "out"
+def _build_excel_bytes(data: dict[str, list[object]]) -> bytes:
+    df = pd.DataFrame(data)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/reports/repetitividad"
-        assert request.method == "POST"
-        assert "multipart/form-data" in request.headers["content-type"]
-        return httpx.Response(
-            200,
-            headers={
-                "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "content-disposition": 'attachment; filename="reporte.docx"',
-            },
-            content=b"DOCX-CONTENT",
-        )
 
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mock") as client:
-        result = await generate_report(
-            input_file,
-            mes=7,
-            anio=2024,
-            output_dir=out_dir,
-            include_pdf=False,
-            api_base="http://mock",
-            client=client,
-        )
+def test_generar_informe_docx(tmp_path: Path) -> None:
+    excel_bytes = _build_excel_bytes(
+        {
+            "CLIENTE": ["A", "A", "B"],
+            "SERVICIO": ["S1", "S1", "S2"],
+            "FECHA": ["2024-07-01", "2024-07-15", "2024-07-20"],
+            "ID_SERVICIO": [1, 2, 3],
+        }
+    )
+    config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
 
-    assert result.docx is not None
+    result = generar_informe_desde_excel(excel_bytes, "07/2024", False, config)
+
     assert result.docx.exists()
     assert result.pdf is None
-    assert result.docx.read_bytes() == b"DOCX-CONTENT"
+    assert result.total_filas == 3
+    assert result.total_repetitivos == 1
+    assert result.periodos_detectados is not None
+    assert "2024-07" in result.periodos_detectados
 
 
-@pytest.mark.asyncio
-async def test_generate_report_zip(tmp_path):
-    input_file = tmp_path / "casos.xlsx"
-    input_file.write_bytes(b"dummy-excel")
-    out_dir = tmp_path / "out"
+def test_generar_informe_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    excel_bytes = _build_excel_bytes(
+        {
+            "CLIENTE": ["A", "A"],
+            "SERVICIO": ["S1", "S1"],
+            "FECHA": ["2024-08-01", "2024-08-02"],
+            "ID_SERVICIO": [1, 2],
+        }
+    )
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("reporte.docx", b"DOCX-CONTENT")
-        archive.writestr("reporte.pdf", b"PDF-CONTENT")
-    zip_buffer.seek(0)
+    def _fake_pdf(docx_path: str, soffice_bin: str) -> str:
+        pdf_path = Path(docx_path).with_suffix(".pdf")
+        pdf_path.write_bytes(b"PDF")
+        return str(pdf_path)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={
-                "content-type": "application/zip",
-                "content-disposition": 'attachment; filename="reporte.zip"',
-            },
-            content=zip_buffer.getvalue(),
-        )
+    monkeypatch.setattr(report, "maybe_export_pdf", _fake_pdf)
 
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mock") as client:
-        result = await generate_report(
-            input_file,
-            mes=8,
-            anio=2024,
-            output_dir=out_dir,
-            include_pdf=True,
-            api_base="http://mock",
-            client=client,
-        )
+    config = ReportConfig(reports_dir=tmp_path, soffice_bin="/usr/bin/soffice", maps_enabled=False)
 
-    assert result.docx is not None
+    result = generar_informe_desde_excel(excel_bytes, "08/2024", True, config)
+
+    assert result.docx.exists()
     assert result.pdf is not None
+    assert result.pdf.read_bytes() == b"PDF"
+
+
+def test_generar_informe_periodo_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    excel_bytes = _build_excel_bytes(
+        {
+            "CLIENTE": ["A", "B"],
+            "SERVICIO": ["S1", "S1"],
+            "FECHA": ["2023-01-01", "2023-02-01"],
+            "ID_SERVICIO": [1, 2],
+        }
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "compute_repetitividad",
+        lambda df: ResultadoRepetitividad(
+            items=[],
+            total_servicios=len(df),
+            total_repetitivos=0,
+            periodos=[],
+            geo_points=[],
+        ),
+    )
+
+    config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
+
+    result = generar_informe_desde_excel(excel_bytes, "Informe sin periodo", False, config)
+
     assert result.docx.exists()
-    assert result.pdf.exists()
-    assert result.docx.read_bytes() == b"DOCX-CONTENT"
-    assert result.pdf.read_bytes() == b"PDF-CONTENT"
+    # Fallback debería generar archivo con 197001 cuando no se puede inferir período
+    assert result.docx.name.startswith("repetitividad_1970")
 
 
-@pytest.mark.asyncio
-async def test_generate_report_http_error(tmp_path):
-    input_file = tmp_path / "casos.xlsx"
-    input_file.write_bytes(b"dummy-excel")
-    out_dir = tmp_path / "out"
+def test_generar_informe_no_filtra_periodos(tmp_path: Path) -> None:
+    excel_bytes = _build_excel_bytes(
+        {
+            "CLIENTE": ["A", "A", "B", "B"],
+            "SERVICIO": ["S1", "S1", "S2", "S2"],
+            "FECHA": ["2024-07-01", "2024-07-05", "2024-08-01", "2024-08-02"],
+            "ID_SERVICIO": [1, 2, 3, 4],
+        }
+    )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            400,
-            json={"detail": "Archivo inválido"},
-        )
+    config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
+    result = generar_informe_desde_excel(excel_bytes, "09/2024", False, config)
 
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mock") as client:
-        with pytest.raises(httpx.HTTPStatusError):
-            await generate_report(
-                input_file,
-                mes=9,
-                anio=2024,
-                output_dir=out_dir,
-                include_pdf=False,
-                api_base="http://mock",
-                client=client,
-            )
-
-
-@pytest.mark.asyncio
-async def test_generate_report_sin_content_disposition(tmp_path):
-    input_file = tmp_path / "casos.xlsx"
-    input_file.write_bytes(b"dummy-excel")
-    out_dir = tmp_path / "out"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={
-                "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            },
-            content=b"DOCX-CONTENT",
-        )
-
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mock") as client:
-        result = await generate_report(
-            input_file,
-            mes=10,
-            anio=2024,
-            output_dir=out_dir,
-            include_pdf=False,
-            api_base="http://mock",
-            client=client,
-        )
-
-    assert result.docx is not None
-    assert result.docx.name == "repetitividad_202410.docx"
-    assert result.docx.read_bytes() == b"DOCX-CONTENT"
-
-
-@pytest.mark.asyncio
-async def test_generate_report_zip_sin_pdf(tmp_path):
-    input_file = tmp_path / "casos.xlsx"
-    input_file.write_bytes(b"dummy-excel")
-    out_dir = tmp_path / "out"
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("reporte.docx", b"DOCX-CONTENT")
-    zip_buffer.seek(0)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={
-                "content-type": "application/zip",
-            },
-            content=zip_buffer.getvalue(),
-        )
-
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://mock") as client:
-        result = await generate_report(
-            input_file,
-            mes=11,
-            anio=2024,
-            output_dir=out_dir,
-            include_pdf=True,
-            api_base="http://mock",
-            client=client,
-        )
-
-    assert result.docx is not None
-    assert result.pdf is None
-    assert result.docx.read_bytes() == b"DOCX-CONTENT"
+    assert result.total_repetitivos == 2
+    assert set(result.periodos_detectados or []) == {"2024-07", "2024-08"}

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import time
@@ -30,7 +31,6 @@ from pathlib import Path
 import shutil
 from mimetypes import guess_type
 from fastapi import UploadFile, File
-from modules.informes_repetitividad.service import ReportResult, generate_report
 import unicodedata
 import json
 import pandas as pd
@@ -49,6 +49,20 @@ DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} por
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logger = setup_logging("web", LOG_LEVEL, enable_file=None, filename="web.log")
+
+
+def _detect_build_version() -> str:
+    for candidate in (
+        os.getenv("WEB_BUILD_VERSION"),
+        os.getenv("BUILD_HASH"),
+        os.getenv("GIT_SHA"),
+    ):
+        if candidate:
+            return candidate.strip()
+    return str(int(time.time()))
+
+
+BUILD_VERSION = _detect_build_version()
 
 # Métricas simples en memoria (MVP) con persistencia opcional
 INTENT_COUNTER: dict[str, int] = {"Solicitud de acción": 0, "Consulta/Generico": 0, "Otros": 0}
@@ -79,7 +93,7 @@ def _persist_metrics() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("action=metrics_persist error=%s", exc)
 
-app = FastAPI(title="LAS-FOCAS Web UI", version="0.1.0")
+app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("WEB_SECRET_KEY", "dev-secret-change"))
 
 # Middleware de trazabilidad de requests (ayuda a depurar ERR_INVALID_HTTP_RESPONSE en navegador)
@@ -139,9 +153,23 @@ os.environ.setdefault("UPLOADS_DIR", str(UPLOADS_DIR))
 os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))
 os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
+# Importar servicio de informes después de setear variables de entorno
+from modules.informes_repetitividad.service import (  # noqa: E402
+    ReportConfig,
+    ReportResult,
+    generar_informe_desde_excel,
+)
+
+REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
+# Elegir la carpeta de reportes a montar: preferir la de configuración si existe; si no, fallback local
+_cfg_reports = Path(REPORT_SERVICE_CONFIG.reports_dir)
+_mount_reports = _cfg_reports if _cfg_reports.exists() else REPORTS_DIR
+_mount_reports.mkdir(parents=True, exist_ok=True)
+app.mount("/reports", StaticFiles(directory=str(_mount_reports)), name="reports")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+templates.env.globals["build_version"] = BUILD_VERSION
 
 
 def _parse_allowed_origins(raw: str | None) -> List[str]:
@@ -194,6 +222,11 @@ async def classify_text(text: str) -> IntentResponse:
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return {"status": "ok", "service": "web", "time": int(time.time())}
+
+
+@app.get("/health/version")
+async def health_version() -> Dict[str, Any]:
+    return {"status": "ok", "service": "web", "version": BUILD_VERSION}
 
 
 def get_current_user(request: Request) -> str | None:
@@ -273,13 +306,60 @@ async def logout(request: Request) -> RedirectResponse:
 async def index(request: Request) -> HTMLResponse:
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    # Mostrar el nuevo panel con Chat como vista principal
     return templates.TemplateResponse(
         request,
-        "index.html",
+        "panel.html",
         {
             "username": get_current_user(request),
             "csrf": request.session.get("csrf"),
             "api_base": os.getenv("API_BASE", "http://192.168.241.28:8080"),
+        },
+    )
+
+
+@app.get("/panel", response_class=HTMLResponse)
+async def panel(request: Request) -> HTMLResponse:
+    if not get_current_user(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    return templates.TemplateResponse(
+        request,
+        "panel.html",
+        {
+            "username": get_current_user(request),
+            "csrf": request.session.get("csrf"),
+            "api_base": os.getenv("API_BASE", "http://192.168.241.28:8080"),
+        },
+    )
+
+@app.get("/reports/index")
+async def reports_index_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
+
+
+@app.get("/reports-history", response_class=HTMLResponse)
+async def reports_history(request: Request) -> HTMLResponse:
+    if not get_current_user(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    # Listar archivos del directorio de reportes (solo nivel actual)
+    files = []
+    try:
+        for p in sorted(_mount_reports.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
+            if p.is_file():
+                files.append({
+                    "name": p.name,
+                    "size": p.stat().st_size,
+                    "mtime": int(p.stat().st_mtime),
+                    "href": f"/reports/{p.name}",
+                })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=reports_index_list error=%s", exc)
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        {
+            "username": get_current_user(request),
+            "files": files,
         },
     )
 
@@ -683,17 +763,11 @@ async def flow_repetitividad(
     file: UploadFile = File(...),
     mes: int = Form(...),
     anio: int = Form(...),
-    include_pdf: bool = Form(True),  # mantenemos True para no romper tests existentes
+    include_pdf: bool = Form(True),
     csrf_token: str = Form(...),
 ):
-    """Flujo Web para generar Informe de Repetitividad.
+    """Flujo Web para generar Informe de Repetitividad (sin filtros por período)."""
 
-    - Valida CSRF y autenticación.
-    - Verifica extensión .xlsx (case-insensitive).
-    - Limita tamaño (soft) a 10 MB.
-    - Invoca helper asíncrono que llama a la API de reportes.
-    - Devuelve JSON con links relativos a /reports.
-    """
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
@@ -703,88 +777,90 @@ async def flow_repetitividad(
         return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
 
     upload_path = _save_upload(file)
+    periodo_titulo = f"{mes:02d}/{anio}"
     size_bytes = 0
+    start = time.time()
+
     try:
         size_bytes = upload_path.stat().st_size
-        MAX_BYTES = 10 * 1024 * 1024  # 10 MB
-        if size_bytes > MAX_BYTES:
+        max_bytes = 10 * 1024 * 1024
+        if size_bytes > max_bytes:
             upload_path.unlink(missing_ok=True)
             return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
 
-        start = time.time()
-        logger.info(
-            "action=flow_repetitividad stage=start filename=%s mes=%s anio=%s include_pdf=%s size=%s",  # noqa: E501
-            original_name,
-            mes,
-            anio,
-            include_pdf,
-            size_bytes,
-        )
         if not zipfile.is_zipfile(upload_path):
             upload_path.unlink(missing_ok=True)
             return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
-        # Inspección rápida de columnas para diagnóstico antes de enviar a servicio API
+
+        logger.info(
+            "action=flow_repetitividad stage=start filename=%s periodo=%s include_pdf=%s size=%s",
+            original_name,
+            periodo_titulo,
+            include_pdf,
+            size_bytes,
+        )
+
         try:
             df_head = pd.read_excel(upload_path, nrows=1, engine="openpyxl")
             logger.info(
-                "action=flow_repetitividad stage=inspect columns_raw=%s", list(df_head.columns)
+                "action=flow_repetitividad stage=inspect columns_raw=%s",
+                list(df_head.columns),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "action=flow_repetitividad stage=inspect error=%s", exc
-            )
-        result: ReportResult = await generate_report(
-            upload_path,
-            mes,
-            anio,
-            REPORTS_DIR,
-            include_pdf=include_pdf,
+            logger.warning("action=flow_repetitividad stage=inspect error=%s", exc)
+
+        excel_bytes = upload_path.read_bytes()
+        result: ReportResult = await asyncio.to_thread(
+            generar_informe_desde_excel,
+            excel_bytes,
+            periodo_titulo,
+            include_pdf,
+            REPORT_SERVICE_CONFIG,
         )
-    except httpx.HTTPStatusError as exc:
-        headers = exc.response.headers.get("content-type", "")
-        if headers.startswith("application/json"):
-            try:
-                detail = exc.response.json().get("detail", exc.response.text)
-            except Exception:  # noqa: BLE001
-                detail = exc.response.text
-        else:
-            detail = exc.response.text
+    except ValueError as exc:
         logger.warning(
-            "action=flow_repetitividad stage=reports status=%s detail=%s mes=%s anio=%s",  # noqa: E501
-            exc.response.status_code,
-            detail,
-            mes,
-            anio,
+            "action=flow_repetitividad stage=validation error=%s periodo=%s",
+            exc,
+            periodo_titulo,
         )
-        return JSONResponse({"error": f"Error en el servicio de reportes: {detail}"}, status_code=502)
-    except httpx.HTTPError as exc:
-        logger.exception("action=flow_repetitividad stage=http mes=%s anio=%s error=%s", mes, anio, exc)
-        return JSONResponse({"error": "No se pudo contactar al servicio de reportes"}, status_code=502)
+        return JSONResponse({"error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=flow_repetitividad stage=unexpected mes=%s anio=%s error=%s", mes, anio, exc)
+        logger.exception(
+            "action=flow_repetitividad stage=unexpected periodo=%s error=%s",
+            periodo_titulo,
+            exc,
+        )
         return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
     finally:
         upload_path.unlink(missing_ok=True)
 
-    payload = {"status": "ok", "pdf_requested": include_pdf}
+    payload: Dict[str, Any] = {
+        "status": "ok",
+        "pdf_requested": include_pdf,
+        "stats": {
+            "filas": result.total_filas,
+            "repetitivos": result.total_repetitivos,
+            "periodos": result.periodos_detectados or [],
+        },
+    }
     if result.docx:
         payload["docx"] = f"/reports/{result.docx.name}"
     if result.pdf:
         payload["pdf"] = f"/reports/{result.pdf.name}"
+    elif include_pdf:
+        payload["pdf_generated"] = False
     if result.map_html:
         payload["map"] = f"/reports/{result.map_html.name}"
-    else:
-        if include_pdf:
-            payload["pdf_generated"] = False
 
     elapsed = round((time.time() - start) * 1000)
     logger.info(
-        "action=flow_repetitividad stage=success mes=%s anio=%s docx=%s pdf=%s map=%s ms=%s",  # noqa: E501
-        mes,
-        anio,
+        "action=flow_repetitividad stage=success periodo=%s docx=%s pdf=%s map=%s filas=%s repetitivos=%s ms=%s",
+        periodo_titulo,
         bool(result.docx),
         bool(result.pdf),
         bool(result.map_html),
+        result.total_filas,
+        result.total_repetitivos,
         elapsed,
     )
     return JSONResponse(payload)

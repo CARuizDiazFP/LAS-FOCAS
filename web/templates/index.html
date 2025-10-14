@@ -9,17 +9,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>LAS-FOCAS — Panel</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v={{ build_version }}" />
   <!-- Los assets de Vite se copian a /static/assets en build -->
-  <script defer src="/static/assets/main.js"></script>
+  <script defer src="/static/assets/main.js?v={{ build_version }}"></script>
   <script>
     window.API_BASE = "{{ api_base }}";
     window.CSRF_TOKEN = "{{ csrf }}";
+    window.BUILD_VERSION = "{{ build_version }}";
   </script>
 </head>
 <body class="dark">
   <header class="topbar">
-    <div class="brand">LAS-FOCAS</div>
+  <div class="brand">LAS-FOCAS <span class="version-badge">v{{ build_version }}</span></div>
     <nav class="actions">
       <button class="btn" id="open-rep-modal">Informe Repetitividad</button>
       <button class="btn" id="scroll-rep-card">Ver panel</button>

@@ -9,7 +9,7 @@
 
 ## Cálculo
 - Se normalizan las columnas y se genera `PERIODO = YYYY-MM`.
-- Se filtra por período indicado (mes/año).
+- En el flujo Web, el período `mes/año` se usa como título/etiqueta (no se filtra por mes), el análisis es global sobre el dataset cargado.
 - Se agrupan casos por `SERVICIO` y se consideran repetitivos aquellos con **2 o más** casos.
 - El conteo de servicios repetitivos se realiza con operaciones vectorizadas (`groupby().size()`), lo que mejora el rendimiento.
 - Se genera una tabla con servicio, cantidad y detalles/IDs.
@@ -21,9 +21,9 @@
 4. El bot devuelve un archivo `.docx` y opcionalmente `.pdf`.
 
 ## Integración con otros canales
-- Tanto el bot de Telegram como la UI web delegan la invocación HTTP y el almacenamiento de resultados en `modules.informes_repetitividad.service.generate_report`.
-- El servicio centraliza la publicación hacia `POST /reports/repetitividad`, maneja respuestas ZIP/DOCX y normaliza rutas de salida en disco.
-- Para reutilizarlo desde nuevos flujos basta con pasar la ruta del archivo cargado, el período y el directorio de salida deseado.
+- Tanto la UI web como (a futuro) el bot de Telegram llaman a la misma función de servicio: `modules.informes_repetitividad.service.generar_informe_desde_excel`.
+- La API web (`/api/flows/repetitividad`) devuelve rutas absolutas de descarga bajo `/reports/*` y, cuando está habilitado, un mapa HTML (`.html`).
+- El histórico se lista con `/reports-history`.
 
 ## Cobertura de pruebas automatizadas
 - `tests/test_repetitividad_processor.py`: cubre normalización básica y cálculo de repetitividad para casos repetidos vs. preservación del cliente banquero. Falta validar errores por columnas ausentes (`normalize`) y escenarios con filas nulas.
@@ -39,7 +39,7 @@
 - Evaluar pruebas integrales que verifiquen la generación y descarga de archivos desde la UI (end-to-end en Docker compose).
 
 ## Paths de salida
-- Archivos generados en `/app/data/reports/` dentro del contenedor del bot.
+- Archivos generados en `/app/web_app/data/reports/` en el contenedor `web` (o en `REPORTS_DIR` configurado). La descarga se sirve en `/reports/*`.
 
 ## Variables de entorno
 - `REP_TEMPLATE_PATH=/app/Templates/Plantilla_Informe_Repetitividad.docx` ruta de la plantilla oficial (copiada desde `Templates/`).

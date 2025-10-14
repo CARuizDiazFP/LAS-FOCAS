@@ -1,0 +1,44 @@
+<!--
+# Nombre de archivo: reports.html
+# Ubicación de archivo: web/templates/reports.html
+# Descripción: Listado de archivos de reportes generados (histórico)
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reportes — LAS-FOCAS</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ build_version }}" />
+</head>
+<body class="dark">
+  <header class="topbar">
+    <div class="brand">LAS-FOCAS</div>
+    <nav class="actions">
+      <a class="btn" href="/">Panel</a>
+      <a class="btn" href="/logout">Salir</a>
+      <span class="muted" style="margin-left:12px;">{{ username }}</span>
+    </nav>
+  </header>
+  <main class="container">
+    <section class="card">
+      <header class="card-header"><h1>Histórico de reportes</h1></header>
+      {% if not files %}
+        <p class="muted">No hay archivos generados aún.</p>
+      {% else %}
+        <ul style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px;">
+          {% for f in files %}
+          <li class="panel" style="display:flex; align-items:center; justify-content:space-between;">
+            <div>
+              <a href="{{ f.href }}" target="_blank" rel="noopener">{{ f.name }}</a>
+              <span class="muted" style="margin-left:8px;">{{ f.size }} bytes</span>
+            </div>
+            <time class="muted">{{ f.mtime }}</time>
+          </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

@@ -7,7 +7,7 @@
 ## Resumen
 
 Servicio FastAPI que expone:
-- UI dark-style con barra de botones (SLA, Repetitividad, Comparador FO).
+- UI dark-style con Panel (Chat por defecto y tabs: Repetitividad, SLA, Comparador FO).
 - Chat REST que integra `nlp_intent` para clasificación de intención y persistencia de conversación.
 
 ## Estructura y archivo principal
@@ -16,7 +16,7 @@ La implementación única de la aplicación vive en `web/web_app/main.py` y el c
 ```
 uvicorn web_app.main:app --host 0.0.0.0 --port 8080
 ```
-Anteriormente existía un duplicado en `web/app/main.py` que fue eliminado (se dejó un stub temporal hasta su retiro definitivo). Cualquier referencia antigua debe migrarse a `web_app.main`.
+Se sirve estático en `/static` y se monta el directorio de reportes en `/reports`. El listado histórico se sirve en `/reports-history` (evita colisión con el mount estático de `/reports`).
 
 ## Logging
 
@@ -39,13 +39,15 @@ Centralizado vía `core.logging.setup_logging`.
 - POST /login → autentica con app.web_users (bcrypt). Rate limit: 5/min por sesión.
 - GET /logout → cierra sesión.
 - GET / → panel (requiere sesión). Inyecta API_BASE y CSRF en la plantilla.
+- GET /reports-history → listado HTML de archivos generados (enlaces directos a /reports/*).
+- GET /reports/index → redirección a /reports-history (compatibilidad).
 - POST /api/chat/message → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min por sesión. Devuelve `conversation_id` y `history` (≤6 últimos mensajes) cuando hay sesión.
 - GET /api/chat/history?limit=N → devuelve últimos N (máx 100) mensajes y `conversation_id` del usuario autenticado.
 - GET /api/chat/metrics → métricas simples en memoria (`intent_counts`). Uso interno/debug, se reinicia al reiniciar el contenedor.
 - POST /api/users/change-password → Cambiar contraseña del usuario autenticado. Form fields: current_password, new_password, csrf_token. Respuestas: {status:"ok"} o {error}.
 - POST /api/admin/users → Crear usuario (sólo admin). Form fields: username, password, role?, csrf_token. Respuestas: {status:"ok"} o {error}.
  - POST /api/flows/sla → Ejecuta flujo de SLA. FormData: file, mes, anio, csrf_token. Responde enlaces /reports/*.docx[.pdf].
-- POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad usando `modules.informes_repetitividad.service.generate_report` (FormData: file, mes, anio, csrf_token).
+- POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad usando el servicio central `generar_informe_desde_excel` (FormData: file, mes, anio, include_pdf?, csrf_token). Devuelve links `/reports/*`.
  - POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
 
 Respuesta típica de /api/chat/message (nuevo pipeline):
@@ -73,13 +75,12 @@ Respuesta típica de /api/chat/message (nuevo pipeline):
 }
 ```
 
-## Frontend (Vite + TypeScript)
+## Frontend (JS estático)
 
-- El bundle se copia a /static/assets con nombre estable `assets/main.js`.
-- La plantilla `web/templates/index.html` inyecta variables globales:
+- La plantilla `web/templates/panel.html` inyecta variables globales:
   - `window.API_BASE` (default `http://192.168.241.28:8080`).
   - `window.CSRF_TOKEN` (token actual de sesión).
-- El cliente TS envía `credentials: 'include'` y adjunta `csrf_token` en POST al chat.
+- El cliente JS (`/static/panel.js`) maneja tabs, dropzones y envíos a los endpoints del panel, incluido el Chat HTTP (`/api/chat/message`) y uploads (`/api/chat/uploads`).
 
 ## Variables de entorno
 
@@ -118,7 +119,7 @@ El servicio `nlp_intent` ahora arranca con `LLM_PROVIDER=openai` por defecto. Es
 - `api` remapeado a `8001:8000` para evitar conflicto en la VM.
 - Por defecto, la UI y `nlp_intent` usan Ollama externo vía `http://host.docker.internal:11434` (se añade `extra_hosts` al compose).
 - Alternativa: ejecutar `./Start --with-internal-ollama` para levantar un servicio `ollama` interno al stack.
-- El servicio `web` expone `/reports` como estático para descargar los resultados.
+- El servicio `web` expone `/reports` como estático para descargar los resultados y `/reports-history` como listado HTML.
 - `web` monta `../Templates:/app/Templates:ro` para consumir las plantillas oficiales al invocar la API de reportes.
 
 ## Conectividad y troubleshooting

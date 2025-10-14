@@ -2,12 +2,11 @@
 # Ubicación de archivo: bot_telegram/flows/repetitividad.py
 # Descripción: Flujo para recibir Excel y generar el informe de repetitividad
 
+import asyncio
 import logging
-import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -15,10 +14,15 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, Message
 
 from modules.informes_repetitividad.config import BASE_UPLOADS
-from modules.informes_repetitividad.service import ReportResult, generate_report
+from modules.informes_repetitividad.service import (
+    ReportConfig,
+    ReportResult,
+    generar_informe_desde_excel,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
+REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
 
 class RepetitividadStates(StatesGroup):
     WAITING_FILE = State()
@@ -89,67 +93,55 @@ async def on_period(msg: Message, state: FSMContext) -> None:
     file_path = Path(file_path_str)
     original_name = file_path.name
 
-    with tempfile.TemporaryDirectory(prefix="rep-report-") as tmpdir:
-        tmp_dir_path = Path(tmpdir)
-        try:
-            result: ReportResult = await generate_report(
-                file_path,
-                mes,
-                anio,
-                tmp_dir_path,
-                include_pdf=True,
-            )
-        except httpx.HTTPStatusError as exc:
-            headers = exc.response.headers.get("content-type", "")
-            if headers.startswith("application/json"):
-                try:
-                    detail = exc.response.json().get("detail", exc.response.text)
-                except Exception:  # pragma: no cover
-                    detail = exc.response.text
-            else:
-                detail = exc.response.text
-            logger.warning(
-                "service=bot flow=repetitividad status=%s detail=%s",
-                exc.response.status_code,
-                detail,
-            )
-            await msg.answer(f"Error en el servicio de reportes: {detail}")
-            await state.clear()
-            return
-        except httpx.HTTPError as exc:
-            logger.exception("service=bot flow=repetitividad error=http msg=%s", exc)
-            await msg.answer("No se pudo contactar al servicio de reportes. Intentá más tarde.")
-            await state.clear()
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("service=bot flow=repetitividad error=unexpected msg=%s", exc)
-            await msg.answer("Ocurrió un error inesperado generando el informe.")
-            await state.clear()
-            return
-        finally:
-            file_path.unlink(missing_ok=True)
+    periodo_titulo = f"{mes:02d}/{anio}"
+    try:
+        excel_bytes = file_path.read_bytes()
+        result: ReportResult = await asyncio.to_thread(
+            generar_informe_desde_excel,
+            excel_bytes,
+            periodo_titulo,
+            True,
+            REPORT_SERVICE_CONFIG,
+        )
+    except ValueError as exc:
+        logger.warning("service=bot flow=repetitividad error=validation detail=%s", exc)
+        await msg.answer(f"No pude procesar el archivo: {exc}")
+        await state.clear()
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("service=bot flow=repetitividad error=unexpected msg=%s", exc)
+        await msg.answer("Ocurrió un error inesperado generando el informe.")
+        await state.clear()
+        return
+    finally:
+        file_path.unlink(missing_ok=True)
 
-        if result.docx:
-            await msg.answer_document(FSInputFile(result.docx))
-        if result.pdf:
-            await msg.answer_document(FSInputFile(result.pdf))
-        if result.map_html:
-            try:
-                await msg.answer_document(FSInputFile(result.map_html))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("service=bot flow=repetitividad map_send_failed path=%s error=%s", result.map_html, exc)
-        if not result.docx and not result.pdf:
-            await msg.answer("El servicio no devolvió archivos para descargar.")
-            await state.clear()
-            return
+    if result.docx:
+        await msg.answer_document(FSInputFile(result.docx))
+    if result.pdf:
+        await msg.answer_document(FSInputFile(result.pdf))
+    if result.map_html:
+        try:
+            await msg.answer_document(FSInputFile(result.map_html))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "service=bot flow=repetitividad map_send_failed path=%s error=%s",
+                result.map_html,
+                exc,
+            )
+    if not result.docx and not result.pdf:
+        await msg.answer("No se generaron archivos para descargar.")
+        await state.clear()
+        return
 
     logger.info(
-        "service=bot flow=repetitividad tg_user_id=%s file=%s periodo=%02d/%04d map=%s",
+        "service=bot flow=repetitividad tg_user_id=%s file=%s periodo=%s map=%s filas=%s repetitivos=%s",
         msg.from_user.id,
         original_name,
-        mes,
-        anio,
+        periodo_titulo,
         bool(result.map_html),
+        result.total_filas,
+        result.total_repetitivos,
     )
     await state.clear()
 

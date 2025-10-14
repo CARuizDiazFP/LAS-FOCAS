@@ -29,6 +29,7 @@ COPY web/web_app /app/web_app
 COPY web/templates /app/templates
 COPY web/static /app/static
 COPY web/tools /app/tools
+COPY web/chat_ws.py /app/web/chat_ws.py
 # Incluir paquete core para logging centralizado
 COPY core /app/core
 COPY modules /app/modules

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -14,9 +15,15 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List
 import httpx
 from pydantic import BaseModel, ValidationError, field_validator
 
-from modules.informes_repetitividad.service import ReportResult, generate_report
+from modules.informes_repetitividad.service import (
+    ReportConfig,
+    ReportResult,
+    generar_informe_desde_excel,
+)
 
 logger = logging.getLogger(__name__)
+
+REPORT_CONFIG = ReportConfig.from_settings()
 
 
 @dataclass(slots=True)
@@ -177,7 +184,7 @@ class RegistrarNotionArgs(BaseModel):
 
 async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: ToolContext) -> ToolResult:
     uploads_dir = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
-    reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
+    reports_dir = REPORT_CONFIG.reports_dir
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = Path(args.file_path)
@@ -186,12 +193,14 @@ async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: To
     if not file_path.exists():
         raise ToolInvocationError("FILE_NOT_FOUND", "No encuentro el archivo para generar el informe")
 
-    result: ReportResult = await generate_report(
-        file_path,
-        args.mes,
-        args.anio,
-        reports_dir,
-        include_pdf=args.export_pdf,
+    periodo_titulo = f"{args.mes:02d}/{args.anio}"
+    excel_bytes = file_path.read_bytes()
+    result: ReportResult = await asyncio.to_thread(
+        generar_informe_desde_excel,
+        excel_bytes,
+        periodo_titulo,
+        args.export_pdf,
+        REPORT_CONFIG,
     )
     payload: Dict[str, Any] = {
         "status": "ok",

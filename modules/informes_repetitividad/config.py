@@ -46,6 +46,9 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "numero linea": "SERVICIO",        # 'Número Línea' es el ID único del servicio
     "numero_linea": "SERVICIO",
     "numero de linea": "SERVICIO",
+    "numero de línea": "SERVICIO",
+    "nro linea": "SERVICIO",
+    "nro de linea": "SERVICIO",
 
     # Mapeos para TIPO_SERVICIO (descripción del tipo, ej: "Internet Dedicado")
     "tipo servicio": "TIPO_SERVICIO",
@@ -60,6 +63,9 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "fecha de cierre": "FECHA",
     "cierre reclamo": "FECHA",
     "date": "FECHA",
+    # Nuevos alias explícitos del esquema actualizado
+    "fecha cierre": "FECHA",
+    "fecha inicio": "FECHA_INICIO",
 
     # Mapeos alternativos para fecha (si no hay cierre, usar inicio)
     "fecha cierre problema reclamo": "FECHA_CIERRE_PROBLEMA",
@@ -71,13 +77,16 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "id_servicio": "ID_SERVICIO",
     "numero reclamo": "ID_SERVICIO",   # 'Número Reclamo' es el ID de cada caso
     "numero_reclamo": "ID_SERVICIO",
+    "reclamo": "ID_SERVICIO",
 
     # Datos geoespaciales (opcionales)
     "latitud": "GEO_LAT",
+    "latitud reclamo": "GEO_LAT",
     "latitude": "GEO_LAT",
     "coord lat": "GEO_LAT",
     "coord_lat": "GEO_LAT",
     "longitud": "GEO_LON",
+    "longitud reclamo": "GEO_LON",
     "longitude": "GEO_LON",
     "coord lon": "GEO_LON",
     "coord_lon": "GEO_LON",
@@ -87,6 +96,14 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "provincia": "GEO_REGION",
     "departamento": "GEO_REGION",
     "region": "GEO_REGION",
+
+    # Campos del esquema nuevo para reporte detallado (no estrictamente obligatorios)
+    "tipo solución": "Tipo Solución",
+    "tipo solucion": "Tipo Solución",
+    "descripcion solución": "Descripción Solución",
+    "descripción solución": "Descripción Solución",
+    "descripcion solucion": "Descripción Solución",
+    "horas netas": "Horas Netas",
 }
 
 # Columnas obligatorias para procesar el informe

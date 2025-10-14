@@ -4,11 +4,11 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2025-10-08
+Fecha de última actualización: 2025-10-14
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2025-10-08)
+## Estado actual (al 2025-10-14)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -16,7 +16,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - Nota: el puerto 11434 no está publicado al host en el contenedor observado; evaluar exposición o incorporación de Ollama al `compose` del proyecto.
 - Servicios del repo
   - `api` (FastAPI): endpoints `/health`, `/db-check` y `/reports/repetitividad` (generación DOCX/PDF).
-  - `web` (FastAPI): login básico, barra de acciones, chat WebSocket `/ws/chat` con streaming, reconexión exponencial, validación de adjuntos y persistencia en `app.chat_sessions/app.chat_messages`.
+  - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad/SLA/FO), listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` con proveedores `heuristic | ollama | openai`. Usa `OLLAMA_URL` (default `http://ollama:11434`).
   - `bot` (Telegram): definido en `deploy/compose.yml`.
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
@@ -24,7 +24,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
-  - Volúmenes `reports_data` y `uploads_data` montados en `web` para compartir reportes y adjuntos; parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
+  - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/web_app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
   - Pruebas en `nlp_intent/tests/test_intent.py` (heurística) y en `tests/` para módulos de informes y utilidades.
 - Documentación
@@ -118,7 +118,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [ ] Añadir métricas/observabilidad específicas del chat MCP (contador de tool-calls, errores, latencias).
 
 ### Notas operativas
-- Script `./Start` disponible en la raíz para levantar el stack mínimo (Postgres, Ollama, NLP, API en 8001 y Web en 8080).
+- Script `./Start` disponible en la raíz para levantar el stack mínimo (Postgres, NLP, API en 8001 y Web en 8080). Para reconstruir sólo los estáticos del panel: `./Start --rebuild-frontend`.
 - Carpeta `Legacy/` reservada para referencias del proyecto Sandy; está excluida de git mediante `.gitignore`.
 
 ## Cómo actualizar este documento

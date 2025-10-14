@@ -1,0 +1,145 @@
+<!--
+# Nombre de archivo: panel.html
+# Ubicación de archivo: web/templates/panel.html
+# Descripción: Panel principal con Chat como vista por defecto y secciones de flujos (Repetitividad, SLA, FO)
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAS-FOCAS — Panel</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ build_version }}" />
+  <script>
+    window.API_BASE = "{{ api_base }}";
+    window.CSRF_TOKEN = "{{ csrf }}";
+    window.BUILD_VERSION = "{{ build_version }}";
+  </script>
+  <script defer src="/static/panel.js?v={{ build_version }}"></script>
+</head>
+<body class="dark">
+  <header class="topbar">
+    <div class="brand">LAS-FOCAS <span class="version-badge">v{{ build_version }}</span></div>
+    <nav class="actions" aria-label="Flujos">
+      <button class="chip active" data-view="chat">Chat</button>
+      <button class="chip" data-view="repetitividad">Repetitividad</button>
+      <button class="chip" data-view="sla">SLA</button>
+      <button class="chip" data-view="fo">Comparador FO</button>
+      <span class="spacer"></span>
+      {% if username %}
+      <span class="muted">{{ username }}</span>
+      <a class="btn" href="/admin">Admin</a>
+      <a class="btn" href="/logout">Salir</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="views" id="panel-views">
+      <!-- Chat (vista por defecto) -->
+      <section id="view-chat" class="view active" aria-labelledby="Chat">
+        <article class="card">
+          <header class="card-header">
+            <h1>Asistente conversacional</h1>
+            <span class="badge">MCP</span>
+          </header>
+          <div class="chat">
+            <div id="chat-status" class="chat-status muted"></div>
+            <div id="chat-log" class="chat-log"></div>
+            <div id="chat-attachments" class="chat-attachments"></div>
+            <div id="chat-dropzone" class="chat-dropzone">
+              Arrastrá archivos o <button type="button" id="chat-attachment-browse" class="link-button">buscá en tu equipo</button>
+              <small class="muted">Límite 15 MB por archivo</small>
+            </div>
+            <form id="chat-form" class="chat-form">
+              <input id="chat-input" name="text" type="text" placeholder="Escribí un mensaje" required />
+              <button type="submit" class="btn primary">Enviar</button>
+            </form>
+          </div>
+          <input id="chat-attachment-input" type="file" multiple hidden />
+        </article>
+      </section>
+
+      <!-- Repetitividad -->
+      <section id="view-repetitividad" class="view" aria-labelledby="Repetitividad">
+        <article class="card">
+          <header class="card-header">
+            <h1>Informe de Repetitividad</h1>
+            <span class="badge">FO Legacy+</span>
+          </header>
+          <p class="muted">Subí el Excel y elegí el período decorativo. No filtramos por mes: el análisis es global.</p>
+          <form id="rep-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
+            <div class="dropzone" id="rep-drop">
+              <input type="file" id="rep-file" name="file" accept=".xlsx" />
+              <span>Arrastrá el .xlsx acá o hacé click</span>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label>Mes</label>
+                <input type="number" id="rep-mes" name="mes" min="1" max="12" required />
+              </div>
+              <div class="field">
+                <label>Año</label>
+                <input type="number" id="rep-anio" name="anio" min="2000" max="2100" required />
+              </div>
+            </div>
+            <label class="checkbox"><input type="checkbox" id="rep-pdf" name="include_pdf" checked /> Generar PDF si está disponible</label>
+            <div class="card-actions">
+              <button type="button" id="rep-run" class="btn primary">Generar</button>
+              <a class="btn subtle" href="/reports-history" target="_blank" rel="noopener">Carpeta de reportes</a>
+            </div>
+          </form>
+          <div id="rep-result" class="result-box muted">Aún no se generó ningún informe.</div>
+          <div id="rep-map-container" class="map-container" hidden>
+            <iframe id="rep-map-preview" title="Mapa de repetitividad"></iframe>
+          </div>
+        </article>
+      </section>
+
+      <!-- SLA -->
+      <section id="view-sla" class="view" aria-labelledby="SLA">
+        <article class="card">
+          <header class="card-header">
+            <h1>SLA</h1>
+            <span class="badge">Beta</span>
+          </header>
+          <form id="sla-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
+            <div class="dropzone" id="sla-drop">
+              <input type="file" id="sla-file" name="file" accept=".xlsx,.csv" />
+              <span>Arrastrá el archivo o hacé click</span>
+            </div>
+            <div class="form-grid">
+              <div class="field"><label>Mes</label><input type="number" id="sla-mes" min="1" max="12" required /></div>
+              <div class="field"><label>Año</label><input type="number" id="sla-anio" min="2000" max="2100" required /></div>
+            </div>
+            <div class="card-actions">
+              <button type="button" id="sla-run" class="btn">Ejecutar SLA</button>
+            </div>
+          </form>
+          <div id="sla-result" class="result-box muted">Esperando archivo.</div>
+        </article>
+      </section>
+
+      <!-- Comparador FO -->
+      <section id="view-fo" class="view" aria-labelledby="Comparador FO">
+        <article class="card">
+          <header class="card-header">
+            <h1>Comparador FO</h1>
+            <span class="badge">WIP</span>
+          </header>
+          <form id="fo-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
+            <div class="dropzone" id="fo-drop">
+              <input type="file" id="fo-file" name="file" accept=".xlsx,.csv" />
+              <span>Arrastrá el archivo o hacé click</span>
+            </div>
+            <div class="card-actions">
+              <button type="button" id="fo-run" class="btn">Comparar</button>
+            </div>
+          </form>
+          <div id="fo-result" class="result-box muted">No implementado aún.</div>
+        </article>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

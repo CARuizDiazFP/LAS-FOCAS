@@ -5,8 +5,7 @@
 from __future__ import annotations
 
 import io
-import os
-import tempfile
+import logging
 import zipfile
 from pathlib import Path
 
@@ -14,11 +13,16 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.responses import Response
 
-from modules.informes_repetitividad import processor, report
-from modules.informes_repetitividad.config import REPORTS_DIR, SOFFICE_BIN
-from modules.informes_repetitividad.schemas import Params
+from modules.informes_repetitividad.service import (
+    ReportConfig,
+    ReportResult,
+    generar_informe_desde_excel,
+)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+logger = logging.getLogger(__name__)
+REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
 
 
 @router.post("/repetitividad")
@@ -33,44 +37,46 @@ async def generar_informe_repetitividad(
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="El archivo debe tener extensión .xlsx")
 
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_in:
-        tmp_in.write(await file.read())
-        tmp_path = tmp_in.name
+    excel_bytes = await file.read()
+    if not excel_bytes:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
 
+    periodo_titulo = f"{periodo_mes:02d}/{periodo_anio}"
     try:
-        df = processor.load_excel(tmp_path)
-        df = processor.normalize(df)
-        resultado = processor.compute_repetitividad(df)
+        result: ReportResult = generar_informe_desde_excel(
+            excel_bytes,
+            periodo_titulo,
+            incluir_pdf,
+            REPORT_SERVICE_CONFIG,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        os.remove(tmp_path)
-
-    params = Params(periodo_mes=periodo_mes, periodo_anio=periodo_anio)
-    map_path = report.generate_geo_map(resultado, params, str(REPORTS_DIR))
-    docx_path = report.export_docx(resultado, params, str(REPORTS_DIR), df_raw=df, map_path=map_path)
-
-    pdf_requested = incluir_pdf
-    pdf_path = None
-    if incluir_pdf:
-        pdf_path = report.maybe_export_pdf(docx_path, SOFFICE_BIN)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=reports.repetitividad stage=unexpected periodo=%s error=%s",
+            periodo_titulo,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="No se pudo generar el informe") from exc
 
     response_headers = {
-        "X-PDF-Requested": str(pdf_requested).lower(),
-        "X-PDF-Generated": "true" if pdf_path else "false",
-        "X-Map-Generated": str(bool(map_path)).lower(),
+        "X-PDF-Requested": str(incluir_pdf).lower(),
+        "X-PDF-Generated": str(bool(result.pdf)).lower(),
+        "X-Map-Generated": str(bool(result.map_html)).lower(),
+        "X-Total-Filas": str(result.total_filas),
+        "X-Total-Repetitivos": str(result.total_repetitivos),
     }
-    if map_path:
-        response_headers["X-Map-Filename"] = Path(map_path).name
+    if result.map_html:
+        response_headers["X-Map-Filename"] = result.map_html.name
 
-    if pdf_path or map_path:
+    if result.pdf or result.map_html:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(docx_path, Path(docx_path).name)
-            if pdf_path:
-                archive.write(pdf_path, Path(pdf_path).name)
-            if map_path:
-                archive.write(map_path, Path(map_path).name)
+            archive.write(result.docx, result.docx.name)
+            if result.pdf:
+                archive.write(result.pdf, result.pdf.name)
+            if result.map_html:
+                archive.write(result.map_html, result.map_html.name)
         zip_buffer.seek(0)
         filename = f"repetitividad_{periodo_anio}{periodo_mes:02d}.zip"
         return StreamingResponse(
@@ -83,8 +89,8 @@ async def generar_informe_repetitividad(
         )
 
     return FileResponse(
-        path=docx_path,
-        filename=Path(docx_path).name,
+        path=result.docx,
+        filename=result.docx.name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers=response_headers,
     )
