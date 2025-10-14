@@ -12,9 +12,34 @@ from collections import defaultdict
 
 import httpx
 import psycopg
-from aiogram import F, Router
-from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+try:  # Permitir importar el módulo aunque aiogram no esté instalado en el entorno de pruebas
+    from aiogram import F, Router  # type: ignore
+    from aiogram.fsm.context import FSMContext  # type: ignore
+    from aiogram.types import Message  # type: ignore
+    _AI_AVAILABLE = True
+except Exception:  # pragma: no cover - entorno sin aiogram
+    _AI_AVAILABLE = False
+
+    class _Dummy:
+        def __getattr__(self, _):
+            return self
+
+        def __call__(self, *_, **__):
+            return self
+
+    class DummyRouter:
+        def message(self, *_, **__):
+            def _decorator(func):
+                return func
+
+            return _decorator
+
+    F = _Dummy()  # type: ignore
+    Router = DummyRouter  # type: ignore
+    class FSMContext:  # type: ignore
+        pass
+    class Message:  # type: ignore
+        pass
 
 from bot_telegram.flows.repetitividad import start_repetitividad_flow
 from bot_telegram.flows.sla import start_sla_flow
@@ -22,7 +47,7 @@ from bot_telegram.ui.menu import build_main_menu
 from core.repositories.conversations import insert_conversation
 from core.repositories.messages import insert_message
 
-router = Router()
+router = Router() if _AI_AVAILABLE else Router()
 logger = logging.getLogger(__name__)
 _rate_limit: dict[int, list[float]] = defaultdict(list)
 _conversations: dict[int, int] = {}

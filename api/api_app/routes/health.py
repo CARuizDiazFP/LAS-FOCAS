@@ -4,7 +4,7 @@
 from fastapi import APIRouter
 from datetime import datetime, timezone
 
-from app.db import db_health
+from api.app.db import db_health
 
 router = APIRouter()
 

@@ -18,11 +18,13 @@ from modules.informes_repetitividad.service import (
     ReportResult,
     generar_informe_desde_excel,
 )
+# Compatibilidad con tests legacy: exponer módulos para monkeypatch
+from modules.informes_repetitividad import report as report  # type: ignore
+from modules.informes_repetitividad import processor as processor  # type: ignore
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 logger = logging.getLogger(__name__)
-REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
 
 
 @router.post("/repetitividad")
@@ -43,11 +45,13 @@ async def generar_informe_repetitividad(
 
     periodo_titulo = f"{periodo_mes:02d}/{periodo_anio}"
     try:
+        # Construir la configuración en tiempo de request para respetar monkeypatch de settings en tests
+        config = ReportConfig.from_settings()
         result: ReportResult = generar_informe_desde_excel(
             excel_bytes,
             periodo_titulo,
             incluir_pdf,
-            REPORT_SERVICE_CONFIG,
+            config,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

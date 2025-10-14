@@ -14,11 +14,7 @@ from pathlib import Path
 from typing import Iterable, List
 
 from . import processor, report
-from .config import (
-    MAPS_ENABLED,
-    REPORTS_DIR,
-    SOFFICE_BIN,
-)
+from . import config as repet_config
 from .schemas import Params, ResultadoRepetitividad
 
 logger = logging.getLogger(__name__)
@@ -30,16 +26,19 @@ class ReportConfig:
 
     reports_dir: Path
     soffice_bin: str | None = None
-    maps_enabled: bool = MAPS_ENABLED
+    maps_enabled: bool = True
 
     @classmethod
     def from_settings(cls) -> "ReportConfig":
         """Construye la configuración a partir de las variables globales del módulo."""
-
+        # Leer dinámicamente desde el módulo de config para respetar monkeypatch/env en tests
+        reports_dir = Path(getattr(repet_config, "REPORTS_DIR"))
+        soffice_bin = getattr(repet_config, "SOFFICE_BIN", None)
+        maps_enabled = bool(getattr(repet_config, "MAPS_ENABLED", True))
         return cls(
-            reports_dir=Path(REPORTS_DIR),
-            soffice_bin=SOFFICE_BIN,
-            maps_enabled=MAPS_ENABLED,
+            reports_dir=reports_dir,
+            soffice_bin=soffice_bin,
+            maps_enabled=maps_enabled,
         )
 
 

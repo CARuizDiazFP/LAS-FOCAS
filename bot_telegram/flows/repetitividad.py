@@ -7,11 +7,50 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from aiogram import F, Router
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import FSInputFile, Message
+try:  # Importación opcional para entorno de tests sin aiogram
+    from aiogram import F, Router  # type: ignore
+    from aiogram.filters import Command  # type: ignore
+    from aiogram.fsm.context import FSMContext  # type: ignore
+    from aiogram.fsm.state import State, StatesGroup  # type: ignore
+    from aiogram.types import FSInputFile, Message  # type: ignore
+    _AI_AVAILABLE = True
+except Exception:  # pragma: no cover - no aiogram
+    _AI_AVAILABLE = False
+
+    class _Dummy:
+        def __getattr__(self, _):
+            return self
+
+        def __call__(self, *_, **__):
+            return self
+
+    class DummyRouter:
+        def message(self, *_, **__):
+            def _decorator(func):
+                return func
+            return _decorator
+
+    F = _Dummy()  # type: ignore
+    Router = DummyRouter  # type: ignore
+
+    def Command(*_, **__):  # type: ignore
+        return _Dummy()
+
+    class FSMContext:  # type: ignore
+        pass
+
+    class State:  # type: ignore
+        pass
+
+    class StatesGroup:  # type: ignore
+        pass
+
+    class FSInputFile:  # type: ignore
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class Message:  # type: ignore
+        pass
 
 from modules.informes_repetitividad.config import BASE_UPLOADS
 from modules.informes_repetitividad.service import (
@@ -20,7 +59,7 @@ from modules.informes_repetitividad.service import (
     generar_informe_desde_excel,
 )
 
-router = Router()
+router = Router() if _AI_AVAILABLE else Router()
 logger = logging.getLogger(__name__)
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
 
