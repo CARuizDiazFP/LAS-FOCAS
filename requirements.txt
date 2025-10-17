@@ -15,7 +15,7 @@ itsdangerous==2.2.0  # Firmas para sesiones (SessionMiddleware)
 pydantic==2.9.2  # Modelos y validación (usado en schemas de módulos)
 pydantic-settings==2.4.0  # Configuración basada en BaseSettings (PYD v2)
 pandas==2.2.2  # Procesamiento de datos para informes
-openpyxl==3.1.2  # Lectura de Excel para pandas
+openpyxl==3.1.5  # Lectura de Excel para pandas
 python-docx==0.8.11  # Generación de documentos DOCX para informes
 folium==0.16.0  # Mapas interactivos para informes geoespaciales
 staticmap==0.5.5  # Mapas estáticos en PNG para incrustar en reportes

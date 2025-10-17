@@ -12,7 +12,7 @@ orjson==3.10.6
 bcrypt==4.1.2  # Hashing directo para contraseñas web
 pydantic==2.9.2
 pandas==2.2.2
-openpyxl==3.1.2
+openpyxl==3.1.5
 python-docx==0.8.11
 SQLAlchemy==2.0.36
 staticmap==0.5.5
