@@ -36,12 +36,12 @@ def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict
     )
 
     logger.info(
-        "action=run mes=%s anio=%s docx=%s pdf=%s mapa=%s filas=%s repetitivos=%s",
+        "action=run mes=%s anio=%s docx=%s pdf=%s map_images=%s filas=%s repetitivos=%s",
         mes,
         anio,
         result.docx,
         result.pdf,
-        result.map_html,
+        len(result.map_images),
         result.total_filas,
         result.total_repetitivos,
     )
@@ -49,6 +49,6 @@ def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict
     paths = {"docx": str(result.docx)}
     if result.pdf:
         paths["pdf"] = str(result.pdf)
-    if result.map_html:
-        paths["map"] = str(result.map_html)
+    if result.map_images:
+        paths["map_images"] = ",".join(str(path) for path in result.map_images)
     return paths

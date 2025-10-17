@@ -51,9 +51,6 @@
           <a class="btn subtle" href="/reports" target="_blank" rel="noopener">Abrir carpeta</a>
         </div>
         <div id="rep-summary" class="result-box muted">Aún no se generó ningún informe.</div>
-        <div id="rep-map-container" class="map-container" hidden>
-          <iframe id="rep-map-preview" title="Mapa de repetitividad"></iframe>
-        </div>
       </article>
 
       <article class="card" id="card-flows">
@@ -136,8 +133,6 @@
     const repLinks = document.getElementById('rep-links');
     const repError = document.getElementById('rep-error');
   const repSummary = document.getElementById('rep-summary');
-  const repMapContainer = document.getElementById('rep-map-container');
-  const repMapFrame = document.getElementById('rep-map-preview');
     function openRepModal(){
       repError.style.display='none';
       repLinks.textContent='';
@@ -164,9 +159,6 @@
         repSummary.classList.add('info');
         repSummary.classList.add('muted');
         repSummary.innerHTML = 'Procesando informe...';
-      }
-      if (repMapContainer) {
-        repMapContainer.setAttribute('hidden', '');
       }
       const fileEl = document.getElementById('rep-file');
       if(!fileEl.files.length){ repLinks.textContent='Seleccioná un archivo'; return; }
@@ -197,7 +189,11 @@
         let links = [];
         if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
         if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
-        if (j.map) links.push(`<a href="${j.map}" target="_blank">Mapa</a>`);
+        const mapImages = Array.isArray(j.map_images) ? j.map_images : (j.map_image ? [j.map_image] : []);
+        mapImages.forEach((url, idx) => {
+          const label = mapImages.length > 1 ? `Mapa PNG ${idx + 1}` : 'Mapa PNG';
+          links.push(`<a href="${url}" target="_blank">${label}</a>`);
+        });
         if (!j.pdf && j.pdf_requested) {
           links.push('<span class="warn">PDF no generado</span>');
         }
@@ -208,15 +204,6 @@
           repSummary.classList.remove('muted', 'info', 'error');
           repSummary.classList.add('success');
           repSummary.innerHTML = `<strong>Período ${periodo}</strong><br>${joined}`;
-        }
-        if (repMapFrame && repMapContainer) {
-          if (j.map) {
-            repMapFrame.src = j.map;
-            repMapContainer.removeAttribute('hidden');
-          } else {
-            repMapFrame.removeAttribute('src');
-            repMapContainer.setAttribute('hidden', '');
-          }
         }
       } catch(err){
         repError.textContent = 'Fallo de red o parseo';
@@ -264,7 +251,11 @@
         let links = [];
         if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
         if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
-        if (j.map) links.push(`<a href="${j.map}" target="_blank">Mapa</a>`);
+        const mapImages = Array.isArray(j.map_images) ? j.map_images : (j.map_image ? [j.map_image] : []);
+        mapImages.forEach((url, idx) => {
+          const label = mapImages.length > 1 ? `Mapa PNG ${idx + 1}` : 'Mapa PNG';
+          links.push(`<a href="${url}" target="_blank">${label}</a>`);
+        });
         if (!j.pdf && j.pdf_requested) {
           links.push('<span class="warn">PDF no generado</span>');
         }

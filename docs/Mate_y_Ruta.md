@@ -4,29 +4,34 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2025-10-14
+Fecha de última actualización: 2025-10-17
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2025-10-14)
+## Estado actual (al 2025-10-15)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
   - Contenedor de Ollama activo (`ollama-llama3`) con modelo disponible: `llama3:latest` (4.7 GB).
   - Nota: el puerto 11434 no está publicado al host en el contenedor observado; evaluar exposición o incorporación de Ollama al `compose` del proyecto.
 - Servicios del repo
-  - `api` (FastAPI): endpoints `/health`, `/db-check` y `/reports/repetitividad` (generación DOCX/PDF).
+  - `api` (FastAPI): endpoints `/health`, `/health/version`, `/db-check`, `POST /ingest/reclamos` (alias `POST /import/reclamos`), `POST /reports/repetitividad` (Excel o DB) y `GET /reports/repetitividad` (métricas JSON).
   - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad/SLA/FO), listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` con proveedores `heuristic | ollama | openai`. Usa `OLLAMA_URL` (default `http://ollama:11434`).
   - `bot` (Telegram): definido en `deploy/compose.yml`.
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
+  - Ingesta híbrida: parser robusto (tolerante a acentos/mayúsculas; Unidecode con fallback a unicodedata), saneo de fechas y GEO, y upsert en PostgreSQL con `ON CONFLICT DO UPDATE` usando `COALESCE(excluded.col, table.col)` para no perder datos existentes.
+  - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
+  - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
   - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/web_app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
-  - Pruebas en `nlp_intent/tests/test_intent.py` (heurística) y en `tests/` para módulos de informes y utilidades.
+  - Suite actual: PASS (62 pruebas), con 0 fallas y 2 opcionales de DB habilitables según entorno. Nuevas suites unitarias cubren `core/utils/timefmt`, parser de reclamos y render del informe.
+  - Se corrigieron rutas y contratos en la API; mapa ahora tiene fallback HTML si falta `folium` en entorno de test/minimal.
+  - Documentación actualizada: `README.md` (Prueba rápida y puertos), `docs/api.md` (salud/versión, ingest, modo DB y headers), y PR del día.
 - Documentación
   - `README.md`, `docs/` con módulos bot/API/NLP/Informes.
 - Seguridad y lineamientos
@@ -97,16 +102,25 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Chat WebSocket del panel conectado a MCP, con almacenamiento en `app.chat_sessions/app.chat_messages` y cliente streaming (2025-10-07).
 - [x] Validación de adjuntos y drag & drop en el chat WebSocket, con control de MIME y límite de 15 MB (2025-10-08).
 - [x] Pruebas de integración WebSocket (`tests/test_web_chat.py`) y ampliación de cobertura del orquestador/mcp (2025-10-08).
+- [x] Ingesta híbrida Excel→DB con deduplicación por `numero_reclamo` y upsert COALESCE, parser tolerante a acentos/mayúsculas (Unidecode con fallback) — endpoints `POST /ingest/reclamos` y alias `POST /import/reclamos` (2025-10-15).
+- [x] Repetitividad desde DB (sin archivo) o Excel (con archivo) en `POST /reports/repetitividad`; `GET /reports/repetitividad` devuelve métricas por período. Fallback de mapa HTML si falta `folium` (2025-10-15).
+- [x] Start integra Alembic con `ALEMBIC_URL` desde `.env`; migraciones aplicadas hasta `20251014_01_reclamos` (2025-10-15).
+- [x] Panel web actualiza flujo de Repetitividad con toggles GEO/DB y soporte de múltiples mapas (2025-10-15).
+- [x] Pruebas del panel web (`test_web_repetitividad_flow.py`) cubren flags `with_geo`/`use_db` y respuesta multi-mapa (2025-10-15).
+- [x] `/health/version` en API y documentación actualizada; README con “Prueba rápida” (2025-10-15).
+- [x] Portada dinámica del informe de repetitividad y eliminación del flujo interactivo HTML (solo PNG estáticos por servicio en backend/UI) (2025-10-17).
+- [x] Utilitario `replace_text_everywhere` (shapes, encabezados, DrawingML) y mapas estáticos estilo Google sin ejes (nuevo `core/maps/static_map.py` + tablas DOCX sin lat/lon y pruebas específicas) (2025-10-17).
+- [x] Normalización de Horas Netas a minutos con `core/utils/timefmt`, tablas DOCX en `HH:MM` y nuevas pruebas (`test_timefmt.py`, `test_ingest_parser.py`, `test_repetitividad_docx_render.py`) (2025-10-17).
 
 ### Pendiente (prioridad)
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [ ] Disparadores de flujos desde la UI.
-- [ ] Documentar en `docs/api.md` y `docs/web.md` los headers `X-PDF-*` y el nuevo comportamiento opcional del PDF.
+- [x] Documentación en `docs/web.md` de headers `X-PDF-*`/`X-Map-*`, generación de PNG estáticos y ejemplos de respuesta (2025-10-17).
 - [ ] Unificar versiones FastAPI/pydantic (root vs `office_service`).
 - [ ] Validaciones de tamaño y tipo en `/reports/repetitividad`.
 - [x] Pruebas automatizadas para `POST /api/flows/repetitividad` (web) cubriendo paths feliz y errores.
 - [ ] Pruebas FSM del flujo Telegram de repetitividad (aiogram) con escenarios de error/éxito.
-- [ ] Documentar endpoint `/reports/repetitividad` en `docs/api.md`.
+- [ ] Revisar `docs/api.md` con ejemplos curl de modo DB vs Excel (actualización hecha; validar).
 - [ ] Entrada decisiones sobre hashes de plantillas y versión unificada FastAPI.
 - [ ] Auth (API key) básica para `/reports/*`.
 - [ ] Tests dedicados `core/password.needs_rehash`.

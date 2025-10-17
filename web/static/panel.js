@@ -28,14 +28,21 @@
     input.style.left = '-9999px';
     // Abrir selector sólo cuando clickeamos la zona (y no el input)
     zone.addEventListener('click', (e) => {
+      if (zone.classList.contains('disabled')) return;
       if (e.target === input) return; // no duplicar
       input.click();
     });
     // Drag & Drop
-    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      if (zone.classList.contains('disabled')) return;
+      zone.classList.add('drag');
+    });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
     zone.addEventListener('drop', e => {
-      e.preventDefault(); zone.classList.remove('drag');
+      e.preventDefault();
+      zone.classList.remove('drag');
+      if (zone.classList.contains('disabled')) return;
       if(e.dataTransfer.files && e.dataTransfer.files.length){
         input.files = e.dataTransfer.files;
         const name = e.dataTransfer.files[0].name;
@@ -57,24 +64,53 @@
 
   // Repetitividad
   const repBtn = document.getElementById('rep-run');
+  const repUseDb = document.getElementById('rep-use-db');
+  const repWithGeo = document.getElementById('rep-with-geo');
+  const repDrop = document.getElementById('rep-drop');
+  const repFile = document.getElementById('rep-file');
+
+  function updateRepDrop(){
+    if (!repDrop) return;
+    const label = repDrop.querySelector('span');
+    if (repUseDb && repUseDb.checked){
+      repDrop.classList.add('disabled');
+      repDrop.setAttribute('aria-disabled', 'true');
+      if (label) label.textContent = 'Usando datos desde la base (archivo opcional)';
+      if (repFile) repFile.value = '';
+    } else {
+      repDrop.classList.remove('disabled');
+      repDrop.removeAttribute('aria-disabled');
+      if (label) label.textContent = 'Arrastrá el .xlsx acá o hacé click';
+    }
+  }
+  if (repUseDb){
+    repUseDb.addEventListener('change', updateRepDrop);
+    updateRepDrop();
+  }
+
   if (repBtn) {
     repBtn.addEventListener('click', async () => {
       const out = document.getElementById('rep-result');
-      const file = document.getElementById('rep-file');
       const mes = document.getElementById('rep-mes');
       const anio = document.getElementById('rep-anio');
       const pdf = document.getElementById('rep-pdf');
-      const mapFrame = document.getElementById('rep-map-preview');
-      const mapContainer = document.getElementById('rep-map-container');
-      if (!file.files.length){ out.textContent = 'Seleccioná un archivo'; out.className='result-box error'; return; }
+      const useDb = repUseDb && repUseDb.checked;
+      if (!useDb && repFile && !repFile.files.length){
+        out.textContent = 'Seleccioná un archivo';
+        out.className='result-box error';
+        return;
+      }
       const data = new FormData();
-      data.append('file', file.files[0]);
+      if (repFile && repFile.files.length && !useDb){
+        data.append('file', repFile.files[0]);
+      }
       data.append('mes', mes.value);
       data.append('anio', anio.value);
-      if (pdf && pdf.checked) data.append('include_pdf','true');
+      data.append('include_pdf', pdf && pdf.checked ? 'true' : 'false');
+      data.append('with_geo', repWithGeo && repWithGeo.checked ? 'true' : 'false');
+      data.append('use_db', useDb ? 'true' : 'false');
       if (window.CSRF_TOKEN) data.append('csrf_token', window.CSRF_TOKEN);
       out.textContent = 'Procesando...'; out.className='result-box info';
-      mapContainer?.setAttribute('hidden','');
       try {
         const res = await fetch('/api/flows/repetitividad', { method:'POST', body:data, credentials:'include'});
         const j = await res.json();
@@ -82,10 +118,13 @@
         const links = [];
         if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
         if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
-        if (j.map) links.push(`<a href="${j.map}" target="_blank">Mapa</a>`);
+        const mapImages = Array.isArray(j.map_images) ? j.map_images : [];
+        mapImages.forEach((url, idx) => {
+          const label = mapImages.length > 1 ? `Mapa PNG ${idx + 1}` : 'Mapa PNG';
+          links.push(`<a href="${url}" target="_blank">${label}</a>`);
+        });
         out.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
         out.className='result-box success';
-        if (j.map && mapFrame && mapContainer){ mapFrame.src = j.map; mapContainer.removeAttribute('hidden'); }
       } catch (e) {
         out.textContent = 'Error: ' + e.message; out.className='result-box error';
       }

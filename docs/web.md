@@ -47,7 +47,7 @@ Centralizado vía `core.logging.setup_logging`.
 - POST /api/users/change-password → Cambiar contraseña del usuario autenticado. Form fields: current_password, new_password, csrf_token. Respuestas: {status:"ok"} o {error}.
 - POST /api/admin/users → Crear usuario (sólo admin). Form fields: username, password, role?, csrf_token. Respuestas: {status:"ok"} o {error}.
  - POST /api/flows/sla → Ejecuta flujo de SLA. FormData: file, mes, anio, csrf_token. Responde enlaces /reports/*.docx[.pdf].
-- POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad usando el servicio central `generar_informe_desde_excel` (FormData: file, mes, anio, include_pdf?, csrf_token). Devuelve links `/reports/*`.
+- POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad reutilizando los servicios compartidos (`generar_informe_desde_excel` / `generar_informe_desde_dataframe`). FormData: `file?`, `mes`, `anio`, `include_pdf?`, `csrf_token`, `with_geo?`, `use_db?`. Respuesta JSON con `docx`, `pdf?`, `map_images` (lista de PNGs), `assets` (alias de `map_images`), `map_image` (primer PNG), `stats`, `source` y flags `pdf_requested`/`with_geo`.
  - POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
 
 Respuesta típica de /api/chat/message (nuevo pipeline):
@@ -74,6 +74,38 @@ Respuesta típica de /api/chat/message (nuevo pipeline):
   "history": [ {"role":"user", "text":"hola"}, {"role":"assistant", "text":"¿Podrías ampliar?"} ]
 }
 ```
+
+Respuesta típica de `/api/flows/repetitividad` (modo Excel + GEO):
+
+```json
+{
+  "status": "ok",
+  "source": "excel",
+  "pdf_requested": true,
+  "with_geo": true,
+  "docx": "/reports/repetitividad_202407.docx",
+  "pdf": "/reports/repetitividad_202407.pdf",
+  "map_images": [
+    "/reports/repetitividad_202407_servicio_a.png",
+    "/reports/repetitividad_202407_servicio_b.png"
+  ],
+  "map_image": "/reports/repetitividad_202407_servicio_a.png",
+  "assets": [
+    "/reports/repetitividad_202407_servicio_a.png",
+    "/reports/repetitividad_202407_servicio_b.png"
+  ],
+  "stats": {
+    "filas": 42,
+    "repetitivos": 7,
+    "periodos": ["2024-06", "2024-07"]
+  }
+}
+```
+
+  Notas clave del flujo:
+  - El DOCX resultante reemplaza la portada con el período solicitado, elimina columnas Lat/Lon y muestra Horas Netas formateadas como `HH:MM`.
+  - Los mapas `.png` se generan por servicio cuando hay coordenadas válidas y se escalan para no superar media hoja A4 al incrustarse en el informe.
+  - La API complementa la respuesta con headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count` y `X-Total-*` para trazabilidad en el panel.
 
 ## Frontend (JS estático)
 
@@ -121,6 +153,7 @@ El servicio `nlp_intent` ahora arranca con `LLM_PROVIDER=openai` por defecto. Es
 - Alternativa: ejecutar `./Start --with-internal-ollama` para levantar un servicio `ollama` interno al stack.
 - El servicio `web` expone `/reports` como estático para descargar los resultados y `/reports-history` como listado HTML.
 - `web` monta `../Templates:/app/Templates:ro` para consumir las plantillas oficiales al invocar la API de reportes.
+- Las imágenes `api`, `web` y `bot` instalan `gdal-bin`, `libgdal-dev`, `libproj-dev`, `libgeos-dev` y `build-essential` para soportar `matplotlib/contextily/pyproj` en la generación de mapas PNG.
 
 ## Conectividad y troubleshooting
 

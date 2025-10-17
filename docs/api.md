@@ -16,6 +16,7 @@
     "db": "ok",
     "server_version": "16.0"
   }
+  ```
 
 ### Versión
 
@@ -23,7 +24,6 @@
 - **Descripción:** Devuelve la versión de build del servicio (cuando está habilitado).
   ```json
   { "status": "ok", "service": "api", "version": "2025-10-14T12:00:00Z" }
-  ```
   ```
 
 ## Verificación de base de datos
@@ -53,36 +53,44 @@
 ## Informes
 ### POST `/reports/repetitividad`
 
-Genera el informe de Repetitividad para un mes/año determinado a partir de un archivo Excel cargado por el usuario.
+Genera el informe de Repetitividad para un mes/año determinado ya sea a partir de un archivo Excel cargado por el usuario (modo Excel) o directamente desde la base de datos (modo DB, si no se adjunta archivo).
 
 #### Descripción general
-Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Opcionalmente, intenta generar un PDF (vía LibreOffice / `SOFFICE_BIN`) y, de ser exitoso, devuelve ambos archivos comprimidos en un ZIP.
+Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Las Horas Netas se normalizan a minutos enteros y al renderizar el informe se muestran como `HH:MM`. Cuando hay datos georreferenciados genera un PNG por servicio repetitivo usando `matplotlib` (con tiles de `contextily` si están disponibles) y adjunta las rutas en la respuesta. Si se solicita, intenta producir un PDF (LibreOffice headless vía `SOFFICE_BIN`). Cuando existen PDFs y/o mapas, el endpoint empaqueta todos los artefactos en un ZIP.
 
 #### Parámetros (multipart/form-data)
 | Campo | Tipo | Requerido | Validación | Descripción |
 |-------|------|-----------|------------|-------------|
-| `file` | UploadFile (.xlsx) | Sí | Extensión `.xlsx` obligatoria | Archivo Excel con columnas mínimas: `CLIENTE`, `SERVICIO`, `FECHA` (YYYY-MM-DD). Columnas adicionales se ignoran. |
+| `file` | UploadFile (.xlsx) | No | Si se envía, debe ser `.xlsx` | Si está presente se usa modo Excel; si falta, se usa modo DB consultando `app.reclamos` por período. |
 | `periodo_mes` | int | Sí | 1 ≤ mes ≤ 12 | Mes del período a procesar |
 | `periodo_anio` | int | Sí | 2000 ≤ año ≤ 2100 | Año del período |
 | `incluir_pdf` | bool | No | Default `false` | Si es `true`, intenta adjuntar PDF (requiere LibreOffice disponible) |
 
 #### Respuestas
-1. 200 OK (DOCX)
+1. **200 OK (DOCX)**
   - `Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document`
-  - Devuelve directamente el archivo generado `repetitividad_<YYYY><MM>.docx`.
-2. 200 OK (ZIP cuando `incluir_pdf=true` y PDF generado)
+  - Se devuelve solo el DOCX cuando no se solicitó PDF y no existen mapas generados.
+2. **200 OK (ZIP)**
   - `Content-Type: application/zip`
-  - Contiene: `repetitividad_<YYYY><MM>.docx` y `repetitividad_<YYYY><MM>.pdf`.
-3. 400 Bad Request
-  - Archivo sin extensión `.xlsx` o parámetros inválidos.
-4. 500 Internal Server Error
-  - Errores de procesamiento (por ejemplo columnas faltantes o fallo en normalización) retornan detalle controlado.
+  - El ZIP incluye siempre el DOCX y, si corresponde, el PDF (`incluir_pdf=true` + conversión exitosa) y todos los mapas PNG generados (`repetitividad_<YYYY><MM>_*.png`).
+3. **400 Bad Request**
+  - Archivo sin extensión `.xlsx`, payload vacío o parámetros fuera de rango.
+4. **404 Not Found (modo DB)**
+  - Sin datos en la base para el período solicitado.
+5. **500 Internal Server Error**
+  - Errores inesperados durante la normalización o la escritura se registran y devuelven mensaje genérico.
 
 #### Encabezados personalizados
 | Header | Valores | Significado |
 |--------|---------|-------------|
-| `X-PDF-Requested` | `true` / `false` | Indica si el cliente solicitó PDF (`incluir_pdf=true`). |
-| `X-PDF-Generated` | `true` / `false` | Indica si el PDF fue efectivamente generado y agregado al ZIP. |
+| `X-Source` | `excel` / `db` | Fuente de datos utilizada.
+| `X-With-Geo` | `true` / `false` | Indica si el cálculo incluyó georreferenciación.
+| `X-PDF-Requested` | `true` / `false` | Se solicitó PDF (`incluir_pdf=true`).
+| `X-PDF-Generated` | `true` / `false` | El PDF se generó correctamente y se agregó al ZIP.
+| `X-Map-Generated` | `true` / `false` | Existen mapas PNG en la respuesta.
+| `X-Maps-Count` | entero | Cantidad de archivos PNG generados.
+| `X-Map-Filenames` | lista separada por comas | Nombres de los mapas incluidos en el ZIP.
+| `X-Total-Filas` / `X-Total-Repetitivos` | entero | Métricas básicas usadas en la UI.
 
 #### Ejemplos
 Solicitud (cURL ilustrativo):
@@ -102,15 +110,35 @@ Content-Type: application/zip
 Content-Disposition: attachment; filename=repetitividad_202407.zip
 X-PDF-Requested: true
 X-PDF-Generated: true
+X-Map-Generated: true
+X-Maps-Count: 3
+X-Map-Filenames: repetitividad_202407_servicio_a.png,repetitividad_202407_servicio_b.png,repetitividad_202407_servicio_c.png
 ```
 
 #### Notas de implementación
+- Mapas: `core.maps.static_map` utiliza `matplotlib` con backend Agg y agrega basemap de `contextily`+`pyproj` cuando están instalados; en ausencia de tiles, queda un scatter sobre lat/lon.
+- Las imágenes generadas se escalan automáticamente para no superar media hoja A4 dentro del DOCX.
+- Dependencias del sistema: las imágenes Docker instalan `gdal-bin`, `libgdal-dev`, `libproj-dev`, `libgeos-dev` y `build-essential` para soportar `pyproj/rasterio`.
 - La conversión a PDF se realiza sólo si `incluir_pdf=true` y `SOFFICE_BIN` apunta a un binario válido (modo directo) o se integra a futuro con `office_service`.
 - Si la conversión falla, se devuelve el DOCX sin elevar excepción (fail-safe) y `X-PDF-Generated=false`.
 - Los archivos se escriben en el directorio configurado (`REPORTS_DIR`). Limpiar o rotar periódicamente para evitar acumulación.
 - Validar tamaño máximo del Excel (pendiente: establecer límite y documentación — TODO).
+- `core.utils.timefmt` centraliza la conversión de valores de Horas Netas (decimales, `HH:MM`, `timedelta`, enteros) a minutos enteros y los formatea luego como `HH:MM`.
 
-### Ingesta de reclamos (nuevo, WIP)
+### GET `/reports/repetitividad`
+
+Devuelve métricas básicas del período consultando la DB.
+
+- Parámetros: `periodo_mes` (1-12), `periodo_anio` (2000-2100)
+- Respuesta 200:
+  ```json
+  { "periodo": "2024-07", "total_servicios": 123, "servicios_repetitivos": 17 }
+  ```
+
+Notas:
+- Requiere que la tabla `app.reclamos` exista (migraciones Alembic aplicadas) y que las variables de conexión estén configuradas.
+
+### Ingesta de reclamos (nuevo)
 
 - **Ruta:** `POST /ingest/reclamos`
 - **Descripción:** Normaliza y resume un archivo XLSX/CSV con reclamos (fechas, duraciones, GEO opcional). Útil para prevalidar datasets antes de generar reportes.
@@ -126,10 +154,18 @@ X-PDF-Generated: true
   }
   ```
 
+  Las Horas Netas aceptan formatos `HH:MM[:SS]`, decimales (`1,5`) o enteros y se convierten a minutos (`Int64`).
+
 #### Seguridad y consideraciones
 - El endpoint no exige aún autenticación ni rate limiting: agregar API key / token interno (TODO) antes de exponer en ambientes sensibles.
 - Los datos cargados se procesan con `pandas` (openpyxl). No se evalúa código embebido en el XLSX.
 - Se recomienda escanear/limitar tamaño de archivo para mitigar ataques de compresión o payloads muy grandes.
+
+## Migraciones Alembic y Start
+
+- El script `./Start` ejecuta las migraciones Alembic dentro del contenedor `api` luego de que PostgreSQL esté healthy.
+- Para alinear credenciales, `Start` construye `ALEMBIC_URL` a partir de `.env` (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`).
+- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; por defecto, las credenciales de ejemplo son `FOCALBOT` / `LASFOCAS2026!` y DB `FOCALDB`.
 
 #### Códigos de error resumidos
 | Código | Causa principal | Mitigación |
@@ -200,7 +236,7 @@ Notas:
 
 - **Descripción:** Genera el informe de repetitividad a partir de un Excel `.xlsx` y devuelve el archivo `.docx`. Si se envía `incluir_pdf=true` también se adjunta un `.zip` con el PDF generado mediante LibreOffice headless.
 - **Parámetros (form-data):**
-  - `file` (UploadFile, requerido): Excel con columnas `CLIENTE`, `SERVICIO`, `FECHA`, `ID_SERVICIO` (opcional).
+  - `file` (UploadFile, requerido): Excel con columnas mínimas `Número Reclamo`, `Numero Línea`, `Nombre Cliente`, `Fecha Inicio Problema Reclamo`, `Fecha Cierre Problema Reclamo`, `Horas Netas Problema Reclamo` (se normalizan; GEO opcional).
   - `periodo_mes` (int, 1-12, requerido).
   - `periodo_anio` (int, 2000-2100, requerido).
   - `incluir_pdf` (bool, opcional, por defecto `false`).
@@ -213,4 +249,5 @@ Notas:
 - **Notas:**
   - La conversión a PDF sólo se intenta cuando `incluir_pdf=true` *y* el binario configurado en `SOFFICE_BIN` existe en el contenedor.
   - Si el PDF no puede generarse, la respuesta se degrada a DOCX sin error y `X-PDF-Generated=false`.
-- **Dependencias:** utiliza `modules.informes_repetitividad` + plantillas de `Templates/` y, si está configurado, `SOFFICE_BIN` o el servicio `office_service` para la conversión a PDF.
+  - Los mapas PNG embebidos se escalan automáticamente para no superar media hoja A4 dentro del documento.
+- **Dependencias:** utiliza `modules.informes_repetitividad`, el helper `core.utils.timefmt` para normalizar Horas Netas, plantillas de `Templates/` y, si está configurado, `SOFFICE_BIN` o el servicio `office_service` para la conversión a PDF.

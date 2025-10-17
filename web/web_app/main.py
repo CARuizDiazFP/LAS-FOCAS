@@ -154,9 +154,11 @@ os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))
 os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
+from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
     ReportConfig,
     ReportResult,
+    generar_informe_desde_dataframe,
     generar_informe_desde_excel,
 )
 
@@ -760,68 +762,89 @@ async def flow_sla(request: Request, file: UploadFile = File(...), mes: int = Fo
 @app.post("/api/flows/repetitividad")
 async def flow_repetitividad(
     request: Request,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
     mes: int = Form(...),
     anio: int = Form(...),
     include_pdf: bool = Form(True),
     csrf_token: str = Form(...),
+    with_geo: bool = Form(False),
+    use_db: bool = Form(False),
 ):
-    """Flujo Web para generar Informe de Repetitividad (sin filtros por período)."""
+    """Genera el informe de Repetitividad desde Excel o DB según los parámetros."""
 
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
-    original_name = file.filename or "archivo.xlsx"
-    if not original_name.lower().endswith(".xlsx"):
-        return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
-
-    upload_path = _save_upload(file)
     periodo_titulo = f"{mes:02d}/{anio}"
-    size_bytes = 0
+    use_db = use_db or file is None
     start = time.time()
 
     try:
-        size_bytes = upload_path.stat().st_size
-        max_bytes = 10 * 1024 * 1024
-        if size_bytes > max_bytes:
-            upload_path.unlink(missing_ok=True)
-            return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
+        if not use_db:
+            if not file or not file.filename or not file.filename.lower().endswith(".xlsx"):
+                return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
 
-        if not zipfile.is_zipfile(upload_path):
-            upload_path.unlink(missing_ok=True)
-            return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
+            upload_path = _save_upload(file)
+            try:
+                size_bytes = upload_path.stat().st_size
+                if size_bytes > 10 * 1024 * 1024:
+                    upload_path.unlink(missing_ok=True)
+                    return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
+                if not zipfile.is_zipfile(upload_path):
+                    upload_path.unlink(missing_ok=True)
+                    return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
+                logger.info(
+                    "action=flow_repetitividad stage=start source=excel periodo=%s include_pdf=%s with_geo=%s size_bytes=%s",
+                    periodo_titulo,
+                    include_pdf,
+                    with_geo,
+                    size_bytes,
+                )
+                try:
+                    df_head = pd.read_excel(upload_path, nrows=1, engine="openpyxl")
+                    logger.info(
+                        "action=flow_repetitividad stage=inspect columns_raw=%s",
+                        list(df_head.columns),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("action=flow_repetitividad stage=inspect error=%s", exc)
 
-        logger.info(
-            "action=flow_repetitividad stage=start filename=%s periodo=%s include_pdf=%s size=%s",
-            original_name,
-            periodo_titulo,
-            include_pdf,
-            size_bytes,
-        )
-
-        try:
-            df_head = pd.read_excel(upload_path, nrows=1, engine="openpyxl")
+                excel_bytes = upload_path.read_bytes()
+                result: ReportResult = await asyncio.to_thread(
+                    generar_informe_desde_excel,
+                    excel_bytes,
+                    periodo_titulo,
+                    include_pdf,
+                    REPORT_SERVICE_CONFIG,
+                    with_geo,
+                )
+            finally:
+                upload_path.unlink(missing_ok=True)
+        else:
+            df_db = reclamos_from_db(mes, anio)
+            df_proc = db_to_processor_frame(df_db)
+            if df_proc.empty:
+                return JSONResponse({"error": "No hay reclamos registrados para el período"}, status_code=404)
             logger.info(
-                "action=flow_repetitividad stage=inspect columns_raw=%s",
-                list(df_head.columns),
+                "action=flow_repetitividad stage=start source=db periodo=%s include_pdf=%s with_geo=%s filas=%s",
+                periodo_titulo,
+                include_pdf,
+                with_geo,
+                len(df_proc),
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("action=flow_repetitividad stage=inspect error=%s", exc)
-
-        excel_bytes = upload_path.read_bytes()
-        result: ReportResult = await asyncio.to_thread(
-            generar_informe_desde_excel,
-            excel_bytes,
-            periodo_titulo,
-            include_pdf,
-            REPORT_SERVICE_CONFIG,
-        )
+            result = await asyncio.to_thread(
+                generar_informe_desde_dataframe,
+                df_proc,
+                periodo_titulo,
+                include_pdf,
+                REPORT_SERVICE_CONFIG,
+                with_geo,
+                "db",
+            )
     except ValueError as exc:
         logger.warning(
-            "action=flow_repetitividad stage=validation error=%s periodo=%s",
-            exc,
-            periodo_titulo,
+            "action=flow_repetitividad stage=validation error=%s periodo=%s", exc, periodo_titulo
         )
         return JSONResponse({"error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
@@ -831,17 +854,21 @@ async def flow_repetitividad(
             exc,
         )
         return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
-    finally:
-        upload_path.unlink(missing_ok=True)
 
+    image_maps = [f"/reports/{Path(m).name}" for m in result.map_images]
     payload: Dict[str, Any] = {
         "status": "ok",
         "pdf_requested": include_pdf,
+        "with_geo": bool(with_geo),
+        "source": "db" if use_db else "excel",
         "stats": {
             "filas": result.total_filas,
             "repetitivos": result.total_repetitivos,
             "periodos": result.periodos_detectados or [],
         },
+        "maps": [],
+        "map_images": image_maps,
+        "assets": image_maps,
     }
     if result.docx:
         payload["docx"] = f"/reports/{result.docx.name}"
@@ -849,16 +876,17 @@ async def flow_repetitividad(
         payload["pdf"] = f"/reports/{result.pdf.name}"
     elif include_pdf:
         payload["pdf_generated"] = False
-    if result.map_html:
-        payload["map"] = f"/reports/{result.map_html.name}"
+    if image_maps:
+        payload["map_image"] = image_maps[0]
 
     elapsed = round((time.time() - start) * 1000)
     logger.info(
-        "action=flow_repetitividad stage=success periodo=%s docx=%s pdf=%s map=%s filas=%s repetitivos=%s ms=%s",
+        "action=flow_repetitividad stage=success periodo=%s source=%s docx=%s pdf=%s map_images=%s filas=%s repetitivos=%s ms=%s",
         periodo_titulo,
+        payload["source"],
         bool(result.docx),
         bool(result.pdf),
-        bool(result.map_html),
+        len(image_maps),
         result.total_filas,
         result.total_repetitivos,
         elapsed,

@@ -67,7 +67,7 @@
             <h1>Informe de Repetitividad</h1>
             <span class="badge">FO Legacy+</span>
           </header>
-          <p class="muted">Subí el Excel y elegí el período decorativo. No filtramos por mes: el análisis es global.</p>
+          <p class="muted">Podés cargar un Excel o tomar los datos directo desde la base. El período sólo se usa como etiqueta en los archivos generados.</p>
           <form id="rep-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
             <div class="dropzone" id="rep-drop">
               <input type="file" id="rep-file" name="file" accept=".xlsx" />
@@ -84,15 +84,14 @@
               </div>
             </div>
             <label class="checkbox"><input type="checkbox" id="rep-pdf" name="include_pdf" checked /> Generar PDF si está disponible</label>
+            <label class="checkbox"><input type="checkbox" id="rep-with-geo" name="with_geo" /> Incluir mapas GEO por servicio</label>
+            <label class="checkbox"><input type="checkbox" id="rep-use-db" name="use_db" /> Usar reclamos desde la base de datos (ignora archivo)</label>
             <div class="card-actions">
               <button type="button" id="rep-run" class="btn primary">Generar</button>
               <a class="btn subtle" href="/reports-history" target="_blank" rel="noopener">Carpeta de reportes</a>
             </div>
           </form>
           <div id="rep-result" class="result-box muted">Aún no se generó ningún informe.</div>
-          <div id="rep-map-container" class="map-container" hidden>
-            <iframe id="rep-map-preview" title="Mapa de repetitividad"></iframe>
-          </div>
         </article>
       </section>
 

@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+import sqlalchemy as sa  # noqa: F401
+from sqlalchemy.dialects import postgresql  # noqa: F401
 
 
 revision = "20251007_01"
@@ -18,46 +18,50 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "chat_sessions",
-        sa.Column("id", sa.Integer(), primary_key=True),
-    sa.Column("user_id", sa.String(length=255), nullable=False),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=False), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("last_activity", sa.DateTime(timezone=False), server_default=sa.text("NOW()"), nullable=False),
-        schema="app",
+    # Idempotente: usar IF NOT EXISTS para evitar fallos si init.sql ya creó tablas
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app.chat_sessions (
+            id SERIAL PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+            last_activity TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+        )
+        """
     )
-    op.create_index(
-        "ix_chat_sessions_user_id_last_activity",
-        "chat_sessions",
-        ["user_id", "last_activity"],
-        schema="app",
+    op.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_id_last_activity
+        ON app.chat_sessions (user_id, last_activity)
+        """
     )
 
-    op.create_table(
-        "chat_messages",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("session_id", sa.Integer(), nullable=False),
-        sa.Column("role", sa.String(length=32), nullable=False),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("tool_name", sa.String(length=128), nullable=True),
-        sa.Column("tool_args", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column("attachments", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column("error_code", sa.String(length=64), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=False), server_default=sa.text("NOW()"), nullable=False),
-        sa.ForeignKeyConstraint(["session_id"], ["app.chat_sessions.id"], ondelete="CASCADE"),
-        schema="app",
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app.chat_messages (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES app.chat_sessions(id) ON DELETE CASCADE,
+            role VARCHAR(32) NOT NULL,
+            content TEXT NOT NULL,
+            tool_name VARCHAR(128),
+            tool_args JSONB,
+            attachments JSONB,
+            error_code VARCHAR(64),
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+        )
+        """
     )
-    op.create_index(
-        "ix_chat_messages_session_created",
-        "chat_messages",
-        ["session_id", "created_at"],
-        schema="app",
+    op.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_chat_messages_session_created
+        ON app.chat_messages (session_id, created_at)
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_chat_messages_session_created", table_name="chat_messages", schema="app")
-    op.drop_table("chat_messages", schema="app")
-    op.drop_index("ix_chat_sessions_user_id_last_activity", table_name="chat_sessions", schema="app")
-    op.drop_table("chat_sessions", schema="app")
+    op.execute("DROP INDEX IF EXISTS app.ix_chat_messages_session_created")
+    op.execute("DROP TABLE IF EXISTS app.chat_messages")
+    op.execute("DROP INDEX IF EXISTS app.ix_chat_sessions_user_id_last_activity")
+    op.execute("DROP TABLE IF EXISTS app.chat_sessions")

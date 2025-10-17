@@ -223,11 +223,29 @@ Luego de iniciar los contenedores, puede verificarse el estado del servicio:
 
 ```bash
 curl -sS http://localhost:8001/health   # API (remapeada)
-curl -sS http://localhost:8000/db-check
+curl -sS http://localhost:8001/db-check
 curl -sS http://192.168.241.28:8080/health   # Web UI (IP privada de la VM)
 curl -sS http://192.168.241.28:8080/health/version  # versión de build del Web UI
 curl -sS http://localhost:11434/api/tags # Ollama (externo o interno si se usó --with-internal-ollama)
 ```
+
+### ⚡ Prueba rápida (API + DB)
+
+1) Salud del servicio y DB
+
+- `GET /health` → estado general del microservicio API.
+- `GET /db-check` → `SELECT 1` y versión de PostgreSQL.
+
+2) Ingesta de reclamos (opcional)
+
+- Enviar un Excel de prueba al endpoint `POST /ingest/reclamos` para validar mapeo/fechas/GEO.
+- Archivo de ejemplo: `devs/Reclamos Nuevo.xlsx` (editar y adaptar a tu dataset real).
+
+3) Métricas de Repetitividad desde DB
+
+- `GET /reports/repetitividad?periodo_mes=7&periodo_anio=2024` devuelve métricas básicas del período.
+- Alternativamente, `POST /reports/repetitividad` sin archivo usa modo DB y genera el DOCX (y ZIP si `incluir_pdf=true`).
+- El DOCX exportado reemplaza por completo la portada, muestra Horas Netas en formato `HH:MM` y embebe mapas PNG por servicio ajustados a media hoja A4.
 
 ---
 
@@ -263,6 +281,7 @@ Modelos sugeridos para 32 GB RAM:
 - **Office**: LibreOffice headless.
 - **DB**: PostgreSQL.
 - **Infra**: Docker, docker-compose.
+- Utilidades propias: `core/utils/timefmt` para normalizar duraciones en minutos ↔ `HH:MM` dentro de los informes.
 
 ---
 

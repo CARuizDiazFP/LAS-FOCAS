@@ -14,7 +14,8 @@ import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from core.parsers.reclamos_xlsx import IngestSummary, parse_reclamos_df
+from core.parsers.reclamos_excel import IngestSummary, parse_reclamos_df
+from core.services.repetitividad import upsert_reclamos
 
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -45,15 +46,27 @@ async def ingest_reclamos(
         raise HTTPException(status_code=400, detail="No se pudo leer el archivo") from exc
 
     df_ok, summary = parse_reclamos_df(df)
+    inserted, updated = upsert_reclamos(df_ok)
 
     payload: Dict[str, Any] = {
         "status": "ok",
         "rows_ok": summary.rows_ok,
         "rows_bad": summary.rows_bad,
+        "inserted": inserted,
+        "updated": updated,
         "date_min": None if summary.date_min is None else summary.date_min.isoformat(),
         "date_max": None if summary.date_max is None else summary.date_max.isoformat(),
         "geo_pct": round(summary.geo_pct, 2),
         "geo_available": summary.geo_pct > 0.0,
-        "columns": list(df_ok.columns),
     }
     return JSONResponse(payload)
+
+# Alias solicitado: /import/reclamos → mismo handler
+alias_router = APIRouter(prefix="/import", tags=["ingest"])
+
+@alias_router.post("/reclamos")
+async def import_reclamos(
+    file: UploadFile = File(..., description="Archivo XLSX o CSV con reclamos"),
+    flujo: str | None = Form(None, description="Nombre del flujo que consume (opcional)"),
+) -> JSONResponse:
+    return await ingest_reclamos(file=file, flujo=flujo)

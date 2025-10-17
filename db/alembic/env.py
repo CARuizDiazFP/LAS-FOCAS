@@ -18,14 +18,13 @@ if config.config_file_name is not None:
 section = config.get_section(config.config_ini_section)
 if section is None:
     section = {}
-url_override = os.getenv("DATABASE_URL")
-if url_override:
-    section["sqlalchemy.url"] = url_override
+
+# Precedencia: DATABASE_URL > ALEMBIC_URL > valor del ini > default seguro
+db_url = os.getenv("DATABASE_URL") or os.getenv("ALEMBIC_URL")
+if db_url:
+    section["sqlalchemy.url"] = db_url
 elif "sqlalchemy.url" not in section:
-    section["sqlalchemy.url"] = os.getenv(
-        "ALEMBIC_URL",
-        "postgresql+psycopg://lasfocas:superseguro@postgres:5432/lasfocas",
-    )
+    section["sqlalchemy.url"] = "postgresql+psycopg://lasfocas:superseguro@postgres:5432/lasfocas"
 
 config.set_section_option(config.config_ini_section, "sqlalchemy.url", section["sqlalchemy.url"])
 

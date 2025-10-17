@@ -20,7 +20,7 @@ def test_compute_repetitividad_preserva_macro():
 
     assert res.total_servicios == 2
     assert res.total_repetitivos == 1
-    assert res.items[0].servicio == "S1"
+    assert res.servicios[0].servicio == "S1"
     assert "BANCO MACRO SA" in df["CLIENTE"].unique()
     assert "2024-07" in res.periodos
 
@@ -39,7 +39,7 @@ def test_compute_repetitividad_varios_servicios():
 
     assert res.total_servicios == 3
     assert res.total_repetitivos == 2
-    servicios = {item.servicio: item.casos for item in res.items}
+    servicios = {item.servicio: item.casos for item in res.servicios}
     assert servicios == {"S1": 2, "S2": 2}
     assert res.periodos == ["2024-07"]
 
@@ -84,9 +84,10 @@ def test_compute_repetitividad_exige_reclamos_distintos():
     res = processor.compute_repetitividad(df)
 
     assert res.total_repetitivos == 1
-    assert res.items[0].servicio == "S2"
-    assert res.items[0].casos == 2
-    assert res.items[0].detalles == ["R2", "R3"]
+    servicio = res.servicios[0]
+    assert servicio.servicio == "S2"
+    assert servicio.casos == 2
+    assert [r.numero_reclamo for r in servicio.reclamos] == ["R2", "R3"]
 
 
 def test_detalles_sin_id_servicio_usa_indice():
@@ -98,7 +99,7 @@ def test_detalles_sin_id_servicio_usa_indice():
     df = processor.normalize(df)
     res = processor.compute_repetitividad(df)
 
-    assert res.items[0].detalles == ["0", "1"]
+    assert [r.numero_reclamo for r in res.servicios[0].reclamos] == ["0", "1"]
 
 
 def test_compute_repetitividad_con_geo():
@@ -110,11 +111,11 @@ def test_compute_repetitividad_con_geo():
     df = processor.normalize(df)
     res = processor.compute_repetitividad(df)
 
-    assert res.geo_points
-    point = res.geo_points[0]
-    assert point.servicio == "S1"
-    assert point.casos == 2
-    assert round(point.lat, 1) == -34.6
+    assert res.with_geo is True
+    servicio = res.servicios[0]
+    assert servicio.servicio == "S1"
+    assert servicio.has_geo() is True
+    assert round(servicio.reclamos[0].latitud, 1) == -34.6
 
 
 def test_load_excel_rechaza_archivo_no_xlsx(tmp_path):

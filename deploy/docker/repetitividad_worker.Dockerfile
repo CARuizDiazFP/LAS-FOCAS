@@ -25,7 +25,7 @@ WORKDIR /app
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
-RUN pip install --no-cache-dir geopandas==0.14.4 contextily==1.5.1 matplotlib==3.9.1
+RUN pip install --no-cache-dir geopandas==0.14.4
 
 COPY . /app
 

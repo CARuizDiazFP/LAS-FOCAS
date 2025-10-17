@@ -3,35 +3,34 @@
 # Descripción: Documentación del informe de Repetitividad
 
 ## Insumos requeridos
-- Excel "Casos" en formato `.xlsx`.
-- Columnas mínimas: `CLIENTE`, `SERVICIO`, `FECHA` y opcional `ID_SERVICIO`.
+- Excel "Casos" en formato `.xlsx` con encabezados en español.
+- Columnas mínimas (se renombran automáticamente): `Número Reclamo`, `Numero Línea`, `Nombre Cliente`, `Fecha Inicio Problema Reclamo`, `Fecha Cierre Problema Reclamo`, `Horas Netas Problema Reclamo` (opcional GEO: `Latitud Reclamo`, `Longitud Reclamo`).
+- El parser tolera acentos/mayúsculas y coma decimal; la columna Horas Netas se convierte a minutos (`HORAS_NETAS_MIN`) aceptando formatos `HH:MM[:SS]`, enteros o decimales.
 - Los datos del cliente **BANCO MACRO SA** nunca se filtran automáticamente.
 
 ## Cálculo
-- Se normalizan las columnas y se genera `PERIODO = YYYY-MM`.
+- Se normalizan las columnas (incluidas fechas y GEO) y se asigna `PERIODO = YYYY-MM`.
+- Las Horas Netas se guardan como minutos enteros (`HORAS_NETAS_MIN`) y al exportar se formatean como `HH:MM` mediante `core.utils.timefmt.minutes_to_hhmm`.
 - En el flujo Web, el período `mes/año` se usa como título/etiqueta (no se filtra por mes), el análisis es global sobre el dataset cargado.
 - Se agrupan casos por `SERVICIO` y se consideran repetitivos aquellos con **2 o más** casos.
 - El conteo de servicios repetitivos se realiza con operaciones vectorizadas (`groupby().size()`), lo que mejora el rendimiento.
-- Se genera una tabla con servicio, cantidad y detalles/IDs.
+- Se genera una tabla con servicio, cantidad y detalles/IDs; cada fila incluye Horas Netas en formato `HH:MM`.
 
 ## Uso por Telegram
 1. Enviar comando `/repetitividad` o usar el botón correspondiente.
 2. Subir el Excel.
 3. Indicar el período `mm/aaaa`.
-4. El bot devuelve un archivo `.docx` y opcionalmente `.pdf`.
+4. El bot devuelve el `.docx`, adjunta el `.pdf` si está disponible y reenvía cada mapa `.png` generado.
 
 ## Integración con otros canales
 - Tanto la UI web como (a futuro) el bot de Telegram llaman a la misma función de servicio: `modules.informes_repetitividad.service.generar_informe_desde_excel`.
-- La API web (`/api/flows/repetitividad`) devuelve rutas absolutas de descarga bajo `/reports/*` y, cuando está habilitado, un mapa HTML (`.html`).
+- La API web (`/api/flows/repetitividad`) devuelve rutas absolutas de descarga bajo `/reports/*` incluyendo los mapas `.png` generados por servicio y la lista completa en `assets`.
 - El histórico se lista con `/reports-history`.
 
 ## Cobertura de pruebas automatizadas
-- `tests/test_repetitividad_processor.py`: cubre normalización básica y cálculo de repetitividad para casos repetidos vs. preservación del cliente banquero. Falta validar errores por columnas ausentes (`normalize`) y escenarios con filas nulas.
-- `tests/test_report_builder.py`: verifica que `export_docx` genere un documento válido con título dinámico. No comprueba estilos, totales ni resaltado de casos ≥4.
-- `tests/test_reports_repetitividad_api.py`: asegura respuestas DOCX y ZIP (mockeando LibreOffice), valida headers `X-PDF-Requested` / `X-PDF-Generated` e incluye casos negativos (extensión inválida, error en `processor.load_excel`).
-- `tests/test_informes_repetitividad_service.py`: prueba el helper asíncrono (`generate_report`) para respuestas DOCX/ZIP, errores HTTP, ausencia de `Content-Disposition` y ZIP sin PDF.
-- `tests/test_web_repetitividad_flow.py`: valida el flujo completo desde la UI web (CSRF correcto, respuesta exitosa y propagación de errores HTTP del servicio externo).
-- `Legacy/Sandy/tests/test_clasificar_flujo.py` (proyecto Sandy) servía de referencia para garantizar que las entradas de chat disparen el handler de repetitividad. También existen pruebas de base de datos en `Legacy/Sandy/tests/test_database.py` que evitan duplicados de servicios y reclamos. Sirven como guía para planificar tests de orquestación en el bot/UI y reglas de deduplicación en la nueva versión.
+- `tests/test_docx_utils.py`, `tests/test_static_map.py`, `tests/test_repetitividad_docx_render.py`: casos actualizados para nuevas funcionalidades.
+- `tests/test_timefmt.py`: valida conversión minutos ↔ `HH:MM` y entradas mixtas (decimales, `timedelta`, objetos con `total_seconds`).
+- `tests/test_ingest_parser.py`: asegura que el parser normalice Horas Netas a minutos y limpie GEO fuera de rango.
 
 ### Pendientes (# TODO)
 - Crear pruebas funcionales del flujo de Telegram con `aiogram` (al menos simulando estados felices y errores).
@@ -46,8 +45,8 @@
 - `REPORTS_DIR=/app/data/reports` destino de los informes.
 - `UPLOADS_DIR=/app/data/uploads` ubicación temporal de archivos subidos.
 - `SOFFICE_BIN=/usr/bin/soffice` para habilitar la conversión a PDF (opcional).
-- `MAPS_ENABLED=false` habilita mapas cuando es `true`.
-- `MAPS_LIGHTWEIGHT=true` usa Matplotlib sin stack geoespacial.
+- `MAPS_ENABLED=true` activa la generación de mapas PNG.
+- Dependencias geoespaciales instaladas en los contenedores: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` + paquetes nativos (`gdal-bin`, `libgdal-dev`, `libproj-dev`, `libgeos-dev`, `build-essential`).
 
 ## Referencias legacy y plan de migración
 
@@ -74,8 +73,8 @@
    - Implementar componente que consuma la plantilla via `python-docx` o delegue en `office_service` para conversiones y formateos.
    - Reemplazar la porción COM por macros/estilos predefinidos o post-proceso con LibreOffice headless.
 4. **Mapas**
-   - Evaluar si se mantiene `geopandas/contextily`; de ser necesario, encapsularlo en un worker Docker separado.
-   - Alternativa lightweight: `folium` o servicios estáticos si el overhead geoespacial es muy alto.
+   - Consolidado: `core.maps.static_map` genera PNG con `matplotlib` (Agg) y tiles de `contextily` cuando hay conectividad, ajustándolos para no superar media hoja A4 al incrustarse en el DOCX.
+   - El worker `repetitividad_worker` mantiene `geopandas` para tareas enfocadas; API/web/bot consumen directamente los PNG almacenados en `REPORTS_DIR`.
 5. **Integraciones**
    - Exponer servicio REST (`POST /reports/repetitividad`) reutilizable por bot y web.
    - Orquestar envío de archivos desde web/Telegram usando `REPORTS_DIR`.

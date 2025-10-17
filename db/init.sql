@@ -1,6 +1,6 @@
-# Nombre de archivo: init.sql
-# Ubicación de archivo: db/init.sql
-# Descripción: Inicialización mínima de BD (schema y tabla de ejemplo)
+-- Nombre de archivo: init.sql
+-- Ubicación de archivo: db/init.sql
+-- Descripción: Inicialización mínima de BD (schema y tabla de ejemplo)
 -- Crear schema lógico para la app
 CREATE SCHEMA IF NOT EXISTS app;
 

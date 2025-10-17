@@ -17,7 +17,14 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        gdal-bin \
+        libgdal-dev \
+        libproj-dev \
+        libgeos-dev \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY web/requirements.txt /app/requirements.txt
@@ -33,6 +40,7 @@ COPY web/chat_ws.py /app/web/chat_ws.py
 # Incluir paquete core para logging centralizado
 COPY core /app/core
 COPY modules /app/modules
+COPY db /app/db
 COPY --from=web-build /frontend/dist /app/static/assets
 
 EXPOSE 8080

@@ -57,6 +57,7 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
   - Imágenes base slim/alpine (si compatible) y multi-stage builds.
 - Dependencias
   - Fijar versiones. Revisar CVEs. Eliminar paquetes no usados.
+  - Para la toolchain geoespacial (`matplotlib`, `contextily`, `pyproj`, GDAL/PROJ) monitorear CVEs de librerías nativas y validar hashes/firmas en cada rebuild.
 - Datos
   - Clasificar datos (sensibles/no). Minimización y cifrado en reposo/transporte cuando corresponda.
   - Política de retención y acceso.

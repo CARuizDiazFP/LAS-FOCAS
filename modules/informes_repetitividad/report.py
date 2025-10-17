@@ -4,29 +4,40 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 
-import pandas as pd
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.shared import Pt, Inches
+from docx.shape import InlineShape
 
 from modules.common.libreoffice_export import convert_to_pdf
+from core.docx_utils.text_replace import replace_title_everywhere
+from core.maps.static_map import build_static_map_png
+from core.utils.timefmt import minutes_to_hhmm
 from .config import (
-    MAPS_DEFAULT_ZOOM,
     MAPS_ENABLED,
-    MAPS_LIGHTWEIGHT,
-    MAPS_MARKER_BORDER,
-    MAPS_MARKER_COLOR,
     MESES_ES,
     REP_TEMPLATE_PATH,
 )
-from .schemas import Params, ResultadoRepetitividad
+from .schemas import Params, ResultadoRepetitividad, ServicioDetalle, ReclamoDetalle
 
 logger = logging.getLogger(__name__)
+
+TABLE_HEADERS = [
+    "N° Reclamo",
+    "N° Evento",
+    "Fecha Inicio",
+    "Fecha Cierre",
+    "Horas Netas",
+    "Tipo Solución",
+    "Descripción",
+]
+
+MAP_MAX_WIDTH = Inches(6.2)
+MAP_MAX_HEIGHT = Inches(5.6)
 
 
 def _header_cell(cell, text: str) -> None:
@@ -49,257 +60,149 @@ def _load_template() -> Document:
     return Document()
 
 
-def _add_hyperlink(paragraph, text: str, url: str) -> None:
-    """Inserta un hipervínculo externo en un párrafo."""
-
-    hyperlink = OxmlElement("w:hyperlink")
-    hyperlink.set(qn("r:id"), paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True))
-
-    new_run = OxmlElement("w:r")
-    r_pr = OxmlElement("w:rPr")
-
-    color = OxmlElement("w:color")
-    color.set(qn("w:val"), "0563C1")  # azul clásico
-    r_pr.append(color)
-
-    underline = OxmlElement("w:u")
-    underline.set(qn("w:val"), "single")
-    r_pr.append(underline)
-
-    new_run.append(r_pr)
-    text_element = OxmlElement("w:t")
-    text_element.text = text
-    new_run.append(text_element)
-    hyperlink.append(new_run)
-    paragraph._p.append(hyperlink)
-
-
 def export_docx(
     data: ResultadoRepetitividad,
     periodo: Params,
     out_dir: str,
-    df_raw: Optional[pd.DataFrame] = None,
-    map_path: Optional[str] = None,
+    with_geo: bool = False,
 ) -> str:
-    """Genera el archivo DOCX con el detalle completo de repetitividad.
-    
-    Args:
-        data: Resultado calculado con servicios repetitivos
-        periodo: Período del informe (mes/año)
-        out_dir: Directorio de salida
-        df_raw: DataFrame normalizado con todos los datos (opcional, para detalle enriquecido)
-    """
+    """Genera el archivo DOCX con bloques por servicio y mapa opcional."""
 
     mes_nombre = MESES_ES[periodo.periodo_mes - 1].capitalize()
     doc = _load_template()
 
+    titulo = f"Informe Repetitividad — {mes_nombre} {periodo.periodo_anio}"
+    replace_title_everywhere(doc, titulo)
+
     # Título principal
     doc.add_heading(
-        f"Informe de Repetitividad — {mes_nombre} {periodo.periodo_anio}",
+        titulo,
         level=1,
     )
 
     # Resumen ejecutivo
+    porcentaje = 100 * data.total_repetitivos / max(data.total_servicios, 1)
     doc.add_paragraph(
         f"Servicios analizados: {data.total_servicios} | "
-        f"Servicios con repetitividad: {data.total_repetitivos} "
-        f"({100 * data.total_repetitivos / max(data.total_servicios, 1):.1f}%)"
+        f"Servicios con repetitividad: {data.total_repetitivos} ({porcentaje:.1f}%)"
     )
 
     if data.periodos:
         doc.add_paragraph(
-            "Períodos presentes en el dataset: " + ", ".join(data.periodos)
+            "Períodos detectados: " + ", ".join(sorted(set(data.periodos)))
         )
 
-    _export_geo_summary(doc, data, map_path)
-
-    # Si no tenemos el DataFrame raw, generamos una tabla simple (modo legacy)
-    if df_raw is None or df_raw.empty:
-        _export_simple_table(doc, data)
+    if not data.servicios:
+        doc.add_paragraph("No se detectaron servicios repetitivos en el período seleccionado.")
     else:
-        _export_detailed_report(doc, data, df_raw)
+        for servicio in data.servicios:
+            _render_service_block(doc, servicio, with_geo)
 
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
     docx_path = out_dir_path / f"repetitividad_{periodo.periodo_anio}{periodo.periodo_mes:02d}.docx"
     doc.save(docx_path)
-    logger.info("action=export_docx path=%s items=%s", docx_path, len(data.items))
+    logger.info("action=export_docx path=%s servicios=%s", docx_path, len(data.servicios))
     return str(docx_path)
 
 
-def _export_simple_table(doc: Document, data: ResultadoRepetitividad) -> None:
-    """Genera una tabla simple con el resumen de repetitividad (fallback)."""
-    
-    table = doc.add_table(rows=1, cols=3)
-    table.style = 'Table Grid'
-    
+def _render_service_block(doc: Document, servicio: ServicioDetalle, with_geo: bool) -> None:
+    """Dibuja el bloque detallado para un servicio repetitivo."""
+
+    heading_parts: List[str] = []
+    if servicio.tipo_servicio:
+        heading_parts.append(servicio.tipo_servicio)
+    heading_parts.append(servicio.servicio)
+    heading = " — ".join(filter(None, heading_parts)) or servicio.servicio
+    if servicio.nombre_cliente:
+        heading = f"{heading} · {servicio.nombre_cliente}"
+    doc.add_heading(heading, level=2)
+
+    table = doc.add_table(rows=1, cols=len(TABLE_HEADERS))
+    table.style = "Table Grid"
+
     hdr_cells = table.rows[0].cells
-    _header_cell(hdr_cells[0], "Servicio")
-    _header_cell(hdr_cells[1], "Casos Repetidos")
-    _header_cell(hdr_cells[2], "Detalles/IDs")
-
-    for item in data.items:
-        row = table.add_row().cells
-        row[0].text = item.servicio
-        row[1].text = str(item.casos)
-        row[2].text = ", ".join(item.detalles[:10])  # Limitar a 10 IDs
-        if item.casos >= 4:
-            row[1].paragraphs[0].runs[0].bold = True
-
-    for row in table.rows:
-        for cell in row.cells:
-            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-
-def _export_detailed_report(doc: Document, data: ResultadoRepetitividad, df: pd.DataFrame) -> None:
-    """Genera un informe detallado al estilo del legacy, con tablas por servicio."""
-
-    for item in data.items:
-        servicio_id = item.servicio
-
-        # Filtrar los casos de este servicio
-        df_servicio = df[df["SERVICIO"] == servicio_id].copy()
-        if df_servicio.empty:
-            continue
-
-        # Encabezado del servicio
-        primer_caso = df_servicio.iloc[0]
-        cliente = primer_caso.get("CLIENTE", "N/A")
-        tipo_servicio = primer_caso.get("TIPO_SERVICIO", "Servicio")
-        doc.add_heading(f"{tipo_servicio}: {servicio_id} - {cliente}", level=2)
-
-        # Tabla de detalle
-        table = doc.add_table(rows=1, cols=6)
-        table.style = "Table Grid"
-
-        hdr_cells = table.rows[0].cells
-        headers = [
-            "Reclamo",
-            "Tipo Solución",
-            "Fecha Inicio",
-            "Fecha Cierre",
-            "Horas Netas",
-            "Descripción Solución",
-        ]
-        for idx, header in enumerate(headers):
-            _header_cell(hdr_cells[idx], header)
-
-        # Llenar filas con datos
-        for _, fila in df_servicio.iterrows():
-            row_cells = table.add_row().cells
-
-            # Número de reclamo/ID
-            id_caso = fila.get("ID_SERVICIO", fila.name)
-            row_cells[0].text = str(id_caso)
-
-            # Tipo de solución (preferir nueva cabecera, fallback legacy)
-            tipo_solucion = fila.get("Tipo Solución") or fila.get("Tipo Solución Reclamo") or "-"
-            row_cells[1].text = str(tipo_solucion) if pd.notna(tipo_solucion) else "-"
-
-            # Fecha de inicio (FECHA_INICIO si existe, fallback FECHA)
-            fecha_inicio = fila.get("FECHA_INICIO") or fila.get("FECHA")
-            if pd.notna(fecha_inicio):
-                try:
-                    row_cells[2].text = pd.to_datetime(fecha_inicio).strftime("%d/%m/%Y %H:%M")
-                except Exception:
-                    row_cells[2].text = str(fecha_inicio)
-            else:
-                row_cells[2].text = "-"
-
-            # Fecha de cierre (FECHA)
-            fecha_cierre = fila.get("FECHA")
-            if pd.notna(fecha_cierre):
-                try:
-                    row_cells[3].text = pd.to_datetime(fecha_cierre).strftime("%d/%m/%Y %H:%M")
-                except Exception:
-                    row_cells[3].text = str(fecha_cierre)
-            else:
-                row_cells[3].text = "-"
-
-            # Horas netas (nueva cabecera o variantes legacy)
-            horas = (
-                fila.get("Horas Netas")
-                or fila.get("Horas Netas Problema Reclamo")
-                or fila.get("Horas Netas Reclamo")
-            )
-            if pd.notna(horas):
-                if isinstance(horas, pd.Timedelta):
-                    total_min = int(horas.total_seconds() // 60)
-                    h = total_min // 60
-                    m = total_min % 60
-                    row_cells[4].text = f"{h:02d}:{m:02d}"
-                else:
-                    row_cells[4].text = str(horas)
-            else:
-                row_cells[4].text = "-"
-
-            # Descripción de solución
-            desc = fila.get("Descripción Solución") or fila.get("Descripción Solución Reclamo") or "-"
-            if pd.notna(desc):
-                row_cells[5].text = str(desc)[:200]
-            else:
-                row_cells[5].text = "-"
-
-        # Ajustar tamaño de fuente de la tabla (opcional, para mejor lectura)
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    for run in paragraph.runs:
-                        run.font.size = Pt(9)
-
-        # Espacio antes de la siguiente sección
-        doc.add_paragraph()
-
-
-def _export_geo_summary(doc: Document, data: ResultadoRepetitividad, map_path: Optional[str]) -> None:
-    """Agrega una sección con el resumen geográfico y enlace al mapa."""
-
-    doc.add_heading("Cobertura geográfica", level=2)
-
-    if map_path:
-        para = doc.add_paragraph("Mapa interactivo: ")
-        try:
-            _add_hyperlink(para, "Abrir mapa", Path(map_path).name)
-        except Exception:  # noqa: BLE001
-            logger.warning("action=geo_summary hyperlink_failed map=%s", map_path)
-            para.add_run(Path(map_path).name)
-    else:
-        doc.add_paragraph("Mapa interactivo: No disponible (sin datos georreferenciados)")
-
-    if not data.geo_points:
-        doc.add_paragraph("El conjunto de datos no incluye coordenadas para los servicios repetitivos.")
-        return
-
-    table = doc.add_table(rows=1, cols=7)
-    table.style = 'Table Grid'
-    headers = [
-        "Servicio",
-        "Cliente",
-        "Etiqueta",
-        "Región",
-        "Latitud",
-        "Longitud",
-        "Casos",
-    ]
-    hdr_cells = table.rows[0].cells
-    for idx, header in enumerate(headers):
+    for idx, header in enumerate(TABLE_HEADERS):
         _header_cell(hdr_cells[idx], header)
 
-    for point in data.geo_points:
-        row = table.add_row().cells
-        row[0].text = point.servicio
-        row[1].text = point.cliente or "-"
-        row[2].text = point.label or "-"
-        row[3].text = point.region or "-"
-        row[4].text = f"{point.lat:.5f}"
-        row[5].text = f"{point.lon:.5f}"
-        row[6].text = str(point.casos)
+    for reclamo in servicio.reclamos:
+        _render_reclamo_row(table, reclamo)
 
     for row in table.rows:
         for cell in row.cells:
-            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+            for paragraph in cell.paragraphs:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                for run in paragraph.runs:
+                    run.font.size = Pt(9)
+
+    if with_geo and servicio.map_image_path:
+        image_path = Path(servicio.map_image_path)
+        if image_path.exists():
+            try:
+                _insert_service_map(doc, image_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("action=servicio_block image_failed map=%s error=%s", image_path, exc)
+                doc.add_paragraph(f"No se pudo insertar el mapa ({image_path.name}).")
+        else:
+            logger.debug(
+                "action=servicio_block map_missing servicio=%s path=%s",
+                servicio.servicio,
+                image_path,
+            )
 
     doc.add_paragraph()
+
+
+def _render_reclamo_row(table, reclamo: ReclamoDetalle) -> None:
+    row_cells = table.add_row().cells
+    row_cells[0].text = _safe_text(reclamo.numero_reclamo)
+    row_cells[1].text = _safe_text(reclamo.numero_evento)
+    row_cells[2].text = _safe_text(reclamo.fecha_inicio)
+    row_cells[3].text = _safe_text(reclamo.fecha_cierre)
+    row_cells[4].text = _format_horas(reclamo.horas_netas)
+    row_cells[5].text = _safe_text(reclamo.tipo_solucion)
+    row_cells[6].text = _shorten(_safe_text(reclamo.descripcion_solucion))
+
+
+def _safe_text(value: Optional[str]) -> str:
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    return text or "-"
+
+
+def _shorten(value: str, limit: int = 220) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _format_horas(value: Any) -> str:
+    return minutes_to_hhmm(value)
+
+
+def _insert_service_map(doc: Document, image_path: Path) -> None:
+    doc.add_paragraph()
+    doc.add_paragraph("Mapa georreferenciado:")
+    image_paragraph = doc.add_paragraph()
+    run = image_paragraph.add_run()
+    picture = run.add_picture(str(image_path))
+    _fit_inline_picture(picture)
+
+
+def _fit_inline_picture(picture: InlineShape) -> None:
+    width = float(picture.width)
+    height = float(picture.height)
+
+    if height > float(MAP_MAX_HEIGHT):
+        ratio = float(MAP_MAX_HEIGHT) / height
+        picture.height = int(MAP_MAX_HEIGHT)
+        picture.width = int(width * ratio)
+        width = float(picture.width)
+        height = float(picture.height)
+
+    if width > float(MAP_MAX_WIDTH):
+        ratio = float(MAP_MAX_WIDTH) / width
+        picture.width = int(MAP_MAX_WIDTH)
+        picture.height = int(height * ratio)
 
 
 def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
@@ -324,63 +227,83 @@ def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str
         return None
 
 
+def generate_service_maps(
+    data: ResultadoRepetitividad,
+    periodo: Params,
+    out_dir: str,
+    with_geo: bool,
+) -> List[Path]:
+    """Genera mapas por servicio y adjunta la ruta al resultado."""
+
+    if not MAPS_ENABLED or not with_geo or not data.servicios:
+        return []
+
+    out_dir_path = Path(out_dir)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    maps_dir = out_dir_path / f"maps_{periodo.periodo_anio}{periodo.periodo_mes:02d}"
+    maps_dir.mkdir(parents=True, exist_ok=True)
+
+    created: List[Path] = []
+
+    for servicio in data.servicios:
+        coords = _collect_coords(servicio)
+        servicio.map_path = None
+        if not coords:
+            servicio.map_path = None
+            servicio.map_image_path = None
+            continue
+
+        safe_name = "".join(ch if ch.isalnum() else "_" for ch in servicio.servicio)[:50]
+        png_path = maps_dir / f"repetitividad_{periodo.periodo_anio}{periodo.periodo_mes:02d}_{safe_name}.png"
+
+        try:
+            build_static_map_png([(lat, lon) for lat, lon, _ in coords], png_path)
+        except ValueError:
+            servicio.map_image_path = None
+            logger.debug("action=generate_service_maps reason=no_valid_points servicio=%s", servicio.servicio)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            servicio.map_image_path = None
+            logger.warning(
+                "action=generate_service_maps stage=static_map_failed servicio=%s error=%s",
+                servicio.servicio,
+                exc,
+            )
+            continue
+
+        servicio.map_image_path = str(png_path)
+        created.append(png_path)
+
+    logger.info("action=generate_service_maps total=%s", len(created))
+    return created
+
+
+def _collect_coords(servicio: ServicioDetalle) -> List[tuple[float, float, Optional[str]]]:
+    coords: List[tuple[float, float, Optional[str]]] = []
+    for reclamo in servicio.reclamos:
+        lat = _to_float(reclamo.latitud)
+        lon = _to_float(reclamo.longitud)
+        if lat is None or lon is None:
+            continue
+        coords.append((lat, lon, reclamo.numero_reclamo))
+    return coords
+
+
+def _to_float(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):  # noqa: BLE001
+        return None
+
+
 def generate_geo_map(
     data: ResultadoRepetitividad,
     periodo: Params,
     out_dir: str,
 ) -> Optional[str]:
-    """Genera un mapa interactivo en HTML con los servicios repetitivos."""
+    """Compatibilidad: genera el primer mapa disponible o retorna None."""
 
-    if not MAPS_ENABLED or not data.geo_points:
-        return None
-
-    try:
-        import folium  # type: ignore[import-untyped]
-    except ImportError:  # pragma: no cover - dependencia externa
-        logger.warning("action=generate_geo_map reason=missing_folium")
-        return None
-
-    avg_lat = sum(point.lat for point in data.geo_points) / len(data.geo_points)
-    avg_lon = sum(point.lon for point in data.geo_points) / len(data.geo_points)
-
-    fmap = folium.Map(location=[avg_lat, avg_lon], zoom_start=MAPS_DEFAULT_ZOOM, tiles="CartoDB positron")
-
-    for point in data.geo_points:
-        popup_lines = [
-            f"<strong>{point.servicio}</strong>",
-            f"Casos repetidos: {point.casos}",
-        ]
-        if point.cliente:
-            popup_lines.append(f"Cliente: {point.cliente}")
-        if point.region:
-            popup_lines.append(f"Región: {point.region}")
-        if point.label and point.label != point.servicio:
-            popup_lines.append(f"Ubicación: {point.label}")
-
-        popup_html = "<br/>".join(popup_lines)
-
-        if MAPS_LIGHTWEIGHT:
-            folium.CircleMarker(
-                location=[point.lat, point.lon],
-                radius=6 + min(point.casos, 6),
-                color=MAPS_MARKER_BORDER,
-                weight=2,
-                fill=True,
-                fill_color=MAPS_MARKER_COLOR,
-                fill_opacity=0.85,
-                tooltip=point.servicio,
-                popup=folium.Popup(popup_html, max_width=280),
-            ).add_to(fmap)
-        else:
-            folium.Marker(
-                location=[point.lat, point.lon],
-                tooltip=point.servicio,
-                popup=folium.Popup(popup_html, max_width=280),
-            ).add_to(fmap)
-
-    out_dir_path = Path(out_dir)
-    out_dir_path.mkdir(parents=True, exist_ok=True)
-    map_path = out_dir_path / f"repetitividad_{periodo.periodo_anio}{periodo.periodo_mes:02d}_map.html"
-    fmap.save(map_path)
-    logger.info("action=generate_geo_map path=%s markers=%s", map_path, len(data.geo_points))
-    return str(map_path)
+    maps = generate_service_maps(data, periodo, out_dir, with_geo=True)
+    return str(maps[0]) if maps else None

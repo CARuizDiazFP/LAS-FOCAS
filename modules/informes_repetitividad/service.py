@@ -9,9 +9,12 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List
+from typing import TYPE_CHECKING, Iterable, List, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - usado solo para type checking
+    import pandas as pd
 
 from . import processor, report
 from . import config as repet_config
@@ -48,7 +51,7 @@ class ReportResult:
 
     docx: Path
     pdf: Path | None = None
-    map_html: Path | None = None
+    map_images: List[Path] = field(default_factory=list)
     total_filas: int = 0
     total_repetitivos: int = 0
     periodos_detectados: List[str] | None = None
@@ -81,6 +84,7 @@ def generar_informe_desde_excel(
     periodo_titulo: str,
     export_pdf: bool,
     config: ReportConfig,
+    with_geo: bool = False,
 ) -> ReportResult:
     """Genera el informe de repetitividad a partir de un Excel en memoria.
 
@@ -125,6 +129,10 @@ def generar_informe_desde_excel(
     )
 
     resultado: ResultadoRepetitividad = processor.compute_repetitividad(df_normalizado)
+    resultado = resultado.model_copy(update={
+        "with_geo": bool(with_geo and resultado.with_geo),
+        "source": "excel",
+    })
     logger.info(
         "action=repetitividad_service stage=compute_ok total_servicios=%s repetitivos=%s",
         resultado.total_servicios,
@@ -134,19 +142,16 @@ def generar_informe_desde_excel(
     mes, anio = _infer_periodo(periodo_titulo, resultado.periodos)
     params = Params(periodo_mes=mes, periodo_anio=anio)
 
-    map_path: Path | None = None
-    if config.maps_enabled:
-        map_result = report.generate_geo_map(resultado, params, str(reports_dir))
-        if map_result:
-            map_path = Path(map_result)
+    map_images: List[Path] = []
+    if config.maps_enabled and resultado.with_geo:
+        map_images = report.generate_service_maps(resultado, params, str(reports_dir), with_geo)
 
     docx_path = Path(
         report.export_docx(
             resultado,
             params,
             str(reports_dir),
-            df_raw=df_normalizado,
-            map_path=str(map_path) if map_path else None,
+            with_geo=with_geo,
         )
     )
 
@@ -157,17 +162,72 @@ def generar_informe_desde_excel(
             pdf_path = Path(pdf_result)
 
     logger.info(
-        "action=repetitividad_service stage=success docx=%s pdf=%s map=%s",
+        "action=repetitividad_service stage=success docx=%s pdf=%s map_images=%s",
         docx_path,
         pdf_path,
-        map_path,
+        len(map_images),
     )
 
     return ReportResult(
         docx=docx_path,
         pdf=pdf_path,
-        map_html=map_path,
+        map_images=map_images,
         total_filas=total_filas,
+        total_repetitivos=resultado.total_repetitivos,
+        periodos_detectados=resultado.periodos,
+    )
+
+
+def generar_informe_desde_dataframe(
+    df: "pd.DataFrame",
+    periodo_titulo: str,
+    export_pdf: bool,
+    config: ReportConfig,
+    with_geo: bool = False,
+    source_label: str = "db",
+) -> ReportResult:
+    """Genera el informe reutilizando un DataFrame ya cargado (modo DB)."""
+
+    if df is None or df.empty:
+        raise ValueError("El DataFrame de reclamos está vacío")
+
+    reports_dir = config.reports_dir
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    df_normalizado = processor.normalize(df)
+    resultado = processor.compute_repetitividad(df_normalizado)
+    resultado = resultado.model_copy(update={
+        "with_geo": bool(with_geo and resultado.with_geo),
+        "source": source_label,
+    })
+
+    mes, anio = _infer_periodo(periodo_titulo, resultado.periodos)
+    params = Params(periodo_mes=mes, periodo_anio=anio)
+
+    map_images: List[Path] = []
+    if config.maps_enabled and resultado.with_geo:
+        map_images = report.generate_service_maps(resultado, params, str(reports_dir), with_geo)
+
+    docx_path = Path(
+        report.export_docx(
+            resultado,
+            params,
+            str(reports_dir),
+            with_geo=with_geo,
+        )
+    )
+
+    pdf_path: Path | None = None
+    if export_pdf and config.soffice_bin:
+        pdf_result = report.maybe_export_pdf(str(docx_path), config.soffice_bin)
+        if pdf_result:
+            pdf_path = Path(pdf_result)
+
+    return ReportResult(
+        docx=docx_path,
+        pdf=pdf_path,
+        map_images=map_images,
+        total_filas=len(df_normalizado),
         total_repetitivos=resultado.total_repetitivos,
         periodos_detectados=resultado.periodos,
     )
@@ -177,4 +237,5 @@ __all__: Iterable[str] = [
     "ReportConfig",
     "ReportResult",
     "generar_informe_desde_excel",
+    "generar_informe_desde_dataframe",
 ]

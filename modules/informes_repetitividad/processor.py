@@ -7,15 +7,21 @@ import zipfile
 from typing import Optional, List, Dict
 
 import pandas as pd
+import unicodedata
+import re as _re
+
+from core.utils.timefmt import value_to_minutes
 
 from .config import (
     CLIENTES_PRESERVAR,
     COLUMNAS_MAPPER,
     COLUMNAS_OBLIGATORIAS,
 )
-from .schemas import GeoPoint, ItemSalida, ResultadoRepetitividad
+from .schemas import ReclamoDetalle, ResultadoRepetitividad, ServicioDetalle
 
 logger = logging.getLogger(__name__)
+
+HORAS_NETAS_MIN_COL = "HORAS_NETAS_MIN"
 
 
 def load_excel(path: str) -> pd.DataFrame:
@@ -67,6 +73,14 @@ def load_excel(path: str) -> pd.DataFrame:
     return df
 
 
+def _clean_key(s: str) -> str:
+    """Normaliza un nombre de columna facilitando comparaciones."""
+
+    s = str(s)
+    s_no_accents = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+    return s_no_accents.lower().replace(" ", "").replace("_", "").replace("\n", "").replace("\r", "")
+
+
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
     """Normaliza nombres de columnas y formatos de fecha.
 
@@ -76,34 +90,25 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     3. Se busca esta clave en el `COLUMNAS_MAPPER` y se renombra la columna.
     4. Valida que todas las columnas obligatorias estén presentes después del mapeo.
     """
-    import unicodedata
-
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = ["_".join(map(str, col)).strip() for col in df.columns.values]
 
     original_cols = df.columns.tolist()
     rename_map = {}
 
-    def clean_key(s: str) -> str:
-        """Crea una clave de búsqueda normalizada a partir de un nombre de columna."""
-        s = str(s)
-        # Quitar acentos
-        s_no_accents = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-        # Convertir a minúsculas y reemplazar espacios/guiones bajos/saltos de línea
-        return s_no_accents.lower().replace(" ", "").replace("_", "").replace("\n", "").replace("\r", "")
-
     # Invertir el mapper para que las claves sean los nombres normalizados
     # Esto permite tener múltiples variantes en el archivo de config apuntando al mismo destino
-    mapper_keys_cleaned = {clean_key(k): v for k, v in COLUMNAS_MAPPER.items()}
+    mapper_keys_cleaned = {_clean_key(k): v for k, v in COLUMNAS_MAPPER.items()}
 
     for col in original_cols:
-        cleaned_col = clean_key(col)
+        cleaned_col = _clean_key(col)
         if cleaned_col in mapper_keys_cleaned:
             target_name = mapper_keys_cleaned[cleaned_col]
             rename_map[col] = target_name
             logger.info(f"Mapeando columna: '{col}' -> '{target_name}' (clave: '{cleaned_col}')")
 
     df = df.rename(columns=rename_map)
+    df = _normalize_horas_columns(df)
 
     fecha_source_col = None
     if "FECHA" in df.columns:
@@ -156,7 +161,6 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
             df[geo_col] = df[geo_col].astype(str).str.strip()
 
     # Limpieza y parse robusto de lat/lon (admite comas como separador decimal y texto mezclado)
-    import re as _re
     def _to_float_series(s: pd.Series) -> pd.Series:
         # Convierte a string, reemplaza comas por puntos y extrae el primer número con signo y decimal
         s_str = s.astype(str).str.replace(",", ".", regex=False)
@@ -178,6 +182,40 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _normalize_horas_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Detecta y normaliza columnas de horas netas, incluyendo heurística por índice."""
+
+    hora_columns = [
+        "Horas Netas Problema Reclamo",
+        "Horas Netas Reclamo",
+        "Horas Netas",
+    ]
+
+    normalized_keys = {_clean_key(name) for name in hora_columns}
+    candidates = [col for col in df.columns if _clean_key(col) in normalized_keys]
+
+    if not candidates and len(df.columns) > 17:
+        guessed = df.columns[17]
+        cleaned = _clean_key(guessed)
+        if cleaned in {"", "unnamed17", "col17", "columnr"} or "horas" in cleaned:
+            df = df.rename(columns={guessed: "Horas Netas Problema Reclamo"})
+            candidates.append("Horas Netas Problema Reclamo")
+
+    minutes_series = pd.Series([pd.NA] * len(df), index=df.index, dtype="Int64") if len(df) else pd.Series(dtype="Int64")
+
+    for column in candidates:
+        if column not in df.columns:
+            continue
+        serie = df[column].map(value_to_minutes)
+        serie = pd.Series(serie, index=df.index, dtype="Int64")
+        serie = serie.where(serie >= 0)
+        minutes_series = serie.where(serie.notna(), minutes_series)
+
+    df[HORAS_NETAS_MIN_COL] = minutes_series
+
+    return df
+
+
 def filter_period(df: pd.DataFrame, mes: int, anio: int) -> pd.DataFrame:
     """Filtra el DataFrame por un período específico."""
     periodo = f"{anio:04d}-{mes:02d}"
@@ -192,7 +230,7 @@ def _detalles(grupo: pd.DataFrame) -> list[str]:
 
 
 def compute_repetitividad(df: pd.DataFrame) -> ResultadoRepetitividad:
-    """Calcula servicios con casos repetidos (>=2 en el período)."""
+    """Calcula servicios con casos repetidos (>=2) y arma detalle por reclamo."""
     grupos = df.groupby("SERVICIO", sort=True)
 
     if "ID_SERVICIO" in df.columns:
@@ -202,59 +240,72 @@ def compute_repetitividad(df: pd.DataFrame) -> ResultadoRepetitividad:
 
     repetitivos = conteos[conteos >= 2]
 
-    items: list[ItemSalida] = []
+    servicios: List[ServicioDetalle] = []
     for servicio in repetitivos.index:
-        grupo = grupos.get_group(servicio)
-        if "ID_SERVICIO" in grupo.columns:
-            detalles = (
-                grupo["ID_SERVICIO"].dropna().astype(str).str.strip().unique().tolist()
+        grupo = grupos.get_group(servicio).copy()
+
+        primer = grupo.iloc[0]
+        nombre_cliente = str(primer.get("CLIENTE")) if pd.notna(primer.get("CLIENTE")) else None
+        tipo_servicio = str(primer.get("TIPO_SERVICIO")) if pd.notna(primer.get("TIPO_SERVICIO")) else None
+
+        detalles_rows: List[ReclamoDetalle] = []
+        for _, fila in grupo.iterrows():
+            reclamo_id = (
+                str(fila.get("ID_SERVICIO")).strip()
+                if pd.notna(fila.get("ID_SERVICIO"))
+                else None
             )
-        else:
-            detalles = _detalles(grupo)
-        items.append(
-            ItemSalida(
+            if not reclamo_id:
+                reclamo_id = str(fila.name)
+
+            geo_lat = float(fila.get("GEO_LAT")) if pd.notna(fila.get("GEO_LAT")) else None
+            geo_lon = float(fila.get("GEO_LON")) if pd.notna(fila.get("GEO_LON")) else None
+
+            detalles_rows.append(
+                ReclamoDetalle(
+                    numero_reclamo=reclamo_id,
+                    numero_evento=str(fila.get("ID_EVENTO")) if pd.notna(fila.get("ID_EVENTO")) else None,
+                    fecha_inicio=_format_fecha(fila.get("FECHA_INICIO"), fila.get("FECHA")),
+                    fecha_cierre=_format_fecha(fila.get("FECHA")),
+                    tipo_solucion=_sanitize_str(fila.get("Tipo Solución"))
+                    or _sanitize_str(fila.get("TIPO_SOLUCION"))
+                    or _sanitize_str(fila.get("Tipo Solución Reclamo")),
+                    horas_netas=_parse_horas_netas(fila),
+                    descripcion_solucion=_sanitize_str(
+                        fila.get("Descripción Solución")
+                        or fila.get("Descripcion Solucion Reclamo")
+                        or fila.get("Descripción Solución Reclamo")
+                    ),
+                    latitud=geo_lat,
+                    longitud=geo_lon,
+                )
+            )
+
+        servicios.append(
+            ServicioDetalle(
                 servicio=servicio,
+                nombre_cliente=nombre_cliente,
+                tipo_servicio=tipo_servicio,
                 casos=int(repetitivos[servicio]),
-                detalles=detalles,
+                reclamos=detalles_rows,
             )
         )
 
     total_servicios = len(conteos)
-    total_repetitivos = len(repetitivos)
+    total_repetitivos = len(servicios)
 
     if "PERIODO" in df.columns:
         periodos_presentes = sorted({str(p) for p in df["PERIODO"].dropna().unique()})
     else:
         periodos_presentes = []
 
-    geo_points: list[GeoPoint] = []
-    if {"GEO_LAT", "GEO_LON"}.issubset(df.columns):
-        df_geo = df[df["GEO_LAT"].notna() & df["GEO_LON"].notna()].copy()
-        if not df_geo.empty:
-            repetitivos_servicios = set(repetitivos.index)
-            df_geo = df_geo[df_geo["SERVICIO"].isin(repetitivos_servicios)]
-            for servicio, grupo in df_geo.groupby("SERVICIO"):
-                lat = float(grupo["GEO_LAT"].mean())
-                lon = float(grupo["GEO_LON"].mean())
-                primer = grupo.iloc[0]
-                geo_points.append(
-                    GeoPoint(
-                        servicio=servicio,
-                        casos=int(repetitivos[servicio]),
-                        lat=lat,
-                        lon=lon,
-                        cliente=str(primer.get("CLIENTE")) if pd.notna(primer.get("CLIENTE")) else None,
-                        label=str(primer.get("GEO_LABEL")) if "GEO_LABEL" in grupo.columns and pd.notna(primer.get("GEO_LABEL")) else None,
-                        region=str(primer.get("GEO_REGION")) if "GEO_REGION" in grupo.columns and pd.notna(primer.get("GEO_REGION")) else None,
-                    )
-                )
-
     resultado = ResultadoRepetitividad(
-        items=items,
+        servicios=servicios,
         total_servicios=total_servicios,
         total_repetitivos=total_repetitivos,
         periodos=periodos_presentes,
-        geo_points=geo_points,
+        with_geo=any(s.has_geo() for s in servicios),
+        source="excel",
     )
     logger.info(
         "action=compute_repetitividad total_servicios=%s total_repetitivos=%s",
@@ -265,3 +316,39 @@ def compute_repetitividad(df: pd.DataFrame) -> ResultadoRepetitividad:
         top = repetitivos.sort_values(ascending=False).head(5)
         logger.debug("action=compute_repetitividad leaders=%s", top.to_dict())
     return resultado
+
+
+def _parse_horas_netas(row: pd.Series) -> Optional[int]:
+    value = row.get(HORAS_NETAS_MIN_COL)
+    if value is not None and not pd.isna(value):
+        return int(value)
+
+    candidates = [
+        row.get("Horas Netas Problema Reclamo"),
+        row.get("Horas Netas Reclamo"),
+        row.get("Horas Netas"),
+    ]
+    for cand in candidates:
+        minutes = value_to_minutes(cand)
+        if minutes is not None and minutes >= 0:
+            return minutes
+
+    return None
+
+
+def _sanitize_str(value: object) -> Optional[str]:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _format_fecha(*values: object) -> Optional[str]:
+    for value in values:
+        if value is None or pd.isna(value):
+            continue
+        try:
+            return pd.to_datetime(value, errors="coerce").strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+    return None

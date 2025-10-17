@@ -13,6 +13,7 @@ NC='\033[0m'
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$ROOT_DIR/deploy/compose.yml"
+COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE" --env-file "$ROOT_DIR/.env")
 
 HOST_IP="192.168.241.28" # Requerido según infraestructura de la VM
 
@@ -22,6 +23,7 @@ CRITICAL=(postgres api web nlp_intent office)
 DO_DOWN=true
 PURGE=false
 REBUILD_FRONTEND=false
+REBUILD_API=false
 NO_COLOR=false
 
 usage() {
@@ -32,12 +34,14 @@ Opciones:
   --no-down             No ejecutar 'docker compose down' previo (reutiliza contenedores existentes)
   --purge               Down + elimina volúmenes e imágenes locales de servicios mínimos
   --rebuild-frontend    Fuerza rebuild sin cache de la imagen web (frontend npm)
+  --rebuild-api         Fuerza rebuild sin cache de la imagen de la API
   --no-color            Deshabilita colores en salida
   -h, --help            Muestra esta ayuda
 
 Ejemplos:
   ./Start                 Reinicia limpio y levanta stack mínimo
   ./Start --rebuild-frontend  Fuerza recompilación del frontend
+  ./Start --rebuild-api       Fuerza recompilación de la API
   ./Start --purge         Reinicio completo (pierde datos de DB)
 EOF
 }
@@ -47,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --no-down) DO_DOWN=false ;;
     --purge) PURGE=true ;;
     --rebuild-frontend) REBUILD_FRONTEND=true ;;
+    --rebuild-api) REBUILD_API=true ;;
     --no-color) NO_COLOR=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo -e "${YELLOW}Opción desconocida: $1${NC}"; usage; exit 1 ;;
@@ -79,28 +84,74 @@ if $DO_DOWN; then
   echo -e "${GREEN}Deteniendo stack anterior...${NC}"
   if $PURGE; then
     echo -e "${YELLOW}PURGE activado: se eliminarán volúmenes e imágenes locales de servicios mínimos.${NC}"
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans || true
+    "${COMPOSE_BASE[@]}" down -v --remove-orphans || true
     # Limpieza de imágenes locales (scope limitado a nombre de proyecto lasfocas)
     for s in "${SERVICES[@]}"; do
       img_id=$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '/lasfocas/ && /'"$s"'/ {print $2}' | head -n1)
       if [ -n "$img_id" ]; then docker rmi "$img_id" >/dev/null 2>&1 || true; fi
     done
   else
-    docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
+    "${COMPOSE_BASE[@]}" down --remove-orphans || true
   fi
 fi
 
 ########################################
 # 3) Build & Up                         #
 ########################################
-UP_CMD=(docker compose -f "$COMPOSE_FILE" up -d --build)
+UP_CMD=("${COMPOSE_BASE[@]}" up -d --build)
 if $REBUILD_FRONTEND; then
   echo -e "${YELLOW}Forzando rebuild sin cache para servicio web (frontend)...${NC}"
-  docker compose -f "$COMPOSE_FILE" build --no-cache web
+  "${COMPOSE_BASE[@]}" build --no-cache web
 fi
 
 echo -e "${GREEN}Levantando servicios mínimos: ${SERVICES[*]}${NC}"
 "${UP_CMD[@]}" "${SERVICES[@]}"
+
+########################################
+# 3.5) Migraciones Alembic              #
+########################################
+# Ejecutar migraciones dentro del contenedor de la API, usando las variables
+# de entorno ya definidas en .env y la url de alembic/env.py (DATABASE_URL/ALEMBIC_URL)
+echo -e "${GREEN}Ejecutando migraciones Alembic...${NC}"
+# Espera activa con límite para Postgres healthy (evita bloqueos)
+MAX_TRIES=40
+DELAY=3
+for i in $(seq 1 $MAX_TRIES); do
+  status=$(docker inspect -f '{{.State.Health.Status}}' lasfocas-postgres 2>/dev/null || echo "unknown")
+  if [ "$status" = "healthy" ]; then
+    echo -e "${GREEN}Postgres healthy.${NC}"
+    break
+  fi
+  echo -e "${YELLOW}Esperando Postgres (estado: $status) $i/$MAX_TRIES...${NC}"
+  sleep $DELAY
+done
+
+# Construir ALEMBIC_URL desde .env si existe
+set +u
+source "$ROOT_DIR/.env" >/dev/null 2>&1 || true
+set -u
+ALEMBIC_URL="postgresql+psycopg://${POSTGRES_USER:-lasfocas}:${POSTGRES_PASSWORD:-superseguro}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-lasfocas}"
+
+MIG_OK=false
+if $REBUILD_API; then
+  echo -e "${YELLOW}Forzando rebuild sin cache para servicio API...${NC}"
+  "${COMPOSE_BASE[@]}" build --no-cache api
+fi
+for i in $(seq 1 5); do
+  # Usar el contenedor API ya iniciado para evitar diferencias de entorno de `run`
+  if "${COMPOSE_BASE[@]}" exec -T api sh -lc "ALEMBIC_URL='$ALEMBIC_URL' alembic -c /app/db/alembic.ini upgrade head"; then
+    MIG_OK=true
+    echo -e "${GREEN}Migraciones aplicadas correctamente.${NC}"
+    break
+  else
+    echo -e "${YELLOW}Intento de migración $i/5 fallido. Reintentando en 4s...${NC}"
+    sleep 4
+  fi
+done
+if [ "$MIG_OK" != true ]; then
+  echo -e "${RED}No se pudieron aplicar las migraciones Alembic.${NC}"
+  exit 2
+fi
 
 ########################################
 # 4) Health checks                      #
@@ -144,7 +195,7 @@ check_http_dual() {
 check_internal() {
   local name="$1" service="$2" url="$3" max=30 delay=3
   for i in $(seq 1 $max); do
-    if docker compose -f "$COMPOSE_FILE" exec -T "$service" python - "$url" <<'PY' >/dev/null 2>&1; then
+    if "${COMPOSE_BASE[@]}" exec -T "$service" python - "$url" <<'PY' >/dev/null 2>&1; then
 import sys, urllib.request
 url = sys.argv[1]
 try:

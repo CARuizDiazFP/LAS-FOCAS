@@ -9,6 +9,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Dependencias nativas para contextily/pyproj (GDAL/PROJ)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gdal-bin \
+        libgdal-dev \
+        libproj-dev \
+        libgeos-dev \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 # Instalación de dependencias del bot
 COPY bot_telegram/requirements.txt /app/bot_requirements.txt
 RUN pip install --no-cache-dir -r /app/bot_requirements.txt

@@ -141,6 +141,7 @@ async def on_period(msg: Message, state: FSMContext) -> None:
             periodo_titulo,
             True,
             REPORT_SERVICE_CONFIG,
+            True,
         )
     except ValueError as exc:
         logger.warning("service=bot flow=repetitividad error=validation detail=%s", exc)
@@ -159,13 +160,13 @@ async def on_period(msg: Message, state: FSMContext) -> None:
         await msg.answer_document(FSInputFile(result.docx))
     if result.pdf:
         await msg.answer_document(FSInputFile(result.pdf))
-    if result.map_html:
+    for map_path in result.map_images:
         try:
-            await msg.answer_document(FSInputFile(result.map_html))
+            await msg.answer_document(FSInputFile(map_path))
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "service=bot flow=repetitividad map_send_failed path=%s error=%s",
-                result.map_html,
+                map_path,
                 exc,
             )
     if not result.docx and not result.pdf:
@@ -178,7 +179,7 @@ async def on_period(msg: Message, state: FSMContext) -> None:
         msg.from_user.id,
         original_name,
         periodo_titulo,
-        bool(result.map_html),
+        bool(result.map_images),
         result.total_filas,
         result.total_repetitivos,
     )

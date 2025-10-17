@@ -87,11 +87,12 @@ def test_generar_informe_periodo_fallback(monkeypatch: pytest.MonkeyPatch, tmp_p
         processor,
         "compute_repetitividad",
         lambda df: ResultadoRepetitividad(
-            items=[],
+            servicios=[],
             total_servicios=len(df),
             total_repetitivos=0,
             periodos=[],
-            geo_points=[],
+            with_geo=False,
+            source="excel",
         ),
     )
 

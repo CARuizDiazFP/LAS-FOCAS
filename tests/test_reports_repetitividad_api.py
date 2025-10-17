@@ -123,11 +123,21 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
         fake_convert_to_pdf,
     )
 
+    def fake_generate_service_maps(data, params, out_dir, with_geo):  # noqa: ANN001
+        path = Path(out_dir) / "repetitividad_202407_map.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        for servicio in data.servicios:
+            servicio.map_path = None
+            servicio.map_image_path = str(path)
+        return [path]
+
+    monkeypatch.setattr(api_reports.report, "generate_service_maps", fake_generate_service_maps)
+
     app = create_app()
     client = TestClient(app, raise_server_exceptions=False)
 
-    files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
-    data = {"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "true"}
+    files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")}
+    data = {"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "true", "with_geo": "true"}
 
     response = client.post("/reports/repetitividad", data=data, files=files)
 
@@ -139,15 +149,16 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
     assert response.headers["x-pdf-requested"] == "true"
     assert response.headers["x-pdf-generated"] == "true"
     assert response.headers.get("x-map-generated") == "true"
-    map_filename = response.headers.get("x-map-filename")
-    assert map_filename and map_filename.endswith(".html")
+    map_filenames = response.headers.get("x-map-filenames")
+    assert map_filenames and map_filenames.endswith(".png")
+    assert response.headers.get("x-maps-count") == "1"
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         filenames = {Path(name).name for name in archive.namelist()}
 
     assert "repetitividad_202407.docx" in filenames
     assert "repetitividad_202407.pdf" in filenames
-    assert map_filename in filenames
+    assert "repetitividad_202407_map.png" in filenames
 
 
 def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
@@ -167,31 +178,35 @@ def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
     api_reports.REPORTS_DIR = Path(tmp_path)
     api_reports.SOFFICE_BIN = None
 
-    def fake_geo_map(data, params, out_dir):  # noqa: ANN001
-        path = Path(out_dir) / "repetitividad_202407_map.html"
-        path.write_text("<html></html>")
-        return str(path)
+    def fake_generate_service_maps(data, params, out_dir, with_geo):  # noqa: ANN001
+        path = Path(out_dir) / "repetitividad_202407_map.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        for servicio in data.servicios:
+            servicio.map_path = None
+            servicio.map_image_path = str(path)
+        return [path]
 
-    monkeypatch.setattr(api_reports.report, "generate_geo_map", fake_geo_map)
+    monkeypatch.setattr(api_reports.report, "generate_service_maps", fake_generate_service_maps)
 
     app = create_app()
     client = TestClient(app, raise_server_exceptions=False)
 
     files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
-    data = {"periodo_mes": 7, "periodo_anio": 2024}
+    data = {"periodo_mes": 7, "periodo_anio": 2024, "with_geo": "true"}
 
     response = client.post("/reports/repetitividad", data=data, files=files)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
     assert response.headers.get("x-map-generated") == "true"
-    assert response.headers.get("x-map-filename") == "repetitividad_202407_map.html"
+    assert response.headers.get("x-map-filenames") == "repetitividad_202407_map.png"
+    assert response.headers.get("x-maps-count") == "1"
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         filenames = {Path(name).name for name in archive.namelist()}
 
     assert "repetitividad_202407.docx" in filenames
-    assert "repetitividad_202407_map.html" in filenames
+    assert "repetitividad_202407_map.png" in filenames
 
 
 def test_reporte_repetitividad_rechaza_extension_incorrecta(tmp_path, monkeypatch):

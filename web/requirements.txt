@@ -14,4 +14,10 @@ pydantic==2.9.2
 pandas==2.2.2
 openpyxl==3.1.2
 python-docx==0.8.11
+SQLAlchemy==2.0.36
+staticmap==0.5.5
+Pillow==10.4.0
+matplotlib==3.9.2
+contextily==1.5.2
+pyproj==3.6.1
 psycopg[binary]==3.2.1

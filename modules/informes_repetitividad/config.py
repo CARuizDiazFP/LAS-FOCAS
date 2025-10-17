@@ -104,6 +104,8 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "descripción solución": "Descripción Solución",
     "descripcion solucion": "Descripción Solución",
     "horas netas": "Horas Netas",
+    "horas netas problema reclamo": "Horas Netas Problema Reclamo",
+    "horas netas reclamo": "Horas Netas Reclamo",
 }
 
 # Columnas obligatorias para procesar el informe

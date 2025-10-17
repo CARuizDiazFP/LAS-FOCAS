@@ -141,6 +141,7 @@ class InformeRepetitividadArgs(BaseModel):
     mes: int
     anio: int
     export_pdf: bool = True
+    with_geo: bool = False
 
     @field_validator("mes")
     @classmethod
@@ -201,12 +202,16 @@ async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: To
         periodo_titulo,
         args.export_pdf,
         REPORT_CONFIG,
+        args.with_geo,
     )
+    map_images = [f"/reports/{Path(m).name}" for m in result.map_images]
     payload: Dict[str, Any] = {
         "status": "ok",
         "docx": f"/reports/{result.docx.name}" if result.docx else None,
         "pdf": f"/reports/{result.pdf.name}" if result.pdf else None,
-        "map": f"/reports/{result.map_html.name}" if result.map_html else None,
+        "maps": [],
+        "map_images": map_images,
+        "with_geo": args.with_geo,
     }
     message = (
         "Informe de Repetitividad generado. Revisá los enlaces en la sección de resultados."
