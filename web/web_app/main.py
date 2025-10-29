@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import secrets
 import time
@@ -155,6 +156,7 @@ os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
+from core.services import sla as sla_service  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
     ReportConfig,
     ReportResult,
@@ -334,6 +336,20 @@ async def panel(request: Request) -> HTMLResponse:
         },
     )
 
+
+@app.get("/sla", response_class=HTMLResponse)
+async def sla_page(request: Request) -> HTMLResponse:
+    if not get_current_user(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    return templates.TemplateResponse(
+        request,
+        "sla.html",
+        {
+            "username": get_current_user(request),
+            "csrf": request.session.get("csrf"),
+        },
+    )
+
 @app.get("/reports/index")
 async def reports_index_redirect() -> RedirectResponse:
     return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
@@ -363,6 +379,154 @@ async def reports_history(request: Request) -> HTMLResponse:
             "username": get_current_user(request),
             "files": files,
         },
+    )
+
+
+def _merge_excel_sources(sources: List[tuple[str, bytes]]) -> bytes:
+    if not sources:
+        raise ValueError("No hay archivos para combinar")
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:  # type: ignore[arg-type]
+        sheet_index = 1
+        for name, content in sources:
+            try:
+                workbook = pd.ExcelFile(io.BytesIO(content))
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"El archivo {name} no parece un Excel válido") from exc
+            for sheet in workbook.sheet_names:
+                dataframe = workbook.parse(sheet)
+                prefix = Path(name).stem[:18] or "Hoja"
+                sheet_label = f"{prefix}_{sheet_index}"[:31]
+                dataframe.to_excel(writer, sheet_name=sheet_label, index=False)
+                sheet_index += 1
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _report_href(path: Path) -> str:
+    """Construye la ruta HTTP para un archivo montado en /reports."""
+
+    archivo = Path(path)
+    candidatos = [Path(_mount_reports)]
+    try:
+        candidatos.append(Path(REPORT_SERVICE_CONFIG.reports_dir))
+    except Exception:  # noqa: BLE001 - fallback defensivo
+        pass
+    candidatos.append(REPORTS_DIR)
+
+    for base in candidatos:
+        try:
+            rel = archivo.relative_to(base)
+        except ValueError:
+            continue
+        return f"/reports/{rel.as_posix()}"
+    return f"/reports/{archivo.name}"
+
+
+@app.post("/reports/sla")
+async def generar_informe_sla_web(
+    request: Request,
+    periodo_mes: int = Form(..., ge=1, le=12),
+    periodo_anio: int = Form(..., ge=2000, le=2100),
+    pdf_enabled: bool = Form(False),
+    use_db: bool = Form(False),
+    csrf_token: str | None = Form(None),
+    files: List[UploadFile] | None = File(None),
+):
+    username, _ = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    if expected_csrf and os.getenv("TESTING", "false").lower() != "true":
+        if csrf_token != expected_csrf:
+            return JSONResponse({"ok": False, "error": "CSRF inválido"}, status_code=403)
+
+    archivos = [archivo for archivo in (files or []) if archivo and archivo.filename]
+    archivo_count = len(archivos)
+    source = "db" if use_db else "excel"
+
+    if use_db and archivos:
+        for archivo in archivos:
+            await archivo.close()
+        archivos = []
+
+    try:
+        if not use_db:
+            if not archivos:
+                return JSONResponse({"ok": False, "error": "Adjuntá al menos un archivo .xlsx"}, status_code=400)
+            if len(archivos) > 2:
+                return JSONResponse({"ok": False, "error": "Podés subir hasta dos archivos .xlsx"}, status_code=400)
+            payloads: List[tuple[str, bytes]] = []
+            for archivo in archivos:
+                nombre = Path(archivo.filename).name
+                if not nombre.lower().endswith(".xlsx"):
+                    return JSONResponse(
+                        {"ok": False, "error": f"{nombre} debe tener extensión .xlsx"},
+                        status_code=415,
+                    )
+                contenido = await archivo.read()
+                await archivo.close()
+                if not contenido:
+                    return JSONResponse({"ok": False, "error": f"{nombre} está vacío"}, status_code=400)
+                payloads.append((nombre, contenido))
+            if len(payloads) == 1:
+                excel_bytes = payloads[0][1]
+            else:
+                excel_bytes = _merge_excel_sources(payloads)
+            resultado = sla_service.generate_report_from_excel(
+                excel_bytes,
+                mes=periodo_mes,
+                anio=periodo_anio,
+                incluir_pdf=pdf_enabled,
+            )
+        else:
+            computation = sla_service.compute_from_db(mes=periodo_mes, anio=periodo_anio)
+            resultado = sla_service.generate_report_from_computation(
+                computation,
+                incluir_pdf=pdf_enabled,
+            )
+    except ValueError as exc:
+        logger.warning(
+            "action=sla_web_report stage=validation user=%s source=%s mes=%s anio=%s error=%s",
+            username,
+            source,
+            periodo_mes,
+            periodo_anio,
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=sla_web_report stage=unexpected user=%s source=%s mes=%s anio=%s error=%s",
+            username,
+            source,
+            periodo_mes,
+            periodo_anio,
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": "No se pudo generar el informe SLA"}, status_code=500)
+
+    report_paths = {
+        "docx": _report_href(resultado.docx),
+    }
+    if resultado.pdf:
+        report_paths["pdf"] = _report_href(resultado.pdf)
+
+    logger.info(
+        "action=sla_web_report stage=success user=%s source=%s mes=%s anio=%s pdf=%s archivos=%s",
+        username,
+        source,
+        periodo_mes,
+        periodo_anio,
+        bool(resultado.pdf),
+        archivo_count,
+    )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "Informe SLA generado correctamente",
+            "report_paths": report_paths,
+            "source": source,
+        }
     )
 
 
@@ -736,27 +900,111 @@ def _save_upload(file: UploadFile) -> Path:
 
 
 @app.post("/api/flows/sla")
-async def flow_sla(request: Request, file: UploadFile = File(...), mes: int = Form(...), anio: int = Form(...), csrf_token: str = Form(...)):
+async def flow_sla(
+    request: Request,
+    file: UploadFile | None = File(None),
+    mes: int = Form(..., ge=1, le=12),
+    anio: int = Form(..., ge=2000, le=2100),
+    include_pdf: bool = Form(False),
+    use_db: bool = Form(False),
+    eventos: str = Form(""),
+    conclusion: str = Form(""),
+    propuesta: str = Form(""),
+    csrf_token: str = Form(...),
+):
     # Autenticación + CSRF
     _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-    # Guardar archivo y ejecutar runner
+
+    use_db = use_db or not (file and file.filename)
+    source = "db" if use_db else "excel"
+
+    if use_db and file is not None:
+        await file.close()
+
     try:
-        from modules.informes_sla import runner as sla_runner  # type: ignore
+        if not use_db:
+            assert file is not None
+            if not file.filename or not file.filename.lower().endswith(".xlsx"):
+                return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
+            excel_bytes = await file.read()
+            await file.close()
+            if not excel_bytes:
+                return JSONResponse({"error": "El archivo está vacío"}, status_code=400)
+
+            resultado = sla_service.generate_report_from_excel(
+                excel_bytes,
+                mes=mes,
+                anio=anio,
+                eventos=eventos,
+                conclusion=conclusion,
+                propuesta=propuesta,
+                incluir_pdf=include_pdf,
+            )
+        else:
+            computation = sla_service.compute_from_db(mes=mes, anio=anio)
+            resultado = sla_service.generate_report_from_computation(
+                computation,
+                eventos=eventos,
+                conclusion=conclusion,
+                propuesta=propuesta,
+                incluir_pdf=include_pdf,
+            )
+    except ValueError as exc:
+        logger.warning(
+            "action=sla_flow stage=validation source=%s mes=%s anio=%s error=%s",
+            source,
+            mes,
+            anio,
+            exc,
+        )
+        return JSONResponse({"error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"Módulo SLA no disponible: {exc}"}, status_code=500)
-    try:
-        path = _save_upload(file)
-        result = sla_runner.run(str(path), mes, anio, os.getenv("SOFFICE_BIN"))
-        docx = result.get("docx")
-        pdf = result.get("pdf")
-        payload = {"status": "ok", "docx": f"/reports/{Path(docx).name}" if docx else None}
-        if pdf:
-            payload["pdf"] = f"/reports/{Path(pdf).name}"
-        return JSONResponse(payload)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"Fallo al procesar SLA: {exc}"}, status_code=500)
+        logger.exception(
+            "action=sla_flow stage=unexpected source=%s mes=%s anio=%s error=%s",
+            source,
+            mes,
+            anio,
+            exc,
+        )
+        return JSONResponse({"error": "No se pudo generar el informe SLA"}, status_code=500)
+
+    report_links = {"docx": _report_href(resultado.docx)}
+    if resultado.pdf:
+        report_links["pdf"] = _report_href(resultado.pdf)
+
+    resumen = resultado.computation.resumen
+    payload: Dict[str, Any] = {
+        "status": "ok",
+        "message": "Informe SLA generado",
+        "source": source,
+        "docx": report_links["docx"],
+        "pdf": report_links.get("pdf"),
+        "report_paths": report_links,
+        "metrics": {
+            "periodo": resumen.periodo,
+            "disponibilidad_pct": resumen.disponibilidad_pct,
+            "downtime_total_h": resumen.downtime_total_h,
+            "servicios": resumen.servicios,
+            "incidentes": resumen.incidentes,
+            "tickets": resumen.tickets,
+            "mttr_h": resumen.mttr_h,
+            "mtbf_h": resumen.mtbf_h,
+        },
+    }
+
+    logger.info(
+        "action=sla_flow stage=success source=%s mes=%s anio=%s servicios=%s downtime=%s pdf=%s",
+        source,
+        mes,
+        anio,
+        resumen.servicios,
+        resumen.downtime_total_h,
+        bool(resultado.pdf),
+    )
+
+    return JSONResponse(payload)
 
 
 @app.post("/api/flows/repetitividad")

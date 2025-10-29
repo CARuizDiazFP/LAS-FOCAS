@@ -4,11 +4,11 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2025-10-17
+Fecha de última actualización: 2025-10-29
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2025-10-15)
+## Estado actual (al 2025-10-24)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -23,6 +23,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
   - Ingesta híbrida: parser robusto (tolerante a acentos/mayúsculas; Unidecode con fallback a unicodedata), saneo de fechas y GEO, y upsert en PostgreSQL con `ON CONFLICT DO UPDATE` usando `COALESCE(excluded.col, table.col)` para no perder datos existentes.
   - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
+  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. La UI ahora cuenta con la vista dedicada `/sla`, minimalista (dropzone, mes/año, PDF opcional, usar DB) que orquesta `POST /reports/sla` y muestra enlaces de descarga claros sin objetos serializados.
   - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
@@ -48,8 +49,8 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - Políticas de retención/borrado para archivos de `/api/chat/uploads`.
 - Auditoría de descargas y permisos (evaluar endpoint autenticado o URLs firmadas).
 
-3) Flujos SLA y comparador desde UI
-- Botones del panel deben disparar endpoints backend que invocan `modules/informes_*` (con feedback de progreso y uso potencial de workers).
+3) Comparador FO desde UI
+- Completar flujo del comparador en el panel, aprovechando la nueva página SLA minimalista como referencia para feedback y validaciones.
 
 4) Conectividad Ollama y respuestas generativas
 - Unificar consumo de Ollama entre `web` y `nlp_intent` (service mesh o contenedor dedicado).
@@ -71,7 +72,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 
 - I2 (Chat avanzado + flujos)
   - [x] WebSocket/streaming en el panel y orquestador MCP con persistencia dedicada.
-  - [ ] Botones que invocan flujos (SLA/Repetitividad) vía endpoints backend (con feedback UI).
+  - [x] Botones que invocan flujos (SLA/Repetitividad) vía endpoints backend (con feedback UI).
   - [x] Tests de integración WS end-to-end (cliente WebSocket + herramientas reales).
   - [ ] Métricas y rate limiting específico del chat MCP.
 
@@ -111,10 +112,11 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Portada dinámica del informe de repetitividad y eliminación del flujo interactivo HTML (solo PNG estáticos por servicio en backend/UI) (2025-10-17).
 - [x] Utilitario `replace_text_everywhere` (shapes, encabezados, DrawingML) y mapas estáticos estilo Google sin ejes (nuevo `core/maps/static_map.py` + tablas DOCX sin lat/lon y pruebas específicas) (2025-10-17).
 - [x] Normalización de Horas Netas a minutos con `core/utils/timefmt`, tablas DOCX en `HH:MM` y nuevas pruebas (`test_timefmt.py`, `test_ingest_parser.py`, `test_repetitividad_docx_render.py`) (2025-10-17).
+- [x] Vista web `/sla` minimalista con dropzone (1-2 archivos), período, checkboxes y mensajes claros conectada a `POST /reports/sla` (2025-10-29).
 
 ### Pendiente (prioridad)
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
-- [ ] Disparadores de flujos desde la UI.
+- [x] Disparadores de flujos desde la UI.
 - [x] Documentación en `docs/web.md` de headers `X-PDF-*`/`X-Map-*`, generación de PNG estáticos y ejemplos de respuesta (2025-10-17).
 - [ ] Unificar versiones FastAPI/pydantic (root vs `office_service`).
 - [ ] Validaciones de tamaño y tipo en `/reports/repetitividad`.

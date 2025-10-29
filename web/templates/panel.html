@@ -23,7 +23,7 @@
     <nav class="actions" aria-label="Flujos">
       <button class="chip active" data-view="chat">Chat</button>
       <button class="chip" data-view="repetitividad">Repetitividad</button>
-      <button class="chip" data-view="sla">SLA</button>
+  <a class="chip" href="/sla">SLA</a>
       <button class="chip" data-view="fo">Comparador FO</button>
       <span class="spacer"></span>
       {% if username %}
@@ -92,30 +92,6 @@
             </div>
           </form>
           <div id="rep-result" class="result-box muted">Aún no se generó ningún informe.</div>
-        </article>
-      </section>
-
-      <!-- SLA -->
-      <section id="view-sla" class="view" aria-labelledby="SLA">
-        <article class="card">
-          <header class="card-header">
-            <h1>SLA</h1>
-            <span class="badge">Beta</span>
-          </header>
-          <form id="sla-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
-            <div class="dropzone" id="sla-drop">
-              <input type="file" id="sla-file" name="file" accept=".xlsx,.csv" />
-              <span>Arrastrá el archivo o hacé click</span>
-            </div>
-            <div class="form-grid">
-              <div class="field"><label>Mes</label><input type="number" id="sla-mes" min="1" max="12" required /></div>
-              <div class="field"><label>Año</label><input type="number" id="sla-anio" min="2000" max="2100" required /></div>
-            </div>
-            <div class="card-actions">
-              <button type="button" id="sla-run" class="btn">Ejecutar SLA</button>
-            </div>
-          </form>
-          <div id="sla-result" class="result-box muted">Esperando archivo.</div>
         </article>
       </section>
 

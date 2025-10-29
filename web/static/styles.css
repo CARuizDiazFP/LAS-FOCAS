@@ -88,6 +88,17 @@ body.dark { background: var(--bg); color: var(--text); margin: 0; font-family: s
 .result-box.error { border-color: rgba(248,113,113,0.6); color: #fecaca; background: rgba(248,113,113,0.14); }
 .warn { color: #f97316; }
 
+.sla-wrapper { max-width: 520px; margin: 48px auto; padding: 0 16px; }
+.sla-form { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; gap: 16px; box-shadow: 0 24px 40px rgba(0,0,0,0.12); }
+.sla-form h1 { margin: 0; font-size: 1.35rem; }
+.sla-results { display: flex; flex-wrap: wrap; gap: 12px; }
+.sla-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.sla-results .btn { text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.08em; }
+
+@media (max-width: 520px) {
+  .sla-form { padding: 20px; }
+}
+
 /* Tabs y secciones del panel */
 .views { display:block; }
 .view { display:none; }

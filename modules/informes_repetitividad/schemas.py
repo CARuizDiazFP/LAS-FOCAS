@@ -23,7 +23,7 @@ class ReclamoDetalle(BaseModel):
     fecha_inicio: Optional[str] = None
     fecha_cierre: Optional[str] = None
     tipo_solucion: Optional[str] = None
-    horas_netas: Optional[int] = None
+    horas_netas: Optional[float] = None
     descripcion_solucion: Optional[str] = None
     latitud: Optional[float] = None
     longitud: Optional[float] = None

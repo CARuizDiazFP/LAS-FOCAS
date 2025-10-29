@@ -7,7 +7,7 @@
 ## Resumen
 
 Servicio FastAPI que expone:
-- UI dark-style con Panel (Chat por defecto y tabs: Repetitividad, SLA, Comparador FO).
+- UI dark-style con Panel (Chat por defecto y tabs: Repetitividad, Comparador FO) y una vista independiente `/sla`.
 - Chat REST que integra `nlp_intent` para clasificación de intención y persistencia de conversación.
 
 ## Estructura y archivo principal
@@ -39,6 +39,7 @@ Centralizado vía `core.logging.setup_logging`.
 - POST /login → autentica con app.web_users (bcrypt). Rate limit: 5/min por sesión.
 - GET /logout → cierra sesión.
 - GET / → panel (requiere sesión). Inyecta API_BASE y CSRF en la plantilla.
+- GET /sla → vista minimalista con dropzone (1-2 `.xlsx`), selector de período y opciones básicas (PDF, usar DB).
 - GET /reports-history → listado HTML de archivos generados (enlaces directos a /reports/*).
 - GET /reports/index → redirección a /reports-history (compatibilidad).
 - POST /api/chat/message → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min por sesión. Devuelve `conversation_id` y `history` (≤6 últimos mensajes) cuando hay sesión.
@@ -46,9 +47,10 @@ Centralizado vía `core.logging.setup_logging`.
 - GET /api/chat/metrics → métricas simples en memoria (`intent_counts`). Uso interno/debug, se reinicia al reiniciar el contenedor.
 - POST /api/users/change-password → Cambiar contraseña del usuario autenticado. Form fields: current_password, new_password, csrf_token. Respuestas: {status:"ok"} o {error}.
 - POST /api/admin/users → Crear usuario (sólo admin). Form fields: username, password, role?, csrf_token. Respuestas: {status:"ok"} o {error}.
- - POST /api/flows/sla → Ejecuta flujo de SLA. FormData: file, mes, anio, csrf_token. Responde enlaces /reports/*.docx[.pdf].
+- POST /reports/sla → Endpoint del microservicio `web` empleado por la vista `/sla`. FormData: `periodo_mes`, `periodo_anio`, `pdf_enabled?`, `use_db?`, `files*` (0–2 `.xlsx`), `csrf_token`. Si `use_db=true` se ignoran adjuntos; si se adjuntan dos archivos se combinan en memoria antes de delegar en `core.services.sla`. Devuelve `{ ok, message, report_paths: {docx, pdf?}, source }`.
+- POST /api/flows/sla → Ejecuta flujo SLA completo reutilizando `core.services.sla`. FormData: `file?`, `mes`, `anio`, `usar_db?`, `incluir_pdf?`, `eventos?`, `conclusion?`, `propuesta?`, `csrf_token`. Cuando `usar_db=true` se ignora el archivo y se consulta la base. Responde JSON con enlaces `/reports/*.docx[.pdf]`, indicador `source` y métricas básicas del período.
 - POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad reutilizando los servicios compartidos (`generar_informe_desde_excel` / `generar_informe_desde_dataframe`). FormData: `file?`, `mes`, `anio`, `include_pdf?`, `csrf_token`, `with_geo?`, `use_db?`. Respuesta JSON con `docx`, `pdf?`, `map_images` (lista de PNGs), `assets` (alias de `map_images`), `map_image` (primer PNG), `stats`, `source` y flags `pdf_requested`/`with_geo`.
- - POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
+- POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
 
 Respuesta típica de /api/chat/message (nuevo pipeline):
 
@@ -112,7 +114,8 @@ Respuesta típica de `/api/flows/repetitividad` (modo Excel + GEO):
 - La plantilla `web/templates/panel.html` inyecta variables globales:
   - `window.API_BASE` (default `http://192.168.241.28:8080`).
   - `window.CSRF_TOKEN` (token actual de sesión).
-- El cliente JS (`/static/panel.js`) maneja tabs, dropzones y envíos a los endpoints del panel, incluido el Chat HTTP (`/api/chat/message`) y uploads (`/api/chat/uploads`).
+- El cliente principal (`/static/panel.js`) maneja los tabs activos (Chat, Repetitividad, Comparador FO) y coordina envíos al backend, incluido el Chat HTTP (`/api/chat/message`) y uploads (`/api/chat/uploads`).
+- La vista `/sla` usa `web/templates/sla.html` + `/static/sla.js`, con drag&drop (hasta 2 `.xlsx`), alternancia Excel/DB, validación de período y mensajes accesibles que muestran los enlaces devueltos por `POST /reports/sla`.
 
 ## Variables de entorno
 

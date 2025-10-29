@@ -1,0 +1,48 @@
+<!--
+# Nombre de archivo: sla.html
+# Ubicación de archivo: web/templates/sla.html
+# Descripción: Vista dedicada para la generación minimalista del informe SLA
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAS-FOCAS — Informe SLA</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ build_version }}" />
+  <script>
+    window.CSRF_TOKEN = "{{ csrf or '' }}";
+    window.BUILD_VERSION = "{{ build_version }}";
+  </script>
+  <script defer src="/static/sla.js?v={{ build_version }}"></script>
+</head>
+<body class="dark">
+  <main class="sla-wrapper">
+    <form id="sla-form" class="sla-form stack" enctype="multipart/form-data" novalidate>
+      <h1>Informe SLA</h1>
+      <div class="dropzone" id="sla-drop">
+        <input type="file" id="sla-files" name="files" accept=".xlsx" multiple hidden />
+        <span>Soltá hasta dos archivos .xlsx o hacé click para seleccionarlos</span>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label class="form-label" for="sla-mes">Mes</label>
+          <input type="number" id="sla-mes" name="periodo_mes" min="1" max="12" required />
+        </div>
+        <div class="field">
+          <label class="form-label" for="sla-anio">Año</label>
+          <input type="number" id="sla-anio" name="periodo_anio" min="2000" max="2100" required />
+        </div>
+      </div>
+      <label class="checkbox" for="sla-pdf"><input type="checkbox" id="sla-pdf" name="pdf_enabled" /> Generar PDF si LibreOffice está disponible</label>
+      <label class="checkbox" for="sla-use-db"><input type="checkbox" id="sla-use-db" name="use_db" /> Usar reclamos desde la base de datos (ignora archivo)</label>
+      <div id="sla-flash" class="result-box muted" role="status" aria-live="polite">Seleccioná archivos o activá “Usar base” y completá el período.</div>
+      <div id="sla-results" class="sla-results" aria-live="polite" aria-label="Descargas disponibles"></div>
+      <div class="sla-actions">
+        <button type="submit" class="btn primary">Generar informe</button>
+        <a class="btn subtle" href="/reports-history" target="_blank" rel="noopener">Carpeta de reportes</a>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

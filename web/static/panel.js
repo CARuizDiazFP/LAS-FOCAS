@@ -15,7 +15,10 @@
     chips.forEach(c => c.classList.toggle('active', c.dataset.view===name));
     views.forEach(v => v.classList.toggle('active', v.id === `view-${name}`));
   }
-  chips.forEach(ch => ch.addEventListener('click', () => showView(ch.dataset.view)));
+  chips.forEach(ch => {
+    if (ch.tagName === 'A') return;
+    ch.addEventListener('click', () => showView(ch.dataset.view));
+  });
   showView('chat'); // default
 
   // Dropzone helper (click-to-browse + drag/drop)
@@ -59,7 +62,6 @@
     });
   }
   wireDropzone('rep-drop', 'rep-file');
-  wireDropzone('sla-drop', 'sla-file');
   wireDropzone('fo-drop', 'fo-file');
 
   // Repetitividad
@@ -128,34 +130,6 @@
       } catch (e) {
         out.textContent = 'Error: ' + e.message; out.className='result-box error';
       }
-    });
-  }
-
-  // SLA (reutiliza endpoint existente)
-  const slaBtn = document.getElementById('sla-run');
-  if (slaBtn) {
-    slaBtn.addEventListener('click', async () => {
-      const out = document.getElementById('sla-result');
-      const file = document.getElementById('sla-file');
-      const mes = document.getElementById('sla-mes');
-      const anio = document.getElementById('sla-anio');
-      if (!file.files.length){ out.textContent='Seleccioná un archivo'; out.className='result-box error'; return; }
-      const data = new FormData();
-      data.append('file', file.files[0]);
-      data.append('mes', mes.value);
-      data.append('anio', anio.value);
-      if (window.CSRF_TOKEN) data.append('csrf_token', window.CSRF_TOKEN);
-      out.textContent='Procesando...'; out.className='result-box info';
-      try {
-        const res = await fetch('/api/flows/sla', { method:'POST', body:data, credentials:'include' });
-        const j = await res.json();
-        if (!res.ok) throw new Error(j.error || 'Error');
-        const links = [];
-        if (j.docx) links.push(`<a href="${j.docx}" target="_blank">DOCX</a>`);
-        if (j.pdf) links.push(`<a href="${j.pdf}" target="_blank">PDF</a>`);
-        out.innerHTML = 'Listo: ' + (links.join(' · ') || 'sin archivos');
-        out.className='result-box success';
-      } catch(e){ out.textContent='Error: ' + e.message; out.className='result-box error'; }
     });
   }
 

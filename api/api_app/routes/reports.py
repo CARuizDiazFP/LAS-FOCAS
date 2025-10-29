@@ -23,6 +23,7 @@ from modules.informes_repetitividad.service import (
 from modules.informes_repetitividad import report as report  # type: ignore
 from modules.informes_repetitividad import processor as processor  # type: ignore
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db
+from core.services import sla as sla_service
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -199,3 +200,114 @@ async def repetitividad_metrics(periodo_mes: int = Query(..., ge=1, le=12), peri
             "servicios_repetitivos": metrics.servicios_repetitivos,
         }
     )
+
+
+@router.post("/sla")
+async def generar_informe_sla(
+    file: UploadFile | None = File(None, description="Excel con reclamos y servicios"),
+    periodo_mes: int = Form(..., ge=1, le=12, description="Mes (1-12)"),
+    periodo_anio: int = Form(..., ge=2000, le=2100, description="Año"),
+    usar_db: bool = Form(False, description="Usar datos de la base cuando no hay archivo"),
+    incluir_pdf: bool = Form(False, description="Generar PDF si LibreOffice está disponible"),
+    eventos: str = Form("", description="Eventos destacados del período"),
+    conclusion: str = Form("", description="Conclusiones del período"),
+    propuesta: str = Form("", description="Propuestas de mejora"),
+) -> JSONResponse:
+    use_db = usar_db or not (file and file.filename)
+    source = "db" if use_db else "excel"
+
+    try:
+        if not use_db:
+            assert file is not None  # tranquiliza type-checkers
+            if not file.filename or not file.filename.lower().endswith(".xlsx"):
+                raise HTTPException(status_code=400, detail="El archivo debe tener extensión .xlsx")
+            excel_bytes = await file.read()
+            if not excel_bytes:
+                raise HTTPException(status_code=400, detail="El archivo está vacío")
+
+            resultado = sla_service.generate_report_from_excel(
+                excel_bytes,
+                mes=periodo_mes,
+                anio=periodo_anio,
+                eventos=eventos,
+                conclusion=conclusion,
+                propuesta=propuesta,
+                incluir_pdf=incluir_pdf,
+            )
+        else:
+            computation = sla_service.compute_from_db(mes=periodo_mes, anio=periodo_anio)
+
+            resultado = sla_service.generate_report_from_computation(
+                computation,
+                eventos=eventos,
+                conclusion=conclusion,
+                propuesta=propuesta,
+                incluir_pdf=incluir_pdf,
+            )
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=reports.sla stage=error mes=%s anio=%s usar_db=%s error=%s",
+            periodo_mes,
+            periodo_anio,
+            usar_db,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="No se pudo generar el informe SLA") from exc
+
+    payload = {
+        "docx": str(resultado.docx),
+        "pdf": str(resultado.pdf) if resultado.pdf else None,
+        "preview": resultado.preview,
+    }
+
+    headers = {
+        "X-Source": source,
+        "X-Docx-Path": payload["docx"],
+        "X-Servicios": str(len(resultado.computation.servicios)),
+        "X-Disponibilidad": f"{resultado.computation.resumen.disponibilidad_pct:.4f}",
+    }
+    if resultado.pdf:
+        headers["X-Pdf-Path"] = payload["pdf"] or ""
+
+    return JSONResponse(payload, headers=headers)
+
+
+@router.get("/sla/preview")
+async def obtener_preview_sla(
+    periodo_mes: int = Query(..., ge=1, le=12),
+    periodo_anio: int = Query(..., ge=2000, le=2100),
+    cliente: str | None = Query(None),
+    servicio: str | None = Query(None),
+    service_id: str | None = Query(None),
+    usar_db: bool = Query(True, description="Utilizar los datos de la base"),
+) -> JSONResponse:
+    if not usar_db:
+        raise HTTPException(
+            status_code=501,
+            detail="El preview basado en Excel se habilitará cuando exista un workspace persistente",
+        )
+
+    try:
+        computation = sla_service.compute_from_db(mes=periodo_mes, anio=periodo_anio)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=reports.sla.preview stage=db_error mes=%s anio=%s error=%s",
+            periodo_mes,
+            periodo_anio,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="No se pudo obtener el preview SLA") from exc
+
+    vista = sla_service.build_preview_from_computation(
+        computation,
+        cliente=cliente,
+        servicio=servicio,
+        service_id=service_id,
+    )
+
+    return JSONResponse(vista, headers={"X-Source": "db"})
