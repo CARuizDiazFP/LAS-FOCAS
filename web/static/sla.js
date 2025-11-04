@@ -142,9 +142,15 @@
       return;
     }
 
+    const endpoint = form.getAttribute('action') || '/api/reports/sla';
+    const mesValor = mes.value.trim();
+    const anioValor = anio.value.trim();
+
     const formData = new FormData();
-    formData.append('periodo_mes', mes.value.trim());
-    formData.append('periodo_anio', anio.value.trim());
+    formData.append('mes', mesValor);
+    formData.append('anio', anioValor);
+    formData.append('periodo_mes', mesValor);
+    formData.append('periodo_anio', anioValor);
     formData.append('pdf_enabled', pdf && pdf.checked ? 'true' : 'false');
     formData.append('use_db', useDbChecked ? 'true' : 'false');
     if (!useDbChecked){
@@ -157,7 +163,7 @@
     setFlash('Procesando informe...', 'info');
 
     try {
-      const response = await fetch('/reports/sla', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         body: formData,
         credentials: 'include',

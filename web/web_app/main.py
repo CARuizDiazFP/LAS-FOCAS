@@ -423,11 +423,13 @@ def _report_href(path: Path) -> str:
     return f"/reports/{archivo.name}"
 
 
-@app.post("/reports/sla")
+@app.post("/api/reports/sla")
 async def generar_informe_sla_web(
     request: Request,
-    periodo_mes: int = Form(..., ge=1, le=12),
-    periodo_anio: int = Form(..., ge=2000, le=2100),
+    mes: str | None = Form(None),
+    anio: str | None = Form(None),
+    periodo_mes: str | None = Form(None),
+    periodo_anio: str | None = Form(None),
     pdf_enabled: bool = Form(False),
     use_db: bool = Form(False),
     csrf_token: str | None = Form(None),
@@ -435,9 +437,34 @@ async def generar_informe_sla_web(
 ):
     username, _ = _require_auth(request)
     expected_csrf = request.session.get("csrf")
+
+    async def _close_uploads(upload_list: List[UploadFile] | None) -> None:
+        for upload in upload_list or []:
+            if not upload:
+                continue
+            try:
+                await upload.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("action=sla_web_report stage=close_upload warning", exc_info=True)
+
     if expected_csrf and os.getenv("TESTING", "false").lower() != "true":
         if csrf_token != expected_csrf:
+            await _close_uploads(files)
             return JSONResponse({"ok": False, "error": "CSRF inválido"}, status_code=403)
+
+    raw_mes = mes or periodo_mes
+    raw_anio = anio or periodo_anio
+
+    try:
+        mes_num = int(str(raw_mes).strip())
+        anio_num = int(str(raw_anio).strip())
+    except (TypeError, ValueError):
+        await _close_uploads(files)
+        return JSONResponse({"ok": False, "error": "Mes y año deben ser numéricos"}, status_code=422)
+
+    if not 1 <= mes_num <= 12 or not 2000 <= anio_num <= 2100:
+        await _close_uploads(files)
+        return JSONResponse({"ok": False, "error": "Mes y año fuera de rango permitido"}, status_code=422)
 
     archivos = [archivo for archivo in (files or []) if archivo and archivo.filename]
     archivo_count = len(archivos)
@@ -451,13 +478,16 @@ async def generar_informe_sla_web(
     try:
         if not use_db:
             if not archivos:
+                await _close_uploads(archivos)
                 return JSONResponse({"ok": False, "error": "Adjuntá al menos un archivo .xlsx"}, status_code=400)
             if len(archivos) > 2:
+                await _close_uploads(archivos)
                 return JSONResponse({"ok": False, "error": "Podés subir hasta dos archivos .xlsx"}, status_code=400)
             payloads: List[tuple[str, bytes]] = []
             for archivo in archivos:
                 nombre = Path(archivo.filename).name
                 if not nombre.lower().endswith(".xlsx"):
+                    await archivo.close()
                     return JSONResponse(
                         {"ok": False, "error": f"{nombre} debe tener extensión .xlsx"},
                         status_code=415,
@@ -473,12 +503,12 @@ async def generar_informe_sla_web(
                 excel_bytes = _merge_excel_sources(payloads)
             resultado = sla_service.generate_report_from_excel(
                 excel_bytes,
-                mes=periodo_mes,
-                anio=periodo_anio,
+                mes=mes_num,
+                anio=anio_num,
                 incluir_pdf=pdf_enabled,
             )
         else:
-            computation = sla_service.compute_from_db(mes=periodo_mes, anio=periodo_anio)
+            computation = sla_service.compute_from_db(mes=mes_num, anio=anio_num)
             resultado = sla_service.generate_report_from_computation(
                 computation,
                 incluir_pdf=pdf_enabled,
@@ -488,8 +518,8 @@ async def generar_informe_sla_web(
             "action=sla_web_report stage=validation user=%s source=%s mes=%s anio=%s error=%s",
             username,
             source,
-            periodo_mes,
-            periodo_anio,
+            mes_num,
+            anio_num,
             exc,
         )
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
@@ -498,8 +528,8 @@ async def generar_informe_sla_web(
             "action=sla_web_report stage=unexpected user=%s source=%s mes=%s anio=%s error=%s",
             username,
             source,
-            periodo_mes,
-            periodo_anio,
+            mes_num,
+            anio_num,
             exc,
         )
         return JSONResponse({"ok": False, "error": "No se pudo generar el informe SLA"}, status_code=500)
@@ -514,8 +544,8 @@ async def generar_informe_sla_web(
         "action=sla_web_report stage=success user=%s source=%s mes=%s anio=%s pdf=%s archivos=%s",
         username,
         source,
-        periodo_mes,
-        periodo_anio,
+        mes_num,
+        anio_num,
         bool(resultado.pdf),
         archivo_count,
     )

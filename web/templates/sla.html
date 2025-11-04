@@ -18,7 +18,7 @@
 </head>
 <body class="dark">
   <main class="sla-wrapper">
-    <form id="sla-form" class="sla-form stack" enctype="multipart/form-data" novalidate>
+    <form id="sla-form" class="sla-form stack" method="POST" action="/api/reports/sla" enctype="multipart/form-data" novalidate>
       <h1>Informe SLA</h1>
       <div class="dropzone" id="sla-drop">
         <input type="file" id="sla-files" name="files" accept=".xlsx" multiple hidden />
@@ -27,11 +27,11 @@
       <div class="form-grid">
         <div class="field">
           <label class="form-label" for="sla-mes">Mes</label>
-          <input type="number" id="sla-mes" name="periodo_mes" min="1" max="12" required />
+          <input type="number" id="sla-mes" name="mes" min="1" max="12" required />
         </div>
         <div class="field">
           <label class="form-label" for="sla-anio">Año</label>
-          <input type="number" id="sla-anio" name="periodo_anio" min="2000" max="2100" required />
+          <input type="number" id="sla-anio" name="anio" min="2000" max="2100" required />
         </div>
       </div>
       <label class="checkbox" for="sla-pdf"><input type="checkbox" id="sla-pdf" name="pdf_enabled" /> Generar PDF si LibreOffice está disponible</label>
