@@ -12,7 +12,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from time import time as now
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status
@@ -49,7 +49,8 @@ DB_PASS = os.getenv("POSTGRES_PASSWORD", "superseguro")
 DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logger = setup_logging("web", LOG_LEVEL, enable_file=None, filename="web.log")
+LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
+logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
 
 
 def _detect_build_version() -> str:
@@ -433,15 +434,13 @@ async def generar_informe_sla_web(
     pdf_enabled: bool = Form(False),
     use_db: bool = Form(False),
     csrf_token: str | None = Form(None),
-    files: List[UploadFile] | None = File(None),
+    files: List[UploadFile] = File(default=[]),
 ):
     username, _ = _require_auth(request)
     expected_csrf = request.session.get("csrf")
 
-    async def _close_uploads(upload_list: List[UploadFile] | None) -> None:
-        for upload in upload_list or []:
-            if not upload:
-                continue
+    async def _close_uploads(upload_list: List[UploadFile]) -> None:
+        for upload in upload_list:
             try:
                 await upload.close()
             except Exception:  # noqa: BLE001
@@ -466,7 +465,9 @@ async def generar_informe_sla_web(
         await _close_uploads(files)
         return JSONResponse({"ok": False, "error": "Mes y año fuera de rango permitido"}, status_code=422)
 
-    archivos = [archivo for archivo in (files or []) if archivo and archivo.filename]
+    # Normalizar files: filtrar solo los que tienen nombre de archivo
+    archivos = [archivo for archivo in files if archivo and archivo.filename]
+    
     archivo_count = len(archivos)
     source = "db" if use_db else "excel"
 
@@ -477,17 +478,24 @@ async def generar_informe_sla_web(
 
     try:
         if not use_db:
-            if not archivos:
+            logger.info("action=sla_web_report stage=start user=%s archivos=%s", username, archivo_count)
+            if len(archivos) != 2:
                 await _close_uploads(archivos)
-                return JSONResponse({"ok": False, "error": "Adjuntá al menos un archivo .xlsx"}, status_code=400)
-            if len(archivos) > 2:
-                await _close_uploads(archivos)
-                return JSONResponse({"ok": False, "error": "Podés subir hasta dos archivos .xlsx"}, status_code=400)
-            payloads: List[tuple[str, bytes]] = []
+                logger.warning("action=sla_web_report stage=validation error=archivos_incorrectos count=%s", len(archivos))
+                return JSONResponse(
+                    {"ok": False, "error": "Debés adjuntar dos archivos: servicios y reclamos"},
+                    status_code=400,
+                )
+
+            servicios_bytes: Optional[bytes] = None
+            reclamos_bytes: Optional[bytes] = None
+
             for archivo in archivos:
                 nombre = Path(archivo.filename).name
+                logger.debug("action=sla_web_report stage=processing file=%s", nombre)
                 if not nombre.lower().endswith(".xlsx"):
                     await archivo.close()
+                    logger.warning("action=sla_web_report stage=validation error=extension file=%s", nombre)
                     return JSONResponse(
                         {"ok": False, "error": f"{nombre} debe tener extensión .xlsx"},
                         status_code=415,
@@ -495,24 +503,48 @@ async def generar_informe_sla_web(
                 contenido = await archivo.read()
                 await archivo.close()
                 if not contenido:
+                    logger.warning("action=sla_web_report stage=validation error=empty file=%s", nombre)
                     return JSONResponse({"ok": False, "error": f"{nombre} está vacío"}, status_code=400)
-                payloads.append((nombre, contenido))
-            if len(payloads) == 1:
-                excel_bytes = payloads[0][1]
-            else:
-                excel_bytes = _merge_excel_sources(payloads)
-            resultado = sla_service.generate_report_from_excel(
-                excel_bytes,
+                try:
+                    tipo = sla_service.identify_excel_kind(contenido)
+                    logger.info("action=sla_web_report stage=identify file=%s tipo=%s", nombre, tipo)
+                except ValueError as exc:
+                    logger.warning("action=sla_web_report stage=identify error=%s file=%s", exc, nombre)
+                    return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+
+                if tipo == "servicios":
+                    if servicios_bytes is not None:
+                        return JSONResponse({"ok": False, "error": "Se recibió más de un Excel de servicios"}, status_code=422)
+                    servicios_bytes = contenido
+                else:
+                    if reclamos_bytes is not None:
+                        return JSONResponse({"ok": False, "error": "Se recibió más de un Excel de reclamos"}, status_code=422)
+                    reclamos_bytes = contenido
+
+            if servicios_bytes is None or reclamos_bytes is None:
+                logger.warning("action=sla_web_report stage=validation error=missing_files servicios=%s reclamos=%s", servicios_bytes is not None, reclamos_bytes is not None)
+                return JSONResponse({"ok": False, "error": "Adjuntá los archivos de servicios y reclamos"}, status_code=400)
+
+            logger.info("action=sla_web_report stage=generate_legacy mes=%s anio=%s pdf=%s", mes_num, anio_num, pdf_enabled)
+            documento = sla_service.generate_report_from_excel_pair(
+                servicios_bytes,
+                reclamos_bytes,
                 mes=mes_num,
                 anio=anio_num,
                 incluir_pdf=pdf_enabled,
             )
+            resultado_docx = documento.docx
+            resultado_pdf = documento.pdf
+            source = "excel-legacy"
+            logger.info("action=sla_web_report stage=legacy_ok docx=%s pdf=%s", resultado_docx, resultado_pdf)
         else:
             computation = sla_service.compute_from_db(mes=mes_num, anio=anio_num)
             resultado = sla_service.generate_report_from_computation(
                 computation,
                 incluir_pdf=pdf_enabled,
             )
+            resultado_docx = resultado.docx
+            resultado_pdf = resultado.pdf
     except ValueError as exc:
         logger.warning(
             "action=sla_web_report stage=validation user=%s source=%s mes=%s anio=%s error=%s",
@@ -532,13 +564,14 @@ async def generar_informe_sla_web(
             anio_num,
             exc,
         )
-        return JSONResponse({"ok": False, "error": "No se pudo generar el informe SLA"}, status_code=500)
+        detalle = str(exc) or exc.__class__.__name__
+        return JSONResponse({"ok": False, "error": f"No se pudo generar el informe SLA: {detalle}"}, status_code=500)
 
     report_paths = {
-        "docx": _report_href(resultado.docx),
+        "docx": _report_href(resultado_docx),
     }
-    if resultado.pdf:
-        report_paths["pdf"] = _report_href(resultado.pdf)
+    if resultado_pdf:
+        report_paths["pdf"] = _report_href(resultado_pdf)
 
     logger.info(
         "action=sla_web_report stage=success user=%s source=%s mes=%s anio=%s pdf=%s archivos=%s",
@@ -546,7 +579,7 @@ async def generar_informe_sla_web(
         source,
         mes_num,
         anio_num,
-        bool(resultado.pdf),
+        bool(resultado_pdf),
         archivo_count,
     )
 

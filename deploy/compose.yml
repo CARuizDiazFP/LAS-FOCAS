@@ -67,6 +67,7 @@ services:
       API_BASE: http://192.168.241.28:8080
       REPORTS_DIR: /app/web_app/data/reports
       UPLOADS_DIR: /app/web_app/data/uploads
+      TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
       # LOG_LEVEL se toma de .env; si se desea sobreescribir aquí se puede definir.

@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from core.sla import parser, engine, report, preview
+from core.sla import parser, engine, report, preview, legacy_report
+from core.sla.report import DocumentoSLA
 from core.sla.config import (
     DEFAULT_TZ,
     MERGE_GAP_MINUTES,
@@ -51,6 +52,39 @@ class SLAReportResult:
     pdf: Optional[Path]
     computation: engine.SLAComputation
     preview: dict
+
+
+def identify_excel_kind(content: bytes) -> str:
+    """Identifica si el Excel corresponde a servicios o a reclamos (modo legacy)."""
+
+    return legacy_report.identificar_excel(content)
+
+
+def generate_report_from_excel_pair(
+    servicios_excel: bytes,
+    reclamos_excel: bytes,
+    *,
+    mes: int,
+    anio: int,
+    eventos: str = "",
+    conclusion: str = "",
+    propuesta: str = "",
+    incluir_pdf: bool = False,
+    config: Optional[SLAReportConfig] = None,
+) -> DocumentoSLA:
+    cfg = config or SLAReportConfig.from_settings()
+    return legacy_report.generate_from_excel_pair(
+        servicios_excel,
+        reclamos_excel,
+        mes=mes,
+        anio=anio,
+        incluir_pdf=incluir_pdf,
+        reports_dir=cfg.reports_dir,
+        soffice_bin=cfg.soffice_bin,
+        eventos=eventos,
+        conclusion=conclusion,
+        propuesta=propuesta,
+    )
 
 
 def compute_from_excel(

@@ -47,7 +47,7 @@ Centralizado vía `core.logging.setup_logging`.
 - GET /api/chat/metrics → métricas simples en memoria (`intent_counts`). Uso interno/debug, se reinicia al reiniciar el contenedor.
 - POST /api/users/change-password → Cambiar contraseña del usuario autenticado. Form fields: current_password, new_password, csrf_token. Respuestas: {status:"ok"} o {error}.
 - POST /api/admin/users → Crear usuario (sólo admin). Form fields: username, password, role?, csrf_token. Respuestas: {status:"ok"} o {error}.
-- POST /api/reports/sla → Endpoint del microservicio `web` empleado por la vista `/sla`. FormData: `mes`, `anio`, `periodo_mes?`, `periodo_anio?`, `pdf_enabled?`, `use_db?`, `files*` (0–2 `.xlsx`), `csrf_token`. Si `use_db=true` se ignoran adjuntos; si se adjuntan dos archivos se combinan en memoria antes de delegar en `core.services.sla`. Devuelve `{ ok, message, report_paths: {docx, pdf?}, source }`.
+- POST /api/reports/sla → Endpoint del microservicio `web` empleado por la vista `/sla`. FormData: `mes`, `anio`, `periodo_mes?`, `periodo_anio?`, `pdf_enabled?`, `use_db?`, `files*` (exactamente dos `.xlsx` cuando `use_db=false`: “Servicios Fuera de SLA” y “Reclamos SLA”), `csrf_token`. El backend clasifica y valida cada Excel (columnas obligatorias), genera el DOCX siguiendo la plantilla legacy y devuelve errores legibles (`error: "Faltan columnas en Excel de servicios: SLA"`) si falta contenido. Respuesta `{ ok, message, report_paths: {docx, pdf?}, source }`.
 - POST /api/flows/sla → Ejecuta flujo SLA completo reutilizando `core.services.sla`. FormData: `file?`, `mes`, `anio`, `usar_db?`, `incluir_pdf?`, `eventos?`, `conclusion?`, `propuesta?`, `csrf_token`. Cuando `usar_db=true` se ignora el archivo y se consulta la base. Responde JSON con enlaces `/reports/*.docx[.pdf]`, indicador `source` y métricas básicas del período.
 - POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad reutilizando los servicios compartidos (`generar_informe_desde_excel` / `generar_informe_desde_dataframe`). FormData: `file?`, `mes`, `anio`, `include_pdf?`, `csrf_token`, `with_geo?`, `use_db?`. Respuesta JSON con `docx`, `pdf?`, `map_images` (lista de PNGs), `assets` (alias de `map_images`), `map_image` (primer PNG), `stats`, `source` y flags `pdf_requested`/`with_geo`.
 - POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
@@ -115,7 +115,7 @@ Respuesta típica de `/api/flows/repetitividad` (modo Excel + GEO):
   - `window.API_BASE` (default `http://192.168.241.28:8080`).
   - `window.CSRF_TOKEN` (token actual de sesión).
 - El cliente principal (`/static/panel.js`) maneja los tabs activos (Chat, Repetitividad, Comparador FO) y coordina envíos al backend, incluido el Chat HTTP (`/api/chat/message`) y uploads (`/api/chat/uploads`).
-- La vista `/sla` usa `web/templates/sla.html` + `/static/sla.js`, con drag&drop (hasta 2 `.xlsx`), alternancia Excel/DB, validación de período y mensajes accesibles que muestran los enlaces devueltos por `POST /api/reports/sla`.
+- La vista `/sla` usa `web/templates/sla.html` + `/static/sla.js`, con drag&drop, validación estricta de dos archivos (Servicios + Reclamos), alternancia Excel/DB, validación de período y mensajes accesibles que muestran los enlaces devueltos por `POST /api/reports/sla`.
 
 ## Variables de entorno
 

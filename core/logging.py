@@ -10,6 +10,8 @@ from pathlib import Path
 import os
 from typing import Optional
 
+_DEFAULT_LOGS_DIR = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
+
 _FORMAT = "%(asctime)s service=%(name)s level=%(levelname)s msg=%(message)s"
 
 
@@ -43,8 +45,7 @@ def setup_logging(
         enable_file = os.getenv("ENV", "development").lower() == "development"
     if enable_file:
         try:
-            # Usamos /app/Logs dentro del contenedor (WORKDIR /app); evitamos Path.cwd().parent que apuntaría a '/'
-            base_dir = Path(logs_dir) if logs_dir else (Path.cwd() / "Logs")
+            base_dir = Path(logs_dir) if logs_dir else _DEFAULT_LOGS_DIR
             base_dir.mkdir(parents=True, exist_ok=True)
             file_name = filename or f"{service}.log"
             fh = RotatingFileHandler(base_dir / file_name, maxBytes=max_bytes, backupCount=backup_count)

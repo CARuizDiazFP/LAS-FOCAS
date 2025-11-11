@@ -22,7 +22,7 @@
       <h1>Informe SLA</h1>
       <div class="dropzone" id="sla-drop">
         <input type="file" id="sla-files" name="files" accept=".xlsx" multiple hidden />
-        <span>Soltá hasta dos archivos .xlsx o hacé click para seleccionarlos</span>
+        <span>Adjuntá “Servicios Fuera de SLA.xlsx” y “Reclamos SLA.xlsx” (ambos obligatorios)</span>
       </div>
       <div class="form-grid">
         <div class="field">
@@ -36,7 +36,7 @@
       </div>
       <label class="checkbox" for="sla-pdf"><input type="checkbox" id="sla-pdf" name="pdf_enabled" /> Generar PDF si LibreOffice está disponible</label>
       <label class="checkbox" for="sla-use-db"><input type="checkbox" id="sla-use-db" name="use_db" /> Usar reclamos desde la base de datos (ignora archivo)</label>
-      <div id="sla-flash" class="result-box muted" role="status" aria-live="polite">Seleccioná archivos o activá “Usar base” y completá el período.</div>
+  <div id="sla-flash" class="result-box muted" role="status" aria-live="polite">Subí ambos archivos Excel o activá “Usar base” y completá el período.</div>
       <div id="sla-results" class="sla-results" aria-live="polite" aria-label="Descargas disponibles"></div>
       <div class="sla-actions">
         <button type="submit" class="btn primary">Generar informe</button>

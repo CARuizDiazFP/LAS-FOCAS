@@ -4,7 +4,7 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2025-10-29
+Fecha de última actualización: 2025-11-11
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
@@ -22,8 +22,10 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
   - Ingesta híbrida: parser robusto (tolerante a acentos/mayúsculas; Unidecode con fallback a unicodedata), saneo de fechas y GEO, y upsert en PostgreSQL con `ON CONFLICT DO UPDATE` usando `COALESCE(excluded.col, table.col)` para no perder datos existentes.
-  - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
-  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. La UI ahora cuenta con la vista dedicada `/sla`, minimalista (dropzone, mes/año, PDF opcional, usar DB) que orquesta `POST /api/reports/sla` y muestra enlaces de descarga claros sin objetos serializados.
+    - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
+  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias. **[2025-11-11]**: Flujo SLA completamente funcional desde la UI web tras corrección de manejo de múltiples archivos en FastAPI y configuración de `TEMPLATES_DIR` en Docker Compose.
+  - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
+  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados “Servicios Fuera de SLA” + “Reclamos SLA”, validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias.
   - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
@@ -112,9 +114,12 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Portada dinámica del informe de repetitividad y eliminación del flujo interactivo HTML (solo PNG estáticos por servicio en backend/UI) (2025-10-17).
 - [x] Utilitario `replace_text_everywhere` (shapes, encabezados, DrawingML) y mapas estáticos estilo Google sin ejes (nuevo `core/maps/static_map.py` + tablas DOCX sin lat/lon y pruebas específicas) (2025-10-17).
 - [x] Normalización de Horas Netas a minutos con `core/utils/timefmt`, tablas DOCX en `HH:MM` y nuevas pruebas (`test_timefmt.py`, `test_ingest_parser.py`, `test_repetitividad_docx_render.py`) (2025-10-17).
-- [x] Vista web `/sla` minimalista con dropzone (1-2 archivos), período, checkboxes y mensajes claros conectada a `POST /api/reports/sla` (2025-10-29).
+- [x] Vista web `/sla` minimalista con dropzone (dos archivos obligatorios), período, checkboxes y mensajes claros conectada a `POST /api/reports/sla` (2025-10-29, reforzado 2025-11-05 con validaciones legacy).
+- [x] Corrección completa del flujo SLA web: logging centralizado a `Logs/`, parámetro FastAPI corregido de `Union[List, UploadFile, None]` a `List[UploadFile]`, y variable `TEMPLATES_DIR=/app/Templates` agregada en `deploy/compose.yml` (2025-11-11).
+- [x] Generación exitosa de informes SLA desde la UI web con formato casi idéntico al legacy de Sandy (ajustes menores pendientes) (2025-11-11).
 
 ### Pendiente (prioridad)
+- [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [x] Disparadores de flujos desde la UI.
 - [x] Documentación en `docs/web.md` de headers `X-PDF-*`/`X-Map-*`, generación de PNG estáticos y ejemplos de respuesta (2025-10-17).
