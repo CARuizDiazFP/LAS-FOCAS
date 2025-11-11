@@ -117,6 +117,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Vista web `/sla` minimalista con dropzone (dos archivos obligatorios), período, checkboxes y mensajes claros conectada a `POST /api/reports/sla` (2025-10-29, reforzado 2025-11-05 con validaciones legacy).
 - [x] Corrección completa del flujo SLA web: logging centralizado a `Logs/`, parámetro FastAPI corregido de `Union[List, UploadFile, None]` a `List[UploadFile]`, y variable `TEMPLATES_DIR=/app/Templates` agregada en `deploy/compose.yml` (2025-11-11).
 - [x] Generación exitosa de informes SLA desde la UI web con formato casi idéntico al legacy de Sandy (ajustes menores pendientes) (2025-11-11).
+- [x] Tests de integración end-to-end para `/api/reports/sla`: 7 tests cubriendo flujos Excel/DB, validaciones y errores (`tests/test_web_sla_flow.py`) (2025-11-11).
 
 ### Pendiente (prioridad)
 - [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).
