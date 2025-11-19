@@ -16,15 +16,98 @@ from typing import Dict, Iterable, Optional, Sequence
 
 import pandas as pd
 from docx import Document
+from docx.oxml.shared import OxmlElement
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from core.docx_utils.text_replace import replace_title_everywhere
-from core.sla.config import REPORTS_DIR, SLA_TEMPLATE_PATH, SOFFICE_BIN
+from core.docx_utils.text_replace import replace_text_everywhere
+from core.sla.config import MESES_ES, REPORTS_DIR, SLA_TEMPLATE_PATH, SOFFICE_BIN
 from core.sla.report import DocumentoSLA
 from modules.common.libreoffice_export import convert_to_pdf
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_cell_borders(source_cell, target_cell) -> None:
+    """Copia los bordes de una celda a otra preservando el formato."""
+    try:
+        source_tc = source_cell._element
+        target_tc = target_cell._element
+        
+        # Obtener tcPr (table cell properties) de la celda origen
+        source_tcPr = source_tc.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tcPr')
+        if source_tcPr is None:
+            return
+        
+        # Buscar tcBorders en la celda origen
+        source_borders = source_tcPr.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tcBorders')
+        if source_borders is None:
+            return
+        
+        # Obtener o crear tcPr en la celda destino
+        target_tcPr = target_tc.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tcPr')
+        if target_tcPr is None:
+            target_tcPr = OxmlElement('w:tcPr')
+            target_tc.insert(0, target_tcPr)
+        
+        # Eliminar bordes existentes en destino
+        existing_borders = target_tcPr.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tcBorders')
+        if existing_borders is not None:
+            target_tcPr.remove(existing_borders)
+        
+        # Copiar los bordes
+        target_tcPr.append(copy.deepcopy(source_borders))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("action=copy_cell_borders error=%s", exc)
+
+
+def _set_cell_text(cell, new_text: str) -> None:
+    """Reemplaza el texto de una celda preservando su formato original."""
+    if not cell.paragraphs:
+        cell.text = new_text
+        return
+    
+    # Preservar formato del primer párrafo y su primer run
+    paragraph = cell.paragraphs[0]
+    if not paragraph.runs:
+        cell.text = new_text
+        return
+    
+    # Mantener formato del primer run
+    first_run = paragraph.runs[0]
+    run_format = {
+        'bold': first_run.bold,
+        'italic': first_run.italic,
+        'underline': first_run.underline,
+        'font_name': first_run.font.name if first_run.font else None,
+        'font_size': first_run.font.size if first_run.font else None,
+        'font_color': first_run.font.color.rgb if first_run.font and first_run.font.color else None,
+    }
+    
+    # Limpiar todos los runs del párrafo
+    for run in paragraph.runs:
+        run.text = ""
+    
+    # Limpiar párrafos adicionales
+    for i in range(len(cell.paragraphs) - 1, 0, -1):
+        p = cell.paragraphs[i]
+        p._element.getparent().remove(p._element)
+    
+    # Crear nuevo run con el texto y formato preservado
+    run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+    run.text = new_text
+    if run_format['bold'] is not None:
+        run.bold = run_format['bold']
+    if run_format['italic'] is not None:
+        run.italic = run_format['italic']
+    if run_format['underline'] is not None:
+        run.underline = run_format['underline']
+    if run.font and run_format['font_name']:
+        run.font.name = run_format['font_name']
+    if run.font and run_format['font_size']:
+        run.font.size = run_format['font_size']
+    if run.font and run_format['font_color']:
+        run.font.color.rgb = run_format['font_color']
 
 
 def _normalize(text: str) -> str:
@@ -194,7 +277,17 @@ def _render_document(
         raise FileNotFoundError(f"Plantilla SLA no encontrada: {SLA_TEMPLATE_PATH}")
 
     doc = Document(str(SLA_TEMPLATE_PATH))
-    replace_title_everywhere(doc, f"Informe SLA — {mes:02d}/{anio}")
+    
+    # Actualizar el texto flotante con el formato: "Informe SLA Octubre 2025"
+    mes_nombre = MESES_ES[mes - 1].capitalize()
+    
+    # Reemplazar los placeholders del template:
+    # - "XXXXX" -> nombre del mes (ej: "Octubre")
+    # - " 2023" -> " " + año (ej: " 2025"), el espacio inicial se preserva
+    replace_text_everywhere(doc, {
+        "XXXXX": mes_nombre,
+        " 2023": f" {anio}",  # Preservar el espacio antes del año
+    })
 
     if len(doc.tables) < 3:
         raise ValueError("La plantilla SLA debe contener al menos tres tablas base")
@@ -220,7 +313,7 @@ def _render_document(
     cuerpo.remove(doc.tables[2]._tbl)
     cuerpo.remove(doc.tables[1]._tbl)
 
-    _rellenar_tabla_principal(tabla_principal, servicios)
+    _rellenar_tabla_principal(tabla_principal, servicios, reclamos)
 
     num_servicios = len(servicios.dataframe)
     for idx, srv_row in servicios.dataframe.iterrows():
@@ -263,29 +356,53 @@ def _render_document(
     return DocumentoSLA(docx=docx_path, pdf=pdf_path)
 
 
-def _rellenar_tabla_principal(tabla: Table, servicios: _ExcelDataset) -> None:
+def _rellenar_tabla_principal(tabla: Table, servicios: _ExcelDataset, reclamos: _ExcelDataset) -> None:
     tipo_col = servicios.columns["tipo_servicio"]
     linea_col = servicios.columns["numero_linea"]
     cliente_col = servicios.columns["nombre_cliente"]
-    horas_col = servicios.columns["horas_total"]
     sla_col = servicios.columns["sla"]
+    
+    recl_linea_col = reclamos.columns["numero_linea"]
+    recl_horas = reclamos.columns["horas"]
 
     while len(tabla.rows) > 1:
         tabla._tbl.remove(tabla.rows[1]._tr)
 
+    # Guardar referencia a la fila template con sus bordes
+    fila_template = tabla.rows[0]
+
     for _, fila in servicios.dataframe.iterrows():
-        nueva = copy.deepcopy(tabla.rows[0]._tr)
+        nueva = copy.deepcopy(fila_template._tr)
         tabla._tbl.append(nueva)
         celdas = tabla.rows[-1].cells
-        celdas[0].text = str(fila.get(tipo_col, ""))
-        celdas[1].text = str(fila.get(linea_col, ""))
-        celdas[2].text = str(fila.get(cliente_col, ""))
-        celdas[3].text = str(fila.get(horas_col, ""))
+        
+        # Copiar bordes de la fila template a las nuevas celdas
+        for i, celda in enumerate(celdas):
+            if i < len(fila_template.cells):
+                _copy_cell_borders(fila_template.cells[i], celda)
+        
+        _set_cell_text(celdas[0], str(fila.get(tipo_col, "")))
+        _set_cell_text(celdas[1], str(fila.get(linea_col, "")))
+        _set_cell_text(celdas[2], str(fila.get(cliente_col, "")))
+        
+        # Calcular horas totales sumando los reclamos de este servicio
+        service_id = fila.get(linea_col)
+        subset = reclamos.dataframe[reclamos.dataframe[recl_linea_col] == service_id]
+        total_horas = 0.0
+        for _, reclamo in subset.iterrows():
+            horas_val = reclamo.get(recl_horas)
+            if not pd.isna(horas_val):
+                total_horas += float(horas_val)
+        
+        # Formatear como HHH:MM:SS
+        horas_formateadas = _formatear_horas_totales(total_horas)
+        _set_cell_text(celdas[3], horas_formateadas)
+        
         sla_val = fila.get(sla_col)
         if pd.isna(sla_val):
-            celdas[4].text = ""
+            _set_cell_text(celdas[4], "")
         else:
-            celdas[4].text = f"{float(sla_val) * 100:.2f}%"
+            _set_cell_text(celdas[4], f"{float(sla_val) * 100:.2f}%")
 
 
 def _completar_tabla_servicio(
@@ -351,6 +468,9 @@ def _completar_tabla_detalle(
     servicios: _ExcelDataset,
     reclamos: _ExcelDataset,
 ) -> None:
+    # Guardar fila template antes de eliminar filas
+    fila_template_cells = [cell for cell in tabla.rows[0].cells] if len(tabla.rows) > 0 else []
+    
     while len(tabla.rows) > 1:
         tabla._tbl.remove(tabla.rows[1]._tr)
 
@@ -368,24 +488,36 @@ def _completar_tabla_detalle(
     total_horas = 0.0
     for _, reclamo in subset.iterrows():
         fila = tabla.add_row().cells
-        fila[0].text = str(reclamo.get(recl_linea_col, ""))
-        fila[1].text = str(reclamo.get(recl_ticket, ""))
+        
+        # Copiar bordes de la fila template
+        for i, celda in enumerate(fila):
+            if i < len(fila_template_cells):
+                _copy_cell_borders(fila_template_cells[i], celda)
+        
+        _set_cell_text(fila[0], str(reclamo.get(recl_linea_col, "")))
+        _set_cell_text(fila[1], str(reclamo.get(recl_ticket, "")))
         horas_val = reclamo.get(recl_horas)
         if pd.isna(horas_val):
-            fila[2].text = ""
+            _set_cell_text(fila[2], "")
         else:
-            fila[2].text = f"{horas_val:.2f}"
+            _set_cell_text(fila[2], f"{horas_val:.2f}")
             total_horas += float(horas_val)
-        fila[3].text = str(reclamo.get(recl_tipo, ""))
+        _set_cell_text(fila[3], str(reclamo.get(recl_tipo, "")))
         fecha = reclamo.get(recl_fecha)
-        fila[4].text = _formatear_fecha(fecha)
+        _set_cell_text(fila[4], _formatear_fecha(fecha))
         if recl_desc and len(fila) > 5:
-            fila[5].text = str(reclamo.get(recl_desc, ""))
+            _set_cell_text(fila[5], str(reclamo.get(recl_desc, "")))
 
     if total_horas:
         totales = tabla.add_row().cells
-        totales[0].text = "Total"
-        totales[2].text = f"{total_horas:.2f}"
+        
+        # Copiar bordes de la fila template a la fila de totales
+        for i, celda in enumerate(totales):
+            if i < len(fila_template_cells):
+                _copy_cell_borders(fila_template_cells[i], celda)
+        
+        _set_cell_text(totales[0], "Total")
+        _set_cell_text(totales[2], f"{total_horas:.2f}")
 
 
 def _tickets_por_servicio(
@@ -460,6 +592,14 @@ def _to_timedelta(valor) -> pd.Timedelta:
 def _fmt_td(td: pd.Timedelta) -> str:
     total = int(td.total_seconds())
     horas, resto = divmod(total, 3600)
+    minutos, segundos = divmod(resto, 60)
+    return f"{horas:03d}:{minutos:02d}:{segundos:02d}"
+
+
+def _formatear_horas_totales(horas_decimal: float) -> str:
+    """Convierte horas decimales a formato HHH:MM:SS."""
+    total_segundos = int(horas_decimal * 3600)
+    horas, resto = divmod(total_segundos, 3600)
     minutos, segundos = divmod(resto, 60)
     return f"{horas:03d}:{minutos:02d}:{segundos:02d}"
 

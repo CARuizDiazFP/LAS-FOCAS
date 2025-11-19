@@ -25,16 +25,18 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
     - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
   - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias. **[2025-11-11]**: Flujo SLA completamente funcional desde la UI web tras corrección de manejo de múltiples archivos en FastAPI y configuración de `TEMPLATES_DIR` en Docker Compose.
   - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
-  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados “Servicios Fuera de SLA” + “Reclamos SLA”, validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias.
+  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias.
   - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
+  - **Alarmas Ciena** (2025-11-17): Nueva herramienta en el panel web para procesar CSV de alarmas exportados desde gestores de red Ciena (SiteManager y MCP). Detecta automáticamente el formato, limpia datos (padding, placeholders), soporta campos multilínea y genera Excel limpio. Endpoint `POST /api/tools/alarmas-ciena` con validaciones completas, 26 tests cubriendo todos los casos y documentación exhaustiva en `docs/informes/alarmas_ciena.md`.
+    - **Actualización PM**: se corrigió el fixture MCP multilínea, se añadió un fixture `web_client_logged` para pruebas autenticadas y `_require_auth` ahora responde HTTP 401, dejando la suite `tests/test_alarmas_ciena.py` totalmente en verde.
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
   - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/web_app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
-  - Suite actual: PASS (62 pruebas), con 0 fallas y 2 opcionales de DB habilitables según entorno. Nuevas suites unitarias cubren `core/utils/timefmt`, parser de reclamos y render del informe.
+  - Suite actual: PASS (88 pruebas con Alarmas Ciena), con 0 fallas y 2 opcionales de DB habilitables según entorno. Nuevas suites unitarias cubren `core/utils/timefmt`, parser de reclamos, render del informe y procesamiento de alarmas Ciena.
   - Se corrigieron rutas y contratos en la API; mapa ahora tiene fallback HTML si falta `folium` en entorno de test/minimal.
-  - Documentación actualizada: `README.md` (Prueba rápida y puertos), `docs/api.md` (salud/versión, ingest, modo DB y headers), y PR del día.
+  - Documentación actualizada: `README.md` (Prueba rápida y puertos), `docs/api.md` (salud/versión, ingest, modo DB y headers), `docs/informes/alarmas_ciena.md` (formatos Ciena, API, troubleshooting) y PR del día.
 - Documentación
   - `README.md`, `docs/` con módulos bot/API/NLP/Informes.
 - Seguridad y lineamientos
@@ -42,7 +44,13 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 
 ## Próximas implementaciones (prioridad)
 
-1) MCP completo + herramientas
+1) Alarmas Ciena - Validación en producción
+- Validar con archivos CSV reales de Ciena de operaciones
+- Ajustar detección si aparecen variantes de formato
+- Evaluar necesidad de aumentar límite de 10MB según uso real
+- Considerar integración con MCP (herramienta conversacional)
+
+2) MCP completo + herramientas
 - Implementar lógica real de `CompararTrazasFO` y `RegistrarEnNotion`.
 - Completar integración de `ConvertirDocAPdf` con `office_service` (manejo de errores y colas si es necesario).
 - Definir taxonomía de mensajes/errores estandarizados para herramientas.
@@ -118,9 +126,11 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Corrección completa del flujo SLA web: logging centralizado a `Logs/`, parámetro FastAPI corregido de `Union[List, UploadFile, None]` a `List[UploadFile]`, y variable `TEMPLATES_DIR=/app/Templates` agregada en `deploy/compose.yml` (2025-11-11).
 - [x] Generación exitosa de informes SLA desde la UI web con formato casi idéntico al legacy de Sandy (ajustes menores pendientes) (2025-11-11).
 - [x] Tests de integración end-to-end para `/api/reports/sla`: 7 tests cubriendo flujos Excel/DB, validaciones y errores (`tests/test_web_sla_flow.py`) (2025-11-11).
+- [x] Implementación completa de **Alarmas Ciena**: nueva herramienta en el panel web para convertir CSV de alarmas (SiteManager y MCP) a Excel con detección automática de formato, validaciones, tests completos (26 tests) y documentación exhaustiva (2025-11-17).
 
 ### Pendiente (prioridad)
 - [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).
+- [ ] Validación manual exhaustiva de Alarmas Ciena con archivos reales de producción (2025-11-17).
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [x] Disparadores de flujos desde la UI.
 - [x] Documentación en `docs/web.md` de headers `X-PDF-*`/`X-Map-*`, generación de PNG estáticos y ejemplos de respuesta (2025-10-17).

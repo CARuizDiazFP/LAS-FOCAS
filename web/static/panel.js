@@ -63,6 +63,7 @@
   }
   wireDropzone('rep-drop', 'rep-file');
   wireDropzone('fo-drop', 'fo-file');
+  wireDropzone('ciena-drop', 'ciena-file');
 
   // Repetitividad
   const repBtn = document.getElementById('rep-run');
@@ -232,6 +233,74 @@
         attachInput.files = e.dataTransfer.files; // dispara change y sube
         const event = new Event('change');
         attachInput.dispatchEvent(event);
+      }
+    });
+  }
+
+  // Alarmas Ciena
+  const cienaBtn = document.getElementById('ciena-run');
+  if (cienaBtn) {
+    cienaBtn.addEventListener('click', async () => {
+      const out = document.getElementById('ciena-result');
+      const fileInput = document.getElementById('ciena-file');
+      
+      if (!fileInput.files.length) {
+        out.textContent = 'Seleccioná un archivo CSV';
+        out.className = 'result-box error';
+        return;
+      }
+      
+      const data = new FormData();
+      data.append('file', fileInput.files[0]);
+      if (window.CSRF_TOKEN) {
+        data.append('csrf_token', window.CSRF_TOKEN);
+      }
+      
+      out.textContent = 'Procesando...';
+      out.className = 'result-box info';
+      
+      try {
+        const res = await fetch('/api/tools/alarmas-ciena', {
+          method: 'POST',
+          body: data,
+          credentials: 'include'
+        });
+        
+        if (!res.ok) {
+          // Intentar obtener mensaje de error del JSON
+          let errMsg = 'Error al procesar el archivo';
+          try {
+            const errData = await res.json();
+            if (errData.error) errMsg = errData.error;
+            else if (errData.detail) errMsg = errData.detail;
+          } catch {}
+          throw new Error(errMsg);
+        }
+        
+        // Obtener información del archivo desde los headers
+        const formato = res.headers.get('X-Formato-Detectado') || 'desconocido';
+        const filas = res.headers.get('X-Filas-Procesadas') || '?';
+        const columnas = res.headers.get('X-Columnas') || '?';
+        
+        // Obtener el blob Excel de la respuesta
+        const blob = await res.blob();
+        
+        // Crear un link temporal para descargarlo
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileInput.files[0].name.replace(/\.csv$/i, '') + '_procesado.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        out.textContent = `✔ Archivo convertido (formato: ${formato}, ${filas} filas, ${columnas} columnas). La descarga debería haber comenzado.`;
+        out.className = 'result-box success';
+        
+      } catch (e) {
+        out.textContent = 'Error: ' + e.message;
+        out.className = 'result-box error';
       }
     });
   }

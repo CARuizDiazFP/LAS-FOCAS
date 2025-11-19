@@ -15,7 +15,7 @@ from time import time as now
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
-from fastapi import FastAPI, Form, Request, status
+from fastapi import FastAPI, Form, Request, status, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -597,7 +597,7 @@ def _require_auth(request: Request) -> tuple[str, str]:
     username = request.session.get("username")
     role = request.session.get("role", "user")
     if not username:
-        raise RuntimeError("Unauthorized")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No autenticado")
     return username, role
 
 
@@ -1209,3 +1209,150 @@ async def flow_repetitividad(
 async def flow_comparador_fo(request: Request):
     _require_auth(request)
     return JSONResponse({"error": "Comparador FO no implementado aún"}, status_code=501)
+
+
+@app.post("/api/tools/alarmas-ciena")
+async def tool_alarmas_ciena(
+    request: Request,
+    file: UploadFile = File(...),
+    csrf_token: str = Form(...),
+):
+    """
+    Endpoint para procesar archivos CSV de alarmas Ciena (SiteManager o MCP).
+    
+    Detecta automáticamente el formato, parsea el CSV y retorna un archivo Excel.
+    
+    Args:
+        request: Request de FastAPI
+        file: Archivo CSV subido
+        csrf_token: Token CSRF para validación
+        
+    Returns:
+        Response con el archivo Excel para descarga
+    """
+    from core.parsers.alarmas_ciena import parsear_alarmas_ciena, dataframe_to_excel, FormatoAlarma
+    
+    # Autenticación y CSRF
+    _require_auth(request)
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    
+    # Validar nombre y extensión
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        logger.warning(
+            "action=alarmas_ciena_upload_invalid user=%s filename=%s",
+            get_current_user(request),
+            file.filename
+        )
+        return JSONResponse(
+            {"error": "Por favor subí un archivo .CSV válido"},
+            status_code=400
+        )
+    
+    # Leer contenido
+    try:
+        content = await file.read()
+        await file.close()
+    except Exception as e:
+        logger.error("action=alarmas_ciena_read_error error=%s", e, exc_info=True)
+        return JSONResponse(
+            {"error": "Error al leer el archivo"},
+            status_code=500
+        )
+    
+    if not content:
+        return JSONResponse(
+            {"error": "El archivo está vacío"},
+            status_code=400
+        )
+    
+    # Validar tamaño (límite de 10MB para CSV)
+    MAX_CSV_SIZE = 10 * 1024 * 1024  # 10MB
+    if len(content) > MAX_CSV_SIZE:
+        logger.warning(
+            "action=alarmas_ciena_size_exceeded user=%s size=%d",
+            get_current_user(request),
+            len(content)
+        )
+        return JSONResponse(
+            {"error": "El archivo supera el límite de 10MB"},
+            status_code=413
+        )
+    
+    # Procesar archivo
+    username = get_current_user(request)
+    start_time = time.time()
+    
+    try:
+        logger.info(
+            "action=alarmas_ciena_start user=%s filename=%s size=%d",
+            username,
+            file.filename,
+            len(content)
+        )
+        
+        # Detectar formato y parsear
+        df, formato = parsear_alarmas_ciena(content)
+        
+        logger.info(
+            "action=alarmas_ciena_parsed user=%s formato=%s rows=%d cols=%d",
+            username,
+            formato.value,
+            len(df),
+            len(df.columns)
+        )
+        
+        # Generar Excel
+        excel_content = dataframe_to_excel(df)
+        
+        elapsed = time.time() - start_time
+        logger.info(
+            "action=alarmas_ciena_complete user=%s formato=%s rows=%d size_out=%d elapsed=%.2fs",
+            username,
+            formato.value,
+            len(df),
+            len(excel_content),
+            elapsed
+        )
+        
+        # Preparar nombre de salida
+        base_name = file.filename.rsplit('.', 1)[0]
+        output_filename = f"{base_name}_procesado.xlsx"
+        
+        # Retornar Excel para descarga
+        from fastapi.responses import Response
+        return Response(
+            content=excel_content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                'Content-Disposition': f'attachment; filename="{output_filename}"',
+                'X-Formato-Detectado': formato.value,
+                'X-Filas-Procesadas': str(len(df)),
+                'X-Columnas': str(len(df.columns)),
+            }
+        )
+        
+    except ValueError as e:
+        # Errores de validación o formato no soportado
+        logger.warning(
+            "action=alarmas_ciena_validation_error user=%s error=%s",
+            username,
+            str(e)
+        )
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=415  # Unsupported Media Type
+        )
+        
+    except Exception as e:
+        # Errores inesperados
+        logger.error(
+            "action=alarmas_ciena_error user=%s error=%s",
+            username,
+            str(e),
+            exc_info=True
+        )
+        return JSONResponse(
+            {"error": f"Error al procesar el archivo: {str(e)}"},
+            status_code=500
+        )

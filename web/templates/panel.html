@@ -25,6 +25,7 @@
       <button class="chip" data-view="repetitividad">Repetitividad</button>
   <a class="chip" href="/sla">SLA</a>
       <button class="chip" data-view="fo">Comparador FO</button>
+      <button class="chip" data-view="ciena">Alarmas Ciena</button>
       <span class="spacer"></span>
       {% if username %}
       <span class="muted">{{ username }}</span>
@@ -112,6 +113,27 @@
             </div>
           </form>
           <div id="fo-result" class="result-box muted">No implementado aún.</div>
+        </article>
+      </section>
+
+      <!-- Alarmas Ciena -->
+      <section id="view-ciena" class="view" aria-labelledby="Alarmas Ciena">
+        <article class="card">
+          <header class="card-header">
+            <h1>Alarmas Ciena</h1>
+            <span class="badge">Nuevo</span>
+          </header>
+          <p class="muted">Seleccioná un CSV exportado desde SiteManager o MCP para convertirlo a Excel.</p>
+          <form id="ciena-form" class="stack" enctype="multipart/form-data" onsubmit="return false;">
+            <div class="dropzone" id="ciena-drop">
+              <input type="file" id="ciena-file" name="file" accept=".csv" />
+              <span>Arrastrá el .csv acá o hacé click</span>
+            </div>
+            <div class="card-actions">
+              <button type="button" id="ciena-run" class="btn primary">Procesar</button>
+            </div>
+          </form>
+          <div id="ciena-result" class="result-box muted">Esperando archivo.</div>
         </article>
       </section>
     </section>
