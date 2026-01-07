@@ -50,6 +50,40 @@
 
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
+## Infraestructura
+### POST `/sync/camaras`
+
+Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la tabla `app.camaras`.
+
+- **Autenticación:** pendiente (usar sólo en entornos controlados hasta integrar API key / JWT).
+- **Body (JSON opcional):**
+
+  | Campo            | Tipo   | Descripción |
+  |------------------|--------|-------------|
+  | `sheet_id`       | string | ID del Google Sheet (override de `INFRA_SHEET_ID`). |
+  | `worksheet_name` | string | Nombre de la hoja; default `Camaras`. |
+
+  Si no se envía body se usan los valores configurados por entorno (`INFRA_SHEET_ID`, `INFRA_SHEET_NAME`).
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "processed": 120,
+    "updated": 17,
+    "created": 5
+  }
+  ```
+
+- **Códigos de error:**
+  - `400`: configuración incompleta o columnas requeridas ausentes.
+  - `500`: falló la lectura del Sheet o el upsert (consultar logs `action=infra_sync`).
+
+- **Dependencias:** requiere un archivo `credentials.json` en la carpeta `Keys/` (o la variable `GOOGLE_CREDENTIALS_JSON` con el Service Account), además de un Sheet "Camaras" con columnas `Fontine_ID`, `Nombre`, `Lat`, `Lon`, `Estado`.
+- **Notas:** los estados se normalizan a `LIBRE|OCUPADA|BANEADA`; las coordenadas aceptan `.` o `,` como separador decimal. Las filas sin `Fontine_ID` se omiten del conteo `processed` y se registran como `skipped` en logs.
+- **Referencias:** ver pasos operativos en `docs/Guia_de_Uso.md` (sección "Sincronización de cámaras").
+
 ## Informes
 ### POST `/reports/repetitividad`
 

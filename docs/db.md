@@ -27,3 +27,4 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 	- `servicio_empalme_association`: tabla intermedia N-a-N entre servicios y empalmes.
 	- `ingresos`: vínculo de técnicos a cámaras con `fecha_inicio`/`fecha_fin`.
 - Relaciones expuestas: `Camara.empalmes`, `Camara.ingresos`, `Servicio.empalmes` y `Empalme.servicios` permiten navegar las rutas y trazas importadas desde TXT/Sheet.
+- Servicio de sincronización: `core/services/infra_sync.py` toma la hoja Google "Camaras" (configurada via `INFRA_SHEET_ID`/`INFRA_SHEET_NAME`) y hace upsert contra `app.camaras` respetando `fontine_id`, actualizando coordenadas y estado; exige `Keys/credentials.json` o `GOOGLE_CREDENTIALS_JSON` con el Service Account.

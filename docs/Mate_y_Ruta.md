@@ -8,7 +8,7 @@ Fecha de última actualización: 2026-01-07
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2025-10-24)
+## Estado actual (al 2026-01-07)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -16,7 +16,10 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - Nota: el puerto 11434 no está publicado al host en el contenedor observado; evaluar exposición o incorporación de Ollama al `compose` del proyecto.
   - Publicación del servicio `web` restringida a `192.168.241.28:8080` (ver `deploy/compose.yml`) y script de firewall idempotente disponible en `scripts/firewall_hardening.sh` para aplicar allowlists y `DROP` en `INPUT/DOCKER-USER`.
   - Postgres ahora sólo expuesto en la red interna (`expose: 5432` en `deploy/compose.yml`), sin puerto publicado al host.
-  - Modelo base de infraestructura en curso: nuevas tablas `camaras`, `cables`, `empalmes`, `servicios`, asociación N-a-N y `ingresos` definidos en SQLAlchemy para soportar baneo/desbaneo y tracking de rutas; migración Alembic generada y parser inicial del tracking FO listo para poblar la tabla de empalmes.
+  - Esquema de infraestructura listo: modelos SQLAlchemy en `db/models/infra.py` y migración `db/alembic/versions/20251230_01_infra.py` crean `app.camaras`, `app.cables`, `app.empalmes`, `app.servicios`, la tabla puente `app.servicio_empalme_association` y `app.ingresos`.
+  - Parser TXT de tracking (`core/parsers/tracking_parser.py`) transforma archivos de rutas en estructuras tipadas listas para poblar `empalmes` y relaciones.
+  - Servicio `core/services/infra_sync.py` sincroniza la hoja Google "Camaras" contra DB (upsert por `fontine_id`), soporta credenciales vía `Keys/credentials.json` o `GOOGLE_CREDENTIALS_JSON` y registra métricas `processed/updated/created/skipped`.
+  - Endpoint FastAPI `POST /sync/camaras` disponible en `api/api_app/routes/infra.py` para disparar la sincronización desde la API.
 - Servicios del repo
   - `api` (FastAPI): endpoints `/health`, `/health/version`, `/db-check`, `POST /ingest/reclamos` (alias `POST /import/reclamos`), `POST /reports/repetitividad` (Excel o DB) y `GET /reports/repetitividad` (métricas JSON).
   - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
@@ -27,8 +30,6 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - Ingesta híbrida: parser robusto (tolerante a acentos/mayúsculas; Unidecode con fallback a unicodedata), saneo de fechas y GEO, y upsert en PostgreSQL con `ON CONFLICT DO UPDATE` usando `COALESCE(excluded.col, table.col)` para no perder datos existentes.
     - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
   - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias. **[2025-11-11]**: Flujo SLA completamente funcional desde la UI web tras corrección de manejo de múltiples archivos en FastAPI y configuración de `TEMPLATES_DIR` en Docker Compose. **[2025-11-19]**: La suma de horas por servicio ahora prioriza la columna "Horas Netas Cierre Problema Reclamo" (columna P) y cae a columnas alternativas sólo si es necesario, replicando el archivo entregado por Sandy.
-  - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
-  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias.
   - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
   - **Alarmas Ciena** (2025-11-17): Nueva herramienta en el panel web para procesar CSV de alarmas exportados desde gestores de red Ciena (SiteManager y MCP). Detecta automáticamente el formato, limpia datos (padding, placeholders), soporta campos multilínea y genera Excel limpio. Endpoint `POST /api/tools/alarmas-ciena` con validaciones completas, 26 tests cubriendo todos los casos y documentación exhaustiva en `docs/informes/alarmas_ciena.md`.
     - **Actualización PM**: se corrigió el fixture MCP multilínea, se añadió un fixture `web_client_logged` para pruebas autenticadas y `_require_auth` ahora responde HTTP 401, dejando la suite `tests/test_alarmas_ciena.py` totalmente en verde.
@@ -64,18 +65,18 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - Completar integración de `ConvertirDocAPdf` con `office_service` (manejo de errores y colas si es necesario).
 - Definir taxonomía de mensajes/errores estandarizados para herramientas.
 
-2) Gestión de adjuntos y almacenamiento
+3) Gestión de adjuntos y almacenamiento
 - Políticas de retención/borrado para archivos de `/api/chat/uploads`.
 - Auditoría de descargas y permisos (evaluar endpoint autenticado o URLs firmadas).
 
-3) Comparador FO desde UI
+4) Comparador FO desde UI
 - Completar flujo del comparador en el panel, aprovechando la nueva página SLA minimalista como referencia para feedback y validaciones.
 
-4) Conectividad Ollama y respuestas generativas
+5) Conectividad Ollama y respuestas generativas
 - Unificar consumo de Ollama entre `web` y `nlp_intent` (service mesh o contenedor dedicado).
 - Afinar prompts e indicadores de intención para decidir cuándo invocar herramientas vs. respuestas generativas.
 
-5) Observabilidad y seguridad
+6) Observabilidad y seguridad
 - Métricas Prometheus para WS y MCP (latencias, tool-calls, errores).
 - Rate limiting específico para WebSocket y endpoints de uploads.
 - Checklist de seguridad para publicar `/ws/chat` detrás de proxy (CSP, headers, logs).
@@ -138,6 +139,13 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Implementación completa de **Alarmas Ciena**: nueva herramienta en el panel web para convertir CSV de alarmas (SiteManager y MCP) a Excel con detección automática de formato, validaciones, tests completos (26 tests) y documentación exhaustiva (2025-11-17).
 - [x] Corrección del cálculo de horas en el SLA legacy: `core/sla/legacy_report.py` ahora detecta y usa exclusivamente la columna "Horas Netas Cierre Problema Reclamo" (columna P), prioriza la columna "Número Línea" frente a "Número Primer Servicio", normaliza los IDs (`83241`, `83241.0`, ` 83241 `) y cuenta con pruebas unitarias que cubren matching dual `Número Línea`/`Número Primer Servicio` y errores cuando falta la columna requerida (2025-11-19).
 - [x] Documentación y pruebas del comparador de VLANs: endpoint `POST /api/tools/compare-vlans` detallado en `docs/api.md`, mejoras de accesibilidad/UX en `panel.html`, `panel.js`, `styles.css` y nuevo test de rangos altos en `tests/test_vlan_comparator.py` (2025-12-04).
+- [x] Base declarativa compartida (`db/base.py`) y reorganización de paquetes `db` para permitir importaciones limpias desde modelos (2025-12-30).
+- [x] Modelos de infraestructura (`camaras`, `cables`, `empalmes`, `servicios`, `ingresos`) definidos en `db/models/infra.py` con enums y relaciones completas (2025-12-30).
+- [x] Migración Alembic `20251230_01_infra.py` creada para desplegar las tablas y restricciones de infraestructura (2025-12-30).
+- [x] Parser TXT de tracking (`core/parsers/tracking_parser.py`) que normaliza las líneas de rutas FO y expone dataclasses listas para persistencia (2025-12-30).
+- [x] Servicio de sincronización `core/services/infra_sync.py` que integra Google Sheets (gspread) y actualiza `app.camaras` con logging estructurado y upsert (2026-01-07).
+- [x] Endpoint FastAPI `POST /sync/camaras` y wiring en `api/app/main.py` para disparar la sincronización desde la API (2026-01-07).
+- [x] Documentación actualizada (`docs/db.md`, `docs/api.md`, `docs/Mate_y_Ruta.md`) y guía de credenciales (`Keys/credentials.json`) reflejada en `deploy/env.sample` (2026-01-07).
 
 ### Pendiente (prioridad)
 - [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).
@@ -157,6 +165,8 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Cobertura adicional para `modules.informes_repetitividad.processor.normalize` y `_detalles`.
 - [ ] Autenticación / limits adicionales para `/reports/repetitividad` (API key, tamaño máximo) y pruebas asociadas.
 - [ ] Completar implementación de herramientas MCP (`CompararTrazasFO`, `ConvertirDocAPdf`, `RegistrarEnNotion`).
+- [ ] Integrar parser de tracking con persistencia real en `empalmes`/`servicio_empalme_association` y exponer endpoint de importación.
+- [ ] Diseñar endpoints de baneo/desbaneo y métricas de ocupación usando el nuevo esquema `app.camaras`.
 - [ ] Definir estrategia de limpieza programada para archivos subidos en `/api/chat/uploads`.
 - [ ] Añadir métricas/observabilidad específicas del chat MCP (contador de tool-calls, errores, latencias).
 
