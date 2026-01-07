@@ -9,6 +9,9 @@
 !.env.sample
 .envrc
 
+# Claves locales
+Keys/
+
 # Entorno virtual Python
 .venv*/
 
