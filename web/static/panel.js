@@ -65,6 +65,131 @@
   wireDropzone('fo-drop', 'fo-file');
   wireDropzone('ciena-drop', 'ciena-file');
 
+  // Comparador VLAN
+  const vlanEls = {
+    textA: document.getElementById('vlan-text-a'),
+    textB: document.getElementById('vlan-text-b'),
+    status: document.getElementById('vlan-status'),
+    onlyA: document.getElementById('vlan-only-a'),
+    onlyB: document.getElementById('vlan-only-b'),
+    common: document.getElementById('vlan-common'),
+    onlyACount: document.getElementById('vlan-only-a-count'),
+    onlyBCount: document.getElementById('vlan-only-b-count'),
+    commonCount: document.getElementById('vlan-common-count'),
+  };
+
+  const vlanCompareBtn = document.getElementById('vlan-compare');
+  const vlanClearBtn = document.getElementById('vlan-clear');
+
+  function setVlanStatus(message, variant='info', isBusy=false){
+    if (!vlanEls.status) return;
+    const variants = {
+      info: 'result-box info',
+      success: 'result-box success',
+      error: 'result-box error',
+      muted: 'result-box muted'
+    };
+    vlanEls.status.className = variants[variant] || variants.info;
+    vlanEls.status.textContent = message;
+    if (isBusy) {
+      vlanEls.status.setAttribute('aria-busy', 'true');
+    } else {
+      vlanEls.status.removeAttribute('aria-busy');
+    }
+  }
+
+  function setVlanCount(el, value){
+    if (el) el.textContent = value;
+  }
+
+  function renderVlanList(target, values){
+    if (!target) return;
+    target.innerHTML = '';
+    if (!values || !values.length){
+      target.classList.add('empty');
+      target.textContent = target.dataset.empty || 'Sin datos';
+      return;
+    }
+    target.classList.remove('empty');
+    const sortedValues = [...values]
+      .map((val) => Number(val))
+      .filter((val) => Number.isFinite(val))
+      .sort((a, b) => a - b);
+    sortedValues.forEach((val) => {
+      const pill = document.createElement('span');
+      pill.className = 'vlan-pill';
+      pill.textContent = val;
+      target.appendChild(pill);
+    });
+  }
+
+  function resetVlanResults(){
+    renderVlanList(vlanEls.onlyA, []);
+    renderVlanList(vlanEls.onlyB, []);
+    renderVlanList(vlanEls.common, []);
+    setVlanCount(vlanEls.onlyACount, 0);
+    setVlanCount(vlanEls.onlyBCount, 0);
+    setVlanCount(vlanEls.commonCount, 0);
+  }
+
+  if (vlanEls.onlyA || vlanEls.onlyB || vlanEls.common){
+    resetVlanResults();
+  }
+
+  async function handleVlanCompare(){
+    if (!vlanEls.textA || !vlanEls.textB){
+      return;
+    }
+    const textA = vlanEls.textA.value.trim();
+    const textB = vlanEls.textB.value.trim();
+    if (!textA || !textB){
+      resetVlanResults();
+      setVlanStatus('Pegá configuraciones en ambos campos.', 'error');
+      return;
+    }
+    setVlanStatus('Comparando configuraciones...', 'info', true);
+    const payload = { text_a: textA, text_b: textB };
+    if (window.CSRF_TOKEN){
+      payload.csrf_token = window.CSRF_TOKEN;
+    }
+    try {
+      const res = await fetch('/api/tools/compare-vlans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok){
+        throw new Error(data.error || 'Error comparando VLANs');
+      }
+      renderVlanList(vlanEls.onlyA, data.only_a || []);
+      renderVlanList(vlanEls.onlyB, data.only_b || []);
+      renderVlanList(vlanEls.common, data.common || []);
+      setVlanCount(vlanEls.onlyACount, data.only_a ? data.only_a.length : 0);
+      setVlanCount(vlanEls.onlyBCount, data.only_b ? data.only_b.length : 0);
+      setVlanCount(vlanEls.commonCount, data.common ? data.common.length : 0);
+      const totalA = data.total_a ?? (data.vlans_a ? data.vlans_a.length : 0);
+      const totalB = data.total_b ?? (data.vlans_b ? data.vlans_b.length : 0);
+      setVlanStatus(`Totales: A ${totalA} · B ${totalB} · Coincidencias ${data.common ? data.common.length : 0}`, 'success');
+    } catch (err){
+      resetVlanResults();
+      setVlanStatus(err.message, 'error');
+    }
+  }
+
+  if (vlanCompareBtn){
+    vlanCompareBtn.addEventListener('click', handleVlanCompare);
+  }
+  if (vlanClearBtn){
+    vlanClearBtn.addEventListener('click', () => {
+      if (vlanEls.textA) vlanEls.textA.value = '';
+      if (vlanEls.textB) vlanEls.textB.value = '';
+      resetVlanResults();
+      setVlanStatus('Ingresá dos configuraciones de interfaz trunk para comenzar.', 'muted');
+    });
+  }
+
   // Repetitividad
   const repBtn = document.getElementById('rep-run');
   const repUseDb = document.getElementById('rep-use-db');

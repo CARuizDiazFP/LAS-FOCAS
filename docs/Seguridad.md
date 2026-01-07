@@ -33,6 +33,8 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Logs estructurados con metadatos (service, action, request_id, timestamps) y prudencia en datos sensibles.
 - Auditoría básica de dependencias antes de incorporarlas.
 - Servicios web/bot llaman al API de reportes mediante `REPORTS_API_BASE`; asegúrese de que apunte a la red interna (`http://api:8000`).
+- Publicación del servicio `web` acotada a la IP LAN `192.168.241.28:8080` en `deploy/compose.yml` para evitar exposición en 0.0.0.0.
+- Postgres sin publicación al host: `deploy/compose.yml` usa `expose: 5432` para que solo sea accesible por servicios internos.
 
 ## Riesgos comunes a considerar
 
@@ -72,6 +74,23 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Documentación y PR
   - Actualizar `README`, `AGENTS.md` y `docs/` del módulo.
   - Registrar cambios e impactos en `docs/PR/YYYY-MM-DD.md` (esta fecha).
+
+## Endurecimiento de red y firewall (2025-12-30)
+
+- Objetivo: limitar el acceso a `lasfocas-web` a las subredes requeridas, reforzar `rp_filter` y asegurar que las reglas persistan tras reinicio.cd /home/focal/proyectos/LAS-FOCAS
+WEB_ALLOWED_SUBNETS="190.12.96.0/24" \
+WEB_HOST="192.168.241.28" \
+MGMT_IFACE="ens224" \
+PERSIST_RULES=true \
+bash scripts/firewall_hardening.sh
+- Publicación del puerto 8080 sólo en la IP LAN: ver `ports` en [deploy/compose.yml](deploy/compose.yml).
+- Firewall/iptables (idempotente): usar [scripts/firewall_hardening.sh](scripts/firewall_hardening.sh). Ejecutar como root y ajustar subredes permitidas, por ejemplo:
+  - `WEB_ALLOWED_SUBNETS="190.12.96.0/24 192.168.241.0/24" WEB_HOST=192.168.241.28 PERSIST_RULES=true bash scripts/firewall_hardening.sh`
+  - Reglas aplicadas: `INPUT` y `DOCKER-USER` permiten sólo las subredes definidas hacia 8080, luego `DROP`; `POSTROUTING` mantiene SNAT `172.18.0.0/16 -> ens224` sin duplicados.
+- `rp_filter`: el script fija `1` en interfaces generales y mantiene `2` en `ens224` (o la interfaz definida en `MGMT_IFACE`), con persistencia en `/etc/sysctl.d/99-lasfocas.conf`.
+- Persistencia de reglas: habilitar `iptables-persistent`/`netfilter-persistent` y ejecutar con `PERSIST_RULES=true` (el script guarda automáticamente si la herramienta está instalada). Verificar con `iptables-save` y `sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.ens224.rp_filter`.
+- Control de superficie: revisar servicios escuchando con `ss -tulpen` y desactivar los innecesarios; asegurar SSH sólo por la red de gestión y con autenticación por clave pública.
+- TLS y autenticación: si el portal queda accesible en LAN, front-end detrás de proxy TLS (Nginx/Traefik) y proteger `/health` con auth básica o allowlist de IP.
 
 ## Respuesta a incidentes (básico)
 

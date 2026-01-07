@@ -23,7 +23,8 @@
     <nav class="actions" aria-label="Flujos">
       <button class="chip active" data-view="chat">Chat</button>
       <button class="chip" data-view="repetitividad">Repetitividad</button>
-  <a class="chip" href="/sla">SLA</a>
+        <button class="chip" data-view="vlan">Comparador VLAN</button>
+        <a class="chip" href="/sla">SLA</a>
       <button class="chip" data-view="fo">Comparador FO</button>
       <button class="chip" data-view="ciena">Alarmas Ciena</button>
       <span class="spacer"></span>
@@ -93,6 +94,59 @@
             </div>
           </form>
           <div id="rep-result" class="result-box muted">Aún no se generó ningún informe.</div>
+        </article>
+      </section>
+
+      <!-- Comparador VLAN -->
+      <section id="view-vlan" class="view" aria-labelledby="Comparador de VLANs">
+        <article class="card">
+          <header class="card-header">
+            <h1>Comparador de VLANs</h1>
+            <span class="badge">Nuevo</span>
+          </header>
+          <p class="muted">Pegá las configuraciones completas de las interfaces (formato Cisco IOS). El sistema detecta automáticamente las líneas <code>switchport trunk allowed vlan</code>, expande los rangos y muestra las diferencias.</p>
+          <div class="vlan-input-grid">
+            <div class="vlan-input">
+              <label for="vlan-text-a" class="form-label">Interfaz A</label>
+              <textarea id="vlan-text-a" name="text_a" placeholder="interface GigabitEthernet0/1&#10; switchport trunk allowed vlan 1-30,101,306-308"></textarea>
+              <small class="muted">Se muestran las VLANs que están únicamente en esta interfaz.</small>
+            </div>
+            <div class="vlan-input">
+              <label for="vlan-text-b" class="form-label">Interfaz B</label>
+              <textarea id="vlan-text-b" name="text_b" placeholder="interface TenGigabitEthernet0/48&#10; switchport trunk allowed vlan add 1-10,40,306-310"></textarea>
+              <small class="muted">Incluí todos los comandos relevantes; el parser ignora líneas ajenas.</small>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button type="button" id="vlan-compare" class="btn primary">Comparar</button>
+            <button type="button" id="vlan-clear" class="btn subtle">Limpiar</button>
+          </div>
+          <div id="vlan-status" class="result-box muted" role="status" aria-live="polite" aria-atomic="true">
+            Ingresá dos configuraciones de interfaz trunk para comenzar.
+          </div>
+          <div class="vlan-results" id="vlan-results">
+            <div class="vlan-result-card">
+              <div class="vlan-result-header">
+                <h2>Solo A</h2>
+                <span id="vlan-only-a-count" class="vlan-count">0</span>
+              </div>
+              <div id="vlan-only-a" class="vlan-list" data-empty="Sin diferencias detectadas"></div>
+            </div>
+            <div class="vlan-result-card">
+              <div class="vlan-result-header">
+                <h2>Comunes</h2>
+                <span id="vlan-common-count" class="vlan-count">0</span>
+              </div>
+              <div id="vlan-common" class="vlan-list" data-empty="No hay coincidencias"></div>
+            </div>
+            <div class="vlan-result-card">
+              <div class="vlan-result-header">
+                <h2>Solo B</h2>
+                <span id="vlan-only-b-count" class="vlan-count">0</span>
+              </div>
+              <div id="vlan-only-b" class="vlan-list" data-empty="Sin diferencias detectadas"></div>
+            </div>
+          </div>
         </article>
       </section>
 

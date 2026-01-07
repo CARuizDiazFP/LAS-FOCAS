@@ -7,7 +7,7 @@
 ## Resumen
 
 Servicio FastAPI que expone:
-- UI dark-style con Panel (Chat por defecto y tabs: Repetitividad, Comparador FO) y una vista independiente `/sla`.
+- UI dark-style con Panel (Chat por defecto y tabs: Repetitividad, Comparador VLAN, Comparador FO) y una vista independiente `/sla`.
 - Chat REST que integra `nlp_intent` para clasificación de intención y persistencia de conversación.
 
 ## Estructura y archivo principal
@@ -51,6 +51,7 @@ Centralizado vía `core.logging.setup_logging`.
 - POST /api/flows/sla → Ejecuta flujo SLA completo reutilizando `core.services.sla`. FormData: `file?`, `mes`, `anio`, `usar_db?`, `incluir_pdf?`, `eventos?`, `conclusion?`, `propuesta?`, `csrf_token`. Cuando `usar_db=true` se ignora el archivo y se consulta la base. Responde JSON con enlaces `/reports/*.docx[.pdf]`, indicador `source` y métricas básicas del período.
 - POST /api/flows/repetitividad → Ejecuta flujo de Repetitividad reutilizando los servicios compartidos (`generar_informe_desde_excel` / `generar_informe_desde_dataframe`). FormData: `file?`, `mes`, `anio`, `include_pdf?`, `csrf_token`, `with_geo?`, `use_db?`. Respuesta JSON con `docx`, `pdf?`, `map_images` (lista de PNGs), `assets` (alias de `map_images`), `map_image` (primer PNG), `stats`, `source` y flags `pdf_requested`/`with_geo`.
 - POST /api/flows/comparador-fo → Placeholder (501) hasta implementar.
+- POST /api/tools/compare-vlans → Herramienta para auditar configuraciones trunk. Cuerpo JSON `{ text_a, text_b, csrf_token }`; el backend busca comandos `switchport trunk allowed vlan[ add]`, expande rangos (1-6 → 1..6), depura valores fuera de 1-4094 y devuelve listas `only_a`, `only_b`, `common`, además de los totales (`total_a`, `total_b`) y las listas completas (`vlans_a`, `vlans_b`). Errores: 400 si no se detectan VLANs en alguna interfaz, 403 CSRF inválido.
 
 Respuesta típica de /api/chat/message (nuevo pipeline):
 
@@ -114,7 +115,7 @@ Respuesta típica de `/api/flows/repetitividad` (modo Excel + GEO):
 - La plantilla `web/templates/panel.html` inyecta variables globales:
   - `window.API_BASE` (default `http://192.168.241.28:8080`).
   - `window.CSRF_TOKEN` (token actual de sesión).
-- El cliente principal (`/static/panel.js`) maneja los tabs activos (Chat, Repetitividad, Comparador FO) y coordina envíos al backend, incluido el Chat HTTP (`/api/chat/message`) y uploads (`/api/chat/uploads`).
+- El cliente principal (`/static/panel.js`) maneja los tabs activos (Chat, Repetitividad, Comparador VLAN, Comparador FO) y coordina envíos al backend, incluido el Chat HTTP (`/api/chat/message`), uploads (`/api/chat/uploads`) y la nueva herramienta de comparación vía `POST /api/tools/compare-vlans`.
 - La vista `/sla` usa `web/templates/sla.html` + `/static/sla.js`, con drag&drop, validación estricta de dos archivos (Servicios + Reclamos), alternancia Excel/DB, validación de período y mensajes accesibles que muestran los enlaces devueltos por `POST /api/reports/sla`.
 
 ## Variables de entorno

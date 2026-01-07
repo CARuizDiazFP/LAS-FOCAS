@@ -24,8 +24,9 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-RUN pip install --no-cache-dir geopandas==0.14.4
+RUN python -m pip install --upgrade pip \
+    && pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt \
+    && pip install --no-cache-dir --only-binary=:all: geopandas==0.14.4
 
 COPY . /app
 

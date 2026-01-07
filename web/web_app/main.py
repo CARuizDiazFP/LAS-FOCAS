@@ -27,6 +27,7 @@ from core.repositories.conversations import get_or_create_conversation_for_web_u
 from core.repositories.messages import insert_message, get_last_messages
 from core.chatbot import ChatMessage
 from web.chat_ws import ChatWebSocketSettings, mount_chat_websocket
+from web.tools.vlan_comparator import compare_vlan_sets, parse_cisco_vlans
 import psycopg
 from pathlib import Path
 import shutil
@@ -212,6 +213,12 @@ class MCPInvokeRequest(BaseModel):
     tool: str = Field(..., description="Nombre de la herramienta MCP")
     args: Dict[str, Any] = Field(default_factory=dict, description="Argumentos para la herramienta")
     attachments: List[Dict[str, Any]] = Field(default_factory=list, description="Adjuntos opcionales")
+
+
+class VLANCompareRequest(BaseModel):
+    text_a: str = Field(..., description="Configuración de la primera interfaz")
+    text_b: str = Field(..., description="Configuración de la segunda interfaz")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 async def classify_text(text: str) -> IntentResponse:
@@ -1356,3 +1363,57 @@ async def tool_alarmas_ciena(
             {"error": f"Error al procesar el archivo: {str(e)}"},
             status_code=500
         )
+
+
+@app.post("/api/tools/compare-vlans")
+async def tool_compare_vlans(request: Request, payload: VLANCompareRequest) -> JSONResponse:
+    """Compara las VLANs permitidas entre dos interfaces Cisco."""
+
+    username, _ = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not payload.csrf_token or payload.csrf_token != expected_csrf):
+        logger.warning("action=vlan_compare result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    vlans_a = parse_cisco_vlans(payload.text_a)
+    vlans_b = parse_cisco_vlans(payload.text_b)
+    missing_sections: list[str] = []
+    if not vlans_a:
+        missing_sections.append("Interfaz A")
+    if not vlans_b:
+        missing_sections.append("Interfaz B")
+    if missing_sections:
+        detail = " y ".join(missing_sections)
+        logger.warning(
+            "action=vlan_compare result=fail reason=empty user=%s missing=%s",
+            username,
+            ",".join(missing_sections),
+        )
+        return JSONResponse(
+            {
+                "error": f"No se detectaron VLANs en {detail}. Asegurate de incluir líneas 'switchport trunk allowed vlan'.",
+            },
+            status_code=400,
+        )
+
+    diff = compare_vlan_sets(vlans_a, vlans_b)
+    response = {
+        "vlans_a": diff.vlans_a,
+        "vlans_b": diff.vlans_b,
+        "only_a": diff.only_a,
+        "only_b": diff.only_b,
+        "common": diff.common,
+        "total_a": len(diff.vlans_a),
+        "total_b": len(diff.vlans_b),
+    }
+    logger.info(
+        "action=vlan_compare result=success user=%s total_a=%s total_b=%s only_a=%s only_b=%s common=%s",
+        username,
+        response["total_a"],
+        response["total_b"],
+        len(response["only_a"]),
+        len(response["only_b"]),
+        len(response["common"]),
+    )
+    return JSONResponse(response)

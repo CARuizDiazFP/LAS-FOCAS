@@ -4,11 +4,8 @@
 
 from __future__ import annotations
 
-from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, String, DateTime, Numeric, Text
-
-
-Base = declarative_base()
+from db.base import Base
 
 
 class Reclamo(Base):

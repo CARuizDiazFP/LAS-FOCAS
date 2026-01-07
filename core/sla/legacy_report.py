@@ -10,7 +10,7 @@ import io
 import logging
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence
 
@@ -26,6 +26,8 @@ from core.sla.report import DocumentoSLA
 from modules.common.libreoffice_export import convert_to_pdf
 
 logger = logging.getLogger(__name__)
+
+EXCEL_EPOCH = datetime(1899, 12, 31)
 
 
 def _copy_cell_borders(source_cell, target_cell) -> None:
@@ -116,29 +118,44 @@ def _normalize(text: str) -> str:
     return " ".join(cleaned.lower().strip().split())
 
 
-SERVICIOS_REQUIRED: Dict[str, set[str]] = {
-    "tipo_servicio": {"tipo servicio"},
-    "numero_linea": {"numero linea", "numero primer servicio", "numero servicio"},
-    "nombre_cliente": {"nombre cliente", "cliente"},
-    "horas_total": {"horas reclamos todos", "horas reclamos"},
-    "sla": {"sla", "sla entregado", "% sla", "disponibilidad", "% disponibilidad"},
+SERVICIOS_REQUIRED: Dict[str, Sequence[str]] = {
+    "tipo_servicio": ("tipo servicio",),
+    "numero_linea": ("numero linea", "numero servicio", "numero primer servicio"),
+    "nombre_cliente": ("nombre cliente", "cliente"),
+    "horas_total": ("horas reclamos todos", "horas reclamos"),
+    "sla": ("sla", "sla entregado", "% sla", "disponibilidad", "% disponibilidad"),
 }
 
-SERVICIOS_OPTIONAL: Dict[str, set[str]] = {
-    "domicilio": {"direccion servicio", "domicilio", "direccion"},
+SERVICIOS_OPTIONAL: Dict[str, Sequence[str]] = {
+    "domicilio": ("direccion servicio", "domicilio", "direccion"),
+    "numero_primer_servicio": ("numero primer servicio",),
 }
 
-RECLAMOS_REQUIRED: Dict[str, set[str]] = {
-    "numero_linea": {"numero linea", "numero primer servicio", "numero de linea"},
-    "ticket": {"numero reclamo", "n° reclamo", "n° de ticket", "numero ticket", "ticket"},
-    "horas": {"horas netas reclamo", "horas netas problema reclamo", "horas netas", "duracion"},
-    "tipo_solucion": {"tipo solucion reclamo", "tipo solución reclamo", "tipo solucion", "causa", "tipo"},
-    "fecha_inicio": {"fecha inicio reclamo", "fecha inicio problema reclamo", "inicio"},
+RECLAMOS_REQUIRED: Dict[str, Sequence[str]] = {
+    "numero_linea": ("numero linea", "numero de linea", "numero linea reclamo", "numero primer servicio"),
+    "ticket": ("numero reclamo", "n° reclamo", "n° de ticket", "numero ticket", "ticket"),
+    "horas": ("horas netas reclamo", "horas netas problema reclamo", "horas netas", "duracion"),
+    "tipo_solucion": ("tipo solucion reclamo", "tipo solución reclamo", "tipo solucion", "causa", "tipo"),
+    "fecha_inicio": ("fecha inicio reclamo", "fecha inicio problema reclamo", "inicio"),
 }
 
-RECLAMOS_OPTIONAL: Dict[str, set[str]] = {
-    "fecha_cierre": {"fecha cierre reclamo", "fecha cierre problema reclamo", "cierre"},
-    "descripcion": {"descripcion", "descripcion solucion reclamo", "descripción solución reclamo"},
+RECLAMOS_OPTIONAL: Dict[str, Sequence[str]] = {
+    "fecha_cierre": ("fecha cierre reclamo", "fecha cierre problema reclamo", "cierre"),
+    "descripcion": ("descripcion", "descripcion solucion reclamo", "descripción solución reclamo"),
+    "numero_primer_servicio": ("numero primer servicio",),
+    "horas_netas_cierre": (
+        "horas netas cierre problema reclamo",
+        "horas netas cierre",
+        "horas netas problema cierre",
+        "netas cierre problema",
+        "horas cierre netas",
+    ),
+    "horas_totales_cierre": (
+        "horas totales cierre problema reclamo",
+        "horas totales cierre",
+        "horas cierre problema",
+        "total horas cierre",
+    ),
 }
 
 
@@ -151,13 +168,21 @@ class _ExcelDataset:
 
 def _match_headers(
     columns: Iterable[str],
-    required: Dict[str, set[str]],
-    optional: Dict[str, set[str]] | None = None,
+    required: Dict[str, Sequence[str]],
+    optional: Dict[str, Sequence[str]] | None = None,
 ) -> tuple[Dict[str, str], Dict[str, Optional[str]]]:
     normalized = {_normalize(col): col for col in columns}
+
+    def _find_match(candidates: Sequence[str]) -> Optional[str]:
+        for candidate in candidates:
+            normalized_candidate = _normalize(candidate)
+            if normalized_candidate in normalized:
+                return normalized[normalized_candidate]
+        return None
+
     resolved: Dict[str, str] = {}
     for key, synonyms in required.items():
-        found = next((normalized[label] for label in normalized if label in synonyms), None)
+        found = _find_match(synonyms)
         if not found:
             raise ValueError(key)
         resolved[key] = found
@@ -165,8 +190,7 @@ def _match_headers(
     resolved_optional: Dict[str, Optional[str]] = {}
     if optional:
         for key, synonyms in optional.items():
-            found = next((normalized[label] for label in normalized if label in synonyms), None)
-            resolved_optional[key] = found
+            resolved_optional[key] = _find_match(synonyms)
     return resolved, resolved_optional
 
 
@@ -174,6 +198,17 @@ def _read_excel(content: bytes) -> pd.DataFrame:
     dataframe = pd.read_excel(io.BytesIO(content))
     dataframe.columns = dataframe.columns.astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
     return dataframe
+
+
+def _normalize_line_value(valor) -> str:
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return ""
+    if isinstance(valor, float) and valor.is_integer():
+        valor = int(valor)
+    texto = str(valor).strip()
+    if texto.endswith(".0") and texto.replace(".", "", 1).isdigit():
+        texto = texto[:-2]
+    return texto
 
 
 def load_servicios_excel(content: bytes) -> _ExcelDataset:
@@ -185,6 +220,12 @@ def load_servicios_excel(content: bytes) -> _ExcelDataset:
         raise ValueError(f"Faltan columnas en Excel de servicios: {missing.upper()}") from exc
 
     df = df.copy()
+    linea_col = resolved["numero_linea"]
+    df[linea_col] = df[linea_col].apply(_normalize_line_value)
+    numero_primer_servicio = optional.get("numero_primer_servicio")
+    if numero_primer_servicio:
+        df[numero_primer_servicio] = df[numero_primer_servicio].apply(_normalize_line_value)
+
     sla_col = resolved["sla"]
     df[sla_col] = df[sla_col].apply(_parse_sla_value)
     horas_col = resolved["horas_total"]
@@ -204,6 +245,36 @@ def load_reclamos_excel(content: bytes) -> _ExcelDataset:
     df = df.copy()
     horas_col = resolved["horas"]
     df[horas_col] = df[horas_col].apply(_horas_decimal)
+    
+    linea_col = resolved["numero_linea"]
+    df[linea_col] = df[linea_col].apply(_normalize_line_value)
+    numero_primer_servicio = optional.get("numero_primer_servicio")
+    if numero_primer_servicio:
+        df[numero_primer_servicio] = df[numero_primer_servicio].apply(_normalize_line_value)
+
+    horas_netas_cierre_col = optional.get("horas_netas_cierre")
+    if not horas_netas_cierre_col:
+        raise ValueError(
+            "Falta la columna 'Horas Netas Cierre Problema Reclamo' (columna P) en el Excel de reclamos"
+        )
+
+    logger.info(
+        "action=sla_legacy_report stage=load_reclamos horas_netas_cierre_detectada=%s",
+        horas_netas_cierre_col,
+    )
+    df[horas_netas_cierre_col] = df[horas_netas_cierre_col].apply(_horas_decimal)
+
+    # Procesar columna de horas totales cierre si existe
+    horas_totales_col = optional.get("horas_totales_cierre")
+    if horas_totales_col:
+        logger.info(
+            "action=sla_legacy_report stage=load_reclamos horas_totales_cierre_detectada=%s",
+            horas_totales_col
+        )
+        df[horas_totales_col] = df[horas_totales_col].apply(_horas_decimal)
+    else:
+        logger.warning("action=sla_legacy_report stage=load_reclamos horas_totales_cierre=no_detectada")
+    
     fecha_col = resolved["fecha_inicio"]
     df[fecha_col] = df[fecha_col].apply(_to_datetime)
     cierre_col = optional.get("fecha_cierre")
@@ -356,6 +427,52 @@ def _render_document(
     return DocumentoSLA(docx=docx_path, pdf=pdf_path)
 
 
+def _columna_horas_reclamos(reclamos: _ExcelDataset) -> tuple[str, str]:
+    """Devuelve la columna de horas preferida para los cálculos de reclamos."""
+    columna = reclamos.optional.get("horas_netas_cierre")
+    if columna and columna in reclamos.dataframe.columns:
+        return columna, "horas_netas_cierre"
+    raise ValueError(
+        "Falta la columna 'Horas Netas Cierre Problema Reclamo' (columna P) en el Excel de reclamos"
+    )
+
+
+def _subset_reclamos_por_servicio(
+    srv_row: pd.Series,
+    servicios: _ExcelDataset,
+    reclamos: _ExcelDataset,
+) -> tuple[pd.DataFrame, str]:
+    """Obtiene los reclamos asociados a un servicio considerando múltiples identificadores."""
+
+    servicio_candidates: list[str] = []
+    srv_linea_col = servicios.columns["numero_linea"]
+    linea_val = str(srv_row.get(srv_linea_col, ""))
+    if linea_val:
+        servicio_candidates.append(linea_val)
+
+    srv_linea_alt = servicios.optional.get("numero_primer_servicio")
+    if srv_linea_alt:
+        alt_val = str(srv_row.get(srv_linea_alt, ""))
+        if alt_val and alt_val not in servicio_candidates:
+            servicio_candidates.append(alt_val)
+
+    recl_linea_col = reclamos.columns["numero_linea"]
+    recl_alt_col = reclamos.optional.get("numero_primer_servicio")
+
+    for candidate in servicio_candidates:
+        if not candidate:
+            continue
+        mask = reclamos.dataframe[recl_linea_col] == candidate
+        if recl_alt_col:
+            mask = mask | (reclamos.dataframe[recl_alt_col] == candidate)
+        subset = reclamos.dataframe[mask]
+        if not subset.empty:
+            linea_display = subset[recl_linea_col].dropna().iloc[0]
+            return subset, str(linea_display)
+
+    return pd.DataFrame(columns=reclamos.dataframe.columns), servicio_candidates[0] if servicio_candidates else ""
+
+
 def _rellenar_tabla_principal(tabla: Table, servicios: _ExcelDataset, reclamos: _ExcelDataset) -> None:
     tipo_col = servicios.columns["tipo_servicio"]
     linea_col = servicios.columns["numero_linea"]
@@ -363,7 +480,12 @@ def _rellenar_tabla_principal(tabla: Table, servicios: _ExcelDataset, reclamos: 
     sla_col = servicios.columns["sla"]
     
     recl_linea_col = reclamos.columns["numero_linea"]
-    recl_horas = reclamos.columns["horas"]
+    recl_horas, origen_horas = _columna_horas_reclamos(reclamos)
+    logger.info(
+        "action=sla_legacy_report stage=tabla_principal columna_horas=%s origen=%s",
+        recl_horas,
+        origen_horas,
+    )
 
     while len(tabla.rows) > 1:
         tabla._tbl.remove(tabla.rows[1]._tr)
@@ -382,17 +504,26 @@ def _rellenar_tabla_principal(tabla: Table, servicios: _ExcelDataset, reclamos: 
                 _copy_cell_borders(fila_template.cells[i], celda)
         
         _set_cell_text(celdas[0], str(fila.get(tipo_col, "")))
-        _set_cell_text(celdas[1], str(fila.get(linea_col, "")))
+        subset, linea_presentable = _subset_reclamos_por_servicio(fila, servicios, reclamos)
+        _set_cell_text(celdas[1], linea_presentable or str(fila.get(linea_col, "")))
         _set_cell_text(celdas[2], str(fila.get(cliente_col, "")))
         
-        # Calcular horas totales sumando los reclamos de este servicio
-        service_id = fila.get(linea_col)
-        subset = reclamos.dataframe[reclamos.dataframe[recl_linea_col] == service_id]
+        if subset.empty:
+            logger.warning(
+                "action=sla_legacy_report stage=tabla_principal subset_vacio linea=%s",
+                fila.get(linea_col),
+            )
+
         total_horas = 0.0
         for _, reclamo in subset.iterrows():
             horas_val = reclamo.get(recl_horas)
             if not pd.isna(horas_val):
                 total_horas += float(horas_val)
+
+        if not subset.empty and total_horas <= 0:
+            raise ValueError(
+                f"No se pudieron sumar horas para el servicio {linea_presentable}. Verificar columna P del Excel de reclamos."
+            )
         
         # Formatear como HHH:MM:SS
         horas_formateadas = _formatear_horas_totales(total_horas)
@@ -425,10 +556,35 @@ def _completar_tabla_servicio(
             for clave, valor in valores.items():
                 if clave in contenido:
                     if len(fila.cells) > idx + 1 and not fila.cells[idx + 1].text.strip():
+                        # Formato: Label en celda actual, valor en siguiente celda
+                        # Agregar negrita al label
+                        label_celda = fila.cells[idx]
+                        label_text = label_celda.text
+                        label_celda.text = ""
+                        for paragraph in label_celda.paragraphs:
+                            run = paragraph.add_run(label_text)
+                            run.bold = True
+                        
+                        # Valor normal en siguiente celda
                         fila.cells[idx + 1].text = valor
                     else:
+                        # Formato: "Label: valor" en la misma celda
                         base = celda.text.split(":")[0].strip(": ")
-                        fila.cells[idx].text = f"{base}: {valor}" if valor else base
+                        texto_completo = f"{base}: {valor}" if valor else base
+                        
+                        # Limpiar contenido actual
+                        celda.text = ""
+                        
+                        # Crear runs con formato diferenciado
+                        for paragraph in celda.paragraphs:
+                            # Label en negrita
+                            run_label = paragraph.add_run(f"{base}:")
+                            run_label.bold = True
+                            
+                            # Valor en texto normal
+                            if valor:
+                                run_valor = paragraph.add_run(f" {valor}")
+                                run_valor.bold = False
                     break
 
 
@@ -475,15 +631,15 @@ def _completar_tabla_detalle(
         tabla._tbl.remove(tabla.rows[1]._tr)
 
     linea_col = servicios.columns["numero_linea"]
-    recl_linea_col = reclamos.columns["numero_linea"]
     recl_ticket = reclamos.columns["ticket"]
-    recl_horas = reclamos.columns["horas"]
+
+    recl_horas, _ = _columna_horas_reclamos(reclamos)
+
     recl_tipo = reclamos.columns["tipo_solucion"]
     recl_fecha = reclamos.columns["fecha_inicio"]
     recl_desc = reclamos.optional.get("descripcion")
 
-    service_id = srv_row.get(linea_col)
-    subset = reclamos.dataframe[reclamos.dataframe[recl_linea_col] == service_id]
+    subset, _ = _subset_reclamos_por_servicio(srv_row, servicios, reclamos)
 
     total_horas = 0.0
     for _, reclamo in subset.iterrows():
@@ -493,7 +649,8 @@ def _completar_tabla_detalle(
         for i, celda in enumerate(fila):
             if i < len(fila_template_cells):
                 _copy_cell_borders(fila_template_cells[i], celda)
-        
+
+        recl_linea_col = reclamos.columns["numero_linea"]
         _set_cell_text(fila[0], str(reclamo.get(recl_linea_col, "")))
         _set_cell_text(fila[1], str(reclamo.get(recl_ticket, "")))
         horas_val = reclamo.get(recl_horas)
@@ -525,11 +682,9 @@ def _tickets_por_servicio(
     servicios: _ExcelDataset,
     reclamos: _ExcelDataset,
 ) -> list[str]:
-    linea_col = servicios.columns["numero_linea"]
-    recl_linea_col = reclamos.columns["numero_linea"]
     recl_ticket = reclamos.columns["ticket"]
-    service_id = srv_row.get(linea_col)
-    tickets = reclamos.dataframe[reclamos.dataframe[recl_linea_col] == service_id][recl_ticket]
+    subset, _ = _subset_reclamos_por_servicio(srv_row, servicios, reclamos)
+    tickets = subset[recl_ticket] if not subset.empty else pd.Series([], dtype=str)
     return [str(ticket) for ticket in tickets.dropna().unique()]
 
 
@@ -551,6 +706,22 @@ def _sla_texto(valor) -> str:
 def _horas_decimal(valor) -> Optional[float]:
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return None
+
+    if isinstance(valor, pd.Timestamp):
+        valor = valor.to_pydatetime()
+
+    if isinstance(valor, datetime):
+        delta = valor - EXCEL_EPOCH
+        return delta.total_seconds() / 3600
+
+    if isinstance(valor, time):
+        base = datetime.combine(datetime(1900, 1, 1), valor)
+        delta = base - datetime(1900, 1, 1)
+        return delta.total_seconds() / 3600
+
+    if isinstance(valor, (pd.Timedelta, timedelta)):
+        return valor.total_seconds() / 3600
+
     texto = str(valor).strip().lower().replace(",", ".")
     if not texto:
         return None

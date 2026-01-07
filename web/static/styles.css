@@ -113,5 +113,18 @@ body.dark { background: var(--bg); color: var(--text); margin: 0; font-family: s
 .form-label { font-size:0.75rem; color: var(--muted); display:block; margin-bottom:4px; text-transform: uppercase; letter-spacing:0.08em; }
 .field input { width:100%; }
 input[type="file"], input[type="number"] { background:#0c1117; color: var(--text); border:1px solid var(--border); border-radius:6px; padding:10px; }
+textarea { background:#0c1117; color: var(--text); border:1px solid var(--border); border-radius:8px; padding:12px; width:100%; min-height:180px; resize:vertical; font-family:"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+.vlan-input-grid { display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.vlan-input textarea { background:#0b1118; }
+.vlan-results { display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.vlan-result-card { background:#10151c; border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:10px; min-height:150px; }
+.vlan-result-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.vlan-count { background: rgba(59,130,246,0.18); border-radius:999px; padding:2px 10px; font-size:0.9rem; color: var(--text); }
+.vlan-list { display:flex; flex-wrap:wrap; gap:6px; min-height:36px; max-height:220px; overflow-y:auto; padding-right:4px; }
+.vlan-list::-webkit-scrollbar { width:6px; }
+.vlan-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius:3px; }
+.vlan-list::-webkit-scrollbar-track { background: transparent; }
+.vlan-list.empty { color: var(--muted); font-style:italic; }
+.vlan-pill { background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.18); border-radius:999px; padding:4px 10px; font-size:0.85rem; }
 .checkbox { display:flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--muted); }
 .btn.primary { box-shadow: 0 8px 20px rgba(59,130,246,0.3); }

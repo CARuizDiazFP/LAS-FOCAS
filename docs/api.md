@@ -231,6 +231,46 @@ Notas:
 - Si `need_clarification=true`, `clarification_question` contendrá una pregunta breve.
 - `next_action` se reserva para futura orquestación de flujos.
 
+## Herramientas del panel web
+
+### POST `/api/tools/compare-vlans`
+
+Compara las VLANs permitidas de dos configuraciones Cisco IOS.
+
+- **Autenticación:** requiere sesión válida en el panel web y token CSRF (omitible en modo `TESTING=true`).
+- **Body (JSON):**
+  | Campo | Tipo | Requerido | Descripción |
+  |-------|------|-----------|-------------|
+  | `text_a` | string | Sí | Configuración completa de la primera interfaz. Se buscan las líneas `switchport trunk allowed vlan` (con o sin `add`). |
+  | `text_b` | string | Sí | Configuración de la segunda interfaz. |
+  | `csrf_token` | string | Condicional | Token de sesión utilizado por el panel (campo oculto en `panel.html`). |
+
+- **Procesamiento:**
+  - Se parsean las líneas relevantes usando `web.tools.vlan_comparator.parse_cisco_vlans`.
+  - Se admiten rangos (`1-6,200-210`) y listas separadas por comas; los valores fuera de `1-4094` se descartan.
+  - Las VLANs se consolidan en conjuntos únicos antes de comparar.
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "vlans_a": [1, 2, 3, 10],
+    "vlans_b": [2, 3, 4, 30],
+    "only_a": [1, 10],
+    "only_b": [4, 30],
+    "common": [2, 3],
+    "total_a": 4,
+    "total_b": 4
+  }
+  ```
+
+- **Errores frecuentes:**
+  - `401` → sesión expirada o inexistente.
+  - `403` → token CSRF inválido.
+  - `400` → no se detectaron VLANs en una de las configuraciones.
+
+- **UI relacionada:** sección "Comparador de VLANs" en `web/templates/panel.html`, estilos en `web/static/styles.css` y lógica en `web/static/panel.js`.
+
 
 ### POST `/reports/repetitividad`
 

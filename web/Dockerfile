@@ -6,8 +6,14 @@ FROM node:20.12.2-slim AS web-build
 WORKDIR /frontend
 # Copiamos sólo el frontend (el build context ahora es la raíz del repo)
 COPY web/frontend/package.json web/frontend/tsconfig.json web/frontend/index.html ./
+COPY web/frontend/package-lock.json ./package-lock.json
 COPY web/frontend/src ./src
-RUN npm ci || npm i && npm run build
+RUN if [ -f package-lock.json ]; then \
+        npm ci --no-audit --no-fund; \
+    else \
+        npm install --no-audit --no-fund --prefer-offline; \
+    fi \
+    && npm run build
 
 FROM python:3.11-slim
 
@@ -20,22 +26,18 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
-        gdal-bin \
-        libgdal-dev \
-        libproj-dev \
-        libgeos-dev \
-        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY web/requirements.txt /app/requirements.txt
 # Instalamos dependencias (bcrypt fijado en requirements para evitar backend defectuoso)
-RUN python -m pip install --upgrade pip && pip install -r requirements.txt
+RUN python -m pip install --upgrade pip \
+    && pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 
 COPY web/app /app/app
 COPY web/web_app /app/web_app
 COPY web/templates /app/templates
 COPY web/static /app/static
-COPY web/tools /app/tools
+COPY web/tools /app/web/tools
 COPY web/chat_ws.py /app/web/chat_ws.py
 # Incluir paquete core para logging centralizado
 COPY core /app/core

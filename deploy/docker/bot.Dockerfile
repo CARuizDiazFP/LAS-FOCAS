@@ -5,23 +5,15 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Dependencias nativas para contextily/pyproj (GDAL/PROJ)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        gdal-bin \
-        libgdal-dev \
-        libproj-dev \
-        libgeos-dev \
-        build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
 # Instalación de dependencias del bot
 COPY bot_telegram/requirements.txt /app/bot_requirements.txt
-RUN pip install --no-cache-dir -r /app/bot_requirements.txt
+RUN python -m pip install --upgrade pip \
+    && pip install --no-cache-dir --only-binary=:all: -r /app/bot_requirements.txt
 
 # Copiamos solo lo necesario del proyecto
 COPY bot_telegram /app/bot_telegram

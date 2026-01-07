@@ -15,3 +15,15 @@ La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la vers
 para verificar el estado de la base de datos.
 
 Se limpiaron imports innecesarios en los repositorios de conversaciones y mensajes para mantener el código conforme a PEP8.
+
+## Infraestructura (cámaras, cables y servicios)
+
+- Base común: `db/base.py` expone `Base = declarative_base()` para todos los modelos.
+- Nuevas tablas en esquema `app` definidas en `db/models/infra.py`:
+	- `camaras`: referencia única `fontine_id`, coordenadas opcionales, estado `LIBRE|OCUPADA|BANEADA` y `last_update`.
+	- `cables`: enlaces opcionales entre cámaras (`origen_camara_id`, `destino_camara_id`).
+	- `empalmes`: identificador de tracking (`tracking_empalme_id`), FK a cámara y tipo.
+	- `servicios`: cliente, categoría y `raw_tracking_data` (JSON) para conservar trazas crudas.
+	- `servicio_empalme_association`: tabla intermedia N-a-N entre servicios y empalmes.
+	- `ingresos`: vínculo de técnicos a cámaras con `fecha_inicio`/`fecha_fin`.
+- Relaciones expuestas: `Camara.empalmes`, `Camara.ingresos`, `Servicio.empalmes` y `Empalme.servicios` permiten navegar las rutas y trazas importadas desde TXT/Sheet.

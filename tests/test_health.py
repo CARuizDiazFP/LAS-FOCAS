@@ -2,13 +2,8 @@
 # Ubicación de archivo: tests/test_health.py
 # Descripción: Pruebas para la ruta de health de la API
 
-from pathlib import Path
-import sys
-
-sys.path.append(str(Path(__file__).resolve().parents[1] / "api"))
-
 from fastapi.testclient import TestClient
-from app.main import app
+from api.app.main import app
 
 client = TestClient(app)
 
