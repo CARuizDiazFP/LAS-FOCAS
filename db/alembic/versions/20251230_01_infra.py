@@ -23,6 +23,7 @@ camara_estado_enum = postgresql.ENUM(
     "BANEADA",
     name="camara_estado",
     schema="app",
+    create_type=False,
 )
 
 

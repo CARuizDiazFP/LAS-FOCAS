@@ -13,9 +13,9 @@ bcrypt==4.1.2  # Hashing directo para contraseñas web
 pydantic==2.9.2
 pandas==2.2.2
 openpyxl==3.1.2
-python-docx==0.8.11
+python-docx==1.1.2
 SQLAlchemy==2.0.36
-staticmap==0.5.5
+staticmap==0.5.7
 Pillow==10.4.0
 matplotlib==3.9.2
 contextily==1.5.2

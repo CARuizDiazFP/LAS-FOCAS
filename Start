@@ -216,7 +216,8 @@ PY
 
 echo -e "${GREEN}Comprobando health de servicios...${NC}"
 check_http    "API"        "http://localhost:8001/health" || true
-check_http_dual "WEB"      "http://localhost:8080/health" "http://$HOST_IP:8080/health" || true
+# WEB: usar check interno porque el puerto 8080 está bindeado solo a IP fija y firewall bloquea acceso local
+check_internal "WEB"        "web"  "http://localhost:8080/health" || true
 check_internal "NLP"        "nlp_intent"  "http://localhost:8100/health" || true
 check_internal "LibreOffice" "office"     "http://localhost:8090/health" || true
 

@@ -130,6 +130,18 @@ Documento ampliado con lineamientos, checklist y controles: ver `docs/Seguridad.
 
 ### 8) Docker/Infra
 
+* **Ubicación del Compose:** el archivo principal está en `deploy/compose.yml`, **NO** en la raíz del proyecto.
+* **Comandos Docker Compose:** siempre usar `-f deploy/compose.yml` o ejecutar desde `deploy/`:
+  ```bash
+  # Desde la raíz del proyecto:
+  docker compose -f deploy/compose.yml up -d
+  docker compose -f deploy/compose.yml build api web
+  docker compose -f deploy/compose.yml logs -f web
+  
+  # O navegar al directorio deploy:
+  cd deploy && docker compose up -d
+  ```
+* **Rebuild de servicios:** tras cambios de código, usar `docker compose -f deploy/compose.yml build <servicio>`.
 * **Compose**: redes internas por defecto, volúmenes nombrados, healthchecks cuando sea posible.
 * **Imágenes ligeras** (slim, alpine si es viable) y multi-stage builds para reducir tamaño.
 * **Recursos**: límites razonables de CPU/RAM en servicios no críticos.

@@ -430,3 +430,434 @@
     });
   }
 })();
+
+// --- Infraestructura / Cámaras Dashboard ---
+(function(){
+  const $ = (sel, root=document) => root.querySelector(sel);
+  const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+
+  // Elementos del DOM - Smart Search (texto libre)
+  const searchInput = $('#infra-search-input');
+  const addTermBtn = $('#infra-add-term');
+  const searchTermsContainer = $('#infra-search-terms');
+  const searchBtn = $('#infra-search-btn');
+  const quickFilterChips = $$('.infra-quick-chip');
+
+  // Elementos del DOM - Upload y resultados
+  const uploadZone = $('#infra-drop');
+  const fileInput = $('#infra-file');
+  const statusEl = $('#infra-status');
+  const gridEl = $('#infra-grid');
+  const loadingEl = $('#infra-loading');
+  const emptyEl = $('#infra-empty');
+
+  if (!searchInput || !gridEl) return; // Vista infra no presente
+
+  // Estado de términos de búsqueda activos
+  let searchTerms = [];
+  let hasSearched = false;
+
+  // ===========================================
+  // TOAST NOTIFICATIONS
+  // ===========================================
+  function showToast(type, title, message, duration = 5000) {
+    const container = $('#toast-container');
+    if (!container) return;
+
+    const icons = {
+      success: '✓',
+      error: '✗',
+      warning: '⚠',
+      info: 'ℹ'
+    };
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+      <span class="toast-icon">${icons[type] || 'ℹ'}</span>
+      <div class="toast-content">
+        <div class="toast-title">${title}</div>
+        ${message ? `<div class="toast-message">${message}</div>` : ''}
+      </div>
+      <button class="toast-close" aria-label="Cerrar">×</button>
+    `;
+
+    const closeBtn = toast.querySelector('.toast-close');
+    const closeToast = () => {
+      toast.classList.add('closing');
+      setTimeout(() => toast.remove(), 250);
+    };
+
+    closeBtn.addEventListener('click', closeToast);
+    container.appendChild(toast);
+
+    if (duration > 0) {
+      setTimeout(closeToast, duration);
+    }
+  }
+
+  // ===========================================
+  // STATUS HELPERS
+  // ===========================================
+  function setStatus(text, variant = 'muted') {
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.className = `infra-status ${variant}`;
+  }
+
+  function showLoading(show) {
+    if (loadingEl) loadingEl.hidden = !show;
+    if (gridEl) gridEl.style.display = show ? 'none' : '';
+    if (emptyEl) emptyEl.hidden = true;
+  }
+
+  function showEmpty(show) {
+    if (emptyEl) emptyEl.hidden = !show;
+    if (gridEl) gridEl.style.display = show ? 'none' : '';
+    if (loadingEl) loadingEl.hidden = true;
+  }
+
+  function showInitialState() {
+    // Estado inicial: mostrar empty state con mensaje de bienvenida
+    if (loadingEl) loadingEl.hidden = true;
+    if (gridEl) gridEl.style.display = 'none';
+    if (emptyEl) emptyEl.hidden = false;
+    setStatus('');
+  }
+
+  // ===========================================
+  // RENDERIZADO DE TARJETAS
+  // ===========================================
+  function renderCamaraCard(camara) {
+    const estadoLower = (camara.estado || 'libre').toLowerCase();
+    const servicios = camara.servicios || [];
+    const origenDatos = camara.origen_datos || 'MANUAL';
+
+    const card = document.createElement('div');
+    card.className = 'infra-camara-card';
+    card.dataset.estado = camara.estado || 'LIBRE';
+    card.dataset.origen = origenDatos;
+
+    let serviciosHtml = '';
+    if (servicios.length > 0) {
+      serviciosHtml = servicios.map(s => 
+        `<span class="infra-servicio-chip">${s}</span>`
+      ).join('');
+    } else {
+      serviciosHtml = '<span class="infra-no-servicios">Sin servicios asociados</span>';
+    }
+
+    let metaHtml = '';
+    const metaItems = [];
+    if (camara.id) {
+      metaItems.push(`<span class="infra-meta-item"><span>ID:</span> ${camara.id}</span>`);
+    }
+    if (camara.latitud && camara.longitud) {
+      metaItems.push(`<span class="infra-meta-item"><span>📍</span> ${camara.latitud.toFixed(4)}, ${camara.longitud.toFixed(4)}</span>`);
+    }
+    if (origenDatos && origenDatos !== 'MANUAL') {
+      metaItems.push(`<span class="infra-meta-item"><span>Origen:</span> ${origenDatos}</span>`);
+    }
+    if (metaItems.length > 0) {
+      metaHtml = `<div class="infra-camara-meta">${metaItems.join('')}</div>`;
+    }
+
+    card.innerHTML = `
+      <div class="infra-camara-header">
+        <div class="infra-camara-estado">
+          <span class="infra-estado-icon ${estadoLower}"></span>
+          <span class="infra-estado-text">${camara.estado || 'LIBRE'}</span>
+        </div>
+        ${camara.fontine_id ? `<span class="infra-camara-id">${camara.fontine_id}</span>` : ''}
+      </div>
+      <div class="infra-camara-nombre">${camara.nombre || camara.direccion || 'Sin nombre'}</div>
+      <div class="infra-camara-servicios">${serviciosHtml}</div>
+      ${metaHtml}
+    `;
+
+    return card;
+  }
+
+  function renderCamaras(camaras) {
+    gridEl.innerHTML = '';
+    
+    if (!camaras || camaras.length === 0) {
+      showEmpty(true);
+      return;
+    }
+
+    showEmpty(false);
+    camaras.forEach(camara => {
+      gridEl.appendChild(renderCamaraCard(camara));
+    });
+  }
+
+  // ===========================================
+  // SEARCH TERMS MANAGEMENT (Smart Search)
+  // ===========================================
+  function addTerm(value) {
+    if (!value || !value.trim()) return false;
+
+    const trimmedValue = value.trim();
+
+    // Evitar duplicados exactos (case-insensitive)
+    const exists = searchTerms.some(t => t.toLowerCase() === trimmedValue.toLowerCase());
+    if (exists) {
+      showToast('warning', 'Término duplicado', 'Este término ya está activo');
+      return false;
+    }
+
+    searchTerms.push(trimmedValue);
+    renderSearchTerms();
+    return true;
+  }
+
+  function removeTerm(index) {
+    if (index >= 0 && index < searchTerms.length) {
+      searchTerms.splice(index, 1);
+      renderSearchTerms();
+    }
+  }
+
+  function clearAllTerms() {
+    searchTerms = [];
+    renderSearchTerms();
+  }
+
+  function renderSearchTerms() {
+    if (!searchTermsContainer) return;
+    searchTermsContainer.innerHTML = '';
+
+    searchTerms.forEach((term, index) => {
+      const tag = document.createElement('span');
+      tag.className = 'infra-search-term';
+      tag.innerHTML = `
+        <span class="infra-search-term-value">${term}</span>
+        <button class="infra-search-term-remove" title="Eliminar término" data-index="${index}">×</button>
+      `;
+
+      const removeBtn = tag.querySelector('.infra-search-term-remove');
+      removeBtn.addEventListener('click', () => removeTerm(index));
+
+      searchTermsContainer.appendChild(tag);
+    });
+  }
+
+  // ===========================================
+  // API: SMART SEARCH (POST /api/infra/smart-search)
+  // ===========================================
+  async function searchCamaras() {
+    hasSearched = true;
+    showLoading(true);
+    setStatus('Buscando con ' + searchTerms.length + ' término' + (searchTerms.length !== 1 ? 's' : '') + '...', 'loading');
+
+    const payload = {
+      terms: searchTerms,
+      limit: 100,
+      offset: 0
+    };
+
+    try {
+      const url = `${window.API_BASE || ''}/api/infra/smart-search`;
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || errData.error || `Error ${res.status}`);
+      }
+
+      const data = await res.json();
+      const camaras = data.camaras || [];
+
+      showLoading(false);
+      renderCamaras(camaras);
+
+      const count = camaras.length;
+      const total = data.total || count;
+      if (count > 0) {
+        const statusText = total > count 
+          ? `Mostrando ${count} de ${total} cámaras (${searchTerms.length} término${searchTerms.length !== 1 ? 's' : ''} AND)`
+          : `${count} cámara${count !== 1 ? 's' : ''} encontrada${count !== 1 ? 's' : ''}`;
+        setStatus(statusText, 'success');
+      } else {
+        setStatus('Sin resultados para estos términos', 'muted');
+      }
+
+    } catch (err) {
+      showLoading(false);
+      showEmpty(true);
+      setStatus(`Error: ${err.message}`, 'error');
+      console.error('Error buscando cámaras:', err);
+    }
+  }
+
+  // ===========================================
+  // API: UPLOAD DE TRACKING
+  // ===========================================
+  async function uploadTracking(file) {
+    if (!file) return;
+
+    // Validar extensión
+    if (!file.name.toLowerCase().endsWith('.txt')) {
+      showToast('error', 'Archivo inválido', 'Solo se aceptan archivos .txt');
+      return;
+    }
+
+    setStatus('Subiendo tracking...', 'loading');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    if (window.CSRF_TOKEN) {
+      formData.append('csrf_token', window.CSRF_TOKEN);
+    }
+
+    try {
+      const url = `${window.API_BASE || ''}/api/infra/upload_tracking`;
+      const res = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include'
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || `Error ${res.status}`);
+      }
+
+      // Toast de éxito
+      const msg = [
+        data.camaras_nuevas > 0 ? `${data.camaras_nuevas} nueva${data.camaras_nuevas !== 1 ? 's' : ''}` : '',
+        data.camaras_existentes > 0 ? `${data.camaras_existentes} existente${data.camaras_existentes !== 1 ? 's' : ''}` : '',
+        data.empalmes_registrados > 0 ? `${data.empalmes_registrados} empalme${data.empalmes_registrados !== 1 ? 's' : ''}` : ''
+      ].filter(Boolean).join(', ');
+
+      showToast(
+        'success',
+        'Tracking procesado',
+        `Servicio ${data.servicio_id}: ${msg || 'sin cambios'}`
+      );
+
+      setStatus(data.mensaje || 'Tracking procesado correctamente', 'success');
+
+      // Agregar filtro con el servicio recién subido y buscar
+      if (data.servicio_id) {
+        clearAllTerms();
+        addTerm(data.servicio_id);
+        await searchCamaras();
+      }
+
+    } catch (err) {
+      showToast('error', 'Error al procesar', err.message);
+      setStatus(`Error: ${err.message}`, 'error');
+      console.error('Error subiendo tracking:', err);
+    }
+  }
+
+  // ===========================================
+  // EVENT LISTENERS
+  // ===========================================
+
+  // Agregar término con botón +
+  addTermBtn.addEventListener('click', () => {
+    const value = searchInput.value;
+    
+    if (addTerm(value)) {
+      searchInput.value = '';
+      searchInput.focus();
+    }
+  });
+
+  // Enter en input de búsqueda → agregar término
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const value = searchInput.value;
+      
+      if (addTerm(value)) {
+        searchInput.value = '';
+      }
+    }
+  });
+
+  // Botón de búsqueda
+  searchBtn.addEventListener('click', () => {
+    searchCamaras();
+  });
+
+  // Quick filter chips (atajos para agregar términos)
+  quickFilterChips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      const value = chip.dataset.term || chip.dataset.filterValue;
+      
+      if (value) {
+        addTerm(value);
+        // Ejecutar búsqueda inmediatamente
+        searchCamaras();
+      }
+    });
+  });
+
+  // Upload zone: click
+  uploadZone.addEventListener('click', (e) => {
+    if (e.target === fileInput) return;
+    fileInput.click();
+  });
+
+  // Upload zone: drag & drop
+  uploadZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadZone.classList.add('drag');
+  });
+
+  uploadZone.addEventListener('dragleave', () => {
+    uploadZone.classList.remove('drag');
+  });
+
+  uploadZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag');
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      uploadTracking(file);
+    }
+  });
+
+  // File input change
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+      uploadTracking(fileInput.files[0]);
+      fileInput.value = ''; // Reset para permitir subir el mismo archivo de nuevo
+    }
+  });
+
+  // Mostrar estado inicial cuando se activa la vista
+  const viewInfra = $('#view-infra');
+  if (viewInfra) {
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          if (viewInfra.classList.contains('active') && !hasSearched) {
+            // Primera vez que se muestra la vista, mostrar estado inicial
+            showInitialState();
+          }
+        }
+      });
+    });
+    observer.observe(viewInfra, { attributes: true });
+    
+    // Si ya está activa al cargar
+    if (viewInfra.classList.contains('active')) {
+      showInitialState();
+    }
+  }
+})();

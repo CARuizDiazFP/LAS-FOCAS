@@ -115,8 +115,49 @@ Respuesta típica de `/api/flows/repetitividad` (modo Excel + GEO):
 - La plantilla `web/templates/panel.html` inyecta variables globales:
   - `window.API_BASE` (default `http://192.168.241.28:8080`).
   - `window.CSRF_TOKEN` (token actual de sesión).
-- El cliente principal (`/static/panel.js`) maneja los tabs activos (Chat, Repetitividad, Comparador VLAN, Comparador FO) y coordina envíos al backend, incluido el Chat HTTP (`/api/chat/message`), uploads (`/api/chat/uploads`) y la nueva herramienta de comparación vía `POST /api/tools/compare-vlans`.
+- El cliente principal (`/static/panel.js`) maneja los tabs activos (Chat, Repetitividad, Comparador VLAN, Comparador FO, Alarmas Ciena, **Infra/Cámaras**) y coordina envíos al backend, incluido el Chat HTTP (`/api/chat/message`), uploads (`/api/chat/uploads`) y la nueva herramienta de comparación vía `POST /api/tools/compare-vlans`.
 - La vista `/sla` usa `web/templates/sla.html` + `/static/sla.js`, con drag&drop, validación estricta de dos archivos (Servicios + Reclamos), alternancia Excel/DB, validación de período y mensajes accesibles que muestran los enlaces devueltos por `POST /api/reports/sla`.
+
+### Dashboard de Infraestructura (Cámaras)
+
+Nueva sección en el panel que permite visualizar y gestionar la infraestructura de fibra óptica con búsqueda avanzada:
+
+**Características:**
+- **Search Builder con Tags:** Sistema de filtros combinables que permite agregar múltiples criterios de búsqueda:
+  - Selector de tipo de filtro (Dirección, Servicio ID, Estado, Cable, Origen).
+  - Input de valor con botón "+" neón para agregar filtros.
+  - Tags visuales que muestran filtros activos con posibilidad de eliminar individualmente.
+  - Lógica AND: todos los filtros se aplican simultáneamente (intersección).
+- **Quick Filters:** Atajos para agregar filtros de estado/origen rápidamente.
+- **Zona de upload drag & drop:** Permite arrastrar archivos `.txt` de tracking para procesarlos automáticamente.
+- **Grid de tarjetas:** Cada cámara se muestra como una tarjeta con:
+  - Indicador de estado (icono de color neón según estado).
+  - Nombre/dirección de la cámara.
+  - Chips con los IDs de servicios que pasan por esa cámara.
+  - Metadatos opcionales (coordenadas, origen de datos, fontine_id).
+  - Borde punteado para cámaras con origen TRACKING (provisorias).
+- **Toasts de notificación:** Feedback visual al completar o fallar operaciones de upload.
+
+**Tipos de filtro disponibles:**
+| Campo | Descripción |
+|-------|-------------|
+| `address` | Busca por nombre o dirección de cámara (contains) |
+| `service_id` | Busca cámaras por donde pasa un servicio específico |
+| `status` | Estado: LIBRE, OCUPADA, BANEADA, DETECTADA |
+| `cable` | Busca cámaras asociadas a un cable por nombre |
+| `origen` | Origen de datos: MANUAL, TRACKING, SHEET |
+
+**Estilo visual:**
+- Tema "Hacker/Dark Mode" con acentos neón verde (#00ff88).
+- Tags de filtros con borde semitransparente y efecto glow.
+- Bordes con glow suave en elementos interactivos.
+- Fuentes monoespaciadas para IDs y datos técnicos.
+- Responsive: grid adapta columnas según ancho de pantalla.
+
+**Endpoints consumidos:**
+- `POST /api/infra/search` - Búsqueda avanzada con filtros AND (nuevo).
+- `GET /api/infra/camaras?q=<query>&estado=<estado>` - Búsqueda simple (legacy).
+- `POST /api/infra/upload_tracking` - Carga de archivos de tracking.
 
 ## Variables de entorno
 

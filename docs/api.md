@@ -84,6 +84,217 @@ Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la 
 - **Notas:** los estados se normalizan a `LIBRE|OCUPADA|BANEADA`; las coordenadas aceptan `.` o `,` como separador decimal. Las filas sin `Fontine_ID` se omiten del conteo `processed` y se registran como `skipped` en logs.
 - **Referencias:** ver pasos operativos en `docs/Guia_de_Uso.md` (sección "Sincronización de cámaras").
 
+### GET `/api/infra/camaras`
+
+Busca cámaras en la base de datos con filtrado por texto y/o estado.
+
+- **Autenticación:** requiere sesión activa (panel web) o API key (pendiente).
+- **Parámetros (query string):**
+
+  | Campo   | Tipo   | Requerido | Default | Descripción |
+  |---------|--------|-----------|---------|-------------|
+  | `q`     | string | No        | -       | Texto de búsqueda (busca en nombre, dirección, fontine_id, servicio_id). |
+  | `estado`| string | No        | -       | Filtrar por estado: `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`. |
+  | `limit` | int    | No        | 100     | Máximo de resultados (tope: 500). |
+
+- **Lógica de búsqueda:**
+  1. Filtra cámaras por estado si se especifica.
+  2. Busca coincidencias en `nombre`, `direccion`, `fontine_id` usando `ILIKE`.
+  3. Si no encuentra resultados y `q` parece un ID de servicio, busca servicios y retorna las cámaras asociadas.
+  4. Incluye lista de servicios que pasan por cada cámara (IDs extraídos de la relación servicio-empalme-cámara).
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "total": 5,
+    "camaras": [
+      {
+        "id": 1,
+        "nombre": "Av. Corrientes 1234",
+        "fontine_id": "CAM-001",
+        "direccion": null,
+        "estado": "OCUPADA",
+        "origen_datos": "SHEET",
+        "latitud": -34.6037,
+        "longitud": -58.3816,
+        "servicios": ["111995", "112001"]
+      }
+    ]
+  }
+  ```
+
+- **Códigos de error:**
+  - `500`: error de base de datos (consultar logs `action=search_camaras`).
+
+- **Ejemplo (cURL):**
+  ```bash
+  curl "http://localhost:8001/api/infra/camaras?q=corrientes&estado=OCUPADA&limit=50"
+  ```
+
+### POST `/api/infra/search`
+
+Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.
+
+- **Autenticación:** requiere sesión activa (panel web) o API key (pendiente).
+- **Content-Type:** `application/json`
+- **Body (JSON):**
+
+  ```json
+  {
+    "filters": [
+      {"field": "service_id", "operator": "eq", "value": "111995"},
+      {"field": "address", "operator": "contains", "value": "rivadavia"}
+    ],
+    "limit": 100,
+    "offset": 0
+  }
+  ```
+
+- **Campos de filtro disponibles:**
+
+  | Campo       | Descripción |
+  |-------------|-------------|
+  | `service_id` | Busca cámaras por donde pasa un servicio específico. |
+  | `address`    | Busca por nombre o dirección de la cámara. |
+  | `status`     | Estado de la cámara: `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`. |
+  | `cable`      | Busca cámaras asociadas a un cable por nombre. |
+  | `origen`     | Origen de datos: `MANUAL`, `TRACKING`, `SHEET`. |
+
+- **Operadores disponibles:**
+
+  | Operador      | Descripción | Ejemplo |
+  |---------------|-------------|---------|
+  | `eq`          | Coincidencia exacta (case-insensitive) | `{"field": "status", "operator": "eq", "value": "LIBRE"}` |
+  | `contains`    | El texto contiene el valor (default) | `{"field": "address", "operator": "contains", "value": "corrientes"}` |
+  | `starts_with` | Empieza con el valor | `{"field": "address", "operator": "starts_with", "value": "av."}` |
+  | `ends_with`   | Termina con el valor | `{"field": "address", "operator": "ends_with", "value": "1234"}` |
+  | `in`          | Valor está en lista (usar array en `value`) | `{"field": "status", "operator": "in", "value": ["LIBRE", "DETECTADA"]}` |
+
+- **Lógica de búsqueda:**
+  - Los filtros se combinan con **AND** (intersección): solo se devuelven cámaras que cumplan **todos** los filtros.
+  - Para filtrar por servicio, se busca en las relaciones servicio → empalme → cámara.
+  - Para filtrar por cable, se busca en la relación cámara → cables.
+  - Soporta paginación con `limit` (max 500) y `offset`.
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "total": 3,
+    "limit": 100,
+    "offset": 0,
+    "filters_applied": 2,
+    "camaras": [
+      {
+        "id": 1,
+        "nombre": "Av. Rivadavia 1500",
+        "fontine_id": "CAM-001",
+        "direccion": null,
+        "estado": "OCUPADA",
+        "origen_datos": "TRACKING",
+        "latitud": -34.6037,
+        "longitud": -58.3816,
+        "servicios": ["111995"]
+      }
+    ]
+  }
+  ```
+
+- **Códigos de error:**
+  - `422`: filtros inválidos o más de 10 filtros.
+  - `500`: error de base de datos (consultar logs `action=advanced_search`).
+
+- **Ejemplos de uso:**
+
+  ```bash
+  # Buscar cámaras de un servicio específico
+  curl -X POST http://localhost:8001/api/infra/search \
+    -H "Content-Type: application/json" \
+    -d '{"filters": [{"field": "service_id", "operator": "eq", "value": "111995"}]}'
+
+  # Buscar cámaras libres en una calle
+  curl -X POST http://localhost:8001/api/infra/search \
+    -H "Content-Type: application/json" \
+    -d '{"filters": [
+      {"field": "address", "operator": "contains", "value": "corrientes"},
+      {"field": "status", "operator": "eq", "value": "LIBRE"}
+    ]}'
+
+  # Buscar cámaras con múltiples estados (detectadas o libres)
+  curl -X POST http://localhost:8001/api/infra/search \
+    -H "Content-Type: application/json" \
+    -d '{"filters": [{"field": "status", "operator": "in", "value": ["LIBRE", "DETECTADA"]}]}'
+
+  # Buscar con paginación
+  curl -X POST http://localhost:8001/api/infra/search \
+    -H "Content-Type: application/json" \
+    -d '{"filters": [], "limit": 50, "offset": 100}'
+  ```
+
+### POST `/api/infra/upload_tracking`
+
+Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos con servicios, cámaras y empalmes.
+
+- **Autenticación:** pendiente (usar sólo en entornos controlados hasta integrar API key / JWT).
+- **Content-Type:** `multipart/form-data`
+- **Parámetros:**
+
+  | Campo  | Tipo       | Requerido | Descripción |
+  |--------|------------|-----------|-------------|
+  | `file` | UploadFile | Sí        | Archivo `.txt` con el tracking de fibra óptica. |
+
+- **Lógica de procesamiento:**
+  1. Extrae el ID del servicio desde el nombre del archivo usando regex (ej: `FO 111995 C2.txt` → `111995`).
+  2. Parsea el contenido buscando líneas `Empalme <ID>: <Dirección/Ubicación>`.
+  3. Crea o actualiza el servicio en `app.servicios`.
+  4. Para cada empalme/ubicación:
+     - Busca la cámara por nombre (coincidencia exacta o normalizada case-insensitive).
+     - **Si no existe:** crea una nueva cámara con `estado=DETECTADA` y `origen_datos=TRACKING`.
+     - Registra el empalme y la asociación servicio-empalme.
+  5. Guarda el tracking crudo en `raw_tracking_data` del servicio.
+
+- **Enriquecimiento progresivo:** las cámaras detectadas automáticamente pueden enriquecerse posteriormente con coordenadas y estado real mediante el endpoint `/sync/camaras` o edición manual.
+
+- **Idempotencia:** subir el mismo archivo dos veces no duplica datos; actualiza las asociaciones existentes.
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "servicios_procesados": 1,
+    "servicio_id": "111995",
+    "camaras_nuevas": 3,
+    "camaras_existentes": 5,
+    "empalmes_registrados": 8,
+    "mensaje": "Tracking del servicio 111995 procesado correctamente"
+  }
+  ```
+
+- **Códigos de error:**
+  - `400`: archivo sin extensión `.txt`, ID de servicio no extraíble, o sin empalmes válidos.
+  - `500`: error durante el procesamiento o persistencia (consultar logs `action=upload_tracking`).
+
+- **Ejemplo (cURL):**
+  ```bash
+  curl -X POST \
+    -F "file=@FO 111995 C2.txt" \
+    http://localhost:8001/api/infra/upload_tracking
+  ```
+
+- **Formato de archivo esperado:**
+  ```
+  Empalme 1: Av. Corrientes 1234
+  F-001: ... 0.35 dB
+  F-002: ... 0.28 dB
+  Empalme 2: Calle Florida 567
+  F-003: ... 0.42 dB
+  ...
+  ```
+
 ## Informes
 ### POST `/reports/repetitividad`
 

@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, asdict
-from typing import Iterable, List, Optional
+from dataclasses import dataclass, asdict, field
+from typing import Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Regex para extraer ID de servicio desde nombre de archivo (ej: "FO 111995 C2.txt" -> "111995")
+SERVICIO_ID_REGEX = re.compile(r"(?:FO\s*)?(\d{5,})", re.IGNORECASE)
 
 EMPALME_REGEX = re.compile(r"^Empalme\s+(?P<id>\d+):\s*(?P<descripcion>.+)$", re.IGNORECASE)
 FIBRA_REGEX = re.compile(
@@ -36,8 +39,73 @@ class TrackingEntry:
         return asdict(self)
 
 
-def parse_tracking(raw_text: str) -> List[TrackingEntry]:
-    """Parsea el contenido crudo de un archivo de tracking y devuelve segmentos ordenados.
+@dataclass
+class TrackingParseResult:
+    """Resultado completo del parsing de un archivo de tracking."""
+
+    servicio_id: Optional[str]
+    nombre_archivo: str
+    entries: List[TrackingEntry] = field(default_factory=list)
+    empalmes_count: int = 0
+    tramos_count: int = 0
+
+    def to_dict(self) -> dict:
+        """Convierte el resultado a dict para serialización."""
+
+        return {
+            "servicio_id": self.servicio_id,
+            "nombre_archivo": self.nombre_archivo,
+            "entries": [e.to_dict() for e in self.entries],
+            "empalmes_count": self.empalmes_count,
+            "tramos_count": self.tramos_count,
+        }
+
+    def get_empalmes(self) -> List[TrackingEntry]:
+        """Retorna solo las entradas de tipo empalme."""
+
+        return [e for e in self.entries if e.tipo == "empalme"]
+
+    def get_topologia(self) -> List[Tuple[str, str]]:
+        """Retorna lista de tuplas (empalme_id, descripcion/ubicacion) para los empalmes."""
+
+        return [
+            (e.empalme_id, e.empalme_descripcion)
+            for e in self.entries
+            if e.tipo == "empalme" and e.empalme_id and e.empalme_descripcion
+        ]
+
+
+def extract_servicio_id(filename: str) -> Optional[str]:
+    """Extrae el ID del servicio desde el nombre del archivo.
+
+    Args:
+        filename: Nombre del archivo (ej: "FO 111995 C2.txt")
+
+    Returns:
+        ID del servicio como string (ej: "111995") o None si no se encuentra.
+
+    Ejemplos:
+        - "FO 111995 C2.txt" -> "111995"
+        - "FO111995.txt" -> "111995"
+        - "111995_backup.txt" -> "111995"
+        - "tracking_servicio_999999.txt" -> "999999"
+    """
+
+    match = SERVICIO_ID_REGEX.search(filename)
+    if match:
+        return match.group(1)
+    return None
+
+
+def parse_tracking(raw_text: str, filename: str = "") -> TrackingParseResult:
+    """Parsea el contenido crudo de un archivo de tracking y devuelve resultado estructurado.
+
+    Args:
+        raw_text: Contenido del archivo de tracking.
+        filename: Nombre del archivo para extraer el ID del servicio.
+
+    Returns:
+        TrackingParseResult con ID de servicio, entradas parseadas y conteos.
 
     - Detecta líneas de empalme ("Empalme <id>: <descripcion>") y crea nodos de tipo "empalme".
     - Detecta líneas de fibra ("F-XYZ: ... 7.06 dB") y crea tramos con nombre de cable y atenuación.
@@ -47,6 +115,9 @@ def parse_tracking(raw_text: str) -> List[TrackingEntry]:
     entries: List[TrackingEntry] = []
     current_empalme_id: Optional[str] = None
     current_empalme_desc: Optional[str] = None
+
+    # Extraer ID del servicio desde el nombre del archivo
+    servicio_id = extract_servicio_id(filename) if filename else None
 
     for idx, line in enumerate(raw_text.splitlines()):
         stripped = line.strip()
@@ -93,19 +164,37 @@ def parse_tracking(raw_text: str) -> List[TrackingEntry]:
 
         logger.debug("action=parse_tracking skip_unmatched line=%s", stripped)
 
+    empalmes_count = sum(1 for e in entries if e.tipo == "empalme")
+    tramos_count = sum(1 for e in entries if e.tipo == "tramo")
+
     logger.info(
-        "action=parse_tracking parsed_entries=%d empalmes=%d tramos=%d",
+        "action=parse_tracking filename=%s servicio_id=%s parsed_entries=%d empalmes=%d tramos=%d",
+        filename,
+        servicio_id,
         len(entries),
-        sum(1 for e in entries if e.tipo == "empalme"),
-        sum(1 for e in entries if e.tipo == "tramo"),
+        empalmes_count,
+        tramos_count,
     )
-    return entries
+
+    return TrackingParseResult(
+        servicio_id=servicio_id,
+        nombre_archivo=filename,
+        entries=entries,
+        empalmes_count=empalmes_count,
+        tramos_count=tramos_count,
+    )
 
 
-def parse_tracking_as_dicts(raw_text: str) -> List[dict]:
-    """Helper para obtener la salida como lista de diccionarios."""
+def parse_tracking_as_dicts(raw_text: str, filename: str = "") -> dict:
+    """Helper para obtener la salida como diccionario completo."""
 
-    return [entry.to_dict() for entry in parse_tracking(raw_text)]
+    return parse_tracking(raw_text, filename).to_dict()
+
+
+def parse_tracking_entries(raw_text: str) -> List[TrackingEntry]:
+    """Parsea y retorna solo las entradas (compatibilidad hacia atrás)."""
+
+    return parse_tracking(raw_text).entries
 
 
 def iter_empalmes(entries: Iterable[TrackingEntry]) -> Iterable[TrackingEntry]:

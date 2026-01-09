@@ -146,6 +146,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Servicio de sincronización `core/services/infra_sync.py` que integra Google Sheets (gspread) y actualiza `app.camaras` con logging estructurado y upsert (2026-01-07).
 - [x] Endpoint FastAPI `POST /sync/camaras` y wiring en `api/app/main.py` para disparar la sincronización desde la API (2026-01-07).
 - [x] Documentación actualizada (`docs/db.md`, `docs/api.md`, `docs/Mate_y_Ruta.md`) y guía de credenciales (`Keys/credentials.json`) reflejada en `deploy/env.sample` (2026-01-07).
+- [x] Migración `20251230_01_infra.py` ajustada para ser idempotente (enum con `create_type=False`) y guía de ejecución de Alembic con `ALEMBIC_URL` documentada (2026-01-08).
 
 ### Pendiente (prioridad)
 - [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).

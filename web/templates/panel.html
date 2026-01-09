@@ -27,6 +27,7 @@
         <a class="chip" href="/sla">SLA</a>
       <button class="chip" data-view="fo">Comparador FO</button>
       <button class="chip" data-view="ciena">Alarmas Ciena</button>
+      <button class="chip" data-view="infra">Infra/Cámaras</button>
       <span class="spacer"></span>
       {% if username %}
       <span class="muted">{{ username }}</span>
@@ -190,7 +191,125 @@
           <div id="ciena-result" class="result-box muted">Esperando archivo.</div>
         </article>
       </section>
+
+      <!-- Dashboard Infraestructura / Cámaras -->
+      <section id="view-infra" class="view" aria-labelledby="Infraestructura">
+        <article class="card infra-card">
+          <!-- Hero Header con título y badge -->
+          <header class="infra-hero">
+            <div class="infra-hero-content">
+              <h1 class="infra-title">Infraestructura FO</h1>
+              <p class="infra-subtitle">Gestión de cámaras y servicios de fibra óptica</p>
+            </div>
+            <span class="badge infra-badge">🔌 FO INFRA</span>
+          </header>
+
+          <!-- Actions: Smart Search + Upload -->
+          <div class="infra-actions">
+            <!-- Smart Search (texto libre) -->
+            <div class="infra-search-builder">
+              <div class="infra-search-row">
+                <input 
+                  type="text" 
+                  id="infra-search-input" 
+                  class="infra-search-input" 
+                  placeholder="Buscá por servicio, dirección, cámara, cable..." 
+                  autocomplete="off"
+                />
+                <button type="button" id="infra-add-term" class="infra-add-btn" title="Agregar término">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                </button>
+              </div>
+              <!-- Términos de búsqueda activos -->
+              <div id="infra-search-terms" class="infra-search-terms"></div>
+              <!-- Botón de búsqueda -->
+              <button type="button" id="infra-search-btn" class="infra-search-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.35-4.35"/>
+                </svg>
+                Buscar
+              </button>
+            </div>
+
+            <!-- Upload Zone -->
+            <div class="infra-upload-zone" id="infra-drop">
+              <input type="file" id="infra-file" name="file" accept=".txt" hidden />
+              <svg class="infra-upload-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17,8 12,3 7,8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span class="infra-upload-text">Subir tracking</span>
+              <span class="infra-upload-hint">.txt</span>
+            </div>
+          </div>
+
+          <!-- Quick filters (estado) - Atajos para agregar términos -->
+          <div class="infra-quick-filters">
+            <span class="infra-filters-label">Atajos:</span>
+            <button class="infra-quick-chip" data-term="LIBRE">
+              <span class="status-dot libre"></span> Libre
+            </button>
+            <button class="infra-quick-chip" data-term="OCUPADA">
+              <span class="status-dot ocupada"></span> Ocupada
+            </button>
+            <button class="infra-quick-chip" data-term="BANEADA">
+              <span class="status-dot baneada"></span> Baneada
+            </button>
+            <button class="infra-quick-chip" data-term="DETECTADA">
+              <span class="status-dot detectada"></span> Detectada
+            </button>
+            <button class="infra-quick-chip" data-term="TRACKING">
+              📍 Tracking
+            </button>
+          </div>
+
+          <!-- Separador visual -->
+          <hr class="infra-divider" />
+
+          <!-- Status bar -->
+          <div id="infra-status" class="infra-status">
+            <!-- Se actualiza dinámicamente -->
+          </div>
+
+          <!-- Contenedor principal de resultados -->
+          <div class="infra-results">
+            <!-- Grid de resultados -->
+            <div id="infra-grid" class="infra-grid"></div>
+
+            <!-- Loading spinner -->
+            <div id="infra-loading" class="infra-loading" hidden>
+              <div class="infra-spinner-ring"></div>
+              <span>Buscando cámaras...</span>
+            </div>
+
+            <!-- Empty state inicial -->
+            <div id="infra-empty" class="infra-empty">
+              <div class="infra-empty-visual">
+                <svg viewBox="0 0 120 100" class="infra-empty-illustration">
+                  <rect x="10" y="60" width="100" height="35" rx="4" fill="#1a1f26" stroke="#30363d"/>
+                  <circle cx="35" cy="77" r="8" fill="none" stroke="#00ff88" stroke-width="2" opacity="0.6"/>
+                  <circle cx="60" cy="77" r="8" fill="none" stroke="#3b82f6" stroke-width="2" opacity="0.6"/>
+                  <circle cx="85" cy="77" r="8" fill="none" stroke="#eab308" stroke-width="2" opacity="0.6"/>
+                  <path d="M35 40 L60 20 L85 40" stroke="#30363d" stroke-width="2" fill="none"/>
+                  <circle cx="60" cy="20" r="6" fill="#0d1117" stroke="#00ff88" stroke-width="2"/>
+                  <line x1="60" y1="26" x2="60" y2="60" stroke="#30363d" stroke-width="2" stroke-dasharray="4 2"/>
+                </svg>
+              </div>
+              <h3 class="infra-empty-title">Sin cámaras para mostrar</h3>
+              <p class="infra-empty-desc">Buscá por ID de servicio, dirección o subí un archivo de tracking</p>
+            </div>
+          </div>
+        </article>
+      </section>
     </section>
   </main>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container"></div>
 </body>
 </html>

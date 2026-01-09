@@ -1417,3 +1417,655 @@ async def tool_compare_vlans(request: Request, payload: VLANCompareRequest) -> J
         len(response["common"]),
     )
     return JSONResponse(response)
+
+
+# =============================================================================
+# INFRAESTRUCTURA / CÁMARAS
+# =============================================================================
+
+class CamaraResponseModel(BaseModel):
+    """Modelo de respuesta para una cámara."""
+
+    id: int
+    nombre: str
+    fontine_id: Optional[str] = None
+    direccion: Optional[str] = None
+    estado: str
+    origen_datos: str
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    servicios: List[str] = []
+
+
+class CamarasListResponseModel(BaseModel):
+    """Modelo de respuesta para lista de cámaras."""
+
+    status: str
+    total: int
+    camaras: List[CamaraResponseModel]
+
+
+@app.get("/api/infra/camaras")
+async def search_camaras_web(
+    request: Request,
+    q: Optional[str] = None,
+    estado: Optional[str] = None,
+    limit: int = 100,
+) -> JSONResponse:
+    """Busca cámaras por query y/o estado (proxy al API interno)."""
+
+    username, _ = _require_auth(request)
+    limit = min(limit, 500)
+
+    try:
+        from db.models.infra import Camara, CamaraEstado, Servicio
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            query = session.query(Camara)
+
+            # Filtro por estado
+            if estado:
+                estado_upper = estado.upper()
+                if estado_upper in [e.value for e in CamaraEstado]:
+                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
+
+            # Filtro por texto
+            if q and q.strip():
+                search_term = f"%{q.strip()}%"
+                query = query.filter(
+                    (Camara.nombre.ilike(search_term)) |
+                    (Camara.direccion.ilike(search_term)) |
+                    (Camara.fontine_id.ilike(search_term))
+                )
+
+            camaras_db = query.order_by(Camara.nombre).limit(limit).all()
+
+            # Construir respuesta con servicios
+            camaras_response = []
+            for cam in camaras_db:
+                servicios_ids = []
+                for empalme in cam.empalmes:
+                    for servicio in empalme.servicios:
+                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
+                            servicios_ids.append(servicio.servicio_id)
+
+                camaras_response.append({
+                    "id": cam.id,
+                    "nombre": cam.nombre or "",
+                    "fontine_id": cam.fontine_id,
+                    "direccion": cam.direccion,
+                    "estado": cam.estado.value if cam.estado else "LIBRE",
+                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                    "latitud": cam.latitud,
+                    "longitud": cam.longitud,
+                    "servicios": servicios_ids,
+                })
+
+            # Buscar por servicio_id si no se encontraron cámaras
+            if q and q.strip() and not camaras_response:
+                servicio = session.query(Servicio).filter(
+                    Servicio.servicio_id.ilike(f"%{q.strip()}%")
+                ).first()
+
+                if servicio:
+                    for empalme in servicio.empalmes:
+                        if empalme.camara and empalme.camara.id not in [c["id"] for c in camaras_response]:
+                            cam = empalme.camara
+                            servicios_ids = [servicio.servicio_id]
+                            for emp in cam.empalmes:
+                                for svc in emp.servicios:
+                                    if svc.servicio_id and svc.servicio_id not in servicios_ids:
+                                        servicios_ids.append(svc.servicio_id)
+
+                            camaras_response.append({
+                                "id": cam.id,
+                                "nombre": cam.nombre or "",
+                                "fontine_id": cam.fontine_id,
+                                "direccion": cam.direccion,
+                                "estado": cam.estado.value if cam.estado else "LIBRE",
+                                "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                                "latitud": cam.latitud,
+                                "longitud": cam.longitud,
+                                "servicios": servicios_ids,
+                            })
+
+            logger.info(
+                "action=search_camaras user=%s query=%s estado=%s results=%d",
+                username,
+                q,
+                estado,
+                len(camaras_response),
+            )
+
+            return JSONResponse({
+                "status": "ok",
+                "total": len(camaras_response),
+                "camaras": camaras_response,
+            })
+
+    except Exception as exc:
+        logger.exception("action=search_camaras_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"error": f"Error buscando cámaras: {exc!s}"},
+            status_code=500
+        )
+
+
+class SearchFilterModel(BaseModel):
+    """Filtro individual para búsqueda avanzada."""
+    field: str
+    operator: str = "contains"
+    value: str | list[str]
+
+
+class SearchRequestModel(BaseModel):
+    """Request para búsqueda avanzada de cámaras."""
+    filters: list[SearchFilterModel] = []
+    limit: int = 100
+    offset: int = 0
+
+
+@app.post("/api/infra/search")
+async def advanced_search_camaras_web(
+    request: Request,
+    body: SearchRequestModel,
+) -> JSONResponse:
+    """Búsqueda avanzada de cámaras con filtros combinables (AND).
+
+    Campos: service_id, address, status, cable, origen
+    Operadores: eq, contains, starts_with, ends_with, in
+    """
+
+    username, _ = _require_auth(request)
+
+    try:
+        from db.models.infra import Cable, Camara, CamaraEstado, CamaraOrigenDatos, Empalme, Servicio
+        from db.session import SessionLocal
+
+        limit = min(body.limit, 500)
+        offset = max(body.offset, 0)
+
+        with SessionLocal() as session:
+            all_camaras = session.query(Camara).order_by(Camara.nombre).all()
+
+            def apply_text_filter(value: str, operator: str, db_value: str | None) -> bool:
+                if db_value is None:
+                    return False
+                db_lower = db_value.lower()
+                val_lower = value.lower() if isinstance(value, str) else value
+
+                if operator == "eq":
+                    return db_lower == val_lower
+                elif operator == "contains":
+                    return val_lower in db_lower
+                elif operator == "starts_with":
+                    return db_lower.startswith(val_lower)
+                elif operator == "ends_with":
+                    return db_lower.endswith(val_lower)
+                elif operator == "in":
+                    if isinstance(value, list):
+                        return db_lower in [v.lower() for v in value]
+                    return db_lower == val_lower
+                return False
+
+            def get_camara_servicios(camara: Camara) -> list[str]:
+                servicios_ids = []
+                for empalme in camara.empalmes:
+                    for servicio in empalme.servicios:
+                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
+                            servicios_ids.append(servicio.servicio_id)
+                return servicios_ids
+
+            def get_camara_cables(camara: Camara) -> list[str]:
+                cables_nombres = []
+                for cable in camara.cables:
+                    if cable.nombre and cable.nombre not in cables_nombres:
+                        cables_nombres.append(cable.nombre)
+                return cables_nombres
+
+            def camara_matches_filter(camara, flt, servicios_ids, cables_nombres) -> bool:
+                value = flt.value if isinstance(flt.value, str) else (flt.value[0] if flt.value else "")
+
+                if flt.field == "service_id":
+                    for svc_id in servicios_ids:
+                        if apply_text_filter(value, flt.operator, svc_id):
+                            return True
+                    return False
+
+                elif flt.field == "address":
+                    return (
+                        apply_text_filter(value, flt.operator, camara.nombre) or
+                        apply_text_filter(value, flt.operator, camara.direccion)
+                    )
+
+                elif flt.field == "status":
+                    estado_actual = camara.estado.value if camara.estado else "LIBRE"
+                    if flt.operator == "in" and isinstance(flt.value, list):
+                        return estado_actual.upper() in [v.upper() for v in flt.value]
+                    return estado_actual.upper() == value.upper()
+
+                elif flt.field == "cable":
+                    for cable_nombre in cables_nombres:
+                        if apply_text_filter(value, flt.operator, cable_nombre):
+                            return True
+                    return False
+
+                elif flt.field == "origen":
+                    origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
+                    if flt.operator == "in" and isinstance(flt.value, list):
+                        return origen_actual.upper() in [v.upper() for v in flt.value]
+                    return origen_actual.upper() == value.upper()
+
+                return False
+
+            # Si no hay filtros, devolver todas
+            if not body.filters:
+                total = len(all_camaras)
+                paginated = all_camaras[offset:offset + limit]
+                camaras_response = []
+                for cam in paginated:
+                    servicios_ids = get_camara_servicios(cam)
+                    camaras_response.append({
+                        "id": cam.id,
+                        "nombre": cam.nombre or "",
+                        "fontine_id": cam.fontine_id,
+                        "direccion": cam.direccion,
+                        "estado": cam.estado.value if cam.estado else "LIBRE",
+                        "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                        "latitud": cam.latitud,
+                        "longitud": cam.longitud,
+                        "servicios": servicios_ids,
+                    })
+
+                return JSONResponse({
+                    "status": "ok",
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "filters_applied": 0,
+                    "camaras": camaras_response,
+                })
+
+            # Aplicar filtros con lógica AND
+            matching_camaras = []
+            for camara in all_camaras:
+                servicios_ids = get_camara_servicios(camara)
+                cables_nombres = get_camara_cables(camara)
+
+                matches_all = True
+                for flt in body.filters:
+                    if not camara_matches_filter(camara, flt, servicios_ids, cables_nombres):
+                        matches_all = False
+                        break
+
+                if matches_all:
+                    matching_camaras.append((camara, servicios_ids))
+
+            total = len(matching_camaras)
+            paginated = matching_camaras[offset:offset + limit]
+            camaras_response = []
+            for cam, svc_ids in paginated:
+                camaras_response.append({
+                    "id": cam.id,
+                    "nombre": cam.nombre or "",
+                    "fontine_id": cam.fontine_id,
+                    "direccion": cam.direccion,
+                    "estado": cam.estado.value if cam.estado else "LIBRE",
+                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                    "latitud": cam.latitud,
+                    "longitud": cam.longitud,
+                    "servicios": svc_ids,
+                })
+
+            logger.info(
+                "action=advanced_search user=%s filters=%d total=%d returned=%d",
+                username,
+                len(body.filters),
+                total,
+                len(camaras_response),
+            )
+
+            return JSONResponse({
+                "status": "ok",
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "filters_applied": len(body.filters),
+                "camaras": camaras_response,
+            })
+
+    except Exception as exc:
+        logger.exception("action=advanced_search_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"error": f"Error en búsqueda avanzada: {exc!s}"},
+            status_code=500
+        )
+
+
+class SmartSearchRequestModel(BaseModel):
+    """Request para Smart Search con términos libres."""
+    terms: list[str] = []
+    limit: int = 100
+    offset: int = 0
+
+
+@app.post("/api/infra/smart-search")
+async def smart_search_camaras_web(
+    request: Request,
+    body: SmartSearchRequestModel,
+) -> JSONResponse:
+    """Smart Search: búsqueda libre por términos.
+
+    Cada término se busca en múltiples campos (nombre, dirección, fontine_id,
+    servicios, cables, estado, origen). Los términos se combinan con AND.
+    """
+
+    username, _ = _require_auth(request)
+
+    try:
+        from db.models.infra import Camara
+        from db.session import SessionLocal
+
+        limit = min(body.limit, 500)
+        offset = max(body.offset, 0)
+
+        with SessionLocal() as session:
+            all_camaras = session.query(Camara).order_by(Camara.nombre).all()
+
+            def get_camara_servicios(camara: Camara) -> list[str]:
+                servicios_ids = []
+                for empalme in camara.empalmes:
+                    for servicio in empalme.servicios:
+                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
+                            servicios_ids.append(servicio.servicio_id)
+                return servicios_ids
+
+            def get_camara_cables(camara: Camara) -> list[str]:
+                cables_nombres = []
+                for cable in camara.cables:
+                    if cable.nombre and cable.nombre not in cables_nombres:
+                        cables_nombres.append(cable.nombre)
+                return cables_nombres
+
+            def term_matches_camara(term: str, camara, servicios_ids, cables_nombres) -> bool:
+                term_lower = term.lower()
+
+                # Buscar en nombre
+                if camara.nombre and term_lower in camara.nombre.lower():
+                    return True
+
+                # Buscar en dirección
+                if camara.direccion and term_lower in camara.direccion.lower():
+                    return True
+
+                # Buscar en fontine_id
+                if camara.fontine_id and term_lower in camara.fontine_id.lower():
+                    return True
+
+                # Buscar en servicios
+                for svc_id in servicios_ids:
+                    if term_lower in svc_id.lower():
+                        return True
+
+                # Buscar en cables
+                for cable_nombre in cables_nombres:
+                    if term_lower in cable_nombre.lower():
+                        return True
+
+                # Buscar en estado
+                estado_actual = camara.estado.value if camara.estado else "LIBRE"
+                if term_lower in estado_actual.lower():
+                    return True
+
+                # Buscar en origen
+                origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
+                if term_lower in origen_actual.lower():
+                    return True
+
+                return False
+
+            # Si no hay términos, devolver todas
+            if not body.terms:
+                total = len(all_camaras)
+                paginated = all_camaras[offset:offset + limit]
+                camaras_response = []
+                for cam in paginated:
+                    servicios_ids = get_camara_servicios(cam)
+                    camaras_response.append({
+                        "id": cam.id,
+                        "nombre": cam.nombre or "",
+                        "fontine_id": cam.fontine_id,
+                        "direccion": cam.direccion,
+                        "estado": cam.estado.value if cam.estado else "LIBRE",
+                        "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                        "latitud": cam.latitud,
+                        "longitud": cam.longitud,
+                        "servicios": servicios_ids,
+                    })
+
+                return JSONResponse({
+                    "status": "ok",
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "filters_applied": 0,
+                    "camaras": camaras_response,
+                })
+
+            # Aplicar términos con lógica AND
+            matching_camaras = []
+            for camara in all_camaras:
+                servicios_ids = get_camara_servicios(camara)
+                cables_nombres = get_camara_cables(camara)
+
+                matches_all = True
+                for term in body.terms:
+                    term_clean = term.strip()
+                    if not term_clean:
+                        continue
+                    if not term_matches_camara(term_clean, camara, servicios_ids, cables_nombres):
+                        matches_all = False
+                        break
+
+                if matches_all:
+                    matching_camaras.append((camara, servicios_ids))
+
+            total = len(matching_camaras)
+            paginated = matching_camaras[offset:offset + limit]
+            camaras_response = []
+            for cam, svc_ids in paginated:
+                camaras_response.append({
+                    "id": cam.id,
+                    "nombre": cam.nombre or "",
+                    "fontine_id": cam.fontine_id,
+                    "direccion": cam.direccion,
+                    "estado": cam.estado.value if cam.estado else "LIBRE",
+                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                    "latitud": cam.latitud,
+                    "longitud": cam.longitud,
+                    "servicios": svc_ids,
+                })
+
+            terms_count = len([t for t in body.terms if t.strip()])
+            logger.info(
+                "action=smart_search user=%s terms=%d total=%d returned=%d",
+                username,
+                terms_count,
+                total,
+                len(camaras_response),
+            )
+
+            return JSONResponse({
+                "status": "ok",
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "filters_applied": terms_count,
+                "camaras": camaras_response,
+            })
+
+    except Exception as exc:
+        logger.exception("action=smart_search_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"error": f"Error en smart search: {exc!s}"},
+            status_code=500
+        )
+
+
+@app.post("/api/infra/upload_tracking")
+async def upload_tracking_web(
+    request: Request,
+    file: UploadFile = File(...),
+) -> JSONResponse:
+    """Procesa un archivo de tracking de fibra óptica."""
+
+    username, _ = _require_auth(request)
+
+    # Validar extensión
+    if not file.filename or not file.filename.lower().endswith(".txt"):
+        return JSONResponse(
+            {"error": "El archivo debe tener extensión .txt"},
+            status_code=400
+        )
+
+    try:
+        from core.parsers.tracking_parser import parse_tracking
+        from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos, Empalme, Servicio
+        from db.session import SessionLocal
+        from datetime import datetime, timezone
+
+        # Leer contenido
+        content = await file.read()
+        try:
+            raw_text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raw_text = content.decode("latin-1")
+
+        # Parsear
+        result = parse_tracking(raw_text, file.filename)
+
+        if not result.servicio_id:
+            return JSONResponse(
+                {"error": f"No se pudo extraer el ID del servicio desde: {file.filename}"},
+                status_code=400
+            )
+
+        topologia = result.get_topologia()
+        if not topologia:
+            return JSONResponse(
+                {"error": "No se encontraron empalmes/ubicaciones en el archivo"},
+                status_code=400
+            )
+
+        logger.info(
+            "action=upload_tracking user=%s filename=%s servicio_id=%s empalmes=%d",
+            username,
+            file.filename,
+            result.servicio_id,
+            len(topologia),
+        )
+
+        camaras_nuevas = 0
+        camaras_existentes = 0
+        empalmes_registrados = 0
+
+        with SessionLocal() as session:
+            # Obtener o crear servicio
+            servicio = session.query(Servicio).filter(
+                Servicio.servicio_id == result.servicio_id
+            ).first()
+
+            if servicio:
+                servicio.nombre_archivo_origen = file.filename
+            else:
+                servicio = Servicio(
+                    servicio_id=result.servicio_id,
+                    nombre_archivo_origen=file.filename,
+                )
+                session.add(servicio)
+                session.flush()
+
+            servicio.raw_tracking_data = result.to_dict()
+
+            # Procesar empalmes
+            for empalme_id, ubicacion in topologia:
+                # Buscar cámara
+                nombre_norm = " ".join(ubicacion.strip().lower().split())
+                camara = session.query(Camara).filter(Camara.nombre == ubicacion).first()
+
+                if not camara:
+                    # Buscar normalizado
+                    all_cams = session.query(Camara).all()
+                    for c in all_cams:
+                        if c.nombre and " ".join(c.nombre.strip().lower().split()) == nombre_norm:
+                            camara = c
+                            break
+
+                if camara:
+                    camaras_existentes += 1
+                else:
+                    camara = Camara(
+                        nombre=ubicacion.strip(),
+                        estado=CamaraEstado.DETECTADA,
+                        origen_datos=CamaraOrigenDatos.TRACKING,
+                        last_update=datetime.now(timezone.utc),
+                    )
+                    session.add(camara)
+                    session.flush()
+                    camaras_nuevas += 1
+
+                # Registrar empalme
+                tracking_id_completo = f"{result.servicio_id}_{empalme_id}"
+                empalme = session.query(Empalme).filter(
+                    Empalme.tracking_empalme_id == tracking_id_completo
+                ).first()
+
+                if empalme:
+                    if empalme.camara_id != camara.id:
+                        empalme.camara_id = camara.id
+                    if servicio not in empalme.servicios:
+                        empalme.servicios.append(servicio)
+                else:
+                    empalme = Empalme(
+                        tracking_empalme_id=tracking_id_completo,
+                        camara_id=camara.id,
+                    )
+                    session.add(empalme)
+                    session.flush()
+                    empalme.servicios.append(servicio)
+                    empalmes_registrados += 1
+
+            session.commit()
+
+            logger.info(
+                "action=upload_tracking_complete user=%s servicio_id=%s camaras_nuevas=%d "
+                "camaras_existentes=%d empalmes=%d",
+                username,
+                result.servicio_id,
+                camaras_nuevas,
+                camaras_existentes,
+                empalmes_registrados,
+            )
+
+            return JSONResponse({
+                "status": "ok",
+                "servicios_procesados": 1,
+                "servicio_id": result.servicio_id,
+                "camaras_nuevas": camaras_nuevas,
+                "camaras_existentes": camaras_existentes,
+                "empalmes_registrados": empalmes_registrados,
+                "mensaje": f"Tracking del servicio {result.servicio_id} procesado correctamente",
+            })
+
+    except Exception as exc:
+        logger.exception(
+            "action=upload_tracking_error user=%s filename=%s error=%s",
+            username,
+            file.filename,
+            exc,
+        )
+        return JSONResponse(
+            {"error": f"Error procesando el archivo: {exc!s}"},
+            status_code=500
+        )
