@@ -1,13 +1,13 @@
 # Nombre de archivo: infra.py
 # Ubicación de archivo: api/api_app/routes/infra.py
-# Descripción: Endpoints para sincronizar cámaras y procesar trackings de fibra óptica
+# Descripción: Endpoints para sincronizar cámaras, procesar trackings y gestionar rutas de fibra óptica
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -15,12 +15,23 @@ from sqlalchemy import func, or_
 
 from core.parsers.tracking_parser import parse_tracking
 from core.services.infra_sync import sync_camaras_from_sheet
+from core.services.infra_service import (
+    AnalysisResult,
+    AnalysisStatus,
+    InfraService,
+    ResolveAction,
+    ResolveResult,
+    analyze_tracking_file,
+    resolve_tracking_file,
+)
 from db.models.infra import (
     Cable,
     Camara,
     CamaraEstado,
     CamaraOrigenDatos,
     Empalme,
+    RutaServicio,
+    RutaTipo,
     Servicio,
 )
 from db.session import SessionLocal
@@ -1030,4 +1041,441 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
         raise HTTPException(
             status_code=500,
             detail=f"Error procesando el archivo de tracking: {exc!s}",
+        ) from exc
+
+
+# =============================================================================
+# ENDPOINTS DE VERSIONADO Y RAMIFICACIÓN DE RUTAS
+# =============================================================================
+
+
+class TrackingAnalyzeRequest(BaseModel):
+    """Request opcional para analyze (puede enviar contenido en lugar de archivo)."""
+    
+    content: Optional[str] = None
+    filename: Optional[str] = None
+
+
+class RutaInfoResponse(BaseModel):
+    """Información de una ruta existente."""
+    
+    id: int
+    nombre: str
+    tipo: str
+    hash_contenido: Optional[str] = None
+    empalmes_count: int
+    activa: bool
+    created_at: Optional[str] = None
+    nombre_archivo_origen: Optional[str] = None
+
+
+class TrackingAnalyzeResponse(BaseModel):
+    """Respuesta del análisis de un archivo de tracking."""
+    
+    status: str  # NEW, IDENTICAL, CONFLICT, ERROR
+    servicio_id: Optional[str] = None
+    servicio_db_id: Optional[int] = None
+    nuevo_hash: Optional[str] = None
+    rutas_existentes: List[RutaInfoResponse] = []
+    ruta_identica_id: Optional[int] = None
+    parsed_empalmes_count: int = 0
+    message: str = ""
+    error: Optional[str] = None
+
+
+class TrackingResolveRequest(BaseModel):
+    """Request para resolver un tracking."""
+    
+    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH
+    content: str
+    filename: str
+    target_ruta_id: Optional[int] = None
+    new_ruta_name: Optional[str] = None
+    new_ruta_tipo: Optional[str] = None  # PRINCIPAL, BACKUP, ALTERNATIVA
+
+
+class TrackingResolveResponse(BaseModel):
+    """Respuesta de la resolución de un tracking."""
+    
+    success: bool
+    action: str
+    servicio_id: Optional[str] = None
+    servicio_db_id: Optional[int] = None
+    ruta_id: Optional[int] = None
+    ruta_nombre: Optional[str] = None
+    camaras_nuevas: int = 0
+    camaras_existentes: int = 0
+    empalmes_creados: int = 0
+    empalmes_asociados: int = 0
+    message: str = ""
+    error: Optional[str] = None
+
+
+class ServicioRutasResponse(BaseModel):
+    """Respuesta con información de un servicio y sus rutas."""
+    
+    status: str
+    servicio_id: str
+    servicio_db_id: int
+    cliente: Optional[str] = None
+    rutas: List[RutaInfoResponse]
+    total_rutas: int
+
+
+@router.post("/api/infra/trackings/analyze", response_model=TrackingAnalyzeResponse)
+async def analyze_tracking_endpoint(
+    file: Optional[UploadFile] = File(None),
+    content: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> TrackingAnalyzeResponse:
+    """Analiza un archivo de tracking y determina el escenario.
+    
+    El "Portero" de archivos - Fase 1 (Análisis):
+    - Parsea el archivo y extrae ID de servicio y empalmes
+    - Busca el servicio en la base de datos
+    - Compara hashes con rutas existentes
+    
+    Escenarios posibles:
+    - NEW: El servicio no existe, se puede crear
+    - IDENTICAL: El archivo es idéntico a una ruta existente
+    - CONFLICT: El servicio existe pero el contenido es diferente
+    - ERROR: Hubo un error durante el análisis
+    
+    Args:
+        file: Archivo .txt de tracking (multipart/form-data)
+        content: Contenido del archivo (alternativa a subir archivo)
+        filename: Nombre del archivo (requerido si se usa content)
+    
+    Returns:
+        TrackingAnalyzeResponse con el resultado del análisis
+    """
+    # Obtener contenido del archivo o del body
+    if file:
+        raw_bytes = await file.read()
+        try:
+            raw_content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raw_content = raw_bytes.decode("latin-1")
+        filename_used = file.filename or "unknown.txt"
+    elif content:
+        raw_content = content
+        filename_used = filename or "unknown.txt"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe enviar un archivo (file) o contenido (content + filename)",
+        )
+    
+    try:
+        with SessionLocal() as session:
+            result = analyze_tracking_file(session, raw_content, filename_used)
+            
+            return TrackingAnalyzeResponse(
+                status=result.status.value,
+                servicio_id=result.servicio_id,
+                servicio_db_id=result.servicio_db_id,
+                nuevo_hash=result.nuevo_hash,
+                rutas_existentes=[
+                    RutaInfoResponse(
+                        id=r.id,
+                        nombre=r.nombre,
+                        tipo=r.tipo,
+                        hash_contenido=r.hash_contenido,
+                        empalmes_count=r.empalmes_count,
+                        activa=r.activa,
+                        created_at=r.created_at,
+                        nombre_archivo_origen=r.nombre_archivo_origen,
+                    )
+                    for r in result.rutas_existentes
+                ],
+                ruta_identica_id=result.ruta_identica_id,
+                parsed_empalmes_count=result.parsed_empalmes_count,
+                message=result.message,
+                error=result.error,
+            )
+            
+    except Exception as exc:
+        logger.exception("action=analyze_tracking_error filename=%s error=%s", filename_used, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error analizando el archivo: {exc!s}",
+        ) from exc
+
+
+@router.post("/api/infra/trackings/resolve", response_model=TrackingResolveResponse)
+async def resolve_tracking_endpoint(
+    body: TrackingResolveRequest,
+) -> TrackingResolveResponse:
+    """Resuelve un tracking ejecutando la acción especificada.
+    
+    El "Portero" de archivos - Fase 2 (Resolución):
+    Ejecuta la acción correspondiente basada en el análisis previo.
+    
+    Acciones disponibles:
+    - CREATE_NEW: Crea un nuevo servicio con una ruta "Principal"
+    - MERGE_APPEND: Agrega empalmes nuevos a una ruta existente
+    - REPLACE: Reemplaza completamente los empalmes de una ruta
+    - BRANCH: Crea una nueva ruta bajo el mismo servicio
+    
+    Args:
+        body: TrackingResolveRequest con:
+            - action: Acción a ejecutar
+            - content: Contenido del archivo
+            - filename: Nombre del archivo
+            - target_ruta_id: ID de ruta destino (para MERGE_APPEND/REPLACE)
+            - new_ruta_name: Nombre de nueva ruta (para BRANCH)
+            - new_ruta_tipo: Tipo de ruta (PRINCIPAL/BACKUP/ALTERNATIVA)
+    
+    Returns:
+        TrackingResolveResponse con el resultado de la operación
+    """
+    # Validar acción
+    try:
+        action = ResolveAction(body.action.upper())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Acción inválida: {body.action}. Opciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH",
+        )
+    
+    # Validar tipo de ruta si se especifica
+    ruta_tipo = RutaTipo.ALTERNATIVA
+    if body.new_ruta_tipo:
+        try:
+            ruta_tipo = RutaTipo(body.new_ruta_tipo.upper())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tipo de ruta inválido: {body.new_ruta_tipo}. Opciones: PRINCIPAL, BACKUP, ALTERNATIVA",
+            )
+    
+    try:
+        with SessionLocal() as session:
+            result = resolve_tracking_file(
+                session,
+                action,
+                body.content,
+                body.filename,
+                target_ruta_id=body.target_ruta_id,
+                new_ruta_name=body.new_ruta_name,
+                new_ruta_tipo=ruta_tipo,
+            )
+            
+            if not result.success:
+                # No es un error HTTP, es un resultado de negocio
+                return TrackingResolveResponse(
+                    success=False,
+                    action=result.action.value,
+                    servicio_id=result.servicio_id,
+                    error=result.error,
+                    message=result.message,
+                )
+            
+            return TrackingResolveResponse(
+                success=True,
+                action=result.action.value,
+                servicio_id=result.servicio_id,
+                servicio_db_id=result.servicio_db_id,
+                ruta_id=result.ruta_id,
+                ruta_nombre=result.ruta_nombre,
+                camaras_nuevas=result.camaras_nuevas,
+                camaras_existentes=result.camaras_existentes,
+                empalmes_creados=result.empalmes_creados,
+                empalmes_asociados=result.empalmes_asociados,
+                message=result.message,
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=resolve_tracking_error action=%s error=%s", body.action, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error resolviendo el tracking: {exc!s}",
+        ) from exc
+
+
+@router.get("/api/infra/servicios/{servicio_id}/rutas", response_model=ServicioRutasResponse)
+async def get_servicio_rutas(servicio_id: str) -> ServicioRutasResponse:
+    """Obtiene las rutas de un servicio.
+    
+    Args:
+        servicio_id: ID del servicio (ej: "111995")
+    
+    Returns:
+        ServicioRutasResponse con información del servicio y sus rutas
+    """
+    try:
+        with SessionLocal() as session:
+            servicio = session.query(Servicio).filter(
+                Servicio.servicio_id == servicio_id
+            ).first()
+            
+            if not servicio:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Servicio {servicio_id} no encontrado",
+                )
+            
+            rutas_info = []
+            for ruta in servicio.rutas:
+                rutas_info.append(RutaInfoResponse(
+                    id=ruta.id,
+                    nombre=ruta.nombre,
+                    tipo=ruta.tipo.value if ruta.tipo else "PRINCIPAL",
+                    hash_contenido=ruta.hash_contenido,
+                    empalmes_count=len(ruta.empalmes),
+                    activa=bool(ruta.activa),
+                    created_at=ruta.created_at.isoformat() if ruta.created_at else None,
+                    nombre_archivo_origen=ruta.nombre_archivo_origen,
+                ))
+            
+            return ServicioRutasResponse(
+                status="ok",
+                servicio_id=servicio.servicio_id,
+                servicio_db_id=servicio.id,
+                cliente=servicio.cliente,
+                rutas=rutas_info,
+                total_rutas=len(rutas_info),
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=get_servicio_rutas_error servicio_id=%s error=%s", servicio_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo rutas del servicio: {exc!s}",
+        ) from exc
+
+
+@router.get("/api/infra/rutas/{ruta_id}/empalmes")
+async def get_ruta_empalmes(ruta_id: int) -> Dict[str, Any]:
+    """Obtiene los empalmes de una ruta específica.
+    
+    Args:
+        ruta_id: ID de la ruta
+    
+    Returns:
+        Dict con información de la ruta y sus empalmes ordenados
+    """
+    try:
+        with SessionLocal() as session:
+            ruta = session.query(RutaServicio).get(ruta_id)
+            
+            if not ruta:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Ruta {ruta_id} no encontrada",
+                )
+            
+            empalmes_data = []
+            for empalme in ruta.empalmes:
+                camara_data = None
+                if empalme.camara:
+                    camara_data = {
+                        "id": empalme.camara.id,
+                        "nombre": empalme.camara.nombre,
+                        "direccion": empalme.camara.direccion,
+                        "estado": empalme.camara.estado.value if empalme.camara.estado else None,
+                        "latitud": empalme.camara.latitud,
+                        "longitud": empalme.camara.longitud,
+                    }
+                
+                empalmes_data.append({
+                    "id": empalme.id,
+                    "tracking_empalme_id": empalme.tracking_empalme_id,
+                    "tipo": empalme.tipo,
+                    "camara": camara_data,
+                })
+            
+            return {
+                "status": "ok",
+                "ruta": {
+                    "id": ruta.id,
+                    "nombre": ruta.nombre,
+                    "tipo": ruta.tipo.value if ruta.tipo else "PRINCIPAL",
+                    "servicio_id": ruta.servicio.servicio_id,
+                    "activa": bool(ruta.activa),
+                },
+                "empalmes": empalmes_data,
+                "total_empalmes": len(empalmes_data),
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=get_ruta_empalmes_error ruta_id=%d error=%s", ruta_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo empalmes de la ruta: {exc!s}",
+        ) from exc
+
+
+@router.delete("/api/infra/servicios/{servicio_id}/empalmes")
+async def delete_servicio_empalmes(servicio_id: str) -> Dict[str, Any]:
+    """Elimina todas las asociaciones empalmes de un servicio.
+    
+    Esto permite "limpiar" un servicio para volver a asociarlo con nuevos empalmes.
+    Elimina tanto las asociaciones legacy (servicio_empalme_association) como 
+    las rutas (rutas_servicio + ruta_empalme_association).
+    
+    ⚠️ PRECAUCIÓN: Esta operación es destructiva y no se puede deshacer.
+    
+    Args:
+        servicio_id: ID del servicio (ej: "52547")
+    
+    Returns:
+        Dict con información de las asociaciones eliminadas
+    """
+    try:
+        with SessionLocal() as session:
+            servicio = session.query(Servicio).filter(
+                Servicio.servicio_id == servicio_id
+            ).first()
+            
+            if not servicio:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Servicio {servicio_id} no encontrado",
+                )
+            
+            # Contar antes de eliminar
+            empalmes_legacy_count = len(servicio.empalmes)
+            rutas_count = len(servicio.rutas)
+            empalmes_rutas_count = sum(len(r.empalmes) for r in servicio.rutas)
+            
+            # Eliminar asociaciones legacy (N-a-N servicio_empalme_association)
+            servicio.empalmes.clear()
+            
+            # Eliminar rutas (cascade elimina ruta_empalme_association)
+            for ruta in list(servicio.rutas):
+                session.delete(ruta)
+            
+            session.commit()
+            
+            logger.info(
+                "action=delete_servicio_empalmes servicio_id=%s empalmes_legacy=%d rutas=%d empalmes_rutas=%d",
+                servicio_id,
+                empalmes_legacy_count,
+                rutas_count,
+                empalmes_rutas_count,
+            )
+            
+            return {
+                "status": "ok",
+                "servicio_id": servicio_id,
+                "message": f"Eliminadas {empalmes_legacy_count} asociaciones legacy y {rutas_count} rutas",
+                "empalmes_legacy_eliminados": empalmes_legacy_count,
+                "rutas_eliminadas": rutas_count,
+                "empalmes_rutas_eliminados": empalmes_rutas_count,
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=delete_servicio_empalmes_error servicio_id=%s error=%s", servicio_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error eliminando asociaciones del servicio: {exc!s}",
         ) from exc

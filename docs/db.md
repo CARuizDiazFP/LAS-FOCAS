@@ -75,14 +75,97 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 | `nombre_archivo_origen`| String(255)   | Nombre del archivo de tracking original. |
 | `raw_tracking_data`   | JSON           | Datos crudos del tracking parseado. |
 
-### Tabla `servicio_empalme_association`
+### Tabla `servicio_empalme_association` (Legacy)
 
-Tabla intermedia N-a-N entre `servicios` y `empalmes`:
+Tabla intermedia N-a-N entre `servicios` y `empalmes`. Mantenida por retrocompatibilidad.
+**Para nuevas implementaciones usar `rutas_servicio` + `ruta_empalme_association`.**
 
 | Columna      | Tipo         | Descripción |
 |--------------|--------------|-------------|
 | `servicio_id`| FK → servicios (PK) | ID del servicio. |
 | `empalme_id` | FK → empalmes (PK)  | ID del empalme. |
+
+---
+
+## Versionado de Rutas (Nuevo modelo)
+
+A partir de la migración `20260110_01`, se introduce un sistema de versionado de rutas similar a "branches" de Git.
+Cada servicio puede tener múltiples rutas (Principal, Backup, Alternativa) con su propio conjunto de empalmes.
+
+### Tabla `rutas_servicio`
+
+| Columna               | Tipo                | Descripción |
+|-----------------------|---------------------|-------------|
+| `id`                  | Integer (PK)        | ID autoincremental. |
+| `servicio_id`         | FK → servicios      | Servicio al que pertenece la ruta. |
+| `nombre`              | String(255)         | Nombre de la ruta (ej: "Principal", "Backup Norte"). |
+| `tipo`                | Enum(ruta_tipo)     | `PRINCIPAL`, `BACKUP`, `ALTERNATIVA`. |
+| `hash_contenido`      | String(64)          | SHA256 del contenido normalizado del tracking. |
+| `activa`              | Boolean             | Si la ruta está activa (true por defecto). |
+| `nombre_archivo_origen`| String(255)        | Nombre del archivo de tracking original. |
+| `contenido_original`  | Text                | Contenido raw del tracking para debugging. |
+| `created_at`          | DateTime(tz)        | Fecha de creación. |
+| `updated_at`          | DateTime(tz)        | Última actualización. |
+
+**Tipos de ruta:**
+- `PRINCIPAL`: Ruta principal del servicio (solo una activa por servicio).
+- `BACKUP`: Ruta de respaldo.
+- `ALTERNATIVA`: Ruta alternativa para casos especiales.
+
+### Tabla `ruta_empalme_association`
+
+Tabla intermedia N-a-N entre `rutas_servicio` y `empalmes`:
+
+| Columna     | Tipo               | Descripción |
+|-------------|--------------------| ------------|
+| `ruta_id`   | FK → rutas_servicio (PK) | ID de la ruta. |
+| `empalme_id`| FK → empalmes (PK) | ID del empalme. |
+| `orden`     | Integer            | Orden del empalme en la secuencia de la ruta. |
+
+### Relaciones del modelo de rutas
+
+- `Servicio.rutas`: Lista de rutas del servicio (1-a-N).
+- `RutaServicio.servicio`: Servicio al que pertenece (N-a-1).
+- `RutaServicio.empalmes`: Empalmes de la ruta en orden (N-a-N).
+- `Empalme.rutas`: Rutas que pasan por el empalme (N-a-N).
+
+### Propiedades helper en Servicio
+
+- `servicio.ruta_principal`: Retorna la ruta de tipo PRINCIPAL activa (o None).
+- `servicio.rutas_activas`: Lista de rutas activas del servicio.
+- `servicio.todos_los_empalmes`: Set único de todos los empalmes de todas las rutas.
+
+---
+
+## API de Ingesta Inteligente (Patrón "Portero")
+
+El sistema implementa una lógica de ingesta en 2 pasos para manejar conflictos:
+
+### Paso 1: Análisis (`POST /api/infra/trackings/analyze`)
+
+Analiza el archivo de tracking sin modificar la base de datos.
+
+**Escenarios posibles:**
+- `NEW`: El servicio no existe, se puede crear.
+- `IDENTICAL`: El archivo es idéntico a una ruta existente.
+- `CONFLICT`: El servicio existe pero el contenido difiere.
+- `ERROR`: Error durante el análisis.
+
+### Paso 2: Resolución (`POST /api/infra/trackings/resolve`)
+
+Ejecuta la acción elegida por el usuario:
+
+| Acción       | Descripción |
+|--------------|-------------|
+| `CREATE_NEW` | Crea nuevo servicio con ruta Principal. |
+| `MERGE_APPEND` | Agrega empalmes nuevos a ruta existente (unión). |
+| `REPLACE`    | Reemplaza todos los empalmes de una ruta. |
+| `BRANCH`     | Crea nueva ruta bajo el mismo servicio. |
+
+### Endpoints adicionales
+
+- `GET /api/infra/servicios/{id}/rutas`: Lista todas las rutas de un servicio.
+- `GET /api/infra/rutas/{id}/empalmes`: Lista empalmes de una ruta específica.
 
 ### Tabla `ingresos`
 

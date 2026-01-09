@@ -4,11 +4,11 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-01-07
+Fecha de última actualización: 2026-01-09
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2026-01-07)
+## Estado actual (al 2026-01-09)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -147,6 +147,10 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] Endpoint FastAPI `POST /sync/camaras` y wiring en `api/app/main.py` para disparar la sincronización desde la API (2026-01-07).
 - [x] Documentación actualizada (`docs/db.md`, `docs/api.md`, `docs/Mate_y_Ruta.md`) y guía de credenciales (`Keys/credentials.json`) reflejada en `deploy/env.sample` (2026-01-07).
 - [x] Migración `20251230_01_infra.py` ajustada para ser idempotente (enum con `create_type=False`) y guía de ejecución de Alembic con `ALEMBIC_URL` documentada (2026-01-08).
+- [x] **Smart Search** para Infraestructura: búsqueda por texto libre con múltiples términos (AND), endpoint `POST /api/infra/smart-search`, UI con tags visuales y quick chips (2026-01-09).
+- [x] **Sistema de Versionado de Rutas FO**: modelos `RutaServicio` con hashes SHA256, flujo analyze→modal→resolve, acciones CREATE_NEW/REPLACE/MERGE_APPEND/BRANCH (2026-01-09).
+- [x] **UX del Modal de Conflictos**: corrección de bug (se abría automáticamente), agregado botón "Complementar" (MERGE_APPEND), renombrado a "Camino disjunto", botón "Limpiar servicio" (2026-01-09).
+- [x] **Endpoint DELETE empalmes**: `DELETE /api/infra/servicios/{id}/empalmes` para limpiar asociaciones de un servicio desde el frontend (2026-01-09).
 
 ### Pendiente (prioridad)
 - [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).

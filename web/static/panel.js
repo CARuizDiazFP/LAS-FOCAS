@@ -526,11 +526,136 @@
   }
 
   // ===========================================
+  // COLORES DE RUTAS SEGÚN TIPO/ORDEN
+  // ===========================================
+  const RUTA_COLORS = {
+    PRINCIPAL: '#3B82F6',  // Azul (actual)
+    BACKUP: '#37BC7D',     // Verde (Camino 2/Secundario)
+    ALTERNATIVA: '#F54927', // Naranja/Rojo (Camino 3)
+    CUARTO: '#E61876',     // Rosa (Camino 4+)
+  };
+
+  function getRutaColor(ruta, index) {
+    // Primero por tipo explícito
+    if (ruta.ruta_tipo === 'PRINCIPAL') return RUTA_COLORS.PRINCIPAL;
+    if (ruta.ruta_tipo === 'BACKUP') return RUTA_COLORS.BACKUP;
+    if (ruta.ruta_tipo === 'ALTERNATIVA') return RUTA_COLORS.ALTERNATIVA;
+    
+    // Por nombre
+    const nombre = (ruta.ruta_nombre || '').toLowerCase();
+    if (nombre.includes('principal') || nombre === 'camino 1') return RUTA_COLORS.PRINCIPAL;
+    if (nombre.includes('backup') || nombre.includes('secundario') || nombre === 'camino 2') return RUTA_COLORS.BACKUP;
+    if (nombre === 'camino 3' || nombre.includes('alternativ')) return RUTA_COLORS.ALTERNATIVA;
+    if (nombre === 'camino 4') return RUTA_COLORS.CUARTO;
+    
+    // Por índice (fallback)
+    const colors = [RUTA_COLORS.PRINCIPAL, RUTA_COLORS.BACKUP, RUTA_COLORS.ALTERNATIVA, RUTA_COLORS.CUARTO];
+    return colors[index % colors.length];
+  }
+
+  // ===========================================
+  // MODAL DE TRACKING
+  // ===========================================
+  let trackingDetailModal = null;
+  
+  function createTrackingModalIfNeeded() {
+    if (trackingDetailModal) return;
+    
+    trackingDetailModal = document.createElement('dialog');
+    trackingDetailModal.className = 'tracking-detail-modal';
+    trackingDetailModal.innerHTML = `
+      <div class="tracking-detail-content">
+        <div class="tracking-detail-header">
+          <h3 class="tracking-detail-title">Tracking del Servicio</h3>
+          <button class="tracking-detail-close" type="button">&times;</button>
+        </div>
+        <div class="tracking-detail-info"></div>
+        <div class="tracking-detail-list"></div>
+      </div>
+    `;
+    document.body.appendChild(trackingDetailModal);
+    
+    // Cerrar con click en X
+    trackingDetailModal.querySelector('.tracking-detail-close').addEventListener('click', () => {
+      trackingDetailModal.close();
+    });
+    
+    // Cerrar con click fuera
+    trackingDetailModal.addEventListener('click', (e) => {
+      if (e.target === trackingDetailModal) trackingDetailModal.close();
+    });
+  }
+
+  async function showTrackingModal(rutaId, servicioId, rutaNombre, rutaTipo, color) {
+    createTrackingModalIfNeeded();
+    
+    const titleEl = trackingDetailModal.querySelector('.tracking-detail-title');
+    const infoEl = trackingDetailModal.querySelector('.tracking-detail-info');
+    const listEl = trackingDetailModal.querySelector('.tracking-detail-list');
+    
+    titleEl.textContent = `Svc: ${servicioId}`;
+    infoEl.innerHTML = `
+      <span class="tracking-ruta-badge" style="background-color: ${color}">
+        ${rutaNombre} (${rutaTipo})
+      </span>
+    `;
+    listEl.innerHTML = '<div class="tracking-loading">Cargando tracking...</div>';
+    
+    trackingDetailModal.showModal();
+    
+    try {
+      const res = await fetch(`${window.API_BASE || ''}/api/infra/rutas/${rutaId}/tracking`);
+      const data = await res.json();
+      
+      if (data.error) {
+        listEl.innerHTML = `<div class="tracking-error">${data.error}</div>`;
+        return;
+      }
+      
+      const tracking = data.tracking || [];
+      if (tracking.length === 0) {
+        listEl.innerHTML = '<div class="tracking-empty">Sin información de tracking</div>';
+        return;
+      }
+      
+      // Renderizar secuencia cámara-cable
+      let html = '<div class="tracking-sequence">';
+      tracking.forEach((item, idx) => {
+        if (item.tipo === 'camara') {
+          html += `
+            <div class="tracking-item tracking-camara">
+              <span class="tracking-icon">📍</span>
+              <span class="tracking-text">${item.descripcion || 'Cámara'}</span>
+              ${item.empalme_id ? `<span class="tracking-empalme-id">#${item.empalme_id}</span>` : ''}
+            </div>
+          `;
+        } else if (item.tipo === 'cable') {
+          html += `
+            <div class="tracking-item tracking-cable">
+              <span class="tracking-cable-line"></span>
+              <span class="tracking-cable-info">
+                <span class="tracking-cable-name">${item.nombre || 'Cable'}</span>
+                ${item.atenuacion_db != null ? `<span class="tracking-atenuacion">${item.atenuacion_db} dB</span>` : ''}
+              </span>
+            </div>
+          `;
+        }
+      });
+      html += '</div>';
+      
+      listEl.innerHTML = html;
+      
+    } catch (err) {
+      listEl.innerHTML = `<div class="tracking-error">Error: ${err.message}</div>`;
+    }
+  }
+
+  // ===========================================
   // RENDERIZADO DE TARJETAS
   // ===========================================
   function renderCamaraCard(camara) {
     const estadoLower = (camara.estado || 'libre').toLowerCase();
-    const servicios = camara.servicios || [];
+    const rutas = camara.rutas || [];
     const origenDatos = camara.origen_datos || 'MANUAL';
 
     const card = document.createElement('div');
@@ -538,11 +663,38 @@
     card.dataset.estado = camara.estado || 'LIBRE';
     card.dataset.origen = origenDatos;
 
+    // Renderizar chips de servicios con colores según ruta
     let serviciosHtml = '';
-    if (servicios.length > 0) {
-      serviciosHtml = servicios.map(s => 
-        `<span class="infra-servicio-chip">${s}</span>`
-      ).join('');
+    if (rutas.length > 0) {
+      // Agrupar por servicio_id para ordenar
+      const servicioRutas = {};
+      rutas.forEach((ruta, idx) => {
+        if (!servicioRutas[ruta.servicio_id]) {
+          servicioRutas[ruta.servicio_id] = [];
+        }
+        servicioRutas[ruta.servicio_id].push({ ...ruta, _index: idx });
+      });
+      
+      // Generar chips
+      const chips = [];
+      Object.entries(servicioRutas).forEach(([svcId, svcRutas]) => {
+        svcRutas.forEach((ruta) => {
+          const color = getRutaColor(ruta, ruta._index);
+          chips.push(`
+            <span class="infra-servicio-chip" 
+                  style="background-color: ${color}; cursor: pointer;"
+                  data-ruta-id="${ruta.ruta_id}"
+                  data-servicio-id="${ruta.servicio_id}"
+                  data-ruta-nombre="${ruta.ruta_nombre}"
+                  data-ruta-tipo="${ruta.ruta_tipo}"
+                  data-color="${color}"
+                  title="${ruta.ruta_nombre} (${ruta.ruta_tipo})">
+              Svc: ${svcId}
+            </span>
+          `);
+        });
+      });
+      serviciosHtml = chips.join('');
     } else {
       serviciosHtml = '<span class="infra-no-servicios">Sin servicios asociados</span>';
     }
@@ -574,6 +726,19 @@
       <div class="infra-camara-servicios">${serviciosHtml}</div>
       ${metaHtml}
     `;
+
+    // Agregar event listeners a los chips
+    card.querySelectorAll('.infra-servicio-chip[data-ruta-id]').forEach(chip => {
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rutaId = chip.dataset.rutaId;
+        const servicioId = chip.dataset.servicioId;
+        const rutaNombre = chip.dataset.rutaNombre;
+        const rutaTipo = chip.dataset.rutaTipo;
+        const color = chip.dataset.color;
+        showTrackingModal(rutaId, servicioId, rutaNombre, rutaTipo, color);
+      });
+    });
 
     return card;
   }
@@ -700,8 +865,23 @@
   }
 
   // ===========================================
-  // API: UPLOAD DE TRACKING
+  // API: UPLOAD DE TRACKING (Flujo de 2 pasos)
   // ===========================================
+  
+  // Estado del modal de conflicto
+  let pendingAnalysis = null;
+  let pendingFile = null;
+  let selectedAction = null;
+  
+  // Referencias al modal (solo inicializar cuando existe)
+  const trackingModal = document.getElementById('tracking-conflict-modal');
+  const trackingConfirmBtn = document.getElementById('tracking-confirm-btn');
+  const trackingCancelBtn = document.getElementById('tracking-cancel-btn');
+  const trackingCloseBtn = trackingModal ? trackingModal.querySelector('.tracking-modal-close') : null;
+  const trackingActionBtns = trackingModal ? trackingModal.querySelectorAll('.tracking-action-btn') : [];
+  const trackingBranchOptions = document.getElementById('tracking-branch-options');
+  
+  // Función principal de upload
   async function uploadTracking(file) {
     if (!file) return;
 
@@ -711,7 +891,8 @@
       return;
     }
 
-    setStatus('Subiendo tracking...', 'loading');
+    setStatus('Analizando tracking...', 'loading');
+    pendingFile = file;
 
     const formData = new FormData();
     formData.append('file', file);
@@ -720,10 +901,157 @@
     }
 
     try {
-      const url = `${window.API_BASE || ''}/api/infra/upload_tracking`;
-      const res = await fetch(url, {
+      // Paso 1: Analizar
+      const analyzeUrl = `${window.API_BASE || ''}/api/infra/trackings/analyze`;
+      const res = await fetch(analyzeUrl, {
         method: 'POST',
         body: formData,
+        credentials: 'include'
+      });
+
+      const analysis = await res.json();
+
+      if (!res.ok) {
+        throw new Error(analysis.detail || analysis.error || `Error ${res.status}`);
+      }
+
+      pendingAnalysis = analysis;
+
+      // Si hay conflicto (servicio existente con diferente hash), mostrar modal
+      if (analysis.suggested_action === 'REPLACE' || analysis.suggested_action === 'BRANCH') {
+        showConflictModal(analysis);
+        return;
+      }
+
+      // Si es nuevo o sin cambios, resolver automáticamente
+      await resolveTracking(analysis.suggested_action);
+
+    } catch (err) {
+      showToast('error', 'Error al analizar', err.message);
+      setStatus(`Error: ${err.message}`, 'error');
+      console.error('Error analizando tracking:', err);
+      pendingFile = null;
+      pendingAnalysis = null;
+    }
+  }
+  
+  // Mostrar modal de conflicto
+  function showConflictModal(analysis) {
+    if (!trackingModal) {
+      console.error('Modal de conflicto no encontrado');
+      return;
+    }
+    
+    // Llenar datos del modal
+    const msgEl = document.getElementById('tracking-conflict-message');
+    if (msgEl) msgEl.textContent = `El servicio ${analysis.servicio_id} ya existe con una ruta diferente.`;
+    
+    const filenameEl = document.getElementById('tracking-new-filename');
+    if (filenameEl) filenameEl.textContent = pendingFile?.name || '-';
+    
+    const servicioEl = document.getElementById('tracking-new-servicio');
+    if (servicioEl) servicioEl.textContent = analysis.servicio_id || '-';
+    
+    const empalmesEl = document.getElementById('tracking-new-empalmes');
+    if (empalmesEl) empalmesEl.textContent = analysis.empalmes_nuevos || '-';
+    
+    // Info de ruta existente
+    const existingRoute = analysis.rutas_existentes?.[0];
+    const rutaEl = document.getElementById('tracking-existing-ruta');
+    if (rutaEl) rutaEl.textContent = existingRoute?.nombre || 'Principal';
+    
+    const existingEmpalmesEl = document.getElementById('tracking-existing-empalmes');
+    if (existingEmpalmesEl) existingEmpalmesEl.textContent = existingRoute?.empalmes_count || '-';
+    
+    const diffEl = document.getElementById('tracking-diff-count');
+    if (diffEl) diffEl.textContent = analysis.hash_match ? '0 (idéntico)' : 'Contenido diferente';
+    
+    // Reset estado
+    selectedAction = null;
+    if (trackingActionBtns) {
+      trackingActionBtns.forEach(btn => btn.classList.remove('selected'));
+    }
+    if (trackingConfirmBtn) trackingConfirmBtn.disabled = true;
+    if (trackingBranchOptions) trackingBranchOptions.setAttribute('hidden', '');
+    
+    trackingModal.showModal();
+  }
+  
+  // Cerrar modal
+  function closeConflictModal() {
+    if (trackingModal) trackingModal.close();
+    pendingAnalysis = null;
+    pendingFile = null;
+    selectedAction = null;
+    setStatus('Operación cancelada', 'muted');
+  }
+  
+  // Seleccionar acción en el modal
+  function selectAction(action) {
+    selectedAction = action;
+    if (trackingActionBtns) {
+      trackingActionBtns.forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.action === action);
+      });
+    }
+    if (trackingConfirmBtn) trackingConfirmBtn.disabled = false;
+    
+    // Mostrar opciones de branch si corresponde
+    if (action === 'BRANCH' && trackingBranchOptions) {
+      trackingBranchOptions.removeAttribute('hidden');
+      // Sugerir nombre basado en el archivo
+      const nombreInput = document.getElementById('tracking-ruta-nombre');
+      if (nombreInput && pendingFile) {
+        const suggestedName = pendingFile.name.replace(/\.txt$/i, '').replace(/^\d+\s*/, '');
+        nombreInput.value = suggestedName || 'Camino 2';
+      }
+    } else if (trackingBranchOptions) {
+      trackingBranchOptions.setAttribute('hidden', '');
+    }
+  }
+  
+  // Resolver tracking (Paso 2)
+  async function resolveTracking(action) {
+    if (!pendingFile || !pendingAnalysis) {
+      showToast('error', 'Error interno', 'No hay análisis pendiente');
+      return;
+    }
+    
+    setStatus('Procesando tracking...', 'loading');
+    if (trackingModal) trackingModal.close();
+
+    // Leer contenido del archivo
+    const fileContent = await pendingFile.text();
+    
+    // Construir body JSON
+    const bodyData = {
+      action: action,
+      content: fileContent,
+      filename: pendingFile.name,
+    };
+    
+    // Para REPLACE/MERGE_APPEND, usar la primera ruta existente como target
+    if ((action === 'REPLACE' || action === 'MERGE_APPEND') && pendingAnalysis.rutas_existentes?.length > 0) {
+      bodyData.target_ruta_id = pendingAnalysis.rutas_existentes[0].id;
+    }
+    
+    // Para BRANCH, agregar nombre y tipo
+    if (action === 'BRANCH') {
+      const nombreRuta = document.getElementById('tracking-ruta-nombre')?.value || 'Camino 2';
+      const tipoRuta = document.getElementById('tracking-ruta-tipo')?.value || 'ALTERNATIVA';
+      bodyData.new_ruta_name = nombreRuta;
+      bodyData.new_ruta_tipo = tipoRuta;
+    }
+
+    try {
+      const resolveUrl = `${window.API_BASE || ''}/api/infra/trackings/resolve`;
+      const res = await fetch(resolveUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': window.CSRF_TOKEN || '',
+        },
+        body: JSON.stringify(bodyData),
         credentials: 'include'
       });
 
@@ -734,19 +1062,27 @@
       }
 
       // Toast de éxito
+      const actionLabels = {
+        'CREATE_NEW': 'Servicio creado',
+        'REPLACE': 'Ruta actualizada',
+        'MERGE_APPEND': 'Cámaras agregadas',
+        'BRANCH': 'Camino disjunto creado',
+        'SKIP': 'Sin cambios',
+        'NO_CHANGES': 'Sin cambios'
+      };
+      
       const msg = [
-        data.camaras_nuevas > 0 ? `${data.camaras_nuevas} nueva${data.camaras_nuevas !== 1 ? 's' : ''}` : '',
-        data.camaras_existentes > 0 ? `${data.camaras_existentes} existente${data.camaras_existentes !== 1 ? 's' : ''}` : '',
-        data.empalmes_registrados > 0 ? `${data.empalmes_registrados} empalme${data.empalmes_registrados !== 1 ? 's' : ''}` : ''
+        data.camaras_nuevas > 0 ? `${data.camaras_nuevas} cámara${data.camaras_nuevas !== 1 ? 's' : ''} nueva${data.camaras_nuevas !== 1 ? 's' : ''}` : '',
+        data.empalmes_asociados > 0 ? `${data.empalmes_asociados} empalme${data.empalmes_asociados !== 1 ? 's' : ''}` : ''
       ].filter(Boolean).join(', ');
 
       showToast(
         'success',
-        'Tracking procesado',
-        `Servicio ${data.servicio_id}: ${msg || 'sin cambios'}`
+        actionLabels[data.action] || 'Tracking procesado',
+        `Servicio ${data.servicio_id}: ${msg || data.message || 'OK'}`
       );
 
-      setStatus(data.mensaje || 'Tracking procesado correctamente', 'success');
+      setStatus(data.message || 'Tracking procesado correctamente', 'success');
 
       // Agregar filtro con el servicio recién subido y buscar
       if (data.servicio_id) {
@@ -758,8 +1094,101 @@
     } catch (err) {
       showToast('error', 'Error al procesar', err.message);
       setStatus(`Error: ${err.message}`, 'error');
-      console.error('Error subiendo tracking:', err);
+      console.error('Error resolviendo tracking:', err);
+    } finally {
+      pendingFile = null;
+      pendingAnalysis = null;
+      selectedAction = null;
     }
+  }
+  
+  // Event listeners del modal (solo si existe)
+  if (trackingCloseBtn) {
+    trackingCloseBtn.addEventListener('click', closeConflictModal);
+  }
+  if (trackingCancelBtn) {
+    trackingCancelBtn.addEventListener('click', closeConflictModal);
+  }
+  if (trackingConfirmBtn) {
+    trackingConfirmBtn.addEventListener('click', () => {
+      if (selectedAction) {
+        resolveTracking(selectedAction);
+      }
+    });
+  }
+  if (trackingActionBtns && trackingActionBtns.length > 0) {
+    trackingActionBtns.forEach(btn => {
+      btn.addEventListener('click', () => selectAction(btn.dataset.action));
+    });
+  }
+  
+  // Cerrar modal con Escape
+  if (trackingModal) {
+    trackingModal.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      closeConflictModal();
+    });
+  }
+
+  // ===========================================
+  // LIMPIAR SERVICIO (Eliminar asociaciones)
+  // ===========================================
+  const clearServiceBtn = document.getElementById('infra-clear-service-btn');
+  
+  async function clearServiceEmpalmes() {
+    // Pedir el ID del servicio
+    const servicioId = prompt('Ingresá el ID del servicio a limpiar (ej: 52547):');
+    if (!servicioId || !servicioId.trim()) {
+      return;
+    }
+    
+    // Confirmar
+    const confirmed = confirm(`¿Estás seguro de eliminar TODAS las asociaciones del servicio ${servicioId}?\n\nEsta acción no se puede deshacer.`);
+    if (!confirmed) {
+      return;
+    }
+    
+    setStatus(`Limpiando servicio ${servicioId}...`, 'loading');
+    
+    try {
+      const url = `${window.API_BASE || ''}/api/infra/servicios/${servicioId}/empalmes`;
+      const res = await fetch(url, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json',
+          'X-CSRF-Token': window.CSRF_TOKEN || '',
+        }
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || `Error ${res.status}`);
+      }
+      
+      showToast(
+        'success',
+        'Servicio limpiado',
+        `${data.empalmes_legacy_eliminados} asociaciones y ${data.rutas_eliminadas} rutas eliminadas`
+      );
+      
+      setStatus(data.message || 'Servicio limpiado correctamente', 'success');
+      
+      // Si hay términos de búsqueda activos, refrescar
+      if (searchTerms.length > 0) {
+        await searchCamaras();
+      }
+      
+    } catch (err) {
+      showToast('error', 'Error al limpiar', err.message);
+      setStatus(`Error: ${err.message}`, 'error');
+      console.error('Error limpiando servicio:', err);
+    }
+  }
+  
+  if (clearServiceBtn) {
+    clearServiceBtn.addEventListener('click', clearServiceEmpalmes);
   }
 
   // ===========================================

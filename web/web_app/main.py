@@ -1458,7 +1458,7 @@ async def search_camaras_web(
     limit = min(limit, 500)
 
     try:
-        from db.models.infra import Camara, CamaraEstado, Servicio
+        from db.models.infra import Camara, CamaraEstado, Servicio, RutaServicio, ruta_empalme_association
         from db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -1481,14 +1481,26 @@ async def search_camaras_web(
 
             camaras_db = query.order_by(Camara.nombre).limit(limit).all()
 
-            # Construir respuesta con servicios
+            # Construir respuesta con servicios y rutas
             camaras_response = []
             for cam in camaras_db:
-                servicios_ids = []
+                # Obtener rutas asociadas a esta cámara a través de empalmes
+                rutas_info = []
+                seen_rutas = set()
+                
                 for empalme in cam.empalmes:
-                    for servicio in empalme.servicios:
-                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                            servicios_ids.append(servicio.servicio_id)
+                    for ruta in empalme.rutas:
+                        if ruta.id not in seen_rutas:
+                            seen_rutas.add(ruta.id)
+                            rutas_info.append({
+                                "ruta_id": ruta.id,
+                                "servicio_id": ruta.servicio.servicio_id,
+                                "ruta_nombre": ruta.nombre,
+                                "ruta_tipo": ruta.tipo.value,
+                            })
+
+                # Para retrocompatibilidad, mantener lista simple de servicios
+                servicios_ids = list(set(r["servicio_id"] for r in rutas_info))
 
                 camaras_response.append({
                     "id": cam.id,
@@ -1500,6 +1512,7 @@ async def search_camaras_web(
                     "latitud": cam.latitud,
                     "longitud": cam.longitud,
                     "servicios": servicios_ids,
+                    "rutas": rutas_info,
                 })
 
             # Buscar por servicio_id si no se encontraron cámaras
@@ -1509,26 +1522,42 @@ async def search_camaras_web(
                 ).first()
 
                 if servicio:
-                    for empalme in servicio.empalmes:
-                        if empalme.camara and empalme.camara.id not in [c["id"] for c in camaras_response]:
-                            cam = empalme.camara
-                            servicios_ids = [servicio.servicio_id]
-                            for emp in cam.empalmes:
-                                for svc in emp.servicios:
-                                    if svc.servicio_id and svc.servicio_id not in servicios_ids:
-                                        servicios_ids.append(svc.servicio_id)
+                    # Obtener cámaras a través de las rutas del servicio
+                    seen_cam_ids = set()
+                    for ruta in servicio.rutas:
+                        for empalme in ruta.empalmes:
+                            if empalme.camara and empalme.camara.id not in seen_cam_ids:
+                                seen_cam_ids.add(empalme.camara.id)
+                                cam = empalme.camara
+                                
+                                # Obtener todas las rutas de esta cámara
+                                rutas_info = []
+                                seen_rutas = set()
+                                for emp in cam.empalmes:
+                                    for r in emp.rutas:
+                                        if r.id not in seen_rutas:
+                                            seen_rutas.add(r.id)
+                                            rutas_info.append({
+                                                "ruta_id": r.id,
+                                                "servicio_id": r.servicio.servicio_id,
+                                                "ruta_nombre": r.nombre,
+                                                "ruta_tipo": r.tipo.value,
+                                            })
+                                
+                                servicios_ids = list(set(r["servicio_id"] for r in rutas_info))
 
-                            camaras_response.append({
-                                "id": cam.id,
-                                "nombre": cam.nombre or "",
-                                "fontine_id": cam.fontine_id,
-                                "direccion": cam.direccion,
-                                "estado": cam.estado.value if cam.estado else "LIBRE",
-                                "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                                "latitud": cam.latitud,
-                                "longitud": cam.longitud,
-                                "servicios": servicios_ids,
-                            })
+                                camaras_response.append({
+                                    "id": cam.id,
+                                    "nombre": cam.nombre or "",
+                                    "fontine_id": cam.fontine_id,
+                                    "direccion": cam.direccion,
+                                    "estado": cam.estado.value if cam.estado else "LIBRE",
+                                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                                    "latitud": cam.latitud,
+                                    "longitud": cam.longitud,
+                                    "servicios": servicios_ids,
+                                    "rutas": rutas_info,
+                                })
 
             logger.info(
                 "action=search_camaras user=%s query=%s estado=%s results=%d",
@@ -1548,6 +1577,76 @@ async def search_camaras_web(
         logger.exception("action=search_camaras_error user=%s error=%s", username, exc)
         return JSONResponse(
             {"error": f"Error buscando cámaras: {exc!s}"},
+            status_code=500
+        )
+
+
+@app.get("/api/infra/rutas/{ruta_id}/tracking")
+async def get_ruta_tracking(
+    request: Request,
+    ruta_id: int,
+) -> JSONResponse:
+    """Obtiene el tracking completo de una ruta (secuencia cámara-cable-cámara)."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import RutaServicio, ruta_empalme_association
+        from db.session import SessionLocal
+        import json as json_module
+        
+        with SessionLocal() as session:
+            ruta = session.query(RutaServicio).filter(RutaServicio.id == ruta_id).first()
+            
+            if not ruta:
+                return JSONResponse({"error": "Ruta no encontrada"}, status_code=404)
+            
+            # Parsear el contenido original del tracking
+            tracking_entries = []
+            if ruta.contenido_original:
+                try:
+                    parsed = json_module.loads(ruta.contenido_original)
+                    entries = parsed.get("entries", [])
+                    
+                    # Construir secuencia cámara-cable
+                    for entry in entries:
+                        if entry.get("tipo") == "empalme":
+                            tracking_entries.append({
+                                "tipo": "camara",
+                                "descripcion": entry.get("empalme_descripcion", ""),
+                                "empalme_id": entry.get("empalme_id"),
+                            })
+                        elif entry.get("tipo") == "tramo":
+                            tracking_entries.append({
+                                "tipo": "cable",
+                                "nombre": entry.get("cable_nombre", ""),
+                                "atenuacion_db": entry.get("atenuacion_db"),
+                            })
+                except json_module.JSONDecodeError:
+                    pass
+            
+            # Si no hay contenido original, construir desde empalmes
+            if not tracking_entries:
+                for empalme in ruta.empalmes:
+                    tracking_entries.append({
+                        "tipo": "camara",
+                        "descripcion": empalme.camara.nombre if empalme.camara else "Sin cámara",
+                        "empalme_id": empalme.tracking_empalme_id,
+                    })
+            
+            return JSONResponse({
+                "status": "ok",
+                "ruta_id": ruta.id,
+                "servicio_id": ruta.servicio.servicio_id,
+                "ruta_nombre": ruta.nombre,
+                "ruta_tipo": ruta.tipo.value,
+                "tracking": tracking_entries,
+            })
+    
+    except Exception as exc:
+        logger.exception("action=get_ruta_tracking_error ruta_id=%d error=%s", ruta_id, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo tracking: {exc!s}"},
             status_code=500
         )
 
@@ -1773,7 +1872,27 @@ async def smart_search_camaras_web(
         with SessionLocal() as session:
             all_camaras = session.query(Camara).order_by(Camara.nombre).all()
 
-            def get_camara_servicios(camara: Camara) -> list[str]:
+            def get_camara_rutas(camara: Camara) -> list[dict]:
+                """Obtiene las rutas asociadas a una cámara a través de empalmes."""
+                rutas_info = []
+                seen_rutas = set()
+                for empalme in camara.empalmes:
+                    for ruta in empalme.rutas:
+                        if ruta.id not in seen_rutas:
+                            seen_rutas.add(ruta.id)
+                            rutas_info.append({
+                                "ruta_id": ruta.id,
+                                "servicio_id": ruta.servicio.servicio_id,
+                                "ruta_nombre": ruta.nombre,
+                                "ruta_tipo": ruta.tipo.value,
+                            })
+                return rutas_info
+
+            def get_camara_servicios(camara: Camara, rutas_info: list[dict] = None) -> list[str]:
+                """Obtiene servicios desde rutas (preferido) o empalmes legacy."""
+                if rutas_info:
+                    return list(set(r["servicio_id"] for r in rutas_info))
+                # Fallback: relación legacy
                 servicios_ids = []
                 for empalme in camara.empalmes:
                     for servicio in empalme.servicios:
@@ -1831,7 +1950,8 @@ async def smart_search_camaras_web(
                 paginated = all_camaras[offset:offset + limit]
                 camaras_response = []
                 for cam in paginated:
-                    servicios_ids = get_camara_servicios(cam)
+                    rutas_info = get_camara_rutas(cam)
+                    servicios_ids = get_camara_servicios(cam, rutas_info)
                     camaras_response.append({
                         "id": cam.id,
                         "nombre": cam.nombre or "",
@@ -1842,6 +1962,7 @@ async def smart_search_camaras_web(
                         "latitud": cam.latitud,
                         "longitud": cam.longitud,
                         "servicios": servicios_ids,
+                        "rutas": rutas_info,
                     })
 
                 return JSONResponse({
@@ -1856,7 +1977,8 @@ async def smart_search_camaras_web(
             # Aplicar términos con lógica AND
             matching_camaras = []
             for camara in all_camaras:
-                servicios_ids = get_camara_servicios(camara)
+                rutas_info = get_camara_rutas(camara)
+                servicios_ids = get_camara_servicios(camara, rutas_info)
                 cables_nombres = get_camara_cables(camara)
 
                 matches_all = True
@@ -1869,12 +1991,12 @@ async def smart_search_camaras_web(
                         break
 
                 if matches_all:
-                    matching_camaras.append((camara, servicios_ids))
+                    matching_camaras.append((camara, servicios_ids, rutas_info))
 
             total = len(matching_camaras)
             paginated = matching_camaras[offset:offset + limit]
             camaras_response = []
-            for cam, svc_ids in paginated:
+            for cam, svc_ids, rutas in paginated:
                 camaras_response.append({
                     "id": cam.id,
                     "nombre": cam.nombre or "",
@@ -1885,6 +2007,7 @@ async def smart_search_camaras_web(
                     "latitud": cam.latitud,
                     "longitud": cam.longitud,
                     "servicios": svc_ids,
+                    "rutas": rutas,
                 })
 
             terms_count = len([t for t in body.terms if t.strip()])
@@ -2067,5 +2190,256 @@ async def upload_tracking_web(
         )
         return JSONResponse(
             {"error": f"Error procesando el archivo: {exc!s}"},
+            status_code=500
+        )
+
+
+# =============================================================================
+# TRACKING V2: ANÁLISIS Y RESOLUCIÓN INTELIGENTE
+# =============================================================================
+
+
+class TrackingResolveRequestModel(BaseModel):
+    """Request para resolver un tracking."""
+    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH
+    content: str
+    filename: str
+    target_ruta_id: Optional[int] = None
+    new_ruta_name: Optional[str] = None
+    new_ruta_tipo: Optional[str] = None  # PRINCIPAL, BACKUP, ALTERNATIVA
+
+
+@app.post("/api/infra/trackings/analyze")
+async def analyze_tracking_web(
+    request: Request,
+    file: UploadFile = File(...),
+) -> JSONResponse:
+    """Analiza un archivo de tracking (Fase 1 del Portero).
+    
+    Detecta si el servicio es nuevo, idéntico o hay conflicto.
+    """
+    username, _ = _require_auth(request)
+    
+    # Leer contenido del archivo
+    raw_bytes = await file.read()
+    try:
+        raw_content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raw_content = raw_bytes.decode("latin-1")
+    
+    filename_used = file.filename or "unknown.txt"
+    
+    try:
+        from core.services.infra_service import InfraService
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            service = InfraService(session)
+            result = service.analyze_tracking(raw_content, filename_used)
+            
+            logger.info(
+                "action=analyze_tracking user=%s filename=%s status=%s servicio=%s",
+                username,
+                filename_used,
+                result.status.value,
+                result.servicio_id,
+            )
+            
+            # Convertir rutas_existentes a dict
+            rutas_list = []
+            for r in result.rutas_existentes:
+                rutas_list.append(r.to_dict())
+            
+            # Sugerir acción basada en el status
+            suggested_action = None
+            if result.status.value == "NEW":
+                suggested_action = "CREATE_NEW"
+            elif result.status.value == "IDENTICAL":
+                suggested_action = "SKIP"
+            elif result.status.value == "CONFLICT":
+                suggested_action = "REPLACE"  # Default, el usuario puede elegir otra
+            
+            return JSONResponse({
+                "status": result.status.value,
+                "servicio_id": result.servicio_id,
+                "servicio_db_id": result.servicio_db_id,
+                "nuevo_hash": result.nuevo_hash,
+                "rutas_existentes": rutas_list,
+                "ruta_identica_id": result.ruta_identica_id,
+                "parsed_empalmes_count": result.parsed_empalmes_count,
+                "empalmes_nuevos": result.parsed_empalmes_count,
+                "message": result.message,
+                "error": result.error,
+                "suggested_action": suggested_action,
+                "hash_match": result.ruta_identica_id is not None,
+            })
+            
+    except Exception as exc:
+        logger.exception(
+            "action=analyze_tracking_error user=%s filename=%s error=%s",
+            username,
+            filename_used,
+            exc,
+        )
+        return JSONResponse(
+            {"error": f"Error analizando el archivo: {exc!s}"},
+            status_code=500
+        )
+
+
+@app.post("/api/infra/trackings/resolve")
+async def resolve_tracking_web(
+    request: Request,
+    body: TrackingResolveRequestModel,
+) -> JSONResponse:
+    """Resuelve un tracking ejecutando la acción (Fase 2 del Portero).
+    
+    Acciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, SKIP
+    """
+    username, _ = _require_auth(request)
+    
+    # Validar acción
+    valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "SKIP"]
+    action_upper = body.action.upper()
+    if action_upper not in valid_actions:
+        return JSONResponse(
+            {"error": f"Acción inválida: {body.action}. Opciones: {', '.join(valid_actions)}"},
+            status_code=400
+        )
+    
+    # SKIP no hace nada
+    if action_upper == "SKIP":
+        return JSONResponse({
+            "success": True,
+            "action": "SKIP",
+            "message": "Operación omitida por el usuario",
+        })
+    
+    try:
+        from core.services.infra_service import InfraService, ResolveAction, RutaTipo
+        from db.session import SessionLocal
+        
+        # Convertir acción
+        action = ResolveAction(action_upper)
+        
+        # Convertir tipo de ruta si se especifica
+        ruta_tipo = RutaTipo.ALTERNATIVA
+        if body.new_ruta_tipo:
+            try:
+                ruta_tipo = RutaTipo(body.new_ruta_tipo.upper())
+            except ValueError:
+                pass  # Usar default
+        
+        with SessionLocal() as session:
+            service = InfraService(session)
+            result = service.resolve_tracking(
+                action=action,
+                raw_content=body.content,
+                filename=body.filename,
+                target_ruta_id=body.target_ruta_id,
+                new_ruta_name=body.new_ruta_name,
+                new_ruta_tipo=ruta_tipo,
+            )
+            
+            logger.info(
+                "action=resolve_tracking user=%s action=%s servicio=%s success=%s",
+                username,
+                action_upper,
+                result.servicio_id,
+                result.success,
+            )
+            
+            return JSONResponse({
+                "success": result.success,
+                "action": result.action.value,
+                "servicio_id": result.servicio_id,
+                "servicio_db_id": result.servicio_db_id,
+                "ruta_id": result.ruta_id,
+                "ruta_nombre": result.ruta_nombre,
+                "camaras_nuevas": result.camaras_nuevas,
+                "camaras_existentes": result.camaras_existentes,
+                "empalmes_creados": result.empalmes_creados,
+                "empalmes_asociados": result.empalmes_asociados,
+                "message": result.message,
+                "error": result.error,
+            })
+            
+    except Exception as exc:
+        logger.exception(
+            "action=resolve_tracking_error user=%s action=%s error=%s",
+            username,
+            body.action,
+            exc,
+        )
+        return JSONResponse(
+            {"error": f"Error resolviendo el tracking: {exc!s}"},
+            status_code=500
+        )
+
+
+@app.delete("/api/infra/servicios/{servicio_id}/empalmes")
+async def delete_servicio_empalmes_web(
+    request: Request,
+    servicio_id: str,
+) -> JSONResponse:
+    """Elimina todas las asociaciones de empalmes de un servicio.
+    
+    ⚠️ PRECAUCIÓN: Operación destructiva.
+    """
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import Servicio, RutaServicio
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            servicio = session.query(Servicio).filter(
+                Servicio.servicio_id == servicio_id
+            ).first()
+            
+            if not servicio:
+                return JSONResponse(
+                    {"error": f"Servicio {servicio_id} no encontrado"},
+                    status_code=404
+                )
+            
+            # Contar antes de eliminar
+            empalmes_legacy_count = len(servicio.empalmes)
+            rutas_count = len(servicio.rutas)
+            
+            # Eliminar asociaciones legacy
+            servicio.empalmes.clear()
+            
+            # Eliminar rutas
+            for ruta in list(servicio.rutas):
+                session.delete(ruta)
+            
+            session.commit()
+            
+            logger.info(
+                "action=delete_servicio_empalmes user=%s servicio_id=%s empalmes=%d rutas=%d",
+                username,
+                servicio_id,
+                empalmes_legacy_count,
+                rutas_count,
+            )
+            
+            return JSONResponse({
+                "status": "ok",
+                "servicio_id": servicio_id,
+                "message": f"Eliminadas {empalmes_legacy_count} asociaciones y {rutas_count} rutas",
+                "empalmes_legacy_eliminados": empalmes_legacy_count,
+                "rutas_eliminadas": rutas_count,
+            })
+            
+    except Exception as exc:
+        logger.exception(
+            "action=delete_servicio_empalmes_error user=%s servicio_id=%s error=%s",
+            username,
+            servicio_id,
+            exc,
+        )
+        return JSONResponse(
+            {"error": f"Error eliminando asociaciones: {exc!s}"},
             status_code=500
         )

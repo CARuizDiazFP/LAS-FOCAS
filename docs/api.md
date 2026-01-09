@@ -295,7 +295,292 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
   ...
   ```
 
+### Sistema de Versionado de Rutas FO (v2)
+
+El sistema de carga de trackings evolucionó a un flujo en 2 pasos con soporte de versionado/ramificación, similar a un sistema de control de versiones (Git) para rutas de fibra óptica.
+
+#### Conceptos clave
+
+- **Servicio**: Identificador único de una conexión de fibra (ej: `52547`, `111995`).
+- **Ruta (RutaServicio)**: Un camino específico dentro de un servicio. Un servicio puede tener múltiples rutas:
+  - `PRINCIPAL`: La ruta primaria/activa.
+  - `ALTERNATIVA`: Camino alternativo (disjunto, backup, etc.).
+  - `BACKUP`: Ruta de respaldo histórica.
+- **Empalme**: Punto de fusión en una cámara, asociado a una o más rutas.
+- **Hash SHA256**: Identifica de forma única el contenido de un tracking (normalizado).
+
+#### Flujo de carga inteligente
+
+```
+┌─────────────────┐
+│  Archivo .txt   │
+│  (Tracking FO)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     POST /api/infra/trackings/analyze
+│    ANÁLISIS     │ ──────────────────────────────────────►
+│  (Fase 1)       │
+└────────┬────────┘
+         │
+         ▼
+    ┌────┴────┐
+    │ Status? │
+    └────┬────┘
+         │
+   ┌─────┼─────┬─────────┐
+   │     │     │         │
+   ▼     ▼     ▼         ▼
+  NEW  IDENT. CONFLICT  ERROR
+   │     │     │         │
+   │     │     │         └──► Mostrar error
+   │     │     │
+   │     │     └──► Modal con opciones:
+   │     │         ├─ REPLACE (Reemplazar)
+   │     │         ├─ MERGE_APPEND (Complementar)
+   │     │         ├─ BRANCH (Camino disjunto)
+   │     │         └─ SKIP (Ignorar)
+   │     │
+   │     └──► No hacer nada (ya idéntico)
+   │
+   └──► Crear servicio + ruta principal
+         │
+         ▼
+┌─────────────────┐     POST /api/infra/trackings/resolve
+│   RESOLUCIÓN    │ ──────────────────────────────────────►
+│   (Fase 2)      │
+└─────────────────┘
+```
+
+### POST `/api/infra/trackings/analyze`
+
+Analiza un archivo de tracking sin modificar la base de datos. Detecta si es nuevo, idéntico o hay conflicto.
+
+- **Autenticación:** requiere sesión activa.
+- **Content-Type:** `multipart/form-data`
+- **Parámetros:**
+
+  | Campo    | Tipo       | Requerido | Descripción |
+  |----------|------------|-----------|-------------|
+  | `file`   | UploadFile | Sí        | Archivo `.txt` con el tracking. |
+
+- **Respuestas posibles:**
+
+  **1. NEW** - Servicio no existe:
+  ```json
+  {
+    "status": "NEW",
+    "servicio_id": "52547",
+    "servicio_db_id": null,
+    "nuevo_hash": "a3b8c1d2e4f5...",
+    "rutas_existentes": [],
+    "parsed_empalmes_count": 15,
+    "message": "Servicio 52547 es nuevo. Se creará con una ruta principal."
+  }
+  ```
+
+  **2. IDENTICAL** - Hash coincide con ruta existente:
+  ```json
+  {
+    "status": "IDENTICAL",
+    "servicio_id": "52547",
+    "servicio_db_id": 123,
+    "ruta_identica_id": 456,
+    "nuevo_hash": "a3b8c1d2e4f5...",
+    "rutas_existentes": [
+      {
+        "id": 456,
+        "nombre": "Principal",
+        "tipo": "PRINCIPAL",
+        "hash_contenido": "a3b8c1d2e4f5...",
+        "empalmes_count": 15,
+        "activa": true,
+        "created_at": "2026-01-09T10:30:00",
+        "nombre_archivo_origen": "52547.txt"
+      }
+    ],
+    "message": "El archivo es idéntico a la ruta existente (ID: 456). No se requiere acción."
+  }
+  ```
+
+  **3. CONFLICT** - Hash difiere, requiere decisión:
+  ```json
+  {
+    "status": "CONFLICT",
+    "servicio_id": "52547",
+    "servicio_db_id": 123,
+    "nuevo_hash": "x9y8z7w6v5u4...",
+    "rutas_existentes": [
+      {
+        "id": 456,
+        "nombre": "Principal",
+        "tipo": "PRINCIPAL",
+        "hash_contenido": "a3b8c1d2e4f5...",
+        "empalmes_count": 12,
+        "activa": true
+      }
+    ],
+    "parsed_empalmes_count": 15,
+    "message": "El servicio 52547 ya existe con 1 ruta(s). Seleccioná una acción."
+  }
+  ```
+
+  **4. ERROR** - Problema durante el análisis:
+  ```json
+  {
+    "status": "ERROR",
+    "servicio_id": null,
+    "error": "No se pudo extraer ID de servicio desde: archivo.txt",
+    "message": "El nombre del archivo debe contener un ID de servicio (ej: 'FO 111995 C2.txt')"
+  }
+  ```
+
+### POST `/api/infra/trackings/resolve`
+
+Ejecuta la acción seleccionada tras el análisis.
+
+- **Autenticación:** requiere sesión activa.
+- **Content-Type:** `application/json`
+- **Body:**
+
+  ```json
+  {
+    "action": "REPLACE",
+    "content": "<contenido del archivo>",
+    "filename": "52547.txt",
+    "target_ruta_id": 456,
+    "new_ruta_name": null,
+    "new_ruta_tipo": null
+  }
+  ```
+
+- **Parámetros:**
+
+  | Campo           | Tipo   | Requerido | Descripción |
+  |-----------------|--------|-----------|-------------|
+  | `action`        | string | Sí        | `CREATE_NEW`, `MERGE_APPEND`, `REPLACE`, `BRANCH` |
+  | `content`       | string | Sí        | Contenido del archivo de tracking |
+  | `filename`      | string | Sí        | Nombre del archivo |
+  | `target_ruta_id`| int    | Condicional | Requerido para `MERGE_APPEND` y `REPLACE` |
+  | `new_ruta_name` | string | Condicional | Nombre de la nueva ruta (para `BRANCH`, default: "Camino 2") |
+  | `new_ruta_tipo` | string | No        | `PRINCIPAL`, `ALTERNATIVA`, `BACKUP` (default: `ALTERNATIVA`) |
+
+- **Acciones disponibles:**
+
+  | Acción        | Descripción | Parámetros adicionales |
+  |---------------|-------------|------------------------|
+  | `CREATE_NEW`  | Crea servicio nuevo con ruta "Principal" | Ninguno |
+  | `REPLACE`     | Reemplaza empalmes de una ruta existente | `target_ruta_id` |
+  | `MERGE_APPEND`| Agrega empalmes sin eliminar existentes | `target_ruta_id` |
+  | `BRANCH`      | Crea nueva ruta bajo el mismo servicio | `new_ruta_name`, `new_ruta_tipo` |
+
+- **Respuesta 200 (éxito):**
+
+  ```json
+  {
+    "success": true,
+    "action": "REPLACE",
+    "servicio_id": "52547",
+    "servicio_db_id": 123,
+    "ruta_id": 456,
+    "ruta_nombre": "Principal",
+    "camaras_nuevas": 3,
+    "camaras_existentes": 12,
+    "empalmes_creados": 3,
+    "empalmes_asociados": 15,
+    "message": "Ruta 'Principal' actualizada con 15 empalmes"
+  }
+  ```
+
+- **Respuesta (error de negocio, no HTTP error):**
+
+  ```json
+  {
+    "success": false,
+    "action": "MERGE_APPEND",
+    "servicio_id": "52547",
+    "error": "target_ruta_id es requerido para MERGE_APPEND",
+    "message": null
+  }
+  ```
+
+### DELETE `/api/infra/servicios/{servicio_id}/empalmes`
+
+Elimina todas las asociaciones de empalmes de un servicio (limpia el servicio sin borrarlo).
+
+- **Autenticación:** requiere sesión activa.
+- **Parámetros de ruta:**
+
+  | Campo        | Tipo   | Descripción |
+  |--------------|--------|-------------|
+  | `servicio_id`| string | ID del servicio (ej: `52547`) |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "servicio_id": "52547",
+    "empalmes_removed": 15,
+    "message": "Eliminados 15 empalmes del servicio 52547"
+  }
+  ```
+
+- **Códigos de error:**
+  - `404`: Servicio no encontrado.
+  - `500`: Error durante la eliminación.
+
+- **Ejemplo (cURL):**
+  ```bash
+  curl -X DELETE \
+    -H "X-CSRF-Token: $TOKEN" \
+    "http://localhost:8080/api/infra/servicios/52547/empalmes"
+  ```
+
+### POST `/api/infra/smart-search`
+
+Búsqueda de cámaras por texto libre con múltiples términos (lógica AND).
+
+- **Autenticación:** requiere sesión activa.
+- **Content-Type:** `application/json`
+- **Body:**
+
+  ```json
+  {
+    "terms": ["52547", "corrientes"],
+    "limit": 100,
+    "offset": 0
+  }
+  ```
+
+- **Lógica:**
+  - Cada término se busca en: `nombre`, `direccion`, `fontine_id`, `servicios`, `cables`, `estado`, `origen`
+  - Términos se combinan con **AND** (intersección)
+  - Máximo 20 términos
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "total": 3,
+    "limit": 100,
+    "offset": 0,
+    "terms_applied": 2,
+    "camaras": [...]
+  }
+  ```
+
+- **Ejemplo (cURL):**
+  ```bash
+  curl -X POST http://localhost:8080/api/infra/smart-search \
+    -H "Content-Type: application/json" \
+    -H "X-CSRF-Token: $TOKEN" \
+    -d '{"terms": ["111995", "OCUPADA"]}'
+  ```
+
 ## Informes
+
 ### POST `/reports/repetitividad`
 
 Genera el informe de Repetitividad para un mes/año determinado ya sea a partir de un archivo Excel cargado por el usuario (modo Excel) o directamente desde la base de datos (modo DB, si no se adjunta archivo).

@@ -857,3 +857,445 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
 .toast.info .toast-icon {
   color: var(--primary);
 }
+
+
+/* ===========================================
+   MODAL: CONFLICTO DE TRACKING
+   =========================================== */
+
+.tracking-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.75);
+  border: none;
+  padding: 0;
+  margin: 0;
+  max-width: 100%;
+  max-height: 100%;
+  /* NO poner display: flex aquí - rompe el comportamiento nativo de <dialog> */
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.tracking-modal::backdrop {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+/* Solo cuando está abierto (atributo open presente) */
+.tracking-modal[open] {
+  display: flex;
+}
+
+.tracking-modal-content {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.tracking-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tracking-modal-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+.tracking-modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.tracking-modal-close:hover {
+  color: var(--text);
+}
+
+.tracking-modal-body {
+  padding: 1.25rem;
+}
+
+.tracking-conflict-message {
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  color: #eab308;
+  font-size: 0.9rem;
+}
+
+.tracking-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.tracking-info-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.tracking-info-card h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.85rem;
+  color: var(--primary);
+}
+
+.tracking-info-card.existing h4 {
+  color: #3b82f6;
+}
+
+.tracking-info-card dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.tracking-info-card dt {
+  color: var(--muted);
+}
+
+.tracking-info-card dd {
+  margin: 0;
+  color: var(--text);
+  font-family: monospace;
+}
+
+.tracking-actions-section h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.tracking-action-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tracking-action-btn {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: 0 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+}
+
+.tracking-action-btn:hover {
+  border-color: var(--primary);
+  background: rgba(0, 255, 136, 0.05);
+}
+
+.tracking-action-btn.selected {
+  border-color: var(--primary);
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.tracking-action-btn.danger:hover {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.tracking-action-btn.danger.selected {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.tracking-action-icon {
+  grid-row: span 2;
+  font-size: 1.5rem;
+  display: flex;
+  align-items: center;
+}
+
+.tracking-action-label {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.tracking-action-desc {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.tracking-branch-options {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tracking-branch-options label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.tracking-branch-options input,
+.tracking-branch-options select {
+  width: 100%;
+  padding: 0.5rem;
+  margin-bottom: 0.75rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.tracking-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.tracking-modal-footer .btn {
+  padding: 0.5rem 1.25rem;
+}
+
+.tracking-modal-footer .btn.secondary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.tracking-modal-footer .btn.secondary:hover {
+  background: var(--card);
+}
+
+@media (max-width: 600px) {
+  .tracking-info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+
+/* Botón limpiar servicio */
+.infra-clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: #ef4444;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.infra-clear-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: #ef4444;
+}
+
+.infra-clear-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+
+/* ===========================================
+   MODAL DE DETALLE DE TRACKING
+   =========================================== */
+.tracking-detail-modal {
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: #1a1f2e;
+  color: var(--text);
+  max-width: 500px;
+  width: 90%;
+  max-height: 80vh;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.tracking-detail-modal::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.tracking-detail-modal[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.tracking-detail-content {
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+
+.tracking-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: #151b23;
+  border-radius: 12px 12px 0 0;
+}
+
+.tracking-detail-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tracking-detail-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.tracking-detail-close:hover {
+  color: var(--text);
+}
+
+.tracking-detail-info {
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tracking-ruta-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: white;
+}
+
+.tracking-detail-list {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.tracking-loading,
+.tracking-empty,
+.tracking-error {
+  text-align: center;
+  padding: 2rem;
+  color: var(--muted);
+}
+
+.tracking-error {
+  color: #ef4444;
+}
+
+.tracking-sequence {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.tracking-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.tracking-camara {
+  background: #1f2937;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin: 0.25rem 0;
+}
+
+.tracking-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.tracking-text {
+  flex: 1;
+  font-size: 0.9rem;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.tracking-empalme-id {
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.1);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+
+.tracking-cable {
+  padding: 0.25rem 0 0.25rem 1.75rem;
+  position: relative;
+}
+
+.tracking-cable-line {
+  position: absolute;
+  left: 0.9rem;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--primary), var(--primary));
+}
+
+.tracking-cable-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-left: 0.5rem;
+  border-left: 2px dashed var(--border);
+  margin-left: 0.25rem;
+}
+
+.tracking-cable-name {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+.tracking-atenuacion {
+  font-size: 0.7rem;
+  color: #f59e0b;
+  font-weight: 500;
+}
