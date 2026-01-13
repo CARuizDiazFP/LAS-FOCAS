@@ -14,10 +14,10 @@ def load_excel(path: str) -> pd.DataFrame:
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza nombres de columnas y obtiene TTR desde 'Horas Netas Reclamo'.
+    """Normaliza nombres de columnas y obtiene TTR desde 'Horas Netas Cierre Problema'.
     
-    El TTR (Time To Resolve) se obtiene de la columna 'Horas Netas Reclamo' 
-    (columna U del Excel), que contiene las horas netas de resolución.
+    El TTR (Time To Resolve) se obtiene de la columna 'Horas Netas Cierre Problema' 
+    (columna P del Excel), que contiene las horas netas de resolución.
     Si la columna no existe, se calcula como fallback desde las fechas.
     """
     df = df.rename(columns={k: v for k, v in COLUMNAS_MAPPER.items() if k in df.columns})
@@ -29,7 +29,7 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df["FECHA_APERTURA"] = pd.to_datetime(df["FECHA_APERTURA"], errors="coerce")
     df["FECHA_CIERRE"] = pd.to_datetime(df["FECHA_CIERRE"], errors="coerce")
     
-    # Usar columna 'Horas Netas Reclamo' (mapeada a TTR_h) si existe
+    # Usar columna 'Horas Netas Cierre Problema' (mapeada a TTR_h) si existe
     # De lo contrario, calcular desde fechas como fallback
     if "TTR_h" not in df.columns:
         df["TTR_h"] = (df["FECHA_CIERRE"] - df["FECHA_APERTURA"]).dt.total_seconds() / 3600
