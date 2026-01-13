@@ -15,7 +15,7 @@ from time import time as now
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
-from fastapi import FastAPI, Form, Request, status, HTTPException
+from fastapi import FastAPI, Form, Request, status, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1581,6 +1581,67 @@ async def search_camaras_web(
         )
 
 
+@app.get("/api/infra/servicios/{servicio_id}/rutas")
+async def get_servicio_rutas_web(
+    request: Request,
+    servicio_id: str,
+) -> JSONResponse:
+    """Obtiene las rutas de un servicio para el wizard de baneo."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import Servicio, RutaServicio
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            servicio = session.query(Servicio).filter(
+                Servicio.servicio_id == servicio_id
+            ).first()
+            
+            if not servicio:
+                return JSONResponse(
+                    {"error": f"Servicio {servicio_id} no encontrado"},
+                    status_code=404
+                )
+            
+            rutas_info = []
+            for ruta in servicio.rutas:
+                rutas_info.append({
+                    "id": ruta.id,
+                    "nombre": ruta.nombre,
+                    "tipo": ruta.tipo.value if ruta.tipo else "PRINCIPAL",
+                    "hash_contenido": ruta.hash_contenido,
+                    "empalmes_count": len(ruta.empalmes),
+                    "activa": bool(ruta.activa),
+                    "created_at": ruta.created_at.isoformat() if ruta.created_at else None,
+                    "nombre_archivo_origen": ruta.nombre_archivo_origen,
+                })
+            
+            logger.info(
+                "action=get_servicio_rutas user=%s servicio_id=%s rutas=%d",
+                username,
+                servicio_id,
+                len(rutas_info),
+            )
+            
+            return JSONResponse({
+                "status": "ok",
+                "servicio_id": servicio.servicio_id,
+                "servicio_db_id": servicio.id,
+                "cliente": servicio.cliente,
+                "rutas": rutas_info,
+                "total_rutas": len(rutas_info),
+            })
+            
+    except Exception as exc:
+        logger.exception("action=get_servicio_rutas_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo rutas: {exc!s}"},
+            status_code=500
+        )
+
+
 @app.get("/api/infra/rutas/{ruta_id}/tracking")
 async def get_ruta_tracking(
     request: Request,
@@ -1603,10 +1664,94 @@ async def get_ruta_tracking(
             
             # Parsear el contenido original del tracking
             tracking_entries = []
-            if ruta.contenido_original:
+            punta_a_info = None
+            punta_b_info = None
+            
+            # Primero intentar parsear raw_file_content (el TXT original)
+            if ruta.raw_file_content:
+                from core.parsers.tracking_parser import parse_tracking
+                parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
+                
+                # Extraer puntas A y B del parsing
+                if parsed.punta_a:
+                    punta_a_info = {
+                        "sitio": parsed.punta_a.sitio_descripcion or "",
+                        "identificador": parsed.punta_a.identificador_fisico or "",
+                        "conector": parsed.punta_a.pelo_conector or "",
+                    }
+                if parsed.punta_b:
+                    punta_b_info = {
+                        "sitio": parsed.punta_b.sitio_descripcion or "",
+                        "identificador": parsed.punta_b.identificador_fisico or "",
+                        "conector": parsed.punta_b.pelo_conector or "",
+                    }
+                
+                # Construir secuencia cámara-cable desde entries
+                for entry in parsed.entries:
+                    if entry.tipo == "empalme":
+                        tracking_entries.append({
+                            "tipo": "camara",
+                            "descripcion": entry.empalme_descripcion or "",
+                            "empalme_id": entry.empalme_id,
+                        })
+                    elif entry.tipo == "tramo":
+                        tracking_entries.append({
+                            "tipo": "cable",
+                            "nombre": entry.cable_nombre or "",
+                            "atenuacion_db": entry.atenuacion_db,
+                        })
+                
+                # Extraer terminales de primera/última línea si no hay puntas formales
+                if not punta_a_info and parsed.entries:
+                    # Buscar primer tramo con nombre de cable tipo ODF (O-xxxxx)
+                    for entry in parsed.entries:
+                        if entry.tipo == "tramo" and entry.cable_nombre:
+                            # Extraer sitio:conector del raw_line si está presente
+                            import re
+                            match = re.search(r"(O-[\w-]+):\s*(\d+)", entry.raw_line)
+                            if match:
+                                punta_a_info = {
+                                    "sitio": match.group(1),
+                                    "identificador": "",
+                                    "conector": match.group(2),
+                                }
+                            break
+                
+                if not punta_b_info and parsed.entries:
+                    # Buscar último tramo con ODF
+                    for entry in reversed(parsed.entries):
+                        if entry.tipo == "tramo" and entry.cable_nombre:
+                            import re
+                            match = re.search(r"(O-[\w-]+):\s*(\d+)", entry.raw_line)
+                            if match:
+                                punta_b_info = {
+                                    "sitio": match.group(1),
+                                    "identificador": "",
+                                    "conector": match.group(2),
+                                }
+                            break
+            
+            # Fallback a contenido_original (JSON guardado)
+            elif ruta.contenido_original:
                 try:
                     parsed = json_module.loads(ruta.contenido_original)
                     entries = parsed.get("entries", [])
+                    
+                    # Extraer info de puntas A y B
+                    punta_a_raw = parsed.get("punta_a")
+                    punta_b_raw = parsed.get("punta_b")
+                    if punta_a_raw:
+                        punta_a_info = {
+                            "sitio": punta_a_raw.get("sitio_descripcion", ""),
+                            "identificador": punta_a_raw.get("identificador_fisico", ""),
+                            "conector": punta_a_raw.get("pelo_conector", ""),
+                        }
+                    if punta_b_raw:
+                        punta_b_info = {
+                            "sitio": punta_b_raw.get("sitio_descripcion", ""),
+                            "identificador": punta_b_raw.get("identificador_fisico", ""),
+                            "conector": punta_b_raw.get("pelo_conector", ""),
+                        }
                     
                     # Construir secuencia cámara-cable
                     for entry in entries:
@@ -1641,12 +1786,870 @@ async def get_ruta_tracking(
                 "ruta_nombre": ruta.nombre,
                 "ruta_tipo": ruta.tipo.value,
                 "tracking": tracking_entries,
+                "punta_a": punta_a_info,
+                "punta_b": punta_b_info,
             })
     
     except Exception as exc:
         logger.exception("action=get_ruta_tracking_error ruta_id=%d error=%s", ruta_id, exc)
         return JSONResponse(
             {"error": f"Error obteniendo tracking: {exc!s}"},
+            status_code=500
+        )
+
+
+@app.get("/api/infra/rutas/{ruta_id}/download")
+async def download_ruta_tracking(
+    request: Request,
+    ruta_id: int,
+) -> Response:
+    """Descarga el tracking de una ruta como archivo TXT."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import RutaServicio
+        from db.session import SessionLocal
+        import json as json_module
+        
+        with SessionLocal() as session:
+            ruta = session.query(RutaServicio).filter(RutaServicio.id == ruta_id).first()
+            
+            if not ruta:
+                return JSONResponse({"error": "Ruta no encontrada"}, status_code=404)
+            
+            # Reconstruir formato de tracking TXT
+            servicio_id = ruta.servicio.servicio_id if ruta.servicio else "unknown"
+            lines = [
+                f"# Tracking de Ruta - Servicio {servicio_id}",
+                f"# Ruta: {ruta.nombre} ({ruta.tipo.value if ruta.tipo else 'PRINCIPAL'})",
+                f"# Exportado: {__import__('datetime').datetime.now().isoformat()}",
+                "",
+            ]
+            
+            # Intentar usar contenido original si existe
+            if ruta.contenido_original:
+                try:
+                    parsed = json_module.loads(ruta.contenido_original)
+                    entries = parsed.get("entries", [])
+                    
+                    for entry in entries:
+                        if entry.get("tipo") == "empalme":
+                            desc = entry.get("empalme_descripcion", "Empalme")
+                            lines.append(f"EMPALME: {desc}")
+                        elif entry.get("tipo") == "tramo":
+                            cable = entry.get("cable_nombre", "Cable")
+                            atten = entry.get("atenuacion_db", 0)
+                            lines.append(f"  └─ CABLE: {cable} ({atten} dB)")
+                except json_module.JSONDecodeError:
+                    pass
+            
+            # Si no hay contenido original, usar empalmes de la ruta
+            if len(lines) <= 4:
+                for empalme in ruta.empalmes:
+                    if empalme.camara:
+                        lines.append(f"CAMARA: {empalme.camara.nombre or empalme.camara.direccion or 'Sin nombre'}")
+                    lines.append(f"  └─ EMPALME: {empalme.descripcion or empalme.nombre or 'Empalme'}")
+            
+            content = "\\n".join(lines)
+            filename = f"tracking_{servicio_id}_{ruta.nombre.replace(' ', '_')}.txt"
+            
+            logger.info("action=download_tracking user=%s ruta_id=%d servicio=%s", username, ruta_id, servicio_id)
+            
+            return Response(
+                content=content,
+                media_type="text/plain; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                }
+            )
+            
+    except Exception as exc:
+        logger.exception("action=download_tracking_error ruta_id=%d error=%s", ruta_id, exc)
+        return JSONResponse(
+            {"error": f"Error descargando tracking: {exc!s}"},
+            status_code=500
+        )
+
+
+# -----------------------------------------------------------------------------
+# ALIAS: TRACKING DOWNLOAD (para compatibilidad con panel.js)
+# -----------------------------------------------------------------------------
+
+@app.get("/api/infra/tracking/{ruta_id}/download")
+async def download_tracking_alias(
+    request: Request,
+    ruta_id: int,
+) -> Response:
+    """Alias de /api/infra/rutas/{ruta_id}/download para compatibilidad."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import RutaServicio
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            ruta = session.query(RutaServicio).filter(RutaServicio.id == ruta_id).first()
+            
+            if not ruta:
+                return JSONResponse({"error": "Ruta no encontrada"}, status_code=404)
+            
+            # Usar raw_file_content si existe
+            if ruta.raw_file_content:
+                filename = ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt"
+                
+                return Response(
+                    content=ruta.raw_file_content,
+                    media_type="text/plain; charset=utf-8",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                    }
+                )
+            
+            # No hay contenido original
+            return JSONResponse(
+                {"error": "Archivo original no disponible para esta ruta"},
+                status_code=404
+            )
+            
+    except Exception as exc:
+        logger.exception("action=download_tracking_alias_error ruta_id=%d error=%s", ruta_id, exc)
+        return JSONResponse(
+            {"error": f"Error descargando tracking: {exc!s}"},
+            status_code=500
+        )
+
+
+# -----------------------------------------------------------------------------
+# ENDPOINTS DE BANEO (Protocolo de Protección)
+# -----------------------------------------------------------------------------
+
+class BanCreateRequestModel(BaseModel):
+    """Request para crear un baneo."""
+    ticket_asociado: Optional[str] = None
+    servicio_afectado_id: str
+    servicio_protegido_id: str
+    ruta_protegida_id: Optional[int] = None
+    motivo: Optional[str] = None
+
+
+@app.post("/api/infra/ban/create")
+async def create_ban_web(
+    request: Request,
+    ban_request: BanCreateRequestModel,
+) -> JSONResponse:
+    """Crea un incidente de baneo y marca las cámaras como BANEADAS."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from core.services.protection_service import create_ban as do_create_ban
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            result = do_create_ban(
+                session,
+                ticket_asociado=ban_request.ticket_asociado,
+                servicio_afectado_id=ban_request.servicio_afectado_id,
+                servicio_protegido_id=ban_request.servicio_protegido_id,
+                ruta_protegida_id=ban_request.ruta_protegida_id,
+                usuario_ejecutor=username,
+                motivo=ban_request.motivo,
+            )
+            
+            if result.success:
+                session.commit()
+                logger.info(
+                    "action=create_ban user=%s ticket=%s servicio_afectado=%s servicio_protegido=%s camaras=%d",
+                    username,
+                    ban_request.ticket_asociado,
+                    ban_request.servicio_afectado_id,
+                    ban_request.servicio_protegido_id,
+                    result.camaras_baneadas,
+                )
+            else:
+                session.rollback()
+                logger.warning(
+                    "action=create_ban_failed user=%s error=%s",
+                    username,
+                    result.message,
+                )
+            
+            return JSONResponse(result.to_dict())
+            
+    except Exception as exc:
+        logger.exception("action=create_ban_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"success": False, "error": f"Error creando baneo: {exc!s}"},
+            status_code=500
+        )
+
+
+@app.get("/api/infra/ban/active")
+async def get_active_bans_web(request: Request) -> JSONResponse:
+    """Obtiene todos los incidentes de baneo activos."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from core.services.protection_service import get_incidentes_activos
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            incidentes = get_incidentes_activos(session)
+            
+            incidentes_data = []
+            for inc in incidentes:
+                duracion = None
+                if inc.fecha_inicio:
+                    from datetime import datetime, timezone
+                    ahora = datetime.now(timezone.utc)
+                    duracion = (ahora - inc.fecha_inicio).total_seconds() / 3600
+                
+                incidentes_data.append({
+                    "id": inc.id,
+                    "ticket_asociado": inc.ticket_asociado,
+                    "servicio_afectado_id": inc.servicio_afectado_id,
+                    "servicio_protegido_id": inc.servicio_protegido_id,
+                    "ruta_protegida_id": inc.ruta_protegida_id,
+                    "usuario_ejecutor": inc.usuario_ejecutor,
+                    "motivo": inc.motivo,
+                    "fecha_inicio": inc.fecha_inicio.isoformat() if inc.fecha_inicio else None,
+                    "activo": inc.activo,
+                    "duracion_horas": round(duracion, 1) if duracion else None,
+                })
+            
+            logger.info("action=get_active_bans user=%s count=%d", username, len(incidentes_data))
+            
+            return JSONResponse({
+                "status": "ok",
+                "incidentes": incidentes_data,
+                "total": len(incidentes_data),
+            })
+            
+    except Exception as exc:
+        logger.exception("action=get_active_bans_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo baneos activos: {exc!s}"},
+            status_code=500
+        )
+
+
+class BanLiftRequestModel(BaseModel):
+    """Request para levantar un baneo."""
+    incidente_id: int
+    motivo_cierre: Optional[str] = None
+
+
+@app.post("/api/infra/ban/lift")
+async def lift_ban_web(
+    request: Request,
+    lift_request: BanLiftRequestModel,
+) -> JSONResponse:
+    """Levanta un baneo y restaura el estado de las cámaras."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from core.services.protection_service import lift_ban as do_lift_ban
+        from db.session import SessionLocal
+        
+        with SessionLocal() as session:
+            result = do_lift_ban(
+                session,
+                lift_request.incidente_id,
+                usuario_ejecutor=username,
+                motivo_cierre=lift_request.motivo_cierre,
+            )
+            
+            if result.success:
+                session.commit()
+                logger.info(
+                    "action=lift_ban user=%s incidente_id=%d camaras_restauradas=%d",
+                    username,
+                    lift_request.incidente_id,
+                    result.camaras_restauradas,
+                )
+            else:
+                session.rollback()
+                logger.warning(
+                    "action=lift_ban_failed user=%s incidente_id=%d error=%s",
+                    username,
+                    lift_request.incidente_id,
+                    result.message,
+                )
+            
+            return JSONResponse(result.to_dict())
+            
+    except Exception as exc:
+        logger.exception("action=lift_ban_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"success": False, "error": f"Error levantando baneo: {exc!s}"},
+            status_code=500
+        )
+
+
+# -----------------------------------------------------------------------------
+# ENDPOINTS DE NOTIFICACIÓN POR EMAIL
+# -----------------------------------------------------------------------------
+
+class EmailNotifyRequestModel(BaseModel):
+    """Request para enviar notificación por email."""
+    to: list[str]
+    cc: Optional[list[str]] = None
+    subject: str
+    body: str
+    incidente_ids: list[int] = []
+    include_xls: bool = False
+    include_txt: bool = False
+
+
+@app.post("/api/infra/notify/email")
+async def send_email_notification_web(
+    request: Request,
+    email_request: EmailNotifyRequestModel,
+) -> JSONResponse:
+    """Envía un correo electrónico con información de baneos."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from core.services.email_service import EmailAttachment, get_email_service
+        from db.models.infra import IncidenteBaneo
+        from db.session import SessionLocal
+        import io
+        
+        email_service = get_email_service()
+        
+        if not email_service.is_configured():
+            return JSONResponse({
+                "success": False,
+                "message": "Servicio de email no configurado",
+                "error": "SMTP no está configurado en el servidor",
+            }, status_code=500)
+        
+        attachments: list = []
+        
+        with SessionLocal() as session:
+            # Obtener incidentes
+            incidentes = []
+            if email_request.incidente_ids:
+                incidentes = (
+                    session.query(IncidenteBaneo)
+                    .filter(IncidenteBaneo.id.in_(email_request.incidente_ids))
+                    .all()
+                )
+            
+            # Generar XLS si se solicita
+            if email_request.include_xls and incidentes:
+                try:
+                    import pandas as pd
+                    
+                    rows = []
+                    for incidente in incidentes:
+                        for camara in incidente.camaras_afectadas:
+                            rows.append({
+                                "Incidente ID": incidente.id,
+                                "Ticket": incidente.ticket_asociado or "-",
+                                "Servicio Afectado": incidente.servicio_afectado_id,
+                                "Servicio Protegido": incidente.servicio_protegido_id,
+                                "Cámara ID": camara.id,
+                                "Cámara Nombre": camara.nombre,
+                                "Estado": camara.estado.value if camara.estado else "-",
+                                "Fecha Inicio": (
+                                    incidente.fecha_inicio.strftime("%Y-%m-%d %H:%M")
+                                    if incidente.fecha_inicio else "-"
+                                ),
+                                "Motivo": incidente.motivo or "-",
+                            })
+                    
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                            df.to_excel(writer, sheet_name="Baneos_Activos", index=False)
+                        output.seek(0)
+                        
+                        attachments.append(
+                            EmailAttachment(
+                                filename="baneos_activos.xlsx",
+                                content=output.getvalue(),
+                                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                        )
+                
+                except ImportError:
+                    logger.warning("action=notify_email warning=pandas_not_available skipping_xls=true")
+            
+            # Obtener TXT original si se solicita
+            if email_request.include_txt and incidentes:
+                from db.models.infra import Servicio
+                
+                for incidente in incidentes:
+                    servicio = (
+                        session.query(Servicio)
+                        .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
+                        .first()
+                    )
+                    if servicio and servicio.rutas:
+                        for ruta in servicio.rutas:
+                            if ruta.raw_file_content:
+                                filename = (
+                                    ruta.nombre_archivo_origen
+                                    or f"tracking_{servicio.servicio_id}.txt"
+                                )
+                                attachments.append(
+                                    EmailAttachment(
+                                        filename=filename,
+                                        content=ruta.raw_file_content.encode("utf-8"),
+                                        mime_type="text/plain; charset=utf-8",
+                                    )
+                                )
+                                break
+                        break
+        
+        # Enviar correo
+        result = email_service.send_email(
+            to=email_request.to,
+            cc=email_request.cc,
+            subject=email_request.subject,
+            body=email_request.body,
+            attachments=attachments if attachments else None,
+        )
+        
+        logger.info(
+            "action=send_email user=%s to=%s success=%s attachments=%d",
+            username,
+            email_request.to,
+            result.success,
+            len(attachments),
+        )
+        
+        return JSONResponse({
+            "success": result.success,
+            "message": result.message,
+            "error": result.error,
+            "recipients_count": len(email_request.to) + len(email_request.cc or []),
+        })
+        
+    except Exception as exc:
+        logger.exception("action=send_email_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"success": False, "message": "Error enviando email", "error": str(exc)},
+            status_code=500
+        )
+
+
+@app.get("/api/infra/notify/email/config")
+async def get_email_config_web(request: Request) -> JSONResponse:
+    """Obtiene el estado de configuración del email."""
+    
+    _require_auth(request)
+    
+    try:
+        from core.services.email_service import get_email_service
+        
+        email_service = get_email_service()
+        settings = email_service.settings
+        
+        return JSONResponse({
+            "configured": email_service.is_configured(),
+            "from_email": settings.from_email if email_service.is_configured() else None,
+            "from_name": settings.from_name if email_service.is_configured() else None,
+        })
+        
+    except Exception as exc:
+        logger.exception("action=get_email_config_error error=%s", exc)
+        return JSONResponse({"configured": False, "error": str(exc)})
+
+
+# -----------------------------------------------------------------------------
+# GENERACIÓN DE ARCHIVO EML (ALTERNATIVA A SMTP)
+# -----------------------------------------------------------------------------
+
+class EmlDownloadRequestModel(BaseModel):
+    """Request para generar archivo .eml descargable."""
+    incident_id: int
+    recipients: str  # Emails separados por coma o punto y coma
+    subject: str
+    html_body: str = ""  # HTML completo del correo
+    include_xls: bool = True
+    include_txt: bool = True
+
+
+DEFAULT_EMAIL_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+        .content { padding: 20px; background: #f8fafc; border: 1px solid #e2e8f0; }
+        .footer { padding: 15px; background: #f1f5f9; border-radius: 0 0 8px 8px; font-size: 12px; color: #64748b; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f1f5f9; font-weight: 600; }
+        .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; }
+        .badge-warning { background: #fef3c7; color: #92400e; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>🔒 Notificación de Protocolo de Protección</h2>
+    </div>
+    <div class="content">
+        <p>Se ha activado el Protocolo de Protección en la red de fibra óptica.</p>
+        <table>
+            <tr><th>Ticket</th><td>{{ticket}}</td></tr>
+            <tr><th>Servicio Afectado</th><td>{{servicio_afectado}}</td></tr>
+            <tr><th>Servicio Protegido</th><td>{{servicio_protegido}}</td></tr>
+            <tr><th>Cámaras Baneadas</th><td>{{total_camaras}}</td></tr>
+            <tr><th>Fecha</th><td>{{fecha}}</td></tr>
+            <tr><th>Motivo</th><td>{{motivo}}</td></tr>
+        </table>
+        <p>Se adjunta el detalle de las cámaras afectadas.</p>
+    </div>
+    <div class="footer">
+        <p>Este mensaje fue generado automáticamente por LAS-FOCAS - Metrotel</p>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.post("/api/infra/notify/download-eml")
+async def generate_eml_file(
+    request: Request,
+    eml_request: EmlDownloadRequestModel,
+) -> Response:
+    """Genera un archivo .eml descargable con el correo de notificación.
+    
+    Este endpoint es una alternativa cuando no se puede usar SMTP directamente
+    (ej: Office 365 sin App Password). El usuario puede abrir el .eml con su
+    cliente de correo y enviarlo manualmente.
+    
+    Args:
+        eml_request: Datos del correo a generar
+        
+    Returns:
+        Archivo .eml para descarga
+    """
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import formataddr, formatdate
+    from datetime import datetime, timezone
+    import io
+    import re
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import IncidenteBaneo, Servicio
+        from db.session import SessionLocal
+        from core.config import get_settings
+        
+        settings = get_settings()
+        
+        # Parsear destinatarios (soporta coma, punto y coma, espacios)
+        recipients_raw = re.split(r'[,;\s]+', eml_request.recipients.strip())
+        recipients = [r.strip() for r in recipients_raw if r.strip() and '@' in r]
+        
+        if not recipients:
+            return JSONResponse(
+                {"error": "No se especificaron destinatarios válidos"},
+                status_code=400
+            )
+        
+        with SessionLocal() as session:
+            # Obtener datos del incidente
+            incidente = session.query(IncidenteBaneo).get(eml_request.incident_id)
+            
+            if not incidente:
+                return JSONResponse(
+                    {"error": f"Incidente {eml_request.incident_id} no encontrado"},
+                    status_code=404
+                )
+            
+            # Preparar variables para el template
+            template_vars = {
+                "ticket": incidente.ticket_asociado or f"INC-{incidente.id}",
+                "servicio_afectado": incidente.servicio_afectado_id or "-",
+                "servicio_protegido": incidente.servicio_protegido_id or "-",
+                "total_camaras": len(incidente.camaras_afectadas),
+                "fecha": incidente.fecha_inicio.strftime("%d/%m/%Y %H:%M") if incidente.fecha_inicio else "-",
+                "motivo": incidente.motivo or "Sin especificar",
+            }
+            
+            # Determinar el cuerpo HTML
+            html_body = eml_request.html_body.strip()
+            
+            if not html_body:
+                # Usar template por defecto
+                html_body = DEFAULT_EMAIL_TEMPLATE
+            
+            # Reemplazar variables residuales {{variable}}
+            for key, value in template_vars.items():
+                html_body = html_body.replace(f"{{{{{key}}}}}", str(value))
+            
+            # Crear mensaje MIME
+            msg = MIMEMultipart("mixed")
+            msg["From"] = formataddr((
+                settings.smtp.from_name or "LAS-FOCAS",
+                settings.smtp.from_email or "notificaciones@lasfocas.local"
+            ))
+            msg["To"] = ", ".join(recipients)
+            msg["Subject"] = eml_request.subject
+            msg["Date"] = formatdate(localtime=True)
+            msg["X-Mailer"] = "LAS-FOCAS Notification System"
+            
+            # Cuerpo HTML
+            html_part = MIMEText(html_body, "html", "utf-8")
+            msg.attach(html_part)
+            
+            attachments_info = []
+            
+            # Adjuntar Excel con cámaras baneadas
+            if eml_request.include_xls:
+                try:
+                    import pandas as pd
+                    
+                    rows = []
+                    for camara in incidente.camaras_afectadas:
+                        rows.append({
+                            "ID": camara.id,
+                            "Nombre": camara.nombre or "",
+                            "Fontine_ID": camara.fontine_id or "",
+                            "Dirección": camara.direccion or "",
+                            "Estado": camara.estado.value if camara.estado else "-",
+                            "Ticket": incidente.ticket_asociado or f"INC-{incidente.id}",
+                        })
+                    
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        xls_buffer = io.BytesIO()
+                        with pd.ExcelWriter(xls_buffer, engine="openpyxl") as writer:
+                            df.to_excel(writer, sheet_name="Camaras_Baneadas", index=False)
+                        xls_buffer.seek(0)
+                        
+                        xls_part = MIMEApplication(xls_buffer.getvalue())
+                        xls_filename = f"camaras_baneadas_{incidente.ticket_asociado or incidente.id}.xlsx"
+                        xls_part.add_header(
+                            "Content-Disposition",
+                            "attachment",
+                            filename=xls_filename
+                        )
+                        msg.attach(xls_part)
+                        attachments_info.append(xls_filename)
+                        
+                except ImportError:
+                    logger.warning("action=generate_eml warning=pandas_not_available skipping_xls=true")
+            
+            # Adjuntar TXT original de tracking
+            if eml_request.include_txt:
+                servicio = session.query(Servicio).filter(
+                    Servicio.servicio_id == incidente.servicio_protegido_id
+                ).first()
+                
+                if servicio and servicio.rutas:
+                    for ruta in servicio.rutas:
+                        if ruta.raw_file_content:
+                            txt_filename = (
+                                ruta.nombre_archivo_origen
+                                or f"tracking_{servicio.servicio_id}.txt"
+                            )
+                            txt_part = MIMEApplication(
+                                ruta.raw_file_content.encode("utf-8"),
+                                Name=txt_filename
+                            )
+                            txt_part.add_header(
+                                "Content-Disposition",
+                                "attachment",
+                                filename=txt_filename
+                            )
+                            msg.attach(txt_part)
+                            attachments_info.append(txt_filename)
+                            break  # Solo un TXT
+            
+            # Generar contenido del .eml
+            eml_content = msg.as_bytes()
+            
+            # Nombre del archivo .eml
+            ticket_safe = re.sub(r'[^\w\-]', '_', incidente.ticket_asociado or f"INC_{incidente.id}")
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            eml_filename = f"notificacion_{ticket_safe}_{timestamp}.eml"
+            
+            logger.info(
+                "action=generate_eml user=%s incident_id=%d recipients=%d attachments=%s",
+                username,
+                eml_request.incident_id,
+                len(recipients),
+                attachments_info,
+            )
+            
+            return Response(
+                content=eml_content,
+                media_type="message/rfc822",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{eml_filename}"',
+                }
+            )
+            
+    except Exception as exc:
+        logger.exception("action=generate_eml_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"error": f"Error generando archivo EML: {exc!s}"},
+            status_code=500
+        )
+
+
+# -----------------------------------------------------------------------------
+# EXPORTACIÓN DE CÁMARAS
+# -----------------------------------------------------------------------------
+
+@app.get("/api/infra/export/cameras")
+async def export_cameras_web(
+    request: Request,
+    filter_status: Optional[str] = None,
+    servicio_id: Optional[str] = None,
+    format: str = "csv",
+) -> Response:
+    """Exporta listado de cámaras a CSV o XLSX."""
+    
+    username, _ = _require_auth(request)
+    
+    try:
+        from db.models.infra import Camara, CamaraEstado, IncidenteBaneo, Servicio
+        from db.session import SessionLocal
+        from datetime import datetime, timezone
+        import csv
+        import io
+        
+        with SessionLocal() as session:
+            query = session.query(Camara)
+            
+            # Filtrar por estado
+            if filter_status and filter_status.upper() != "ALL":
+                estado_upper = filter_status.upper()
+                if estado_upper in [e.value for e in CamaraEstado]:
+                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
+            
+            # Filtrar por servicio
+            if servicio_id:
+                servicio = session.query(Servicio).filter(
+                    Servicio.servicio_id == servicio_id
+                ).first()
+                
+                if servicio:
+                    camara_ids = set()
+                    for ruta in servicio.rutas_activas:
+                        for empalme in ruta.empalmes:
+                            if empalme.camara:
+                                camara_ids.add(empalme.camara.id)
+                    
+                    if camara_ids:
+                        query = query.filter(Camara.id.in_(camara_ids))
+                    else:
+                        query = query.filter(Camara.id == -1)
+            
+            camaras = query.order_by(Camara.nombre).all()
+            
+            # Obtener tickets de baneo activos
+            baneos_activos = session.query(IncidenteBaneo).filter(
+                IncidenteBaneo.activo == True
+            ).all()
+            
+            ticket_por_servicio: dict = {}
+            for baneo in baneos_activos:
+                ticket_por_servicio[baneo.servicio_protegido_id] = baneo.ticket_asociado or f"INC-{baneo.id}"
+            
+            # Preparar datos
+            rows = []
+            for cam in camaras:
+                servicios_cat6 = []
+                for empalme in cam.empalmes:
+                    for srv in empalme.servicios:
+                        if srv.servicio_id and srv.servicio_id not in servicios_cat6:
+                            servicios_cat6.append(srv.servicio_id)
+                
+                ticket_baneo = ""
+                if cam.estado == CamaraEstado.BANEADA:
+                    for svc_id in servicios_cat6:
+                        if svc_id in ticket_por_servicio:
+                            ticket_baneo = ticket_por_servicio[svc_id]
+                            break
+                
+                rows.append({
+                    "ID": cam.id,
+                    "Nombre": cam.nombre or "",
+                    "Fontine_ID": cam.fontine_id or "",
+                    "Dirección": cam.direccion or "",
+                    "Estado": cam.estado.value if cam.estado else "LIBRE",
+                    "Servicios_Cat6": ", ".join(servicios_cat6),
+                    "Ticket_Baneo": ticket_baneo,
+                    "Latitud": cam.latitud or "",
+                    "Longitud": cam.longitud or "",
+                    "Origen_Datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                })
+            
+            logger.info(
+                "action=export_cameras user=%s filter_status=%s format=%s rows=%d",
+                username,
+                filter_status,
+                format,
+                len(rows),
+            )
+            
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            
+            if format.lower() == "xlsx":
+                try:
+                    import pandas as pd
+                    
+                    df = pd.DataFrame(rows)
+                    output = io.BytesIO()
+                    
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        df.to_excel(writer, sheet_name="Cámaras", index=False)
+                    
+                    output.seek(0)
+                    
+                    return Response(
+                        content=output.getvalue(),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"',
+                        },
+                    )
+                    
+                except ImportError:
+                    logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
+            
+            # CSV (default)
+            output = io.StringIO()
+            if rows:
+                writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            else:
+                output.write("Sin datos\\n")
+            
+            content = output.getvalue().encode("utf-8-sig")
+            
+            return Response(
+                content=content,
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
+                },
+            )
+            
+    except Exception as exc:
+        logger.exception("action=export_cameras_error user=%s error=%s", username, exc)
+        return JSONResponse(
+            {"error": f"Error exportando cámaras: {exc!s}"},
             status_code=500
         )
 
@@ -2294,12 +3297,12 @@ async def resolve_tracking_web(
 ) -> JSONResponse:
     """Resuelve un tracking ejecutando la acción (Fase 2 del Portero).
     
-    Acciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, SKIP
+    Acciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, ADD_STRAND, SKIP
     """
     username, _ = _require_auth(request)
     
     # Validar acción
-    valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "SKIP"]
+    valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "ADD_STRAND", "SKIP"]
     action_upper = body.action.upper()
     if action_upper not in valid_actions:
         return JSONResponse(

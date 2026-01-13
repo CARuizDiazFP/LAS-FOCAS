@@ -1,6 +1,6 @@
 # Nombre de archivo: infra.py
 # Ubicación de archivo: db/models/infra.py
-# Descripción: Modelos SQLAlchemy para infraestructura (cámaras, cables, empalmes, servicios, rutas e ingresos)
+# Descripción: Modelos SQLAlchemy para infraestructura (cámaras, cables, empalmes, servicios, rutas, puntos terminales e ingresos)
 
 from __future__ import annotations
 
@@ -14,12 +14,15 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Table,
     Text,
+    UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 
 from db.base import Base
@@ -51,6 +54,13 @@ class RutaTipo(str, Enum):
     PRINCIPAL = "PRINCIPAL"
     BACKUP = "BACKUP"
     ALTERNATIVA = "ALTERNATIVA"
+
+
+class PuntoTerminalTipo(str, Enum):
+    """Tipo de punto terminal (extremo de la ruta)."""
+
+    A = "A"  # Origen/Punta A
+    B = "B"  # Destino/Punta B
 
 
 # =============================================================================
@@ -144,6 +154,7 @@ class Empalme(Base):
     tracking_empalme_id = Column(String(64), nullable=False, index=True)
     camara_id = Column(Integer, ForeignKey("app.camaras.id"), nullable=True, index=True)
     tipo = Column(String(64), nullable=True)
+    es_transito = Column(Boolean, nullable=False, default=False)  # True si es punto de tránsito (ODF/NODO/RACK)
 
     camara = relationship("Camara", back_populates="empalmes")
     
@@ -189,9 +200,11 @@ class RutaServicio(Base):
         nullable=False,
         default=RutaTipo.PRINCIPAL,
     )
+    cantidad_pelos = Column(Integer, nullable=True)  # Cantidad de pelos/hilos de la ruta (extraído del tracking)
     hash_contenido = Column(String(64), nullable=True, index=True)  # SHA256
     nombre_archivo_origen = Column(String(255), nullable=True)
-    contenido_original = Column(Text, nullable=True)  # Contenido raw del tracking para debugging
+    contenido_original = Column(Text, nullable=True)  # JSON parseado del tracking
+    raw_file_content = Column(Text, nullable=True)  # Contenido EXACTO del archivo .txt original
     activa = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc))
@@ -204,6 +217,11 @@ class RutaServicio(Base):
         back_populates="rutas",
         order_by=ruta_empalme_association.c.orden,
     )
+    puntos_terminales = relationship(
+        "PuntoTerminal",
+        back_populates="ruta",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<RutaServicio id={self.id} servicio_id={self.servicio_id} nombre='{self.nombre}' tipo={self.tipo.value}>"
@@ -212,6 +230,58 @@ class RutaServicio(Base):
     def empalmes_ordenados(self) -> List["Empalme"]:
         """Retorna los empalmes en orden de aparición en la ruta."""
         return list(self.empalmes)
+
+    @property
+    def punta_a(self) -> Optional["PuntoTerminal"]:
+        """Retorna el punto terminal A (origen) de la ruta."""
+        for pt in self.puntos_terminales:
+            if pt.tipo == PuntoTerminalTipo.A:
+                return pt
+        return None
+
+    @property
+    def punta_b(self) -> Optional["PuntoTerminal"]:
+        """Retorna el punto terminal B (destino) de la ruta."""
+        for pt in self.puntos_terminales:
+            if pt.tipo == PuntoTerminalTipo.B:
+                return pt
+        return None
+
+
+class PuntoTerminal(Base):
+    """Punto terminal de una ruta de fibra óptica (extremos A y B).
+    
+    Representa los puntos físicos donde inicia y termina una ruta de fibra,
+    típicamente un ODF (Optical Distribution Frame), NODO, o RACK.
+    
+    Attributes:
+        tipo: A (origen) o B (destino)
+        sitio_descripcion: Descripción del sitio (ej: "ODF MAIPU 316 1")
+        identificador_fisico: Rack/posición física (ej: "RACK 1 BANDEJA 2")
+        pelo_conector: Par pelo-conector (ej: "P09-C10")
+    """
+
+    __tablename__ = "puntos_terminales"
+    __table_args__ = (
+        UniqueConstraint("ruta_id", "tipo", name="uq_punto_terminal_ruta_tipo"),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    ruta_id = Column(Integer, ForeignKey("app.rutas_servicio.id", ondelete="CASCADE"), nullable=False, index=True)
+    tipo = Column(
+        SQLEnum(PuntoTerminalTipo, name="punto_terminal_tipo", create_type=False),
+        nullable=False,
+    )
+    sitio_descripcion = Column(String(255), nullable=True)  # ODF MAIPU 316 1
+    identificador_fisico = Column(String(255), nullable=True)  # RACK 1 BANDEJA 2
+    pelo_conector = Column(String(64), nullable=True)  # P09-C10
+
+    # Relación
+    ruta = relationship("RutaServicio", back_populates="puntos_terminales")
+
+    def __repr__(self) -> str:
+        return f"<PuntoTerminal id={self.id} ruta_id={self.ruta_id} tipo={self.tipo.value} sitio='{self.sitio_descripcion}'>"
 
 
 class Servicio(Base):
@@ -226,6 +296,7 @@ class Servicio(Base):
 
     id = Column(Integer, primary_key=True)
     servicio_id = Column(String(64), nullable=False, unique=True, index=True)
+    alias_ids = Column(ARRAY(String(64)), nullable=True)  # IDs alternativos del servicio (ej: O1C1, O1C2)
     cliente = Column(String(255), nullable=True)
     categoria = Column(Integer, nullable=True)
     nombre_archivo_origen = Column(String(255), nullable=True)  # DEPRECATED: Mover a RutaServicio
@@ -296,3 +367,65 @@ class Ingreso(Base):
 
     def __repr__(self) -> str:
         return f"<Ingreso id={self.id} camara_id={self.camara_id}>"
+
+
+class IncidenteBaneo(Base):
+    """Registro de incidente de baneo/protección de cámaras.
+    
+    Implementa el "Protocolo de Protección" que permite bloquear el acceso
+    físico a cámaras que contienen fibra de respaldo cuando la principal
+    está cortada.
+    
+    Soporta redundancia cruzada: el servicio afectado (cortado) puede ser
+    diferente al servicio protegido (baneado).
+    
+    Attributes:
+        ticket_asociado: ID del ticket de soporte/incidente.
+        servicio_afectado_id: ID del servicio que sufrió el corte (texto).
+        servicio_protegido_id: ID del servicio cuya ruta se protege (baneando cámaras).
+        ruta_protegida_id: FK opcional a RutaServicio específica a proteger.
+        usuario_ejecutor: Usuario que ejecutó el baneo.
+        motivo: Descripción del motivo del baneo.
+        fecha_inicio: Timestamp de inicio del baneo.
+        fecha_fin: Timestamp de fin del baneo (cuando se levanta).
+        activo: Si el baneo sigue vigente.
+    """
+
+    __tablename__ = "incidentes_baneo"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    ticket_asociado = Column(String(64), nullable=True, index=True)
+    servicio_afectado_id = Column(String(64), nullable=False, index=True)  # El que se cortó
+    servicio_protegido_id = Column(String(64), nullable=False, index=True)  # El que vamos a banear
+    ruta_protegida_id = Column(
+        Integer,
+        ForeignKey("app.rutas_servicio.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    usuario_ejecutor = Column(String(128), nullable=True)
+    motivo = Column(String(512), nullable=True)
+    fecha_inicio = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    fecha_fin = Column(DateTime(timezone=True), nullable=True)
+    activo = Column(Boolean, nullable=False, default=True, index=True)
+
+    # Relaciones
+    ruta_protegida = relationship("RutaServicio", foreign_keys=[ruta_protegida_id])
+
+    def __repr__(self) -> str:
+        status = "ACTIVO" if self.activo else "CERRADO"
+        return f"<IncidenteBaneo id={self.id} ticket={self.ticket_asociado} protegido={self.servicio_protegido_id} [{status}]>"
+
+    @property
+    def duracion_horas(self) -> float | None:
+        """Calcula la duración del baneo en horas."""
+        if not self.fecha_inicio:
+            return None
+        fin = self.fecha_fin or datetime.now(timezone.utc)
+        delta = fin - self.fecha_inicio
+        return delta.total_seconds() / 3600

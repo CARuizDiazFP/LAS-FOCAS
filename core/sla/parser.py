@@ -42,9 +42,8 @@ _RECLAMOS_MAP: Mapping[str, str] = {
     "fecha cierre reclamo": "fin",
     "fecha cierre": "fin",
     "cierre": "fin",
+    # IMPORTANTE: Solo usar columna 'Horas Netas Reclamo' (columna U del Excel)
     "horas netas reclamo": "duracion_h",
-    "horas netas problema reclamo": "duracion_h",
-    "horas reclamos todos": "duracion_h",
     "tipo solución reclamo": "causal",
     "tipo solucion reclamo": "causal",
     "causal": "causal",
@@ -223,27 +222,54 @@ def _parse_datetime(value, tz) -> Optional[pd.Timestamp]:
 
 
 def _parse_duracion_horas(value, inicio, fin) -> Optional[float]:
+    """Parsea duración a horas decimales desde la columna 'Horas Netas Reclamo'.
+    
+    IMPORTANTE: Solo usa el valor de la columna, SIN fallback a fechas.
+    
+    Maneja múltiples formatos:
+    - Timedelta de pandas o Python
+    - String "HH:MM:SS" o "H:MM:SS"  
+    - Número decimal en horas
+    - datetime.time (Excel a veces interpreta así)
+    """
+    import datetime
+    
+    # Si no hay valor, retornar None (sin fallback a fechas)
     if value is None or (isinstance(value, float) and pd.isna(value)):
-        if inicio is not None and fin is not None:
-            delta = fin - inicio
-            return round(delta.total_seconds() / 3600, 4)
         return None
+    
+    # Si es timedelta de pandas
+    if isinstance(value, pd.Timedelta):
+        return round(value.total_seconds() / 3600, 4)
+    
+    # Si es timedelta de Python
+    if isinstance(value, datetime.timedelta):
+        return round(value.total_seconds() / 3600, 4)
+    
+    # Si es datetime.time (Excel a veces interpreta tiempos así)
+    if isinstance(value, datetime.time):
+        return round(value.hour + value.minute / 60 + value.second / 3600, 4)
+    
     text = str(value).strip().lower()
     if not text or text in {"nan", "none"}:
-        if inicio is not None and fin is not None:
-            delta = fin - inicio
-            return round(delta.total_seconds() / 3600, 4)
         return None
+    
+    # Intentar parsear como timedelta (formato HH:MM:SS)
     try:
         td = pd.to_timedelta(text.replace(",", "."))
+        if not pd.isna(td):
+            return round(td.total_seconds() / 3600, 4)
     except ValueError:
-        try:
-            td = pd.to_timedelta(float(text.replace(",", ".")), unit="h")
-        except Exception:
-            return _parse_float_or_none(value)
-    if pd.isna(td):
-        return None
-    return round(td.total_seconds() / 3600, 4)
+        pass
+    
+    # Intentar como número decimal directo (ya en horas)
+    try:
+        num = float(text.replace(",", "."))
+        return round(num, 4)
+    except Exception:
+        pass
+    
+    return _parse_float_or_none(value)
 
 
 def _parse_float_or_none(value) -> Optional[float]:

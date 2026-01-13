@@ -201,7 +201,23 @@
               <h1 class="infra-title">Infraestructura FO</h1>
               <p class="infra-subtitle">Gestión de cámaras y servicios de fibra óptica</p>
             </div>
-            <span class="badge infra-badge">🔌 FO INFRA</span>
+            <div class="infra-hero-actions">
+              <!-- Badge de baneos activos (clickeable para ver/gestionar) -->
+              <button type="button" id="infra-ban-badge" class="infra-ban-badge" hidden title="Ver y gestionar baneos activos">
+                <span class="infra-ban-badge-icon">🔒</span>
+                <span id="infra-ban-count" class="infra-ban-badge-count">0</span>
+                <span class="infra-ban-badge-text">ACTIVOS</span>
+              </button>
+              <!-- Botón de notificación (solo si hay baneos) -->
+              <button type="button" id="infra-notify-btn" class="infra-notify-btn" hidden title="Dar aviso de baneo por correo">
+                📧 Dar Aviso
+              </button>
+              <!-- BOTÓN DE PÁNICO -->
+              <button type="button" id="infra-panic-btn" class="infra-panic-btn" title="Activar Protocolo de Protección">
+                🚨 Protocolo Protección
+              </button>
+              <span class="badge infra-badge">🔌 FO INFRA</span>
+            </div>
           </header>
 
           <!-- Actions: Smart Search + Upload -->
@@ -258,6 +274,24 @@
               </svg>
               <span>Limpiar servicio</span>
             </button>
+
+            <!-- Botón exportar cámaras -->
+            <div class="infra-export-dropdown">
+              <button type="button" id="infra-export-btn" class="infra-export-btn" title="Descargar listado de cámaras">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7,10 12,15 17,10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <span>Descargar</span>
+              </button>
+              <div id="infra-export-menu" class="infra-export-menu" hidden>
+                <button type="button" data-filter="ALL" data-format="xlsx">📊 Todas (XLSX)</button>
+                <button type="button" data-filter="ALL" data-format="csv">📄 Todas (CSV)</button>
+                <button type="button" data-filter="BANEADA" data-format="xlsx">🔒 Solo Baneadas</button>
+                <button type="button" data-filter="OCUPADA" data-format="xlsx">🔧 Con Ingreso</button>
+              </div>
+            </div>
           </div>
 
           <!-- Quick filters (estado) - Atajos para agregar términos -->
@@ -328,13 +362,14 @@
   <dialog id="tracking-conflict-modal" class="tracking-modal">
     <article class="tracking-modal-content">
       <header class="tracking-modal-header">
-        <h2>⚠️ Conflicto de Tracking</h2>
+        <h2 id="tracking-modal-title">⚠️ Conflicto de Tracking</h2>
         <button type="button" class="tracking-modal-close" aria-label="Cerrar">&times;</button>
       </header>
       <div class="tracking-modal-body">
         <p id="tracking-conflict-message" class="tracking-conflict-message"></p>
         
-        <div class="tracking-info-grid">
+        <!-- Vista estándar de conflicto -->
+        <div id="tracking-standard-conflict" class="tracking-info-grid">
           <div class="tracking-info-card">
             <h4>📄 Archivo subido</h4>
             <dl>
@@ -358,8 +393,89 @@
             </dl>
           </div>
         </div>
+
+        <!-- Vista de Upgrade Potencial -->
+        <div id="tracking-upgrade-view" class="tracking-upgrade-view" hidden>
+          <div class="tracking-upgrade-diagram">
+            <div class="tracking-upgrade-service old">
+              <div class="tracking-upgrade-service-header">
+                <span class="tracking-upgrade-icon">📁</span>
+                <span>Servicio Existente</span>
+              </div>
+              <div class="tracking-upgrade-service-id" id="tracking-upgrade-old-id">10125</div>
+            </div>
+            <div class="tracking-upgrade-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="5" y1="12" x2="19" y2="12"/>
+                <polyline points="12 5 19 12 12 19"/>
+              </svg>
+              <span>Migrar a</span>
+            </div>
+            <div class="tracking-upgrade-service new">
+              <div class="tracking-upgrade-service-header">
+                <span class="tracking-upgrade-icon">📄</span>
+                <span>Nuevo ID</span>
+              </div>
+              <div class="tracking-upgrade-service-id" id="tracking-upgrade-new-id">30256</div>
+            </div>
+          </div>
+          <div class="tracking-upgrade-puntas">
+            <h4>Puntas coincidentes:</h4>
+            <div class="tracking-puntas-chips">
+              <span class="tracking-punta-chip punta-a">
+                <svg class="punta-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                <span>Punta A:</span>
+                <strong id="tracking-upgrade-punta-a">ODF Maipu</strong>
+              </span>
+              <span class="tracking-punta-chip punta-b">
+                <svg class="punta-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                <span>Punta B:</span>
+                <strong id="tracking-upgrade-punta-b">ODF Warnes</strong>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vista de Nuevo Pelo -->
+        <div id="tracking-strand-view" class="tracking-strand-view" hidden>
+          <div class="tracking-strand-diagram">
+            <div class="tracking-strand-service">
+              <div class="tracking-strand-header">
+                <span class="tracking-strand-icon">🧶</span>
+                <span>Servicio</span>
+              </div>
+              <div class="tracking-strand-id" id="tracking-strand-service-id">52547</div>
+            </div>
+            <div class="tracking-strand-info">
+              <div class="tracking-strand-current">
+                <span class="tracking-strand-label">Pelos actuales:</span>
+                <span class="tracking-strand-count" id="tracking-strand-current">1</span>
+              </div>
+              <div class="tracking-strand-arrow">
+                <span>+1</span>
+              </div>
+              <div class="tracking-strand-new">
+                <span class="tracking-strand-label">Resultado:</span>
+                <span class="tracking-strand-count highlight" id="tracking-strand-new">2</span>
+              </div>
+            </div>
+          </div>
+          <div class="tracking-strand-details">
+            <p>El recorrido del tracking es <strong>idéntico</strong> a la ruta existente.</p>
+            <p class="tracking-strand-hint">Esto indica que se trata de un nuevo pelo/hilo sobre la misma fibra.</p>
+          </div>
+        </div>
         
-        <div class="tracking-actions-section">
+        <!-- Acciones estándar -->
+        <div id="tracking-standard-actions" class="tracking-actions-section">
           <h4>¿Qué deseas hacer?</h4>
           <div class="tracking-action-options">
             <button type="button" class="tracking-action-btn" data-action="REPLACE">
@@ -377,10 +493,49 @@
               <span class="tracking-action-label">Camino disjunto</span>
               <span class="tracking-action-desc">Guardar como ruta alternativa/backup</span>
             </button>
+            <button type="button" class="tracking-action-btn" data-action="ADD_STRAND">
+              <span class="tracking-action-icon">🧶</span>
+              <span class="tracking-action-label">Agregar pelo</span>
+              <span class="tracking-action-desc">Mismo camino, diferente hilo (C1, C2...)</span>
+            </button>
             <button type="button" class="tracking-action-btn danger" data-action="SKIP">
               <span class="tracking-action-icon">⏭️</span>
               <span class="tracking-action-label">Omitir</span>
               <span class="tracking-action-desc">No hacer cambios, mantener como está</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Acciones para Upgrade -->
+        <div id="tracking-upgrade-actions" class="tracking-actions-section" hidden>
+          <h4>¿Qué deseas hacer?</h4>
+          <div class="tracking-action-options tracking-action-options-upgrade">
+            <button type="button" class="tracking-action-btn primary-action" data-action="CONFIRM_UPGRADE">
+              <span class="tracking-action-icon">✅</span>
+              <span class="tracking-action-label">Sí, realizar Upgrade</span>
+              <span class="tracking-action-desc" id="tracking-upgrade-desc">Migrar 10125 → 30256</span>
+            </button>
+            <button type="button" class="tracking-action-btn" data-action="CREATE_NEW">
+              <span class="tracking-action-icon">➕</span>
+              <span class="tracking-action-label">No, crear como nuevo</span>
+              <span class="tracking-action-desc">Crear servicio independiente</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Acciones para Nuevo Pelo -->
+        <div id="tracking-strand-actions" class="tracking-actions-section" hidden>
+          <h4>¿Qué deseas hacer?</h4>
+          <div class="tracking-action-options tracking-action-options-strand">
+            <button type="button" class="tracking-action-btn primary-action" data-action="ADD_STRAND">
+              <span class="tracking-action-icon">🧶</span>
+              <span class="tracking-action-label">Agregar como Pelo Adicional (+1)</span>
+              <span class="tracking-action-desc">Incrementar capacidad de la ruta existente</span>
+            </button>
+            <button type="button" class="tracking-action-btn" data-action="SKIP">
+              <span class="tracking-action-icon">⏭️</span>
+              <span class="tracking-action-label">Omitir</span>
+              <span class="tracking-action-desc">No hacer cambios</span>
             </button>
           </div>
         </div>
@@ -399,6 +554,256 @@
       <footer class="tracking-modal-footer">
         <button type="button" id="tracking-confirm-btn" class="btn primary" disabled>Confirmar</button>
         <button type="button" id="tracking-cancel-btn" class="btn secondary">Cancelar</button>
+      </footer>
+    </article>
+  </dialog>
+
+  <!-- Modal Wizard de Baneo (Protocolo de Protección) -->
+  <dialog id="ban-wizard-modal" class="ban-wizard-modal">
+    <article class="ban-wizard-content">
+      <header class="ban-wizard-header">
+        <div class="ban-wizard-title-row">
+          <span class="ban-wizard-icon">🚨</span>
+          <h2>Protocolo de Protección</h2>
+        </div>
+        <button type="button" class="ban-wizard-close" aria-label="Cerrar">&times;</button>
+      </header>
+      
+      <!-- Progress Steps -->
+      <div class="ban-wizard-progress">
+        <div class="ban-step active" data-step="1">
+          <span class="ban-step-number">1</span>
+          <span class="ban-step-label">Identificación</span>
+        </div>
+        <div class="ban-step-connector"></div>
+        <div class="ban-step" data-step="2">
+          <span class="ban-step-number">2</span>
+          <span class="ban-step-label">Selección</span>
+        </div>
+        <div class="ban-step-connector"></div>
+        <div class="ban-step" data-step="3">
+          <span class="ban-step-number">3</span>
+          <span class="ban-step-label">Confirmación</span>
+        </div>
+      </div>
+
+      <div class="ban-wizard-body">
+        <!-- Paso 1: Identificación -->
+        <div class="ban-wizard-step" data-step="1">
+          <h3>🎫 Identificación del Incidente</h3>
+          <p class="ban-wizard-desc">Ingresá los datos del corte que disparó este protocolo.</p>
+          
+          <div class="ban-form-group">
+            <label for="ban-ticket">Ticket Incidente (opcional)</label>
+            <input type="text" id="ban-ticket" placeholder="Ej: INC0012345" maxlength="64" />
+          </div>
+          
+          <div class="ban-form-group">
+            <label for="ban-servicio-afectado">Servicio Afectado (ID) <span class="required">*</span></label>
+            <input type="text" id="ban-servicio-afectado" placeholder="Ej: 52547" required />
+            <small class="ban-form-hint">El servicio que sufrió el corte de fibra.</small>
+          </div>
+
+          <div class="ban-form-group">
+            <label for="ban-motivo">Motivo (opcional)</label>
+            <textarea id="ban-motivo" placeholder="Describe brevemente el motivo del baneo..." rows="2" maxlength="512"></textarea>
+          </div>
+        </div>
+
+        <!-- Paso 2: Selección del Objetivo -->
+        <div class="ban-wizard-step" data-step="2" hidden>
+          <h3>🎯 Selección del Objetivo a Proteger</h3>
+          
+          <!-- Info del servicio afectado -->
+          <div id="ban-afectado-info" class="ban-info-box">
+            <span class="ban-info-icon">ℹ️</span>
+            <span id="ban-afectado-text">Buscando rutas del servicio afectado...</span>
+          </div>
+
+          <!-- Opción: mismo servicio u otro -->
+          <div class="ban-target-toggle">
+            <button type="button" class="ban-target-opt active" data-target="same">
+              <span class="ban-target-opt-icon">🔄</span>
+              <span class="ban-target-opt-text">Proteger el mismo servicio</span>
+            </button>
+            <button type="button" class="ban-target-opt" data-target="other">
+              <span class="ban-target-opt-icon">🔀</span>
+              <span class="ban-target-opt-text">Proteger otro servicio (redundancia cruzada)</span>
+            </button>
+          </div>
+
+          <!-- Input para buscar otro servicio -->
+          <div id="ban-other-service-input" class="ban-form-group" hidden>
+            <label for="ban-servicio-protegido">ID del Servicio a Proteger</label>
+            <div class="ban-search-row">
+              <input type="text" id="ban-servicio-protegido" placeholder="Ej: 52548" />
+              <button type="button" id="ban-search-service-btn" class="ban-search-btn">Buscar</button>
+            </div>
+          </div>
+
+          <!-- Resultado: rutas disponibles -->
+          <div id="ban-rutas-container" class="ban-rutas-container">
+            <h4>Rutas disponibles para banear:</h4>
+            <div id="ban-rutas-list" class="ban-rutas-list">
+              <!-- Se llena dinámicamente -->
+            </div>
+          </div>
+
+          <!-- Semáforo de Tracking -->
+          <div id="ban-tracking-status" class="ban-tracking-status" hidden>
+            <div class="ban-tracking-semaforo">
+              <span id="ban-tracking-icon" class="ban-tracking-icon">🟢</span>
+              <span id="ban-tracking-text">Tracking actualizado hace X días</span>
+            </div>
+            <button type="button" id="ban-download-tracking-btn" class="ban-download-tracking-btn" title="Descargar tracking TXT">
+              📥 Descargar TXT
+            </button>
+          </div>
+        </div>
+
+        <!-- Paso 3: Confirmación -->
+        <div class="ban-wizard-step" data-step="3" hidden>
+          <h3>⚠️ Confirmación Final</h3>
+          <p class="ban-wizard-desc ban-warning">Revisá los datos antes de ejecutar. Esta acción marcará las cámaras como BANEADAS.</p>
+          
+          <div class="ban-summary">
+            <div class="ban-summary-row">
+              <span class="ban-summary-label">Ticket:</span>
+              <span id="ban-summary-ticket" class="ban-summary-value">-</span>
+            </div>
+            <div class="ban-summary-row">
+              <span class="ban-summary-label">Servicio Afectado:</span>
+              <span id="ban-summary-afectado" class="ban-summary-value">-</span>
+            </div>
+            <div class="ban-summary-row">
+              <span class="ban-summary-label">Servicio a Proteger:</span>
+              <span id="ban-summary-protegido" class="ban-summary-value">-</span>
+            </div>
+            <div class="ban-summary-row">
+              <span class="ban-summary-label">Ruta:</span>
+              <span id="ban-summary-ruta" class="ban-summary-value">Todas las rutas</span>
+            </div>
+            <div class="ban-summary-row highlight">
+              <span class="ban-summary-label">Cámaras afectadas:</span>
+              <span id="ban-summary-camaras" class="ban-summary-value">-</span>
+            </div>
+          </div>
+
+          <div class="ban-confirm-checkbox">
+            <label>
+              <input type="checkbox" id="ban-confirm-check" />
+              <span>Confirmo que entiendo que las cámaras serán bloqueadas</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <footer class="ban-wizard-footer">
+        <button type="button" id="ban-prev-btn" class="btn secondary" hidden>← Anterior</button>
+        <div class="ban-wizard-spacer"></div>
+        <button type="button" id="ban-cancel-btn" class="btn secondary">Cancelar</button>
+        <button type="button" id="ban-next-btn" class="btn primary">Siguiente →</button>
+        <button type="button" id="ban-execute-btn" class="btn danger" hidden>🚨 EJECUTAR BANEO</button>
+      </footer>
+    </article>
+  </dialog>
+
+  <!-- Modal de Baneos Activos -->
+  <dialog id="notify-modal" class="notify-modal active-bans-modal">
+    <article class="notify-modal-content">
+      <header class="notify-modal-header">
+        <h2>🔒 Baneos Activos</h2>
+        <button type="button" class="notify-modal-close">&times;</button>
+      </header>
+      <div class="notify-modal-body">
+        <p class="active-bans-subtitle">Cámaras protegidas por el Protocolo de Protección</p>
+        <div id="active-bans-list" class="active-bans-list">
+          <p class="loading-text">Cargando baneos...</p>
+        </div>
+      </div>
+      <footer class="notify-modal-footer">
+        <div class="notify-email-option">
+          <label class="notify-email-label">
+            <input type="checkbox" id="notify-email-check" />
+            <span>📧 Enviar aviso por correo al desbanear</span>
+          </label>
+        </div>
+        <button type="button" id="notify-cancel-btn" class="btn secondary">Cerrar</button>
+      </footer>
+    </article>
+  </dialog>
+
+  <!-- Modal de Editor de Correo - Dar Aviso -->
+  <dialog id="email-editor-modal" class="email-editor-modal">
+    <article class="email-editor-content">
+      <header class="email-editor-header">
+        <h2>📧 Componer Aviso de Baneo</h2>
+        <button type="button" class="email-editor-close">&times;</button>
+      </header>
+      <div class="email-editor-body">
+        <!-- Destinatarios -->
+        <div class="email-field">
+          <label for="email-to">Para:</label>
+          <input type="text" id="email-to" placeholder="correo1@ejemplo.com, correo2@ejemplo.com" />
+          <small class="email-hint">Separar múltiples correos con coma o punto y coma · Los destinatarios se guardan automáticamente</small>
+        </div>
+        
+        <!-- Asunto -->
+        <div class="email-field">
+          <label for="email-subject">Asunto:</label>
+          <input type="text" id="email-subject" placeholder="Asunto del correo" />
+        </div>
+        
+        <!-- Editor de Cuerpo (texto simple) -->
+        <div class="email-field email-field-body">
+          <div class="email-body-header">
+            <label>Mensaje:</label>
+            <button type="button" id="email-restore-template" class="btn-restore-template" title="Restaurar plantilla por defecto">
+              🔄 Restaurar Plantilla
+            </button>
+          </div>
+          <textarea id="email-body" rows="10" placeholder="Escribí el mensaje aquí..." class="email-text-editor"></textarea>
+        </div>
+        
+        <!-- Adjuntos -->
+        <div class="email-attachments">
+          <h4>📎 Archivos adjuntos:</h4>
+          <div class="email-attachments-list">
+            <label class="email-attachment-item">
+              <input type="checkbox" id="email-attach-xls" checked />
+              <span class="attachment-icon">📊</span>
+              <span class="attachment-name">baneos_activos.xlsx</span>
+              <span class="attachment-desc">Listado de cámaras baneadas</span>
+            </label>
+            <label class="email-attachment-item">
+              <input type="checkbox" id="email-attach-txt" checked />
+              <span class="attachment-icon">📄</span>
+              <span class="attachment-name" id="email-txt-filename">tracking_original.txt</span>
+              <span class="attachment-desc">Archivo de tracking original</span>
+            </label>
+          </div>
+          <p class="email-attachment-warning" id="email-txt-warning" hidden>
+            ⚠️ El archivo TXT original no está disponible para esta ruta.
+          </p>
+        </div>
+        
+        <!-- Resumen de baneos incluidos -->
+        <div class="email-bans-summary">
+          <h4>🔒 Baneos incluidos:</h4>
+          <div id="email-bans-list" class="email-bans-list">
+            <p class="loading-text">Cargando baneos...</p>
+          </div>
+        </div>
+      </div>
+      <footer class="email-editor-footer">
+        <div class="email-status" id="email-status"></div>
+        <button type="button" id="email-cancel-btn" class="btn secondary">Cancelar</button>
+        <button type="button" id="email-download-eml-btn" class="btn outline-primary" title="Genera un archivo .eml que podés abrir con Outlook">
+          <span class="btn-icon">📥</span> Descargar EML
+        </button>
+        <button type="button" id="email-send-btn" class="btn primary" title="Enviar correo directamente">
+          <span class="btn-icon">📤</span> Enviar Correo
+        </button>
       </footer>
     </article>
   </dialog>

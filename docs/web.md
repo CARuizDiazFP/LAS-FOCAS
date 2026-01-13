@@ -218,6 +218,149 @@ El servicio `nlp_intent` ahora arranca con `LLM_PROVIDER=openai` por defecto. Es
 - Roles: admin/user. Endpoints admin exigen role "admin".
  - Roles soportados: Admin, OwnerGroup, Invitado (se almacenan en minúsculas: admin/ownergroup/invitado). Endpoints admin exigen role "admin".
 
+## Protocolo de Protección (Baneo de Cámaras)
+
+Sistema de emergencia para proteger la infraestructura de fibra óptica cuando se detectan amenazas físicas en cámaras subterráneas.
+
+### Propósito
+
+Cuando se identifica actividad sospechosa (intento de robo, vandalismo) en una cámara, el operador puede "banear" todas las rutas que pasan por ella, documentando el incidente con un ticket asociado. Esto permite:
+
+- Registrar rápidamente qué rutas están comprometidas.
+- Notificar equipos de campo con un listado claro.
+- Auditar el historial de incidentes por cámara.
+- Exportar listados filtrados para análisis.
+
+### Componentes Frontend
+
+#### 1. Botón Pánico (🚨 Protocolo Protección)
+
+- **Ubicación:** Cabecera del tab "Infra/Cámaras" junto al badge de baneos activos.
+- **Estilo:** Rojo intenso (#ff4444) con efecto glow y animación de pulso suave.
+- **Acción:** Abre el wizard de 3 pasos para registrar un nuevo incidente.
+
+#### 2. Badge de Baneos Activos
+
+- **Muestra:** Número de cámaras actualmente baneadas.
+- **Se actualiza:** Al cargar la sección Infra y después de crear/remover un baneo.
+- **Clic:** Expande listado resumido de baneos activos.
+
+#### 3. Wizard de Baneo (3 Pasos)
+
+**Paso 1 – Identificación:**
+- Campo de texto para buscar cámara (por nombre, dirección, ID).
+- Autocompletado con resultados de la API.
+- Selección visual con preview de la cámara elegida.
+
+**Paso 2 – Selección:**
+- Toggle para elegir alcance: "Todas las rutas" o "Seleccionar rutas específicas".
+- Listado con checkboxes de las rutas/servicios que pasan por la cámara.
+- Campo para número de ticket obligatorio.
+- Semáforo de tracking (🔴→🟡→🟢) mostrando progreso del proceso.
+
+**Paso 3 – Confirmación:**
+- Resumen del incidente: cámara afectada, rutas seleccionadas, ticket.
+- Checkbox de confirmación obligatorio.
+- Botón "Ejecutar Protocolo" que envía `POST /api/infra/ban/create`.
+
+#### 4. Indicadores Visuales en Tarjetas
+
+Las tarjetas de cámara con estado `BANEADA` muestran:
+
+- **Borde rojo brillante** con efecto glow pulsante.
+- **Icono de candado** (🔒) en la esquina superior derecha con animación.
+- **Número de ticket** visible debajo de los servicios, con prefijo 🎫.
+
+```css
+.infra-camara-card[data-estado="BANEADA"] {
+  border-color: #ff4444;
+  box-shadow: 0 0 20px rgba(255, 68, 68, 0.3);
+}
+```
+
+#### 5. Dropdown de Exportación
+
+Menú desplegable junto al botón "Limpiar servicio" con las opciones:
+
+| Opción | Formato | Filtro |
+|--------|---------|--------|
+| Exportar todas (XLSX) | Excel | Sin filtro |
+| Exportar todas (CSV) | CSV | Sin filtro |
+| Solo baneadas (CSV) | CSV | estado=BANEADA |
+| Solo con ingreso (CSV) | CSV | estado=OCUPADA |
+
+Cada opción llama a `GET /api/infra/export/cameras?filter=X&format=Y`.
+
+#### 6. Botón de Notificaciones
+
+- **Icono:** Campana (🔔) con badge numérico.
+- **Función (mock):** Abre modal con listado de baneos activos.
+- **Futuro:** Integrará con sistema de alertas push o Telegram.
+
+### Endpoints Consumidos
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/infra/ban/create` | POST | Crea incidente de baneo |
+| `/api/infra/ban/active` | GET | Lista baneos activos |
+| `/api/infra/ban/{id}/remove` | DELETE | Remueve un baneo |
+| `/api/infra/servicios/{id}/rutas` | GET | Lista rutas de un servicio |
+| `/api/infra/export/cameras` | GET | Exporta cámaras con filtros |
+
+### Modelo de Datos
+
+Ver `docs/db.md` para el esquema completo de `app.incidentes_baneo`.
+
+Campos principales:
+- `camara_id` / `servicio_id`: FK a la entidad afectada.
+- `ticket_baneo`: Número de ticket asociado (obligatorio).
+- `motivo_baneo`: Descripción del incidente.
+- `rutas_afectadas`: JSON con lista de rutas comprometidas.
+- `estado_baneo`: ACTIVO / RESUELTO / CANCELADO.
+- `usuario_baneo`: Usuario que ejecutó el protocolo.
+- `fecha_baneo` / `fecha_resolucion`: Timestamps.
+
+### Flujo de Usuario
+
+```
+1. Operador detecta amenaza en cámara física
+2. Click en "🚨 Protocolo Protección"
+3. Wizard Paso 1: Busca y selecciona la cámara
+4. Wizard Paso 2: Elige rutas + ingresa ticket
+5. Wizard Paso 3: Confirma y ejecuta
+6. Sistema:
+   - Crea registro en app.incidentes_baneo
+   - Actualiza estado de cámara a BANEADA
+   - Incrementa contador en badge
+   - Muestra tarjeta con indicadores visuales
+7. Operador puede exportar listado para equipos de campo
+```
+
+### Estilos CSS Clave
+
+```css
+/* Botón pánico */
+.infra-panic-btn {
+  background: linear-gradient(135deg, #ff4444, #cc3333);
+  box-shadow: 0 0 15px rgba(255, 68, 68, 0.4);
+  animation: panicPulse 2s ease-in-out infinite;
+}
+
+/* Tarjeta baneada */
+.infra-camara-card[data-estado="BANEADA"]::after {
+  content: '🔒';
+  position: absolute;
+  animation: lockPulse 2s ease-in-out infinite;
+}
+
+/* Ticket en tarjeta */
+.infra-ban-ticket {
+  background: rgba(255, 68, 68, 0.15);
+  border: 1px solid rgba(255, 68, 68, 0.3);
+  color: #ff6b6b;
+}
+```
+
 ## Próximos pasos
 
 - Agregar página Admin (UI) para crear usuarios y cambiar contraseña.

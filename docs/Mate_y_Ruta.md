@@ -4,11 +4,11 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-01-09
+Fecha de última actualización: 2026-01-12
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2026-01-09)
+## Estado actual (al 2026-01-12)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -34,6 +34,11 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - **Alarmas Ciena** (2025-11-17): Nueva herramienta en el panel web para procesar CSV de alarmas exportados desde gestores de red Ciena (SiteManager y MCP). Detecta automáticamente el formato, limpia datos (padding, placeholders), soporta campos multilínea y genera Excel limpio. Endpoint `POST /api/tools/alarmas-ciena` con validaciones completas, 26 tests cubriendo todos los casos y documentación exhaustiva en `docs/informes/alarmas_ciena.md`.
     - **Actualización PM**: se corrigió el fixture MCP multilínea, se añadió un fixture `web_client_logged` para pruebas autenticadas y `_require_auth` ahora responde HTTP 401, dejando la suite `tests/test_alarmas_ciena.py` totalmente en verde.
   - **Comparador de VLANs** (2025-12-03): Herramienta full-stack en el panel que permite pegar dos configuraciones Cisco IOS, detecta las líneas `switchport trunk allowed vlan`, expande rangos 1-4094, quita duplicados y muestra "Sólo A", "Comunes" y "Sólo B". Endpoint `POST /api/tools/compare-vlans` + helper `web/tools/vlan_comparator.py`, UI dark en `panel.html` y lógica `panel.js` con feedback inmediato. [2025-12-04] Se añadió aria-live en el estado, scroll en los listados y pruebas dedicadas (`tests/test_vlan_comparator.py`) que cubren rangos altos y descarte de valores fuera de límite.
+  - **Protocolo de Protección / Baneo de Cámaras** (2026-01-12): Sistema completo para proteger fibra de respaldo cuando hay cortes en fibra principal:
+    - **Backend**: Modelo `IncidenteBaneo`, servicio `ProtectionService`, endpoints de baneo (create/lift/active/detail), exportación a CSV/XLSX.
+    - **Frontend**: Botón pánico "🚨 Protocolo Protección", wizard de 3 pasos (Identificación/Selección/Confirmación), badge de baneos activos, indicadores visuales en tarjetas (borde rojo, candado 🔒, ticket 🎫), dropdown de exportación, modal de notificaciones.
+    - **Migración**: Tabla `app.incidentes_baneo` con índices por servicio y estado.
+    - **Lógica inteligente**: Cámaras nuevas heredan baneo si el servicio está baneado; restauración automática a LIBRE/OCUPADA al desbanear.
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.

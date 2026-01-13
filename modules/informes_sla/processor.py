@@ -14,7 +14,12 @@ def load_excel(path: str) -> pd.DataFrame:
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza nombres de columnas y calcula TTR en horas."""
+    """Normaliza nombres de columnas y obtiene TTR desde 'Horas Netas Reclamo'.
+    
+    El TTR (Time To Resolve) se obtiene de la columna 'Horas Netas Reclamo' 
+    (columna U del Excel), que contiene las horas netas de resolución.
+    Si la columna no existe, se calcula como fallback desde las fechas.
+    """
     df = df.rename(columns={k: v for k, v in COLUMNAS_MAPPER.items() if k in df.columns})
 
     faltantes = [c for c in COLUMNAS_OBLIGATORIAS if c not in df.columns]
@@ -23,8 +28,76 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     df["FECHA_APERTURA"] = pd.to_datetime(df["FECHA_APERTURA"], errors="coerce")
     df["FECHA_CIERRE"] = pd.to_datetime(df["FECHA_CIERRE"], errors="coerce")
-    df["TTR_h"] = (df["FECHA_CIERRE"] - df["FECHA_APERTURA"]).dt.total_seconds() / 3600
+    
+    # Usar columna 'Horas Netas Reclamo' (mapeada a TTR_h) si existe
+    # De lo contrario, calcular desde fechas como fallback
+    if "TTR_h" not in df.columns:
+        df["TTR_h"] = (df["FECHA_CIERRE"] - df["FECHA_APERTURA"]).dt.total_seconds() / 3600
+    else:
+        # La columna puede venir en diferentes formatos:
+        # - Timedelta (28:05:57 leído como timedelta por pandas)
+        # - String "HH:MM:SS"
+        # - Número decimal ya en horas
+        df["TTR_h"] = df["TTR_h"].apply(_parse_horas_netas)
+    
     return df
+
+
+def _parse_horas_netas(valor) -> float:
+    """Convierte 'Horas Netas Reclamo' a horas decimales.
+    
+    Maneja formatos:
+    - timedelta de pandas
+    - string "HH:MM:SS" o "H:MM:SS"
+    - número decimal ya en horas
+    - datetime.time
+    """
+    import datetime
+    
+    if pd.isna(valor):
+        return float("nan")
+    
+    # Si ya es numérico (float/int), retornar directamente
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    
+    # Si es timedelta de pandas
+    if isinstance(valor, pd.Timedelta):
+        return valor.total_seconds() / 3600
+    
+    # Si es timedelta de Python
+    if isinstance(valor, datetime.timedelta):
+        return valor.total_seconds() / 3600
+    
+    # Si es datetime.time (Excel a veces lo interpreta así)
+    if isinstance(valor, datetime.time):
+        return valor.hour + valor.minute / 60 + valor.second / 3600
+    
+    # Si es string, intentar parsear HH:MM:SS
+    if isinstance(valor, str):
+        valor = valor.strip()
+        # Intentar convertir a número directamente
+        try:
+            return float(valor.replace(",", "."))
+        except ValueError:
+            pass
+        # Parsear formato HH:MM:SS o H:MM:SS
+        try:
+            partes = valor.split(":")
+            if len(partes) == 3:
+                h, m, s = partes
+                return int(h) + int(m) / 60 + float(s) / 3600
+            elif len(partes) == 2:
+                h, m = partes
+                return int(h) + float(m) / 60
+        except (ValueError, IndexError):
+            pass
+    
+    # Fallback: intentar conversión numérica
+    try:
+        return float(valor)
+    except (ValueError, TypeError):
+        return float("nan")
 
 
 def filter_period(df: pd.DataFrame, mes: int, anio: int) -> pd.DataFrame:

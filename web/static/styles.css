@@ -747,7 +747,7 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 9999;
+  z-index: 100000; /* Muy alto para estar sobre modales <dialog> */
   pointer-events: none;
 }
 
@@ -1098,9 +1098,372 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   background: var(--card);
 }
 
+/* ===========================================
+   TRACKING MODAL - VISTAS DE UPGRADE Y STRAND
+   =========================================== */
+
+/* Vista de Upgrade */
+.tracking-upgrade-view {
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.05), rgba(251, 191, 36, 0.1));
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.tracking-upgrade-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.tracking-upgrade-service {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem;
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  min-width: 100px;
+}
+
+.tracking-upgrade-service.old {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.tracking-upgrade-service.new {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.tracking-upgrade-service-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.tracking-upgrade-service-id {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+}
+
+.tracking-upgrade-service.old .tracking-upgrade-service-id {
+  color: #ef4444;
+}
+
+.tracking-upgrade-service.new .tracking-upgrade-service-id {
+  color: #22c55e;
+}
+
+.tracking-upgrade-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.tracking-upgrade-arrow svg {
+  width: 32px;
+  height: 32px;
+  color: #fbbf24;
+}
+
+.tracking-upgrade-puntas {
+  margin-top: 1rem;
+}
+
+.tracking-upgrade-puntas h4 {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.tracking-puntas-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.tracking-punta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.tracking-punta-chip.punta-a {
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.tracking-punta-chip.punta-b {
+  border-color: rgba(168, 85, 247, 0.5);
+}
+
+.tracking-punta-chip .punta-icon {
+  width: 18px;
+  height: 18px;
+  color: #3b82f6;
+}
+
+.tracking-punta-chip.punta-b .punta-icon {
+  color: #a855f7;
+}
+
+.tracking-punta-chip strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* Vista de Strand (Nuevo Pelo) */
+.tracking-strand-view {
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.05), rgba(168, 85, 247, 0.1));
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.tracking-strand-diagram {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem;
+  background: var(--card);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.tracking-strand-service {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tracking-strand-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.tracking-strand-icon {
+  font-size: 1.5rem;
+}
+
+.tracking-strand-id {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+  color: #a855f7;
+}
+
+.tracking-strand-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.tracking-strand-current,
+.tracking-strand-new {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tracking-strand-label {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.tracking-strand-count {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+  color: var(--text);
+}
+
+.tracking-strand-count.highlight {
+  color: #22c55e;
+}
+
+.tracking-strand-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: rgba(168, 85, 247, 0.2);
+  border-radius: 50%;
+  color: #a855f7;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.tracking-strand-details {
+  text-align: center;
+}
+
+.tracking-strand-details p {
+  font-size: 0.85rem;
+  color: var(--text);
+  margin: 0 0 0.5rem;
+}
+
+.tracking-strand-hint {
+  color: var(--muted) !important;
+  font-size: 0.75rem !important;
+}
+
+/* Acciones para Upgrade y Strand */
+.tracking-action-options-upgrade,
+.tracking-action-options-strand {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tracking-action-btn.primary-action {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(34, 197, 94, 0.2));
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.tracking-action-btn.primary-action:hover {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(34, 197, 94, 0.3));
+  border-color: #22c55e;
+}
+
+.tracking-action-btn.primary-action.selected {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.3), rgba(34, 197, 94, 0.4));
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.3);
+}
+
+/* ===========================================
+   TARJETAS DE SERVICIO - ESTILOS ADICIONALES
+   =========================================== */
+
+/* Alias (ex IDs) */
+.servicio-alias {
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-style: italic;
+  margin-left: 0.25rem;
+}
+
+/* Badge de pelos/hilos */
+.servicio-pelos-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.3rem;
+  background: rgba(168, 85, 247, 0.3);
+  color: #d8b4fe;
+  font-size: 0.6rem;
+  font-weight: 600;
+  border-radius: 4px;
+  margin-left: 0.25rem;
+}
+
+/* Badge de tránsitos */
+.servicio-transito-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.1rem 0.3rem;
+  background: rgba(251, 191, 36, 0.3);
+  color: #fde68a;
+  font-size: 0.6rem;
+  font-weight: 600;
+  border-radius: 4px;
+  margin-left: 0.25rem;
+}
+
+.transito-icon {
+  width: 10px;
+  height: 10px;
+}
+
+/* ID principal del servicio */
+.servicio-id-main {
+  font-weight: 500;
+}
+
+/* Chips de puntas en tarjetas de cámara */
+.infra-camara-puntas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.punta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: var(--text);
+}
+
+.punta-chip.punta-a {
+  border-color: rgba(59, 130, 246, 0.4);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.punta-chip.punta-b {
+  border-color: rgba(168, 85, 247, 0.4);
+  background: rgba(168, 85, 247, 0.1);
+}
+
+.punta-icon-small {
+  width: 12px;
+  height: 12px;
+  color: #3b82f6;
+}
+
+.punta-chip.punta-b .punta-icon-small {
+  color: #a855f7;
+}
+
 @media (max-width: 600px) {
   .tracking-info-grid {
     grid-template-columns: 1fr;
+  }
+  
+  .tracking-upgrade-diagram {
+    flex-direction: column;
+  }
+  
+  .tracking-upgrade-arrow {
+    transform: rotate(90deg);
+  }
+  
+  .tracking-strand-diagram {
+    flex-direction: column;
+    gap: 1rem;
   }
 }
 
@@ -1194,9 +1557,75 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   color: var(--text);
 }
 
+.tracking-download-btn {
+  background: var(--accent);
+  border: none;
+  color: white;
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.tracking-download-btn:hover {
+  background: var(--accent-hover, #3b82f6);
+  transform: translateY(-1px);
+}
+
+.tracking-download-btn:active {
+  transform: translateY(0);
+}
+
 .tracking-detail-info {
   padding: 0.75rem 1.25rem;
   border-bottom: 1px solid var(--border);
+}
+
+/* Tabs de rutas en modal de tracking */
+.tracking-rutas-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: #151b23;
+}
+
+.tracking-ruta-tab {
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid transparent;
+  border-left: 4px solid var(--tab-color, var(--primary));
+  color: var(--muted);
+  padding: 0.5rem 0.85rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.tracking-ruta-tab:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.tracking-ruta-tab.active {
+  background: rgba(var(--primary-rgb, 59, 130, 246), 0.2);
+  border-color: var(--tab-color, var(--primary));
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.tracking-loading-tabs,
+.tracking-no-rutas {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 0.25rem 0;
 }
 
 .tracking-ruta-badge {
@@ -1265,6 +1694,49 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   border-radius: 4px;
 }
 
+/* Puntas A y B del tracking */
+.tracking-punta {
+  background: linear-gradient(135deg, #1f3a5f 0%, #1f2937 100%);
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  margin: 0.35rem 0;
+  border-left: 3px solid var(--primary);
+}
+
+.tracking-punta-a {
+  border-left-color: #10b981; /* verde */
+}
+
+.tracking-punta-b {
+  border-left-color: #ef4444; /* rojo */
+}
+
+.tracking-punta .tracking-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.tracking-punta-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tracking-punta-sitio {
+  font-size: 0.9rem;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.tracking-punta-id {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: monospace;
+}
+
 .tracking-cable {
   padding: 0.25rem 0 0.25rem 1.75rem;
   position: relative;
@@ -1298,4 +1770,1420 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   font-size: 0.7rem;
   color: #f59e0b;
   font-weight: 500;
+}
+
+/* ===========================================
+   PROTOCOLO DE PROTECCIÓN - BANEO
+   =========================================== */
+
+/* Header Actions del Hero */
+.infra-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Badge de baneos activos (ahora es botón clickeable) */
+.infra-ban-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 68, 68, 0.15);
+  border: 1px solid rgba(255, 68, 68, 0.4);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  animation: banPulse 2s ease-in-out infinite;
+  transition: all 0.2s ease;
+}
+
+.infra-ban-badge:hover {
+  background: rgba(255, 68, 68, 0.25);
+  border-color: rgba(255, 68, 68, 0.6);
+  transform: scale(1.02);
+}
+
+.infra-ban-badge[hidden] { display: none; }
+
+@keyframes banPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 12px 2px rgba(255, 68, 68, 0.3); }
+}
+
+.infra-ban-badge-icon { font-size: 1rem; }
+.infra-ban-badge-count {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: #ff4444;
+}
+.infra-ban-badge-text {
+  font-size: 0.75rem;
+  color: #ff6b6b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Botón de notificación */
+.infra-notify-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  color: #60a5fa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.infra-notify-btn:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+}
+
+.infra-notify-btn[hidden] { display: none; }
+
+/* Botón de Pánico */
+.infra-panic-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(255, 68, 68, 0.2), rgba(255, 68, 68, 0.1));
+  border: 2px solid #ff4444;
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ff4444;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  box-shadow: 0 0 20px rgba(255, 68, 68, 0.2);
+}
+
+.infra-panic-btn:hover {
+  background: linear-gradient(135deg, rgba(255, 68, 68, 0.35), rgba(255, 68, 68, 0.2));
+  box-shadow: 0 0 30px rgba(255, 68, 68, 0.4), 0 4px 20px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.infra-panic-btn:active {
+  transform: translateY(0);
+}
+
+/* Dropdown de exportación */
+.infra-export-dropdown {
+  position: relative;
+}
+
+.infra-export-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 255, 136, 0.08);
+  border: 1px solid rgba(0, 255, 136, 0.25);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  color: #00ff88;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.infra-export-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.infra-export-btn:hover {
+  background: rgba(0, 255, 136, 0.15);
+  border-color: #00ff88;
+}
+
+.infra-export-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  background: #1a1f26;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 180px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.infra-export-menu[hidden] { display: none; }
+
+.infra-export-menu button {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.infra-export-menu button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ===========================================
+   TARJETAS DE CÁMARAS BANEADAS
+   =========================================== */
+
+.infra-camara-card[data-estado="BANEADA"] {
+  border: 2px solid #ff4444 !important;
+  box-shadow: 0 0 20px rgba(255, 68, 68, 0.15), inset 0 0 30px rgba(255, 68, 68, 0.03);
+  position: relative;
+}
+
+.infra-camara-card[data-estado="BANEADA"]::before {
+  background: linear-gradient(90deg, #ff4444, #ff6b6b) !important;
+  height: 4px !important;
+}
+
+/* Icono de candado para cámaras baneadas */
+.infra-camara-card[data-estado="BANEADA"]::after {
+  content: '🔒';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 1.1rem;
+  opacity: 0.9;
+  animation: lockPulse 2s ease-in-out infinite;
+}
+
+@keyframes lockPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+/* Ticket de baneo en la tarjeta */
+.infra-ban-ticket {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 68, 68, 0.15);
+  border: 1px solid rgba(255, 68, 68, 0.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  color: #ff6b6b;
+  font-family: monospace;
+  margin-top: 4px;
+}
+
+.infra-ban-ticket::before {
+  content: '🎫';
+  font-size: 0.65rem;
+}
+
+/* ===========================================
+   WIZARD MODAL DE BANEO
+   =========================================== */
+
+.ban-wizard-modal {
+  padding: 0;
+  border: none;
+  border-radius: 16px;
+  background: #12171f;
+  color: var(--text);
+  max-width: 600px;
+  width: 95%;
+  max-height: 90vh;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 68, 68, 0.2);
+  overflow: hidden;
+}
+
+.ban-wizard-modal::backdrop {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.ban-wizard-modal[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.ban-wizard-content {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+.ban-wizard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 1.5rem;
+  background: linear-gradient(135deg, rgba(255, 68, 68, 0.15), rgba(255, 68, 68, 0.05));
+  border-bottom: 1px solid rgba(255, 68, 68, 0.3);
+}
+
+.ban-wizard-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ban-wizard-icon {
+  font-size: 1.5rem;
+  animation: alertPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes alertPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.ban-wizard-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: #ff6b6b;
+  font-weight: 700;
+}
+
+.ban-wizard-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.75rem;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.ban-wizard-close:hover { color: #ff4444; }
+
+/* Progress Steps - Estilo neón consistente con el proyecto */
+.ban-wizard-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 1rem 1.5rem;
+  background: transparent;
+  border-bottom: 1px solid rgba(255, 68, 68, 0.2);
+}
+
+.ban-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.35;
+  transition: all 0.3s ease;
+}
+
+.ban-step.active { opacity: 1; }
+.ban-step.completed { opacity: 0.8; }
+
+.ban-step-number {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--muted);
+  transition: all 0.3s ease;
+}
+
+.ban-step.active .ban-step-number {
+  background: transparent;
+  border-color: #ff4444;
+  color: #ff4444;
+  box-shadow: 0 0 20px rgba(255, 68, 68, 0.4), inset 0 0 10px rgba(255, 68, 68, 0.1);
+  text-shadow: 0 0 8px rgba(255, 68, 68, 0.6);
+}
+
+.ban-step.completed .ban-step-number {
+  background: transparent;
+  border-color: #00ff88;
+  color: #00ff88;
+  box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
+  text-shadow: 0 0 6px rgba(0, 255, 136, 0.5);
+}
+
+.ban-step.completed .ban-step-number::after {
+  content: '✓';
+  position: absolute;
+}
+
+.ban-step-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.ban-step.active .ban-step-label {
+  color: #ff6b6b;
+  text-shadow: 0 0 6px rgba(255, 68, 68, 0.4);
+}
+
+.ban-step.completed .ban-step-label {
+  color: #00ff88;
+}
+
+.ban-step-connector {
+  width: 50px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--border), rgba(255, 68, 68, 0.3));
+  margin: 0 12px;
+  margin-bottom: 22px;
+  border-radius: 1px;
+  position: relative;
+}
+
+.ban-step.completed + .ban-step-connector,
+.ban-step-connector.completed {
+  background: linear-gradient(90deg, #00ff88, rgba(0, 255, 136, 0.3));
+  box-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+}
+
+/* Wizard Body */
+.ban-wizard-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ban-wizard-step[hidden] { display: none; }
+
+.ban-wizard-step h3 {
+  margin: 0 0 8px 0;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+.ban-wizard-desc {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0 0 1.25rem 0;
+}
+
+.ban-wizard-desc.ban-warning {
+  color: #eab308;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+/* Form Groups */
+.ban-form-group {
+  margin-bottom: 1rem;
+}
+
+.ban-form-group label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ban-form-group label .required {
+  color: #ff4444;
+}
+
+.ban-form-group input,
+.ban-form-group textarea {
+  width: 100%;
+  padding: 10px 14px;
+  background: #0a0e14;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.9rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.ban-form-group input:focus,
+.ban-form-group textarea:focus {
+  outline: none;
+  border-color: #ff4444;
+  box-shadow: 0 0 0 3px rgba(255, 68, 68, 0.1);
+}
+
+.ban-form-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* Info Box */
+.ban-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+  color: #60a5fa;
+}
+
+.ban-info-icon { font-size: 1rem; flex-shrink: 0; }
+
+/* Target Toggle */
+.ban-target-toggle {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 1rem;
+}
+
+.ban-target-opt {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.ban-target-opt:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ban-target-opt.active {
+  border-color: #ff4444;
+  background: rgba(255, 68, 68, 0.1);
+}
+
+.ban-target-opt-icon { font-size: 1.5rem; }
+.ban-target-opt-text { font-size: 0.8rem; color: var(--text); }
+
+/* Search Row */
+.ban-search-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ban-search-row input { flex: 1; }
+
+.ban-search-btn {
+  padding: 10px 18px;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 8px;
+  color: #60a5fa;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ban-search-btn:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: #3b82f6;
+}
+
+/* Rutas Container */
+.ban-rutas-container {
+  margin-top: 1rem;
+}
+
+.ban-rutas-container h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ban-rutas-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ban-ruta-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ban-ruta-item:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.ban-ruta-item.selected {
+  border-color: #ff4444;
+  background: rgba(255, 68, 68, 0.08);
+}
+
+.ban-ruta-item input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #ff4444;
+}
+
+.ban-ruta-info { flex: 1; }
+
+.ban-ruta-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.ban-ruta-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.ban-ruta-camaras {
+  font-size: 0.8rem;
+  color: #60a5fa;
+  font-weight: 500;
+}
+
+/* Tracking Status (Semáforo) */
+.ban-tracking-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 1rem;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ban-tracking-status[hidden] { display: none; }
+
+.ban-tracking-semaforo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ban-tracking-icon { font-size: 1.1rem; }
+
+.ban-tracking-text {
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.ban-download-tracking-btn {
+  padding: 6px 12px;
+  background: rgba(0, 255, 136, 0.1);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  border-radius: 6px;
+  color: #00ff88;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ban-download-tracking-btn:hover {
+  background: rgba(0, 255, 136, 0.2);
+}
+
+/* Summary (Paso 3) */
+.ban-summary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.ban-summary-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.ban-summary-row:last-child { border-bottom: none; }
+
+.ban-summary-row.highlight {
+  background: rgba(255, 68, 68, 0.1);
+  margin: 0 -1rem;
+  padding: 12px 1rem;
+  border-radius: 0 0 10px 10px;
+  border-bottom: none;
+}
+
+.ban-summary-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ban-summary-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  font-family: monospace;
+}
+
+.ban-summary-row.highlight .ban-summary-value {
+  color: #ff4444;
+  font-size: 1rem;
+}
+
+.ban-confirm-checkbox {
+  margin-top: 1rem;
+}
+
+.ban-confirm-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.ban-confirm-checkbox input {
+  width: 18px;
+  height: 18px;
+  accent-color: #ff4444;
+}
+
+/* Wizard Footer */
+.ban-wizard-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.ban-wizard-spacer { flex: 1; }
+
+.ban-wizard-footer .btn { padding: 10px 20px; }
+
+.ban-wizard-footer .btn.danger {
+  background: linear-gradient(135deg, #ff4444, #dc2626);
+  border: none;
+  color: white;
+  font-weight: 700;
+  box-shadow: 0 4px 15px rgba(255, 68, 68, 0.4);
+}
+
+.ban-wizard-footer .btn.danger:hover {
+  box-shadow: 0 6px 20px rgba(255, 68, 68, 0.5);
+}
+
+.ban-wizard-footer .btn[hidden] { display: none; }
+
+/* ===========================================
+   MODAL DE NOTIFICACIÓN
+   =========================================== */
+
+.notify-modal {
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: #1a1f26;
+  color: var(--text);
+  max-width: 450px;
+  width: 90%;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.notify-modal::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.notify-modal[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.notify-modal-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.notify-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.notify-modal-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.notify-modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.notify-modal-body {
+  padding: 1.25rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.notify-modal-body p {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.active-bans-subtitle {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.active-bans-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.active-bans-list .loading-text,
+.active-bans-list .empty-text,
+.active-bans-list .error-text {
+  text-align: center;
+  padding: 2rem;
+  color: var(--muted);
+}
+
+.active-bans-list .error-text {
+  color: #ff6b6b;
+}
+
+.active-ban-item {
+  background: rgba(255, 68, 68, 0.08);
+  border: 1px solid rgba(255, 68, 68, 0.25);
+  border-radius: 10px;
+  padding: 1rem;
+  transition: all 0.2s ease;
+}
+
+.active-ban-item:hover {
+  border-color: rgba(255, 68, 68, 0.4);
+  background: rgba(255, 68, 68, 0.12);
+}
+
+.active-ban-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.active-ban-ticket {
+  font-family: monospace;
+  font-weight: 700;
+  color: #ff6b6b;
+  font-size: 0.95rem;
+}
+
+.active-ban-duration {
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.active-ban-services {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.active-ban-services strong {
+  color: #00ff88;
+  font-family: monospace;
+}
+
+.active-ban-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.active-ban-arrow {
+  color: #ff6b6b;
+  font-weight: bold;
+}
+
+.active-ban-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.active-ban-motivo {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-style: italic;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+
+.active-ban-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-lift-ban {
+  background: transparent;
+  border: 1px solid #00ff88;
+  color: #00ff88;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-lift-ban:hover {
+  background: rgba(0, 255, 136, 0.15);
+  box-shadow: 0 0 12px rgba(0, 255, 136, 0.3);
+}
+
+.notify-recipients {
+  list-style: none;
+  margin: 0 0 1rem 0;
+  padding: 0;
+}
+
+.notify-recipients li {
+  padding: 6px 0;
+  font-family: monospace;
+  color: #60a5fa;
+  font-size: 0.85rem;
+}
+
+.notify-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.notify-preview strong {
+  color: var(--text);
+}
+
+.notify-modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+/* Opción de envío de correo al desbanear */
+.notify-email-option {
+  flex: 1;
+}
+
+.notify-email-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--muted);
+  transition: color 0.2s ease;
+}
+
+.notify-email-label:hover {
+  color: #60a5fa;
+}
+
+.notify-email-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #60a5fa;
+  cursor: pointer;
+}
+
+.notify-email-label input[type="checkbox"]:checked + span {
+  color: #60a5fa;
+}
+
+/* ===========================================
+   MODAL EDITOR DE CORREO ELECTRÓNICO
+   =========================================== */
+
+.email-editor-modal {
+  border: none;
+  border-radius: 16px;
+  background: var(--surface);
+  padding: 0;
+  max-width: 700px;
+  width: 95%;
+  max-height: 90vh;
+  box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.email-editor-modal::backdrop {
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+}
+
+.email-editor-content {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+.email-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(37, 99, 235, 0.08));
+}
+
+.email-editor-header h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #60a5fa;
+  margin: 0;
+}
+
+.email-editor-close {
+  background: transparent;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.2s ease;
+}
+
+.email-editor-close:hover {
+  color: #f87171;
+}
+
+.email-editor-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.email-field {
+  margin-bottom: 1rem;
+}
+
+.email-field label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.email-field input,
+.email-field textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  color: var(--text);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.email-field input:focus,
+.email-field textarea:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
+}
+
+.email-field textarea {
+  resize: vertical;
+  min-height: 150px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.email-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.email-field-body {
+  margin-bottom: 1.5rem;
+}
+
+/* Header del editor de cuerpo */
+.email-body-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.email-body-header label {
+  margin-bottom: 0;
+}
+
+.btn-restore-template {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-restore-template:hover {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: #60a5fa;
+  color: #60a5fa;
+}
+
+/* Editor de texto (textarea) */
+.email-text-editor {
+  width: 100%;
+  min-height: 280px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  color: var(--text);
+  resize: vertical;
+}
+
+.email-text-editor:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
+}
+
+/* Legacy: email-html-editor (removido, usar email-text-editor) */
+
+/* Sección de adjuntos */
+.email-attachments {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.email-attachments h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.email-attachments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.email-attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.email-attachment-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(96, 165, 250, 0.3);
+}
+
+.email-attachment-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #60a5fa;
+  cursor: pointer;
+}
+
+.email-attachment-item .attachment-icon {
+  font-size: 1.25rem;
+}
+
+.email-attachment-item .attachment-name {
+  font-weight: 500;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.email-attachment-item .attachment-desc {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.email-attachment-warning {
+  margin: 0.75rem 0 0 0;
+  padding: 8px 12px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #fbbf24;
+}
+
+/* Resumen de baneos en el correo */
+.email-bans-summary {
+  background: rgba(239, 68, 68, 0.05);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.email-bans-summary h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #f87171;
+}
+
+.email-bans-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.email-ban-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.email-ban-item .ban-ticket {
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+.email-ban-item .ban-services {
+  color: var(--text);
+}
+
+.email-ban-item .ban-camaras {
+  margin-left: auto;
+  padding: 2px 8px;
+  background: rgba(239, 68, 68, 0.15);
+  border-radius: 10px;
+  font-size: 0.75rem;
+  color: #f87171;
+}
+
+/* Footer del editor */
+.email-editor-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.email-status {
+  flex: 1;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.email-status.loading {
+  color: #60a5fa;
+}
+
+.email-status.error {
+  color: #f87171;
+}
+
+.email-status.success {
+  color: #34d399;
+}
+
+.email-editor-footer .btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.email-editor-footer .btn .btn-icon {
+  font-size: 1rem;
+}
+
+.email-editor-footer .btn.primary {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  border-color: #3b82f6;
+}
+
+.email-editor-footer .btn.primary:hover {
+  background: linear-gradient(135deg, #60a5fa, #3b82f6);
+}
+
+.email-editor-footer .btn.primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.email-editor-footer .btn.outline-primary {
+  background: transparent;
+  border-color: #3b82f6;
+  color: #60a5fa;
+}
+
+.email-editor-footer .btn.outline-primary:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.email-editor-footer .btn.outline-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Acciones en header del editor */
+.email-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  margin-right: 1rem;
+}
+
+.btn-icon-only {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-icon-only:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: #60a5fa;
+}
+
+.btn-icon-only.btn-save {
+  background: rgba(52, 211, 153, 0.15);
+  border-color: rgba(52, 211, 153, 0.4);
+}
+
+.btn-icon-only.btn-save:hover {
+  background: rgba(52, 211, 153, 0.25);
+  border-color: #34d399;
+}
+
+/* Campos en modo lectura */
+.field-readonly {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border-color: transparent !important;
+  color: var(--text);
+  cursor: default;
+}
+
+.field-readonly:focus {
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+/* Aviso de adjuntos automáticos */
+.email-attachment-notice-box {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 1rem;
+}
+
+.email-attachment-notice {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #60a5fa;
+}
+
+.email-attachment-notice strong {
+  color: #93c5fd;
+}
+
+/* Spinner en botón de envío */
+.email-editor-footer .btn.primary .spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

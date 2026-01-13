@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, File, HTTPException, UploadFile, Response
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import func, or_
 
 from core.parsers.tracking_parser import parse_tracking
@@ -21,9 +22,12 @@ from core.services.infra_service import (
     InfraService,
     ResolveAction,
     ResolveResult,
+    StrandInfo,
+    UpgradeInfo,
     analyze_tracking_file,
     resolve_tracking_file,
 )
+from core.services.email_service import EmailAttachment, get_email_service
 from db.models.infra import (
     Cable,
     Camara,
@@ -1069,10 +1073,32 @@ class RutaInfoResponse(BaseModel):
     nombre_archivo_origen: Optional[str] = None
 
 
+class UpgradeInfoResponse(BaseModel):
+    """Información de un posible upgrade detectado."""
+    
+    old_service_id: str
+    old_service_db_id: int
+    new_service_id: str
+    match_reason: str
+    punta_a_match: Optional[str] = None
+    punta_b_match: Optional[str] = None
+
+
+class StrandInfoResponse(BaseModel):
+    """Información de un nuevo pelo detectado."""
+    
+    service_id: str
+    service_db_id: int
+    ruta_id: int
+    current_strands: int
+    new_strand_pelo: Optional[str] = None
+    new_strand_conector: Optional[str] = None
+
+
 class TrackingAnalyzeResponse(BaseModel):
     """Respuesta del análisis de un archivo de tracking."""
     
-    status: str  # NEW, IDENTICAL, CONFLICT, ERROR
+    status: str  # NEW, IDENTICAL, CONFLICT, POTENTIAL_UPGRADE, NEW_STRAND, ERROR
     servicio_id: Optional[str] = None
     servicio_db_id: Optional[int] = None
     nuevo_hash: Optional[str] = None
@@ -1081,17 +1107,26 @@ class TrackingAnalyzeResponse(BaseModel):
     parsed_empalmes_count: int = 0
     message: str = ""
     error: Optional[str] = None
+    # Nuevos campos para upgrade y strand
+    upgrade_info: Optional[UpgradeInfoResponse] = None
+    strand_info: Optional[StrandInfoResponse] = None
+    # Info de puntas
+    punta_a_sitio: Optional[str] = None
+    punta_b_sitio: Optional[str] = None
+    cantidad_pelos: Optional[int] = None
+    alias_id: Optional[str] = None
 
 
 class TrackingResolveRequest(BaseModel):
     """Request para resolver un tracking."""
     
-    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH
+    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, CONFIRM_UPGRADE, ADD_STRAND
     content: str
     filename: str
     target_ruta_id: Optional[int] = None
     new_ruta_name: Optional[str] = None
     new_ruta_tipo: Optional[str] = None  # PRINCIPAL, BACKUP, ALTERNATIVA
+    old_service_id: Optional[str] = None  # Para CONFIRM_UPGRADE
 
 
 class TrackingResolveResponse(BaseModel):
@@ -1170,6 +1205,30 @@ async def analyze_tracking_endpoint(
         with SessionLocal() as session:
             result = analyze_tracking_file(session, raw_content, filename_used)
             
+            # Convertir upgrade_info si existe
+            upgrade_info_response = None
+            if result.upgrade_info:
+                upgrade_info_response = UpgradeInfoResponse(
+                    old_service_id=result.upgrade_info.old_service_id,
+                    old_service_db_id=result.upgrade_info.old_service_db_id,
+                    new_service_id=result.upgrade_info.new_service_id,
+                    match_reason=result.upgrade_info.match_reason,
+                    punta_a_match=result.upgrade_info.punta_a_match,
+                    punta_b_match=result.upgrade_info.punta_b_match,
+                )
+            
+            # Convertir strand_info si existe
+            strand_info_response = None
+            if result.strand_info:
+                strand_info_response = StrandInfoResponse(
+                    service_id=result.strand_info.service_id,
+                    service_db_id=result.strand_info.service_db_id,
+                    ruta_id=result.strand_info.ruta_id,
+                    current_strands=result.strand_info.current_strands,
+                    new_strand_pelo=result.strand_info.new_strand_pelo,
+                    new_strand_conector=result.strand_info.new_strand_conector,
+                )
+            
             return TrackingAnalyzeResponse(
                 status=result.status.value,
                 servicio_id=result.servicio_id,
@@ -1192,6 +1251,12 @@ async def analyze_tracking_endpoint(
                 parsed_empalmes_count=result.parsed_empalmes_count,
                 message=result.message,
                 error=result.error,
+                upgrade_info=upgrade_info_response,
+                strand_info=strand_info_response,
+                punta_a_sitio=result.punta_a_sitio,
+                punta_b_sitio=result.punta_b_sitio,
+                cantidad_pelos=result.cantidad_pelos,
+                alias_id=result.alias_id,
             )
             
     except Exception as exc:
@@ -1216,15 +1281,18 @@ async def resolve_tracking_endpoint(
     - MERGE_APPEND: Agrega empalmes nuevos a una ruta existente
     - REPLACE: Reemplaza completamente los empalmes de una ruta
     - BRANCH: Crea una nueva ruta bajo el mismo servicio
+    - CONFIRM_UPGRADE: Confirma upgrade, mueve ID viejo a alias
+    - ADD_STRAND: Agrega nuevo pelo a ruta existente
     
     Args:
         body: TrackingResolveRequest con:
             - action: Acción a ejecutar
             - content: Contenido del archivo
             - filename: Nombre del archivo
-            - target_ruta_id: ID de ruta destino (para MERGE_APPEND/REPLACE)
+            - target_ruta_id: ID de ruta destino (para MERGE_APPEND/REPLACE/ADD_STRAND)
             - new_ruta_name: Nombre de nueva ruta (para BRANCH)
             - new_ruta_tipo: Tipo de ruta (PRINCIPAL/BACKUP/ALTERNATIVA)
+            - old_service_id: ID del servicio viejo (para CONFIRM_UPGRADE)
     
     Returns:
         TrackingResolveResponse con el resultado de la operación
@@ -1235,7 +1303,7 @@ async def resolve_tracking_endpoint(
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Acción inválida: {body.action}. Opciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH",
+            detail=f"Acción inválida: {body.action}. Opciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, CONFIRM_UPGRADE, ADD_STRAND",
         )
     
     # Validar tipo de ruta si se especifica
@@ -1259,6 +1327,7 @@ async def resolve_tracking_endpoint(
                 target_ruta_id=body.target_ruta_id,
                 new_ruta_name=body.new_ruta_name,
                 new_ruta_tipo=ruta_tipo,
+                old_service_id=body.old_service_id,
             )
             
             if not result.success:
@@ -1478,4 +1547,734 @@ async def delete_servicio_empalmes(servicio_id: str) -> Dict[str, Any]:
         raise HTTPException(
             status_code=500,
             detail=f"Error eliminando asociaciones del servicio: {exc!s}",
+        ) from exc
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROTOCOLO DE PROTECCIÓN - BANEO DE CÁMARAS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class BanCreateRequest(BaseModel):
+    """Request para crear un baneo de cámaras."""
+    
+    ticket_asociado: Optional[str] = Field(None, max_length=64, description="ID del ticket de soporte")
+    servicio_afectado_id: str = Field(..., max_length=64, description="ID del servicio que sufrió el corte")
+    servicio_protegido_id: str = Field(..., max_length=64, description="ID del servicio a proteger (banear)")
+    ruta_protegida_id: Optional[int] = Field(None, description="ID de ruta específica (opcional)")
+    usuario_ejecutor: Optional[str] = Field(None, max_length=128, description="Usuario que ejecuta el baneo")
+    motivo: Optional[str] = Field(None, max_length=512, description="Motivo del baneo")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{
+                "ticket_asociado": "INC0012345",
+                "servicio_afectado_id": "52547",
+                "servicio_protegido_id": "52548",
+                "usuario_ejecutor": "operador@metrotel.com.ar",
+                "motivo": "Corte de fibra principal en Av. Corrientes, protegiendo backup",
+            }]
+        }
+    }
+
+
+class BanLiftRequest(BaseModel):
+    """Request para levantar un baneo."""
+    
+    incidente_id: int = Field(..., description="ID del incidente de baneo a cerrar")
+    usuario_ejecutor: Optional[str] = Field(None, max_length=128, description="Usuario que levanta el baneo")
+    motivo_cierre: Optional[str] = Field(None, max_length=512, description="Motivo del cierre")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{
+                "incidente_id": 1,
+                "usuario_ejecutor": "operador@metrotel.com.ar",
+                "motivo_cierre": "Corte reparado, fibra principal operativa",
+            }]
+        }
+    }
+
+
+class IncidenteBaneoResponse(BaseModel):
+    """Respuesta con datos de un incidente de baneo."""
+    
+    id: int
+    ticket_asociado: Optional[str]
+    servicio_afectado_id: str
+    servicio_protegido_id: str
+    ruta_protegida_id: Optional[int]
+    usuario_ejecutor: Optional[str]
+    motivo: Optional[str]
+    fecha_inicio: str
+    fecha_fin: Optional[str]
+    activo: bool
+    duracion_horas: Optional[float]
+
+
+@router.post("/api/infra/ban/create")
+async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
+    """Crea un incidente de baneo y marca las cámaras como BANEADAS.
+    
+    El Protocolo de Protección permite bloquear el acceso físico a cámaras
+    que contienen fibra óptica de respaldo cuando la fibra principal está cortada.
+    
+    **Redundancia cruzada:** El servicio afectado (el que se cortó) puede ser
+    diferente al servicio protegido (cuyas cámaras se banean).
+    
+    Args:
+        request: Datos del baneo a crear
+        
+    Returns:
+        Dict con resultado del baneo (ID de incidente, cámaras afectadas)
+    
+    Example:
+        >>> # Corte en servicio 52547, proteger backup en 52548
+        >>> POST /api/infra/ban/create
+        >>> {
+        ...     "ticket_asociado": "INC0012345",
+        ...     "servicio_afectado_id": "52547",
+        ...     "servicio_protegido_id": "52548",
+        ...     "motivo": "Protección de ruta backup"
+        ... }
+    """
+    from core.services.protection_service import create_ban as do_create_ban
+    
+    try:
+        with SessionLocal() as session:
+            result = do_create_ban(
+                session,
+                ticket_asociado=request.ticket_asociado,
+                servicio_afectado_id=request.servicio_afectado_id,
+                servicio_protegido_id=request.servicio_protegido_id,
+                ruta_protegida_id=request.ruta_protegida_id,
+                usuario_ejecutor=request.usuario_ejecutor,
+                motivo=request.motivo,
+            )
+            
+            if result.success:
+                session.commit()
+            else:
+                session.rollback()
+            
+            return result.to_dict()
+            
+    except Exception as exc:
+        logger.exception("action=create_ban_endpoint_error error=%s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creando baneo: {exc!s}",
+        ) from exc
+
+
+@router.post("/api/infra/ban/lift")
+async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
+    """Levanta un baneo y restaura el estado de las cámaras.
+    
+    La lógica de restauración es inteligente:
+    - Si la cámara tiene un ingreso activo → OCUPADA
+    - Si la cámara está en otro baneo activo → BANEADA (sin cambio)
+    - En otro caso → LIBRE
+    
+    Args:
+        request: ID del incidente a cerrar y datos opcionales
+        
+    Returns:
+        Dict con resultado del levantamiento (cámaras restauradas)
+    
+    Example:
+        >>> POST /api/infra/ban/lift
+        >>> {"incidente_id": 1, "motivo_cierre": "Corte reparado"}
+    """
+    from core.services.protection_service import lift_ban as do_lift_ban
+    
+    try:
+        with SessionLocal() as session:
+            result = do_lift_ban(
+                session,
+                request.incidente_id,
+                usuario_ejecutor=request.usuario_ejecutor,
+                motivo_cierre=request.motivo_cierre,
+            )
+            
+            if result.success:
+                session.commit()
+            else:
+                session.rollback()
+            
+            return result.to_dict()
+            
+    except Exception as exc:
+        logger.exception("action=lift_ban_endpoint_error error=%s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error levantando baneo: {exc!s}",
+        ) from exc
+
+
+@router.get("/api/infra/ban/active")
+async def get_active_bans() -> Dict[str, Any]:
+    """Obtiene todos los incidentes de baneo activos.
+    
+    Returns:
+        Dict con lista de incidentes activos y conteo
+    """
+    from core.services.protection_service import get_incidentes_activos
+    
+    try:
+        with SessionLocal() as session:
+            incidentes = get_incidentes_activos(session)
+            
+            incidentes_data = []
+            for inc in incidentes:
+                # Contar cámaras afectadas
+                camaras_count = len(inc.camaras_afectadas) if inc.camaras_afectadas else 0
+                
+                incidentes_data.append({
+                    "id": inc.id,
+                    "ticket_asociado": inc.ticket_asociado,
+                    "servicio_afectado_id": inc.servicio_afectado_id,
+                    "servicio_protegido_id": inc.servicio_protegido_id,
+                    "ruta_protegida_id": inc.ruta_protegida_id,
+                    "usuario_ejecutor": inc.usuario_ejecutor,
+                    "motivo": inc.motivo,
+                    "fecha_inicio": inc.fecha_inicio.isoformat() if inc.fecha_inicio else None,
+                    "activo": inc.activo,
+                    "duracion_horas": inc.duracion_horas,
+                    "camaras_count": camaras_count,
+                })
+            
+            return {
+                "status": "ok",
+                "total": len(incidentes_data),
+                "incidentes": incidentes_data,
+            }
+            
+    except Exception as exc:
+        logger.exception("action=get_active_bans_error error=%s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo baneos activos: {exc!s}",
+        ) from exc
+
+
+@router.get("/api/infra/ban/{incidente_id}")
+async def get_ban_detail(incidente_id: int) -> Dict[str, Any]:
+    """Obtiene el detalle de un incidente de baneo específico.
+    
+    Incluye las cámaras afectadas actualmente.
+    
+    Args:
+        incidente_id: ID del incidente
+        
+    Returns:
+        Dict con detalle del incidente y cámaras afectadas
+    """
+    from core.services.protection_service import ProtectionService
+    
+    try:
+        with SessionLocal() as session:
+            service = ProtectionService(session)
+            incidente = service.get_incidente_by_id(incidente_id)
+            
+            if not incidente:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Incidente {incidente_id} no encontrado",
+                )
+            
+            # Obtener cámaras afectadas
+            camaras = service.get_camaras_for_servicio(
+                incidente.servicio_protegido_id,
+                incidente.ruta_protegida_id,
+            )
+            
+            camaras_data = []
+            for cam in camaras:
+                camaras_data.append({
+                    "id": cam.id,
+                    "nombre": cam.nombre,
+                    "fontine_id": cam.fontine_id,
+                    "direccion": cam.direccion,
+                    "estado": cam.estado.value if cam.estado else "LIBRE",
+                })
+            
+            return {
+                "status": "ok",
+                "incidente": {
+                    "id": incidente.id,
+                    "ticket_asociado": incidente.ticket_asociado,
+                    "servicio_afectado_id": incidente.servicio_afectado_id,
+                    "servicio_protegido_id": incidente.servicio_protegido_id,
+                    "ruta_protegida_id": incidente.ruta_protegida_id,
+                    "usuario_ejecutor": incidente.usuario_ejecutor,
+                    "motivo": incidente.motivo,
+                    "fecha_inicio": incidente.fecha_inicio.isoformat() if incidente.fecha_inicio else None,
+                    "fecha_fin": incidente.fecha_fin.isoformat() if incidente.fecha_fin else None,
+                    "activo": incidente.activo,
+                    "duracion_horas": incidente.duracion_horas,
+                },
+                "camaras_afectadas": camaras_data,
+                "total_camaras": len(camaras_data),
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=get_ban_detail_error incidente_id=%d error=%s", incidente_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo detalle del baneo: {exc!s}",
+        ) from exc
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NOTIFICACIÓN POR CORREO - PROTOCOLO DE PROTECCIÓN
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class EmailNotifyRequest(BaseModel):
+    """Request para enviar notificación por email sobre baneos activos."""
+
+    to: List[str] = Field(..., min_length=1, description="Lista de destinatarios")
+    cc: Optional[List[str]] = Field(None, description="Lista de destinatarios en copia")
+    subject: str = Field(..., min_length=1, max_length=256, description="Asunto del correo")
+    body: str = Field(..., min_length=1, description="Cuerpo del mensaje")
+    incidente_ids: List[int] = Field(
+        ..., min_length=1, description="IDs de los incidentes de baneo a incluir"
+    )
+    include_xls: bool = Field(True, description="Incluir archivo XLS con resumen de baneos")
+    include_txt: bool = Field(True, description="Incluir archivo TXT original del tracking")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "to": ["operador@metrotel.com.ar", "supervisor@metrotel.com.ar"],
+                    "cc": ["noc@metrotel.com.ar"],
+                    "subject": "Alerta: Protocolo de Protección Activado - Servicio 52548",
+                    "body": "Se informa que se ha activado el protocolo de protección...",
+                    "incidente_ids": [1, 2],
+                    "include_xls": True,
+                    "include_txt": True,
+                }
+            ]
+        }
+    }
+
+
+class EmailNotifyResponse(BaseModel):
+    """Respuesta del endpoint de notificación por email."""
+
+    success: bool
+    message: str
+    error: Optional[str] = None
+    recipients_count: int = 0
+
+
+@router.post("/api/infra/notify/email", response_model=EmailNotifyResponse)
+async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotifyResponse:
+    """Envía un correo electrónico con información de baneos activos.
+
+    Incluye:
+    - Cuerpo personalizado del mensaje
+    - Archivo XLS con resumen de cámaras baneadas (opcional)
+    - Archivo TXT original del tracking (opcional, si está disponible)
+
+    Args:
+        request: Datos del correo a enviar
+
+    Returns:
+        EmailNotifyResponse con el resultado del envío
+    """
+    import io
+
+    from db.models.infra import IncidenteBaneo
+
+    email_service = get_email_service()
+
+    if not email_service.is_configured():
+        return EmailNotifyResponse(
+            success=False,
+            message="Servicio de email no configurado",
+            error="SMTP no está configurado en el servidor",
+        )
+
+    try:
+        attachments: List[EmailAttachment] = []
+
+        with SessionLocal() as session:
+            # Obtener incidentes
+            incidentes = (
+                session.query(IncidenteBaneo)
+                .filter(IncidenteBaneo.id.in_(request.incidente_ids))
+                .all()
+            )
+
+            if not incidentes:
+                return EmailNotifyResponse(
+                    success=False,
+                    message="No se encontraron incidentes con los IDs especificados",
+                    error="incidente_ids vacíos o inválidos",
+                )
+
+            # Generar XLS si se solicita
+            if request.include_xls:
+                try:
+                    import pandas as pd
+
+                    rows = []
+                    for incidente in incidentes:
+                        for camara in incidente.camaras_afectadas:
+                            rows.append(
+                                {
+                                    "Incidente ID": incidente.id,
+                                    "Ticket": incidente.ticket_asociado or "-",
+                                    "Servicio Afectado": incidente.servicio_afectado_id,
+                                    "Servicio Protegido": incidente.servicio_protegido_id,
+                                    "Cámara ID": camara.id,
+                                    "Cámara Nombre": camara.nombre,
+                                    "Estado": camara.estado.value if camara.estado else "-",
+                                    "Fecha Inicio": (
+                                        incidente.fecha_inicio.strftime("%Y-%m-%d %H:%M")
+                                        if incidente.fecha_inicio
+                                        else "-"
+                                    ),
+                                    "Motivo": incidente.motivo or "-",
+                                }
+                            )
+
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                            df.to_excel(writer, sheet_name="Baneos_Activos", index=False)
+                        output.seek(0)
+
+                        attachments.append(
+                            EmailAttachment(
+                                filename="baneos_activos.xlsx",
+                                content=output.getvalue(),
+                                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                        )
+
+                except ImportError:
+                    logger.warning("action=notify_email warning=pandas_not_available skipping_xls=true")
+
+            # Obtener archivo TXT original si se solicita
+            if request.include_txt:
+                txt_found = False
+                for incidente in incidentes:
+                    # Buscar la ruta asociada al servicio protegido
+                    servicio = (
+                        session.query(Servicio)
+                        .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
+                        .first()
+                    )
+                    if servicio and servicio.rutas:
+                        for ruta in servicio.rutas:
+                            if ruta.raw_file_content:
+                                txt_found = True
+                                filename = (
+                                    ruta.nombre_archivo_origen
+                                    or f"tracking_{servicio.servicio_id}.txt"
+                                )
+                                attachments.append(
+                                    EmailAttachment(
+                                        filename=filename,
+                                        content=ruta.raw_file_content.encode("utf-8"),
+                                        mime_type="text/plain; charset=utf-8",
+                                    )
+                                )
+                                break  # Solo un TXT por incidente
+                        if txt_found:
+                            break
+
+                if not txt_found and request.include_txt:
+                    logger.warning(
+                        "action=notify_email warning=original_txt_not_found incidentes=%s",
+                        request.incidente_ids,
+                    )
+
+        # Enviar correo
+        result = email_service.send_email(
+            to=request.to,
+            cc=request.cc,
+            subject=request.subject,
+            body=request.body,
+            attachments=attachments if attachments else None,
+        )
+
+        return EmailNotifyResponse(
+            success=result.success,
+            message=result.message,
+            error=result.error,
+            recipients_count=len(request.to) + len(request.cc or []),
+        )
+
+    except Exception as exc:
+        logger.exception("action=notify_email_error error=%s", exc)
+        return EmailNotifyResponse(
+            success=False,
+            message="Error al enviar notificación",
+            error=str(exc),
+        )
+
+
+@router.get("/api/infra/tracking/{ruta_id}/download")
+async def download_tracking_file(ruta_id: int) -> Response:
+    """Descarga el archivo de tracking original de una ruta.
+
+    IMPORTANTE: Devuelve el archivo TXT ORIGINAL tal como fue cargado,
+    no una reconstrucción del JSON parseado.
+
+    Args:
+        ruta_id: ID de la ruta
+
+    Returns:
+        Archivo TXT original o error 404 si no está disponible
+    """
+    try:
+        with SessionLocal() as session:
+            ruta = session.query(RutaServicio).get(ruta_id)
+
+            if not ruta:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Ruta {ruta_id} no encontrada",
+                )
+
+            if not ruta.raw_file_content:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Archivo original no disponible para esta ruta. "
+                    "Solo las rutas creadas después de la actualización del sistema "
+                    "tienen el archivo original guardado.",
+                )
+
+            filename = ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt"
+
+            return Response(
+                content=ruta.raw_file_content.encode("utf-8"),
+                media_type="text/plain; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                },
+            )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=download_tracking_error ruta_id=%d error=%s", ruta_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error descargando archivo de tracking: {exc!s}",
+        ) from exc
+
+
+@router.get("/api/infra/notify/email/config")
+async def get_email_config_status() -> Dict[str, Any]:
+    """Verifica si el servicio de email está configurado.
+
+    Returns:
+        Estado de configuración del servicio de email
+    """
+    email_service = get_email_service()
+    settings = email_service.settings
+
+    return {
+        "configured": email_service.is_configured(),
+        "from_email": settings.from_email if email_service.is_configured() else None,
+        "from_name": settings.from_name if email_service.is_configured() else None,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPORTACIÓN DE CÁMARAS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class ExportFormat(str, Enum):
+    """Formatos de exportación disponibles."""
+    CSV = "csv"
+    XLSX = "xlsx"
+
+
+@router.get("/api/infra/export/cameras")
+async def export_cameras(
+    filter_status: Optional[str] = None,
+    servicio_id: Optional[str] = None,
+    format: ExportFormat = ExportFormat.CSV,
+) -> Any:
+    """Exporta listado de cámaras a CSV o XLSX.
+    
+    Args:
+        filter_status: Filtrar por estado (ALL, LIBRE, OCUPADA, BANEADA, DETECTADA)
+        servicio_id: Filtrar cámaras de un servicio específico
+        format: Formato de salida (csv o xlsx)
+        
+    Returns:
+        Archivo CSV o XLSX para descarga
+        
+    Example:
+        >>> GET /api/infra/export/cameras?filter_status=BANEADA&format=xlsx
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    try:
+        with SessionLocal() as session:
+            query = session.query(Camara)
+            
+            # Filtrar por estado
+            if filter_status and filter_status.upper() != "ALL":
+                estado_upper = filter_status.upper()
+                if estado_upper in [e.value for e in CamaraEstado]:
+                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
+            
+            # Filtrar por servicio
+            if servicio_id:
+                servicio = session.query(Servicio).filter(
+                    Servicio.servicio_id == servicio_id
+                ).first()
+                
+                if servicio:
+                    # Obtener IDs de cámaras del servicio
+                    camara_ids = set()
+                    for ruta in servicio.rutas_activas:
+                        for empalme in ruta.empalmes:
+                            if empalme.camara:
+                                camara_ids.add(empalme.camara.id)
+                    
+                    if camara_ids:
+                        query = query.filter(Camara.id.in_(camara_ids))
+                    else:
+                        # Servicio sin cámaras
+                        query = query.filter(Camara.id == -1)  # No results
+            
+            camaras = query.order_by(Camara.nombre).all()
+            
+            # Obtener tickets de baneo activos para cámaras BANEADAS
+            from db.models.infra import IncidenteBaneo
+            baneos_activos = session.query(IncidenteBaneo).filter(
+                IncidenteBaneo.activo == True
+            ).all()
+            
+            # Crear mapa servicio_protegido -> ticket
+            ticket_por_servicio: dict[str, str] = {}
+            for baneo in baneos_activos:
+                ticket_por_servicio[baneo.servicio_protegido_id] = baneo.ticket_asociado or f"INC-{baneo.id}"
+            
+            # Preparar datos
+            rows = []
+            for cam in camaras:
+                # Obtener servicios Cat6
+                servicios_cat6 = []
+                for empalme in cam.empalmes:
+                    for srv in empalme.servicios:
+                        if srv.servicio_id and srv.servicio_id not in servicios_cat6:
+                            servicios_cat6.append(srv.servicio_id)
+                
+                # Determinar ticket de baneo
+                ticket_baneo = ""
+                if cam.estado == CamaraEstado.BANEADA:
+                    for svc_id in servicios_cat6:
+                        if svc_id in ticket_por_servicio:
+                            ticket_baneo = ticket_por_servicio[svc_id]
+                            break
+                
+                rows.append({
+                    "ID": cam.id,
+                    "Nombre": cam.nombre or "",
+                    "Fontine_ID": cam.fontine_id or "",
+                    "Dirección": cam.direccion or "",
+                    "Estado": cam.estado.value if cam.estado else "LIBRE",
+                    "Servicios_Cat6": ", ".join(servicios_cat6),
+                    "Ticket_Baneo": ticket_baneo,
+                    "Latitud": cam.latitud or "",
+                    "Longitud": cam.longitud or "",
+                    "Origen_Datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                })
+            
+            logger.info(
+                "action=export_cameras filter_status=%s servicio=%s format=%s rows=%d",
+                filter_status,
+                servicio_id,
+                format.value,
+                len(rows),
+            )
+            
+            # Generar archivo según formato
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            
+            if format == ExportFormat.CSV:
+                # Generar CSV
+                output = io.StringIO()
+                if rows:
+                    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+                    writer.writeheader()
+                    writer.writerows(rows)
+                else:
+                    output.write("Sin datos\n")
+                
+                content = output.getvalue().encode("utf-8-sig")  # BOM para Excel
+                
+                return StreamingResponse(
+                    io.BytesIO(content),
+                    media_type="text/csv; charset=utf-8",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
+                    },
+                )
+            
+            else:  # XLSX
+                try:
+                    import pandas as pd
+                    
+                    df = pd.DataFrame(rows)
+                    output = io.BytesIO()
+                    
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        df.to_excel(writer, sheet_name="Cámaras", index=False)
+                    
+                    output.seek(0)
+                    
+                    return StreamingResponse(
+                        output,
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"',
+                        },
+                    )
+                    
+                except ImportError:
+                    # Fallback a CSV si no hay pandas/openpyxl
+                    logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
+                    
+                    output = io.StringIO()
+                    if rows:
+                        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    else:
+                        output.write("Sin datos\n")
+                    
+                    content = output.getvalue().encode("utf-8-sig")
+                    
+                    return StreamingResponse(
+                        io.BytesIO(content),
+                        media_type="text/csv; charset=utf-8",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
+                            "X-Export-Warning": "XLSX no disponible, exportando como CSV",
+                        },
+                    )
+                    
+    except Exception as exc:
+        logger.exception("action=export_cameras_error error=%s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error exportando cámaras: {exc!s}",
         ) from exc

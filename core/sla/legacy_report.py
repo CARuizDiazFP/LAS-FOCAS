@@ -134,7 +134,8 @@ SERVICIOS_OPTIONAL: Dict[str, Sequence[str]] = {
 RECLAMOS_REQUIRED: Dict[str, Sequence[str]] = {
     "numero_linea": ("numero linea", "numero de linea", "numero linea reclamo", "numero primer servicio"),
     "ticket": ("numero reclamo", "n° reclamo", "n° de ticket", "numero ticket", "ticket"),
-    "horas": ("horas netas reclamo", "horas netas problema reclamo", "horas netas", "duracion"),
+    # IMPORTANTE: Solo usar "Horas Netas Reclamo" (columna U), sin fallbacks a otras columnas
+    "horas": ("horas netas reclamo",),
     "tipo_solucion": ("tipo solucion reclamo", "tipo solución reclamo", "tipo solucion", "causa", "tipo"),
     "fecha_inicio": ("fecha inicio reclamo", "fecha inicio problema reclamo", "inicio"),
 }
@@ -244,6 +245,15 @@ def load_reclamos_excel(content: bytes) -> _ExcelDataset:
 
     df = df.copy()
     horas_col = resolved["horas"]
+    
+    # DEBUG: Log valores crudos de la columna de horas antes de convertir
+    logger.info(
+        "action=sla_legacy_report stage=load_reclamos columna_horas=%s primeros_valores_crudos=%s tipos=%s",
+        horas_col,
+        df[horas_col].head(5).tolist(),
+        [type(v).__name__ for v in df[horas_col].head(5).tolist()],
+    )
+    
     df[horas_col] = df[horas_col].apply(_horas_decimal)
     
     linea_col = resolved["numero_linea"]
@@ -428,12 +438,17 @@ def _render_document(
 
 
 def _columna_horas_reclamos(reclamos: _ExcelDataset) -> tuple[str, str]:
-    """Devuelve la columna de horas preferida para los cálculos de reclamos."""
-    columna = reclamos.optional.get("horas_netas_cierre")
+    """Devuelve la columna de horas preferida para los cálculos de reclamos.
+    
+    IMPORTANTE: Usa la columna 'Horas Netas Reclamo' (columna U del Excel),
+    que es la columna principal de horas según requerimiento.
+    """
+    # Usar la columna 'horas' que mapea a 'Horas Netas Reclamo' (columna U)
+    columna = reclamos.columns.get("horas")
     if columna and columna in reclamos.dataframe.columns:
-        return columna, "horas_netas_cierre"
+        return columna, "horas"
     raise ValueError(
-        "Falta la columna 'Horas Netas Cierre Problema Reclamo' (columna P) en el Excel de reclamos"
+        "Falta la columna 'Horas Netas Reclamo' (columna U) en el Excel de reclamos"
     )
 
 
@@ -704,31 +719,40 @@ def _sla_texto(valor) -> str:
 
 
 def _horas_decimal(valor) -> Optional[float]:
+    """Convierte valores de horas a formato decimal.
+    
+    Maneja múltiples formatos de Excel:
+    - datetime (Excel guarda tiempos > 24h como fechas desde 1899-12-31)
+    - time (para tiempos < 24h)
+    - timedelta
+    - string formato HH:MM:SS
+    - número decimal
+    """
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return None
 
     if isinstance(valor, pd.Timestamp):
         valor = valor.to_pydatetime()
 
+    # Excel guarda tiempos > 24h como datetime relativo a EXCEL_EPOCH (1899-12-31)
     if isinstance(valor, datetime):
         delta = valor - EXCEL_EPOCH
-        return delta.total_seconds() / 3600
+        return round(delta.total_seconds() / 3600, 4)
 
     if isinstance(valor, time):
-        base = datetime.combine(datetime(1900, 1, 1), valor)
-        delta = base - datetime(1900, 1, 1)
-        return delta.total_seconds() / 3600
+        # Para tiempos < 24h que vienen como time object
+        return round(valor.hour + valor.minute / 60 + valor.second / 3600, 4)
 
     if isinstance(valor, (pd.Timedelta, timedelta)):
-        return valor.total_seconds() / 3600
+        return round(valor.total_seconds() / 3600, 4)
 
     texto = str(valor).strip().lower().replace(",", ".")
     if not texto:
         return None
     try:
         if ":" in texto or "h" in texto:
-            return float(pd.to_timedelta(texto).total_seconds() / 3600)
-        return float(texto)
+            return round(float(pd.to_timedelta(texto).total_seconds() / 3600), 4)
+        return round(float(texto), 4)
     except Exception:  # noqa: BLE001
         return None
 

@@ -821,3 +821,137 @@ Compara las VLANs permitidas de dos configuraciones Cisco IOS.
   - Si el PDF no puede generarse, la respuesta se degrada a DOCX sin error y `X-PDF-Generated=false`.
   - Los mapas PNG embebidos se escalan automáticamente para no superar media hoja A4 dentro del documento.
 - **Dependencias:** utiliza `modules.informes_repetitividad`, el helper `core.utils.timefmt` para normalizar Horas Netas, plantillas de `Templates/` y, si está configurado, `SOFFICE_BIN` o el servicio `office_service` para la conversión a PDF.
+---
+
+## Protocolo de Protección (Baneo de Cámaras)
+
+Endpoints para gestionar el bloqueo de acceso físico a cámaras de fibra óptica de respaldo.
+
+### POST `/api/infra/ban/create`
+
+Crea un incidente de baneo y marca las cámaras afectadas como `BANEADA`.
+
+- **Body (JSON):**
+
+  | Campo                | Tipo   | Requerido | Descripción |
+  |----------------------|--------|-----------|-------------|
+  | `ticket_asociado`    | string | No        | ID del ticket de soporte (ej: "INC0012345"). |
+  | `servicio_afectado_id` | string | Sí      | ID del servicio que sufrió el corte. |
+  | `servicio_protegido_id`| string | Sí      | ID del servicio a proteger (banear sus cámaras). |
+  | `ruta_protegida_id`  | int    | No        | ID de ruta específica a banear (opcional). |
+  | `usuario_ejecutor`   | string | No        | Usuario que ejecuta el baneo. |
+  | `motivo`             | string | No        | Motivo del baneo. |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "success": true,
+    "incidente_id": 1,
+    "camaras_baneadas": 45,
+    "camaras_ya_baneadas": 5,
+    "message": "Baneo creado. 45 cámaras baneadas, 5 ya estaban baneadas.",
+    "camaras_afectadas": [
+      {"id": 123, "nombre": "CAM-001", "estado_anterior": "LIBRE", "estado_nuevo": "BANEADA", "accion": "baneada"}
+    ]
+  }
+  ```
+
+- **Notas:**
+  - Soporta **redundancia cruzada**: el servicio afectado puede ser diferente al protegido.
+  - El baneo afecta a la entidad Cámara completa, no solo la asociación.
+
+### POST `/api/infra/ban/lift`
+
+Levanta un baneo y restaura el estado de las cámaras.
+
+- **Body (JSON):**
+
+  | Campo            | Tipo   | Requerido | Descripción |
+  |------------------|--------|-----------|-------------|
+  | `incidente_id`   | int    | Sí        | ID del incidente a cerrar. |
+  | `usuario_ejecutor` | string | No      | Usuario que levanta el baneo. |
+  | `motivo_cierre`  | string | No        | Motivo del cierre. |
+
+- **Lógica de restauración:**
+  - Si la cámara tiene un ingreso activo → `OCUPADA`
+  - Si la cámara tiene otro baneo activo → `BANEADA` (sin cambio)
+  - En otro caso → `LIBRE`
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "success": true,
+    "incidente_id": 1,
+    "camaras_restauradas": 40,
+    "camaras_mantenidas_baneadas": 5,
+    "message": "Baneo levantado. 40 cámaras restauradas, 5 mantenidas baneadas por otros incidentes."
+  }
+  ```
+
+### GET `/api/infra/ban/active`
+
+Obtiene todos los incidentes de baneo activos.
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "total": 2,
+    "incidentes": [
+      {
+        "id": 1,
+        "ticket_asociado": "INC0012345",
+        "servicio_afectado_id": "52547",
+        "servicio_protegido_id": "52548",
+        "motivo": "Corte de fibra principal",
+        "fecha_inicio": "2026-01-12T10:00:00+00:00",
+        "activo": true,
+        "duracion_horas": 2.5
+      }
+    ]
+  }
+  ```
+
+### GET `/api/infra/ban/{incidente_id}`
+
+Obtiene el detalle de un incidente específico con las cámaras afectadas.
+
+- **Respuesta 200:** Incluye datos del incidente y lista de cámaras afectadas.
+
+---
+
+## Exportación de Cámaras
+
+### GET `/api/infra/export/cameras`
+
+Exporta un listado de cámaras a CSV o XLSX.
+
+- **Parámetros (query string):**
+
+  | Campo          | Tipo   | Requerido | Default | Descripción |
+  |----------------|--------|-----------|---------|-------------|
+  | `filter_status`| string | No        | ALL     | Filtrar por estado: `ALL`, `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`. |
+  | `servicio_id`  | string | No        | -       | Filtrar cámaras de un servicio específico. |
+  | `format`       | string | No        | csv     | Formato de salida: `csv` o `xlsx`. |
+
+- **Columnas exportadas:**
+  - `ID`: ID de la cámara.
+  - `Nombre`: Nombre de la cámara.
+  - `Fontine_ID`: ID de referencia externa.
+  - `Dirección`: Dirección de la cámara.
+  - `Estado`: Estado actual (`LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`).
+  - `Servicios_Cat6`: IDs de servicios asociados (separados por coma).
+  - `Ticket_Baneo`: ID del ticket de baneo (si aplica).
+  - `Latitud`, `Longitud`: Coordenadas.
+  - `Origen_Datos`: Origen de los datos (`MANUAL`, `TRACKING`, `SHEET`).
+
+- **Respuesta:**
+  - `200 OK` con archivo CSV o XLSX para descarga.
+  - Content-Disposition: `attachment; filename="camaras_20260112_143000.csv"`
+
+- **Notas:**
+  - Si `pandas` u `openpyxl` no están disponibles, se degrada a CSV con header `X-Export-Warning`.
+  - El CSV usa BOM UTF-8 para compatibilidad con Excel.

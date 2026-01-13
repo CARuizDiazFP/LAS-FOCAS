@@ -33,6 +33,10 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "FECHA_CIERRE": "FECHA_CIERRE",
     "SLA": "SLA_OBJETIVO_HORAS",
     "SLA_OBJETIVO_HORAS": "SLA_OBJETIVO_HORAS",
+    # Columna U del Excel: Horas Netas Reclamo (tiempo de resolución en horas)
+    "Horas Netas Reclamo": "TTR_h",
+    "HORAS_NETAS_RECLAMO": "TTR_h",
+    "TTR_h": "TTR_h",
 }
 
 # Columnas obligatorias para el cálculo del SLA

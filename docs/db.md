@@ -177,6 +177,36 @@ Ejecuta la acción elegida por el usuario:
 | `fecha_inicio`| DateTime(tz)   | Fecha/hora de inicio. |
 | `fecha_fin`   | DateTime(tz)   | Fecha/hora de fin. |
 
+---
+
+## Protocolo de Protección (Baneo de Cámaras)
+
+El sistema permite bloquear el acceso físico a cámaras que contienen fibra óptica de respaldo
+cuando la fibra principal está cortada. Esto se implementa mediante la tabla `incidentes_baneo`.
+
+### Tabla `incidentes_baneo`
+
+| Columna               | Tipo              | Descripción |
+|-----------------------|-------------------|-------------|
+| `id`                  | Integer (PK)      | ID autoincremental. |
+| `ticket_asociado`     | String(64), index | ID del ticket de soporte (ej: "INC0012345"). |
+| `servicio_afectado_id`| String(64), index | ID del servicio que sufrió el corte. |
+| `servicio_protegido_id`| String(64), index| ID del servicio cuyas cámaras se banean. |
+| `ruta_protegida_id`   | FK → rutas_servicio | Ruta específica a proteger (opcional). |
+| `usuario_ejecutor`    | String(128)       | Usuario que ejecutó el baneo. |
+| `motivo`              | String(512)       | Descripción del motivo. |
+| `fecha_inicio`        | DateTime(tz)      | Timestamp de inicio del baneo. |
+| `fecha_fin`           | DateTime(tz)      | Timestamp de cierre (cuando se levanta). |
+| `activo`              | Boolean, index    | Si el baneo está vigente. |
+
+**Índice compuesto:** `ix_incidentes_baneo_servicio_activo` sobre `(servicio_protegido_id, activo)`.
+
+**Características:**
+- **Redundancia cruzada:** El servicio afectado puede ser diferente al protegido.
+- **Baneo a nivel de entidad:** El estado de `Camara` cambia a `BANEADA`.
+- **Restauración inteligente:** Al levantar baneo, las cámaras vuelven a `LIBRE` u `OCUPADA` según ingresos activos.
+- **Cámaras nuevas:** Si se carga un tracking de un servicio baneado, las cámaras nuevas nacen `BANEADAS`.
+
 ### Relaciones
 
 - `Camara.empalmes`: lista de empalmes ubicados en la cámara.
