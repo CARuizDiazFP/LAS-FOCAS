@@ -4,11 +4,11 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-01-12
+Fecha de última actualización: 2026-01-13
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
-## Estado actual (al 2026-01-12)
+## Estado actual (al 2026-01-13)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -29,7 +29,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
   - Ingesta híbrida: parser robusto (tolerante a acentos/mayúsculas; Unidecode con fallback a unicodedata), saneo de fechas y GEO, y upsert en PostgreSQL con `ON CONFLICT DO UPDATE` usando `COALESCE(excluded.col, table.col)` para no perder datos existentes.
     - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
-  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias. **[2025-11-11]**: Flujo SLA completamente funcional desde la UI web tras corrección de manejo de múltiples archivos en FastAPI y configuración de `TEMPLATES_DIR` en Docker Compose. **[2025-11-19]**: La suma de horas por servicio ahora prioriza la columna "Horas Netas Cierre Problema Reclamo" (columna P) y cae a columnas alternativas sólo si es necesario, replicando el archivo entregado por Sandy.
+  - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias. **[2025-11-11]**: Flujo SLA completamente funcional desde la UI web tras corrección de manejo de múltiples archivos en FastAPI y configuración de `TEMPLATES_DIR` en Docker Compose. **[2026-01-13]**: Corrección crítica: la suma de horas por servicio ahora usa exclusivamente la columna "Horas Netas Reclamo" (columna U del Excel), que contiene el tiempo neto de resolución. Se eliminó el fallback incorrecto a "Horas Netas Cierre Problema Reclamo" (columna P).
   - Dependencias geoespaciales estandarizadas: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` y toolchain GDAL/PROJ ya declarados en `requirements*.txt` y Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`).
   - **Alarmas Ciena** (2025-11-17): Nueva herramienta en el panel web para procesar CSV de alarmas exportados desde gestores de red Ciena (SiteManager y MCP). Detecta automáticamente el formato, limpia datos (padding, placeholders), soporta campos multilínea y genera Excel limpio. Endpoint `POST /api/tools/alarmas-ciena` con validaciones completas, 26 tests cubriendo todos los casos y documentación exhaustiva en `docs/informes/alarmas_ciena.md`.
     - **Actualización PM**: se corrigió el fixture MCP multilínea, se añadió un fixture `web_client_logged` para pruebas autenticadas y `_require_auth` ahora responde HTTP 401, dejando la suite `tests/test_alarmas_ciena.py` totalmente en verde.
@@ -156,9 +156,15 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] **Sistema de Versionado de Rutas FO**: modelos `RutaServicio` con hashes SHA256, flujo analyze→modal→resolve, acciones CREATE_NEW/REPLACE/MERGE_APPEND/BRANCH (2026-01-09).
 - [x] **UX del Modal de Conflictos**: corrección de bug (se abría automáticamente), agregado botón "Complementar" (MERGE_APPEND), renombrado a "Camino disjunto", botón "Limpiar servicio" (2026-01-09).
 - [x] **Endpoint DELETE empalmes**: `DELETE /api/infra/servicios/{id}/empalmes` para limpiar asociaciones de un servicio desde el frontend (2026-01-09).
+- [x] **Protocolo de Protección (Baneo)**: Sistema completo para proteger fibra de respaldo con modelo `IncidenteBaneo`, wizard de 3 pasos, badges visuales, exportación CSV/XLSX, notificaciones por email (2026-01-12).
+- [x] **Email Service**: Servicio SMTP (`core/services/email_service.py`) para notificaciones con soporte de adjuntos y EML (2026-01-12).
+- [x] **Puntos Terminales y Tracking mejorado**: Parser actualizado para extraer puntas A/B, alias de pelos (C1, C2, O1C1), detección de tránsitos, modelos `PuntoTerminal` y migraciones Alembic (2026-01-13).
+- [x] **Detección de Conflictos Inteligente**: Escenarios POTENTIAL_UPGRADE y NEW_STRAND en analyze/resolve de trackings, UI con modales específicos para cada tipo de conflicto (2026-01-13).
+- [x] **Corrección crítica SLA**: `core/sla/legacy_report.py` ahora usa exclusivamente columna "Horas Netas Reclamo" (columna U) para el cálculo de horas, eliminando el fallback incorrecto a columna P. Tests actualizados y validados con datos reales (2026-01-13).
 
 ### Pendiente (prioridad)
-- [ ] Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy (2025-11-11).
+- [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).
+- [ ] Implementar endpoint `/api/infra/notify/send` para envío SMTP de notificaciones.
 - [ ] Validación manual exhaustiva de Alarmas Ciena con archivos reales de producción (2025-11-17).
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [x] Disparadores de flujos desde la UI.

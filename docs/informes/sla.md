@@ -9,9 +9,25 @@ El informe de SLA analiza el cumplimiento de tiempos de resolución de tickets/r
 1. **Modo Excel (legacy)**: Dos archivos separados ("Servicios Fuera de SLA" + "Reclamos SLA").
 2. **Modo DB**: Consulta directa a la tabla `app.reclamos` con normalización automática.
 
-**Estado actual (2025-11-11)**: ✅ Flujo web completamente funcional. El informe se genera correctamente desde la UI con formato casi idéntico al legacy. Ajustes menores de formato pendientes.
+**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo").
 
 ## Columnas esperadas y mapeos
+
+### Archivo "Reclamos SLA"
+
+Las columnas se mapean internamente con sinónimos para tolerar variaciones:
+
+| Campo interno | Columna Excel esperada | Columna | Descripción |
+|---------------|------------------------|---------|-------------|
+| `id_reclamo` | "Número reclamo" | A | ID único del ticket |
+| `id_servicio` | "Número Línea" o "Número Primer Servicio" | D / C | ID del servicio afectado |
+| `cliente` | "Razón Social" o "Cliente" | - | Nombre del cliente |
+| `horas` | **"Horas Netas Reclamo"** | **U** | ⚠️ **Columna crítica**: tiempo neto de resolución |
+
+> **IMPORTANTE**: La columna "Horas Netas Reclamo" (U) es la única fuente válida para el cálculo de horas. NO se usa "Horas Netas Cierre Problema Reclamo" (columna P).
+
+### Archivo "Servicios Fuera de SLA"
+
 - `ID`
 - `CLIENTE`
 - `SERVICIO`
@@ -153,8 +169,51 @@ docker exec lasfocas-web python -c "from core.sla.config import SLA_TEMPLATE_PAT
 
 ## Próximos pasos
 
-1. **Ajustes de formato**: Revisar y ajustar detalles menores del formato del informe para coincidencia 100% con el legacy de Sandy.
+1. ~~**Ajustes de formato**: Revisar y ajustar detalles menores del formato del informe para coincidencia 100% con el legacy de Sandy.~~ ✅ Corregido 2026-01-13.
 2. **Tests de integración**: Agregar test end-to-end para el endpoint `/api/reports/sla`.
 3. **Documentación de API**: Actualizar `docs/api.md` con ejemplos de uso del endpoint SLA.
 4. **Modo DB**: Validar y documentar el flujo completo usando `use_db=true` con datos reales de `app.reclamos`.
+
+---
+
+## Corrección crítica de columnas (2026-01-13)
+
+### Problema detectado
+
+El informe SLA mostraba valores de horas incorrectos. Al comparar con el Excel fuente:
+
+| Servicio | Excel Col U (correcto) | Informe mostraba |
+|----------|------------------------|------------------|
+| 85015    | 28:05:57               | 43:58:59         |
+| 85015    | 06:01:53               | 62:13:16         |
+
+### Causa
+
+La función `_columna_horas_reclamos()` en `core/sla/legacy_report.py` retornaba la columna incorrecta:
+
+```python
+# ANTES (incorrecto):
+return optional.get("horas_netas_cierre")  # Columna P
+
+# DESPUÉS (correcto):
+return columns.get("horas")  # Columna U
+```
+
+### Archivos modificados
+
+- `core/sla/legacy_report.py` - Función `_columna_horas_reclamos()` corregida
+- `core/sla/parser.py` - Eliminada columna fallback incorrecta de `RECLAMOS_REQUIRED`
+- `modules/informes_sla/processor.py` - Docstring actualizado
+- `tests/test_sla_legacy_report.py` - Test actualizado
+
+### Validación
+
+```bash
+# Verificar con datos reales
+docker exec lasfocas-web python -c "
+from core.sla.parser import RECLAMOS_REQUIRED
+print('Columna horas:', RECLAMOS_REQUIRED.get('horas'))
+"
+# Output: ['Horas Netas Reclamo']
+```
 
