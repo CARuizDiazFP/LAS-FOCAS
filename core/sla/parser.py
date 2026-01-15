@@ -42,8 +42,8 @@ _RECLAMOS_MAP: Mapping[str, str] = {
     "fecha cierre reclamo": "fin",
     "fecha cierre": "fin",
     "cierre": "fin",
-    # IMPORTANTE: Solo usar columna 'Horas Netas Reclamo' (columna U del Excel)
-    "horas netas reclamo": "duracion_h",
+    # IMPORTANTE: Usar columna 'Horas Netas Cierre Problema Reclamo' (columna P del Excel)
+    "horas netas cierre problema reclamo": "duracion_h",
     "tipo solución reclamo": "causal",
     "tipo solucion reclamo": "causal",
     "causal": "causal",
@@ -222,9 +222,9 @@ def _parse_datetime(value, tz) -> Optional[pd.Timestamp]:
 
 
 def _parse_duracion_horas(value, inicio, fin) -> Optional[float]:
-    """Parsea duración a horas decimales desde la columna 'Horas Netas Reclamo'.
+    """Parsea duración a horas decimales desde la columna 'Horas Netas Cierre Problema Reclamo'.
     
-    IMPORTANTE: Solo usa el valor de la columna, SIN fallback a fechas.
+    IMPORTANTE: Solo usa el valor de la columna P, SIN fallback a fechas.
     
     Maneja múltiples formatos:
     - Timedelta de pandas o Python

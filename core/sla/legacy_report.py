@@ -134,8 +134,8 @@ SERVICIOS_OPTIONAL: Dict[str, Sequence[str]] = {
 RECLAMOS_REQUIRED: Dict[str, Sequence[str]] = {
     "numero_linea": ("numero linea", "numero de linea", "numero linea reclamo", "numero primer servicio"),
     "ticket": ("numero reclamo", "n° reclamo", "n° de ticket", "numero ticket", "ticket"),
-    # IMPORTANTE: Solo usar "Horas Netas Reclamo" (columna U), sin fallbacks a otras columnas
-    "horas": ("horas netas reclamo",),
+    # IMPORTANTE: Usar "Horas Netas Cierre Problema Reclamo" (columna P)
+    "horas": ("horas netas cierre problema reclamo",),
     "tipo_solucion": ("tipo solucion reclamo", "tipo solución reclamo", "tipo solucion", "causa", "tipo"),
     "fecha_inicio": ("fecha inicio reclamo", "fecha inicio problema reclamo", "inicio"),
 }
@@ -363,11 +363,11 @@ def _render_document(
     mes_nombre = MESES_ES[mes - 1].capitalize()
     
     # Reemplazar los placeholders del template:
-    # - "XXXXX" -> nombre del mes (ej: "Octubre")
-    # - " 2023" -> " " + año (ej: " 2025"), el espacio inicial se preserva
+    # - "XXXXX" -> nombre del mes + espacio (ej: "Octubre ")
+    # - "2023" -> año (ej: "2025")
     replace_text_everywhere(doc, {
-        "XXXXX": mes_nombre,
-        " 2023": f" {anio}",  # Preservar el espacio antes del año
+        "XXXXX": f"{mes_nombre} ",  # Agregar espacio después del mes
+        "2023": str(anio),
     })
 
     if len(doc.tables) < 3:
@@ -440,15 +440,15 @@ def _render_document(
 def _columna_horas_reclamos(reclamos: _ExcelDataset) -> tuple[str, str]:
     """Devuelve la columna de horas preferida para los cálculos de reclamos.
     
-    IMPORTANTE: Usa la columna 'Horas Netas Reclamo' (columna U del Excel),
+    IMPORTANTE: Usa la columna 'Horas Netas Cierre Problema Reclamo' (columna P del Excel),
     que es la columna principal de horas según requerimiento.
     """
-    # Usar la columna 'horas' que mapea a 'Horas Netas Reclamo' (columna U)
+    # Usar la columna 'horas' que mapea a 'Horas Netas Cierre Problema Reclamo' (columna P)
     columna = reclamos.columns.get("horas")
     if columna and columna in reclamos.dataframe.columns:
         return columna, "horas"
     raise ValueError(
-        "Falta la columna 'Horas Netas Reclamo' (columna U) en el Excel de reclamos"
+        "Falta la columna 'Horas Netas Cierre Problema Reclamo' (columna P) en el Excel de reclamos"
     )
 
 
