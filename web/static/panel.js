@@ -2599,8 +2599,12 @@ Metrotel S.A.`;
 
   function htmlToPlainText(html) {
     if (!html) return '';
+    // Eliminar estilos/scripts para que no aparezcan en el editor
+    const sanitized = html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
     // Reemplazar saltos de línea HTML por \n antes de extraer texto
-    const normalized = html
+    const normalized = sanitized
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/p>/gi, '\n')
       .replace(/<\/div>/gi, '\n');
