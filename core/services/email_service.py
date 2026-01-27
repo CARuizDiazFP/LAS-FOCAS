@@ -187,6 +187,8 @@ class EmailService:
         html_body: str | None = None,
         subject: str | None = None,
         recipients: str | None = None,
+        tracking_content: bytes | None = None,
+        tracking_filename: str | None = None,
     ) -> io.BytesIO:
         """Genera un archivo EML con resumen de baneo usando la lista explícita de cámaras."""
 
@@ -253,6 +255,17 @@ class EmailService:
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
                 msg.attach(excel_part)
+
+        # Adjuntar tracking original si se provee
+        if tracking_content:
+            txt_part = MIMEApplication(tracking_content)
+            txt_part.add_header(
+                "Content-Disposition",
+                "attachment",
+                filename=tracking_filename or f"tracking_{incidente.ticket_asociado or incidente.id}.txt",
+            )
+            txt_part.add_header("Content-Type", "text/plain; charset=utf-8")
+            msg.attach(txt_part)
 
         # Serializar a bytes
         eml_bytes = msg.as_bytes()

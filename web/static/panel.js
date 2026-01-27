@@ -2578,19 +2578,27 @@ Metrotel S.A.`;
   }
 
   function textToBasicHtml(text) {
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Separar párrafos por líneas en blanco, y dentro usar <br> para saltos simples
+    const paragraphs = escaped.split(/\n\s*\n/).map(p => p.replace(/\n/g, '<br>'));
+    const htmlContent = paragraphs.map(p => `<p style="margin:0 0 12px 0;">${p}</p>`).join('');
+
     return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <style>
         body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; padding: 20px; }
-        .content { white-space: pre-wrap; }
     </style>
 </head>
 <body>
-    <div class="content">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br>')}</div>
+    ${htmlContent}
     <hr style="margin-top: 30px; border: none; border-top: 1px solid #e2e8f0;">
-    <p style="font-size: 12px; color: #64748b;">
+    <p style="font-size: 12px; color: #64748b; margin: 0;">
         Generado por LAS-FOCAS - Metrotel
     </p>
 </body>

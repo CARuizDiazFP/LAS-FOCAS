@@ -2079,6 +2079,7 @@ def download_ban_eml(
 ):
     """Genera y descarga un archivo .eml con el aviso de baneo y adjuntos."""
     from core.services.protection_service import ProtectionService
+    from db.models.infra import Servicio, RutaServicio
 
     with SessionLocal() as session:
         # 1. Recuperar el incidente
@@ -2108,6 +2109,29 @@ def download_ban_eml(
             ruta_id=incidente.ruta_protegida_id
         )
 
+        # 2.b Buscar tracking original para adjuntar (si existe)
+        tracking_content = None
+        tracking_filename = None
+        servicio = (
+            session.query(Servicio)
+            .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
+            .first()
+        )
+        if servicio and servicio.rutas:
+            ruta_candidates = []
+            if incidente.ruta_protegida_id:
+                ruta_sel = session.query(RutaServicio).filter(RutaServicio.id == incidente.ruta_protegida_id).first()
+                if ruta_sel:
+                    ruta_candidates.append(ruta_sel)
+            # fallback: todas las rutas del servicio
+            ruta_candidates.extend([r for r in servicio.rutas if r not in ruta_candidates])
+
+            for ruta in ruta_candidates:
+                if ruta.raw_file_content:
+                    tracking_content = ruta.raw_file_content.encode("utf-8", errors="ignore")
+                    tracking_filename = ruta.nombre_archivo_origen or f"tracking_{ruta.id}.txt"
+                    break
+
         # 3. Generar el EML
         email_svc = EmailService()
         try:
@@ -2117,6 +2141,8 @@ def download_ban_eml(
                 html_body=html_body,
                 subject=subject,
                 recipients=recipients,
+                tracking_content=tracking_content,
+                tracking_filename=tracking_filename,
             )
         except Exception as e:
             logger.exception("Error generando EML")
