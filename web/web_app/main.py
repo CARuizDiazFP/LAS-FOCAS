@@ -325,7 +325,8 @@ async def index(request: Request) -> HTMLResponse:
         {
             "username": get_current_user(request),
             "csrf": request.session.get("csrf"),
-            "api_base": os.getenv("API_BASE", "http://192.168.241.28:8080"),
+        # API externa: por defecto usar el puerto expuesto de la API (8001)
+        "api_base": os.getenv("API_BASE", "http://localhost:8001"),
         },
     )
 
@@ -340,7 +341,8 @@ async def panel(request: Request) -> HTMLResponse:
         {
             "username": get_current_user(request),
             "csrf": request.session.get("csrf"),
-            "api_base": os.getenv("API_BASE", "http://192.168.241.28:8080"),
+        # API externa: por defecto usar el puerto expuesto de la API (8001)
+        "api_base": os.getenv("API_BASE", "http://localhost:8001"),
         },
     )
 
