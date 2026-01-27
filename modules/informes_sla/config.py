@@ -33,9 +33,9 @@ COLUMNAS_MAPPER: Dict[str, str] = {
     "FECHA_CIERRE": "FECHA_CIERRE",
     "SLA": "SLA_OBJETIVO_HORAS",
     "SLA_OBJETIVO_HORAS": "SLA_OBJETIVO_HORAS",
-    # Columna P del Excel: Horas Netas Cierre Problema (tiempo de resolución en horas)
-    "Horas Netas Cierre Problema": "TTR_h",
-    "HORAS_NETAS_CIERRE_PROBLEMA": "TTR_h",
+    # Columna P del Excel: Horas Netas Cierre Problema Reclamo (tiempo de resolución en horas)
+    "Horas Netas Cierre Problema Reclamo": "TTR_h",
+    "HORAS_NETAS_CIERRE_PROBLEMA_RECLAMO": "TTR_h",
     "TTR_h": "TTR_h",
 }
 

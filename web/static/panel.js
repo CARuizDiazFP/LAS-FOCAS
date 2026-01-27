@@ -1162,12 +1162,14 @@
   
   // Mostrar modal de conflicto según tipo
   function showConflictModal(analysis) {
+    console.log('showConflictModal called with:', JSON.stringify(analysis, null, 2));
     if (!trackingModal) {
       console.error('Modal de conflicto no encontrado');
       return;
     }
     
     const status = analysis.status || 'CONFLICT';
+    console.log('Modal status:', status, 'upgrade_info:', analysis.upgrade_info);
     
     // Referencias a las secciones del modal
     const titleEl = document.getElementById('tracking-modal-title');
@@ -1190,8 +1192,20 @@
     // Configurar según el tipo de conflicto
     if (status === 'POTENTIAL_UPGRADE' && analysis.upgrade_info) {
       // === CASO: POTENTIAL_UPGRADE ===
+      const uInfo = analysis.upgrade_info;
       if (titleEl) titleEl.textContent = '⚠️ ¿Es esto un Upgrade?';
-      if (msgEl) msgEl.innerHTML = `El tracking subido (<strong>${analysis.servicio_id}</strong>) coincide físicamente con el servicio existente (<strong>${analysis.upgrade_info.old_service_id}</strong>). ¿Desea migrarlo?`;
+      
+      // Construir mensaje con terminales que matchearon
+      let matchDetails = '';
+      if (uInfo.terminal_a_odf && uInfo.terminal_a_conector) {
+        matchDetails += `<br>• Terminal A: <code>${uInfo.terminal_a_odf}: ${uInfo.terminal_a_conector}</code>`;
+      }
+      if (uInfo.terminal_b_odf && uInfo.terminal_b_conector) {
+        matchDetails += `<br>• Terminal B: <code>${uInfo.terminal_b_odf}: ${uInfo.terminal_b_conector}</code>`;
+      }
+      if (msgEl) {
+        msgEl.innerHTML = `El tracking <strong>${analysis.servicio_id}</strong> coincide con el servicio existente <strong>${uInfo.old_service_id}</strong>.${matchDetails}<br><br>¿Desea migrar el servicio?`;
+      }
       
       // Llenar datos de upgrade
       const oldIdEl = document.getElementById('tracking-upgrade-old-id');
@@ -1200,11 +1214,20 @@
       const puntaBEl = document.getElementById('tracking-upgrade-punta-b');
       const upgradeDescEl = document.getElementById('tracking-upgrade-desc');
       
-      if (oldIdEl) oldIdEl.textContent = analysis.upgrade_info.old_service_id;
+      if (oldIdEl) oldIdEl.textContent = uInfo.old_service_id;
       if (newIdEl) newIdEl.textContent = analysis.servicio_id;
-      if (puntaAEl) puntaAEl.textContent = analysis.punta_a_sitio || '-';
-      if (puntaBEl) puntaBEl.textContent = analysis.punta_b_sitio || '-';
-      if (upgradeDescEl) upgradeDescEl.textContent = `Migrar ${analysis.upgrade_info.old_service_id} → ${analysis.servicio_id}`;
+      // Mostrar terminales completos si están disponibles
+      if (puntaAEl) {
+        puntaAEl.textContent = uInfo.terminal_a_odf && uInfo.terminal_a_conector
+          ? `${uInfo.terminal_a_odf}: ${uInfo.terminal_a_conector}`
+          : (analysis.punta_a_sitio || '-');
+      }
+      if (puntaBEl) {
+        puntaBEl.textContent = uInfo.terminal_b_odf && uInfo.terminal_b_conector
+          ? `${uInfo.terminal_b_odf}: ${uInfo.terminal_b_conector}`
+          : (analysis.punta_b_sitio || '-');
+      }
+      if (upgradeDescEl) upgradeDescEl.textContent = `Migrar ${uInfo.old_service_id} → ${analysis.servicio_id}`;
       
       // Mostrar vistas de upgrade
       if (upgradeView) upgradeView.hidden = false;
@@ -1334,9 +1357,10 @@
       bodyData.new_ruta_tipo = tipoRuta;
     }
     
-    // Para CONFIRM_UPGRADE, agregar el old_service_id
+    // Para CONFIRM_UPGRADE, agregar los datos del servicio a migrar
     if (action === 'CONFIRM_UPGRADE' && pendingAnalysis.upgrade_info) {
       bodyData.old_service_id = pendingAnalysis.upgrade_info.old_service_id;
+      bodyData.old_service_db_id = pendingAnalysis.upgrade_info.old_service_db_id;
     }
     
     // Para ADD_STRAND, agregar target_ruta_id

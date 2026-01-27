@@ -1922,10 +1922,17 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
             if request.include_xls:
                 try:
                     import pandas as pd
+                    from core.services.protection_service import ProtectionService
+                    
+                    protection_service = ProtectionService(session)
 
                     rows = []
                     for incidente in incidentes:
-                        for camara in incidente.camaras_afectadas:
+                        camaras_afectadas = protection_service.get_camaras_for_servicio(
+                            servicio_id=incidente.servicio_protegido_id,
+                            ruta_id=incidente.ruta_protegida_id
+                        )
+                        for camara in camaras_afectadas:
                             rows.append(
                                 {
                                     "Incidente ID": incidente.id,

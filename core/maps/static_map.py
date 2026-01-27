@@ -32,7 +32,7 @@ Point = Tuple[float, float]
 class MapStyle:
     """Configura la apariencia del mapa estático."""
 
-    provider: str | None = "CartoDB.Voyager"
+    provider: str | None = "OpenStreetMap.Mapnik"
     dpi: int = 220
     figsize: Tuple[float, float] = (6.2, 4.8)
     marker: str = "x"
@@ -66,8 +66,7 @@ def build_static_map_png(
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#f7f9fb")
 
-    use_basemap = False
-
+    basemap_was_drawn = False
     try:
         if style.provider:
             import contextily as ctx  # type: ignore
@@ -91,11 +90,12 @@ def build_static_map_png(
             )
             ax.set_xticks([])
             ax.set_yticks([])
-            use_basemap = True
+            basemap_was_drawn = True
         else:
             raise RuntimeError("Proveedor deshabilitado")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("action=build_static_map_png stage=basemap_unavailable error=%s", exc)
+    except Exception as e:  # noqa: BLE001
+        print(f"DEBUG: Basemap failed. Exception type: {type(e).__name__}, args: {e.args}")
+        logger.exception("action=build_static_map_png stage=basemap_unavailable")
         longitudes = [lon for _, lon in valid_points]
         latitudes = [lat for lat, _ in valid_points]
         _draw_points(ax, longitudes, latitudes, style)
@@ -112,7 +112,7 @@ def build_static_map_png(
         "action=build_static_map_png stage=success path=%s points=%s basemap=%s",
         out_path,
         len(valid_points),
-        use_basemap,
+        basemap_was_drawn,
     )
     return out_path
 

@@ -2,10 +2,13 @@
 # Ubicación de archivo: modules/informes_sla/processor.py
 # Descripción: Funciones de procesamiento de datos para el informe de SLA
 
+import logging
 import pandas as pd
 
 from .config import COLUMNAS_MAPPER, COLUMNAS_OBLIGATORIAS, SLA_POR_SERVICIO
 from .schemas import FilaDetalle, KPI, ResultadoSLA
+
+logger = logging.getLogger(__name__)
 
 
 def load_excel(path: str) -> pd.DataFrame:
@@ -14,13 +17,23 @@ def load_excel(path: str) -> pd.DataFrame:
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza nombres de columnas y obtiene TTR desde 'Horas Netas Cierre Problema'.
+    """Normaliza nombres de columnas y obtiene TTR desde 'Horas Netas Cierre Problema Reclamo'.
     
-    El TTR (Time To Resolve) se obtiene de la columna 'Horas Netas Cierre Problema' 
+    El TTR (Time To Resolve) se obtiene de la columna 'Horas Netas Cierre Problema Reclamo' 
     (columna P del Excel), que contiene las horas netas de resolución.
     Si la columna no existe, se calcula como fallback desde las fechas.
     """
+    # Log de columnas originales para diagnóstico
+    logger.info(f"Columnas originales del Excel: {list(df.columns)}")
+    
+    # Buscar columnas que contengan "Horas Netas" para diagnóstico
+    cols_horas = [c for c in df.columns if "Horas" in str(c) or "horas" in str(c)]
+    if cols_horas:
+        logger.info(f"Columnas relacionadas con horas encontradas: {cols_horas}")
+    
     df = df.rename(columns={k: v for k, v in COLUMNAS_MAPPER.items() if k in df.columns})
+    
+    logger.info(f"Columnas después del mapeo: {list(df.columns)}")
 
     faltantes = [c for c in COLUMNAS_OBLIGATORIAS if c not in df.columns]
     if faltantes:

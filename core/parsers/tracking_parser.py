@@ -40,6 +40,12 @@ TRANSITO_KEYWORDS = frozenset(["ODF", "NODO", "RACK", "BANDEJA", "DISTRIBUIDOR",
 # Regex para detectar cantidad de pelos/hilos (ej: "2 Pelos")
 PELOS_COUNT_REGEX = re.compile(r"(\d+)\s*Pelos?", re.IGNORECASE)
 
+# Regex para extraer identificador de ODF y conector (ej: "O-1234166-15: 16", "ODF DWDM 91719: 15")
+ODF_IDENTIFIER_REGEX = re.compile(
+    r"^(?P<odf_id>O-[\w-]+|ODF\s+[\w\s]+?):\s*(?P<conector>\d+)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class TrackingEntry:
@@ -89,6 +95,9 @@ class TrackingParseResult:
     cantidad_pelos: Optional[int] = None  # Cantidad de pelos/hilos del servicio
     punta_a: Optional[PuntaTerminal] = None
     punta_b: Optional[PuntaTerminal] = None
+    # Terminales ODF: tuplas (odf_id, conector) para búsqueda de upgrades
+    terminal_a: Optional[Tuple[str, str]] = None  # (O-1234166-15, 16)
+    terminal_b: Optional[Tuple[str, str]] = None  # (ODF DWDM 91719, 15)
 
     def to_dict(self) -> dict:
         """Convierte el resultado a dict para serialización."""
@@ -104,6 +113,8 @@ class TrackingParseResult:
             "cantidad_pelos": self.cantidad_pelos,
             "punta_a": self.punta_a.to_dict() if self.punta_a else None,
             "punta_b": self.punta_b.to_dict() if self.punta_b else None,
+            "terminal_a": {"odf_id": self.terminal_a[0], "conector": self.terminal_a[1]} if self.terminal_a else None,
+            "terminal_b": {"odf_id": self.terminal_b[0], "conector": self.terminal_b[1]} if self.terminal_b else None,
         }
 
     def get_empalmes(self) -> List[TrackingEntry]:
@@ -209,6 +220,54 @@ def extract_cantidad_pelos(raw_text: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+def extract_odf_terminal(line: str) -> Optional[Tuple[str, str]]:
+    """Extrae identificador de ODF y conector de una línea de tracking.
+    
+    Soporta formatos:
+    - "O-1234166-15: 16 --> ..." -> ("O-1234166-15", "16")
+    - "ODF DWDM 91719: 15 --> ..." -> ("ODF DWDM 91719", "15")
+    
+    Args:
+        line: Línea de tracking.
+        
+    Returns:
+        Tupla (odf_id, conector) o None si no es línea de ODF.
+    """
+    match = ODF_IDENTIFIER_REGEX.match(line.strip())
+    if match:
+        return (match.group("odf_id").strip(), match.group("conector"))
+    return None
+
+
+def extract_tracking_terminals(raw_text: str) -> Tuple[Optional[Tuple[str, str]], Optional[Tuple[str, str]]]:
+    """Extrae los terminales ODF de inicio y fin de un tracking.
+    
+    Busca la primera y última línea que contenga un identificador de ODF
+    con formato "O-XXXXX: N" o "ODF XXXX: N".
+    
+    Args:
+        raw_text: Contenido completo del archivo de tracking.
+        
+    Returns:
+        Tupla de (terminal_a, terminal_b), donde cada terminal es (odf_id, conector) o None.
+    """
+    terminal_a: Optional[Tuple[str, str]] = None
+    terminal_b: Optional[Tuple[str, str]] = None
+    
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+            
+        odf = extract_odf_terminal(stripped)
+        if odf:
+            if terminal_a is None:
+                terminal_a = odf
+            terminal_b = odf  # Siempre actualizar el último encontrado
+    
+    return (terminal_a, terminal_b)
 
 
 def parse_punta(line: str) -> Optional[PuntaTerminal]:
@@ -364,6 +423,15 @@ def parse_tracking(raw_text: str, filename: str = "") -> TrackingParseResult:
         cantidad_pelos,
     )
 
+    # Extraer terminales ODF para detección de upgrades
+    terminal_a, terminal_b = extract_tracking_terminals(raw_text)
+    
+    logger.info(
+        "action=parse_tracking terminals terminal_a=%s terminal_b=%s",
+        terminal_a,
+        terminal_b,
+    )
+
     return TrackingParseResult(
         servicio_id=servicio_id,
         alias_id=alias_id,
@@ -375,6 +443,8 @@ def parse_tracking(raw_text: str, filename: str = "") -> TrackingParseResult:
         cantidad_pelos=cantidad_pelos,
         punta_a=punta_a,
         punta_b=punta_b,
+        terminal_a=terminal_a,
+        terminal_b=terminal_b,
     )
 
 

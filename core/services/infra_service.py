@@ -101,9 +101,14 @@ class UpgradeInfo:
     old_service_id: str
     old_service_db_id: int
     new_service_id: str
-    match_reason: str  # "Endpoints Match", "Punta A Match", etc.
+    match_reason: str  # "Endpoints Match", "Terminal A Match", "Terminal B Match", "Full Terminal Match"
     punta_a_match: Optional[str] = None
     punta_b_match: Optional[str] = None
+    # Terminales ODF que coincidieron
+    terminal_a_odf: Optional[str] = None  # Ej: "O-1234166-15"
+    terminal_a_conector: Optional[str] = None  # Ej: "15"
+    terminal_b_odf: Optional[str] = None
+    terminal_b_conector: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -113,6 +118,10 @@ class UpgradeInfo:
             "match_reason": self.match_reason,
             "punta_a_match": self.punta_a_match,
             "punta_b_match": self.punta_b_match,
+            "terminal_a_odf": self.terminal_a_odf,
+            "terminal_a_conector": self.terminal_a_conector,
+            "terminal_b_odf": self.terminal_b_odf,
+            "terminal_b_conector": self.terminal_b_conector,
         }
 
 
@@ -407,25 +416,37 @@ class InfraService:
                     Servicio.alias_ids.contains([parsed.servicio_id])
                 ).first()
             
-            # ESCENARIO 1: Servicio no existe - buscar por huella física (puntas)
+            # ESCENARIO 1: Servicio no existe - buscar por huella física (terminales ODF)
             if not servicio:
-                # Buscar coincidencia por puntas A/B
-                upgrade_candidate = self._find_service_by_endpoints(punta_a_sitio, punta_b_sitio)
+                # Buscar coincidencia por terminales ODF (más preciso que sitio_descripcion)
+                terminal_match = self._find_service_by_terminals(
+                    parsed.terminal_a,
+                    parsed.terminal_b,
+                    exclude_service_id=parsed.servicio_id,
+                )
                 
-                if upgrade_candidate:
-                    # POTENTIAL_UPGRADE: Mismas puntas pero diferente ID
+                if terminal_match:
+                    upgrade_candidate, match_reason = terminal_match
+                    # POTENTIAL_UPGRADE: Mismos terminales ODF pero diferente ID
                     upgrade_info = UpgradeInfo(
                         old_service_id=upgrade_candidate.servicio_id,
                         old_service_db_id=upgrade_candidate.id,
                         new_service_id=parsed.servicio_id,
-                        match_reason="Endpoints Match",
+                        match_reason=match_reason,
                         punta_a_match=punta_a_sitio,
                         punta_b_match=punta_b_sitio,
+                        terminal_a_odf=parsed.terminal_a[0] if parsed.terminal_a else None,
+                        terminal_a_conector=parsed.terminal_a[1] if parsed.terminal_a else None,
+                        terminal_b_odf=parsed.terminal_b[0] if parsed.terminal_b else None,
+                        terminal_b_conector=parsed.terminal_b[1] if parsed.terminal_b else None,
                     )
                     logger.info(
-                        "action=analyze_tracking status=POTENTIAL_UPGRADE old_id=%s new_id=%s",
+                        "action=analyze_tracking status=POTENTIAL_UPGRADE old_id=%s new_id=%s reason=%s terminal_a=%s terminal_b=%s",
                         upgrade_candidate.servicio_id,
                         parsed.servicio_id,
+                        match_reason,
+                        parsed.terminal_a,
+                        parsed.terminal_b,
                     )
                     return AnalysisResult(
                         status=AnalysisStatus.POTENTIAL_UPGRADE,
@@ -437,7 +458,7 @@ class InfraService:
                         punta_b_sitio=punta_b_sitio,
                         cantidad_pelos=parsed.cantidad_pelos,
                         alias_id=parsed.alias_id,
-                        message=f"Detectado posible upgrade: Servicio {upgrade_candidate.servicio_id} → {parsed.servicio_id}. Mismos endpoints.",
+                        message=f"Detectado posible upgrade: Servicio {upgrade_candidate.servicio_id} → {parsed.servicio_id}. {match_reason}.",
                     )
                 
                 # Servicio completamente nuevo
@@ -564,7 +585,9 @@ class InfraService:
         punta_a_sitio: Optional[str],
         punta_b_sitio: Optional[str],
     ) -> Optional[Servicio]:
-        """Busca un servicio que tenga las mismas puntas A y B.
+        """Busca un servicio que tenga las mismas puntas A y B (por sitio_descripcion).
+        
+        DEPRECATED: Usar _find_service_by_terminals para búsqueda por ODF ID.
         
         Args:
             punta_a_sitio: Descripción del sitio de la punta A
@@ -606,6 +629,200 @@ class InfraService:
                         return ruta.servicio
         
         return None
+
+    def _find_service_by_terminals(
+        self,
+        terminal_a: Optional[Tuple[str, str]],
+        terminal_b: Optional[Tuple[str, str]],
+        exclude_service_id: Optional[str] = None,
+    ) -> Optional[Tuple[Servicio, str]]:
+        """Busca un servicio que tenga los mismos terminales ODF (identificador + conector).
+        
+        Esta es la búsqueda principal para detectar upgrades, ya que busca por el
+        identificador físico de ODF (ej: O-1234166-15) más el conector (ej: 16).
+        
+        Args:
+            terminal_a: Tupla (odf_id, conector) del terminal A, ej: ("O-1234166-15", "15")
+            terminal_b: Tupla (odf_id, conector) del terminal B, ej: ("ODF DWDM 91719", "15")
+            exclude_service_id: ID de servicio a excluir de la búsqueda
+            
+        Returns:
+            Tupla (Servicio, match_reason) o None si no se encuentra.
+            match_reason puede ser "Full Terminal Match", "Terminal A Match", "Terminal B Match"
+        """
+        from core.parsers.tracking_parser import extract_tracking_terminals
+        
+        if not terminal_a and not terminal_b:
+            return None
+        
+        # Buscar en todas las rutas que tengan raw_file_content
+        rutas_query = self.session.query(RutaServicio).filter(
+            RutaServicio.raw_file_content.isnot(None)
+        ).join(Servicio)
+        
+        if exclude_service_id:
+            rutas_query = rutas_query.filter(Servicio.servicio_id != exclude_service_id)
+        
+        # Normalizar terminales de entrada para comparación
+        def normalize_terminal(t: Optional[Tuple[str, str]]) -> Optional[Tuple[str, str]]:
+            if not t:
+                return None
+            return (t[0].strip().upper(), t[1].strip())
+        
+        terminal_a_norm = normalize_terminal(terminal_a)
+        terminal_b_norm = normalize_terminal(terminal_b)
+        
+        for ruta in rutas_query.all():
+            # Extraer terminales del raw_file_content de esta ruta
+            try:
+                ruta_terminal_a, ruta_terminal_b = extract_tracking_terminals(ruta.raw_file_content)
+                ruta_terminal_a_norm = normalize_terminal(ruta_terminal_a)
+                ruta_terminal_b_norm = normalize_terminal(ruta_terminal_b)
+            except Exception:
+                continue
+            
+            # Comparar terminales
+            match_a = terminal_a_norm and ruta_terminal_a_norm and (
+                terminal_a_norm[0] == ruta_terminal_a_norm[0] and
+                terminal_a_norm[1] == ruta_terminal_a_norm[1]
+            )
+            match_b = terminal_b_norm and ruta_terminal_b_norm and (
+                terminal_b_norm[0] == ruta_terminal_b_norm[0] and
+                terminal_b_norm[1] == ruta_terminal_b_norm[1]
+            )
+            
+            if match_a and match_b:
+                logger.info(
+                    "action=find_service_by_terminals match=FULL service_id=%s ruta_id=%d",
+                    ruta.servicio.servicio_id, ruta.id,
+                )
+                return (ruta.servicio, "Full Terminal Match")
+            elif match_a:
+                logger.info(
+                    "action=find_service_by_terminals match=TERMINAL_A service_id=%s ruta_id=%d",
+                    ruta.servicio.servicio_id, ruta.id,
+                )
+                return (ruta.servicio, "Terminal A Match")
+            elif match_b:
+                logger.info(
+                    "action=find_service_by_terminals match=TERMINAL_B service_id=%s ruta_id=%d",
+                    ruta.servicio.servicio_id, ruta.id,
+                )
+                return (ruta.servicio, "Terminal B Match")
+        
+        return None
+
+    def execute_upgrade(
+        self,
+        old_service_db_id: int,
+        new_service_id: str,
+        new_alias: Optional[str],
+        raw_content: str,
+        filename: str,
+    ) -> Dict[str, Any]:
+        """Ejecuta un upgrade de servicio.
+        
+        El upgrade consiste en:
+        1. Cambiar el servicio_id del servicio existente al nuevo ID
+        2. Mover el ID anterior a alias_ids para mantener referencia histórica
+        3. Actualizar el alias si se proporciona
+        4. Agregar el nuevo raw_file_content a la ruta principal
+        
+        Args:
+            old_service_db_id: ID de base de datos del servicio a migrar
+            new_service_id: Nuevo ID del servicio
+            new_alias: Alias del nuevo tracking (ej: C1, C2)
+            raw_content: Contenido del nuevo archivo de tracking
+            filename: Nombre del archivo
+            
+        Returns:
+            Dict con resultado de la operación
+        """
+        try:
+            # Buscar el servicio a migrar
+            servicio = self.session.query(Servicio).filter(
+                Servicio.id == old_service_db_id
+            ).first()
+            
+            if not servicio:
+                return {
+                    "success": False,
+                    "error": f"Servicio con ID de BD {old_service_db_id} no encontrado",
+                }
+            
+            old_service_id = servicio.servicio_id
+            
+            # Verificar que el nuevo ID no exista ya
+            existing_new = self.session.query(Servicio).filter(
+                Servicio.servicio_id == new_service_id
+            ).first()
+            
+            if existing_new and existing_new.id != old_service_db_id:
+                return {
+                    "success": False,
+                    "error": f"Ya existe un servicio con ID {new_service_id}",
+                }
+            
+            # Guardar el ID anterior en alias_ids
+            current_aliases = servicio.alias_ids or []
+            if old_service_id not in current_aliases:
+                current_aliases.append(old_service_id)
+            servicio.alias_ids = current_aliases
+            
+            # Actualizar el servicio_id
+            servicio.servicio_id = new_service_id
+            
+            # Si hay un alias nuevo, agregarlo también
+            if new_alias and new_alias not in servicio.alias_ids:
+                servicio.alias_ids = servicio.alias_ids + [new_alias]
+            
+            # Actualizar la ruta principal con el nuevo contenido
+            ruta_principal = None
+            for ruta in servicio.rutas:
+                if ruta.tipo == RutaTipo.PRINCIPAL or ruta.nombre == "Principal":
+                    ruta_principal = ruta
+                    break
+            
+            if ruta_principal:
+                # Actualizar el raw_file_content y nombre del archivo
+                ruta_principal.raw_file_content = raw_content
+                ruta_principal.nombre_archivo_origen = filename
+                # Actualizar hash
+                from core.services.infra_service import compute_tracking_hash
+                ruta_principal.hash_contenido = compute_tracking_hash(raw_content)
+            
+            self.session.commit()
+            
+            logger.info(
+                "action=execute_upgrade success=true old_id=%s new_id=%s db_id=%d rutas=%d",
+                old_service_id,
+                new_service_id,
+                servicio.id,
+                len(servicio.rutas),
+            )
+            
+            return {
+                "success": True,
+                "action": "CONFIRM_UPGRADE",
+                "old_service_id": old_service_id,
+                "new_service_id": new_service_id,
+                "servicio_db_id": servicio.id,
+                "rutas_migradas": len(servicio.rutas),
+                "message": f"Servicio migrado exitosamente: {old_service_id} → {new_service_id}",
+            }
+            
+        except Exception as exc:
+            self.session.rollback()
+            logger.exception(
+                "action=execute_upgrade_error old_db_id=%d new_id=%s error=%s",
+                old_service_db_id,
+                new_service_id,
+                exc,
+            )
+            return {
+                "success": False,
+                "error": f"Error durante el upgrade: {exc!s}",
+            }
 
     def _routes_have_same_path(
         self,

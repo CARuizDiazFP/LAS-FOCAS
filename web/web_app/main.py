@@ -3204,12 +3204,15 @@ async def upload_tracking_web(
 
 class TrackingResolveRequestModel(BaseModel):
     """Request para resolver un tracking."""
-    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH
+    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, CONFIRM_UPGRADE
     content: str
     filename: str
     target_ruta_id: Optional[int] = None
     new_ruta_name: Optional[str] = None
     new_ruta_tipo: Optional[str] = None  # PRINCIPAL, BACKUP, ALTERNATIVA
+    # Campos para upgrade
+    old_service_id: Optional[str] = None  # ID del servicio a migrar
+    old_service_db_id: Optional[int] = None  # DB ID del servicio a migrar
 
 
 @app.post("/api/infra/trackings/analyze")
@@ -3261,6 +3264,8 @@ async def analyze_tracking_web(
                 suggested_action = "SKIP"
             elif result.status.value == "CONFLICT":
                 suggested_action = "REPLACE"  # Default, el usuario puede elegir otra
+            elif result.status.value == "POTENTIAL_UPGRADE":
+                suggested_action = "CONFIRM_UPGRADE"
             
             return JSONResponse({
                 "status": result.status.value,
@@ -3275,6 +3280,10 @@ async def analyze_tracking_web(
                 "error": result.error,
                 "suggested_action": suggested_action,
                 "hash_match": result.ruta_identica_id is not None,
+                "upgrade_info": result.upgrade_info.to_dict() if result.upgrade_info else None,
+                "strand_info": result.strand_info.to_dict() if result.strand_info else None,
+                "punta_a_sitio": result.punta_a_sitio,
+                "punta_b_sitio": result.punta_b_sitio,
             })
             
     except Exception as exc:
@@ -3302,7 +3311,7 @@ async def resolve_tracking_web(
     username, _ = _require_auth(request)
     
     # Validar acción
-    valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "ADD_STRAND", "SKIP"]
+    valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "ADD_STRAND", "SKIP", "CONFIRM_UPGRADE"]
     action_upper = body.action.upper()
     if action_upper not in valid_actions:
         return JSONResponse(
@@ -3317,6 +3326,58 @@ async def resolve_tracking_web(
             "action": "SKIP",
             "message": "Operación omitida por el usuario",
         })
+    
+    # CONFIRM_UPGRADE: Migrar servicio antiguo al nuevo ID
+    if action_upper == "CONFIRM_UPGRADE":
+        if not body.old_service_id or not body.old_service_db_id:
+            return JSONResponse(
+                {"error": "Se requiere old_service_id y old_service_db_id para CONFIRM_UPGRADE"},
+                status_code=400
+            )
+        
+        try:
+            from core.services.infra_service import InfraService
+            from core.parsers.tracking_parser import parse_tracking
+            from db.session import SessionLocal
+            
+            with SessionLocal() as session:
+                service = InfraService(session)
+                
+                # Parsear el nuevo archivo para obtener el nuevo ID
+                parsed = parse_tracking(body.content, body.filename)
+                new_service_id = parsed.servicio_id
+                new_alias = parsed.alias_id
+                
+                # Ejecutar el upgrade
+                result = service.execute_upgrade(
+                    old_service_db_id=body.old_service_db_id,
+                    new_service_id=new_service_id,
+                    new_alias=new_alias,
+                    raw_content=body.content,
+                    filename=body.filename,
+                )
+                
+                logger.info(
+                    "action=confirm_upgrade user=%s old_id=%s new_id=%s success=%s",
+                    username,
+                    body.old_service_id,
+                    new_service_id,
+                    result.get('success', False),
+                )
+                
+                return JSONResponse(result)
+                
+        except Exception as exc:
+            logger.exception(
+                "action=confirm_upgrade_error user=%s old_id=%s error=%s",
+                username,
+                body.old_service_id,
+                exc,
+            )
+            return JSONResponse(
+                {"error": f"Error ejecutando upgrade: {exc!s}"},
+                status_code=500
+            )
     
     try:
         from core.services.infra_service import InfraService, ResolveAction, RutaTipo
