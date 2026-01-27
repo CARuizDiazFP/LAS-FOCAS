@@ -2390,7 +2390,7 @@
   // PLANTILLA DE TEXTO PLANO (más fácil de editar)
   // ═══════════════════════════════════════════════════════════════════════════
   
-  const EMAIL_TEXT_TEMPLATE = `Estimados,
+  const DEFAULT_TEMPLATE = `Estimados,
 
 Se les informa que se ha activado el Protocolo de Protección en la red de fibra óptica debido a una afectación de servicio.
 
@@ -2398,7 +2398,7 @@ DATOS DEL INCIDENTE:
 • Ticket: {{ticket}}
 • Servicio Afectado: {{servicio_afectado}}
 • Servicio Protegido: {{servicio_protegido}}
-• Cámaras Restringidas: {{total_camaras}} cámaras
+• Cámaras Restringidas: {{cantidad}} cámaras
 • Fecha/Hora: {{fecha}}
 • Motivo: {{motivo}}
 
@@ -2415,9 +2415,31 @@ Metrotel S.A.`;
   // FUNCIONES DEL EDITOR
   // ═══════════════════════════════════════════════════════════════════════════
   
+  function renderTemplate(template, values) {
+    const replacements = {
+      ticket: values.ticket || `INC-${values.id || ''}`.trim(),
+      servicio: values.servicio || values.servicio_protegido || '-',
+      servicio_afectado: values.servicio_afectado || '-',
+      servicio_protegido: values.servicio_protegido || values.servicio || '-',
+      cantidad: values.cantidad ?? values.total_camaras ?? '?',
+      fecha: values.fecha || new Date().toLocaleString('es-AR'),
+      motivo: values.motivo || 'Afectación de servicio',
+    };
+
+    let output = template;
+    Object.entries(replacements).forEach(([key, val]) => {
+      output = output.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), val);
+    });
+
+    // Compatibilidad retro: reemplazar placeholder anterior si quedara en la plantilla
+    output = output.replace(/\{\{total_camaras\}\}/g, replacements.cantidad);
+
+    return output;
+  }
+
   // Generar texto con datos del incidente
   function generateEmailText(bans) {
-    if (bans.length === 0) return EMAIL_TEXT_TEMPLATE;
+    if (bans.length === 0) return DEFAULT_TEMPLATE;
     
     const ban = bans[0]; // Usar el primer baneo para los datos principales
     const fecha = ban.fecha_inicio 
@@ -2427,16 +2449,16 @@ Metrotel S.A.`;
         })
       : new Date().toLocaleString('es-AR');
     
-    let text = EMAIL_TEXT_TEMPLATE;
-    
-    text = text.replace(/\{\{ticket\}\}/g, ban.ticket_asociado || `INC-${ban.id}`);
-    text = text.replace(/\{\{servicio_afectado\}\}/g, ban.servicio_afectado_id || '-');
-    text = text.replace(/\{\{servicio_protegido\}\}/g, ban.servicio_protegido_id || '-');
-    text = text.replace(/\{\{total_camaras\}\}/g, ban.camaras_count || '?');
-    text = text.replace(/\{\{fecha\}\}/g, fecha);
-    text = text.replace(/\{\{motivo\}\}/g, ban.motivo || 'Afectación de servicio');
-    
-    return text;
+    return renderTemplate(DEFAULT_TEMPLATE, {
+      id: ban.id,
+      ticket: ban.ticket_asociado || `INC-${ban.id}`,
+      servicio_afectado: ban.servicio_afectado_id,
+      servicio_protegido: ban.servicio_protegido_id,
+      servicio: ban.servicio_protegido_id,
+      cantidad: ban.camaras_count ?? ban.cantidad_camaras ?? '?',
+      fecha,
+      motivo: ban.motivo,
+    });
   }
 
   // Generar asunto por defecto
@@ -2555,11 +2577,8 @@ Metrotel S.A.`;
     return true;
   }
 
-  // Preparar payload para el backend (convierte texto a HTML)
-  function prepareEmailPayload() {
-    let htmlBody = emailBody.value;
-    // Convertir texto plano a HTML básico
-    htmlBody = `<!DOCTYPE html>
+  function textToBasicHtml(text) {
+    return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -2569,22 +2588,47 @@ Metrotel S.A.`;
     </style>
 </head>
 <body>
-    <div class="content">${htmlBody.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
+    <div class="content">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br>')}</div>
     <hr style="margin-top: 30px; border: none; border-top: 1px solid #e2e8f0;">
     <p style="font-size: 12px; color: #64748b;">
         Generado por LAS-FOCAS - Metrotel
     </p>
 </body>
 </html>`;
+  }
 
+  function htmlToPlainText(html) {
+    if (!html) return '';
+    // Reemplazar saltos de línea HTML por \n antes de extraer texto
+    const normalized = html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/div>/gi, '\n');
+    const tmp = document.createElement('div');
+    tmp.innerHTML = normalized;
+    return tmp.textContent || tmp.innerText || html;
+  }
+
+  // Preparar payload JSON para envío directo
+  function prepareEmailPayload() {
     return {
       incident_id: emailEditorBans[0].id,
       recipients: emailTo.value,
       subject: emailSubject.value,
-      html_body: htmlBody,
+      html_body: textToBasicHtml(emailBody.value),
       include_xls: emailAttachXls ? emailAttachXls.checked : true,
       include_txt: emailAttachTxt ? emailAttachTxt.checked : true,
     };
+  }
+
+  // Preparar FormData para descarga EML (endpoint espera form-data)
+  function prepareEmlFormData() {
+    const formData = new FormData();
+    formData.append('incident_id', emailEditorBans[0].id);
+    formData.append('recipients', emailTo.value);
+    formData.append('subject', emailSubject.value);
+    formData.append('html_body', textToBasicHtml(emailBody.value));
+    return formData;
   }
 
   // Generar y descargar archivo EML
@@ -2598,16 +2642,15 @@ Metrotel S.A.`;
     if (emailDownloadEmlBtn) emailDownloadEmlBtn.disabled = true;
     
     try {
-      const payload = prepareEmailPayload();
+      const formData = prepareEmlFormData();
       
       const res = await fetch(`${window.API_BASE || ''}/api/infra/notify/download-eml`, {
         method: 'POST',
         credentials: 'include',
         headers: {
-          'Content-Type': 'application/json',
           'X-CSRF-Token': window.CSRF_TOKEN || '',
         },
-        body: JSON.stringify(payload),
+        body: formData,
       });
       
       if (!res.ok) {
@@ -2660,9 +2703,22 @@ Metrotel S.A.`;
     if (emailSendBtn) emailSendBtn.disabled = true;
     
     try {
-      const payload = prepareEmailPayload();
+      const toList = emailTo.value
+        .split(/[,;\\s]+/)
+        .map(e => e.trim())
+        .filter(Boolean);
+
+      const payload = {
+        to: toList,
+        cc: [],
+        subject: emailSubject.value,
+        body: emailBody.value,
+        incidente_ids: [emailEditorBans[0].id],
+        include_xls: emailAttachXls ? emailAttachXls.checked : true,
+        include_txt: emailAttachTxt ? emailAttachTxt.checked : true,
+      };
       
-      const res = await fetch(`${window.API_BASE || ''}/api/infra/notify/send`, {
+      const res = await fetch(`${window.API_BASE || ''}/api/infra/notify/email`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -2714,9 +2770,26 @@ Metrotel S.A.`;
   // Abrir editor de correo al hacer click en "Dar Aviso"
   if (notifyBtn && emailEditorModal) {
     notifyBtn.addEventListener('click', async () => {
-      resetEmailEditor();
-      await loadBansIntoEmailEditor();
-      emailEditorModal.showModal();
+      try {
+        const res = await fetch(`${window.API_BASE || ''}/api/infra/ban/active`, {
+          credentials: 'include',
+        });
+        if (!res.ok) {
+          throw new Error('No se pudo obtener la lista de baneos activos');
+        }
+        const data = await res.json();
+        const firstIncidente = data.incidentes && data.incidentes.length ? data.incidentes[0] : null;
+
+        if (!firstIncidente) {
+          showToast('warning', 'Sin baneos activos', 'No hay incidentes para notificar');
+          return;
+        }
+
+        await openEmailModal(firstIncidente.id, firstIncidente);
+      } catch (err) {
+        console.error('Error abriendo editor de correo:', err);
+        showToast('error', 'No se pudo abrir el editor', err.message);
+      }
     });
   }
 
@@ -2756,5 +2829,171 @@ Metrotel S.A.`;
       }
     });
   }
+
+  // Cargar y abrir modal de email para un incidente específico
+  async function openEmailModal(incidenteId, fallbackBan = null) {
+    if (!incidenteId) {
+      showToast('warning', 'Incidente requerido', 'Seleccioná un incidente para notificar');
+      return;
+    }
+
+    resetEmailEditor();
+    setEmailStatus('Cargando incidente...', 'loading');
+
+    try {
+      const res = await fetch(`${window.API_BASE || ''}/api/infra/ban/${incidenteId}`, {
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const message = errData.detail || `Error ${res.status}`;
+        // Intento de fallback con datos ya cargados si la API de detalle no está disponible
+        if (fallbackBan) {
+          console.warn('Detalle no disponible, usando datos de fallback del listado activo:', message);
+          throw { useFallback: true, message };
+        }
+        throw new Error(message);
+      }
+
+      const data = await res.json();
+
+      const cantidad =
+        data.cantidad_camaras ??
+        data.camaras_count ??
+        data.total_camaras ??
+        (data.camaras_afectadas ? data.camaras_afectadas.length : undefined) ??
+        (data.incidente && data.incidente.camaras_afectadas ? data.incidente.camaras_afectadas.length : undefined) ??
+        '?';
+
+      const templateData = {
+        id: data.id,
+        ticket: data.ticket,
+        servicio_afectado: data.servicio_afectado,
+        servicio_protegido: data.servicio_protegido,
+        servicio: data.servicio_protegido,
+        cantidad,
+        motivo: data.motivo,
+      };
+
+      emailEditorBans = [
+        {
+          id: data.id,
+          ticket_asociado: data.ticket,
+          servicio_afectado_id: data.servicio_afectado,
+          servicio_protegido_id: data.servicio_protegido,
+          camaras_count: cantidad,
+          motivo: data.motivo,
+        },
+      ];
+
+      if (emailBansList) {
+        emailBansList.innerHTML = `
+          <div class="email-ban-item">
+            <span class="ban-ticket">${data.ticket || 'Sin ticket'}</span>
+            <span class="ban-services">${data.servicio_afectado} → ${data.servicio_protegido}</span>
+            <span class="ban-camaras">${cantidad ?? '?'} cámaras</span>
+          </div>
+        `;
+      }
+
+      const savedSettings = loadEmailSettings();
+      if (emailTo && savedSettings.recipients) {
+        emailTo.value = savedSettings.recipients;
+      }
+
+      const defaultSubject = `[ALERTA] Protocolo de Protección - ${data.ticket || `INC-${data.id}`} - ${data.servicio_protegido}`;
+      if (emailSubject) emailSubject.value = data.email_subject || defaultSubject;
+
+      const defaultBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
+      const bodyFromDb = data.email_body ? htmlToPlainText(data.email_body) : null;
+      if (emailBody) emailBody.value = bodyFromDb || defaultBody;
+
+      if (emailTxtWarning) emailTxtWarning.hidden = true;
+      txtFileAvailable = true;
+      setEmailStatus('', '');
+
+      if (emailEditorModal) emailEditorModal.showModal();
+    } catch (err) {
+      // Fallback: si vino desde listado y no hay endpoint de detalle, usar datos básicos para no bloquear UX
+      if (err && err.useFallback && fallbackBan) {
+        const fallbackData = {
+          id: fallbackBan.id,
+          ticket: fallbackBan.ticket_asociado || `INC-${fallbackBan.id}`,
+          servicio_afectado: fallbackBan.servicio_afectado_id,
+          servicio_protegido: fallbackBan.servicio_protegido_id,
+          cantidad_camaras: fallbackBan.camaras_count ?? fallbackBan.cantidad_camaras ?? '?',
+          motivo: fallbackBan.motivo,
+          email_subject: null,
+          email_body: null,
+        };
+
+        const cantidad =
+          fallbackData.cantidad_camaras ??
+          fallbackData.camaras_count ??
+          fallbackData.total_camaras ??
+          (fallbackData.camaras_afectadas ? fallbackData.camaras_afectadas.length : undefined) ??
+          '?';
+
+        const templateData = {
+          id: fallbackData.id,
+          ticket: fallbackData.ticket,
+          servicio_afectado: fallbackData.servicio_afectado,
+          servicio_protegido: fallbackData.servicio_protegido,
+          servicio: fallbackData.servicio_protegido,
+          cantidad,
+          motivo: fallbackData.motivo,
+        };
+
+        emailEditorBans = [
+          {
+            id: fallbackData.id,
+            ticket_asociado: fallbackData.ticket,
+            servicio_afectado_id: fallbackData.servicio_afectado,
+            servicio_protegido_id: fallbackData.servicio_protegido,
+            camaras_count: cantidad,
+            motivo: fallbackData.motivo,
+          },
+        ];
+
+        if (emailBansList) {
+          emailBansList.innerHTML = `
+            <div class="email-ban-item">
+              <span class="ban-ticket">${fallbackData.ticket || 'Sin ticket'}</span>
+              <span class="ban-services">${fallbackData.servicio_afectado} → ${fallbackData.servicio_protegido}</span>
+            <span class="ban-camaras">${cantidad ?? '?'} cámaras</span>
+          </div>
+        `;
+      }
+
+        const savedSettings = loadEmailSettings();
+        if (emailTo && savedSettings.recipients) {
+          emailTo.value = savedSettings.recipients;
+        }
+
+        const defaultSubject = `[ALERTA] Protocolo de Protección - ${fallbackData.ticket} - ${fallbackData.servicio_protegido}`;
+        if (emailSubject) emailSubject.value = fallbackData.email_subject || defaultSubject;
+
+        const defaultBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
+        const bodyFromDb = fallbackData.email_body ? htmlToPlainText(fallbackData.email_body) : null;
+        if (emailBody) emailBody.value = bodyFromDb || defaultBody;
+
+        if (emailTxtWarning) emailTxtWarning.hidden = true;
+        txtFileAvailable = true;
+        setEmailStatus('', '');
+
+        if (emailEditorModal) emailEditorModal.showModal();
+        return;
+      }
+
+      const message = err.message || 'No se pudo cargar el incidente';
+      console.error('Error cargando incidente para notificación:', err);
+      setEmailStatus(message, 'error');
+      showToast('error', 'No se pudo cargar el incidente', message);
+    }
+  }
+
+  // Exponer función para usos externos (botones dinámicos)
+  window.openEmailModal = openEmailModal;
 
 })();

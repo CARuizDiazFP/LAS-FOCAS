@@ -1764,64 +1764,36 @@ async def get_active_bans() -> Dict[str, Any]:
 
 @router.get("/api/infra/ban/{incidente_id}")
 async def get_ban_detail(incidente_id: int) -> Dict[str, Any]:
-    """Obtiene el detalle de un incidente de baneo específico.
-    
-    Incluye las cámaras afectadas actualmente.
-    
-    Args:
-        incidente_id: ID del incidente
-        
-    Returns:
-        Dict con detalle del incidente y cámaras afectadas
-    """
+    """Obtiene el detalle de un incidente de baneo con datos de correo y conteo de cámaras."""
     from core.services.protection_service import ProtectionService
-    
+
     try:
         with SessionLocal() as session:
             service = ProtectionService(session)
             incidente = service.get_incidente_by_id(incidente_id)
-            
+
             if not incidente:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Incidente {incidente_id} no encontrado",
                 )
-            
-            # Obtener cámaras afectadas
+
             camaras = service.get_camaras_for_servicio(
                 incidente.servicio_protegido_id,
                 incidente.ruta_protegida_id,
             )
-            
-            camaras_data = []
-            for cam in camaras:
-                camaras_data.append({
-                    "id": cam.id,
-                    "nombre": cam.nombre,
-                    "fontine_id": cam.fontine_id,
-                    "direccion": cam.direccion,
-                    "estado": cam.estado.value if cam.estado else "LIBRE",
-                })
-            
+            cantidad_camaras = len(camaras)
+
             return {
-                "status": "ok",
-                "incidente": {
-                    "id": incidente.id,
-                    "ticket_asociado": incidente.ticket_asociado,
-                    "servicio_afectado_id": incidente.servicio_afectado_id,
-                    "servicio_protegido_id": incidente.servicio_protegido_id,
-                    "ruta_protegida_id": incidente.ruta_protegida_id,
-                    "usuario_ejecutor": incidente.usuario_ejecutor,
-                    "motivo": incidente.motivo,
-                    "fecha_inicio": incidente.fecha_inicio.isoformat() if incidente.fecha_inicio else None,
-                    "fecha_fin": incidente.fecha_fin.isoformat() if incidente.fecha_fin else None,
-                    "activo": incidente.activo,
-                    "duracion_horas": incidente.duracion_horas,
-                },
-                "camaras_afectadas": camaras_data,
-                "total_camaras": len(camaras_data),
+                "id": incidente.id,
+                "ticket": incidente.ticket_asociado,
+                "servicio_afectado": incidente.servicio_afectado_id,
+                "servicio_protegido": incidente.servicio_protegido_id,
+                "email_subject": incidente.email_subject,
+                "email_body": incidente.email_body,
+                "cantidad_camaras": cantidad_camaras,
             }
-            
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -2112,9 +2084,22 @@ def download_ban_eml(
         # 1. Recuperar el incidente
         protection_svc = ProtectionService(session)
         incidente = protection_svc.get_incidente_by_id(incident_id)
-        
+
         if not incidente:
             raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+        # 1.b Guardar ediciones de asunto/cuerpo si llegan en el formulario
+        datos_actualizados = False
+        if subject is not None:
+            incidente.email_subject = subject
+            datos_actualizados = True
+        if html_body is not None:
+            incidente.email_body = html_body
+            datos_actualizados = True
+
+        if datos_actualizados:
+            session.commit()
+            session.refresh(incidente)
 
         # 2. Recuperar las cámaras afectadas usando el servicio de protección (CRÍTICO)
         # Aquí solucionamos el error: Calculamos la lista y se la pasamos al email service

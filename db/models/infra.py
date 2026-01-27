@@ -413,6 +413,8 @@ class IncidenteBaneo(Base):
     )
     fecha_fin = Column(DateTime(timezone=True), nullable=True)
     activo = Column(Boolean, nullable=False, default=True, index=True)
+    email_subject = Column(String(512), nullable=True)
+    email_body = Column(Text, nullable=True)
 
     # Relaciones
     ruta_protegida = relationship("RutaServicio", foreign_keys=[ruta_protegida_id])
