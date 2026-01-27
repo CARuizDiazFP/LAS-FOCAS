@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import smtplib
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import List, Optional, Tuple
+
+import pandas as pd
 
 from core.config import get_settings
 
@@ -173,6 +176,87 @@ class EmailService:
                 message="Error inesperado al enviar correo",
                 error=str(exc),
             )
+
+    # ------------------------------------------------------------------ #
+    # Generación de EML para baneo
+    # ------------------------------------------------------------------ #
+    def generate_ban_eml(
+        self,
+        incidente,
+        camaras_afectadas: List,
+        html_body: str | None = None,
+        subject: str | None = None,
+        recipients: str | None = None,
+    ) -> io.BytesIO:
+        """Genera un archivo EML con resumen de baneo usando la lista explícita de cámaras."""
+
+        # Asunto y remitente
+        from_email = self.settings.from_email or "no-reply@las-focas.com"
+        from_name = self.settings.from_name or "LAS-FOCAS"
+        eml_subject = subject or f"AVISO DE BANEO - Ticket {incidente.ticket_asociado or incidente.id}"
+
+        # Cuerpo HTML por defecto si no viene uno custom
+        if not html_body:
+            ticket = incidente.ticket_asociado or incidente.id
+            html_body = (
+                f"<p>Se informa baneo de cámaras para el ticket <strong>{ticket}</strong>.</p>"
+                "<p>Se adjunta el detalle de cámaras afectadas.</p>"
+            )
+
+        # Construir el mensaje
+        msg = MIMEMultipart("mixed")
+        msg["From"] = formataddr((from_name, from_email))
+        if recipients:
+            msg["To"] = recipients
+        msg["Subject"] = eml_subject
+
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+        # Excel con cámaras afectadas
+        if camaras_afectadas:
+            rows = []
+            for cam in camaras_afectadas:
+                servicios_ids = []
+                try:
+                    for emp in getattr(cam, "empalmes", []) or []:
+                        for svc in getattr(emp, "servicios", []) or []:
+                            sid = getattr(svc, "servicio_id", None)
+                            if sid and sid not in servicios_ids:
+                                servicios_ids.append(sid)
+                except Exception:
+                    pass
+
+                rows.append(
+                    {
+                        "ID": getattr(cam, "id", None),
+                        "Nombre": getattr(cam, "nombre", None),
+                        "Dirección": getattr(cam, "direccion", None),
+                        "Estado": getattr(getattr(cam, "estado", None), "value", getattr(cam, "estado", None)),
+                        "Servicios": ", ".join(servicios_ids),
+                        "Latitud": getattr(cam, "latitud", None),
+                        "Longitud": getattr(cam, "longitud", None),
+                    }
+                )
+
+            if rows:
+                df = pd.DataFrame(rows)
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    df.to_excel(writer, sheet_name="Camaras_Baneadas", index=False)
+                buffer.seek(0)
+
+                excel_part = MIMEApplication(buffer.getvalue())
+                filename = f"Camaras_Baneadas_{incidente.ticket_asociado or incidente.id}.xlsx"
+                excel_part.add_header("Content-Disposition", "attachment", filename=filename)
+                excel_part.add_header(
+                    "Content-Type",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                msg.attach(excel_part)
+
+        # Serializar a bytes
+        eml_bytes = msg.as_bytes()
+        return io.BytesIO(eml_bytes)
 
 
 # Singleton para uso global

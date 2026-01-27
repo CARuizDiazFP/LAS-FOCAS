@@ -2073,9 +2073,9 @@ async def get_email_config_status() -> Dict[str, Any]:
 @router.post("/api/infra/notify/download-eml")
 def download_ban_eml(
     incident_id: int = Form(...),
-    recipients: str = Form(None),
-    subject: str = Form(None),
-    html_body: str = Form(None),
+    recipients: Optional[str] = Form(None),
+    subject: Optional[str] = Form(None),
+    html_body: Optional[str] = Form(None),
 ):
     """Genera y descarga un archivo .eml con el aviso de baneo y adjuntos."""
     from core.services.protection_service import ProtectionService
