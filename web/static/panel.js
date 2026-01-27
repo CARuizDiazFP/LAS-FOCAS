@@ -2625,9 +2625,11 @@ Metrotel S.A.`;
   function prepareEmlFormData() {
     const formData = new FormData();
     formData.append('incident_id', String(emailEditorBans[0].id));
-    formData.append('recipients', emailTo.value || '');
-    formData.append('subject', emailSubject.value || '');
     formData.append('html_body', textToBasicHtml(emailBody.value || ''));
+    formData.append('subject', emailSubject.value || '');
+    if (emailTo && emailTo.value) {
+      formData.append('recipients', emailTo.value);
+    }
     return formData;
   }
 
