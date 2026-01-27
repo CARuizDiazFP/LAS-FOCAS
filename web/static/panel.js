@@ -2909,7 +2909,16 @@ Metrotel S.A.`;
 
       const defaultBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
       const bodyFromDb = data.email_body ? htmlToPlainText(data.email_body) : null;
-      if (emailBody) emailBody.value = bodyFromDb || defaultBody;
+
+      let finalBody = bodyFromDb;
+      if (!finalBody) {
+        finalBody = defaultBody;
+      } else if (finalBody.includes('{{cantidad}}') || finalBody.includes('? cámaras')) {
+        // Reemplazar placeholders antiguos o valores desconocidos con el conteo real
+        finalBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
+      }
+
+      if (emailBody) emailBody.value = finalBody;
 
       if (emailTxtWarning) emailTxtWarning.hidden = true;
       txtFileAvailable = true;
@@ -2978,7 +2987,15 @@ Metrotel S.A.`;
 
         const defaultBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
         const bodyFromDb = fallbackData.email_body ? htmlToPlainText(fallbackData.email_body) : null;
-        if (emailBody) emailBody.value = bodyFromDb || defaultBody;
+
+        let finalBody = bodyFromDb;
+        if (!finalBody) {
+          finalBody = defaultBody;
+        } else if (finalBody.includes('{{cantidad}}') || finalBody.includes('? cámaras')) {
+          finalBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
+        }
+
+        if (emailBody) emailBody.value = finalBody;
 
         if (emailTxtWarning) emailTxtWarning.hidden = true;
         txtFileAvailable = true;
