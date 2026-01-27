@@ -2624,10 +2624,10 @@ Metrotel S.A.`;
   // Preparar FormData para descarga EML (endpoint espera form-data)
   function prepareEmlFormData() {
     const formData = new FormData();
-    formData.append('incident_id', emailEditorBans[0].id);
-    formData.append('recipients', emailTo.value);
-    formData.append('subject', emailSubject.value);
-    formData.append('html_body', textToBasicHtml(emailBody.value));
+    formData.append('incident_id', String(emailEditorBans[0].id));
+    formData.append('recipients', emailTo.value || '');
+    formData.append('subject', emailSubject.value || '');
+    formData.append('html_body', textToBasicHtml(emailBody.value || ''));
     return formData;
   }
 
@@ -2838,7 +2838,7 @@ Metrotel S.A.`;
     }
 
     resetEmailEditor();
-    setEmailStatus('Cargando incidente...', 'loading');
+    setEmailStatus('Cargando datos...', 'loading');
 
     try {
       const res = await fetch(`${window.API_BASE || ''}/api/infra/ban/${incidenteId}`, {
