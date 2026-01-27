@@ -14,6 +14,14 @@
     window.API_BASE = "{{ api_base }}";
     window.CSRF_TOKEN = "{{ csrf }}";
     window.BUILD_VERSION = "{{ build_version }}";
+    // Fallback: si API_BASE no está definida o apunta al puerto del frontend (8080), usar el puerto expuesto de la API (8001)
+    (function() {
+      const needsFallback = !window.API_BASE || window.API_BASE.includes(':8080');
+      if (needsFallback) {
+        const host = window.location.hostname || 'localhost';
+        window.API_BASE = `http://${host}:8001`;
+      }
+    })();
   </script>
   <script defer src="/static/panel.js?v={{ build_version }}"></script>
 </head>
