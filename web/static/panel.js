@@ -2623,8 +2623,17 @@ Metrotel S.A.`;
 
   // Preparar FormData para descarga EML (endpoint espera form-data)
   function prepareEmlFormData() {
+    if (!emailEditorBans.length || typeof emailEditorBans[0].id === 'undefined') {
+      throw new Error('Incidente no cargado en el editor');
+    }
+
+    const incidentId = parseInt(emailEditorBans[0].id, 10);
+    if (!Number.isFinite(incidentId)) {
+      throw new Error('Incidente inválido');
+    }
+
     const formData = new FormData();
-    formData.append('incident_id', String(emailEditorBans[0].id));
+    formData.append('incident_id', String(incidentId));
     formData.append('html_body', textToBasicHtml(emailBody.value || ''));
     formData.append('subject', emailSubject.value || '');
     if (emailTo && emailTo.value) {
@@ -2657,7 +2666,9 @@ Metrotel S.A.`;
       
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || `Error ${res.status}`);
+        // Mostrar detalle de validación si viene de FastAPI
+        const detail = errorData.detail || errorData.error;
+        throw new Error(detail || `Error ${res.status}`);
       }
       
       // Descargar el archivo .eml
