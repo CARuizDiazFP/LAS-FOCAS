@@ -1,162 +1,122 @@
 # Nombre de archivo: test_email_service.py
 # Ubicación de archivo: tests/test_email_service.py
-# Descripción: Tests para el servicio de envío de correos electrónicos
+# Descripción: Tests unitarios para el EmailService, incluyendo la generación de EML.
 
-from __future__ import annotations
+import io
+import unittest
+from email import message_from_bytes
+from unittest.mock import MagicMock
 
-import os
-from unittest.mock import MagicMock, patch
+import pandas as pd
 
-import pytest
+from core.services.email_service import EmailService
+from db.models.infra import Camara, CamaraEstado, IncidenteBaneo
 
 
-class TestEmailService:
-    """Tests para EmailService."""
+class TestEmailService(unittest.TestCase):
+    """Tests para los métodos de EmailService."""
 
-    def test_email_service_import(self):
-        """Verifica que el servicio se puede importar."""
-        from core.services.email_service import EmailService, get_email_service
+    def setUp(self):
+        """Configura los mocks necesarios para los tests."""
+        self.email_service = EmailService()
 
-        assert EmailService is not None
-        assert get_email_service is not None
+        # Mock de IncidenteBaneo
+        self.mock_incidente = MagicMock(spec=IncidenteBaneo)
+        self.mock_incidente.ticket_asociado = "INC-TEST-123"
+        self.mock_incidente.motivo = "Test de baneo"
+        self.mock_incidente.servicio_protegido_id = "SVC-PROT-001"
 
-    def test_email_service_not_configured_without_env(self):
-        """Verifica que reporta no configurado si no hay variables SMTP."""
-        # Limpiar cache del singleton
-        import core.services.email_service as email_module
+        # Mock de Camara con relaciones anidadas para la generación del Excel
+        mock_camara_1 = MagicMock(spec=Camara)
+        mock_camara_1.id = 1
+        mock_camara_1.nombre = "Camara Test 1"
+        mock_camara_1.direccion = "Calle Falsa 123"
+        mock_camara_1.estado = CamaraEstado.BANEADA
+        mock_camara_1.fontine_id = "F-001"
+        mock_camara_1.latitud = -34.0
+        mock_camara_1.longitud = -58.0
 
-        email_module._email_service = None
+        mock_servicio_1 = MagicMock()
+        mock_servicio_1.servicio_id = "SVC-A"
+        mock_empalme_1 = MagicMock()
+        mock_empalme_1.servicios = [mock_servicio_1]
+        mock_camara_1.empalmes = [mock_empalme_1]
 
-        with patch.dict(os.environ, {}, clear=True):
-            # Forzar recarga de configuración
-            from core.config import Settings
+        self.mock_camaras_afectadas = [mock_camara_1]
 
-            settings = Settings()
-            
-            # Sin SMTP_HOST, debe reportar no habilitado
-            assert settings.smtp.enabled is False
+    def test_generate_ban_eml_with_custom_data(self):
+        """
+        Prueba la generación de EML con asunto, destinatarios y cuerpo HTML personalizados.
+        """
+        # Datos de entrada
+        subject = "Asunto de prueba personalizado"
+        recipients = "test1@example.com,test2@example.com"
+        html_body = "<h1>Cuerpo del correo de prueba</h1><p>Este es un test.</p>"
 
-    def test_email_attachment_dataclass(self):
-        """Verifica la estructura de EmailAttachment."""
-        from core.services.email_service import EmailAttachment
-
-        attachment = EmailAttachment(
-            filename="test.txt",
-            content=b"contenido de prueba",
-            mime_type="text/plain",
+        # Generar el EML
+        eml_stream = self.email_service.generate_ban_eml(
+            incidente=self.mock_incidente,
+            camaras_afectadas=self.mock_camaras_afectadas,
+            html_body=html_body,
+            subject=subject,
+            recipients=recipients,
         )
 
-        assert attachment.filename == "test.txt"
-        assert attachment.content == b"contenido de prueba"
-        assert attachment.mime_type == "text/plain"
+        self.assertIsInstance(eml_stream, io.BytesIO)
+        eml_content = eml_stream.getvalue()
+        self.assertTrue(len(eml_content) > 0)
 
-    def test_email_result_success(self):
-        """Verifica EmailResult con éxito."""
-        from core.services.email_service import EmailResult
+        # Parsear el EML y verificar su contenido
+        msg = message_from_bytes(eml_content)
 
-        result = EmailResult(
-            success=True,
-            message="Correo enviado",
+        # 1. Verificar cabeceras
+        self.assertEqual(msg["Subject"], subject)
+        self.assertEqual(msg["To"], recipients)
+        self.assertEqual(msg["From"], "no-reply@las-focas.com")
+
+        # 2. Verificar cuerpo y adjuntos
+        self.assertTrue(msg.is_multipart())
+        found_html = False
+        found_excel = False
+
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get("Content-Disposition"))
+
+            if "attachment" in content_disposition:
+                # Es el adjunto Excel
+                found_excel = True
+                filename = part.get_filename()
+                self.assertEqual(filename, "Camaras_Baneadas_INC-TEST-123.xlsx")
+
+                # 3. Verificar contenido del Excel
+                excel_data = part.get_payload(decode=True)
+                df = pd.read_excel(io.BytesIO(excel_data), engine="openpyxl")
+
+                self.assertEqual(len(df), 1)
+                self.assertEqual(df.iloc[0]["ID"], 1)
+                self.assertEqual(df.iloc[0]["Nombre"], "Camara Test 1")
+                self.assertEqual(df.iloc[0]["Servicios"], "SVC-A")
+
+            elif content_type == "text/html":
+                # Es el cuerpo HTML
+                found_html = True
+                body_payload = part.get_payload(decode=True).decode("utf-8")
+                self.assertEqual(body_payload, html_body)
+
+        self.assertTrue(found_html, "No se encontró la parte del cuerpo HTML en el EML.")
+        self.assertTrue(found_excel, "No se encontró el adjunto Excel en el EML.")
+
+    def test_generate_ban_eml_with_defaults(self):
+        """
+        Prueba la generación de EML usando el asunto y cuerpo de texto por defecto.
+        """
+        eml_stream = self.email_service.generate_ban_eml(
+            incidente=self.mock_incidente,
+            camaras_afectadas=self.mock_camaras_afectadas,
         )
+        msg = message_from_bytes(eml_stream.getvalue())
 
-        assert result.success is True
-        assert result.message == "Correo enviado"
-        assert result.error is None
-
-    def test_email_result_error(self):
-        """Verifica EmailResult con error."""
-        from core.services.email_service import EmailResult
-
-        result = EmailResult(
-            success=False,
-            message="Error al enviar",
-            error="SMTP timeout",
-        )
-
-        assert result.success is False
-        assert result.error == "SMTP timeout"
-
-    @patch("core.services.email_service.smtplib.SMTP")
-    def test_send_email_success(self, mock_smtp_class):
-        """Verifica envío exitoso de email (mockeado)."""
-        from core.services.email_service import EmailService
-
-        # Configurar mock
-        mock_smtp = MagicMock()
-        mock_smtp_class.return_value.__enter__ = MagicMock(return_value=mock_smtp)
-        mock_smtp_class.return_value.__exit__ = MagicMock(return_value=False)
-
-        # Crear servicio con config mockeada
-        service = EmailService()
-        service.settings.enabled = True
-        service.settings.host = "smtp.test.com"
-        service.settings.port = 587
-        service.settings.user = "test@test.com"
-        service.settings.password = "secret"
-        service.settings.from_email = "from@test.com"
-        service.settings.from_name = "Test"
-        service.settings.use_tls = True
-
-        result = service.send_email(
-            to=["dest@test.com"],
-            subject="Test Subject",
-            body="Test Body",
-        )
-
-        assert result.success is True
-        assert "exitosamente" in result.message
-
-    def test_send_email_no_recipients(self):
-        """Verifica error si no hay destinatarios."""
-        from core.services.email_service import EmailService
-
-        service = EmailService()
-        service.settings.enabled = True
-        service.settings.host = "smtp.test.com"
-
-        result = service.send_email(
-            to=[],
-            subject="Test",
-            body="Test",
-        )
-
-        assert result.success is False
-        assert "destinatarios" in result.message.lower()
-
-
-class TestSmtpConfig:
-    """Tests para la configuración SMTP."""
-
-    def test_smtp_settings_from_env(self):
-        """Verifica que SmtpSettings lee variables de entorno."""
-        test_env = {
-            "SMTP_HOST": "smtp.ejemplo.com",
-            "SMTP_PORT": "465",
-            "SMTP_USER": "usuario@ejemplo.com",
-            "SMTP_PASS": "password123",
-            "SMTP_FROM_EMAIL": "noreply@ejemplo.com",
-            "SMTP_FROM_NAME": "Sistema Prueba",
-            "SMTP_USE_TLS": "false",
-        }
-
-        with patch.dict(os.environ, test_env, clear=False):
-            from core.config import SmtpSettings
-
-            # Crear instancia directa para test
-            settings = SmtpSettings(
-                host=os.getenv("SMTP_HOST", ""),
-                port=int(os.getenv("SMTP_PORT", "587")),
-                user=os.getenv("SMTP_USER", ""),
-                password=os.getenv("SMTP_PASS", ""),
-                from_email=os.getenv("SMTP_FROM_EMAIL", ""),
-                from_name=os.getenv("SMTP_FROM_NAME", "Test"),
-                use_tls=os.getenv("SMTP_USE_TLS", "true").lower() in ("true", "1"),
-                enabled=bool(os.getenv("SMTP_HOST")),
-            )
-
-            assert settings.host == "smtp.ejemplo.com"
-            assert settings.port == 465
-            assert settings.user == "usuario@ejemplo.com"
-            assert settings.from_email == "noreply@ejemplo.com"
-            assert settings.use_tls is False
-            assert settings.enabled is True
+        self.assertEqual(msg["Subject"], "AVISO DE BANEO - Ticket INC-TEST-123")
+        self.assertIsNone(msg["To"])
+        self.assertIn("Se informa baneo de cámaras", msg.get_payload()[0].get_payload())

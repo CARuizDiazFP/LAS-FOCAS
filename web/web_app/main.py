@@ -2118,6 +2118,7 @@ async def send_email_notification_web(
         from core.services.email_service import EmailAttachment, get_email_service
         from db.models.infra import IncidenteBaneo
         from db.session import SessionLocal
+        from core.services.protection_service import ProtectionService
         import io
         
         email_service = get_email_service()
@@ -2132,6 +2133,7 @@ async def send_email_notification_web(
         attachments: list = []
         
         with SessionLocal() as session:
+            protection_svc = ProtectionService(session)
             # Obtener incidentes
             incidentes = []
             if email_request.incidente_ids:
@@ -2148,7 +2150,9 @@ async def send_email_notification_web(
                     
                     rows = []
                     for incidente in incidentes:
-                        for camara in incidente.camaras_afectadas:
+                        # Se corrige el acceso a camaras_afectadas usando ProtectionService
+                        camaras = protection_svc.get_camaras_for_servicio(incidente.servicio_protegido_id, incidente.ruta_protegida_id)
+                        for camara in camaras:
                             rows.append({
                                 "Incidente ID": incidente.id,
                                 "Ticket": incidente.ticket_asociado or "-",
@@ -2350,6 +2354,7 @@ async def generate_eml_file(
         from db.models.infra import IncidenteBaneo, Servicio
         from db.session import SessionLocal
         from core.config import get_settings
+        from core.services.protection_service import ProtectionService
         
         settings = get_settings()
         
@@ -2365,7 +2370,8 @@ async def generate_eml_file(
         
         with SessionLocal() as session:
             # Obtener datos del incidente
-            incidente = session.query(IncidenteBaneo).get(eml_request.incident_id)
+            protection_svc = ProtectionService(session)
+            incidente = protection_svc.get_incidente_by_id(eml_request.incident_id)
             
             if not incidente:
                 return JSONResponse(
@@ -2373,12 +2379,18 @@ async def generate_eml_file(
                     status_code=404
                 )
             
+            # Obtener cámaras afectadas
+            camaras_afectadas = protection_svc.get_camaras_for_servicio(
+                incidente.servicio_protegido_id,
+                incidente.ruta_protegida_id
+            )
+            
             # Preparar variables para el template
             template_vars = {
                 "ticket": incidente.ticket_asociado or f"INC-{incidente.id}",
                 "servicio_afectado": incidente.servicio_afectado_id or "-",
                 "servicio_protegido": incidente.servicio_protegido_id or "-",
-                "total_camaras": len(incidente.camaras_afectadas),
+                "total_camaras": len(camaras_afectadas),
                 "fecha": incidente.fecha_inicio.strftime("%d/%m/%Y %H:%M") if incidente.fecha_inicio else "-",
                 "motivo": incidente.motivo or "Sin especificar",
             }
@@ -2417,7 +2429,7 @@ async def generate_eml_file(
                     import pandas as pd
                     
                     rows = []
-                    for camara in incidente.camaras_afectadas:
+                    for camara in camaras_afectadas:
                         rows.append({
                             "ID": camara.id,
                             "Nombre": camara.nombre or "",

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, Response
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import func, or_
@@ -27,7 +27,7 @@ from core.services.infra_service import (
     analyze_tracking_file,
     resolve_tracking_file,
 )
-from core.services.email_service import EmailAttachment, get_email_service
+from core.services.email_service import EmailAttachment, get_email_service, EmailService
 from db.models.infra import (
     Cable,
     Camara,
@@ -37,6 +37,7 @@ from db.models.infra import (
     RutaServicio,
     RutaTipo,
     Servicio,
+    IncidenteBaneo,
 )
 from db.session import SessionLocal
 
@@ -1719,16 +1720,19 @@ async def get_active_bans() -> Dict[str, Any]:
     Returns:
         Dict con lista de incidentes activos y conteo
     """
-    from core.services.protection_service import get_incidentes_activos
+    from core.services.protection_service import get_incidentes_activos, ProtectionService
     
     try:
         with SessionLocal() as session:
             incidentes = get_incidentes_activos(session)
+            protection_svc = ProtectionService(session)
             
             incidentes_data = []
             for inc in incidentes:
                 # Contar cámaras afectadas
-                camaras_count = len(inc.camaras_afectadas) if inc.camaras_afectadas else 0
+                # Se corrige el acceso a camaras_afectadas usando ProtectionService
+                camaras = protection_svc.get_camaras_for_servicio(inc.servicio_protegido_id, inc.ruta_protegida_id)
+                camaras_count = len(camaras)
                 
                 incidentes_data.append({
                     "id": inc.id,
@@ -1890,6 +1894,7 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
     import io
 
     from db.models.infra import IncidenteBaneo
+    from core.services.protection_service import ProtectionService
 
     email_service = get_email_service()
 
@@ -1904,6 +1909,7 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
         attachments: List[EmailAttachment] = []
 
         with SessionLocal() as session:
+            protection_svc = ProtectionService(session)
             # Obtener incidentes
             incidentes = (
                 session.query(IncidenteBaneo)
@@ -1922,17 +1928,12 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
             if request.include_xls:
                 try:
                     import pandas as pd
-                    from core.services.protection_service import ProtectionService
-                    
-                    protection_service = ProtectionService(session)
 
                     rows = []
                     for incidente in incidentes:
-                        camaras_afectadas = protection_service.get_camaras_for_servicio(
-                            servicio_id=incidente.servicio_protegido_id,
-                            ruta_id=incidente.ruta_protegida_id
-                        )
-                        for camara in camaras_afectadas:
+                        # Se corrige el acceso a camaras_afectadas usando ProtectionService
+                        camaras = protection_svc.get_camaras_for_servicio(incidente.servicio_protegido_id, incidente.ruta_protegida_id)
+                        for camara in camaras:
                             rows.append(
                                 {
                                     "Incidente ID": incidente.id,
@@ -2095,6 +2096,54 @@ async def get_email_config_status() -> Dict[str, Any]:
         "from_email": settings.from_email if email_service.is_configured() else None,
         "from_name": settings.from_name if email_service.is_configured() else None,
     }
+
+
+@router.post("/api/infra/notify/download-eml")
+def download_ban_eml(
+    incident_id: int = Form(...),
+    recipients: str = Form(None),
+    subject: str = Form(None),
+    html_body: str = Form(None),
+):
+    """Genera y descarga un archivo .eml con el aviso de baneo y adjuntos."""
+    from core.services.protection_service import ProtectionService
+
+    with SessionLocal() as session:
+        # 1. Recuperar el incidente
+        protection_svc = ProtectionService(session)
+        incidente = protection_svc.get_incidente_by_id(incident_id)
+        
+        if not incidente:
+            raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+        # 2. Recuperar las cámaras afectadas usando el servicio de protección (CRÍTICO)
+        # Aquí solucionamos el error: Calculamos la lista y se la pasamos al email service
+        camaras = protection_svc.get_camaras_for_servicio(
+            servicio_id=incidente.servicio_protegido_id,
+            ruta_id=incidente.ruta_protegida_id
+        )
+
+        # 3. Generar el EML
+        email_svc = EmailService()
+        try:
+            eml_stream = email_svc.generate_ban_eml(
+                incidente=incidente,
+                camaras_afectadas=camaras,  # <--- Pasamos la lista explícita aquí
+                html_body=html_body,
+                subject=subject,
+                recipients=recipients,
+            )
+        except Exception as e:
+            logger.exception("Error generando EML")
+            raise HTTPException(status_code=500, detail=f"Error generando EML: {str(e)}")
+
+        # 4. Retornar archivo
+        filename = f"Aviso_Baneo_{incidente.ticket_asociado}.eml"
+        return StreamingResponse(
+            eml_stream,
+            media_type="message/rfc822",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
