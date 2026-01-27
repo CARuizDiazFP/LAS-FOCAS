@@ -2665,10 +2665,22 @@ Metrotel S.A.`;
       });
       
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        // Mostrar detalle de validación si viene de FastAPI
-        const detail = errorData.detail || errorData.error;
-        throw new Error(detail || `Error ${res.status}`);
+        let message = `Error ${res.status}`;
+        try {
+          const errorData = await res.json();
+          if (errorData) {
+            if (typeof errorData.detail === 'string') {
+              message = errorData.detail;
+            } else if (Array.isArray(errorData.detail)) {
+              message = errorData.detail.map((d) => d.msg || d.detail || JSON.stringify(d)).join('; ');
+            } else if (errorData.error) {
+              message = errorData.error;
+            }
+          }
+        } catch (_) {
+          // si no es JSON, dejamos el status
+        }
+        throw new Error(message);
       }
       
       // Descargar el archivo .eml
