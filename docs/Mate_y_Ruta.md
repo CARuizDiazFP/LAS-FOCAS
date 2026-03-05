@@ -4,9 +4,76 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-01-13
+Fecha de última actualización: 2026-03-03
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
+
+## 🤖 Sistema Multi-Agente (Nuevo en 2026-03-03)
+
+El proyecto ahora utiliza un ecosistema de agentes especializados para asistir en el desarrollo. La estructura anterior (CODEX monolítico) ha sido modernizada:
+
+### Estructura de Archivos
+
+```
+.github/
+├── agents/          # 12 agentes especializados
+│   ├── docker.agent.md
+│   ├── testing.agent.md
+│   ├── reports.agent.md
+│   ├── mcp-chatbot.agent.md
+│   ├── bot.agent.md
+│   ├── web.agent.md
+│   ├── api.agent.md
+│   ├── db.agent.md
+│   ├── nlp.agent.md
+│   ├── office.agent.md
+│   ├── security.agent.md
+│   └── infra.agent.md
+├── prompts/         # Prompts automatizados
+│   ├── generar-pr-diario.prompt.md
+│   ├── nuevo-modulo.prompt.md
+│   ├── migracion-alembic.prompt.md
+│   └── revisar-seguridad.prompt.md
+└── skills/          # Habilidades reutilizables
+    ├── docker-rebuild/SKILL.md
+    ├── pytest-focas/SKILL.md
+    ├── alembic-migrations/SKILL.md
+    └── libreoffice-convert/SKILL.md
+```
+
+### Agentes Disponibles
+
+| Agente | Especialidad | Handoffs |
+|--------|--------------|----------|
+| `docker.agent.md` | Despliegue, contenedores, compose | → testing, db |
+| `testing.agent.md` | Pytest, mocks, cobertura 60% | → api, bot, reports |
+| `reports.agent.md` | Informes SLA/Repetitividad | → office, db, testing |
+| `mcp-chatbot.agent.md` | MCP Registry, orquestador | → nlp, reports, web |
+| `bot.agent.md` | Telegram (aiogram), flows | → nlp, testing, mcp |
+| `web.agent.md` | Panel web, auth, frontend | → api, mcp, security |
+| `api.agent.md` | Endpoints FastAPI | → db, testing, security |
+| `db.agent.md` | SQLAlchemy, Alembic, PostgreSQL | → api, docker |
+| `nlp.agent.md` | Clasificación de intención | → mcp, bot |
+| `office.agent.md` | LibreOffice, conversiones | → reports, docker |
+| `security.agent.md` | Hardening, secrets, auditoría | → docker, web, api |
+| `infra.agent.md` | Cámaras, rutas, servicios | → db, api, reports |
+
+### Prompts Automatizados
+
+- **generar-pr-diario.prompt.md**: Genera `docs/PR/YYYY-MM-DD.md` automáticamente
+- **nuevo-modulo.prompt.md**: Scaffolding de módulo con tests y docs
+- **migracion-alembic.prompt.md**: Crear migraciones de base de datos
+- **revisar-seguridad.prompt.md**: Auditoría de seguridad del proyecto
+
+### Cambios en AGENTS.md
+
+El archivo `AGENTS.md` en raíz ahora contiene solo:
+- Arquitectura del proyecto (~100 líneas)
+- Regla inquebrantable del encabezado de 3 líneas
+- Reglas de seguridad esenciales
+- Comandos Docker (`-f deploy/compose.yml`)
+- Convenciones de código (PEP8, logging, testing)
+- Tabla de referencia a agentes especializados
 
 ## Estado actual (al 2026-01-13)
 
@@ -161,6 +228,7 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 - [x] **Puntos Terminales y Tracking mejorado**: Parser actualizado para extraer puntas A/B, alias de pelos (C1, C2, O1C1), detección de tránsitos, modelos `PuntoTerminal` y migraciones Alembic (2026-01-13).
 - [x] **Detección de Conflictos Inteligente**: Escenarios POTENTIAL_UPGRADE y NEW_STRAND en analyze/resolve de trackings, UI con modales específicos para cada tipo de conflicto (2026-01-13).
 - [x] **Corrección crítica SLA**: `core/sla/legacy_report.py` ahora usa exclusivamente columna "Horas Netas Reclamo" (columna U) para el cálculo de horas, eliminando el fallback incorrecto a columna P. Tests actualizados y validados con datos reales (2026-01-13).
+- [x] **Sistema Multi-Agente**: Modernización de AGENTS.md a ecosistema modular con 12 agentes especializados, 4 prompts automatizados y 4 habilidades reutilizables en `.github/` (2026-03-03).
 
 ### Pendiente (prioridad)
 - [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).
@@ -201,9 +269,14 @@ Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de im
 ## Referencias
 
 - `README.md` — visión general y despliegue.
+- `AGENTS.md` — instrucciones base para agentes IA (~100 líneas).
+- `.github/agents/` — 12 agentes especializados por dominio.
+- `.github/prompts/` — prompts automatizados (PR diario, nuevos módulos).
+- `.github/skills/` — habilidades reutilizables (Docker, pytest, Alembic).
 - `deploy/compose.yml` — servicios, redes, puertos y healthchecks.
 - `docs/decisiones.md` — registro de decisiones técnicas.
 - `docs/PR/` — PR diario con cambios y validaciones.
+- `docs/Seguridad.md` — lineamientos de seguridad.
 - `docs/office_service.md` — detalles del microservicio LibreOffice/UNO.
 - `Templates/` — repositorio centralizado de plantillas (SLA, Repetitividad y futuras).
 - `docs/api.md` — endpoints disponibles (incluye `/reports/repetitividad`).

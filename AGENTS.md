@@ -1,30 +1,37 @@
 # Nombre de archivo: AGENTS.md
 # Ubicación de archivo: AGENTS.md
-# Descripción: Instrucciones para CODEX sobre el proyecto LAS-FOCAS
+# Descripción: Instrucciones base para Agentes IA en el proyecto LAS-FOCAS
 
 # AGENTS.md
 
-Este documento está diseñado para orientar a Agentes en la comprensión del proyecto **LAS-FOCAS** y establecer las directrices para el desarrollo, asegurando consistencia en la estructura y propósito del código.
+Instrucciones base para Agentes IA en **LAS-FOCAS**. Las instrucciones específicas por dominio están en `.github/agents/`, prompts automatizados en `.github/prompts/` y habilidades reutilizables en `.github/skills/`.
 
-## 🎯 Objetivo del Proyecto
+## 🎯 Arquitectura del Proyecto
 
-**LAS-FOCAS** es un sistema modular, dockerizado y diseñado para Debian 12.4, cuyo propósito principal es:
+**LAS-FOCAS** es un sistema modular dockerizado (Debian 12.4) para Metrotel:
 
-1. Automatizar informes operativos (Repetitividad, SLA, Comparador de trazas FO, etc.).
-2. Actuar como asistente conversacional para tareas repetitivas.
-3. Integrarse con sistemas internos de Metrotel a futuro.
+- **Informes operativos**: SLA, Repetitividad, Comparador de trazas FO
+- **Asistente conversacional**: Telegram Bot + Web Panel
+- **Stack**: Python 3.11+, FastAPI, PostgreSQL 16, LibreOffice headless, Ollama/OpenAI
 
-## 📜 Alcance y Expectativas
+**Estructura de directorios:**
+```
+api/          # Endpoints REST (FastAPI)
+bot_telegram/ # Bot Telegram (aiogram)
+core/         # Funcionalidades compartidas (chatbot, mcp, parsers, services)
+db/           # Modelos SQLAlchemy + migraciones Alembic
+deploy/       # Docker Compose y configuración de despliegue
+docs/         # Documentación del proyecto
+modules/      # Informes específicos (repetitividad, SLA)
+nlp_intent/   # Clasificación de intención
+office_service/ # Microservicio LibreOffice
+tests/        # Tests pytest
+web/          # Panel web con chat
+```
 
-* Migrar y adaptar módulos de **Sandy** a un entorno Linux.
-* Implementar microservicios dockerizados con **PostgreSQL** como base de datos local.
-* Proveer interfaces vía **Telegram Bot** (con IDs permitidos) y **Web Panel** (con login básico).
-* Incorporar logs desde el inicio y documentar todo en `/docs`.
-* Mantener la estructura modular para permitir la incorporación de un **agente autónomo** en el futuro.
+## 🔒 Regla Inquebrantable: Encabezado de 3 Líneas
 
-## 📝 Primera Instrucción para CODEX
-
-**Regla obligatoria:** Todo archivo modificable debe iniciar con un encabezado de 3 líneas con el siguiente formato:
+**Todo archivo modificable** debe iniciar con:
 
 ```
 # Nombre de archivo: <nombre_del_archivo.ext>
@@ -32,148 +39,77 @@ Este documento está diseñado para orientar a Agentes en la comprensión del pr
 # Descripción: <breve_descripción_del_uso_o_función_del_archivo>
 ```
 
-* Si el archivo ya existe y no tiene encabezado, agregarlo.
-* Si es un archivo nuevo, crearlo con este encabezado incluido desde el inicio.
+Sin excepciones. Si el archivo existe sin encabezado, agregarlo.
 
-**Ejemplo:**
+## 🛡️ Seguridad (Obligatorio)
 
+> Entorno: VM Debian 12.4 con salida a Internet y acceso a red local.
+
+- **Secrets**: nunca exponer en código ni logs. Usar `.env` / Docker Secrets
+- **Mínimos privilegios**: usuario no root cuando sea viable
+- **Red interna**: servicios con `expose`, evitar `ports` salvo interfaces públicas
+- **Logs prudentes**: no loguear texto del usuario salvo `LOG_RAW_TEXT=true`
+- **Versionado estricto**: nunca usar `latest` en imágenes ni librerías
+- **Auditoría**: revisar vulnerabilidades antes de incorporar paquetes
+
+Lineamientos completos: `docs/Seguridad.md`
+
+## ⚙️ Docker y Despliegue
+
+**Ubicación del Compose**: `deploy/compose.yml` (NO en raíz)
+
+```bash
+# Desde raíz del proyecto:
+docker compose -f deploy/compose.yml up -d
+docker compose -f deploy/compose.yml build <servicio>
+docker compose -f deploy/compose.yml logs -f <servicio>
 ```
-# Nombre de archivo: main.py
-# Ubicación de archivo: sandy_bot/main.py
-# Descripción: Archivo Main, en este se centralizan las funciones y operaciones del bot
-```
 
-## 📌 Instrucciones Generales
+- Redes internas por defecto, volúmenes nombrados
+- Imágenes ligeras (slim, alpine), multi-stage builds
+- Healthchecks cuando sea posible
+- Migraciones DB con Alembic
 
-1. **Estructura de carpetas:** Respetar la organización definida en el README. No crear carpetas fuera de la estructura sin aprobación.
-2. **Estilo de código:** Seguir PEP8 para Python. Nombres descriptivos, comentarios claros y docstrings en funciones y clases.
-3. **Commits:** Usar mensajes de commit descriptivos en español, siguiendo formato "[módulo] Acción realizada".
-4. **Logs:** Incluir logging en puntos clave del código. No usar `print()` en producción.
-5. **Variables sensibles:** Nunca commitear `.env` ni credenciales. Usar `.env` y Docker Secrets cuando corresponda.
-6. **Documentación:** Cualquier módulo nuevo debe tener su documentación en `/docs`.
-7. **Pruebas:** Crear o actualizar tests para cualquier cambio funcional. Los tests deben pasar antes de mergear.
-8. **Docker:** Mantener imágenes ligeras y basadas en versiones específicas, no usar `latest`.
-9. **Dependencias:** Actualizar `requirements.txt` al añadir librerías y verificar compatibilidad.
-10. **Integraciones externas:** Probar en entornos de staging antes de aplicar a producción.
+## 📝 Código y Calidad
 
-## 📌 Instrucciones Generales Permanentes (para todas las interacciones de CODEX)
+- **Idioma**: español en código, commits, PRs y documentación
+- **PEP8 + type hints**: anotaciones de tipo, `pydantic` para contratos
+- **Logging estructurado**: JSON/clave=valor con `service`, `action`, `request_id`
+- **Sin `print()` en producción**: solo `logging`
+- **Tratamiento de errores**: timeouts (HTTP default 15s), reintentos con backoff
+- **Docstrings**: en módulos, clases y funciones públicas
+- **Dependencias**: mantener `requirements.txt` actualizado y versionado
 
-> Estas pautas aplican a **todo cambio en el repositorio**, a toda **implementación** y a cada **prompt** que se envíe a CODEX dentro del proyecto LAS-FOCAS.
+## 🧪 Testing
 
-### 1) Estilo de trabajo y alcance
+- **pytest** obligatorio para cambios funcionales
+- **Cobertura mínima**: 60% para módulos nuevos
+- **Mocks** para proveedores externos (OpenAI/Ollama/SMTP)
+- **CI**: GitHub Actions configurado en `.github/workflows/ci.yml`
 
-* **Idioma:** siempre en español (código, commits, PRs y documentación).
-* **Docker-first:** todo lo que pueda correr dockerizado debe correr en Docker/Compose. Evitar dependencias del host.
-* **No usar `latest`:** fijar versiones (imágenes, librerías). Mantener reproducibilidad.
-* **Idempotencia:** scripts y servicios deben poder ejecutarse múltiples veces sin efectos inesperados.
-* **Fail-safe por defecto:** ante ambigüedad, usar valores por defecto seguros y documentarlos en el PR.
-* **Cuando falte información:** proponer supuestos explícitos, implementar con placeholders y dejar `# TODO:` claros.
+## 📚 Documentación
 
-### 2) Formato estándar de prompts a CODEX
+- Actualizar `docs/` para cada módulo tocado
+- Decisiones técnicas en `docs/decisiones.md`
+- PRs diarios en `docs/PR/YYYY-MM-DD.md` (usar prompt automatizado)
 
-Todos los prompts deben seguir este esquema **en este orden**:
+## 🤖 Sistema Multi-Agente
 
-1. **Contexto** (qué es LAS-FOCAS, qué módulo/parte afecta, entorno y restricciones).
-2. **Observaciones y Errores** (estado actual, huecos, bugs, riesgos, supuestos).
-3. **Objetivo** (resultado esperado de negocio/técnico y límites del alcance).
-4. **Tareas o configuraciones** (lista detallada, con archivos a crear/editar y contenido esperado).
-5. **Criterios de aceptación** (tests, comportamiento, logs, endpoints, performance, seguridad).
-6. **Entregables** (archivos, fragmentos de código, comandos, migraciones, docs a actualizar).
-7. **Checklist de validación** (pasos manuales para verificar que funciona).
+Este proyecto utiliza agentes especializados para diferentes dominios:
 
-> Nota: La regla del **encabezado de 3 líneas** ya está definida en este AGENTS.md y se considera **obligatoria** para cada archivo nuevo o modificado.
+| Agente | Descripción |
+|--------|-------------|
+| `docker.agent.md` | Despliegue y contenedores |
+| `testing.agent.md` | Pytest, mocks, cobertura |
+| `reports.agent.md` | Informes SLA/Repetitividad |
+| `mcp-chatbot.agent.md` | Herramientas MCP, orquestador |
+| `bot.agent.md` | Telegram bot y flows |
+| `web.agent.md` | Panel web, login, frontend |
+| `api.agent.md` | Endpoints FastAPI |
+| `db.agent.md` | Modelos, Alembic |
+| `nlp.agent.md` | Clasificación de intención |
+| `office.agent.md` | LibreOffice, conversiones |
+| `security.agent.md` | Hardening, secrets |
+| `infra.agent.md` | Infraestructura interna |
 
-### 3) Código y calidad
-
-* **PEP8 + type hints**: usar anotaciones de tipo y `pydantic` para contratos.
-* **Docstrings** en módulos, clases y funciones públicas.
-* **Sin `print()` en producción**: usar `logging` con formato estructurado.
-* **Tratamiento de errores:** timeouts definidos (HTTP default 15s), reintentos con backoff exponencial, manejo explícito de excepciones y mensajes de error útiles.
-* **Dependencias:** mantener `requirements.txt`/`pyproject` actualizados y versionados; evitar paquetes no utilizados.
-* **Estructura**: respetar la jerarquía del README (api/, bot_telegram/, nlp_intent/, core/, modules/, db/, deploy/, docs/, tests/).
-
-### 4) Seguridad y confidencialidad
-
-> Entorno operativo: VM Debian 12.4 con salida a Internet y acceso a red local. Toda implementación debe evaluar riesgos de exposición (servicios, puertos, dependencias, archivos) en este contexto mixto.
-
-* **Principio de mínimos privilegios** (DB, contenedores, archivos). Usuario no root cuando sea viable.
-* **Secrets:** nunca exponer claves/tokens en el código ni en logs. Usar `.env` y planificar migración a Docker Secrets.
-* **Red interna:** servicios internos con `expose`, evitar `ports` hacia el host salvo interfaces públicas controladas.
-* **Rate limiting** por ID en superficies expuestas (ej: bot), y validación/escape de entradas.
-* **Versionado estricto:** no usar `latest`; fijar versiones y programar revisiones periódicas de seguridad.
-* **Logs prudentes:** por defecto no registrar texto íntegro del usuario salvo `LOG_RAW_TEXT=true`.
-* **Auditoría de dependencias:** revisar vulnerabilidades antes de incorporar paquetes.
-
-Documento ampliado con lineamientos, checklist y controles: ver `docs/Seguridad.md`.
-
-### 5) Logs, métricas y trazabilidad
-
-* **Logs estructurados** (JSON o clave=valor). Incluir `service`, `action`, `tg_user_id` (si aplica), `request_id` y timestamps.
-* **Contenido sensible:** por defecto **no** loguear texto íntegro del usuario; habilitarlo solo si `LOG_RAW_TEXT=true`.
-* **Persistencia de conversaciones:** según política actual, se **guardará el texto completo** en DB asociado al ID de Telegram y metadatos; documentar esta decisión en `docs/`.
-* **Métricas**: exponer healthchecks y, cuando corresponda, contadores simples (req/s, latencias).
-
-### 6) Pruebas y CI
-
-* **pytest** obligatorio para módulos nuevos y cambios funcionales.
-* **Cobertura mínima sugerida:** 60% para módulos nuevos en MVP (elevar gradualmente).
-* **Mocks** para proveedores externos (OpenAI/Ollama/SMTP/etc.).
-* **Tests de integración** básicos cuando se agreguen endpoints o servicios nuevos.
-* Preparar workflows de **GitHub Actions** (CI) cuando el módulo esté estable.
-
-### 7) Documentación viva
-
-* Actualizar **README**, **AGENTS.md** y **requirements** cuando corresponda.
-* En `/docs/` crear/actualizar la documentación específica del módulo tocado (ej.: `docs/bot.md`, `docs/nlp/intent.md`, `docs/db.md`).
-* `docs/informes/sla.md` documenta el informe de SLA y debe mantenerse al día.
-* Mantener un registro de decisiones técnicas en `docs/decisiones.md` (formato breve: contexto → decisión → alternativas → impactos).
-
-### 8) Docker/Infra
-
-* **Ubicación del Compose:** el archivo principal está en `deploy/compose.yml`, **NO** en la raíz del proyecto.
-* **Comandos Docker Compose:** siempre usar `-f deploy/compose.yml` o ejecutar desde `deploy/`:
-  ```bash
-  # Desde la raíz del proyecto:
-  docker compose -f deploy/compose.yml up -d
-  docker compose -f deploy/compose.yml build api web
-  docker compose -f deploy/compose.yml logs -f web
-  
-  # O navegar al directorio deploy:
-  cd deploy && docker compose up -d
-  ```
-* **Rebuild de servicios:** tras cambios de código, usar `docker compose -f deploy/compose.yml build <servicio>`.
-* **Compose**: redes internas por defecto, volúmenes nombrados, healthchecks cuando sea posible.
-* **Imágenes ligeras** (slim, alpine si es viable) y multi-stage builds para reducir tamaño.
-* **Recursos**: límites razonables de CPU/RAM en servicios no críticos.
-* **Migraciones DB**: con Alembic (planificar e integrar); no romper esquemas en caliente.
-
-### 9) PRs diarios y registro de cambios
-
-En cada interacción de desarrollo (por Agentes/CODEX), se debe crear o actualizar un PR de la fecha actual bajo `docs/PR/YYYY-MM-DD.md` con el siguiente contenido mínimo:
-
-1. Resumen de cambios (alto nivel) y objetivo.
-2. Contexto y alcance (módulos afectados, supuestos, riesgos conocidos).
-3. Cambios realizados (archivos, endpoints, comandos, esquemas, docs).
-4. Tareas realizadas y pendientes (con `# TODO:` cuando aplique).
-5. Criterios de aceptación y validación (tests, linters, healthchecks).
-6. Impacto en seguridad y datos (referenciar `docs/Seguridad.md`).
-7. Compatibilidad y migraciones (DB/Alembic, versiones, flags).
-8. Evidencia de validación manual (pasos, capturas si aplica).
-9. Próximos pasos.
-
-Requisitos del PR diario:
-
-* Encabezado obligatorio de 3 líneas al inicio del archivo.
-* Formato de nombre: `docs/PR/YYYY-MM-DD.md` (una única nota por fecha, que se va actualizando en la misma jornada).
-* Idioma español y estilo conciso, accionable.
-* No incluir secretos; referencias a `.env`/Secrets cuando corresponda.
-
-### 10) Documento de planeación vivo (Mate y Ruta)
-
-Además del PR diario, mantener actualizado el documento de plan y estado general:
-
-* Archivo: `docs/Mate_y_Ruta.md`.
-* Contenido mínimo: Estado actual, Próximas implementaciones, Roadmap por iteraciones, Checklist (Realizado/Pendiente), Referencias.
-* Frecuencia: actualizar en cada hito relevante y al menos una vez por jornada.
-* Vincular decisiones no triviales a `docs/decisiones.md` y referenciarlas en este archivo.
-* Aplicar la regla del encabezado obligatorio de 3 líneas.
+Los agentes están en `.github/agents/` y pueden traspasar contexto entre sí (handoffs).
