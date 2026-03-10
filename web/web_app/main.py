@@ -2897,11 +2897,22 @@ async def smart_search_camaras_web(
                     for ruta in empalme.rutas:
                         if ruta.id not in seen_rutas:
                             seen_rutas.add(ruta.id)
+                            # Obtener alias del servicio
+                            alias_ids = ruta.servicio.alias_ids or []
+                            # Contar tránsitos en esta ruta
+                            transitos_count = sum(1 for e in ruta.empalmes if e.es_transito)
+                            # Obtener puntas
+                            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
+                            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
                             rutas_info.append({
                                 "ruta_id": ruta.id,
                                 "servicio_id": ruta.servicio.servicio_id,
                                 "ruta_nombre": ruta.nombre,
                                 "ruta_tipo": ruta.tipo.value,
+                                "alias_ids": alias_ids,
+                                "transitos_count": transitos_count,
+                                "punta_a_sitio": punta_a_sitio,
+                                "punta_b_sitio": punta_b_sitio,
                             })
                 return rutas_info
 
