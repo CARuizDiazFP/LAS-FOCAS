@@ -2689,6 +2689,64 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   box-shadow: 0 0 12px rgba(0, 255, 136, 0.3);
 }
 
+/* Botón Dar Aviso individual en el modal de baneos */
+.btn-notify-ban {
+  background: transparent;
+  border: 1px solid #60a5fa;
+  color: #60a5fa;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-right: 8px;
+}
+
+.btn-notify-ban:hover {
+  background: rgba(96, 165, 250, 0.15);
+  box-shadow: 0 0 12px rgba(96, 165, 250, 0.3);
+}
+
+/* Indicador de cámaras restringidas en el header */
+.infra-camaras-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  color: #ff6b6b;
+}
+
+.infra-camaras-indicator[hidden] {
+  display: none;
+}
+
+.infra-camaras-indicator .camaras-icon {
+  font-size: 1rem;
+}
+
+.infra-camaras-indicator .camaras-count {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.infra-camaras-indicator .camaras-text {
+  opacity: 0.9;
+}
+
+/* Colores de servicio en modal de baneos */
+.active-ban-services .text-red {
+  color: #ff6b6b;
+}
+
+.active-ban-services .text-green {
+  color: #00ff88;
+}
+
 .notify-recipients {
   list-style: none;
   margin: 0 0 1rem 0;

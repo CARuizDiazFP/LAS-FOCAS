@@ -57,10 +57,14 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 | `office.agent.md` | LibreOffice, conversiones | → reports, docker |
 | `security.agent.md` | Hardening, secrets, auditoría | → docker, web, api |
 | `infra.agent.md` | Cámaras, rutas, servicios | → db, api, reports |
+| `skill-generator.agent.md` | Meta-customizations, skills, prompts y agentes | → sin handoff fijo |
 
 ### Prompts Automatizados
 
+- **crear-skill.prompt.md**: Crea skills nuevas o tríadas completas del ecosistema agéntico
 - **generar-pr-diario.prompt.md**: Genera `docs/PR/YYYY-MM-DD.md` automáticamente
+- **mantenimiento-disco.prompt.md**: Diagnostica disco y propone limpieza segura
+- **repo-updater.prompt.md**: Audita trazabilidad documental, genera commit técnico y hace push a `main`
 - **nuevo-modulo.prompt.md**: Scaffolding de módulo con tests y docs
 - **migracion-alembic.prompt.md**: Crear migraciones de base de datos
 - **revisar-seguridad.prompt.md**: Auditoría de seguridad del proyecto
@@ -229,6 +233,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Detección de Conflictos Inteligente**: Escenarios POTENTIAL_UPGRADE y NEW_STRAND en analyze/resolve de trackings, UI con modales específicos para cada tipo de conflicto (2026-01-13).
 - [x] **Corrección crítica SLA**: `core/sla/legacy_report.py` ahora usa exclusivamente columna "Horas Netas Reclamo" (columna U) para el cálculo de horas, eliminando el fallback incorrecto a columna P. Tests actualizados y validados con datos reales (2026-01-13).
 - [x] **Sistema Multi-Agente**: Modernización de AGENTS.md a ecosistema modular con 12 agentes especializados, 4 prompts automatizados y 4 habilidades reutilizables en `.github/` (2026-03-03).
+- [x] **Trazabilidad Git autónoma**: incorporación de `repo-updater` como workflow para auditar `docs/PR/`, verificar documentación temática en `docs/` y ejecutar `git add`, `git commit` y `git push` hacia `main` con CLI del sistema (2026-04-17).
 
 ### Pendiente (prioridad)
 - [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).
@@ -270,9 +275,9 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 
 - `README.md` — visión general y despliegue.
 - `AGENTS.md` — instrucciones base para agentes IA (~100 líneas).
-- `.github/agents/` — 12 agentes especializados por dominio.
-- `.github/prompts/` — prompts automatizados (PR diario, nuevos módulos).
-- `.github/skills/` — habilidades reutilizables (Docker, pytest, Alembic).
+- `.github/agents/` — agentes especializados por dominio y meta-agentes de customización.
+- `.github/prompts/` — prompts automatizados (creación de skills, PR diario, actualización de repositorio, mantenimiento, nuevos módulos).
+- `.github/skills/` — habilidades reutilizables (Docker, pytest, Alembic, repo-updater).
 - `deploy/compose.yml` — servicios, redes, puertos y healthchecks.
 - `docs/decisiones.md` — registro de decisiones técnicas.
 - `docs/PR/` — PR diario con cambios y validaciones.

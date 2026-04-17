@@ -3,8 +3,9 @@
 # Descripción: Habilidad para conversión de documentos con LibreOffice/office_service
 
 ---
-name: LibreOffice Convert
-description: Habilidad para convertir documentos usando el microservicio office_service
+name: libreoffice-convert
+description: "Usar cuando haya que convertir documentos con office_service o depurar flujos DOCX a PDF con LibreOffice headless"
+argument-hint: "Describe archivo o flujo, por ejemplo: convertir DOCX de SLA a PDF desde office_service"
 ---
 
 # Habilidad: Conversión con LibreOffice

@@ -3,8 +3,9 @@
 # Descripción: Habilidad para reconstruir contenedores Docker de LAS-FOCAS
 
 ---
-name: Docker Rebuild
-description: Habilidad para reconstruir y gestionar contenedores Docker de LAS-FOCAS
+name: docker-rebuild
+description: "Usar cuando haya que reconstruir servicios Docker, refrescar imágenes o verificar un rebuild selectivo de LAS-FOCAS"
+argument-hint: "Describe servicio o cambio, por ejemplo: rebuild de api y web sin bajar toda la stack"
 ---
 
 # Habilidad: Docker Rebuild

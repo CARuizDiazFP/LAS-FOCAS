@@ -3,8 +3,9 @@
 # Descripción: Skill para análisis y diagnóstico de uso de disco en el entorno LAS-FOCAS
 
 ---
-name: Análisis de Disco
-description: Diagnóstico completo de uso de disco incluyendo Docker, volúmenes, logs y archivos del proyecto
+name: disk-analysis
+description: "Usar cuando haya que diagnosticar uso de disco, espacio consumido por Docker, logs, volúmenes o artefactos del proyecto"
+argument-hint: "Describe foco del análisis, por ejemplo: revisar consumo de disco de Docker y Logs"
 ---
 
 # Habilidad: Análisis de Disco

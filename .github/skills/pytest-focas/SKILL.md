@@ -3,8 +3,9 @@
 # Descripción: Habilidad para ejecutar tests con pytest en LAS-FOCAS
 
 ---
-name: Pytest FOCAS
-description: Habilidad para ejecutar y escribir tests con pytest en LAS-FOCAS
+name: pytest-focas
+description: "Usar cuando haya que ejecutar pytest, escribir tests, preparar fixtures o revisar cobertura en LAS-FOCAS"
+argument-hint: "Describe suite o módulo, por ejemplo: correr tests de SLA y revisar mocks de OpenAI"
 ---
 
 # Habilidad: Pytest FOCAS

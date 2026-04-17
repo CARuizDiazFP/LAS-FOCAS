@@ -4,24 +4,9 @@
 
 ---
 name: Testing Agent
-description: Agente especializado en pytest, mocks, fixtures y cobertura de código
-tools:
-  - terminal
-  - file_editor
-context:
-  - tests/
-  - pytest.ini
-  - conftest.py
-  - .github/workflows/ci.yml
-skills:
-  - pytest-focas
-handoffs:
-  - target: api.agent.md
-    trigger: "Tests de endpoints API fallan"
-  - target: bot.agent.md
-    trigger: "Tests de handlers del bot fallan"
-  - target: reports.agent.md
-    trigger: "Tests de módulos de informes fallan"
+description: "Usar cuando la tarea trate de pytest, fixtures, mocks, cobertura, fallos de tests o estrategia de validación en LAS-FOCAS"
+argument-hint: "Describe suite o fallo, por ejemplo: arreglar tests de web chat con TESTING=true"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Testing

@@ -4,20 +4,9 @@
 
 ---
 name: Office Agent
-description: Agente especializado en LibreOffice headless y conversión de documentos
-tools:
-  - terminal
-  - file_editor
-context:
-  - office_service/
-  - docs/office_service.md
-skills:
-  - libreoffice-convert
-handoffs:
-  - target: reports.agent.md
-    trigger: "Documento convertido, continuar con generación de informe"
-  - target: docker.agent.md
-    trigger: "Problemas con el contenedor de LibreOffice"
+description: "Usar cuando la tarea trate de LibreOffice headless, conversiones DOCX/PDF, office_service o problemas UNO de documentos"
+argument-hint: "Describe conversión o problema Office, por ejemplo: revisar exportación PDF desde office_service"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Office

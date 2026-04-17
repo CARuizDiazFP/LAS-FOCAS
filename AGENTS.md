@@ -2,114 +2,80 @@
 # Ubicación de archivo: AGENTS.md
 # Descripción: Instrucciones base para Agentes IA en el proyecto LAS-FOCAS
 
-# AGENTS.md
+# Project Guidelines
 
-Instrucciones base para Agentes IA en **LAS-FOCAS**. Las instrucciones específicas por dominio están en `.github/agents/`, prompts automatizados en `.github/prompts/` y habilidades reutilizables en `.github/skills/`.
+LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. Este archivo debe mantenerse breve y útil para cualquier tarea del repo. La documentación detallada vive en `docs/` y las instrucciones especializadas en `.github/agents/`, `.github/prompts/` y `.github/skills/`.
 
-## 🎯 Arquitectura del Proyecto
+## Arquitectura
 
-**LAS-FOCAS** es un sistema modular dockerizado (Debian 12.4) para Metrotel:
+- `api/`: FastAPI orientada a endpoints REST y procesos de ingest/reporting. No mezclar UI aquí.
+- `web/`: panel FastAPI con login, vistas, websocket de chat y disparo de informes.
+- `bot_telegram/`: bot aiogram que consume flujos y servicios; evitar lógica de negocio duplicada.
+- `core/`: configuración, logging, parsers, repositorios y servicios compartidos.
+- `modules/`: implementación específica de informes SLA, repetitividad y utilidades comunes.
+- `db/`: modelos SQLAlchemy, sesión y migraciones Alembic.
+- `nlp_intent/`: microservicio aislado para clasificación de intención por HTTP.
+- `office_service/`: microservicio de LibreOffice headless para conversiones.
 
-- **Informes operativos**: SLA, Repetitividad, Comparador de trazas FO
-- **Asistente conversacional**: Telegram Bot + Web Panel
-- **Stack**: Python 3.11+, FastAPI, PostgreSQL 16, LibreOffice headless, Ollama/OpenAI
+## Convenciones
 
-**Estructura de directorios:**
-```
-api/          # Endpoints REST (FastAPI)
-bot_telegram/ # Bot Telegram (aiogram)
-core/         # Funcionalidades compartidas (chatbot, mcp, parsers, services)
-db/           # Modelos SQLAlchemy + migraciones Alembic
-deploy/       # Docker Compose y configuración de despliegue
-docs/         # Documentación del proyecto
-modules/      # Informes específicos (repetitividad, SLA)
-nlp_intent/   # Clasificación de intención
-office_service/ # Microservicio LibreOffice
-tests/        # Tests pytest
-web/          # Panel web con chat
-```
+- Todo archivo modificable debe empezar con este encabezado de 3 líneas:
 
-## 🔒 Regla Inquebrantable: Encabezado de 3 Líneas
-
-**Todo archivo modificable** debe iniciar con:
-
-```
+```python
 # Nombre de archivo: <nombre_del_archivo.ext>
 # Ubicación de archivo: <ruta_relativa_en_el_proyecto>
 # Descripción: <breve_descripción_del_uso_o_función_del_archivo>
 ```
 
-Sin excepciones. Si el archivo existe sin encabezado, agregarlo.
+- Idioma obligatorio: español en código, commits, PRs y documentación.
+- Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
+- Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.
+- Mantener type hints y estilos cercanos a PEP 8. Las dependencias se versionan de forma estricta.
+- No tocar `Legacy/` salvo pedido explícito.
 
-## 🛡️ Seguridad (Obligatorio)
+## Build y Test
 
-> Entorno: VM Debian 12.4 con salida a Internet y acceso a red local.
+- Arranque principal desde la raíz: `./Start`
+- Iteración rápida: `./Start --no-down`
+- Rebuild selectivo: `./Start --rebuild-api`, `./Start --rebuild-frontend`
+- Fallback Docker: `docker compose -f deploy/compose.yml up -d|build|logs -f`
+- Tests: `pytest`, `pytest -v -k "<filtro>"`, `pytest tests/test_sla_module.py`
+- Para evitar llamadas reales a LLM en tests: `LLM_PROVIDER=heuristic pytest -q`
+- Cobertura esperada para módulos nuevos: al menos 60%
+- Migraciones: `ALEMBIC_URL="..." alembic upgrade head`
 
-- **Secrets**: nunca exponer en código ni logs. Usar `.env` / Docker Secrets
-- **Mínimos privilegios**: usuario no root cuando sea viable
-- **Red interna**: servicios con `expose`, evitar `ports` salvo interfaces públicas
-- **Logs prudentes**: no loguear texto del usuario salvo `LOG_RAW_TEXT=true`
-- **Versionado estricto**: nunca usar `latest` en imágenes ni librerías
-- **Auditoría**: revisar vulnerabilidades antes de incorporar paquetes
+## Gotchas
 
-Lineamientos completos: `docs/Seguridad.md`
+- Existe conflicto potencial entre `api/app` y `web/app`; evitar imports ambiguos y respetar `pytest.ini`.
+- Algunos tests y módulos requieren `TESTING=true` antes de importar configuración sensible; revisar patrones existentes en tests.
+- El informe SLA depende de la columna U (`Horas Netas Reclamo`) en el Excel legacy; no reintroducir fallbacks a otras columnas.
+- La VM y varios defaults asumen la IP `192.168.241.28`; si cambia, revisar configuración y documentación relacionada.
+- `nlp_intent` puede depender de Ollama externo; no asumir que siempre está disponible.
 
-## ⚙️ Docker y Despliegue
+## Seguridad y Operación
 
-**Ubicación del Compose**: `deploy/compose.yml` (NO en raíz)
+- Nunca exponer secretos en código o logs; usar `.env` o secrets de Docker.
+- Preferir `expose` sobre `ports`, salvo interfaces públicas necesarias.
+- No usar tags `latest` ni dependencias sin pin.
+- Aplicar mínimos privilegios y healthchecks cuando corresponda.
 
-```bash
-# Desde raíz del proyecto:
-docker compose -f deploy/compose.yml up -d
-docker compose -f deploy/compose.yml build <servicio>
-docker compose -f deploy/compose.yml logs -f <servicio>
-```
+## Documentación Fuente
 
-- Redes internas por defecto, volúmenes nombrados
-- Imágenes ligeras (slim, alpine), multi-stage builds
-- Healthchecks cuando sea posible
-- Migraciones DB con Alembic
+- Seguridad: `docs/Seguridad.md`
+- Decisiones técnicas: `docs/decisiones.md`
+- API: `docs/api.md`
+- DB: `docs/db.md`
+- Bot: `docs/bot.md`
+- Chatbot y MCP: `docs/chatbot.md`, `docs/mcp.md`
+- Web: `docs/web.md`
+- Informes: `docs/informes/sla.md`, `docs/informes/repetitividad.md`, `docs/informes/alarmas_ciena.md`
+- NLP: `docs/nlp/intent.md`
+- Office service: `docs/office_service.md`
+- Infraestructura: `docs/infra.md`
+- PRs diarios: `docs/PR/YYYY-MM-DD.md`
 
-## 📝 Código y Calidad
+## Agentes y Skills
 
-- **Idioma**: español en código, commits, PRs y documentación
-- **PEP8 + type hints**: anotaciones de tipo, `pydantic` para contratos
-- **Logging estructurado**: JSON/clave=valor con `service`, `action`, `request_id`
-- **Sin `print()` en producción**: solo `logging`
-- **Tratamiento de errores**: timeouts (HTTP default 15s), reintentos con backoff
-- **Docstrings**: en módulos, clases y funciones públicas
-- **Dependencias**: mantener `requirements.txt` actualizado y versionado
-
-## 🧪 Testing
-
-- **pytest** obligatorio para cambios funcionales
-- **Cobertura mínima**: 60% para módulos nuevos
-- **Mocks** para proveedores externos (OpenAI/Ollama/SMTP)
-- **CI**: GitHub Actions configurado en `.github/workflows/ci.yml`
-
-## 📚 Documentación
-
-- Actualizar `docs/` para cada módulo tocado
-- Decisiones técnicas en `docs/decisiones.md`
-- PRs diarios en `docs/PR/YYYY-MM-DD.md` (usar prompt automatizado)
-
-## 🤖 Sistema Multi-Agente
-
-Este proyecto utiliza agentes especializados para diferentes dominios:
-
-| Agente | Descripción |
-|--------|-------------|
-| `docker.agent.md` | Despliegue y contenedores |
-| `testing.agent.md` | Pytest, mocks, cobertura |
-| `reports.agent.md` | Informes SLA/Repetitividad |
-| `mcp-chatbot.agent.md` | Herramientas MCP, orquestador |
-| `bot.agent.md` | Telegram bot y flows |
-| `web.agent.md` | Panel web, login, frontend |
-| `api.agent.md` | Endpoints FastAPI |
-| `db.agent.md` | Modelos, Alembic |
-| `nlp.agent.md` | Clasificación de intención |
-| `office.agent.md` | LibreOffice, conversiones |
-| `security.agent.md` | Hardening, secrets |
-| `infra.agent.md` | Infraestructura interna |
-
-Los agentes están en `.github/agents/` y pueden traspasar contexto entre sí (handoffs).
+- Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
+- Usar skills de `.github/skills/` para workflows repetibles como pytest, alembic, Docker, mantenimiento y sincronización trazable del repositorio.
+- Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.github/skills/skill-generator/`.

@@ -4,102 +4,125 @@
 
 ---
 name: Generar PR Diario
-description: Genera o actualiza el documento de PR diario con los cambios realizados
-mode: agent
-variables:
-  - name: fecha
-    default: "${date:YYYY-MM-DD}"
-    description: Fecha del PR en formato YYYY-MM-DD
+description: "Genera o actualiza docs/PR/YYYY-MM-DD.md con cambios del día, comandos ejecutados, impacto, riesgos y validaciones"
+argument-hint: "Fecha opcional YYYY-MM-DD y contexto opcional, por ejemplo: 2026-04-16 cambios en web e infra"
+agent: "agent"
 ---
 
 # Generar PR Diario para LAS-FOCAS
 
-Genera o actualiza el archivo `docs/PR/${fecha}.md` con los cambios realizados hoy en el proyecto.
+Genera o actualiza el archivo `docs/PR/YYYY-MM-DD.md` correspondiente a la fecha indicada por el usuario. Si el usuario no indica fecha, usar la fecha actual.
 
-## Instrucciones
+## Objetivo
 
-1. **Analiza los cambios recientes** usando git:
-   ```bash
-   git log --oneline --since="midnight" --until="now"
-   git diff --stat HEAD~10 HEAD
-   ```
+Documentar cambios reales del día con foco en:
 
-2. **Verifica si existe** el archivo `docs/PR/${fecha}.md`:
-   - Si existe, actualízalo agregando los nuevos cambios
-   - Si no existe, créalo con la estructura completa
+- resumen ejecutivo de lo implementado
+- archivos, módulos o servicios afectados
+- comandos realmente ejecutados y su resultado relevante
+- riesgos, impacto operativo y compatibilidad
+- validación manual y próximos pasos
 
-3. **Estructura del PR diario** (obligatoria):
+## Flujo de trabajo
+
+1. Determinar la fecha objetivo en formato `YYYY-MM-DD`.
+2. Revisar si ya existe `docs/PR/YYYY-MM-DD.md`.
+3. Si existe, preservarlo y fusionar la nueva información sin duplicar secciones ni perder historial útil.
+4. Si no existe, crearlo con encabezado obligatorio de 3 líneas.
+5. Basarse en cambios reales del workspace, comandos ejecutados, tests corridos, validaciones hechas y documentación tocada.
+6. Si faltan datos, explicitarlo como pendiente o no verificado. No inventar validaciones.
+
+## Fuentes a consultar
+
+- `git status`, `git diff --stat`, `git log --oneline` y cambios locales relevantes
+- terminal activa si hay comandos recientes útiles para documentar
+- archivos modificados o creados en el día
+- documentación relacionada en `docs/`
+- tests o validaciones efectivamente ejecutadas
+
+## Estructura esperada del documento
+
+Usar esta estructura base y adaptarla al contenido real del día. Si una sección no aplica, omitirla o dejarla explícitamente como no aplica.
 
 ```markdown
-# Nombre de archivo: ${fecha}.md
-# Ubicación de archivo: docs/PR/${fecha}.md
-# Descripción: PR diario del ${fecha}
+# Nombre de archivo: YYYY-MM-DD.md
+# Ubicación de archivo: docs/PR/YYYY-MM-DD.md
+# Descripción: PR diario del YYYY-MM-DD
 
-# PR Diario - ${fecha}
+# PR Diario - YYYY-MM-DD
 
 ## Resumen de Cambios
 
-[Descripción de alto nivel de los cambios realizados]
+[Síntesis breve de los cambios más relevantes]
 
 ## Contexto y Alcance
 
-- **Módulos afectados**: [lista de módulos]
+- **Módulos afectados**: [lista concreta]
+- **Objetivo**: [qué se buscó resolver]
 - **Supuestos**: [si aplica]
-- **Riesgos conocidos**: [si aplica]
 
 ## Cambios Realizados
 
-### Archivos Modificados
-- [archivo 1]: [descripción breve]
-- [archivo 2]: [descripción breve]
+- [Archivo o grupo de archivos]: [cambio realizado]
+- [Endpoint, servicio o flujo]: [cambio realizado]
 
-### Archivos Creados
-- [archivo nuevo]: [propósito]
+## Comandos Ejecutados
 
-### Endpoints/Comandos Nuevos
-- [si aplica]
-
-## Tareas
-
-### Realizadas
-- [x] Tarea completada 1
-- [x] Tarea completada 2
-
-### Pendientes
-- [ ] Tarea pendiente 1 `# TODO: descripción`
+- `comando 1`
+  - Resultado: [salida útil o efecto]
+- `comando 2`
+  - Resultado: [salida útil o efecto]
 
 ## Criterios de Aceptación
 
-- [ ] Tests pasan: `pytest`
-- [ ] Sin errores de linting
-- [ ] Documentación actualizada
+- [x] [criterio validado]
+- [ ] [criterio pendiente]
 
-## Impacto en Seguridad
+## Impacto y Riesgos
 
-[Referencia a docs/Seguridad.md si hay cambios relevantes]
-[Confirmar que no se exponen secretos]
+- **Impacto operativo**: [efecto en usuario, servicio, DX o despliegue]
+- **Riesgos conocidos**: [riesgo real o "Sin riesgos adicionales identificados"]
+- **Seguridad y datos**: [si hay efecto sobre secretos, exposición, permisos, DB, PII]
 
 ## Compatibilidad y Migraciones
 
-- **DB/Alembic**: [si hay migraciones]
-- **Versiones**: [si hay cambios de dependencias]
+- **DB/Alembic**: [si aplica]
+- **Dependencias**: [si aplica]
 - **Breaking changes**: [si aplica]
 
 ## Validación Manual
 
-1. [Paso de verificación 1]
-2. [Paso de verificación 2]
+- [Paso o evidencia real]
+- [Paso o evidencia real]
 
 ## Próximos Pasos
 
-- [Siguiente tarea planificada]
+- [Siguiente tarea o deuda técnica]
+- [Seguimiento recomendado]
 ```
 
-4. **Reglas obligatorias**:
-   - Encabezado de 3 líneas al inicio
-   - Idioma español
-   - No incluir secretos ni credenciales
-   - Formato de nombre: `docs/PR/YYYY-MM-DD.md`
-   - Estilo conciso y accionable
+## Reglas obligatorias
 
-5. **Después de generar**, muestra un resumen de los cambios documentados.
+1. Usar español técnico, concreto y sin relleno.
+2. No inventar tests, comandos, despliegues ni validaciones.
+3. Priorizar formato y terminología ya presentes en `docs/PR/`.
+4. Incluir `## Comandos Ejecutados` cuando existan comandos relevantes en la sesión o en la tarea.
+5. Incluir `## Impacto y Riesgos` siempre, aunque sea para dejar explícito que no se detectaron riesgos adicionales.
+6. Si hubo migraciones, cambios de puertos, dependencias o variables de entorno, reflejarlo en compatibilidad.
+7. Mantener el encabezado obligatorio de 3 líneas al inicio del archivo.
+8. No incluir secretos, tokens, credenciales ni rutas sensibles.
+
+## Criterios de calidad para la redacción
+
+- Resumir primero y detallar después.
+- Agrupar cambios por componente o flujo, no por orden accidental.
+- Cuando el día incluya varias etapas, usar subtítulos por etapa solo si aclaran la lectura.
+- Si existe un PR diario previo para la fecha, conservar lo útil y anexar únicamente el delta nuevo.
+
+## Salida esperada
+
+1. Crear o actualizar `docs/PR/YYYY-MM-DD.md`.
+2. Mostrar un resumen corto con:
+   - archivo actualizado
+   - secciones incorporadas o fusionadas
+   - riesgos o pendientes que quedaron explicitados

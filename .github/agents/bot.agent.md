@@ -4,20 +4,9 @@
 
 ---
 name: Bot Agent
-description: Agente especializado en el bot de Telegram (aiogram)
-tools:
-  - terminal
-  - file_editor
-context:
-  - bot_telegram/
-  - docs/bot.md
-handoffs:
-  - target: nlp.agent.md
-    trigger: "Problemas con clasificación de intención en el bot"
-  - target: testing.agent.md
-    trigger: "Necesito crear tests para handlers del bot"
-  - target: mcp-chatbot.agent.md
-    trigger: "Integración con herramientas MCP"
+description: "Usar cuando la tarea trate del bot de Telegram, aiogram, handlers, flows, filtros o UI conversacional en bot_telegram/"
+argument-hint: "Describe handler, flow o bug del bot, por ejemplo: corregir callback del menú SLA"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Bot Telegram

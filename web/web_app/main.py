@@ -1990,16 +1990,17 @@ async def create_ban_web(
 
 @app.get("/api/infra/ban/active")
 async def get_active_bans_web(request: Request) -> JSONResponse:
-    """Obtiene todos los incidentes de baneo activos."""
+    """Obtiene todos los incidentes de baneo activos con conteo de cámaras."""
     
     username, _ = _require_auth(request)
     
     try:
-        from core.services.protection_service import get_incidentes_activos
+        from core.services.protection_service import get_incidentes_activos, ProtectionService
         from db.session import SessionLocal
         
         with SessionLocal() as session:
             incidentes = get_incidentes_activos(session)
+            protection_svc = ProtectionService(session)
             
             incidentes_data = []
             for inc in incidentes:
@@ -2008,6 +2009,13 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
                     from datetime import datetime, timezone
                     ahora = datetime.now(timezone.utc)
                     duracion = (ahora - inc.fecha_inicio).total_seconds() / 3600
+                
+                # Contar cámaras afectadas para cada incidente
+                camaras = protection_svc.get_camaras_for_servicio(
+                    inc.servicio_protegido_id,
+                    inc.ruta_protegida_id
+                )
+                camaras_count = len(camaras)
                 
                 incidentes_data.append({
                     "id": inc.id,
@@ -2020,6 +2028,7 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
                     "fecha_inicio": inc.fecha_inicio.isoformat() if inc.fecha_inicio else None,
                     "activo": inc.activo,
                     "duracion_horas": round(duracion, 1) if duracion else None,
+                    "camaras_count": camaras_count,
                 })
             
             logger.info("action=get_active_bans user=%s count=%d", username, len(incidentes_data))

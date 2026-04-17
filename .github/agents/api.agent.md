@@ -4,21 +4,9 @@
 
 ---
 name: API Agent
-description: Agente especializado en endpoints REST y FastAPI
-tools:
-  - terminal
-  - file_editor
-context:
-  - api/
-  - api_app/routes/
-  - docs/api.md
-handoffs:
-  - target: db.agent.md
-    trigger: "Necesito modificar consultas o modelos de base de datos"
-  - target: testing.agent.md
-    trigger: "Necesito crear tests para endpoints"
-  - target: security.agent.md
-    trigger: "Problemas de autenticación o autorización en endpoints"
+description: "Usar cuando la tarea trate de endpoints REST, FastAPI, validación Pydantic, healthchecks o rutas de api/ en LAS-FOCAS"
+argument-hint: "Describe endpoint, ruta o problema API, por ejemplo: ajustar /api/reports/sla y sus validaciones"
+tools: [read, edit, search, execute]
 ---
 
 # Agente API

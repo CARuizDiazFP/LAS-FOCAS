@@ -94,3 +94,10 @@
 - **Alternativas:** Eliminar completamente el árbol (perdería valor de referencia) o moverlo a un repositorio separado de solo lectura. Se pospone esa separación hasta finalizar la migración de todos los informes críticos.
 - **Impacto:** Reduce riesgo de reintroducir patrones obsoletos, clarifica el alcance para colaboradores y auditores. Facilita auditoría de cambios: cualquier modificación en `Legacy/` se considera señal de posible error de procedimiento.
 - **Acciones complementarias:** Añadir hook pre-commit (pendiente) que bloquee modificaciones futuras; actualizar `README.md` para informar el estado DEPRECATED. (Se añadirá en una iteración futura si se aprueba.)
+
+## 2026-04-17 — Tríada para generación de skills y customizations agénticos
+
+- **Contexto:** El proyecto evolucionó hacia un ecosistema agéntico con recursos en `.github/agents/`, `.github/prompts/` y `.github/skills/`. Crear nuevas skills sin un patrón claro aumentaba el riesgo de mezclar instrucciones pasivas, prompts y workflows activos, saturando la ventana de contexto y degradando el descubrimiento automático.
+- **Decisión:** Estandarizar la creación de nuevas skills mediante una tríada explícita compuesta por: un agente generador de skills, un prompt estructurado para capturar requerimientos y una meta-skill invocable que orquesta el workflow. Cada capa mantiene una responsabilidad única: el agente implementa, el prompt estructura y la skill empaqueta el proceso.
+- **Alternativas:** Crear solo una skill genérica, mover estas reglas a `AGENTS.md` o seguir creando customizations ad hoc en cada tarea. Se descartaron porque mezclan responsabilidades o cargan contexto global innecesario.
+- **Impacto:** Reduce duplicación, mejora consistencia de naming y frontmatter, y mantiene el conocimiento especializado fuera de las instrucciones siempre activas. También hace más predecible la evolución del ecosistema de customizations del repositorio.

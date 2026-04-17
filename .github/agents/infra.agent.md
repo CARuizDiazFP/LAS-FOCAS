@@ -4,25 +4,9 @@
 
 ---
 name: Infra Agent
-description: Agente especializado en modelos de infraestructura interna (cámaras, rutas, servicios)
-tools:
-  - terminal
-  - file_editor
-  - mcp_postgres
-context:
-  - core/services/infra_*.py
-  - core/parsers/
-  - db/models/infrastructure.py
-  - docs/informes/
-skills:
-  - db-mcp-postgres
-handoffs:
-  - target: db.agent.md
-    trigger: "Necesito modificar modelos de infraestructura en DB"
-  - target: api.agent.md
-    trigger: "Crear endpoints para consultas de infraestructura"
-  - target: reports.agent.md
-    trigger: "Generar informes basados en infraestructura"
+description: "Usar cuando la tarea trate de infraestructura FO, cámaras, rutas, servicios, trackings o lógica de infra en core/services y db/models"
+argument-hint: "Describe flujo o entidad de infraestructura, por ejemplo: corregir búsqueda de cámaras por servicio"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Infra

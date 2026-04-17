@@ -1629,9 +1629,10 @@
   const panicBtn = $('#infra-panic-btn');
   const banBadge = $('#infra-ban-badge');
   const banCountEl = $('#infra-ban-count');
-  const notifyBtn = $('#infra-notify-btn');
   const exportBtn = $('#infra-export-btn');
   const exportMenu = $('#infra-export-menu');
+  // Elemento para mostrar total de cámaras baneadas (se crea dinámicamente)
+  let totalCamarasBaneadasEl = null;
 
   // Estado del wizard
   let banWizardState = {
@@ -1656,7 +1657,7 @@
   const banExecuteBtn = document.getElementById('ban-execute-btn');
   const banCloseBtn = banWizardModal ? banWizardModal.querySelector('.ban-wizard-close') : null;
 
-  // Cargar baneos activos al iniciar
+  // Cargar baneos activos al iniciar y calcular total de cámaras
   async function loadActiveBans() {
     try {
       const res = await fetch(`${window.API_BASE || ''}/api/infra/ban/active`, {
@@ -1666,19 +1667,66 @@
       
       const data = await res.json();
       const count = data.total || 0;
+      const incidentes = data.incidentes || [];
+      
+      // Calcular total de cámaras baneadas sumando todos los baneos
+      let totalCamaras = 0;
+      for (const inc of incidentes) {
+        totalCamaras += inc.camaras_count || 0;
+      }
       
       if (count > 0) {
         if (banBadge) {
           banBadge.hidden = false;
           if (banCountEl) banCountEl.textContent = count;
         }
-        if (notifyBtn) notifyBtn.hidden = false;
+        // Actualizar el tooltip del badge para mostrar total de cámaras
+        if (banBadge) {
+          banBadge.title = `${count} baneo(s) activo(s) - ${totalCamaras} cámara(s) restringidas`;
+        }
+        // Actualizar indicador global de cámaras baneadas
+        updateTotalCamarasIndicator(totalCamaras);
       } else {
         if (banBadge) banBadge.hidden = true;
-        if (notifyBtn) notifyBtn.hidden = true;
+        updateTotalCamarasIndicator(0);
       }
     } catch (err) {
       console.error('Error cargando baneos activos:', err);
+    }
+  }
+
+  // Actualizar indicador visual de total de cámaras baneadas en el header
+  function updateTotalCamarasIndicator(total) {
+    // Buscar o crear el elemento indicador
+    if (!totalCamarasBaneadasEl) {
+      totalCamarasBaneadasEl = document.getElementById('infra-total-camaras-indicator');
+    }
+    
+    // Si no existe y hay cámaras, crear el elemento
+    if (!totalCamarasBaneadasEl && total > 0) {
+      const heroActions = document.querySelector('.infra-hero-actions');
+      if (heroActions) {
+        totalCamarasBaneadasEl = document.createElement('div');
+        totalCamarasBaneadasEl.id = 'infra-total-camaras-indicator';
+        totalCamarasBaneadasEl.className = 'infra-camaras-indicator';
+        // Insertar después del badge de baneos activos
+        const badge = heroActions.querySelector('#infra-ban-badge');
+        if (badge && badge.nextSibling) {
+          heroActions.insertBefore(totalCamarasBaneadasEl, badge.nextSibling);
+        } else {
+          heroActions.prepend(totalCamarasBaneadasEl);
+        }
+      }
+    }
+    
+    if (totalCamarasBaneadasEl) {
+      if (total > 0) {
+        totalCamarasBaneadasEl.innerHTML = `<span class="camaras-icon">📷</span> <span class="camaras-count">${total}</span> <span class="camaras-text">cámaras restringidas</span>`;
+        totalCamarasBaneadasEl.hidden = false;
+        totalCamarasBaneadasEl.title = `Total de cámaras bajo Protocolo de Protección`;
+      } else {
+        totalCamarasBaneadasEl.hidden = true;
+      }
     }
   }
 
@@ -2215,6 +2263,7 @@
       for (const inc of incidentes) {
         const duracion = inc.duracion_horas ? `${inc.duracion_horas}h` : '-';
         const fecha = inc.fecha_inicio ? new Date(inc.fecha_inicio).toLocaleString('es-AR') : '-';
+        const camarasCount = inc.camaras_count || '?';
         
         html += `
           <div class="active-ban-item" data-id="${inc.id}">
@@ -2223,9 +2272,9 @@
               <span class="active-ban-duration">⏱️ ${duracion}</span>
             </div>
             <div class="active-ban-services">
-              <span class="active-ban-label">Afectado:</span> <strong>${inc.servicio_afectado_id}</strong>
+              <span class="active-ban-label">Afectado:</span> <strong class="text-red">${inc.servicio_afectado_id}</strong>
               <span class="active-ban-arrow">→</span>
-              <span class="active-ban-label">Protegido:</span> <strong>${inc.servicio_protegido_id}</strong>
+              <span class="active-ban-label">Protegido:</span> <strong class="text-green">${inc.servicio_protegido_id}</strong>
             </div>
             <div class="active-ban-meta">
               <span>📅 ${fecha}</span>
@@ -2233,6 +2282,9 @@
             </div>
             ${inc.motivo ? `<div class="active-ban-motivo">${inc.motivo}</div>` : ''}
             <div class="active-ban-actions">
+              <button type="button" class="btn-notify-ban" data-id="${inc.id}" data-ticket="${inc.ticket_asociado || ''}" title="Enviar aviso por correo para este baneo">
+                📧 Dar Aviso
+              </button>
               <button type="button" class="btn-lift-ban" data-id="${inc.id}" data-ticket="${inc.ticket_asociado || ''}">
                 🔓 Levantar Baneo
               </button>
@@ -2246,6 +2298,19 @@
       // Agregar event listeners a los botones de desbanear
       activeBansList.querySelectorAll('.btn-lift-ban').forEach(btn => {
         btn.addEventListener('click', () => liftBan(btn.dataset.id, btn.dataset.ticket));
+      });
+      
+      // Agregar event listeners a los botones de Dar Aviso (individual por baneo)
+      activeBansList.querySelectorAll('.btn-notify-ban').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const incId = parseInt(btn.dataset.id, 10);
+          const inc = incidentes.find(i => i.id === incId);
+          if (inc) {
+            await openEmailModal(incId, inc);
+          } else {
+            showToast('error', 'Error', 'No se encontró el incidente');
+          }
+        });
       });
       
     } catch (err) {
@@ -2804,31 +2869,9 @@ Metrotel S.A.`;
     setEmailStatus('', '');
   }
 
-  // Abrir editor de correo al hacer click en "Dar Aviso"
-  if (notifyBtn && emailEditorModal) {
-    notifyBtn.addEventListener('click', async () => {
-      try {
-        const res = await fetch(`${window.API_BASE || ''}/api/infra/ban/active`, {
-          credentials: 'include',
-        });
-        if (!res.ok) {
-          throw new Error('No se pudo obtener la lista de baneos activos');
-        }
-        const data = await res.json();
-        const firstIncidente = data.incidentes && data.incidentes.length ? data.incidentes[0] : null;
-
-        if (!firstIncidente) {
-          showToast('warning', 'Sin baneos activos', 'No hay incidentes para notificar');
-          return;
-        }
-
-        await openEmailModal(firstIncidente.id, firstIncidente);
-      } catch (err) {
-        console.error('Error abriendo editor de correo:', err);
-        showToast('error', 'No se pudo abrir el editor', err.message);
-      }
-    });
-  }
+  // NOTA: El botón global "Dar Aviso" fue eliminado del header principal.
+  // Ahora cada baneo en el modal tiene su propio botón de aviso individual.
+  // Los event listeners se agregan dinámicamente en loadActiveBansIntoModal().
 
   // Botón Restaurar Plantilla
   if (emailRestoreBtn) {

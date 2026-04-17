@@ -4,23 +4,9 @@
 
 ---
 name: Reports Agent
-description: Agente especializado en generación de informes operativos (SLA, Repetitividad)
-tools:
-  - terminal
-  - file_editor
-context:
-  - modules/informes_sla/
-  - modules/informes_repetitividad/
-  - core/sla/
-  - Templates/
-  - docs/informes/
-handoffs:
-  - target: office.agent.md
-    trigger: "Problemas con conversión de documentos o LibreOffice"
-  - target: db.agent.md
-    trigger: "Consultas a base de datos para informes"
-  - target: testing.agent.md
-    trigger: "Necesito crear tests para el módulo de informes"
+description: "Usar cuando la tarea trate de informes SLA, repetitividad, plantillas DOCX/PDF, builders o lógica en modules/informes_* y core/sla"
+argument-hint: "Describe informe o generación, por ejemplo: corregir cálculo del informe SLA legacy"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Reports

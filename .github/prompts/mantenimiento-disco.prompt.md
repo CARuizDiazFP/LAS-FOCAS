@@ -3,61 +3,49 @@
 # Descripción: Prompt reutilizable para diagnóstico y limpieza de espacio en disco del entorno LAS-FOCAS
 
 ---
-mode: agent
-description: Diagnóstico y limpieza de espacio en disco para el entorno Docker de LAS-FOCAS
-variables:
-  - name: umbral_disco
-    default: "85"
-    description: Porcentaje de uso de disco para alerta crítica
-  - name: umbral_logs_mb
-    default: "500"
-    description: Tamaño máximo de logs en MB antes de advertir
-  - name: umbral_volumen_gb
-    default: "2"
-    description: Tamaño de volumen en GB para mostrar advertencia
+name: Mantenimiento de Disco
+description: "Diagnostica uso de disco y propone limpieza segura en LAS-FOCAS sin tocar volúmenes persistentes"
+argument-hint: "Contexto opcional, por ejemplo: umbral disco 85, logs 500 MB, volumen 2 GB"
+agent: "agent"
 ---
 
 # Mantenimiento de Disco - LAS-FOCAS
 
-Ejecutar diagnóstico y limpieza de espacio en disco siguiendo el flujo estructurado de 5 fases.
+Ejecuta un diagnóstico de espacio en disco y, si corresponde, una limpieza segura del entorno de trabajo. Si el usuario no define umbrales, usar como referencia: disco 85%, logs 500 MB y volúmenes 2 GB.
 
-## 📋 Configuración
+## Objetivo
 
-- **Umbral crítico de disco**: {{umbral_disco}}%
-- **Umbral de logs**: {{umbral_logs_mb}}MB
-- **Advertencia de volúmenes**: {{umbral_volumen_gb}}GB
+- medir uso real de disco, Docker, logs y temporales
+- identificar espacio recuperable sin afectar datos persistentes
+- confirmar con el usuario antes de borrar recursos relevantes
+- entregar un resumen pre y post limpieza con espacio recuperado
 
-## 🔄 Flujo de Ejecución
+## Entradas esperadas
 
-### FASE 1: DIAGNÓSTICO
+- umbral de uso de disco crítico
+- umbral de logs en MB
+- umbral informativo de volúmenes en GB
+- alcance de limpieza si el usuario quiere limitarla
 
-Ejecutar análisis completo usando el skill `disk-analysis`:
+## Flujo de trabajo
+
+### 1. Diagnóstico
+
+Recolectar estado actual con comandos de diagnóstico y resumirlo por categorías.
 
 ```bash
-# 1. Estado general del disco
 df -h /
-
-# 2. Resumen Docker
 docker system df
-
-# 3. Top directorios Docker (si tienes acceso sudo)
 sudo du -h --max-depth=2 /var/lib/docker 2>/dev/null | sort -hr | head -15
-
-# 4. Logs del proyecto
 du -sh Logs/ 2>/dev/null
-
-# 5. Caché Python
 find . -type d -name "__pycache__" -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "%.2f MB\n", sum/1024/1024}'
 ```
 
-Generar reporte con semáforos:
-- 🟢 Normal (sin acción)
-- 🟡 Advertencia (monitorear)
-- 🔴 Crítico (acción requerida)
+Opcionalmente complementar con los skills del repo para análisis de disco, Docker, logs y temporales.
 
-### FASE 2: REPORTE PRE-LIMPIEZA
+### 2. Reporte pre-limpieza
 
-Generar tabla resumen con espacio recuperable por categoría:
+Generar una tabla o lista compacta con tamaño actual, recuperable y nivel de riesgo por categoría.
 
 | Categoría | Tamaño Actual | Recuperable | Estado |
 |-----------|---------------|-------------|--------|
@@ -68,130 +56,60 @@ Generar tabla resumen con espacio recuperable por categoría:
 | __pycache__ | X MB | X MB | 🔴/🟡/🟢 |
 | **Volúmenes** | X MB | **NO TOCAR** | ⚠️ Info |
 
-### FASE 3: CONFIRMACIÓN INTERACTIVA
+### 3. Confirmación interactiva
 
-Preguntar al usuario por cada categoría que requiera acción:
+Pedir confirmación explícita por cada categoría borrable que requiera acción. Los volúmenes solo se informan.
 
-1. **Docker (imágenes + cache)**: "Se pueden liberar X GB. ¿Proceder?"
-2. **Logs** (solo si >{{umbral_logs_mb}}MB): "Logs en X MB. ¿Limpiar backups?"
-3. **Temporales**: "__pycache__ ocupa X MB. ¿Limpiar?"
-4. **Volúmenes**: Solo informar si alguno supera {{umbral_volumen_gb}}GB (NUNCA ofrecer eliminar)
+### 4. Ejecución
 
-### FASE 4: EJECUCIÓN
+Ejecutar solo lo confirmado por el usuario.
 
-Según las confirmaciones, ejecutar limpieza usando los skills correspondientes:
-
-#### Si se confirmó Docker:
 ```bash
-# Limpiar imágenes no usadas
 docker image prune -a -f
-
-# Limpiar contenedores detenidos
 docker container prune -f
-
-# Limpiar build cache
 docker builder prune -f
-
-# Limpiar redes no usadas
 docker network prune -f
 ```
 
-#### Si se confirmó Logs:
 ```bash
-# Eliminar logs rotativos
 rm -f Logs/*.log.[0-9]* 2>/dev/null
-
-# Truncar logs activos si es necesario
-# for log in Logs/*.log; do truncate -s 0 "$log"; done
 ```
 
-#### Si se confirmó Temporales:
 ```bash
-# Limpiar __pycache__
 find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-
-# Limpiar bytecode
 find . -name "*.pyc" -type f -delete 2>/dev/null
-
-# Limpiar cachés de herramientas
 rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ 2>/dev/null
 ```
 
-### FASE 5: REPORTE POST-LIMPIEZA
+### 5. Reporte post-limpieza
 
-Generar reporte final:
+Volver a medir estado final y resumir espacio liberado, riesgo residual y acciones no ejecutadas.
 
 ```bash
-# Nuevo estado del disco
 df -h /
-
-# Nuevo estado de Docker
 docker system df
-
-# Resumen de limpieza
-echo "═══════════════════════════════════════"
-echo "RESUMEN DE LIMPIEZA"
-echo "═══════════════════════════════════════"
-echo "Espacio liberado: X GB"
-echo "Nuevo uso de disco: Y%"
-echo "═══════════════════════════════════════"
 ```
 
-## ⚠️ Reglas Inquebrantables
+## Reglas obligatorias
 
-1. **NUNCA ejecutar `docker volume prune`** - Los volúmenes contienen datos de PostgreSQL, uploads, etc.
-2. **NUNCA ejecutar `docker system prune --volumes`** - Eliminaría datos persistentes
-3. **Volúmenes solo informativos** - Mostrar peso y advertir si >{{umbral_volumen_gb}}GB, pero NUNCA ofrecer eliminar
-4. **Confirmar antes de eliminar** - Especialmente en categorías marcadas con 🟡
+1. Nunca ejecutar `docker volume prune`.
+2. Nunca ejecutar `docker system prune --volumes`.
+3. No eliminar volúmenes, bases de datos, uploads ni artefactos persistentes.
+4. Confirmar antes de limpiar imágenes, cache, logs o temporales.
+5. Si una acción puede afectar al entorno activo, advertirlo antes de ejecutarla.
+6. Si no hay riesgo real o no hay espacio recuperable significativo, decirlo y no forzar limpieza.
 
-## 📚 Skills Utilizados
+## Referencias útiles
 
-Este prompt utiliza los siguientes skills de mantenimiento:
+- `disk-analysis`
+- `docker-cleanup`
+- `logs-cleanup`
+- `temp-cleanup`
 
-- [disk-analysis](../skills/disk-analysis/SKILL.md) - Comandos de diagnóstico
-- [docker-cleanup](../skills/docker-cleanup/SKILL.md) - Limpieza Docker segura
-- [logs-cleanup](../skills/logs-cleanup/SKILL.md) - Gestión de logs
-- [temp-cleanup](../skills/temp-cleanup/SKILL.md) - Limpieza de temporales
+## Salida esperada
 
-## 🔄 Frecuencia Recomendada
-
-| Situación | Acción |
-|-----------|--------|
-| Disco <70% | Sin acción, monitoreo mensual |
-| Disco 70-85% | Ejecutar limpieza preventiva semanal |
-| Disco >85% | Ejecutar limpieza inmediata |
-| Post-deploy | Limpiar build cache antiguo |
-| Post-desarrollo | Limpiar __pycache__ y devs/output/ |
-
-## 📊 Ejemplo de Ejecución
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║          DIAGNÓSTICO DE DISCO - LAS-FOCAS                    ║
-╚══════════════════════════════════════════════════════════════╝
-
-📊 ESTADO GENERAL
-─────────────────────────────
-Uso de disco: 88% 🔴 CRÍTICO (umbral: 85%)
-Disponible: 7.4 GB
-
-🐳 DOCKER
-─────────────────────────────
-Imágenes:     31.74 GB (11.49 GB recuperables) 🔴
-Build Cache:  25.96 GB (recuperable)           🔴
-Contenedores: 47.39 MB (31.94 MB recuperables) 🟢
-Volúmenes:    253.4 MB                         🟢 (no tocar)
-
-📁 PROYECTO
-─────────────────────────────
-Logs:         36 KB    🟢
-Reports:      6.8 MB   🟢
-__pycache__:  102 MB   🟡
-
-💾 ESPACIO TOTAL RECUPERABLE: ~37 GB
-
-═══════════════════════════════════════════════════════════════
-
-¿Proceder con la limpieza de Docker? (11.49 GB imágenes + 25.96 GB cache)
-> Opciones: [Sí] [No] [Solo imágenes] [Solo cache]
-```
+1. Mostrar diagnóstico inicial.
+2. Resumir espacio recuperable por categoría.
+3. Pedir confirmación cuando aplique.
+4. Ejecutar solo acciones aprobadas.
+5. Mostrar reporte final con espacio liberado y riesgos remanentes.

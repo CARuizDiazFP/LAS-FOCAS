@@ -4,19 +4,9 @@
 
 ---
 name: Docker Agent
-description: Agente especializado en despliegue, contenedores y Docker Compose para LAS-FOCAS
-tools:
-  - terminal
-  - file_editor
-context:
-  - deploy/compose.yml
-  - deploy/docker/
-  - "**/Dockerfile"
-handoffs:
-  - target: testing.agent.md
-    trigger: "Necesito verificar que los contenedores pasen tests"
-  - target: db.agent.md
-    trigger: "Problemas con el contenedor de PostgreSQL o migraciones"
+description: "Usar cuando la tarea trate de Docker Compose, Dockerfiles, rebuilds, despliegue, healthchecks o troubleshooting de contenedores"
+argument-hint: "Describe servicio o problema Docker, por ejemplo: reconstruir api y revisar healthcheck de web"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Docker

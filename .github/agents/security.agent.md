@@ -4,22 +4,9 @@
 
 ---
 name: Security Agent
-description: Agente especializado en seguridad, hardening y gestión de secretos
-tools:
-  - terminal
-  - file_editor
-context:
-  - docs/Seguridad.md
-  - scripts/firewall_hardening.sh
-  - .github/workflows/ci.yml
-  - deploy/compose.yml
-handoffs:
-  - target: docker.agent.md
-    trigger: "Configuración de red o contenedores segura"
-  - target: web.agent.md
-    trigger: "Vulnerabilidades en el panel web"
-  - target: api.agent.md
-    trigger: "Problemas de autenticación en endpoints"
+description: "Usar cuando la tarea trate de seguridad, hardening, exposición de secretos, red, permisos, dependencias vulnerables o docs/Seguridad.md"
+argument-hint: "Describe revisión o fix de seguridad, por ejemplo: auditar secretos y puertos expuestos en compose"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Security

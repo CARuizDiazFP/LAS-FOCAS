@@ -4,243 +4,89 @@
 
 ---
 name: Nuevo Módulo
-description: Genera la estructura completa para un nuevo módulo de LAS-FOCAS
-mode: agent
-variables:
-  - name: nombre_modulo
-    description: Nombre del módulo a crear (ej. informes_vlan, parser_nokia)
-  - name: ubicacion
-    default: modules/
-    description: Ubicación del módulo (modules/, core/, etc.)
-  - name: descripcion
-    description: Descripción breve del propósito del módulo
+description: "Crea el scaffolding de un módulo nuevo con estructura, tests y documentación alineados a LAS-FOCAS"
+argument-hint: "Nombre, ubicación y propósito, por ejemplo: parser_nokia en core para parsear alarmas Nokia"
+agent: "agent"
 ---
 
-# Crear Nuevo Módulo: ${nombre_modulo}
+# Crear Nuevo Módulo
 
-Genera la estructura completa para el módulo `${nombre_modulo}` en `${ubicacion}`.
+Crear un módulo nuevo a partir del nombre, ubicación y propósito indicados por el usuario. Si faltan datos, inferir la estructura mínima y declarar los supuestos.
 
-## Estructura a Crear
+## Objetivo
+
+- generar una estructura coherente con la arquitectura del repo
+- incluir código base, tests y documentación inicial
+- respetar encabezado obligatorio, español, logging y type hints
+
+## Entradas esperadas
+
+- nombre del módulo
+- ubicación objetivo, por ejemplo `modules/`, `core/` o `api/`
+- propósito funcional del módulo
+- si expone servicio, parser, endpoint o integración
+
+## Flujo de trabajo
+
+### 1. Ubicar el módulo correctamente
+
+Elegir la carpeta según la responsabilidad:
+
+- `modules/` para lógica funcional de informes o dominios concretos
+- `core/` para utilidades, parsers, servicios y componentes compartidos
+- `api/` o `web/` solo si el cambio es de superficie HTTP/UI
+
+### 2. Crear estructura mínima
 
 ```
-${ubicacion}${nombre_modulo}/
+<ubicacion>/<nombre_modulo>/
 ├── __init__.py
-├── config.py       # Configuración del módulo
-├── schemas.py      # Modelos Pydantic
-├── processor.py    # Lógica de procesamiento
-├── service.py      # API de servicio
-└── README.md       # Documentación del módulo
+├── config.py
+├── schemas.py
+├── processor.py
+├── service.py
+└── README.md
 ```
 
-## Archivos a Generar
+Agregar `tests/test_<nombre_modulo>.py` y, si corresponde, `docs/<nombre_modulo>.md`.
 
-### 1. `__init__.py`
-```python
-# Nombre de archivo: __init__.py
-# Ubicación de archivo: ${ubicacion}${nombre_modulo}/__init__.py
-# Descripción: Inicializador del módulo ${nombre_modulo}
+### 3. Implementar base coherente
 
-"""
-Módulo ${nombre_modulo}
-${descripcion}
-"""
+Usar estos lineamientos en lugar de generar boilerplate arbitrario:
 
-from .service import ${nombre_modulo.title().replace('_', '')}Service
-from .schemas import *
+- configuración separada en `config.py`
+- contratos o modelos en `schemas.py` si aporta claridad
+- lógica principal en `processor.py` o `service.py`
+- `logging` en vez de `print()`
+- nombres en español y type hints
+- tests enfocados al comportamiento principal y casos de error
 
-__all__ = ["${nombre_modulo.title().replace('_', '')}Service"]
-```
+### 4. Crear tests y documentación
 
-### 2. `config.py`
-```python
-# Nombre de archivo: config.py
-# Ubicación de archivo: ${ubicacion}${nombre_modulo}/config.py
-# Descripción: Configuración del módulo ${nombre_modulo}
+- tests en `tests/` siguiendo el patrón existente del repo
+- documentación breve en `docs/` o `README.md` del módulo
+- si hay impacto transversal, reflejarlo también en el PR diario
 
-"""Configuración del módulo ${nombre_modulo}."""
+## Reglas obligatorias
 
-import os
-from pydantic import BaseSettings
+1. Todo archivo nuevo debe llevar encabezado obligatorio de 3 líneas.
+2. El código y la documentación deben quedar en español.
+3. No duplicar lógica ya existente en `core/`, `modules/` o `bot_telegram/`.
+4. Mantener límites arquitectónicos del repo: no meter UI en `api`, ni acceso directo a DB dentro de `nlp_intent`.
+5. Crear solo la cantidad de archivos que aporte valor real; no generar boilerplate inútil.
 
-class ${nombre_modulo.title().replace('_', '')}Config(BaseSettings):
-    """Configuración para ${nombre_modulo}."""
-    
-    enabled: bool = True
-    timeout: int = 30
-    # Agregar configuraciones específicas
-    
-    class Config:
-        env_prefix = "${nombre_modulo.upper()}_"
+## Checklist de validación
 
-config = ${nombre_modulo.title().replace('_', '')}Config()
-```
+- [ ] Estructura creada en la ubicación correcta
+- [ ] Encabezado de 3 líneas presente en archivos nuevos
+- [ ] Tests base agregados o pendientes explicitados
+- [ ] Imports y nombres coherentes con el resto del repo
+- [ ] Documentación mínima creada o actualizada
+- [ ] PR diario actualizado si corresponde
 
-### 3. `schemas.py`
-```python
-# Nombre de archivo: schemas.py
-# Ubicación de archivo: ${ubicacion}${nombre_modulo}/schemas.py
-# Descripción: Modelos Pydantic del módulo ${nombre_modulo}
+## Salida esperada
 
-"""Schemas del módulo ${nombre_modulo}."""
-
-from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import Optional
-
-class ${nombre_modulo.title().replace('_', '')}Request(BaseModel):
-    """Request para ${nombre_modulo}."""
-    # Definir campos de entrada
-    pass
-
-class ${nombre_modulo.title().replace('_', '')}Response(BaseModel):
-    """Response de ${nombre_modulo}."""
-    success: bool
-    message: str
-    data: Optional[dict] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-```
-
-### 4. `processor.py`
-```python
-# Nombre de archivo: processor.py
-# Ubicación de archivo: ${ubicacion}${nombre_modulo}/processor.py
-# Descripción: Lógica de procesamiento del módulo ${nombre_modulo}
-
-"""Procesador del módulo ${nombre_modulo}."""
-
-import logging
-from typing import Any
-from .schemas import ${nombre_modulo.title().replace('_', '')}Request, ${nombre_modulo.title().replace('_', '')}Response
-
-logger = logging.getLogger(__name__)
-
-class ${nombre_modulo.title().replace('_', '')}Processor:
-    """Procesador principal de ${nombre_modulo}."""
-    
-    def __init__(self):
-        """Inicializar procesador."""
-        logger.info("${nombre_modulo} processor inicializado")
-    
-    async def process(self, request: ${nombre_modulo.title().replace('_', '')}Request) -> ${nombre_modulo.title().replace('_', '')}Response:
-        """
-        Procesar request.
-        
-        Args:
-            request: Datos de entrada
-            
-        Returns:
-            Response con resultado del procesamiento
-        """
-        try:
-            # TODO: Implementar lógica de procesamiento
-            logger.info("Procesando request", extra={"module": "${nombre_modulo}"})
-            
-            return ${nombre_modulo.title().replace('_', '')}Response(
-                success=True,
-                message="Procesamiento completado",
-                data={}
-            )
-        except Exception as e:
-            logger.exception("Error en procesamiento")
-            return ${nombre_modulo.title().replace('_', '')}Response(
-                success=False,
-                message=str(e)
-            )
-```
-
-### 5. `service.py`
-```python
-# Nombre de archivo: service.py
-# Ubicación de archivo: ${ubicacion}${nombre_modulo}/service.py
-# Descripción: API de servicio del módulo ${nombre_modulo}
-
-"""Servicio del módulo ${nombre_modulo}."""
-
-from .processor import ${nombre_modulo.title().replace('_', '')}Processor
-from .schemas import ${nombre_modulo.title().replace('_', '')}Request, ${nombre_modulo.title().replace('_', '')}Response
-from .config import config
-
-class ${nombre_modulo.title().replace('_', '')}Service:
-    """Servicio principal de ${nombre_modulo}."""
-    
-    def __init__(self):
-        """Inicializar servicio."""
-        self.processor = ${nombre_modulo.title().replace('_', '')}Processor()
-        self.config = config
-    
-    async def execute(self, request: ${nombre_modulo.title().replace('_', '')}Request) -> ${nombre_modulo.title().replace('_', '')}Response:
-        """
-        Ejecutar el servicio.
-        
-        Args:
-            request: Request con datos de entrada
-            
-        Returns:
-            Response con resultado
-        """
-        if not self.config.enabled:
-            return ${nombre_modulo.title().replace('_', '')}Response(
-                success=False,
-                message="Módulo deshabilitado"
-            )
-        
-        return await self.processor.process(request)
-```
-
-## Tests a Crear
-
-### `tests/test_${nombre_modulo}.py`
-```python
-# Nombre de archivo: test_${nombre_modulo}.py
-# Ubicación de archivo: tests/test_${nombre_modulo}.py
-# Descripción: Tests del módulo ${nombre_modulo}
-
-"""Tests para el módulo ${nombre_modulo}."""
-
-import pytest
-from ${ubicacion.replace('/', '.')}${nombre_modulo} import (
-    ${nombre_modulo.title().replace('_', '')}Service,
-    ${nombre_modulo.title().replace('_', '')}Request,
-    ${nombre_modulo.title().replace('_', '')}Response,
-)
-
-@pytest.fixture
-def service():
-    """Fixture del servicio."""
-    return ${nombre_modulo.title().replace('_', '')}Service()
-
-@pytest.fixture
-def sample_request():
-    """Fixture de request de ejemplo."""
-    return ${nombre_modulo.title().replace('_', '')}Request()
-
-class Test${nombre_modulo.title().replace('_', '')}Service:
-    """Tests del servicio ${nombre_modulo}."""
-    
-    @pytest.mark.asyncio
-    async def test_execute_success(self, service, sample_request):
-        """Test de ejecución exitosa."""
-        response = await service.execute(sample_request)
-        assert response.success is True
-        assert response.message == "Procesamiento completado"
-    
-    @pytest.mark.asyncio
-    async def test_execute_disabled(self, service, sample_request, monkeypatch):
-        """Test con módulo deshabilitado."""
-        monkeypatch.setattr(service.config, "enabled", False)
-        response = await service.execute(sample_request)
-        assert response.success is False
-        assert "deshabilitado" in response.message.lower()
-```
-
-## Documentación a Crear
-
-### `docs/${nombre_modulo}.md`
-Crear documentación básica del módulo en `docs/`.
-
-## Checklist Post-Creación
-
-1. [ ] Ejecutar tests: `pytest tests/test_${nombre_modulo}.py -v`
-2. [ ] Verificar imports: `python -c "from ${ubicacion.replace('/', '.')}${nombre_modulo} import *"`
-3. [ ] Actualizar `docs/Mate_y_Ruta.md` con el nuevo módulo
-4. [ ] Generar PR diario con los cambios
+1. Crear archivos y tests necesarios, no más.
+2. Explicar brevemente la estructura elegida.
+3. Indicar validaciones ejecutadas o pendientes.
+4. Actualizar documentación relacionada cuando aplique.

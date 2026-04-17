@@ -4,23 +4,30 @@
 
 ---
 name: Migración Alembic
-description: Genera una migración Alembic para cambios en la base de datos
-mode: agent
-variables:
-  - name: descripcion
-    description: Descripción de la migración (ej. "agregar tabla usuarios")
-  - name: tipo
-    default: autogenerate
-    description: Tipo de migración (autogenerate o manual)
+description: "Crea o actualiza una migración Alembic con validaciones, downgrade y documentación asociada"
+argument-hint: "Describe el cambio y opcionalmente el tipo, por ejemplo: agregar tabla usuarios, tipo autogenerate"
+agent: "agent"
 ---
 
-# Crear Migración Alembic: ${descripcion}
+# Crear Migración Alembic
 
-Genera una migración Alembic para: **${descripcion}**
+Crear una migración Alembic a partir de la descripción dada por el usuario. Si el usuario no especifica tipo, inferir si corresponde `autogenerate` o migración manual según el cambio pedido.
 
-## Pasos a Seguir
+## Objetivo
 
-### 1. Verificar estado actual de migraciones
+- revisar estado actual de migraciones
+- generar migración reversible y consistente con el esquema real
+- validar el archivo generado y su impacto en documentación y tests
+
+## Entradas esperadas
+
+- descripción del cambio de esquema
+- tipo sugerido: `autogenerate` o `manual`
+- contexto adicional sobre tablas, columnas, índices o datos existentes
+
+## Flujo de trabajo
+
+### 1. Verificar estado actual
 
 ```bash
 cd /home/focal/proyectos/LAS-FOCAS
@@ -28,28 +35,25 @@ alembic -c db/alembic.ini history
 alembic -c db/alembic.ini current
 ```
 
-### 2. Crear la migración
+### 2. Elegir estrategia de creación
 
-#### Si es autogenerate (cambios en modelos SQLAlchemy):
+Usar `revision --autogenerate` si el cambio está reflejado en modelos SQLAlchemy. Usar `revision -m` si requiere SQL manual, backfill, enums, correcciones idempotentes o transformaciones no detectables.
+
 ```bash
-alembic -c db/alembic.ini revision --autogenerate -m "${descripcion}"
+alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+alembic -c db/alembic.ini revision -m "descripcion"
 ```
 
-#### Si es manual (cambios no detectables automáticamente):
-```bash
-alembic -c db/alembic.ini revision -m "${descripcion}"
-```
-
-### 3. Estructura del archivo de migración
+### 3. Implementar la migración
 
 El archivo generado en `db/alembic/versions/` debe tener:
 
 ```python
-# Nombre de archivo: XXXX_${descripcion.replace(' ', '_').lower()}.py
-# Ubicación de archivo: db/alembic/versions/XXXX_${descripcion.replace(' ', '_').lower()}.py
-# Descripción: Migración - ${descripcion}
+# Nombre de archivo: XXXX_descripcion.py
+# Ubicación de archivo: db/alembic/versions/XXXX_descripcion.py
+# Descripción: Migración de base de datos
 
-"""${descripcion}
+"""descripcion
 
 Revision ID: xxxx
 Revises: yyyy
@@ -67,91 +71,56 @@ depends_on = None
 
 def upgrade() -> None:
     """Aplicar migración."""
-    # Ejemplo: crear tabla
-    op.create_table(
-        'nueva_tabla',
-        sa.Column('id', sa.Integer(), primary_key=True),
-        sa.Column('nombre', sa.String(100), nullable=False),
-        sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
-        schema='app'
-    )
-    
-    # Ejemplo: agregar columna
-    op.add_column(
-        'tabla_existente',
-        sa.Column('nueva_columna', sa.String(50)),
-        schema='app'
-    )
-    
-    # Ejemplo: crear índice
-    op.create_index(
-        'ix_tabla_columna',
-        'tabla',
-        ['columna'],
-        schema='app'
-    )
+    ...
 
 def downgrade() -> None:
     """Revertir migración."""
-    # IMPORTANTE: siempre implementar downgrade
-    op.drop_index('ix_tabla_columna', table_name='tabla', schema='app')
-    op.drop_column('tabla_existente', 'nueva_columna', schema='app')
-    op.drop_table('nueva_tabla', schema='app')
+    ...
 ```
 
 ### 4. Validar la migración
 
 ```bash
-# Ver SQL que se generará (sin ejecutar)
 alembic -c db/alembic.ini upgrade head --sql
-
-# Verificar sintaxis Python
 python db/alembic/versions/XXXX_*.py
 ```
 
-### 5. Aplicar la migración
+### 5. Aplicar o dejar lista la migración
 
 ```bash
-# En desarrollo local
 alembic -c db/alembic.ini upgrade head
-
-# Verificar que se aplicó
 alembic -c db/alembic.ini current
 ```
 
-### 6. Rollback si es necesario
+### 6. Verificar rollback cuando sea razonable
 
 ```bash
-# Revertir última migración
 alembic -c db/alembic.ini downgrade -1
-
-# Revertir a revisión específica
-alembic -c db/alembic.ini downgrade <revision_id>
 ```
 
-## Reglas Obligatorias
+## Reglas obligatorias
 
-1. **Siempre implementar `downgrade()`**: permitir rollback
-2. **Encabezado de 3 líneas**: en el archivo de migración
-3. **Schema `app`**: usar schema 'app' para tablas del sistema
-4. **Nombres descriptivos**: índices y constraints con nombres claros
-5. **No romper datos**: migraciones deben preservar datos existentes
-6. **Tests antes de merge**: verificar que tests pasan con nueva migración
+1. Siempre implementar `downgrade()` salvo caso excepcional justificado.
+2. Mantener encabezado obligatorio de 3 líneas en el archivo creado o editado.
+3. Usar nombres descriptivos para índices, constraints y revisiones.
+4. No romper datos existentes sin advertirlo explícitamente.
+5. Reflejar cambios de DB también en documentación si aplica.
+6. Si la migración requiere pasos manuales de despliegue, dejarlos documentados.
 
-## Checklist de Validación
+## Checklist de validación
 
 - [ ] `upgrade()` implementado correctamente
 - [ ] `downgrade()` implementado (reversible)
 - [ ] Encabezado de 3 líneas presente
-- [ ] No hay datos hardcodeados
+- [ ] No hay SQL o datos peligrosos sin justificación
 - [ ] Índices para columnas de búsqueda frecuente
 - [ ] Constraints de integridad definidos
-- [ ] Tests pasan: `pytest tests/test_db*.py`
+- [ ] Validación Alembic ejecutada o explicitada como pendiente
 - [ ] PR diario actualizado con cambios de DB
 
-## Documentación
+## Salida esperada
 
-Después de crear la migración, actualizar `docs/db.md` con:
-- Nueva tabla/columna agregada
-- Cambios en esquema
-- Notas de migración para otros desarrolladores
+1. Crear o actualizar la migración en `db/alembic/versions/`.
+2. Explicar si fue `autogenerate` o manual y por qué.
+3. Dejar checklist de validación y compatibilidad.
+4. Actualizar `docs/db.md` o el PR diario si corresponde.

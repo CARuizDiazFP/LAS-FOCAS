@@ -4,18 +4,9 @@
 
 ---
 name: NLP Agent
-description: Agente especializado en procesamiento de lenguaje natural y clasificación de intención
-tools:
-  - terminal
-  - file_editor
-context:
-  - nlp_intent/
-  - docs/nlp/
-handoffs:
-  - target: mcp-chatbot.agent.md
-    trigger: "Clasificación lista, integrar con orquestador"
-  - target: bot.agent.md
-    trigger: "Ajustar clasificación para comandos del bot"
+description: "Usar cuando la tarea trate de clasificación de intención, providers heurístico/Ollama/OpenAI o código dentro de nlp_intent/"
+argument-hint: "Describe ajuste de NLP, por ejemplo: mejorar fallback heurístico del intent classifier"
+tools: [read, edit, search, execute]
 ---
 
 # Agente NLP

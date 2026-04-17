@@ -4,9 +4,8 @@
 
 ---
 name: db-mcp-postgres
-description: Guía para consultar la base de datos PostgreSQL de LAS-FOCAS mediante el servidor MCP. Úsalo para depurar estados de infraestructura (cámaras, rutas), verificar migraciones de Alembic y auditar tablas del esquema 'app'.
-tools:
-  - mcp_postgres
+description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app"
+argument-hint: "Describe tabla o consulta, por ejemplo: revisar incidentes_baneo y relaciones con camaras"
 ---
 
 # Skill: MCP PostgreSQL para LAS-FOCAS

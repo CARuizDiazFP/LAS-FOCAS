@@ -4,24 +4,9 @@
 
 ---
 name: DB Agent
-description: Agente especializado en PostgreSQL, SQLAlchemy y migraciones Alembic
-tools:
-  - terminal
-  - file_editor
-  - mcp_postgres
-context:
-  - db/
-  - db/models/
-  - db/alembic/
-  - docs/db.md
-skills:
-  - alembic-migrations
-  - db-mcp-postgres
-handoffs:
-  - target: api.agent.md
-    trigger: "Los modelos están listos, necesito crear endpoints"
-  - target: docker.agent.md
-    trigger: "Problemas con el contenedor de PostgreSQL"
+description: "Usar cuando la tarea trate de PostgreSQL, SQLAlchemy, modelos, consultas, Alembic o archivos bajo db/ en LAS-FOCAS"
+argument-hint: "Describe cambio de esquema o consulta, por ejemplo: agregar columna a incidentes_baneo con migración Alembic"
+tools: [read, edit, search, execute]
 ---
 
 # Agente DB

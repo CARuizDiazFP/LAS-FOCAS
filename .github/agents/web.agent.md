@@ -4,20 +4,9 @@
 
 ---
 name: Web Agent
-description: Agente especializado en el panel web, autenticación y frontend
-tools:
-  - terminal
-  - file_editor
-context:
-  - web/
-  - docs/web.md
-handoffs:
-  - target: api.agent.md
-    trigger: "Problemas con endpoints que consume el frontend"
-  - target: mcp-chatbot.agent.md
-    trigger: "Integración del chat en el panel web"
-  - target: security.agent.md
-    trigger: "Problemas de autenticación o seguridad web"
+description: "Usar cuando la tarea trate del panel web, autenticación, templates, panel.js, styles.css, websocket de chat o código bajo web/"
+argument-hint: "Describe pantalla o flujo web, por ejemplo: corregir login y render del panel de infra"
+tools: [read, edit, search, execute]
 ---
 
 # Agente Web

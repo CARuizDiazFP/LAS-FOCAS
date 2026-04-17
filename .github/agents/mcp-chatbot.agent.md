@@ -4,22 +4,9 @@
 
 ---
 name: MCP Chatbot Agent
-description: Agente especializado en herramientas MCP y orquestador del chatbot
-tools:
-  - terminal
-  - file_editor
-context:
-  - core/mcp/
-  - core/chatbot/
-  - docs/mcp.md
-  - docs/chatbot.md
-handoffs:
-  - target: nlp.agent.md
-    trigger: "Problemas con clasificación de intención"
-  - target: reports.agent.md
-    trigger: "Herramienta MCP de informes necesita ajustes"
-  - target: web.agent.md
-    trigger: "Integración del chat con el panel web"
+description: "Usar cuando la tarea trate del orquestador de chat, herramientas MCP, registry, dispatch o integración entre core/mcp y core/chatbot"
+argument-hint: "Describe herramienta o flujo MCP, por ejemplo: ajustar registry de GenerarInformeRepetitividad"
+tools: [read, edit, search, execute]
 ---
 
 # Agente MCP/Chatbot
