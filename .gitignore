@@ -38,6 +38,9 @@ wheelhouse/
 logs/
 Logs/
 tmp/
+temp_*.ini
+temp_*.py
+*.db
 .cache/
 .ipynb_checkpoints/
 
