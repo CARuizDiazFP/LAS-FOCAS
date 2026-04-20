@@ -13,6 +13,7 @@
   <script>
     window.API_BASE = "{{ api_base }}";
     window.CSRF_TOKEN = "{{ csrf }}";
+    window.USER_ROLE = "{{ role or 'user' }}";
     window.BUILD_VERSION = "{{ build_version }}";
     // Fallback: si API_BASE no está definida o apunta al puerto del frontend (8080), usar el puerto expuesto de la API (8001)
     (function() {
@@ -708,6 +709,39 @@
         <button type="button" id="ban-cancel-btn" class="btn secondary">Cancelar</button>
         <button type="button" id="ban-next-btn" class="btn primary">Siguiente →</button>
         <button type="button" id="ban-execute-btn" class="btn danger" hidden>🚨 EJECUTAR BANEO</button>
+      </footer>
+    </article>
+  </dialog>
+
+  <!-- Modal de edición manual de estado de cámara -->
+  <dialog id="camera-state-modal" class="notify-modal camera-state-modal">
+    <article class="notify-modal-content camera-state-content">
+      <header class="notify-modal-header">
+        <h2>Editar estado de cámara</h2>
+        <button type="button" class="notify-modal-close" id="camera-state-close-btn">&times;</button>
+      </header>
+      <div class="notify-modal-body camera-state-body">
+        <div id="camera-state-summary" class="camera-state-summary"></div>
+        <form id="camera-state-form" class="camera-state-form">
+          <label class="camera-state-field">
+            <span>Nuevo estado</span>
+            <select id="camera-state-select" required>
+              <option value="LIBRE">LIBRE</option>
+              <option value="OCUPADA">OCUPADA</option>
+              <option value="BANEADA">BANEADA</option>
+              <option value="DETECTADA">DETECTADA</option>
+            </select>
+          </label>
+          <label class="camera-state-field">
+            <span>Motivo</span>
+            <textarea id="camera-state-reason" rows="4" maxlength="500" placeholder="Explicá por qué corregís manualmente el estado" required></textarea>
+          </label>
+        </form>
+        <div id="camera-state-incidents" class="camera-state-incidents"></div>
+      </div>
+      <footer class="notify-modal-footer camera-state-footer">
+        <button type="button" id="camera-state-cancel-btn" class="btn secondary">Cancelar</button>
+        <button type="button" id="camera-state-save-btn" class="btn primary">Guardar cambio</button>
       </footer>
     </article>
   </dialog>

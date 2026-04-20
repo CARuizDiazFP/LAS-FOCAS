@@ -207,6 +207,31 @@ cuando la fibra principal está cortada. Esto se implementa mediante la tabla `i
 - **Restauración inteligente:** Al levantar baneo, las cámaras vuelven a `LIBRE` u `OCUPADA` según ingresos activos.
 - **Cámaras nuevas:** Si se carga un tracking de un servicio baneado, las cámaras nuevas nacen `BANEADAS`.
 
+### Tabla `camaras_estado_auditoria`
+
+Registra overrides manuales del campo `Camara.estado` cuando un administrador necesita
+normalizar discrepancias entre el estado efectivo persistido y el estado operativo sugerido
+por incidentes activos o ingresos abiertos.
+
+| Columna               | Tipo                    | Descripción |
+|-----------------------|-------------------------|-------------|
+| `id`                  | Integer (PK)            | ID autoincremental. |
+| `camara_id`           | FK → camaras, index     | Cámara modificada manualmente. |
+| `usuario`             | String(128)             | Usuario administrador que realizó el cambio. |
+| `motivo`              | Text                    | Motivo auditado del override. |
+| `estado_anterior`     | Enum `camara_estado`    | Estado persistido antes del cambio. |
+| `estado_nuevo`        | Enum `camara_estado`    | Estado persistido después del cambio. |
+| `estado_sugerido`     | Enum `camara_estado`    | Estado que el sistema sugería al momento del override. |
+| `incidentes_activos`  | JSON                    | IDs de incidentes activos relacionados en el momento del cambio. |
+| `created_at`          | DateTime(tz), index     | Timestamp del override manual. |
+
+**Migración:** `20260420_01_camaras_estado_auditoria.py`.
+
+**Uso operativo:**
+- El panel web permite editar manualmente `estado` solo a usuarios `admin`.
+- La auditoría preserva trazabilidad aunque el operador fuerce un estado distinto al sugerido.
+- Los conteos visuales del panel se alinean con el estado efectivo de `app.camaras.estado`, no solo con la topología de incidentes activos.
+
 ### Relaciones
 
 - `Camara.empalmes`: lista de empalmes ubicados en la cámara.
@@ -220,6 +245,26 @@ cuando la fibra principal está cortada. Esto se implementa mediante la tabla `i
 
 - **Google Sheets** (`/sync/camaras`): `core/services/infra_sync.py` sincroniza desde la hoja "Camaras" configurada vía `INFRA_SHEET_ID`/`INFRA_SHEET_NAME`, actualizando `fontine_id`, coordenadas y estado.
 - **Tracking** (`/api/infra/upload_tracking`): procesa archivos TXT de tracking, crea servicios, detecta cámaras nuevas y registra empalmes.
+
+## Configuración de Servicios Automatizados
+
+### Tabla `config_servicios`
+
+Almacena configuración dinámica de workers y servicios automatizados. Definida en `db/models/servicios.py`.
+
+| Columna           | Tipo              | Descripción |
+|-------------------|-------------------|-------------|
+| `id`              | Integer (PK)      | ID autoincremental. |
+| `nombre_servicio` | String(128), unique, index | Identificador único del servicio (ej: `slack_baneo_notifier`). |
+| `intervalo_horas` | Integer           | Intervalo de ejecución en horas (default: 4). |
+| `slack_channels`  | String(512)       | Canales Slack separados por coma. |
+| `ultima_ejecucion`| DateTime(tz)      | Timestamp de la última ejecución exitosa. |
+| `activo`          | Boolean           | Si el servicio está habilitado (default: true). |
+| `ultimo_error`    | Text              | Último error registrado (NULL si la última ejecución fue exitosa). |
+
+**Migración:** `20260417_01_config_servicios.py` — crea la tabla e inserta fila por defecto para `slack_baneo_notifier`.
+
+**Uso:** El worker `slack_baneo_notifier` lee esta tabla en cada ejecución para obtener la configuración actualizada (intervalo, canales, estado activo). El panel admin en `/admin/Servicios/Baneos` permite modificar estos valores sin reiniciar el worker.
 
 ## Migraciones y despliegue
 

@@ -4,7 +4,7 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-03-03
+Fecha de última actualización: 2026-04-20
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
@@ -38,7 +38,11 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
     ├── docker-rebuild/SKILL.md
     ├── pytest-focas/SKILL.md
     ├── alembic-migrations/SKILL.md
-    └── libreoffice-convert/SKILL.md
+  ├── libreoffice-convert/SKILL.md
+  ├── security-scan/SKILL.md
+  ├── dependency-audit/SKILL.md
+  ├── secret-detection/SKILL.md
+  └── sast-analysis/SKILL.md
 ```
 
 ### Agentes Disponibles
@@ -69,6 +73,12 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 - **migracion-alembic.prompt.md**: Crear migraciones de base de datos
 - **revisar-seguridad.prompt.md**: Auditoría de seguridad del proyecto
 
+### Seguridad Safe-by-Design
+
+- El agente `security` ahora orquesta revisiones de seguridad apoyándose en cuatro skills especializadas: `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`.
+- El prompt `revisar-seguridad.prompt.md` quedó alineado a ese flujo: prioriza `.env`, `deploy/`, `Keys/`, Docker, red, auth y superficies expuestas antes de emitir hallazgos.
+- La regla quedó consolidada también en `AGENTS.md` para que las revisiones del repo sigan el mismo estándar.
+
 ### Cambios en AGENTS.md
 
 El archivo `AGENTS.md` en raíz ahora contiene solo:
@@ -79,7 +89,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - Convenciones de código (PEP8, logging, testing)
 - Tabla de referencia a agentes especializados
 
-## Estado actual (al 2026-01-13)
+## Estado actual (al 2026-04-20)
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
@@ -91,13 +101,17 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
   - Parser TXT de tracking (`core/parsers/tracking_parser.py`) transforma archivos de rutas en estructuras tipadas listas para poblar `empalmes` y relaciones.
   - Servicio `core/services/infra_sync.py` sincroniza la hoja Google "Camaras" contra DB (upsert por `fontine_id`), soporta credenciales vía `Keys/credentials.json` o `GOOGLE_CREDENTIALS_JSON` y registra métricas `processed/updated/created/skipped`.
   - Endpoint FastAPI `POST /sync/camaras` disponible en `api/api_app/routes/infra.py` para disparar la sincronización desde la API.
+  - Worker `slack_baneo_worker` incorporado al stack para reportes periódicos de cámaras baneadas en Slack, con health check interno, logs centralizados en `Logs/slack_baneo_worker.log` y configuración dinámica persistida en `app.config_servicios`.
 - Servicios del repo
   - `api` (FastAPI): endpoints `/health`, `/health/version`, `/db-check`, `POST /ingest/reclamos` (alias `POST /import/reclamos`), `POST /reports/repetitividad` (Excel o DB) y `GET /reports/repetitividad` (métricas JSON).
   - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
+    - Infra/Cámaras: las tarjetas ahora exponen edición manual del `estado` para usuarios `admin`, muestran inconsistencias entre estado persistido y estado sugerido, y consumen endpoints web protegidos por sesión + CSRF para consultar/aplicar overrides.
+    - Protocolo de Protección: el badge y el modal de baneos distinguen entre cámaras cubiertas por incidentes y cámaras efectivamente persistidas como `BANEADA`, evitando falsos positivos cuando hay normalización manual.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` con proveedores `heuristic | ollama | openai`. Usa `OLLAMA_URL` (default `http://ollama:11434`).
   - `bot` (Telegram): definido en `deploy/compose.yml`.
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
+    - Infra: además de `app.incidentes_baneo`, el dominio ahora cuenta con `app.config_servicios` para workers configurables y `app.camaras_estado_auditoria` para trazabilidad de overrides manuales de cámaras.
   - Ingesta híbrida: parser robusto (tolerante a acentos/mayúsculas; Unidecode con fallback a unicodedata), saneo de fechas y GEO, y upsert en PostgreSQL con `ON CONFLICT DO UPDATE` usando `COALESCE(excluded.col, table.col)` para no perder datos existentes.
     - Repetitividad desde DB o Excel: el endpoint devuelve `map_images`/`assets` (PNGs) junto al DOCX/PDF, admite `with_geo` y `use_db`; la portada del DOCX ahora es dinámica (`Informe Repetitividad — <Mes> <Año>`), cada fila exibe Horas Netas en formato `HH:MM` (normalizadas desde minutos) y se insertan mapas estáticos por servicio ajustados a media hoja A4 cuando hay coordenadas válidas. La UI alterna fuente Excel/DB, habilita GEO, lista cada mapa como descarga directa y expone headers `X-Source`, `X-With-Geo`, `X-PDF-*`, `X-Map-*`, `X-Maps-Count`, `X-Total-*`.
   - SLA: motor completo disponible para Excel y DB; `core/services/sla.compute_from_db` reutiliza la ingesta `app.reclamos` con normalización de columnas y tz. Para Excel se replica el flujo legacy (dos archivos separados "Servicios Fuera de SLA" + "Reclamos SLA", validación de columnas y render con la plantilla Sandy). La vista `/sla` exige ambos archivos, muestra errores legibles y delega en `POST /api/reports/sla` que devuelve rutas docx/pdf limpias. **[2025-11-11]**: Flujo SLA completamente funcional desde la UI web tras corrección de manejo de múltiples archivos en FastAPI y configuración de `TEMPLATES_DIR` en Docker Compose. **[2026-01-13]**: Corrección crítica: la suma de horas por servicio ahora usa exclusivamente la columna "Horas Netas Reclamo" (columna U del Excel), que contiene el tiempo neto de resolución. Se eliminó el fallback incorrecto a "Horas Netas Cierre Problema Reclamo" (columna P).
@@ -110,12 +124,17 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
     - **Frontend**: Botón pánico "🚨 Protocolo Protección", wizard de 3 pasos (Identificación/Selección/Confirmación), badge de baneos activos, indicadores visuales en tarjetas (borde rojo, candado 🔒, ticket 🎫), dropdown de exportación, modal de notificaciones.
     - **Migración**: Tabla `app.incidentes_baneo` con índices por servicio y estado.
     - **Lógica inteligente**: Cámaras nuevas heredan baneo si el servicio está baneado; restauración automática a LIBRE/OCUPADA al desbanear.
+  - **Normalización Manual de Estado de Cámaras** (2026-04-20): Extensión full-stack del módulo Infra para corregir discrepancias operativas sin tocar incidentes históricos.
+    - **Backend**: nuevo servicio `core/services/camara_estado_service.py`, endpoints `GET/POST /api/infra/camaras/{id}/estado`, validación admin + CSRF y auditoría en `app.camaras_estado_auditoria`.
+    - **Frontend**: botón `Editar estado` por tarjeta, modal con contexto operativo, incidentes activos relacionados y motivo obligatorio.
+    - **Conteos**: `GET /api/infra/ban/active` informa `camaras_count`, `camaras_baneadas_count` y `total_camaras_baneadas` para separar cobertura topológica de estado efectivo.
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
   - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/web_app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
   - Suite actual: PASS (88 pruebas con Alarmas Ciena), con 0 fallas y 2 opcionales de DB habilitables según entorno. Nuevas suites unitarias cubren `core/utils/timefmt`, parser de reclamos, render del informe y procesamiento de alarmas Ciena.
+  - Cobertura reciente: `tests/test_web_infra_camera_state.py` valida rol admin, inyección de `USER_ROLE`, consulta de contexto, rechazo CSRF y persistencia del override manual; corrida focal adicional `tests/test_web_infra_camera_state.py tests/test_web_admin.py` en verde (10 pruebas).
   - Se corrigieron rutas y contratos en la API; mapa ahora tiene fallback HTML si falta `folium` en entorno de test/minimal.
   - Documentación actualizada: `README.md` (Prueba rápida y puertos), `docs/api.md` (salud/versión, ingest, modo DB y headers), `docs/informes/alarmas_ciena.md` (formatos Ciena, API, troubleshooting) y PR del día.
 - Documentación
@@ -234,10 +253,13 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Corrección crítica SLA**: `core/sla/legacy_report.py` ahora usa exclusivamente columna "Horas Netas Reclamo" (columna U) para el cálculo de horas, eliminando el fallback incorrecto a columna P. Tests actualizados y validados con datos reales (2026-01-13).
 - [x] **Sistema Multi-Agente**: Modernización de AGENTS.md a ecosistema modular con 12 agentes especializados, 4 prompts automatizados y 4 habilidades reutilizables en `.github/` (2026-03-03).
 - [x] **Trazabilidad Git autónoma**: incorporación de `repo-updater` como workflow para auditar `docs/PR/`, verificar documentación temática en `docs/` y ejecutar `git add`, `git commit` y `git push` hacia `main` con CLI del sistema (2026-04-17).
+- [x] **Worker Slack de Baneos**: servicio `slack_baneo_worker`, tabla `app.config_servicios`, panel admin `/admin/Servicios/Baneos`, health check interno y logs centralizados en `Logs/slack_baneo_worker.log` (2026-04-17).
+- [x] **Edición Manual de Estado de Cámaras**: overrides admin auditados en `app.camaras_estado_auditoria`, modal de edición en Infra/Cámaras y conteo efectivo de baneadas alineado al estado persistido (2026-04-20).
 
 ### Pendiente (prioridad)
 - [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).
 - [ ] Implementar endpoint `/api/infra/notify/send` para envío SMTP de notificaciones.
+- [ ] Aplicar en el entorno objetivo la migración `20260420_01_camaras_estado_auditoria` antes de usar la edición manual desde el panel.
 - [ ] Validación manual exhaustiva de Alarmas Ciena con archivos reales de producción (2025-11-17).
 - [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
 - [x] Disparadores de flujos desde la UI.

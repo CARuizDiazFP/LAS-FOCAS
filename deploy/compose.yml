@@ -67,6 +67,7 @@ services:
       # Nota: Se usa un Ollama externo ya existente en la VM/host
       OLLAMA_URL: http://host.docker.internal:11434
       API_BASE: http://192.168.241.28:8080
+      LOGS_DIR: /app/Logs
       REPORTS_DIR: /app/web_app/data/reports
       UPLOADS_DIR: /app/web_app/data/uploads
       TEMPLATES_DIR: /app/Templates
@@ -163,6 +164,33 @@ services:
       - ../Templates:/app/Templates:ro
       - ../Reports:/app/data/reports
     command: ["python", "-m", "modules.informes_repetitividad.worker"]
+
+  slack_baneo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/slack_baneo_worker.Dockerfile
+    container_name: lasfocas-slack-baneo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      LOGS_DIR: /app/Logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8095"
+    volumes:
+      - ../Logs:/app/Logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8095/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_net
 
   # (Opcional) pgAdmin. Levantar con: docker compose -f deploy/compose.yml --profile pgadmin up -d
   pgadmin:

@@ -431,3 +431,47 @@ class IncidenteBaneo(Base):
         fin = self.fecha_fin or datetime.now(timezone.utc)
         delta = fin - self.fecha_inicio
         return delta.total_seconds() / 3600
+
+
+class CamaraEstadoAuditoria(Base):
+    """Auditoría de cambios manuales del estado de cámaras."""
+
+    __tablename__ = "camaras_estado_auditoria"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    camara_id = Column(
+        Integer,
+        ForeignKey("app.camaras.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    usuario = Column(String(128), nullable=False)
+    motivo = Column(Text, nullable=False)
+    estado_anterior = Column(
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        nullable=False,
+    )
+    estado_nuevo = Column(
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        nullable=False,
+    )
+    estado_sugerido = Column(
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        nullable=True,
+    )
+    incidentes_activos = Column(JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    camara = relationship("Camara")
+
+    def __repr__(self) -> str:
+        return (
+            f"<CamaraEstadoAuditoria id={self.id} camara_id={self.camara_id} "
+            f"{self.estado_anterior.value}->{self.estado_nuevo.value}>"
+        )

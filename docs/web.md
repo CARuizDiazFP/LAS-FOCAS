@@ -278,7 +278,19 @@ Las tarjetas de cámara con estado `BANEADA` muestran:
 }
 ```
 
-#### 5. Dropdown de Exportación
+Además, cuando el estado persistido de la cámara no coincide con el estado sugerido por el
+contexto operativo, la tarjeta muestra una alerta amarilla con el estado actual, el sugerido
+y la cantidad de incidentes activos que justifican la discrepancia.
+
+#### 5. Edición Manual de Estado
+
+- **Permiso:** solo usuarios con rol `admin`.
+- **Acción:** cada tarjeta editable expone un botón `Editar estado`.
+- **Modal:** permite ver contexto operativo, incidentes activos relacionados, estado sugerido y guardar un override manual con motivo obligatorio.
+- **Auditoría:** cada cambio exitoso se registra en `app.camaras_estado_auditoria`.
+- **Regla operativa:** el override manual puede dejar una cámara en un estado distinto al sugerido, incluso si existe un baneo activo; la interfaz lo muestra explícitamente como inconsistencia.
+
+#### 6. Dropdown de Exportación
 
 Menú desplegable junto al botón "Limpiar servicio" con las opciones:
 
@@ -291,7 +303,7 @@ Menú desplegable junto al botón "Limpiar servicio" con las opciones:
 
 Cada opción llama a `GET /api/infra/export/cameras?filter=X&format=Y`.
 
-#### 6. Botón de Notificaciones
+#### 7. Botón de Notificaciones
 
 - **Icono:** Campana (🔔) con badge numérico.
 - **Función (mock):** Abre modal con listado de baneos activos.
@@ -301,11 +313,19 @@ Cada opción llama a `GET /api/infra/export/cameras?filter=X&format=Y`.
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
+| `/api/infra/camaras/{id}/estado` | GET | Devuelve el contexto operativo de una cámara para edición manual |
+| `/api/infra/camaras/{id}/estado` | POST | Aplica override manual del estado (admin + CSRF) |
 | `/api/infra/ban/create` | POST | Crea incidente de baneo |
 | `/api/infra/ban/active` | GET | Lista baneos activos |
 | `/api/infra/ban/{id}/remove` | DELETE | Remueve un baneo |
 | `/api/infra/servicios/{id}/rutas` | GET | Lista rutas de un servicio |
 | `/api/infra/export/cameras` | GET | Exporta cámaras con filtros |
+
+`GET /api/infra/ban/active` devuelve ahora dos nociones distintas:
+- `camaras_count`: cámaras cubiertas topológicamente por cada incidente activo.
+- `camaras_baneadas_count` y `total_camaras_baneadas`: cámaras efectivamente persistidas con estado `BANEADA`.
+
+El badge del panel usa el conteo efectivo para evitar falsos positivos cuando un administrador normaliza manualmente discrepancias.
 
 ### Modelo de Datos
 
@@ -363,7 +383,37 @@ Campos principales:
 
 ## Próximos pasos
 
-- Agregar página Admin (UI) para crear usuarios y cambiar contraseña.
 - Conectar botones a flujos SLA/Repetitividad/Comparador FO.
 - WebSocket/streaming con Ollama y feedback de progreso.
 - Tests de integración adicionales y documentación de uso.
+
+## Panel Admin — Servicios Baneos
+
+### URL
+
+`/admin/Servicios/Baneos` — requiere rol `admin`.
+
+### Descripción
+
+Página independiente para gestionar la configuración del worker de notificaciones de baneos a Slack. Permite cambiar el intervalo de ejecución, los canales destino y el estado activo/inactivo del servicio sin necesidad de reiniciar el worker.
+
+### Funcionalidades
+
+| Componente | Descripción |
+|------------|-------------|
+| Intervalo (horas) | Campo numérico libre (mín. 1) para definir cada cuántas horas se envía el reporte |
+| Canales Slack | Textarea con canales separados por coma (ej: `#baneo-de-camaras-prueba,#ingresos_nodos_camaras`) |
+| Servicio activo | Toggle on/off para habilitar/deshabilitar el envío |
+| Última ejecución | Timestamp readonly de la última ejecución exitosa |
+| Último error | Mensaje del último error registrado (si aplica) |
+| Verificar Estado | Botón AJAX que consulta el health check del worker y muestra indicador visual verde/rojo |
+
+### Endpoints
+
+- `GET /admin/Servicios/Baneos` — Renderiza template con config actual desde `app.config_servicios`
+- `POST /api/admin/servicios/baneos` — Actualiza configuración (admin + CSRF). Redirige a la misma página tras guardar.
+- `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`)
+
+### Navegación
+
+Enlace disponible en la topbar de la página Admin (`/admin`).

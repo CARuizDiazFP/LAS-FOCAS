@@ -318,12 +318,14 @@ async def logout(request: Request) -> RedirectResponse:
 async def index(request: Request) -> HTMLResponse:
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    _, role = _require_auth(request)
     # Mostrar el nuevo panel con Chat como vista principal
     return templates.TemplateResponse(
         request,
         "panel.html",
         {
             "username": get_current_user(request),
+            "role": role,
             "csrf": request.session.get("csrf"),
         # API externa: por defecto usar el puerto expuesto de la API (8001)
         "api_base": os.getenv("API_BASE", "http://localhost:8001"),
@@ -335,11 +337,13 @@ async def index(request: Request) -> HTMLResponse:
 async def panel(request: Request) -> HTMLResponse:
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    _, role = _require_auth(request)
     return templates.TemplateResponse(
         request,
         "panel.html",
         {
             "username": get_current_user(request),
+            "role": role,
             "csrf": request.session.get("csrf"),
         # API externa: por defecto usar el puerto expuesto de la API (8001)
         "api_base": os.getenv("API_BASE", "http://localhost:8001"),
@@ -610,6 +614,13 @@ def _require_auth(request: Request) -> tuple[str, str]:
     return username, role
 
 
+def _require_admin(request: Request) -> str:
+    username, role = _require_auth(request)
+    if role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
+    return username
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request) -> HTMLResponse:
     user = request.session.get("username")
@@ -693,6 +704,134 @@ async def admin_create_user(
     except Exception as exc:
         return JSONResponse({"error": f"Error creando usuario: {exc}"}, status_code=500)
     return JSONResponse({"status": "ok"})
+
+
+# ── Servicios Baneos (admin) ────────────────────────────────────
+
+_SLACK_WORKER_HEALTH_URL = os.getenv(
+    "SLACK_WORKER_HEALTH_URL", "http://slack_baneo_worker:8095/health"
+)
+
+
+@app.get("/admin/Servicios/Baneos", response_class=HTMLResponse)
+async def servicios_baneos_page(request: Request) -> HTMLResponse:
+    """Panel admin para configurar el worker de notificaciones de baneos Slack."""
+    user = request.session.get("username")
+    role = request.session.get("role", "user")
+    if not user:
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    if role != "admin":
+        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+
+    # Leer configuración actual de la DB
+    config_data: dict[str, Any] = {
+        "intervalo_horas": 4,
+        "slack_channels": "",
+        "activo": True,
+        "ultima_ejecucion": None,
+        "ultimo_error": None,
+    }
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT intervalo_horas, slack_channels, activo, ultima_ejecucion, ultimo_error "
+                    "FROM app.config_servicios WHERE nombre_servicio = %s",
+                    ("slack_baneo_notifier",),
+                )
+                row = cur.fetchone()
+                if row:
+                    config_data = {
+                        "intervalo_horas": row[0],
+                        "slack_channels": row[1],
+                        "activo": row[2],
+                        "ultima_ejecucion": row[3].isoformat() if row[3] else None,
+                        "ultimo_error": row[4],
+                    }
+    except Exception as exc:
+        logger.error("Error leyendo config_servicios: %s", exc)
+
+    return templates.TemplateResponse(
+        request,
+        "servicios_baneos.html",
+        {
+            "username": user,
+            "role": role,
+            "csrf": request.session.get("csrf"),
+            **config_data,
+        },
+    )
+
+
+@app.post("/api/admin/servicios/baneos")
+async def servicios_baneos_update(
+    request: Request,
+    intervalo_horas: int = Form(...),
+    slack_channels: str = Form(""),
+    activo: str = Form("off"),
+    csrf_token: str = Form(...),
+):
+    """Actualiza la configuración del worker de notificaciones de baneos."""
+    _, role = _require_auth(request)
+    if role != "admin":
+        return JSONResponse({"error": "Solo admin"}, status_code=403)
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if intervalo_horas < 1:
+        return JSONResponse({"error": "El intervalo debe ser al menos 1 hora"}, status_code=400)
+
+    if len(slack_channels.strip()) > 512:
+        return JSONResponse({"error": "Los canales no deben superar 512 caracteres"}, status_code=400)
+
+    activo_bool = activo.lower() in ("on", "true", "1", "yes")
+
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE app.config_servicios "
+                    "SET intervalo_horas = %s, slack_channels = %s, activo = %s "
+                    "WHERE nombre_servicio = %s",
+                    (intervalo_horas, slack_channels.strip(), activo_bool, "slack_baneo_notifier"),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "INSERT INTO app.config_servicios "
+                        "(nombre_servicio, intervalo_horas, slack_channels, activo) "
+                        "VALUES (%s, %s, %s, %s)",
+                        ("slack_baneo_notifier", intervalo_horas, slack_channels.strip(), activo_bool),
+                    )
+                conn.commit()
+    except Exception as exc:
+        logger.error("Error actualizando config_servicios: %s", exc)
+        return JSONResponse({"error": "Error actualizando configuración"}, status_code=500)
+
+    return RedirectResponse(url="/admin/Servicios/Baneos", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/api/admin/servicios/baneos/health")
+async def servicios_baneos_health(request: Request):
+    """Proxy al health check del worker de notificaciones de baneos."""
+    _, role = _require_auth(request)
+    if role != "admin":
+        return JSONResponse({"error": "Solo admin"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(_SLACK_WORKER_HEALTH_URL)
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"status": "offline", "service": "slack_baneo_worker", "error": "Worker no accesible"},
+            status_code=503,
+        )
+    except Exception as exc:
+        logger.error("Error consultando health del worker: %s", exc)
+        return JSONResponse(
+            {"status": "error", "service": "slack_baneo_worker"},
+            status_code=500,
+        )
 
 
 @app.post("/api/chat/message")
@@ -1436,7 +1575,15 @@ class CamaraResponseModel(BaseModel):
     origen_datos: str
     latitud: Optional[float] = None
     longitud: Optional[float] = None
-    servicios: List[str] = []
+    servicios: List[str] = Field(default_factory=list)
+    rutas: List[Dict[str, Any]] = Field(default_factory=list)
+    tiene_baneo_activo: bool = False
+    tiene_ingreso_activo: bool = False
+    inconsistente: bool = False
+    estado_sugerido: Optional[str] = None
+    ticket_baneo: Optional[str] = None
+    editable: bool = False
+    incidentes_activos: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class CamarasListResponseModel(BaseModel):
@@ -1445,6 +1592,58 @@ class CamarasListResponseModel(BaseModel):
     status: str
     total: int
     camaras: List[CamaraResponseModel]
+
+
+class CamaraEstadoUpdateRequest(BaseModel):
+    """Payload para override manual del estado de una cámara."""
+
+    estado: str
+    motivo: str = Field(min_length=5, max_length=500)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+def _serialize_camara_response(
+    *,
+    camara: Any,
+    rutas_info: list[dict[str, Any]],
+    servicios_ids: list[str],
+    contexto: Any | None,
+    editable: bool,
+) -> dict[str, Any]:
+    ticket_baneo = None
+    tiene_baneo_activo = False
+    tiene_ingreso_activo = False
+    inconsistente = False
+    estado_sugerido = None
+    incidentes_activos: list[dict[str, Any]] = []
+
+    if contexto is not None:
+        ticket_baneo = contexto.ticket_baneo
+        tiene_baneo_activo = contexto.tiene_baneo_activo
+        tiene_ingreso_activo = contexto.tiene_ingreso_activo
+        inconsistente = contexto.inconsistente
+        estado_sugerido = contexto.estado_sugerido.value
+        incidentes_activos = [incidente.to_dict() for incidente in contexto.incidentes_activos]
+
+    return {
+        "id": camara.id,
+        "nombre": camara.nombre or "",
+        "fontine_id": camara.fontine_id,
+        "direccion": camara.direccion,
+        "estado": camara.estado.value if camara.estado else "LIBRE",
+        "origen_datos": camara.origen_datos.value if camara.origen_datos else "MANUAL",
+        "latitud": camara.latitud,
+        "longitud": camara.longitud,
+        "servicios": servicios_ids,
+        "rutas": rutas_info,
+        "tiene_baneo_activo": tiene_baneo_activo,
+        "tiene_ingreso_activo": tiene_ingreso_activo,
+        "inconsistente": inconsistente,
+        "estado_sugerido": estado_sugerido,
+        "ticket_baneo": ticket_baneo,
+        "editable": editable,
+        "incidentes_activos": incidentes_activos,
+    }
 
 
 @app.get("/api/infra/camaras")
@@ -1456,10 +1655,11 @@ async def search_camaras_web(
 ) -> JSONResponse:
     """Busca cámaras por query y/o estado (proxy al API interno)."""
 
-    username, _ = _require_auth(request)
+    username, role = _require_auth(request)
     limit = min(limit, 500)
 
     try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
         from db.models.infra import Camara, CamaraEstado, Servicio, RutaServicio, ruta_empalme_association
         from db.session import SessionLocal
 
@@ -1504,18 +1704,15 @@ async def search_camaras_web(
                 # Para retrocompatibilidad, mantener lista simple de servicios
                 servicios_ids = list(set(r["servicio_id"] for r in rutas_info))
 
-                camaras_response.append({
-                    "id": cam.id,
-                    "nombre": cam.nombre or "",
-                    "fontine_id": cam.fontine_id,
-                    "direccion": cam.direccion,
-                    "estado": cam.estado.value if cam.estado else "LIBRE",
-                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                    "latitud": cam.latitud,
-                    "longitud": cam.longitud,
-                    "servicios": servicios_ids,
-                    "rutas": rutas_info,
-                })
+                camaras_response.append(
+                    _serialize_camara_response(
+                        camara=cam,
+                        rutas_info=rutas_info,
+                        servicios_ids=servicios_ids,
+                        contexto=get_camara_estado_contexto(session, cam.id),
+                        editable=role == "admin",
+                    )
+                )
 
             # Buscar por servicio_id si no se encontraron cámaras
             if q and q.strip() and not camaras_response:
@@ -1548,18 +1745,15 @@ async def search_camaras_web(
                                 
                                 servicios_ids = list(set(r["servicio_id"] for r in rutas_info))
 
-                                camaras_response.append({
-                                    "id": cam.id,
-                                    "nombre": cam.nombre or "",
-                                    "fontine_id": cam.fontine_id,
-                                    "direccion": cam.direccion,
-                                    "estado": cam.estado.value if cam.estado else "LIBRE",
-                                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                                    "latitud": cam.latitud,
-                                    "longitud": cam.longitud,
-                                    "servicios": servicios_ids,
-                                    "rutas": rutas_info,
-                                })
+                                camaras_response.append(
+                                    _serialize_camara_response(
+                                        camara=cam,
+                                        rutas_info=rutas_info,
+                                        servicios_ids=servicios_ids,
+                                        contexto=get_camara_estado_contexto(session, cam.id),
+                                        editable=role == "admin",
+                                    )
+                                )
 
             logger.info(
                 "action=search_camaras user=%s query=%s estado=%s results=%d",
@@ -1996,11 +2190,13 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
     
     try:
         from core.services.protection_service import get_incidentes_activos, ProtectionService
+        from db.models.infra import Camara, CamaraEstado
         from db.session import SessionLocal
         
         with SessionLocal() as session:
             incidentes = get_incidentes_activos(session)
             protection_svc = ProtectionService(session)
+            total_camaras_baneadas = session.query(Camara.id).filter(Camara.estado == CamaraEstado.BANEADA).count()
             
             incidentes_data = []
             for inc in incidentes:
@@ -2016,6 +2212,7 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
                     inc.ruta_protegida_id
                 )
                 camaras_count = len(camaras)
+                camaras_baneadas_count = sum(1 for camara in camaras if camara.estado == CamaraEstado.BANEADA)
                 
                 incidentes_data.append({
                     "id": inc.id,
@@ -2029,6 +2226,7 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
                     "activo": inc.activo,
                     "duracion_horas": round(duracion, 1) if duracion else None,
                     "camaras_count": camaras_count,
+                    "camaras_baneadas_count": camaras_baneadas_count,
                 })
             
             logger.info("action=get_active_bans user=%s count=%d", username, len(incidentes_data))
@@ -2037,6 +2235,7 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
                 "status": "ok",
                 "incidentes": incidentes_data,
                 "total": len(incidentes_data),
+                "total_camaras_baneadas": total_camaras_baneadas,
             })
             
     except Exception as exc:
@@ -2875,6 +3074,86 @@ class SmartSearchRequestModel(BaseModel):
     offset: int = 0
 
 
+@app.get("/api/infra/camaras/{camara_id}/estado")
+async def get_camara_estado_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene el contexto operativo del estado de una cámara."""
+
+    _require_admin(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            contexto = get_camara_estado_contexto(session, camara_id)
+            if contexto is None:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "editable": True,
+                    "estados_disponibles": [estado.value for estado in CamaraEstado],
+                    "contexto": contexto.to_dict(),
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=get_camara_estado_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudo obtener el estado de la cámara"}, status_code=500)
+
+
+@app.post("/api/infra/camaras/{camara_id}/estado")
+async def update_camara_estado_web(
+    request: Request,
+    camara_id: int,
+    body: CamaraEstadoUpdateRequest,
+) -> JSONResponse:
+    """Permite a un administrador aplicar un override manual del estado."""
+
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=update_camara_estado result=fail reason=csrf user=%s camara_id=%s", username, camara_id)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_estado_service import override_camara_estado_manual
+        from db.models.infra import CamaraEstado
+        from db.session import SessionLocal
+
+        estado_normalizado = body.estado.strip().upper()
+        if estado_normalizado not in {estado.value for estado in CamaraEstado}:
+            return JSONResponse({"error": "Estado inválido"}, status_code=400)
+
+        with SessionLocal() as session:
+            result = override_camara_estado_manual(
+                session,
+                camara_id,
+                CamaraEstado(estado_normalizado),
+                usuario=username,
+                motivo=body.motivo.strip(),
+            )
+            if not result.success:
+                session.rollback()
+                return JSONResponse({"error": result.error or "No se pudo actualizar el estado"}, status_code=400)
+
+            if result.changed:
+                session.commit()
+            else:
+                session.rollback()
+
+            return JSONResponse(result.to_dict())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=update_camara_estado_error user=%s camara_id=%s error=%s", username, camara_id, exc)
+        return JSONResponse({"error": "No se pudo actualizar el estado de la cámara"}, status_code=500)
+
+
 @app.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
     request: Request,
@@ -2886,9 +3165,10 @@ async def smart_search_camaras_web(
     servicios, cables, estado, origen). Los términos se combinan con AND.
     """
 
-    username, _ = _require_auth(request)
+    username, role = _require_auth(request)
 
     try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
         from db.models.infra import Camara
         from db.session import SessionLocal
 
@@ -2989,18 +3269,15 @@ async def smart_search_camaras_web(
                 for cam in paginated:
                     rutas_info = get_camara_rutas(cam)
                     servicios_ids = get_camara_servicios(cam, rutas_info)
-                    camaras_response.append({
-                        "id": cam.id,
-                        "nombre": cam.nombre or "",
-                        "fontine_id": cam.fontine_id,
-                        "direccion": cam.direccion,
-                        "estado": cam.estado.value if cam.estado else "LIBRE",
-                        "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                        "latitud": cam.latitud,
-                        "longitud": cam.longitud,
-                        "servicios": servicios_ids,
-                        "rutas": rutas_info,
-                    })
+                    camaras_response.append(
+                        _serialize_camara_response(
+                            camara=cam,
+                            rutas_info=rutas_info,
+                            servicios_ids=servicios_ids,
+                            contexto=get_camara_estado_contexto(session, cam.id),
+                            editable=role == "admin",
+                        )
+                    )
 
                 return JSONResponse({
                     "status": "ok",
@@ -3034,18 +3311,15 @@ async def smart_search_camaras_web(
             paginated = matching_camaras[offset:offset + limit]
             camaras_response = []
             for cam, svc_ids, rutas in paginated:
-                camaras_response.append({
-                    "id": cam.id,
-                    "nombre": cam.nombre or "",
-                    "fontine_id": cam.fontine_id,
-                    "direccion": cam.direccion,
-                    "estado": cam.estado.value if cam.estado else "LIBRE",
-                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                    "latitud": cam.latitud,
-                    "longitud": cam.longitud,
-                    "servicios": svc_ids,
-                    "rutas": rutas,
-                })
+                camaras_response.append(
+                    _serialize_camara_response(
+                        camara=cam,
+                        rutas_info=rutas,
+                        servicios_ids=svc_ids,
+                        contexto=get_camara_estado_contexto(session, cam.id),
+                        editable=role == "admin",
+                    )
+                )
 
             terms_count = len([t for t in body.terms if t.strip()])
             logger.info(

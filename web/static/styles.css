@@ -566,6 +566,14 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   gap: 12px;
 }
 
+.infra-camara-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .infra-camara-estado {
   display: flex;
   align-items: center;
@@ -600,12 +608,42 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
   font-family: "SFMono-Regular", Consolas, monospace;
 }
 
+.infra-edit-btn {
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  background: rgba(96, 165, 250, 0.12);
+  color: #93c5fd;
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.infra-edit-btn:hover {
+  background: rgba(96, 165, 250, 0.2);
+}
+
 /* Nombre/Dirección */
 .infra-camara-nombre {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
   line-height: 1.3;
+}
+
+.infra-camara-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(250, 204, 21, 0.08);
+  border: 1px solid rgba(250, 204, 21, 0.25);
+  color: #fde68a;
+  font-size: 0.78rem;
+}
+
+.infra-camara-card[data-inconsistente="true"] {
+  border-color: rgba(250, 204, 21, 0.35);
 }
 
 /* Servicios */
@@ -2670,6 +2708,106 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
 .active-ban-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.camera-state-content {
+  max-width: 720px;
+}
+
+.camera-state-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.camera-state-summary,
+.camera-state-incidents {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px 16px;
+}
+
+.camera-state-title-row,
+.camera-state-meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.camera-state-title-row {
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.camera-state-meta-row {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.camera-state-badge {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.camera-state-badge.ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+}
+
+.camera-state-badge.warning {
+  background: rgba(250, 204, 21, 0.15);
+  color: #fde68a;
+}
+
+.camera-state-form {
+  display: grid;
+  gap: 14px;
+}
+
+.camera-state-field {
+  display: grid;
+  gap: 8px;
+}
+
+.camera-state-field span {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.camera-state-field select,
+.camera-state-field textarea {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.camera-state-incidents-title {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.camera-state-incident-item {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+  margin-top: 10px;
+  font-size: 0.84rem;
+}
+
+.camera-state-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .btn-lift-ban {

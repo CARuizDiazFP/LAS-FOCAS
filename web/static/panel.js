@@ -456,6 +456,25 @@
   // Estado de términos de búsqueda activos
   let searchTerms = [];
   let hasSearched = false;
+  const isInfraAdmin = (window.USER_ROLE || 'user').toLowerCase() === 'admin';
+  const cameraStateModal = document.getElementById('camera-state-modal');
+  const cameraStateSummary = document.getElementById('camera-state-summary');
+  const cameraStateIncidents = document.getElementById('camera-state-incidents');
+  const cameraStateSelect = document.getElementById('camera-state-select');
+  const cameraStateReason = document.getElementById('camera-state-reason');
+  const cameraStateSaveBtn = document.getElementById('camera-state-save-btn');
+  const cameraStateCancelBtn = document.getElementById('camera-state-cancel-btn');
+  const cameraStateCloseBtn = document.getElementById('camera-state-close-btn');
+  let cameraStateCurrent = null;
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   // ===========================================
   // TOAST NOTIFICATIONS
@@ -806,11 +825,15 @@
     const rutas = camara.rutas || [];
     const origenDatos = camara.origen_datos || 'MANUAL';
     const ticketBaneo = camara.ticket_baneo || null;
+    const editable = Boolean(isInfraAdmin && camara.editable);
+    const estadoSugerido = camara.estado_sugerido || null;
+    const incidenteActivo = Array.isArray(camara.incidentes_activos) ? camara.incidentes_activos : [];
 
     const card = document.createElement('div');
     card.className = 'infra-camara-card';
     card.dataset.estado = camara.estado || 'LIBRE';
     card.dataset.origen = origenDatos;
+    card.dataset.inconsistente = camara.inconsistente ? 'true' : 'false';
 
     // Renderizar chips de servicios con colores según ruta
     let serviciosHtml = '';
@@ -928,15 +951,40 @@
       metaHtml = `<div class="infra-camara-meta">${metaItems.join('')}</div>`;
     }
 
+    let warningHtml = '';
+    if (camara.inconsistente && estadoSugerido) {
+      const incidentesTexto = incidenteActivo.length > 0
+        ? `${incidenteActivo.length} incidente${incidenteActivo.length !== 1 ? 's' : ''} activo${incidenteActivo.length !== 1 ? 's' : ''}`
+        : 'sin incidentes activos';
+      warningHtml = `
+        <div class="infra-camara-warning">
+          <strong>Estado manual distinto al sugerido.</strong>
+          <span>Actual: ${escapeHtml(camara.estado)} · Sugerido: ${escapeHtml(estadoSugerido)} · ${escapeHtml(incidentesTexto)}</span>
+        </div>
+      `;
+    }
+
+    const editButtonHtml = editable
+      ? `<button type="button" class="infra-edit-btn" data-camara-id="${camara.id}">Editar estado</button>`
+      : '';
+
+    const headerMetaHtml = `
+      <div class="infra-camara-header-actions">
+        ${camara.fontine_id ? `<span class="infra-camara-id">${escapeHtml(camara.fontine_id)}</span>` : ''}
+        ${editButtonHtml}
+      </div>
+    `;
+
     card.innerHTML = `
       <div class="infra-camara-header">
         <div class="infra-camara-estado">
           <span class="infra-estado-icon ${estadoLower}"></span>
           <span class="infra-estado-text">${camara.estado || 'LIBRE'}</span>
         </div>
-        ${camara.fontine_id ? `<span class="infra-camara-id">${camara.fontine_id}</span>` : ''}
+        ${headerMetaHtml}
       </div>
       <div class="infra-camara-nombre">${camara.nombre || camara.direccion || 'Sin nombre'}</div>
+      ${warningHtml}
       <div class="infra-camara-servicios">${serviciosHtml}</div>
       ${puntasHtml}
       ${ticketHtml}
@@ -956,6 +1004,14 @@
       });
     });
 
+    const editBtn = card.querySelector('.infra-edit-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await openCameraStateModal(camara);
+      });
+    }
+
     return card;
   }
 
@@ -971,6 +1027,131 @@
     camaras.forEach(camara => {
       gridEl.appendChild(renderCamaraCard(camara));
     });
+  }
+
+  async function refreshInfraResults() {
+    if (hasSearched) {
+      await searchCamaras();
+    }
+    await loadActiveBans();
+    if (notifyModal && notifyModal.open) {
+      await loadActiveBansIntoModal();
+    }
+  }
+
+  function closeCameraStateModal() {
+    if (!cameraStateModal) return;
+    cameraStateCurrent = null;
+    if (cameraStateReason) cameraStateReason.value = '';
+    cameraStateModal.close();
+  }
+
+  function renderCameraStateSummary(camara, contexto) {
+    if (!cameraStateSummary) return;
+    const nombre = escapeHtml(camara.nombre || camara.direccion || 'Sin nombre');
+    const actual = escapeHtml(contexto.estado_actual || camara.estado || 'LIBRE');
+    const sugerido = escapeHtml(contexto.estado_sugerido || camara.estado_sugerido || actual);
+    const inconsistente = contexto.inconsistente
+      ? '<span class="camera-state-badge warning">Inconsistente</span>'
+      : '<span class="camera-state-badge ok">Alineada</span>';
+
+    cameraStateSummary.innerHTML = `
+      <div class="camera-state-title-row">
+        <strong>${nombre}</strong>
+        ${inconsistente}
+      </div>
+      <div class="camera-state-meta-row">
+        <span>Estado actual: <strong>${actual}</strong></span>
+        <span>Estado sugerido: <strong>${sugerido}</strong></span>
+      </div>
+      <div class="camera-state-meta-row">
+        <span>Baneo activo: <strong>${contexto.tiene_baneo_activo ? 'Sí' : 'No'}</strong></span>
+        <span>Ingreso activo: <strong>${contexto.tiene_ingreso_activo ? 'Sí' : 'No'}</strong></span>
+      </div>
+    `;
+  }
+
+  function renderCameraStateIncidents(contexto) {
+    if (!cameraStateIncidents) return;
+    const incidentes = Array.isArray(contexto.incidentes_activos) ? contexto.incidentes_activos : [];
+    if (!incidentes.length) {
+      cameraStateIncidents.innerHTML = '<p class="camera-state-empty">No hay incidentes activos vinculados a esta cámara.</p>';
+      return;
+    }
+
+    cameraStateIncidents.innerHTML = `
+      <div class="camera-state-incidents-title">Incidentes activos vinculados</div>
+      ${incidentes.map((incidente) => `
+        <div class="camera-state-incident-item">
+          <strong>${escapeHtml(incidente.ticket_asociado || 'Sin ticket')}</strong>
+          <span>Servicio protegido: ${escapeHtml(incidente.servicio_protegido_id || '-')}</span>
+          <span>Ruta protegida: ${escapeHtml(incidente.ruta_protegida_id ?? '-')}</span>
+        </div>
+      `).join('')}
+    `;
+  }
+
+  async function openCameraStateModal(camara) {
+    if (!cameraStateModal || !cameraStateSelect || !cameraStateReason) return;
+
+    try {
+      const res = await fetch(`${window.API_BASE || ''}/api/infra/camaras/${camara.id}/estado`, {
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Error ${res.status}`);
+      }
+
+      cameraStateCurrent = { camara, contexto: data.contexto };
+      cameraStateSelect.value = (data.contexto && data.contexto.estado_actual) || camara.estado || 'LIBRE';
+      cameraStateReason.value = '';
+      renderCameraStateSummary(camara, data.contexto || {});
+      renderCameraStateIncidents(data.contexto || {});
+      cameraStateModal.showModal();
+    } catch (err) {
+      showToast('error', 'No se pudo abrir el editor', err.message);
+    }
+  }
+
+  async function saveCameraStateOverride() {
+    if (!cameraStateCurrent || !cameraStateSelect || !cameraStateReason) return;
+
+    const motivo = cameraStateReason.value.trim();
+    if (motivo.length < 5) {
+      showToast('warning', 'Motivo insuficiente', 'Ingresá al menos 5 caracteres para auditar el cambio');
+      return;
+    }
+
+    if (cameraStateSaveBtn) cameraStateSaveBtn.disabled = true;
+
+    try {
+      const res = await fetch(`${window.API_BASE || ''}/api/infra/camaras/${cameraStateCurrent.camara.id}/estado`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          estado: cameraStateSelect.value,
+          motivo,
+          csrf_token: window.CSRF_TOKEN || ''
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'No se pudo guardar el cambio');
+      }
+
+      closeCameraStateModal();
+      await refreshInfraResults();
+      showToast('success', 'Estado actualizado', data.changed ? 'El cambio quedó auditado' : 'La cámara ya tenía ese estado');
+    } catch (err) {
+      showToast('error', 'Error al guardar', err.message);
+    } finally {
+      if (cameraStateSaveBtn) cameraStateSaveBtn.disabled = false;
+    }
   }
 
   // ===========================================
@@ -1668,12 +1849,7 @@
       const data = await res.json();
       const count = data.total || 0;
       const incidentes = data.incidentes || [];
-      
-      // Calcular total de cámaras baneadas sumando todos los baneos
-      let totalCamaras = 0;
-      for (const inc of incidentes) {
-        totalCamaras += inc.camaras_count || 0;
-      }
+      const totalCamaras = data.total_camaras_baneadas || 0;
       
       if (count > 0) {
         if (banBadge) {
@@ -1682,7 +1858,8 @@
         }
         // Actualizar el tooltip del badge para mostrar total de cámaras
         if (banBadge) {
-          banBadge.title = `${count} baneo(s) activo(s) - ${totalCamaras} cámara(s) restringidas`;
+          const cubiertas = incidentes.reduce((sum, inc) => sum + (inc.camaras_count || 0), 0);
+          banBadge.title = `${count} baneo(s) activo(s) - ${totalCamaras} cámara(s) efectivamente baneadas de ${cubiertas} cubiertas por incidentes`;
         }
         // Actualizar indicador global de cámaras baneadas
         updateTotalCamarasIndicator(totalCamaras);
@@ -2264,6 +2441,7 @@
         const duracion = inc.duracion_horas ? `${inc.duracion_horas}h` : '-';
         const fecha = inc.fecha_inicio ? new Date(inc.fecha_inicio).toLocaleString('es-AR') : '-';
         const camarasCount = inc.camaras_count || '?';
+        const camarasBaneadasCount = inc.camaras_baneadas_count ?? '?';
         
         html += `
           <div class="active-ban-item" data-id="${inc.id}">
@@ -2279,6 +2457,7 @@
             <div class="active-ban-meta">
               <span>📅 ${fecha}</span>
               ${inc.usuario_ejecutor ? `<span>👤 ${inc.usuario_ejecutor}</span>` : ''}
+              <span>📷 ${camarasBaneadasCount}/${camarasCount} efectivamente baneadas</span>
             </div>
             ${inc.motivo ? `<div class="active-ban-motivo">${inc.motivo}</div>` : ''}
             <div class="active-ban-actions">
@@ -2363,7 +2542,7 @@
       loadActiveBans();
       
       // Recargar búsqueda si hay filtros activos
-      if (terms.length > 0) {
+      if (searchTerms.length > 0 || hasSearched) {
         await searchCamaras();
       }
       
@@ -2389,6 +2568,18 @@
 
   if (notifyCancelBtn) {
     notifyCancelBtn.addEventListener('click', () => notifyModal.close());
+  }
+
+  if (cameraStateCloseBtn) {
+    cameraStateCloseBtn.addEventListener('click', closeCameraStateModal);
+  }
+
+  if (cameraStateCancelBtn) {
+    cameraStateCancelBtn.addEventListener('click', closeCameraStateModal);
+  }
+
+  if (cameraStateSaveBtn) {
+    cameraStateSaveBtn.addEventListener('click', saveCameraStateOverride);
   }
 
   // ===========================================

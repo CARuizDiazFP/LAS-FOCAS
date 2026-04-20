@@ -30,9 +30,19 @@ class SmtpSettings:
 
 
 @dataclass(slots=True)
+class SlackSettings:
+    """Configuración Slack para notificaciones automatizadas."""
+
+    bot_token: str
+    app_token: str
+    enabled: bool
+
+
+@dataclass(slots=True)
 class Settings:
     infra: InfraSettings
     smtp: SmtpSettings
+    slack: SlackSettings
 
     def __init__(self) -> None:
         self.infra = InfraSettings(
@@ -48,6 +58,11 @@ class Settings:
             from_name=getenv("SMTP_FROM_NAME", "LAS-FOCAS Notificaciones"),
             use_tls=getenv("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes"),
             enabled=bool(getenv("SMTP_HOST")),
+        )
+        self.slack = SlackSettings(
+            bot_token=getenv("SLACK_BOT_TOKEN", ""),
+            app_token=getenv("SLACK_APP_TOKEN", ""),
+            enabled=bool(getenv("SLACK_BOT_TOKEN")),
         )
 
 

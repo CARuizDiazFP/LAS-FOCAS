@@ -35,6 +35,8 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Servicios web/bot llaman al API de reportes mediante `REPORTS_API_BASE`; asegúrese de que apunte a la red interna (`http://api:8000`).
 - Publicación del servicio `web` acotada a la IP LAN `192.168.241.28:8080` en `deploy/compose.yml` para evitar exposición en 0.0.0.0.
 - Postgres sin publicación al host: `deploy/compose.yml` usa `expose: 5432` para que solo sea accesible por servicios internos.
+- El worker `slack_baneo_worker` expone solo `8095` dentro de la red de compose y toma credenciales Slack desde `.env`; no se publican tokens ni puertos Slack hacia el host.
+- Las auditorías de seguridad del repositorio se estandarizan con el agente `security` y las skills `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`.
 
 ## Riesgos comunes a considerar
 
@@ -98,6 +100,13 @@ bash scripts/firewall_hardening.sh
 - Revocar/rotar secretos comprometidos y reemitir imágenes.
 - Parchear dependencias vulnerables y reconstruir.
 - Registrar el incidente, causas y acciones en `docs/PR/` y `docs/decisiones.md`.
+
+## Workflow de revisión safe-by-design
+
+- Alcance recomendado: secretos, dependencias, SAST y hardening de despliegue.
+- Superficies prioritarias: `.env`, `deploy/compose.yml`, Dockerfiles, `Keys/`, scripts operativos, autenticación/sesiones y endpoints expuestos.
+- Resultado esperado: hallazgos ordenados por severidad con parche o mitigación mínima, sin exponer secretos completos.
+- Referencias operativas: `.github/agents/security.agent.md`, `.github/prompts/revisar-seguridad.prompt.md` y `.github/skills/security-scan/`.
 
 ## Próximos pasos
 

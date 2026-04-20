@@ -78,4 +78,5 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 - Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
 - Usar skills de `.github/skills/` para workflows repetibles como pytest, alembic, Docker, mantenimiento y sincronización trazable del repositorio.
+- Para revisiones safe-by-design de seguridad, usar `security` junto con `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`; priorizar `.env`, `deploy/`, `Keys/`, Docker, red y superficies expuestas.
 - Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.github/skills/skill-generator/`.

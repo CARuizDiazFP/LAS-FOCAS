@@ -1,0 +1,215 @@
+<!--
+# Nombre de archivo: servicios_baneos.html
+# Ubicación de archivo: web/templates/servicios_baneos.html
+# Descripción: Panel admin para configurar notificaciones de baneos de cámaras a Slack
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Servicios — Baneos — LAS-FOCAS</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .status-badge.ok { background: #16a34a22; color: #4ade80; border: 1px solid #16a34a55; }
+    .status-badge.offline { background: #dc262622; color: #f87171; border: 1px solid #dc262655; }
+    .status-badge.unknown { background: #a3a3a322; color: #a3a3a3; border: 1px solid #a3a3a355; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-dot.ok { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+    .status-dot.offline { background: #f87171; box-shadow: 0 0 6px #f87171; }
+    .status-dot.unknown { background: #a3a3a3; }
+    .info-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: var(--muted); font-size: 0.9rem; }
+    .info-value { font-weight: 500; }
+    .error-text { color: #f87171; font-size: 0.85rem; margin-top: 4px; }
+    .toggle-container { display: flex; align-items: center; gap: 10px; }
+    .toggle { position: relative; width: 44px; height: 24px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background: var(--border); border-radius: 12px; transition: 0.3s;
+    }
+    .toggle-slider:before {
+      content: ""; position: absolute; width: 18px; height: 18px;
+      left: 3px; bottom: 3px; background: var(--text);
+      border-radius: 50%; transition: 0.3s;
+    }
+    .toggle input:checked + .toggle-slider { background: var(--primary); }
+    .toggle input:checked + .toggle-slider:before { transform: translateX(20px); }
+    textarea.channels { width: 100%; min-height: 60px; resize: vertical; }
+  </style>
+</head>
+<body class="dark">
+  <header class="topbar">
+    <div class="brand">LAS-FOCAS</div>
+    <nav class="actions">
+      <a class="btn" href="/">Panel</a>
+      <a class="btn" href="/admin">Admin</a>
+      <a class="btn" href="/logout">Salir</a>
+      <span style="margin-left:12px;color:var(--muted)">Usuario: {{ username }} ({{ role }})</span>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="panel">
+      <h1>Servicios — Notificaciones de Baneos</h1>
+      <p style="color:var(--muted);margin-bottom:24px;">
+        Configuración del worker que envía reportes periódicos de cámaras baneadas a Slack.
+      </p>
+
+      <div class="grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+
+        <!-- Card: Configuración -->
+        <div class="card" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;">
+          <h2 style="margin-top:0;">Configuración</h2>
+          <form method="post" action="/api/admin/servicios/baneos">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}" />
+
+            <label for="intervalo_horas">Intervalo de ejecución (horas)</label>
+            <input
+              type="number"
+              id="intervalo_horas"
+              name="intervalo_horas"
+              min="1"
+              value="{{ intervalo_horas }}"
+              required
+              style="width:100%;"
+            />
+            <p class="muted" style="font-size:0.8rem;">Cada cuántas horas se envía el reporte a Slack.</p>
+
+            <label for="slack_channels">Canales Slack</label>
+            <textarea
+              id="slack_channels"
+              name="slack_channels"
+              class="channels"
+              placeholder="#canal1,#canal2"
+            >{{ slack_channels }}</textarea>
+            <p class="muted" style="font-size:0.8rem;">Separar múltiples canales con coma.</p>
+
+            <div class="toggle-container" style="margin:16px 0;">
+              <label class="toggle">
+                <input type="checkbox" name="activo" {% if activo %}checked{% endif %} />
+                <span class="toggle-slider"></span>
+              </label>
+              <span>Servicio activo</span>
+            </div>
+
+            <button type="submit" class="btn primary" style="width:100%;margin-top:12px;">
+              Guardar Configuración
+            </button>
+          </form>
+        </div>
+
+        <!-- Card: Estado del Worker -->
+        <div class="card" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;">
+          <h2 style="margin-top:0;">Estado del Worker</h2>
+
+          <div id="health-status" style="text-align:center;padding:20px 0;">
+            <span class="status-badge unknown">
+              <span class="status-dot unknown"></span>
+              Sin verificar
+            </span>
+          </div>
+
+          <div id="health-details" style="display:none;">
+            <div class="info-row">
+              <span class="info-label">Estado</span>
+              <span class="info-value" id="detail-status">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Intervalo actual</span>
+              <span class="info-value" id="detail-intervalo">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Última ejecución</span>
+              <span class="info-value" id="detail-last-run">—</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Último error</span>
+              <span class="info-value" id="detail-last-error">—</span>
+            </div>
+          </div>
+
+          <div class="info-row" style="margin-top:16px;">
+            <span class="info-label">Última ejecución (DB)</span>
+            <span class="info-value">{{ ultima_ejecucion or "Nunca" }}</span>
+          </div>
+          {% if ultimo_error %}
+          <p class="error-text">⚠ Último error: {{ ultimo_error }}</p>
+          {% endif %}
+
+          <button
+            type="button"
+            class="btn primary"
+            style="width:100%;margin-top:16px;"
+            onclick="verificarHealth()"
+            id="btn-health"
+          >
+            Verificar Estado
+          </button>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <script>
+    async function verificarHealth() {
+      const btn = document.getElementById('btn-health');
+      const statusEl = document.getElementById('health-status');
+      const detailsEl = document.getElementById('health-details');
+
+      btn.disabled = true;
+      btn.textContent = 'Verificando...';
+
+      try {
+        const resp = await fetch('/api/admin/servicios/baneos/health');
+        const data = await resp.json();
+
+        const isOk = data.status === 'ok';
+        const cls = isOk ? 'ok' : 'offline';
+        const label = isOk ? 'Activo' : (data.status || 'Inactivo');
+
+        statusEl.textContent = '';
+        const badge = document.createElement('span');
+        badge.className = 'status-badge ' + cls;
+        const dot = document.createElement('span');
+        dot.className = 'status-dot ' + cls;
+        badge.appendChild(dot);
+        badge.appendChild(document.createTextNode(' ' + label));
+        statusEl.appendChild(badge);
+
+        document.getElementById('detail-status').textContent = data.status || '—';
+        document.getElementById('detail-intervalo').textContent =
+          data.intervalo_horas ? data.intervalo_horas + 'h' : '—';
+        document.getElementById('detail-last-run').textContent = data.last_run || 'Nunca';
+        document.getElementById('detail-last-error').textContent = data.last_error || 'Ninguno';
+        detailsEl.style.display = 'block';
+      } catch (err) {
+        statusEl.textContent = '';
+        const errBadge = document.createElement('span');
+        errBadge.className = 'status-badge offline';
+        const errDot = document.createElement('span');
+        errDot.className = 'status-dot offline';
+        errBadge.appendChild(errDot);
+        errBadge.appendChild(document.createTextNode(' Error de conexión'));
+        statusEl.appendChild(errBadge);
+        detailsEl.style.display = 'none';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Verificar Estado';
+      }
+    }
+  </script>
+</body>
+</html>
