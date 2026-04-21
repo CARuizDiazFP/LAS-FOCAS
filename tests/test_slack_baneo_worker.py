@@ -172,5 +172,46 @@ class TestWorkerConfig(unittest.TestCase):
         self.assertIsInstance(JOB_ID, str)
 
 
+class TestWorkerHotReload(unittest.TestCase):
+    """Tests para la recarga en caliente de configuración del worker."""
+
+    @patch("modules.slack_baneo_notifier.worker._leer_config")
+    def test_sincroniza_intervalo_y_reprograma_scheduler(self, mock_leer_config: MagicMock) -> None:
+        from modules.slack_baneo_notifier import worker
+
+        config = ConfigServicios()
+        config.intervalo_horas = 24
+        config.activo = True
+        mock_leer_config.return_value = config
+
+        scheduler = MagicMock()
+        worker._worker_status["intervalo_horas"] = 4
+
+        resultado = worker._sincronizar_configuracion_worker(scheduler)
+
+        self.assertTrue(resultado["ok"])
+        self.assertEqual(resultado["intervalo_horas"], 24)
+        self.assertEqual(worker._worker_status["intervalo_horas"], 24)
+        scheduler.reschedule_job.assert_called_once()
+        trigger = scheduler.reschedule_job.call_args.kwargs["trigger"]
+        self.assertEqual(trigger.interval.total_seconds(), 24 * 3600)
+
+    @patch("modules.slack_baneo_notifier.worker._leer_config")
+    def test_sincroniza_estado_sin_scheduler(self, mock_leer_config: MagicMock) -> None:
+        from modules.slack_baneo_notifier import worker
+
+        config = ConfigServicios()
+        config.intervalo_horas = 12
+        config.activo = False
+        mock_leer_config.return_value = config
+
+        worker._worker_status["intervalo_horas"] = 4
+        resultado = worker._sincronizar_configuracion_worker(None)
+
+        self.assertTrue(resultado["ok"])
+        self.assertEqual(resultado["intervalo_horas"], 12)
+        self.assertFalse(resultado["activo"])
+
+
 if __name__ == "__main__":
     unittest.main()

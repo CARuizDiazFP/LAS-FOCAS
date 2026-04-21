@@ -402,7 +402,7 @@ Página independiente para gestionar la configuración del worker de notificacio
 | Componente | Descripción |
 |------------|-------------|
 | Intervalo (horas) | Campo numérico libre (mín. 1) para definir cada cuántas horas se envía el reporte |
-| Canales Slack | Textarea con canales separados por coma (ej: `#baneo-de-camaras-prueba,#ingresos_nodos_camaras`) |
+| Canales o IDs Slack | Textarea con destinos separados por coma. Acepta nombres como `#baneo-de-camaras-prueba` y IDs como `C08UB8ML3LP`; para canales privados o reinstalaciones del bot se recomienda usar el ID |
 | Servicio activo | Toggle on/off para habilitar/deshabilitar el envío |
 | Última ejecución | Timestamp readonly de la última ejecución exitosa |
 | Último error | Mensaje del último error registrado (si aplica) |
@@ -411,8 +411,15 @@ Página independiente para gestionar la configuración del worker de notificacio
 ### Endpoints
 
 - `GET /admin/Servicios/Baneos` — Renderiza template con config actual desde `app.config_servicios`
-- `POST /api/admin/servicios/baneos` — Actualiza configuración (admin + CSRF). Redirige a la misma página tras guardar.
+- `POST /api/admin/servicios/baneos` — Actualiza configuración (admin + CSRF), valida formato de destinos Slack y dispara una recarga en caliente del worker.
 - `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`)
+
+### Ajustes operativos 2026-04-21
+
+- La configuración del worker acepta explícitamente IDs de canal Slack además de nombres con `#`.
+- Al guardar cambios desde el panel admin se invoca una recarga en caliente (`POST /reload`) para que el intervalo y los destinos nuevos se reflejen de inmediato en el health del worker.
+- El editor de estado de cámaras consume los endpoints del mismo servicio `web` (same-origin) para evitar `404` cuando `API_BASE` apunta al servicio `api` en `:8001`.
+- Como fallback de UX, el botón `Editar estado` se muestra a usuarios `admin` aunque un payload legacy no incluya el flag `editable`, manteniendo la validación real en backend.
 
 ### Navegación
 

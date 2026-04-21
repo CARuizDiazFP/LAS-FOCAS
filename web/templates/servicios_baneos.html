@@ -87,14 +87,14 @@
             />
             <p class="muted" style="font-size:0.8rem;">Cada cuántas horas se envía el reporte a Slack.</p>
 
-            <label for="slack_channels">Canales Slack</label>
+            <label for="slack_channels">Canales o IDs de Slack</label>
             <textarea
               id="slack_channels"
               name="slack_channels"
               class="channels"
-              placeholder="#canal1,#canal2"
+              placeholder="C08UB8ML3LP,#canal-secundario"
             >{{ slack_channels }}</textarea>
-            <p class="muted" style="font-size:0.8rem;">Separar múltiples canales con coma.</p>
+            <p class="muted" style="font-size:0.8rem;">Separar múltiples destinos con coma. Se aceptan nombres con <strong>#</strong> o IDs de Slack tipo <strong>C08UB8ML3LP</strong>. Para canales privados o bots reinstalados, preferir el ID.</p>
 
             <div class="toggle-container" style="margin:16px 0;">
               <label class="toggle">

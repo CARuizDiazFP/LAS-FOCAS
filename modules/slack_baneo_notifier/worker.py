@@ -55,6 +55,7 @@ _worker_status: dict = {
     "intervalo_horas": INTERVALO_HORAS_DEFAULT,
 }
 _status_lock = threading.Lock()
+_scheduler: BlockingScheduler | None = None
 
 
 # ── Health Check HTTP embebido ──────────────────────────────────
@@ -70,6 +71,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
                     "status": _worker_status["status"],
                     "service": _worker_status["service"],
                     "last_run": _worker_status["last_run"],
+                    "last_error": _worker_status["last_error"],
                     "intervalo_horas": _worker_status["intervalo_horas"],
                     "time": datetime.now(timezone.utc).isoformat(),
                 }
@@ -81,6 +83,19 @@ class _HealthHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/reload":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        resultado = _sincronizar_configuracion_worker(_scheduler)
+        status_code = 200 if resultado["ok"] else 500
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(resultado).encode())
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         """Silenciar logs del HTTP server para no ensuciar stdout."""
@@ -113,6 +128,37 @@ def _leer_config() -> ConfigServicios | None:
         return config
     finally:
         session.close()
+
+
+def _sincronizar_configuracion_worker(scheduler: BlockingScheduler | None) -> dict[str, object]:
+    """Sincroniza el scheduler y el estado expuesto con la configuración persistida."""
+    config = _leer_config()
+    if config is None:
+        logger.error("No se encontró configuración para '%s' al sincronizar", NOMBRE_SERVICIO)
+        return {"ok": False, "error": "Configuración no encontrada"}
+
+    nuevo_intervalo = max(1, config.intervalo_horas or INTERVALO_HORAS_DEFAULT)
+    with _status_lock:
+        intervalo_actual = _worker_status.get("intervalo_horas", INTERVALO_HORAS_DEFAULT)
+        _worker_status["intervalo_horas"] = nuevo_intervalo
+
+    if scheduler is not None and nuevo_intervalo != intervalo_actual:
+        logger.info(
+            "Intervalo cambiado en caliente de %d a %d horas, reprogramando scheduler",
+            intervalo_actual,
+            nuevo_intervalo,
+        )
+        scheduler.reschedule_job(
+            JOB_ID,
+            trigger=IntervalTrigger(hours=nuevo_intervalo),
+        )
+
+    return {
+        "ok": True,
+        "service": _worker_status["service"],
+        "intervalo_horas": nuevo_intervalo,
+        "activo": bool(config.activo),
+    }
 
 
 def _ejecutar_notificacion(scheduler: BlockingScheduler) -> None:
@@ -169,21 +215,7 @@ def _ejecutar_notificacion(scheduler: BlockingScheduler) -> None:
     finally:
         session.close()
 
-    # Verificar si el intervalo cambió para reprogramar
-    config_actual = _leer_config()
-    if config_actual and config_actual.intervalo_horas != _worker_status.get("intervalo_horas"):
-        nuevo_intervalo = max(1, config_actual.intervalo_horas)
-        logger.info(
-            "Intervalo cambió de %d a %d horas, reprogramando...",
-            _worker_status.get("intervalo_horas", INTERVALO_HORAS_DEFAULT),
-            nuevo_intervalo,
-        )
-        scheduler.reschedule_job(
-            JOB_ID,
-            trigger=IntervalTrigger(hours=nuevo_intervalo),
-        )
-        with _status_lock:
-            _worker_status["intervalo_horas"] = nuevo_intervalo
+    _sincronizar_configuracion_worker(scheduler)
 
 
 # ── Entry Point ─────────────────────────────────────────────────
@@ -191,6 +223,8 @@ def _ejecutar_notificacion(scheduler: BlockingScheduler) -> None:
 
 def main() -> None:
     """Punto de entrada del worker."""
+    global _scheduler
+
     logger.info("Inicializando worker de notificaciones de baneos...")
 
     # Iniciar health check
@@ -219,6 +253,7 @@ def main() -> None:
 
     # Configurar scheduler
     scheduler = BlockingScheduler()
+    _scheduler = scheduler
     scheduler.add_job(
         _ejecutar_notificacion,
         trigger=IntervalTrigger(hours=intervalo),

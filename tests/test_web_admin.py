@@ -19,6 +19,7 @@ class _Cur:
         self._row = row
         self.last_sql = ""
         self.calls = []
+        self.rowcount = 0
 
     def __enter__(self):
         return self
@@ -29,6 +30,10 @@ class _Cur:
     def execute(self, sql: str, params: tuple[Any, ...] | None = None):
         self.last_sql = sql
         self.calls.append((sql, params))
+        if "UPDATE app.config_servicios" in sql or "INSERT INTO app.config_servicios" in sql:
+            self.rowcount = 1
+        else:
+            self.rowcount = 0
 
     def fetchone(self):
         # Si es la consulta de existencia de usuario nuevo → simular que no existe
@@ -139,3 +144,72 @@ def test_admin_create_user_guest_role(monkeypatch):
     res = client.post("/api/admin/users", data={"username": "guest", "password": "x", "role": "Invitado", "csrf_token": csrf})
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
+
+
+def test_servicios_baneos_update_recarga_worker(monkeypatch):
+    from web_app import main as web_main
+
+    recargas = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+    class _AsyncClient:
+        def __init__(self, timeout: float):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str):
+            recargas.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
+    monkeypatch.setattr(web_main.httpx, "AsyncClient", _AsyncClient)
+
+    client = TestClient(app)
+    client.post("/login", data={"username": "admin", "password": "admin"})
+    csrf = re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", client.get("/").text).group(1)
+
+    res = client.post(
+        "/api/admin/servicios/baneos",
+        data={
+            "intervalo_horas": "24",
+            "slack_channels": "C08UB8ML3LP,#baneo-de-camaras-prueba",
+            "activo": "on",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+
+    assert res.status_code == 303
+    assert res.headers["location"] == "/admin/Servicios/Baneos"
+    assert recargas == [web_main._SLACK_WORKER_RELOAD_URL]
+
+
+def test_servicios_baneos_update_rechaza_destino_invalido(monkeypatch):
+    from web_app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
+    client = TestClient(app)
+    client.post("/login", data={"username": "admin", "password": "admin"})
+    csrf = re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", client.get("/").text).group(1)
+
+    res = client.post(
+        "/api/admin/servicios/baneos",
+        data={
+            "intervalo_horas": "24",
+            "slack_channels": "canal con espacios",
+            "activo": "on",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+
+    assert res.status_code == 400
+    assert "ID de Slack" in res.json()["error"]

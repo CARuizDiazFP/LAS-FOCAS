@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import secrets
 import time
 import zipfile
@@ -711,6 +712,39 @@ async def admin_create_user(
 _SLACK_WORKER_HEALTH_URL = os.getenv(
     "SLACK_WORKER_HEALTH_URL", "http://slack_baneo_worker:8095/health"
 )
+_SLACK_WORKER_RELOAD_URL = os.getenv(
+    "SLACK_WORKER_RELOAD_URL", "http://slack_baneo_worker:8095/reload"
+)
+
+
+def _es_destino_slack_valido(destino: str) -> bool:
+    """Valida nombres de canal o IDs de destino de Slack."""
+    if not destino:
+        return False
+    valor = destino.strip()
+    if not valor:
+        return False
+    if re.fullmatch(r"#[a-z0-9._-]+", valor):
+        return True
+    if re.fullmatch(r"[CGD][A-Z0-9]{8,}", valor):
+        return True
+    return False
+
+
+def _normalizar_destinos_slack(raw_value: str) -> str:
+    """Normaliza una lista separada por comas de canales o IDs Slack."""
+    destinos = [destino.strip() for destino in raw_value.split(",") if destino.strip()]
+    return ",".join(destinos)
+
+
+async def _reload_slack_worker_config() -> None:
+    """Solicita al worker de Slack que relea su configuración en caliente."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(_SLACK_WORKER_RELOAD_URL)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning("No se pudo recargar la config del slack worker: %s", exc)
 
 
 @app.get("/admin/Servicios/Baneos", response_class=HTMLResponse)
@@ -781,8 +815,24 @@ async def servicios_baneos_update(
     if intervalo_horas < 1:
         return JSONResponse({"error": "El intervalo debe ser al menos 1 hora"}, status_code=400)
 
-    if len(slack_channels.strip()) > 512:
+    destinos_normalizados = _normalizar_destinos_slack(slack_channels)
+
+    if len(destinos_normalizados) > 512:
         return JSONResponse({"error": "Los canales no deben superar 512 caracteres"}, status_code=400)
+
+    destinos_invalidos = [
+        destino for destino in destinos_normalizados.split(",") if destino and not _es_destino_slack_valido(destino)
+    ]
+    if destinos_invalidos:
+        return JSONResponse(
+            {
+                "error": (
+                    "Cada destino debe ser un nombre de canal con # "
+                    "o un ID de Slack tipo C/G/D..."
+                )
+            },
+            status_code=400,
+        )
 
     activo_bool = activo.lower() in ("on", "true", "1", "yes")
 
@@ -793,19 +843,21 @@ async def servicios_baneos_update(
                     "UPDATE app.config_servicios "
                     "SET intervalo_horas = %s, slack_channels = %s, activo = %s "
                     "WHERE nombre_servicio = %s",
-                    (intervalo_horas, slack_channels.strip(), activo_bool, "slack_baneo_notifier"),
+                    (intervalo_horas, destinos_normalizados, activo_bool, "slack_baneo_notifier"),
                 )
                 if cur.rowcount == 0:
                     cur.execute(
                         "INSERT INTO app.config_servicios "
                         "(nombre_servicio, intervalo_horas, slack_channels, activo) "
                         "VALUES (%s, %s, %s, %s)",
-                        ("slack_baneo_notifier", intervalo_horas, slack_channels.strip(), activo_bool),
+                        ("slack_baneo_notifier", intervalo_horas, destinos_normalizados, activo_bool),
                     )
                 conn.commit()
     except Exception as exc:
         logger.error("Error actualizando config_servicios: %s", exc)
         return JSONResponse({"error": "Error actualizando configuración"}, status_code=500)
+
+    await _reload_slack_worker_config()
 
     return RedirectResponse(url="/admin/Servicios/Baneos", status_code=status.HTTP_303_SEE_OTHER)
 

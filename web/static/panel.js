@@ -457,6 +457,7 @@
   let searchTerms = [];
   let hasSearched = false;
   const isInfraAdmin = (window.USER_ROLE || 'user').toLowerCase() === 'admin';
+  const webBase = window.location.origin;
   const cameraStateModal = document.getElementById('camera-state-modal');
   const cameraStateSummary = document.getElementById('camera-state-summary');
   const cameraStateIncidents = document.getElementById('camera-state-incidents');
@@ -825,7 +826,7 @@
     const rutas = camara.rutas || [];
     const origenDatos = camara.origen_datos || 'MANUAL';
     const ticketBaneo = camara.ticket_baneo || null;
-    const editable = Boolean(isInfraAdmin && camara.editable);
+    const editable = Boolean(isInfraAdmin && camara.editable !== false);
     const estadoSugerido = camara.estado_sugerido || null;
     const incidenteActivo = Array.isArray(camara.incidentes_activos) ? camara.incidentes_activos : [];
 
@@ -1095,7 +1096,7 @@
     if (!cameraStateModal || !cameraStateSelect || !cameraStateReason) return;
 
     try {
-      const res = await fetch(`${window.API_BASE || ''}/api/infra/camaras/${camara.id}/estado`, {
+      const res = await fetch(`${webBase}/api/infra/camaras/${camara.id}/estado`, {
         credentials: 'include'
       });
       const data = await res.json();
@@ -1126,7 +1127,7 @@
     if (cameraStateSaveBtn) cameraStateSaveBtn.disabled = true;
 
     try {
-      const res = await fetch(`${window.API_BASE || ''}/api/infra/camaras/${cameraStateCurrent.camara.id}/estado`, {
+      const res = await fetch(`${webBase}/api/infra/camaras/${cameraStateCurrent.camara.id}/estado`, {
         method: 'POST',
         credentials: 'include',
         headers: {
