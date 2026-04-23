@@ -2,7 +2,7 @@
 # Ubicación de archivo: nlp_intent/requirements.txt
 # Descripción: Dependencias específicas del microservicio nlp_intent
 
-fastapi==0.112.2
+fastapi==0.120.1
 uvicorn[standard]==0.30.6
 httpx==0.27.0
 pydantic==2.9.2
