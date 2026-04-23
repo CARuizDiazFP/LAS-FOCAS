@@ -2,7 +2,7 @@
 # Ubicación de archivo: bot_telegram/requirements.txt
 # Descripción: Dependencias específicas del bot de Telegram
 
-aiogram==3.13.1
+aiogram==3.22.0
 pandas==2.2.2
 openpyxl==3.1.2
 python-docx==1.1.2
