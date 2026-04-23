@@ -21,3 +21,4 @@ matplotlib==3.9.2
 contextily==1.5.2
 pyproj==3.6.1
 psycopg[binary]==3.2.1
+docker==7.1.0  # Python SDK para gestión del contenedor del worker

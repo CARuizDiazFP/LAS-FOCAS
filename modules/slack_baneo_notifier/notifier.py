@@ -9,6 +9,8 @@ import logging
 from datetime import datetime, timezone
 
 import pandas as pd
+
+from core.utils.tz import TZ_ARG, ahora_local, fmt_local
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.orm import Session
@@ -33,7 +35,7 @@ def generar_excel_baneadas(session: Session) -> tuple[int, io.BytesIO | None, st
     )
 
     cantidad = len(camaras)
-    ahora = datetime.now(timezone.utc)
+    ahora = ahora_local()
     nombre_archivo = f"camaras_baneadas_{ahora:%Y%m%d_%H%M}.xlsx"
 
     if cantidad == 0:
@@ -47,7 +49,7 @@ def generar_excel_baneadas(session: Session) -> tuple[int, io.BytesIO | None, st
             "Dirección": c.direccion or "",
             "Latitud": c.latitud,
             "Longitud": c.longitud,
-            "Último Update": c.last_update.isoformat() if c.last_update else "",
+            "Último Update": fmt_local(c.last_update, "%d/%m/%Y %H:%M") if c.last_update else "",
         }
         for c in camaras
     ]
@@ -79,8 +81,8 @@ def enviar_reporte_baneos(
     client = WebClient(token=bot_token)
     cantidad, excel_buf, nombre_archivo = generar_excel_baneadas(session)
 
-    ahora = datetime.now(timezone.utc)
-    fecha_str = ahora.strftime("%d/%m/%Y %H:%M UTC")
+    ahora = ahora_local()
+    fecha_str = ahora.strftime("%d/%m/%Y %H:%M") + " (GMT-3)"
 
     if cantidad == 0:
         texto = (

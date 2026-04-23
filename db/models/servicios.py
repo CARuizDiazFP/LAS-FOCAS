@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, SmallInteger, String, Text
 
 from db.base import Base
 
@@ -43,4 +43,8 @@ class ConfigServicios(Base):
     ultimo_error = Column(
         Text, nullable=True,
         comment="Último error registrado (NULL si la última ejecución fue exitosa)",
+    )
+    hora_inicio = Column(
+        SmallInteger, nullable=True,
+        comment="Hora del día (0-23, GMT-3) que ancla el primer ciclo; NULL = arrancar de inmediato",
     )

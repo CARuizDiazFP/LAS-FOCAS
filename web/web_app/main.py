@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from core.logging import setup_logging
+from core.utils.tz import TZ_ARG
 from core.password import hash_password, verify_password
 from core.repositories.conversations import get_or_create_conversation_for_web_user
 from core.repositories.messages import insert_message, get_last_messages
@@ -622,8 +623,15 @@ def _require_admin(request: Request) -> str:
     return username
 
 
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request) -> HTMLResponse:
+@app.get("/api/admin/me")
+async def admin_me(request: Request) -> JSONResponse:
+    """Devuelve datos del usuario admin autenticado. Usado por el SPA Vue para validar sesión."""
+    username = _require_admin(request)  # lanza 403 si no es admin
+    return JSONResponse({"username": username, "role": "admin"})
+
+
+def _admin_shell_response(request: Request) -> HTMLResponse:
+    """Genera la respuesta del shell SPA admin con CSRF y usuario inyectados."""
     user = request.session.get("username")
     role = request.session.get("role", "user")
     if not user:
@@ -632,13 +640,30 @@ async def admin_page(request: Request) -> HTMLResponse:
         return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
     return templates.TemplateResponse(
         request,
-        "admin.html",
+        "admin_shell.html",
         {
             "username": user,
-            "role": role,
             "csrf": request.session.get("csrf"),
         },
     )
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request) -> HTMLResponse:
+    """Dashboard principal del panel admin (SPA Vue)."""
+    return _admin_shell_response(request)
+
+
+@app.get("/admin/usuarios", response_class=HTMLResponse)
+async def admin_usuarios_page(request: Request) -> HTMLResponse:
+    """Vista de gestión de usuarios del panel admin (SPA Vue)."""
+    return _admin_shell_response(request)
+
+
+@app.get("/admin/servicios", response_class=HTMLResponse)
+async def admin_servicios_page(request: Request) -> HTMLResponse:
+    """Vista de servicios del panel admin (SPA Vue)."""
+    return _admin_shell_response(request)
 
 
 @app.post("/api/users/change-password")
@@ -715,6 +740,12 @@ _SLACK_WORKER_HEALTH_URL = os.getenv(
 _SLACK_WORKER_RELOAD_URL = os.getenv(
     "SLACK_WORKER_RELOAD_URL", "http://slack_baneo_worker:8095/reload"
 )
+_SLACK_WORKER_TRIGGER_URL = os.getenv(
+    "SLACK_WORKER_TRIGGER_URL", "http://slack_baneo_worker:8095/trigger"
+)
+_SLACK_WORKER_CONTAINER_NAME = os.getenv(
+    "SLACK_WORKER_CONTAINER_NAME", "lasfocas-slack-baneo-worker"
+)
 
 
 def _es_destino_slack_valido(destino: str) -> bool:
@@ -747,21 +778,15 @@ async def _reload_slack_worker_config() -> None:
         logger.warning("No se pudo recargar la config del slack worker: %s", exc)
 
 
-@app.get("/admin/Servicios/Baneos", response_class=HTMLResponse)
-async def servicios_baneos_page(request: Request) -> HTMLResponse:
-    """Panel admin para configurar el worker de notificaciones de baneos Slack."""
-    user = request.session.get("username")
-    role = request.session.get("role", "user")
-    if not user:
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    if role != "admin":
-        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-
-    # Leer configuración actual de la DB
+@app.get("/api/admin/servicios/baneos/config")
+async def servicios_baneos_config_json(request: Request) -> JSONResponse:
+    """Devuelve la configuración del worker de baneos como JSON. Usado por el SPA Vue."""
+    _require_admin(request)
     config_data: dict[str, Any] = {
         "intervalo_horas": 4,
         "slack_channels": "",
         "activo": True,
+        "hora_inicio": None,
         "ultima_ejecucion": None,
         "ultimo_error": None,
     }
@@ -769,7 +794,7 @@ async def servicios_baneos_page(request: Request) -> HTMLResponse:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT intervalo_horas, slack_channels, activo, ultima_ejecucion, ultimo_error "
+                    "SELECT intervalo_horas, slack_channels, activo, ultima_ejecucion, ultimo_error, hora_inicio "
                     "FROM app.config_servicios WHERE nombre_servicio = %s",
                     ("slack_baneo_notifier",),
                 )
@@ -781,20 +806,17 @@ async def servicios_baneos_page(request: Request) -> HTMLResponse:
                         "activo": row[2],
                         "ultima_ejecucion": row[3].isoformat() if row[3] else None,
                         "ultimo_error": row[4],
+                        "hora_inicio": row[5],
                     }
     except Exception as exc:
         logger.error("Error leyendo config_servicios: %s", exc)
+    return JSONResponse(config_data)
 
-    return templates.TemplateResponse(
-        request,
-        "servicios_baneos.html",
-        {
-            "username": user,
-            "role": role,
-            "csrf": request.session.get("csrf"),
-            **config_data,
-        },
-    )
+
+@app.get("/admin/Servicios/Baneos", response_class=HTMLResponse)
+async def servicios_baneos_page(request: Request) -> HTMLResponse:
+    """Vista de configuración del worker de baneos (SPA Vue)."""
+    return _admin_shell_response(request)
 
 
 @app.post("/api/admin/servicios/baneos")
@@ -803,6 +825,7 @@ async def servicios_baneos_update(
     intervalo_horas: int = Form(...),
     slack_channels: str = Form(""),
     activo: str = Form("off"),
+    hora_inicio: str = Form(""),
     csrf_token: str = Form(...),
 ):
     """Actualiza la configuración del worker de notificaciones de baneos."""
@@ -814,6 +837,16 @@ async def servicios_baneos_update(
 
     if intervalo_horas < 1:
         return JSONResponse({"error": "El intervalo debe ser al menos 1 hora"}, status_code=400)
+
+    # hora_inicio: string vacío → NULL; entero 0-23 → valor
+    hora_inicio_val: int | None = None
+    if hora_inicio.strip():
+        try:
+            hora_inicio_val = int(hora_inicio)
+            if not (0 <= hora_inicio_val <= 23):
+                return JSONResponse({"error": "hora_inicio debe estar entre 0 y 23"}, status_code=400)
+        except ValueError:
+            return JSONResponse({"error": "hora_inicio inválida"}, status_code=400)
 
     destinos_normalizados = _normalizar_destinos_slack(slack_channels)
 
@@ -841,16 +874,16 @@ async def servicios_baneos_update(
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE app.config_servicios "
-                    "SET intervalo_horas = %s, slack_channels = %s, activo = %s "
+                    "SET intervalo_horas = %s, slack_channels = %s, activo = %s, hora_inicio = %s "
                     "WHERE nombre_servicio = %s",
-                    (intervalo_horas, destinos_normalizados, activo_bool, "slack_baneo_notifier"),
+                    (intervalo_horas, destinos_normalizados, activo_bool, hora_inicio_val, "slack_baneo_notifier"),
                 )
                 if cur.rowcount == 0:
                     cur.execute(
                         "INSERT INTO app.config_servicios "
-                        "(nombre_servicio, intervalo_horas, slack_channels, activo) "
-                        "VALUES (%s, %s, %s, %s)",
-                        ("slack_baneo_notifier", intervalo_horas, destinos_normalizados, activo_bool),
+                        "(nombre_servicio, intervalo_horas, slack_channels, activo, hora_inicio) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        ("slack_baneo_notifier", intervalo_horas, destinos_normalizados, activo_bool, hora_inicio_val),
                     )
                 conn.commit()
     except Exception as exc:
@@ -860,6 +893,56 @@ async def servicios_baneos_update(
     await _reload_slack_worker_config()
 
     return RedirectResponse(url="/admin/Servicios/Baneos", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/api/admin/servicios/baneos/worker/start")
+async def servicios_baneos_worker_start(request: Request):
+    """Inicia el contenedor del worker de baneos si está detenido."""
+    _require_admin(request)
+    body = await request.form()
+    if body.get("csrf_token") != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        import docker as docker_sdk  # type: ignore[import-untyped]
+        client = docker_sdk.from_env()
+        try:
+            container = client.containers.get(_SLACK_WORKER_CONTAINER_NAME)
+            if container.status == "running":
+                return JSONResponse({"status": "already_running", "msg": "El worker ya está corriendo"})
+            container.start()
+            container.reload()
+            return JSONResponse({"status": "started", "container_status": container.status})
+        except docker_sdk.errors.NotFound:
+            return JSONResponse(
+                {"error": f"Contenedor '{_SLACK_WORKER_CONTAINER_NAME}' no encontrado. Ejecutá ./Start para crearlo."},
+                status_code=404,
+            )
+    except Exception as exc:
+        logger.error("Error iniciando worker de baneos: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/admin/servicios/baneos/trigger")
+async def servicios_baneos_trigger(request: Request):
+    """Dispara una ejecución manual inmediata del worker de baneos."""
+    _require_admin(request)
+    body = await request.form()
+    if body.get("csrf_token") != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(_SLACK_WORKER_TRIGGER_URL)
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"error": "Worker no accesible. Verificá que esté corriendo."},
+            status_code=503,
+        )
+    except Exception as exc:
+        logger.error("Error disparando ejecución manual del worker: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @app.get("/api/admin/servicios/baneos/health")
@@ -2424,7 +2507,7 @@ async def send_email_notification_web(
                                 "Cámara Nombre": camara.nombre,
                                 "Estado": camara.estado.value if camara.estado else "-",
                                 "Fecha Inicio": (
-                                    incidente.fecha_inicio.strftime("%Y-%m-%d %H:%M")
+                                    incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M")
                                     if incidente.fecha_inicio else "-"
                                 ),
                                 "Motivo": incidente.motivo or "-",
@@ -2653,7 +2736,7 @@ async def generate_eml_file(
                 "servicio_afectado": incidente.servicio_afectado_id or "-",
                 "servicio_protegido": incidente.servicio_protegido_id or "-",
                 "total_camaras": len(camaras_afectadas),
-                "fecha": incidente.fecha_inicio.strftime("%d/%m/%Y %H:%M") if incidente.fecha_inicio else "-",
+                "fecha": incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M") if incidente.fecha_inicio else "-",
                 "motivo": incidente.motivo or "Sin especificar",
             }
             

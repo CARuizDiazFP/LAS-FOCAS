@@ -213,3 +213,95 @@ def test_servicios_baneos_update_rechaza_destino_invalido(monkeypatch):
 
     assert res.status_code == 400
     assert "ID de Slack" in res.json()["error"]
+
+
+# ── Nuevas rutas SPA admin ──────────────────────────────────────────────────
+
+def test_admin_me_ok(monkeypatch):
+    """GET /api/admin/me con sesión admin devuelve 200 con username y role."""
+    from web_app import main as web_main
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
+    client = TestClient(app)
+    client.post("/login", data={"username": "admin", "password": "admin"})
+    res = client.get("/api/admin/me")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["username"] == "admin"
+    assert data["role"] == "admin"
+
+
+def test_admin_me_sin_sesion():
+    """GET /api/admin/me sin sesión devuelve 401."""
+    client = TestClient(app, raise_server_exceptions=False)
+    res = client.get("/api/admin/me")
+    assert res.status_code in (401, 403)
+
+
+def test_admin_me_no_admin(monkeypatch):
+    """GET /api/admin/me con sesión no-admin devuelve 403."""
+    from web_app import main as web_main
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
+    client = TestClient(app)
+    client.post("/login", data={"username": "user", "password": "userpass"})
+    res = client.get("/api/admin/me")
+    assert res.status_code == 403
+
+
+def test_admin_usuarios_accesible_admin(monkeypatch):
+    """GET /admin/usuarios con sesión admin devuelve 200 con el shell SPA."""
+    from web_app import main as web_main
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
+    client = TestClient(app)
+    client.post("/login", data={"username": "admin", "password": "admin"})
+    res = client.get("/admin/usuarios")
+    assert res.status_code == 200
+    assert "admin-app" in res.text
+
+
+def test_admin_usuarios_redirige_sin_sesion():
+    """GET /admin/usuarios sin sesión redirige a /login."""
+    client = TestClient(app, follow_redirects=False)
+    res = client.get("/admin/usuarios")
+    assert res.status_code == 302
+    assert "/login" in res.headers["location"]
+
+
+def test_admin_servicios_accesible_admin(monkeypatch):
+    """GET /admin/servicios con sesión admin devuelve 200 con el shell SPA."""
+    from web_app import main as web_main
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
+    client = TestClient(app)
+    client.post("/login", data={"username": "admin", "password": "admin"})
+    res = client.get("/admin/servicios")
+    assert res.status_code == 200
+    assert "admin-app" in res.text
+
+
+def test_admin_servicios_redirige_sin_sesion():
+    """GET /admin/servicios sin sesión redirige a /login."""
+    client = TestClient(app, follow_redirects=False)
+    res = client.get("/admin/servicios")
+    assert res.status_code == 302
+    assert "/login" in res.headers["location"]
+
+
+def test_admin_baneos_config_json(monkeypatch):
+    """GET /api/admin/servicios/baneos/config con sesión admin devuelve JSON de configuración."""
+    from web_app import main as web_main
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
+    client = TestClient(app)
+    client.post("/login", data={"username": "admin", "password": "admin"})
+    res = client.get("/api/admin/servicios/baneos/config")
+    assert res.status_code == 200
+    data = res.json()
+    assert "intervalo_horas" in data
+    assert "slack_channels" in data
+    assert "activo" in data
+
+
+def test_admin_baneos_config_json_sin_sesion():
+    """GET /api/admin/servicios/baneos/config sin sesión devuelve 401."""
+    client = TestClient(app, raise_server_exceptions=False)
+    res = client.get("/api/admin/servicios/baneos/config")
+    assert res.status_code in (401, 403)
+

@@ -22,3 +22,4 @@ python-docx==1.1.2
 Unidecode==1.3.8
 
 gspread==6.0.0
+slack_sdk==3.33.5  # Avisos a Slack al crear/levantar baneos desde Infra

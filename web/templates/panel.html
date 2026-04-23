@@ -663,6 +663,9 @@
             <button type="button" id="ban-download-tracking-btn" class="ban-download-tracking-btn" title="Descargar tracking TXT">
               📥 Descargar TXT
             </button>
+            <button type="button" id="ban-refresh-tracking-btn" class="ban-download-tracking-btn" title="Subir tracking actualizado" hidden>
+              🔁 Actualizar Tracking
+            </button>
           </div>
         </div>
 
@@ -786,6 +789,13 @@
           <small class="email-hint">Separar múltiples correos con coma o punto y coma · Los destinatarios se guardan automáticamente</small>
         </div>
         
+        <!-- CC -->
+        <div class="email-field">
+          <label for="email-cc">CC:</label>
+          <input type="text" id="email-cc" placeholder="cc1@ejemplo.com, cc2@ejemplo.com" />
+          <small class="email-hint">Separar múltiples correos con coma o punto y coma · Los CC se guardan automáticamente</small>
+        </div>
+
         <!-- Asunto -->
         <div class="email-field">
           <label for="email-subject">Asunto:</label>

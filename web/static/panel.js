@@ -2177,6 +2177,20 @@
       if (trackingText) trackingText.style.color = '#eab308';
     }
     
+    // Botón de actualizar tracking (solo cuando está desactualizado)
+    const refreshTrackingBtn = document.getElementById('ban-refresh-tracking-btn');
+    if (refreshTrackingBtn) {
+      if (diasDesdeUpdate > 60) {
+        refreshTrackingBtn.hidden = false;
+        refreshTrackingBtn.onclick = () => {
+          const infraFileInput = document.getElementById('infra-file');
+          if (infraFileInput) infraFileInput.click();
+        };
+      } else {
+        refreshTrackingBtn.hidden = true;
+      }
+    }
+
     // Botón de descarga del tracking
     if (downloadBtn) {
       downloadBtn.onclick = async () => {
@@ -2596,6 +2610,7 @@
   
   // Campos del formulario
   const emailTo = document.getElementById('email-to');
+  const emailCc = document.getElementById('email-cc');
   const emailSubject = document.getElementById('email-subject');
   const emailBody = document.getElementById('email-body');
   const emailAttachXls = document.getElementById('email-attach-xls');
@@ -2630,6 +2645,7 @@
     try {
       const settings = {
         recipients: emailTo ? emailTo.value : '',
+        cc: emailCc ? emailCc.value : '',
       };
       localStorage.setItem(EMAIL_STORAGE_KEY, JSON.stringify(settings));
     } catch (err) {
@@ -2637,10 +2653,14 @@
     }
   }
   
-  // Guardar destinatarios cuando cambian
+  // Guardar destinatarios y CC cuando cambian
   if (emailTo) {
     emailTo.addEventListener('change', saveEmailSettings);
     emailTo.addEventListener('blur', saveEmailSettings);
+  }
+  if (emailCc) {
+    emailCc.addEventListener('change', saveEmailSettings);
+    emailCc.addEventListener('blur', saveEmailSettings);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2720,10 +2740,7 @@ Metrotel S.A.`;
 
   // Generar asunto por defecto
   function generateDefaultSubject(bans) {
-    if (bans.length === 0) return '[ALERTA] Protocolo de Protección Activo - Metrotel';
-    const ban = bans[0];
-    const ticket = ban.ticket_asociado || `INC-${ban.id}`;
-    return `[ALERTA] Protocolo de Protección - ${ticket} - ${ban.servicio_protegido_id}`;
+    return '[AVISO] BANEO de Camaras';
   }
 
   // Restaurar plantilla por defecto
@@ -3002,9 +3019,13 @@ Metrotel S.A.`;
         .map(e => e.trim())
         .filter(Boolean);
 
+      const ccList = emailCc && emailCc.value.trim()
+        ? emailCc.value.split(/[,;\s]+/).map(e => e.trim()).filter(Boolean)
+        : [];
+
       const payload = {
         to: toList,
-        cc: [],
+        cc: ccList,
         subject: emailSubject.value,
         body: emailBody.value,
         incidente_ids: [emailEditorBans[0].id],
@@ -3052,7 +3073,7 @@ Metrotel S.A.`;
 
   function resetEmailEditor() {
     emailEditorBans = [];
-    // No resetear destinatarios - se cargan desde localStorage
+    // No resetear destinatarios ni CC - se cargan desde localStorage
     if (emailSubject) emailSubject.value = '';
     if (emailBody) emailBody.value = '';
     if (emailAttachXls) emailAttachXls.checked = true;
@@ -3173,8 +3194,11 @@ Metrotel S.A.`;
       if (emailTo && savedSettings.recipients) {
         emailTo.value = savedSettings.recipients;
       }
+      if (emailCc && savedSettings.cc) {
+        emailCc.value = savedSettings.cc;
+      }
 
-      const defaultSubject = `[ALERTA] Protocolo de Protección - ${data.ticket || `INC-${data.id}`} - ${data.servicio_protegido}`;
+      const defaultSubject = '[AVISO] BANEO de Camaras';
       if (emailSubject) emailSubject.value = data.email_subject || defaultSubject;
 
       const defaultBody = renderTemplate(DEFAULT_TEMPLATE, templateData);
@@ -3251,8 +3275,11 @@ Metrotel S.A.`;
         if (emailTo && savedSettings.recipients) {
           emailTo.value = savedSettings.recipients;
         }
+        if (emailCc && savedSettings.cc) {
+          emailCc.value = savedSettings.cc;
+        }
 
-        const defaultSubject = `[ALERTA] Protocolo de Protección - ${fallbackData.ticket} - ${fallbackData.servicio_protegido}`;
+        const defaultSubject = '[AVISO] BANEO de Camaras';
         if (emailSubject) emailSubject.value = fallbackData.email_subject || defaultSubject;
 
         const defaultBody = renderTemplate(DEFAULT_TEMPLATE, templateData);

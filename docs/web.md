@@ -387,40 +387,70 @@ Campos principales:
 - WebSocket/streaming con Ollama y feedback de progreso.
 - Tests de integración adicionales y documentación de uso.
 
-## Panel Admin — Servicios Baneos
+## Panel Admin — SPA Vue 3
 
-### URL
+### Arquitectura
 
-`/admin/Servicios/Baneos` — requiere rol `admin`.
+El panel admin usa un **SPA Vue 3** con Vue Router, compilado por Vite como un segundo entry point (`assets/admin.js`). FastAPI sirve un shell HTML mínimo (`admin_shell.html`) que inyecta CSRF y monta el SPA. La sesión y el control de acceso siguen siendo responsabilidad del backend (server-side), sin depender de guards client-side como única barrera.
 
-### Descripción
+### Rutas
 
-Página independiente para gestionar la configuración del worker de notificaciones de baneos a Slack. Permite cambiar el intervalo de ejecución, los canales destino y el estado activo/inactivo del servicio sin necesidad de reiniciar el worker.
+| Ruta | Descripción |
+|------|-------------|
+| `GET /admin` | Dashboard principal — acceso a módulos Usuarios y Servicios |
+| `GET /admin/usuarios` | Gestión de usuarios — crear cuenta y cambiar contraseña |
+| `GET /admin/servicios` | Grid de servicios configurables (tarjetas) |
+| `GET /admin/Servicios/Baneos` | Configuración del worker de notificaciones Slack |
 
-### Funcionalidades
+Todas estas rutas requieren `role == "admin"` en sesión. Sin sesión redirigen a `/login`; con rol insuficiente redirigen a `/`.
 
-| Componente | Descripción |
-|------------|-------------|
-| Intervalo (horas) | Campo numérico libre (mín. 1) para definir cada cuántas horas se envía el reporte |
-| Canales o IDs Slack | Textarea con destinos separados por coma. Acepta nombres como `#baneo-de-camaras-prueba` y IDs como `C08UB8ML3LP`; para canales privados o reinstalaciones del bot se recomienda usar el ID |
-| Servicio activo | Toggle on/off para habilitar/deshabilitar el envío |
-| Última ejecución | Timestamp readonly de la última ejecución exitosa |
-| Último error | Mensaje del último error registrado (si aplica) |
-| Verificar Estado | Botón AJAX que consulta el health check del worker y muestra indicador visual verde/rojo |
+### Endpoint de sesión (usado por Vue Router guard)
 
-### Endpoints
+- `GET /api/admin/me` — Devuelve `{username, role}` si la sesión es admin. Devuelve HTTP 401/403 en caso contrario. El navigation guard del router llama a este endpoint antes de cada navegación y redirige a `/login` si falla.
 
-- `GET /admin/Servicios/Baneos` — Renderiza template con config actual desde `app.config_servicios`
-- `POST /api/admin/servicios/baneos` — Actualiza configuración (admin + CSRF), valida formato de destinos Slack y dispara una recarga en caliente del worker.
-- `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`)
+### Endpoints JSON de configuración
 
-### Ajustes operativos 2026-04-21
+- `GET /api/admin/servicios/baneos/config` — Devuelve configuración del worker como JSON (admin+sesión).
+- `POST /api/admin/servicios/baneos` — Actualiza configuración (admin + CSRF), valida formato de destinos Slack y dispara recarga en caliente del worker. Redirige a `/admin/Servicios/Baneos` (303) al completar.
+- `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`).
 
-- La configuración del worker acepta explícitamente IDs de canal Slack además de nombres con `#`.
-- Al guardar cambios desde el panel admin se invoca una recarga en caliente (`POST /reload`) para que el intervalo y los destinos nuevos se reflejen de inmediato en el health del worker.
-- El editor de estado de cámaras consume los endpoints del mismo servicio `web` (same-origin) para evitar `404` cuando `API_BASE` apunta al servicio `api` en `:8001`.
-- Como fallback de UX, el botón `Editar estado` se muestra a usuarios `admin` aunque un payload legacy no incluya el flag `editable`, manteniendo la validación real en backend.
+### Estructura del frontend (Vite dual entry)
 
-### Navegación
+```
+web/frontend/src/
+├── chat/main.ts              ← Chat WebSocket client (compilado → assets/main.js)
+└── admin/
+    ├── main.ts               ← Entry point del SPA (compilado → assets/admin.js)
+    ├── App.vue               ← RouterView + AdminLayout
+    ├── admin.css             ← Dark theme (vars reutilizadas de styles.css)
+    ├── router/index.ts       ← Rutas + navigation guard
+    ├── api/admin.ts          ← Fetch wrappers tipados
+    ├── components/
+    │   ├── AdminLayout.vue   ← Topbar con navegación
+    │   └── ServiceCard.vue   ← Tarjeta reutilizable de servicio
+    └── views/
+        ├── AdminDashboard.vue   ← /admin — menú central
+        ├── AdminUsuarios.vue    ← /admin/usuarios
+        ├── AdminServicios.vue   ← /admin/servicios — grid de tarjetas
+        └── AdminBaneos.vue      ← /admin/Servicios/Baneos
+```
 
-Enlace disponible en la topbar de la página Admin (`/admin`).
+### Módulos de servicios
+
+El grid de `/admin/servicios` está diseñado para crecer. Para agregar un nuevo servicio se crea un componente en `views/` y se añade un `<ServiceCard>` en `AdminServicios.vue`. La primera tarjeta disponible es **Baneos** (`/admin/Servicios/Baneos`).
+
+### Configuración del worker de Baneos
+
+| Campo | Descripción |
+|-------|-------------|
+| Intervalo (horas) | Cada cuántas horas se envía el reporte Slack (mín. 1) |
+| Canales o IDs Slack | Destinos separados por coma. Acepta `#nombre-canal` y IDs tipo `C08UB8ML3LP`. Para canales privados o reinstalaciones del bot, usar ID. |
+| Servicio activo | Toggle on/off |
+| Verificar Estado | Consulta el health check del worker y muestra estado visual (verde/rojo) |
+
+Al guardar, se invoca `POST /reload` al worker para que el nuevo intervalo y destinos tomen efecto de inmediato sin reiniciar el contenedor.
+
+### Templates legacy (mantenidos)
+
+- `web/templates/admin.html` — **deprecado**, supersedido por el SPA. Se mantiene como fallback hasta validación en producción.
+- `web/templates/servicios_baneos.html` — **deprecado**, idem.

@@ -17,8 +17,8 @@ COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE" --env-file "$ROOT_DIR/.env")
 
 HOST_IP="192.168.241.28" # Requerido según infraestructura de la VM
 
-SERVICES=(postgres nlp_intent api web office)
-CRITICAL=(postgres api web nlp_intent office)
+SERVICES=(postgres nlp_intent api web office slack_baneo_worker)
+CRITICAL=(postgres api web nlp_intent office slack_baneo_worker)
 
 DO_DOWN=true
 PURGE=false
@@ -220,6 +220,7 @@ check_http    "API"        "http://localhost:8001/health" || true
 check_internal "WEB"        "web"  "http://localhost:8080/health" || true
 check_internal "NLP"        "nlp_intent"  "http://localhost:8100/health" || true
 check_internal "LibreOffice" "office"     "http://localhost:8090/health" || true
+check_internal "SlackWorker" "slack_baneo_worker" "http://localhost:8095/health" || true
 
 # Ollama externo (warning si falla)
 if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
@@ -233,7 +234,7 @@ fi
 ########################################
 echo -e "\n${GREEN}Resumen de health:${NC}"
 FAIL_COUNT=0
-for comp in API WEB NLP LibreOffice; do
+for comp in API WEB NLP LibreOffice SlackWorker; do
   state=${HEALTH_RESULTS[$comp]:-FAIL}
   if [ "$state" = "OK" ]; then
     echo -e "  $comp: ${GREEN}OK${NC}"

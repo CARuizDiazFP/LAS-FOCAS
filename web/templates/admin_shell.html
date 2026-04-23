@@ -1,0 +1,28 @@
+<!--
+# Nombre de archivo: admin_shell.html
+# Ubicación de archivo: web/templates/admin_shell.html
+# Descripción: Shell HTML mínimo para el SPA admin Vue 3 — inyecta sesión y monta assets/admin.js
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin — LAS-FOCAS</title>
+  <!-- El CSS del admin SPA es generado por Vite junto con admin.js -->
+  <link rel="stylesheet" href="/static/assets/admin.css" />
+</head>
+<body>
+  <!-- Punto de montaje del SPA Vue -->
+  <div id="admin-app"></div>
+
+  <!-- Variables de sesión inyectadas desde FastAPI -->
+  <script>
+    window.CSRF_TOKEN = "{{ csrf }}";
+    window.ADMIN_USER = "{{ username }}";
+  </script>
+
+  <!-- Bundle del SPA admin generado por Vite -->
+  <script type="module" src="/static/assets/admin.js"></script>
+</body>
+</html>

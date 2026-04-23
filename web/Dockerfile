@@ -5,7 +5,7 @@
 FROM node:20.12.2-slim AS web-build
 WORKDIR /frontend
 # Copiamos sólo el frontend (el build context ahora es la raíz del repo)
-COPY web/frontend/package.json web/frontend/tsconfig.json web/frontend/index.html ./
+COPY web/frontend/package.json web/frontend/tsconfig.json web/frontend/vite.config.ts web/frontend/index.html ./
 COPY web/frontend/package-lock.json ./package-lock.json
 COPY web/frontend/src ./src
 RUN if [ -f package-lock.json ]; then \
@@ -44,7 +44,7 @@ COPY web/chat_ws.py /app/web/chat_ws.py
 COPY core /app/core
 COPY modules /app/modules
 COPY db /app/db
-COPY --from=web-build /frontend/dist /app/static/assets
+COPY --from=web-build /frontend/dist/assets /app/static/assets
 
 EXPOSE 8080
 

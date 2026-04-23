@@ -87,6 +87,7 @@ services:
       - ../Templates:/app/Templates:ro
       - reports_data:/app/web_app/data/reports
       - uploads_data:/app/web_app/data/uploads
+      - /var/run/docker.sock:/var/run/docker.sock  # Gestión del worker de baneos desde el panel admin
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || curl -fsS http://192.168.241.28:8080/health || exit 1"]
       interval: 10s

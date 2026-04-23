@@ -17,12 +17,15 @@ import os
 import signal
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
+TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
 from core.config import get_settings
 from core.logging import setup_logging
@@ -53,6 +56,7 @@ _worker_status: dict = {
     "last_run": None,
     "last_error": None,
     "intervalo_horas": INTERVALO_HORAS_DEFAULT,
+    "hora_inicio": None,
 }
 _status_lock = threading.Lock()
 _scheduler: BlockingScheduler | None = None
@@ -85,17 +89,31 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/reload":
+        if self.path == "/reload":
+            resultado = _sincronizar_configuracion_worker(_scheduler)
+            status_code = 200 if resultado["ok"] else 500
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resultado).encode())
+        elif self.path == "/trigger":
+            # Ejecutar el job inmediatamente en un thread separado
+            if _scheduler is not None:
+                thread = threading.Thread(
+                    target=_ejecutar_notificacion,
+                    args=[_scheduler],
+                    daemon=True,
+                )
+                thread.start()
+                self.send_response(202)
+            else:
+                self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": _scheduler is not None, "msg": "Ejecución iniciada"}).encode())
+        else:
             self.send_response(404)
             self.end_headers()
-            return
-
-        resultado = _sincronizar_configuracion_worker(_scheduler)
-        status_code = 200 if resultado["ok"] else 500
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(resultado).encode())
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         """Silenciar logs del HTTP server para no ensuciar stdout."""
@@ -108,6 +126,25 @@ def _start_health_server() -> HTTPServer:
     thread.start()
     logger.info("Health check disponible en http://0.0.0.0:%d/health", HEALTH_PORT)
     return server
+
+
+# ── Utilidades de scheduling ────────────────────────────────────
+
+
+def _build_trigger(intervalo: int, hora_inicio: int | None) -> IntervalTrigger:
+    """Construye el IntervalTrigger anclado a hora_inicio (GMT-3) si se indicó.
+
+    Si ``hora_inicio`` es None el trigger empieza de inmediato.
+    Si se especifica (0-23), la primera ejecución ocurre en la próxima
+    ocurrencia de esa hora y luego cada ``intervalo`` horas.
+    """
+    if hora_inicio is not None:
+        now = datetime.now(TZ_ARG)
+        start = now.replace(hour=hora_inicio, minute=0, second=0, microsecond=0)
+        if start <= now:
+            start += timedelta(hours=intervalo)
+        return IntervalTrigger(hours=intervalo, start_date=start, timezone=TZ_ARG)
+    return IntervalTrigger(hours=intervalo)
 
 
 # ── Lógica del Job ──────────────────────────────────────────────
@@ -138,25 +175,30 @@ def _sincronizar_configuracion_worker(scheduler: BlockingScheduler | None) -> di
         return {"ok": False, "error": "Configuración no encontrada"}
 
     nuevo_intervalo = max(1, config.intervalo_horas or INTERVALO_HORAS_DEFAULT)
+    nuevo_hora_inicio: int | None = config.hora_inicio  # puede ser None
+
     with _status_lock:
         intervalo_actual = _worker_status.get("intervalo_horas", INTERVALO_HORAS_DEFAULT)
+        hora_inicio_actual = _worker_status.get("hora_inicio")
         _worker_status["intervalo_horas"] = nuevo_intervalo
+        _worker_status["hora_inicio"] = nuevo_hora_inicio
 
-    if scheduler is not None and nuevo_intervalo != intervalo_actual:
+    config_cambio = nuevo_intervalo != intervalo_actual or nuevo_hora_inicio != hora_inicio_actual
+    if scheduler is not None and config_cambio:
         logger.info(
-            "Intervalo cambiado en caliente de %d a %d horas, reprogramando scheduler",
-            intervalo_actual,
-            nuevo_intervalo,
+            "Config cambiada (intervalo %dh→%dh, hora_inicio %s→%s), reprogramando scheduler",
+            intervalo_actual, nuevo_intervalo, hora_inicio_actual, nuevo_hora_inicio,
         )
         scheduler.reschedule_job(
             JOB_ID,
-            trigger=IntervalTrigger(hours=nuevo_intervalo),
+            trigger=_build_trigger(nuevo_intervalo, nuevo_hora_inicio),
         )
 
     return {
         "ok": True,
         "service": _worker_status["service"],
         "intervalo_horas": nuevo_intervalo,
+        "hora_inicio": nuevo_hora_inicio,
         "activo": bool(config.activo),
     }
 
@@ -233,11 +275,14 @@ def main() -> None:
     # Leer configuración inicial
     config = _leer_config()
     intervalo = INTERVALO_HORAS_DEFAULT
+    hora_inicio: int | None = None
     if config:
         intervalo = max(1, config.intervalo_horas)
+        hora_inicio = config.hora_inicio
         logger.info(
-            "Configuración cargada: intervalo=%dh, canales='%s', activo=%s",
+            "Configuración cargada: intervalo=%dh, hora_inicio=%s, canales='%s', activo=%s",
             intervalo,
+            hora_inicio,
             config.slack_channels,
             config.activo,
         )
@@ -250,13 +295,14 @@ def main() -> None:
     with _status_lock:
         _worker_status["status"] = "ok"
         _worker_status["intervalo_horas"] = intervalo
+        _worker_status["hora_inicio"] = hora_inicio
 
     # Configurar scheduler
     scheduler = BlockingScheduler()
     _scheduler = scheduler
     scheduler.add_job(
         _ejecutar_notificacion,
-        trigger=IntervalTrigger(hours=intervalo),
+        trigger=_build_trigger(intervalo, hora_inicio),
         id=JOB_ID,
         name="Notificación de baneos a Slack",
         args=[scheduler],

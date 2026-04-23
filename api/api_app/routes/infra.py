@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from core.utils.tz import TZ_ARG
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, EmailStr
@@ -1655,6 +1657,19 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
             
             if result.success:
                 session.commit()
+                # Aviso a Slack: baneo creado
+                try:
+                    from core.config import get_settings
+                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
+                    datos_evento = result.to_dict()
+                    datos_evento["servicio_afectado_id"] = request.servicio_afectado_id
+                    datos_evento["servicio_protegido_id"] = request.servicio_protegido_id
+                    datos_evento["ticket_asociado"] = request.ticket_asociado
+                    datos_evento["usuario_ejecutor"] = request.usuario_ejecutor
+                    datos_evento["motivo"] = request.motivo
+                    notificar_evento_baneo(session, "create", datos_evento, get_settings().slack.bot_token)
+                except Exception as slack_exc:
+                    logger.warning("Error enviando aviso Slack de baneo creado: %s", slack_exc)
             else:
                 session.rollback()
             
@@ -1700,6 +1715,16 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
             
             if result.success:
                 session.commit()
+                # Aviso a Slack: baneo levantado
+                try:
+                    from core.config import get_settings
+                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
+                    datos_evento = result.to_dict()
+                    datos_evento["usuario_ejecutor"] = request.usuario_ejecutor
+                    datos_evento["motivo_cierre"] = request.motivo_cierre
+                    notificar_evento_baneo(session, "lift", datos_evento, get_settings().slack.bot_token)
+                except Exception as slack_exc:
+                    logger.warning("Error enviando aviso Slack de baneo levantado: %s", slack_exc)
             else:
                 session.rollback()
             
@@ -1916,7 +1941,7 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
                                     "Cámara Nombre": camara.nombre,
                                     "Estado": camara.estado.value if camara.estado else "-",
                                     "Fecha Inicio": (
-                                        incidente.fecha_inicio.strftime("%Y-%m-%d %H:%M")
+                                        incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M")
                                         if incidente.fecha_inicio
                                         else "-"
                                     ),

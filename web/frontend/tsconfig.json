@@ -6,10 +6,10 @@
     "strict": true,
     "baseUrl": ".",
     "paths": {},
-    "jsx": "react-jsx",
+    "jsx": "preserve",
     "allowJs": false,
     "isolatedModules": true,
-    "types": [],
+    "types": ["vite/client"],
     "noEmit": true
   },
   "include": ["src"]
