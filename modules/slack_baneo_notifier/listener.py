@@ -118,7 +118,7 @@ class IngresoListener:
                 )
                 logger.info("Cámara no encontrada: '%s' (normalizado: '%s')", nombre_raw, nombre_norm)
             else:
-                incidentes = _obtener_incidentes_activos_camara(camara.id, session)
+                incidentes = _obtener_incidentes_activos_camara(camara, session)
                 if incidentes:
                     inc = incidentes[0]
                     respuesta = (
@@ -194,23 +194,27 @@ class IngresoListener:
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _obtener_incidentes_activos_camara(camara_id: int, session: Any) -> list[Any]:
-    """Retorna los incidentes de baneo activos que afectan a la cámara dada."""
+def _obtener_incidentes_activos_camara(camara: Any, session: Any) -> list[Any]:
+    """Retorna los incidentes de baneo activos cuando la cámara está en estado BANEADA.
+
+    El modelo no tiene tabla de detalle cámara-incidente; el baneo se registra
+    cambiando ``camara.estado = CamaraEstado.BANEADA`` y el incidente apunta al
+    servicio protegido.  La verificación primaria es el estado de la cámara; si
+    está BANEADA, se busca el incidente activo más reciente como referencia.
+    """
     try:
-        from db.models.infra import IncidenteBaneo, IncidenteBaneoDetalle
+        from db.models.infra import CamaraEstado, IncidenteBaneo
+
+        if getattr(camara, "estado", None) != CamaraEstado.BANEADA:
+            return []
 
         return (
             session.query(IncidenteBaneo)
-            .join(
-                IncidenteBaneoDetalle,
-                IncidenteBaneoDetalle.incidente_id == IncidenteBaneo.id,
-            )
-            .filter(
-                IncidenteBaneoDetalle.camara_id == camara_id,
-                IncidenteBaneo.activo == True,  # noqa: E712
-            )
+            .filter(IncidenteBaneo.activo == True)  # noqa: E712
+            .order_by(IncidenteBaneo.fecha_inicio.desc())
+            .limit(1)
             .all()
         )
     except Exception as exc:
-        logger.warning("Error consultando incidentes para cámara %s: %s", camara_id, exc)
+        logger.warning("Error consultando incidentes para cámara %s: %s", getattr(camara, "id", "?"), exc)
         return []
