@@ -156,8 +156,8 @@ class IngresoListener:
         Diseñado para ser llamado desde un daemon thread en worker.py.
         """
         try:
-            from slack_bolt import App
-            from slack_bolt.adapter.socket_mode import SocketModeHandler
+            from slack_bolt import App  # type: ignore[import]
+            from slack_bolt.adapter.socket_mode import SocketModeHandler  # type: ignore[import]
         except ImportError:
             logger.error("slack_bolt no disponible — listener no iniciado. Instalá slack_bolt>=1.22")
             return
