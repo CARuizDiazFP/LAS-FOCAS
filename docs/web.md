@@ -412,7 +412,11 @@ Todas estas rutas requieren `role == "admin"` en sesión. Sin sesión redirigen 
 
 - `GET /api/admin/servicios/baneos/config` — Devuelve configuración del worker como JSON (admin+sesión).
 - `POST /api/admin/servicios/baneos` — Actualiza configuración (admin + CSRF), valida formato de destinos Slack y dispara recarga en caliente del worker. Redirige a `/admin/Servicios/Baneos` (303) al completar.
-- `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`).
+- `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`). Incluye campo `listener_activo: bool`.
+- `POST /api/admin/servicios/baneos/worker/start` — Inicia el contenedor del worker via Docker SDK si está detenido (admin + CSRF).
+- `POST /api/admin/servicios/baneos/trigger` — Dispara una ejecución manual inmediata del job de notificación (admin + CSRF).
+- `GET /api/admin/servicios/baneos/listener` — Devuelve `{activo, canal_id, ultimo_error}` del monitor de ingresos (admin+sesión).
+- `POST /api/admin/servicios/baneos/listener` — Actualiza `activo` y `canal_id` del listener (admin + CSRF); invoca `/reload` en el worker. Form fields: `activo`, `canal_id`, `csrf_token`.
 
 ### Estructura del frontend (Vite dual entry)
 
@@ -445,10 +449,29 @@ El grid de `/admin/servicios` está diseñado para crecer. Para agregar un nuevo
 |-------|-------------|
 | Intervalo (horas) | Cada cuántas horas se envía el reporte Slack (mín. 1) |
 | Canales o IDs Slack | Destinos separados por coma. Acepta `#nombre-canal` y IDs tipo `C08UB8ML3LP`. Para canales privados o reinstalaciones del bot, usar ID. |
+| Hora de inicio (GMT-3) | Ancla el primer ciclo (0-23); `null` = arrancar de inmediato. |
 | Servicio activo | Toggle on/off |
-| Verificar Estado | Consulta el health check del worker y muestra estado visual (verde/rojo) |
+| ▶ Iniciar Worker | Arranca el contenedor si está detenido (Docker SDK). |
+| 📤 Enviar Aviso Ahora | Dispara una ejecución manual fuera de ciclo. |
+| Verificar Estado | Consulta el health check del worker y muestra estado visual (verde/rojo). El campo `listener_activo` indica si el Socket Mode está corriendo. |
 
 Al guardar, se invoca `POST /reload` al worker para que el nuevo intervalo y destinos tomen efecto de inmediato sin reiniciar el contenedor.
+
+### Monitor de Ingresos (Socket Mode)
+
+Card adicional en `/admin/Servicios/Baneos` que controla el `IngresoListener`.
+
+| Campo | Descripción |
+|-------|-------------|
+| Canal de Slack | ID (`C...`) o `#nombre` del canal a monitorear |
+| Activar monitor | Toggle on/off. Se usa la fila `slack_ingreso_listener` en `app.config_servicios`. |
+
+El listener se ejecuta como daemon thread dentro del proceso `slack_baneo_worker`. Requiere `SLACK_APP_TOKEN` configurado en el entorno; si falta, el thread no arranca y el worker continúa operando normalmente.
+
+**Funcionamiento:** cada mensaje del canal configurado que contenga el campo `Cámara: <nombre>` desencadena:
+1. Búsqueda fuzzy del nombre (unidecode + abreviaturas + cascada ILIKE/tokens).
+2. Consulta de `camara.estado` en DB.
+3. Respuesta en el mismo hilo (`thread_ts`) con uno de los tres estados: no encontrada / libre / baneada (con número de incidente y ticket).
 
 ### Templates legacy (mantenidos)
 
