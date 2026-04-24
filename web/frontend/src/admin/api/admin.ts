@@ -34,6 +34,13 @@ export interface WorkerHealth {
   intervalo_horas?: number;
   last_run?: string;
   last_error?: string | null;
+  listener_activo?: boolean;
+}
+
+export interface ListenerConfig {
+  activo: boolean;
+  canal_id: string;
+  ultimo_error: string | null;
 }
 
 // ─── Endpoints ───────────────────────────────────────────────────────────
@@ -133,4 +140,24 @@ export async function getBaneosHealth(): Promise<WorkerHealth> {
   const res = await fetch('/api/admin/servicios/baneos/health', { credentials: 'include' });
   if (!res.ok) throw new Error(`Error ${res.status}`);
   return res.json() as Promise<WorkerHealth>;
+}
+
+/** Devuelve la configuración del listener de ingresos. */
+export async function getListenerConfig(): Promise<ListenerConfig> {
+  const res = await fetch('/api/admin/servicios/baneos/listener', { credentials: 'include' });
+  if (!res.ok) throw new Error(`Error ${res.status}`);
+  return res.json() as Promise<ListenerConfig>;
+}
+
+/** Guarda la configuración del listener de ingresos. */
+export async function saveListenerConfig(activo: boolean, canalId: string): Promise<void> {
+  const res = await fetch('/api/admin/servicios/baneos/listener', {
+    method: 'POST',
+    credentials: 'include',
+    body: formBody({ activo: activo ? 'on' : 'off', canal_id: canalId }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `Error ${res.status}`);
+  }
 }

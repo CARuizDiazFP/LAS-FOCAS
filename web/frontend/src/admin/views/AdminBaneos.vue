@@ -168,11 +168,49 @@
       {{ trigger.msg }}
     </div>
   </div>
+
+  <!-- Card: Monitor de Ingresos -->
+  <div v-if="!cargando" class="card" style="margin-top:24px">
+    <h2>🎧 Monitor de Ingresos</h2>
+    <p style="color:var(--muted);font-size:0.9rem;margin-bottom:16px">
+      Escucha en tiempo real los formularios de ingreso técnico enviados en un canal de Slack.
+      Al recibir un mensaje con el campo <em>Cámara:</em>, responde en el hilo con el estado de baneo.
+      Requiere que <code>SLACK_APP_TOKEN</code> esté configurado en el worker.
+    </p>
+    <form @submit.prevent="handleGuardarListener" style="display:flex;flex-direction:column;gap:12px;max-width:460px">
+      <label class="field-row">
+        <span>Canal de Slack (ID o #nombre)</span>
+        <input
+          v-model="listener.canalId"
+          type="text"
+          placeholder="Ej: C0123ABCDEF"
+          class="input"
+        />
+      </label>
+      <label class="toggle-row" style="display:flex;align-items:center;gap:10px">
+        <input v-model="listener.activo" type="checkbox" />
+        <span>Activar monitor</span>
+        <span
+          class="badge"
+          :class="listener.activo ? 'ok' : 'offline'"
+        >{{ listener.activo ? 'Activo' : 'Inactivo' }}</span>
+      </label>
+      <button type="submit" class="btn primary" :disabled="listener.loading">
+        {{ listener.loading ? 'Guardando…' : '💾 Guardar Configuración' }}
+      </button>
+      <div class="msg" :class="{ visible: !!listener.msg, ok: !listener.error, err: listener.error }">
+        {{ listener.msg }}
+      </div>
+      <div v-if="listener.ultimoError" style="color:var(--danger);font-size:0.85rem;margin-top:4px">
+        Último error: {{ listener.ultimoError }}
+      </div>
+    </form>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue';
-import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification } from '../api/admin';
+import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig } from '../api/admin';
 
 // ─── Estado del formulario ────────────────────────────────────────────────
 const form = reactive({
@@ -218,16 +256,29 @@ const trigger = reactive({
   error: false,
 });
 
+// ─── Estado monitor de ingresos ───────────────────────────────────────────
+const listener = reactive({
+  activo: false,
+  canalId: '',
+  ultimoError: null as string | null,
+  loading: false,
+  msg: '',
+  error: false,
+});
+
 // ─── Carga inicial de configuración ──────────────────────────────────────
 onMounted(async () => {
   try {
-    const cfg = await getBaneosConfig();
+    const [cfg, lstCfg] = await Promise.all([getBaneosConfig(), getListenerConfig()]);
     form.intervaloHoras = cfg.intervalo_horas;
     form.slackChannels = cfg.slack_channels;
     form.activo = cfg.activo;
     form.horaInicio = cfg.hora_inicio;
     dbData.ultimaEjecucion = cfg.ultima_ejecucion;
     dbData.ultimoError = cfg.ultimo_error;
+    listener.activo = lstCfg.activo;
+    listener.canalId = lstCfg.canal_id;
+    listener.ultimoError = lstCfg.ultimo_error;
   } catch {
     // Error cargando configuración — el form muestra defaults
   } finally {
@@ -306,6 +357,22 @@ async function handleTrigger() {
     trigger.error = true;
   } finally {
     trigger.loading = false;
+  }
+}
+
+// ─── Monitor de ingresos ───────────────────────────────────────────────────
+async function handleGuardarListener() {
+  listener.loading = true;
+  listener.msg = '';
+  try {
+    await saveListenerConfig(listener.activo, listener.canalId);
+    listener.msg = 'Configuración del monitor guardada.';
+    listener.error = false;
+  } catch (e: unknown) {
+    listener.msg = e instanceof Error ? e.message : 'Error guardando configuración.';
+    listener.error = true;
+  } finally {
+    listener.loading = false;
   }
 }
 </script>

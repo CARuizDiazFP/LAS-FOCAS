@@ -38,6 +38,7 @@ from modules.slack_baneo_notifier.config import (
     NOMBRE_SERVICIO,
 )
 from modules.slack_baneo_notifier.notifier import enviar_reporte_baneos
+from modules.slack_baneo_notifier.listener import IngresoListener
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOGS_ROOT = Path(os.getenv("LOGS_DIR", "/app/Logs"))
@@ -60,6 +61,7 @@ _worker_status: dict = {
 }
 _status_lock = threading.Lock()
 _scheduler: BlockingScheduler | None = None
+_listener: IngresoListener | None = None
 
 
 # ── Health Check HTTP embebido ──────────────────────────────────
@@ -78,6 +80,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
                     "last_error": _worker_status["last_error"],
                     "intervalo_horas": _worker_status["intervalo_horas"],
                     "time": datetime.now(timezone.utc).isoformat(),
+                    "listener_activo": _listener.is_running() if _listener else False,
                 }
                 body = json.dumps(safe_status)
             self.send_response(200)
@@ -308,6 +311,19 @@ def main() -> None:
         args=[scheduler],
         max_instances=1,
     )
+
+    # Arrancar IngresoListener como daemon thread si hay app_token
+    global _listener
+    settings = get_settings()
+    app_token = settings.slack.app_token
+    bot_token = settings.slack.bot_token
+    if app_token and bot_token:
+        _listener = IngresoListener(bot_token=bot_token, app_token=app_token)
+        listener_thread = threading.Thread(target=_listener.start, daemon=True, name="ingreso-listener")
+        listener_thread.start()
+        logger.info("IngresoListener iniciado como daemon thread")
+    else:
+        logger.warning("SLACK_APP_TOKEN no configurado — IngresoListener desactivado")
 
     # Señales para apagado limpio
     def _shutdown(signum: int, frame: object) -> None:

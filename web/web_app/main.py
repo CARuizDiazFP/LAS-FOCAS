@@ -969,6 +969,84 @@ async def servicios_baneos_health(request: Request):
         )
 
 
+# ── Listener de ingresos (Socket Mode) ─────────────────────────────────
+
+_LISTENER_SERVICIO = "slack_ingreso_listener"
+
+
+@app.get("/api/admin/servicios/baneos/listener")
+async def listener_config_get(request: Request) -> JSONResponse:
+    """Devuelve la configuración actual del listener de ingresos."""
+    _require_admin(request)
+
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT activo, slack_channels, ultimo_error "
+                    "FROM app.config_servicios "
+                    "WHERE nombre_servicio = %s",
+                    (_LISTENER_SERVICIO,),
+                )
+                row = cur.fetchone()
+    except Exception as exc:
+        logger.error("Error leyendo config listener: %s", exc)
+        return JSONResponse({"error": "Error de base de datos"}, status_code=500)
+
+    if row is None:
+        return JSONResponse({"activo": False, "canal_id": "", "ultimo_error": None})
+
+    return JSONResponse(
+        {
+            "activo": bool(row[0]),
+            "canal_id": row[1] or "",
+            "ultimo_error": row[2],
+        }
+    )
+
+
+@app.post("/api/admin/servicios/baneos/listener")
+async def listener_config_post(
+    request: Request,
+    activo: str = Form("off"),
+    canal_id: str = Form(""),
+    csrf_token: str = Form(...),
+) -> JSONResponse:
+    """Actualiza la configuración del listener de ingresos y recarga el worker."""
+    _require_admin(request)
+
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    canal_id_norm = canal_id.strip()
+    activo_bool = activo.lower() in ("on", "true", "1", "yes")
+
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE app.config_servicios "
+                    "SET activo = %s, slack_channels = %s "
+                    "WHERE nombre_servicio = %s",
+                    (activo_bool, canal_id_norm, _LISTENER_SERVICIO),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "INSERT INTO app.config_servicios "
+                        "(nombre_servicio, intervalo_horas, slack_channels, activo) "
+                        "VALUES (%s, 0, %s, %s)",
+                        (_LISTENER_SERVICIO, canal_id_norm, activo_bool),
+                    )
+                conn.commit()
+    except Exception as exc:
+        logger.error("Error actualizando config listener: %s", exc)
+        return JSONResponse({"error": "Error actualizando configuración"}, status_code=500)
+
+    await _reload_slack_worker_config()
+
+    return JSONResponse({"ok": True, "activo": activo_bool, "canal_id": canal_id_norm})
+
+
 @app.post("/api/chat/message")
 async def chat_message(request: Request, text: str = Form(...), csrf_token: str | None = Form(None)) -> JSONResponse:
     """

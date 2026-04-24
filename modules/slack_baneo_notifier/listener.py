@@ -1,0 +1,216 @@
+# Nombre de archivo: listener.py
+# Ubicación de archivo: modules/slack_baneo_notifier/listener.py
+# Descripción: Listener de ingresos técnicos via Slack Bolt (Socket Mode) — responde en hilo con estado de baneo
+
+"""Escucha en tiempo real los formularios de ingreso a cámaras enviados por técnicos
+en un canal de Slack.  Cuando llega un mensaje, extrae el nombre de cámara del campo
+"Cámara:", normaliza el texto, consulta la DB y responde en el **hilo original**
+con uno de los tres estados posibles.
+
+Requiere:
+  - SLACK_BOT_TOKEN  (xoxb-...)  — ya existente en .env
+  - SLACK_APP_TOKEN  (xapp-...)  — nuevo, para Socket Mode
+
+Se integra en worker.py como un daemon thread independiente.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from typing import Any
+
+from db.session import SessionLocal
+from modules.slack_baneo_notifier.camara_search import buscar_camara, extraer_nombre_camara
+
+logger = logging.getLogger("slack_baneo_worker.listener")
+
+_NOMBRE_SERVICIO_LISTENER = "slack_ingreso_listener"
+_CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
+
+
+class IngresoListener:
+    """Escucha mensajes de ingreso técnico en un canal Slack y responde en hilo."""
+
+    def __init__(self, bot_token: str, app_token: str) -> None:
+        self._bot_token = bot_token
+        self._app_token = app_token
+        self._handler: Any = None
+        self._thread: threading.Thread | None = None
+        self._running = False
+
+    # ── Configuración desde DB ───────────────────────────────────────────
+
+    def _get_config(self, session: Any) -> tuple[str, bool]:
+        """Lee canal_id y flag activo desde config_servicios.
+
+        Crea la fila con defaults si no existe todavía (primer arranque).
+        Devuelve (canal_id, activo).
+        """
+        try:
+            from db.models.servicios import ConfigServicios
+
+            row = (
+                session.query(
+                    ConfigServicios.slack_channels,
+                    ConfigServicios.activo,
+                )
+                .filter(ConfigServicios.nombre_servicio == _NOMBRE_SERVICIO_LISTENER)
+                .one_or_none()
+            )
+            if row is None:
+                # Primera vez: crear fila con defaults (inactivo hasta configuración manual)
+                config = ConfigServicios(
+                    nombre_servicio=_NOMBRE_SERVICIO_LISTENER,
+                    intervalo_horas=0,
+                    slack_channels="",
+                    activo=False,
+                )
+                session.add(config)
+                session.commit()
+                logger.info("Fila '%s' creada en config_servicios (inactivo por defecto)", _NOMBRE_SERVICIO_LISTENER)
+                return "", False
+
+            canal_id = (row[0] or "").strip()
+            activo = bool(row[1])
+            return canal_id, activo
+
+        except Exception as exc:
+            logger.warning("No se pudo leer config del listener: %s", exc)
+            return "", False
+
+    # ── Handler principal ────────────────────────────────────────────────
+
+    def _handle_message(self, event: dict[str, Any], client: Any) -> None:
+        """Procesa un mensaje entrante y responde en el mismo hilo."""
+        # Ignorar mensajes de bots (evitar loops)
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
+            return
+
+        texto = event.get("text", "")
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        channel = event.get("channel", "")
+
+        session = SessionLocal()
+        try:
+            canal_id, activo = self._get_config(session)
+
+            if not activo:
+                logger.debug("Listener inactivo, ignorando mensaje en canal %s", channel)
+                return
+
+            if canal_id and channel != canal_id:
+                logger.debug("Mensaje de canal %s ignorado (esperado: %s)", channel, canal_id)
+                return
+
+            nombre_raw = extraer_nombre_camara(texto)
+            if not nombre_raw:
+                return
+
+            logger.info("Procesando ingreso — nombre raw: '%s'", nombre_raw)
+
+            camara, nombre_norm = buscar_camara(nombre_raw, session)
+
+            if camara is None:
+                respuesta = (
+                    f"🔍 No encontré la cámara *{nombre_raw}* en el sistema.\n"
+                    "_Verificá el nombre en el listado de cámaras o consultá con el equipo de red._"
+                )
+                logger.info("Cámara no encontrada: '%s' (normalizado: '%s')", nombre_raw, nombre_norm)
+            else:
+                incidentes = _obtener_incidentes_activos_camara(camara.id, session)
+                if incidentes:
+                    inc = incidentes[0]
+                    respuesta = (
+                        f"🚨 *ATENCIÓN* — La cámara *{camara.nombre}* tiene el incidente "
+                        f"*#{inc.id}* activo (Baneo de Protección).\n"
+                        f"Ticket: {inc.ticket_asociado or 'sin ticket'} | "
+                        f"Servicio protegido: {inc.servicio_protegido_id}\n"
+                        "_No acceder a esta cámara hasta nuevo aviso._"
+                    )
+                    logger.info("Cámara '%s' BANEADA — incidente #%s", camara.nombre, inc.id)
+                else:
+                    respuesta = (
+                        f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
+                        f"Sin incidentes activos.\n_Podés proceder con el ingreso._"
+                    )
+                    logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
+
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=respuesta,
+                mrkdwn=True,
+            )
+
+        except Exception as exc:
+            logger.error("Error procesando mensaje de ingreso: %s", exc, exc_info=True)
+        finally:
+            session.close()
+
+    # ── Ciclo de vida ────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Arranca el Socket Mode handler en el thread actual (bloqueante).
+
+        Diseñado para ser llamado desde un daemon thread en worker.py.
+        """
+        try:
+            from slack_bolt import App
+            from slack_bolt.adapter.socket_mode import SocketModeHandler
+        except ImportError:
+            logger.error("slack_bolt no disponible — listener no iniciado. Instalá slack_bolt>=1.22")
+            return
+
+        app = App(token=self._bot_token)
+
+        @app.event("message")
+        def on_message(event: dict[str, Any], client: Any) -> None:
+            self._handle_message(event, client)
+
+        self._handler = SocketModeHandler(app, self._app_token)
+        self._running = True
+        logger.info("IngresoListener iniciado en modo Socket (escuchando eventos message)")
+        try:
+            self._handler.start()
+        finally:
+            self._running = False
+
+    def stop(self) -> None:
+        """Detiene el handler si está activo."""
+        if self._handler is not None:
+            try:
+                self._handler.close()
+                logger.info("IngresoListener detenido")
+            except Exception as exc:
+                logger.warning("Error deteniendo listener: %s", exc)
+        self._running = False
+
+    def is_running(self) -> bool:
+        """Retorna True si el listener está activo."""
+        return self._running
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _obtener_incidentes_activos_camara(camara_id: int, session: Any) -> list[Any]:
+    """Retorna los incidentes de baneo activos que afectan a la cámara dada."""
+    try:
+        from db.models.infra import IncidenteBaneo, IncidenteBaneoDetalle
+
+        return (
+            session.query(IncidenteBaneo)
+            .join(
+                IncidenteBaneoDetalle,
+                IncidenteBaneoDetalle.incidente_id == IncidenteBaneo.id,
+            )
+            .filter(
+                IncidenteBaneoDetalle.camara_id == camara_id,
+                IncidenteBaneo.activo == True,  # noqa: E712
+            )
+            .all()
+        )
+    except Exception as exc:
+        logger.warning("Error consultando incidentes para cámara %s: %s", camara_id, exc)
+        return []
