@@ -41,11 +41,11 @@ class IngresoListener:
 
     # ── Configuración desde DB ───────────────────────────────────────────
 
-    def _get_config(self, session: Any) -> tuple[str, bool]:
-        """Lee canal_id y flag activo desde config_servicios.
+    def _get_config(self, session: Any) -> tuple[str, bool, list[str], bool]:
+        """Lee canal_id, activo, workflow_ids y solo_workflows desde config_servicios.
 
         Crea la fila con defaults si no existe todavía (primer arranque).
-        Devuelve (canal_id, activo).
+        Devuelve (canal_id, activo, workflow_ids_list, solo_workflows).
         """
         try:
             from db.models.servicios import ConfigServicios
@@ -54,6 +54,8 @@ class IngresoListener:
                 session.query(
                     ConfigServicios.slack_channels,
                     ConfigServicios.activo,
+                    ConfigServicios.workflow_ids,
+                    ConfigServicios.solo_workflows,
                 )
                 .filter(ConfigServicios.nombre_servicio == _NOMBRE_SERVICIO_LISTENER)
                 .one_or_none()
@@ -65,19 +67,24 @@ class IngresoListener:
                     intervalo_horas=0,
                     slack_channels="",
                     activo=False,
+                    workflow_ids=None,
+                    solo_workflows=False,
                 )
                 session.add(config)
                 session.commit()
                 logger.info("Fila '%s' creada en config_servicios (inactivo por defecto)", _NOMBRE_SERVICIO_LISTENER)
-                return "", False
+                return "", False, [], False
 
             canal_id = (row[0] or "").strip()
             activo = bool(row[1])
-            return canal_id, activo
+            raw_ids = row[2] or ""
+            workflow_ids = [w.strip() for w in raw_ids.split(",") if w.strip()]
+            solo_workflows = bool(row[3])
+            return canal_id, activo, workflow_ids, solo_workflows
 
         except Exception as exc:
             logger.warning("No se pudo leer config del listener: %s", exc)
-            return "", False
+            return "", False, [], False
 
     # ── Handler principal ────────────────────────────────────────────────
 
@@ -96,7 +103,7 @@ class IngresoListener:
 
         session = SessionLocal()
         try:
-            canal_id, activo = self._get_config(session)
+            canal_id, activo, workflow_ids, solo_workflows = self._get_config(session)
 
             if not activo:
                 logger.debug("Listener inactivo, ignorando mensaje en canal %s", channel)
@@ -105,6 +112,19 @@ class IngresoListener:
             if canal_id and channel != canal_id:
                 logger.debug("Mensaje de canal %s ignorado (esperado: %s)", channel, canal_id)
                 return
+
+            # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
+            if solo_workflows:
+                event_workflow_id = event.get("workflow_id") or ""
+                if not event_workflow_id:
+                    logger.debug("Mensaje sin workflow_id ignorado (filtro solo_workflows activo)")
+                    return
+                if workflow_ids and event_workflow_id not in workflow_ids:
+                    logger.debug(
+                        "workflow_id '%s' no está en la lista permitida — ignorado",
+                        event_workflow_id,
+                    )
+                    return
 
             logger.info(
                 "Mensaje de ingreso recibido — canal=%s ts=%s bot_id=%s",
@@ -208,15 +228,15 @@ class IngresoListener:
 def _obtener_incidentes_activos_camara(camara: Any, session: Any) -> list[Any]:
     """Retorna los incidentes de baneo activos cuando la cámara está en estado BANEADA.
 
-    El modelo no tiene tabla de detalle cámara-incidente; el baneo se registra
-    cambiando ``camara.estado = CamaraEstado.BANEADA`` y el incidente apunta al
-    servicio protegido.  La verificación primaria es el estado de la cámara; si
-    está BANEADA, se busca el incidente activo más reciente como referencia.
+    Las cámaras con estado LIBRE o DETECTADA (tracking inicial sin baneo real)
+    se tratan como aptas para ingreso: devuelven lista vacía.
+    Solo BANEADA implica restricción de acceso.
     """
     try:
         from db.models.infra import CamaraEstado, IncidenteBaneo
 
-        if getattr(camara, "estado", None) != CamaraEstado.BANEADA:
+        estado = getattr(camara, "estado", None)
+        if estado != CamaraEstado.BANEADA:
             return []
 
         return (

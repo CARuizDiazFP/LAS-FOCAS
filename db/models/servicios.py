@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, SmallInteger, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, SmallInteger, String, Text, false as sa_false
 
 from db.base import Base
 
@@ -47,4 +47,12 @@ class ConfigServicios(Base):
     hora_inicio = Column(
         SmallInteger, nullable=True,
         comment="Hora del día (0-23, GMT-3) que ancla el primer ciclo; NULL = arrancar de inmediato",
+    )
+    workflow_ids = Column(
+        String(512), nullable=True,
+        comment="IDs de Workflow de Slack permitidos, separados por coma (NULL = sin filtro)",
+    )
+    solo_workflows = Column(
+        Boolean, nullable=False, default=False, server_default=sa_false(),
+        comment="Si True, solo procesa mensajes con workflow_id incluido en workflow_ids",
     )

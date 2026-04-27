@@ -110,3 +110,55 @@ commands_rep: A | callbacks_rep: B
 ```
 
 Los registros (`logging`) incluyen `route`, `cmd` o `data`, y `tg_user_id` para facilitar el seguimiento.
+
+---
+
+## Monitor de Ingresos Técnicos (Slack)
+
+El `IngresoListener` (`modules/slack_baneo_notifier/listener.py`) escucha en tiempo real los formularios de ingreso técnico enviados en un canal de Slack via Socket Mode y responde en el **hilo** del mensaje con el estado de baneo de la cámara.
+
+### Variables de entorno requeridas
+
+| Variable | Descripción |
+|---|---|
+| `SLACK_BOT_TOKEN` | Token del bot (`xoxb-...`) — ya usado por el worker de baneos |
+| `SLACK_APP_TOKEN` | Token de Socket Mode (`xapp-...`) — nuevo, exclusivo del listener |
+
+### Configuración en la DB (`app.config_servicios`)
+
+El servicio se identifica con `nombre_servicio = 'slack_ingreso_listener'` y tiene los siguientes campos relevantes:
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `slack_channels` | `VARCHAR(512)` | ID del canal Slack a monitorear (ej. `C08UB8ML3LP`) |
+| `activo` | `BOOLEAN` | Habilita o deshabilita el listener |
+| `workflow_ids` | `VARCHAR(512)` | IDs de Workflow de Slack permitidos, separados por coma. `NULL` = sin restricción |
+| `solo_workflows` | `BOOLEAN` | Si `TRUE`, solo procesa mensajes cuyo `workflow_id` esté en `workflow_ids` |
+
+### Lógica de filtrado (campo `solo_workflows`)
+
+- **`solo_workflows = FALSE`** (modo Dev): el bot responde a cualquier mensaje de texto en el canal. Útil durante desarrollo y pruebas.
+- **`solo_workflows = TRUE`**: el bot solo responde si el evento trae un `workflow_id` y ese ID está en la lista `workflow_ids`. Mensajes de usuarios y Workflows no configurados son ignorados silenciosamente.
+- Si `workflow_ids` está vacío y `solo_workflows = TRUE`, se acepta cualquier Workflow (sin filtrar por ID específico).
+
+### Cómo obtener el Workflow ID
+
+El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Slack) o en la URL del Workflow dentro de la configuración de Slack Workflows. Ejemplo: `Wf0B0KJF68BS`.
+
+### Estados de cámara
+
+| Estado | Comportamiento |
+|---|---|
+| `LIBRE` | ✅ Sin incidentes — se permite el ingreso |
+| `DETECTADA` | ✅ Sin incidentes — se permite el ingreso (tracking inicial, no implica baneo) |
+| `BANEADA` | 🚨 Se reporta el incidente de baneo activo — no acceder |
+
+> Las cámaras recién detectadas (`DETECTADA`) ya no generan alertas erróneas de restricción a menos que tengan un incidente de baneo registrado y activo.
+
+### Configuración desde el panel web
+
+La sección **🎧 Monitor de Ingresos** en `/admin/Servicios/Baneos` permite:
+- Ingresar el **Canal de Slack** (ID o #nombre)
+- Activar/desactivar el toggle **Filtrar mensajes de usuario** (mapea a `solo_workflows`)
+- Ingresar los **Workflow IDs permitidos** (se habilita solo si el filtro está activo)
+- Activar/desactivar el monitor completo

@@ -177,24 +177,70 @@
       Al recibir un mensaje con el campo <em>Cámara:</em>, responde en el hilo con el estado de baneo.
       Requiere que <code>SLACK_APP_TOKEN</code> esté configurado en el worker.
     </p>
-    <form @submit.prevent="handleGuardarListener" style="display:flex;flex-direction:column;gap:12px;max-width:460px">
-      <label class="field-row">
-        <span>Canal de Slack (ID o #nombre)</span>
+    <form @submit.prevent="handleGuardarListener" style="display:flex;flex-direction:column;gap:16px;max-width:480px">
+
+      <!-- Canal de Slack -->
+      <div>
+        <label style="display:block;margin-bottom:4px;font-weight:500">Canal de Slack (ID o #nombre)</label>
         <input
           v-model="listener.canalId"
           type="text"
           placeholder="Ej: C0123ABCDEF"
           class="input"
+          style="width:100%"
         />
-      </label>
-      <label class="toggle-row" style="display:flex;align-items:center;gap:10px">
-        <input v-model="listener.activo" type="checkbox" />
-        <span>Activar monitor</span>
-        <span
-          class="badge"
-          :class="listener.activo ? 'ok' : 'offline'"
-        >{{ listener.activo ? 'Activo' : 'Inactivo' }}</span>
-      </label>
+      </div>
+
+      <!-- Toggle: Filtrar mensajes de usuario (solo_workflows) -->
+      <div class="toggle-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <label class="toggle-wrap">
+            <input type="checkbox" v-model="listener.soloWorkflows" />
+            <span class="toggle-slider" />
+          </label>
+          <span style="font-weight:500">Filtrar mensajes de usuario</span>
+          <span class="badge" :class="listener.soloWorkflows ? 'ok' : 'offline'">
+            {{ listener.soloWorkflows ? 'Activo' : 'Inactivo' }}
+          </span>
+        </div>
+        <p style="color:var(--muted);font-size:0.82rem;margin:0">
+          Si está activo, el bot solo responde a mensajes enviados por Workflows de Slack con los IDs configurados abajo.
+          Desactivalo para modo Dev (responde a cualquier mensaje de texto).
+        </p>
+      </div>
+
+      <!-- Workflow IDs -->
+      <div>
+        <label style="display:block;margin-bottom:4px;font-weight:500">
+          Workflow IDs permitidos
+          <span v-if="!listener.soloWorkflows" style="color:var(--muted);font-weight:400;font-size:0.82rem"> (inactivo — filtro desactivado)</span>
+        </label>
+        <textarea
+          v-model="listener.workflowIds"
+          rows="3"
+          :disabled="!listener.soloWorkflows"
+          placeholder="Wf0B0KJF68BS,Wf0OTRA1ID2"
+          style="resize:vertical;width:100%;opacity:1;transition:opacity 0.2s"
+          :style="{ opacity: listener.soloWorkflows ? '1' : '0.45' }"
+        />
+        <p style="color:var(--muted);font-size:0.82rem;margin:4px 0 0">
+          IDs de Workflow de Slack separados por coma. Dejá vacío para aceptar cualquier Workflow.
+          El ID se ve en la URL del Workflow en la configuración de Slack.
+        </p>
+      </div>
+
+      <!-- Toggle: Activar monitor -->
+      <div class="toggle-row" style="align-items:center;gap:10px">
+        <label class="toggle-wrap">
+          <input type="checkbox" v-model="listener.activo" />
+          <span class="toggle-slider" />
+        </label>
+        <span style="font-weight:500">Activar monitor</span>
+        <span class="badge" :class="listener.activo ? 'ok' : 'offline'">
+          {{ listener.activo ? 'Activo' : 'Inactivo' }}
+        </span>
+      </div>
+
       <button type="submit" class="btn primary" :disabled="listener.loading">
         {{ listener.loading ? 'Guardando…' : '💾 Guardar Configuración' }}
       </button>
@@ -260,6 +306,8 @@ const trigger = reactive({
 const listener = reactive({
   activo: false,
   canalId: '',
+  workflowIds: '',
+  soloWorkflows: false,
   ultimoError: null as string | null,
   loading: false,
   msg: '',
@@ -278,6 +326,8 @@ onMounted(async () => {
     dbData.ultimoError = cfg.ultimo_error;
     listener.activo = lstCfg.activo;
     listener.canalId = lstCfg.canal_id;
+    listener.workflowIds = lstCfg.workflow_ids ?? '';
+    listener.soloWorkflows = lstCfg.solo_workflows ?? false;
     listener.ultimoError = lstCfg.ultimo_error;
   } catch {
     // Error cargando configuración — el form muestra defaults
@@ -365,7 +415,7 @@ async function handleGuardarListener() {
   listener.loading = true;
   listener.msg = '';
   try {
-    await saveListenerConfig(listener.activo, listener.canalId);
+    await saveListenerConfig(listener.activo, listener.canalId, listener.workflowIds, listener.soloWorkflows);
     listener.msg = 'Configuración del monitor guardada.';
     listener.error = false;
   } catch (e: unknown) {

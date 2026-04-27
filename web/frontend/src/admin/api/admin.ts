@@ -41,6 +41,8 @@ export interface ListenerConfig {
   activo: boolean;
   canal_id: string;
   ultimo_error: string | null;
+  workflow_ids: string;
+  solo_workflows: boolean;
 }
 
 // ─── Endpoints ───────────────────────────────────────────────────────────
@@ -150,11 +152,21 @@ export async function getListenerConfig(): Promise<ListenerConfig> {
 }
 
 /** Guarda la configuración del listener de ingresos. */
-export async function saveListenerConfig(activo: boolean, canalId: string): Promise<void> {
+export async function saveListenerConfig(
+  activo: boolean,
+  canalId: string,
+  workflowIds: string,
+  soloWorkflows: boolean,
+): Promise<void> {
   const res = await fetch('/api/admin/servicios/baneos/listener', {
     method: 'POST',
     credentials: 'include',
-    body: formBody({ activo: activo ? 'on' : 'off', canal_id: canalId }),
+    body: formBody({
+      activo: activo ? 'on' : 'off',
+      canal_id: canalId,
+      workflow_ids: workflowIds,
+      solo_workflows: soloWorkflows ? 'on' : 'off',
+    }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };

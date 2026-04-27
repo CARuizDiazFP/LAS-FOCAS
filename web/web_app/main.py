@@ -983,7 +983,7 @@ async def listener_config_get(request: Request) -> JSONResponse:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT activo, slack_channels, ultimo_error "
+                    "SELECT activo, slack_channels, ultimo_error, workflow_ids, solo_workflows "
                     "FROM app.config_servicios "
                     "WHERE nombre_servicio = %s",
                     (_LISTENER_SERVICIO,),
@@ -994,13 +994,15 @@ async def listener_config_get(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Error de base de datos"}, status_code=500)
 
     if row is None:
-        return JSONResponse({"activo": False, "canal_id": "", "ultimo_error": None})
+        return JSONResponse({"activo": False, "canal_id": "", "ultimo_error": None, "workflow_ids": "", "solo_workflows": False})
 
     return JSONResponse(
         {
             "activo": bool(row[0]),
             "canal_id": row[1] or "",
             "ultimo_error": row[2],
+            "workflow_ids": row[3] or "",
+            "solo_workflows": bool(row[4]),
         }
     )
 
@@ -1010,6 +1012,8 @@ async def listener_config_post(
     request: Request,
     activo: str = Form("off"),
     canal_id: str = Form(""),
+    workflow_ids: str = Form(""),
+    solo_workflows: str = Form("off"),
     csrf_token: str = Form(...),
 ) -> JSONResponse:
     """Actualiza la configuración del listener de ingresos y recarga el worker."""
@@ -1020,22 +1024,27 @@ async def listener_config_post(
 
     canal_id_norm = canal_id.strip()
     activo_bool = activo.lower() in ("on", "true", "1", "yes")
+    solo_workflows_bool = solo_workflows.lower() in ("on", "true", "1", "yes")
+    # Normalizar workflow_ids: separar por coma, limpiar espacios
+    workflow_ids_norm = ",".join(w.strip() for w in workflow_ids.split(",") if w.strip())
+    if len(workflow_ids_norm) > 512:
+        return JSONResponse({"error": "workflow_ids no debe superar 512 caracteres"}, status_code=400)
 
     try:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE app.config_servicios "
-                    "SET activo = %s, slack_channels = %s "
+                    "SET activo = %s, slack_channels = %s, workflow_ids = %s, solo_workflows = %s "
                     "WHERE nombre_servicio = %s",
-                    (activo_bool, canal_id_norm, _LISTENER_SERVICIO),
+                    (activo_bool, canal_id_norm, workflow_ids_norm or None, solo_workflows_bool, _LISTENER_SERVICIO),
                 )
                 if cur.rowcount == 0:
                     cur.execute(
                         "INSERT INTO app.config_servicios "
-                        "(nombre_servicio, intervalo_horas, slack_channels, activo) "
-                        "VALUES (%s, 0, %s, %s)",
-                        (_LISTENER_SERVICIO, canal_id_norm, activo_bool),
+                        "(nombre_servicio, intervalo_horas, slack_channels, activo, workflow_ids, solo_workflows) "
+                        "VALUES (%s, 0, %s, %s, %s, %s)",
+                        (_LISTENER_SERVICIO, canal_id_norm, activo_bool, workflow_ids_norm or None, solo_workflows_bool),
                     )
                 conn.commit()
     except Exception as exc:
@@ -1044,7 +1053,13 @@ async def listener_config_post(
 
     await _reload_slack_worker_config()
 
-    return JSONResponse({"ok": True, "activo": activo_bool, "canal_id": canal_id_norm})
+    return JSONResponse({
+        "ok": True,
+        "activo": activo_bool,
+        "canal_id": canal_id_norm,
+        "workflow_ids": workflow_ids_norm,
+        "solo_workflows": solo_workflows_bool,
+    })
 
 
 @app.post("/api/chat/message")
