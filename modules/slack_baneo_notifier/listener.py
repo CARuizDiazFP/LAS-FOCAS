@@ -83,9 +83,12 @@ class IngresoListener:
 
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
-        # Ignorar mensajes de bots (evitar loops)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        # Ignorar ediciones para no procesar dos veces el mismo ingreso
+        if event.get("subtype") == "message_changed":
             return
+        # Los Workflows de Slack envían subtype=bot_message con bot_id propio.
+        # IgnoringSelfEvents ya bloquea nuestros propios eventos; aquí procesamos
+        # mensajes de cualquier bot externo (incluidos Workflows).
 
         texto = event.get("text", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
@@ -103,13 +106,21 @@ class IngresoListener:
                 logger.debug("Mensaje de canal %s ignorado (esperado: %s)", channel, canal_id)
                 return
 
+            logger.info(
+                "Mensaje de ingreso recibido — canal=%s ts=%s bot_id=%s",
+                channel,
+                event.get("ts"),
+                event.get("bot_id", "—"),
+            )
+
             nombre_raw = extraer_nombre_camara(texto)
+            logger.info("Nombre extraído por regex: '%s'", nombre_raw)
             if not nombre_raw:
+                logger.info("No se pudo extraer nombre de cámara del mensaje")
                 return
 
-            logger.info("Procesando ingreso — nombre raw: '%s'", nombre_raw)
-
             camara, nombre_norm = buscar_camara(nombre_raw, session)
+            logger.info("Resultado búsqueda DB — cámara: %s (normalizado: '%s')", camara, nombre_norm)
 
             if camara is None:
                 respuesta = (

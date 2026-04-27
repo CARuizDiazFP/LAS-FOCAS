@@ -43,6 +43,26 @@ class TestExtraerNombreCamara(unittest.TestCase):
         result = self.extraer(texto)
         self.assertEqual(result, "Interseccion cra 7 clle 10")
 
+    def test_formato_workflow_nombre_nodo_camara(self) -> None:
+        """Extrae el nombre de cámara del formato real del Workflow de Slack."""
+        texto = (
+            "*Cual es el numero de Ticket MKT? o Numero de Linea*\nMKT-111111\n"
+            "*Es Camara Critica?*\nNo\n"
+            "*Nombre: Nodo/Camara/botella*\nBot. estacion Alem linea B CF\n"
+            "*Ingreso o Egreso*\nIngreso\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Bot. estacion Alem linea B CF")
+
+    def test_formato_workflow_prioritario_sobre_campo_camara(self) -> None:
+        """El regex de Workflow tiene prioridad sobre el campo libre 'Cámara:'."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nCam Real del Workflow\n"
+            "Cámara: Cam de fallback\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Cam Real del Workflow")
+
     def test_sin_campo_camara_usa_primera_linea(self) -> None:
         texto = "Cam Zona Norte\nTécnico: María"
         result = self.extraer(texto)
@@ -118,21 +138,60 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         channel: str = "C123",
         ts: str = "1234567890.000001",
         bot_id: str | None = None,
+        subtype: str | None = None,
     ) -> dict:
         ev = {"text": text, "channel": channel, "ts": ts}
         if bot_id:
             ev["bot_id"] = bot_id
+        if subtype:
+            ev["subtype"] = subtype
         return ev
 
-    def test_ignora_mensajes_de_bots(self) -> None:
+    def test_ignora_message_changed(self) -> None:
+        """Eventos subtype=message_changed deben descartarse sin procesar."""
         listener = self._make_listener()
         client_mock = MagicMock()
-        event = self._make_event(bot_id="B999ABC")
+        event = self._make_event(subtype="message_changed")
 
-        with patch.object(listener, "_get_config", return_value=("C123", True)):
-            listener._handle_message(event, client_mock)
+        listener._handle_message(event, client_mock)
 
         client_mock.chat_postMessage.assert_not_called()
+
+    def test_acepta_bot_message_de_workflow(self) -> None:
+        """Mensajes con subtype=bot_message de Workflows externos deben procesarse."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        texto_workflow = (
+            "*Cual es el numero de Ticket MKT? o Numero de Linea*\nMKT-111111\n"
+            "*Nombre: Nodo/Camara/botella*\nBot. estacion Alem linea B CF\n"
+            "*Ingreso o Egreso*\nIngreso\n"
+        )
+        event = self._make_event(
+            text=texto_workflow,
+            channel="C123",
+            bot_id="B0AV5BDDUJE",
+            subtype="bot_message",
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Bot. estacion Alem linea B CF",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara",
+                return_value=(None, "bot estacion alem linea b cf"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
+                return_value=[],
+            ),
+        ):
+            listener._handle_message(event, client_mock)
+
+        client_mock.chat_postMessage.assert_called_once()
 
     def test_responde_camara_no_encontrada(self) -> None:
         listener = self._make_listener()

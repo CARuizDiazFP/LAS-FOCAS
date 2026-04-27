@@ -39,7 +39,11 @@ _ABREVIATURAS: dict[str, str] = {
     r"\bcf\b": "",          # código de filial — ignorar al buscar
 }
 
-# Regex para extraer nombre de cámara del mensaje estructurado del Workflow
+# Regex principal: campo del Workflow "*Nombre: Nodo/Camara/botella*\n[valor]"
+_RE_NOMBRE_WORKFLOW = re.compile(
+    r"(?i)\*?Nombre:\s*Nodo[/\\]C[aá]mara[/\\]botella\*?\n(.+?)(?:\n|$)"
+)
+# Regex fallback: campo libre "Cámara: [valor]"
 _RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*:\s*(.+?)(?:\n|$)")
 
 
@@ -64,11 +68,16 @@ def _expandir_abreviaturas(texto: str) -> str:
 
 
 def extraer_nombre_camara(mensaje: str) -> str:
-    """Extrae el nombre de cámara del mensaje del Workflow.
+    """Extrae el nombre de cámara del mensaje.
 
-    Si el mensaje tiene el campo "Cámara: [valor]" lo extrae;
-    si no, devuelve el mensaje completo como fallback.
+    Prioridad:
+      1. Formato Workflow: ``*Nombre: Nodo/Camara/botella*\\n[valor]``
+      2. Campo libre: ``Cámara: [valor]``
+      3. Fallback: primera línea del mensaje.
     """
+    match = _RE_NOMBRE_WORKFLOW.search(mensaje)
+    if match:
+        return match.group(1).strip()
     match = _RE_CAMPO_CAMARA.search(mensaje)
     if match:
         return match.group(1).strip()
