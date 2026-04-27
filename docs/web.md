@@ -415,8 +415,8 @@ Todas estas rutas requieren `role == "admin"` en sesión. Sin sesión redirigen 
 - `GET /api/admin/servicios/baneos/health` — Proxy al health check del worker (`http://slack_baneo_worker:8095/health`). Incluye campo `listener_activo: bool`.
 - `POST /api/admin/servicios/baneos/worker/start` — Inicia el contenedor del worker via Docker SDK si está detenido (admin + CSRF).
 - `POST /api/admin/servicios/baneos/trigger` — Dispara una ejecución manual inmediata del job de notificación (admin + CSRF).
-- `GET /api/admin/servicios/baneos/listener` — Devuelve `{activo, canal_id, ultimo_error}` del monitor de ingresos (admin+sesión).
-- `POST /api/admin/servicios/baneos/listener` — Actualiza `activo` y `canal_id` del listener (admin + CSRF); invoca `/reload` en el worker. Form fields: `activo`, `canal_id`, `csrf_token`.
+- `GET /api/admin/servicios/baneos/listener` — Devuelve `{activo, canal_id, ultimo_error, workflow_ids, solo_workflows}` del monitor de ingresos (admin+sesión).
+- `POST /api/admin/servicios/baneos/listener` — Actualiza `activo`, `canal_id`, `workflow_ids` y `solo_workflows` del listener (admin + CSRF); invoca `/reload` en el worker. Form fields: `activo`, `canal_id`, `workflow_ids`, `solo_workflows`, `csrf_token`.
 
 ### Estructura del frontend (Vite dual entry)
 
@@ -464,6 +464,8 @@ Card adicional en `/admin/Servicios/Baneos` que controla el `IngresoListener`.
 | Campo | Descripción |
 |-------|-------------|
 | Canal de Slack | ID (`C...`) o `#nombre` del canal a monitorear |
+| Filtrar mensajes de usuario | Toggle on/off (`solo_workflows`). Si activo, solo procesa mensajes de Workflows de Slack. |
+| Workflow IDs permitidos | IDs de Workflow separados por coma (ej: `Wf0B0KJF68BS`). Se habilita solo si el filtro está activo. Vacío = acepta cualquier Workflow. |
 | Activar monitor | Toggle on/off. Se usa la fila `slack_ingreso_listener` en `app.config_servicios`. |
 
 El listener se ejecuta como daemon thread dentro del proceso `slack_baneo_worker`. Requiere `SLACK_APP_TOKEN` configurado en el entorno; si falta, el thread no arranca y el worker continúa operando normalmente.

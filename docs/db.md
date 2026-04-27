@@ -261,6 +261,9 @@ Almacena configuración dinámica de workers y servicios automatizados. Definida
 | `ultima_ejecucion`| DateTime(tz)      | Timestamp de la última ejecución exitosa. |
 | `activo`          | Boolean           | Si el servicio está habilitado (default: true). |
 | `ultimo_error`    | Text              | Último error registrado (NULL si la última ejecución fue exitosa). |
+| `hora_inicio`     | SmallInteger      | Hora del día (0-23, GMT-3) que ancla el primer ciclo; NULL = arrancar de inmediato. |
+| `workflow_ids`    | String(512)       | IDs de Workflow de Slack permitidos, separados por coma. NULL = sin filtro. Usado por `slack_ingreso_listener`. |
+| `solo_workflows`  | Boolean           | Si TRUE, el listener solo procesa mensajes con `workflow_id` incluido en `workflow_ids` (default: false). |
 
 **Migración:** `20260417_01_config_servicios.py` — crea la tabla e inserta fila por defecto para `slack_baneo_notifier`.
 
@@ -294,3 +297,4 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260420_01` | `20260420_01_camaras_estado_auditoria.py` | Tabla `app.camaras_estado_auditoria` + enum `camara_estado` |
 | `20260423_01` | `20260423_01_config_servicios_hora_inicio.py` | Columna `hora_inicio` en `app.config_servicios` |
 | `20260427_01` | `20260427_01_unaccent_extension.py` | Extensión `unaccent` para búsquedas sin acento |
+| `20260428_01` | `20260428_01_listener_workflow_ids.py` | Columnas `workflow_ids` y `solo_workflows` en `app.config_servicios` |
