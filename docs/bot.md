@@ -155,6 +155,32 @@ El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Sl
 
 > Las cámaras recién detectadas (`DETECTADA`) ya no generan alertas erróneas de restricción a menos que tengan un incidente de baneo registrado y activo.
 
+### Normalización de nombres de cámara (`camara_search.py`)
+
+La búsqueda en DB usa `modules/slack_baneo_notifier/camara_search.py` con una estrategia en cascada de 4 intentos:
+
+1. **ILIKE directo** — `%nombre_normalizado%` sobre `unaccent(lower(Camara.nombre))`
+2. **Tokens AND** — todos los tokens (≥ 3 chars) presentes en el nombre
+3. **Sin números** — reintenta 1 y 2 descartando dígitos
+4. **Sin expansión** *(fallback)* — reintenta con el nombre raw normalizado, SIN expandir abreviaturas; cubre el caso en que la DB almacena la abreviatura literal
+
+#### Abreviaturas expandidas
+
+| Abreviatura | Expansión |
+|---|---|
+| `clle`, `all` | `calle` |
+| `av`, `ave` | `avenida` |
+| `pje`, `pas` | `pasaje` |
+| `bv`, `blvd` | `boulevard` |
+| `dr` | `doctor` |
+| `pte` | `presidente` |
+| `sn` | `san` |
+| `sta` | `santa` |
+| `sto` | `santo` |
+| `cf` | *(eliminado — código de filial)* |
+
+> **`cra` no se expande.** En los nombres de cámara, "Cra" se usa de forma literal (ej.: `Bot 2 Cra Poste 202 Vias FFCC Roca Hudson`). Expandirlo a "carrera" destruye el match contra la DB. El Intento 4 garantiza encontrar la cámara incluso si otras abreviaturas modificaron el query.
+
 ### Configuración desde el panel web
 
 La sección **🎧 Monitor de Ingresos** en `/admin/Servicios/Baneos` permite:

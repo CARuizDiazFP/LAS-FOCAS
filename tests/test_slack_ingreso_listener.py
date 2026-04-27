@@ -122,6 +122,60 @@ class TestBuscarCamara(unittest.TestCase):
         self.assertIsNone(camara)
         self.assertIsInstance(nombre_norm, str)
 
+    def test_cra_no_se_expande_a_carrera(self) -> None:
+        """'Cra' debe llegar a la DB sin transformarse en 'carrera'."""
+        from modules.slack_baneo_notifier.camara_search import _expandir_abreviaturas, _normalizar
+
+        expandido = _expandir_abreviaturas("Bot 2 Cra Poste 202 Vias FFCC Roca Hudson")
+        normalizado = _normalizar(expandido)
+        self.assertNotIn("carrera", normalizado)
+        self.assertIn("cra", normalizado)
+
+    def test_buscar_camara_con_cra_encuentra_por_ilike(self) -> None:
+        """buscar_camara debe encontrar cámara con 'Cra' en nombre via ILIKE directo."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        camara_mock = self._make_camara(7, "Bot 2 Cra Poste 202 Vias FFCC Roca Hudson")
+        session = MagicMock()
+        query_mock = MagicMock()
+        query_mock.filter.return_value.all.return_value = [camara_mock]
+        session.query.return_value = query_mock
+
+        camara, nombre_norm = buscar_camara(
+            "Bot 2 Cra Poste 202 Vias FFCC Roca Hudson", session
+        )
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Bot 2 Cra Poste 202 Vias FFCC Roca Hudson")
+        self.assertIn("cra", nombre_norm)
+        self.assertNotIn("carrera", nombre_norm)
+
+    def test_intento4_fallback_sin_expansion(self) -> None:
+        """Intento 4 usa el nombre sin expansión cuando intento 1-3 fallan."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        camara_mock = self._make_camara(8, "Cam Clle Principal 100")
+        # Simular que solo el intento 4 (raw normalizado) encuentra la cámara.
+        # clle→calle via expansión → "cam calle principal 100"
+        # raw normalizado → "cam clle principal 100"
+        call_count: list[int] = [0]
+
+        def ilike_side_effect(patron: str, session: Any) -> Any:
+            call_count[0] += 1
+            # Primeros 2 llamados (intento 1 + intento 3): None
+            # Tercer llamado (intento 4, sin expansión): retorna cámara
+            if call_count[0] <= 2:
+                return None
+            return camara_mock
+
+        with (
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike", side_effect=ilike_side_effect),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens", return_value=None),
+        ):
+            camara, nombre_norm = buscar_camara("Cam Clle Principal 100", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+
 
 # ─── Tests del handler del listener ────────────────────────────────────────────
 

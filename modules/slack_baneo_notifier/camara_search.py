@@ -21,8 +21,10 @@ if TYPE_CHECKING:
     from db.models.infra import Camara
 
 # ── Tabla de abreviaturas comunes usadas por técnicos ────────────────────
+# NOTA: "Cra" fue eliminado de esta tabla.  Los nombres de cámara almacenados
+# en DB conservan "Cra" como parte del nombre literal (ej: "Bot 2 Cra Poste …"),
+# por lo que expandirlo a "carrera" destruye el match en la búsqueda ILIKE.
 _ABREVIATURAS: dict[str, str] = {
-    r"\bcra\b": "carrera",
     r"\bclle\b": "calle",
     r"\ball\b": "calle",   # alias informal
     r"\bav\b": "avenida",
@@ -89,9 +91,12 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
     """Busca una cámara en DB tolerando abreviaturas y variaciones ortográficas.
 
     Estrategia en cascada:
-      1. ILIKE exacto sobre el nombre normalizado
-      2. Cada token del query presente en el nombre (AND ILIKE)
+      1. ILIKE exacto sobre el nombre normalizado (con expansión de abreviaturas)
+      2. Cada token del query presente en el nombre (AND ILIKE), con expansión
       3. Reintentar sin números si el query tenía números
+      4. Reintentar con el nombre raw normalizado SIN expansión de abreviaturas
+         (fallback para cuando la expansión modifica términos que la DB conserva
+         en forma abreviada, p.ej. "Cra" almacenado literalmente)
 
     Args:
         nombre_raw: Nombre extraído del mensaje (sin normalizar).
@@ -130,6 +135,20 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
             resultado = _buscar_tokens(tokens_sin_num, session)
             if resultado:
                 return resultado, nombre_sin_num
+
+    # ── Intento 4: sin expansión de abreviaturas (nombre raw normalizado) ─
+    # Cubre el caso en que la DB almacena el nombre con abreviaturas literales
+    # (p.ej. "Cra") que la expansión habría transformado incorrectamente.
+    nombre_raw_norm = _normalizar(nombre_raw)
+    if nombre_raw_norm != nombre_norm:
+        resultado = _buscar_ilike(nombre_raw_norm, session)
+        if resultado:
+            return resultado, nombre_raw_norm
+        tokens_raw = [t for t in nombre_raw_norm.split() if len(t) >= 3]
+        if len(tokens_raw) >= 2:
+            resultado = _buscar_tokens(tokens_raw, session)
+            if resultado:
+                return resultado, nombre_raw_norm
 
     return None, nombre_norm
 
