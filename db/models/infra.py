@@ -38,6 +38,7 @@ class CamaraEstado(str, Enum):
     OCUPADA = "OCUPADA"
     BANEADA = "BANEADA"
     DETECTADA = "DETECTADA"  # Cámaras creadas automáticamente desde tracking
+    PENDIENTE_REVISION = "PENDIENTE_REVISION"  # Auto-registradas por el listener; requieren revisión admin
 
 
 class CamaraOrigenDatos(str, Enum):
@@ -116,6 +117,7 @@ class Camara(Base):
     cables_origen = relationship("Cable", back_populates="origen_camara", foreign_keys="Cable.origen_camara_id")
     cables_destino = relationship("Cable", back_populates="destino_camara", foreign_keys="Cable.destino_camara_id")
     ingresos = relationship("Ingreso", back_populates="camara", cascade="all, delete-orphan")
+    aliases = relationship("CamaraAlias", back_populates="camara", cascade="all, delete-orphan")
 
     @property
     def cables(self) -> list["Cable"]:
@@ -124,6 +126,32 @@ class Camara(Base):
 
     def __repr__(self) -> str:
         return f"<Camara id={self.id} nombre='{self.nombre}' estado={self.estado.value}>"
+
+
+class CamaraAlias(Base):
+    """Alias (nombre alternativo) de una cámara — permite encontrarla con variaciones de nomenclatura."""
+
+    __tablename__ = "camara_alias"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    camara_id = Column(
+        Integer,
+        ForeignKey("app.camaras.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alias_nombre = Column(String(255), nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default="CURRENT_TIMESTAMP",
+    )
+
+    camara = relationship("Camara", back_populates="aliases")
+
+    def __repr__(self) -> str:
+        return f"<CamaraAlias id={self.id} camara_id={self.camara_id} alias='{self.alias_nombre}'>"
 
 
 class Cable(Base):

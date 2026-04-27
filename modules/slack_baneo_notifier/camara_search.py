@@ -21,9 +21,9 @@ if TYPE_CHECKING:
     from db.models.infra import Camara
 
 # ── Tabla de abreviaturas comunes usadas por técnicos ────────────────────
-# NOTA: "Cra" fue eliminado de esta tabla.  Los nombres de cámara almacenados
-# en DB conservan "Cra" como parte del nombre literal (ej: "Bot 2 Cra Poste …"),
-# por lo que expandirlo a "carrera" destruye el match en la búsqueda ILIKE.
+# NOTA: "Cra" NO está en esta tabla.  Los nombres de cámara almacenados en DB
+# conservan "Cra" de forma literal (ej: "Bot 2 Cra Poste …"); expandirlo a
+# "carrera" destruiría el match ILIKE.  El Intento 4 cubre este caso.
 _ABREVIATURAS: dict[str, str] = {
     r"\bclle\b": "calle",
     r"\ball\b": "calle",   # alias informal
@@ -41,12 +41,39 @@ _ABREVIATURAS: dict[str, str] = {
     r"\bcf\b": "",          # código de filial — ignorar al buscar
 }
 
+# ── Diccionario de sinónimos (aplicado DESPUÉS de normalizar) ────────────
+# Permite empatar variaciones semánticas frecuentes en escritura técnica.
+# Se aplican sobre el texto ya en minúsculas y sin acentos (post-unidecode).
+_SINONIMOS: dict[str, str] = {
+    r"\bbotella\b": "bot",    # "Botella" → "Bot" (prefijo de cámara)
+    r"\bcamara\b": "cra",    # "camara" / "cámara" (post-unidecode) → "cra"
+}
+
 # Regex principal: campo del Workflow "*Nombre: Nodo/Camara/botella*\n[valor]"
 _RE_NOMBRE_WORKFLOW = re.compile(
     r"(?i)\*?Nombre:\s*Nodo[/\\]C[aá]mara[/\\]botella\*?\n(.+?)(?:\n|$)"
 )
 # Regex fallback: campo libre "Cámara: [valor]"
 _RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*:\s*(.+?)(?:\n|$)")
+
+
+def _limpiar_puntuacion(texto: str) -> str:
+    """Elimina signos de puntuación irrelevantes antes de normalizar.
+
+    - Comas, punto y coma, puntos NO precedidos de dígitos (para preservar
+      decimales como "7.06 dB").
+    - Guiones rodeados de espacios (" - ") → espacio simple.
+    - Normaliza espacios múltiples resultantes.
+    """
+    # Punto y coma y comas → espacio
+    texto = re.sub(r"[,;]", " ", texto)
+    # Punto al final de palabra (no entre dígitos) → espacio
+    texto = re.sub(r"(?<!\d)\.(?!\d)", " ", texto)
+    # Guión con espacios (separador de texto largo) → espacio
+    texto = re.sub(r"\s+-\s+", " ", texto)
+    # Normalizar espacios
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
 
 
 def _normalizar(texto: str) -> str:
@@ -59,6 +86,13 @@ def _normalizar(texto: str) -> str:
     texto = texto.lower().strip()
     texto = re.sub(r"\s+", " ", texto)
     return texto
+
+
+def _aplicar_sinonimos(texto_norm: str) -> str:
+    """Aplica el diccionario de sinónimos sobre texto ya normalizado (lowercase, sin acentos)."""
+    for patron, reemplazo in _SINONIMOS.items():
+        texto_norm = re.sub(patron, reemplazo, texto_norm, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", texto_norm).strip()
 
 
 def _expandir_abreviaturas(texto: str) -> str:
@@ -88,15 +122,20 @@ def extraer_nombre_camara(mensaje: str) -> str:
 
 
 def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", str]:
-    """Busca una cámara en DB tolerando abreviaturas y variaciones ortográficas.
+    """Busca una cámara en DB tolerando abreviaturas, sinónimos y variaciones ortográficas.
+
+    Preprocesamiento:
+      - Limpieza de puntuación (comas, puntos, guiones separadores)
+      - Expansión de abreviaturas viales (av→avenida, clle→calle, etc.)
+      - Normalización (unidecode + lowercase)
+      - Aplicación de sinónimos (botella→bot, camara→cra)
 
     Estrategia en cascada:
-      1. ILIKE exacto sobre el nombre normalizado (con expansión de abreviaturas)
-      2. Cada token del query presente en el nombre (AND ILIKE), con expansión
-      3. Reintentar sin números si el query tenía números
-      4. Reintentar con el nombre raw normalizado SIN expansión de abreviaturas
-         (fallback para cuando la expansión modifica términos que la DB conserva
-         en forma abreviada, p.ej. "Cra" almacenado literalmente)
+      1. ILIKE '%nombre_norm%' en Camara.nombre y CamaraAlias.alias_nombre
+      2. Todos los tokens (≥3 chars) presentes — AND ILIKE
+      3. Reintentar sin números
+      4. Fallback con nombre raw normalizado SIN expansión (para abreviaturas
+         almacenadas literalmente en DB, p.ej. "Cra")
 
     Args:
         nombre_raw: Nombre extraído del mensaje (sin normalizar).
@@ -106,10 +145,11 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
         Tupla ``(camara_o_None, nombre_normalizado_usado)``.
         Si hay múltiples candidatos se retorna el de nombre más corto.
     """
-    from db.models.infra import Camara
-
-    nombre_expandido = _expandir_abreviaturas(nombre_raw)
-    nombre_norm = _normalizar(nombre_expandido)
+    # ── Pre-proceso ──────────────────────────────────────────────────────
+    nombre_limpio = _limpiar_puntuacion(nombre_raw)
+    nombre_expandido = _expandir_abreviaturas(nombre_limpio)
+    nombre_norm_base = _normalizar(nombre_expandido)
+    nombre_norm = _aplicar_sinonimos(nombre_norm_base)
 
     # ── Intento 1: coincidencia parcial normalizada ──────────────────────
     resultado = _buscar_ilike(nombre_norm, session)
@@ -137,9 +177,8 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
                 return resultado, nombre_sin_num
 
     # ── Intento 4: sin expansión de abreviaturas (nombre raw normalizado) ─
-    # Cubre el caso en que la DB almacena el nombre con abreviaturas literales
-    # (p.ej. "Cra") que la expansión habría transformado incorrectamente.
-    nombre_raw_norm = _normalizar(nombre_raw)
+    # Cubre el caso en que la DB almacena el nombre con abreviaturas literales.
+    nombre_raw_norm = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(nombre_raw)))
     if nombre_raw_norm != nombre_norm:
         resultado = _buscar_ilike(nombre_raw_norm, session)
         if resultado:
@@ -154,28 +193,49 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
 
 
 def _buscar_ilike(patron: str, session: Session) -> "Camara | None":
-    """Query ILIKE '%patron%' sobre Camara.nombre normalizado."""
-    from db.models.infra import Camara
+    """Query ILIKE '%patron%' sobre Camara.nombre y CamaraAlias.alias_nombre."""
+    from db.models.infra import Camara, CamaraAlias
 
-    candidatos = (
+    # Búsqueda en nombre directo
+    por_nombre = (
         session.query(Camara)
         .filter(func.unaccent(func.lower(Camara.nombre)).ilike(f"%{patron}%"))
         .all()
     )
-    return _mejor_candidato(candidatos)
+    # Búsqueda en aliases (JOIN)
+    por_alias = (
+        session.query(Camara)
+        .join(CamaraAlias, CamaraAlias.camara_id == Camara.id)
+        .filter(func.unaccent(func.lower(CamaraAlias.alias_nombre)).ilike(f"%{patron}%"))
+        .all()
+    )
+    return _mejor_candidato(por_nombre + por_alias)
 
 
 def _buscar_tokens(tokens: list[str], session: Session) -> "Camara | None":
-    """Busca cámaras cuyo nombre contenga TODOS los tokens dados."""
-    from db.models.infra import Camara
+    """Busca cámaras cuyo nombre o algún alias contenga TODOS los tokens dados."""
+    from db.models.infra import Camara, CamaraAlias
     from sqlalchemy import and_
 
-    condiciones = [
+    # En nombre directo
+    condiciones_nombre = [
         func.unaccent(func.lower(Camara.nombre)).ilike(f"%{token}%")
         for token in tokens
     ]
-    candidatos = session.query(Camara).filter(and_(*condiciones)).all()
-    return _mejor_candidato(candidatos)
+    por_nombre = session.query(Camara).filter(and_(*condiciones_nombre)).all()
+
+    # En aliases
+    condiciones_alias = [
+        func.unaccent(func.lower(CamaraAlias.alias_nombre)).ilike(f"%{token}%")
+        for token in tokens
+    ]
+    por_alias = (
+        session.query(Camara)
+        .join(CamaraAlias, CamaraAlias.camara_id == Camara.id)
+        .filter(and_(*condiciones_alias))
+        .all()
+    )
+    return _mejor_candidato(por_nombre + por_alias)
 
 
 def _mejor_candidato(candidatos: list["Camara"]) -> "Camara | None":

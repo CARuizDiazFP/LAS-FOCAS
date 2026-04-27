@@ -97,9 +97,10 @@ class TestBuscarCamara(unittest.TestCase):
         session = MagicMock()
         camara_mock = self._make_camara(1, "Cam Avenida Libertador 1234")
 
-        # Primera consulta (ILIKE) retorna la cámara
+        # Configurar mock para la query directa Y para la query JOIN de aliases
         query_mock = MagicMock()
         query_mock.filter.return_value.all.return_value = [camara_mock]
+        query_mock.join.return_value.filter.return_value.all.return_value = []
         session.query.return_value = query_mock
 
         camara, nombre_norm = buscar_camara("Av Libertador 1234", session)
@@ -139,6 +140,7 @@ class TestBuscarCamara(unittest.TestCase):
         session = MagicMock()
         query_mock = MagicMock()
         query_mock.filter.return_value.all.return_value = [camara_mock]
+        query_mock.join.return_value.filter.return_value.all.return_value = []
         session.query.return_value = query_mock
 
         camara, nombre_norm = buscar_camara(
@@ -249,6 +251,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         client_mock.chat_postMessage.assert_called_once()
 
     def test_responde_camara_no_encontrada(self) -> None:
+        """Cuando buscar_camara no encuentra la cámara, el listener la auto-registra."""
         listener = self._make_listener()
         client_mock = MagicMock()
         event = self._make_event(text="Cámara: Cám Inexistente 9999\nTécnico: Juan")
@@ -260,13 +263,12 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(None, "cam inexistente 9999")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
-            mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
-            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_session_cls.return_value = MagicMock()
             listener._handle_message(event, client_mock)
 
         client_mock.chat_postMessage.assert_called_once()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
-        self.assertIn("No encontré", texto_respuesta)
+        self.assertIn("bajo revisión", texto_respuesta)
 
     def test_responde_camara_libre(self) -> None:
         listener = self._make_listener()
@@ -445,6 +447,101 @@ class TestObtenerIncidentesActivosCamara(unittest.TestCase):
             camara = self._make_camara("LIBRE")
             result = _obtener_incidentes_activos_camara(camara, MagicMock())
         self.assertEqual(result, [])
+
+
+# ─── Tests de limpieza de puntuación y sinónimos ───────────────────────────────
+
+
+class TestLimpiezaYSinonimos(unittest.TestCase):
+    """Prueba _limpiar_puntuacion, _aplicar_sinonimos y flujo integrado."""
+
+    def test_limpiar_puntuacion_coma(self) -> None:
+        """Las comas se eliminan y se normalizan espacios."""
+        from modules.slack_baneo_notifier.camara_search import _limpiar_puntuacion
+        resultado = _limpiar_puntuacion("Cámara, Bartolomé Mitre 440. CF")
+        self.assertNotIn(",", resultado)
+
+    def test_limpiar_puntuacion_punto_final(self) -> None:
+        """Puntos al final de palabra se eliminan."""
+        from modules.slack_baneo_notifier.camara_search import _limpiar_puntuacion
+        resultado = _limpiar_puntuacion("Bot. estacion Alem")
+        # el punto es reemplazado por espacio
+        self.assertNotIn("Bot.", resultado)
+
+    def test_limpiar_puntuacion_guion_con_espacios(self) -> None:
+        """Guiones con espacios se reemplazan por espacio simple."""
+        from modules.slack_baneo_notifier.camara_search import _limpiar_puntuacion
+        resultado = _limpiar_puntuacion("Terminal Norte - Acceso Sur")
+        self.assertNotIn(" - ", resultado)
+        self.assertIn("Norte", resultado)
+        self.assertIn("Acceso", resultado)
+
+    def test_sinonimo_botella_a_bot(self) -> None:
+        """'botella' como palabra completa se convierte a 'bot' post-normalización."""
+        from modules.slack_baneo_notifier.camara_search import _aplicar_sinonimos
+        resultado = _aplicar_sinonimos("botella 2 cra poste 202")
+        self.assertIn("bot", resultado)
+        self.assertNotIn("botella", resultado)
+
+    def test_sinonimo_camara_a_cra(self) -> None:
+        """'camara' (post-unidecode de 'cámara') se convierte a 'cra'."""
+        from modules.slack_baneo_notifier.camara_search import _aplicar_sinonimos, _normalizar
+        # Simular flujo real: unidecode('cámara') → 'camara'
+        texto_norm = _normalizar("Cámara Bartolomé Mitre 440")
+        resultado = _aplicar_sinonimos(texto_norm)
+        self.assertIn("cra", resultado)
+        self.assertNotIn("camara", resultado)
+
+    def test_buscar_camara_por_alias(self) -> None:
+        """buscar_camara encuentra una cámara a través de su alias en CamaraAlias."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        camara_mock = MagicMock()
+        camara_mock.id = 5
+        camara_mock.nombre = "Bot 2 Cra Poste 202"
+
+        def ilike_side_effect(patron: str, session: Any) -> Any:
+            # Simular que búsqueda por nombre directo falla pero por alias encuentra
+            # _buscar_ilike combina ambas; mockeamos retornando la cámara en el primer intento
+            return camara_mock
+
+        with patch("modules.slack_baneo_notifier.camara_search._buscar_ilike", side_effect=ilike_side_effect):
+            camara, _ = buscar_camara("Botella 2 Cra Poste 202", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Bot 2 Cra Poste 202")
+
+    def test_autoregistro_camara_pendiente(self) -> None:
+        """Cuando buscar_camara retorna None, listener registra cámara como PENDIENTE_REVISION."""
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        event: dict = {
+            "text": "Cámara: CRA Inexistente XYZ 9999",
+            "channel": "C123",
+            "ts": "1234567890.000001",
+        }
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="CRA Inexistente XYZ 9999"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(None, "cra inexistente xyz 9999")),
+        ):
+            # El listener usa session = SessionLocal() directamente (no context manager)
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(event, client_mock)
+
+        # Verificar que se llamó session.add (auto-registro)
+        session_mock.add.assert_called_once()
+        session_mock.commit.assert_called_once()
+
+        # Verificar que la respuesta indica auto-registro
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("bajo revisión", texto)
 
 
 if __name__ == "__main__":

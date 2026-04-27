@@ -252,11 +252,99 @@
       </div>
     </form>
   </div>
+
+  <!-- Acordeón: Cámaras Pendientes de Revisión -->
+  <div v-if="!cargando" class="card" style="margin-top:24px">
+    <div
+      class="accordion-header"
+      style="display:flex;align-items:center;justify-content:space-between;cursor:pointer"
+      @click="pendientes.abierto = !pendientes.abierto"
+    >
+      <h2 style="margin:0">🔄 Cámaras Pendientes de Revisión</h2>
+      <span style="font-size:1.2rem">{{ pendientes.abierto ? '▲' : '▼' }}</span>
+    </div>
+
+    <div v-if="pendientes.abierto" style="margin-top:16px">
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:16px">
+        Cámaras auto-registradas por el listener de ingresos que requieren
+        aprobación o clasificación como alias de otra cámara.
+      </p>
+
+      <div v-if="pendientes.cargando" style="color:var(--muted)">Cargando…</div>
+      <div v-else-if="pendientes.error" style="color:var(--danger)">{{ pendientes.error }}</div>
+      <div v-else-if="pendientes.lista.length === 0" style="color:var(--muted)">
+        No hay cámaras pendientes de revisión.
+      </div>
+      <table v-else class="table" style="width:100%">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Nombre</th>
+            <th>Registrada</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="cam in pendientes.lista" :key="cam.id">
+            <td>{{ cam.id }}</td>
+            <td>{{ cam.nombre }}</td>
+            <td style="font-size:0.85rem;color:var(--muted)">{{ cam.last_update ? new Date(cam.last_update).toLocaleString('es-AR') : '—' }}</td>
+            <td style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button
+                class="btn primary"
+                style="padding:4px 10px;font-size:0.82rem"
+                :disabled="pendientes.accionando === cam.id"
+                @click="handleAprobar(cam.id)"
+              >
+                ✅ Aprobar
+              </button>
+              <button
+                class="btn"
+                style="padding:4px 10px;font-size:0.82rem"
+                :disabled="pendientes.accionando === cam.id"
+                @click="toggleFormAlias(cam.id)"
+              >
+                🔗 Convertir en Alias
+              </button>
+              <!-- Formulario inline para convertir en alias -->
+              <div v-if="pendientes.aliasFormId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%">
+                <input
+                  v-model.number="pendientes.aliasDestinoId"
+                  type="number"
+                  placeholder="ID de cámara destino"
+                  style="width:180px"
+                />
+                <button
+                  class="btn primary"
+                  style="padding:4px 10px;font-size:0.82rem"
+                  :disabled="!pendientes.aliasDestinoId || pendientes.accionando === cam.id"
+                  @click="handleConvertirAlias(cam.id)"
+                >
+                  Confirmar
+                </button>
+                <button
+                  class="btn"
+                  style="padding:4px 10px;font-size:0.82rem"
+                  @click="pendientes.aliasFormId = null"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="msg" :class="{ visible: !!pendientes.msg, ok: !pendientes.msgError, err: pendientes.msgError }" style="margin-top:12px">
+        {{ pendientes.msg }}
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue';
-import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig } from '../api/admin';
+import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, type CamaraPendiente } from '../api/admin';
 
 // ─── Estado del formulario ────────────────────────────────────────────────
 const form = reactive({
@@ -314,6 +402,19 @@ const listener = reactive({
   error: false,
 });
 
+// ─── Estado cámaras pendientes de revisión ────────────────────────────────
+const pendientes = reactive({
+  abierto: false,
+  cargando: false,
+  lista: [] as CamaraPendiente[],
+  error: '' as string,
+  accionando: null as number | null,
+  aliasFormId: null as number | null,
+  aliasDestinoId: null as number | null,
+  msg: '',
+  msgError: false,
+});
+
 // ─── Carga inicial de configuración ──────────────────────────────────────
 onMounted(async () => {
   try {
@@ -334,6 +435,8 @@ onMounted(async () => {
   } finally {
     cargando.value = false;
   }
+  // Cargar lista de pendientes en background
+  void cargarPendientes();
 });
 
 // ─── Guardar configuración ────────────────────────────────────────────────
@@ -423,6 +526,62 @@ async function handleGuardarListener() {
     listener.error = true;
   } finally {
     listener.loading = false;
+  }
+}
+
+// ─── Cámaras pendientes de revisión ──────────────────────────────────────
+async function cargarPendientes() {
+  pendientes.cargando = true;
+  pendientes.error = '';
+  try {
+    pendientes.lista = await getCamarasPendientes();
+  } catch (e: unknown) {
+    pendientes.error = e instanceof Error ? e.message : 'Error cargando pendientes.';
+  } finally {
+    pendientes.cargando = false;
+  }
+}
+
+function toggleFormAlias(id: number) {
+  if (pendientes.aliasFormId === id) {
+    pendientes.aliasFormId = null;
+  } else {
+    pendientes.aliasFormId = id;
+    pendientes.aliasDestinoId = null;
+  }
+}
+
+async function handleAprobar(id: number) {
+  pendientes.accionando = id;
+  pendientes.msg = '';
+  try {
+    await aprobarCamara(id);
+    pendientes.msg = `Cámara #${id} aprobada correctamente.`;
+    pendientes.msgError = false;
+    await cargarPendientes();
+  } catch (e: unknown) {
+    pendientes.msg = e instanceof Error ? e.message : 'Error al aprobar la cámara.';
+    pendientes.msgError = true;
+  } finally {
+    pendientes.accionando = null;
+  }
+}
+
+async function handleConvertirAlias(id: number) {
+  if (!pendientes.aliasDestinoId) return;
+  pendientes.accionando = id;
+  pendientes.msg = '';
+  try {
+    await convertirAlias(id, pendientes.aliasDestinoId);
+    pendientes.msg = `Cámara #${id} convertida en alias correctamente.`;
+    pendientes.msgError = false;
+    pendientes.aliasFormId = null;
+    await cargarPendientes();
+  } catch (e: unknown) {
+    pendientes.msg = e instanceof Error ? e.message : 'Error al convertir alias.';
+    pendientes.msgError = true;
+  } finally {
+    pendientes.accionando = null;
   }
 }
 </script>

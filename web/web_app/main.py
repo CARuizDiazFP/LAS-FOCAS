@@ -3382,6 +3382,125 @@ async def update_camara_estado_web(
         return JSONResponse({"error": "No se pudo actualizar el estado de la cámara"}, status_code=500)
 
 
+# ── Endpoints admin: gestión de cámaras PENDIENTE_REVISION ───────────────
+
+
+@app.get("/api/admin/infra/camaras/pendientes")
+async def admin_camaras_pendientes(request: Request) -> JSONResponse:
+    """Lista cámaras auto-registradas en estado PENDIENTE_REVISION."""
+    _require_admin(request)
+    try:
+        from db.models.infra import Camara, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camaras = (
+                session.query(Camara)
+                .filter(Camara.estado == CamaraEstado.PENDIENTE_REVISION)
+                .order_by(Camara.last_update.desc())
+                .all()
+            )
+            return JSONResponse([
+                {
+                    "id": c.id,
+                    "nombre": c.nombre,
+                    "last_update": c.last_update.isoformat() if c.last_update else None,
+                    "estado": c.estado.value if c.estado else None,
+                }
+                for c in camaras
+            ])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_camaras_pendientes error=%s", exc)
+        return JSONResponse({"error": "Error al obtener cámaras pendientes"}, status_code=500)
+
+
+@app.post("/api/admin/infra/camaras/{camara_id}/aprobar")
+async def admin_aprobar_camara(request: Request, camara_id: int) -> JSONResponse:
+    """Aprueba una cámara PENDIENTE_REVISION, cambiando su estado a LIBRE."""
+    _require_admin(request)
+    try:
+        from db.models.infra import Camara, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+            if camara.estado != CamaraEstado.PENDIENTE_REVISION:
+                return JSONResponse(
+                    {"error": f"La cámara no está en estado PENDIENTE_REVISION (estado actual: {camara.estado.value})"},
+                    status_code=400,
+                )
+            camara.estado = CamaraEstado.LIBRE
+            session.commit()
+            logger.info("action=aprobar_camara camara_id=%s nombre='%s'", camara_id, camara.nombre)
+            return JSONResponse({"ok": True, "camara_id": camara_id, "estado": "LIBRE"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_aprobar_camara_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "Error al aprobar la cámara"}, status_code=500)
+
+
+class _ConvertirAliasRequest(BaseModel):
+    camara_destino_id: int
+
+
+@app.post("/api/admin/infra/camaras/{camara_id}/convertir-alias")
+async def admin_convertir_alias(
+    request: Request,
+    camara_id: int,
+    body: _ConvertirAliasRequest,
+) -> JSONResponse:
+    """Convierte una cámara PENDIENTE_REVISION en alias de otra cámara existente.
+
+    - Crea un registro en ``app.camara_alias`` asociando el nombre de la cámara
+      pendiente como alias de la cámara destino.
+    - Elimina físicamente el registro pendiente.
+    """
+    _require_admin(request)
+    try:
+        from db.models.infra import Camara, CamaraAlias, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            pendiente = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not pendiente:
+                return JSONResponse({"error": "Cámara pendiente no encontrada"}, status_code=404)
+            if pendiente.estado != CamaraEstado.PENDIENTE_REVISION:
+                return JSONResponse(
+                    {"error": f"La cámara no está en estado PENDIENTE_REVISION (estado actual: {pendiente.estado.value})"},
+                    status_code=400,
+                )
+            destino = session.query(Camara).filter(Camara.id == body.camara_destino_id).first()
+            if not destino:
+                return JSONResponse({"error": "Cámara destino no encontrada"}, status_code=404)
+
+            alias = CamaraAlias(
+                camara_id=destino.id,
+                alias_nombre=pendiente.nombre,
+            )
+            session.add(alias)
+            session.delete(pendiente)
+            session.commit()
+            logger.info(
+                "action=convertir_alias pendiente_id=%s nombre='%s' destino_id=%s",
+                camara_id, pendiente.nombre, destino.id,
+            )
+            return JSONResponse({
+                "ok": True,
+                "alias_nombre": pendiente.nombre,
+                "camara_destino_id": destino.id,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_convertir_alias_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "Error al convertir alias"}, status_code=500)
+
+
 @app.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
     request: Request,

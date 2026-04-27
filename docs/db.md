@@ -31,7 +31,7 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 | `latitud`     | Float                | Coordenada latitud (opcional). |
 | `longitud`    | Float                | Coordenada longitud (opcional). |
 | `direccion`   | String(255)          | Dirección alternativa (opcional). |
-| `estado`      | Enum                 | `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`. |
+| `estado`      | Enum                 | `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `PENDIENTE_REVISION`. |
 | `origen_datos`| Enum                 | `MANUAL`, `TRACKING`, `SHEET`. |
 | `last_update` | DateTime(tz)         | Última actualización. |
 
@@ -40,6 +40,7 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 - `OCUPADA`: cámara en uso.
 - `BANEADA`: cámara excluida de operaciones.
 - `DETECTADA`: cámara creada automáticamente desde tracking (pendiente de validación).
+- `PENDIENTE_REVISION`: cámara auto-registrada por el listener de ingresos Slack al recibir una cámara desconocida.  Requiere que un administrador la apruebe (estado → `LIBRE`) o la convierta en alias de otra cámara existente.
 
 **Origen de datos:**
 - `MANUAL`: ingresada manualmente.
@@ -298,3 +299,19 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260423_01` | `20260423_01_config_servicios_hora_inicio.py` | Columna `hora_inicio` en `app.config_servicios` |
 | `20260427_01` | `20260427_01_unaccent_extension.py` | Extensión `unaccent` para búsquedas sin acento |
 | `20260428_01` | `20260428_01_listener_workflow_ids.py` | Columnas `workflow_ids` y `solo_workflows` en `app.config_servicios` |
+| `20260428_02` | `20260428_02_camara_alias_pendiente.py` | Tabla `app.camara_alias` + valor `PENDIENTE_REVISION` en enum `camara_estado` |
+
+---
+
+### Tabla `camara_alias`
+
+| Columna        | Tipo                | Descripción |
+|----------------|---------------------|-------------|
+| `id`           | Integer (PK)        | ID autoincremental. |
+| `camara_id`    | Integer (FK)        | Referencia a `app.camaras.id` — `ON DELETE CASCADE`. |
+| `alias_nombre` | String(255), index  | Nombre alternativo de la cámara. |
+| `created_at`   | DateTime(tz)        | Fecha de creación del alias. |
+
+**Uso:** el listener de ingresos y `camara_search.py` utilizan esta tabla para empatar
+cámaras escritas con nomenclatura alternativa. Un administrador puede registrar aliases
+desde el panel `/admin/Servicios/Baneos` → sección *Cámaras Pendientes de Revisión*.

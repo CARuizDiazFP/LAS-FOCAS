@@ -157,12 +157,25 @@ El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Sl
 
 ### Normalización de nombres de cámara (`camara_search.py`)
 
-La búsqueda en DB usa `modules/slack_baneo_notifier/camara_search.py` con una estrategia en cascada de 4 intentos:
+La búsqueda en DB usa `modules/slack_baneo_notifier/camara_search.py`.  
+El preprocesamiento aplica en orden:
 
-1. **ILIKE directo** — `%nombre_normalizado%` sobre `unaccent(lower(Camara.nombre))`
-2. **Tokens AND** — todos los tokens (≥ 3 chars) presentes en el nombre
+1. **Limpieza de puntuación** (`_limpiar_puntuacion`) — elimina comas, punto y coma, puntos no entre dígitos, y guiones con espacios (` - ` → ` `).
+2. **Expansión de abreviaturas** (`_expandir_abreviaturas`) — reemplaza prefijos viales comunes.
+3. **Normalización** (`_normalizar`) — unidecode + lowercase + espacios simples.
+4. **Sinónimos** (`_aplicar_sinonimos`) — reemplaza términos semánticos equivalentes:
+
+| Término escrito | Reemplazado por |
+|---|---|
+| `botella` | `bot` |
+| `camara` *(post-unidecode de "cámara")* | `cra` |
+
+Luego se aplica la estrategia en cascada de 4 intentos sobre el texto preprocesado:
+
+1. **ILIKE directo** — `%nombre_norm%` sobre `Camara.nombre` **y** `CamaraAlias.alias_nombre`
+2. **Tokens AND** — todos los tokens (≥ 3 chars) presentes, en nombre o alias
 3. **Sin números** — reintenta 1 y 2 descartando dígitos
-4. **Sin expansión** *(fallback)* — reintenta con el nombre raw normalizado, SIN expandir abreviaturas; cubre el caso en que la DB almacena la abreviatura literal
+4. **Sin expansión** *(fallback)* — reintenta con el nombre raw + limpieza + sinónimos, SIN expandir abreviaturas; cubre el caso en que la DB almacena la abreviatura literal (ej.: `Cra`)
 
 #### Abreviaturas expandidas
 
@@ -179,7 +192,21 @@ La búsqueda en DB usa `modules/slack_baneo_notifier/camara_search.py` con una e
 | `sto` | `santo` |
 | `cf` | *(eliminado — código de filial)* |
 
-> **`cra` no se expande.** En los nombres de cámara, "Cra" se usa de forma literal (ej.: `Bot 2 Cra Poste 202 Vias FFCC Roca Hudson`). Expandirlo a "carrera" destruye el match contra la DB. El Intento 4 garantiza encontrar la cámara incluso si otras abreviaturas modificaron el query.
+> **`cra` no se expande.** En los nombres de cámara, "Cra" se usa de forma literal (ej.: `Bot 2 Cra Poste 202 Vias FFCC Roca Hudson`). El Intento 4 garantiza encontrar la cámara incluso si otras abreviaturas modificaron el query.
+
+### Auto-registro de cámaras desconocidas
+
+Cuando `buscar_camara()` retorna `None`, el listener **auto-registra** la cámara en la DB con:
+- `estado = PENDIENTE_REVISION`
+- `origen_datos = MANUAL`
+- `last_update = now()`
+
+Y responde al técnico:
+> ✅ Cámara no registrada previamente, se registra automáticamente bajo revisión. Sin incidentes activos. Podés proceder.
+
+El administrador luego revisa las cámaras pendientes desde el panel `/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión** y puede:
+- **Aprobar** → cambia el estado a `LIBRE`
+- **Convertir en Alias** → crea un registro en `app.camara_alias` y elimina el registro pendiente
 
 ### Configuración desde el panel web
 

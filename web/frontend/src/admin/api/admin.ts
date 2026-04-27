@@ -173,3 +173,45 @@ export async function saveListenerConfig(
     throw new Error(data.error ?? `Error ${res.status}`);
   }
 }
+
+// ── Cámaras pendientes de revisión ──────────────────────────────────────
+
+export interface CamaraPendiente {
+  id: number;
+  nombre: string;
+  last_update: string | null;
+  estado: string;
+}
+
+export async function getCamarasPendientes(): Promise<CamaraPendiente[]> {
+  const res = await fetch('/api/admin/infra/camaras/pendientes', { credentials: 'include' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `Error ${res.status}`);
+  }
+  return res.json() as Promise<CamaraPendiente[]>;
+}
+
+export async function aprobarCamara(id: number): Promise<void> {
+  const res = await fetch(`/api/admin/infra/camaras/${id}/aprobar`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `Error ${res.status}`);
+  }
+}
+
+export async function convertirAlias(id: number, camaraDestinoId: number): Promise<void> {
+  const res = await fetch(`/api/admin/infra/camaras/${id}/convertir-alias`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ camara_destino_id: camaraDestinoId }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `Error ${res.status}`);
+  }
+}

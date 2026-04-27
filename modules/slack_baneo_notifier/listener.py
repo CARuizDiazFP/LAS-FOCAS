@@ -143,11 +143,28 @@ class IngresoListener:
             logger.info("Resultado búsqueda DB — cámara: %s (normalizado: '%s')", camara, nombre_norm)
 
             if camara is None:
-                respuesta = (
-                    f"🔍 No encontré la cámara *{nombre_raw}* en el sistema.\n"
-                    "_Verificá el nombre en el listado de cámaras o consultá con el equipo de red._"
+                # Auto-registrar la cámara con estado PENDIENTE_REVISION para que
+                # un administrador la revise y apruebe (o la marque como alias).
+                from datetime import datetime, timezone
+                from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
+
+                nueva_camara = Camara(
+                    nombre=nombre_raw,
+                    estado=CamaraEstado.PENDIENTE_REVISION,
+                    origen_datos=CamaraOrigenDatos.MANUAL,
+                    last_update=datetime.now(timezone.utc),
                 )
-                logger.info("Cámara no encontrada: '%s' (normalizado: '%s')", nombre_raw, nombre_norm)
+                session.add(nueva_camara)
+                session.commit()
+                respuesta = (
+                    "✅ Cámara no registrada previamente, se registra automáticamente "
+                    "bajo revisión. Sin incidentes activos. Podés proceder."
+                )
+                logger.info(
+                    "Cámara desconocida '%s' auto-registrada con estado PENDIENTE_REVISION (id=%s)",
+                    nombre_raw,
+                    nueva_camara.id,
+                )
             else:
                 incidentes = _obtener_incidentes_activos_camara(camara, session)
                 if incidentes:
