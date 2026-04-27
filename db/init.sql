@@ -1,6 +1,9 @@
 -- Nombre de archivo: init.sql
 -- Ubicación de archivo: db/init.sql
 -- Descripción: Inicialización mínima de BD (schema y tabla de ejemplo)
+-- Extensión unaccent (requerida por búsquedas de cámaras con normalización de acentos)
+CREATE EXTENSION IF NOT EXISTS unaccent;
+
 -- Crear schema lógico para la app
 CREATE SCHEMA IF NOT EXISTS app;
 

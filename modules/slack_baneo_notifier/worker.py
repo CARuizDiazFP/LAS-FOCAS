@@ -300,8 +300,8 @@ def main() -> None:
         _worker_status["intervalo_horas"] = intervalo
         _worker_status["hora_inicio"] = hora_inicio
 
-    # Configurar scheduler
-    scheduler = BlockingScheduler()
+    # Configurar scheduler en zona horaria de Argentina
+    scheduler = BlockingScheduler(timezone=TZ_ARG)
     _scheduler = scheduler
     scheduler.add_job(
         _ejecutar_notificacion,

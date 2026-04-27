@@ -177,6 +177,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
     depends_on:
       postgres:
         condition: service_healthy

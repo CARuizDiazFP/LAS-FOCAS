@@ -9,9 +9,11 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl tzdata \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=America/Argentina/Buenos_Aires
 
 WORKDIR /app
 

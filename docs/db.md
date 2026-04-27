@@ -266,6 +266,14 @@ Almacena configuración dinámica de workers y servicios automatizados. Definida
 
 **Uso:** El worker `slack_baneo_notifier` lee esta tabla en cada ejecución para obtener la configuración actualizada (intervalo, canales, estado activo). El panel admin en `/admin/Servicios/Baneos` permite modificar estos valores sin reiniciar el worker.
 
+## Extensiones PostgreSQL requeridas
+
+| Extensión | Motivo |
+|-----------|---------|
+| `unaccent` | Normalización de acentos en búsquedas ILIKE de cámaras (`camara_search._buscar_ilike`, `_buscar_tokens`). Se instala via migración `20260427_01`. |
+
+Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;` para que nuevos entornos no requieran correr la migración manualmente.
+
 ## Migraciones y despliegue
 
 - Ejecutar migraciones con Alembic apuntando al archivo `db/alembic.ini`. Ejemplo local (fuera de Docker Compose):
@@ -276,3 +284,13 @@ Almacena configuración dinámica de workers y servicios automatizados. Definida
 	```
 - El enum `app.camara_estado` se crea sólo si no existe (`create_type=False` + `checkfirst=True`), lo que permite reintentos sin tener que limpiar tipos manualmente.
 - En entornos dockerizados, reemplazar `localhost` por el hostname del contenedor (`postgres`) y dejar que Compose gestione las credenciales.
+
+## Historial de migraciones
+
+| Revisión | Archivo | Descripción |
+|----------|---------|-------------|
+| `20260127_01` | `20260127_01_incidente_baneo_email_fields.py` | Campos de email en incidentes de baneo |
+| `20260417_01` | `20260417_01_config_servicios.py` | Tabla `app.config_servicios` para worker Slack |
+| `20260420_01` | `20260420_01_camaras_estado_auditoria.py` | Tabla `app.camaras_estado_auditoria` + enum `camara_estado` |
+| `20260423_01` | `20260423_01_config_servicios_hora_inicio.py` | Columna `hora_inicio` en `app.config_servicios` |
+| `20260427_01` | `20260427_01_unaccent_extension.py` | Extensión `unaccent` para búsquedas sin acento |
