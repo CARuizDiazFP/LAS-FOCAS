@@ -465,6 +465,231 @@ class TestObtenerIncidentesActivosCamara(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+# ─── Tests de filtro de ambigüedad ─────────────────────────────────────────────
+
+
+class TestFiltroAmbiguedad(unittest.TestCase):
+    """Prueba el filtro de ambigüedad en buscar_camara y la respuesta del listener."""
+
+    def _make_camara(self, id_: int, nombre: str) -> MagicMock:
+        cam = MagicMock()
+        cam.id = id_
+        cam.nombre = nombre
+        return cam
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event(self, text: str = "Cámara: test", channel: str = "C123") -> dict:
+        return {"text": text, "channel": channel, "ts": "1234567890.000001"}
+
+    # ── Tests sobre buscar_camara ──────────────────────────────────────────────
+
+    def test_nombre_una_palabra_raises_ambiguous(self) -> None:
+        """Un nombre con 1 token significativo y sin números lanza AmbiguousSearchError."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara
+
+        with self.assertRaises(AmbiguousSearchError) as ctx:
+            buscar_camara("Centro", session=MagicMock())
+
+        self.assertEqual(ctx.exception.cantidad, 0)
+        self.assertEqual(ctx.exception.nombre_raw, "Centro")
+
+    def test_nombre_vacio_raises_ambiguous(self) -> None:
+        """Un nombre de dos chars (token < 3) lanza AmbiguousSearchError sin consultar DB."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara
+
+        with self.assertRaises(AmbiguousSearchError) as ctx:
+            buscar_camara("VL", session=MagicMock())
+
+        self.assertEqual(ctx.exception.cantidad, 0)
+
+    def test_multiples_candidatos_raises_ambiguous(self) -> None:
+        """Cuando todos los intentos devuelven >1 candidato, se lanza AmbiguousSearchError."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara
+
+        cam1 = self._make_camara(1, "Cra Vicente Lopez Norte 100")
+        cam2 = self._make_camara(2, "Cra Vicente Lopez Sur 200")
+        cam3 = self._make_camara(3, "Cra Vicente Lopez Este 300")
+
+        with (
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                  return_value=[cam1, cam2, cam3]),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+                  return_value=[cam1, cam2, cam3]),
+            self.assertRaises(AmbiguousSearchError) as ctx,
+        ):
+            buscar_camara("Vicente Lopez", session=MagicMock())
+
+        self.assertEqual(ctx.exception.cantidad, 3)
+        self.assertIn(ctx.exception.nombre_raw, "Vicente Lopez")
+        self.assertEqual(len(ctx.exception.candidatos), 3)
+
+    def test_multiples_candidatos_limitados_a_5(self) -> None:
+        """candidatos en AmbiguousSearchError se limita a 5 nombres."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara
+
+        cams = [self._make_camara(i, f"Cra Test Zona {i}") for i in range(1, 8)]
+
+        with (
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                  return_value=cams),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+                  return_value=cams),
+            self.assertRaises(AmbiguousSearchError) as ctx,
+        ):
+            buscar_camara("Test Zona", session=MagicMock())
+
+        self.assertLessEqual(len(ctx.exception.candidatos), 5)
+
+    def test_un_candidato_no_raises(self) -> None:
+        """Con exactamente 1 candidato después de los filtros, no se lanza la excepción."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        cam = self._make_camara(1, "Cra Mitre 440 CF")
+
+        with (
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                  return_value=[cam]),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+                  return_value=[]),
+        ):
+            resultado, _ = buscar_camara("Cra Mitre 440", session=MagicMock())
+
+        self.assertIsNotNone(resultado)
+        self.assertEqual(resultado.nombre, "Cra Mitre 440 CF")
+
+    def test_nombre_con_numero_no_aplica_heuristica_corta(self) -> None:
+        """Un token + número no dispara la heurística (el número es información suficiente)."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        # "Bot 2" → tokens_sig = ["bot"] (1 token), pero numeros_requeridos = {"2"}
+        # → la pre-heurística NO debe dispararse
+        with (
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                  return_value=[]),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+                  return_value=[]),
+        ):
+            resultado, _ = buscar_camara("Bot 2", session=MagicMock())
+
+        self.assertIsNone(resultado)
+
+    # ── Tests del listener ante ambigüedad ────────────────────────────────────
+
+    def test_listener_responde_warning_nombre_generico(self) -> None:
+        """Cuando buscar_camara lanza AmbiguousSearchError(cantidad=0), listener responde warning."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Norte"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+                  side_effect=AmbiguousSearchError("Norte", 0, [])),
+        ):
+            listener._handle_message(self._make_event(text="Norte"), client_mock)
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":warning:", texto)
+        self.assertIn("Norte", texto)
+        self.assertIn("genérico", texto)
+
+    def test_listener_responde_warning_multiples_candidatos(self) -> None:
+        """Cuando buscar_camara lanza AmbiguousSearchError(cantidad>0), listener responde warning."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Vicente Lopez"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+                  side_effect=AmbiguousSearchError(
+                      "Vicente Lopez", 8,
+                      ["Cra A Vicente Lopez", "Cra B Vicente Lopez"]
+                  )),
+        ):
+            listener._handle_message(
+                self._make_event(text="Cámara: Vicente Lopez"),
+                client_mock,
+            )
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":warning:", texto)
+        self.assertIn("Vicente Lopez", texto)
+        self.assertIn("8", texto)
+
+    def test_listener_no_autoregistra_en_ambiguedad(self) -> None:
+        """Con AmbiguousSearchError, el listener NO escribe en DB (no auto-registro)."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal",
+                  return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Vicente Lopez"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+                  side_effect=AmbiguousSearchError("Vicente Lopez", 5, [])),
+        ):
+            listener._handle_message(
+                self._make_event(text="Cámara: Vicente Lopez"),
+                client_mock,
+            )
+
+        # No debe haber escritura (add/commit) en la sesión
+        session_mock.add.assert_not_called()
+        session_mock.commit.assert_not_called()
+
+    def test_multibot_no_se_confunde_con_ambiguedad(self) -> None:
+        """'Botella 1 y 2' es multi-bot, no ambigüedad — se procesan como dos cámaras."""
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        cam = MagicMock()
+        cam.nombre = "Cra Mitre 300"
+        cam.estado = CamaraEstado.LIBRE
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Cra Mitre 300 Botella 1 y 2"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+                  return_value=(cam, "cra mitre 300")) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
+                  return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                  return_value=None),
+        ):
+            listener._handle_message(
+                self._make_event(text="Cra Mitre 300 Botella 1 y 2"),
+                client_mock,
+            )
+
+        # Se deben hacer 2 búsquedas (una por botella) — no warning
+        self.assertEqual(mock_buscar.call_count, 2)
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertNotIn(":warning:", texto)
+
+
 # ─── Tests de limpieza de puntuación y sinónimos ───────────────────────────────
 
 

@@ -172,6 +172,51 @@ nombre_raw = extraer_nombre_camara(texto)
 
 > La verificación se realiza sobre el **nombre extraído** por `extraer_nombre_camara()`, no sobre el texto completo del evento. Esto evita falsos positivos en mensajes de Workflow cuya etiqueta de campo es `*Nombre: Nodo/Camara/botella*` — el label contiene "Nodo" pero el VALOR extraído es el nombre de la cámara.
 
+### Filtro de Ambigüedad
+
+Cuando un técnico envía un nombre demasiado genérico (ej: `"Vicente Lopez"`, `"Norte"`), el motor de búsqueda no puede identificar una cámara de forma unívoca. En lugar de auto-registrar el string como una nueva cámara bajo revisión, el bot responde con un aviso solicitando mayor especificidad.
+
+El filtro opera en dos niveles dentro de `buscar_camara()`:
+
+#### Heurística pre-búsqueda (sin consultar la DB)
+
+Si el nombre tiene **menos de 2 tokens significativos (≥ 3 caracteres) y ningún número**, se lanza `AmbiguousSearchError(cantidad=0)` de inmediato:
+
+| Input | Tokens sig. | Números | Resultado |
+|---|---|---|---|
+| `"Norte"` | 1 (`"norte"`) | 0 | ⚠️ Ambiguo |
+| `"VL"` | 0 (ambos < 3 chars) | 0 | ⚠️ Ambiguo |
+| `"Bot 2"` | 1 (`"bot"`) | 1 (`"2"`) | ✅ Pasa (el número aporta precisión) |
+| `"Vicente Lopez"` | 2 | 0 | ✅ Pasa a la DB |
+
+#### Detección por resultados de DB
+
+Si la cascada de búsqueda (intentos 1 a 4) nunca reduce los candidatos a exactamente 1, se lanza `AmbiguousSearchError(cantidad=N, candidatos=[...])` con el grupo más acotado encontrado. **Ningún intento escribe en DB.**
+
+```
+buscar_camara("vicente lopez")
+  ↓ Intento 1: ILIKE → 8 candidatos → ambiguo, guarda grupo
+  ↓ Intento 2: tokens → 8 candidatos → no mejora
+  ↓ Intento 3: sin números (aplica) → 8 candidatos → no mejora
+  ↓ Intento 4: sin expansión → 8 candidatos → no mejora
+  ↓ _ambiguos = [8 cameras]
+  → raise AmbiguousSearchError("vicente lopez", 8, ["Cra A Vicente...", ...])
+```
+
+#### Respuesta en Slack
+
+El listener captura `AmbiguousSearchError` y envía un aviso contextualizado:
+
+- Si `cantidad == 0` (nombre insuficiente):
+  > ⚠️ El nombre *'Norte'* es demasiado genérico para identificar una cámara. Por favor, especificá la dirección completa o el número exacto.
+
+- Si `cantidad > 1` (múltiples coincidencias en DB):
+  > ⚠️ Tu solicitud *'Vicente Lopez'* es ambigua y coincide con *8* cámaras en el sistema. Por favor, especificá la dirección o el número exacto.
+
+#### Relación con Multi-Bot
+
+`"Cra Mitre 300 Botella 1 y 2"` **no es ambiguo** — `detectar_multi_bot()` lo procesa primero y lo expande en dos nombres específicos (`"Cra Mitre 300"` y `"Bot 2 Cra Mitre 300"`). Cada nombre tiene número → búsqueda precisa. El filtro de ambigüedad solo actúa sobre nombres simples sin suficiente información.
+
 ### Cómo obtener el Workflow ID
 
 El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Slack) o en la URL del Workflow dentro de la configuración de Slack Workflows. Ejemplo: `Wf0B0KJF68BS`.

@@ -196,6 +196,32 @@ def extraer_nombre_camara(mensaje: str) -> str:
     return mensaje.split("\n")[0].strip()
 
 
+class AmbiguousSearchError(Exception):
+    """Se lanza cuando la búsqueda de cámara no puede identificar una entidad unívoca.
+
+    Cubre dos casos:
+
+    * **Nombre insuficiente** (``cantidad == 0``): el string tiene menos de 2
+      tokens significativos y ningún número; es imposible hacer una búsqueda
+      precisa sin consultar la DB.
+    * **Múltiples candidatos** (``cantidad > 1``): la cascada de búsqueda nunca
+      redujo los resultados a exactamente una cámara.
+
+    Attributes:
+        nombre_raw:  Nombre original ingresado por el técnico.
+        cantidad:    Número de candidatos encontrados (0 si el nombre es insuficiente).
+        candidatos:  Lista de nombres de cámaras candidatas (hasta 5).
+    """
+
+    def __init__(self, nombre_raw: str, cantidad: int, candidatos: list[str]) -> None:
+        self.nombre_raw = nombre_raw
+        self.cantidad = cantidad
+        self.candidatos = candidatos[:5]
+        super().__init__(
+            f"Búsqueda ambigua: '{nombre_raw}' devuelve {cantidad} candidatos"
+        )
+
+
 def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", str]:
     """Busca una cámara en DB tolerando abreviaturas, sinónimos y variaciones ortográficas.
 
@@ -221,13 +247,25 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
       4. Fallback con nombre raw normalizado SIN expansión (para abreviaturas
          almacenadas literalmente en DB, p.ej. "Cra")
 
+    Filtro de ambigüedad:
+      - Heurística previa: si hay < 2 tokens significativos (≥3 chars) y ningún
+        número, se lanza ``AmbiguousSearchError(cantidad=0)`` sin consultar la DB.
+      - Si algún intento de la cascada devuelve múltiples candidatos (tras los
+        filtros de números y bots) y ningún intento posterior los reduce a 1,
+        se lanza ``AmbiguousSearchError`` con el grupo más acotado encontrado.
+
     Args:
         nombre_raw: Nombre extraído del mensaje (sin normalizar).
         session:    Sesión SQLAlchemy activa.
 
     Returns:
-        Tupla ``(camara_o_None, nombre_normalizado_usado)``.
-        Si hay múltiples candidatos se retorna el de nombre más corto.
+        Tupla ``(camara, nombre_normalizado_usado)`` cuando se identifica
+        exactamente una cámara, o ``(None, nombre_norm)`` cuando no se encontró
+        ninguna (flujo de auto-registro).
+
+    Raises:
+        AmbiguousSearchError: Cuando el nombre es ambiguo o insuficientemente
+            específico para identificar una cámara de forma unívoca.
     """
     # ── Pre-proceso ──────────────────────────────────────────────────────
     nombre_limpio = _limpiar_puntuacion(nombre_raw)
@@ -241,27 +279,47 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
     # Bot/Botella: si el técnico lo menciona explícitamente, permitimos bots secundarios
     tiene_bot: bool = bool(re.search(r"\bbot(ella)?\b", nombre_raw, re.IGNORECASE))
 
-    def _buscar_filtrado_ilike(patron: str) -> "Camara | None":
+    # ── Heurística pre-búsqueda: nombre insuficientemente específico ──────
+    # Si hay < 2 tokens significativos (≥3 chars) y ningún número, el nombre
+    # es demasiado genérico para encontrar una cámara de forma unívoca.
+    tokens_sig = [t for t in nombre_norm.split() if len(t) >= 3]
+    if len(tokens_sig) < 2 and not numeros_requeridos:
+        raise AmbiguousSearchError(nombre_raw, 0, [])
+
+    # ── Helpers de búsqueda con filtros aplicados ────────────────────────
+    def _get_candidatos_ilike(patron: str) -> list["Camara"]:
         candidatos = _buscar_ilike_lista(patron, session)
         candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
         candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return _mejor_candidato(candidatos)
+        return candidatos
 
-    def _buscar_filtrado_tokens(tokens: list[str]) -> "Camara | None":
+    def _get_candidatos_tokens(tokens: list[str]) -> list["Camara"]:
         candidatos = _buscar_tokens_lista(tokens, session)
         candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
         candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return _mejor_candidato(candidatos)
+        return candidatos
+
+    # Seguimiento de ambigüedad: conserva el grupo más acotado (menos candidatos)
+    _ambiguos: list["Camara"] = []
+
+    def _evaluar(candidatos: list["Camara"]) -> "Camara | None":
+        nonlocal _ambiguos
+        if len(candidatos) == 1:
+            return candidatos[0]
+        if len(candidatos) > 1:
+            if not _ambiguos or len(candidatos) < len(_ambiguos):
+                _ambiguos = candidatos
+        return None
 
     # ── Intento 1: coincidencia parcial normalizada ──────────────────────
-    resultado = _buscar_filtrado_ilike(nombre_norm)
+    resultado = _evaluar(_get_candidatos_ilike(nombre_norm))
     if resultado:
         return resultado, nombre_norm
 
     # ── Intento 2: todos los tokens presentes ────────────────────────────
     tokens = [t for t in nombre_norm.split() if len(t) >= 3]
     if len(tokens) >= 2:
-        resultado = _buscar_filtrado_tokens(tokens)
+        resultado = _evaluar(_get_candidatos_tokens(tokens))
         if resultado:
             return resultado, nombre_norm
 
@@ -272,12 +330,12 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
         nombre_sin_num = re.sub(r"\d+", "", nombre_norm).strip()
         nombre_sin_num = re.sub(r"\s+", " ", nombre_sin_num).strip()
         if nombre_sin_num and nombre_sin_num != nombre_norm:
-            resultado = _buscar_filtrado_ilike(nombre_sin_num)
+            resultado = _evaluar(_get_candidatos_ilike(nombre_sin_num))
             if resultado:
                 return resultado, nombre_sin_num
             tokens_sin_num = [t for t in nombre_sin_num.split() if len(t) >= 3]
             if len(tokens_sin_num) >= 2:
-                resultado = _buscar_filtrado_tokens(tokens_sin_num)
+                resultado = _evaluar(_get_candidatos_tokens(tokens_sin_num))
                 if resultado:
                     return resultado, nombre_sin_num
 
@@ -285,14 +343,21 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
     # Cubre el caso en que la DB almacena el nombre con abreviaturas literales.
     nombre_raw_norm = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(nombre_raw)))
     if nombre_raw_norm != nombre_norm:
-        resultado = _buscar_filtrado_ilike(nombre_raw_norm)
+        resultado = _evaluar(_get_candidatos_ilike(nombre_raw_norm))
         if resultado:
             return resultado, nombre_raw_norm
         tokens_raw = [t for t in nombre_raw_norm.split() if len(t) >= 3]
         if len(tokens_raw) >= 2:
-            resultado = _buscar_filtrado_tokens(tokens_raw)
+            resultado = _evaluar(_get_candidatos_tokens(tokens_raw))
             if resultado:
                 return resultado, nombre_raw_norm
+
+    # ── Resolución final ─────────────────────────────────────────────────
+    # Si algún intento devolvió múltiples candidatos sin que ninguno llegara a 1,
+    # el nombre es ambiguo → no auto-registrar.
+    if _ambiguos:
+        nombres_candidatos = [c.nombre for c in _ambiguos[:5]]
+        raise AmbiguousSearchError(nombre_raw, len(_ambiguos), nombres_candidatos)
 
     return None, nombre_norm
 

@@ -23,7 +23,7 @@ from typing import Any
 
 from core.services.camara_estado_service import obtener_ultimo_motivo_baneo_manual
 from db.session import SessionLocal
-from modules.slack_baneo_notifier.camara_search import buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
+from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
 
 logger = logging.getLogger("slack_baneo_worker.listener")
 
@@ -264,6 +264,31 @@ class IngresoListener:
                 mrkdwn=True,
             )
 
+        except AmbiguousSearchError as exc:
+            if exc.cantidad == 0:
+                aviso = (
+                    f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
+                    "para identificar una cámara. Por favor, especificá la dirección "
+                    "completa o el número exacto."
+                )
+            else:
+                aviso = (
+                    f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
+                    f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
+                    "la dirección o el número exacto."
+                )
+            logger.info(
+                "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s",
+                exc.nombre_raw,
+                exc.cantidad,
+                exc.candidatos,
+            )
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=aviso,
+                mrkdwn=True,
+            )
         except Exception as exc:
             logger.error("Error procesando mensaje de ingreso: %s", exc, exc_info=True)
         finally:
