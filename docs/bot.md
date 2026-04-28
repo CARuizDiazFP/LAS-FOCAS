@@ -151,9 +151,30 @@ El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Sl
 |---|---|
 | `LIBRE` | ✅ Sin incidentes — se permite el ingreso |
 | `DETECTADA` | ✅ Sin incidentes — se permite el ingreso (tracking inicial, no implica baneo) |
-| `BANEADA` | 🚨 Se reporta el incidente de baneo activo — no acceder |
+| `PENDIENTE_REVISION` | ✅ Auto-registrada, sin restricción operativa — se permite el ingreso |
+| `BANEADA` (por incidente de red) | 🚨 Se reporta el incidente de baneo activo — no acceder |
+| `BANEADA` (manual desde el panel) | :no_entry: Se informa el motivo del admin — no acceder |
 
 > Las cámaras recién detectadas (`DETECTADA`) ya no generan alertas erróneas de restricción a menos que tengan un incidente de baneo registrado y activo.
+
+### Jerarquía de validación de acceso
+
+Antes de responder al técnico, `_construir_respuesta_camara()` evalúa **en orden**:
+
+1. **Incidente de red activo** (`IncidenteBaneo.activo == True`) → 🚨 `*ATENCIÓN*` con número de incidente y ticket.
+2. **Baneo manual sin incidente** (`camara.estado == BANEADA` y lista de incidentes vacía) → `:no_entry:` con el motivo extraído del último registro de `app.camaras_estado_auditoria` (`estado_nuevo = BANEADA`, ordenado por `created_at DESC`).  Si no hay registro de auditoría, se informa _"sin motivo registrado"_.
+3. **Cualquier otro estado** → ✅ `Podés proceder con el ingreso.`
+
+El nivel 1 siempre tiene precedencia sobre el nivel 2: si una cámara está `BANEADA` con incidente activo, se reporta el incidente (no el motivo manual).
+
+```
+¿IncidenteBaneo activo?
+  Sí → 🚨 ATENCIÓN + datos del incidente
+  No →
+    ¿camara.estado == BANEADA?
+      Sí → :no_entry: + motivo de camaras_estado_auditoria
+      No → ✅ Podés proceder
+```
 
 ### Normalización de nombres de cámara (`camara_search.py`)
 

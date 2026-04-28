@@ -20,6 +20,7 @@ import logging
 import threading
 from typing import Any
 
+from core.services.camara_estado_service import obtener_ultimo_motivo_baneo_manual
 from db.session import SessionLocal
 from modules.slack_baneo_notifier.camara_search import buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
 
@@ -99,8 +100,13 @@ class IngresoListener:
         descartando sufijos como '- CUADRILLA DE HIDROCONS' o '/ Móvil 4'.
 
         Si no la encuentra, la auto-registra como ``PENDIENTE_REVISION`` y
-        retorna el mensaje correspondiente.  Si la encuentra, informa el
-        estado de baneo.
+        retorna el mensaje correspondiente.  Si la encuentra, evalúa el estado
+        de acceso siguiendo esta jerarquía:
+
+        1. Incidente de red activo (``IncidenteBaneo.activo``) → 🚨 ATENCIÓN.
+        2. Estado ``BANEADA`` sin incidente activo (baneo manual desde el panel)
+           → :no_entry: con el motivo extraído de ``camaras_estado_auditoria``.
+        3. Cualquier otro estado → ✅ podés proceder.
         """
         nombre_buscado = limpiar_ruido_operativo(nombre_buscado)
         camara, nombre_norm = buscar_camara(nombre_buscado, session)
@@ -139,6 +145,22 @@ class IngresoListener:
                 f"Ticket: {inc.ticket_asociado or 'sin ticket'} | "
                 f"Servicio protegido: {inc.servicio_protegido_id}\n"
                 "_No acceder a esta cámara hasta nuevo aviso._"
+            )
+
+        from db.models.infra import CamaraEstado
+
+        if camara.estado == CamaraEstado.BANEADA:
+            motivo = obtener_ultimo_motivo_baneo_manual(session, camara.id)
+            motivo_texto = motivo or "sin motivo registrado"
+            logger.info(
+                "Cámara '%s' BANEADA manualmente — sin incidente activo, motivo: '%s'",
+                camara.nombre,
+                motivo_texto,
+            )
+            return (
+                f":no_entry: La cámara *{camara.nombre}* fue baneada manualmente. "
+                f"Motivo: _{motivo_texto}_.\n"
+                "_No podés proceder con el ingreso._"
             )
 
         logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
@@ -280,9 +302,11 @@ class IngresoListener:
 def _obtener_incidentes_activos_camara(camara: Any, session: Any) -> list[Any]:
     """Retorna los incidentes de baneo activos cuando la cámara está en estado BANEADA.
 
-    Las cámaras con estado LIBRE o DETECTADA (tracking inicial sin baneo real)
-    se tratan como aptas para ingreso: devuelven lista vacía.
-    Solo BANEADA implica restricción de acceso.
+    Las cámaras con estado LIBRE, DETECTADA o PENDIENTE_REVISION se tratan como
+    aptas para ingreso: devuelven lista vacía.  Estado BANEADA con un
+    ``IncidenteBaneo.activo`` asociado retorna ese incidente (nivel 1 de la
+    jerarquía).  BANEADA sin incidente activo es manejado por la rama
+    siguiente en ``_construir_respuesta_camara`` (baneo manual, nivel 2).
     """
     try:
         from db.models.infra import CamaraEstado, IncidenteBaneo

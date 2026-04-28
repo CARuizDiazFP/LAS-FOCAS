@@ -247,10 +247,30 @@ def override_camara_estado_manual(
     )
 
 
+def obtener_ultimo_motivo_baneo_manual(session: Session, camara_id: int) -> str | None:
+    """Retorna el motivo del último cambio manual de estado a BANEADA para una cámara.
+
+    Consulta ``app.camaras_estado_auditoria`` ordenando por ``created_at DESC``
+    y retorna el campo ``motivo`` del registro más reciente cuyo ``estado_nuevo``
+    sea ``BANEADA``.  Si no existe ningún registro, retorna ``None``.
+    """
+    registro = (
+        session.query(CamaraEstadoAuditoria.motivo)
+        .filter(
+            CamaraEstadoAuditoria.camara_id == camara_id,
+            CamaraEstadoAuditoria.estado_nuevo == CamaraEstado.BANEADA,
+        )
+        .order_by(CamaraEstadoAuditoria.created_at.desc())
+        .first()
+    )
+    return registro[0] if registro else None
+
+
 __all__ = [
     "ActualizacionEstadoResultado",
     "CamaraEstadoContexto",
     "IncidenteActivoResumen",
     "get_camara_estado_contexto",
+    "obtener_ultimo_motivo_baneo_manual",
     "override_camara_estado_manual",
 ]

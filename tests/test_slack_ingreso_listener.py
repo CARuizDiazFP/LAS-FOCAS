@@ -808,6 +808,139 @@ class TestLimpiarRuidoOperativo(unittest.TestCase):
         self.assertEqual(self.limpiar(""), "")
 
 
+# ─── Tests de baneo manual sin incidente de red ────────────────────────────────
+
+
+class TestBaneoManualSinIncidente(unittest.TestCase):
+    """Prueba la jerarquía de validación cuando una cámara está BANEADA manualmente
+    (sin IncidenteBaneo activo)."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event(self, text: str = "Cámara: Cam Test") -> dict:
+        return {"text": text, "channel": "C123", "ts": "1234567890.000001"}
+
+    def test_baneada_manual_sin_incidente_bloquea(self) -> None:
+        """Cámara BANEADA sin incidente activo → :no_entry: con motivo de auditoría."""
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = MagicMock()
+        camara_mock.id = 10
+        camara_mock.nombre = "Cam Baneada Manual"
+        camara_mock.estado = CamaraEstado.BANEADA
+        event = self._make_event(text="Cámara: Baneada Manual")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Manual"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "baneada manual")),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual", return_value="Fibra cortada en nodo norte"),
+        ):
+            listener._handle_message(event, client_mock)
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":no_entry:", texto)
+        self.assertIn("Cam Baneada Manual", texto)
+        self.assertIn("Fibra cortada en nodo norte", texto)
+        self.assertNotIn("ATENCIÓN", texto)
+
+    def test_baneada_manual_sin_motivo_auditoria(self) -> None:
+        """Cámara BANEADA, obtener_ultimo_motivo retorna None → fallback 'sin motivo registrado'."""
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = MagicMock()
+        camara_mock.id = 11
+        camara_mock.nombre = "Cam Baneada Sin Audit"
+        camara_mock.estado = CamaraEstado.BANEADA
+        event = self._make_event(text="Cámara: Baneada Sin Audit")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Sin Audit"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "baneada sin audit")),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual", return_value=None),
+        ):
+            listener._handle_message(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":no_entry:", texto)
+        self.assertIn("sin motivo registrado", texto)
+
+    def test_jerarquia_incidente_tiene_prioridad(self) -> None:
+        """BANEADA con IncidenteBaneo activo → 🚨 ATENCIÓN (nivel 1 gana sobre manual)."""
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = MagicMock()
+        camara_mock.id = 12
+        camara_mock.nombre = "Cam Con Incidente"
+        camara_mock.estado = CamaraEstado.BANEADA
+        incidente_mock = MagicMock()
+        incidente_mock.id = 55
+        incidente_mock.ticket_asociado = "TKT-555"
+        incidente_mock.servicio_protegido_id = "SVC-01"
+        event = self._make_event(text="Cámara: Con Incidente")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Con Incidente"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "con incidente")),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[incidente_mock]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual") as mock_motivo,
+        ):
+            listener._handle_message(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("ATENCIÓN", texto)
+        self.assertIn("#55", texto)
+        # La función de auditoría no debe haberse llamado cuando hay incidente activo
+        mock_motivo.assert_not_called()
+
+    def test_libre_no_afectado(self) -> None:
+        """Cámara LIBRE → ✅ OK — la nueva rama no interfiere. (regresión)"""
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = MagicMock()
+        camara_mock.id = 13
+        camara_mock.nombre = "Cam Libre Norte"
+        camara_mock.estado = CamaraEstado.LIBRE
+        event = self._make_event(text="Cámara: Libre Norte")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Libre Norte"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "libre norte")),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual") as mock_motivo,
+        ):
+            listener._handle_message(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("✅", texto)
+        self.assertIn("Podés proceder", texto)
+        mock_motivo.assert_not_called()
+
+
 class TestHandleMessageMultiBot(unittest.TestCase):
     """Prueba que el listener responde por cada cámara cuando se detecta multi-bot."""
 
