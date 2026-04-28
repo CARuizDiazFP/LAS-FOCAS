@@ -17,6 +17,7 @@ Se integra en worker.py como un daemon thread independiente.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import Any
 
@@ -28,6 +29,11 @@ logger = logging.getLogger("slack_baneo_worker.listener")
 
 _NOMBRE_SERVICIO_LISTENER = "slack_ingreso_listener"
 _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
+
+# Regex para detectar nombres que corresponden a Nodos (no son cámaras).
+# Se aplica sobre el nombre extraído —no el texto completo— para evitar falsos
+# positivos con el label del Workflow "*Nombre: Nodo/Camara/botella*".
+_RE_NODO = re.compile(r"\bnodos?\b", re.IGNORECASE)
 
 
 class IngresoListener:
@@ -218,6 +224,16 @@ class IngresoListener:
             logger.info("Nombre extraído por regex: '%s'", nombre_raw)
             if not nombre_raw:
                 logger.info("No se pudo extraer nombre de cámara del mensaje")
+                return
+
+            # Exclusión temprana: mensajes de Nodo no corresponden a cámaras.
+            # La verificación se hace sobre el nombre extraído (no el texto bruto)
+            # para evitar falsos positivos con el label "Nodo/Camara/botella" del Workflow.
+            if _RE_NODO.search(nombre_raw):
+                logger.info(
+                    "Mensaje ignorado: Corresponde a un Nodo ('%s')",
+                    nombre_raw,
+                )
                 return
 
             # Detectar si el técnico mencionó múltiples botellas en un mismo mensaje

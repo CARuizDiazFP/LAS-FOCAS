@@ -941,6 +941,141 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
         mock_motivo.assert_not_called()
 
 
+# ─── Tests de exclusión de Nodos ───────────────────────────────────────────────
+
+
+class TestExclusionNodo(unittest.TestCase):
+    """Prueba que el listener ignora mensajes cuyo nombre extraído corresponde a un Nodo."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event(self, text: str = "Nodo Test", channel: str = "C123") -> dict:
+        return {"text": text, "channel": channel, "ts": "1234567890.000001"}
+
+    def test_ignora_nodo_simple(self) -> None:
+        """Nombre extraído 'Nodo Vte Lopez' → el bot no responde ni consulta DB."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Nodo Vte Lopez"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara") as mock_buscar,
+        ):
+            listener._handle_message(self._make_event(text="Nodo Vte Lopez"), client_mock)
+
+        client_mock.chat_postMessage.assert_not_called()
+        mock_buscar.assert_not_called()
+
+    def test_ignora_nodo_con_descripcion_operativa(self) -> None:
+        """'Nodo Vte Lopez - cuadrilla de empalmes' → ignorado sin acceso a DB."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Nodo Vte Lopez - cuadrilla de empalmes"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara") as mock_buscar,
+        ):
+            listener._handle_message(
+                self._make_event(text="Buenas tardes Nodo Vte Lopez - cuadrilla de empalmes"),
+                client_mock,
+            )
+
+        client_mock.chat_postMessage.assert_not_called()
+        mock_buscar.assert_not_called()
+
+    def test_ignora_nodos_plural(self) -> None:
+        """'nodos zona sur' (plural, minúsculas) → ignorado (case-insensitive)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="nodos zona sur"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara") as mock_buscar,
+        ):
+            listener._handle_message(
+                self._make_event(text="Ingreso a nodos zona sur"),
+                client_mock,
+            )
+
+        client_mock.chat_postMessage.assert_not_called()
+        mock_buscar.assert_not_called()
+
+    def test_camara_no_afectada_por_filtro_nodo(self) -> None:
+        """Nombre extraído de cámara normal → sigue procesándose (regresión)."""
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = MagicMock()
+        camara_mock.nombre = "Cam Mitre 440"
+        camara_mock.estado = CamaraEstado.LIBRE
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Cam Mitre 440"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+                  return_value=(camara_mock, "cam mitre 440")) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
+                  return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                  return_value=None),
+        ):
+            listener._handle_message(
+                self._make_event(text="Cámara: Cam Mitre 440"),
+                client_mock,
+            )
+
+        mock_buscar.assert_called_once()
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("✅", texto)
+
+    def test_workflow_con_label_nodo_camara_no_ignorado(self) -> None:
+        """Workflow con ETIQUETA 'Nodo/Camara/botella' y VALOR de cámara → no ignorado."""
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = MagicMock()
+        camara_mock.nombre = "Bot. estacion Alem linea B CF"
+        camara_mock.estado = CamaraEstado.LIBRE
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            # extraer_nombre_camara extrae el VALOR (no la etiqueta del Workflow)
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Bot. estacion Alem linea B CF"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+                  return_value=(camara_mock, "bot estacion alem linea b cf")) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
+                  return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                  return_value=None),
+        ):
+            listener._handle_message(
+                self._make_event(
+                    text="*Nombre: Nodo/Camara/botella*\nBot. estacion Alem linea B CF\n"
+                ),
+                client_mock,
+            )
+
+        mock_buscar.assert_called_once()
+        client_mock.chat_postMessage.assert_called_once()
+
+
 class TestHandleMessageMultiBot(unittest.TestCase):
     """Prueba que el listener responde por cada cámara cuando se detecta multi-bot."""
 

@@ -141,6 +141,37 @@ El servicio se identifica con `nombre_servicio = 'slack_ingreso_listener'` y tie
 - **`solo_workflows = TRUE`**: el bot solo responde si el evento trae un `workflow_id` y ese ID está en la lista `workflow_ids`. Mensajes de usuarios y Workflows no configurados son ignorados silenciosamente.
 - Si `workflow_ids` está vacío y `solo_workflows = TRUE`, se acepta cualquier Workflow (sin filtrar por ID específico).
 
+### Exclusión de mensajes de Nodo
+
+Los técnicos comparten el mismo canal para ingresos tanto a **Cámaras** como a **Nodos**. El listener excluye automáticamente los mensajes cuyo nombre extraído corresponde a un Nodo para evitar búsquedas fallidas y auto-registros erróneos en la base de datos.
+
+**Condición**: si `extraer_nombre_camara()` devuelve un nombre que contiene la palabra `nodo` o `nodos` como palabra completa (case-insensitive), el mensaje es ignorado con log `INFO` y sin ninguna consulta a la DB.
+
+```
+nombre_raw = extraer_nombre_camara(texto)
+  ↓
+¿nombre_raw contiene \bnodos?\b ?
+  Sí → logger.info("Mensaje ignorado: Corresponde a un Nodo") → return
+  No → sigue el flujo normal
+```
+
+**Ejemplos ignorados**:
+
+| Texto del mensaje | Nombre extraído | Resultado |
+|---|---|---|
+| `"Nodo Vte Lopez"` | `"Nodo Vte Lopez"` | ⏭️ Ignorado |
+| `"Buenas tardes Nodo Vte Lopez - cuadrilla de empalmes"` | `"Nodo Vte Lopez - cuadrilla de empalmes"` | ⏭️ Ignorado |
+| `"Ingreso a nodos zona sur"` | `"nodos zona sur"` | ⏭️ Ignorado |
+
+**Ejemplos que NO son ignorados**:
+
+| Texto del mensaje | Nombre extraído | Resultado |
+|---|---|---|
+| `"*Nombre: Nodo/Camara/botella*\nBot. estacion Alem CF"` | `"Bot. estacion Alem CF"` (VALOR, no etiqueta) | ✅ Procesado |
+| `"Cámara: Cra Mitre 440"` | `"Cra Mitre 440"` | ✅ Procesado |
+
+> La verificación se realiza sobre el **nombre extraído** por `extraer_nombre_camara()`, no sobre el texto completo del evento. Esto evita falsos positivos en mensajes de Workflow cuya etiqueta de campo es `*Nombre: Nodo/Camara/botella*` — el label contiene "Nodo" pero el VALOR extraído es el nombre de la cámara.
+
 ### Cómo obtener el Workflow ID
 
 El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Slack) o en la URL del Workflow dentro de la configuración de Slack Workflows. Ejemplo: `Wf0B0KJF68BS`.
