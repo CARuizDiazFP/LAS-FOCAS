@@ -755,6 +755,59 @@ class TestDetectarMultiBot(unittest.TestCase):
             self.assertNotIn("301.", s, f"Punto tras número en: {s!r}")
 
 
+# ─── Tests del filtro de ruido operativo ───────────────────────────────────────
+
+
+class TestLimpiarRuidoOperativo(unittest.TestCase):
+    """Prueba limpiar_ruido_operativo() — descarte de sufijos operativos."""
+
+    def setUp(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import limpiar_ruido_operativo
+        self.limpiar = limpiar_ruido_operativo
+
+    def test_cuadrilla_con_guion(self) -> None:
+        """Caso real: '- CUADRILLA DE HIDROCONS' se descarta."""
+        self.assertEqual(
+            self.limpiar("Cra Quesada 2396 CF - CUADRILLA DE HIDROCONS"),
+            "Cra Quesada 2396 CF",
+        )
+
+    def test_movil_con_guion(self) -> None:
+        """'- Móvil 4' se descarta."""
+        self.assertEqual(self.limpiar("Camara 1 - Móvil 4"), "Camara 1")
+
+    def test_movil_sin_acento(self) -> None:
+        """'- Movil 4' (sin tilde) también se descarta."""
+        self.assertEqual(self.limpiar("Cra Mitre 440 - Movil 7"), "Cra Mitre 440")
+
+    def test_contratista_con_barra(self) -> None:
+        """Separador '/' también se reconoce."""
+        self.assertEqual(self.limpiar("Cra Mitre 440 / Contratista XYZ"), "Cra Mitre 440")
+
+    def test_equipo_con_pipe(self) -> None:
+        """Separador '|' también se reconoce."""
+        self.assertEqual(self.limpiar("Cra Quesada 2396 CF | EQUIPO A"), "Cra Quesada 2396 CF")
+
+    def test_localidad_con_guion_se_preserva(self) -> None:
+        """Regresión: 'Poste Lavalle - Campana' NO se corta — Campana no es stopword."""
+        self.assertEqual(
+            self.limpiar("Poste Lavalle - Campana"),
+            "Poste Lavalle - Campana",
+        )
+
+    def test_sin_ruido_retorna_intacto(self) -> None:
+        """Sin separador ni ruido, el string queda intacto."""
+        self.assertEqual(self.limpiar("Cra Mitre 440"), "Cra Mitre 440")
+
+    def test_tecnico_con_guion(self) -> None:
+        """Stopword 'Técnico' también se descarta."""
+        self.assertEqual(self.limpiar("Cam Zona Norte - Técnico Juan"), "Cam Zona Norte")
+
+    def test_texto_vacio(self) -> None:
+        """String vacío retorna vacío."""
+        self.assertEqual(self.limpiar(""), "")
+
+
 class TestHandleMessageMultiBot(unittest.TestCase):
     """Prueba que el listener responde por cada cámara cuando se detecta multi-bot."""
 

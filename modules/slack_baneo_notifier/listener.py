@@ -21,7 +21,7 @@ import threading
 from typing import Any
 
 from db.session import SessionLocal
-from modules.slack_baneo_notifier.camara_search import buscar_camara, detectar_multi_bot, extraer_nombre_camara
+from modules.slack_baneo_notifier.camara_search import buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
 
 logger = logging.getLogger("slack_baneo_worker.listener")
 
@@ -95,10 +95,14 @@ class IngresoListener:
     ) -> str:
         """Busca una cámara por nombre y construye el texto de respuesta.
 
+        Aplica el filtro de ruido operativo antes de buscar y antes de registrar,
+        descartando sufijos como '- CUADRILLA DE HIDROCONS' o '/ Móvil 4'.
+
         Si no la encuentra, la auto-registra como ``PENDIENTE_REVISION`` y
         retorna el mensaje correspondiente.  Si la encuentra, informa el
         estado de baneo.
         """
+        nombre_buscado = limpiar_ruido_operativo(nombre_buscado)
         camara, nombre_norm = buscar_camara(nombre_buscado, session)
         logger.info("Resultado búsqueda — cámara: %s (normalizado: '%s')", camara, nombre_norm)
 

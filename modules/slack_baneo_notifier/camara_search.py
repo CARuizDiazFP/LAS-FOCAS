@@ -62,6 +62,15 @@ _RE_MULTI_BOT = re.compile(
     r"(?i)\bbot(?:ella)?s?\s+(\d+)\s+(?:y|&)\s+(\d+)\b"
 )
 
+# Detecta sufijos de ruido operativo: "- CUADRILLA DE HIDROCONS", "/ Móvil 4", etc.
+# Solo corta en separador (-, /, |) SEGUIDO de una stopword operativa conocida.
+# Preserva localidades con guion: "Poste Lavalle - Campana" (Campana no es stopword).
+_RE_RUIDO_OPERATIVO = re.compile(
+    r"(?i)\s*[-/|]\s*"
+    r"(?:cuadrilla|m[oó]vil|contratista|ticket|equipo|personal|guardia|"
+    r"inspector|t[eé]cnico|brigada|grupo|empresa)\b.*"
+)
+
 
 def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
     """Detecta si el nombre menciona múltiples botellas/bots en un mismo campo.
@@ -102,6 +111,25 @@ def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
         else:
             nombres.append(f"Bot {n} {base}")
     return nombres
+
+
+def limpiar_ruido_operativo(texto: str) -> str:
+    """Elimina sufijos de ruido operativo del nombre de cámara.
+
+    Corta en el primer separador (-, /, |) seguido de una stopword operativa
+    conocida (cuadrilla, móvil, contratista, equipo, técnico, etc.).
+
+    Solo actúa cuando el token posterior al separador es reconocido como ruido.
+    Las localidades con guion (ej: "Poste Lavalle - Campana") se preservan
+    intactas porque "Campana" no es una stopword operativa.
+
+    Ejemplo::
+
+        "Cra Quesada 2396 CF - CUADRILLA DE HIDROCONS"  →  "Cra Quesada 2396 CF"
+        "Camara 1 - Móvil 4"                            →  "Camara 1"
+        "Poste Lavalle - Campana"                       →  "Poste Lavalle - Campana"
+    """
+    return _RE_RUIDO_OPERATIVO.sub("", texto).strip()
 
 
 def _limpiar_puntuacion(texto: str) -> str:

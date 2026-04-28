@@ -216,6 +216,27 @@ El listener procesa ambas búsquedas y envía una respuesta combinada en el mism
 
 > **`cra` no se expande.** En los nombres de cámara, "Cra" se usa de forma literal (ej.: `Bot 2 Cra Poste 202 Vias FFCC Roca Hudson`). El Intento 4 garantiza encontrar la cámara incluso si otras abreviaturas modificaron el query.
 
+#### Filtro de ruido operativo (`limpiar_ruido_operativo`)
+
+Antes de consultar la DB y antes de auto-registrar, el listener aplica `limpiar_ruido_operativo()` para descartar sufijos operativos que los técnicos adjuntan al nombre de cámara.
+
+**Patrón reconocido**: separador (`-`, `/`, `|`) seguido de una **stopword operativa**:
+
+| Stopwords |
+|---|
+| `cuadrilla`, `móvil`/`movil`, `contratista`, `ticket`, `equipo`, `personal`, `guardia`, `inspector`, `técnico`/`tecnico`, `brigada`, `grupo`, `empresa` |
+
+**Ejemplos**:
+
+| Input del técnico | Nombre usado para búsqueda y registro |
+|---|---|
+| `Cra Quesada 2396 CF - CUADRILLA DE HIDROCONS` | `Cra Quesada 2396 CF` |
+| `Camara 1 - Móvil 4` | `Camara 1` |
+| `Cra Mitre 440 / Contratista XYZ` | `Cra Mitre 440` |
+| `Cra Mitre 440 \| EQUIPO A` | `Cra Mitre 440` |
+
+**El corte es condicional**: si el token después del separador NO es una stopword conocida, el string se preserva íntegro. Ejemplo: `"Poste Lavalle - Campana"` → `"Poste Lavalle - Campana"` (Campana es una localidad, no ruido).
+
 ### Auto-registro de cámaras desconocidas
 
 Cuando `buscar_camara()` retorna `None`, el listener **auto-registra** la cámara en la DB con:
