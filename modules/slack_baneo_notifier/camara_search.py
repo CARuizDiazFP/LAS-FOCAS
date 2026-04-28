@@ -53,8 +53,8 @@ _SINONIMOS: dict[str, str] = {
 _RE_NOMBRE_WORKFLOW = re.compile(
     r"(?i)\*?Nombre:\s*Nodo[/\\]C[aá]mara[/\\]botella\*?\n(.+?)(?:\n|$)"
 )
-# Regex fallback: campo libre "Cámara: [valor]"
-_RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*:\s*(.+?)(?:\n|$)")
+# Regex fallback: campo libre "Cámara: [valor]" o "Cámara, [valor]"
+_RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*[,:]\s*(.+?)(?:\n|$)")
 
 # Detecta menciones del tipo "Botella 1 y 2", "Bot 1 y 2", "botellas 2 y 3", etc.
 # Captura los dos números para expandirlos en búsquedas independientes.
@@ -89,10 +89,10 @@ def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
     n1, n2 = int(match.group(1)), int(match.group(2))
     # Remover el patrón multi-bot y limpiar el resultado
     base = _RE_MULTI_BOT.sub("", nombre_raw)
-    # Eliminar puntuación sobrante (comas, puntos aislados, punto y coma)
+    # Eliminar puntuación sobrante (comas, puntos no seguidos de dígito, punto y coma)
     base = re.sub(r"[,;]", " ", base)
-    base = re.sub(r"(?<!\d)\.(?!\d)", " ", base)
-    base = re.sub(r"\s+", " ", base).strip().strip(".")
+    base = re.sub(r"\.(?!\d)", " ", base)
+    base = re.sub(r"\s+", " ", base).strip()
 
     nombres: list[str] = []
     for n in sorted({n1, n2}):
@@ -114,8 +114,8 @@ def _limpiar_puntuacion(texto: str) -> str:
     """
     # Punto y coma y comas → espacio
     texto = re.sub(r"[,;]", " ", texto)
-    # Punto al final de palabra (no entre dígitos) → espacio
-    texto = re.sub(r"(?<!\d)\.(?!\d)", " ", texto)
+    # Punto no seguido de dígito → espacio (preserva decimales: 7.06 intacto)
+    texto = re.sub(r"\.(?!\d)", " ", texto)
     # Guión con espacios (separador de texto largo) → espacio
     texto = re.sub(r"\s+-\s+", " ", texto)
     # Normalizar espacios

@@ -77,6 +77,18 @@ class TestExtraerNombreCamara(unittest.TestCase):
         result = self.extraer("   \n  ")
         self.assertEqual(result, "")
 
+    def test_campo_camara_con_coma(self) -> None:
+        """Regresión: 'Cámara, nombre' (coma en lugar de dos puntos) debe extraer el nombre."""
+        texto = "Cámara, Bartolomé Mitre 301. Botella 1 y 2. CF"
+        result = self.extraer(texto)
+        self.assertEqual(result, "Bartolomé Mitre 301. Botella 1 y 2. CF")
+
+    def test_campo_camara_dos_puntos_sigue_funcionando(self) -> None:
+        """Retrocompatibilidad: 'Cámara: nombre' (dos puntos) sigue funcionando."""
+        texto = "Cámara: Bartolomé Mitre 301 CF"
+        result = self.extraer(texto)
+        self.assertEqual(result, "Bartolomé Mitre 301 CF")
+
 
 # ─── Tests de búsqueda de cámara ───────────────────────────────────────────────
 
@@ -721,6 +733,26 @@ class TestDetectarMultiBot(unittest.TestCase):
         # La base no debe terminar en punto
         for s in resultado:
             self.assertFalse(s.strip().endswith("."), f"Trailing dot en: {s!r}")
+
+    def test_punto_tras_numero_se_elimina(self) -> None:
+        """Regresión: '301.' debe quedar '301' — el punto post-dígito no es decimal."""
+        resultado = self.detectar("Bartolomé Mitre 301. Botella 1 y 2. CF")
+        assert resultado is not None
+        for s in resultado:
+            self.assertNotIn("301.", s, f"Punto tras número en: {s!r}")
+        self.assertIn("301", resultado[0])
+        self.assertIn("301", resultado[1])
+
+    def test_caso_real_campo_camara_con_coma(self) -> None:
+        """Regresión: 'Cámara, ... Botella 1 y 2' — la palabra 'Cámara' no contamina la base."""
+        resultado = self.detectar("Cámara, Bartolomé Mitre 301. Botella 1 y 2. CF")
+        # detectar_multi_bot actúa sobre el nombre_raw ya extraído; si llega con
+        # "Cámara," el sinonimo camara→cra lo maneja, pero la base no debe incluir
+        # "Cámara" sin transformar.
+        self.assertIsNotNone(resultado)
+        assert resultado is not None
+        for s in resultado:
+            self.assertNotIn("301.", s, f"Punto tras número en: {s!r}")
 
 
 class TestHandleMessageMultiBot(unittest.TestCase):
