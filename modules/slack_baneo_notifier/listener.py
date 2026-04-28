@@ -21,7 +21,7 @@ import threading
 from typing import Any
 
 from db.session import SessionLocal
-from modules.slack_baneo_notifier.camara_search import buscar_camara, extraer_nombre_camara
+from modules.slack_baneo_notifier.camara_search import buscar_camara, detectar_multi_bot, extraer_nombre_camara
 
 logger = logging.getLogger("slack_baneo_worker.listener")
 
@@ -88,6 +88,61 @@ class IngresoListener:
 
     # ── Handler principal ────────────────────────────────────────────────
 
+    def _construir_respuesta_camara(
+        self,
+        nombre_buscado: str,
+        session: Any,
+    ) -> str:
+        """Busca una cámara por nombre y construye el texto de respuesta.
+
+        Si no la encuentra, la auto-registra como ``PENDIENTE_REVISION`` y
+        retorna el mensaje correspondiente.  Si la encuentra, informa el
+        estado de baneo.
+        """
+        camara, nombre_norm = buscar_camara(nombre_buscado, session)
+        logger.info("Resultado búsqueda — cámara: %s (normalizado: '%s')", camara, nombre_norm)
+
+        if camara is None:
+            from datetime import datetime, timezone
+
+            from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
+
+            nueva_camara = Camara(
+                nombre=nombre_buscado,
+                estado=CamaraEstado.PENDIENTE_REVISION,
+                origen_datos=CamaraOrigenDatos.MANUAL,
+                last_update=datetime.now(timezone.utc),
+            )
+            session.add(nueva_camara)
+            session.commit()
+            logger.info(
+                "Cámara desconocida '%s' auto-registrada PENDIENTE_REVISION (id=%s)",
+                nombre_buscado,
+                nueva_camara.id,
+            )
+            return (
+                "✅ Cámara no registrada previamente, se registra automáticamente "
+                "bajo revisión. Sin incidentes activos. Podés proceder."
+            )
+
+        incidentes = _obtener_incidentes_activos_camara(camara, session)
+        if incidentes:
+            inc = incidentes[0]
+            logger.info("Cámara '%s' BANEADA — incidente #%s", camara.nombre, inc.id)
+            return (
+                f"🚨 *ATENCIÓN* — La cámara *{camara.nombre}* tiene el incidente "
+                f"*#{inc.id}* activo (Baneo de Protección).\n"
+                f"Ticket: {inc.ticket_asociado or 'sin ticket'} | "
+                f"Servicio protegido: {inc.servicio_protegido_id}\n"
+                "_No acceder a esta cámara hasta nuevo aviso._"
+            )
+
+        logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
+        return (
+            f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
+            f"Sin incidentes activos.\n_Podés proceder con el ingreso._"
+        )
+
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
         # Ignorar ediciones para no procesar dos veces el mismo ingreso
@@ -139,50 +194,26 @@ class IngresoListener:
                 logger.info("No se pudo extraer nombre de cámara del mensaje")
                 return
 
-            camara, nombre_norm = buscar_camara(nombre_raw, session)
-            logger.info("Resultado búsqueda DB — cámara: %s (normalizado: '%s')", camara, nombre_norm)
-
-            if camara is None:
-                # Auto-registrar la cámara con estado PENDIENTE_REVISION para que
-                # un administrador la revise y apruebe (o la marque como alias).
-                from datetime import datetime, timezone
-                from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
-
-                nueva_camara = Camara(
-                    nombre=nombre_raw,
-                    estado=CamaraEstado.PENDIENTE_REVISION,
-                    origen_datos=CamaraOrigenDatos.MANUAL,
-                    last_update=datetime.now(timezone.utc),
-                )
-                session.add(nueva_camara)
-                session.commit()
-                respuesta = (
-                    "✅ Cámara no registrada previamente, se registra automáticamente "
-                    "bajo revisión. Sin incidentes activos. Podés proceder."
-                )
+            # Detectar si el técnico mencionó múltiples botellas en un mismo mensaje
+            # (ej: "Botella 1 y 2") y separar en búsquedas independientes.
+            nombres_a_buscar = detectar_multi_bot(nombre_raw)
+            if nombres_a_buscar is not None:
                 logger.info(
-                    "Cámara desconocida '%s' auto-registrada con estado PENDIENTE_REVISION (id=%s)",
+                    "Multi-bot detectado en '%s' → búsquedas independientes: %s",
                     nombre_raw,
-                    nueva_camara.id,
+                    nombres_a_buscar,
                 )
             else:
-                incidentes = _obtener_incidentes_activos_camara(camara, session)
-                if incidentes:
-                    inc = incidentes[0]
-                    respuesta = (
-                        f"🚨 *ATENCIÓN* — La cámara *{camara.nombre}* tiene el incidente "
-                        f"*#{inc.id}* activo (Baneo de Protección).\n"
-                        f"Ticket: {inc.ticket_asociado or 'sin ticket'} | "
-                        f"Servicio protegido: {inc.servicio_protegido_id}\n"
-                        "_No acceder a esta cámara hasta nuevo aviso._"
-                    )
-                    logger.info("Cámara '%s' BANEADA — incidente #%s", camara.nombre, inc.id)
-                else:
-                    respuesta = (
-                        f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
-                        f"Sin incidentes activos.\n_Podés proceder con el ingreso._"
-                    )
-                    logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
+                nombres_a_buscar = [nombre_raw]
+
+            respuestas = [
+                self._construir_respuesta_camara(nombre, session)
+                for nombre in nombres_a_buscar
+            ]
+
+            # Para múltiples cámaras, separar con línea divisoria para mayor claridad
+            separador = "\n\n─────────────────────\n\n" if len(respuestas) > 1 else ""
+            respuesta = separador.join(respuestas)
 
             client.chat_postMessage(
                 channel=channel,

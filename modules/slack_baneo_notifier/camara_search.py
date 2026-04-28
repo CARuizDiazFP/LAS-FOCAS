@@ -56,6 +56,53 @@ _RE_NOMBRE_WORKFLOW = re.compile(
 # Regex fallback: campo libre "Cámara: [valor]"
 _RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*:\s*(.+?)(?:\n|$)")
 
+# Detecta menciones del tipo "Botella 1 y 2", "Bot 1 y 2", "botellas 2 y 3", etc.
+# Captura los dos números para expandirlos en búsquedas independientes.
+_RE_MULTI_BOT = re.compile(
+    r"(?i)\bbot(?:ella)?s?\s+(\d+)\s+(?:y|&)\s+(\d+)\b"
+)
+
+
+def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
+    """Detecta si el nombre menciona múltiples botellas/bots en un mismo campo.
+
+    Patrones reconocidos: "Botella 1 y 2", "Bot 1 y 2", "botellas 2 y 3", etc.
+
+    Regla de numeración canónica:
+      - Botella 1 (N=1) corresponde a la cámara principal, cuyo nombre NO lleva
+        el prefijo "Bot"; se busca con la dirección base sin prefijo.
+      - Botella N≥2 lleva "Bot N" como prefijo en la DB; se le antepone "Bot N".
+
+    Ejemplo::
+
+        "Bartolomé Mitre 301. Botella 1 y 2. CF"
+        → ["Bartolomé Mitre 301 CF", "Bot 2 Bartolomé Mitre 301 CF"]
+
+    Returns:
+        Lista de 2 strings limpios para pasar a ``buscar_camara()``, o ``None``
+        si no se detectó el patrón.
+    """
+    match = _RE_MULTI_BOT.search(nombre_raw)
+    if not match:
+        return None
+
+    n1, n2 = int(match.group(1)), int(match.group(2))
+    # Remover el patrón multi-bot y limpiar el resultado
+    base = _RE_MULTI_BOT.sub("", nombre_raw)
+    # Eliminar puntuación sobrante (comas, puntos aislados, punto y coma)
+    base = re.sub(r"[,;]", " ", base)
+    base = re.sub(r"(?<!\d)\.(?!\d)", " ", base)
+    base = re.sub(r"\s+", " ", base).strip().strip(".")
+
+    nombres: list[str] = []
+    for n in sorted({n1, n2}):
+        if n == 1:
+            # Botella 1 = cámara principal sin prefijo Bot
+            nombres.append(base)
+        else:
+            nombres.append(f"Bot {n} {base}")
+    return nombres
+
 
 def _limpiar_puntuacion(texto: str) -> str:
     """Elimina signos de puntuación irrelevantes antes de normalizar.

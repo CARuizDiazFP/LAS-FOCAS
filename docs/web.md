@@ -485,6 +485,7 @@ El acordeón **🔄 Cámaras Pendientes de Revisión** en `/admin/Servicios/Bane
 | ✅ **Aprobar** | Cambia estado a `LIBRE`; el nombre queda tal como lo escribió el técnico. |
 | 🔗 **Convertir en Alias** | Solicita el ID de una cámara existente, crea `app.camara_alias` y elimina el registro pendiente. |
 | 🏷️ **Definir Nombre Canón** | Abre un input pre-cargado con el nombre del técnico; al confirmar: cambia el nombre al canónico oficial, promueve a `LIBRE` y guarda el nombre original como alias en `app.camara_alias`. Endpoint: `POST /api/admin/infra/camaras/{id}/dar-de-alta`. |
+| 🗑️ **Eliminar** | Elimina físicamente el registro de `app.camaras`. Muestra confirmación inline antes de proceder. Solo válido para cámaras en estado `PENDIENTE_REVISION` (el servidor rechaza con 409 cualquier otro estado). Endpoint: `DELETE /api/admin/infra/camaras/pendientes/{id}`. |
 
 ### Templates legacy (mantenidos)
 

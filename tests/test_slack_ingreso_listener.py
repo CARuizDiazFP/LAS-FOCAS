@@ -662,5 +662,149 @@ class TestFiltrosNumeroBot(unittest.TestCase):
             self.assertIn("440", p)
 
 
+# ─── Tests del parser multi-bot ────────────────────────────────────────────────
+
+
+class TestDetectarMultiBot(unittest.TestCase):
+    """Prueba detectar_multi_bot() — detección y expansión de 'Botella 1 y 2'."""
+
+    def setUp(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import detectar_multi_bot
+        self.detectar = detectar_multi_bot
+
+    def test_botella_1_y_2_genera_dos_strings(self) -> None:
+        """Patrón canónico: 'Bartolomé Mitre 301. Botella 1 y 2. CF'."""
+        resultado = self.detectar("Bartolomé Mitre 301. Botella 1 y 2. CF")
+        self.assertIsNotNone(resultado)
+        assert resultado is not None
+        self.assertEqual(len(resultado), 2)
+        # Botella 1 → solo base sin prefijo Bot
+        self.assertNotIn("Bot 1", resultado[0])
+        self.assertIn("Mitre 301", resultado[0])
+        # Botella 2 → prefijo "Bot 2" + base
+        self.assertIn("Bot 2", resultado[1])
+        self.assertIn("Mitre 301", resultado[1])
+
+    def test_bot_1_y_2_minusculas(self) -> None:
+        """Variante con 'bot' en minúscula."""
+        resultado = self.detectar("bot 1 y 2 calle principal 100")
+        self.assertIsNotNone(resultado)
+        assert resultado is not None
+        self.assertEqual(len(resultado), 2)
+        self.assertNotIn("Bot 1", resultado[0])
+        self.assertIn("Bot 2", resultado[1])
+
+    def test_bot_2_y_3_ambos_con_prefijo(self) -> None:
+        """Cuando ambos números son ≥2, ambos llevan prefijo 'Bot N'."""
+        resultado = self.detectar("Bot 2 y 3 Calle Real 50")
+        self.assertIsNotNone(resultado)
+        assert resultado is not None
+        self.assertEqual(len(resultado), 2)
+        self.assertIn("Bot 2", resultado[0])
+        self.assertIn("Bot 3", resultado[1])
+
+    def test_sin_patron_multi_bot_retorna_none(self) -> None:
+        """Sin patrón 'bot N y M', retorna None."""
+        self.assertIsNone(self.detectar("Cra Mitre 440 sin botellas"))
+        self.assertIsNone(self.detectar("Botella 2"))
+        self.assertIsNone(self.detectar(""))
+
+    def test_botellas_plural(self) -> None:
+        """Variante plural: 'Botellas 1 y 2'."""
+        resultado = self.detectar("Botellas 1 y 2 Av Principal 300 CF")
+        self.assertIsNotNone(resultado)
+
+    def test_base_sin_cf_puntuacion_limpia(self) -> None:
+        """La base queda limpia de puntuación sobrante."""
+        resultado = self.detectar("Bartolomé Mitre 301. Botella 1 y 2. CF")
+        assert resultado is not None
+        # La base no debe terminar en punto
+        for s in resultado:
+            self.assertFalse(s.strip().endswith("."), f"Trailing dot en: {s!r}")
+
+
+class TestHandleMessageMultiBot(unittest.TestCase):
+    """Prueba que el listener responde por cada cámara cuando se detecta multi-bot."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _evento(self, texto: str) -> dict:
+        return {
+            "text": texto,
+            "ts": "1234567890.000001",
+            "channel": "C_TEST",
+        }
+
+    def test_multi_bot_responde_dos_estados(self) -> None:
+        """Un mensaje con 'Botella 1 y 2' genera una respuesta con ambas cámaras."""
+        listener = self._make_listener()
+
+        cam1 = MagicMock()
+        cam1.nombre = "Cra Bartolomé Mitre 301"
+        cam2 = MagicMock()
+        cam2.nombre = "Bot 2 Cra Bartolomé Mitre 301"
+
+        client_mock = MagicMock()
+        config_mock = ("C_TEST", True, [], False)
+
+        # buscar_camara: primera llamada → cam1, segunda → cam2
+        buscar_side = [
+            (cam1, "cra bartolome mitre 301"),
+            (cam2, "bot 2 cra bartolome mitre 301"),
+        ]
+
+        with patch(
+            "modules.slack_baneo_notifier.listener.IngresoListener._get_config",
+            return_value=config_mock,
+        ):
+            with patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara",
+                side_effect=buscar_side,
+            ):
+                with patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_sess:
+                    mock_sess.return_value.__enter__ = MagicMock(return_value=MagicMock())
+                    mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+                    # _get_config se llama con session, usamos patch directo
+                    listener._handle_message(
+                        self._evento("Cámara: Bartolomé Mitre 301. Botella 1 y 2. CF"),
+                        client_mock,
+                    )
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        # Ambos nombres deben aparecer en el texto compuesto
+        self.assertIn("Cra Bartolomé Mitre 301", texto_respuesta)
+        self.assertIn("Bot 2 Cra Bartolomé Mitre 301", texto_respuesta)
+
+    def test_sin_multi_bot_flujo_normal(self) -> None:
+        """Sin patrón multi-bot, buscar_camara se llama una sola vez."""
+        listener = self._make_listener()
+
+        cam = MagicMock()
+        cam.nombre = "Cra Mitre 440"
+        client_mock = MagicMock()
+        config_mock = ("C_TEST", True, [], False)
+
+        with patch(
+            "modules.slack_baneo_notifier.listener.IngresoListener._get_config",
+            return_value=config_mock,
+        ):
+            with patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara",
+                return_value=(cam, "cra mitre 440"),
+            ) as mock_buscar:
+                with patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_sess:
+                    mock_sess.return_value.__enter__ = MagicMock(return_value=MagicMock())
+                    mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+                    listener._handle_message(
+                        self._evento("Cámara: Cra Mitre 440"),
+                        client_mock,
+                    )
+
+        self.assertEqual(mock_buscar.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

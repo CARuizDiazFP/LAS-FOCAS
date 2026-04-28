@@ -228,3 +228,14 @@ export async function darDeAltaComoCanon(id: number, nombreCanon: string): Promi
     throw new Error(data.error ?? `Error ${res.status}`);
   }
 }
+
+export async function eliminarCamaraPendiente(id: number): Promise<void> {
+  const res = await fetch(`/api/admin/infra/camaras/pendientes/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `Error ${res.status}`);
+  }
+}

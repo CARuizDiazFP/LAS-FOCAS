@@ -187,6 +187,18 @@ Adicionalmente, el **Intento 3 se omite** cuando hay números en el input, ya qu
 Si el técnico **no** menciona `bot` ni `botella` en su mensaje, los resultados de DB que coincidan con `Bot [2-9]` (bots secundarios) se descartan automáticamente. Esto evita que "Cra Bartolomé Mitre 440" empareje "Bot 2 Cra Bartolomé Mitre 440".  
 Si el técnico escribe explícitamente "botella" o "bot", el filtro se desactiva para ese mensaje.
 
+#### Múltiples botellas en un solo mensaje (`detectar_multi_bot`)
+
+Los técnicos a veces mencionan dos botellas de la misma cámara en un mismo formulario (ej.: "Bartolomé Mitre 301. Botella 1 y 2. CF").  
+`detectar_multi_bot(nombre_raw)` detecta el patrón `bot(?:ella)?s?\s+N\s+y\s+M` y genera dos búsquedas independientes:
+
+| Número | Nombre buscado en DB |
+|--------|----------------------|
+| 1 | base sin prefijo (Botella 1 = cámara principal) |
+| ≥2 | `"Bot N " + base` (Botella 2 = cámara secundaria) |
+
+El listener procesa ambas búsquedas y envía una respuesta combinada en el mismo hilo, separada por un divisor visual. Si alguna no se encuentra, se auto-registra como `PENDIENTE_REVISION` de forma independiente.
+
 #### Abreviaturas expandidas
 
 | Abreviatura | Expansión |
@@ -218,6 +230,7 @@ El administrador luego revisa las cámaras pendientes desde el panel `/admin/Ser
 - **Aprobar** → cambia el estado a `LIBRE` (mantiene el nombre tal como lo escribió el técnico)
 - **Convertir en Alias** → crea un registro en `app.camara_alias` vinculado a una cámara existente y elimina el registro pendiente
 - **Definir Nombre Canón** → permite editar el nombre al formato oficial y lo promueve a `LIBRE`; el nombre original del técnico queda guardado automáticamente como un alias en `app.camara_alias` para que futuras búsquedas del mismo término sigan resolviendo esta cámara
+- **Eliminar** → elimina físicamente el registro de `app.camaras`; requiere confirmación inline. Útil para borrar entradas basura generadas por mensajes mal formateados o nombres combinados erróneos.
 
 ### Configuración desde el panel web
 

@@ -314,6 +314,14 @@
               >
                 🏷️ Definir Nombre Canón
               </button>
+              <button
+                class="btn"
+                style="padding:4px 10px;font-size:0.82rem;background:var(--danger,#ef4444);color:#fff;border-color:transparent"
+                :disabled="pendientes.accionando === cam.id"
+                @click="toggleEliminar(cam.id)"
+              >
+                🗑️ Eliminar
+              </button>
               <!-- Formulario inline para convertir en alias -->
               <div v-if="pendientes.aliasFormId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%">
                 <input
@@ -362,6 +370,27 @@
                   Cancelar
                 </button>
               </div>
+              <!-- Confirmación de eliminación -->
+              <div v-if="pendientes.eliminandoId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%;background:var(--danger-bg,#fee2e2);padding:8px;border-radius:6px">
+                <span style="font-size:0.85rem;color:var(--danger,#ef4444);flex:1">
+                  ⚠️ ¿Eliminar permanentemente <strong>{{ cam.nombre }}</strong>? Esta acción no se puede deshacer.
+                </span>
+                <button
+                  class="btn"
+                  style="padding:4px 10px;font-size:0.82rem;background:var(--danger,#ef4444);color:#fff;border-color:transparent"
+                  :disabled="pendientes.accionando === cam.id"
+                  @click="handleEliminar(cam.id)"
+                >
+                  Sí, eliminar
+                </button>
+                <button
+                  class="btn"
+                  style="padding:4px 10px;font-size:0.82rem"
+                  @click="pendientes.eliminandoId = null"
+                >
+                  Cancelar
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -376,7 +405,7 @@
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue';
-import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, darDeAltaComoCanon, type CamaraPendiente } from '../api/admin';
+import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, darDeAltaComoCanon, eliminarCamaraPendiente, type CamaraPendiente } from '../api/admin';
 
 // ─── Estado del formulario ────────────────────────────────────────────────
 const form = reactive({
@@ -442,8 +471,11 @@ const pendientes = reactive({
   error: '' as string,
   accionando: null as number | null,
   aliasFormId: null as number | null,
-  aliasDestinoId: null as number | null,  canonFormId: null as number | null,
-  canonNombre: '' as string,  msg: '',
+  aliasDestinoId: null as number | null,
+  canonFormId: null as number | null,
+  canonNombre: '' as string,
+  eliminandoId: null as number | null,
+  msg: '',
   msgError: false,
 });
 
@@ -580,6 +612,8 @@ function toggleFormAlias(id: number) {
   } else {
     pendientes.aliasFormId = id;
     pendientes.aliasDestinoId = null;
+    pendientes.canonFormId = null;
+    pendientes.eliminandoId = null;
   }
 }
 
@@ -623,7 +657,35 @@ function toggleFormCanon(id: number, nombreTecnico: string) {
   } else {
     pendientes.canonFormId = id;
     pendientes.aliasFormId = null; // cerrar el otro form si estaba abierto
+    pendientes.eliminandoId = null;
     pendientes.canonNombre = nombreTecnico;
+  }
+}
+
+function toggleEliminar(id: number) {
+  if (pendientes.eliminandoId === id) {
+    pendientes.eliminandoId = null;
+  } else {
+    pendientes.eliminandoId = id;
+    pendientes.aliasFormId = null;
+    pendientes.canonFormId = null;
+  }
+}
+
+async function handleEliminar(id: number) {
+  pendientes.accionando = id;
+  pendientes.msg = '';
+  try {
+    await eliminarCamaraPendiente(id);
+    pendientes.msg = `Cámara #${id} eliminada permanentemente.`;
+    pendientes.msgError = false;
+    pendientes.eliminandoId = null;
+    await cargarPendientes();
+  } catch (e: unknown) {
+    pendientes.msg = e instanceof Error ? e.message : 'Error al eliminar la cámara.';
+    pendientes.msgError = true;
+  } finally {
+    pendientes.accionando = null;
   }
 }
 

@@ -3573,6 +3573,52 @@ async def admin_dar_de_alta_camara(
         return JSONResponse({"error": "Error al dar de alta la cámara"}, status_code=500)
 
 
+@app.delete("/api/admin/infra/camaras/pendientes/{camara_id}")
+async def admin_eliminar_camara_pendiente(
+    request: Request,
+    camara_id: int,
+) -> JSONResponse:
+    """Elimina físicamente de la DB una cámara en estado PENDIENTE_REVISION.
+
+    Solo se permite eliminar cámaras que estén en estado ``PENDIENTE_REVISION``.
+    Para proteger contra borrados accidentales, registros en otros estados
+    deben gestionarse por otros medios.
+    """
+    _require_admin(request)
+    try:
+        from db.models.infra import Camara, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+            if camara.estado != CamaraEstado.PENDIENTE_REVISION:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"Solo se pueden eliminar cámaras en estado PENDIENTE_REVISION "
+                            f"(estado actual: {camara.estado.value})"
+                        )
+                    },
+                    status_code=409,
+                )
+            nombre_eliminado = camara.nombre
+            session.delete(camara)
+            session.commit()
+            logger.info(
+                "action=eliminar_pendiente camara_id=%s nombre='%s'",
+                camara_id,
+                nombre_eliminado,
+            )
+            return JSONResponse({"ok": True, "id": camara_id})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_eliminar_pendiente_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "Error al eliminar la cámara"}, status_code=500)
+
+
 @app.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
     request: Request,
