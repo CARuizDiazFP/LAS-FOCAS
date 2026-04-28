@@ -215,3 +215,16 @@ export async function convertirAlias(id: number, camaraDestinoId: number): Promi
     throw new Error(data.error ?? `Error ${res.status}`);
   }
 }
+
+export async function darDeAltaComoCanon(id: number, nombreCanon: string): Promise<void> {
+  const res = await fetch(`/api/admin/infra/camaras/${id}/dar-de-alta`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nombre_canon: nombreCanon }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `Error ${res.status}`);
+  }
+}

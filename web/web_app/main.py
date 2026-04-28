@@ -3501,6 +3501,78 @@ async def admin_convertir_alias(
         return JSONResponse({"error": "Error al convertir alias"}, status_code=500)
 
 
+class _DarDeAltaRequest(BaseModel):
+    nombre_canon: str
+
+
+@app.post("/api/admin/infra/camaras/{camara_id}/dar-de-alta")
+async def admin_dar_de_alta_camara(
+    request: Request,
+    camara_id: int,
+    body: _DarDeAltaRequest,
+) -> JSONResponse:
+    """Promueve una cámara PENDIENTE_REVISION a cámara oficial (estado LIBRE).
+
+    Actualiza el nombre al nombre canónico provisto por el admin, cambia el
+    estado de ``PENDIENTE_REVISION`` a ``LIBRE``, y guarda el nombre original
+    (el que ingresó el técnico) como un alias en ``app.camara_alias``, siempre
+    que sea diferente al nombre canónico.
+    """
+    _require_admin(request)
+    nombre_canon = body.nombre_canon.strip()
+    if not nombre_canon:
+        return JSONResponse({"error": "El nombre canónico no puede estar vacío"}, status_code=400)
+    try:
+        from db.models.infra import Camara, CamaraAlias, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+            if camara.estado != CamaraEstado.PENDIENTE_REVISION:
+                return JSONResponse(
+                    {"error": f"La cámara no está en estado PENDIENTE_REVISION (estado actual: {camara.estado.value})"},
+                    status_code=409,
+                )
+            nombre_original = camara.nombre or ""
+            camara.nombre = nombre_canon
+            camara.estado = CamaraEstado.LIBRE
+
+            # Guardar el nombre original como alias si difiere del canónico
+            alias_creado = False
+            if nombre_original and nombre_original.strip().lower() != nombre_canon.lower():
+                alias_existente = (
+                    session.query(CamaraAlias)
+                    .filter(
+                        CamaraAlias.camara_id == camara_id,
+                        CamaraAlias.alias_nombre == nombre_original,
+                    )
+                    .first()
+                )
+                if not alias_existente:
+                    session.add(CamaraAlias(camara_id=camara_id, alias_nombre=nombre_original))
+                    alias_creado = True
+
+            session.commit()
+            logger.info(
+                "action=definir_nombre_canon camara_id=%s nombre_original='%s' nombre_canon='%s' alias_creado=%s",
+                camara_id, nombre_original, nombre_canon, alias_creado,
+            )
+            return JSONResponse({
+                "ok": True,
+                "id": camara_id,
+                "nombre": nombre_canon,
+                "alias_creado": alias_creado,
+                "alias_nombre": nombre_original if alias_creado else None,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_dar_de_alta_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "Error al dar de alta la cámara"}, status_code=500)
+
+
 @app.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
     request: Request,

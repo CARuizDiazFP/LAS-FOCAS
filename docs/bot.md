@@ -174,8 +174,18 @@ Luego se aplica la estrategia en cascada de 4 intentos sobre el texto preprocesa
 
 1. **ILIKE directo** — `%nombre_norm%` sobre `Camara.nombre` **y** `CamaraAlias.alias_nombre`
 2. **Tokens AND** — todos los tokens (≥ 3 chars) presentes, en nombre o alias
-3. **Sin números** — reintenta 1 y 2 descartando dígitos
+3. **Sin números** — reintenta 1 y 2 descartando dígitos (**omitido** si el input contiene números, ver Regla de Numeración)
 4. **Sin expansión** *(fallback)* — reintenta con el nombre raw + limpieza + sinónimos, SIN expandir abreviaturas; cubre el caso en que la DB almacena la abreviatura literal (ej.: `Cra`)
+
+#### Regla de Numeración
+
+Si el input contiene uno o más números (ej.: `440`), solo se aceptan cámaras cuyo nombre los contenga **exactamente como palabras completas** (`\b440\b`). Esto evita emparejar `Cra Mitre 440` con `Cra Mitre 399`.  
+Adicionalmente, el **Intento 3 se omite** cuando hay números en el input, ya que buscar sin dígitos ampliaría incorrectamente los candidatos.
+
+#### Regla de Botella / Bot secundario
+
+Si el técnico **no** menciona `bot` ni `botella` en su mensaje, los resultados de DB que coincidan con `Bot [2-9]` (bots secundarios) se descartan automáticamente. Esto evita que "Cra Bartolomé Mitre 440" empareje "Bot 2 Cra Bartolomé Mitre 440".  
+Si el técnico escribe explícitamente "botella" o "bot", el filtro se desactiva para ese mensaje.
 
 #### Abreviaturas expandidas
 
@@ -205,8 +215,9 @@ Y responde al técnico:
 > ✅ Cámara no registrada previamente, se registra automáticamente bajo revisión. Sin incidentes activos. Podés proceder.
 
 El administrador luego revisa las cámaras pendientes desde el panel `/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión** y puede:
-- **Aprobar** → cambia el estado a `LIBRE`
-- **Convertir en Alias** → crea un registro en `app.camara_alias` y elimina el registro pendiente
+- **Aprobar** → cambia el estado a `LIBRE` (mantiene el nombre tal como lo escribió el técnico)
+- **Convertir en Alias** → crea un registro en `app.camara_alias` vinculado a una cámara existente y elimina el registro pendiente
+- **Definir Nombre Canón** → permite editar el nombre al formato oficial y lo promueve a `LIBRE`; el nombre original del técnico queda guardado automáticamente como un alias en `app.camara_alias` para que futuras búsquedas del mismo término sigan resolviendo esta cámara
 
 ### Configuración desde el panel web
 

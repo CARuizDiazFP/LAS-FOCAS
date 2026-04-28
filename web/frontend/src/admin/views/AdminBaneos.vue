@@ -306,6 +306,14 @@
               >
                 🔗 Convertir en Alias
               </button>
+              <button
+                class="btn"
+                style="padding:4px 10px;font-size:0.82rem;background:var(--warning,#f59e0b);color:#fff;border-color:transparent"
+                :disabled="pendientes.accionando === cam.id"
+                @click="toggleFormCanon(cam.id, cam.nombre)"
+              >
+                🏷️ Definir Nombre Canón
+              </button>
               <!-- Formulario inline para convertir en alias -->
               <div v-if="pendientes.aliasFormId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%">
                 <input
@@ -330,6 +338,30 @@
                   Cancelar
                 </button>
               </div>
+              <!-- Formulario inline para dar de alta como cámara canónica -->
+              <div v-if="pendientes.canonFormId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%">
+                <input
+                  v-model="pendientes.canonNombre"
+                  type="text"
+                  placeholder="Nombre canónico oficial"
+                  style="flex:1;min-width:220px"
+                />
+                <button
+                  class="btn primary"
+                  style="padding:4px 10px;font-size:0.82rem"
+                  :disabled="!pendientes.canonNombre.trim() || pendientes.accionando === cam.id"
+                  @click="handleDarDeAlta(cam.id)"
+                >
+                  Confirmar Alta
+                </button>
+                <button
+                  class="btn"
+                  style="padding:4px 10px;font-size:0.82rem"
+                  @click="pendientes.canonFormId = null"
+                >
+                  Cancelar
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -344,7 +376,7 @@
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue';
-import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, type CamaraPendiente } from '../api/admin';
+import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, darDeAltaComoCanon, type CamaraPendiente } from '../api/admin';
 
 // ─── Estado del formulario ────────────────────────────────────────────────
 const form = reactive({
@@ -410,8 +442,8 @@ const pendientes = reactive({
   error: '' as string,
   accionando: null as number | null,
   aliasFormId: null as number | null,
-  aliasDestinoId: null as number | null,
-  msg: '',
+  aliasDestinoId: null as number | null,  canonFormId: null as number | null,
+  canonNombre: '' as string,  msg: '',
   msgError: false,
 });
 
@@ -579,6 +611,39 @@ async function handleConvertirAlias(id: number) {
     await cargarPendientes();
   } catch (e: unknown) {
     pendientes.msg = e instanceof Error ? e.message : 'Error al convertir alias.';
+    pendientes.msgError = true;
+  } finally {
+    pendientes.accionando = null;
+  }
+}
+
+function toggleFormCanon(id: number, nombreTecnico: string) {
+  if (pendientes.canonFormId === id) {
+    pendientes.canonFormId = null;
+  } else {
+    pendientes.canonFormId = id;
+    pendientes.aliasFormId = null; // cerrar el otro form si estaba abierto
+    pendientes.canonNombre = nombreTecnico;
+  }
+}
+
+async function handleDarDeAlta(id: number) {
+  const nombre = pendientes.canonNombre.trim();
+  if (!nombre) return;
+  pendientes.accionando = id;
+  pendientes.msg = '';
+  try {
+    await darDeAltaComoCanon(id, nombre);
+    const nombreOriginal = pendientes.lista.find(c => c.id === id)?.nombre ?? '';
+    const conAlias = nombreOriginal && nombreOriginal.toLowerCase() !== nombre.toLowerCase();
+    pendientes.msg = conAlias
+      ? `Cámara #${id} dada de alta como "${nombre}". Nombre original "${nombreOriginal}" guardado como alias.`
+      : `Cámara #${id} dada de alta como "${nombre}" correctamente.`;
+    pendientes.msgError = false;
+    pendientes.canonFormId = null;
+    await cargarPendientes();
+  } catch (e: unknown) {
+    pendientes.msg = e instanceof Error ? e.message : 'Error al dar de alta la cámara.';
     pendientes.msgError = true;
   } finally {
     pendientes.accionando = null;

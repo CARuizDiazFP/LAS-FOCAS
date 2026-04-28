@@ -471,9 +471,20 @@ Card adicional en `/admin/Servicios/Baneos` que controla el `IngresoListener`.
 El listener se ejecuta como daemon thread dentro del proceso `slack_baneo_worker`. Requiere `SLACK_APP_TOKEN` configurado en el entorno; si falta, el thread no arranca y el worker continúa operando normalmente.
 
 **Funcionamiento:** cada mensaje del canal configurado que contenga el campo `Cámara: <nombre>` desencadena:
-1. Búsqueda fuzzy del nombre (unidecode + abreviaturas + cascada ILIKE/tokens).
-2. Consulta de `camara.estado` en DB.
-3. Respuesta en el mismo hilo (`thread_ts`) con uno de los tres estados: no encontrada / libre / baneada (con número de incidente y ticket).
+1. Búsqueda fuzzy del nombre (unidecode + abreviaturas + cascada ILIKE/tokens; ver Regla de Numeración y Regla de Botella en `docs/bot.md`).
+2. Si no se encuentra, la cámara se **auto-registra** en `PENDIENTE_REVISION` y el técnico recibe confirmación para proceder.
+3. Si se encuentra, se consulta `camara.estado` en DB.
+4. Respuesta en el mismo hilo (`thread_ts`) con uno de los tres estados: no encontrada-auto-registrada / libre / baneada (con número de incidente y ticket).
+
+### Resolución de cámaras pendientes
+
+El acordeón **🔄 Cámaras Pendientes de Revisión** en `/admin/Servicios/Baneos` lista todas las cámaras en estado `PENDIENTE_REVISION`. Por cada tarjeta, el administrador puede:
+
+| Acción | Efecto |
+|--------|--------|
+| ✅ **Aprobar** | Cambia estado a `LIBRE`; el nombre queda tal como lo escribió el técnico. |
+| 🔗 **Convertir en Alias** | Solicita el ID de una cámara existente, crea `app.camara_alias` y elimina el registro pendiente. |
+| 🏷️ **Definir Nombre Canón** | Abre un input pre-cargado con el nombre del técnico; al confirmar: cambia el nombre al canónico oficial, promueve a `LIBRE` y guarda el nombre original como alias en `app.camara_alias`. Endpoint: `POST /api/admin/infra/camaras/{id}/dar-de-alta`. |
 
 ### Templates legacy (mantenidos)
 

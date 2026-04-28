@@ -115,8 +115,8 @@ class TestBuscarCamara(unittest.TestCase):
         session = MagicMock()
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike", return_value=None),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens", return_value=None),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", return_value=[]),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara("XYZ Inexistente 9999", session)
 
@@ -153,26 +153,30 @@ class TestBuscarCamara(unittest.TestCase):
         self.assertNotIn("carrera", nombre_norm)
 
     def test_intento4_fallback_sin_expansion(self) -> None:
-        """Intento 4 usa el nombre sin expansión cuando intento 1-3 fallan."""
+        """Intento 4 usa el nombre sin expansión cuando intento 1-2 fallan.
+
+        Nota: el intento 3 (sin números) se omite porque '100' está en el input.
+        Con 'Cam Clle Principal 100' → nombre_norm='cam calle principal 100',
+        numeros_requeridos={'100'} → intento 3 saltado.
+        El intento 4 usa nombre_raw_norm='cam clle principal 100' (diferente al
+        norm expandido), y encuentra la cámara.
+        """
         from modules.slack_baneo_notifier.camara_search import buscar_camara
 
         camara_mock = self._make_camara(8, "Cam Clle Principal 100")
-        # Simular que solo el intento 4 (raw normalizado) encuentra la cámara.
-        # clle→calle via expansión → "cam calle principal 100"
-        # raw normalizado → "cam clle principal 100"
         call_count: list[int] = [0]
 
-        def ilike_side_effect(patron: str, session: Any) -> Any:
+        def ilike_lista_side_effect(patron: str, session: Any) -> Any:
             call_count[0] += 1
-            # Primeros 2 llamados (intento 1 + intento 3): None
-            # Tercer llamado (intento 4, sin expansión): retorna cámara
-            if call_count[0] <= 2:
-                return None
-            return camara_mock
+            # Llamado 1 (intento 1, expanded): vacío
+            # Llamado 2 (intento 4, raw-norm): retorna cámara
+            if call_count[0] <= 1:
+                return []
+            return [camara_mock]
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike", side_effect=ilike_side_effect),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens", return_value=None),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", side_effect=ilike_lista_side_effect),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara("Cam Clle Principal 100", session=MagicMock())
 
@@ -500,12 +504,7 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
         camara_mock.id = 5
         camara_mock.nombre = "Bot 2 Cra Poste 202"
 
-        def ilike_side_effect(patron: str, session: Any) -> Any:
-            # Simular que búsqueda por nombre directo falla pero por alias encuentra
-            # _buscar_ilike combina ambas; mockeamos retornando la cámara en el primer intento
-            return camara_mock
-
-        with patch("modules.slack_baneo_notifier.camara_search._buscar_ilike", side_effect=ilike_side_effect):
+        with patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", return_value=[camara_mock]):
             camara, _ = buscar_camara("Botella 2 Cra Poste 202", session=MagicMock())
 
         self.assertIsNotNone(camara)
@@ -542,6 +541,125 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
         client_mock.chat_postMessage.assert_called_once()
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("bajo revisión", texto)
+
+
+# ─── Tests de filtros: número estricto y exclusión de Bots secundarios ────────
+
+
+class TestFiltrosNumeroBot(unittest.TestCase):
+    """Prueba las nuevas reglas de búsqueda estricta por número y exclusión de Bot 2+."""
+
+    def _make_camara(self, id_: int, nombre: str) -> MagicMock:
+        cam = MagicMock()
+        cam.id = id_
+        cam.nombre = nombre
+        return cam
+
+    def test_filtro_numero_estricto_descarta_numero_incorrecto(self) -> None:
+        """Si el input contiene '440', no debe devolverse una cámara con '399'."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        cam_399 = self._make_camara(1, "Cra Bartolome Mitre 399")
+        cam_440 = self._make_camara(2, "Cra Bartolome Mitre 440")
+
+        # La query retorna ambas candidatas; la 399 debe ser descartada
+        with patch(
+            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            return_value=[cam_399, cam_440],
+        ):
+            camara, _ = buscar_camara("Cámara, Bartolomé Mitre 440. CF", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Cra Bartolome Mitre 440")
+
+    def test_filtro_numero_sin_numero_en_input_no_filtra(self) -> None:
+        """Sin número en el input, ningún candidato se descarta por número."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        cam_399 = self._make_camara(1, "Cra Bartolome Mitre 399")
+
+        with patch(
+            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            return_value=[cam_399],
+        ):
+            camara, _ = buscar_camara("Cra Bartolome Mitre", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Cra Bartolome Mitre 399")
+
+    def test_filtro_bot_secundario_excluido_sin_mencion_bot(self) -> None:
+        """Si el usuario NO menciona 'bot'/'botella', los 'Bot 2+' deben excluirse."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        cam_bot2 = self._make_camara(3, "Bot 2 Cra Bartolome Mitre 440")
+
+        with patch(
+            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            return_value=[cam_bot2],
+        ):
+            # Input sin "bot" ni "botella"
+            camara, _ = buscar_camara("Cra Bartolome Mitre 440", session=MagicMock())
+
+        self.assertIsNone(camara)
+
+    def test_filtro_bot_secundario_permitido_con_botella(self) -> None:
+        """Si el usuario menciona 'botella', los 'Bot 2+' NO deben excluirse."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        cam_bot2 = self._make_camara(3, "Bot 2 Cra Bartolome Mitre 440")
+
+        with patch(
+            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            return_value=[cam_bot2],
+        ):
+            camara, _ = buscar_camara("Botella 2 Cra Bartolome Mitre 440", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Bot 2 Cra Bartolome Mitre 440")
+
+    def test_filtro_bot_principal_no_excluido(self) -> None:
+        """'Bot ' sin número secundario (Bot principal) nunca se excluye."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        cam_bot1 = self._make_camara(4, "Bot Cra Bartolome Mitre 440")
+
+        with patch(
+            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            return_value=[cam_bot1],
+        ):
+            # Input sin "bot"/"botella" pero el candidato es el Bot principal
+            camara, _ = buscar_camara("Cra Bartolome Mitre 440", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Bot Cra Bartolome Mitre 440")
+
+    def test_intento3_omitido_cuando_hay_numeros(self) -> None:
+        """Con números en el input, el intento 3 (sin números) se salta."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        call_count: list[int] = [0]
+        patrones_llamados: list[str] = []
+
+        def ilike_lista_side_effect(patron: str, session: Any) -> list:
+            call_count[0] += 1
+            patrones_llamados.append(patron)
+            return []  # Siempre vacío; nos interesa cuántas veces se llama
+
+        with (
+            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", side_effect=ilike_lista_side_effect),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+        ):
+            camara, _ = buscar_camara("Cra Mitre 440", session=MagicMock())
+
+        self.assertIsNone(camara)
+        # Con "440" en el input, intento 3 se omite.
+        # El nombre raw_norm == nombre_norm para "Cra Mitre 440" (Cra no se expande),
+        # por lo que intento 4 también se omite.
+        # Solo intento 1 → 1 llamada a _buscar_ilike_lista.
+        self.assertEqual(call_count[0], 1)
+        # Verificar que nunca se llamó con un patrón sin "440"
+        for p in patrones_llamados:
+            self.assertIn("440", p)
 
 
 if __name__ == "__main__":

@@ -314,4 +314,6 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 
 **Uso:** el listener de ingresos y `camara_search.py` utilizan esta tabla para empatar
 cámaras escritas con nomenclatura alternativa. Un administrador puede registrar aliases
-desde el panel `/admin/Servicios/Baneos` → sección *Cámaras Pendientes de Revisión*.
+desde el panel `/admin/Servicios/Baneos` → sección *Cámaras Pendientes de Revisión* mediante dos flujos:
+- **Convertir en Alias** — vincula el nombre del técnico como alias de una cámara ya existente.
+- **Definir Nombre Canón** — crea la cámara con su nombre oficial (`LIBRE`) y guarda automáticamente el nombre original del técnico como alias de la nueva cámara.

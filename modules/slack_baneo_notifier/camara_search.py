@@ -130,10 +130,19 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
       - Normalización (unidecode + lowercase)
       - Aplicación de sinónimos (botella→bot, camara→cra)
 
+    Regla de numeración:
+      Si el input contiene números, solo se aceptan cámaras cuyo nombre los
+      contenga exactamente (como palabras completas).  El Intento 3 (búsqueda
+      sin números) se omite para evitar falsos positivos (ej: 440 ≠ 399).
+
+    Regla de Botella/Bot:
+      Si el input NO menciona explícitamente "bot" o "botella", se excluyen
+      resultados de cámaras secundarias tipo "Bot 2", "Bot 3", etc.
+
     Estrategia en cascada:
       1. ILIKE '%nombre_norm%' en Camara.nombre y CamaraAlias.alias_nombre
       2. Todos los tokens (≥3 chars) presentes — AND ILIKE
-      3. Reintentar sin números
+      3. Reintentar sin números (SOLO si el input no tenía números)
       4. Fallback con nombre raw normalizado SIN expansión (para abreviaturas
          almacenadas literalmente en DB, p.ej. "Cra")
 
@@ -151,49 +160,106 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
     nombre_norm_base = _normalizar(nombre_expandido)
     nombre_norm = _aplicar_sinonimos(nombre_norm_base)
 
+    # ── Restricciones extraídas del input original ───────────────────────
+    # Números requeridos: si el input tiene "440", solo aceptamos cámaras con "440"
+    numeros_requeridos: set[str] = set(re.findall(r"\d+", nombre_norm))
+    # Bot/Botella: si el técnico lo menciona explícitamente, permitimos bots secundarios
+    tiene_bot: bool = bool(re.search(r"\bbot(ella)?\b", nombre_raw, re.IGNORECASE))
+
+    def _buscar_filtrado_ilike(patron: str) -> "Camara | None":
+        candidatos = _buscar_ilike_lista(patron, session)
+        candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
+        candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
+        return _mejor_candidato(candidatos)
+
+    def _buscar_filtrado_tokens(tokens: list[str]) -> "Camara | None":
+        candidatos = _buscar_tokens_lista(tokens, session)
+        candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
+        candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
+        return _mejor_candidato(candidatos)
+
     # ── Intento 1: coincidencia parcial normalizada ──────────────────────
-    resultado = _buscar_ilike(nombre_norm, session)
+    resultado = _buscar_filtrado_ilike(nombre_norm)
     if resultado:
         return resultado, nombre_norm
 
     # ── Intento 2: todos los tokens presentes ────────────────────────────
     tokens = [t for t in nombre_norm.split() if len(t) >= 3]
     if len(tokens) >= 2:
-        resultado = _buscar_tokens(tokens, session)
+        resultado = _buscar_filtrado_tokens(tokens)
         if resultado:
             return resultado, nombre_norm
 
-    # ── Intento 3: sin números ───────────────────────────────────────────
-    nombre_sin_num = re.sub(r"\d+", "", nombre_norm).strip()
-    nombre_sin_num = re.sub(r"\s+", " ", nombre_sin_num).strip()
-    if nombre_sin_num and nombre_sin_num != nombre_norm:
-        resultado = _buscar_ilike(nombre_sin_num, session)
-        if resultado:
-            return resultado, nombre_sin_num
-        tokens_sin_num = [t for t in nombre_sin_num.split() if len(t) >= 3]
-        if len(tokens_sin_num) >= 2:
-            resultado = _buscar_tokens(tokens_sin_num, session)
+    # ── Intento 3: sin números (OMITIDO si el input tenía números) ───────
+    # Si el input tiene números, no ampliar la búsqueda sin ellos para evitar
+    # emparejar "Cra Mitre 440" con "Cra Mitre 399".
+    if not numeros_requeridos:
+        nombre_sin_num = re.sub(r"\d+", "", nombre_norm).strip()
+        nombre_sin_num = re.sub(r"\s+", " ", nombre_sin_num).strip()
+        if nombre_sin_num and nombre_sin_num != nombre_norm:
+            resultado = _buscar_filtrado_ilike(nombre_sin_num)
             if resultado:
                 return resultado, nombre_sin_num
+            tokens_sin_num = [t for t in nombre_sin_num.split() if len(t) >= 3]
+            if len(tokens_sin_num) >= 2:
+                resultado = _buscar_filtrado_tokens(tokens_sin_num)
+                if resultado:
+                    return resultado, nombre_sin_num
 
     # ── Intento 4: sin expansión de abreviaturas (nombre raw normalizado) ─
     # Cubre el caso en que la DB almacena el nombre con abreviaturas literales.
     nombre_raw_norm = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(nombre_raw)))
     if nombre_raw_norm != nombre_norm:
-        resultado = _buscar_ilike(nombre_raw_norm, session)
+        resultado = _buscar_filtrado_ilike(nombre_raw_norm)
         if resultado:
             return resultado, nombre_raw_norm
         tokens_raw = [t for t in nombre_raw_norm.split() if len(t) >= 3]
         if len(tokens_raw) >= 2:
-            resultado = _buscar_tokens(tokens_raw, session)
+            resultado = _buscar_filtrado_tokens(tokens_raw)
             if resultado:
                 return resultado, nombre_raw_norm
 
     return None, nombre_norm
 
 
-def _buscar_ilike(patron: str, session: Session) -> "Camara | None":
-    """Query ILIKE '%patron%' sobre Camara.nombre y CamaraAlias.alias_nombre."""
+def _filtrar_por_numeros(
+    candidatos: list["Camara"], numeros_requeridos: set[str]
+) -> list["Camara"]:
+    """Descarta candidatos cuyo nombre no contenga todos los números requeridos.
+
+    Usa coincidencia de palabra completa (``\\b<n>\\b``) sobre el nombre
+    normalizado.  Si ``numeros_requeridos`` está vacío, retorna la lista sin
+    cambios.
+    """
+    if not numeros_requeridos:
+        return candidatos
+    resultado: list["Camara"] = []
+    for cam in candidatos:
+        nombre_norm = _normalizar(cam.nombre or "")
+        if all(re.search(rf"\b{re.escape(n)}\b", nombre_norm) for n in numeros_requeridos):
+            resultado.append(cam)
+    return resultado
+
+
+def _filtrar_bots_secundarios(
+    candidatos: list["Camara"], tiene_bot: bool
+) -> list["Camara"]:
+    """Si el usuario NO mencionó 'bot'/'botella', excluye cámaras tipo 'Bot 2', 'Bot 3', etc.
+
+    Esto evita que "Cra Mitre 440" empareje "Bot 2 Cra Mitre 440" cuando el
+    técnico claramente se refiere a la cámara principal.
+    """
+    if tiene_bot:
+        return candidatos
+    _re_bot_sec = re.compile(r"\bbot\s+[2-9]\b", re.IGNORECASE)
+    return [c for c in candidatos if not _re_bot_sec.search(c.nombre or "")]
+
+
+def _buscar_ilike_lista(patron: str, session: Session) -> list["Camara"]:
+    """Query ILIKE '%patron%' sobre Camara.nombre y CamaraAlias.alias_nombre.
+
+    Retorna lista de candidatos sin filtrar, deduplicada por id.
+    """
     from db.models.infra import Camara, CamaraAlias
 
     # Búsqueda en nombre directo
@@ -209,11 +275,21 @@ def _buscar_ilike(patron: str, session: Session) -> "Camara | None":
         .filter(func.unaccent(func.lower(CamaraAlias.alias_nombre)).ilike(f"%{patron}%"))
         .all()
     )
-    return _mejor_candidato(por_nombre + por_alias)
+    # Deduplicar preservando orden
+    seen: set[int] = set()
+    result: list["Camara"] = []
+    for c in por_nombre + por_alias:
+        if c.id not in seen:
+            seen.add(c.id)
+            result.append(c)
+    return result
 
 
-def _buscar_tokens(tokens: list[str], session: Session) -> "Camara | None":
-    """Busca cámaras cuyo nombre o algún alias contenga TODOS los tokens dados."""
+def _buscar_tokens_lista(tokens: list[str], session: Session) -> list["Camara"]:
+    """Busca cámaras cuyo nombre o algún alias contenga TODOS los tokens.
+
+    Retorna lista de candidatos sin filtrar, deduplicada por id.
+    """
     from db.models.infra import Camara, CamaraAlias
     from sqlalchemy import and_
 
@@ -235,7 +311,30 @@ def _buscar_tokens(tokens: list[str], session: Session) -> "Camara | None":
         .filter(and_(*condiciones_alias))
         .all()
     )
-    return _mejor_candidato(por_nombre + por_alias)
+    # Deduplicar preservando orden
+    seen: set[int] = set()
+    result: list["Camara"] = []
+    for c in por_nombre + por_alias:
+        if c.id not in seen:
+            seen.add(c.id)
+            result.append(c)
+    return result
+
+
+def _buscar_ilike(patron: str, session: Session) -> "Camara | None":
+    """Wrapper de _buscar_ilike_lista que aplica _mejor_candidato.
+
+    Mantenido para compatibilidad con tests que parchean esta función.
+    """
+    return _mejor_candidato(_buscar_ilike_lista(patron, session))
+
+
+def _buscar_tokens(tokens: list[str], session: Session) -> "Camara | None":
+    """Wrapper de _buscar_tokens_lista que aplica _mejor_candidato.
+
+    Mantenido para compatibilidad con tests que parchean esta función.
+    """
+    return _mejor_candidato(_buscar_tokens_lista(tokens, session))
 
 
 def _mejor_candidato(candidatos: list["Camara"]) -> "Camara | None":
