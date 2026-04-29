@@ -17,9 +17,8 @@ from core.services.camara_estado_service import (
 )
 from db.models.infra import CamaraEstado
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
-from web_app.main import app  # type: ignore  # noqa: E402
+from web.app.main import app  # type: ignore  # noqa: E402
 
 
 class _Cur:
@@ -95,7 +94,7 @@ class _FakeSession:
 
 
 def _login(client: TestClient, monkeypatch, *, role: str, password: str = "secret") -> str:
-    from web_app import main as web_main
+    from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok(role, password))
     response = client.post(

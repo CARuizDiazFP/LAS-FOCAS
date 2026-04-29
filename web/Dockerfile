@@ -1,6 +1,6 @@
 # Nombre de archivo: Dockerfile
 # Ubicación de archivo: web/Dockerfile
-# Descripción: Imagen del servicio Web (UI) con FastAPI. Stage Python hereda dependencias comunes de focas-base:latest.
+# Descripción: Imagen del servicio Web (UI) con FastAPI. Stage Python hereda dependencias comunes de focas-base:latest. La app vive en web/app/main.py.
 
 FROM node:20.12.2-slim AS web-build
 WORKDIR /frontend
@@ -24,7 +24,6 @@ RUN pip install --no-cache-dir -r /tmp/web-requirements.txt \
     && rm /tmp/web-requirements.txt
 
 COPY web/app /app/app
-COPY web/web_app /app/web_app
 COPY web/templates /app/templates
 COPY web/static /app/static
 COPY web/tools /app/web/tools
@@ -37,4 +36,4 @@ COPY --from=web-build /frontend/dist/assets /app/static/assets
 
 EXPOSE 8080
 
-CMD ["uvicorn", "web_app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

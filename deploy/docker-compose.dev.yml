@@ -69,8 +69,8 @@ services:
       # Puerto dev: 8090. Para acceso remoto: ssh -L 8090:localhost:8090 usuario@servidor
       API_BASE: http://localhost:8090
       LOGS_DIR: /app/Logs
-      REPORTS_DIR: /app/web_app/data/reports
-      UPLOADS_DIR: /app/web_app/data/uploads
+      REPORTS_DIR: /app/data/reports
+      UPLOADS_DIR: /app/data/uploads
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
@@ -87,8 +87,8 @@ services:
     volumes:
       - ../Logs/dev:/app/Logs          # Subdir separado: no mezcla logs con prod
       - ../Templates:/app/Templates:ro  # Templates compartidos (solo lectura)
-      - reports_dev_data:/app/web_app/data/reports
-      - uploads_dev_data:/app/web_app/data/uploads
+      - reports_dev_data:/app/data/reports
+      - uploads_dev_data:/app/data/uploads
       # NOTA: el panel admin usa este socket para gestionar contenedores por nombre.
       # En dev, el worker se llama lasfocasdev-slack-baneo-worker; el toggle admin
       # buscará lasfocas-slack-baneo-worker (prod). Limitación documentada en docs/infra.md.

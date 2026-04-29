@@ -100,7 +100,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
   - Esquema de infraestructura listo: modelos SQLAlchemy en `db/models/infra.py` y migración `db/alembic/versions/20251230_01_infra.py` crean `app.camaras`, `app.cables`, `app.empalmes`, `app.servicios`, la tabla puente `app.servicio_empalme_association` y `app.ingresos`.
   - Parser TXT de tracking (`core/parsers/tracking_parser.py`) transforma archivos de rutas en estructuras tipadas listas para poblar `empalmes` y relaciones.
   - Servicio `core/services/infra_sync.py` sincroniza la hoja Google "Camaras" contra DB (upsert por `fontine_id`), soporta credenciales vía `Keys/credentials.json` o `GOOGLE_CREDENTIALS_JSON` y registra métricas `processed/updated/created/skipped`.
-  - Endpoint FastAPI `POST /sync/camaras` disponible en `api/api_app/routes/infra.py` para disparar la sincronización desde la API.
+  - Endpoint FastAPI `POST /sync/camaras` disponible en `api/app/routes/infra.py` para disparar la sincronización desde la API.
   - Worker `slack_baneo_worker` incorporado al stack para reportes periódicos de cámaras baneadas en Slack, con health check interno, logs centralizados en `Logs/slack_baneo_worker.log` y configuración dinámica persistida en `app.config_servicios`.
 - Servicios del repo
   - `api` (FastAPI): endpoints `/health`, `/health/version`, `/db-check`, `POST /ingest/reclamos` (alias `POST /import/reclamos`), `POST /reports/repetitividad` (Excel o DB) y `GET /reports/repetitividad` (métricas JSON).
@@ -131,7 +131,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - Compose
   - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
-  - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/web_app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
+  - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
   - Suite actual: PASS (88 pruebas con Alarmas Ciena), con 0 fallas y 2 opcionales de DB habilitables según entorno. Nuevas suites unitarias cubren `core/utils/timefmt`, parser de reclamos, render del informe y procesamiento de alarmas Ciena.
   - Cobertura reciente: `tests/test_web_infra_camera_state.py` valida rol admin, inyección de `USER_ROLE`, consulta de contexto, rechazo CSRF y persistencia del override manual; corrida focal adicional `tests/test_web_infra_camera_state.py tests/test_web_admin.py` en verde (10 pruebas).

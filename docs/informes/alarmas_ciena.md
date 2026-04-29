@@ -412,7 +412,7 @@ def parsear_alarmas_ciena(content: bytes) -> tuple[pd.DataFrame, FormatoAlarma]:
 ## Referencias
 
 - **Módulo**: `core/parsers/alarmas_ciena.py`
-- **Endpoint**: `web/web_app/main.py` → `tool_alarmas_ciena()`
+- **Endpoint**: `web/app/main.py` → `tool_alarmas_ciena()`
 - **Frontend**: `web/templates/panel.html` → sección `view-ciena`
 - **JavaScript**: `web/static/panel.js` → handler `ciena-run`
 - **Tests**: `tests/test_alarmas_ciena.py`

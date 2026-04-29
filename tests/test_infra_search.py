@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app.main import app
-from api.api_app.routes.infra import (
+from api.app.routes.infra import (
     FilterField,
     FilterOperator,
     SearchFilter,

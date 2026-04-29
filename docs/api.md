@@ -1,6 +1,27 @@
 # Nombre de archivo: api.md
 # Ubicación de archivo: docs/api.md
-# Descripción: Documentación básica de la API y del endpoint de salud
+# Descripción: Documentación de la API REST (endpoints, estructura y referencia)
+
+# API — LAS-FOCAS
+
+## Estructura canónica del microservicio
+
+```
+api/
+├── Dockerfile          # CMD: uvicorn app.main:app (vía symlink /app/app → /app/api/app)
+├── app/
+│   ├── main.py         # Factory FastAPI, registra todos los routers
+│   ├── db.py           # SQLAlchemy engine + db_health()
+│   └── routes/
+│       ├── health.py   # GET /health, /health/version, /db-check
+│       ├── reports.py  # POST /reports/repetitividad, /reports/sla
+│       ├── ingest.py   # POST /ingest/reclamos, /import/reclamos
+│       └── infra.py    # Endpoints de infraestructura (cámaras, trackings, rutas)
+└── requirements.txt    # Dependencias específicas del microservicio
+```
+
+Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+(el Dockerfile crea un symlink `/app/app → /app/api/app` para el resolver de módulos).
 
 ## Endpoint de salud
 

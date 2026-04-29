@@ -13,11 +13,10 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from modules.informes_repetitividad.service import ReportConfig, ReportResult  # type: ignore  # noqa: E402
-from web_app import main as web_main  # type: ignore  # noqa: E402
-from web_app.main import app  # type: ignore  # noqa: E402
+from web.app import main as web_main  # type: ignore  # noqa: E402
+from web.app.main import app  # type: ignore  # noqa: E402
 
 from tests.test_web_admin import _connect_user_ok  # noqa: E402
 

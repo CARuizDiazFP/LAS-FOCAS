@@ -1,6 +1,6 @@
 # Nombre de archivo: Dockerfile
 # Ubicación de archivo: api/Dockerfile
-# Descripción: Imagen del servicio API (FastAPI). Hereda dependencias comunes de focas-base:latest.
+# Descripción: Imagen del servicio API (FastAPI). Hereda dependencias comunes de focas-base:latest. Las rutas viven en api/app/routes/.
 
 FROM focas-base:latest
 # ENV, WORKDIR /app y dependencias comunes ya están en focas-base.
@@ -14,7 +14,6 @@ RUN mkdir -p /app/api
 COPY api/__init__.py /app/api/__init__.py
 COPY api/app /app/api/app
 RUN ln -s /app/api/app /app/app
-COPY api/api_app /app/api_app
 # Incluir módulos compartidos y core (logging, servicios comunes)
 COPY modules /app/modules
 COPY core /app/core

@@ -68,8 +68,8 @@ services:
       OLLAMA_URL: http://host.docker.internal:11434
       API_BASE: http://192.168.241.28:8080
       LOGS_DIR: /app/Logs
-      REPORTS_DIR: /app/web_app/data/reports
-      UPLOADS_DIR: /app/web_app/data/uploads
+      REPORTS_DIR: /app/data/reports
+      UPLOADS_DIR: /app/data/uploads
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
@@ -85,8 +85,8 @@ services:
     volumes:
       - ../Logs:/app/Logs
       - ../Templates:/app/Templates:ro
-      - reports_data:/app/web_app/data/reports
-      - uploads_data:/app/web_app/data/uploads
+      - reports_data:/app/data/reports
+      - uploads_data:/app/data/uploads
       - /var/run/docker.sock:/var/run/docker.sock  # Gestión del worker de baneos desde el panel admin
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || curl -fsS http://192.168.241.28:8080/health || exit 1"]

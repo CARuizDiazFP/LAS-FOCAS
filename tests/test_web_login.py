@@ -7,11 +7,10 @@ import sys
 import re
 from typing import Any, Optional
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient  # type: ignore
 from core.password import hash_password
-from web_app.main import app  # type: ignore
+from web.app.main import app  # type: ignore
 
 
 class _Cur:
@@ -69,7 +68,7 @@ def _mock_connect_fail():
 
 
 def test_login_success_and_csrf_injected(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
 
     # Mock DB para devolver usuario admin con contraseña "admin"
     monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_ok("admin", "admin", role="admin"))
@@ -89,7 +88,7 @@ def test_login_success_and_csrf_injected(monkeypatch):
 
 
 def test_login_invalid_credentials(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     # Mock DB sin usuario
     monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_fail())
     client = TestClient(app)
@@ -98,7 +97,7 @@ def test_login_invalid_credentials(monkeypatch):
 
 
 def test_login_redirect_when_already_logged(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_ok("admin", "admin", role="user"))
     client = TestClient(app)
     # Primer login

@@ -8,17 +8,16 @@ import os
 
 os.environ.setdefault("TESTING", "true")
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient  # type: ignore
-from web_app.main import app, INTENT_COUNTER  # type: ignore
+from web.app.main import app, INTENT_COUNTER  # type: ignore
 
 client = TestClient(app)
 
 
 def test_chat_history_and_metrics(monkeypatch):
     # Forzar usuario autenticado
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main, "get_current_user", lambda request: "tester")
 
     # Mocks de persistencia en memoria

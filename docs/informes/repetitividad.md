@@ -38,7 +38,7 @@
 - Evaluar pruebas integrales que verifiquen la generación y descarga de archivos desde la UI (end-to-end en Docker compose).
 
 ## Paths de salida
-- Archivos generados en `/app/web_app/data/reports/` en el contenedor `web` (o en `REPORTS_DIR` configurado). La descarga se sirve en `/reports/*`.
+- Archivos generados en `/app/data/reports/` en el contenedor `web` (o en `REPORTS_DIR` configurado). La descarga se sirve en `/reports/*`.
 
 ## Variables de entorno
 - `REP_TEMPLATE_PATH=/app/Templates/Plantilla_Informe_Repetitividad.docx` ruta de la plantilla oficial (copiada desde `Templates/`).

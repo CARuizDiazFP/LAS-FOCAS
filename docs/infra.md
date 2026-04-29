@@ -142,8 +142,8 @@ Genera archivo EML para descargar y abrir en Outlook.
 - `web/templates/panel.html` - Template HTML del panel
 - `web/static/panel.js` - Lógica JavaScript del módulo
 - `web/static/styles.css` - Estilos CSS
-- `web/web_app/main.py` - Endpoints web
-- `api/api_app/routes/infra.py` - Endpoints API
+- `web/app/main.py` - Endpoints web
+- `api/app/routes/infra.py` - Endpoints API
 - `core/services/protection_service.py` - Lógica de negocio del Protocolo de Protección
 - `db/models/infra.py` - Modelos de base de datos
 

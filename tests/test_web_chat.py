@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 import sys
 
-# Permite importar app.web sin necesidad de instalar el paquete
-sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient
 import pytest
@@ -17,7 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 from core.chatbot import ChatOrchestrator
 from core.chatbot.storage import InMemoryChatStorage
 from core.mcp.registry import MCPRegistry, ToolDefinition, ToolResult
-from web_app.main import app  # type: ignore[import]
+from web.app.main import app  # type: ignore[import]
 
 client = TestClient(app)
 
@@ -32,10 +30,10 @@ def test_chat_message_returns_json(monkeypatch) -> None:
     # Mock del clasificador para evitar IO
     async def _fake_classify(text: str):
         # Simula respuesta antigua para endpoint deprecado; el nuevo endpoint de analyze se consume internamente.
-        from web_app.main import IntentResponse  # type: ignore[import]
+        from web.app.main import IntentResponse  # type: ignore[import]
         return IntentResponse(intent="Consulta", confidence=0.9, provider="heuristic", normalized_text=text)
 
-    from web_app import main as web_main  # type: ignore[import]
+    from web.app import main as web_main  # type: ignore[import]
     web_main.classify_text = _fake_classify
 
     res = client.post("/api/chat/message", data={"text": "¿Cómo genero el SLA?"})

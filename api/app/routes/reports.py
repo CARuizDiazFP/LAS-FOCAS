@@ -1,5 +1,5 @@
 # Nombre de archivo: reports.py
-# Ubicación de archivo: api/api_app/routes/reports.py
+# Ubicación de archivo: api/app/routes/reports.py
 # Descripción: Endpoints para generación de informes (repetitividad, etc.)
 
 from __future__ import annotations

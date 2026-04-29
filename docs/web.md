@@ -12,9 +12,9 @@ Servicio FastAPI que expone:
 
 ## Estructura y archivo principal
 
-La implementación única de la aplicación vive en `web/web_app/main.py` y el contenedor la lanza con:
+La implementación única de la aplicación vive en `web/app/main.py` y el contenedor la lanza con:
 ```
-uvicorn web_app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 Se sirve estático en `/static` y se monta el directorio de reportes en `/reports`. El listado histórico se sirve en `/reports-history` (evita colisión con el mount estático de `/reports`).
 

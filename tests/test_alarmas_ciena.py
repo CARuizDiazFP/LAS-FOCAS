@@ -24,8 +24,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_web_admin import _connect_user_ok
-from web.web_app import main as web_main  # type: ignore
-from web.web_app.main import app  # type: ignore
+from web.app import main as web_main  # type: ignore
+from web.app.main import app  # type: ignore
 
 from core.parsers.alarmas_ciena import (
     detectar_formato,

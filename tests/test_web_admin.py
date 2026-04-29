@@ -7,11 +7,10 @@ import sys
 import re
 from typing import Any, Optional
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "web"))
 
 from fastapi.testclient import TestClient  # type: ignore
 from core.password import hash_password
-from web_app.main import app  # type: ignore
+from web.app.main import app  # type: ignore
 
 
 class _Cur:
@@ -83,7 +82,7 @@ def _connect_user_ok(password: str = "userpass"):
 
 
 def test_admin_create_user(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     # Login admin
@@ -98,7 +97,7 @@ def test_admin_create_user(monkeypatch):
 
 
 def test_admin_create_user_forbidden_for_non_admin(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
     client = TestClient(app)
     # Login user normal
@@ -110,7 +109,7 @@ def test_admin_create_user_forbidden_for_non_admin(monkeypatch):
 
 
 def test_change_password_happy_path(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("oldpass"))
     client = TestClient(app)
     # Login con oldpass
@@ -126,7 +125,7 @@ def test_change_password_happy_path(monkeypatch):
 
 
 def test_admin_create_user_invalid_role(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})
@@ -136,7 +135,7 @@ def test_admin_create_user_invalid_role(monkeypatch):
 
 
 def test_admin_create_user_guest_role(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})
@@ -147,7 +146,7 @@ def test_admin_create_user_guest_role(monkeypatch):
 
 
 def test_servicios_baneos_update_recarga_worker(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
 
     recargas = []
 
@@ -193,7 +192,7 @@ def test_servicios_baneos_update_recarga_worker(monkeypatch):
 
 
 def test_servicios_baneos_update_rechaza_destino_invalido(monkeypatch):
-    from web_app import main as web_main
+    from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
@@ -219,7 +218,7 @@ def test_servicios_baneos_update_rechaza_destino_invalido(monkeypatch):
 
 def test_admin_me_ok(monkeypatch):
     """GET /api/admin/me con sesión admin devuelve 200 con username y role."""
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})
@@ -239,7 +238,7 @@ def test_admin_me_sin_sesion():
 
 def test_admin_me_no_admin(monkeypatch):
     """GET /api/admin/me con sesión no-admin devuelve 403."""
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
     client = TestClient(app)
     client.post("/login", data={"username": "user", "password": "userpass"})
@@ -249,7 +248,7 @@ def test_admin_me_no_admin(monkeypatch):
 
 def test_admin_usuarios_accesible_admin(monkeypatch):
     """GET /admin/usuarios con sesión admin devuelve 200 con el shell SPA."""
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})
@@ -268,7 +267,7 @@ def test_admin_usuarios_redirige_sin_sesion():
 
 def test_admin_servicios_accesible_admin(monkeypatch):
     """GET /admin/servicios con sesión admin devuelve 200 con el shell SPA."""
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})
@@ -287,7 +286,7 @@ def test_admin_servicios_redirige_sin_sesion():
 
 def test_admin_baneos_config_json(monkeypatch):
     """GET /api/admin/servicios/baneos/config con sesión admin devuelve JSON de configuración."""
-    from web_app import main as web_main
+    from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
     client.post("/login", data={"username": "admin", "password": "admin"})

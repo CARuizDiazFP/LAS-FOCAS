@@ -1,5 +1,5 @@
 # Nombre de archivo: main.py
-# Ubicación de archivo: web/web_app/main.py
+# Ubicación de archivo: web/app/main.py
 # Descripción: Aplicación FastAPI para la UI (página dark, barra y chat REST)
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ async def log_requests(request, call_next):  # type: ignore
         logger.exception("action=request_error path=%s error=%s", getattr(request, 'url', '?'), exc)
         raise
 
-# Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/web_app/main.py)
+# Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/app/main.py)
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = str(BASE_DIR / "static")
 TEMPLATES_DIR = str(BASE_DIR / "templates")

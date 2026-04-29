@@ -45,6 +45,7 @@ Este reporte resume el estado de dependencias Python por servicio, cambios aplic
   - Mitigaciones sugeridas:
     - A corto plazo: ejecutar tests por servicio (como ya hace CI) o forzar `sys.path.insert(0, ...)` en los tests para asegurar prioridad, evitando `append`.
     - A mediano plazo: renombrar uno de los paquetes (`api_app`, `web_app`) o usar layouts tipo `src/` para aislar imports.
+  - **✅ Implementado (2026-04-29):** los paquetes `api_app` y `web_app` fueron eliminados. Las rutas canónicas son ahora `api.app.routes.*` (API) y `web.app.main` (Web). Los tests web importan directamente `from web.app.main import app`; los tests de API usan `from api.app.routes import ...`. No se requiere más `sys.path.append`.
 
 - Warnings:
   - passlib: DeprecationWarning sobre `crypt` (removido en Python 3.13). Seguimiento recomendado antes de migrar a 3.13.

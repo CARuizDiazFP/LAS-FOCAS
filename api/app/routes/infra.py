@@ -1,5 +1,5 @@
 # Nombre de archivo: infra.py
-# Ubicación de archivo: api/api_app/routes/infra.py
+# Ubicación de archivo: api/app/routes/infra.py
 # Descripción: Endpoints para sincronizar cámaras, procesar trackings y gestionar rutas de fibra óptica
 
 from __future__ import annotations

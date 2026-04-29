@@ -6,10 +6,10 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api_app.routes.health import router as health_router
-from api_app.routes.reports import router as reports_router
-from api_app.routes.ingest import router as ingest_router
-from api_app.routes.infra import router as infra_router
+from api.app.routes.health import router as health_router
+from api.app.routes.reports import router as reports_router
+from api.app.routes.ingest import router as ingest_router, alias_router as ingest_alias_router
+from api.app.routes.infra import router as infra_router
 
 
 def create_app() -> FastAPI:
@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, tags=["health"])
     app.include_router(reports_router)
     app.include_router(ingest_router)
+    app.include_router(ingest_alias_router)
     app.include_router(infra_router)
     return app
 

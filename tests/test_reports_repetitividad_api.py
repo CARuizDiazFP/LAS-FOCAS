@@ -63,7 +63,7 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
-    from api_app.routes import reports as api_reports  # type: ignore[import-not-found]
+    from api.app.routes import reports as api_reports  # type: ignore[import-not-found]
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
@@ -100,7 +100,7 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
-    from api_app.routes import reports as api_reports  # type: ignore[import-not-found]
+    from api.app.routes import reports as api_reports  # type: ignore[import-not-found]
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
@@ -169,7 +169,7 @@ def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
-    from api_app.routes import reports as api_reports  # type: ignore[import-not-found]
+    from api.app.routes import reports as api_reports  # type: ignore[import-not-found]
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
@@ -233,7 +233,7 @@ def test_reporte_repetitividad_error_en_procesamiento(tmp_path, monkeypatch):
     monkeypatch.setenv("SOFFICE_BIN", "")
 
     from modules.informes_repetitividad import config as repet_config
-    from api_app.routes import reports as api_reports
+    from api.app.routes import reports as api_reports
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)

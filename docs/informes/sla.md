@@ -99,16 +99,16 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 
 - `TEMPLATES_DIR=/app/Templates` — ruta base de plantillas dentro del contenedor.
 - `SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx` — ruta de la plantilla oficial (se resuelve automáticamente desde `TEMPLATES_DIR`).
-- `REPORTS_DIR=/app/web_app/data/reports` — destino de los informes generados.
-- `UPLOADS_DIR=/app/web_app/data/uploads` — ubicación temporal de archivos subidos.
+- `REPORTS_DIR=/app/data/reports` — destino de los informes generados.
+- `UPLOADS_DIR=/app/data/uploads` — ubicación temporal de archivos subidos.
 - `SOFFICE_BIN=/usr/bin/soffice` — para habilitar conversión a PDF (opcional, requiere LibreOffice en el contenedor).
 
 **Volúmenes montados:**
 ```yaml
 volumes:
   - ../Templates:/app/Templates:ro  # Plantillas en modo read-only
-  - reports_data:/app/web_app/data/reports
-  - uploads_data:/app/web_app/data/uploads
+  - reports_data:/app/data/reports
+  - uploads_data:/app/data/uploads
 ```
 
 ## Correcciones aplicadas (2025-11-11)
