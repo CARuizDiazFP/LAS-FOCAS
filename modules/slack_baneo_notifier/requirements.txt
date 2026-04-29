@@ -1,12 +1,8 @@
 # Nombre de archivo: requirements.txt
 # Ubicación de archivo: modules/slack_baneo_notifier/requirements.txt
-# Descripción: Dependencias del worker de notificaciones Slack para baneos
+# Descripción: Dependencias específicas del worker Slack (las comunes están en focas-base vía common-requirements.txt)
 
+# Solo paquetes específicos de este servicio
 slack_sdk>=3.27.0,<4
 slack_bolt>=1.22,<2
 apscheduler>=3.10,<4
-openpyxl>=3.1.2
-pandas>=2.2.2
-sqlalchemy==2.0.32
-psycopg[binary]==3.1.19
-unidecode>=1.3.8
