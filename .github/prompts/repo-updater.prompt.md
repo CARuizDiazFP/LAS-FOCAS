@@ -1,17 +1,17 @@
 # Nombre de archivo: repo-updater.prompt.md
 # Ubicación de archivo: .github/prompts/repo-updater.prompt.md
-# Descripción: Prompt para auditar trazabilidad, documentar cambios y ejecutar commit más push a main
+# Descripción: Prompt para auditar trazabilidad, documentar cambios y ejecutar commit más push a dev (rama de trabajo habitual)
 
 ---
 name: Repo Updater
-description: "Sincroniza cambios con main: audita diff, valida docs/PR y docs temáticas, genera commit técnico y hace push"
-argument-hint: "Describe alcance o rama esperada, por ejemplo: validar cambios de api y docs antes de subir a main"
+description: "Sincroniza cambios con dev: audita diff, valida docs/PR y docs temáticas, genera commit técnico y hace push"
+argument-hint: "Describe alcance o rama esperada, por ejemplo: validar cambios de api y docs antes de subir a dev"
 agent: "agent"
 ---
 
 # Rol
 
-Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directamente la CLI de `git` del sistema para validar trazabilidad, completar documentación faltante y sincronizar el estado local con la rama `main`.
+Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directamente la CLI de `git` del sistema para validar trazabilidad, completar documentación faltante y sincronizar el estado local con la rama `dev` (rama de trabajo habitual).
 
 # Contexto
 
@@ -19,7 +19,7 @@ Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directament
 - La fecha del PR diario debe identificarse dinámicamente con la fecha actual del sistema en formato `YYYY-MM-DD`.
 - Los commits deben ser técnicos, concisos y coherentes con el diff real.
 - Si el cambio toca `.github/`, la documentación relacionada mínima es `docs/Mate_y_Ruta.md` además del PR diario.
-- La rama objetivo por defecto es `main` y el push debe hacerse al remoto `origin`.
+- La rama objetivo por defecto es `dev` y el push debe hacerse al remoto `origin`. Los merges a `main` solo se realizan mediante Pull Request revisado.
 
 # Objetivo
 
@@ -29,12 +29,12 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
 
 1. Inspeccionar el estado real del repositorio con CLI de `git`:
    ```bash
-   git fetch origin main
+   git fetch origin dev
    git status --short --branch
    git diff --stat
    git diff --cached --stat
    git diff --name-status
-   git log --oneline origin/main..HEAD
+   git log --oneline origin/dev..HEAD
    ```
 2. Determinar la fecha actual y ubicar el archivo `docs/PR/YYYY-MM-DD.md`. Si no existe, crearlo con encabezado obligatorio de 3 líneas.
 3. Analizar si el diff real ya está documentado en el PR diario vigente y en la documentación temática de `docs/`.
@@ -58,9 +58,9 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
    ```bash
    git add .
    git commit -m "<mensaje_tecnico>"
-   git push origin main
+   git push origin dev
    ```
-8. Si `git push` falla por divergencia, no hacer `push --force`. Explicar el bloqueo y, solo si es seguro y consistente con el estado local, preparar la resolución con `git pull --rebase origin main` antes de reintentar.
+8. Si `git push` falla por divergencia, no hacer `push --force`. Explicar el bloqueo y, solo si es seguro y consistente con el estado local, preparar la resolución con `git pull --rebase origin dev` antes de reintentar.
 9. Entregar un cierre corto con:
    - archivos de documentación creados o actualizados
    - mensaje de commit usado
@@ -74,7 +74,7 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
 - [ ] El diff quedó contrastado contra `docs/PR/` y contra la documentación relevante en `docs/`.
 - [ ] Si faltaba documentación, se creó o actualizó antes del commit.
 - [ ] El commit generado es técnico, conciso y describe el diff real.
-- [ ] Se ejecutó `git add .`, `git commit` y `git push origin main`, o se dejó explicitado el bloqueo real.
+- [ ] Se ejecutó `git add .`, `git commit` y `git push origin dev`, o se dejó explicitado el bloqueo real.
 
 # Reglas adicionales
 

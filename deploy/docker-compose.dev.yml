@@ -1,0 +1,226 @@
+# Nombre de archivo: docker-compose.dev.yml
+# Ubicación de archivo: deploy/docker-compose.dev.yml
+# Descripción: Stack de DESARROLLO aislado. Puertos alternativos, base focas_dev, sin afectar producción.
+# Uso:        docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d
+# Alternativa: ./scripts/start_dev.sh
+
+name: lasfocasdev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lasfocasdev-postgres
+    restart: unless-stopped
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    expose:
+      - "5432"
+    ports:
+      - "127.0.0.1:5433:5432"  # Puerto alternativo: no colisiona con prod (5432)
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ../db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - lasfocas_dev_net
+
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    container_name: lasfocasdev-api
+    restart: unless-stopped
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8011:8000"  # Puerto alternativo: no colisiona con prod (8001)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - lasfocas_dev_net
+
+  web:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    container_name: lasfocasdev-web
+    env_file:
+      - ../.env.dev
+    environment:
+      NLP_INTENT_URL: http://nlp_intent:8100
+      # Ollama externo ya existente en el host
+      OLLAMA_URL: http://host.docker.internal:11434
+      # Puerto dev: 8090. Para acceso remoto: ssh -L 8090:localhost:8090 usuario@servidor
+      API_BASE: http://localhost:8090
+      LOGS_DIR: /app/Logs
+      REPORTS_DIR: /app/web_app/data/reports
+      UPLOADS_DIR: /app/web_app/data/uploads
+      TEMPLATES_DIR: /app/Templates
+      WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
+      OFFICE_SERVICE_BASE: http://office:8090
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+      - nlp_intent
+      - postgres
+    ports:
+      # Bind solo a loopback: más seguro en servidor compartido.
+      # Para acceso remoto: ssh -L 8090:localhost:8090 usuario@servidor
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - ../Logs/dev:/app/Logs          # Subdir separado: no mezcla logs con prod
+      - ../Templates:/app/Templates:ro  # Templates compartidos (solo lectura)
+      - reports_dev_data:/app/web_app/data/reports
+      - uploads_dev_data:/app/web_app/data/uploads
+      # NOTA: el panel admin usa este socket para gestionar contenedores por nombre.
+      # En dev, el worker se llama lasfocasdev-slack-baneo-worker; el toggle admin
+      # buscará lasfocas-slack-baneo-worker (prod). Limitación documentada en docs/infra.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - lasfocas_dev_net
+
+  nlp_intent:
+    build:
+      context: ..
+      dockerfile: deploy/docker/nlp_intent.Dockerfile
+    env_file:
+      - ../.env.dev
+    environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "8100"
+    restart: unless-stopped
+    networks:
+      - lasfocas_dev_net
+    healthcheck:
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\ntry:\n  with urllib.request.urlopen('http://localhost:8100/health', timeout=5) as r:\n    exit(0 if r.status==200 else 1)\nexcept Exception:\n  exit(1)\nPY"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/docker/bot.Dockerfile
+    env_file:
+      - ../.env.dev
+    depends_on:
+      - api
+    restart: unless-stopped
+    volumes:
+      - bot_dev_data:/app/data
+
+  office:
+    build:
+      context: ../office_service
+      dockerfile: Dockerfile
+    container_name: lasfocasdev-office
+    env_file:
+      - ../.env.dev
+    environment:
+      OFFICE_ENABLE_UNO: ${OFFICE_ENABLE_UNO:-true}
+      OFFICE_LOG_LEVEL: ${OFFICE_LOG_LEVEL:-INFO}
+    expose:
+      - "8090"
+      - "2002"
+    restart: unless-stopped
+    networks:
+      - lasfocas_dev_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8090/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+
+  repetitividad_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/repetitividad_worker.Dockerfile
+    profiles: ["reports-worker"]
+    env_file:
+      - ../.env.dev
+    environment:
+      TEMPLATES_DIR: /app/Templates
+    volumes:
+      - ../Templates:/app/Templates:ro
+      - ../Reports:/app/data/reports
+    command: ["python", "-m", "modules.informes_repetitividad.worker"]
+
+  slack_baneo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/slack_baneo_worker.Dockerfile
+    container_name: lasfocasdev-slack-baneo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8095"
+    volumes:
+      - ../Logs/dev:/app/Logs  # Mismo subdir dev que el servicio web
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8095/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_dev_net
+
+  # (Opcional) pgAdmin dev. Levantar con: docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: lasfocasdev-pgadmin
+    profiles: ["pgadmin"]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5051:80"  # Puerto alternativo: no colisiona con prod (5050)
+    depends_on:
+      - postgres
+    networks:
+      - lasfocas_dev_net
+
+volumes:
+  postgres_dev_data:
+  bot_dev_data:
+  reports_dev_data:
+  uploads_dev_data:
+
+networks:
+  lasfocas_dev_net:
+    driver: bridge

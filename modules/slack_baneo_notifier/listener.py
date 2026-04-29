@@ -138,7 +138,7 @@ class IngresoListener:
             )
             return (
                 "✅ Cámara no registrada previamente, se registra automáticamente "
-                "bajo revisión. Sin incidentes activos. Podés proceder."
+                "bajo revisión. Sin incidentes activos. puede cotinuar con el proceso de aprobacion."
             )
 
         incidentes = _obtener_incidentes_activos_camara(camara, session)
@@ -172,7 +172,7 @@ class IngresoListener:
         logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
         return (
             f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
-            f"Sin incidentes activos.\n_Podés proceder con el ingreso._"
+            f"Sin incidentes activos.\n_puede cotinuar con el proceso de aprobacion._"
         )
 
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
@@ -269,7 +269,7 @@ class IngresoListener:
                 aviso = (
                     f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
                     "para identificar una cámara. Por favor, especificá la dirección "
-                    "completa o el número exacto."
+                    "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
                 )
             else:
                 aviso = (

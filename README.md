@@ -300,7 +300,25 @@ docker compose -f deploy/compose.yml up -d --build
 
 ---
 
-## 📅 Roadmap
+## �️ Entorno de Desarrollo
+
+Ver [docs/entorno_dev.md](docs/entorno_dev.md) para el flujo completo.
+
+```bash
+git checkout dev             # Rama de trabajo habitual
+cp deploy/env.dev.sample .env.dev
+./scripts/start_dev.sh       # Levanta stack lasfocasdev (puertos alternativos)
+```
+
+| | Producción | Dev |
+|-|-----------|-----|
+| Web panel | `192.168.241.28:8080` | `localhost:8090` |
+| API docs  | `:8001/docs` | `:8011/docs` |
+| PostgreSQL | `5432` | `5433` |
+
+---
+
+## �📅 Roadmap
 
 1. Infra base.
 2. Migrar Repetitividad/SLA.

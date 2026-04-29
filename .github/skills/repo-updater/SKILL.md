@@ -1,10 +1,10 @@
 # Nombre de archivo: SKILL.md
 # Ubicación de archivo: .github/skills/repo-updater/SKILL.md
-# Descripción: Skill para sincronizar el repositorio con validación documental, commit técnico y push a main
+# Descripción: Skill para sincronizar el repositorio con validación documental, commit técnico y push a dev (rama de trabajo habitual)
 
 ---
 name: repo-updater
-description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a main"
+description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a dev (rama de trabajo habitual)"
 argument-hint: "Describe alcance o contexto, por ejemplo: sincronizar cambios de web y docs a main"
 ---
 
@@ -23,17 +23,17 @@ Usar esta skill cuando el usuario pida:
 
 ## Procedimiento
 
-1. Ejecutar inspección con CLI de git para comparar el estado local contra `main`:
-   - `git fetch origin main`
+1. Ejecutar inspección con CLI de git para comparar el estado local contra `dev`:
+   - `git fetch origin dev`
    - `git status --short --branch`
    - `git diff --stat`
    - `git diff --cached --stat`
-   - `git log --oneline origin/main..HEAD`
+   - `git log --oneline origin/dev..HEAD`
 2. Determinar la fecha actual en formato `YYYY-MM-DD` y localizar `docs/PR/YYYY-MM-DD.md`.
 3. Mapear los archivos cambiados contra la documentación temática afectada dentro de `docs/`.
 4. Si el diff no está documentado, actualizar primero el PR diario y luego la documentación temática correspondiente.
 5. Generar un mensaje de commit técnico, breve y semántico a partir del diff real.
-6. Ejecutar `git add .`, `git commit` y `git push origin main`.
+6. Ejecutar `git add .`, `git commit` y `git push origin dev`.
 
 ## Cobertura documental mínima
 
@@ -65,4 +65,6 @@ Usar esta skill cuando el usuario pida:
 - PR diario actual localizado o creado para la fecha vigente.
 - Documentación temática alineada con los cambios.
 - Commit técnico generado desde el diff real.
-- Push exitoso a `origin/main` o bloqueo explícito documentado.
+- Push exitoso a `origin/dev` o bloqueo explícito documentado.
+
+> **Guardrail**: `git push origin main` está **prohibido** desde este skill. Los merges a `main` se realizan solo mediante Pull Request revisado desde `dev`.

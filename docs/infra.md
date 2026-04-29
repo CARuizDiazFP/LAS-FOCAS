@@ -197,3 +197,87 @@ Genera archivo EML para descargar y abrir en Outlook.
   3. `deploy/docker/slack_baneo_worker.Dockerfile` — instalación de `tzdata` + `ENV TZ=America/Argentina/Buenos_Aires`.
 - **Corregido**: `BlockingScheduler()` instanciado sin `timezone`, lo que podía causar offsetting incorrecto en el scheduler. Ahora: `BlockingScheduler(timezone=TZ_ARG)` donde `TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")`.
 - **Resultado verificado en logs**: `Next wakeup is due at 2026-04-28 07:00:00-03:00` — offset explícito `-03:00`; timestamps de inicio del worker en hora local Argentina.
+
+### 2026-04-28 - Entorno de Desarrollo (Dev) aislado
+- **Agregado**: `deploy/docker-compose.dev.yml` — stack Docker Compose paralelo con nombre de proyecto `lasfocasdev`, puertos alternativos y red propia `lasfocas_dev_net`.
+- **Agregado**: `deploy/env.dev.sample` — plantilla de variables para entorno dev; DB apunta a `focas_dev`, LLM en modo `heuristic`, web en `localhost:8090`.
+- **Agregado**: `scripts/start_dev.sh` — script bash con flags `--clone-db`, `--no-build`, `--down`; incluye espera de Postgres, migraciones Alembic y healthchecks.
+- **Sin impacto en producción**: el stack prod (`compose.yml`, `.env`) no fue modificado.
+
+---
+
+## Entorno de Desarrollo (Dev)
+
+Stack Docker Compose independiente (`lasfocasdev`) que corre en paralelo al productivo sin interferencia.
+
+### Puertos
+
+| Servicio             | Producción                    | Dev                     |
+|----------------------|-------------------------------|-------------------------|
+| PostgreSQL           | `127.0.0.1:5432`              | `127.0.0.1:5433`        |
+| API (docs: `/docs`)  | `:8001`                       | `:8011`                 |
+| Web (panel)          | `192.168.241.28:8080`         | `127.0.0.1:8090`        |
+| pgAdmin (profile)    | `:5050`                       | `:5051`                 |
+| NLP / Office / Slack | interno (sin exposición)      | interno (sin exposición) |
+
+El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota usar SSH tunneling:
+
+```bash
+ssh -L 8090:localhost:8090 usuario@192.168.241.28
+```
+
+### Inicio rápido
+
+```bash
+# Primera vez: crear .env.dev desde la plantilla
+cp deploy/env.dev.sample .env.dev
+# Editar credenciales — en especial SLACK_BOT_TOKEN y SLACK_APP_TOKEN (app Slack de dev separada)
+nano .env.dev
+
+# Levantar stack dev (build + migraciones + healthchecks)
+./scripts/start_dev.sh
+
+# Levantar con clonado de base de datos de prod → dev
+./scripts/start_dev.sh --clone-db
+
+# Levantar sin rebuild (iteración rápida)
+./scripts/start_dev.sh --no-build
+```
+
+### Detener el stack dev
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml down
+```
+
+### Variables de entorno
+
+`deploy/env.dev.sample` → copiar a `.env.dev` en la raíz. Diferencias clave respecto a `.env`:
+
+| Variable              | Producción                       | Dev                          |
+|-----------------------|----------------------------------|------------------------------|
+| `POSTGRES_DB`         | `FOCALDB`                        | `focas_dev`                  |
+| `API_BASE`            | `http://192.168.241.28:8080`     | `http://localhost:8090`      |
+| `WEB_INFERRED_ORIGIN` | `http://192.168.241.28:8080`     | `http://localhost:8090`      |
+| `SLACK_BOT_TOKEN`     | token de app Slack prod          | token de app Slack dev       |
+| `SLACK_APP_TOKEN`     | token de app Slack prod          | token de app Slack dev       |
+| `LLM_PROVIDER`        | `openai`                         | `heuristic` (sin costo/API)  |
+| `LOG_LEVEL`           | `INFO`                           | `DEBUG`                      |
+
+### Clonar DB de producción a dev
+
+```bash
+./scripts/start_dev.sh --clone-db
+```
+
+Requisito: el contenedor `lasfocas-postgres` (prod) debe estar corriendo. El script hace `pg_dump` del esquema prod y lo restaura en `focas_dev` con `--clean --if-exists`.
+
+### Limitación conocida: panel admin y docker.sock
+
+El servicio `web` monta `/var/run/docker.sock` para permitir al panel admin controlar el `slack_baneo_worker`. En producción el panel busca el contenedor `lasfocas-slack-baneo-worker`. En dev, el contenedor se llama `lasfocasdev-slack-baneo-worker`, por lo que el toggle del panel dev no controlará el worker dev vía socket. El worker dev funciona correctamente de forma autónoma; solo el control desde la UI admin queda limitado en este entorno.
+
+### Archivos relacionados
+
+- `deploy/docker-compose.dev.yml` — Stack Docker Compose dev
+- `deploy/env.dev.sample` — Plantilla de variables de entorno dev
+- `scripts/start_dev.sh` — Script de inicio con healthchecks y clonado opcional de DB
