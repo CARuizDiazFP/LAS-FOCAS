@@ -1,12 +1,6 @@
 # Nombre de archivo: requirements.txt
 # Ubicación de archivo: bot_telegram/requirements.txt
-# Descripción: Dependencias específicas del bot de Telegram
+# Descripción: Dependencias específicas del bot de Telegram (las comunes están en focas-base vía common-requirements.txt)
 
+# Solo paquetes específicos de este servicio
 aiogram==3.13.1
-pandas==2.2.2
-openpyxl==3.1.2
-python-docx==1.1.2
-httpx==0.27.0
-matplotlib==3.9.2
-contextily==1.5.2
-pyproj==3.6.1

@@ -1,6 +1,6 @@
 # Nombre de archivo: Dockerfile
 # Ubicación de archivo: web/Dockerfile
-# Descripción: Imagen del servicio Web (UI) con FastAPI
+# Descripción: Imagen del servicio Web (UI) con FastAPI. Stage Python hereda dependencias comunes de focas-base:latest.
 
 FROM node:20.12.2-slim AS web-build
 WORKDIR /frontend
@@ -15,24 +15,13 @@ RUN if [ -f package-lock.json ]; then \
     fi \
     && npm run build
 
-FROM python:3.11-slim
+FROM focas-base:latest
+# ENV, WORKDIR /app, curl y libexpat1 ya están en focas-base.
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        curl \
-        libexpat1 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY web/requirements.txt /app/requirements.txt
-# Instalamos dependencias (bcrypt fijado en requirements para evitar backend defectuoso)
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir --only-binary=:all: -r requirements.txt
+# Instala solo los paquetes específicos del servicio web
+COPY web/requirements.txt /tmp/web-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/web-requirements.txt \
+    && rm /tmp/web-requirements.txt
 
 COPY web/app /app/app
 COPY web/web_app /app/web_app

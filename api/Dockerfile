@@ -1,28 +1,15 @@
 # Nombre de archivo: Dockerfile
 # Ubicación de archivo: api/Dockerfile
-# Descripción: Imagen minimal para FastAPI (Python 3.11) con healthcheck por curl
+# Descripción: Imagen del servicio API (FastAPI). Hereda dependencias comunes de focas-base:latest.
 
-FROM python:3.11-slim
+FROM focas-base:latest
+# ENV, WORKDIR /app y dependencias comunes ya están en focas-base.
 
-# Evitar prompts interactivos y cache de pip
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Instala solo los paquetes específicos de la API
+COPY api/requirements.txt /tmp/api-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/api-requirements.txt \
+    && rm /tmp/api-requirements.txt
 
-WORKDIR /app
-
-# Dependencias mínimas para healthchecks
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Requisitos primero para aprovechar cache
-COPY requirements.txt /app/requirements.txt
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir --only-binary=:all: -r requirements.txt
-
-# Copiamos el código de la app y exponemos ambos paquetes (app y api.app)
 RUN mkdir -p /app/api
 COPY api/__init__.py /app/api/__init__.py
 COPY api/app /app/api/app

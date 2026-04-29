@@ -80,6 +80,7 @@ nano .env.dev
 El script hace automáticamente:
 - Crear `Logs/dev/` si no existe
 - Crear `.env.dev` desde el sample si no existe (con aviso para completar tokens)
+- Construir `focas-base:latest` si `common-requirements.txt` cambió (via `scripts/build_base.sh`)
 - Levantar todos los servicios con build
 - Esperar a que Postgres esté healthy
 - Aplicar migraciones Alembic
@@ -95,12 +96,18 @@ El script hace automáticamente:
 # Build completo (primera vez o tras cambios de Dockerfile / dependencias)
 ./scripts/start_dev.sh
 
-# Sin rebuild (iteración rápida de código Python/Vue)
+# Sin rebuild de servicios (iteración rápida de código Python/Vue)
 ./scripts/start_dev.sh --no-build
 
 # Reinicio limpio (detiene y vuelve a levantar)
 ./scripts/start_dev.sh --down
 ```
+
+> **Nota:** Si modificaste `common-requirements.txt` (agregaste una dependencia común), reconstruye primero la imagen base:
+> ```bash
+> ./scripts/build_base.sh
+> ```
+> `start_dev.sh` llama a `build_base.sh` automáticamente, pero si solo quieres verificar el estado de la imagen base sin levantar el stack, puedes ejecutarlo directamente.
 
 ### Clonar DB de producción a dev
 

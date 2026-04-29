@@ -1,20 +1,10 @@
 # Nombre de archivo: nlp_intent.Dockerfile
 # Ubicación de archivo: deploy/docker/nlp_intent.Dockerfile
-# Descripción: Imagen para el microservicio de clasificación de intención
+# Descripción: Imagen del microservicio de clasificación de intención. Hereda todas las dependencias de focas-base:latest.
 
-FROM python:3.11-slim
-
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-COPY nlp_intent/requirements.txt /app/requirements.txt
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-	&& rm -rf /var/lib/apt/lists/* \
-	&& python -m pip install --upgrade pip \
-	&& pip install --no-cache-dir --only-binary=:all: -r /app/requirements.txt
+FROM focas-base:latest
+# Todas las dependencias Python (fastapi, uvicorn, httpx, pydantic, orjson)
+# ya están en focas-base. No se requiere instalación adicional.
 
 COPY nlp_intent/app /app/app
 # Módulos compartidos y core

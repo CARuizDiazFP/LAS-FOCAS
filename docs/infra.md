@@ -204,6 +204,16 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Agregado**: `scripts/start_dev.sh` — script bash con flags `--clone-db`, `--no-build`, `--down`; incluye espera de Postgres, migraciones Alembic y healthchecks.
 - **Sin impacto en producción**: el stack prod (`compose.yml`, `.env`) no fue modificado.
 
+### 2026-04-29 - Imagen base focas-base:latest con multi-stage build
+- **Agregado**: `common-requirements.txt` — 22 paquetes Python comunes a todos los servicios (FastAPI, SQLAlchemy, pandas, etc.).
+- **Agregado**: `deploy/docker/base.Dockerfile` — patrón multi-stage: stage `builder` compila wheels con `build-essential/gcc/libpq-dev`; stage `runtime` instala solo los wheels pre-compilados sin herramientas de compilación.
+- **Agregado**: `scripts/build_base.sh` — construye `focas-base:latest` con detección de cambios vía hash SHA-256 de `common-requirements.txt` para evitar rebuilds innecesarios.
+- **Modificado**: `api/Dockerfile`, `web/Dockerfile`, `deploy/docker/bot.Dockerfile`, `deploy/docker/nlp_intent.Dockerfile`, `deploy/docker/slack_baneo_worker.Dockerfile`, `deploy/docker/repetitividad_worker.Dockerfile` — reemplazado `FROM python:3.11-slim*` por `FROM focas-base:latest`.
+- **Modificado**: `api/requirements.txt`, `web/requirements.txt`, `bot_telegram/requirements.txt`, `nlp_intent/requirements.txt`, `modules/slack_baneo_notifier/requirements.txt` — eliminados los 22 paquetes comunes (ya en la imagen base).
+- **Actualizado**: `Start` y `scripts/start_dev.sh` — llaman a `build_base.sh` automáticamente antes de levantar el stack.
+- **Excluido**: `office_service/Dockerfile` queda sin cambios (usa fastapi 0.111.1/pydantic 2.8.2/uvicorn 0.30.1 + LibreOffice, incompatible con la base común).
+- **Armonización de versiones**: `SQLAlchemy` 2.0.32→2.0.36, `psycopg[binary]` 3.1.19→3.2.1 en `requirements.txt` raíz y `slack_baneo_notifier/requirements.txt`.
+
 ---
 
 ## Entorno de Desarrollo (Dev)
@@ -281,3 +291,69 @@ El servicio `web` monta `/var/run/docker.sock` para permitir al panel admin cont
 - `deploy/docker-compose.dev.yml` — Stack Docker Compose dev
 - `deploy/env.dev.sample` — Plantilla de variables de entorno dev
 - `scripts/start_dev.sh` — Script de inicio con healthchecks y clonado opcional de DB
+
+---
+
+## Imagen base Docker: `focas-base:latest`
+
+Imagen multi-stage compartida por todos los servicios Python del proyecto (excepto `office_service`).
+
+### Qué incluye
+
+22 paquetes Python directos y todas sus dependencias transitivas, pre-compilados como wheels en el stage `builder` e instalados en el stage `runtime` sin herramientas de compilación:
+
+| Grupo | Paquetes |
+|-------|----------|
+| FastAPI stack | `fastapi`, `uvicorn[standard]`, `pydantic`, `pydantic-settings`, `httpx`, `orjson` |
+| Web extras | `jinja2`, `itsdangerous`, `python-multipart`, `bcrypt` |
+| DB / ORM | `SQLAlchemy`, `psycopg[binary]`, `alembic` |
+| Data | `pandas`, `openpyxl`, `python-docx`, `Unidecode` |
+| Geo / Maps | `matplotlib`, `Pillow`, `staticmap`, `contextily`, `pyproj` |
+
+Además incluye en runtime: `curl`, `libpq5`, `libexpat1`, `tzdata`, `ca-certificates`.
+
+### Patrón multi-stage
+
+```
+builder (python:3.11-slim-bookworm)
+  └─ apt: build-essential gcc libpq-dev libffi-dev libssl-dev
+  └─ pip wheel --wheel-dir /wheels -r common-requirements.txt
+        ↓ wheels de todos los paquetes + transitive deps
+runtime (python:3.11-slim-bookworm)  ← imagen final
+  └─ apt: curl libpq5 libexpat1 tzdata ca-certificates
+  └─ pip install --no-index --find-links=/wheels ...
+  └─ rm -rf /wheels  ← limpia en el mismo layer
+```
+
+### Cuándo reconstruir
+
+`build_base.sh` detecta automáticamente si `common-requirements.txt` cambió (hash SHA-256) y solo reconstruye cuando es necesario.
+
+Casos que requieren rebuild manual:
+- Se agrega o actualiza un paquete en `common-requirements.txt`
+- Se cambia la versión base de Python
+
+### Comandos
+
+```bash
+# Build automático (detecta cambios)
+./scripts/build_base.sh
+
+# Forzar rebuild aunque no haya cambios
+./scripts/build_base.sh --force
+
+# Build manual directo
+docker build -t focas-base:latest -f deploy/docker/base.Dockerfile .
+```
+
+`Start` y `scripts/start_dev.sh` llaman a `build_base.sh` automáticamente antes de levantar el stack.
+
+### Excepción: office_service
+
+`office_service/Dockerfile` usa `fastapi==0.111.1`, `pydantic==2.8.2` y `uvicorn==0.30.1` (versiones distintas a las de `focas-base`) además de `python3-uno` y LibreOffice instalados desde apt. No hereda de `focas-base`.
+
+### Archivos relacionados
+
+- `common-requirements.txt` — 22 paquetes comunes (fuente de verdad de la imagen base)
+- `deploy/docker/base.Dockerfile` — Dockerfile multi-stage
+- `scripts/build_base.sh` — Script de build con detección de cambios

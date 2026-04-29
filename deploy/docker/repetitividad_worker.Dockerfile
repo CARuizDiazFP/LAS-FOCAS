@@ -1,12 +1,11 @@
 # Nombre de archivo: repetitividad_worker.Dockerfile
 # Ubicación de archivo: deploy/docker/repetitividad_worker.Dockerfile
-# Descripción: Worker dedicado a mapas/geopandas para informes de repetitividad
+# Descripción: Worker dedicado a mapas/geopandas para informes de repetitividad.
+#              Hereda dependencias comunes de focas-base:latest. Solo agrega GDAL y geopandas.
 
-FROM python:3.11-slim-bookworm
-
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+FROM focas-base:latest
+# Dependencias Python comunes ya están en focas-base.
+# Solo se agregan las librerías OS y Python específicas de geopandas/GDAL.
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -21,12 +20,7 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
-COPY requirements.txt /tmp/requirements.txt
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt \
-    && pip install --no-cache-dir --only-binary=:all: geopandas==0.14.4
+RUN pip install --no-cache-dir geopandas==0.14.4
 
 COPY . /app
 

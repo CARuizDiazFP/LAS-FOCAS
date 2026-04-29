@@ -98,6 +98,9 @@ fi
 ########################################
 # 3) Build & Up                         #
 ########################################
+echo -e "${GREEN}Verificando/construyendo imagen base focas-base...${NC}"
+"$ROOT_DIR/scripts/build_base.sh"
+
 UP_CMD=("${COMPOSE_BASE[@]}" up -d --build)
 if $REBUILD_FRONTEND; then
   echo -e "${YELLOW}Forzando rebuild sin cache para servicio web (frontend)...${NC}"

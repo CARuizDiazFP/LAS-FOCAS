@@ -1,19 +1,13 @@
 # Nombre de archivo: bot.Dockerfile
 # Ubicación de archivo: deploy/docker/bot.Dockerfile
-# Descripción: Imagen del bot de Telegram (aiogram, Python 3.11-slim)
+# Descripción: Imagen del bot de Telegram (aiogram). Hereda dependencias comunes de focas-base:latest.
 
-FROM python:3.11-slim
+FROM focas-base:latest
+# ENV, WORKDIR /app y dependencias comunes ya están en focas-base.
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
-
-WORKDIR /app
-
-# Instalación de dependencias del bot
+# Instala solo aiogram (el resto de las dependencias del bot están en focas-base)
 COPY bot_telegram/requirements.txt /app/bot_requirements.txt
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir --only-binary=:all: -r /app/bot_requirements.txt
+RUN pip install --no-cache-dir -r /app/bot_requirements.txt
 
 # Copiamos solo lo necesario del proyecto
 COPY bot_telegram /app/bot_telegram

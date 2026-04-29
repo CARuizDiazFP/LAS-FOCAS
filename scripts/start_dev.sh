@@ -80,6 +80,12 @@ if $DO_DOWN; then
 fi
 
 ########################################
+# 2.5) Imagen base focas-base           #
+########################################
+echo -e "${GREEN}Verificando/construyendo imagen base focas-base...${NC}"
+"$ROOT_DIR/scripts/build_base.sh"
+
+########################################
 # 3) Build & Up                         #
 ########################################
 if $NO_BUILD; then

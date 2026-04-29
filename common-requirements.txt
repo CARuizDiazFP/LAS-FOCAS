@@ -1,0 +1,36 @@
+# Nombre de archivo: common-requirements.txt
+# Ubicación de archivo: common-requirements.txt
+# Descripción: Dependencias Python comunes a todos los servicios. Forman la imagen base focas-base:latest.
+# NOTA: office_service queda excluido (versiones de fastapi/pydantic/uvicorn incompatibles + LibreOffice).
+
+# FastAPI stack
+fastapi==0.112.2
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.4.0
+httpx==0.27.0
+orjson==3.10.6
+
+# Web extras
+jinja2==3.1.4
+itsdangerous==2.2.0
+python-multipart==0.0.9
+bcrypt==4.1.2
+
+# DB / ORM
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.1
+alembic==1.13.2
+
+# Data
+pandas==2.2.2
+openpyxl==3.1.2
+python-docx==1.1.2
+Unidecode==1.3.8
+
+# Geo / Maps
+matplotlib==3.9.2
+Pillow==10.4.0
+staticmap==0.5.7
+contextily==1.5.2
+pyproj==3.6.1
