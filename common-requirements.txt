@@ -20,6 +20,8 @@ bcrypt==4.1.2
 # DB / ORM
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.1
+asyncpg==0.29.0
+asyncpg==0.29.0
 alembic==1.13.2
 
 # Data

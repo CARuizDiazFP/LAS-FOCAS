@@ -975,4 +975,75 @@ Exporta un listado de cámaras a CSV o XLSX.
 
 - **Notas:**
   - Si `pandas` u `openpyxl` no están disponibles, se degrada a CSV con header `X-Export-Warning`.
+
+---
+
+## Acceso a la Base de Datos — Patrón Async (asyncpg)
+
+### Driver y URL
+
+Desde la migración async la API usa **asyncpg** como driver PostgreSQL:
+
+- **Driver:** `asyncpg==0.29.0`
+- **URL async:** `postgresql+asyncpg://<user>:<pass>@<host>/<db>`
+- El archivo `db/session.py` reemplaza automáticamente el prefijo `postgresql://` (o `postgresql+psycopg://`) por `postgresql+asyncpg://` — no se necesita una variable de entorno separada.
+
+### Motor dual
+
+`db/session.py` expone dos engines:
+
+| Nombre            | Tipo   | Driver   | Usado por                        |
+|-------------------|--------|----------|----------------------------------|
+| `engine`          | sync   | psycopg  | Workers, Alembic, migraciones    |
+| `async_engine`    | async  | asyncpg  | API FastAPI (todos los handlers) |
+
+### Inyección de sesión en handlers
+
+Los handlers que acceden a la DB directamente usan `get_async_db` via `Depends`:
+
+```python
+from db.session import get_async_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
+
+@router.get("/ruta")
+async def mi_handler(db: AsyncSession = Depends(get_async_db)):
+    result = await db.execute(select(MiModelo))
+    ...
+```
+
+### Lazy loading — regla fundamental
+
+Con AsyncSession **el lazy loading está deshabilitado**. Toda relación debe cargarse con `selectinload()` en la misma consulta:
+
+```python
+from sqlalchemy.orm import selectinload
+
+stmt = (
+    select(Camara)
+    .options(
+        selectinload(Camara.empalmes).selectinload(Empalme.servicios),
+        selectinload(Camara.cables_origen),
+    )
+)
+camaras = (await db.execute(stmt)).scalars().all()
+```
+
+### Handlers con servicios complejos — asyncio.to_thread
+
+Los handlers que delegan a `InfraService` o `ProtectionService` (que usan Session sync con lazy loading complejo) se envuelven en `asyncio.to_thread()`:
+
+```python
+def _do_work():
+    with SessionLocal() as session:
+        result = MiServicio(session).hacer_algo(...)
+        session.commit()
+        return result.to_dict()
+
+return await asyncio.to_thread(_do_work)
+```
+
+### Workers y Alembic
+
+Los workers (`slack_baneo_notifier`, etc.) y Alembic siguen usando el engine sync (`SessionLocal`) — no requieren cambios de configuración.
   - El CSV usa BOM UTF-8 para compatibilidad con Excel.

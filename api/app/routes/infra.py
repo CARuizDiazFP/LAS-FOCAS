@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from enum import Enum
@@ -11,10 +12,12 @@ from typing import Any, Dict, List, Optional
 
 from core.utils.tz import TZ_ARG
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from core.parsers.tracking_parser import parse_tracking
 from core.services.infra_sync import sync_camaras_from_sheet
@@ -41,7 +44,7 @@ from db.models.infra import (
     Servicio,
     IncidenteBaneo,
 )
-from db.session import SessionLocal
+from db.session import SessionLocal, get_async_db
 
 router = APIRouter(tags=["infra"])
 logger = logging.getLogger(__name__)
@@ -187,6 +190,7 @@ async def search_camaras(
     q: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = 100,
+    db: AsyncSession = Depends(get_async_db),
 ) -> CamarasListResponse:
     """Busca cámaras por query (nombre, servicio, dirección) y/o estado.
 
@@ -202,93 +206,106 @@ async def search_camaras(
     limit = min(limit, 500)
 
     try:
-        with SessionLocal() as session:
-            query = session.query(Camara)
+        stmt = (
+            select(Camara)
+            .options(
+                selectinload(Camara.empalmes).selectinload(Empalme.servicios),
+                selectinload(Camara.cables_origen),
+                selectinload(Camara.cables_destino),
+            )
+        )
 
-            # Filtro por estado
-            if estado:
-                estado_upper = estado.upper()
-                if estado_upper in [e.value for e in CamaraEstado]:
-                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
+        # Filtro por estado
+        if estado:
+            estado_upper = estado.upper()
+            if estado_upper in [e.value for e in CamaraEstado]:
+                stmt = stmt.where(Camara.estado == CamaraEstado(estado_upper))
 
-            # Filtro por texto (búsqueda amplia)
-            if q and q.strip():
-                search_term = f"%{q.strip()}%"
-                # Buscar en nombre, dirección, fontine_id
-                query = query.filter(
-                    (Camara.nombre.ilike(search_term)) |
-                    (Camara.direccion.ilike(search_term)) |
-                    (Camara.fontine_id.ilike(search_term))
+        # Filtro por texto (búsqueda amplia)
+        if q and q.strip():
+            search_term = f"%{q.strip()}%"
+            stmt = stmt.where(
+                (Camara.nombre.ilike(search_term)) |
+                (Camara.direccion.ilike(search_term)) |
+                (Camara.fontine_id.ilike(search_term))
+            )
+
+        stmt = stmt.order_by(Camara.nombre).limit(limit)
+        camaras_db = (await db.execute(stmt)).scalars().all()
+
+        # Construir respuesta con servicios asociados
+        camaras_response = []
+        for cam in camaras_db:
+            # Obtener IDs de servicios que pasan por esta cámara
+            servicios_ids = []
+            for empalme in cam.empalmes:
+                for servicio in empalme.servicios:
+                    if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
+                        servicios_ids.append(servicio.servicio_id)
+
+            camaras_response.append(CamaraResponse(
+                id=cam.id,
+                nombre=cam.nombre or "",
+                fontine_id=cam.fontine_id,
+                direccion=cam.direccion,
+                estado=cam.estado.value if cam.estado else "LIBRE",
+                origen_datos=cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                latitud=cam.latitud,
+                longitud=cam.longitud,
+                servicios=servicios_ids,
+            ))
+
+        # Si se buscó por ID de servicio y no se encontró en cámaras, buscar servicios
+        if q and q.strip() and not camaras_response:
+            # Intentar buscar por servicio_id
+            svc_stmt = (
+                select(Servicio)
+                .where(Servicio.servicio_id.ilike(f"%{q.strip()}%"))
+                .options(
+                    selectinload(Servicio.empalmes)
+                    .selectinload(Empalme.camara)
+                    .selectinload(Camara.empalmes)
+                    .selectinload(Empalme.servicios)
                 )
-
-            # Ejecutar query
-            camaras_db = query.order_by(Camara.nombre).limit(limit).all()
-
-            # Construir respuesta con servicios asociados
-            camaras_response = []
-            for cam in camaras_db:
-                # Obtener IDs de servicios que pasan por esta cámara
-                servicios_ids = []
-                for empalme in cam.empalmes:
-                    for servicio in empalme.servicios:
-                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                            servicios_ids.append(servicio.servicio_id)
-
-                camaras_response.append(CamaraResponse(
-                    id=cam.id,
-                    nombre=cam.nombre or "",
-                    fontine_id=cam.fontine_id,
-                    direccion=cam.direccion,
-                    estado=cam.estado.value if cam.estado else "LIBRE",
-                    origen_datos=cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                    latitud=cam.latitud,
-                    longitud=cam.longitud,
-                    servicios=servicios_ids,
-                ))
-
-            # Si se buscó por ID de servicio y no se encontró en cámaras, buscar servicios
-            if q and q.strip() and not camaras_response:
-                # Intentar buscar por servicio_id
-                servicio = session.query(Servicio).filter(
-                    Servicio.servicio_id.ilike(f"%{q.strip()}%")
-                ).first()
-
-                if servicio:
-                    # Obtener cámaras de ese servicio a través de empalmes
-                    for empalme in servicio.empalmes:
-                        if empalme.camara and empalme.camara.id not in [c.id for c in camaras_response]:
-                            cam = empalme.camara
-                            servicios_ids = [servicio.servicio_id]
-                            # Añadir otros servicios de la misma cámara
-                            for emp in cam.empalmes:
-                                for svc in emp.servicios:
-                                    if svc.servicio_id and svc.servicio_id not in servicios_ids:
-                                        servicios_ids.append(svc.servicio_id)
-
-                            camaras_response.append(CamaraResponse(
-                                id=cam.id,
-                                nombre=cam.nombre or "",
-                                fontine_id=cam.fontine_id,
-                                direccion=cam.direccion,
-                                estado=cam.estado.value if cam.estado else "LIBRE",
-                                origen_datos=cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                                latitud=cam.latitud,
-                                longitud=cam.longitud,
-                                servicios=servicios_ids,
-                            ))
-
-            logger.info(
-                "action=search_camaras query=%s estado=%s results=%d",
-                q,
-                estado,
-                len(camaras_response),
             )
+            servicio = (await db.execute(svc_stmt)).scalars().first()
 
-            return CamarasListResponse(
-                status="ok",
-                total=len(camaras_response),
-                camaras=camaras_response,
-            )
+            if servicio:
+                # Obtener cámaras de ese servicio a través de empalmes
+                for empalme in servicio.empalmes:
+                    if empalme.camara and empalme.camara.id not in [c.id for c in camaras_response]:
+                        cam = empalme.camara
+                        servicios_ids = [servicio.servicio_id]
+                        # Añadir otros servicios de la misma cámara
+                        for emp in cam.empalmes:
+                            for svc in emp.servicios:
+                                if svc.servicio_id and svc.servicio_id not in servicios_ids:
+                                    servicios_ids.append(svc.servicio_id)
+
+                        camaras_response.append(CamaraResponse(
+                            id=cam.id,
+                            nombre=cam.nombre or "",
+                            fontine_id=cam.fontine_id,
+                            direccion=cam.direccion,
+                            estado=cam.estado.value if cam.estado else "LIBRE",
+                            origen_datos=cam.origen_datos.value if cam.origen_datos else "MANUAL",
+                            latitud=cam.latitud,
+                            longitud=cam.longitud,
+                            servicios=servicios_ids,
+                        ))
+
+        logger.info(
+            "action=search_camaras query=%s estado=%s results=%d",
+            q,
+            estado,
+            len(camaras_response),
+        )
+
+        return CamarasListResponse(
+            status="ok",
+            total=len(camaras_response),
+            camaras=camaras_response,
+        )
 
     except Exception as exc:
         logger.exception("action=search_camaras_error error=%s", exc)
@@ -430,7 +447,10 @@ def _build_camara_response(camara: Camara, servicios_ids: list[str]) -> CamaraRe
 
 
 @router.post("/api/infra/search", response_model=SearchResponse)
-async def advanced_search_camaras(request: SearchRequest) -> SearchResponse:
+async def advanced_search_camaras(
+    request: SearchRequest,
+    db: AsyncSession = Depends(get_async_db),
+) -> SearchResponse:
     """Búsqueda avanzada de cámaras con filtros combinables (AND).
 
     Este endpoint permite buscar cámaras aplicando múltiples filtros que se
@@ -472,87 +492,93 @@ async def advanced_search_camaras(request: SearchRequest) -> SearchResponse:
         ... ]}
     """
     try:
-        with SessionLocal() as session:
-            # Obtener todas las cámaras (optimizado con eager loading si es necesario)
-            query = session.query(Camara)
+        stmt = (
+            select(Camara)
+            .options(
+                selectinload(Camara.empalmes).selectinload(Empalme.servicios),
+                selectinload(Camara.cables_origen),
+                selectinload(Camara.cables_destino),
+            )
+            .order_by(Camara.nombre)
+        )
 
-            # Pre-filtro por estado si solo hay filtro de estado (optimización)
-            status_filters = [f for f in request.filters if f.field == FilterField.STATUS]
-            if len(status_filters) == 1 and len(request.filters) == 1:
-                flt = status_filters[0]
-                if flt.operator == FilterOperator.EQ:
-                    value = flt.value if isinstance(flt.value, str) else flt.value[0]
-                    if value.upper() in [e.value for e in CamaraEstado]:
-                        query = query.filter(Camara.estado == CamaraEstado(value.upper()))
-                elif flt.operator == FilterOperator.IN and isinstance(flt.value, list):
-                    estados = [CamaraEstado(v.upper()) for v in flt.value if v.upper() in [e.value for e in CamaraEstado]]
-                    if estados:
-                        query = query.filter(Camara.estado.in_(estados))
+        # Pre-filtro por estado si solo hay filtro de estado (optimización)
+        status_filters = [f for f in request.filters if f.field == FilterField.STATUS]
+        if len(status_filters) == 1 and len(request.filters) == 1:
+            flt = status_filters[0]
+            if flt.operator == FilterOperator.EQ:
+                value = flt.value if isinstance(flt.value, str) else flt.value[0]
+                if value.upper() in [e.value for e in CamaraEstado]:
+                    stmt = stmt.where(Camara.estado == CamaraEstado(value.upper()))
+            elif flt.operator == FilterOperator.IN and isinstance(flt.value, list):
+                estados = [CamaraEstado(v.upper()) for v in flt.value if v.upper() in [e.value for e in CamaraEstado]]
+                if estados:
+                    stmt = stmt.where(Camara.estado.in_(estados))
 
-            all_camaras = query.order_by(Camara.nombre).all()
+        all_camaras = (await db.execute(stmt)).scalars().all()
 
-            # Si no hay filtros, devolver todas las cámaras (con paginación)
-            if not request.filters:
-                total = len(all_camaras)
-                paginated = all_camaras[request.offset : request.offset + request.limit]
-                camaras_response = [
-                    _build_camara_response(cam, _get_camara_servicios(cam))
-                    for cam in paginated
-                ]
-
-                logger.info(
-                    "action=advanced_search filters=0 total=%d returned=%d",
-                    total,
-                    len(camaras_response),
-                )
-
-                return SearchResponse(
-                    total=total,
-                    limit=request.limit,
-                    offset=request.offset,
-                    filters_applied=0,
-                    camaras=camaras_response,
-                )
-
-            # Aplicar filtros con lógica AND
-            matching_camaras = []
-            for camara in all_camaras:
-                servicios_ids = _get_camara_servicios(camara)
-                cables_nombres = _get_camara_cables(camara)
-
-                # Verificar que cumpla TODOS los filtros
-                matches_all = True
-                for flt in request.filters:
-                    if not _camara_matches_filter(camara, flt, servicios_ids, cables_nombres):
-                        matches_all = False
-                        break
-
-                if matches_all:
-                    matching_camaras.append((camara, servicios_ids))
-
-            # Aplicar paginación
-            total = len(matching_camaras)
-            paginated = matching_camaras[request.offset : request.offset + request.limit]
+        # Si no hay filtros, devolver todas las cámaras (con paginación)
+        if not request.filters:
+            total = len(all_camaras)
+            paginated = all_camaras[request.offset : request.offset + request.limit]
             camaras_response = [
-                _build_camara_response(cam, svc_ids)
-                for cam, svc_ids in paginated
+                _build_camara_response(cam, _get_camara_servicios(cam))
+                for cam in paginated
             ]
 
             logger.info(
-                "action=advanced_search filters=%d total=%d returned=%d offset=%d",
-                len(request.filters),
+                "action=advanced_search filters=0 total=%d returned=%d",
                 total,
                 len(camaras_response),
-                request.offset,
             )
 
             return SearchResponse(
                 total=total,
                 limit=request.limit,
                 offset=request.offset,
-                filters_applied=len(request.filters),
+                filters_applied=0,
                 camaras=camaras_response,
             )
+
+        # Aplicar filtros con lógica AND
+        matching_camaras = []
+        for camara in all_camaras:
+            servicios_ids = _get_camara_servicios(camara)
+            cables_nombres = _get_camara_cables(camara)
+
+            # Verificar que cumpla TODOS los filtros
+            matches_all = True
+            for flt in request.filters:
+                if not _camara_matches_filter(camara, flt, servicios_ids, cables_nombres):
+                    matches_all = False
+                    break
+
+            if matches_all:
+                matching_camaras.append((camara, servicios_ids))
+
+        # Aplicar paginación
+        total = len(matching_camaras)
+        paginated = matching_camaras[request.offset : request.offset + request.limit]
+        camaras_response = [
+            _build_camara_response(cam, svc_ids)
+            for cam, svc_ids in paginated
+        ]
+
+        logger.info(
+            "action=advanced_search filters=%d total=%d returned=%d offset=%d",
+            len(request.filters),
+            total,
+            len(camaras_response),
+            request.offset,
+        )
+
+        return SearchResponse(
+            total=total,
+            limit=request.limit,
+            offset=request.offset,
+            filters_applied=len(request.filters),
+            camaras=camaras_response,
+        )
 
     except Exception as exc:
         logger.exception("action=advanced_search_error error=%s", exc)
@@ -629,7 +655,10 @@ def _term_matches_camara(
 
 
 @router.post("/api/infra/smart-search", response_model=SearchResponse)
-async def smart_search_camaras(request: SmartSearchRequest) -> SearchResponse:
+async def smart_search_camaras(
+    request: SmartSearchRequest,
+    db: AsyncSession = Depends(get_async_db),
+) -> SearchResponse:
     """Smart Search: búsqueda libre por términos.
 
     A diferencia de la búsqueda avanzada (filtros tipados), este endpoint
@@ -660,75 +689,83 @@ async def smart_search_camaras(request: SmartSearchRequest) -> SearchResponse:
         Lista de cámaras que coinciden con todos los términos.
     """
     try:
-        with SessionLocal() as session:
-            all_camaras = session.query(Camara).order_by(Camara.nombre).all()
+        stmt = (
+            select(Camara)
+            .options(
+                selectinload(Camara.empalmes).selectinload(Empalme.servicios),
+                selectinload(Camara.cables_origen),
+                selectinload(Camara.cables_destino),
+            )
+            .order_by(Camara.nombre)
+        )
+        all_camaras = (await db.execute(stmt)).scalars().all()
 
-            # Si no hay términos, devolver todas las cámaras
-            if not request.terms:
-                total = len(all_camaras)
-                paginated = all_camaras[request.offset : request.offset + request.limit]
-                camaras_response = [
-                    _build_camara_response(cam, _get_camara_servicios(cam))
-                    for cam in paginated
-                ]
-
-                logger.info(
-                    "action=smart_search terms=0 total=%d returned=%d",
-                    total,
-                    len(camaras_response),
-                )
-
-                return SearchResponse(
-                    total=total,
-                    limit=request.limit,
-                    offset=request.offset,
-                    filters_applied=0,
-                    camaras=camaras_response,
-                )
-
-            # Aplicar términos con lógica AND
-            matching_camaras = []
-            for camara in all_camaras:
-                servicios_ids = _get_camara_servicios(camara)
-                cables_nombres = _get_camara_cables(camara)
-
-                # Verificar que cumpla TODOS los términos
-                matches_all = True
-                for term in request.terms:
-                    term_clean = term.strip()
-                    if not term_clean:
-                        continue
-                    if not _term_matches_camara(term_clean, camara, servicios_ids, cables_nombres):
-                        matches_all = False
-                        break
-
-                if matches_all:
-                    matching_camaras.append((camara, servicios_ids))
-
-            # Aplicar paginación
-            total = len(matching_camaras)
-            paginated = matching_camaras[request.offset : request.offset + request.limit]
+        # Si no hay términos, devolver todas las cámaras
+        if not request.terms:
+            total = len(all_camaras)
+            paginated = all_camaras[request.offset : request.offset + request.limit]
             camaras_response = [
-                _build_camara_response(cam, svc_ids)
-                for cam, svc_ids in paginated
+                _build_camara_response(cam, _get_camara_servicios(cam))
+                for cam in paginated
             ]
 
-            terms_count = len([t for t in request.terms if t.strip()])
             logger.info(
-                "action=smart_search terms=%d total=%d returned=%d offset=%d",
-                terms_count,
+                "action=smart_search terms=0 total=%d returned=%d",
                 total,
                 len(camaras_response),
-                request.offset,
             )
 
             return SearchResponse(
                 total=total,
                 limit=request.limit,
                 offset=request.offset,
-                filters_applied=terms_count,
+                filters_applied=0,
                 camaras=camaras_response,
             )
+
+        # Aplicar términos con lógica AND
+        matching_camaras = []
+        for camara in all_camaras:
+            servicios_ids = _get_camara_servicios(camara)
+            cables_nombres = _get_camara_cables(camara)
+
+            # Verificar que cumpla TODOS los términos
+            matches_all = True
+            for term in request.terms:
+                term_clean = term.strip()
+                if not term_clean:
+                    continue
+                if not _term_matches_camara(term_clean, camara, servicios_ids, cables_nombres):
+                    matches_all = False
+                    break
+
+            if matches_all:
+                matching_camaras.append((camara, servicios_ids))
+
+        # Aplicar paginación
+        total = len(matching_camaras)
+        paginated = matching_camaras[request.offset : request.offset + request.limit]
+        camaras_response = [
+            _build_camara_response(cam, svc_ids)
+            for cam, svc_ids in paginated
+        ]
+
+        terms_count = len([t for t in request.terms if t.strip()])
+        logger.info(
+            "action=smart_search terms=%d total=%d returned=%d offset=%d",
+            terms_count,
+            total,
+            len(camaras_response),
+            request.offset,
+        )
+
+        return SearchResponse(
+            total=total,
+            limit=request.limit,
+            offset=request.offset,
+            filters_applied=terms_count,
+            camaras=camaras_response,
+        )
 
     except Exception as exc:
         logger.exception("action=smart_search_error error=%s", exc)
@@ -745,7 +782,11 @@ async def trigger_infra_sync(payload: InfraSyncRequest | None = None) -> InfraSy
     sheet_id = payload.sheet_id if payload else None
     worksheet_name = payload.worksheet_name if payload else None
     try:
-        result = sync_camaras_from_sheet(sheet_id=sheet_id, worksheet_name=worksheet_name)
+        result = await asyncio.to_thread(
+            sync_camaras_from_sheet,
+            sheet_id=sheet_id,
+            worksheet_name=worksheet_name,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -973,73 +1014,62 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
             len(topologia),
         )
 
-        # Procesar en base de datos
-        camaras_nuevas = 0
-        camaras_existentes = 0
-        empalmes_registrados = 0
+        # Procesar en base de datos (bloqueante — usa SessionLocal en thread)
+        _servicio_id = result.servicio_id
+        _topologia = topologia
+        _filename = file.filename
 
-        with SessionLocal() as session:
-            try:
-                # Obtener o crear servicio
-                servicio, servicio_nuevo = _obtener_o_crear_servicio(
-                    session,
-                    result.servicio_id,
-                    file.filename,
-                )
+        def _persist() -> tuple[int, int, int]:
+            camaras_nuevas = 0
+            camaras_existentes = 0
+            empalmes_registrados = 0
 
-                # Guardar datos crudos del tracking
-                servicio.raw_tracking_data = result.to_dict()
+            with SessionLocal() as session:
+                try:
+                    servicio, _ = _obtener_o_crear_servicio(session, _servicio_id, _filename)
+                    servicio.raw_tracking_data = result.to_dict()
 
-                # Procesar cada empalme/ubicación
-                for empalme_id, ubicacion in topologia:
-                    # Buscar o crear cámara
-                    camara = _buscar_camara_por_nombre(session, ubicacion)
+                    for empalme_id, ubicacion in _topologia:
+                        camara = _buscar_camara_por_nombre(session, ubicacion)
+                        if camara:
+                            camaras_existentes += 1
+                        else:
+                            camara = _crear_camara_desde_tracking(session, ubicacion)
+                            camaras_nuevas += 1
 
-                    if camara:
-                        camaras_existentes += 1
-                    else:
-                        camara = _crear_camara_desde_tracking(session, ubicacion)
-                        camaras_nuevas += 1
+                        _, empalme_nuevo = _registrar_empalme(session, servicio, empalme_id, camara)
+                        if empalme_nuevo:
+                            empalmes_registrados += 1
 
-                    # Registrar empalme
-                    empalme, empalme_nuevo = _registrar_empalme(
-                        session,
-                        servicio,
-                        empalme_id,
-                        camara,
+                    session.commit()
+                    logger.info(
+                        "action=upload_tracking_complete servicio_id=%s camaras_nuevas=%d "
+                        "camaras_existentes=%d empalmes=%d",
+                        _servicio_id,
+                        camaras_nuevas,
+                        camaras_existentes,
+                        empalmes_registrados,
                     )
-                    if empalme_nuevo:
-                        empalmes_registrados += 1
+                    return camaras_nuevas, camaras_existentes, empalmes_registrados
 
-                session.commit()
+                except Exception as exc:
+                    session.rollback()
+                    logger.exception(
+                        "action=upload_tracking_error servicio_id=%s error=%s", _servicio_id, exc
+                    )
+                    raise
 
-                logger.info(
-                    "action=upload_tracking_complete servicio_id=%s camaras_nuevas=%d "
-                    "camaras_existentes=%d empalmes=%d",
-                    result.servicio_id,
-                    camaras_nuevas,
-                    camaras_existentes,
-                    empalmes_registrados,
-                )
+        camaras_nuevas, camaras_existentes, empalmes_registrados = await asyncio.to_thread(_persist)
 
-                return TrackingUploadResponse(
-                    status="ok",
-                    servicios_procesados=1,
-                    servicio_id=result.servicio_id,
-                    camaras_nuevas=camaras_nuevas,
-                    camaras_existentes=camaras_existentes,
-                    empalmes_registrados=empalmes_registrados,
-                    mensaje=f"Tracking del servicio {result.servicio_id} procesado correctamente",
-                )
-
-            except Exception as exc:
-                session.rollback()
-                logger.exception(
-                    "action=upload_tracking_error servicio_id=%s error=%s",
-                    result.servicio_id,
-                    exc,
-                )
-                raise
+        return TrackingUploadResponse(
+            status="ok",
+            servicios_procesados=1,
+            servicio_id=result.servicio_id,
+            camaras_nuevas=camaras_nuevas,
+            camaras_existentes=camaras_existentes,
+            empalmes_registrados=empalmes_registrados,
+            mensaje=f"Tracking del servicio {result.servicio_id} procesado correctamente",
+        )
 
     except HTTPException:
         raise
@@ -1204,64 +1234,67 @@ async def analyze_tracking_endpoint(
             detail="Debe enviar un archivo (file) o contenido (content + filename)",
         )
     
-    try:
+    def _analyze() -> AnalysisResult:
         with SessionLocal() as session:
-            result = analyze_tracking_file(session, raw_content, filename_used)
-            
-            # Convertir upgrade_info si existe
-            upgrade_info_response = None
-            if result.upgrade_info:
-                upgrade_info_response = UpgradeInfoResponse(
-                    old_service_id=result.upgrade_info.old_service_id,
-                    old_service_db_id=result.upgrade_info.old_service_db_id,
-                    new_service_id=result.upgrade_info.new_service_id,
-                    match_reason=result.upgrade_info.match_reason,
-                    punta_a_match=result.upgrade_info.punta_a_match,
-                    punta_b_match=result.upgrade_info.punta_b_match,
-                )
-            
-            # Convertir strand_info si existe
-            strand_info_response = None
-            if result.strand_info:
-                strand_info_response = StrandInfoResponse(
-                    service_id=result.strand_info.service_id,
-                    service_db_id=result.strand_info.service_db_id,
-                    ruta_id=result.strand_info.ruta_id,
-                    current_strands=result.strand_info.current_strands,
-                    new_strand_pelo=result.strand_info.new_strand_pelo,
-                    new_strand_conector=result.strand_info.new_strand_conector,
-                )
-            
-            return TrackingAnalyzeResponse(
-                status=result.status.value,
-                servicio_id=result.servicio_id,
-                servicio_db_id=result.servicio_db_id,
-                nuevo_hash=result.nuevo_hash,
-                rutas_existentes=[
-                    RutaInfoResponse(
-                        id=r.id,
-                        nombre=r.nombre,
-                        tipo=r.tipo,
-                        hash_contenido=r.hash_contenido,
-                        empalmes_count=r.empalmes_count,
-                        activa=r.activa,
-                        created_at=r.created_at,
-                        nombre_archivo_origen=r.nombre_archivo_origen,
-                    )
-                    for r in result.rutas_existentes
-                ],
-                ruta_identica_id=result.ruta_identica_id,
-                parsed_empalmes_count=result.parsed_empalmes_count,
-                message=result.message,
-                error=result.error,
-                upgrade_info=upgrade_info_response,
-                strand_info=strand_info_response,
-                punta_a_sitio=result.punta_a_sitio,
-                punta_b_sitio=result.punta_b_sitio,
-                cantidad_pelos=result.cantidad_pelos,
-                alias_id=result.alias_id,
+            return analyze_tracking_file(session, raw_content, filename_used)
+
+    try:
+        result = await asyncio.to_thread(_analyze)
+
+        # Convertir upgrade_info si existe
+        upgrade_info_response = None
+        if result.upgrade_info:
+            upgrade_info_response = UpgradeInfoResponse(
+                old_service_id=result.upgrade_info.old_service_id,
+                old_service_db_id=result.upgrade_info.old_service_db_id,
+                new_service_id=result.upgrade_info.new_service_id,
+                match_reason=result.upgrade_info.match_reason,
+                punta_a_match=result.upgrade_info.punta_a_match,
+                punta_b_match=result.upgrade_info.punta_b_match,
             )
-            
+
+        # Convertir strand_info si existe
+        strand_info_response = None
+        if result.strand_info:
+            strand_info_response = StrandInfoResponse(
+                service_id=result.strand_info.service_id,
+                service_db_id=result.strand_info.service_db_id,
+                ruta_id=result.strand_info.ruta_id,
+                current_strands=result.strand_info.current_strands,
+                new_strand_pelo=result.strand_info.new_strand_pelo,
+                new_strand_conector=result.strand_info.new_strand_conector,
+            )
+
+        return TrackingAnalyzeResponse(
+            status=result.status.value,
+            servicio_id=result.servicio_id,
+            servicio_db_id=result.servicio_db_id,
+            nuevo_hash=result.nuevo_hash,
+            rutas_existentes=[
+                RutaInfoResponse(
+                    id=r.id,
+                    nombre=r.nombre,
+                    tipo=r.tipo,
+                    hash_contenido=r.hash_contenido,
+                    empalmes_count=r.empalmes_count,
+                    activa=r.activa,
+                    created_at=r.created_at,
+                    nombre_archivo_origen=r.nombre_archivo_origen,
+                )
+                for r in result.rutas_existentes
+            ],
+            ruta_identica_id=result.ruta_identica_id,
+            parsed_empalmes_count=result.parsed_empalmes_count,
+            message=result.message,
+            error=result.error,
+            upgrade_info=upgrade_info_response,
+            strand_info=strand_info_response,
+            punta_a_sitio=result.punta_a_sitio,
+            punta_b_sitio=result.punta_b_sitio,
+            cantidad_pelos=result.cantidad_pelos,
+            alias_id=result.alias_id,
+        )
+
     except Exception as exc:
         logger.exception("action=analyze_tracking_error filename=%s error=%s", filename_used, exc)
         raise HTTPException(
@@ -1320,43 +1353,49 @@ async def resolve_tracking_endpoint(
                 detail=f"Tipo de ruta inválido: {body.new_ruta_tipo}. Opciones: PRINCIPAL, BACKUP, ALTERNATIVA",
             )
     
-    try:
+    _action = action
+    _body = body
+    _ruta_tipo = ruta_tipo
+
+    def _resolve() -> ResolveResult:
         with SessionLocal() as session:
-            result = resolve_tracking_file(
+            return resolve_tracking_file(
                 session,
-                action,
-                body.content,
-                body.filename,
-                target_ruta_id=body.target_ruta_id,
-                new_ruta_name=body.new_ruta_name,
-                new_ruta_tipo=ruta_tipo,
-                old_service_id=body.old_service_id,
+                _action,
+                _body.content,
+                _body.filename,
+                target_ruta_id=_body.target_ruta_id,
+                new_ruta_name=_body.new_ruta_name,
+                new_ruta_tipo=_ruta_tipo,
+                old_service_id=_body.old_service_id,
             )
-            
-            if not result.success:
-                # No es un error HTTP, es un resultado de negocio
-                return TrackingResolveResponse(
-                    success=False,
-                    action=result.action.value,
-                    servicio_id=result.servicio_id,
-                    error=result.error,
-                    message=result.message,
-                )
-            
+
+    try:
+        result = await asyncio.to_thread(_resolve)
+
+        if not result.success:
             return TrackingResolveResponse(
-                success=True,
+                success=False,
                 action=result.action.value,
                 servicio_id=result.servicio_id,
-                servicio_db_id=result.servicio_db_id,
-                ruta_id=result.ruta_id,
-                ruta_nombre=result.ruta_nombre,
-                camaras_nuevas=result.camaras_nuevas,
-                camaras_existentes=result.camaras_existentes,
-                empalmes_creados=result.empalmes_creados,
-                empalmes_asociados=result.empalmes_asociados,
+                error=result.error,
                 message=result.message,
             )
-            
+
+        return TrackingResolveResponse(
+            success=True,
+            action=result.action.value,
+            servicio_id=result.servicio_id,
+            servicio_db_id=result.servicio_db_id,
+            ruta_id=result.ruta_id,
+            ruta_nombre=result.ruta_nombre,
+            camaras_nuevas=result.camaras_nuevas,
+            camaras_existentes=result.camaras_existentes,
+            empalmes_creados=result.empalmes_creados,
+            empalmes_asociados=result.empalmes_asociados,
+            message=result.message,
+        )
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -1368,7 +1407,10 @@ async def resolve_tracking_endpoint(
 
 
 @router.get("/api/infra/servicios/{servicio_id}/rutas", response_model=ServicioRutasResponse)
-async def get_servicio_rutas(servicio_id: str) -> ServicioRutasResponse:
+async def get_servicio_rutas(
+    servicio_id: str,
+    db: AsyncSession = Depends(get_async_db),
+) -> ServicioRutasResponse:
     """Obtiene las rutas de un servicio.
     
     Args:
@@ -1378,39 +1420,44 @@ async def get_servicio_rutas(servicio_id: str) -> ServicioRutasResponse:
         ServicioRutasResponse con información del servicio y sus rutas
     """
     try:
-        with SessionLocal() as session:
-            servicio = session.query(Servicio).filter(
-                Servicio.servicio_id == servicio_id
-            ).first()
-            
-            if not servicio:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Servicio {servicio_id} no encontrado",
-                )
-            
-            rutas_info = []
-            for ruta in servicio.rutas:
-                rutas_info.append(RutaInfoResponse(
-                    id=ruta.id,
-                    nombre=ruta.nombre,
-                    tipo=ruta.tipo.value if ruta.tipo else "PRINCIPAL",
-                    hash_contenido=ruta.hash_contenido,
-                    empalmes_count=len(ruta.empalmes),
-                    activa=bool(ruta.activa),
-                    created_at=ruta.created_at.isoformat() if ruta.created_at else None,
-                    nombre_archivo_origen=ruta.nombre_archivo_origen,
-                ))
-            
-            return ServicioRutasResponse(
-                status="ok",
-                servicio_id=servicio.servicio_id,
-                servicio_db_id=servicio.id,
-                cliente=servicio.cliente,
-                rutas=rutas_info,
-                total_rutas=len(rutas_info),
+        stmt = (
+            select(Servicio)
+            .where(Servicio.servicio_id == servicio_id)
+            .options(
+                selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes)
             )
-            
+        )
+        servicio = (await db.execute(stmt)).scalars().first()
+
+        if not servicio:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Servicio {servicio_id} no encontrado",
+            )
+
+        rutas_info = [
+            RutaInfoResponse(
+                id=ruta.id,
+                nombre=ruta.nombre,
+                tipo=ruta.tipo.value if ruta.tipo else "PRINCIPAL",
+                hash_contenido=ruta.hash_contenido,
+                empalmes_count=len(ruta.empalmes),
+                activa=bool(ruta.activa),
+                created_at=ruta.created_at.isoformat() if ruta.created_at else None,
+                nombre_archivo_origen=ruta.nombre_archivo_origen,
+            )
+            for ruta in servicio.rutas
+        ]
+
+        return ServicioRutasResponse(
+            status="ok",
+            servicio_id=servicio.servicio_id,
+            servicio_db_id=servicio.id,
+            cliente=servicio.cliente,
+            rutas=rutas_info,
+            total_rutas=len(rutas_info),
+        )
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -1422,7 +1469,10 @@ async def get_servicio_rutas(servicio_id: str) -> ServicioRutasResponse:
 
 
 @router.get("/api/infra/rutas/{ruta_id}/empalmes")
-async def get_ruta_empalmes(ruta_id: int) -> Dict[str, Any]:
+async def get_ruta_empalmes(
+    ruta_id: int,
+    db: AsyncSession = Depends(get_async_db),
+) -> Dict[str, Any]:
     """Obtiene los empalmes de una ruta específica.
     
     Args:
@@ -1432,48 +1482,55 @@ async def get_ruta_empalmes(ruta_id: int) -> Dict[str, Any]:
         Dict con información de la ruta y sus empalmes ordenados
     """
     try:
-        with SessionLocal() as session:
-            ruta = session.query(RutaServicio).get(ruta_id)
-            
-            if not ruta:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Ruta {ruta_id} no encontrada",
-                )
-            
-            empalmes_data = []
-            for empalme in ruta.empalmes:
-                camara_data = None
-                if empalme.camara:
-                    camara_data = {
-                        "id": empalme.camara.id,
-                        "nombre": empalme.camara.nombre,
-                        "direccion": empalme.camara.direccion,
-                        "estado": empalme.camara.estado.value if empalme.camara.estado else None,
-                        "latitud": empalme.camara.latitud,
-                        "longitud": empalme.camara.longitud,
-                    }
-                
-                empalmes_data.append({
-                    "id": empalme.id,
-                    "tracking_empalme_id": empalme.tracking_empalme_id,
-                    "tipo": empalme.tipo,
-                    "camara": camara_data,
-                })
-            
-            return {
-                "status": "ok",
-                "ruta": {
-                    "id": ruta.id,
-                    "nombre": ruta.nombre,
-                    "tipo": ruta.tipo.value if ruta.tipo else "PRINCIPAL",
-                    "servicio_id": ruta.servicio.servicio_id,
-                    "activa": bool(ruta.activa),
-                },
-                "empalmes": empalmes_data,
-                "total_empalmes": len(empalmes_data),
-            }
-            
+        stmt = (
+            select(RutaServicio)
+            .where(RutaServicio.id == ruta_id)
+            .options(
+                selectinload(RutaServicio.empalmes).selectinload(Empalme.camara),
+                selectinload(RutaServicio.servicio),
+            )
+        )
+        ruta = (await db.execute(stmt)).scalars().first()
+
+        if not ruta:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ruta {ruta_id} no encontrada",
+            )
+
+        empalmes_data = []
+        for empalme in ruta.empalmes:
+            camara_data = None
+            if empalme.camara:
+                camara_data = {
+                    "id": empalme.camara.id,
+                    "nombre": empalme.camara.nombre,
+                    "direccion": empalme.camara.direccion,
+                    "estado": empalme.camara.estado.value if empalme.camara.estado else None,
+                    "latitud": empalme.camara.latitud,
+                    "longitud": empalme.camara.longitud,
+                }
+
+            empalmes_data.append({
+                "id": empalme.id,
+                "tracking_empalme_id": empalme.tracking_empalme_id,
+                "tipo": empalme.tipo,
+                "camara": camara_data,
+            })
+
+        return {
+            "status": "ok",
+            "ruta": {
+                "id": ruta.id,
+                "nombre": ruta.nombre,
+                "tipo": ruta.tipo.value if ruta.tipo else "PRINCIPAL",
+                "servicio_id": ruta.servicio.servicio_id,
+                "activa": bool(ruta.activa),
+            },
+            "empalmes": empalmes_data,
+            "total_empalmes": len(empalmes_data),
+        }
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -1485,7 +1542,10 @@ async def get_ruta_empalmes(ruta_id: int) -> Dict[str, Any]:
 
 
 @router.delete("/api/infra/servicios/{servicio_id}/empalmes")
-async def delete_servicio_empalmes(servicio_id: str) -> Dict[str, Any]:
+async def delete_servicio_empalmes(
+    servicio_id: str,
+    db: AsyncSession = Depends(get_async_db),
+) -> Dict[str, Any]:
     """Elimina todas las asociaciones empalmes de un servicio.
     
     Esto permite "limpiar" un servicio para volver a asociarlo con nuevos empalmes.
@@ -1501,48 +1561,53 @@ async def delete_servicio_empalmes(servicio_id: str) -> Dict[str, Any]:
         Dict con información de las asociaciones eliminadas
     """
     try:
-        with SessionLocal() as session:
-            servicio = session.query(Servicio).filter(
-                Servicio.servicio_id == servicio_id
-            ).first()
-            
-            if not servicio:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Servicio {servicio_id} no encontrado",
-                )
-            
-            # Contar antes de eliminar
-            empalmes_legacy_count = len(servicio.empalmes)
-            rutas_count = len(servicio.rutas)
-            empalmes_rutas_count = sum(len(r.empalmes) for r in servicio.rutas)
-            
-            # Eliminar asociaciones legacy (N-a-N servicio_empalme_association)
-            servicio.empalmes.clear()
-            
-            # Eliminar rutas (cascade elimina ruta_empalme_association)
-            for ruta in list(servicio.rutas):
-                session.delete(ruta)
-            
-            session.commit()
-            
-            logger.info(
-                "action=delete_servicio_empalmes servicio_id=%s empalmes_legacy=%d rutas=%d empalmes_rutas=%d",
-                servicio_id,
-                empalmes_legacy_count,
-                rutas_count,
-                empalmes_rutas_count,
+        stmt = (
+            select(Servicio)
+            .where(Servicio.servicio_id == servicio_id)
+            .options(
+                selectinload(Servicio.empalmes),
+                selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes),
             )
-            
-            return {
-                "status": "ok",
-                "servicio_id": servicio_id,
-                "message": f"Eliminadas {empalmes_legacy_count} asociaciones legacy y {rutas_count} rutas",
-                "empalmes_legacy_eliminados": empalmes_legacy_count,
-                "rutas_eliminadas": rutas_count,
-                "empalmes_rutas_eliminados": empalmes_rutas_count,
-            }
-            
+        )
+        servicio = (await db.execute(stmt)).scalars().first()
+
+        if not servicio:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Servicio {servicio_id} no encontrado",
+            )
+
+        # Contar antes de eliminar
+        empalmes_legacy_count = len(servicio.empalmes)
+        rutas_count = len(servicio.rutas)
+        empalmes_rutas_count = sum(len(r.empalmes) for r in servicio.rutas)
+
+        # Eliminar asociaciones legacy (N-a-N servicio_empalme_association)
+        servicio.empalmes = []
+
+        # Eliminar rutas (cascade elimina ruta_empalme_association)
+        for ruta in list(servicio.rutas):
+            await db.delete(ruta)
+
+        await db.commit()
+
+        logger.info(
+            "action=delete_servicio_empalmes servicio_id=%s empalmes_legacy=%d rutas=%d empalmes_rutas=%d",
+            servicio_id,
+            empalmes_legacy_count,
+            rutas_count,
+            empalmes_rutas_count,
+        )
+
+        return {
+            "status": "ok",
+            "servicio_id": servicio_id,
+            "message": f"Eliminadas {empalmes_legacy_count} asociaciones legacy y {rutas_count} rutas",
+            "empalmes_legacy_eliminados": empalmes_legacy_count,
+            "rutas_eliminadas": rutas_count,
+            "empalmes_rutas_eliminados": empalmes_rutas_count,
+        }
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -1642,8 +1707,8 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
         ... }
     """
     from core.services.protection_service import create_ban as do_create_ban
-    
-    try:
+
+    def _do_ban() -> Dict[str, Any]:
         with SessionLocal() as session:
             result = do_create_ban(
                 session,
@@ -1654,10 +1719,8 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
                 usuario_ejecutor=request.usuario_ejecutor,
                 motivo=request.motivo,
             )
-            
             if result.success:
                 session.commit()
-                # Aviso a Slack: baneo creado
                 try:
                     from core.config import get_settings
                     from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
@@ -1672,9 +1735,10 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
                     logger.warning("Error enviando aviso Slack de baneo creado: %s", slack_exc)
             else:
                 session.rollback()
-            
             return result.to_dict()
-            
+
+    try:
+        return await asyncio.to_thread(_do_ban)
     except Exception as exc:
         logger.exception("action=create_ban_endpoint_error error=%s", exc)
         raise HTTPException(
@@ -1703,8 +1767,8 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
         >>> {"incidente_id": 1, "motivo_cierre": "Corte reparado"}
     """
     from core.services.protection_service import lift_ban as do_lift_ban
-    
-    try:
+
+    def _do_lift() -> Dict[str, Any]:
         with SessionLocal() as session:
             result = do_lift_ban(
                 session,
@@ -1712,10 +1776,8 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
                 usuario_ejecutor=request.usuario_ejecutor,
                 motivo_cierre=request.motivo_cierre,
             )
-            
             if result.success:
                 session.commit()
-                # Aviso a Slack: baneo levantado
                 try:
                     from core.config import get_settings
                     from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
@@ -1727,9 +1789,10 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
                     logger.warning("Error enviando aviso Slack de baneo levantado: %s", slack_exc)
             else:
                 session.rollback()
-            
             return result.to_dict()
-            
+
+    try:
+        return await asyncio.to_thread(_do_lift)
     except Exception as exc:
         logger.exception("action=lift_ban_endpoint_error error=%s", exc)
         raise HTTPException(
@@ -1746,19 +1809,19 @@ async def get_active_bans() -> Dict[str, Any]:
         Dict con lista de incidentes activos y conteo
     """
     from core.services.protection_service import get_incidentes_activos, ProtectionService
-    
-    try:
+
+    def _get_bans() -> Dict[str, Any]:
         with SessionLocal() as session:
             incidentes = get_incidentes_activos(session)
             protection_svc = ProtectionService(session)
-            
+
             incidentes_data = []
             for inc in incidentes:
-                # Contar cámaras afectadas
-                # Se corrige el acceso a camaras_afectadas usando ProtectionService
-                camaras = protection_svc.get_camaras_for_servicio(inc.servicio_protegido_id, inc.ruta_protegida_id)
+                camaras = protection_svc.get_camaras_for_servicio(
+                    inc.servicio_protegido_id, inc.ruta_protegida_id
+                )
                 camaras_count = len(camaras)
-                
+
                 incidentes_data.append({
                     "id": inc.id,
                     "ticket_asociado": inc.ticket_asociado,
@@ -1772,13 +1835,11 @@ async def get_active_bans() -> Dict[str, Any]:
                     "duracion_horas": inc.duracion_horas,
                     "camaras_count": camaras_count,
                 })
-            
-            return {
-                "status": "ok",
-                "total": len(incidentes_data),
-                "incidentes": incidentes_data,
-            }
-            
+
+            return {"status": "ok", "total": len(incidentes_data), "incidentes": incidentes_data}
+
+    try:
+        return await asyncio.to_thread(_get_bans)
     except Exception as exc:
         logger.exception("action=get_active_bans_error error=%s", exc)
         raise HTTPException(
@@ -1792,23 +1853,16 @@ async def get_ban_detail(incidente_id: int) -> Dict[str, Any]:
     """Obtiene el detalle de un incidente de baneo con datos de correo y conteo de cámaras."""
     from core.services.protection_service import ProtectionService
 
-    try:
+    def _get_detail() -> Optional[Dict[str, Any]]:
         with SessionLocal() as session:
             service = ProtectionService(session)
             incidente = service.get_incidente_by_id(incidente_id)
-
             if not incidente:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Incidente {incidente_id} no encontrado",
-                )
-
+                return None
             camaras = service.get_camaras_for_servicio(
                 incidente.servicio_protegido_id,
                 incidente.ruta_protegida_id,
             )
-            cantidad_camaras = len(camaras)
-
             return {
                 "id": incidente.id,
                 "ticket": incidente.ticket_asociado,
@@ -1816,9 +1870,17 @@ async def get_ban_detail(incidente_id: int) -> Dict[str, Any]:
                 "servicio_protegido": incidente.servicio_protegido_id,
                 "email_subject": incidente.email_subject,
                 "email_body": incidente.email_body,
-                "cantidad_camaras": cantidad_camaras,
+                "cantidad_camaras": len(camaras),
             }
 
+    try:
+        result = await asyncio.to_thread(_get_detail)
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Incidente {incidente_id} no encontrado",
+            )
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -1902,12 +1964,12 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
             error="SMTP no está configurado en el servidor",
         )
 
-    try:
+    def _build_attachments() -> Optional[List[EmailAttachment]]:
+        """Construye los adjuntos en un thread bloqueante."""
         attachments: List[EmailAttachment] = []
 
         with SessionLocal() as session:
             protection_svc = ProtectionService(session)
-            # Obtener incidentes
             incidentes = (
                 session.query(IncidenteBaneo)
                 .filter(IncidenteBaneo.id.in_(request.incidente_ids))
@@ -1915,39 +1977,32 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
             )
 
             if not incidentes:
-                return EmailNotifyResponse(
-                    success=False,
-                    message="No se encontraron incidentes con los IDs especificados",
-                    error="incidente_ids vacíos o inválidos",
-                )
+                return None  # Señal de "no encontrado"
 
-            # Generar XLS si se solicita
             if request.include_xls:
                 try:
                     import pandas as pd
 
                     rows = []
                     for incidente in incidentes:
-                        # Se corrige el acceso a camaras_afectadas usando ProtectionService
-                        camaras = protection_svc.get_camaras_for_servicio(incidente.servicio_protegido_id, incidente.ruta_protegida_id)
+                        camaras = protection_svc.get_camaras_for_servicio(
+                            incidente.servicio_protegido_id, incidente.ruta_protegida_id
+                        )
                         for camara in camaras:
-                            rows.append(
-                                {
-                                    "Incidente ID": incidente.id,
-                                    "Ticket": incidente.ticket_asociado or "-",
-                                    "Servicio Afectado": incidente.servicio_afectado_id,
-                                    "Servicio Protegido": incidente.servicio_protegido_id,
-                                    "Cámara ID": camara.id,
-                                    "Cámara Nombre": camara.nombre,
-                                    "Estado": camara.estado.value if camara.estado else "-",
-                                    "Fecha Inicio": (
-                                        incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M")
-                                        if incidente.fecha_inicio
-                                        else "-"
-                                    ),
-                                    "Motivo": incidente.motivo or "-",
-                                }
-                            )
+                            rows.append({
+                                "Incidente ID": incidente.id,
+                                "Ticket": incidente.ticket_asociado or "-",
+                                "Servicio Afectado": incidente.servicio_afectado_id,
+                                "Servicio Protegido": incidente.servicio_protegido_id,
+                                "Cámara ID": camara.id,
+                                "Cámara Nombre": camara.nombre,
+                                "Estado": camara.estado.value if camara.estado else "-",
+                                "Fecha Inicio": (
+                                    incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M")
+                                    if incidente.fecha_inicio else "-"
+                                ),
+                                "Motivo": incidente.motivo or "-",
+                            })
 
                     if rows:
                         df = pd.DataFrame(rows)
@@ -1955,23 +2010,17 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
                         with pd.ExcelWriter(output, engine="openpyxl") as writer:
                             df.to_excel(writer, sheet_name="Baneos_Activos", index=False)
                         output.seek(0)
-
-                        attachments.append(
-                            EmailAttachment(
-                                filename="baneos_activos.xlsx",
-                                content=output.getvalue(),
-                                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            )
-                        )
+                        attachments.append(EmailAttachment(
+                            filename="baneos_activos.xlsx",
+                            content=output.getvalue(),
+                            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        ))
 
                 except ImportError:
                     logger.warning("action=notify_email warning=pandas_not_available skipping_xls=true")
 
-            # Obtener archivo TXT original si se solicita
             if request.include_txt:
-                txt_found = False
                 for incidente in incidentes:
-                    # Buscar la ruta asociada al servicio protegido
                     servicio = (
                         session.query(Servicio)
                         .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
@@ -1980,29 +2029,26 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
                     if servicio and servicio.rutas:
                         for ruta in servicio.rutas:
                             if ruta.raw_file_content:
-                                txt_found = True
-                                filename = (
-                                    ruta.nombre_archivo_origen
-                                    or f"tracking_{servicio.servicio_id}.txt"
-                                )
-                                attachments.append(
-                                    EmailAttachment(
-                                        filename=filename,
-                                        content=ruta.raw_file_content.encode("utf-8"),
-                                        mime_type="text/plain; charset=utf-8",
-                                    )
-                                )
-                                break  # Solo un TXT por incidente
-                        if txt_found:
-                            break
+                                filename_txt = ruta.nombre_archivo_origen or f"tracking_{servicio.servicio_id}.txt"
+                                attachments.append(EmailAttachment(
+                                    filename=filename_txt,
+                                    content=ruta.raw_file_content.encode("utf-8"),
+                                    mime_type="text/plain; charset=utf-8",
+                                ))
+                                break
 
-                if not txt_found and request.include_txt:
-                    logger.warning(
-                        "action=notify_email warning=original_txt_not_found incidentes=%s",
-                        request.incidente_ids,
-                    )
+        return attachments
 
-        # Enviar correo
+    try:
+        attachments = await asyncio.to_thread(_build_attachments)
+
+        if attachments is None:
+            return EmailNotifyResponse(
+                success=False,
+                message="No se encontraron incidentes con los IDs especificados",
+                error="incidente_ids vacíos o inválidos",
+            )
+
         result = email_service.send_email(
             to=request.to,
             cc=request.cc,
@@ -2028,7 +2074,10 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
 
 
 @router.get("/api/infra/tracking/{ruta_id}/download")
-async def download_tracking_file(ruta_id: int) -> Response:
+async def download_tracking_file(
+    ruta_id: int,
+    db: AsyncSession = Depends(get_async_db),
+) -> Response:
     """Descarga el archivo de tracking original de una ruta.
 
     IMPORTANTE: Devuelve el archivo TXT ORIGINAL tal como fue cargado,
@@ -2041,32 +2090,32 @@ async def download_tracking_file(ruta_id: int) -> Response:
         Archivo TXT original o error 404 si no está disponible
     """
     try:
-        with SessionLocal() as session:
-            ruta = session.query(RutaServicio).get(ruta_id)
+        stmt = select(RutaServicio).where(RutaServicio.id == ruta_id)
+        ruta = (await db.execute(stmt)).scalars().first()
 
-            if not ruta:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Ruta {ruta_id} no encontrada",
-                )
-
-            if not ruta.raw_file_content:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Archivo original no disponible para esta ruta. "
-                    "Solo las rutas creadas después de la actualización del sistema "
-                    "tienen el archivo original guardado.",
-                )
-
-            filename = ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt"
-
-            return Response(
-                content=ruta.raw_file_content.encode("utf-8"),
-                media_type="text/plain; charset=utf-8",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                },
+        if not ruta:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ruta {ruta_id} no encontrada",
             )
+
+        if not ruta.raw_file_content:
+            raise HTTPException(
+                status_code=404,
+                detail="Archivo original no disponible para esta ruta. "
+                "Solo las rutas creadas después de la actualización del sistema "
+                "tienen el archivo original guardado.",
+            )
+
+        filename = ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt"
+
+        return Response(
+            content=ruta.raw_file_content.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
 
     except HTTPException:
         raise
@@ -2096,7 +2145,7 @@ async def get_email_config_status() -> Dict[str, Any]:
 
 
 @router.post("/api/infra/notify/download-eml")
-def download_ban_eml(
+async def download_ban_eml(
     incident_id: int = Form(...),
     recipients: Optional[str] = Form(None),
     subject: Optional[str] = Form(None),
@@ -2106,80 +2155,95 @@ def download_ban_eml(
     from core.services.protection_service import ProtectionService
     from db.models.infra import Servicio, RutaServicio
 
-    with SessionLocal() as session:
-        # 1. Recuperar el incidente
-        protection_svc = ProtectionService(session)
-        incidente = protection_svc.get_incidente_by_id(incident_id)
+    _incident_id = incident_id
+    _recipients = recipients
+    _subject = subject
+    _html_body = html_body
 
-        if not incidente:
-            raise HTTPException(status_code=404, detail="Incidente no encontrado")
+    def _prepare():
+        with SessionLocal() as session:
+            protection_svc = ProtectionService(session)
+            incidente = protection_svc.get_incidente_by_id(_incident_id)
 
-        # 1.b Guardar ediciones de asunto/cuerpo si llegan en el formulario
-        datos_actualizados = False
-        if subject is not None:
-            incidente.email_subject = subject
-            datos_actualizados = True
-        if html_body is not None:
-            incidente.email_body = html_body
-            datos_actualizados = True
+            if not incidente:
+                return None, None, None, None, None
 
-        if datos_actualizados:
-            session.commit()
-            session.refresh(incidente)
+            # 1.b Guardar ediciones de asunto/cuerpo si llegan en el formulario
+            datos_actualizados = False
+            if _subject is not None:
+                incidente.email_subject = _subject
+                datos_actualizados = True
+            if _html_body is not None:
+                incidente.email_body = _html_body
+                datos_actualizados = True
 
-        # 2. Recuperar las cámaras afectadas usando el servicio de protección (CRÍTICO)
-        # Aquí solucionamos el error: Calculamos la lista y se la pasamos al email service
-        camaras = protection_svc.get_camaras_for_servicio(
-            servicio_id=incidente.servicio_protegido_id,
-            ruta_id=incidente.ruta_protegida_id
-        )
+            if datos_actualizados:
+                session.commit()
+                session.refresh(incidente)
 
-        # 2.b Buscar tracking original para adjuntar (si existe)
-        tracking_content = None
-        tracking_filename = None
-        servicio = (
-            session.query(Servicio)
-            .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
-            .first()
-        )
-        if servicio and servicio.rutas:
-            ruta_candidates = []
-            if incidente.ruta_protegida_id:
-                ruta_sel = session.query(RutaServicio).filter(RutaServicio.id == incidente.ruta_protegida_id).first()
-                if ruta_sel:
-                    ruta_candidates.append(ruta_sel)
-            # fallback: todas las rutas del servicio
-            ruta_candidates.extend([r for r in servicio.rutas if r not in ruta_candidates])
-
-            for ruta in ruta_candidates:
-                if ruta.raw_file_content:
-                    tracking_content = ruta.raw_file_content.encode("utf-8", errors="ignore")
-                    tracking_filename = ruta.nombre_archivo_origen or f"tracking_{ruta.id}.txt"
-                    break
-
-        # 3. Generar el EML
-        email_svc = EmailService()
-        try:
-            eml_stream = email_svc.generate_ban_eml(
-                incidente=incidente,
-                camaras_afectadas=camaras,  # <--- Pasamos la lista explícita aquí
-                html_body=html_body,
-                subject=subject,
-                recipients=recipients,
-                tracking_content=tracking_content,
-                tracking_filename=tracking_filename,
+            # 2. Recuperar las cámaras afectadas
+            camaras = protection_svc.get_camaras_for_servicio(
+                servicio_id=incidente.servicio_protegido_id,
+                ruta_id=incidente.ruta_protegida_id,
             )
-        except Exception as e:
-            logger.exception("Error generando EML")
-            raise HTTPException(status_code=500, detail=f"Error generando EML: {str(e)}")
 
-        # 4. Retornar archivo
-        filename = f"Aviso_Baneo_{incidente.ticket_asociado}.eml"
-        return StreamingResponse(
-            eml_stream,
-            media_type="message/rfc822",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            # 2.b Buscar tracking original
+            tracking_content = None
+            tracking_filename = None
+            servicio = (
+                session.query(Servicio)
+                .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
+                .first()
+            )
+            if servicio and servicio.rutas:
+                ruta_candidates = []
+                if incidente.ruta_protegida_id:
+                    ruta_sel = session.query(RutaServicio).filter(
+                        RutaServicio.id == incidente.ruta_protegida_id
+                    ).first()
+                    if ruta_sel:
+                        ruta_candidates.append(ruta_sel)
+                ruta_candidates.extend([r for r in servicio.rutas if r not in ruta_candidates])
+
+                for ruta in ruta_candidates:
+                    if ruta.raw_file_content:
+                        tracking_content = ruta.raw_file_content.encode("utf-8", errors="ignore")
+                        tracking_filename = ruta.nombre_archivo_origen or f"tracking_{ruta.id}.txt"
+                        break
+
+            return incidente, camaras, tracking_content, tracking_filename, None
+
+    try:
+        incidente, camaras, tracking_content, tracking_filename, _ = await asyncio.to_thread(_prepare)
+    except Exception as exc:
+        logger.exception("Error recuperando datos para EML")
+        raise HTTPException(status_code=500, detail=f"Error recuperando datos: {exc!s}") from exc
+
+    if incidente is None:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+    # 3. Generar el EML (CPU-bound but short, OK in thread)
+    email_svc = EmailService()
+    try:
+        eml_stream = email_svc.generate_ban_eml(
+            incidente=incidente,
+            camaras_afectadas=camaras,
+            html_body=_html_body,
+            subject=_subject,
+            recipients=_recipients,
+            tracking_content=tracking_content,
+            tracking_filename=tracking_filename,
         )
+    except Exception as e:
+        logger.exception("Error generando EML")
+        raise HTTPException(status_code=500, detail=f"Error generando EML: {e!s}") from e
+
+    filename = f"Aviso_Baneo_{incidente.ticket_asociado}.eml"
+    return StreamingResponse(
+        eml_stream,
+        media_type="message/rfc822",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2215,68 +2279,56 @@ async def export_cameras(
     import csv
     import io
     from fastapi.responses import StreamingResponse
-    
-    try:
+
+    def _export() -> tuple[ExportFormat, str, list, str]:
+        from db.models.infra import IncidenteBaneo
+
         with SessionLocal() as session:
             query = session.query(Camara)
-            
-            # Filtrar por estado
+
             if filter_status and filter_status.upper() != "ALL":
                 estado_upper = filter_status.upper()
                 if estado_upper in [e.value for e in CamaraEstado]:
                     query = query.filter(Camara.estado == CamaraEstado(estado_upper))
-            
-            # Filtrar por servicio
+
             if servicio_id:
-                servicio = session.query(Servicio).filter(
-                    Servicio.servicio_id == servicio_id
-                ).first()
-                
-                if servicio:
-                    # Obtener IDs de cámaras del servicio
+                svc = session.query(Servicio).filter(Servicio.servicio_id == servicio_id).first()
+                if svc:
                     camara_ids = set()
-                    for ruta in servicio.rutas_activas:
+                    for ruta in svc.rutas_activas:
                         for empalme in ruta.empalmes:
                             if empalme.camara:
                                 camara_ids.add(empalme.camara.id)
-                    
                     if camara_ids:
                         query = query.filter(Camara.id.in_(camara_ids))
                     else:
-                        # Servicio sin cámaras
-                        query = query.filter(Camara.id == -1)  # No results
-            
+                        query = query.filter(Camara.id == -1)
+
             camaras = query.order_by(Camara.nombre).all()
-            
-            # Obtener tickets de baneo activos para cámaras BANEADAS
-            from db.models.infra import IncidenteBaneo
+
             baneos_activos = session.query(IncidenteBaneo).filter(
-                IncidenteBaneo.activo == True
+                IncidenteBaneo.activo == True  # noqa: E712
             ).all()
-            
-            # Crear mapa servicio_protegido -> ticket
-            ticket_por_servicio: dict[str, str] = {}
-            for baneo in baneos_activos:
-                ticket_por_servicio[baneo.servicio_protegido_id] = baneo.ticket_asociado or f"INC-{baneo.id}"
-            
-            # Preparar datos
+            ticket_por_servicio: dict[str, str] = {
+                b.servicio_protegido_id: b.ticket_asociado or f"INC-{b.id}"
+                for b in baneos_activos
+            }
+
             rows = []
             for cam in camaras:
-                # Obtener servicios Cat6
                 servicios_cat6 = []
                 for empalme in cam.empalmes:
                     for srv in empalme.servicios:
                         if srv.servicio_id and srv.servicio_id not in servicios_cat6:
                             servicios_cat6.append(srv.servicio_id)
-                
-                # Determinar ticket de baneo
+
                 ticket_baneo = ""
                 if cam.estado == CamaraEstado.BANEADA:
                     for svc_id in servicios_cat6:
                         if svc_id in ticket_por_servicio:
                             ticket_baneo = ticket_por_servicio[svc_id]
                             break
-                
+
                 rows.append({
                     "ID": cam.id,
                     "Nombre": cam.nombre or "",
@@ -2289,84 +2341,64 @@ async def export_cameras(
                     "Longitud": cam.longitud or "",
                     "Origen_Datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
                 })
-            
+
             logger.info(
                 "action=export_cameras filter_status=%s servicio=%s format=%s rows=%d",
-                filter_status,
-                servicio_id,
-                format.value,
-                len(rows),
+                filter_status, servicio_id, format.value, len(rows),
             )
-            
-            # Generar archivo según formato
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            
-            if format == ExportFormat.CSV:
-                # Generar CSV
-                output = io.StringIO()
-                if rows:
-                    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-                    writer.writeheader()
-                    writer.writerows(rows)
-                else:
-                    output.write("Sin datos\n")
-                
-                content = output.getvalue().encode("utf-8-sig")  # BOM para Excel
-                
-                return StreamingResponse(
-                    io.BytesIO(content),
-                    media_type="text/csv; charset=utf-8",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
-                    },
-                )
-            
-            else:  # XLSX
-                try:
-                    import pandas as pd
-                    
-                    df = pd.DataFrame(rows)
-                    output = io.BytesIO()
-                    
-                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        df.to_excel(writer, sheet_name="Cámaras", index=False)
-                    
-                    output.seek(0)
-                    
-                    return StreamingResponse(
-                        output,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"',
-                        },
-                    )
-                    
-                except ImportError:
-                    # Fallback a CSV si no hay pandas/openpyxl
-                    logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
-                    
-                    output = io.StringIO()
-                    if rows:
-                        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-                        writer.writeheader()
-                        writer.writerows(rows)
-                    else:
-                        output.write("Sin datos\n")
-                    
-                    content = output.getvalue().encode("utf-8-sig")
-                    
-                    return StreamingResponse(
-                        io.BytesIO(content),
-                        media_type="text/csv; charset=utf-8",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
-                            "X-Export-Warning": "XLSX no disponible, exportando como CSV",
-                        },
-                    )
-                    
+            return format, timestamp, rows, ""
+
+    try:
+        fmt, timestamp, rows, _ = await asyncio.to_thread(_export)
     except Exception as exc:
         logger.exception("action=export_cameras_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error exportando cámaras: {exc!s}",
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Error exportando cámaras: {exc!s}") from exc
+
+    if fmt == ExportFormat.CSV:
+        output = io.StringIO()
+        if rows:
+            writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        else:
+            output.write("Sin datos\n")
+        content = output.getvalue().encode("utf-8-sig")
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"'},
+        )
+
+    else:  # XLSX
+        try:
+            import pandas as pd
+
+            df = pd.DataFrame(rows)
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name="Cámaras", index=False)
+            output.seek(0)
+            return StreamingResponse(
+                output,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"'},
+            )
+        except ImportError:
+            logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
+            output_csv = io.StringIO()
+            if rows:
+                writer = csv.DictWriter(output_csv, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            else:
+                output_csv.write("Sin datos\n")
+            content = output_csv.getvalue().encode("utf-8-sig")
+            return StreamingResponse(
+                io.BytesIO(content),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
+                    "X-Export-Warning": "XLSX no disponible, exportando como CSV",
+                },
+            )

@@ -12,6 +12,7 @@ en cada ejecución para permitir cambios dinámicos desde el panel admin.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -22,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -60,7 +61,7 @@ _worker_status: dict = {
     "hora_inicio": None,
 }
 _status_lock = threading.Lock()
-_scheduler: BlockingScheduler | None = None
+_scheduler: AsyncIOScheduler | None = None
 _listener: IngresoListener | None = None
 
 
@@ -170,7 +171,7 @@ def _leer_config() -> ConfigServicios | None:
         session.close()
 
 
-def _sincronizar_configuracion_worker(scheduler: BlockingScheduler | None) -> dict[str, object]:
+def _sincronizar_configuracion_worker(scheduler: AsyncIOScheduler | None) -> dict[str, object]:
     """Sincroniza el scheduler y el estado expuesto con la configuración persistida."""
     config = _leer_config()
     if config is None:
@@ -206,7 +207,7 @@ def _sincronizar_configuracion_worker(scheduler: BlockingScheduler | None) -> di
     }
 
 
-def _ejecutar_notificacion(scheduler: BlockingScheduler) -> None:
+def _ejecutar_notificacion(scheduler: AsyncIOScheduler) -> None:
     """Job principal: lee config, envía notificación, actualiza timestamps."""
     logger.info("Ejecutando job de notificación de baneos...")
 
@@ -266,8 +267,8 @@ def _ejecutar_notificacion(scheduler: BlockingScheduler) -> None:
 # ── Entry Point ─────────────────────────────────────────────────
 
 
-def main() -> None:
-    """Punto de entrada del worker."""
+async def _main_loop() -> None:
+    """Bucle principal async del worker."""
     global _scheduler
 
     logger.info("Inicializando worker de notificaciones de baneos...")
@@ -300,8 +301,7 @@ def main() -> None:
         _worker_status["intervalo_horas"] = intervalo
         _worker_status["hora_inicio"] = hora_inicio
 
-    # Configurar scheduler en zona horaria de Argentina
-    scheduler = BlockingScheduler(timezone=TZ_ARG)
+    scheduler = AsyncIOScheduler(timezone=TZ_ARG)
     _scheduler = scheduler
     scheduler.add_job(
         _ejecutar_notificacion,
@@ -312,7 +312,6 @@ def main() -> None:
         max_instances=1,
     )
 
-    # Arrancar IngresoListener como daemon thread si hay app_token
     global _listener
     settings = get_settings()
     app_token = settings.slack.app_token
@@ -325,24 +324,33 @@ def main() -> None:
     else:
         logger.warning("SLACK_APP_TOKEN no configurado — IngresoListener desactivado")
 
-    # Señales para apagado limpio
-    def _shutdown(signum: int, frame: object) -> None:
-        logger.info("Señal %d recibida, apagando worker...", signum)
+    scheduler.start()
+    logger.info("Worker iniciado.")
+
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
         scheduler.shutdown(wait=False)
         health_server.shutdown()
+
+
+def main() -> None:
+    """Punto de entrada del worker."""
+
+    def _shutdown(signum: int, frame: object) -> None:
+        logger.info("Señal %d recibida, apagando worker...", signum)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
-    logger.info("Worker iniciado. Próxima ejecución en %d hora(s).", intervalo)
-
     try:
-        scheduler.start()
+        asyncio.run(_main_loop())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Worker detenido.")
-    finally:
-        health_server.shutdown()
 
 
 if __name__ == "__main__":  # pragma: no cover

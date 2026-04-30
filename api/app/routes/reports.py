@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import zipfile
@@ -30,10 +31,9 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 logger = logging.getLogger(__name__)
 
 
-def _df_from_db_for_period(mes: int, anio: int):
+async def _df_from_db_for_period(mes: int, anio: int):
     """Obtiene los reclamos del período y los adapta a la ingesta estándar."""
-
-    raw_df = reclamos_from_db(mes, anio)
+    raw_df = await asyncio.to_thread(reclamos_from_db, mes, anio)
     return db_to_processor_frame(raw_df)
 
 
@@ -64,7 +64,8 @@ async def generar_informe_repetitividad(
             raise HTTPException(status_code=400, detail="El archivo está vacío")
 
         try:
-            result: ReportResult = generar_informe_desde_excel(
+            result: ReportResult = await asyncio.to_thread(
+                generar_informe_desde_excel,
                 excel_bytes,
                 periodo_titulo,
                 incluir_pdf,
@@ -123,11 +124,13 @@ async def generar_informe_repetitividad(
         )
 
     try:
-        df_db = _df_from_db_for_period(periodo_mes, periodo_anio)
+        # _df_from_db_for_period usa psycopg síncrono; se delega a un thread.
+        df_db = await asyncio.to_thread(_df_from_db_for_period, periodo_mes, periodo_anio)
         if df_db is None or df_db.empty:
             raise HTTPException(status_code=404, detail="No se encontraron reclamos para el período solicitado")
 
-        result = generar_informe_desde_dataframe(
+        result = await asyncio.to_thread(
+            generar_informe_desde_dataframe,
             df_db,
             periodo_titulo,
             incluir_pdf,
@@ -192,7 +195,7 @@ async def generar_informe_repetitividad(
 @router.get("/repetitividad")
 async def repetitividad_metrics(periodo_mes: int = Query(..., ge=1, le=12), periodo_anio: int = Query(..., ge=2000, le=2100)) -> JSONResponse:
     from core.services.repetitividad import repetitividad_metrics_from_db
-    metrics = repetitividad_metrics_from_db(periodo_mes, periodo_anio)
+    metrics = await asyncio.to_thread(repetitividad_metrics_from_db, periodo_mes, periodo_anio)
     return JSONResponse(
         {
             "periodo": metrics.periodo,
@@ -225,7 +228,8 @@ async def generar_informe_sla(
             if not excel_bytes:
                 raise HTTPException(status_code=400, detail="El archivo está vacío")
 
-            resultado = sla_service.generate_report_from_excel(
+            resultado = await asyncio.to_thread(
+                sla_service.generate_report_from_excel,
                 excel_bytes,
                 mes=periodo_mes,
                 anio=periodo_anio,
@@ -235,9 +239,12 @@ async def generar_informe_sla(
                 incluir_pdf=incluir_pdf,
             )
         else:
-            computation = sla_service.compute_from_db(mes=periodo_mes, anio=periodo_anio)
+            computation = await asyncio.to_thread(
+                sla_service.compute_from_db, mes=periodo_mes, anio=periodo_anio
+            )
 
-            resultado = sla_service.generate_report_from_computation(
+            resultado = await asyncio.to_thread(
+                sla_service.generate_report_from_computation,
                 computation,
                 eventos=eventos,
                 conclusion=conclusion,
@@ -293,7 +300,9 @@ async def obtener_preview_sla(
         )
 
     try:
-        computation = sla_service.compute_from_db(mes=periodo_mes, anio=periodo_anio)
+        computation = await asyncio.to_thread(
+            sla_service.compute_from_db, mes=periodo_mes, anio=periodo_anio
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "action=reports.sla.preview stage=db_error mes=%s anio=%s error=%s",
@@ -303,7 +312,8 @@ async def obtener_preview_sla(
         )
         raise HTTPException(status_code=500, detail="No se pudo obtener el preview SLA") from exc
 
-    vista = sla_service.build_preview_from_computation(
+    vista = await asyncio.to_thread(
+        sla_service.build_preview_from_computation,
         computation,
         cliente=cliente,
         servicio=servicio,

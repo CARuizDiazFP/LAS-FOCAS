@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from typing import Any, Dict
@@ -46,7 +47,7 @@ async def ingest_reclamos(
         raise HTTPException(status_code=400, detail="No se pudo leer el archivo") from exc
 
     df_ok, summary = parse_reclamos_df(df)
-    inserted, updated = upsert_reclamos(df_ok)
+    inserted, updated = await asyncio.to_thread(upsert_reclamos, df_ok)
 
     payload: Dict[str, Any] = {
         "status": "ok",
