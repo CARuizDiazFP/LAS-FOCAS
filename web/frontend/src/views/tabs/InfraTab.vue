@@ -220,7 +220,7 @@
                 {{ r.nombre }} ({{ r.tipo }}, {{ r.empalmes_count }} emp.)
               </option>
             </select>
-            <label class="form-label">Nombre de la nueva rama (para "Crear rama")</label>
+            <label class="form-label">Nombre del nuevo camino (para "Crear Camino")</label>
             <input v-model="resolveNewRutaNombre" type="text" placeholder="Ej: Backup Corrientes" />
             <div class="modal-actions resolve-conflict-actions">
               <button class="btn subtle" :disabled="uploadResolving" @click="resolveTracking('MERGE_APPEND', { target_ruta_id: resolveTargetRutaId })">
@@ -233,7 +233,12 @@
                 class="btn primary"
                 :disabled="uploadResolving || !resolveNewRutaNombre.trim()"
                 @click="resolveTracking('BRANCH', { new_ruta_name: resolveNewRutaNombre, new_ruta_tipo: 'ALTERNATIVA' })"
-              >{{ uploadResolving ? '...' : '⑂ Crear rama' }}</button>
+              >{{ uploadResolving ? '...' : '⑂ Crear Camino' }}</button>
+              <button
+                class="btn primary"
+                :disabled="uploadResolving"
+                @click="resolveTracking('ADD_STRAND', { target_ruta_id: resolveTargetRutaId })"
+              >{{ uploadResolving ? '...' : '🧵 Nuevo Pelo' }}</button>
               <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
             </div>
           </template>
@@ -319,7 +324,19 @@
         <h2 class="infra-toolbar-title">Infraestructura FO</h2>
         <div class="infra-toolbar-actions">
           <button class="btn danger" @click="openBanModal">🔴 Protocolo Protección</button>
-          <button class="btn" @click="triggerUploadTracking">📁 Subir Tracking</button>
+          <div
+            class="upload-drop-zone"
+            :class="{ 'drag-over': isDragOver }"
+            role="button"
+            tabindex="0"
+            @click="triggerUploadTracking"
+            @keydown.enter.prevent="triggerUploadTracking"
+            @keydown.space.prevent="triggerUploadTracking"
+            @dragover.prevent="onDragOver"
+            @dragenter.prevent="onDragEnter"
+            @dragleave="onDragLeave"
+            @drop.prevent="onDrop"
+          >📁 Subir Tracking</div>
           <button class="btn danger-subtle" @click="openLimpiarModal">🗑 Limpiar Servicio</button>
           <div class="download-dropdown-wrapper" ref="downloadDropdownEl">
             <button class="btn success" @click.stop="toggleDownloadMenu">
@@ -806,6 +823,42 @@ function triggerUploadTracking() {
   trackingFileInputEl.value?.click();
 }
 
+// --- Drag & Drop para la zona de upload de tracking ---
+const isDragOver = ref(false);
+
+function onDragOver() {
+  isDragOver.value = true;
+}
+
+function onDragEnter() {
+  isDragOver.value = true;
+}
+
+function onDragLeave(e: DragEvent) {
+  // Solo desactivar si el mouse salió del wrapper completo
+  const target = e.currentTarget as HTMLElement;
+  if (!target.contains(e.relatedTarget as Node)) {
+    isDragOver.value = false;
+  }
+}
+
+function onDrop(e: DragEvent) {
+  isDragOver.value = false;
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.txt')) {
+    showToast('warning', 'Archivo inválido', 'Solo se aceptan archivos .txt');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    fileContent.value = (ev.target?.result as string) ?? '';
+    fileName.value = file.name;
+    void analyzeTracking();
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
 function handleTrackingFile(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -1068,7 +1121,22 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   gap: 10px; padding: 12px 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
 }
 .infra-toolbar-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: var(--text); }
-.infra-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.infra-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* Zona Drag & Drop de upload tracking */
+.upload-drop-zone {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 7px 14px; border-radius: 8px; font-size: .88rem; font-weight: 500; cursor: pointer;
+  user-select: none; transition: background .15s, border-color .15s;
+  background: rgba(255,255,255,.06); color: var(--text);
+  border: 1.5px dashed var(--border);
+  min-height: 36px;
+}
+.upload-drop-zone:hover { background: rgba(255,255,255,.12); border-color: #60a5fa; }
+.upload-drop-zone.drag-over {
+  background: rgba(96,165,250,.12); border-color: #60a5fa;
+  color: #60a5fa; outline: none;
+}
 
 /* Botones extra (modificadores de .btn global) */
 .btn.danger { background: rgba(239,68,68,.15); color: #ef4444; border: 1px solid rgba(239,68,68,.3); }

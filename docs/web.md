@@ -97,6 +97,31 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET /api/infra/servicios/{svcId}/rutas` → rutas de un servicio.
 - `GET /api/infra/rutas/{rutaId}/tracking` → tracking de una ruta.
 - `GET /api/infra/tracking/{rutaId}/download` → descarga de tracking.
+- `POST /api/infra/trackings/analyze` → analiza archivo `.txt` (multipart). Devuelve `AnalyzeResult` con `status`: `NEW`, `IDENTICAL`, `CONFLICT`, `POTENTIAL_UPGRADE`, `NEW_STRAND`, `ERROR`.
+- `POST /api/infra/trackings/resolve` → ejecuta la acción seleccionada. JSON body: `{action, content, filename, target_ruta_id?, new_ruta_name?, new_ruta_tipo?, old_service_id?}`.
+- `GET /api/infra/export/cameras` → exporta cámaras. Params: `format=xlsx|csv`, `filter_status=ALL|BANEADA|OCUPADA|...`, `servicio_id?`.
+
+### InfraTab — Subir Tracking (Portero de Archivos)
+
+El flujo de carga de trackings opera en 2 fases:
+
+**Fase 1 — Análisis (`/analyze`)**: Se sube el `.txt`; la API responde con el `status` del archivo y, si corresponde, lista de rutas existentes (`rutas_existentes`).
+
+**Fase 2 — Resolución (`/resolve`)**: El usuario elige la acción y se envía el JSON con `action` + extras según la tabla:
+
+| Acción UI | `action` enviado | Extras |
+|---|---|---|
+| Crear nuevo servicio | `CREATE_NEW` | — |
+| Merge empalmes | `MERGE_APPEND` | `target_ruta_id` |
+| Reemplazar ruta | `REPLACE` | `target_ruta_id` |
+| **Crear Camino** | `BRANCH` | `new_ruta_name`, `new_ruta_tipo: "ALTERNATIVA"` |
+| **Nuevo Pelo** | `ADD_STRAND` | `target_ruta_id` |
+| Confirmar upgrade | `CONFIRM_UPGRADE` | `old_service_id` |
+| Agregar pelo (auto-detect) | `ADD_STRAND` | `target_ruta_id` (de `strand_info.ruta_id`) |
+
+> **Nota de nomenclatura**: La acción `BRANCH` se presenta como **"Crear Camino"** en la UI (caminos alternativos/redundantes de FO). La opción **"Nuevo Pelo"** es visible tanto cuando el status es `NEW_STRAND` como dentro del modal `CONFLICT`, permitiendo al usuario agregar manualmente un pelo adicional a un camino existente.
+
+**Zona de upload — Drag & Drop**: La zona "📁 Subir Tracking" acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia a azul (`--drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
 
 ## Frontend SPA (Vue 3)
 
