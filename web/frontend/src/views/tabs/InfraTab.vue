@@ -127,8 +127,203 @@
       </div>
     </dialog>
 
+    <!-- Hidden file input para tracking upload -->
+    <input ref="trackingFileInputEl" type="file" accept=".txt" style="display:none" @change="handleTrackingFile">
+
+    <!-- Modal: Protocolo de Protección (ban) -->
+    <dialog ref="banModalEl" class="infra-generic-modal" @click.self="closeBanModal">
+      <div class="modal-inner">
+        <div class="modal-header-row">
+          <h3 class="modal-title">🔴 Protocolo de Protección</h3>
+          <button class="close-btn" @click="closeBanModal">×</button>
+        </div>
+        <p class="modal-desc">Activa el baneo de cámaras del servicio protegido (backup/respaldo).</p>
+        <label class="form-label">Ticket asociado (opcional)</label>
+        <input v-model="banForm.ticket_asociado" type="text" placeholder="INC0012345" />
+        <label class="form-label">Servicio afectado (el que se cortó) <span class="req">*</span></label>
+        <input v-model="banForm.servicio_afectado_id" type="text" placeholder="ID del servicio cortado" />
+        <label class="form-label">Servicio a proteger (banear) <span class="req">*</span></label>
+        <input v-model="banForm.servicio_protegido_id" type="text" placeholder="ID del servicio a proteger" />
+        <label class="form-label">Motivo (opcional)</label>
+        <textarea v-model="banForm.motivo" rows="2" placeholder="Corte de fibra en Av. Corrientes..."></textarea>
+        <label class="form-label">Operador (opcional)</label>
+        <input v-model="banForm.usuario_ejecutor" type="text" placeholder="usuario@empresa.com" />
+        <div class="modal-actions">
+          <button
+            class="btn danger"
+            :disabled="banLoading || !banForm.servicio_afectado_id.trim() || !banForm.servicio_protegido_id.trim()"
+            @click="submitBan"
+          >{{ banLoading ? 'Activando...' : 'Activar Protocolo' }}</button>
+          <button class="btn subtle" @click="closeBanModal">Cancelar</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Modal: Resolución de tracking (flujo Portero 2 fases) -->
+    <dialog ref="trackingResolveModalEl" class="infra-generic-modal tracking-resolve-modal" @click.self="closeUploadModal">
+      <div class="modal-inner">
+        <div class="modal-header-row">
+          <h3 class="modal-title">📁 Subir Tracking</h3>
+          <button class="close-btn" @click="closeUploadModal">×</button>
+        </div>
+        <div v-if="uploadAnalyzing" class="upload-analyzing">
+          ⏳ Analizando <strong>{{ fileName }}</strong>...
+        </div>
+        <template v-else-if="analyzeResult">
+          <div :class="['resolve-status-badge', 'status-' + (analyzeResult.status ?? 'error').toLowerCase()]">
+            {{ analyzeResult.status }}
+          </div>
+          <p class="resolve-message">{{ analyzeResult.message }}</p>
+          <div v-if="analyzeResult.servicio_id" class="resolve-svc-info">
+            Servicio: <strong>{{ analyzeResult.servicio_id }}</strong>
+            <span v-if="analyzeResult.parsed_empalmes_count"> · {{ analyzeResult.parsed_empalmes_count }} empalmes</span>
+            <template v-if="analyzeResult.punta_a_sitio">
+              <span> · {{ analyzeResult.punta_a_sitio }} → {{ analyzeResult.punta_b_sitio ?? '?' }}</span>
+            </template>
+          </div>
+
+          <!-- NEW: crear servicio nuevo -->
+          <template v-if="analyzeResult.status === 'NEW'">
+            <p class="resolve-hint">El servicio no existe. Se creará con una ruta Principal.</p>
+            <div class="modal-actions">
+              <button class="btn primary" :disabled="uploadResolving" @click="resolveTracking('CREATE_NEW', {})">
+                {{ uploadResolving ? 'Procesando...' : 'Crear nuevo servicio' }}
+              </button>
+              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+            </div>
+          </template>
+
+          <!-- IDENTICAL: ya existe igual -->
+          <template v-else-if="analyzeResult.status === 'IDENTICAL'">
+            <p class="resolve-hint">El archivo es idéntico a una ruta existente. Sin cambios necesarios.</p>
+            <div class="modal-actions">
+              <button class="btn subtle" @click="closeUploadModal">Cerrar</button>
+            </div>
+          </template>
+
+          <!-- CONFLICT: servicio existe con contenido diferente -->
+          <template v-else-if="analyzeResult.status === 'CONFLICT'">
+            <p class="resolve-hint">El servicio ya existe con contenido diferente.</p>
+            <div v-if="analyzeResult.rutas_existentes.length" class="resolve-rutas-list">
+              <div v-for="r in analyzeResult.rutas_existentes" :key="r.id" class="resolve-ruta-item">
+                <strong>{{ r.nombre }}</strong>
+                <span class="resolve-ruta-meta">{{ r.tipo }} · {{ r.empalmes_count }} emp.</span>
+              </div>
+            </div>
+            <label v-if="analyzeResult.rutas_existentes.length > 0" class="form-label">Ruta destino para Merge / Reemplazar</label>
+            <select
+              v-if="analyzeResult.rutas_existentes.length > 0"
+              v-model="resolveTargetRutaId"
+              class="resolve-select"
+            >
+              <option v-for="r in analyzeResult.rutas_existentes" :key="r.id" :value="r.id">
+                {{ r.nombre }} ({{ r.tipo }}, {{ r.empalmes_count }} emp.)
+              </option>
+            </select>
+            <label class="form-label">Nombre de la nueva rama (para "Crear rama")</label>
+            <input v-model="resolveNewRutaNombre" type="text" placeholder="Ej: Backup Corrientes" />
+            <div class="modal-actions resolve-conflict-actions">
+              <button class="btn subtle" :disabled="uploadResolving" @click="resolveTracking('MERGE_APPEND', { target_ruta_id: resolveTargetRutaId })">
+                {{ uploadResolving ? '...' : '+ Merge empalmes' }}
+              </button>
+              <button class="btn warning" :disabled="uploadResolving" @click="resolveTracking('REPLACE', { target_ruta_id: resolveTargetRutaId })">
+                {{ uploadResolving ? '...' : '↺ Reemplazar ruta' }}
+              </button>
+              <button
+                class="btn primary"
+                :disabled="uploadResolving || !resolveNewRutaNombre.trim()"
+                @click="resolveTracking('BRANCH', { new_ruta_name: resolveNewRutaNombre, new_ruta_tipo: 'ALTERNATIVA' })"
+              >{{ uploadResolving ? '...' : '⑂ Crear rama' }}</button>
+              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+            </div>
+          </template>
+
+          <!-- POTENTIAL_UPGRADE: posible upgrade de servicio -->
+          <template v-else-if="analyzeResult.status === 'POTENTIAL_UPGRADE'">
+            <p class="resolve-hint">Se detectó un posible upgrade de servicio.</p>
+            <div v-if="analyzeResult.upgrade_info" class="resolve-upgrade-info">
+              <div>Servicio viejo: <strong>{{ analyzeResult.upgrade_info.old_service_id }}</strong></div>
+              <div>Razón: {{ analyzeResult.upgrade_info.match_reason }}</div>
+              <div v-if="analyzeResult.upgrade_info.punta_a_match">Punta A: {{ analyzeResult.upgrade_info.punta_a_match }}</div>
+              <div v-if="analyzeResult.upgrade_info.punta_b_match">Punta B: {{ analyzeResult.upgrade_info.punta_b_match }}</div>
+            </div>
+            <div class="modal-actions">
+              <button
+                class="btn primary"
+                :disabled="uploadResolving"
+                @click="resolveTracking('CONFIRM_UPGRADE', { old_service_id: analyzeResult?.upgrade_info?.old_service_id ?? '' })"
+              >{{ uploadResolving ? '...' : 'Confirmar upgrade' }}</button>
+              <button class="btn subtle" :disabled="uploadResolving" @click="resolveTracking('CREATE_NEW', {})">
+                {{ uploadResolving ? '...' : 'Crear como nuevo' }}
+              </button>
+              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+            </div>
+          </template>
+
+          <!-- NEW_STRAND: nuevo pelo -->
+          <template v-else-if="analyzeResult.status === 'NEW_STRAND'">
+            <p class="resolve-hint">Se detectó un nuevo pelo para un servicio existente.</p>
+            <div v-if="analyzeResult.strand_info" class="resolve-upgrade-info">
+              <div>Servicio: <strong>{{ analyzeResult.strand_info.service_id }}</strong></div>
+              <div>Pelos actuales: {{ analyzeResult.strand_info.current_strands }}</div>
+              <div v-if="analyzeResult.strand_info.new_strand_pelo">Nuevo pelo: {{ analyzeResult.strand_info.new_strand_pelo }}</div>
+            </div>
+            <div class="modal-actions">
+              <button
+                class="btn primary"
+                :disabled="uploadResolving"
+                @click="resolveTracking('ADD_STRAND', { target_ruta_id: analyzeResult?.strand_info?.ruta_id })"
+              >{{ uploadResolving ? '...' : 'Agregar pelo' }}</button>
+              <button class="btn subtle" :disabled="uploadResolving" @click="resolveTracking('CREATE_NEW', {})">
+                {{ uploadResolving ? '...' : 'Crear como nuevo' }}
+              </button>
+              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+            </div>
+          </template>
+
+          <!-- ERROR (y cualquier status desconocido) -->
+          <template v-else>
+            <p class="resolve-error">{{ analyzeResult.error ?? 'Error desconocido durante el análisis.' }}</p>
+            <div class="modal-actions">
+              <button class="btn subtle" @click="closeUploadModal">Cerrar</button>
+            </div>
+          </template>
+        </template>
+      </div>
+    </dialog>
+
+    <!-- Modal: Limpiar servicio -->
+    <dialog ref="limpiarModalEl" class="infra-generic-modal" @click.self="closeLimpiarModal">
+      <div class="modal-inner">
+        <div class="modal-header-row">
+          <h3 class="modal-title">🗑 Limpiar Servicio</h3>
+          <button class="close-btn" @click="closeLimpiarModal">×</button>
+        </div>
+        <p class="modal-desc danger-text">⚠️ Operación destructiva e irreversible. Se eliminarán todas las asociaciones de empalmes y rutas del servicio.</p>
+        <label class="form-label">ID del servicio <span class="req">*</span></label>
+        <input v-model="limpiarServicioId" type="text" placeholder="Ej: 52547" />
+        <div class="modal-actions">
+          <button
+            class="btn danger"
+            :disabled="limpiarLoading || !limpiarServicioId.trim()"
+            @click="submitLimpiar"
+          >{{ limpiarLoading ? 'Limpiando...' : 'Limpiar servicio' }}</button>
+          <button class="btn subtle" @click="closeLimpiarModal">Cancelar</button>
+        </div>
+      </div>
+    </dialog>
+
     <!-- Main content -->
     <div class="infra-panel">
+      <div class="infra-toolbar">
+        <h2 class="infra-toolbar-title">Infraestructura FO</h2>
+        <div class="infra-toolbar-actions">
+          <button class="btn danger" @click="openBanModal">🔴 Protocolo Protección</button>
+          <button class="btn" @click="triggerUploadTracking">📁 Subir Tracking</button>
+          <button class="btn danger-subtle" @click="openLimpiarModal">🗑 Limpiar Servicio</button>
+          <button class="btn success" @click="downloadCameras">⬇ Descargar XLSX</button>
+        </div>
+      </div>
       <div class="infra-search-area">
         <div class="infra-search-row">
           <input
@@ -148,6 +343,15 @@
           </span>
         </div>
         <div v-if="statusText" :class="['infra-status', statusVariant]">{{ statusText }}</div>
+      </div>
+
+      <!-- Leyenda de estados -->
+      <div class="infra-legend">
+        <span class="infra-legend-item"><span class="infra-legend-dot libre"></span>LIBRE</span>
+        <span class="infra-legend-item"><span class="infra-legend-dot ocupada"></span>OCUPADA</span>
+        <span class="infra-legend-item"><span class="infra-legend-dot baneada"></span>BANEADA</span>
+        <span class="infra-legend-item"><span class="infra-legend-dot detectada"></span>DETECTADA</span>
+        <span class="infra-legend-item"><span style="font-size:.85rem">📍</span>TRACKING</span>
       </div>
 
       <div v-if="loading" class="infra-loading">Buscando...</div>
@@ -491,6 +695,256 @@ async function downloadTracking() {
     showToast('error', 'Error de descarga', e instanceof Error ? e.message : String(e));
   }
 }
+
+// --- Protocolo de Protección (ban) ---
+interface BanFormData {
+  ticket_asociado: string;
+  servicio_afectado_id: string;
+  servicio_protegido_id: string;
+  motivo: string;
+  usuario_ejecutor: string;
+}
+const banModalEl = ref<HTMLDialogElement | null>(null);
+const banLoading = ref(false);
+const banForm = ref<BanFormData>({
+  ticket_asociado: '',
+  servicio_afectado_id: '',
+  servicio_protegido_id: '',
+  motivo: '',
+  usuario_ejecutor: '',
+});
+
+function openBanModal() {
+  banForm.value = {
+    ticket_asociado: '',
+    servicio_afectado_id: '',
+    servicio_protegido_id: '',
+    motivo: '',
+    usuario_ejecutor: '',
+  };
+  banModalEl.value?.showModal();
+}
+
+function closeBanModal() {
+  banModalEl.value?.close();
+}
+
+async function submitBan() {
+  if (!banForm.value.servicio_afectado_id.trim() || !banForm.value.servicio_protegido_id.trim()) {
+    showToast('warning', 'Campos requeridos', 'Completá los dos IDs de servicio');
+    return;
+  }
+  banLoading.value = true;
+  try {
+    const payload: Record<string, string | null> = {
+      ticket_asociado: banForm.value.ticket_asociado.trim() || null,
+      servicio_afectado_id: banForm.value.servicio_afectado_id.trim(),
+      servicio_protegido_id: banForm.value.servicio_protegido_id.trim(),
+      motivo: banForm.value.motivo.trim() || null,
+      usuario_ejecutor: banForm.value.usuario_ejecutor.trim() || null,
+    };
+    const res = await fetch('/api/infra/ban/create', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    closeBanModal();
+    const baneadas = (data as Record<string, number>).camaras_baneadas ?? 0;
+    showToast('success', 'Protocolo activado', `${baneadas} cámara(s) baneadas`);
+    if (hasSearched.value) await searchCamaras();
+  } catch (e: unknown) {
+    showToast('error', 'Error al activar protocolo', e instanceof Error ? e.message : String(e));
+  } finally {
+    banLoading.value = false;
+  }
+}
+
+// --- Upload Tracking (flujo Portero 2 fases) ---
+interface RutaInfo {
+  id: number; nombre: string; tipo: string; empalmes_count: number; activa: boolean;
+}
+interface UpgradeInfo {
+  old_service_id: string; old_service_db_id: number; new_service_id: string;
+  match_reason: string; punta_a_match?: string | null; punta_b_match?: string | null;
+}
+interface StrandInfo {
+  service_id: string; service_db_id: number; ruta_id: number;
+  current_strands: number; new_strand_pelo?: string | null;
+}
+interface AnalyzeResult {
+  status: string; servicio_id?: string | null; servicio_db_id?: number | null;
+  rutas_existentes: RutaInfo[]; parsed_empalmes_count: number; message: string;
+  error?: string | null; upgrade_info?: UpgradeInfo | null; strand_info?: StrandInfo | null;
+  punta_a_sitio?: string | null; punta_b_sitio?: string | null;
+}
+
+const trackingFileInputEl = ref<HTMLInputElement | null>(null);
+const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);
+const uploadAnalyzing = ref(false);
+const uploadResolving = ref(false);
+const analyzeResult = ref<AnalyzeResult | null>(null);
+const fileContent = ref('');
+const fileName = ref('');
+const resolveTargetRutaId = ref<number | null>(null);
+const resolveNewRutaNombre = ref('');
+
+function triggerUploadTracking() {
+  trackingFileInputEl.value?.click();
+}
+
+function handleTrackingFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.txt')) {
+    showToast('warning', 'Archivo inválido', 'Solo se aceptan archivos .txt');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    fileContent.value = (e.target?.result as string) ?? '';
+    fileName.value = file.name;
+    void analyzeTracking();
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+async function analyzeTracking() {
+  uploadAnalyzing.value = true;
+  analyzeResult.value = null;
+  resolveTargetRutaId.value = null;
+  resolveNewRutaNombre.value = '';
+  trackingResolveModalEl.value?.showModal();
+  try {
+    const blob = new Blob([fileContent.value], { type: 'text/plain' });
+    const formData = new FormData();
+    formData.append('file', blob, fileName.value);
+    const res = await fetch('/api/infra/trackings/analyze', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    analyzeResult.value = data as AnalyzeResult;
+    if (analyzeResult.value.rutas_existentes?.length) {
+      resolveTargetRutaId.value = analyzeResult.value.rutas_existentes[0].id;
+    }
+  } catch (e: unknown) {
+    analyzeResult.value = {
+      status: 'ERROR', message: 'Error analizando el archivo',
+      parsed_empalmes_count: 0, rutas_existentes: [],
+      error: e instanceof Error ? e.message : String(e),
+    };
+  } finally {
+    uploadAnalyzing.value = false;
+  }
+}
+
+async function resolveTracking(action: string, extras: Record<string, unknown> = {}) {
+  uploadResolving.value = true;
+  try {
+    const body: Record<string, unknown> = {
+      action,
+      content: fileContent.value,
+      filename: fileName.value,
+      ...extras,
+    };
+    const res = await fetch('/api/infra/trackings/resolve', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    if (!(data as Record<string, boolean>).success) {
+      throw new Error((data as Record<string, string>).error ?? 'Error al resolver el tracking');
+    }
+    closeUploadModal();
+    showToast('success', 'Tracking procesado', (data as Record<string, string>).message ?? '');
+    if (hasSearched.value) await searchCamaras();
+  } catch (e: unknown) {
+    showToast('error', 'Error al procesar tracking', e instanceof Error ? e.message : String(e));
+  } finally {
+    uploadResolving.value = false;
+  }
+}
+
+function closeUploadModal() {
+  trackingResolveModalEl.value?.close();
+  uploadAnalyzing.value = false;
+  analyzeResult.value = null;
+  fileContent.value = '';
+  fileName.value = '';
+  resolveTargetRutaId.value = null;
+  resolveNewRutaNombre.value = '';
+}
+
+// --- Limpiar servicio ---
+const limpiarModalEl = ref<HTMLDialogElement | null>(null);
+const limpiarServicioId = ref('');
+const limpiarLoading = ref(false);
+
+function openLimpiarModal() {
+  limpiarServicioId.value = '';
+  limpiarModalEl.value?.showModal();
+}
+
+function closeLimpiarModal() {
+  limpiarModalEl.value?.close();
+}
+
+async function submitLimpiar() {
+  const svcId = limpiarServicioId.value.trim();
+  if (!svcId) return;
+  limpiarLoading.value = true;
+  try {
+    const res = await fetch(`/api/infra/servicios/${encodeURIComponent(svcId)}/empalmes`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { Accept: 'application/json', 'X-CSRF-Token': csrf() },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    closeLimpiarModal();
+    showToast('success', 'Servicio limpiado', (data as Record<string, string>).message ?? '');
+    if (hasSearched.value) await searchCamaras();
+  } catch (e: unknown) {
+    showToast('error', 'Error al limpiar servicio', e instanceof Error ? e.message : String(e));
+  } finally {
+    limpiarLoading.value = false;
+  }
+}
+
+// --- Descargar XLSX ---
+async function downloadCameras() {
+  let url = '/api/infra/export/cameras?format=xlsx';
+  if (searchTerms.value.length === 1 && /^\d+$/.test(searchTerms.value[0].trim())) {
+    url += `&servicio_id=${encodeURIComponent(searchTerms.value[0].trim())}`;
+  }
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Error ${res.status}`);
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    const match = cd.match(/filename="(.+?)"/);
+    const filename = match ? match[1] : `camaras_${Date.now()}.xlsx`;
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+    showToast('success', 'Descarga completa', filename);
+  } catch (e: unknown) {
+    showToast('error', 'Error al descargar', e instanceof Error ? e.message : String(e));
+  }
+}
 </script>
 
 <style scoped>
@@ -571,4 +1025,79 @@ async function downloadTracking() {
 .toast-close { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.1rem; padding: 0; }
 .toast-anim-enter-active, .toast-anim-leave-active { transition: all .25s ease; }
 .toast-anim-enter-from, .toast-anim-leave-to { opacity: 0; transform: translateX(24px); }
+
+/* Estado icons — colores faltantes en la migración */
+.infra-estado-icon.ocupada { background: #f59e0b; }
+.infra-estado-icon.detectada { background: #9ca3af; }
+
+/* Toolbar */
+.infra-toolbar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 10px; padding: 12px 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+}
+.infra-toolbar-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.infra-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Botones extra (modificadores de .btn global) */
+.btn.danger { background: rgba(239,68,68,.15); color: #ef4444; border: 1px solid rgba(239,68,68,.3); }
+.btn.danger:hover:not(:disabled) { background: rgba(239,68,68,.25); }
+.btn.danger-subtle { background: none; color: #ef4444; border: 1px solid rgba(239,68,68,.2); }
+.btn.danger-subtle:hover:not(:disabled) { background: rgba(239,68,68,.1); }
+.btn.success { background: rgba(34,197,94,.15); color: #22c55e; border: 1px solid rgba(34,197,94,.3); }
+.btn.success:hover:not(:disabled) { background: rgba(34,197,94,.25); }
+.btn.warning { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.3); }
+.btn.warning:hover:not(:disabled) { background: rgba(245,158,11,.25); }
+
+/* Leyenda de estados */
+.infra-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0 8px; font-size: .8rem; color: var(--muted); }
+.infra-legend-item { display: flex; align-items: center; gap: 5px; }
+.infra-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.infra-legend-dot.libre { background: #22c55e; }
+.infra-legend-dot.ocupada { background: #f59e0b; }
+.infra-legend-dot.baneada { background: #ef4444; }
+.infra-legend-dot.detectada { background: #9ca3af; }
+
+/* Modal genérico compartido */
+.infra-generic-modal {
+  border: 1px solid var(--border); border-radius: 10px; background: #1c1c1c;
+  color: var(--text); padding: 0; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto;
+}
+.infra-generic-modal::backdrop { background: rgba(0,0,0,.6); }
+.modal-inner { padding: 24px; display: flex; flex-direction: column; gap: 6px; }
+.modal-header-row { display: flex; align-items: center; margin-bottom: 10px; }
+.modal-title { margin: 0; font-size: 1rem; flex: 1; }
+.modal-desc { margin: 0 0 6px; font-size: .83rem; color: var(--muted); }
+.danger-text { color: #f59e0b; }
+.req { color: #ef4444; }
+.modal-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.resolve-conflict-actions { gap: 6px; }
+
+/* Modal de resolución de tracking */
+.tracking-resolve-modal { max-width: 580px; }
+.upload-analyzing { padding: 16px 0; font-size: .88rem; color: var(--muted); }
+.resolve-status-badge {
+  display: inline-block; padding: 4px 12px; border-radius: 12px;
+  font-size: .82rem; font-weight: 700; margin-bottom: 6px; background: rgba(255,255,255,.07);
+}
+.resolve-status-badge.status-new { background: rgba(59,130,246,.15); color: #60a5fa; }
+.resolve-status-badge.status-identical { background: rgba(34,197,94,.15); color: #22c55e; }
+.resolve-status-badge.status-conflict { background: rgba(245,158,11,.15); color: #f59e0b; }
+.resolve-status-badge.status-potential_upgrade { background: rgba(168,85,247,.15); color: #c084fc; }
+.resolve-status-badge.status-new_strand { background: rgba(168,85,247,.15); color: #c084fc; }
+.resolve-status-badge.status-error { background: rgba(239,68,68,.15); color: #ef4444; }
+.resolve-message { margin: 0 0 8px; font-size: .85rem; }
+.resolve-svc-info { font-size: .83rem; color: var(--muted); margin-bottom: 8px; }
+.resolve-hint { font-size: .85rem; color: var(--muted); margin: 4px 0 8px; }
+.resolve-error { color: #ef4444; font-size: .85rem; margin: 8px 0; }
+.resolve-rutas-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.resolve-ruta-item {
+  display: flex; align-items: center; gap: 8px; font-size: .82rem;
+  padding: 6px 8px; background: rgba(255,255,255,.04); border-radius: 6px;
+}
+.resolve-ruta-meta { font-size: .78rem; color: var(--muted); }
+.resolve-select { width: 100%; margin: 4px 0 10px; }
+.resolve-upgrade-info {
+  font-size: .83rem; background: rgba(255,255,255,.04); border-radius: 6px;
+  padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 3px;
+}
 </style>
