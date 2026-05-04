@@ -13,6 +13,25 @@
 }
 
 body.dark { background: var(--bg); color: var(--text); margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; }
+
+/*
+ * ── Centrado nativo de <dialog> ──────────────────────────────────────────────
+ * admin.css aplica `margin: 0` a todos los elementos via el reset universal `*`.
+ * Esto pisa el `margin: auto` del UA stylesheet que centra los <dialog> abiertos
+ * con .showModal() dentro del top-layer. Sin este fix, los modales se renderizan
+ * pegados al margen superior-izquierdo del viewport.
+ *
+ * Esta regla de tipo (especificidad 0-0-1) es sobreescrita por cualquier selector
+ * de clase (0-1-0) que necesite comportamiento distinto (ej. .tracking-modal usa
+ * width/height:100% y margin:0 explícito, por lo que no se ve afectado).
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+dialog {
+  position: fixed;
+  inset: 0;          /* top/right/bottom/left: 0 — ancla al viewport */
+  margin: auto;      /* distribuye el espacio sobrante → centra horizontal y vertical */
+}
+
 .muted { color: var(--muted); }
 
 .topbar { display:flex; align-items:center; justify-content:space-between; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top:0; z-index:10; }
@@ -1537,6 +1556,9 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
    MODAL DE DETALLE DE TRACKING
    =========================================== */
 .tracking-detail-modal {
+  position: fixed;
+  inset: 0;
+  margin: auto;
   padding: 0;
   border: none;
   border-radius: 12px;

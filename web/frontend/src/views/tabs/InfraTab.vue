@@ -1706,7 +1706,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-edit-btn { font-size: .75rem; padding: 3px 8px; background: rgba(255,255,255,.07); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text); }
 .infra-ban-ticket { margin-top: 6px; font-size: .78rem; color: #ef4444; }
 /* Modal */
-.camera-state-modal, .tracking-detail-modal { border: 1px solid var(--border); border-radius: 10px; background: #1c1c1c; color: var(--text); padding: 24px; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto; }
+.camera-state-modal, .tracking-detail-modal { position: fixed; inset: 0; margin: auto; border: 1px solid var(--border); border-radius: 10px; background: #1c1c1c; color: var(--text); padding: 24px; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto; }
 .camera-state-modal::backdrop, .tracking-detail-modal::backdrop { background: rgba(0,0,0,.6); }
 .camera-state-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .camera-state-meta-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: .85rem; margin-bottom: 8px; color: var(--muted); }
@@ -1837,6 +1837,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 
 /* Modal genérico compartido */
 .infra-generic-modal {
+  position: fixed; inset: 0; margin: auto;
   border: 1px solid var(--border); border-radius: 10px; background: #1c1c1c;
   color: var(--text); padding: 0; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto;
 }
