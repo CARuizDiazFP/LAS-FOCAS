@@ -104,6 +104,18 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
 
+### InfraTab — Leyenda de estados (atajos de filtrado)
+
+Los cinco elementos de la barra de leyenda (`LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `TRACKING`) son botones interactivos que aplican un filtro rápido sobre la grilla de cámaras ya cargada:
+
+- **Clic en un atajo**: filtra la grilla al instante, sin nueva llamada a la API.
+- **Clic en el mismo atajo activo**: limpia el filtro (toggle).
+- **Clic en la `×` del chip**: también limpia el filtro.
+- **`TRACKING`**: muestra sólo cámaras que tienen al menos una ruta/servicio asociado.
+- El botón **Limpiar** también resetea el filtro activo junto a los términos de búsqueda.
+
+Al activar un filtro aparece un **chip removible** junto al área de búsqueda indicando el estado activo. El chip usa la misma paleta de colores que los dots de la leyenda.
+
 ### InfraTab — Protocolo de Protección (Wizard 3 pasos)
 
 El botón **🔴 Protocolo Protección** abre un wizard guiado de 3 pasos con stepper visual:

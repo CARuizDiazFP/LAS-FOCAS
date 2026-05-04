@@ -506,16 +506,22 @@
             <button class="infra-search-term-remove" @click="removeTerm(i)">×</button>
           </span>
         </div>
+        <div v-if="activeStateFilter" class="infra-state-filter-chip">
+          <span v-if="activeStateFilter !== 'TRACKING'" class="infra-legend-dot" :class="activeStateFilter.toLowerCase()"></span>
+          <span v-else style="font-size:.85rem;line-height:1">📍</span>
+          <span>{{ activeStateFilter }}</span>
+          <button class="infra-state-filter-remove" @click="activeStateFilter = null" aria-label="Quitar filtro de estado">×</button>
+        </div>
         <div v-if="statusText" :class="['infra-status', statusVariant]">{{ statusText }}</div>
       </div>
 
-      <!-- Leyenda de estados -->
+      <!-- Leyenda de estados (atajos de filtrado rápido) (atajos de filtrado rápido) -->
       <div class="infra-legend">
-        <span class="infra-legend-item"><span class="infra-legend-dot libre"></span>LIBRE</span>
-        <span class="infra-legend-item"><span class="infra-legend-dot ocupada"></span>OCUPADA</span>
-        <span class="infra-legend-item"><span class="infra-legend-dot baneada"></span>BANEADA</span>
-        <span class="infra-legend-item"><span class="infra-legend-dot detectada"></span>DETECTADA</span>
-        <span class="infra-legend-item"><span style="font-size:.85rem">📍</span>TRACKING</span>
+        <button :class="['infra-legend-item', { active: activeStateFilter === 'LIBRE' }]" @click="toggleStateFilter('LIBRE')"><span class="infra-legend-dot libre"></span>LIBRE</button>
+        <button :class="['infra-legend-item', { active: activeStateFilter === 'OCUPADA' }]" @click="toggleStateFilter('OCUPADA')"><span class="infra-legend-dot ocupada"></span>OCUPADA</button>
+        <button :class="['infra-legend-item', { active: activeStateFilter === 'BANEADA' }]" @click="toggleStateFilter('BANEADA')"><span class="infra-legend-dot baneada"></span>BANEADA</button>
+        <button :class="['infra-legend-item', { active: activeStateFilter === 'DETECTADA' }]" @click="toggleStateFilter('DETECTADA')"><span class="infra-legend-dot detectada"></span>DETECTADA</button>
+        <button :class="['infra-legend-item', { active: activeStateFilter === 'TRACKING' }]" @click="toggleStateFilter('TRACKING')"><span style="font-size:.85rem;line-height:1">📍</span>TRACKING</button>
       </div>
 
       <div v-if="loading" class="infra-loading">Buscando...</div>
@@ -523,9 +529,12 @@
         <span>Agregá términos de búsqueda y presioná "Buscar"</span>
       </div>
       <div v-else-if="camaras.length === 0" class="infra-empty">Sin resultados para estos términos.</div>
+      <div v-else-if="filteredCamaras.length === 0" class="infra-empty">
+        Sin cámaras con estado <strong>{{ activeStateFilter }}</strong> en los resultados actuales.
+      </div>
       <div v-else class="infra-grid">
         <div
-          v-for="camara in camaras"
+          v-for="camara in filteredCamaras"
           :key="camara.id"
           :class="['infra-camara-card']"
           :data-estado="camara.estado ?? 'LIBRE'"
@@ -632,8 +641,25 @@ function clearAll() {
   searchInput.value = '';
   camaras.value = [];
   hasSearched.value = false;
+  activeStateFilter.value = null;
   setStatus('');
 }
+
+// --- Filtro rápido por estado ---
+const activeStateFilter = ref<string | null>(null);
+
+function toggleStateFilter(estado: string) {
+  activeStateFilter.value = activeStateFilter.value === estado ? null : estado;
+}
+
+const filteredCamaras = computed(() => {
+  if (!activeStateFilter.value) return camaras.value;
+  const target = activeStateFilter.value;
+  if (target === 'TRACKING') {
+    return camaras.value.filter(c => ((c.rutas as unknown[]) ?? []).length > 0);
+  }
+  return camaras.value.filter(c => (c.estado ?? 'LIBRE') === target);
+});
 
 async function searchCamaras() {
   if (searchTerms.value.length === 0) return;
@@ -1413,14 +1439,33 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .btn.warning { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.3); }
 .btn.warning:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 
-/* Leyenda de estados */
-.infra-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0 8px; font-size: .8rem; color: var(--muted); }
-.infra-legend-item { display: flex; align-items: center; gap: 5px; }
-.infra-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+/* Leyenda de estados — atajos de filtrado rápido */
+.infra-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 8px; }
+.infra-legend-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 1px solid transparent; cursor: pointer;
+  padding: 3px 10px; border-radius: 14px; font-size: .8rem;
+  color: var(--muted); transition: background .15s, color .15s, border-color .15s;
+}
+.infra-legend-item:hover { background: rgba(255,255,255,.07); color: var(--text); }
+.infra-legend-item.active { background: rgba(255,255,255,.10); color: var(--text); border-color: var(--border); }
+.infra-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .infra-legend-dot.libre { background: #22c55e; }
 .infra-legend-dot.ocupada { background: #f59e0b; }
 .infra-legend-dot.baneada { background: #ef4444; }
 .infra-legend-dot.detectada { background: #9ca3af; }
+/* Chip de filtro de estado activo */
+.infra-state-filter-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px 3px 10px; border-radius: 14px; font-size: .82rem;
+  background: rgba(96,165,250,.12); color: #60a5fa;
+  border: 1px solid rgba(96,165,250,.3); margin-top: 8px;
+}
+.infra-state-filter-remove {
+  background: none; border: none; cursor: pointer; color: #60a5fa;
+  font-size: 1rem; padding: 0 2px; line-height: 1;
+}
+.infra-state-filter-remove:hover { color: var(--text); }
 
 /* Modal genérico compartido */
 .infra-generic-modal {
