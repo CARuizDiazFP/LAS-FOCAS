@@ -514,32 +514,40 @@
           <h3 class="modal-title">📧 Dar Aviso — {{ avisoIncidente.ticket_asociado || 'Sin ticket' }}</h3>
           <button class="close-btn" @click="closeAvisoModal">×</button>
         </div>
-        <label class="form-label">Destinatarios <span class="req">*</span> <span class="aviso-hint">(separados por coma)</span></label>
-        <input v-model="avisoForm.to" type="text" placeholder="operador@empresa.com, supervisor@empresa.com" />
-        <label class="form-label">Con copia (CC) <span class="aviso-hint">(opcional)</span></label>
-        <input v-model="avisoForm.cc" type="text" placeholder="noc@empresa.com" />
-        <label class="form-label">Asunto <span class="req">*</span></label>
-        <input v-model="avisoForm.subject" type="text" />
-        <label class="form-label">Cuerpo del mensaje <span class="req">*</span></label>
-        <textarea v-model="avisoForm.body" rows="4"></textarea>
-        <div class="aviso-options">
-          <label class="aviso-checkbox-row">
-            <input v-model="avisoForm.include_xls" type="checkbox" />
-            <span>Adjuntar resumen XLS</span>
-          </label>
-          <label class="aviso-checkbox-row">
-            <input v-model="avisoForm.include_txt" type="checkbox" />
-            <span>Adjuntar tracking TXT</span>
-          </label>
-        </div>
-        <div class="modal-actions">
-          <button class="btn subtle" :disabled="avisoSending" @click="closeAvisoModal">Cancelar</button>
-          <button
-            class="btn warning"
-            :disabled="avisoSending || !avisoForm.to.trim() || !avisoForm.subject.trim() || !avisoForm.body.trim()"
-            @click="sendAviso"
-          >{{ avisoSending ? 'Enviando...' : '📧 Enviar Aviso' }}</button>
-        </div>
+        <div v-if="avisoLoadingTemplate" class="aviso-loading-template">⏳ Cargando plantilla...</div>
+        <template v-else>
+          <label class="form-label">Destinatarios <span class="req">*</span> <span class="aviso-hint">(separados por coma)</span></label>
+          <input v-model="avisoForm.to" type="text" placeholder="operador@empresa.com, supervisor@empresa.com" />
+          <label class="form-label">Con copia (CC) <span class="aviso-hint">(opcional)</span></label>
+          <input v-model="avisoForm.cc" type="text" placeholder="noc@empresa.com" />
+          <label class="form-label">Asunto <span class="req">*</span></label>
+          <input v-model="avisoForm.subject" type="text" />
+          <label class="form-label">Cuerpo del mensaje <span class="req">*</span> <span class="aviso-hint">(editable)</span></label>
+          <textarea v-model="avisoForm.body" rows="11" class="aviso-body-textarea"></textarea>
+          <div class="aviso-options">
+            <label class="aviso-checkbox-row">
+              <input v-model="avisoForm.include_xls" type="checkbox" />
+              <span>Adjuntar resumen XLS</span>
+            </label>
+            <label class="aviso-checkbox-row">
+              <input v-model="avisoForm.include_txt" type="checkbox" />
+              <span>Adjuntar tracking TXT</span>
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button class="btn subtle" :disabled="avisoSending" @click="closeAvisoModal">Cancelar</button>
+            <button
+              class="btn primary small"
+              :disabled="avisoSending"
+              @click="downloadEml"
+            >📥 Descargar EML</button>
+            <button
+              class="btn warning"
+              :disabled="avisoSending || !avisoForm.to.trim() || !avisoForm.subject.trim() || !avisoForm.body.trim()"
+              @click="sendAviso"
+            >{{ avisoSending ? 'Enviando...' : '📧 Enviar Aviso' }}</button>
+          </div>
+        </template>
       </div>
     </dialog>
 
@@ -1167,6 +1175,7 @@ const avisoLoadingId = ref<number | null>(null);
 const avisoModalEl = ref<HTMLDialogElement | null>(null);
 const avisoIncidente = ref<IncidenteActivo | null>(null);
 const avisoSending = ref(false);
+const avisoLoadingTemplate = ref(false);
 interface AvisoForm {
   to: string;
   cc: string;
@@ -1178,6 +1187,41 @@ interface AvisoForm {
 const avisoForm = ref<AvisoForm>({
   to: '', cc: '', subject: '', body: '', include_xls: true, include_txt: true,
 });
+
+// --- Plantilla por defecto ---
+function buildAvisoBody(inc: IncidenteActivo, fechaHora: string): string {
+  const lineas = [
+    'Estimados,',
+    '',
+    'Se les informa que se ha activado el Protocolo de Protección en la red de fibra óptica debido a una afectación de servicio.',
+    '',
+    'DATOS DEL INCIDENTE:',
+    `• Ticket: ${inc.ticket_asociado ?? 'Sin ticket'}`,
+    `• Servicio Afectado: ${inc.servicio_afectado_id}`,
+    `• Servicio Protegido: ${inc.servicio_protegido_id}`,
+    `• Cámaras Restringidas: ${inc.camaras_count} cámara${inc.camaras_count !== 1 ? 's' : ''}`,
+    `• Fecha/Hora: ${fechaHora}`,
+    `• Motivo: ${inc.motivo ?? 'No especificado'}`,
+    '',
+    'Se adjunta el listado detallado de cámaras restringidas (Excel) y el archivo de tracking original.',
+    '',
+    'Por favor, tomar las precauciones necesarias y abstenerse de realizar trabajos en las cámaras listadas hasta nuevo aviso.',
+    '',
+    'Saludos cordiales,',
+    'Operaciones de Red',
+    'Metrotel S.A.',
+    '',
+    'Generado por LAS-FOCAS - Metrotel',
+  ];
+  return lineas.join('\n');
+}
+
+function saveAvisoDestinatarios() {
+  try {
+    localStorage.setItem('focas_baneo_to', avisoForm.value.to.trim());
+    localStorage.setItem('focas_baneo_cc', avisoForm.value.cc.trim());
+  } catch { /* localStorage no disponible */ }
+}
 
 function formatDuracion(horas: number | null): string {
   if (horas === null || horas === undefined) return '';
@@ -1242,19 +1286,37 @@ async function confirmLiftBan(inc: IncidenteActivo) {
 async function openAvisoModal(inc: IncidenteActivo) {
   avisoIncidente.value = inc;
   avisoLoadingId.value = inc.id;
-  // Intentar precargar asunto/cuerpo desde el detalle del incidente
+  avisoLoadingTemplate.value = true;
+  avisoForm.value.include_xls = true;
+  avisoForm.value.include_txt = true;
+
+  // Restaurar destinatarios desde localStorage
+  try {
+    avisoForm.value.to = localStorage.getItem('focas_baneo_to') ?? '';
+    avisoForm.value.cc = localStorage.getItem('focas_baneo_cc') ?? '';
+  } catch {
+    avisoForm.value.to = '';
+    avisoForm.value.cc = '';
+  }
+
+  // Plantilla por defecto con datos del incidente
+  const ahora = new Date().toLocaleString('es-AR', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  avisoForm.value.subject = '[AVISO] BANEO de Camaras';
+  avisoForm.value.body = buildAvisoBody(inc, ahora);
+
+  // Intentar sobreescribir con plantilla guardada en el backend
   try {
     const res = await fetch(`/api/infra/ban/${inc.id}`, { credentials: 'include' });
     if (res.ok) {
-      const det = await res.json() as { email_subject?: string; email_body?: string };
-      avisoForm.value.subject = det.email_subject ?? `Protocolo de Protección — Servicio ${inc.servicio_protegido_id}`;
-      avisoForm.value.body = det.email_body ?? `Se informa que el servicio ${inc.servicio_protegido_id} se encuentra bajo protocolo de protección${inc.ticket_asociado ? ` (${inc.ticket_asociado})` : ''}.`;
+      const det = await res.json() as { email_subject?: string | null; email_body?: string | null };
+      if (det.email_subject) avisoForm.value.subject = det.email_subject;
+      if (det.email_body) avisoForm.value.body = det.email_body;
     }
-  } catch { /* fallback a valores por defecto */ }
-  avisoForm.value.to = '';
-  avisoForm.value.cc = '';
-  avisoForm.value.include_xls = true;
-  avisoForm.value.include_txt = true;
+  } catch { /* usar plantilla local */ }
+
+  avisoLoadingTemplate.value = false;
   avisoLoadingId.value = null;
   avisoModalEl.value?.showModal();
 }
@@ -1272,6 +1334,7 @@ async function sendAviso() {
     showToast('warning', 'Destinatarios requeridos', 'Ingresá al menos un destinatario');
     return;
   }
+  saveAvisoDestinatarios();
   avisoSending.value = true;
   try {
     const payload = {
@@ -1299,6 +1362,39 @@ async function sendAviso() {
     showToast('error', 'Error al enviar aviso', e instanceof Error ? e.message : String(e));
   } finally {
     avisoSending.value = false;
+  }
+}
+
+async function downloadEml() {
+  if (!avisoIncidente.value) return;
+  saveAvisoDestinatarios();
+  const toList = avisoForm.value.to.split(',').map(s => s.trim()).filter(Boolean);
+  const fd = new FormData();
+  fd.append('incident_id', String(avisoIncidente.value.id));
+  if (toList.length) fd.append('recipients', toList.join(', '));
+  if (avisoForm.value.subject.trim()) fd.append('subject', avisoForm.value.subject.trim());
+  if (avisoForm.value.body.trim()) fd.append('html_body', avisoForm.value.body.trim());
+  try {
+    const res = await fetch('/api/infra/notify/download-eml', {
+      method: 'POST',
+      credentials: 'include',
+      body: fd,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as Record<string, string>).detail ?? `Error ${res.status}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    const match = cd.match(/filename="(.+?)"/);
+    const filename = match ? match[1] : `aviso_baneo_${avisoIncidente.value.id}.eml`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('success', 'EML descargado', filename);
+  } catch (e: unknown) {
+    showToast('error', 'Error al generar EML', e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -1893,8 +1989,10 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .active-ban-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
 
 /* Sub-modal Dar Aviso */
-.aviso-modal { max-width: 540px; }
+.aviso-modal { max-width: 560px; }
 .aviso-hint { font-size: .75rem; color: var(--muted); font-weight: 400; }
+.aviso-loading-template { padding: 24px 0; text-align: center; color: var(--muted); font-size: .88rem; }
+.aviso-body-textarea { font-family: inherit; font-size: .84rem; line-height: 1.5; resize: vertical; min-height: 200px; }
 .aviso-options { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .aviso-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: .85rem; cursor: pointer; }
 .aviso-checkbox-row input[type=checkbox] { flex-shrink: 0; }

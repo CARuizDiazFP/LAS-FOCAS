@@ -119,12 +119,14 @@ Cada tarjeta de incidente muestra:
 - Motivo del corte
 - Fecha/hora de inicio, cantidad de cámaras afectadas, usuario ejecutor
 
-**Acción "📧 Dar Aviso"** — Abre un sub-modal con formulario de email:
-- Destinatarios (To) y CC, separados por coma
-- Asunto y cuerpo (precargados desde `GET /api/infra/ban/{id}` si el incidente tiene plantilla guardada)
-- Checkboxes: adjuntar resumen XLS y/o tracking TXT
-- Llama a `POST /api/infra/notify/email` con payload `{ to, cc?, subject, body, incidente_ids, include_xls, include_txt }`
-- Muestra toast de éxito con conteo de destinatarios
+**Acción "📧 Dar Aviso"** — Abre un sub-modal con formulario de email enriquecido:
+- **Destinatarios persistidos**: los campos "Para" y "CC" se restauran automáticamente desde `localStorage` (`focas_baneo_to` / `focas_baneo_cc`). Se guardan al hacer clic en "Enviar Aviso" o "Descargar EML".
+- **Plantilla autocompletada**: el asunto se precarga como `[AVISO] BANEO de Camaras`; el cuerpo se genera con los datos del incidente (ticket, servicios, cámaras, fecha/hora, motivo) usando la plantilla estándar. Si el backend tiene una plantilla guardada en el incidente (`GET /api/infra/ban/{id}`), se usa en su lugar.
+- El textarea del cuerpo es **editable** — el usuario puede modificar el texto antes de enviar.
+- Checkboxes: adjuntar resumen XLS y/o tracking TXT.
+- **Botón "📥 Descargar EML"**: genera y descarga un archivo `.eml` listo para abrir en el cliente de correo, llamando a `POST /api/infra/notify/download-eml` (multipart/form-data con `incident_id`, `recipients`, `subject`, `html_body`). También guarda los destinatarios en localStorage.
+- **Botón "📧 Enviar Aviso"**: llama a `POST /api/infra/notify/email` con payload `{ to, cc?, subject, body, incidente_ids, include_xls, include_txt }`.
+- Muestra toast de éxito con conteo de destinatarios (o error detallado).
 
 **Acción "🔓 Levantar Baneo"** — Pide confirmación nativa (`window.confirm`) con datos del incidente. Al confirmar:
 - Llama a `POST /api/infra/ban/lift` con `{ incidente_id }`
