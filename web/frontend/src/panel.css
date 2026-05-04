@@ -1,7 +1,7 @@
 /*
-# Nombre de archivo: styles.css
-# Ubicación de archivo: web/static/styles.css
-# Descripción: Estilos base dark para la UI del panel y chat
+# Nombre de archivo: panel.css
+# Ubicación de archivo: web/frontend/src/panel.css
+# Descripción: Estilos globales del panel SPA — migrado desde web/static/styles.css
 */
 :root {
   --bg: #0f1419;

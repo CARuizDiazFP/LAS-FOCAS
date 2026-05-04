@@ -24,15 +24,13 @@ RUN pip install --no-cache-dir -r /tmp/web-requirements.txt \
     && rm /tmp/web-requirements.txt
 
 COPY web/app /app/app
-COPY web/templates /app/templates
-COPY web/static /app/static
 COPY web/tools /app/web/tools
 COPY web/chat_ws.py /app/web/chat_ws.py
 # Incluir paquete core para logging centralizado
 COPY core /app/core
 COPY modules /app/modules
 COPY db /app/db
-COPY --from=web-build /frontend/dist/assets /app/static/assets
+COPY --from=web-build /frontend/dist /app/frontend/dist
 
 EXPOSE 8080
 

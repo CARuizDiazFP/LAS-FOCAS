@@ -17,9 +17,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from core.logging import setup_logging
@@ -120,11 +119,11 @@ async def log_requests(request, call_next):  # type: ignore
 
 # Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/app/main.py)
 BASE_DIR = Path(__file__).resolve().parents[1]
-STATIC_DIR = str(BASE_DIR / "static")
-TEMPLATES_DIR = str(BASE_DIR / "templates")
 DATA_DIR = BASE_DIR / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 REPORTS_DIR = DATA_DIR / "reports"
+DIST_DIR = BASE_DIR / "frontend" / "dist"
+SPA_INDEX = DIST_DIR / "index.html"
 DEFAULT_TEMPLATES_PATH = Path(__file__).resolve().parents[2] / "Templates"
 TEMPLATES_ROOT = os.getenv("TEMPLATES_DIR", str(DEFAULT_TEMPLATES_PATH))
 DATA_DIR.mkdir(exist_ok=True)
@@ -170,14 +169,15 @@ from modules.informes_repetitividad.service import (  # noqa: E402
 
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Montar assets del build Vite si existen
+_vite_assets = DIST_DIR / "assets"
+if _vite_assets.exists():
+    app.mount("/assets", StaticFiles(directory=str(_vite_assets)), name="vite-assets")
 # Elegir la carpeta de reportes a montar: preferir la de configuración si existe; si no, fallback local
 _cfg_reports = Path(REPORT_SERVICE_CONFIG.reports_dir)
 _mount_reports = _cfg_reports if _cfg_reports.exists() else REPORTS_DIR
 _mount_reports.mkdir(parents=True, exist_ok=True)
 app.mount("/reports", StaticFiles(directory=str(_mount_reports)), name="reports")
-templates = Jinja2Templates(directory=TEMPLATES_DIR)
-templates.env.globals["build_version"] = BUILD_VERSION
 
 
 def _parse_allowed_origins(raw: str | None) -> List[str]:
@@ -247,16 +247,24 @@ def get_current_user(request: Request) -> str | None:
     return request.session.get("username")
 
 
-@app.get("/login", response_class=HTMLResponse)
-async def login_form(request: Request) -> HTMLResponse:
-    if get_current_user(request):
-        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+@app.get("/api/auth/session")
+async def api_auth_session(request: Request) -> JSONResponse:
+    """Devuelve el estado de la sesión actual (sin autenticación requerida)."""
+    username = request.session.get("username")
+    if not username:
+        return JSONResponse({"authenticated": False, "username": None, "role": None, "csrf": None})
+    return JSONResponse({
+        "authenticated": True,
+        "username": username,
+        "role": request.session.get("role", "user"),
+        "csrf": request.session.get("csrf"),
+    })
 
 
-@app.post("/login")
-async def do_login(request: Request, username: str = Form(...), password: str = Form(...)):
-    # Rate limiting simple por IP (5 intentos/ minuto)
+@app.post("/api/auth/login")
+async def api_auth_login(request: Request) -> JSONResponse:
+    """Login vía JSON. Devuelve sesión o error."""
+    # Rate limiting simple por IP (5 intentos/minuto)
     ip = request.client.host if request.client else "unknown"
     rl = request.session.get("rl_login", {"ip": ip, "count": 0, "ts": now()})
     if rl["ip"] != ip or now() - rl["ts"] > 60:
@@ -264,8 +272,18 @@ async def do_login(request: Request, username: str = Form(...), password: str = 
     rl["count"] += 1
     request.session["rl_login"] = rl
     if rl["count"] > 5:
-        return templates.TemplateResponse(request, "login.html", {"error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
-    # Verificar usuario en DB
+        return JSONResponse({"ok": False, "error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
+
+    try:
+        body = await request.json()
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Body inválido"}, status_code=400)
+
+    if not username or not password:
+        return JSONResponse({"ok": False, "error": "Usuario y contraseña requeridos"}, status_code=400)
+
     try:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -276,106 +294,45 @@ async def do_login(request: Request, username: str = Form(...), password: str = 
                     try:
                         password_ok = verify_password(password, row[0])
                     except Exception as exc:  # noqa: BLE001
-                        logger.error("action=login bcrypt_error username=%s error=%s", username, exc)
+                        logger.error("action=api_login bcrypt_error username=%s error=%s", username, exc)
                 if not row or not password_ok:
-                    # Hash truncado a 20 chars para diagnóstico (sin exponer todo si se hacen logs externos)
-                    stored_hash_preview = row[0][:20] + "..." if row else None
-                    logger.warning(
-                        "action=login result=fail reason=%s username=%s found_user=%s bcrypt_ok=%s hash_preview=%s ip=%s rl_count=%s",
-                        "no_user" if not row else "bad_password",
-                        username,
-                        bool(row),
-                        password_ok,
-                        stored_hash_preview,
-                        ip,
-                        rl["count"],
-                    )
-                    return templates.TemplateResponse(request, "login.html", {"error": "Credenciales inválidas"}, status_code=400)
+                    logger.warning("action=api_login result=fail username=%s ip=%s", username, ip)
+                    return JSONResponse({"ok": False, "error": "Credenciales inválidas"}, status_code=401)
     except Exception as exc:  # noqa: BLE001
-        logger.exception(f"action=login result=error username={username} ip={ip} error={exc}")
-        return templates.TemplateResponse(request, "login.html", {"error": "Error de autenticación"}, status_code=500)
+        logger.exception("action=api_login result=error username=%s ip=%s error=%s", username, ip, exc)
+        return JSONResponse({"ok": False, "error": "Error de autenticación"}, status_code=500)
 
-    logger.info(
-        "action=login result=success username=%s role=%s ip=%s rl_count=%s",
-        username,
-        row[1] if row else "?",
-        ip,
-        rl["count"],
-    )
-
+    csrf_token = secrets.token_urlsafe(32)
     request.session["username"] = username
     request.session["role"] = row[1] if row else "user"
-    # Regenerar token CSRF en login
-    request.session["csrf"] = secrets.token_urlsafe(32)
-    return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    request.session["csrf"] = csrf_token
+    logger.info("action=api_login result=success username=%s role=%s ip=%s", username, row[1] if row else "user", ip)
+    return JSONResponse({"ok": True, "username": username, "role": row[1] if row else "user", "csrf": csrf_token})
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request) -> JSONResponse:
+    """Cierra la sesión vía API."""
+    request.session.clear()
+    return JSONResponse({"ok": True})
 
 
 @app.get("/logout")
 async def logout(request: Request) -> RedirectResponse:
+    """Compatibilidad hacia atrás — limpia sesión y redirige al SPA."""
     request.session.clear()
-    return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    if not get_current_user(request):
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    _, role = _require_auth(request)
-    # Mostrar el nuevo panel con Chat como vista principal
-    return templates.TemplateResponse(
-        request,
-        "panel.html",
-        {
-            "username": get_current_user(request),
-            "role": role,
-            "csrf": request.session.get("csrf"),
-        # API externa: por defecto usar el puerto expuesto de la API (8001)
-        "api_base": os.getenv("API_BASE", "http://localhost:8001"),
-        },
-    )
-
-
-@app.get("/panel", response_class=HTMLResponse)
-async def panel(request: Request) -> HTMLResponse:
-    if not get_current_user(request):
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    _, role = _require_auth(request)
-    return templates.TemplateResponse(
-        request,
-        "panel.html",
-        {
-            "username": get_current_user(request),
-            "role": role,
-            "csrf": request.session.get("csrf"),
-        # API externa: por defecto usar el puerto expuesto de la API (8001)
-        "api_base": os.getenv("API_BASE", "http://localhost:8001"),
-        },
-    )
-
-
-@app.get("/sla", response_class=HTMLResponse)
-async def sla_page(request: Request) -> HTMLResponse:
-    if not get_current_user(request):
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    return templates.TemplateResponse(
-        request,
-        "sla.html",
-        {
-            "username": get_current_user(request),
-            "csrf": request.session.get("csrf"),
-        },
-    )
 
 @app.get("/reports/index")
 async def reports_index_redirect() -> RedirectResponse:
     return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
 
 
-@app.get("/reports-history", response_class=HTMLResponse)
-async def reports_history(request: Request) -> HTMLResponse:
-    if not get_current_user(request):
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    # Listar archivos del directorio de reportes (solo nivel actual)
+@app.get("/api/reports/history")
+async def api_reports_history(request: Request) -> JSONResponse:
+    """Devuelve la lista de archivos de reportes generados."""
+    _require_auth(request)
     files = []
     try:
         for p in sorted(_mount_reports.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -387,15 +344,8 @@ async def reports_history(request: Request) -> HTMLResponse:
                     "href": f"/reports/{p.name}",
                 })
     except Exception as exc:  # noqa: BLE001
-        logger.warning("action=reports_index_list error=%s", exc)
-    return templates.TemplateResponse(
-        request,
-        "reports.html",
-        {
-            "username": get_current_user(request),
-            "files": files,
-        },
-    )
+        logger.warning("action=reports_history_list error=%s", exc)
+    return JSONResponse({"files": files})
 
 
 def _merge_excel_sources(sources: List[tuple[str, bytes]]) -> bytes:
@@ -630,42 +580,6 @@ async def admin_me(request: Request) -> JSONResponse:
     return JSONResponse({"username": username, "role": "admin"})
 
 
-def _admin_shell_response(request: Request) -> HTMLResponse:
-    """Genera la respuesta del shell SPA admin con CSRF y usuario inyectados."""
-    user = request.session.get("username")
-    role = request.session.get("role", "user")
-    if not user:
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    if role != "admin":
-        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-    return templates.TemplateResponse(
-        request,
-        "admin_shell.html",
-        {
-            "username": user,
-            "csrf": request.session.get("csrf"),
-        },
-    )
-
-
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request) -> HTMLResponse:
-    """Dashboard principal del panel admin (SPA Vue)."""
-    return _admin_shell_response(request)
-
-
-@app.get("/admin/usuarios", response_class=HTMLResponse)
-async def admin_usuarios_page(request: Request) -> HTMLResponse:
-    """Vista de gestión de usuarios del panel admin (SPA Vue)."""
-    return _admin_shell_response(request)
-
-
-@app.get("/admin/servicios", response_class=HTMLResponse)
-async def admin_servicios_page(request: Request) -> HTMLResponse:
-    """Vista de servicios del panel admin (SPA Vue)."""
-    return _admin_shell_response(request)
-
-
 @app.post("/api/users/change-password")
 async def change_password(
     request: Request,
@@ -811,12 +725,6 @@ async def servicios_baneos_config_json(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.error("Error leyendo config_servicios: %s", exc)
     return JSONResponse(config_data)
-
-
-@app.get("/admin/Servicios/Baneos", response_class=HTMLResponse)
-async def servicios_baneos_page(request: Request) -> HTMLResponse:
-    """Vista de configuración del worker de baneos (SPA Vue)."""
-    return _admin_shell_response(request)
 
 
 @app.post("/api/admin/servicios/baneos")
@@ -4280,3 +4188,14 @@ async def delete_servicio_empalmes_web(
             {"error": f"Error eliminando asociaciones: {exc!s}"},
             status_code=500
         )
+
+
+
+# ── SPA Catch-all (DEBE ser la última ruta) ─────────────────────────
+# Devuelve el index.html del build Vite para todas las rutas no reconocidas.
+# Esto permite que Vue Router maneje el routing del lado del cliente.
+@app.get("/{path:path}")
+async def spa_fallback(path: str) -> FileResponse:
+    if SPA_INDEX.exists():
+        return FileResponse(str(SPA_INDEX))
+    return FileResponse(str(SPA_INDEX), status_code=404)

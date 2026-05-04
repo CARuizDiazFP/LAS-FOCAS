@@ -11,19 +11,24 @@
       <RouterLink class="btn" to="/admin/usuarios">Usuarios</RouterLink>
       <RouterLink class="btn" to="/admin/servicios">Servicios</RouterLink>
       <a class="btn" href="/">Panel</a>
-      <a class="btn" href="/logout">Salir</a>
+      <button class="btn" @click="doLogout">Salir</button>
       <span class="user-info">{{ adminUser }}</span>
     </nav>
   </header>
   <main class="container">
-    <slot />
+    <RouterView />
   </main>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { getAdminMe } from '../api/admin';
+import { logout } from '../../api/auth';
+import { useSession } from '../../composables/useSession';
 
+const { clearSession } = useSession();
+const router = useRouter();
 const adminUser = ref('');
 
 onMounted(async () => {
@@ -34,4 +39,10 @@ onMounted(async () => {
     // El guard del router ya gestiona redirección si falla
   }
 });
+
+async function doLogout() {
+  try { await logout(); } catch { /* ignorar */ }
+  clearSession();
+  router.push('/login');
+}
 </script>

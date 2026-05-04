@@ -27,6 +27,7 @@ class SmtpSettings:
     from_name: str
     use_tls: bool
     enabled: bool
+    timeout: int
 
 
 @dataclass(slots=True)
@@ -58,6 +59,7 @@ class Settings:
             from_name=getenv("SMTP_FROM_NAME", "LAS-FOCAS Notificaciones"),
             use_tls=getenv("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes"),
             enabled=bool(getenv("SMTP_HOST")),
+            timeout=int(getenv("SMTP_TIMEOUT", "15")),
         )
         self.slack = SlackSettings(
             bot_token=getenv("SLACK_BOT_TOKEN", ""),

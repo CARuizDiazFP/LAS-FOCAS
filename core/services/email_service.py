@@ -122,7 +122,7 @@ class EmailService:
             # Enviar
             all_recipients = to + (cc or [])
 
-            with smtplib.SMTP(self.settings.host, self.settings.port) as server:
+            with smtplib.SMTP(self.settings.host, self.settings.port, timeout=self.settings.timeout) as server:
                 if self.settings.use_tls:
                     server.starttls()
                 
