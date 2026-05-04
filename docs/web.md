@@ -100,8 +100,65 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/trackings/analyze` → analiza archivo `.txt` (multipart). Devuelve `AnalyzeResult` con `status`: `NEW`, `IDENTICAL`, `CONFLICT`, `POTENTIAL_UPGRADE`, `NEW_STRAND`, `ERROR`.
 - `POST /api/infra/trackings/resolve` → ejecuta la acción seleccionada. JSON body: `{action, content, filename, target_ruta_id?, new_ruta_name?, new_ruta_tipo?, old_service_id?}`.
 - `GET /api/infra/export/cameras` → exporta cámaras. Params: `format=xlsx|csv`, `filter_status=ALL|BANEADA|OCUPADA|...`, `servicio_id?`.
+- `POST /api/infra/ban/create` → Crear baneo. JSON body: `{ticket_asociado?, servicio_afectado_id, servicio_protegido_id, ruta_protegida_id?, motivo?, usuario_ejecutor?}`. Responde con `{success, incidente_id, camaras_baneadas, ...}`.
+- `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
+- `GET /api/infra/ban/active` → Listado de baneos activos.
+
+### InfraTab — Protocolo de Protección (Wizard 3 pasos)
+
+El botón **🔴 Protocolo Protección** abre un wizard guiado de 3 pasos con stepper visual:
+
+**Paso 1 — Identificación**:
+- Ticket del incidente (opcional)
+- Servicio afectado — ID del servicio que sufrió el corte (obligatorio)
+- Motivo (opcional)
+
+**Paso 2 — Selección del objetivo**:
+- Dos tabs: **"Proteger el mismo servicio"** (modo `same`) o **"Otro servicio — redundancia cruzada"** (modo `other`)
+- En modo `same`: se cargan automáticamente las rutas del servicio afectado.
+- En modo `other`: input para ingresar el ID del servicio a proteger + botón "Buscar rutas".
+- Grilla de tarjetas de ruta: opción "Todas las rutas activas" (equivale a `ruta_protegida_id = null`) + una tarjeta por ruta del servicio.
+- **Alerta de tracking ausente** (`hash_contenido === null`): muestra aviso naranja con dos botones: "📄 Descargar TXT" y "⬆ Actualizar Tracking" (cierra el wizard y abre el flujo de upload).
+
+**Paso 3 — Confirmación**:
+- Resumen: ticket, servicio afectado, servicio protegido, ruta seleccionada, empalmes estimados, motivo.
+- Checkbox de confirmación explícita (obligatorio para habilitar el botón de ejecución).
+- Botón **"🚨 EJECUTAR BANEO"** (rojo) — deshabilitado hasta marcar el checkbox.
+
+**Payload enviado a `/api/infra/ban/create`**:
+
+```json
+{
+  "ticket_asociado": "INC0012345",
+  "servicio_afectado_id": "52547",
+  "servicio_protegido_id": "52548",
+  "ruta_protegida_id": 42,      // null = todas las rutas activas
+  "motivo": "Corte en Av. Corrientes",
+  "usuario_ejecutor": null
+}
+```
 
 ### InfraTab — Subir Tracking (Portero de Archivos)
+
+El flujo de carga de trackings opera en 2 fases:
+
+**Fase 1 — Análisis (`/analyze`)**: Se sube el `.txt`; la API responde con el `status` del archivo y, si corresponde, lista de rutas existentes (`rutas_existentes`).
+
+**Fase 2 — Resolución (`/resolve`)**: El usuario elige la acción y se envía el JSON con `action` + extras según la tabla:
+
+| Acción UI | `action` enviado | Extras |
+|---|---|---|
+| Crear nuevo servicio | `CREATE_NEW` | — |
+| Merge empalmes | `MERGE_APPEND` | `target_ruta_id` |
+| Reemplazar ruta | `REPLACE` | `target_ruta_id` |
+| **Crear Camino** | `BRANCH` | `new_ruta_name`, `new_ruta_tipo: "ALTERNATIVA"` |
+| **Nuevo Pelo** | `ADD_STRAND` | `target_ruta_id` |
+| Confirmar upgrade | `CONFIRM_UPGRADE` | `old_service_id` |
+| Agregar pelo (auto-detect) | `ADD_STRAND` | `target_ruta_id` (de `strand_info.ruta_id`) |
+
+> **Nota de nomenclatura**: La acción `BRANCH` se presenta como **"Crear Camino"** en la UI (caminos alternativos/redundantes de FO). La opción **"Nuevo Pelo"** es visible tanto cuando el status es `NEW_STRAND` como dentro del modal `CONFLICT`, permitiendo al usuario agregar manualmente un pelo adicional a un camino existente.
+
+**Zona de upload — Drag & Drop**: La zona "📁 Subir Tracking" acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia a azul (`--drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
 
 El flujo de carga de trackings opera en 2 fases:
 

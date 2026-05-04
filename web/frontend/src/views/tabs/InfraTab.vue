@@ -130,32 +130,168 @@
     <!-- Hidden file input para tracking upload -->
     <input ref="trackingFileInputEl" type="file" accept=".txt" style="display:none" @change="handleTrackingFile">
 
-    <!-- Modal: Protocolo de Protección (ban) -->
-    <dialog ref="banModalEl" class="infra-generic-modal" @click.self="closeBanModal">
+    <!-- Modal: Protocolo de Protección (ban) — Wizard 3 pasos -->
+    <dialog ref="banModalEl" class="infra-generic-modal ban-wizard-modal" @click.self="closeBanModal">
       <div class="modal-inner">
+
+        <!-- Header fijo -->
         <div class="modal-header-row">
           <h3 class="modal-title">🔴 Protocolo de Protección</h3>
-          <button class="close-btn" @click="closeBanModal">×</button>
+          <button class="close-btn" :disabled="banLoading" @click="closeBanModal">×</button>
         </div>
-        <p class="modal-desc">Activa el baneo de cámaras del servicio protegido (backup/respaldo).</p>
-        <label class="form-label">Ticket asociado (opcional)</label>
-        <input v-model="banForm.ticket_asociado" type="text" placeholder="INC0012345" />
-        <label class="form-label">Servicio afectado (el que se cortó) <span class="req">*</span></label>
-        <input v-model="banForm.servicio_afectado_id" type="text" placeholder="ID del servicio cortado" />
-        <label class="form-label">Servicio a proteger (banear) <span class="req">*</span></label>
-        <input v-model="banForm.servicio_protegido_id" type="text" placeholder="ID del servicio a proteger" />
-        <label class="form-label">Motivo (opcional)</label>
-        <textarea v-model="banForm.motivo" rows="2" placeholder="Corte de fibra en Av. Corrientes..."></textarea>
-        <label class="form-label">Operador (opcional)</label>
-        <input v-model="banForm.usuario_ejecutor" type="text" placeholder="usuario@empresa.com" />
-        <div class="modal-actions">
-          <button
-            class="btn danger"
-            :disabled="banLoading || !banForm.servicio_afectado_id.trim() || !banForm.servicio_protegido_id.trim()"
-            @click="submitBan"
-          >{{ banLoading ? 'Activando...' : 'Activar Protocolo' }}</button>
-          <button class="btn subtle" @click="closeBanModal">Cancelar</button>
+
+        <!-- Stepper visual -->
+        <div class="wizard-stepper">
+          <div v-for="(label, i) in ['Identificación', 'Selección', 'Confirmación']" :key="i" class="wizard-step-row">
+            <div :class="['wizard-step-item', { active: currentBanStep === i + 1, done: currentBanStep > i + 1 }]">
+              <span class="wizard-step-num">{{ currentBanStep > i + 1 ? '✓' : i + 1 }}</span>
+              <span class="wizard-step-label">{{ label }}</span>
+            </div>
+            <div v-if="i < 2" class="wizard-step-connector"></div>
+          </div>
         </div>
+
+        <!-- ─── PASO 1: Identificación ─── -->
+        <template v-if="currentBanStep === 1">
+          <label class="form-label">Ticket del incidente (opcional)</label>
+          <input v-model="banForm.ticket_asociado" type="text" placeholder="INC0012345" />
+          <label class="form-label">Servicio afectado (el que se cortó) <span class="req">*</span></label>
+          <input
+            v-model="banForm.servicio_afectado_id"
+            type="text"
+            placeholder="Ej: 52547"
+            @keydown.enter.prevent="banGoNext"
+          />
+          <label class="form-label">Motivo (opcional)</label>
+          <textarea v-model="banForm.motivo" rows="2" placeholder="Corte de fibra en Av. Corrientes..."></textarea>
+          <div class="modal-actions">
+            <button class="btn subtle" @click="closeBanModal">Cancelar</button>
+            <button
+              class="btn primary"
+              :disabled="!banForm.servicio_afectado_id.trim()"
+              @click="banGoNext"
+            >Siguiente →</button>
+          </div>
+        </template>
+
+        <!-- ─── PASO 2: Selección del objetivo ─── -->
+        <template v-else-if="currentBanStep === 2">
+          <div class="ban-step2-affected">
+            Servicio afectado: <strong>{{ banForm.servicio_afectado_id }}</strong>
+          </div>
+
+          <!-- Tabs: mismo / otro servicio -->
+          <div class="ban-prot-tabs">
+            <button
+              :class="['ban-prot-tab', { active: banProtMode === 'same' }]"
+              @click="banSwitchMode('same')"
+            >Proteger el mismo servicio</button>
+            <button
+              :class="['ban-prot-tab', { active: banProtMode === 'other' }]"
+              @click="banSwitchMode('other')"
+            >Otro servicio (redundancia cruzada)</button>
+          </div>
+
+          <!-- Input solo para "otro servicio" -->
+          <template v-if="banProtMode === 'other'">
+            <label class="form-label">ID del servicio a proteger <span class="req">*</span></label>
+            <div class="ban-search-row">
+              <input
+                v-model="banSearchServicioInput"
+                type="text"
+                placeholder="Ej: 52548"
+                @keydown.enter.prevent="loadRutasForBan(banSearchServicioInput.trim())"
+              />
+              <button
+                class="btn primary"
+                :disabled="banLoadingRutas || !banSearchServicioInput.trim()"
+                @click="loadRutasForBan(banSearchServicioInput.trim())"
+              >{{ banLoadingRutas ? '...' : 'Buscar rutas' }}</button>
+            </div>
+          </template>
+
+          <!-- Error de carga de rutas -->
+          <div v-if="banRutasError" class="ban-rutas-error">⚠ {{ banRutasError }}</div>
+
+          <!-- Grilla de rutas -->
+          <template v-if="banRutas.length > 0">
+            <label class="form-label" style="margin-top: 10px;">Ruta a proteger</label>
+            <div class="ban-ruta-grid">
+              <!-- Opción "Todas las rutas activas" -->
+              <div
+                :class="['ban-ruta-card', 'all-option', { selected: banSelectedRutaId === null }]"
+                @click="banSelectedRutaId = null"
+              >
+                <span class="ban-ruta-icon">📡</span>
+                <div>
+                  <div class="ban-ruta-nombre">Todas las rutas activas</div>
+                  <div class="ban-ruta-meta">{{ banRutas.filter(r => r.activa).length }} caminos · ~{{ banEstimatedCamaras }} empalmes</div>
+                </div>
+              </div>
+              <!-- Una tarjeta por ruta -->
+              <div
+                v-for="ruta in banRutas"
+                :key="ruta.id"
+                :class="['ban-ruta-card', { selected: banSelectedRutaId === ruta.id }]"
+                @click="banSelectedRutaId = ruta.id"
+              >
+                <span class="ban-ruta-icon">{{ ruta.tipo === 'PRINCIPAL' ? '🔵' : ruta.tipo === 'BACKUP' ? '🟡' : '🟣' }}</span>
+                <div>
+                  <div class="ban-ruta-nombre">{{ ruta.nombre }}</div>
+                  <div class="ban-ruta-meta">{{ ruta.tipo }} · {{ ruta.empalmes_count }} empalmes{{ !ruta.activa ? ' · INACTIVA' : '' }}</div>
+                  <!-- Alerta tracking desactualizado -->
+                  <div v-if="ruta.hash_contenido === null && banSelectedRutaId === ruta.id" class="ban-tracking-alert">
+                    ⚠ Sin tracking guardado para esta ruta.
+                    <div class="ban-tracking-alert-actions">
+                      <button class="btn subtle small" @click.stop="downloadTrackingByRutaId(ruta.id)">📄 Descargar TXT</button>
+                      <button class="btn warning small" @click.stop="triggerUploadTrackingForBan(ruta.id)">⬆ Actualizar Tracking</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+          <div v-else-if="!banLoadingRutas && !banRutasError && banRutas.length === 0 && banForm.servicio_protegido_id" class="ban-rutas-empty">
+            Sin rutas registradas para este servicio.
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn subtle" @click="banGoPrev">← Anterior</button>
+            <button
+              class="btn primary"
+              :disabled="!banForm.servicio_protegido_id.trim() || banLoadingRutas"
+              @click="banGoNext"
+            >Siguiente →</button>
+          </div>
+        </template>
+
+        <!-- ─── PASO 3: Confirmación ─── -->
+        <template v-else-if="currentBanStep === 3">
+          <div class="ban-summary-block">
+            <div class="ban-summary-row"><span class="ban-summary-label">Ticket</span><span>{{ banForm.ticket_asociado || '—' }}</span></div>
+            <div class="ban-summary-row"><span class="ban-summary-label">Servicio afectado</span><strong>{{ banForm.servicio_afectado_id }}</strong></div>
+            <div class="ban-summary-row"><span class="ban-summary-label">Servicio a proteger</span><strong>{{ banForm.servicio_protegido_id }}</strong></div>
+            <div class="ban-summary-row">
+              <span class="ban-summary-label">Ruta</span>
+              <span>{{ banSelectedRutaId === null ? 'Todas las rutas activas' : (banRutas.find(r => r.id === banSelectedRutaId)?.nombre ?? '—') }}</span>
+            </div>
+            <div class="ban-summary-row"><span class="ban-summary-label">Empalmes estimados</span><strong>~{{ banEstimatedCamaras }}</strong></div>
+            <div v-if="banForm.motivo" class="ban-summary-row"><span class="ban-summary-label">Motivo</span><span>{{ banForm.motivo }}</span></div>
+          </div>
+          <label class="ban-confirm-row">
+            <input v-model="banConfirmChecked" type="checkbox" />
+            <span>Confirmo que entiendo que las cámaras de este servicio serán <strong>bloqueadas</strong></span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn subtle" :disabled="banLoading" @click="banGoPrev">← Anterior</button>
+            <button
+              class="btn danger"
+              :disabled="banLoading || !banConfirmChecked"
+              @click="submitBan"
+            >{{ banLoading ? 'Activando...' : '🚨 EJECUTAR BANEO' }}</button>
+          </div>
+        </template>
+
       </div>
     </dialog>
 
@@ -724,7 +860,7 @@ async function downloadTracking() {
   }
 }
 
-// --- Protocolo de Protección (ban) ---
+// --- Protocolo de Protección (ban) — Wizard 3 pasos ---
 interface BanFormData {
   ticket_asociado: string;
   servicio_afectado_id: string;
@@ -732,8 +868,26 @@ interface BanFormData {
   motivo: string;
   usuario_ejecutor: string;
 }
+interface BanRutaOption {
+  id: number;
+  nombre: string;
+  tipo: string;
+  empalmes_count: number;
+  activa: boolean;
+  hash_contenido: string | null;
+}
+
 const banModalEl = ref<HTMLDialogElement | null>(null);
 const banLoading = ref(false);
+const currentBanStep = ref<1 | 2 | 3>(1);
+const banProtMode = ref<'same' | 'other'>('same');
+const banSearchServicioInput = ref('');
+const banRutas = ref<BanRutaOption[]>([]);
+const banLoadingRutas = ref(false);
+const banRutasError = ref('');
+const banSelectedRutaId = ref<number | null>(null);
+const banConfirmChecked = ref(false);
+
 const banForm = ref<BanFormData>({
   ticket_asociado: '',
   servicio_afectado_id: '',
@@ -742,32 +896,126 @@ const banForm = ref<BanFormData>({
   usuario_ejecutor: '',
 });
 
+const banEstimatedCamaras = computed<number>(() => {
+  if (banSelectedRutaId.value === null) {
+    return banRutas.value.filter(r => r.activa).reduce((s, r) => s + r.empalmes_count, 0);
+  }
+  return banRutas.value.find(r => r.id === banSelectedRutaId.value)?.empalmes_count ?? 0;
+});
+
 function openBanModal() {
-  banForm.value = {
-    ticket_asociado: '',
-    servicio_afectado_id: '',
-    servicio_protegido_id: '',
-    motivo: '',
-    usuario_ejecutor: '',
-  };
+  banForm.value = { ticket_asociado: '', servicio_afectado_id: '', servicio_protegido_id: '', motivo: '', usuario_ejecutor: '' };
+  currentBanStep.value = 1;
+  banProtMode.value = 'same';
+  banSearchServicioInput.value = '';
+  banRutas.value = [];
+  banLoadingRutas.value = false;
+  banRutasError.value = '';
+  banSelectedRutaId.value = null;
+  banConfirmChecked.value = false;
   banModalEl.value?.showModal();
 }
 
 function closeBanModal() {
+  if (banLoading.value) return;
   banModalEl.value?.close();
+}
+
+async function loadRutasForBan(servicioId: string) {
+  if (!servicioId) return;
+  banLoadingRutas.value = true;
+  banRutasError.value = '';
+  banRutas.value = [];
+  banSelectedRutaId.value = null;
+  banForm.value.servicio_protegido_id = servicioId;
+  try {
+    const res = await fetch(`/api/infra/servicios/${encodeURIComponent(servicioId)}/rutas`, { credentials: 'include' });
+    const data = await res.json() as { rutas?: BanRutaOption[]; detail?: string };
+    if (!res.ok) throw new Error(data.detail ?? `Error ${res.status}`);
+    banRutas.value = data.rutas ?? [];
+    if (banRutas.value.length === 0) banRutasError.value = `El servicio ${servicioId} no tiene rutas registradas.`;
+  } catch (e: unknown) {
+    banRutasError.value = e instanceof Error ? e.message : String(e);
+    banForm.value.servicio_protegido_id = '';
+  } finally {
+    banLoadingRutas.value = false;
+  }
+}
+
+function banSwitchMode(mode: 'same' | 'other') {
+  if (banProtMode.value === mode) return;
+  banProtMode.value = mode;
+  banRutas.value = [];
+  banRutasError.value = '';
+  banSelectedRutaId.value = null;
+  banSearchServicioInput.value = '';
+  banForm.value.servicio_protegido_id = '';
+  if (mode === 'same') {
+    void loadRutasForBan(banForm.value.servicio_afectado_id.trim());
+  }
+}
+
+async function banGoNext() {
+  if (currentBanStep.value === 1) {
+    if (!banForm.value.servicio_afectado_id.trim()) {
+      showToast('warning', 'Campo requerido', 'Ingresá el ID del servicio afectado');
+      return;
+    }
+    currentBanStep.value = 2;
+    if (banProtMode.value === 'same') {
+      await loadRutasForBan(banForm.value.servicio_afectado_id.trim());
+    }
+  } else if (currentBanStep.value === 2) {
+    if (!banForm.value.servicio_protegido_id.trim()) {
+      showToast('warning', 'Servicio requerido', banProtMode.value === 'other' ? 'Buscá un servicio para proteger' : 'No se pudo cargar el servicio');
+      return;
+    }
+    currentBanStep.value = 3;
+  }
+}
+
+function banGoPrev() {
+  if (currentBanStep.value > 1) currentBanStep.value = (currentBanStep.value - 1) as 1 | 2 | 3;
+}
+
+// Descarga tracking de una ruta directamente (sin abrir el modal de tracking)
+async function downloadTrackingByRutaId(rutaId: number) {
+  try {
+    const res = await fetch(`/api/infra/tracking/${rutaId}/download`, { credentials: 'include' });
+    if (res.status === 404) { showToast('warning', 'Sin archivo', 'El TXT original no está disponible'); return; }
+    if (!res.ok) throw new Error(`Error ${res.status}`);
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    const match = cd.match(/filename="(.+?)"/);
+    const filename = match ? match[1] : `tracking_ruta_${rutaId}.txt`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('success', 'Descarga completa', filename);
+  } catch (e: unknown) {
+    showToast('error', 'Error de descarga', e instanceof Error ? e.message : String(e));
+  }
+}
+
+// Abre el flujo de upload tracking desde el wizard de ban
+function triggerUploadTrackingForBan(_rutaId: number) {
+  banModalEl.value?.close();
+  trackingFileInputEl.value?.click();
 }
 
 async function submitBan() {
   if (!banForm.value.servicio_afectado_id.trim() || !banForm.value.servicio_protegido_id.trim()) {
-    showToast('warning', 'Campos requeridos', 'Completá los dos IDs de servicio');
+    showToast('warning', 'Campos requeridos', 'Faltan datos del servicio');
     return;
   }
   banLoading.value = true;
   try {
-    const payload: Record<string, string | null> = {
+    const payload = {
       ticket_asociado: banForm.value.ticket_asociado.trim() || null,
       servicio_afectado_id: banForm.value.servicio_afectado_id.trim(),
       servicio_protegido_id: banForm.value.servicio_protegido_id.trim(),
+      ruta_protegida_id: banSelectedRutaId.value,
       motivo: banForm.value.motivo.trim() || null,
       usuario_ejecutor: banForm.value.usuario_ejecutor.trim() || null,
     };
@@ -1188,6 +1436,78 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .req { color: #ef4444; }
 .modal-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .resolve-conflict-actions { gap: 6px; }
+
+/* ─── Wizard ban ─── */
+.ban-wizard-modal { max-width: 600px; }
+.wizard-stepper {
+  display: flex; align-items: center; gap: 0; margin: 4px 0 18px;
+}
+.wizard-step-row { display: flex; align-items: center; flex: 1; }
+.wizard-step-row:last-child { flex: 0; }
+.wizard-step-item {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.wizard-step-num {
+  width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: .75rem; font-weight: 700; border: 1.5px solid var(--border); color: var(--muted); background: transparent;
+  flex-shrink: 0;
+}
+.wizard-step-label { font-size: .78rem; color: var(--muted); white-space: nowrap; }
+.wizard-step-item.active .wizard-step-num { border-color: #60a5fa; background: rgba(96,165,250,.15); color: #60a5fa; }
+.wizard-step-item.active .wizard-step-label { color: #60a5fa; font-weight: 600; }
+.wizard-step-item.done .wizard-step-num { border-color: #22c55e; background: rgba(34,197,94,.15); color: #22c55e; }
+.wizard-step-item.done .wizard-step-label { color: #22c55e; }
+.wizard-step-connector { flex: 1; height: 1px; background: var(--border); margin: 0 6px; }
+
+/* Paso 2 */
+.ban-step2-affected {
+  font-size: .84rem; color: var(--muted); padding: 6px 10px;
+  background: rgba(255,255,255,.04); border-radius: 6px; margin-bottom: 10px;
+}
+.ban-prot-tabs { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.ban-prot-tab {
+  flex: 1; padding: 8px 10px; font-size: .82rem; cursor: pointer; text-align: center;
+  background: transparent; color: var(--muted); border: none; transition: background .15s;
+}
+.ban-prot-tab:hover { background: rgba(255,255,255,.06); }
+.ban-prot-tab.active { background: rgba(96,165,250,.12); color: #60a5fa; font-weight: 600; }
+.ban-search-row { display: flex; gap: 8px; margin-bottom: 4px; }
+.ban-search-row input { flex: 1; }
+.ban-rutas-error { font-size: .83rem; color: #ef4444; padding: 6px 0; }
+.ban-rutas-empty { font-size: .83rem; color: var(--muted); padding: 10px 0; text-align: center; }
+.ban-ruta-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.ban-ruta-card {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+  background: rgba(255,255,255,.04); border: 1.5px solid var(--border);
+  border-radius: 8px; cursor: pointer; transition: border-color .15s, background .15s;
+}
+.ban-ruta-card:hover { background: rgba(255,255,255,.07); border-color: rgba(96,165,250,.4); }
+.ban-ruta-card.selected { border-color: #60a5fa; background: rgba(96,165,250,.08); }
+.ban-ruta-card.all-option { border-style: dashed; }
+.ban-ruta-icon { font-size: 1.1rem; padding-top: 1px; flex-shrink: 0; }
+.ban-ruta-nombre { font-size: .88rem; font-weight: 600; color: var(--text); }
+.ban-ruta-meta { font-size: .78rem; color: var(--muted); margin-top: 2px; }
+.ban-tracking-alert {
+  margin-top: 6px; padding: 6px 8px; border-radius: 6px; font-size: .78rem;
+  background: rgba(245,158,11,.12); color: #f59e0b; border: 1px solid rgba(245,158,11,.25);
+}
+.ban-tracking-alert-actions { display: flex; gap: 6px; margin-top: 6px; }
+.btn.small { padding: 4px 10px; font-size: .78rem; }
+
+/* Paso 3 */
+.ban-summary-block {
+  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column;
+  gap: 6px; margin-bottom: 12px; font-size: .85rem;
+}
+.ban-summary-row { display: flex; gap: 8px; }
+.ban-summary-label { color: var(--muted); min-width: 130px; flex-shrink: 0; font-size: .82rem; }
+.ban-confirm-row {
+  display: flex; align-items: flex-start; gap: 8px; font-size: .85rem;
+  cursor: pointer; padding: 8px 10px; border-radius: 6px;
+  background: rgba(239,68,68,.06); border: 1px solid rgba(239,68,68,.2);
+}
+.ban-confirm-row input[type=checkbox] { margin-top: 2px; flex-shrink: 0; }
 
 /* Modal de resolución de tracking */
 .tracking-resolve-modal { max-width: 580px; }
