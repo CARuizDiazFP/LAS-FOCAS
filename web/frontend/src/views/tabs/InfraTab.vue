@@ -321,7 +321,18 @@
           <button class="btn danger" @click="openBanModal">🔴 Protocolo Protección</button>
           <button class="btn" @click="triggerUploadTracking">📁 Subir Tracking</button>
           <button class="btn danger-subtle" @click="openLimpiarModal">🗑 Limpiar Servicio</button>
-          <button class="btn success" @click="downloadCameras">⬇ Descargar XLSX</button>
+          <div class="download-dropdown-wrapper" ref="downloadDropdownEl">
+            <button class="btn success" @click.stop="toggleDownloadMenu">
+              ⬇ Descargar <span class="dropdown-caret" :class="{ open: isDownloadMenuOpen }">▾</span>
+            </button>
+            <ul v-if="isDownloadMenuOpen" class="download-dropdown-menu" @click.stop>
+              <li class="dropdown-item" @click="downloadCameras('xlsx', null)">📊 Todas (XLSX)</li>
+              <li class="dropdown-item" @click="downloadCameras('csv', null)">📄 Todas (CSV)</li>
+              <li class="dropdown-divider"></li>
+              <li class="dropdown-item" @click="downloadCameras('xlsx', 'BANEADA')">🔴 Solo Baneadas</li>
+              <li class="dropdown-item" @click="downloadCameras('xlsx', 'OCUPADA')">🟡 Con Ingreso</li>
+            </ul>
+          </div>
         </div>
       </div>
       <div class="infra-search-area">
@@ -411,7 +422,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useSession } from '../../composables/useSession';
 
 const { state, csrf } = useSession();
@@ -922,19 +933,40 @@ async function submitLimpiar() {
   }
 }
 
-// --- Descargar XLSX ---
-async function downloadCameras() {
-  let url = '/api/infra/export/cameras?format=xlsx';
-  if (searchTerms.value.length === 1 && /^\d+$/.test(searchTerms.value[0].trim())) {
-    url += `&servicio_id=${encodeURIComponent(searchTerms.value[0].trim())}`;
+// --- Descargar: dropdown de exportación ---
+const downloadDropdownEl = ref<HTMLElement | null>(null);
+const isDownloadMenuOpen = ref(false);
+
+function toggleDownloadMenu() {
+  isDownloadMenuOpen.value = !isDownloadMenuOpen.value;
+}
+
+function _closeDownloadMenu(e: MouseEvent) {
+  if (downloadDropdownEl.value && !downloadDropdownEl.value.contains(e.target as Node)) {
+    isDownloadMenuOpen.value = false;
   }
+}
+
+onMounted(() => document.addEventListener('click', _closeDownloadMenu));
+onUnmounted(() => document.removeEventListener('click', _closeDownloadMenu));
+
+async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | null) {
+  isDownloadMenuOpen.value = false;
+  const params = new URLSearchParams({ format });
+  if (filterStatus) params.set('filter_status', filterStatus);
+  if (!filterStatus && searchTerms.value.length === 1 && /^\d+$/.test(searchTerms.value[0].trim())) {
+    params.set('servicio_id', searchTerms.value[0].trim());
+  }
+  const ext = format === 'csv' ? 'csv' : 'xlsx';
+  const filterLabel = filterStatus ? ` (${filterStatus})` : '';
+  showToast('info', 'Preparando descarga...', `Exportando cámaras${filterLabel} en ${format.toUpperCase()}`);
   try {
-    const res = await fetch(url, { credentials: 'include' });
+    const res = await fetch(`/api/infra/export/cameras?${params.toString()}`, { credentials: 'include' });
     if (!res.ok) throw new Error(`Error ${res.status}`);
     const blob = await res.blob();
     const cd = res.headers.get('Content-Disposition') ?? '';
     const match = cd.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : `camaras_${Date.now()}.xlsx`;
+    const filename = match ? match[1] : `camaras_${Date.now()}.${ext}`;
     const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = blobUrl; a.download = filename;
@@ -1045,6 +1077,23 @@ async function downloadCameras() {
 .btn.danger-subtle:hover:not(:disabled) { background: rgba(239,68,68,.1); }
 .btn.success { background: rgba(34,197,94,.15); color: #22c55e; border: 1px solid rgba(34,197,94,.3); }
 .btn.success:hover:not(:disabled) { background: rgba(34,197,94,.25); }
+
+/* Dropdown descargar */
+.download-dropdown-wrapper { position: relative; }
+.dropdown-caret { display: inline-block; transition: transform .2s; font-size: .75rem; margin-left: 2px; }
+.dropdown-caret.open { transform: rotate(180deg); }
+.download-dropdown-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 200;
+  min-width: 180px; margin: 0; padding: 4px 0; list-style: none;
+  background: #1e1e1e; border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+}
+.dropdown-item {
+  padding: 9px 14px; font-size: .85rem; cursor: pointer;
+  color: var(--text); display: flex; align-items: center; gap: 7px; white-space: nowrap;
+}
+.dropdown-item:hover { background: rgba(255,255,255,.07); }
+.dropdown-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 .btn.warning { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.3); }
 .btn.warning:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 
