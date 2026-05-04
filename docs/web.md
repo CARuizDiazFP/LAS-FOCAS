@@ -104,6 +104,34 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
 
+### InfraTab — Baneos Activos (gestión de incidentes)
+
+El botón **🔒 Baneos Activos** en la toolbar (junto a "Protocolo Protección") muestra un badge numérico cuando hay incidentes abiertos. Al hacer clic abre el modal de gestión:
+
+**Carga**: Al abrir, hace `GET /api/infra/ban/active` y lista las tarjetas de incidentes.
+**Botón ↻ Actualizar**: recarga la lista sin cerrar el modal.
+
+Cada tarjeta de incidente muestra:
+- Ticket asociado (o `—` si no se registró)
+- Duración transcurrida (badge naranja, en minutos u horas)
+- Servicios: `Afectado → Protegido`
+- Ruta protegida (si aplica)
+- Motivo del corte
+- Fecha/hora de inicio, cantidad de cámaras afectadas, usuario ejecutor
+
+**Acción "📧 Dar Aviso"** — Abre un sub-modal con formulario de email:
+- Destinatarios (To) y CC, separados por coma
+- Asunto y cuerpo (precargados desde `GET /api/infra/ban/{id}` si el incidente tiene plantilla guardada)
+- Checkboxes: adjuntar resumen XLS y/o tracking TXT
+- Llama a `POST /api/infra/notify/email` con payload `{ to, cc?, subject, body, incidente_ids, include_xls, include_txt }`
+- Muestra toast de éxito con conteo de destinatarios
+
+**Acción "🔓 Levantar Baneo"** — Pide confirmación nativa (`window.confirm`) con datos del incidente. Al confirmar:
+- Llama a `POST /api/infra/ban/lift` con `{ incidente_id }`
+- El backend restaura las cámaras, notifica en Slack vía `slack_baneo_notifier`
+- Recarga la lista de baneos y (si hay búsqueda activa) refresca la grilla de cámaras
+- Muestra toast de éxito
+
 ### InfraTab — Leyenda de estados (atajos de filtrado)
 
 Los cinco elementos de la barra de leyenda (`LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `TRACKING`) son botones interactivos que aplican un filtro rápido sobre la grilla de cámaras ya cargada:

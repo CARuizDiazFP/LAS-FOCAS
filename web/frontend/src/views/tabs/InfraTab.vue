@@ -433,6 +433,116 @@
       </div>
     </dialog>
 
+    <!-- Modal: Baneos Activos -->
+    <dialog ref="activeBansModalEl" class="infra-generic-modal active-bans-modal" @click.self="closeActiveBansModal">
+      <div class="modal-inner">
+        <div class="modal-header-row">
+          <h3 class="modal-title">🔒 Baneos Activos</h3>
+          <button class="close-btn" @click="closeActiveBansModal">×</button>
+        </div>
+
+        <!-- Cargando -->
+        <div v-if="activeBansLoading" class="active-bans-loading">Cargando baneos activos...</div>
+
+        <!-- Error -->
+        <div v-else-if="activeBansError" class="active-bans-error">⚠ {{ activeBansError }}</div>
+
+        <!-- Sin baneos -->
+        <div v-else-if="activeBans.length === 0" class="active-bans-empty">
+          <span>✅ No hay baneos activos en este momento.</span>
+        </div>
+
+        <!-- Lista de incidentes -->
+        <template v-else>
+          <div class="active-bans-count">{{ activeBans.length }} incidente{{ activeBans.length !== 1 ? 's' : '' }} activo{{ activeBans.length !== 1 ? 's' : '' }}</div>
+          <div class="active-bans-list">
+            <div v-for="inc in activeBans" :key="inc.id" class="active-ban-card">
+              <div class="active-ban-card-header">
+                <div class="active-ban-ticket">
+                  <span class="active-ban-ticket-label">Ticket</span>
+                  <strong>{{ inc.ticket_asociado || '—' }}</strong>
+                </div>
+                <div class="active-ban-duracion">{{ formatDuracion(inc.duracion_horas) }}</div>
+              </div>
+              <div class="active-ban-servicios">
+                <span class="active-ban-svc-item afectado">
+                  <span class="active-ban-svc-dot afectado"></span>
+                  Afectado: <strong>{{ inc.servicio_afectado_id }}</strong>
+                </span>
+                <span class="active-ban-arrow">→</span>
+                <span class="active-ban-svc-item protegido">
+                  <span class="active-ban-svc-dot protegido"></span>
+                  Protegido: <strong>{{ inc.servicio_protegido_id }}</strong>
+                </span>
+              </div>
+              <div v-if="inc.ruta_protegida_id" class="active-ban-ruta">
+                Ruta: <span>ID {{ inc.ruta_protegida_id }}</span>
+              </div>
+              <div v-if="inc.motivo" class="active-ban-motivo">{{ inc.motivo }}</div>
+              <div class="active-ban-meta">
+                <span>Inicio: {{ formatFecha(inc.fecha_inicio) }}</span>
+                <span v-if="inc.camaras_count">· {{ inc.camaras_count }} cámara{{ inc.camaras_count !== 1 ? 's' : '' }}</span>
+                <span v-if="inc.usuario_ejecutor">· por {{ inc.usuario_ejecutor }}</span>
+              </div>
+              <div class="active-ban-actions">
+                <button
+                  class="btn warning small"
+                  :disabled="avisoLoadingId === inc.id"
+                  @click="openAvisoModal(inc)"
+                >{{ avisoLoadingId === inc.id ? '...' : '📧 Dar Aviso' }}</button>
+                <button
+                  class="btn success small"
+                  :disabled="liftLoadingId === inc.id"
+                  @click="confirmLiftBan(inc)"
+                >{{ liftLoadingId === inc.id ? 'Levantando...' : '🔓 Levantar Baneo' }}</button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <div class="modal-actions" style="margin-top:8px">
+          <button class="btn subtle" @click="closeActiveBansModal">Cerrar</button>
+          <button class="btn primary small" :disabled="activeBansLoading" @click="loadActiveBans">↻ Actualizar</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Sub-modal: Dar Aviso por email -->
+    <dialog ref="avisoModalEl" class="infra-generic-modal aviso-modal" @click.self="closeAvisoModal">
+      <div class="modal-inner" v-if="avisoIncidente">
+        <div class="modal-header-row">
+          <h3 class="modal-title">📧 Dar Aviso — {{ avisoIncidente.ticket_asociado || 'Sin ticket' }}</h3>
+          <button class="close-btn" @click="closeAvisoModal">×</button>
+        </div>
+        <label class="form-label">Destinatarios <span class="req">*</span> <span class="aviso-hint">(separados por coma)</span></label>
+        <input v-model="avisoForm.to" type="text" placeholder="operador@empresa.com, supervisor@empresa.com" />
+        <label class="form-label">Con copia (CC) <span class="aviso-hint">(opcional)</span></label>
+        <input v-model="avisoForm.cc" type="text" placeholder="noc@empresa.com" />
+        <label class="form-label">Asunto <span class="req">*</span></label>
+        <input v-model="avisoForm.subject" type="text" />
+        <label class="form-label">Cuerpo del mensaje <span class="req">*</span></label>
+        <textarea v-model="avisoForm.body" rows="4"></textarea>
+        <div class="aviso-options">
+          <label class="aviso-checkbox-row">
+            <input v-model="avisoForm.include_xls" type="checkbox" />
+            <span>Adjuntar resumen XLS</span>
+          </label>
+          <label class="aviso-checkbox-row">
+            <input v-model="avisoForm.include_txt" type="checkbox" />
+            <span>Adjuntar tracking TXT</span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button class="btn subtle" :disabled="avisoSending" @click="closeAvisoModal">Cancelar</button>
+          <button
+            class="btn warning"
+            :disabled="avisoSending || !avisoForm.to.trim() || !avisoForm.subject.trim() || !avisoForm.body.trim()"
+            @click="sendAviso"
+          >{{ avisoSending ? 'Enviando...' : '📧 Enviar Aviso' }}</button>
+        </div>
+      </div>
+    </dialog>
+
     <!-- Modal: Limpiar servicio -->
     <dialog ref="limpiarModalEl" class="infra-generic-modal" @click.self="closeLimpiarModal">
       <div class="modal-inner">
@@ -460,6 +570,7 @@
         <h2 class="infra-toolbar-title">Infraestructura FO</h2>
         <div class="infra-toolbar-actions">
           <button class="btn danger" @click="openBanModal">🔴 Protocolo Protección</button>
+          <button class="btn subtle active-bans-btn" @click="openActiveBansModal">🔒 Baneos Activos<span v-if="activeBans.length > 0" class="active-bans-badge">{{ activeBans.length }}</span></button>
           <div
             class="upload-drop-zone"
             :class="{ 'drag-over': isDragOver }"
@@ -1030,6 +1141,167 @@ function triggerUploadTrackingForBan(_rutaId: number) {
   trackingFileInputEl.value?.click();
 }
 
+// --- Baneos Activos ---
+interface IncidenteActivo {
+  id: number;
+  ticket_asociado: string | null;
+  servicio_afectado_id: string;
+  servicio_protegido_id: string;
+  ruta_protegida_id: number | null;
+  usuario_ejecutor: string | null;
+  motivo: string | null;
+  fecha_inicio: string | null;
+  activo: boolean;
+  duracion_horas: number | null;
+  camaras_count: number;
+}
+
+const activeBansModalEl = ref<HTMLDialogElement | null>(null);
+const activeBans = ref<IncidenteActivo[]>([]);
+const activeBansLoading = ref(false);
+const activeBansError = ref('');
+const liftLoadingId = ref<number | null>(null);
+const avisoLoadingId = ref<number | null>(null);
+
+// Sub-modal Dar Aviso
+const avisoModalEl = ref<HTMLDialogElement | null>(null);
+const avisoIncidente = ref<IncidenteActivo | null>(null);
+const avisoSending = ref(false);
+interface AvisoForm {
+  to: string;
+  cc: string;
+  subject: string;
+  body: string;
+  include_xls: boolean;
+  include_txt: boolean;
+}
+const avisoForm = ref<AvisoForm>({
+  to: '', cc: '', subject: '', body: '', include_xls: true, include_txt: true,
+});
+
+function formatDuracion(horas: number | null): string {
+  if (horas === null || horas === undefined) return '';
+  if (horas < 1) return `${Math.round(horas * 60)} min`;
+  return `${horas.toFixed(1)} h`;
+}
+
+function formatFecha(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadActiveBans() {
+  activeBansLoading.value = true;
+  activeBansError.value = '';
+  try {
+    const res = await fetch('/api/infra/ban/active', { credentials: 'include' });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    activeBans.value = (data as { incidentes: IncidenteActivo[] }).incidentes ?? [];
+  } catch (e: unknown) {
+    activeBansError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    activeBansLoading.value = false;
+  }
+}
+
+function openActiveBansModal() {
+  activeBansError.value = '';
+  activeBansModalEl.value?.showModal();
+  void loadActiveBans();
+}
+
+function closeActiveBansModal() {
+  activeBansModalEl.value?.close();
+}
+
+async function confirmLiftBan(inc: IncidenteActivo) {
+  const ticket = inc.ticket_asociado ? `#${inc.ticket_asociado}` : `ID ${inc.id}`;
+  if (!window.confirm(`¿Levantar el baneo ${ticket}?\n\nSe restaurarán las cámaras del servicio ${inc.servicio_protegido_id} y se notificará en Slack.`)) return;
+  liftLoadingId.value = inc.id;
+  try {
+    const res = await fetch('/api/infra/ban/lift', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
+      body: JSON.stringify({ incidente_id: inc.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    showToast('success', 'Baneo levantado', `Servicio ${inc.servicio_protegido_id} restaurado`);
+    await loadActiveBans();
+    if (hasSearched.value) await searchCamaras();
+  } catch (e: unknown) {
+    showToast('error', 'Error al levantar baneo', e instanceof Error ? e.message : String(e));
+  } finally {
+    liftLoadingId.value = null;
+  }
+}
+
+async function openAvisoModal(inc: IncidenteActivo) {
+  avisoIncidente.value = inc;
+  avisoLoadingId.value = inc.id;
+  // Intentar precargar asunto/cuerpo desde el detalle del incidente
+  try {
+    const res = await fetch(`/api/infra/ban/${inc.id}`, { credentials: 'include' });
+    if (res.ok) {
+      const det = await res.json() as { email_subject?: string; email_body?: string };
+      avisoForm.value.subject = det.email_subject ?? `Protocolo de Protección — Servicio ${inc.servicio_protegido_id}`;
+      avisoForm.value.body = det.email_body ?? `Se informa que el servicio ${inc.servicio_protegido_id} se encuentra bajo protocolo de protección${inc.ticket_asociado ? ` (${inc.ticket_asociado})` : ''}.`;
+    }
+  } catch { /* fallback a valores por defecto */ }
+  avisoForm.value.to = '';
+  avisoForm.value.cc = '';
+  avisoForm.value.include_xls = true;
+  avisoForm.value.include_txt = true;
+  avisoLoadingId.value = null;
+  avisoModalEl.value?.showModal();
+}
+
+function closeAvisoModal() {
+  avisoModalEl.value?.close();
+  avisoIncidente.value = null;
+}
+
+async function sendAviso() {
+  if (!avisoIncidente.value) return;
+  const toList = avisoForm.value.to.split(',').map(s => s.trim()).filter(Boolean);
+  const ccList = avisoForm.value.cc.split(',').map(s => s.trim()).filter(Boolean);
+  if (toList.length === 0) {
+    showToast('warning', 'Destinatarios requeridos', 'Ingresá al menos un destinatario');
+    return;
+  }
+  avisoSending.value = true;
+  try {
+    const payload = {
+      to: toList,
+      cc: ccList.length ? ccList : undefined,
+      subject: avisoForm.value.subject.trim(),
+      body: avisoForm.value.body.trim(),
+      incidente_ids: [avisoIncidente.value.id],
+      include_xls: avisoForm.value.include_xls,
+      include_txt: avisoForm.value.include_txt,
+    };
+    const res = await fetch('/api/infra/notify/email', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !(data as { success: boolean }).success) {
+      throw new Error((data as Record<string, string>).error ?? (data as Record<string, string>).detail ?? `Error ${res.status}`);
+    }
+    closeAvisoModal();
+    showToast('success', 'Aviso enviado', `Notificación enviada a ${toList.length} destinatario${toList.length !== 1 ? 's' : ''}`);
+  } catch (e: unknown) {
+    showToast('error', 'Error al enviar aviso', e instanceof Error ? e.message : String(e));
+  } finally {
+    avisoSending.value = false;
+  }
+}
+
 async function submitBan() {
   if (!banForm.value.servicio_afectado_id.trim() || !banForm.value.servicio_protegido_id.trim()) {
     showToast('warning', 'Campos requeridos', 'Faltan datos del servicio');
@@ -1582,4 +1854,48 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   font-size: .83rem; background: rgba(255,255,255,.04); border-radius: 6px;
   padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 3px;
 }
+/* ─── Baneos Activos ─── */
+.active-bans-btn { position: relative; }
+.active-bans-badge {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 18px; height: 18px; border-radius: 9px; padding: 0 4px;
+  background: #ef4444; color: #fff; font-size: .72rem; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
+.active-bans-modal { max-width: 640px; }
+.active-bans-loading, .active-bans-empty {
+  padding: 20px 0; text-align: center; color: var(--muted); font-size: .88rem;
+}
+.active-bans-error { color: #ef4444; font-size: .85rem; padding: 8px 0; }
+.active-bans-count { font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
+.active-bans-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
+.active-ban-card {
+  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.active-ban-card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.active-ban-ticket { display: flex; flex-direction: column; gap: 2px; }
+.active-ban-ticket-label { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.active-ban-duracion {
+  font-size: .78rem; font-weight: 600; color: #f59e0b;
+  background: rgba(245,158,11,.1); padding: 2px 8px; border-radius: 10px;
+  white-space: nowrap; align-self: flex-start;
+}
+.active-ban-servicios { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .85rem; }
+.active-ban-svc-item { display: flex; align-items: center; gap: 5px; }
+.active-ban-svc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.active-ban-svc-dot.afectado { background: #f59e0b; }
+.active-ban-svc-dot.protegido { background: #ef4444; }
+.active-ban-arrow { color: var(--muted); font-size: .9rem; }
+.active-ban-ruta { font-size: .8rem; color: var(--muted); }
+.active-ban-motivo { font-size: .83rem; color: var(--text); font-style: italic; border-left: 2px solid var(--border); padding-left: 8px; }
+.active-ban-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: .78rem; color: var(--muted); }
+.active-ban-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+
+/* Sub-modal Dar Aviso */
+.aviso-modal { max-width: 540px; }
+.aviso-hint { font-size: .75rem; color: var(--muted); font-weight: 400; }
+.aviso-options { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.aviso-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: .85rem; cursor: pointer; }
+.aviso-checkbox-row input[type=checkbox] { flex-shrink: 0; }
 </style>
