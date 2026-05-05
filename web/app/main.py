@@ -3208,6 +3208,7 @@ class SmartSearchRequestModel(BaseModel):
     terms: list[str] = []
     limit: int = 100
     offset: int = 0
+    estado: Optional[str] = None
 
 
 @app.get("/api/infra/camaras/{camara_id}/estado")
@@ -3549,7 +3550,15 @@ async def smart_search_camaras_web(
         offset = max(body.offset, 0)
 
         with SessionLocal() as session:
-            all_camaras = session.query(Camara).order_by(Camara.nombre).all()
+            from db.models.infra import CamaraEstado as _CamaraEstado
+            _query = session.query(Camara)
+            estado_filter: Optional[str] = None
+            if body.estado:
+                estado_upper = body.estado.strip().upper()
+                if estado_upper in [e.value for e in _CamaraEstado]:
+                    _query = _query.filter(Camara.estado == _CamaraEstado(estado_upper))
+                    estado_filter = estado_upper
+            all_camaras = _query.order_by(Camara.nombre).all()
 
             def get_camara_rutas(camara: Camara) -> list[dict]:
                 """Obtiene las rutas asociadas a una cámara a través de empalmes."""
@@ -3657,7 +3666,8 @@ async def smart_search_camaras_web(
                     "total": total,
                     "limit": limit,
                     "offset": offset,
-                    "filters_applied": 0,
+                    "filters_applied": 1 if estado_filter else 0,
+                    "estado_filter": estado_filter,
                     "camaras": camaras_response,
                 })
 
@@ -3696,9 +3706,10 @@ async def smart_search_camaras_web(
 
             terms_count = len([t for t in body.terms if t.strip()])
             logger.info(
-                "action=smart_search user=%s terms=%d total=%d returned=%d",
+                "action=smart_search user=%s terms=%d estado=%s total=%d returned=%d",
                 username,
                 terms_count,
+                estado_filter or "ninguno",
                 total,
                 len(camaras_response),
             )
@@ -3708,7 +3719,8 @@ async def smart_search_camaras_web(
                 "total": total,
                 "limit": limit,
                 "offset": offset,
-                "filters_applied": terms_count,
+                "filters_applied": terms_count + (1 if estado_filter else 0),
+                "estado_filter": estado_filter,
                 "camaras": camaras_response,
             })
 

@@ -649,7 +649,7 @@
       </div>
       <div v-else-if="camaras.length === 0" class="infra-empty">Sin resultados para estos términos.</div>
       <div v-else-if="filteredCamaras.length === 0" class="infra-empty">
-        Sin cámaras con estado <strong>{{ activeStateFilter }}</strong> en los resultados actuales.
+        Sin cámaras en TRACKING con los términos actuales.
       </div>
       <div v-else class="infra-grid">
         <div
@@ -787,13 +787,13 @@ function clearStateFilter() {
   }
 }
 
+// El filtro de estado se aplica en el servidor (salvo TRACKING, que depende de la relación rutas).
+// Este computed solo filtra client-side para el caso especial TRACKING.
 const filteredCamaras = computed(() => {
-  if (!activeStateFilter.value) return camaras.value;
-  const target = activeStateFilter.value;
-  if (target === 'TRACKING') {
+  if (activeStateFilter.value === 'TRACKING') {
     return camaras.value.filter(c => ((c.rutas as unknown[]) ?? []).length > 0);
   }
-  return camaras.value.filter(c => (c.estado ?? 'LIBRE') === target);
+  return camaras.value;
 });
 
 async function searchCamaras() {
@@ -811,7 +811,15 @@ async function searchCamaras() {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ terms: searchTerms.value, limit: 100, offset: 0 }),
+      body: JSON.stringify({
+        terms: searchTerms.value,
+        limit: activeStateFilter.value === 'TRACKING' ? 500 : 100,
+        offset: 0,
+        // Para TRACKING no enviamos estado al backend (no es un CamaraEstado enum); filtramos client-side.
+        ...(activeStateFilter.value && activeStateFilter.value !== 'TRACKING'
+          ? { estado: activeStateFilter.value }
+          : {}),
+      }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
