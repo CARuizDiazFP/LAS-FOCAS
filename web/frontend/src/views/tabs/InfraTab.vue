@@ -616,7 +616,7 @@
             @keydown.enter="addTerm"
           />
           <button class="btn" @click="addTerm">Agregar</button>
-          <button class="btn primary" :disabled="loading || searchTerms.length === 0" @click="searchCamaras">Buscar</button>
+          <button class="btn primary" :disabled="loading || (searchTerms.length === 0 && !activeStateFilter)" @click="searchCamaras">Buscar</button>
           <button class="btn subtle" @click="clearAll">Limpiar</button>
         </div>
         <div v-if="searchTerms.length" class="infra-search-terms">
@@ -629,7 +629,7 @@
           <span v-if="activeStateFilter !== 'TRACKING'" class="infra-legend-dot" :class="activeStateFilter.toLowerCase()"></span>
           <span v-else style="font-size:.85rem;line-height:1">📍</span>
           <span>{{ activeStateFilter }}</span>
-          <button class="infra-state-filter-remove" @click="activeStateFilter = null" aria-label="Quitar filtro de estado">×</button>
+          <button class="infra-state-filter-remove" @click="clearStateFilter" aria-label="Quitar filtro de estado">×</button>
         </div>
         <div v-if="statusText" :class="['infra-status', statusVariant]">{{ statusText }}</div>
       </div>
@@ -769,6 +769,22 @@ const activeStateFilter = ref<string | null>(null);
 
 function toggleStateFilter(estado: string) {
   activeStateFilter.value = activeStateFilter.value === estado ? null : estado;
+  // Si ya hay resultados, el computed filtra instantáneamente sin nueva llamada.
+  // Si no hay resultados aún (primera interacción), disparar búsqueda "traer todo".
+  if (activeStateFilter.value !== null && !hasSearched.value) {
+    searchCamaras();
+  }
+}
+
+function clearStateFilter() {
+  activeStateFilter.value = null;
+  // Si la búsqueda fue disparada sólo por el filtro (sin términos de texto),
+  // limpiar la grilla para volver al estado inicial vacío.
+  if (searchTerms.value.length === 0) {
+    camaras.value = [];
+    hasSearched.value = false;
+    setStatus('');
+  }
 }
 
 const filteredCamaras = computed(() => {
@@ -781,10 +797,15 @@ const filteredCamaras = computed(() => {
 });
 
 async function searchCamaras() {
-  if (searchTerms.value.length === 0) return;
+  // Permitir la búsqueda si hay términos de texto O si hay un filtro de estado activo.
+  // Con terms:[] la API devuelve todas las cámaras (ver SmartSearchRequestModel).
+  if (searchTerms.value.length === 0 && !activeStateFilter.value) return;
   loading.value = true;
   hasSearched.value = true;
-  setStatus(`Buscando con ${searchTerms.value.length} término(s)...`, 'loading');
+  const statusMsg = searchTerms.value.length > 0
+    ? `Buscando con ${searchTerms.value.length} término(s)...`
+    : `Cargando cámaras ${activeStateFilter.value}...`;
+  setStatus(statusMsg, 'loading');
   try {
     const res = await fetch('/api/infra/smart-search', {
       method: 'POST',
