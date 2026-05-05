@@ -136,13 +136,15 @@ Cada tarjeta de incidente muestra:
 
 ### InfraTab — Leyenda de estados (atajos de filtrado)
 
-Los cinco elementos de la barra de leyenda (`LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `TRACKING`) son botones interactivos que aplican un filtro rápido sobre la grilla de cámaras ya cargada:
+Los cinco elementos de la barra de leyenda (`LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `TRACKING`) son botones interactivos que aplican un filtro rápido sobre la grilla de cámaras:
 
-- **Clic en un atajo**: filtra la grilla al instante, sin nueva llamada a la API.
+- **Clic en un atajo sin resultados previos**: dispara automáticamente `searchCamaras()` con `terms: []` (trae todas las cámaras) y luego filtra por estado. No requiere clic en "Buscar".
+- **Clic en un atajo con resultados cargados**: filtra la grilla al instante via computed, sin nueva llamada a la API.
 - **Clic en el mismo atajo activo**: limpia el filtro (toggle).
-- **Clic en la `×` del chip**: también limpia el filtro.
+- **Clic en la `×` del chip**: llama `clearStateFilter()`. Si no había términos de texto, resetea la grilla al estado vacío inicial; si había términos, solo quita el filtro de estado.
 - **`TRACKING`**: muestra sólo cámaras que tienen al menos una ruta/servicio asociado.
-- El botón **Limpiar** también resetea el filtro activo junto a los términos de búsqueda.
+- **Botón "Buscar"**: habilitado si hay términos de texto O si hay un filtro de estado activo (`searchTerms.length > 0 || activeStateFilter !== null`).
+- El botón **Limpiar** resetea filtro de estado, términos de búsqueda y vacía la grilla.
 
 Al activar un filtro aparece un **chip removible** junto al área de búsqueda indicando el estado activo. El chip usa la misma paleta de colores que los dots de la leyenda.
 
