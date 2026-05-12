@@ -2292,6 +2292,19 @@ async def create_ban_web(
             
             if result.success:
                 session.commit()
+                try:
+                    from core.config import get_settings
+                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
+
+                    datos_evento = result.to_dict()
+                    datos_evento["servicio_afectado_id"] = ban_request.servicio_afectado_id
+                    datos_evento["servicio_protegido_id"] = ban_request.servicio_protegido_id
+                    datos_evento["ticket_asociado"] = ban_request.ticket_asociado
+                    datos_evento["usuario_ejecutor"] = username
+                    datos_evento["motivo"] = ban_request.motivo
+                    notificar_evento_baneo(session, "create", datos_evento, get_settings().slack.bot_token)
+                except Exception as slack_exc:
+                    logger.warning("Error enviando aviso Slack de baneo creado desde web: %s", slack_exc)
                 logger.info(
                     "action=create_ban user=%s ticket=%s servicio_afectado=%s servicio_protegido=%s camaras=%d",
                     username,
@@ -2411,6 +2424,16 @@ async def lift_ban_web(
             
             if result.success:
                 session.commit()
+                try:
+                    from core.config import get_settings
+                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
+
+                    datos_evento = result.to_dict()
+                    datos_evento["usuario_ejecutor"] = username
+                    datos_evento["motivo_cierre"] = lift_request.motivo_cierre
+                    notificar_evento_baneo(session, "lift", datos_evento, get_settings().slack.bot_token)
+                except Exception as slack_exc:
+                    logger.warning("Error enviando aviso Slack de baneo levantado desde web: %s", slack_exc)
                 logger.info(
                     "action=lift_ban user=%s incidente_id=%d camaras_restauradas=%d",
                     username,

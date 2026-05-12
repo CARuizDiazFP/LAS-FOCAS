@@ -93,9 +93,9 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 
 - Infraestructura y orquestación
   - Docker instalado y operativo en la VM.
-  - Contenedor de Ollama activo (`ollama-llama3`) con modelo disponible: `llama3:latest` (4.7 GB).
-  - Nota: el puerto 11434 no está publicado al host en el contenedor observado; evaluar exposición o incorporación de Ollama al `compose` del proyecto.
-  - Publicación del servicio `web` restringida a `192.168.241.28:8080` (ver `deploy/compose.yml`) y script de firewall idempotente disponible en `scripts/firewall_hardening.sh` para aplicar allowlists y `DROP` en `INPUT/DOCKER-USER`.
+  - VM operativa migrada a Debian 13 con IP privada `172.18.208.162`.
+  - Se desestimó el uso operativo de Ollama/local LLM por limitaciones de hardware; la topología vigente depende de proveedores externos vía API.
+  - Publicación del servicio `web` restringida a `172.18.208.162:8080` (ver `deploy/compose.yml`) y script de firewall idempotente disponible en `scripts/firewall_hardening.sh` para aplicar allowlists y `DROP` en `INPUT/DOCKER-USER`.
   - Postgres ahora sólo expuesto en la red interna (`expose: 5432` en `deploy/compose.yml`), sin puerto publicado al host.
   - Esquema de infraestructura listo: modelos SQLAlchemy en `db/models/infra.py` y migración `db/alembic/versions/20251230_01_infra.py` crean `app.camaras`, `app.cables`, `app.empalmes`, `app.servicios`, la tabla puente `app.servicio_empalme_association` y `app.ingresos`.
   - Parser TXT de tracking (`core/parsers/tracking_parser.py`) transforma archivos de rutas en estructuras tipadas listas para poblar `empalmes` y relaciones.
@@ -107,7 +107,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
   - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
     - Infra/Cámaras: las tarjetas ahora exponen edición manual del `estado` para usuarios `admin`, muestran inconsistencias entre estado persistido y estado sugerido, y consumen endpoints web protegidos por sesión + CSRF para consultar/aplicar overrides.
     - Protocolo de Protección: el badge y el modal de baneos distinguen entre cámaras cubiertas por incidentes y cámaras efectivamente persistidas como `BANEADA`, evitando falsos positivos cuando hay normalización manual.
-  - `nlp_intent` (FastAPI): `POST /v1/intent:classify` con proveedores `heuristic | ollama | openai`. Usa `OLLAMA_URL` (default `http://ollama:11434`).
+  - `nlp_intent` (FastAPI): `POST /v1/intent:classify` y `POST /v1/intent:analyze` con `openai` como proveedor LLM por defecto; `heuristic` se mantiene como opción de desarrollo/local test sin dependencia GPU.
   - `bot` (Telegram): definido en `deploy/compose.yml`.
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
@@ -167,8 +167,8 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 4) Comparador FO desde UI
 - Completar flujo del comparador en el panel, aprovechando la nueva página SLA minimalista como referencia para feedback y validaciones.
 
-5) Conectividad Ollama y respuestas generativas
-- Unificar consumo de Ollama entre `web` y `nlp_intent` (service mesh o contenedor dedicado).
+5) Respuestas generativas por API externa
+- Consolidar configuración de proveedores HTTP entre `web` y `nlp_intent` sin depender de LLM local en la VM.
 - Afinar prompts e indicadores de intención para decidir cuándo invocar herramientas vs. respuestas generativas.
 
 6) Observabilidad y seguridad
@@ -204,9 +204,9 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 ### Realizado
 - [x] Infra base Docker y Postgres.
 - [x] Servicio `api` con health y check de DB.
-- [x] Servicio `nlp_intent` con proveedores `heuristic/ollama/openai`.
+- [x] Servicio `nlp_intent` con proveedor estándar `openai`, fallback heurístico y compatibilidad heredada para `ollama`.
 - [x] Esquema de conversaciones y mensajes en DB.
-- [x] Modelo `llama3` presente en contenedor de Ollama.
+- [x] Política operativa documentada: sin dependencia a Ollama/local LLM en la topología estándar.
 - [x] Servicio `web` (UI) con login básico, sesiones y CSRF.
 - [x] Contrato del chat `POST /api/chat/message` (REST) con rate limiting.
 - [x] Repositorio Sandy clonado en `Legacy/` para referencia.
@@ -261,7 +261,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [ ] Implementar endpoint `/api/infra/notify/send` para envío SMTP de notificaciones.
 - [ ] Aplicar en el entorno objetivo la migración `20260420_01_camaras_estado_auditoria` antes de usar la edición manual desde el panel.
 - [ ] Validación manual exhaustiva de Alarmas Ciena con archivos reales de producción (2025-11-17).
-- [ ] Conectividad limpia con Ollama desde `nlp_intent`/`web`.
+- [ ] Consolidar configuración de proveedores API y secretos entre `nlp_intent` y `web`.
 - [x] Disparadores de flujos desde la UI.
 - [x] Documentación en `docs/web.md` de headers `X-PDF-*`/`X-Map-*`, generación de PNG estáticos y ejemplos de respuesta (2025-10-17).
 - [ ] Unificar versiones FastAPI/pydantic (root vs `office_service`).

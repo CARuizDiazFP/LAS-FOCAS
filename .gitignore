@@ -67,5 +67,9 @@ Reports/
 web/data/reports/
 devs/
 
+# Dumps y backups locales
+*.dump
+backup_*.dump
+
 # Repositorios legacy
 Legacy/

@@ -8,7 +8,7 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 
 ## Contexto operativo
 
-- Entorno principal: VM Debian 12.4.
+- Entorno principal: VM Debian 13.
 - Conectividad: salida a Internet y acceso a red local (intranet).
 - Arquitectura: microservicios dockerizados, PostgreSQL local, servicios internos expuestos en red interna de compose.
 - Implicancia: toda nueva implementación debe evaluar exposición de puertos/servicios, dependencias y manejo de datos en un entorno mixto (Internet + red local).
@@ -33,7 +33,8 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Logs estructurados con metadatos (service, action, request_id, timestamps) y prudencia en datos sensibles.
 - Auditoría básica de dependencias antes de incorporarlas.
 - Servicios web/bot llaman al API de reportes mediante `REPORTS_API_BASE`; asegúrese de que apunte a la red interna (`http://api:8000`).
-- Publicación del servicio `web` acotada a la IP LAN `192.168.241.28:8080` en `deploy/compose.yml` para evitar exposición en 0.0.0.0.
+- Publicación del servicio `web` acotada a la IP LAN `172.18.208.162:8080` en `deploy/compose.yml` para evitar exposición en 0.0.0.0.
+- El despliegue estándar no debe depender de motores LLM locales ni de `host.docker.internal`; la clasificación productiva se resuelve por proveedor externo vía API y secreto en `.env`.
 - Postgres sin publicación al host: `deploy/compose.yml` usa `expose: 5432` para que solo sea accesible por servicios internos.
 - El worker `slack_baneo_worker` expone solo `8095` dentro de la red de compose y toma credenciales Slack desde `.env`; no se publican tokens ni puertos Slack hacia el host.
 - Las auditorías de seguridad del repositorio se estandarizan con el agente `security` y las skills `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`.
@@ -81,13 +82,13 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 
 - Objetivo: limitar el acceso a `lasfocas-web` a las subredes requeridas, reforzar `rp_filter` y asegurar que las reglas persistan tras reinicio.cd /home/focal/proyectos/LAS-FOCAS
 WEB_ALLOWED_SUBNETS="190.12.96.0/24" \
-WEB_HOST="192.168.241.28" \
+WEB_HOST="172.18.208.162" \
 MGMT_IFACE="ens224" \
 PERSIST_RULES=true \
 bash scripts/firewall_hardening.sh
 - Publicación del puerto 8080 sólo en la IP LAN: ver `ports` en [deploy/compose.yml](deploy/compose.yml).
 - Firewall/iptables (idempotente): usar [scripts/firewall_hardening.sh](scripts/firewall_hardening.sh). Ejecutar como root y ajustar subredes permitidas, por ejemplo:
-  - `WEB_ALLOWED_SUBNETS="190.12.96.0/24 192.168.241.0/24" WEB_HOST=192.168.241.28 PERSIST_RULES=true bash scripts/firewall_hardening.sh`
+  - `WEB_ALLOWED_SUBNETS="190.12.96.0/24 192.168.241.0/24" WEB_HOST=172.18.208.162 PERSIST_RULES=true bash scripts/firewall_hardening.sh`
   - Reglas aplicadas: `INPUT` y `DOCKER-USER` permiten sólo las subredes definidas hacia 8080, luego `DROP`; `POSTROUTING` mantiene SNAT `172.18.0.0/16 -> ens224` sin duplicados.
 - `rp_filter`: el script fija `1` en interfaces generales y mantiene `2` en `ens224` (o la interfaz definida en `MGMT_IFACE`), con persistencia en `/etc/sysctl.d/99-lasfocas.conf`.
 - Persistencia de reglas: habilitar `iptables-persistent`/`netfilter-persistent` y ejecutar con `PERSIST_RULES=true` (el script guarda automáticamente si la herramienta está instalada). Verificar con `iptables-save` y `sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.ens224.rp_filter`.

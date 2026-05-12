@@ -4,7 +4,7 @@
 
 ---
 name: NLP Agent
-description: "Usar cuando la tarea trate de clasificación de intención, providers heurístico/Ollama/OpenAI o código dentro de nlp_intent/"
+description: "Usar cuando la tarea trate de clasificación de intención, providers heurístico/OpenAI o compatibilidad heredada con Ollama dentro de nlp_intent/"
 argument-hint: "Describe ajuste de NLP, por ejemplo: mejorar fallback heurístico del intent classifier"
 tools: [read, edit, search, execute]
 ---
@@ -16,7 +16,7 @@ Soy el agente especializado en procesamiento de lenguaje natural de LAS-FOCAS.
 ## Mi Alcance
 
 - Clasificación de intención del usuario
-- Proveedores de NLP (heurístico, Ollama, OpenAI)
+- Proveedores de NLP (heurístico, OpenAI y compatibilidad heredada con Ollama)
 - Entrenamiento y ajuste de modelos
 - Métricas de precisión
 
@@ -35,7 +35,7 @@ nlp_intent/
 │   │   ├── __init__.py
 │   │   ├── base.py      # Interfaz base
 │   │   ├── heuristic.py # Basado en reglas
-│   │   ├── ollama.py    # Ollama local
+│   │   ├── ollama.py    # Compatibilidad heredada con Ollama
 │   │   └── openai.py    # OpenAI API
 │   └── intents/
 │       ├── __init__.py
@@ -68,7 +68,7 @@ Mensaje del usuario
     ┌────┴────┐
     ↓         ↓
 Heuristic  LLM Provider
-(rápido)   (Ollama/OpenAI)
+(rápido)   (OpenAI/compat)
     ↓         ↓
     └────┬────┘
          ↓
@@ -122,7 +122,7 @@ app = FastAPI(title="NLP Intent Service")
 
 class ClassifyRequest(BaseModel):
     text: str
-    provider: str = "auto"  # auto, heuristic, ollama, openai
+    provider: str = "openai"  # openai, heuristic, auto, ollama(legacy)
 
 class ClassifyResponse(BaseModel):
     intent: str
@@ -153,8 +153,8 @@ async def classify_intent(request: ClassifyRequest):
 ## Configuración
 
 ```
-NLP_DEFAULT_PROVIDER=ollama  # ollama, openai, heuristic
-NLP_OLLAMA_URL=http://localhost:11434
+NLP_DEFAULT_PROVIDER=openai  # openai, heuristic, auto, ollama(legacy)
+NLP_OLLAMA_URL=http://localhost:11434  # sólo para compatibilidad heredada
 NLP_OPENAI_API_KEY=sk-xxx
 NLP_CONFIDENCE_THRESHOLD=0.6
 ```

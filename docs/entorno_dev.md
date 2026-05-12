@@ -15,7 +15,7 @@
 ## Modelo de ramas
 
 ```
-main  ──────────────────────────────────────►  producción (192.168.241.28:8080)
+main  ──────────────────────────────────────►  producción (172.18.208.162:8080)
   └─ dev  ──────────────────────────────────►  desarrollo  (localhost:8090)
        └─ feature/xxx  ──────────────────────►  (opcional, para features largas)
 ```
@@ -38,14 +38,14 @@ El entorno dev corre en paralelo al productivo sin compartir puertos, volúmenes
 |----------------------|------------------------------|---------------------|
 | PostgreSQL           | `127.0.0.1:5432`             | `127.0.0.1:5433`    |
 | API (docs: `/docs`)  | `:8001`                      | `:8011`             |
-| Web (panel)          | `192.168.241.28:8080`        | `127.0.0.1:8090`    |
+| Web (panel)          | `172.18.208.162:8080`        | `127.0.0.1:8090`    |
 | pgAdmin (profile)    | `:5050`                      | `:5051`             |
 | NLP / Office / Slack | interno                      | interno             |
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota:
 
 ```bash
-ssh -L 8090:localhost:8090 usuario@192.168.241.28
+ssh -L 8090:localhost:8090 usuario@172.18.208.162
 ```
 
 ---
@@ -175,8 +175,8 @@ git push origin dev
 | Variable              | Producción                       | Dev                         |
 |-----------------------|----------------------------------|-----------------------------|
 | `POSTGRES_DB`         | `FOCALDB`                        | `focas_dev`                 |
-| `API_BASE`            | `http://192.168.241.28:8080`     | `http://localhost:8090`     |
-| `WEB_INFERRED_ORIGIN` | `http://192.168.241.28:8080`     | `http://localhost:8090`     |
+| `API_BASE`            | `http://172.18.208.162:8080`     | `http://localhost:8090`     |
+| `WEB_INFERRED_ORIGIN` | `http://172.18.208.162:8080`     | `http://localhost:8090`     |
 | `SLACK_BOT_TOKEN`     | app Slack prod                   | app Slack dev (separada)    |
 | `SLACK_APP_TOKEN`     | app Slack prod                   | app Slack dev (separada)    |
 | `LLM_PROVIDER`        | `openai`                         | `heuristic` (sin costo)     |

@@ -1,6 +1,6 @@
 # Nombre de archivo: Start
 # Ubicación de archivo: Start
-# Descripción: Script mejorado para reiniciar stack mínimo (DB, NLP, API, Web, Office) con validaciones y healthchecks internos. IP fija 192.168.241.28 requerida en VM.
+# Descripción: Script mejorado para reiniciar stack mínimo (DB, NLP, API, Web, Office) con validaciones y healthchecks internos. IP fija 172.18.208.162 requerida en VM.
 
 #!/usr/bin/env bash
 set -euo pipefail
@@ -15,7 +15,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$ROOT_DIR/deploy/compose.yml"
 COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE" --env-file "$ROOT_DIR/.env")
 
-HOST_IP="192.168.241.28" # Requerido según infraestructura de la VM
+HOST_IP="172.18.208.162" # Requerido según infraestructura de la VM
 
 SERVICES=(postgres nlp_intent api web office slack_baneo_worker)
 CRITICAL=(postgres api web nlp_intent office slack_baneo_worker)
@@ -225,13 +225,6 @@ check_internal "NLP"        "nlp_intent"  "http://localhost:8100/health" || true
 check_internal "LibreOffice" "office"     "http://localhost:8090/health" || true
 check_internal "SlackWorker" "slack_baneo_worker" "http://localhost:8095/health" || true
 
-# Ollama externo (warning si falla)
-if curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1; then
-  echo -e "${GREEN}OK${NC} Ollama externo"; HEALTH_RESULTS[Ollama]=OK
-else
-  echo -e "${YELLOW}WARN${NC} Ollama no respondió en http://localhost:11434 (modo degradado NLP)"; HEALTH_RESULTS[Ollama]=WARN
-fi
-
 ########################################
 # 5) Resumen                            #
 ########################################
@@ -245,7 +238,6 @@ for comp in API WEB NLP LibreOffice SlackWorker; do
     echo -e "  $comp: ${RED}FAIL${NC}"; ((FAIL_COUNT++)) || true
   fi
 done
-echo -e "  Ollama: ${HEALTH_RESULTS[Ollama]:-NOCHK}"
 
 if [ $FAIL_COUNT -gt 0 ]; then
   echo -e "${RED}Uno o más servicios críticos no pasaron health. Revisar logs con:${NC}"
@@ -254,4 +246,4 @@ if [ $FAIL_COUNT -gt 0 ]; then
 fi
 
 echo -e "${GREEN}Listo.${NC} UI: http://$HOST_IP:8080/  |  API: http://localhost:8001/docs"
-echo -e "${YELLOW}Nota:${NC} IP fija forzada ($HOST_IP). Ollama externo en :11434."
+echo -e "${YELLOW}Nota:${NC} IP fija forzada ($HOST_IP). El proveedor LLM por defecto se resuelve por API externa según .env."

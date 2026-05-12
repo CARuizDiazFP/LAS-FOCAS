@@ -19,7 +19,7 @@
 ## 2025-09-18 — Política de URL base (Web UI) usando IP privada
 
 - Contexto: Usuarios acceden al Web UI desde la red local de la VM Debian. Usar localhost en documentación y defaults generaba confusión y errores de acceso desde otros equipos.
-- Decisión: Unificar la URL base expuesta en código, variables de entorno y documentación a la IP privada de la VM: http://192.168.241.28:8080. En containers, healthchecks siguen usando localhost interno.
+- Decisión: Unificar la URL base expuesta en código, variables de entorno y documentación a la IP privada de la VM: http://172.18.208.162:8080. En containers, healthchecks siguen usando localhost interno.
 - Alternativas: Mantener localhost y exigir configurar API_BASE manualmente; usar nombre DNS interno. Se opta por IP para simplicidad en esta fase.
 - Impacto: Documentación y defaults coherentes. Requiere rebuild del servicio web para hornear el fallback del frontend. Posibles ajustes de firewall/routing si la IP no es accesible desde el host o clientes externos.
 
@@ -94,6 +94,13 @@
 - **Alternativas:** Eliminar completamente el árbol (perdería valor de referencia) o moverlo a un repositorio separado de solo lectura. Se pospone esa separación hasta finalizar la migración de todos los informes críticos.
 - **Impacto:** Reduce riesgo de reintroducir patrones obsoletos, clarifica el alcance para colaboradores y auditores. Facilita auditoría de cambios: cualquier modificación en `Legacy/` se considera señal de posible error de procedimiento.
 - **Acciones complementarias:** Añadir hook pre-commit (pendiente) que bloquee modificaciones futuras; actualizar `README.md` para informar el estado DEPRECATED. (Se añadirá en una iteración futura si se aprueba.)
+
+## 2026-05-12 — Topología Debian 13, IP fija 172.18.208.162 y proveedor LLM sólo por API externa
+
+- Contexto: el proyecto fue migrado a una nueva VM operativa con Debian 13 y cambió su IP privada a `172.18.208.162`. La infraestructura anterior y parte de la documentación todavía referenciaban `192.168.241.28` y una integración con Ollama vía `host.docker.internal:11434`.
+- Decisión: consolidar la topología productiva en la nueva IP privada, eliminar del despliegue estándar las referencias operativas a Ollama/local LLM y documentar que el proveedor LLM por defecto se consume vía API externa (`openai`).
+- Alternativas: mantener la compatibilidad operativa con Ollama en compose o publicar ambos caminos en paralelo. Se descarta porque la VM actual no dispone de GPU y el camino local ya no representa el entorno real.
+- Impacto: `deploy/compose.yml`, `deploy/docker-compose.dev.yml`, `Start`, `README.md`, samples de entorno y documentación operativa deben reflejar la nueva IP y la política de proveedor externo. El soporte heredado para `ollama` puede permanecer en código, pero fuera del despliegue recomendado.
 
 ## 2026-04-17 — Tríada para generación de skills y customizations agénticos
 

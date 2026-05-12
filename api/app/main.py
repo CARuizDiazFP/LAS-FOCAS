@@ -19,7 +19,7 @@ def create_app() -> FastAPI:
     default_origins = [
         "http://localhost:8080",
         "http://127.0.0.1:8080",
-        "http://192.168.241.28:8080",
+        "http://172.18.208.162:8080",
     ]
     extra_origins = os.getenv("CORS_ORIGINS", "")
     if extra_origins:

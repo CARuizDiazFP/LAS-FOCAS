@@ -49,8 +49,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Existe conflicto potencial entre `api/app` y `web/app`; evitar imports ambiguos y respetar `pytest.ini`.
 - Algunos tests y módulos requieren `TESTING=true` antes de importar configuración sensible; revisar patrones existentes en tests.
 - El informe SLA depende de la columna U (`Horas Netas Reclamo`) en el Excel legacy; no reintroducir fallbacks a otras columnas.
-- La VM y varios defaults asumen la IP `192.168.241.28`; si cambia, revisar configuración y documentación relacionada.
-- `nlp_intent` puede depender de Ollama externo; no asumir que siempre está disponible.
+- La VM y varios defaults asumen la IP `172.18.208.162`; si cambia, revisar configuración y documentación relacionada.
+- La topología operativa actual usa proveedores LLM externos vía API; no asumir disponibilidad de Ollama/local LLM salvo trabajo explícito de compatibilidad heredada.
 
 ## Seguridad y Operación
 

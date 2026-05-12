@@ -214,6 +214,12 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Excluido**: `office_service/Dockerfile` queda sin cambios (usa fastapi 0.111.1/pydantic 2.8.2/uvicorn 0.30.1 + LibreOffice, incompatible con la base común).
 - **Armonización de versiones**: `SQLAlchemy` 2.0.32→2.0.36, `psycopg[binary]` 3.1.19→3.2.1 en `requirements.txt` raíz y `slack_baneo_notifier/requirements.txt`.
 
+### 2026-05-12 - Restauración de avisos Slack en Protocolo de Protección
+- **Corregido**: los baneos ejecutados desde el panel Vue 3 entran por `web/app/main.py`; esa ruta persistía el incidente pero no disparaba el aviso inmediato a Slack ni el reporte actualizado.
+- **Corregido**: `POST /api/infra/ban/create` y `POST /api/infra/ban/lift` del servicio `web` ahora reutilizan `modules.slack_baneo_notifier.eventos` igual que `api`, manteniendo el aviso puntual y el reenvío del reporte de cámaras baneadas.
+- **Agregado**: `slack_sdk==3.33.5` en `web/requirements.txt`, porque el contenedor `web` no incluía la dependencia necesaria para ejecutar ese flujo.
+- **UX**: el modal del wizard de Protocolo de Protección se cierra automáticamente tras un alta exitosa y reinicia su estado interno.
+
 ---
 
 ## Entorno de Desarrollo (Dev)
@@ -226,14 +232,14 @@ Stack Docker Compose independiente (`lasfocasdev`) que corre en paralelo al prod
 |----------------------|-------------------------------|-------------------------|
 | PostgreSQL           | `127.0.0.1:5432`              | `127.0.0.1:5433`        |
 | API (docs: `/docs`)  | `:8001`                       | `:8011`                 |
-| Web (panel)          | `192.168.241.28:8080`         | `127.0.0.1:8090`        |
+| Web (panel)          | `172.18.208.162:8080`         | `127.0.0.1:8090`        |
 | pgAdmin (profile)    | `:5050`                       | `:5051`                 |
 | NLP / Office / Slack | interno (sin exposición)      | interno (sin exposición) |
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota usar SSH tunneling:
 
 ```bash
-ssh -L 8090:localhost:8090 usuario@192.168.241.28
+ssh -L 8090:localhost:8090 usuario@172.18.208.162
 ```
 
 ### Inicio rápido
@@ -267,8 +273,8 @@ docker compose -f deploy/docker-compose.dev.yml down
 | Variable              | Producción                       | Dev                          |
 |-----------------------|----------------------------------|------------------------------|
 | `POSTGRES_DB`         | `FOCALDB`                        | `focas_dev`                  |
-| `API_BASE`            | `http://192.168.241.28:8080`     | `http://localhost:8090`      |
-| `WEB_INFERRED_ORIGIN` | `http://192.168.241.28:8080`     | `http://localhost:8090`      |
+| `API_BASE`            | `http://172.18.208.162:8080`     | `http://localhost:8090`      |
+| `WEB_INFERRED_ORIGIN` | `http://172.18.208.162:8080`     | `http://localhost:8090`      |
 | `SLACK_BOT_TOKEN`     | token de app Slack prod          | token de app Slack dev       |
 | `SLACK_APP_TOKEN`     | token de app Slack prod          | token de app Slack dev       |
 | `LLM_PROVIDER`        | `openai`                         | `heuristic` (sin costo/API)  |

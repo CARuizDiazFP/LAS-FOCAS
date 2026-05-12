@@ -1062,6 +1062,18 @@ const banRutasError = ref('');
 const banSelectedRutaId = ref<number | null>(null);
 const banConfirmChecked = ref(false);
 
+function resetBanModalState() {
+  banForm.value = { ticket_asociado: '', servicio_afectado_id: '', servicio_protegido_id: '', motivo: '', usuario_ejecutor: '' };
+  currentBanStep.value = 1;
+  banProtMode.value = 'same';
+  banSearchServicioInput.value = '';
+  banRutas.value = [];
+  banLoadingRutas.value = false;
+  banRutasError.value = '';
+  banSelectedRutaId.value = null;
+  banConfirmChecked.value = false;
+}
+
 const banForm = ref<BanFormData>({
   ticket_asociado: '',
   servicio_afectado_id: '',
@@ -1078,21 +1090,14 @@ const banEstimatedCamaras = computed<number>(() => {
 });
 
 function openBanModal() {
-  banForm.value = { ticket_asociado: '', servicio_afectado_id: '', servicio_protegido_id: '', motivo: '', usuario_ejecutor: '' };
-  currentBanStep.value = 1;
-  banProtMode.value = 'same';
-  banSearchServicioInput.value = '';
-  banRutas.value = [];
-  banLoadingRutas.value = false;
-  banRutasError.value = '';
-  banSelectedRutaId.value = null;
-  banConfirmChecked.value = false;
+  resetBanModalState();
   banModalEl.value?.showModal();
 }
 
-function closeBanModal() {
-  if (banLoading.value) return;
+function closeBanModal(force = false) {
+  if (banLoading.value && !force) return;
   banModalEl.value?.close();
+  resetBanModalState();
 }
 
 async function loadRutasForBan(servicioId: string) {
@@ -1450,7 +1455,7 @@ async function submitBan() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
-    closeBanModal();
+    closeBanModal(true);
     const baneadas = (data as Record<string, number>).camaras_baneadas ?? 0;
     showToast('success', 'Protocolo activado', `${baneadas} cámara(s) baneadas`);
     if (hasSearched.value) await searchCamaras();

@@ -4,7 +4,7 @@
 
 # Microservicio `nlp_intent`
 
-Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones: **Consulta**, **Acción** u **Otros**.
+Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones: **Consulta**, **Acción** u **Otros**. En operación estándar, el proveedor LLM por defecto es externo vía API (`openai`); el modo heurístico se conserva para desarrollo y pruebas.
 
 ## Endpoint
 
@@ -25,13 +25,13 @@ Servicio FastAPI para clasificar mensajes de usuario en una de tres intenciones:
 }
 ```
 
-## Orden de proveedores
+## Selección de proveedores
 
-1. Heurística local (rápida).
-2. Ollama (`llama3`).
-3. OpenAI API.
+1. `heuristic` si `LLM_PROVIDER=heuristic`.
+2. `openai` si `LLM_PROVIDER=openai`.
+3. `auto` sólo para retrocompatibilidad; intenta heurística, luego Ollama y finalmente OpenAI.
 
-El servicio intenta cada proveedor en ese orden mientras la confianza sea menor al umbral configurado (`INTENT_THRESHOLD`, por defecto **0.7**).
+La topología operativa del proyecto ya no depende de Ollama local. Si se habilita `auto` u `ollama`, se trata de compatibilidad heredada y no del despliegue recomendado.
 
 ## Baja confianza
 

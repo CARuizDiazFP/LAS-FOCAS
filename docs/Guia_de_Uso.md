@@ -4,18 +4,18 @@
 
 # Guía de uso de LAS-FOCAS
 
-Esta guía describe los prerrequisitos, configuraciones necesarias y pasos detallados para utilizar las funcionalidades disponibles en LAS-FOCAS al 2026-01-07.
+Esta guía describe los prerrequisitos, configuraciones necesarias y pasos detallados para utilizar las funcionalidades disponibles en LAS-FOCAS al 2026-05-12.
 
 ## 1. Prerrequisitos generales
 
-1. Contar con Docker y Docker Compose instalados en la VM Debian 12.4.
+1. Contar con Docker y Docker Compose instalados en la VM Debian 13.
 2. Clonar el repositorio LAS-FOCAS y crear el archivo `.env` tomando como referencia `deploy/env.sample`.
 3. Definir las variables obligatorias en `.env`:
    - POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB.
-   - OLLAMA_URL si se consume el servicio Ollama externo.
+   - LLM_PROVIDER y OPENAI_API_KEY para la clasificación por proveedor externo vía API.
    - REPORTS_DIR y UPLOADS_DIR (rutas dentro del contenedor web).
 4. Ejecutar `./Start` para levantar el stack base (`postgres`, `api`, `web`, `nlp_intent`, opcionalmente `bot`).
-5. Verificar que la API responde en `http://localhost:8001/health` (o el puerto configurado) y que la web está disponible en `http://localhost:8080`.
+5. Verificar que la API responde en `http://localhost:8001/health` (o el puerto configurado) y que la web está disponible en `http://172.18.208.162:8080`.
 6. Aplicar migraciones con Alembic desde la raíz del proyecto:
    ```bash
    source .venv/bin/activate

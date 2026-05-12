@@ -117,7 +117,7 @@ web:
     context: ..
     dockerfile: deploy/docker/Dockerfile.web
   ports:
-    - "192.168.241.28:8080:8000"
+    - "172.18.208.162:8080:8000"
   depends_on:
     - postgres
     - api

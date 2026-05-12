@@ -104,6 +104,8 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
 
+Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
+
 ### InfraTab — Baneos Activos (gestión de incidentes)
 
 El botón **🔒 Baneos Activos** en la toolbar (junto a "Protocolo Protección") muestra un badge numérico cuando hay incidentes abiertos. Al hacer clic abre el modal de gestión:
@@ -167,7 +169,7 @@ El botón **🔴 Protocolo Protección** abre un wizard guiado de 3 pasos con st
 **Paso 3 — Confirmación**:
 - Resumen: ticket, servicio afectado, servicio protegido, ruta seleccionada, empalmes estimados, motivo.
 - Checkbox de confirmación explícita (obligatorio para habilitar el botón de ejecución).
-- Botón **"🚨 EJECUTAR BANEO"** (rojo) — deshabilitado hasta marcar el checkbox.
+- Botón **"🚨 EJECUTAR BANEO"** (rojo) — deshabilitado hasta marcar el checkbox. Tras una respuesta exitosa del backend, el modal se cierra automáticamente y el wizard queda reiniciado.
 
 **Payload enviado a `/api/infra/ban/create`**:
 

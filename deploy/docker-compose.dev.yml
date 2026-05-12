@@ -64,8 +64,6 @@ services:
       - ../.env.dev
     environment:
       NLP_INTENT_URL: http://nlp_intent:8100
-      # Ollama externo ya existente en el host
-      OLLAMA_URL: http://host.docker.internal:11434
       # Puerto dev: 8090. Para acceso remoto: ssh -L 8090:localhost:8090 usuario@servidor
       API_BASE: http://localhost:8090
       LOGS_DIR: /app/Logs
@@ -74,8 +72,6 @@ services:
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       - api
       - nlp_intent
@@ -107,10 +103,6 @@ services:
       dockerfile: deploy/docker/nlp_intent.Dockerfile
     env_file:
       - ../.env.dev
-    environment:
-      OLLAMA_URL: http://host.docker.internal:11434
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     expose:
       - "8100"
     restart: unless-stopped

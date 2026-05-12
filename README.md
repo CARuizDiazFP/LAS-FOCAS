@@ -12,7 +12,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 2. **Asistente conversacional** para tareas repetitivas (inicio con Telegram; Web en paralelo).
 3. **Integración futura** con sistemas internos (APIs, Slack, Salesforce).
 
-> **Ámbito inicial:** Debian 12.4, despliegue dockerizado (microservicios), base de datos PostgreSQL local.
+> **Ámbito operativo actual:** Debian 13, despliegue dockerizado (microservicios), base de datos PostgreSQL local, panel web publicado en `172.18.208.162:8080` y proveedor LLM por API externa.
 
 ---
 
@@ -27,7 +27,7 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 - **Interfaces**
 
   - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye los flujos `/repetitividad` y `/sla` y un teclado opcional con atajos a ambos comandos. Ver [docs/bot.md](docs/bot.md) para guía rápida.
-  - **Web Panel** (autenticación simple, Panel con Chat por defecto, accesible por IP interna .28).
+  - **Web Panel** (autenticación simple, Panel con Chat por defecto, accesible por `172.18.208.162:8080`).
   - **nlp_intent** (microservicio NLP para clasificación de intención).
   - CLI opcional para utilidades.
 
@@ -160,9 +160,8 @@ SMTP_PORT=587
 SMTP_USER=notificaciones@example.com
 SMTP_PASS=secret
 # NLP / LLM
-LLM_PROVIDER=auto
+LLM_PROVIDER=openai
 OPENAI_API_KEY=
-OLLAMA_URL=http://ollama:11434
 INTENT_THRESHOLD=0.7
 LANG=es
 LOG_RAW_TEXT=false
@@ -199,7 +198,7 @@ REPORTS_API_TIMEOUT=60
 
 Se recomienda **docker-compose** desde el inicio para reproducibilidad.
 
-**Requisitos (Debian 12.4)**
+**Requisitos (Debian 13)**
 
 ```bash
 sudo apt-get update
@@ -212,11 +211,9 @@ sudo usermod -aG docker "$USER"
 
 ```bash
 cp deploy/env.sample .env
-./Start  # levanta Postgres, NLP, API (8001) y Web (8080) usando el Ollama externo de la VM (host:11434)
+./Start  # levanta Postgres, NLP, API (8001) y Web (8080) con proveedor LLM externo por API
 # Reconstruir sólo el front (estáticos/JS/CSS del panel):
 ./Start --rebuild-frontend
-# Para levantar también un Ollama interno del stack (opcional):
-# ./Start --with-internal-ollama
 ```
 
 Luego de iniciar los contenedores, puede verificarse el estado del servicio:
@@ -224,10 +221,11 @@ Luego de iniciar los contenedores, puede verificarse el estado del servicio:
 ```bash
 curl -sS http://localhost:8001/health   # API (remapeada)
 curl -sS http://localhost:8001/db-check
-curl -sS http://192.168.241.28:8080/health   # Web UI (IP privada de la VM)
-curl -sS http://192.168.241.28:8080/health/version  # versión de build del Web UI
-curl -sS http://localhost:11434/api/tags # Ollama (externo o interno si se usó --with-internal-ollama)
+curl -sS http://172.18.208.162:8080/health   # Web UI (IP privada de la VM)
+curl -sS http://172.18.208.162:8080/health/version  # versión de build del Web UI
 ```
+
+Para `nlp_intent`, el proveedor por defecto es `openai` y requiere `OPENAI_API_KEY`. El soporte legado para `ollama` quedó fuera de la topología operativa de producción y no forma parte del despliegue estándar.
 
 ### ⚡ Prueba rápida (API + DB)
 
@@ -269,9 +267,10 @@ curl -sS http://localhost:11434/api/tags # Ollama (externo o interno si se usó 
 
 Microservicio adicional usando el core y la DB.
 
-Modelos sugeridos para 32 GB RAM:
+Modelos/proveedores sugeridos por API:
 
-- **Llama 3.1 8B Instruct**, **Mistral 7B**, **Qwen2 7B** (cuantizados Q4).
+- OpenAI para clasificación y respuestas generativas iniciales.
+- Otros proveedores HTTP compatibles sólo mediante configuración explícita y validación operativa.
 
 ---
 
@@ -312,7 +311,7 @@ cp deploy/env.dev.sample .env.dev
 
 | | Producción | Dev |
 |-|-----------|-----|
-| Web panel | `192.168.241.28:8080` | `localhost:8090` |
+| Web panel | `172.18.208.162:8080` | `localhost:8090` |
 | API docs  | `:8001/docs` | `:8011/docs` |
 | PostgreSQL | `5432` | `5433` |
 

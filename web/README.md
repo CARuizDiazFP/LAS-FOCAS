@@ -21,4 +21,4 @@ Se levanta con el stack general del proyecto:
 
 - Servicio `web` en `8080:8080`.
 - `api` en `8001:8000` (para evitar conflicto con 8000 de la VM).
-- `ollama` expuesto en `11434` y `nlp_intent` apuntando a `http://ollama:11434`.
+- `nlp_intent` resuelto en la red interna de compose y proveedor LLM externo configurado vía `.env`.
