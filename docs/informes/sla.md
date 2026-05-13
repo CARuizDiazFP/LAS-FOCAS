@@ -52,7 +52,9 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 
 **Endpoint**: `POST /api/reports/sla`
 
-**URL**: `http://localhost:8080/sla`
+**URL productiva**: `http://172.18.208.162:8080/sla`
+
+**URL dev**: `http://localhost:8090/sla`
 
 ### Pasos:
 1. Acceder a la vista `/sla` (requiere login).

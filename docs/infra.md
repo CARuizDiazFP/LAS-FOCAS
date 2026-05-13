@@ -31,11 +31,13 @@ La vista dedicada realiza carga paralela contra endpoints same-origin del servic
 
 En esta iteración, **Registros** muestra solo la lógica operativa ya existente:
 
-- auditoría manual de cambios de estado (`app.camaras_estado_auditoria`)
-- incidentes y baneos vinculados a la cámara
-- placeholders explícitos para ingresos y egresos todavía no implementados en la vista
+- pestaña **Ingresos** estructurada sobre un arreglo reactivo vacío, lista para futura hidratación desde backend
+- pestaña **Baneos** con historial ordenado por fecha de inicio descendente y accordions retraídos por defecto
+- auditoría manual de cambios de estado (`app.camaras_estado_auditoria`) como trazabilidad complementaria dentro de la pestaña de baneos
 
-La tarjeta **Servicios Asociados** reutiliza el tracking operativo ya existente del panel: cada servicio se expande, lista sus caminos/rutas, permite alternar entre rutas secundarias o pelos asociados y muestra la secuencia óptica detallada con descarga del TXT actual.
+La tarjeta **Servicios Asociados** muestra la lista de IDs de servicio asociados ordenada de mayor a menor. Cada ID abre un segundo `dialog` modal superpuesto con el tracking detallado del servicio, reutilizando `TrackingDetail.vue` y la descarga del TXT actual.
+
+Para el detalle fino de la UX web y del apilado de modales, la referencia principal queda en `docs/web.md`.
 
 ### Protocolo de Protección (Baneo)
 Sistema para proteger cámaras durante afectaciones de servicio, impidiendo trabajos en ellas hasta resolución.
@@ -196,7 +198,7 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Agregado**: modales aislados para alias conocidos, servicios asociados, registros y edición manual de estado.
 - **Recuperado**: la tarjeta `Servicios Asociados` vuelve a exponer la secuencia de tracking productiva con tabs por ruta y descarga del TXT actual.
 - **Corregido**: el modal `Editar estado` de la vista dedicada vuelve a usar el estilo dark coherente con el dashboard.
-- **Diseño**: la tarjeta `Registros` migra solo la lógica operativa disponible hoy y deja placeholders para ingresos/egresos futuros.
+- **Diseño**: la tarjeta `Registros` se divide en tabs `Ingresos/Baneos`; los baneos usan accordions ordenados por fecha y los ingresos quedan maquetados hasta contar con backend dedicado.
 
 ### 2026-04-17 - Refactor de avisos individuales y conteo de cámaras
 - **Eliminado**: Botón global "Dar Aviso" del header principal

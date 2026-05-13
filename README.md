@@ -105,24 +105,23 @@ Automatizaciones operativas para Metrotel: generación de informes, asistente co
 las-focas/
 ├─ api/
 ├─ bot_telegram/
-├─ nlp_intent/
 ├─ core/
-├─ modules/
-├─ workers/
 ├─ db/
-├─ web/
-├─ integrations/
-├─ scripts/
 ├─ deploy/
 ├─ docs/
-├─ tests/
-├─ Templates/
+├─ Logs/
+├─ modules/
+├─ nlp_intent/
 ├─ office_service/
-├─ devs/
+├─ scripts/
+├─ Templates/
+├─ tests/
+├─ web/
 ├─ .env
+├─ .env.dev
 ├─ .gitignore
-├─ LICENSE
-└─ README.md
+├─ README.md
+└─ Start
 ```
 
 **Plantillas**

@@ -551,11 +551,13 @@ Elimina todas las asociaciones de empalmes de un servicio (limpia el servicio si
   - `404`: Servicio no encontrado.
   - `500`: Error durante la eliminación.
 
+- **Host de referencia:** los ejemplos siguientes apuntan al panel productivo en `http://172.18.208.162:8080`. En el stack dev equivalente usar `http://localhost:8090`.
+
 - **Ejemplo (cURL):**
   ```bash
   curl -X DELETE \
     -H "X-CSRF-Token: $TOKEN" \
-    "http://localhost:8080/api/infra/servicios/52547/empalmes"
+    "http://172.18.208.162:8080/api/infra/servicios/52547/empalmes"
   ```
 
 ### POST `/api/infra/smart-search`
@@ -594,7 +596,7 @@ Búsqueda de cámaras por texto libre con múltiples términos (lógica AND).
 
 - **Ejemplo (cURL):**
   ```bash
-  curl -X POST http://localhost:8080/api/infra/smart-search \
+  curl -X POST http://172.18.208.162:8080/api/infra/smart-search \
     -H "Content-Type: application/json" \
     -H "X-CSRF-Token: $TOKEN" \
     -d '{"terms": ["111995", "OCUPADA"]}'

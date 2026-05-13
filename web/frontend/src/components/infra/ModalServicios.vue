@@ -17,58 +17,49 @@
       <div v-if="groupedServicios.length === 0" class="infra-detail-empty">
         No hay rutas ni servicios asociados para esta cámara.
       </div>
-      <div v-else class="infra-service-groups">
-        <article v-for="servicio in groupedServicios" :key="servicio.servicioId" class="infra-service-card">
-          <button class="infra-service-toggle" type="button" @click="toggleServicio(servicio.servicioId)">
-            <header class="infra-service-card__header">
-              <div>
-                <p>Servicio</p>
-                <h4>{{ servicio.servicioId }}</h4>
-              </div>
-              <span class="infra-service-card__count">
-                {{ servicio.rutas.length }} ruta{{ servicio.rutas.length !== 1 ? 's' : '' }}
-                {{ expandedServicioId === servicio.servicioId ? '↑' : '↓' }}
-              </span>
-            </header>
+      <div v-else class="infra-service-list-shell">
+        <div class="infra-service-list-copy">
+          <p class="infra-service-list-copy__eyebrow">Selección rápida</p>
+          <p>La lista muestra únicamente los IDs de servicio asociados a la cámara. Hacé clic sobre uno para abrir el tracking en un modal superpuesto.</p>
+        </div>
+
+        <div class="infra-service-list">
+          <button
+            v-for="servicio in groupedServicios"
+            :key="servicio.servicioId"
+            class="infra-service-id-btn"
+            type="button"
+            @click="openServiceTracking(servicio.servicioId)"
+          >
+            {{ servicio.servicioId }}
           </button>
-
-          <div class="infra-service-card__summary">
-            <span>{{ servicio.pelos }} pelo{{ servicio.pelos !== 1 ? 's' : '' }}</span>
-            <span>{{ servicio.rutasSecundarias }} camino{{ servicio.rutasSecundarias !== 1 ? 's' : '' }} secundario{{ servicio.rutasSecundarias !== 1 ? 's' : '' }}</span>
-            <span>{{ servicio.transitosTotales }} tránsito{{ servicio.transitosTotales !== 1 ? 's' : '' }}</span>
-          </div>
-
-          <template v-if="expandedServicioId === servicio.servicioId">
-            <ul class="infra-route-list">
-              <li v-for="ruta in servicio.rutas" :key="ruta.ruta_id" class="infra-route-list__item">
-                <div>
-                  <strong>{{ ruta.ruta_nombre || `Ruta ${ruta.ruta_id}` }}</strong>
-                  <p>{{ ruta.punta_a_sitio || 'Punta A pendiente' }} → {{ ruta.punta_b_sitio || 'Punta B pendiente' }}</p>
-                </div>
-                <div class="infra-route-list__meta">
-                  <span :class="['infra-route-badge', badgeClass(ruta.ruta_tipo)]">{{ ruta.ruta_tipo }}</span>
-                  <span v-if="ruta.alias_ids.length">Alias: {{ ruta.alias_ids.join(', ') }}</span>
-                  <span>Tránsitos: {{ ruta.transitos_count }}</span>
-                  <span class="tracking-link">Tracking en línea</span>
-                </div>
-              </li>
-            </ul>
-
-            <div class="infra-service-card__tracking">
-              <TrackingDetail
-                :servicio-id="servicio.servicioId"
-                :rutas="servicio.rutas"
-                @error="handleTrackingError"
-                @downloaded="handleTrackingDownloaded"
-              />
-            </div>
-
-            <div class="infra-service-card__footer">
-              El detalle del tracking reutiliza la misma secuencia óptica y descarga TXT del flujo productivo actual.
-            </div>
-          </template>
-        </article>
+        </div>
       </div>
+    </section>
+  </dialog>
+
+  <dialog ref="trackingDialogEl" class="infra-service-overlay" @click.self="closeServiceTracking">
+    <section v-if="selectedServicio" class="infra-service-overlay__card" role="dialog" aria-modal="true">
+      <header class="infra-service-overlay__header">
+        <div>
+          <p class="infra-service-overlay__eyebrow">Tracking del servicio</p>
+          <h4>{{ selectedServicio.servicioId }}</h4>
+        </div>
+        <button class="close-btn" type="button" @click="closeServiceTracking">×</button>
+      </header>
+
+      <div class="infra-service-overlay__summary">
+        <span>{{ selectedServicio.pelos }} pelo{{ selectedServicio.pelos !== 1 ? 's' : '' }}</span>
+        <span>{{ selectedServicio.rutas.length }} ruta{{ selectedServicio.rutas.length !== 1 ? 's' : '' }}</span>
+        <span>{{ selectedServicio.transitosTotales }} tránsito{{ selectedServicio.transitosTotales !== 1 ? 's' : '' }}</span>
+      </div>
+
+      <TrackingDetail
+        :servicio-id="selectedServicio.servicioId"
+        :rutas="selectedServicio.rutas"
+        @error="handleTrackingError"
+        @downloaded="handleTrackingDownloaded"
+      />
     </section>
   </dialog>
 </template>
@@ -102,7 +93,8 @@ const emit = defineEmits<{
 }>();
 
 const dialogEl = ref<HTMLDialogElement | null>(null);
-const expandedServicioId = ref<string | null>(null);
+const trackingDialogEl = ref<HTMLDialogElement | null>(null);
+const activeServicioId = ref<string | null>(null);
 
 const groupedServicios = computed(() => {
   const groups = new Map<string, RutaItem[]>();
@@ -111,28 +103,47 @@ const groupedServicios = computed(() => {
     current.push(ruta);
     groups.set(ruta.servicio_id, current);
   });
-  return [...groups.entries()].map(([servicioId, rutas]) => ({
-    servicioId,
-    rutas,
-    pelos: rutas.length,
-    rutasSecundarias: rutas.filter((ruta) => ruta.ruta_tipo !== 'PRINCIPAL').length,
-    transitosTotales: rutas.reduce((total, ruta) => total + ruta.transitos_count, 0),
-  }));
+  return [...groups.entries()]
+    .map(([servicioId, rutas]) => ({
+      servicioId,
+      rutas,
+      pelos: rutas.length,
+      rutasSecundarias: rutas.filter((ruta) => ruta.ruta_tipo !== 'PRINCIPAL').length,
+      transitosTotales: rutas.reduce((total, ruta) => total + ruta.transitos_count, 0),
+    }))
+    .sort((left, right) => compareServicioIdsDesc(left.servicioId, right.servicioId));
 });
 
-function badgeClass(tipo: string): string {
-  if (tipo === 'PRINCIPAL') return 'principal';
-  if (tipo === 'BACKUP') return 'backup';
-  return 'alternativa';
+const selectedServicio = computed(() => {
+  return groupedServicios.value.find((servicio) => servicio.servicioId === activeServicioId.value) ?? null;
+});
+
+function compareServicioIdsDesc(left: string, right: string): number {
+  const leftNumeric = Number(left);
+  const rightNumeric = Number(right);
+  const leftIsNumeric = Number.isFinite(leftNumeric);
+  const rightIsNumeric = Number.isFinite(rightNumeric);
+
+  if (leftIsNumeric && rightIsNumeric) {
+    return rightNumeric - leftNumeric;
+  }
+
+  return right.localeCompare(left, 'es-AR', { numeric: true, sensitivity: 'base' });
 }
 
 function handleClose(): void {
+  activeServicioId.value = null;
+  trackingDialogEl.value?.close();
   dialogEl.value?.close();
   emit('close');
 }
 
-function toggleServicio(servicioId: string): void {
-  expandedServicioId.value = expandedServicioId.value === servicioId ? null : servicioId;
+function openServiceTracking(servicioId: string): void {
+  activeServicioId.value = servicioId;
+}
+
+function closeServiceTracking(): void {
+  activeServicioId.value = null;
 }
 
 function handleTrackingError(message: string): void {
@@ -147,11 +158,12 @@ watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) {
-      if (!expandedServicioId.value && groupedServicios.value.length > 0) {
-        expandedServicioId.value = groupedServicios.value[0].servicioId;
-      }
+      activeServicioId.value = null;
       dialogEl.value?.showModal();
       return;
+    }
+    if (trackingDialogEl.value?.open) {
+      trackingDialogEl.value.close();
     }
     if (dialogEl.value?.open) {
       dialogEl.value.close();
@@ -160,14 +172,30 @@ watch(
 );
 
 watch(
+  selectedServicio,
+  (servicio) => {
+    if (servicio) {
+      if (!trackingDialogEl.value?.open) {
+        trackingDialogEl.value?.showModal();
+      }
+      return;
+    }
+
+    if (trackingDialogEl.value?.open) {
+      trackingDialogEl.value.close();
+    }
+  },
+);
+
+watch(
   () => props.rutas,
   (rutas) => {
     if (!rutas.length) {
-      expandedServicioId.value = null;
+      activeServicioId.value = null;
       return;
     }
-    if (!groupedServicios.value.some((servicio) => servicio.servicioId === expandedServicioId.value)) {
-      expandedServicioId.value = groupedServicios.value[0]?.servicioId ?? null;
+    if (activeServicioId.value && !groupedServicios.value.some((servicio) => servicio.servicioId === activeServicioId.value)) {
+      activeServicioId.value = null;
     }
   },
   { immediate: true },
@@ -176,6 +204,7 @@ watch(
 
 <style scoped>
 .infra-detail-modal {
+  position: relative;
   width: min(1024px, calc(100vw - 32px));
   background: transparent;
   border: none;
@@ -217,144 +246,114 @@ watch(
   text-transform: uppercase;
 }
 
-.infra-service-groups {
+.infra-service-list-shell {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 
-.infra-service-card {
-  border: 1px solid rgba(148, 163, 184, 0.14);
+.infra-service-list-copy {
+  padding: 16px 18px;
   border-radius: 16px;
-  padding: 18px;
-  background: rgba(15, 23, 42, 0.75);
-}
-
-.infra-service-card__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.infra-service-toggle {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  background: transparent;
-  border: none;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  padding: 0;
-}
-
-.infra-service-toggle:hover .infra-service-card__count,
-.infra-service-toggle:hover h4 {
-  color: #f8fafc;
-}
-
-.infra-service-toggle:focus-visible {
-  outline: 2px solid rgba(96, 165, 250, 0.6);
-  outline-offset: 6px;
-  border-radius: 12px;
-}
-
-.infra-service-card__header p,
-.infra-route-list__item p {
-  margin: 0;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.56);
   color: var(--muted);
 }
 
-.infra-service-card__header h4 {
-  margin: 4px 0 0;
-  font-size: 1.1rem;
+.infra-service-list-copy__eyebrow,
+.infra-service-overlay__eyebrow {
+  margin: 0 0 8px;
+  color: #fcd34d;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
-.infra-service-card__count {
-  color: #fef3c7;
-  font-size: 0.84rem;
+.infra-service-list-copy p:last-child {
+  margin: 0;
 }
 
-.infra-service-card__summary {
+.infra-service-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.infra-service-id-btn {
+  min-height: 78px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 16px;
+  background: linear-gradient(160deg, rgba(15, 23, 42, 0.92), rgba(8, 12, 20, 0.98));
+  color: #f8fafc;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.infra-service-id-btn:hover {
+  transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, 0.32);
+  box-shadow: 0 18px 38px rgba(2, 6, 23, 0.2);
+}
+
+.infra-service-id-btn:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.62);
+  outline-offset: 2px;
+}
+
+.infra-service-overlay {
+  width: min(1120px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.infra-service-overlay::backdrop {
+  background: rgba(4, 8, 14, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.infra-service-overlay__card {
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
+  color: var(--text);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.42);
+  padding: 24px;
+}
+
+.infra-service-overlay__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.infra-service-overlay__header h4 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1.4rem;
+}
+
+.infra-service-overlay__summary {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 14px;
 }
 
-.infra-service-card__summary span {
+.infra-service-overlay__summary span {
   border-radius: 999px;
   padding: 4px 10px;
   background: rgba(148, 163, 184, 0.12);
   color: var(--muted);
   font-size: 0.76rem;
-}
-
-.infra-route-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.infra-route-list__item {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: rgba(9, 14, 23, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-}
-
-.infra-route-list__meta {
-  display: grid;
-  gap: 6px;
-  justify-items: end;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.infra-route-list__meta .tracking-link {
-  justify-self: end;
-}
-
-.tracking-link {
-  border-radius: 999px;
-  padding: 6px 12px;
-  border: 1px solid rgba(96, 165, 250, 0.28);
-  background: rgba(59, 130, 246, 0.14);
-  color: #dbeafe;
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-
-.infra-route-badge {
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.infra-route-badge.principal {
-  background: rgba(59, 130, 246, 0.18);
-  color: #bfdbfe;
-}
-
-.infra-route-badge.backup {
-  background: rgba(16, 185, 129, 0.18);
-  color: #bbf7d0;
-}
-
-.infra-route-badge.alternativa {
-  background: rgba(249, 115, 22, 0.18);
-  color: #fed7aa;
 }
 
 .infra-detail-empty {
@@ -365,26 +364,18 @@ watch(
   background: rgba(15, 23, 42, 0.45);
 }
 
-.infra-service-card__tracking {
-  margin-top: 16px;
-}
-
-.infra-service-card__footer {
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
 @media (max-width: 720px) {
-  .infra-route-list__item {
-    flex-direction: column;
+  .infra-service-overlay {
+    padding: 16px;
   }
 
-  .infra-route-list__meta {
-    justify-items: start;
+  .infra-service-overlay__card {
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
+    padding: 20px;
   }
 
-  .infra-service-toggle {
+  .infra-service-overlay__header {
     flex-direction: column;
   }
 }

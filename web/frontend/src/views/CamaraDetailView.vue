@@ -45,13 +45,13 @@
           <button class="camara-detail-card" type="button" @click="registrosModalOpen = true">
             <span class="camara-detail-card__eyebrow">Registros</span>
             <strong>{{ registrosCount }}</strong>
-            <p>Incluye baneos relacionados e historial manual de estado. Ingresos y egresos quedan maquetados para la próxima iteración.</p>
+            <p>Alterna entre ingresos y baneos. Los baneos arrancan retraídos y los ingresos quedan listos para hidratar cuando exista backend dedicado.</p>
           </button>
 
           <button class="camara-detail-card" type="button" @click="serviciosModalOpen = true">
             <span class="camara-detail-card__eyebrow">Servicios Asociados</span>
             <strong>{{ serviciosCount }}</strong>
-            <p>{{ camara.rutas.length }} ruta{{ camara.rutas.length !== 1 ? 's' : '' }} asociada{{ camara.rutas.length !== 1 ? 's' : '' }} a la cámara.</p>
+            <p>{{ camara.rutas.length }} ruta{{ camara.rutas.length !== 1 ? 's' : '' }} asociada{{ camara.rutas.length !== 1 ? 's' : '' }}. Cada ID de servicio abre su tracking en un modal superpuesto.</p>
           </button>
         </section>
       </template>

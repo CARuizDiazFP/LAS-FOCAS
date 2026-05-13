@@ -153,12 +153,14 @@ En caso de error, se mostrará un mensaje descriptivo:
 
 **Ejemplo con curl**:
 ```bash
-curl -X POST "http://localhost:8080/api/tools/alarmas-ciena" \
+curl -X POST "http://172.18.208.162:8080/api/tools/alarmas-ciena" \
   -H "Cookie: session=<tu_session>" \
   -F "file=@alarmas.csv" \
   -F "csrf_token=<tu_csrf_token>" \
   --output alarmas_procesado.xlsx
 ```
+
+En el stack dev equivalente, reemplazar el host por `http://localhost:8090`.
 
 **Logs generados**:
 ```

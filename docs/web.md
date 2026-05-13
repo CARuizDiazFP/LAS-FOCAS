@@ -131,9 +131,14 @@ Debajo del header se expone un dashboard de tres tarjetas clickeables con modale
 - **Registros**
 - **Servicios Asociados**
 
-La tarjeta **Servicios Asociados** vuelve a heredar la lógica del tracking productivo: al abrir el modal agrupa rutas por servicio, permite expandir cada servicio, alternar entre caminos/rutas del mismo servicio, renderizar la secuencia óptica (`punta A → empalmes/cables → punta B`) y descargar el TXT actual mediante `GET /api/infra/tracking/{rutaId}/download`.
+La tarjeta **Servicios Asociados** ahora muestra únicamente la lista de IDs de servicio asociados a la cámara, ordenados de mayor a menor. Al hacer clic sobre un ID se abre un segundo `dialog` modal real superpuesto con `TrackingDetail.vue`, para asegurar el apilado correcto por delante del modal padre. Se conserva la secuencia óptica (`punta A → empalmes/cables → punta B`) y la descarga del TXT actual mediante `GET /api/infra/tracking/{rutaId}/download`.
 
-La tarjeta **Registros** es parcial en esta iteración: muestra auditoría manual y baneos relacionados, y deja placeholders explícitos para ingresos y egresos futuros.
+La tarjeta **Registros** ahora se divide en dos pestañas internas:
+
+- **Ingresos**: queda estructurada sobre un arreglo reactivo vacío, preparada para hidratar desde backend y sin generar listados fake largos. La plantilla del detalle ya reserva el campo `Técnico solicitante` para la futura integración.
+- **Baneos**: ordena el historial por `fecha_inicio` descendente y lo presenta como accordions retraídos por defecto mediante transiciones nativas de Vue 3 sobre `AccordionItem.vue`. Cada encabezado muestra solo el rango `inicio - fin` y, si el baneo sigue activo, `En curso`.
+
+Dentro de la pestaña **Baneos** también se conserva una sección compacta de auditoría manual de estado para no perder trazabilidad operativa ya disponible.
 
 El modal **Editar estado** en la vista dedicada recupera el mismo modo oscuro y jerarquía visual del panel actual; mantiene `credentials: 'include'` para lectura y usa `csrf_token` desde `useSession.ts` al persistir cambios.
 
