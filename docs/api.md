@@ -600,6 +600,196 @@ Búsqueda de cámaras por texto libre con múltiples términos (lógica AND).
     -d '{"terms": ["111995", "OCUPADA"]}'
   ```
 
+### GET `/api/infra/camaras/{camara_id}`
+
+Obtiene el resumen operativo base de una cámara para la vista dedicada del panel web.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "camara": {
+      "id": 7,
+      "nombre": "Cámara Canon Norte",
+      "fontine_id": "CAM-007",
+      "direccion": "Av. Siempre Viva 742",
+      "estado": "LIBRE",
+      "origen_datos": "TRACKING",
+      "latitud": -34.6,
+      "longitud": -58.4,
+      "servicios": ["2001"],
+      "rutas": [
+        {
+          "ruta_id": 33,
+          "servicio_id": "2001",
+          "ruta_nombre": "Ruta Principal",
+          "ruta_tipo": "PRINCIPAL",
+          "alias_ids": ["O1C1"],
+          "transitos_count": 1,
+          "punta_a_sitio": "POP A",
+          "punta_b_sitio": "POP B"
+        }
+      ],
+      "tiene_baneo_activo": true,
+      "tiene_ingreso_activo": false,
+      "inconsistente": true,
+      "estado_sugerido": "BANEADA",
+      "ticket_baneo": "INC-11",
+      "editable": true,
+      "incidentes_activos": [
+        {
+          "id": 11,
+          "ticket_asociado": "INC-11",
+          "servicio_protegido_id": "2001",
+          "ruta_protegida_id": 33,
+          "fecha_inicio": "2026-04-20T10:00:00+00:00",
+          "motivo": "Protección temporal"
+        }
+      ]
+    }
+  }
+  ```
+
+- **Notas:** el `id` numérico de cámara es el identificador canónico usado por la tarjeta principal y por la ruta SPA `/infra/Camaras/:id`.
+
+### GET `/api/infra/camaras/{camara_id}/aliases`
+
+Obtiene los alias conocidos de una cámara.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "camara_id": 7,
+    "camara_nombre": "Cámara Canon Norte",
+    "total": 1,
+    "aliases": [
+      {
+        "id": 1,
+        "nombre": "Canon Norte",
+        "created_at": "2026-05-01T15:30:00+00:00"
+      }
+    ]
+  }
+  ```
+
+### GET `/api/infra/camaras/{camara_id}/registros`
+
+Obtiene registros operativos parciales de una cámara para la vista dedicada.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "camara_id": 7,
+    "contexto": {
+      "camara_id": 7,
+      "estado_actual": "LIBRE",
+      "estado_sugerido": "BANEADA",
+      "tiene_baneo_activo": true,
+      "tiene_ingreso_activo": false,
+      "inconsistente": true,
+      "incidentes_activos": [
+        {
+          "id": 11,
+          "ticket_asociado": "INC-11",
+          "servicio_protegido_id": "2001",
+          "ruta_protegida_id": 33,
+          "fecha_inicio": "2026-04-20T10:00:00+00:00",
+          "motivo": "Protección temporal"
+        }
+      ],
+      "ticket_baneo": "INC-11"
+    },
+    "auditoria": [
+      {
+        "id": 19,
+        "usuario": "admin",
+        "motivo": "Corrección manual validada",
+        "estado_anterior": "BANEADA",
+        "estado_nuevo": "LIBRE",
+        "estado_sugerido": "BANEADA",
+        "incidentes_activos": [11],
+        "created_at": "2026-05-12T09:45:00+00:00"
+      }
+    ],
+    "baneos": [
+      {
+        "id": 11,
+        "ticket_asociado": "INC-11",
+        "servicio_afectado_id": "1999",
+        "servicio_protegido_id": "2001",
+        "ruta_protegida_id": 33,
+        "motivo": "Protección temporal",
+        "activo": true,
+        "fecha_inicio": "2026-04-20T10:00:00+00:00",
+        "fecha_fin": null
+      }
+    ],
+    "placeholders": {
+      "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
+      "egresos": "Pendiente de integrar registros de egresos en una próxima iteración."
+    }
+  }
+  ```
+
+- **Notas:** en esta iteración los registros de ingresos y egresos no se exponen todavía; el endpoint devuelve placeholders explícitos para que la UI pueda maquetar esa expansión futura.
+
+### GET `/api/infra/rutas/{ruta_id}/tracking`
+
+Obtiene la secuencia de tracking completa de una ruta para el modal de servicios de la vista dedicada.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "ruta_id": 33,
+    "servicio_id": "2001",
+    "ruta_nombre": "Ruta Principal",
+    "ruta_tipo": "PRINCIPAL",
+    "tracking": [
+      {
+        "tipo": "camara",
+        "descripcion": "BOT carlos mujica 1450",
+        "empalme_id": 901
+      },
+      {
+        "tipo": "cable",
+        "nombre": "Cable FO 24F",
+        "atenuacion_db": 0.2
+      }
+    ],
+    "punta_a": {
+      "sitio": "POP A",
+      "identificador": "ODF-A-01",
+      "conector": "12"
+    },
+    "punta_b": {
+      "sitio": "POP B",
+      "identificador": "ODF-B-09",
+      "conector": "12"
+    }
+  }
+  ```
+
+- **Notas:** la UI reutiliza este payload para renderizar la secuencia óptica (`punta A → empalmes/cables → punta B`) y alternar entre rutas de un mismo servicio.
+
+### GET `/api/infra/tracking/{ruta_id}/download`
+
+Descarga el TXT actual del tracking de una ruta.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:** archivo plano `text/plain` con `Content-Disposition: attachment; filename="..."`.
+- **Notas:** este endpoint es el alias de compatibilidad usado por la SPA actual para mantener la descarga del tracking desde el modal de servicios.
+
 ## Informes
 
 ### POST `/reports/repetitividad`

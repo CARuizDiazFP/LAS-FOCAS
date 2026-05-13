@@ -1782,6 +1782,84 @@ def _serialize_camara_response(
     }
 
 
+def _collect_camara_rutas_info(camara: Any) -> list[dict[str, Any]]:
+    """Obtiene las rutas asociadas a una cámara a través de sus empalmes."""
+
+    rutas_info: list[dict[str, Any]] = []
+    seen_rutas: set[int] = set()
+    for empalme in camara.empalmes:
+        for ruta in empalme.rutas:
+            if ruta.id in seen_rutas:
+                continue
+            seen_rutas.add(ruta.id)
+            alias_ids = ruta.servicio.alias_ids or []
+            transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
+            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
+            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
+            rutas_info.append(
+                {
+                    "ruta_id": ruta.id,
+                    "servicio_id": ruta.servicio.servicio_id,
+                    "ruta_nombre": ruta.nombre,
+                    "ruta_tipo": ruta.tipo.value,
+                    "alias_ids": alias_ids,
+                    "transitos_count": transitos_count,
+                    "punta_a_sitio": punta_a_sitio,
+                    "punta_b_sitio": punta_b_sitio,
+                }
+            )
+    return rutas_info
+
+
+def _collect_camara_servicios_ids(camara: Any, rutas_info: list[dict[str, Any]] | None = None) -> list[str]:
+    """Obtiene servicios asociados a una cámara desde rutas o relación legacy."""
+
+    if rutas_info:
+        return sorted({str(ruta["servicio_id"]) for ruta in rutas_info if ruta.get("servicio_id")})
+
+    servicios_ids: list[str] = []
+    for empalme in camara.empalmes:
+        for servicio in empalme.servicios:
+            if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
+                servicios_ids.append(servicio.servicio_id)
+    return servicios_ids
+
+
+def _serialize_camara_alias(alias: Any) -> dict[str, Any]:
+    return {
+        "id": alias.id,
+        "nombre": alias.alias_nombre,
+        "created_at": alias.created_at.isoformat() if alias.created_at else None,
+    }
+
+
+def _serialize_camara_auditoria(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "usuario": item.usuario,
+        "motivo": item.motivo,
+        "estado_anterior": item.estado_anterior.value if item.estado_anterior else None,
+        "estado_nuevo": item.estado_nuevo.value if item.estado_nuevo else None,
+        "estado_sugerido": item.estado_sugerido.value if item.estado_sugerido else None,
+        "incidentes_activos": item.incidentes_activos or [],
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "ticket_asociado": item.ticket_asociado,
+        "servicio_afectado_id": item.servicio_afectado_id,
+        "servicio_protegido_id": item.servicio_protegido_id,
+        "ruta_protegida_id": item.ruta_protegida_id,
+        "motivo": item.motivo,
+        "activo": bool(item.activo),
+        "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
+        "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
+    }
+
+
 @app.get("/api/infra/camaras")
 async def search_camaras_web(
     request: Request,
@@ -1911,6 +1989,134 @@ async def search_camaras_web(
             {"error": f"Error buscando cámaras: {exc!s}"},
             status_code=500
         )
+
+
+@app.get("/api/infra/camaras/{camara_id}")
+async def get_camara_detail_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene el resumen operativo base de una cámara para la vista de detalle."""
+
+    _, role = _require_auth(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import Camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            rutas_info = _collect_camara_rutas_info(camara)
+            servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
+            payload = _serialize_camara_response(
+                camara=camara,
+                rutas_info=rutas_info,
+                servicios_ids=servicios_ids,
+                contexto=get_camara_estado_contexto(session, camara.id),
+                editable=role == "admin",
+            )
+            return JSONResponse({"status": "ok", "camara": payload})
+    except Exception as exc:
+        logger.exception("action=get_camara_detail_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudo obtener el detalle de la cámara"}, status_code=500)
+
+
+@app.get("/api/infra/camaras/{camara_id}/aliases")
+async def get_camara_aliases_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene los alias conocidos de una cámara."""
+
+    _require_auth(request)
+
+    try:
+        from db.models.infra import Camara, CamaraAlias
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara.id, Camara.nombre).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            aliases = (
+                session.query(CamaraAlias)
+                .filter(CamaraAlias.camara_id == camara_id)
+                .order_by(CamaraAlias.alias_nombre.asc())
+                .all()
+            )
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "camara_id": camara_id,
+                    "camara_nombre": camara.nombre,
+                    "total": len(aliases),
+                    "aliases": [_serialize_camara_alias(alias) for alias in aliases],
+                }
+            )
+    except Exception as exc:
+        logger.exception("action=get_camara_aliases_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudieron obtener los alias de la cámara"}, status_code=500)
+
+
+@app.get("/api/infra/camaras/{camara_id}/registros")
+async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
+
+    _require_auth(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import Camara, CamaraEstadoAuditoria, IncidenteBaneo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            rutas_info = _collect_camara_rutas_info(camara)
+            rutas_ids = {int(ruta["ruta_id"]) for ruta in rutas_info if ruta.get("ruta_id") is not None}
+            servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
+
+            auditoria = (
+                session.query(CamaraEstadoAuditoria)
+                .filter(CamaraEstadoAuditoria.camara_id == camara_id)
+                .order_by(CamaraEstadoAuditoria.created_at.desc())
+                .limit(20)
+                .all()
+            )
+
+            baneos: list[Any] = []
+            if servicios_ids:
+                candidatos = (
+                    session.query(IncidenteBaneo)
+                    .filter(IncidenteBaneo.servicio_protegido_id.in_(servicios_ids))
+                    .order_by(IncidenteBaneo.fecha_inicio.desc())
+                    .limit(50)
+                    .all()
+                )
+                baneos = [
+                    incidente
+                    for incidente in candidatos
+                    if incidente.ruta_protegida_id is None or incidente.ruta_protegida_id in rutas_ids
+                ][:20]
+
+            contexto = get_camara_estado_contexto(session, camara_id)
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "camara_id": camara_id,
+                    "contexto": contexto.to_dict() if contexto else None,
+                    "auditoria": [_serialize_camara_auditoria(item) for item in auditoria],
+                    "baneos": [_serialize_camara_baneo(item) for item in baneos],
+                    "placeholders": {
+                        "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
+                        "egresos": "Pendiente de integrar registros de egresos en una próxima iteración.",
+                    },
+                }
+            )
+    except Exception as exc:
+        logger.exception("action=get_camara_registros_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudieron obtener los registros de la cámara"}, status_code=500)
 
 
 @app.get("/api/infra/servicios/{servicio_id}/rutas")

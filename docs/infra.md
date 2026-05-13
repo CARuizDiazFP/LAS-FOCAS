@@ -15,6 +15,28 @@ El módulo **Infraestructura FO** permite la gestión de cámaras de fibra ópti
 - **Filtros rápidos**: por estado (Libre, Ocupada, Baneada, Detectada, Tracking)
 - **Upload de tracking**: carga archivos `.txt` de tracking para asociar cámaras a servicios
 
+### Vista principal y detalle dedicado
+- **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
+- **Vista dedicada por cámara**: `GET /infra/Camaras/:id` dentro de la SPA Vue 3.
+- **Dashboard de detalle**: tarjetas clickeables para alias, registros y servicios asociados.
+- **Edición de estado reubicada**: el botón `Editar estado` sale de la tarjeta principal y vive en el header del detalle.
+
+### Detalle operativo por cámara
+La vista dedicada realiza carga paralela contra endpoints same-origin del servicio `web`:
+
+- `GET /api/infra/camaras/{id}`
+- `GET /api/infra/camaras/{id}/aliases`
+- `GET /api/infra/camaras/{id}/registros`
+- `GET/POST /api/infra/camaras/{id}/estado` para edición admin con CSRF
+
+En esta iteración, **Registros** muestra solo la lógica operativa ya existente:
+
+- auditoría manual de cambios de estado (`app.camaras_estado_auditoria`)
+- incidentes y baneos vinculados a la cámara
+- placeholders explícitos para ingresos y egresos todavía no implementados en la vista
+
+La tarjeta **Servicios Asociados** reutiliza el tracking operativo ya existente del panel: cada servicio se expande, lista sus caminos/rutas, permite alternar entre rutas secundarias o pelos asociados y muestra la secuencia óptica detallada con descarga del TXT actual.
+
 ### Protocolo de Protección (Baneo)
 Sistema para proteger cámaras durante afectaciones de servicio, impidiendo trabajos en ellas hasta resolución.
 
@@ -96,6 +118,21 @@ Este indicador:
 
 ## API Endpoints
 
+### GET /api/infra/camaras/{camara_id}
+Obtiene el resumen operativo base de una cámara para la vista dedicada. Incluye nombre, ID, estado, editabilidad y servicios/rutas asociados.
+
+### GET /api/infra/rutas/{ruta_id}/tracking
+Obtiene la secuencia de tracking de una ruta FO (`punta_a`, `tracking[]`, `punta_b`) para el modal de servicios de la vista dedicada.
+
+### GET /api/infra/tracking/{ruta_id}/download
+Descarga el TXT actual de una ruta. La vista dedicada lo usa desde la tarjeta **Servicios Asociados** para mantener paridad con el flujo productivo.
+
+### GET /api/infra/camaras/{camara_id}/aliases
+Obtiene los alias conocidos de una cámara desde `app.camara_alias`.
+
+### GET /api/infra/camaras/{camara_id}/registros
+Obtiene registros operativos parciales: auditoría manual de estado, baneos relacionados y placeholders de ingresos/egresos.
+
 ### GET /api/infra/ban/active
 Lista todos los incidentes de baneo activos con conteo de cámaras.
 
@@ -139,15 +176,27 @@ Genera archivo EML para descargar y abrir en Outlook.
 
 ## Archivos relacionados
 
-- `web/templates/panel.html` - Template HTML del panel
-- `web/static/panel.js` - Lógica JavaScript del módulo
-- `web/static/styles.css` - Estilos CSS
-- `web/app/main.py` - Endpoints web
-- `api/app/routes/infra.py` - Endpoints API
+- `web/frontend/src/views/tabs/InfraTab.vue` - Tab principal de Infraestructura FO
+- `web/frontend/src/views/CamaraDetailView.vue` - Vista dedicada por cámara
+- `web/frontend/src/components/infra/` - Modales aislados de alias, servicios, registros y edición de estado
+- `web/frontend/src/router/index.ts` - Ruta SPA `/infra/Camaras/:id`
+- `web/app/main.py` - Endpoints web same-origin para listado y detalle
+- `api/app/routes/infra.py` - Endpoints API base y búsquedas de infraestructura
+- `core/services/camara_estado_service.py` - Lógica de contexto y auditoría de estado
 - `core/services/protection_service.py` - Lógica de negocio del Protocolo de Protección
-- `db/models/infra.py` - Modelos de base de datos
+- `db/models/infra.py` - Modelos de cámaras, alias, auditoría e incidentes
 
 ## Historial de cambios
+
+### 2026-05-13 - Refactor de tarjetas FO y vista dedicada por cámara
+- **Corregido**: la grilla principal vuelve a mostrar el `id` numérico real de cámara en lugar de depender de `fontine_id`.
+- **Modificado**: las tarjetas principales se simplifican a `Nombre canon + ID + Estado`, removiendo detalle operativo inline.
+- **Agregado**: ruta SPA `/infra/Camaras/:id` con vista dedicada `CamaraDetailView.vue`.
+- **Agregado**: endpoints web same-origin `GET /api/infra/camaras/{id}`, `GET /api/infra/camaras/{id}/aliases` y `GET /api/infra/camaras/{id}/registros`.
+- **Agregado**: modales aislados para alias conocidos, servicios asociados, registros y edición manual de estado.
+- **Recuperado**: la tarjeta `Servicios Asociados` vuelve a exponer la secuencia de tracking productiva con tabs por ruta y descarga del TXT actual.
+- **Corregido**: el modal `Editar estado` de la vista dedicada vuelve a usar el estilo dark coherente con el dashboard.
+- **Diseño**: la tarjeta `Registros` migra solo la lógica operativa disponible hoy y deja placeholders para ingresos/egresos futuros.
 
 ### 2026-04-17 - Refactor de avisos individuales y conteo de cámaras
 - **Eliminado**: Botón global "Dar Aviso" del header principal

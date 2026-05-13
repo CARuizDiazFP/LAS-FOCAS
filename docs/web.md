@@ -93,6 +93,9 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/tools/alarmas-ciena` → multipart con archivo CSV. Devuelve Excel como blob.
 - `GET /api/infra/camaras` → búsqueda simple de cámaras (legacy, query params).
 - `POST /api/infra/smart-search` → búsqueda avanzada `{terms, limit, offset}`.
+- `GET /api/infra/camaras/{id}` → resumen operativo de una cámara para la vista dedicada.
+- `GET /api/infra/camaras/{id}/aliases` → alias conocidos de una cámara.
+- `GET /api/infra/camaras/{id}/registros` → históricos parciales de auditoría manual y baneos relacionados.
 - `GET/POST /api/infra/camaras/{id}/estado` → estado de cámara (admin).
 - `GET /api/infra/servicios/{svcId}/rutas` → rutas de un servicio.
 - `GET /api/infra/rutas/{rutaId}/tracking` → tracking de una ruta.
@@ -105,6 +108,34 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
+
+### InfraTab — Tarjeta resumida y detalle por cámara
+
+La grilla principal de `InfraTab.vue` fue simplificada para operar como tablero de consulta rápida:
+
+- Cada tarjeta muestra solo `Nombre canon`, `ID` numérico interno y `estado` con su color actual.
+- El identificador visible ahora es `camara.id`; `fontine_id` sigue existiendo en backend pero ya no se usa como dato primario de la tarjeta.
+- El CTA de la tarjeta pasó de **Editar estado** a **Detalle** y navega a `/infra/Camaras/:id`.
+
+La vista dedicada `CamaraDetailView.vue` cuelga del router principal y carga en paralelo, vía `Promise.all`, tres fuentes same-origin:
+
+- `GET /api/infra/camaras/{id}` para el header operativo y servicios/rutas asociados.
+- `GET /api/infra/camaras/{id}/aliases` para alias conocidos.
+- `GET /api/infra/camaras/{id}/registros` para auditoría manual y baneos relacionados.
+
+En el header de detalle se reubica el botón **Editar estado** solo para admin, reutilizando el endpoint `GET/POST /api/infra/camaras/{id}/estado` y el mismo flujo de CSRF.
+
+Debajo del header se expone un dashboard de tres tarjetas clickeables con modales aislados:
+
+- **Alias Conocidos**
+- **Registros**
+- **Servicios Asociados**
+
+La tarjeta **Servicios Asociados** vuelve a heredar la lógica del tracking productivo: al abrir el modal agrupa rutas por servicio, permite expandir cada servicio, alternar entre caminos/rutas del mismo servicio, renderizar la secuencia óptica (`punta A → empalmes/cables → punta B`) y descargar el TXT actual mediante `GET /api/infra/tracking/{rutaId}/download`.
+
+La tarjeta **Registros** es parcial en esta iteración: muestra auditoría manual y baneos relacionados, y deja placeholders explícitos para ingresos y egresos futuros.
+
+El modal **Editar estado** en la vista dedicada recupera el mismo modo oscuro y jerarquía visual del panel actual; mantiene `credentials: 'include'` para lectura y usa `csrf_token` desde `useSession.ts` al persistir cambios.
 
 ### InfraTab — Baneos Activos (gestión de incidentes)
 

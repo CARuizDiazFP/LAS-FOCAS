@@ -26,7 +26,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import ChatTab from './tabs/ChatTab.vue';
 import RepetitividadTab from './tabs/RepetitividadTab.vue';
 import VlanTab from './tabs/VlanTab.vue';
@@ -43,7 +44,39 @@ const tabs = [
   { id: 'infra', label: 'Infraestructura' },
 ];
 
-const activeTab = ref('chat');
+const route = useRoute();
+const router = useRouter();
+const validTabs = new Set(tabs.map((tab) => tab.id));
+
+function normalizeTab(tab: unknown): string {
+  const candidate = typeof tab === 'string' ? tab.toLowerCase() : '';
+  return validTabs.has(candidate) ? candidate : 'chat';
+}
+
+const activeTab = ref(normalizeTab(route.query.tab));
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const normalized = normalizeTab(tab);
+    if (normalized !== activeTab.value) {
+      activeTab.value = normalized;
+    }
+  },
+);
+
+watch(activeTab, async (tab) => {
+  const nextQuery = { ...route.query };
+  if (tab === 'chat') {
+    delete nextQuery.tab;
+  } else {
+    nextQuery.tab = tab;
+  }
+  if (String(route.query.tab ?? '') === String(nextQuery.tab ?? '')) {
+    return;
+  }
+  await router.replace({ query: nextQuery });
+});
 </script>
 
 <style scoped>

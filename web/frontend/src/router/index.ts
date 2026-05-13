@@ -11,6 +11,7 @@ import PanelLayout from '../components/PanelLayout.vue';
 import PanelView from '../views/PanelView.vue';
 import SlaView from '../views/SlaView.vue';
 import ReportsHistoryView from '../views/ReportsHistoryView.vue';
+import CamaraDetailView from '../views/CamaraDetailView.vue';
 
 // Admin
 import AdminLayout from '../admin/components/AdminLayout.vue';
@@ -33,6 +34,7 @@ const routes: RouteRecordRaw[] = [
       { path: '', component: PanelView },
       { path: 'sla', component: SlaView },
       { path: 'reports-history', component: ReportsHistoryView },
+      { path: 'infra/Camaras/:id(\\d+)', component: CamaraDetailView },
     ],
   },
   {
