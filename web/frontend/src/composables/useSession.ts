@@ -3,6 +3,8 @@
 // Descripción: Composable singleton para estado de sesión y token CSRF del SPA unificado
 
 import { ref } from 'vue';
+import { getSession, logout } from '../api/auth';
+import { clearCsrfToken, setCsrfToken } from '../api/client';
 
 interface SessionState {
   authenticated: boolean;
@@ -23,22 +25,16 @@ let _fetched = false;
 
 function _applyState(data: SessionState): void {
   state.value = data;
-  // Compatibilidad con admin.ts que lee window.CSRF_TOKEN
-  if (data.csrf) {
-    (window as unknown as { CSRF_TOKEN: string }).CSRF_TOKEN = data.csrf;
-  }
+  setCsrfToken(data.csrf);
 }
 
 export function useSession() {
   const csrf = (): string => state.value.csrf ?? '';
 
   async function fetchSession(): Promise<SessionState> {
-    const res = await fetch('/api/auth/session', { credentials: 'include' });
-    if (res.ok) {
-      const data: SessionState = await res.json();
-      _applyState(data);
-      _fetched = true;
-    }
+    const data = await getSession();
+    _applyState(data);
+    _fetched = true;
     return state.value;
   }
 
@@ -56,8 +52,17 @@ export function useSession() {
 
   function clearSession(): void {
     state.value = { authenticated: false, username: null, role: null, csrf: null };
+    clearCsrfToken();
     _fetched = false;
   }
 
-  return { state, csrf, fetchSession, ensureSession, setSession, clearSession };
+  async function logoutSession(): Promise<void> {
+    try {
+      await logout();
+    } finally {
+      clearSession();
+    }
+  }
+
+  return { state, csrf, fetchSession, ensureSession, setSession, clearSession, logoutSession };
 }

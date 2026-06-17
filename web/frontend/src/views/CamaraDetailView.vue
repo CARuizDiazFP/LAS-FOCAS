@@ -6,7 +6,7 @@
 <template>
   <section class="camara-detail-page">
     <div class="camara-detail-shell">
-      <RouterLink class="camara-detail-back" to="/?tab=infra">← Volver a Infraestructura</RouterLink>
+      <RouterLink class="camara-detail-back" to="/infra">← Volver a Infraestructura</RouterLink>
 
       <div v-if="loading" class="camara-detail-state">Cargando detalle operativo de la cámara...</div>
       <div v-else-if="errorMessage" class="camara-detail-state error">

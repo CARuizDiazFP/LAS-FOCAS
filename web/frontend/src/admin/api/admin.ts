@@ -2,16 +2,7 @@
 // Ubicación de archivo: web/frontend/src/admin/api/admin.ts
 // Descripción: Wrappers fetch para todos los endpoints del panel admin
 
-const CSRF = (): string => (window as never as { CSRF_TOKEN: string }).CSRF_TOKEN ?? '';
-
-function formBody(data: Record<string, string | number | boolean>): FormData {
-  const fd = new FormData();
-  fd.append('csrf_token', CSRF());
-  for (const [k, v] of Object.entries(data)) {
-    fd.append(k, String(v));
-  }
-  return fd;
-}
+import { createFormData, request, requestJson } from '../../api/client';
 
 // ─── Tipos ───────────────────────────────────────────────────────────────
 
@@ -49,9 +40,7 @@ export interface ListenerConfig {
 
 /** Devuelve el usuario admin autenticado, lanza Error si no es admin. */
 export async function getAdminMe(): Promise<AdminUser> {
-  const res = await fetch('/api/admin/me', { credentials: 'include' });
-  if (!res.ok) throw new Error(`${res.status}`);
-  return res.json() as Promise<AdminUser>;
+  return requestJson<AdminUser>('/api/admin/me');
 }
 
 /** Crea un nuevo usuario. */
@@ -60,13 +49,10 @@ export async function createUser(
   password: string,
   role: string,
 ): Promise<void> {
-  const res = await fetch('/api/admin/users', {
+  await request('/api/admin/users', {
     method: 'POST',
-    credentials: 'include',
-    body: formBody({ username, password, role }),
+    formData: createFormData({ username, password, role }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
 }
 
 /** Cambia la contraseña del usuario autenticado. */
@@ -74,20 +60,15 @@ export async function changePassword(
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
-  const res = await fetch('/api/users/change-password', {
+  await request('/api/users/change-password', {
     method: 'POST',
-    credentials: 'include',
-    body: formBody({ current_password: currentPassword, new_password: newPassword }),
+    formData: createFormData({ current_password: currentPassword, new_password: newPassword }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
 }
 
 /** Obtiene la configuración del worker de baneos. */
 export async function getBaneosConfig(): Promise<BaneosConfig> {
-  const res = await fetch('/api/admin/servicios/baneos/config', { credentials: 'include' });
-  if (!res.ok) throw new Error(`Error ${res.status}`);
-  return res.json() as Promise<BaneosConfig>;
+  return requestJson<BaneosConfig>('/api/admin/servicios/baneos/config');
 }
 
 /** Guarda la configuración del worker de baneos. */
@@ -103,10 +84,10 @@ export async function saveBaneosConfig(
     activo: activo ? 'on' : 'off',
     hora_inicio: horaInicio !== null ? horaInicio : '',
   };
-  const res = await fetch('/api/admin/servicios/baneos', {
+  const res = await request('/api/admin/servicios/baneos', {
     method: 'POST',
-    credentials: 'include',
-    body: formBody(payload),
+    formData: createFormData(payload),
+    throwOnError: false,
   });
   if (res.status === 303 || res.ok) return; // redirect = éxito
   const data = await res.json().catch(() => ({}));
@@ -115,40 +96,28 @@ export async function saveBaneosConfig(
 
 /** Inicia el contenedor del worker si está detenido. */
 export async function startWorker(): Promise<{ status: string; msg?: string; container_status?: string }> {
-  const res = await fetch('/api/admin/servicios/baneos/worker/start', {
+  return requestJson<{ status: string; msg?: string; container_status?: string }>('/api/admin/servicios/baneos/worker/start', {
     method: 'POST',
-    credentials: 'include',
-    body: formBody({}),
+    formData: createFormData({}),
   });
-  const data = await res.json().catch(() => ({})) as { status?: string; msg?: string; container_status?: string; error?: string };
-  if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
-  return data as { status: string; msg?: string; container_status?: string };
 }
 
 /** Dispara una ejecución manual inmediata del worker. */
 export async function triggerManualNotification(): Promise<{ ok: boolean; msg?: string }> {
-  const res = await fetch('/api/admin/servicios/baneos/trigger', {
+  return requestJson<{ ok: boolean; msg?: string }>('/api/admin/servicios/baneos/trigger', {
     method: 'POST',
-    credentials: 'include',
-    body: formBody({}),
+    formData: createFormData({}),
   });
-  const data = await res.json().catch(() => ({})) as { ok?: boolean; msg?: string; error?: string };
-  if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
-  return data as { ok: boolean; msg?: string };
 }
 
 /** Verifica el estado del worker de baneos. */
 export async function getBaneosHealth(): Promise<WorkerHealth> {
-  const res = await fetch('/api/admin/servicios/baneos/health', { credentials: 'include' });
-  if (!res.ok) throw new Error(`Error ${res.status}`);
-  return res.json() as Promise<WorkerHealth>;
+  return requestJson<WorkerHealth>('/api/admin/servicios/baneos/health');
 }
 
 /** Devuelve la configuración del listener de ingresos. */
 export async function getListenerConfig(): Promise<ListenerConfig> {
-  const res = await fetch('/api/admin/servicios/baneos/listener', { credentials: 'include' });
-  if (!res.ok) throw new Error(`Error ${res.status}`);
-  return res.json() as Promise<ListenerConfig>;
+  return requestJson<ListenerConfig>('/api/admin/servicios/baneos/listener');
 }
 
 /** Guarda la configuración del listener de ingresos. */
@@ -158,20 +127,15 @@ export async function saveListenerConfig(
   workflowIds: string,
   soloWorkflows: boolean,
 ): Promise<void> {
-  const res = await fetch('/api/admin/servicios/baneos/listener', {
+  await request('/api/admin/servicios/baneos/listener', {
     method: 'POST',
-    credentials: 'include',
-    body: formBody({
+    formData: createFormData({
       activo: activo ? 'on' : 'off',
       canal_id: canalId,
       workflow_ids: workflowIds,
       solo_workflows: soloWorkflows ? 'on' : 'off',
     }),
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `Error ${res.status}`);
-  }
 }
 
 // ── Cámaras pendientes de revisión ──────────────────────────────────────
@@ -184,58 +148,33 @@ export interface CamaraPendiente {
 }
 
 export async function getCamarasPendientes(): Promise<CamaraPendiente[]> {
-  const res = await fetch('/api/admin/infra/camaras/pendientes', { credentials: 'include' });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `Error ${res.status}`);
-  }
-  return res.json() as Promise<CamaraPendiente[]>;
+  return requestJson<CamaraPendiente[]>('/api/admin/infra/camaras/pendientes');
 }
 
 export async function aprobarCamara(id: number): Promise<void> {
-  const res = await fetch(`/api/admin/infra/camaras/${id}/aprobar`, {
+  await request(`/api/admin/infra/camaras/${id}/aprobar`, {
     method: 'POST',
-    credentials: 'include',
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `Error ${res.status}`);
-  }
 }
 
 export async function convertirAlias(id: number, camaraDestinoId: number): Promise<void> {
-  const res = await fetch(`/api/admin/infra/camaras/${id}/convertir-alias`, {
+  await request(`/api/admin/infra/camaras/${id}/convertir-alias`, {
     method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ camara_destino_id: camaraDestinoId }),
+    json: { camara_destino_id: camaraDestinoId },
+    csrf: true,
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `Error ${res.status}`);
-  }
 }
 
 export async function darDeAltaComoCanon(id: number, nombreCanon: string): Promise<void> {
-  const res = await fetch(`/api/admin/infra/camaras/${id}/dar-de-alta`, {
+  await request(`/api/admin/infra/camaras/${id}/dar-de-alta`, {
     method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nombre_canon: nombreCanon }),
+    json: { nombre_canon: nombreCanon },
+    csrf: true,
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `Error ${res.status}`);
-  }
 }
 
 export async function eliminarCamaraPendiente(id: number): Promise<void> {
-  const res = await fetch(`/api/admin/infra/camaras/pendientes/${id}`, {
+  await request(`/api/admin/infra/camaras/pendientes/${id}`, {
     method: 'DELETE',
-    credentials: 'include',
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `Error ${res.status}`);
-  }
 }

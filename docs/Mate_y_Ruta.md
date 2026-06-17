@@ -68,7 +68,7 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 - **crear-skill.prompt.md**: Crea skills nuevas o tríadas completas del ecosistema agéntico
 - **generar-pr-diario.prompt.md**: Genera `docs/PR/YYYY-MM-DD.md` automáticamente
 - **mantenimiento-disco.prompt.md**: Diagnostica disco y propone limpieza segura
-- **repo-updater.prompt.md**: Audita trazabilidad documental, genera commit técnico y hace push a `main`
+- **repo-updater.prompt.md**: Audita trazabilidad documental, genera commit técnico y hace push a `dev`
 - **nuevo-modulo.prompt.md**: Scaffolding de módulo con tests y docs
 - **migracion-alembic.prompt.md**: Crear migraciones de base de datos
 - **revisar-seguridad.prompt.md**: Auditoría de seguridad del proyecto
@@ -252,7 +252,8 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Detección de Conflictos Inteligente**: Escenarios POTENTIAL_UPGRADE y NEW_STRAND en analyze/resolve de trackings, UI con modales específicos para cada tipo de conflicto (2026-01-13).
 - [x] **Corrección crítica SLA**: `core/sla/legacy_report.py` ahora usa exclusivamente columna "Horas Netas Reclamo" (columna U) para el cálculo de horas, eliminando el fallback incorrecto a columna P. Tests actualizados y validados con datos reales (2026-01-13).
 - [x] **Sistema Multi-Agente**: Modernización de AGENTS.md a ecosistema modular con 12 agentes especializados, 4 prompts automatizados y 4 habilidades reutilizables en `.github/` (2026-03-03).
-- [x] **Trazabilidad Git autónoma**: incorporación de `repo-updater` como workflow para auditar `docs/PR/`, verificar documentación temática en `docs/` y ejecutar `git add`, `git commit` y `git push` hacia `main` con CLI del sistema (2026-04-17).
+- [x] **Trazabilidad Git autónoma**: incorporación de `repo-updater` como workflow para auditar `docs/PR/`, verificar documentación temática en `docs/` y ejecutar `git add`, `git commit` y `git push` hacia `dev` con CLI del sistema (2026-04-17).
+- [x] **Reglas portables Codex/Gemini**: migración de 17 skills, 13 agentes y 7 prompts desde `.github/` hacia reglas versionadas en `.gemini/rules/`, índice `GEMINI.md` y skills Codex portables en `.codex-skills/skills/` por bloqueo de escritura en `.codex/` durante la sesión (2026-06-17).
 - [x] **Worker Slack de Baneos**: servicio `slack_baneo_worker`, tabla `app.config_servicios`, panel admin `/admin/Servicios/Baneos`, health check interno y logs centralizados en `Logs/slack_baneo_worker.log` (2026-04-17).
 - [x] **Edición Manual de Estado de Cámaras**: overrides admin auditados en `app.camaras_estado_auditoria`, modal de edición en Infra/Cámaras y conteo efectivo de baneadas alineado al estado persistido (2026-04-20).
 

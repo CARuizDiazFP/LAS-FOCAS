@@ -3,16 +3,7 @@
 # Ubicación de archivo: web/frontend/src/panel.css
 # Descripción: Estilos globales del panel SPA — migrado desde web/static/styles.css
 */
-:root {
-  --bg: #0f1419;
-  --surface: #151b23;
-  --text: #e6edf3;
-  --muted: #9da7b3;
-  --primary: #3b82f6;
-  --border: #2a323d;
-}
-
-body.dark { background: var(--bg); color: var(--text); margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; }
+body.dark { background: var(--color-bg-canvas); color: var(--color-text-primary); margin: 0; font-family: var(--font-family-sans); }
 
 /*
  * ── Centrado nativo de <dialog> ──────────────────────────────────────────────

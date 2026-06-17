@@ -32,11 +32,35 @@ web/
   app/main.py          ← FastAPI app: API REST + SPA serving
   frontend/
     src/               ← código fuente Vue 3 + TypeScript
+      assets/styles/   ← tokens CSS globales del panel
+      api/client.ts    ← cliente HTTP compartido con credenciales + CSRF
+      composables/     ← lógica reactiva desacoplada de vistas
     dist/              ← build Vite (generado, no en git)
     vite.config.ts
     index.html
   Dockerfile           ← multi-stage: Node 20 build → Python serve
 ```
+
+### Shell y navegación modular
+
+- El SPA ahora usa un **App Shell compartido** en `web/frontend/src/components/app-shell/AppShell.vue` para panel y admin.
+- La navegación lateral se organiza por módulos y apunta a rutas dedicadas: `/`, `/infra`, `/repetitividad`, `/toolkit/vlan`, `/fo`, `/dwdm/ciena`, `/sla` y `/reports-history`.
+- El header horizontal legacy fue eliminado para ampliar el área de trabajo. Los controles fijos de sesión viven arriba del sidebar: configuración y perfil de usuario.
+- La esquina superior derecha del área principal queda reservada para acciones dinámicas de módulo, sin botones estáticos.
+- El contenedor `#dynamic-module-actions` permite que una vista inyecte acciones con `Teleport`; el mismo bloque expone el slot `module-actions` para usos futuros donde el shell se componga directamente.
+- La ruta `/` renderiza el Home/Chat limpio mediante `PanelView.vue`; los módulos operativos ya no viven como tabs internas del panel.
+
+### Lazy loading
+
+- `web/frontend/src/router/index.ts` carga `Login`, `Panel`, `SLA`, `Reportes`, `Cámara Detail` y vistas admin mediante `import()` dinámico.
+- Los módulos migrados desde las tabs legacy se cargan como rutas dedicadas y conservan lazy loading por componente.
+- Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
+
+### Tokens y estilos compartidos
+
+- Los tokens visuales viven en `web/frontend/src/assets/styles/tokens.css`.
+- `panel.css` y `admin.css` consumen estos tokens en lugar de redeclarar su propia paleta base.
+- El objetivo de la capa es concentrar identidad cromática, spacing, radios y layout en variables CSS nativas (`--color-*`, `--space-*`, `--layout-*`).
 
 El contenedor se lanza con:
 ```
@@ -60,8 +84,30 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 
 ### CSRF
 
-El token CSRF se incluye en la respuesta de `/api/auth/session` y `/api/auth/login`. El composable `useSession.ts` lo almacena y lo inyecta en `window.CSRF_TOKEN` para compatibilidad con el código admin existente.  
+El token CSRF se incluye en la respuesta de `/api/auth/session` y `/api/auth/login`. El composable `useSession.ts` lo almacena en estado reactivo y sincroniza un fallback `window.CSRF_TOKEN` solo por compatibilidad con superficies legacy aún no migradas.
 Todos los endpoints POST que mutan datos validan el CSRF token.
+
+### Cliente HTTP y composables
+
+- `web/frontend/src/api/client.ts` centraliza `fetch` same-origin con `credentials: 'include'`, serialización JSON/FormData, inyección de CSRF y normalización de errores.
+- `web/frontend/src/composables/useSla.ts` contiene el flujo reactivo del informe SLA y corrige el manejo de archivos seleccionados, que antes no era reactivo en la vista.
+- `web/frontend/src/composables/useCiena.ts` desacopla el procesamiento del CSV de alarmas Ciena y la descarga del XLSX resultante.
+- Esta capa es la base para seguir extrayendo lógica desde `RepetitividadTab`, `VlanTab` e `InfraTab`.
+
+### Superficies legacy del frontend
+
+- `web/frontend/src/chat/main.ts` sigue existiendo como cliente standalone heredado para WebSocket, pero **no forma parte del bundle actual del SPA** porque `index.html` solo entra por `src/main.ts`.
+- Si se reactiva ese cliente en el futuro, debe sanearse el uso de `innerHTML` antes de volver a exponerlo en runtime.
+
+## Build Dev del frontend
+
+La validación del frontend debe ejecutarse **solo** en el stack Dev. El comando operativo para rebuild explícito del servicio web es:
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d --build web
+```
+
+Ese flujo recompila los assets Vite dentro del `Dockerfile` multi-stage del servicio `web` y actualiza `/app/frontend/dist` dentro del contenedor dev.
 
 ## Logging
 
@@ -277,10 +323,12 @@ composables/
 api/
   auth.ts              ← wrappers fetch: getSession, login, logout
 components/
-  PanelLayout.vue      ← topbar con nav, usuario y logout
+  app-shell/
+    AppShell.vue       ← shell compartido con controles fijos en sidebar y toolbar dinámica vacía
 views/
   LoginView.vue        ← formulario de login
-  PanelView.vue        ← panel con tabs
+  PanelView.vue        ← Home/Chat limpio
+  CamaraDetailView.vue ← detalle dedicado de cámara FO
   SlaView.vue          ← vista independiente /sla
   ReportsHistoryView.vue ← historial de reportes
   tabs/
@@ -291,8 +339,6 @@ views/
     CienaTab.vue       ← alarmas Ciena
     InfraTab.vue       ← dashboard cámaras
 admin/
-  components/
-    AdminLayout.vue    ← layout admin con RouterView
   (resto de admin Vue)
 ```
 
@@ -301,15 +347,22 @@ admin/
 | Ruta | Componente | Auth | Admin |
 |------|------------|------|-------|
 | `/login` | LoginView | No | No |
-| `/` | PanelView (en PanelLayout) | Sí | No |
-| `/sla` | SlaView (en PanelLayout) | Sí | No |
-| `/reports-history` | ReportsHistoryView (en PanelLayout) | Sí | No |
-| `/admin` | AdminLayout + children | Sí | Sí |
-| `/admin/usuarios` | AdminLayout + children | Sí | Sí |
-| `/admin/servicios` | AdminLayout + children | Sí | Sí |
-| `/admin/Servicios/Baneos` | AdminLayout + children | Sí | Sí |
+| `/` | AppShell + PanelView | Sí | No |
+| `/infra` | AppShell + InfraTab | Sí | No |
+| `/infra/Camaras/:id` | AppShell + CamaraDetailView | Sí | No |
+| `/repetitividad` | AppShell + RepetitividadTab | Sí | No |
+| `/toolkit/vlan` | AppShell + VlanTab | Sí | No |
+| `/fo` | AppShell + FoTab | Sí | No |
+| `/dwdm/ciena` | AppShell + CienaTab | Sí | No |
+| `/sla` | AppShell + SlaView | Sí | No |
+| `/reports-history` | AppShell + ReportsHistoryView | Sí | No |
+| `/admin` | AppShell + AdminDashboard | Sí | Sí |
+| `/admin/usuarios` | AppShell + AdminUsuarios | Sí | Sí |
+| `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
+| `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
 
 El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`.
+Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida para preservar marcadores antiguos sin reintroducir tabs en el Home.
 
 ### Composable `useSession`
 
