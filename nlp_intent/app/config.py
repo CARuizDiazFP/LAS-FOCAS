@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from core.config import get_secret
+
 
 @dataclass
 class Settings:
@@ -14,7 +16,7 @@ class Settings:
     # clasificaciones (y futuras respuestas generativas) utilicen OpenAI salvo
     # que se configure explícitamente otra cosa vía variable de entorno.
     llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
-    openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    openai_api_key: str | None = get_secret("openai_api_key_v1", "OPENAI_API_KEY") or None
     ollama_url: str = os.getenv("OLLAMA_URL", "http://ollama:11434")
     intent_threshold: float = float(os.getenv("INTENT_THRESHOLD", "0.7"))
     lang: str = os.getenv("LANG", "es")
@@ -48,4 +50,3 @@ if os.getenv("TESTING", "false").lower() != "true":  # pragma: no branch
         settings.validate()
     except RuntimeError as _e:  # pragma: no cover
         raise
-

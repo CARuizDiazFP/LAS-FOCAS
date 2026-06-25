@@ -133,7 +133,7 @@ done
 set +u
 source "$ROOT_DIR/.env" >/dev/null 2>&1 || true
 set -u
-ALEMBIC_URL="postgresql+psycopg://${POSTGRES_USER:-lasfocas}:${POSTGRES_PASSWORD:-superseguro}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-lasfocas}"
+ALEMBIC_URL="postgresql+psycopg://${POSTGRES_USER:-lasfocas}:${POSTGRES_PASSWORD:-cambiar_por_password_seguro}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-lasfocas}"
 
 MIG_OK=false
 if $REBUILD_API; then

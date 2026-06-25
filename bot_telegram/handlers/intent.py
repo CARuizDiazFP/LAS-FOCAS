@@ -12,6 +12,9 @@ from collections import defaultdict
 
 import httpx
 import psycopg
+
+from core.config import get_secret
+
 try:  # Permitir importar el módulo aunque aiogram no esté instalado en el entorno de pruebas
     from aiogram import F, Router  # type: ignore
     from aiogram.fsm.context import FSMContext  # type: ignore
@@ -68,7 +71,7 @@ def _get_conn() -> psycopg.Connection:
         host=os.getenv("POSTGRES_HOST", "localhost"),
         dbname=os.getenv("POSTGRES_DB"),
         user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD"),
+        password=get_secret("db_password_v1", "POSTGRES_PASSWORD"),
     )
 
 
@@ -128,5 +131,4 @@ async def classify_message(msg: Message, state: FSMContext):
             )
     else:
         await msg.answer(summary)
-
 

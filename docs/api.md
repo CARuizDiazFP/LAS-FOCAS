@@ -908,7 +908,7 @@ Notas:
 
 - El script `./Start` ejecuta las migraciones Alembic dentro del contenedor `api` luego de que PostgreSQL esté healthy.
 - Para alinear credenciales, `Start` construye `ALEMBIC_URL` a partir de `.env` (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`).
-- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; por defecto, las credenciales de ejemplo son `FOCALBOT` / `LASFOCAS2026!` y DB `FOCALDB`.
+- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; las credenciales deben reemplazarse por valores seguros propios. En dev, preferir `.secrets/db_password_v1.txt` para la contraseña de PostgreSQL.
 
 #### Códigos de error resumidos
 | Código | Causa principal | Mitigación |

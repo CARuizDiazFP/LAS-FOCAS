@@ -140,24 +140,24 @@ las-focas/
 
 ## 🔐 Configuración y credenciales
 
-**.env (ejemplo)**
+**.env / secretos (ejemplo)**
 
 ```
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_DB=lasfocas
 POSTGRES_USER=lasfocas
-POSTGRES_PASSWORD=superseguro
-APP_SECRET_KEY=change-me
+POSTGRES_PASSWORD=cambiar_por_password_seguro
+WEB_SECRET_KEY=cambiar_por_clave_web_segura
 ENV=development
-TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_BOT_TOKEN=cambiar_por_token_telegram
 TELEGRAM_ALLOWED_IDS=11111111,22222222
-NOTION_TOKEN=secret_notion
+NOTION_TOKEN=cambiar_por_token_notion
 NOTION_DB_ID=xxxxx
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USER=notificaciones@example.com
-SMTP_PASS=secret
+SMTP_PASS=cambiar_por_password_smtp
 # NLP / LLM
 LLM_PROVIDER=openai
 OPENAI_API_KEY=
@@ -183,6 +183,9 @@ OFFICE_SOFFICE_CONNECT_HOST=127.0.0.1
 REPORTS_API_BASE=http://api:8000
 REPORTS_API_TIMEOUT=60
 ```
+
+En desarrollo local, el stack `deploy/docker-compose.dev.yml` prefiere Docker Secrets
+montados desde `.secrets/*.txt` y mantiene fallback a estas variables para la transición.
 
 ---
 

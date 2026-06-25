@@ -24,9 +24,13 @@ db_url = os.getenv("DATABASE_URL") or os.getenv("ALEMBIC_URL")
 if db_url:
     section["sqlalchemy.url"] = db_url
 elif "sqlalchemy.url" not in section:
-    section["sqlalchemy.url"] = "postgresql+psycopg://lasfocas:superseguro@postgres:5432/lasfocas"
+    section["sqlalchemy.url"] = "postgresql+psycopg://lasfocas:cambiar_por_password_seguro@postgres:5432/lasfocas"
 
-config.set_section_option(config.config_ini_section, "sqlalchemy.url", section["sqlalchemy.url"])
+config.set_section_option(
+    config.config_ini_section,
+    "sqlalchemy.url",
+    section["sqlalchemy.url"].replace("%", "%%"),
+)
 
 target_metadata = None
 

@@ -9,7 +9,12 @@ La cadena DSN se construye a partir de variables de entorno:
 - `POSTGRES_PORT`: puerto del servicio.
 - `POSTGRES_DB`: nombre de la base de datos.
 - `POSTGRES_USER`: usuario para la conexión.
-- `POSTGRES_PASSWORD`: contraseña del usuario.
+- `POSTGRES_PASSWORD`: contraseña del usuario como fallback de transición.
+
+En el stack de desarrollo, la contraseña se lee primero desde
+`/run/secrets/db_password_v1`, montado por Docker Compose desde
+`.secrets/db_password_v1.txt`. Si el archivo no existe, el código conserva el
+fallback a `POSTGRES_PASSWORD` para no bloquear entornos locales antiguos.
 
 La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la versión del servidor
 para verificar el estado de la base de datos.

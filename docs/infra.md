@@ -298,8 +298,19 @@ ssh -L 8090:localhost:8090 usuario@172.18.208.162
 ```bash
 # Primera vez: crear .env.dev desde la plantilla
 cp deploy/env.dev.sample .env.dev
-# Editar credenciales — en especial SLACK_BOT_TOKEN y SLACK_APP_TOKEN (app Slack de dev separada)
+# Editar valores no sensibles y placeholders de compatibilidad
 nano .env.dev
+
+# Crear Docker Secrets locales de desarrollo
+mkdir -p .secrets
+echo -n "cambiar_por_password_dev_seguro" > .secrets/db_password_v1.txt
+echo -n "cambiar_por_clave_web_dev_segura" > .secrets/web_secret_key_v1.txt
+echo -n "" > .secrets/telegram_bot_token_v1.txt
+echo -n "" > .secrets/openai_api_key_v1.txt
+echo -n "" > .secrets/smtp_password_v1.txt
+echo -n "" > .secrets/slack_bot_token_v1.txt
+echo -n "" > .secrets/slack_app_token_v1.txt
+chmod 600 .secrets/*.txt
 
 # Levantar stack dev (build + migraciones + healthchecks)
 ./scripts/start_dev.sh
@@ -320,6 +331,12 @@ docker compose -f deploy/docker-compose.dev.yml down
 ### Variables de entorno
 
 `deploy/env.dev.sample` → copiar a `.env.dev` en la raíz. Diferencias clave respecto a `.env`:
+
+En dev, las credenciales reales se leen primero desde Docker Secrets montados en
+`/run/secrets/*`. Si falta un archivo, el código cae a `.env.dev` para mantener
+compatibilidad durante la transición. Si se cambia `db_password_v1.txt` sobre un
+volumen PostgreSQL ya inicializado, recrear el volumen dev o actualizar la clave
+del usuario dentro de la base antes de levantar el stack.
 
 | Variable              | Producción                       | Dev                          |
 |-----------------------|----------------------------------|------------------------------|
@@ -347,7 +364,29 @@ El servicio `web` monta `/var/run/docker.sock` para permitir al panel admin cont
 
 - `deploy/docker-compose.dev.yml` — Stack Docker Compose dev
 - `deploy/env.dev.sample` — Plantilla de variables de entorno dev
+- `.secrets/` — Secretos locales dev ignorados por Git
 - `scripts/start_dev.sh` — Script de inicio con healthchecks y clonado opcional de DB
+
+### Purga local de secretos históricos
+
+Antes de publicar una rama reescrita, coordinar ventana de trabajo, partir de un
+árbol limpio y conservar un backup del repo. En esta VM `git filter-repo` debe
+estar instalado previamente.
+
+```bash
+cat > /tmp/las-focas-replacements.txt <<'EOF'
+<password_db_historico_prod>==>***REMOVED***
+<password_db_historico_dev>==>***REMOVED***
+<password_default_historico>==>***REMOVED***
+<hash_bcrypt_admin_historico>==>***REMOVED***
+EOF
+
+git filter-repo --replace-text /tmp/las-focas-replacements.txt --force
+git grep -n "<patron_historico_a_validar>" $(git rev-list --all)
+```
+
+Después de validar, publicar con `git push --force-with-lease origin dev` y
+avisar al equipo que debe resincronizar sus clones.
 
 ---
 

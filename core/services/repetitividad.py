@@ -10,13 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 import logging
 import math
+from urllib.parse import quote
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from os import getenv
 from typing import Optional
 
+from core.config import get_secret
 from core.maps.static_map import build_static_map_png
 
 from db.models.reclamo import Reclamo
@@ -25,12 +26,18 @@ from db.models.reclamo import Reclamo
 logger = logging.getLogger(__name__)
 
 
+def _db_password_url() -> str:
+    return quote(get_secret("db_password_v1", "POSTGRES_PASSWORD"), safe="")
+
+
 def _engine_url() -> str:
-    return getenv(
+    return get_secret(
         "ALEMBIC_URL",
-        getenv(
+        "ALEMBIC_URL",
+        get_secret(
             "DATABASE_URL",
-            f"postgresql+psycopg://{getenv('POSTGRES_USER','lasfocas')}:{getenv('POSTGRES_PASSWORD','superseguro')}@{getenv('POSTGRES_HOST','postgres')}:{getenv('POSTGRES_PORT','5432')}/{getenv('POSTGRES_DB','lasfocas')}",
+            "DATABASE_URL",
+            f"postgresql+psycopg://{get_secret('POSTGRES_USER', 'POSTGRES_USER', 'lasfocas')}:{_db_password_url()}@{get_secret('POSTGRES_HOST', 'POSTGRES_HOST', 'postgres')}:{get_secret('POSTGRES_PORT', 'POSTGRES_PORT', '5432')}/{get_secret('POSTGRES_DB', 'POSTGRES_DB', 'lasfocas')}",
         ),
     )
 

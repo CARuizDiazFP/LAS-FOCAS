@@ -10,6 +10,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from core.config import get_secret
 from bot_telegram.filters.allowlist import AllowlistMiddleware
 from bot_telegram.handlers.basic import router as basic_router
 from bot_telegram.handlers.commands import router as commands_router
@@ -21,7 +22,7 @@ from bot_telegram.handlers.menu import router as menu_router
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 logger = logging.getLogger("bot")
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = get_secret("telegram_bot_token_v1", "TELEGRAM_BOT_TOKEN")
 
 
 async def main():

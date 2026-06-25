@@ -14,6 +14,7 @@ NC='\033[0m'
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_COMPOSE_FILE="$ROOT_DIR/deploy/docker-compose.dev.yml"
 ENV_DEV_FILE="$ROOT_DIR/.env.dev"
+DEV_SECRETS_DIR="$ROOT_DIR/.secrets"
 COMPOSE_DEV=(docker compose -f "$DEV_COMPOSE_FILE" --env-file "$ENV_DEV_FILE")
 
 SERVICES=(postgres nlp_intent api web office slack_baneo_worker)
@@ -21,6 +22,27 @@ SERVICES=(postgres nlp_intent api web office slack_baneo_worker)
 CLONE_DB=false
 NO_BUILD=false
 DO_DOWN=false
+
+read_env_file() {
+  local key="$1" default="${2:-}"
+  local value
+  value=$(grep -E "^${key}=" "$ENV_DEV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"' || true)
+  if [ -n "$value" ]; then echo "$value"; else echo "$default"; fi
+}
+
+read_secret_or_env() {
+  local secret_file="$1" env_key="$2" default="${3:-}"
+  local path="$DEV_SECRETS_DIR/$secret_file"
+  if [ -f "$path" ]; then
+    tr -d '\r\n' < "$path"
+  else
+    read_env_file "$env_key" "$default"
+  fi
+}
+
+urlencode() {
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
 
 usage() {
   cat <<EOF
@@ -131,9 +153,9 @@ if $CLONE_DB; then
   PROD_USER=$(grep -E '^POSTGRES_USER=' "$ROOT_DIR/.env" | cut -d= -f2- | tr -d '"' || echo "FOCALBOT")
   PROD_DB_NAME=$(grep -E '^POSTGRES_DB=' "$ROOT_DIR/.env" | cut -d= -f2- | tr -d '"' || echo "FOCALDB")
   # Leer credenciales dev desde .env.dev
-  DEV_USER=$(grep -E '^POSTGRES_USER=' "$ENV_DEV_FILE" | cut -d= -f2- | tr -d '"' || echo "FOCALBOT")
-  DEV_DB=$(grep -E '^POSTGRES_DB=' "$ENV_DEV_FILE" | cut -d= -f2- | tr -d '"' || echo "focas_dev")
-  DEV_PASS=$(grep -E '^POSTGRES_PASSWORD=' "$ENV_DEV_FILE" | cut -d= -f2- | tr -d '"' || echo "LASFOCAS_DEV_2026!")
+  DEV_USER=$(read_env_file "POSTGRES_USER" "FOCALBOT")
+  DEV_DB=$(read_env_file "POSTGRES_DB" "focas_dev")
+  DEV_PASS=$(read_secret_or_env "db_password_v1.txt" "POSTGRES_PASSWORD" "cambiar_por_password_dev_seguro")
   set -u
 
   echo -e "${GREEN}pg_dump '${PROD_DB_NAME}' (prod) | pg_restore '${DEV_DB}' (dev)...${NC}"
@@ -149,10 +171,11 @@ fi
 # 5) Migraciones Alembic                #
 ########################################
 # Leer variables dev con grep para no contaminar el entorno del script
-DEV_PG_USER=$(grep -E '^POSTGRES_USER=' "$ENV_DEV_FILE" | cut -d= -f2- | tr -d '"' || echo "FOCALBOT")
-DEV_PG_PASS=$(grep -E '^POSTGRES_PASSWORD=' "$ENV_DEV_FILE" | cut -d= -f2- | tr -d '"' || echo "LASFOCAS_DEV_2026!")
-DEV_PG_DB=$(grep -E '^POSTGRES_DB=' "$ENV_DEV_FILE" | cut -d= -f2- | tr -d '"' || echo "focas_dev")
-ALEMBIC_URL="postgresql+psycopg://${DEV_PG_USER}:${DEV_PG_PASS}@postgres:5432/${DEV_PG_DB}"
+DEV_PG_USER=$(read_env_file "POSTGRES_USER" "FOCALBOT")
+DEV_PG_PASS=$(read_secret_or_env "db_password_v1.txt" "POSTGRES_PASSWORD" "cambiar_por_password_dev_seguro")
+DEV_PG_DB=$(read_env_file "POSTGRES_DB" "focas_dev")
+DEV_PG_PASS_URL=$(urlencode "$DEV_PG_PASS")
+ALEMBIC_URL="postgresql+psycopg://${DEV_PG_USER}:${DEV_PG_PASS_URL}@postgres:5432/${DEV_PG_DB}"
 
 echo -e "${GREEN}Ejecutando migraciones Alembic en dev...${NC}"
 MIG_OK=false

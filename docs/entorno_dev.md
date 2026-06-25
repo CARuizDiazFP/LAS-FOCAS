@@ -61,15 +61,27 @@ git checkout -b dev
 git push -u origin dev
 ```
 
-### 2. Configurar variables de entorno dev
+### 2. Configurar variables de entorno dev y secretos
 
 ```bash
 cp deploy/env.dev.sample .env.dev
-# Editar credenciales — en particular:
-#   SLACK_BOT_TOKEN y SLACK_APP_TOKEN  →  app Slack de desarrollo separada
-#   POSTGRES_PASSWORD                  →  nunca usar la de producción
+# Editar valores no sensibles y placeholders de compatibilidad.
 nano .env.dev
+
+mkdir -p .secrets
+echo -n "cambiar_por_password_dev_seguro" > .secrets/db_password_v1.txt
+echo -n "cambiar_por_clave_web_dev_segura" > .secrets/web_secret_key_v1.txt
+echo -n "" > .secrets/telegram_bot_token_v1.txt
+echo -n "" > .secrets/openai_api_key_v1.txt
+echo -n "" > .secrets/smtp_password_v1.txt
+echo -n "" > .secrets/slack_bot_token_v1.txt
+echo -n "" > .secrets/slack_app_token_v1.txt
+chmod 600 .secrets/*.txt
 ```
+
+El stack dev monta Docker Secrets desde `.secrets/*.txt`. Si falta un archivo,
+el código Python cae a las variables tradicionales de `.env.dev` para no bloquear
+la transición de otros desarrolladores.
 
 ### 3. Levantar el stack dev
 
@@ -80,6 +92,7 @@ nano .env.dev
 El script hace automáticamente:
 - Crear `Logs/dev/` si no existe
 - Crear `.env.dev` desde el sample si no existe (con aviso para completar tokens)
+- Leer secretos desde `.secrets/` cuando existan
 - Construir `focas-base:latest` si `common-requirements.txt` cambió (via `scripts/build_base.sh`)
 - Levantar todos los servicios con build
 - Esperar a que Postgres esté healthy
@@ -192,6 +205,7 @@ git push origin dev
 | `deploy/docker-compose.dev.yml` | Stack Docker Compose completo con puertos alternativos |
 | `deploy/env.dev.sample`         | Plantilla de variables de entorno dev |
 | `.env.dev`                      | Variables activas — **no versionado en git** |
+| `.secrets/`                     | Docker Secrets locales dev — **no versionado en git** |
 | `scripts/start_dev.sh`          | Script de inicio con flags, migraciones y healthchecks |
 
 ---

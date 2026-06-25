@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
+from core.config import get_secret
 from core.logging import setup_logging
 from core.utils.tz import TZ_ARG
 from core.password import hash_password, verify_password
@@ -47,7 +48,7 @@ DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
 DB_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 DB_NAME = os.getenv("POSTGRES_DB", "lasfocas")
 DB_USER = os.getenv("POSTGRES_USER", "lasfocas")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "superseguro")
+DB_PASS = get_secret("db_password_v1", "POSTGRES_PASSWORD")
 DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -98,7 +99,10 @@ def _persist_metrics() -> None:
         logger.warning("action=metrics_persist error=%s", exc)
 
 app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION)
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("WEB_SECRET_KEY", "dev-secret-change"))
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=get_secret("web_secret_key_v1", "WEB_SECRET_KEY", "cambiar_por_clave_web_segura"),
+)
 
 # Middleware de trazabilidad de requests (ayuda a depurar ERR_INVALID_HTTP_RESPONSE en navegador)
 @app.middleware("http")
