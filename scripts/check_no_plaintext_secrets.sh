@@ -35,8 +35,9 @@ if git grep -I -nE 'sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|xapp-[A-Z
 fi
 rm -f /tmp/las-focas-secret-patterns.txt
 
-if git grep -I -nE 'POSTGRES_PASSWORD=|SMTP_PASS=|WEB_SECRET_KEY=|OPENAI_API_KEY=sk-' -- . \
+if git grep -I -nE 'POSTGRES_PASSWORD=|SMTP_PASS=|WEB_SECRET_KEY=|LAS_FOCAS_API_KEY=|OPENAI_API_KEY=sk-' -- . \
   ':!.gemini/**' ':!.github/agents/**' ':!docs/**' ':!deploy/env.sample' ':!deploy/env.dev.sample' \
+  ':!scripts/check_no_plaintext_secrets.sh' \
   | grep -Ev '=(cambiar_por_|$)' >/tmp/las-focas-secret-assignments.txt; then
   report "Se detectaron asignaciones sensibles con valores no permitidos."
   cat /tmp/las-focas-secret-assignments.txt >&2

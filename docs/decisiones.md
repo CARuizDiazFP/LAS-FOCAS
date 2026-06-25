@@ -47,9 +47,16 @@
 ## 2025-09-29 — Hashing de contraseñas con bcrypt nativo
 
 - Contexto: Passlib continuaba emitiendo advertencias por depender del módulo `crypt` (deprecado en Python 3.13) y la lógica de hashing estaba duplicada entre web y scripts.
-- Decisión: Eliminar Passlib y utilizar la librería nativa `bcrypt` desde `core/password.py`, centralizando truncado seguro, rounds y verificación para web, tests y utilidades CLI.
+- Decisión: Eliminar Passlib y utilizar la librería nativa `bcrypt` desde `core/password.py`, centralizando rounds y verificación para web, tests y utilidades CLI. Esta decisión queda supersedida parcialmente el 2026-06-25: ya no se truncan contraseñas largas.
 - Alternativas: Migrar directamente a `argon2-cffi` (más costoso en CPU) o mantener Passlib. Se optó por `bcrypt` nativo para compatibilidad con hashes existentes y simplicidad, dejando abierta la migración futura a Argon2.
 - Impacto: Se retira una dependencia obsoleta, se reducen advertencias y se simplifica el mantenimiento al tener un único módulo responsable del hashing.
+
+## 2026-06-25 — Hashing versionado sin truncado silencioso
+
+- Contexto: bcrypt limita la entrada efectiva a 72 bytes. El truncado manual previo podía hacer que contraseñas largas distintas verificaran igual si compartían el mismo prefijo.
+- Decisión: Generar hashes nuevos como SHA-256 de la contraseña UTF-8 completa y luego bcrypt sobre ese digest, con prefijo `$lasfocas-sha256-bcrypt$v1$`. La verificación conserva compatibilidad con bcrypt legacy para contraseñas de hasta 72 bytes y `needs_rehash` marca legacy como migrable.
+- Alternativas: Rechazar contraseñas mayores a 72 bytes o migrar directamente a Argon2. Se elige prehash versionado para no invalidar usuarios existentes y eliminar pérdida silenciosa de información.
+- Impacto: Las contraseñas nuevas no se truncan; los hashes legacy siguen funcionando durante la transición y pueden migrarse en cambios de contraseña o login exitoso futuro.
 
 ## 2025-09-29 — Repositorio central de plantillas y worker geoespacial
 

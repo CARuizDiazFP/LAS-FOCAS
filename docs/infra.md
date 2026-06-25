@@ -289,6 +289,12 @@ Stack Docker Compose independiente (`lasfocasdev`) que corre en paralelo al prod
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota usar SSH tunneling:
 
+### Secretos dev adicionales
+
+- `api_key_v1`: API key interna para proteger rutas sensibles del servicio `api`.
+- `web_secret_key_v1`: firma de cookie de sesión del panel web.
+- `scripts/setup_local_secrets.sh` genera ambos archivos de forma idempotente; en CI usa valores determinísticos de prueba.
+
 ```bash
 ssh -L 8090:localhost:8090 usuario@172.18.208.162
 ```

@@ -43,6 +43,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
     secrets:
+      - api_key_v1
       - db_password_v1
       - smtp_password_v1
       - slack_bot_token_v1
@@ -240,6 +241,8 @@ networks:
     driver: bridge
 
 secrets:
+  api_key_v1:
+    file: ../.secrets/api_key_v1.txt
   db_password_v1:
     file: ../.secrets/db_password_v1.txt
   web_secret_key_v1:

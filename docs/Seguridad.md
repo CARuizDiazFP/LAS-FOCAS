@@ -108,10 +108,17 @@ bash scripts/firewall_hardening.sh
 - No montar `.secrets/` locales en producción.
 - Si se adopta Docker Swarm, declarar secretos productivos como `external: true` y crearlos previamente en los nodos:
   - `printf '%s' "$POSTGRES_PASSWORD" | docker secret create db_password_v1 -`
-  - repetir para tokens Slack, Telegram, SMTP, OpenAI y `WEB_SECRET_KEY`.
+  - repetir para tokens Slack, Telegram, SMTP, OpenAI, `WEB_SECRET_KEY` y `LAS_FOCAS_API_KEY` (`api_key_v1`).
 - Los servicios deben consumir `/run/secrets/<nombre>` con el helper compartido y mantener fallback solo durante la transición.
 - La rotación se hará creando una nueva versión (`*_v2`), actualizando el stack y retirando la versión anterior cuando todos los contenedores hayan sido recreados.
 - Antes de desplegar, validar que no se use `POSTGRES_PASSWORD` en texto plano y que el secret exista en el clúster.
+
+## Autenticación y sesiones
+
+- La API core protege rutas sensibles con API key interna (`api_key_v1` o `LAS_FOCAS_API_KEY`); sólo `/health` y `/health/version` son públicos.
+- El panel web usa sesiones firmadas con `HttpOnly`, `SameSite=Lax`, `max_age` explícito y `Secure` configurable vía `WEB_SESSION_HTTPS_ONLY`.
+- El login del panel aplica rate limit en memoria por IP + usuario. En producción multiworker o multiinstancia debe migrarse a Redis u otro backend compartido.
+- Las contraseñas nuevas usan SHA-256 de la entrada completa antes de bcrypt y un prefijo versionado; los bcrypt legacy siguen verificando para migración gradual.
 
 ## Workflow de revisión safe-by-design
 

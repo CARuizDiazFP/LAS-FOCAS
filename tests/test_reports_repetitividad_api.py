@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 from api.app.main import create_app
 
+API_HEADERS = {"Authorization": "Bearer test-api-key"}
+
 
 def _sample_excel() -> bytes:
     df = pd.DataFrame(
@@ -78,7 +80,7 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
     files = {"file": ("casos.xlsx", _sample_excel(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"periodo_mes": 7, "periodo_anio": 2024}
 
-    response = client.post("/reports/repetitividad", data=data, files=files)
+    response = client.post("/reports/repetitividad", data=data, files=files, headers=API_HEADERS)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -139,7 +141,7 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
     files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")}
     data = {"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "true", "with_geo": "true"}
 
-    response = client.post("/reports/repetitividad", data=data, files=files)
+    response = client.post("/reports/repetitividad", data=data, files=files, headers=API_HEADERS)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
@@ -194,7 +196,7 @@ def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
     files = {"file": ("casos.xlsx", _sample_excel_geo(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"periodo_mes": 7, "periodo_anio": 2024, "with_geo": "true"}
 
-    response = client.post("/reports/repetitividad", data=data, files=files)
+    response = client.post("/reports/repetitividad", data=data, files=files, headers=API_HEADERS)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
@@ -220,7 +222,7 @@ def test_reporte_repetitividad_rechaza_extension_incorrecta(tmp_path, monkeypatc
     files = {"file": ("casos.csv", b"1,2,3", "text/csv")}
     data = {"periodo_mes": 7, "periodo_anio": 2024}
 
-    response = client.post("/reports/repetitividad", data=data, files=files)
+    response = client.post("/reports/repetitividad", data=data, files=files, headers=API_HEADERS)
 
     assert response.status_code == 400
     assert response.json()["detail"] == "El archivo debe tener extensión .xlsx"
@@ -252,7 +254,7 @@ def test_reporte_repetitividad_error_en_procesamiento(tmp_path, monkeypatch):
     files = {"file": ("casos.xlsx", _sample_excel(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"periodo_mes": 7, "periodo_anio": 2024}
 
-    response = client.post("/reports/repetitividad", data=data, files=files)
+    response = client.post("/reports/repetitividad", data=data, files=files, headers=API_HEADERS)
 
     assert response.status_code == 422
     assert "Faltan columnas" in response.text

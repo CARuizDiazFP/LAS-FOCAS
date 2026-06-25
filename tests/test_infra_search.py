@@ -21,6 +21,7 @@ from api.app.routes.infra import (
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
 client = TestClient(app)
+API_HEADERS = {"Authorization": "Bearer test-api-key"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -149,13 +150,14 @@ class TestSearchEndpoint:
             json={
                 "filters": [{"field": "invalid_field", "operator": "eq", "value": "test"}],
             },
+            headers=API_HEADERS,
         )
         assert response.status_code == 422
 
     def test_too_many_filters_returns_422(self) -> None:
         """Más de 10 filtros debe retornar 422."""
         filters = [{"field": "address", "operator": "contains", "value": f"test{i}"} for i in range(11)]
-        response = client.post("/api/infra/search", json={"filters": filters})
+        response = client.post("/api/infra/search", json={"filters": filters}, headers=API_HEADERS)
         assert response.status_code == 422
 
     def test_limit_max_enforced(self) -> None:
@@ -163,6 +165,7 @@ class TestSearchEndpoint:
         response = client.post(
             "/api/infra/search",
             json={"filters": [], "limit": 1000},
+            headers=API_HEADERS,
         )
         # Pydantic validation debería rechazarlo
         assert response.status_code == 422
@@ -174,6 +177,7 @@ class TestSearchEndpoint:
             json={
                 "filters": [{"field": "address", "operator": "invalid_op", "value": "test"}],
             },
+            headers=API_HEADERS,
         )
         assert response.status_code == 422
 
@@ -184,6 +188,7 @@ class TestSearchEndpoint:
             json={
                 "filters": [{"operator": "eq", "value": "test"}],
             },
+            headers=API_HEADERS,
         )
         assert response.status_code == 422
 
@@ -194,6 +199,7 @@ class TestSearchEndpoint:
             json={
                 "filters": [{"field": "address", "operator": "eq"}],
             },
+            headers=API_HEADERS,
         )
         assert response.status_code == 422
 
@@ -202,6 +208,7 @@ class TestSearchEndpoint:
         response = client.post(
             "/api/infra/search",
             json={"filters": [], "limit": 10, "offset": -1},
+            headers=API_HEADERS,
         )
         assert response.status_code == 422
 
@@ -210,6 +217,7 @@ class TestSearchEndpoint:
         response = client.post(
             "/api/infra/search",
             json={"filters": [], "limit": 0},
+            headers=API_HEADERS,
         )
         assert response.status_code == 422
 

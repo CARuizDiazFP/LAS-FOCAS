@@ -70,6 +70,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 ## Autenticación y sesión
 
 - Cookie de sesión (`starlette.middleware.sessions.SessionMiddleware`).
+- Flags explícitos: `HttpOnly`, `SameSite=Lax`, `max_age` configurable y `Secure` configurable por entorno.
 - Keys de sesión: `username`, `role`, `csrf`.
 - **No hay rutas HTML de login**: el SPA usa los endpoints JSON de autenticación.
 
@@ -78,7 +79,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | `GET` | `/api/auth/session` | Devuelve estado de sesión actual (sin auth requerida). Respuesta: `{authenticated, username, role, csrf}` |
-| `POST` | `/api/auth/login` | Login vía JSON `{username, password}`. Rate limit: 5 intentos/min. Respuesta: `{ok, username, role, csrf}` o `{ok:false, error}` |
+| `POST` | `/api/auth/login` | Login vía JSON `{username, password}`. Rate limit en memoria por IP + usuario, default 5 intentos/min. Respuesta: `{ok, username, role, csrf}` o `{ok:false, error}` |
 | `POST` | `/api/auth/logout` | Cierra sesión. Respuesta: `{ok: true}` |
 | `GET` | `/logout` | Compatibilidad hacia atrás — limpia sesión y redirige a `/` (el SPA detecta sesión vacía y muestra login) |
 
@@ -372,6 +373,10 @@ Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad
 ## Variables de entorno
 
 - `WEB_SECRET_KEY` → secreto para cookie de sesión (**obligatorio en prod**).
+- `WEB_SESSION_HTTPS_ONLY` → agrega flag `Secure` a la cookie (`false` en dev HTTP; usar `true` detrás de HTTPS/proxy).
+- `WEB_SESSION_MAX_AGE` → vida máxima de la sesión en segundos (default: 28800).
+- `WEB_LOGIN_RATE_LIMIT_MAX` → intentos de login permitidos por ventana (default: 5).
+- `WEB_LOGIN_RATE_LIMIT_WINDOW` → ventana del rate limit en segundos (default: 60).
 - `LOG_LEVEL` → nivel de logging (default: INFO).
 - `NLP_INTENT_URL` → URL del servicio NLP (default: `http://nlp_intent:8100`).
 - `API_BASE` → base de la API externa (default: `http://localhost:8001`).

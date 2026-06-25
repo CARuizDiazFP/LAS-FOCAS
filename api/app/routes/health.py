@@ -1,11 +1,12 @@
 # Nombre de archivo: health.py
 # Ubicación de archivo: api/app/routes/health.py
 # Descripción: Endpoints de health, versión de build y verificación de DB (async)
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from datetime import datetime, timezone
 import os
 
 from api.app.db import db_health
+from api.app.security import require_api_key
 
 router = APIRouter()
 
@@ -34,6 +35,5 @@ def health_version():
     return {"status": "ok", "service": "api", "version": BUILD_VERSION}
 
 @router.get("/db-check")
-async def db_check():
+async def db_check(_: None = Depends(require_api_key)):
     return await db_health()
-

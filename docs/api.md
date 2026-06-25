@@ -72,11 +72,21 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
 ## Infraestructura
+
+### Autenticación de API core
+
+Todas las rutas sensibles del servicio `api` requieren API key interna. Se acepta
+`Authorization: Bearer <LAS_FOCAS_API_KEY>` o `X-API-Key: <LAS_FOCAS_API_KEY>`.
+La key se lee desde el secret `api_key_v1` y cae a `LAS_FOCAS_API_KEY` en dev.
+Sin credenciales se responde `401`, con credencial inválida `403` y sin key
+configurada en el servidor `503`. Permanecen públicas sólo `/health` y
+`/health/version`; `/db-check` queda protegido.
+
 ### POST `/sync/camaras`
 
 Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la tabla `app.camaras`.
 
-- **Autenticación:** pendiente (usar sólo en entornos controlados hasta integrar API key / JWT).
+- **Autenticación:** requiere API key interna.
 - **Body (JSON opcional):**
 
   | Campo            | Tipo   | Descripción |
@@ -109,7 +119,7 @@ Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la 
 
 Busca cámaras en la base de datos con filtrado por texto y/o estado.
 
-- **Autenticación:** requiere sesión activa (panel web) o API key (pendiente).
+- **Autenticación:** requiere sesión activa en el panel web o API key interna en la API core.
 - **Parámetros (query string):**
 
   | Campo   | Tipo   | Requerido | Default | Descripción |
@@ -158,7 +168,7 @@ Busca cámaras en la base de datos con filtrado por texto y/o estado.
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.
 
-- **Autenticación:** requiere sesión activa (panel web) o API key (pendiente).
+- **Autenticación:** requiere sesión activa en el panel web o API key interna en la API core.
 - **Content-Type:** `application/json`
 - **Body (JSON):**
 
@@ -259,7 +269,7 @@ Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite bu
 
 Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos con servicios, cámaras y empalmes.
 
-- **Autenticación:** pendiente (usar sólo en entornos controlados hasta integrar API key / JWT).
+- **Autenticación:** requiere API key interna.
 - **Content-Type:** `multipart/form-data`
 - **Parámetros:**
 
@@ -798,6 +808,8 @@ Descarga el TXT actual del tracking de una ruta.
 
 Genera el informe de Repetitividad para un mes/año determinado ya sea a partir de un archivo Excel cargado por el usuario (modo Excel) o directamente desde la base de datos (modo DB, si no se adjunta archivo).
 
+- **Autenticación:** requiere API key interna.
+
 #### Descripción general
 Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Las Horas Netas se normalizan a minutos enteros y al renderizar el informe se muestran como `HH:MM`. Cuando hay datos georreferenciados genera un PNG por servicio repetitivo usando `matplotlib` (con tiles de `contextily` si están disponibles) y adjunta las rutas en la respuesta. Si se solicita, intenta producir un PDF (LibreOffice headless vía `SOFFICE_BIN`). Cuando existen PDFs y/o mapas, el endpoint empaqueta todos los artefactos en un ZIP.
 
@@ -879,6 +891,7 @@ Devuelve métricas básicas del período consultando la DB.
   ```
 
 Notas:
+- Requiere API key interna.
 - Requiere que la tabla `app.reclamos` exista (migraciones Alembic aplicadas) y que las variables de conexión estén configuradas.
 
 ### Ingesta de reclamos (nuevo)
@@ -900,7 +913,7 @@ Notas:
   Las Horas Netas aceptan formatos `HH:MM[:SS]`, decimales (`1,5`) o enteros y se convierten a minutos (`Int64`).
 
 #### Seguridad y consideraciones
-- El endpoint no exige aún autenticación ni rate limiting: agregar API key / token interno (TODO) antes de exponer en ambientes sensibles.
+- Requiere API key interna. El rate limiting distribuido queda pendiente si se expone fuera de redes controladas.
 - Los datos cargados se procesan con `pandas` (openpyxl). No se evalúa código embebido en el XLSX.
 - Se recomienda escanear/limitar tamaño de archivo para mitigar ataques de compresión o payloads muy grandes.
 

@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 
 from api.app.main import create_app
 
+API_HEADERS = {"Authorization": "Bearer test-api-key"}
+
 
 pytestmark = pytest.mark.skipif(
     os.getenv("ENABLE_DB_TESTS") != "1",
@@ -20,7 +22,11 @@ pytestmark = pytest.mark.skipif(
 def test_get_metrics_signature():
     app = create_app()
     client = TestClient(app)
-    r = client.get("/reports/repetitividad", params={"periodo_mes": 7, "periodo_anio": 2024})
+    r = client.get(
+        "/reports/repetitividad",
+        params={"periodo_mes": 7, "periodo_anio": 2024},
+        headers=API_HEADERS,
+    )
     # No afirmamos valores específicos sin DB real; sólo la forma mínima
     assert r.status_code in (200, 500, 422)
     if r.status_code == 200:
@@ -31,6 +37,10 @@ def test_get_metrics_signature():
 def test_post_generar_informe_sin_file_signature():
     app = create_app()
     client = TestClient(app)
-    r = client.post("/reports/repetitividad", data={"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "false"})
+    r = client.post(
+        "/reports/repetitividad",
+        data={"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "false"},
+        headers=API_HEADERS,
+    )
     # Puede devolver 200 (DOCX/ZIP) si DB configurada, o 500/422 si falta configuración/datos
     assert r.status_code in (200, 500, 422)

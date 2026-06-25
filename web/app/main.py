@@ -56,6 +56,21 @@ LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] /
 logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        logger.warning("action=config_invalid_int name=%s default=%s", name, default)
+        return default
+
+
 def _detect_build_version() -> str:
     for candidate in (
         os.getenv("WEB_BUILD_VERSION"),
@@ -68,6 +83,20 @@ def _detect_build_version() -> str:
 
 
 BUILD_VERSION = _detect_build_version()
+WEB_SESSION_HTTPS_ONLY = _env_bool("WEB_SESSION_HTTPS_ONLY", False)
+WEB_SESSION_MAX_AGE = _env_int("WEB_SESSION_MAX_AGE", 60 * 60 * 8)
+WEB_LOGIN_RATE_LIMIT_MAX = _env_int("WEB_LOGIN_RATE_LIMIT_MAX", 5)
+WEB_LOGIN_RATE_LIMIT_WINDOW = _env_int("WEB_LOGIN_RATE_LIMIT_WINDOW", 60)
+_LOGIN_ATTEMPTS: dict[tuple[str, str], tuple[int, float]] = {}
+
+
+def _session_middleware_options() -> dict[str, Any]:
+    return {
+        "secret_key": get_secret("web_secret_key_v1", "WEB_SECRET_KEY", "cambiar_por_clave_web_segura"),
+        "https_only": WEB_SESSION_HTTPS_ONLY,
+        "same_site": "lax",
+        "max_age": WEB_SESSION_MAX_AGE,
+    }
 
 # Métricas simples en memoria (MVP) con persistencia opcional
 INTENT_COUNTER: dict[str, int] = {"Solicitud de acción": 0, "Consulta/Generico": 0, "Otros": 0}
@@ -101,7 +130,7 @@ def _persist_metrics() -> None:
 app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=get_secret("web_secret_key_v1", "WEB_SECRET_KEY", "cambiar_por_clave_web_segura"),
+    **_session_middleware_options(),
 )
 
 # Middleware de trazabilidad de requests (ayuda a depurar ERR_INVALID_HTTP_RESPONSE en navegador)
@@ -251,6 +280,36 @@ def get_current_user(request: Request) -> str | None:
     return request.session.get("username")
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_rate_limit_key(ip: str, username: str) -> tuple[str, str]:
+    user_key = username.strip().lower() or "-"
+    return (ip, user_key)
+
+
+def _login_rate_limit_exceeded(ip: str, username: str) -> bool:
+    timestamp = now()
+    window_start = timestamp - WEB_LOGIN_RATE_LIMIT_WINDOW
+    expired = [key for key, (_, ts) in _LOGIN_ATTEMPTS.items() if ts < window_start]
+    for key in expired:
+        _LOGIN_ATTEMPTS.pop(key, None)
+
+    key = _login_rate_limit_key(ip, username)
+    count, first_ts = _LOGIN_ATTEMPTS.get(key, (0, timestamp))
+    if timestamp - first_ts > WEB_LOGIN_RATE_LIMIT_WINDOW:
+        count = 0
+        first_ts = timestamp
+    count += 1
+    _LOGIN_ATTEMPTS[key] = (count, first_ts)
+    return count > WEB_LOGIN_RATE_LIMIT_MAX
+
+
+def _clear_login_rate_limit(ip: str, username: str) -> None:
+    _LOGIN_ATTEMPTS.pop(_login_rate_limit_key(ip, username), None)
+
+
 @app.get("/api/auth/session")
 async def api_auth_session(request: Request) -> JSONResponse:
     """Devuelve el estado de la sesión actual (sin autenticación requerida)."""
@@ -268,22 +327,16 @@ async def api_auth_session(request: Request) -> JSONResponse:
 @app.post("/api/auth/login")
 async def api_auth_login(request: Request) -> JSONResponse:
     """Login vía JSON. Devuelve sesión o error."""
-    # Rate limiting simple por IP (5 intentos/minuto)
-    ip = request.client.host if request.client else "unknown"
-    rl = request.session.get("rl_login", {"ip": ip, "count": 0, "ts": now()})
-    if rl["ip"] != ip or now() - rl["ts"] > 60:
-        rl = {"ip": ip, "count": 0, "ts": now()}
-    rl["count"] += 1
-    request.session["rl_login"] = rl
-    if rl["count"] > 5:
-        return JSONResponse({"ok": False, "error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
-
     try:
         body = await request.json()
         username = str(body.get("username", "")).strip()
         password = str(body.get("password", ""))
     except Exception:
         return JSONResponse({"ok": False, "error": "Body inválido"}, status_code=400)
+
+    ip = _client_ip(request)
+    if _login_rate_limit_exceeded(ip, username):
+        return JSONResponse({"ok": False, "error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
 
     if not username or not password:
         return JSONResponse({"ok": False, "error": "Usuario y contraseña requeridos"}, status_code=400)
@@ -310,6 +363,7 @@ async def api_auth_login(request: Request) -> JSONResponse:
     request.session["username"] = username
     request.session["role"] = row[1] if row else "user"
     request.session["csrf"] = csrf_token
+    _clear_login_rate_limit(ip, username)
     logger.info("action=api_login result=success username=%s role=%s ip=%s", username, row[1] if row else "user", ip)
     return JSONResponse({"ok": True, "username": username, "role": row[1] if row else "user", "csrf": csrf_token})
 

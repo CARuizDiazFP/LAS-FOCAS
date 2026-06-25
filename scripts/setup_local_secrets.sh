@@ -41,7 +41,7 @@ import secrets
 import sys
 
 name = sys.argv[1]
-if name.endswith("_token_v1") or name.endswith("_api_key_v1"):
+if name.endswith("_token_v1") or name == "openai_api_key_v1":
     print("")
 else:
     print(secrets.token_urlsafe(48))
@@ -70,6 +70,7 @@ chmod 700 "$SECRETS_DIR"
 
 write_secret db_password_v1.txt
 write_secret web_secret_key_v1.txt
+write_secret api_key_v1.txt
 write_secret telegram_bot_token_v1.txt
 write_secret openai_api_key_v1.txt
 write_secret smtp_password_v1.txt

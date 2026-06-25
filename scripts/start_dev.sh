@@ -90,8 +90,8 @@ if [ ! -f "$ENV_DEV_FILE" ]; then
   echo -e "${YELLOW}IMPORTANTE: Completá los secretos reales en .secrets/ cuando corresponda.${NC}"
 fi
 
-if [ ! -f "$DEV_SECRETS_DIR/db_password_v1.txt" ]; then
-  echo -e "${YELLOW}No existen Docker Secrets locales. Generando .secrets/*.txt...${NC}"
+if [ ! -f "$DEV_SECRETS_DIR/db_password_v1.txt" ] || [ ! -f "$DEV_SECRETS_DIR/api_key_v1.txt" ]; then
+  echo -e "${YELLOW}Faltan Docker Secrets locales. Generando .secrets/*.txt faltantes...${NC}"
   "$ROOT_DIR/scripts/setup_local_secrets.sh"
 fi
 

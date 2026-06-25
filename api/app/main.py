@@ -3,13 +3,14 @@
 # Descripción: Aplicación FastAPI principal (incluye rutas de health)
 
 import os
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.app.routes.health import router as health_router
 from api.app.routes.reports import router as reports_router
 from api.app.routes.ingest import router as ingest_router, alias_router as ingest_alias_router
 from api.app.routes.infra import router as infra_router
+from api.app.security import require_api_key
 
 
 def create_app() -> FastAPI:
@@ -34,10 +35,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router, tags=["health"])
-    app.include_router(reports_router)
-    app.include_router(ingest_router)
-    app.include_router(ingest_alias_router)
-    app.include_router(infra_router)
+    protected = [Depends(require_api_key)]
+    app.include_router(reports_router, dependencies=protected)
+    app.include_router(ingest_router, dependencies=protected)
+    app.include_router(ingest_alias_router, dependencies=protected)
+    app.include_router(infra_router, dependencies=protected)
     return app
 
 

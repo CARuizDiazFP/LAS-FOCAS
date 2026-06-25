@@ -5,8 +5,11 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:  # pragma: no cover - inicialización
     sys.path.insert(0, str(ROOT_DIR))
+
+os.environ.setdefault("LAS_FOCAS_API_KEY", "test-api-key")
