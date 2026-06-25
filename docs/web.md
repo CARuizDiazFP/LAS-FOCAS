@@ -126,7 +126,7 @@ Centralizado vía `core.logging.setup_logging`.
 
 - `GET /health` → status simple.
 - `GET /reports/index` → redirección a `/reports-history` (compatibilidad).
-- `GET /api/reports/history` → JSON `{files: [{name, size, mtime, href}]}` — lista de reportes. Requiere auth.
+- `GET /api/reports/history` → histórico persistente de reportes. Devuelve `items` con estado, usuario, período, fuente, duración, metadata segura y salidas; conserva `files` como compatibilidad básica. Requiere auth. Filtros: `type`, `status`, `username`, `month`, `year`, `limit`, `offset`.
 - `POST /api/chat/message` → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min.
 - `GET /api/chat/history?limit=N` → últimos N (máx 100) mensajes. Devuelve `conversation_id` y `history`.
 - `GET /api/chat/metrics` → métricas simples en memoria.

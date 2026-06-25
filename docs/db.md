@@ -258,6 +258,25 @@ por incidentes activos o ingresos abiertos.
 
 Almacena configuración dinámica de workers y servicios automatizados. Definida en `db/models/servicios.py`.
 
+## Histórico de Reportes Web
+
+La tabla `app.report_history` registra la ejecución de informes generados desde el panel web. En la primera versión cubre sólo SLA y Repetitividad.
+
+| Columna | Descripción |
+|---------|-------------|
+| `id` | ID autoincremental del registro. |
+| `report_type` | Tipo de informe: `sla` o `repetitividad`. |
+| `status` | Estado operativo: `running`, `success` o `error`. |
+| `username` | Usuario autenticado que inició la generación. |
+| `source` | Origen de datos: `excel`, `excel-legacy` o `db`. |
+| `period_month`, `period_year` | Período informado por el usuario. |
+| `started_at`, `finished_at`, `duration_ms` | Tiempos de ejecución. |
+| `input_metadata` | Metadata segura de entrada, como nombres de archivos, flags y cantidad de adjuntos. |
+| `output_metadata` | Enlaces públicos `/reports/*`, estadísticas y conteos devueltos por el generador. |
+| `error_code`, `error_message` | Error amigable cuando la ejecución falla. |
+
+No se almacenan bytes de archivos, contenido de planillas, secretos ni payloads crudos extensos. La migración asociada es `20260625_01_report_history.py`.
+
 | Columna           | Tipo              | Descripción |
 |-------------------|-------------------|-------------|
 | `id`              | Integer (PK)      | ID autoincremental. |

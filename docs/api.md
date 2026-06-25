@@ -987,6 +987,46 @@ Notas:
 - Si `need_clarification=true`, `clarification_question` contendrá una pregunta breve.
 - `next_action` se reserva para futura orquestación de flujos.
 
+## Histórico de Reportes Web
+
+### GET `/api/reports/history`
+
+Devuelve el histórico persistente de reportes generados desde el panel web. La v1 cubre `sla` y `repetitividad`.
+
+- **Autenticación:** requiere sesión activa del panel.
+- **Filtros query opcionales:** `type`, `status`, `username`, `month`, `year`, `limit`, `offset`.
+- **Estados:** `running`, `success`, `error`.
+
+Respuesta:
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "report_type": "sla",
+      "status": "success",
+      "username": "user",
+      "source": "excel-legacy",
+      "period_month": 6,
+      "period_year": 2026,
+      "started_at": "2026-06-25T12:00:00+00:00",
+      "finished_at": "2026-06-25T12:00:04+00:00",
+      "duration_ms": 4200,
+      "input_metadata": {"archivo_count": 2},
+      "output_metadata": {"outputs": {"docx": "/reports/InformeSLA.docx"}},
+      "error_code": null,
+      "error_message": null
+    }
+  ],
+  "files": [],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+El campo `files` se conserva como compatibilidad básica para consumidores antiguos, pero la vista nueva usa `items`.
+
 ## Herramientas del panel web
 
 ### POST `/api/tools/compare-vlans`

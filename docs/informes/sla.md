@@ -67,6 +67,8 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 6. Click en "Generar informe".
 7. El sistema devuelve JSON con rutas de descarga del `.docx` y opcionalmente `.pdf`.
 
+Cada generación desde el panel web registra una entrada en `app.report_history` con usuario, período, fuente (`excel-legacy` o `db`), estado, duración, errores y enlaces de salida. La vista `/reports-history` consume ese histórico persistente.
+
 ### Validaciones:
 - Se requieren **exactamente 2 archivos** si no se usa DB.
 - Ambos archivos deben tener extensión `.xlsx`.
@@ -94,6 +96,7 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 
 ## Paths de salida
 - Archivos en `/app/data/reports/` dentro del contenedor.
+- Histórico operativo persistido en PostgreSQL (`app.report_history`).
 
 ## Variables de entorno
 
@@ -218,4 +221,3 @@ print('Columna horas:', RECLAMOS_REQUIRED.get('horas'))
 "
 # Output: ['Horas Netas Reclamo']
 ```
-

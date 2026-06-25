@@ -104,7 +104,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
   - Worker `slack_baneo_worker` incorporado al stack para reportes periódicos de cámaras baneadas en Slack, con health check interno, logs centralizados en `Logs/slack_baneo_worker.log` y configuración dinámica persistida en `app.config_servicios`.
 - Servicios del repo
   - `api` (FastAPI): endpoints `/health`, `/health/version`, `/db-check`, `POST /ingest/reclamos` (alias `POST /import/reclamos`), `POST /reports/repetitividad` (Excel o DB) y `GET /reports/repetitividad` (métricas JSON).
-  - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
+  - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, histórico persistente en `/reports-history`, validación de adjuntos y persistencia en DB.
     - Infra/Cámaras: las tarjetas ahora exponen edición manual del `estado` para usuarios `admin`, muestran inconsistencias entre estado persistido y estado sugerido, y consumen endpoints web protegidos por sesión + CSRF para consultar/aplicar overrides.
     - Protocolo de Protección: el badge y el modal de baneos distinguen entre cámaras cubiertas por incidentes y cámaras efectivamente persistidas como `BANEADA`, evitando falsos positivos cuando hay normalización manual.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` y `POST /v1/intent:analyze` con `openai` como proveedor LLM por defecto; `heuristic` se mantiene como opción de desarrollo/local test sin dependencia GPU.

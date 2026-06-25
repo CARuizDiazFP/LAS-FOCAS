@@ -295,7 +295,7 @@ cp deploy/env.sample .env
 docker compose -f deploy/compose.yml up -d --build
 
 # Notas de UI:
-# - La carpeta histórica de reportes se navega en /reports-history (los archivos se sirven en /reports).
+# - El histórico persistente de reportes se navega en /reports-history (salidas servidas en /reports).
 # - En el panel, Repetitividad/SLA muestran enlaces directos a /reports/*.docx|.pdf|.html.
 ```
 

@@ -192,6 +192,7 @@ os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
+from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
     ReportConfig,
@@ -201,6 +202,7 @@ from modules.informes_repetitividad.service import (  # noqa: E402
 )
 
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
+REPORT_HISTORY: ReportHistoryBackend = ReportHistoryService(DB_DSN)
 
 # Montar assets del build Vite si existen
 _vite_assets = DIST_DIR / "assets"
@@ -388,22 +390,66 @@ async def reports_index_redirect() -> RedirectResponse:
 
 
 @app.get("/api/reports/history")
-async def api_reports_history(request: Request) -> JSONResponse:
-    """Devuelve la lista de archivos de reportes generados."""
+async def api_reports_history(
+    request: Request,
+    type: str | None = None,  # noqa: A002 - nombre público del filtro
+    status: str | None = None,
+    username: str | None = None,
+    month: int | None = None,
+    year: int | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> JSONResponse:
+    """Devuelve el histórico persistente de reportes generados."""
+
     _require_auth(request)
-    files = []
-    try:
-        for p in sorted(_mount_reports.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
-            if p.is_file():
-                files.append({
-                    "name": p.name,
-                    "size": p.stat().st_size,
-                    "mtime": int(p.stat().st_mtime),
-                    "href": f"/reports/{p.name}",
-                })
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("action=reports_history_list error=%s", exc)
-    return JSONResponse({"files": files})
+    clean_limit = max(1, min(limit, 200))
+    clean_offset = max(0, offset)
+    records = REPORT_HISTORY.list_records(
+        report_type=type or None,
+        status=status or None,
+        username=username or None,
+        month=month,
+        year=year,
+        limit=clean_limit,
+        offset=clean_offset,
+    )
+    files = _legacy_files_from_report_history(records)
+    return JSONResponse(
+        {
+            "items": records,
+            "files": files,
+            "limit": clean_limit,
+            "offset": clean_offset,
+        }
+    )
+
+
+def _legacy_files_from_report_history(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Construye una vista compatible con el viejo listado de archivos."""
+
+    files: List[Dict[str, Any]] = []
+    for record in records:
+        output_metadata = record.get("output_metadata") or {}
+        outputs = output_metadata.get("outputs") or {}
+        if not isinstance(outputs, dict):
+            continue
+        for label, raw_href in outputs.items():
+            hrefs = raw_href if isinstance(raw_href, list) else [raw_href]
+            for href in hrefs:
+                if not href or not isinstance(href, str):
+                    continue
+                files.append(
+                    {
+                        "name": Path(href).name,
+                        "size": 0,
+                        "mtime": 0,
+                        "href": href,
+                        "report_id": record.get("id"),
+                        "label": label,
+                    }
+                )
+    return files
 
 
 def _merge_excel_sources(sources: List[tuple[str, bytes]]) -> bytes:
@@ -492,7 +538,29 @@ async def generar_informe_sla_web(
     archivos = [archivo for archivo in files if archivo and archivo.filename]
     
     archivo_count = len(archivos)
-    source = "db" if use_db else "excel"
+    source = "db" if use_db else "excel-legacy"
+    file_names = [Path(archivo.filename or "").name for archivo in archivos]
+    history_id = REPORT_HISTORY.start(
+        report_type="sla",
+        username=username,
+        source=source,
+        period_month=mes_num,
+        period_year=anio_num,
+        input_metadata={
+            "archivo_count": archivo_count,
+            "archivos": file_names,
+            "pdf_enabled": bool(pdf_enabled),
+            "use_db": bool(use_db),
+        },
+    )
+
+    def _history_error(error_code: str, message: str) -> None:
+        REPORT_HISTORY.finish_error(
+            history_id,
+            error_code=error_code,
+            error_message=message,
+            output_metadata={"source": source},
+        )
 
     if use_db and archivos:
         for archivo in archivos:
@@ -505,6 +573,7 @@ async def generar_informe_sla_web(
             if len(archivos) != 2:
                 await _close_uploads(archivos)
                 logger.warning("action=sla_web_report stage=validation error=archivos_incorrectos count=%s", len(archivos))
+                _history_error("HTTP_400", "Debés adjuntar dos archivos: servicios y reclamos")
                 return JSONResponse(
                     {"ok": False, "error": "Debés adjuntar dos archivos: servicios y reclamos"},
                     status_code=400,
@@ -519,6 +588,7 @@ async def generar_informe_sla_web(
                 if not nombre.lower().endswith(".xlsx"):
                     await archivo.close()
                     logger.warning("action=sla_web_report stage=validation error=extension file=%s", nombre)
+                    _history_error("HTTP_415", f"{nombre} debe tener extensión .xlsx")
                     return JSONResponse(
                         {"ok": False, "error": f"{nombre} debe tener extensión .xlsx"},
                         status_code=415,
@@ -527,25 +597,30 @@ async def generar_informe_sla_web(
                 await archivo.close()
                 if not contenido:
                     logger.warning("action=sla_web_report stage=validation error=empty file=%s", nombre)
+                    _history_error("HTTP_400", f"{nombre} está vacío")
                     return JSONResponse({"ok": False, "error": f"{nombre} está vacío"}, status_code=400)
                 try:
                     tipo = sla_service.identify_excel_kind(contenido)
                     logger.info("action=sla_web_report stage=identify file=%s tipo=%s", nombre, tipo)
                 except ValueError as exc:
                     logger.warning("action=sla_web_report stage=identify error=%s file=%s", exc, nombre)
+                    _history_error("HTTP_422", str(exc))
                     return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
                 if tipo == "servicios":
                     if servicios_bytes is not None:
+                        _history_error("HTTP_422", "Se recibió más de un Excel de servicios")
                         return JSONResponse({"ok": False, "error": "Se recibió más de un Excel de servicios"}, status_code=422)
                     servicios_bytes = contenido
                 else:
                     if reclamos_bytes is not None:
+                        _history_error("HTTP_422", "Se recibió más de un Excel de reclamos")
                         return JSONResponse({"ok": False, "error": "Se recibió más de un Excel de reclamos"}, status_code=422)
                     reclamos_bytes = contenido
 
             if servicios_bytes is None or reclamos_bytes is None:
                 logger.warning("action=sla_web_report stage=validation error=missing_files servicios=%s reclamos=%s", servicios_bytes is not None, reclamos_bytes is not None)
+                _history_error("HTTP_400", "Adjuntá los archivos de servicios y reclamos")
                 return JSONResponse({"ok": False, "error": "Adjuntá los archivos de servicios y reclamos"}, status_code=400)
 
             logger.info("action=sla_web_report stage=generate_legacy mes=%s anio=%s pdf=%s", mes_num, anio_num, pdf_enabled)
@@ -577,6 +652,7 @@ async def generar_informe_sla_web(
             anio_num,
             exc,
         )
+        _history_error("HTTP_422", str(exc))
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -588,6 +664,7 @@ async def generar_informe_sla_web(
             exc,
         )
         detalle = str(exc) or exc.__class__.__name__
+        _history_error("HTTP_500", f"No se pudo generar el informe SLA: {detalle}")
         return JSONResponse({"ok": False, "error": f"No se pudo generar el informe SLA: {detalle}"}, status_code=500)
 
     report_paths = {
@@ -604,6 +681,14 @@ async def generar_informe_sla_web(
         anio_num,
         bool(resultado_pdf),
         archivo_count,
+    )
+    REPORT_HISTORY.finish_success(
+        history_id,
+        output_metadata={
+            "source": source,
+            "outputs": report_paths,
+            "archivo_count": archivo_count,
+        },
     )
 
     return JSONResponse(
@@ -1425,17 +1510,42 @@ async def flow_repetitividad(
 ):
     """Genera el informe de Repetitividad desde Excel o DB según los parámetros."""
 
-    _require_auth(request)
+    username, _ = _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     periodo_titulo = f"{mes:02d}/{anio}"
     use_db = use_db or file is None
+    source = "db" if use_db else "excel"
+    history_id = REPORT_HISTORY.start(
+        report_type="repetitividad",
+        username=username,
+        source=source,
+        period_month=mes,
+        period_year=anio,
+        input_metadata={
+            "archivo": Path(file.filename).name if file and file.filename else None,
+            "archivo_count": 0 if use_db else 1,
+            "include_pdf": bool(include_pdf),
+            "with_geo": bool(with_geo),
+            "use_db": bool(use_db),
+        },
+    )
+
+    def _history_error(error_code: str, message: str) -> None:
+        REPORT_HISTORY.finish_error(
+            history_id,
+            error_code=error_code,
+            error_message=message,
+            output_metadata={"source": source},
+        )
+
     start = time.time()
 
     try:
         if not use_db:
             if not file or not file.filename or not file.filename.lower().endswith(".xlsx"):
+                _history_error("HTTP_400", "El archivo debe ser .xlsx")
                 return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
 
             upload_path = _save_upload(file)
@@ -1443,9 +1553,11 @@ async def flow_repetitividad(
                 size_bytes = upload_path.stat().st_size
                 if size_bytes > 10 * 1024 * 1024:
                     upload_path.unlink(missing_ok=True)
+                    _history_error("HTTP_413", "Archivo demasiado grande (límite 10MB)")
                     return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
                 if not zipfile.is_zipfile(upload_path):
                     upload_path.unlink(missing_ok=True)
+                    _history_error("HTTP_400", "El archivo subido no es un Excel .xlsx válido")
                     return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
                 logger.info(
                     "action=flow_repetitividad stage=start source=excel periodo=%s include_pdf=%s with_geo=%s size_bytes=%s",
@@ -1478,6 +1590,7 @@ async def flow_repetitividad(
             df_db = reclamos_from_db(mes, anio)
             df_proc = db_to_processor_frame(df_db)
             if df_proc.empty:
+                _history_error("HTTP_404", "No hay reclamos registrados para el período")
                 return JSONResponse({"error": "No hay reclamos registrados para el período"}, status_code=404)
             logger.info(
                 "action=flow_repetitividad stage=start source=db periodo=%s include_pdf=%s with_geo=%s filas=%s",
@@ -1499,6 +1612,7 @@ async def flow_repetitividad(
         logger.warning(
             "action=flow_repetitividad stage=validation error=%s periodo=%s", exc, periodo_titulo
         )
+        _history_error("HTTP_422", str(exc))
         return JSONResponse({"error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -1506,6 +1620,7 @@ async def flow_repetitividad(
             periodo_titulo,
             exc,
         )
+        _history_error("HTTP_500", "No se pudo generar el informe")
         return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
 
     image_maps = [f"/reports/{Path(m).name}" for m in result.map_images]
@@ -1533,6 +1648,19 @@ async def flow_repetitividad(
         payload["map_image"] = image_maps[0]
 
     elapsed = round((time.time() - start) * 1000)
+    outputs = {key: payload[key] for key in ("docx", "pdf", "map_image") if payload.get(key)}
+    if image_maps:
+        outputs["map_images"] = image_maps
+    REPORT_HISTORY.finish_success(
+        history_id,
+        output_metadata={
+            "source": payload["source"],
+            "outputs": outputs,
+            "stats": payload["stats"],
+            "pdf_requested": include_pdf,
+            "with_geo": bool(with_geo),
+        },
+    )
     logger.info(
         "action=flow_repetitividad stage=success periodo=%s source=%s docx=%s pdf=%s map_images=%s filas=%s repetitivos=%s ms=%s",
         periodo_titulo,
