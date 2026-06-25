@@ -9,6 +9,8 @@ Este directorio contiene herramientas auxiliares no incluidas en la ejecución p
 ### Lista actual
 
 - `check_openai.py`: Verifica conectividad y credenciales de OpenAI (`OPENAI_API_KEY`). No se ejecuta en CI por defecto.
+- `setup_local_secrets.sh`: Crea `.secrets/*.txt` para desarrollo local o CI sin imprimir secretos.
+- `check_no_plaintext_secrets.sh`: Bloquea secretos versionados y passwords dev en texto plano.
 
 ### Convenciones
 
@@ -20,12 +22,13 @@ Este directorio contiene herramientas auxiliares no incluidas en la ejecución p
 ### Ejecución típica
 
 ```bash
+./scripts/setup_local_secrets.sh
+./scripts/check_no_plaintext_secrets.sh
 python scripts/check_openai.py
 ```
 
 ### Próximos scripts (ideas)
 
-- `hash_templates.py`: recalcula hashes de plantillas para tests de integridad.
 - `gen_decision_entry.py`: plantilla interactiva para agregar entradas a `docs/decisiones.md`.
 
 ---

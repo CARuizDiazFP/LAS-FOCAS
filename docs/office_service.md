@@ -38,6 +38,7 @@ El proyecto LAS-FOCAS requiere generar informes y transformar plantillas heredad
 - El servicio se expone únicamente a la red interna `lasfocas_net` y no publica puertos al host.
 - `office` es el usuario no privilegiado dentro del contenedor.
 - Requiere validación de archivos de entrada (tamaño, extensión) antes de habilitar conversiones reales.
+- No consume secretos sensibles actualmente; su configuración usa variables `OFFICE_*` operativas. Si se agregan integraciones externas, deberán usar Docker Secrets o el helper compartido antes de aceptar tokens por entorno.
 
 ## Tests
 

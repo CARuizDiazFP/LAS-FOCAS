@@ -8,9 +8,16 @@ import os
 import sys
 import json
 import textwrap
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from core.config import get_secret
 
 API_URL = "https://api.openai.com/v1/models"
 
@@ -21,7 +28,7 @@ def exit_error(msg: str, code: int = 1) -> None:
 
 
 def main() -> None:
-    key = os.getenv("OPENAI_API_KEY")
+    key = get_secret("openai_api_key_v1", "OPENAI_API_KEY")
     provider = os.getenv("LLM_PROVIDER", "openai")
     if provider != "openai":
         print(f"[INFO] LLM_PROVIDER={provider} (este script se centra en openai, continuaré de todas formas)")

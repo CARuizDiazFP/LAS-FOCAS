@@ -28,11 +28,12 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
 
 1. Delimitar alcance técnico: carpetas, servicios, manifests y superficies expuestas.
 2. Ejecutar primero [secret-detection](../secret-detection/SKILL.md) sobre `.env`, despliegue, Docker, `Keys/` y scripts.
-3. Continuar con [dependency-audit](../dependency-audit/SKILL.md) sobre `requirements*.txt`, manifests de servicios y `web/frontend/package.json` si aplica.
-4. Ejecutar [sast-analysis](../sast-analysis/SKILL.md) sobre endpoints, validación de entradas, auth, subprocess, SQL y logging sensible.
-5. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
-6. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
-7. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
+3. Ejecutar `./scripts/check_no_plaintext_secrets.sh` como control preventivo automatizado.
+4. Continuar con [dependency-audit](../dependency-audit/SKILL.md) sobre `requirements*.txt`, manifests de servicios y `web/frontend/package.json` si aplica.
+5. Ejecutar [sast-analysis](../sast-analysis/SKILL.md) sobre endpoints, validación de entradas, auth, subprocess, SQL y logging sensible.
+6. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
+7. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
+8. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
 
 ## Criterios de salida
 

@@ -302,15 +302,7 @@ cp deploy/env.dev.sample .env.dev
 nano .env.dev
 
 # Crear Docker Secrets locales de desarrollo
-mkdir -p .secrets
-echo -n "cambiar_por_password_dev_seguro" > .secrets/db_password_v1.txt
-echo -n "cambiar_por_clave_web_dev_segura" > .secrets/web_secret_key_v1.txt
-echo -n "" > .secrets/telegram_bot_token_v1.txt
-echo -n "" > .secrets/openai_api_key_v1.txt
-echo -n "" > .secrets/smtp_password_v1.txt
-echo -n "" > .secrets/slack_bot_token_v1.txt
-echo -n "" > .secrets/slack_app_token_v1.txt
-chmod 600 .secrets/*.txt
+./scripts/setup_local_secrets.sh
 
 # Levantar stack dev (build + migraciones + healthchecks)
 ./scripts/start_dev.sh
@@ -365,6 +357,8 @@ El servicio `web` monta `/var/run/docker.sock` para permitir al panel admin cont
 - `deploy/docker-compose.dev.yml` — Stack Docker Compose dev
 - `deploy/env.dev.sample` — Plantilla de variables de entorno dev
 - `.secrets/` — Secretos locales dev ignorados por Git
+- `scripts/setup_local_secrets.sh` — Bootstrap idempotente de secretos dev/CI
+- `scripts/check_no_plaintext_secrets.sh` — Control preventivo anti-secretos
 - `scripts/start_dev.sh` — Script de inicio con healthchecks y clonado opcional de DB
 
 ### Purga local de secretos históricos

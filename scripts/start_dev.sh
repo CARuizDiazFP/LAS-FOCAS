@@ -87,7 +87,12 @@ docker compose version >/dev/null 2>&1 || { echo -e "${RED}Plugin 'docker compos
 if [ ! -f "$ENV_DEV_FILE" ]; then
   echo -e "${YELLOW}No existe .env.dev en la raíz. Creando desde deploy/env.dev.sample...${NC}"
   cp "$ROOT_DIR/deploy/env.dev.sample" "$ENV_DEV_FILE"
-  echo -e "${YELLOW}IMPORTANTE: Completá las credenciales en .env.dev (especialmente SLACK_BOT_TOKEN y SLACK_APP_TOKEN) antes de continuar.${NC}"
+  echo -e "${YELLOW}IMPORTANTE: Completá los secretos reales en .secrets/ cuando corresponda.${NC}"
+fi
+
+if [ ! -f "$DEV_SECRETS_DIR/db_password_v1.txt" ]; then
+  echo -e "${YELLOW}No existen Docker Secrets locales. Generando .secrets/*.txt...${NC}"
+  "$ROOT_DIR/scripts/setup_local_secrets.sh"
 fi
 
 # Crear directorio de logs dev si no existe

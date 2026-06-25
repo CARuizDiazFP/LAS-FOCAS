@@ -16,7 +16,7 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 ## Principios y políticas
 
 - Principio de mínimos privilegios (DB, contenedores, archivos). Evitar usuario root en contenedores salvo necesidad justificada.
-- Prohibido exponer secrets en código o logs. Uso de `.env` y planificación de migración a Docker Secrets.
+- Prohibido exponer secrets en código o logs. En dev se usan Docker Secrets locales con fallback temporal a `.env`; producción debe usar un secret store administrado.
 - No usar `latest`: fijar versiones de imágenes y librerías; mantener reproducibilidad.
 - Fail-safe por defecto y valores seguros ante ambigüedad (documentados en PR).
 - Idempotencia: scripts/servicios deben poder ejecutarse múltiples veces sin efectos laterales inesperados.
@@ -38,6 +38,7 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Postgres sin publicación al host: `deploy/compose.yml` usa `expose: 5432` para que solo sea accesible por servicios internos.
 - El worker `slack_baneo_worker` expone solo `8095` dentro de la red de compose y toma credenciales Slack desde `.env`; no se publican tokens ni puertos Slack hacia el host.
 - Las auditorías de seguridad del repositorio se estandarizan con el agente `security` y las skills `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`.
+- CI ejecuta `scripts/check_no_plaintext_secrets.sh` para bloquear `.env` versionados, llaves y passwords dev en texto plano.
 
 ## Riesgos comunes a considerar
 
@@ -55,7 +56,7 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
   - ¿Requiere puerto hacia host? Si no, usar `expose` y red interna.
   - Limitar orígenes/ACL cuando corresponda.
 - Credenciales y configuración
-  - Variables sensibles en `.env` (no commitear). Planear Docker Secrets.
+  - Variables sensibles en Docker Secrets o secret store; `.env` solo como fallback local no versionado.
   - Rotación de claves documentada.
 - Contenedores
   - Usuario no root si es viable; `readOnlyRootFilesystem` cuando aplique.
@@ -102,6 +103,16 @@ bash scripts/firewall_hardening.sh
 - Parchear dependencias vulnerables y reconstruir.
 - Registrar el incidente, causas y acciones en `docs/PR/` y `docs/decisiones.md`.
 
+## Estrategia de secretos en producción
+
+- No montar `.secrets/` locales en producción.
+- Si se adopta Docker Swarm, declarar secretos productivos como `external: true` y crearlos previamente en los nodos:
+  - `printf '%s' "$POSTGRES_PASSWORD" | docker secret create db_password_v1 -`
+  - repetir para tokens Slack, Telegram, SMTP, OpenAI y `WEB_SECRET_KEY`.
+- Los servicios deben consumir `/run/secrets/<nombre>` con el helper compartido y mantener fallback solo durante la transición.
+- La rotación se hará creando una nueva versión (`*_v2`), actualizando el stack y retirando la versión anterior cuando todos los contenedores hayan sido recreados.
+- Antes de desplegar, validar que no se use `POSTGRES_PASSWORD` en texto plano y que el secret exista en el clúster.
+
 ## Workflow de revisión safe-by-design
 
 - Alcance recomendado: secretos, dependencias, SAST y hardening de despliegue.
@@ -111,7 +122,7 @@ bash scripts/firewall_hardening.sh
 
 ## Próximos pasos
 
-- Migrar secrets a Docker Secrets.
+- Completar plan de Docker Secrets productivo con Swarm o secret store equivalente.
 - Automatizar escaneo de vulnerabilidades en CI.
 - Endurecer headers/CORS en servicios web.
 - Revisión periódica de permisos en DB y contenedores.
