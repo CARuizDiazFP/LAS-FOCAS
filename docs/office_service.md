@@ -1,12 +1,12 @@
 # Nombre de archivo: office_service.md
 # Ubicación de archivo: docs/office_service.md
-# Descripción: Documentación del microservicio LibreOffice/UNO
+# Descripción: Documentación del microservicio LibreOffice/UNO para soporte de conversiones del stack moderno
 
 # Microservicio LibreOffice/UNO
 
 ## Contexto
 
-El proyecto LAS-FOCAS requiere generar informes y transformar plantillas heredadas de Sandy sin depender de pywin32. Para ello se implementa un microservicio dockerizado que encapsula LibreOffice en modo headless (UNO) y expone una API REST mínima basada en FastAPI.
+El proyecto LAS-FOCAS requiere generar informes y transformar plantillas heredadas de Sandy sin depender de pywin32. Para ello se implementa un microservicio dockerizado que encapsula LibreOffice en modo headless (UNO) y expone una API REST mínima basada en FastAPI para consumo interno por la API y la SPA.
 
 ## Arquitectura
 

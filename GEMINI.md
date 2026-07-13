@@ -56,19 +56,12 @@ Las fuentes originales viven en `.github/skills/`, `.github/agents/` y `.github/
 ## Prompts Migrados
 
 - [prompt-crear-skill-prompt](.gemini/rules/prompt-crear-skill-prompt.md)
-- [prompt-crear-skill](.gemini/rules/prompt-crear-skill.md)
 - [prompt-generar-pr-diario-prompt](.gemini/rules/prompt-generar-pr-diario-prompt.md)
-- [prompt-generar-pr-diario](.gemini/rules/prompt-generar-pr-diario.md)
-- [prompt-mantenimiento-de-disco](.gemini/rules/prompt-mantenimiento-de-disco.md)
 - [prompt-mantenimiento-disco-prompt](.gemini/rules/prompt-mantenimiento-disco-prompt.md)
-- [prompt-migraci-n-alembic](.gemini/rules/prompt-migraci-n-alembic.md)
 - [prompt-migracion-alembic-prompt](.gemini/rules/prompt-migracion-alembic-prompt.md)
-- [prompt-nuevo-m-dulo](.gemini/rules/prompt-nuevo-m-dulo.md)
 - [prompt-nuevo-modulo-prompt](.gemini/rules/prompt-nuevo-modulo-prompt.md)
 - [prompt-repo-updater-prompt](.gemini/rules/prompt-repo-updater-prompt.md)
-- [prompt-repo-updater](.gemini/rules/prompt-repo-updater.md)
 - [prompt-revisar-seguridad-prompt](.gemini/rules/prompt-revisar-seguridad-prompt.md)
-- [prompt-revisar-seguridad](.gemini/rules/prompt-revisar-seguridad.md)
 
 ## Compatibilidad Codex
 

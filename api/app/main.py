@@ -10,6 +10,7 @@ from api.app.routes.health import router as health_router
 from api.app.routes.reports import router as reports_router
 from api.app.routes.ingest import router as ingest_router, alias_router as ingest_alias_router
 from api.app.routes.infra import router as infra_router
+from api.app.routes.servicios import router as servicios_router
 from api.app.security import require_api_key
 
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router, dependencies=protected)
     app.include_router(ingest_alias_router, dependencies=protected)
     app.include_router(infra_router, dependencies=protected)
+    app.include_router(servicios_router, dependencies=protected)
     return app
 
 

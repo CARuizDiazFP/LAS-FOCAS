@@ -8,14 +8,15 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 ## Arquitectura
 
-- `api/`: FastAPI orientada a endpoints REST y procesos de ingest/reporting. No mezclar UI aquí.
-- `web/`: panel FastAPI con login, vistas, websocket de chat y disparo de informes.
+- `api/`: FastAPI orientada a endpoints REST asíncronos y procesos de ingest/reporting. No mezclar UI aquí.
+- `web/`: backend del panel (sesión/autenticación/WebSocket/chat) y frontend SPA en `web/frontend/` con Vue 3 + Vite + TypeScript + CSS modular.
 - `bot_telegram/`: bot aiogram que consume flujos y servicios; evitar lógica de negocio duplicada.
 - `core/`: configuración, logging, parsers, repositorios y servicios compartidos.
 - `modules/`: implementación específica de informes SLA, repetitividad y utilidades comunes.
-- `db/`: modelos SQLAlchemy, sesión y migraciones Alembic.
+- `db/`: modelos SQLAlchemy async, sesión y migraciones Alembic.
 - `nlp_intent/`: microservicio aislado para clasificación de intención por HTTP.
 - `office_service/`: microservicio de LibreOffice headless para conversiones.
+- Arquitectura objetivo de nuevas implementaciones: SPA pura con comunicación por API REST (JSON) y WebSocket.
 
 ## Convenciones
 
@@ -31,6 +32,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
 - Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.
 - Mantener type hints y estilos cercanos a PEP 8. Las dependencias se versionan de forma estricta.
+- En nuevas APIs y repositorios usar `async/await` y modelos Pydantic para validar entrada/salida.
+- Prohibido en desarrollos nuevos: frontend en Vanilla JS, manipulación directa del DOM como patrón principal y templates Jinja para UI moderna.
 - No tocar `Legacy/` salvo pedido explícito.
 
 ## Build y Test
@@ -79,4 +82,5 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
 - Usar skills de `.github/skills/` para workflows repetibles como pytest, alembic, Docker, mantenimiento y sincronización trazable del repositorio.
 - Para revisiones safe-by-design de seguridad, usar `security` junto con `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`; priorizar `.env`, `deploy/`, `Keys/`, Docker, red y superficies expuestas.
+- El agente `security` se enfoca en APIs y SPAs modernas: XSS en Vue 3, CORS en FastAPI y manejo seguro de tokens/sesiones.
 - Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.github/skills/skill-generator/`.

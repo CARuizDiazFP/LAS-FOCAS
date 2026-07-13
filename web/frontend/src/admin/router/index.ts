@@ -6,12 +6,14 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import AdminDashboard from '../views/AdminDashboard.vue';
 import AdminUsuarios from '../views/AdminUsuarios.vue';
 import AdminServicios from '../views/AdminServicios.vue';
+import AdminIngesta from '../views/AdminIngesta.vue';
 import AdminBaneos from '../views/AdminBaneos.vue';
 
 const routes: RouteRecordRaw[] = [
   { path: '/admin',                  component: AdminDashboard },
   { path: '/admin/usuarios',         component: AdminUsuarios },
   { path: '/admin/servicios',        component: AdminServicios },
+  { path: '/admin/ingesta',          component: AdminIngesta },
   { path: '/admin/Servicios/Baneos', component: AdminBaneos },
   // Redirige cualquier sub-ruta desconocida al dashboard
   { path: '/admin/:pathMatch(.*)*',  redirect: '/admin' },

@@ -44,7 +44,7 @@ web/
 ### Shell y navegación modular
 
 - El SPA ahora usa un **App Shell compartido** en `web/frontend/src/components/app-shell/AppShell.vue` para panel y admin.
-- La navegación lateral se organiza por módulos y apunta a rutas dedicadas: `/`, `/infra`, `/repetitividad`, `/toolkit/vlan`, `/fo`, `/dwdm/ciena`, `/sla` y `/reports-history`.
+- La navegación lateral se organiza por módulos y apunta a rutas dedicadas: `/`, `/infra`, `/servicios`, `/servicios/ID/:idServicio`, `/repetitividad`, `/toolkit/vlan`, `/fo`, `/dwdm/ciena`, `/sla` y `/reports-history`.
 - El header horizontal legacy fue eliminado para ampliar el área de trabajo. Los controles fijos de sesión viven arriba del sidebar: configuración y perfil de usuario.
 - La esquina superior derecha del área principal queda reservada para acciones dinámicas de módulo, sin botones estáticos.
 - El contenedor `#dynamic-module-actions` permite que una vista inyecte acciones con `Teleport`; el mismo bloque expone el slot `module-actions` para usos futuros donde el shell se componga directamente.
@@ -55,6 +55,7 @@ web/
 - `web/frontend/src/router/index.ts` carga `Login`, `Panel`, `SLA`, `Reportes`, `Cámara Detail` y vistas admin mediante `import()` dinámico.
 - Los módulos migrados desde las tabs legacy se cargan como rutas dedicadas y conservan lazy loading por componente.
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
+- La administración incorpora `/admin/ingesta` para cargar el Excel de Servicios SLA con barra de progreso dark y subida automática al seleccionar archivo.
 
 ### Tokens y estilos compartidos
 
@@ -153,6 +154,14 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/ban/create` → Crear baneo. JSON body: `{ticket_asociado?, servicio_afectado_id, servicio_protegido_id, ruta_protegida_id?, motivo?, usuario_ejecutor?}`. Responde con `{success, incidente_id, camaras_baneadas, ...}`.
 - `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
+- `POST /api/servicios/ingest` → proxy autenticado (admin + CSRF) hacia API interna para ingesta masiva de servicios SLA.
+- `GET /api/servicios/search` → proxy autenticado para búsqueda multipropósito con `limit/offset` (scroll infinito en `/servicios`).
+- `GET /api/servicios/detail?id=...` → proxy autenticado de detalle que resuelve el ID origen canónico para navegación histórica en `/servicios/ID/:idServicio`.
+
+En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras integraciones operativas:
+
+- **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
+- **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
 
@@ -357,6 +366,8 @@ admin/
 | `/dwdm/ciena` | AppShell + CienaTab | Sí | No |
 | `/sla` | AppShell + SlaView | Sí | No |
 | `/reports-history` | AppShell + ReportsHistoryView | Sí | No |
+| `/servicios` | AppShell + ServiciosView | Sí | No |
+| `/servicios/ID/:idServicio` | AppShell + ServicioDetalleView | Sí | No |
 | `/admin` | AppShell + AdminDashboard | Sí | Sí |
 | `/admin/usuarios` | AppShell + AdminUsuarios | Sí | Sí |
 | `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |

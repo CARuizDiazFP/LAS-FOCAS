@@ -1,17 +1,18 @@
 # Nombre de archivo: bot.md
 # Ubicación de archivo: docs/bot.md
-# Descripción: Guía rápida de uso del bot de Telegram
+# Descripción: Guía operativa del bot de Telegram como consumidor de servicios del stack moderno
 
 ## Variables requeridas (.env)
 - TELEGRAM_BOT_TOKEN=...
 - TELEGRAM_ALLOWED_IDS=11111111,22222222
-- REPORTS_API_BASE=http://api:8000 *(endpoint REST para generar informes)*
+- REPORTS_API_BASE=http://api:8000 *(endpoint REST asíncrono para generar informes)*
 - REPORTS_API_TIMEOUT=60 *(opcional, segundos de espera para la llamada)*
 
 ## Dependencias clave
 - Paquetes Python: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` (incluidos en `bot_telegram/requirements.txt`).
 - Paquetes nativos en Docker: `gdal-bin`, `libgdal-dev`, `libproj-dev`, `libgeos-dev`, `build-essential` (instalados en `deploy/docker/bot.Dockerfile`).
 - El bot reutiliza `modules.informes_repetitividad` para generar DOCX/PDF/PNG; asegurar acceso a `Templates/` y al volumen de reportes si se requiere persistencia.
+- Los flujos del bot consumen APIs del backend por HTTP JSON y no duplican lógica de negocio de `api/` ni de `web/`.
 
 ## Arranque con Docker
 ```bash
@@ -42,7 +43,7 @@ Botones disponibles:
 - 📊 Informe de Repetitividad
 - ❌ Cerrar
 
-Los flujos de **Repetitividad** y **SLA** están operativos. Repetitividad consume el endpoint `POST /reports/repetitividad` de la API y reutiliza el mismo backend que la UI web.
+Los flujos de **Repetitividad** y **SLA** están operativos. Repetitividad consume el endpoint `POST /reports/repetitividad` de la API y reutiliza el mismo backend que la SPA Vue 3.
 Cuando el dataset incluye coordenadas, el bot envía el DOCX, adjunta el PDF (si se generó) y reenvía cada mapa en formato PNG.
 
 Ejemplos de frases que abren el menú por intención:

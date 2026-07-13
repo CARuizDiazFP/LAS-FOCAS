@@ -1,6 +1,6 @@
 ---
 name: "las-focas-secret-detection"
-description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuraciones sensibles"
+description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuraciones sensibles en APIs y SPAs"
 metadata:
   short-description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuracio..."
   source: ".github/skills/secret-detection/SKILL.md"
@@ -51,6 +51,7 @@ Workflow enfocado en detectar material sensible expuesto o mal gestionado.
 - `deploy/compose.yml`, Dockerfiles y scripts de bootstrap
 - directorios `Keys/`, `scripts/`, `.github/workflows/` y configuraciones de servicios
 - tokens, claves API, passwords, certificados, bearer tokens y secretos MCP
+- tokens de sesión/client-side, cookies, claves de API y secretos de frontend o backend compartidos
 
 ## Procedimiento
 

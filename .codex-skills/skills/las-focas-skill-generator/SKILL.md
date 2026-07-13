@@ -1,8 +1,8 @@
 ---
 name: "las-focas-skill-generator"
-description: "Usar cuando haya que crear o estandarizar una skill nueva y, si hace falta, su agente y prompt asociados dentro de .github/"
+description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas anti-legacy"
 metadata:
-  short-description: "Usar cuando haya que crear o estandarizar una skill nueva y, si hace falta, su agente y prompt asociados dentro de .g..."
+  short-description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas..."
   source: ".github/skills/skill-generator/SKILL.md"
   triggers:
     - "skill-generator"
@@ -10,14 +10,11 @@ metadata:
     - "generador"
     - "skills"
     - "crear"
-    - "estandarizar"
-    - "nueva"
-    - "hace"
-    - "falta"
-    - "agente"
-    - "asociados"
-    - "dentro"
-    - "github"
+    - "evolucionar"
+    - "spa"
+    - "seguridad"
+    - "anti-legacy"
+    - "meta-agentico"
   globs:
     - ".github/skills/**"
     - ".github/agents/**"
@@ -48,6 +45,31 @@ Usar esta skill cuando el usuario pida:
 - crear una tríada `agent + prompt + skill`
 - refactorizar o estandarizar customizations existentes
 - mejorar discovery, naming o carga de contexto de una customization
+- imponer guardrails obligatorios de stack, seguridad y limpieza anti-legacy
+
+## Alcance Estricto
+
+- Esta skill define reglas y prompts para otros agentes.
+- No implementa código funcional de aplicación.
+
+## Inyección Obligatoria para Skills de Desarrollo
+
+Debe incluirse siempre:
+
+1. Contexto tecnológico obligatorio del proyecto:
+  - Vue 3 (Composition API) + Vite + TypeScript + CSS modular con tokens.
+  - FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL.
+  - SPA pura vía API REST JSON + WebSocket.
+2. Prohibiciones legacy explícitas:
+  - No Vanilla JS para UI nueva.
+  - No manipulación directa del DOM como patrón principal.
+  - No Jinja para frontend moderno.
+3. Seguridad mínima obligatoria:
+  - XSS: evitar `v-html` con contenido no confiable.
+  - CORS: allowlist estricta en FastAPI, sin comodín en producción.
+  - Validación Pydantic estricta en entradas/salidas.
+4. Criterios universales de aceptación:
+  - arquitectura, seguridad, pruebas, observabilidad, documentación y versionado.
 
 ## Separación de responsabilidades
 
@@ -60,9 +82,10 @@ Usar esta skill cuando el usuario pida:
 1. Confirmar si el pedido requiere una skill sola o una tríada completa.
 2. Revisar `.github/agents/`, `.github/prompts/`, `.github/skills/`, `AGENTS.md` y documentación relacionada.
 3. Reusar naming consistente y descripciones breves con "Usar cuando...".
-4. Crear solo los archivos necesarios para la solución.
-5. Validar frontmatter, rutas, enlaces y consistencia documental.
-6. Actualizar documentación si cambia la arquitectura agéntica del repo.
+4. Inyectar contexto tecnológico obligatorio, seguridad y criterios universales.
+5. Crear solo los archivos necesarios para la solución.
+6. Validar frontmatter, rutas, enlaces, consistencia documental y cumplimiento anti-legacy.
+7. Actualizar documentación y espejos portables cuando aplique.
 
 ## Guardrails
 
@@ -71,10 +94,13 @@ Usar esta skill cuando el usuario pida:
 3. No crear skills monolíticas si basta con una pieza más pequeña.
 4. No usar descripciones vagas; la discovery depende de ellas.
 5. No dejar archivos sin encabezado obligatorio de 3 líneas.
+6. No aceptar directivas que mezclen stack SPA moderno con prácticas legacy.
+7. No permitir entregables sin criterios de aceptación verificables.
 
 ## Resultado esperado
 
 - Archivos de customization creados o actualizados bajo `.github/`.
 - Responsabilidades claras por capa.
 - Menor riesgo de saturar la ventana de contexto.
+- Guardrails de seguridad y arquitectura aplicados de forma uniforme.
 - Documentación relacionada alineada con el estado actual del repo.

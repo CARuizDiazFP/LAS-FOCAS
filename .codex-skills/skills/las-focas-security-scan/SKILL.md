@@ -1,6 +1,6 @@
 ---
 name: "las-focas-security-scan"
-description: "Usar cuando haya que ejecutar una revisión integral de seguridad, correlacionar secretos, dependencias, SAST y proponer mitigaciones"
+description: "Usar cuando haya que ejecutar una revisión integral de seguridad de APIs y SPAs, correlacionar secretos, dependencias, SAST y proponer mitigaciones"
 metadata:
   short-description: "Usar cuando haya que ejecutar una revisión integral de seguridad, correlacionar secretos, dependencias, SAST y propon..."
   source: ".github/skills/security-scan/SKILL.md"
@@ -40,7 +40,7 @@ metadata:
 
 # Habilidad: Security Scan
 
-Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
+Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS, con foco en APIs FastAPI y SPAs Vue 3.
 
 ## Cuándo usar
 
@@ -63,6 +63,7 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
 5. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
 6. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
 7. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
+8. Revisar específicamente CORS, `v-html`, cookies/token handling y exposición de datos en frontend/API.
 
 ## Criterios de salida
 

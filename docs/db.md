@@ -19,11 +19,18 @@ fallback a `POSTGRES_PASSWORD` para no bloquear entornos locales antiguos.
 La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la versión del servidor
 para verificar el estado de la base de datos.
 
+## Reglas de persistencia
+
+- Todo acceso nuevo a datos debe usar `AsyncSession` y `create_async_engine`.
+- Evitar consultas sincrónicas en rutas y repositorios nuevos.
+- Usar Pydantic en la capa de API para complementar la validación de datos.
+- Mantener constraints, índices y migraciones reversibles en Alembic.
+
 Se limpiaron imports innecesarios en los repositorios de conversaciones y mensajes para mantener el código conforme a PEP8.
 
 ## Infraestructura (cámaras, cables y servicios)
 
-- Base común: `db/base.py` expone `Base = declarative_base()` para todos los modelos.
+- Base común: `db/base.py` expone la base declarativa; en desarrollos nuevos preferir SQLAlchemy 2.0 style y sesiones async.
 - Nuevas tablas en esquema `app` definidas en `db/models/infra.py`:
 
 ### Tabla `camaras`
@@ -76,6 +83,16 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 |-----------------------|----------------|-------------|
 | `id`                  | Integer (PK)   | ID autoincremental. |
 | `servicio_id`         | String(64), unique | ID del servicio (ej: "111995"). |
+| `numero_primer_servicio` | String(64), unique, index | ID lógico padre usado por ingesta SLA. |
+| `nombre_cliente`      | String(255)    | Nombre del cliente en origen SLA. |
+| `numero_linea`        | String(128), index | Línea asociada al servicio. |
+| `tipo_servicio`       | String(128), index | Tipo comercial/técnico del servicio. |
+| `sla_prometido`       | String(128)    | SLA comprometido en el origen. |
+| `direccion`           | String(255)    | Dirección principal del servicio. |
+| `localidad`           | String(128)    | Localidad del servicio. |
+| `provincia`           | String(128)    | Provincia del servicio. |
+| `direccion_2`         | String(255)    | Dirección complementaria. |
+| `estado_servicio`     | String(128), index | Estado actual informado en ingesta SLA. |
 | `cliente`             | String(255)    | Nombre del cliente (opcional). |
 | `categoria`           | Integer        | Categoría del servicio (opcional). |
 | `nombre_archivo_origen`| String(255)   | Nombre del archivo de tracking original. |

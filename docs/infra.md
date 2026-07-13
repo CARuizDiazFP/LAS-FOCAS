@@ -1,12 +1,12 @@
 # Nombre de archivo: infra.md
 # Ubicación de archivo: docs/infra.md
-# Descripción: Documentación del módulo Infraestructura FO (fibra óptica)
+# Descripción: Documentación del módulo Infraestructura FO para la SPA Vue 3 y la API asociada
 
 # Infraestructura FO — LAS-FOCAS
 
 ## Resumen
 
-El módulo **Infraestructura FO** permite la gestión de cámaras de fibra óptica, trackings de servicio y el **Protocolo de Protección** (baneo de cámaras). Parte del panel web (`/` > tab "Infra/Cámaras").
+El módulo **Infraestructura FO** permite la gestión de cámaras de fibra óptica, trackings de servicio y el **Protocolo de Protección** (baneo de cámaras). Vive en la SPA Vue 3 del panel web y consume endpoints JSON del backend.
 
 ## Funcionalidades principales
 
@@ -38,6 +38,12 @@ En esta iteración, **Registros** muestra solo la lógica operativa ya existente
 La tarjeta **Servicios Asociados** muestra la lista de IDs de servicio asociados ordenada de mayor a menor. Cada ID abre un segundo `dialog` modal superpuesto con el tracking detallado del servicio, reutilizando `TrackingDetail.vue` y la descarga del TXT actual.
 
 Para el detalle fino de la UX web y del apilado de modales, la referencia principal queda en `docs/web.md`.
+
+### Contratos y seguridad
+
+- La vista usa contratos JSON del backend y no duplica lógica de negocio en el frontend.
+- Las ediciones de estado requieren sesión válida y CSRF.
+- Los listados se renderizan desde datos tipados; no se debe introducir DOM directo ni plantillas legacy.
 
 ### Protocolo de Protección (Baneo)
 Sistema para proteger cámaras durante afectaciones de servicio, impidiendo trabajos en ellas hasta resolución.

@@ -54,12 +54,12 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 | `reports.agent.md` | Informes SLA/Repetitividad | → office, db, testing |
 | `mcp-chatbot.agent.md` | MCP Registry, orquestador | → nlp, reports, web |
 | `bot.agent.md` | Telegram (aiogram), flows | → nlp, testing, mcp |
-| `web.agent.md` | Panel web, auth, frontend | → api, mcp, security |
-| `api.agent.md` | Endpoints FastAPI | → db, testing, security |
-| `db.agent.md` | SQLAlchemy, Alembic, PostgreSQL | → api, docker |
+| `web.agent.md` | SPA Vue 3 (Composition API), auth web y consumo API JSON desacoplado | → api, mcp, security |
+| `api.agent.md` | FastAPI async, Pydantic, contratos JSON y dependencias | → db, testing, security |
+| `db.agent.md` | PostgreSQL async, SQLAlchemy, Alembic y repositorios | → api, docker |
 | `nlp.agent.md` | Clasificación de intención | → mcp, bot |
 | `office.agent.md` | LibreOffice, conversiones | → reports, docker |
-| `security.agent.md` | Hardening, secrets, auditoría | → docker, web, api |
+| `security.agent.md` | Seguridad de APIs/SPAs, XSS Vue 3, CORS, tokens | → web, api, db |
 | `infra.agent.md` | Cámaras, rutas, servicios | → db, api, reports |
 | `skill-generator.agent.md` | Meta-customizations, skills, prompts y agentes | → sin handoff fijo |
 
@@ -69,7 +69,7 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 - **generar-pr-diario.prompt.md**: Genera `docs/PR/YYYY-MM-DD.md` automáticamente
 - **mantenimiento-disco.prompt.md**: Diagnostica disco y propone limpieza segura
 - **repo-updater.prompt.md**: Audita trazabilidad documental, genera commit técnico y hace push a `dev`
-- **nuevo-modulo.prompt.md**: Scaffolding de módulo con tests y docs
+- **nuevo-modulo.prompt.md**: Andamiaje estandar de modulo/submodulo SPA (views, components, router, api, composables) con reglas anti-legacy
 - **migracion-alembic.prompt.md**: Crear migraciones de base de datos
 - **revisar-seguridad.prompt.md**: Auditoría de seguridad del proyecto
 
@@ -78,6 +78,8 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 - El agente `security` ahora orquesta revisiones de seguridad apoyándose en cuatro skills especializadas: `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`.
 - El prompt `revisar-seguridad.prompt.md` quedó alineado a ese flujo: prioriza `.env`, `deploy/`, `Keys/`, Docker, red, auth y superficies expuestas antes de emitir hallazgos.
 - La regla quedó consolidada también en `AGENTS.md` para que las revisiones del repo sigan el mismo estándar.
+- Las directivas de `web.agent.md` y `nuevo-modulo.prompt.md` obligan frontend desacoplado por API REST JSON/WebSocket y prohiben Jinja, DOM directo y Vanilla JS clasico en nuevos desarrollos.
+- Las directivas de `api.agent.md`, `db.agent.md` y `security.agent.md` ahora asumen FastAPI async, PostgreSQL async, SQLAlchemy async y foco de seguridad en APIs/SPAs Vue 3.
 
 ### Cambios en AGENTS.md
 

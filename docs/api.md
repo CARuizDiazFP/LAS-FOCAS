@@ -4,6 +4,8 @@
 
 # API — LAS-FOCAS
 
+La API de LAS-FOCAS funciona como backend de una SPA Vue 3 desacoplada. Todo endpoint nuevo debe ser asíncrono, tipado con Pydantic y pensado para consumo JSON/WebSocket desde el frontend.
+
 ## Estructura canónica del microservicio
 
 ```
@@ -22,6 +24,14 @@ api/
 
 Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 (el Dockerfile crea un symlink `/app/app → /app/api/app` para el resolver de módulos).
+
+## Reglas del backend API
+
+- Usar `async def` en endpoints, dependencias y servicios nuevos.
+- Validar request, response y errores con Pydantic.
+- Mantener autenticación por API key interna o sesión según la superficie.
+- No mezclar renderizado de UI ni lógica de presentación.
+- Todo acceso a I/O debe ser asíncrono cuando aplique.
 
 ## Endpoint de salud
 
@@ -324,6 +334,105 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
   Empalme 2: Calle Florida 567
   F-003: ... 0.42 dB
   ...
+  ```
+
+### Módulo Servicios (Fase 1)
+
+Se incorporan endpoints dedicados para ingesta masiva de Excel y búsqueda paginada para scroll infinito del visor SPA.
+
+#### POST `/servicios/ingest`
+
+- **Autenticación:** API key interna (`Authorization: Bearer <token>` o `X-API-Key`).
+- **Content-Type:** `multipart/form-data`
+- **Parámetros:**
+
+  | Campo  | Tipo       | Requerido | Descripción |
+  |--------|------------|-----------|-------------|
+  | `file` | UploadFile | Sí        | Archivo `.xlsx`, `.xlsm` o `.csv` de servicios SLA. |
+
+- **Comportamiento:**
+  - Usa `numero_primer_servicio` como identificador lógico padre.
+  - Si no existe: inserta registro.
+  - Si existe: actualiza sólo columnas cambiadas.
+  - Siempre considera `estado_servicio` dentro de la lógica de upsert.
+
+- **Respuesta ejemplo:**
+  ```json
+  {
+    "status": "ok",
+    "rows_ok": 1200,
+    "rows_bad": 15,
+    "inserted": 300,
+    "updated": 120,
+    "unchanged": 780
+  }
+  ```
+
+#### GET `/servicios/search`
+
+- **Autenticación:** API key interna.
+- **Query params:**
+  - `q` (opcional): buscador multipropósito.
+  - `numero_primer_servicio`, `cliente`, `domicilio`, `tipo`, `estado` (opcionales).
+  - `limit` (1..200), `offset` (>=0).
+
+- **Respuesta ejemplo:**
+  ```json
+  {
+    "status": "ok",
+    "total": 542,
+    "limit": 30,
+    "offset": 60,
+    "servicios": [
+      {
+        "id": 1042,
+        "numero_primer_servicio": "111995",
+        "nombre_cliente": "ACME SA",
+        "numero_linea": "43120000",
+        "tipo_servicio": "Datos",
+        "sla_prometido": "8h",
+        "direccion": "Av. Corrientes 1234",
+        "localidad": "CABA",
+        "provincia": "Buenos Aires",
+        "direccion_2": null,
+        "estado_servicio": "ACTIVO",
+        "reclamos": null
+      }
+    ]
+  }
+  ```
+
+#### GET `/servicios/detail`
+
+- **Autenticación:** API key interna.
+- **Query params:**
+  - `id` (requerido): admite ID origen (`numero_primer_servicio`) o ID de línea actual (`numero_linea`).
+
+- **Comportamiento:**
+  - Resuelve el servicio consultado y devuelve siempre el `id_origen` canónico.
+  - Permite unificar el enrutamiento histórico del SPA en `/servicios/ID/{id_origen}`.
+
+- **Respuesta ejemplo:**
+  ```json
+  {
+    "status": "ok",
+    "id_consultado": "121118",
+    "id_origen": "120559",
+    "servicio": {
+      "id": 1820,
+      "numero_primer_servicio": "120559",
+      "nombre_cliente": "ACME SA",
+      "numero_linea": "121118",
+      "tipo_servicio": "TLS",
+      "sla_prometido": "99.7",
+      "direccion": "Av. Siempre Viva 742",
+      "localidad": "Rosario",
+      "provincia": "Santa Fe",
+      "direccion_2": null,
+      "estado_servicio": "ACTIVO",
+      "reclamos": null
+    }
+  }
   ```
 
 ### Sistema de Versionado de Rutas FO (v2)

@@ -79,6 +79,7 @@ services:
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
     secrets:
+      - api_key_v1
       - db_password_v1
       - web_secret_key_v1
       - smtp_password_v1

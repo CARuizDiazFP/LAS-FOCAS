@@ -4,6 +4,8 @@
 
 # Seguridad en LAS-FOCAS
 
+Este documento prioriza la seguridad de una arquitectura API + SPA. El foco principal es prevenir exposición de secretos, reforzar CORS, validar entradas y reducir riesgos de XSS y manejo inseguro de tokens en Vue 3 y FastAPI.
+
 Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-FOCAS, riesgos comunes, controles implementados y checklist para nuevas implementaciones.
 
 ## Contexto operativo
@@ -21,6 +23,8 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Fail-safe por defecto y valores seguros ante ambigüedad (documentados en PR).
 - Idempotencia: scripts/servicios deben poder ejecutarse múltiples veces sin efectos laterales inesperados.
 - Logging prudente: no registrar texto íntegro del usuario salvo `LOG_RAW_TEXT=true`.
+- En la SPA, auditar cualquier uso de `v-html` y evitar inyección de HTML no confiable.
+- En el frontend, evitar `localStorage` para tokens sensibles; priorizar cookies `HttpOnly` o memoria segura según el caso.
 
 ## Controles actuales implementados
 
@@ -29,6 +33,8 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 - Redes internas en docker-compose (`expose` en lugar de `ports` para servicios internos).
 - Versionado estricto de dependencias (evitar `latest`).
 - Validación y escape de entradas en superficies expuestas (bot, APIs).
+- Validación estricta de entradas/salidas con Pydantic en APIs.
+- CORS restrictivo con allowlist explícita en FastAPI.
 - Tratamiento de errores con timeouts (HTTP 15s por defecto) y reintentos con backoff.
 - Logs estructurados con metadatos (service, action, request_id, timestamps) y prudencia en datos sensibles.
 - Auditoría básica de dependencias antes de incorporarlas.
@@ -117,6 +123,7 @@ bash scripts/firewall_hardening.sh
 
 - La API core protege rutas sensibles con API key interna (`api_key_v1` o `LAS_FOCAS_API_KEY`); sólo `/health` y `/health/version` son públicos.
 - El panel web usa sesiones firmadas con `HttpOnly`, `SameSite=Lax`, `max_age` explícito y `Secure` configurable vía `WEB_SESSION_HTTPS_ONLY`.
+- La SPA no debe guardar JWT/tokens sensibles en `localStorage` salvo justificación excepcional y documentada.
 - El login del panel aplica rate limit en memoria por IP + usuario. En producción multiworker o multiinstancia debe migrarse a Redis u otro backend compartido.
 - Las contraseñas nuevas usan SHA-256 de la entrada completa antes de bcrypt y un prefijo versionado; los bcrypt legacy siguen verificando para migración gradual.
 
@@ -134,3 +141,4 @@ bash scripts/firewall_hardening.sh
 - Endurecer headers/CORS en servicios web.
 - Revisión periódica de permisos en DB y contenedores.
 - Definir controles de validación/sandbox para el microservicio LibreOffice (`office_service`).
+- Revisar con prioridad `v-html`, CORS, cookies de sesión, tokens y exposición de endpoints en cualquier feature nuevo.

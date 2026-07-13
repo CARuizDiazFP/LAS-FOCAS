@@ -102,6 +102,7 @@ import { useSession } from '../../composables/useSession';
 type SidebarViewId =
   | 'home'
   | 'infraFo'
+  | 'servicios'
   | 'repetitividad'
   | 'sla'
   | 'historial'
@@ -151,6 +152,11 @@ const primaryLinks: SidebarItem[] = [
     label: 'Infraestructura FO',
     to: { path: '/infra' },
   },
+  {
+    id: 'servicios',
+    label: 'Servicios 🌐',
+    to: { path: '/servicios' },
+  },
 ];
 
 const sidebarModules: SidebarModule[] = [
@@ -196,6 +202,12 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
 
   if (currentRoute.path === '/infra') {
     return 'infraFo';
+  }
+  if (currentRoute.path === '/servicios') {
+    return 'servicios';
+  }
+  if (currentRoute.path.startsWith('/servicios/ID/')) {
+    return 'servicios';
   }
   if (currentRoute.path === '/repetitividad') {
     return 'repetitividad';
@@ -379,7 +391,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   color: var(--color-text-primary);
@@ -403,8 +415,8 @@ watch(
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  min-height: 52px;
-  padding: var(--space-3) var(--space-4);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   background: var(--color-bg-panel);

@@ -1,20 +1,18 @@
 # Nombre de archivo: agent-db-agent.md
 # Ubicación de archivo: .gemini/rules/agent-db-agent.md
-# Descripción: Regla Gemini portable migrada desde .github/agents/db.agent.md
+# Descripción: Regla Gemini portable para PostgreSQL async, SQLAlchemy y Alembic
 ---
 name: "agent-db-agent"
-description: "Usar cuando la tarea trate de PostgreSQL, SQLAlchemy, modelos, consultas, Alembic o archivos bajo db/ en LAS-FOCAS"
+description: "Usar cuando la tarea trate de PostgreSQL, SQLAlchemy async, modelos, consultas, Alembic o archivos bajo db/"
 source: ".github/agents/db.agent.md"
 triggers:
-  - "agente"
-  - "trate"
   - "postgresql"
   - "sqlalchemy"
   - "modelos"
   - "consultas"
   - "alembic"
-  - "bajo"
-  - "las-focas"
+    - "async"
+    - "sesion"
 globs:
   - "db/**"
 commands:
@@ -39,15 +37,15 @@ commands:
 
 # Agente DB
 
-Soy el agente especializado en la base de datos de LAS-FOCAS.
+Soy el agente especializado en PostgreSQL asíncrono de LAS-FOCAS.
 
 ## Mi Alcance
 
-- Modelos SQLAlchemy
-- Migraciones Alembic
-- Consultas y optimización
-- Conexión y configuración PostgreSQL
-- Esquemas de datos
+- Modelos SQLAlchemy async
+- Sesiones, repositorios y consultas asíncronas
+- Migraciones Alembic controladas y reversibles
+- Conexión, pool y configuración PostgreSQL
+- Integridad de esquemas y constraints
 
 ## Estructura
 
@@ -71,24 +69,31 @@ db/
     └── report.py
 ```
 
+## Arquitectura Objetivo (Obligatoria)
+
+- Todo acceso a base de datos nuevo debe ser asíncrono.
+- Usar `AsyncSession`, `create_async_engine` y dependencias inyectables para el acceso a datos.
+- No mezclar I/O sincrónico con capas nuevas de persistencia.
+- Mantener el esquema y las migraciones como fuente de verdad; no alterar tablas manualmente.
+
 ## Modelos SQLAlchemy
 
 ```python
-# db/models/user.py
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 from db.base import Base
 
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, nullable=False, index=True)
-    email = Column(String(100), unique=True, nullable=False)
-    hashed_password = Column(String(255), nullable=False)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), onupdate=func.now())
 ```
 
 ## Migraciones Alembic
@@ -111,35 +116,29 @@ alembic -c db/alembic.ini downgrade -1
 ## Sesión y Conexión
 
 ```python
-# db/session.py
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://...")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-@contextmanager
-def get_session():
+@asynccontextmanager
+async def get_session():
     session = SessionLocal()
     try:
         yield session
-        session.commit()
+        await session.commit()
     except Exception:
-        session.rollback()
+        await session.rollback()
         raise
     finally:
-        session.close()
+        await session.close()
 
-# Para FastAPI
 async def get_db():
-    db = SessionLocal()
-    try:
+    async with SessionLocal() as db:
         yield db
-    finally:
-        db.close()
 ```
 
 ## Tablas del Sistema
@@ -155,29 +154,35 @@ async def get_db():
 ## Consultas Comunes
 
 ```python
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import User, RutaServicio
+from sqlalchemy import select
 
 # Obtener usuario por username
-def get_user_by_username(db: Session, username: str):
-    return db.query(User).filter(User.username == username).first()
+async def get_user_by_username(db: AsyncSession, username: str):
+    resultado = await db.execute(select(User).where(User.username == username))
+    return resultado.scalar_one_or_none()
 
 # Buscar rutas de servicio
-def search_rutas(db: Session, query: str):
-    return db.query(RutaServicio).filter(
-        RutaServicio.nombre.ilike(f"%{query}%")
-    ).limit(50).all()
+async def search_rutas(db: AsyncSession, query: str):
+    resultado = await db.execute(
+        select(RutaServicio)
+        .where(RutaServicio.nombre.ilike(f"%{query}%"))
+        .limit(50)
+    )
+    return resultado.scalars().all()
 ```
 
 ## Reglas que Sigo
 
-1. **Alembic para cambios**: nunca modificar esquema manualmente en producción
-2. **Migraciones reversibles**: siempre incluir `downgrade()`
-3. **Índices**: crear índices para columnas usadas en WHERE/JOIN
-4. **Constraints**: usar constraints de DB además de validación en código
-5. **Transacciones**: usar context managers para garantizar rollback
-6. **Conexión pooling**: configurar pool_size adecuado
-7. **No queries N+1**: usar eager loading cuando sea necesario
+1. **Async first**: sesiones, queries y acceso a datos nuevos deben ser asíncronos.
+2. **Alembic para cambios**: nunca modificar esquema manualmente en producción.
+3. **Migraciones reversibles**: siempre incluir `downgrade()`.
+4. **Índices y constraints**: crear índices para WHERE/JOIN y constraints para integridad.
+5. **Transacciones seguras**: usar context managers y rollback explícito.
+6. **Pooling controlado**: ajustar `pool_size` y `max_overflow` según carga.
+7. **Evitar N+1**: usar eager loading o selectinload cuando corresponda.
+8. **Validación en capas**: la DB complementa a Pydantic, no la reemplaza.
 
 ## Configuración
 
@@ -193,5 +198,5 @@ DB_MAX_OVERFLOW=10
 
 ## Traspasos (Handoffs)
 
-- **→ API Agent**: cuando los modelos están listos para crear endpoints
+- **→ API Agent**: cuando los modelos y repositorios están listos para endpoints
 - **→ Docker Agent**: para problemas con el contenedor PostgreSQL

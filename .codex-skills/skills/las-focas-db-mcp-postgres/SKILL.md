@@ -1,6 +1,6 @@
 ---
 name: "las-focas-db-mcp-postgres"
-description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app"
+description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app con enfoque async"
 metadata:
   short-description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar..."
   source: ".github/skills/db-mcp-postgres/SKILL.md"
@@ -82,7 +82,9 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 
 3. **Optimización de Contexto**: Limita resultados con `LIMIT 10` al explorar datos nuevos para no saturar la ventana de contexto del agente.
 
-4. **No Exponer Secretos**: Nunca incluir resultados de queries que contengan passwords, tokens o datos sensibles en las respuestas.
+4. **Stack objetivo**: La base de datos sirve a FastAPI async y a una SPA Vue 3 desacoplada; conserva los contratos del esquema `app`.
+5. **No Exponer Secretos**: Nunca incluir resultados de queries que contengan passwords, tokens o datos sensibles en las respuestas.
+6. **Compatibilidad async**: cuando el resultado sirva para cambios de código, asumir `AsyncSession` y patrones SQLAlchemy 2.0.
 
 ## 🛠️ Flujos de Depuración Específicos
 
@@ -187,10 +189,11 @@ ORDER BY ordinal_position;
    - Queries sin `LIMIT` en tablas grandes
    - Queries que expongan `hashed_password` u otros campos sensibles
 
-2. **Siempre**:
+3. **Siempre**:
    - Usar `LIMIT` al explorar datos nuevos
    - Verificar el contexto antes de mostrar resultados al usuario
    - Sugerir migraciones Alembic para cambios de esquema
+  - Mantener alineación con Pydantic/async en la capa API consumidora
 
 ## 🔗 Integración con Agentes
 

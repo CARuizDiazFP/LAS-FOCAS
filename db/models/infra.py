@@ -325,6 +325,22 @@ class Servicio(Base):
     id = Column(Integer, primary_key=True)
     servicio_id = Column(String(64), nullable=False, unique=True, index=True)
     alias_ids = Column(ARRAY(String(64)), nullable=True)  # IDs alternativos del servicio (ej: O1C1, O1C2)
+    numero_primer_servicio = Column(
+        String(64),
+        nullable=True,
+        unique=True,
+        index=True,
+        comment="ID lógico padre usado por ingesta SLA",
+    )
+    nombre_cliente = Column(String(255), nullable=True)
+    numero_linea = Column(String(128), nullable=True, index=True)
+    tipo_servicio = Column(String(128), nullable=True, index=True)
+    sla_prometido = Column(String(128), nullable=True)
+    direccion = Column(String(255), nullable=True)
+    localidad = Column(String(128), nullable=True)
+    provincia = Column(String(128), nullable=True)
+    direccion_2 = Column(String(255), nullable=True)
+    estado_servicio = Column(String(128), nullable=False, default="DESCONOCIDO", index=True)
     cliente = Column(String(255), nullable=True)
     categoria = Column(Integer, nullable=True)
     nombre_archivo_origen = Column(String(255), nullable=True)  # DEPRECATED: Mover a RutaServicio

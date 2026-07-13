@@ -41,6 +41,7 @@ import pandas as pd
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
+INTERNAL_API_BASE_URL = os.getenv("INTERNAL_API_BASE_URL", "http://api:8000")
 LOG_RAW_TEXT = os.getenv("LOG_RAW_TEXT", "false").lower() == "true"
 
 # Config DB (usa las variables del .env del stack)
@@ -54,6 +55,15 @@ DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} por
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
 logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
+
+
+def _internal_api_auth_headers() -> dict[str, str]:
+    api_key = get_secret("api_key_v1", "LAS_FOCAS_API_KEY").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="API interna sin credenciales")
+    return {
+        "Authorization": f"Bearer {api_key}",
+    }
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -2317,10 +2327,15 @@ async def get_servicio_rutas_web(
     try:
         from db.models.infra import Servicio, RutaServicio
         from db.session import SessionLocal
+        from sqlalchemy import or_
         
         with SessionLocal() as session:
             servicio = session.query(Servicio).filter(
-                Servicio.servicio_id == servicio_id
+                or_(
+                    Servicio.servicio_id == servicio_id,
+                    Servicio.numero_primer_servicio == servicio_id,
+                    Servicio.numero_linea == servicio_id,
+                )
             ).first()
             
             if not servicio:
@@ -4145,6 +4160,151 @@ async def smart_search_camaras_web(
             {"error": f"Error en smart search: {exc!s}"},
             status_code=500
         )
+
+
+@app.post("/api/servicios/ingest")
+async def servicios_ingest_web(
+    request: Request,
+    file: UploadFile = File(...),
+    csrf_token: str = Form(...),
+) -> JSONResponse:
+    """Ingesta de servicios SLA (solo admin) delegada a la API interna."""
+
+    username, role = _require_auth(request)
+    if role != "admin":
+        return JSONResponse({"error": "Solo admin"}, status_code=403)
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF invalido"}, status_code=403)
+    if not file.filename:
+        return JSONResponse({"error": "Falta nombre de archivo"}, status_code=400)
+
+    try:
+        content = await file.read()
+        files = {
+            "file": (file.filename, content, file.content_type or "application/octet-stream"),
+        }
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/servicios/ingest",
+                files=files,
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error en ingesta"}
+
+        logger.info(
+            "action=servicios_ingest_proxy user=%s filename=%s status=%s",
+            username,
+            file.filename,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_ingest_proxy_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error en ingesta de servicios: {exc!s}"}, status_code=500)
+
+
+@app.get("/api/servicios/search")
+async def servicios_search_web(
+    request: Request,
+    q: str | None = None,
+    numero_primer_servicio: str | None = None,
+    cliente: str | None = None,
+    domicilio: str | None = None,
+    tipo: str | None = None,
+    estado: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> JSONResponse:
+    """Búsqueda paginada de servicios para usuarios autenticados."""
+
+    username, _ = _require_auth(request)
+    params = {
+        "q": q,
+        "numero_primer_servicio": numero_primer_servicio,
+        "cliente": cliente,
+        "domicilio": domicilio,
+        "tipo": tipo,
+        "estado": estado,
+        "limit": max(1, min(limit, 200)),
+        "offset": max(offset, 0),
+    }
+    params = {k: v for k, v in params.items() if v not in (None, "")}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE_URL}/servicios/search",
+                params=params,
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error consultando servicios"}
+
+        logger.info(
+            "action=servicios_search_proxy user=%s q=%s limit=%s offset=%s status=%s",
+            username,
+            q,
+            params.get("limit"),
+            params.get("offset"),
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_search_proxy_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error buscando servicios: {exc!s}"}, status_code=500)
+
+
+@app.get("/api/servicios/detail")
+async def servicios_detail_web(
+    request: Request,
+    id: str,
+) -> JSONResponse:
+    """Detalle de servicio por ID (origen o línea), con resolución a ID canónico."""
+
+    username, _ = _require_auth(request)
+    id_consultado = (id or "").strip()
+    if not id_consultado:
+        return JSONResponse({"error": "ID requerido"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE_URL}/servicios/detail",
+                params={"id": id_consultado},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error consultando detalle de servicio"}
+
+        logger.info(
+            "action=servicios_detail_proxy user=%s id=%s status=%s",
+            username,
+            id_consultado,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_detail_proxy_error user=%s id=%s error=%s", username, id_consultado, exc)
+        return JSONResponse({"error": f"Error consultando detalle de servicio: {exc!s}"}, status_code=500)
 
 
 @app.post("/api/infra/upload_tracking")

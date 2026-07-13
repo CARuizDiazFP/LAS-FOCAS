@@ -1,6 +1,6 @@
 ---
 name: "las-focas-sast-analysis"
-description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensible o superficie de ataque"
+description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensible, XSS/CORS o superficie de ataque"
 metadata:
   short-description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensi..."
   source: ".github/skills/sast-analysis/SKILL.md"
@@ -49,6 +49,7 @@ Checklist de análisis estático orientado a riesgos explotables en el código.
 
 - endpoints REST, WebSocket y handlers de bot expuestos a entrada de usuario
 - autenticación, autorización, sesiones y cookies
+- uso de `v-html`, sanitización de contenido y controles CORS en FastAPI
 - acceso a base de datos, queries dinámicas y repositorios
 - llamadas a `subprocess`, ejecución de shell, parseo de archivos y renderizado de documentos
 - logs que puedan filtrar payloads, secretos o datos personales

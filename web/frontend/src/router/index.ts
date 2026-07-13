@@ -10,6 +10,8 @@ const AppShell = () => import('../components/app-shell/AppShell.vue');
 const PanelView = () => import('../views/PanelView.vue');
 const SlaView = () => import('../views/SlaView.vue');
 const ReportsHistoryView = () => import('../views/ReportsHistoryView.vue');
+const ServiciosView = () => import('../views/ServiciosView.vue');
+const ServicioDetalleView = () => import('../views/ServicioDetalleView.vue');
 const CamaraDetailView = () => import('../views/CamaraDetailView.vue');
 const RepetitividadTab = () => import('../views/tabs/RepetitividadTab.vue');
 const VlanTab = () => import('../views/tabs/VlanTab.vue');
@@ -19,6 +21,7 @@ const InfraTab = () => import('../views/tabs/InfraTab.vue');
 const AdminDashboard = () => import('../admin/views/AdminDashboard.vue');
 const AdminUsuarios = () => import('../admin/views/AdminUsuarios.vue');
 const AdminServicios = () => import('../admin/views/AdminServicios.vue');
+const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminBaneos = () => import('../admin/views/AdminBaneos.vue');
 
 const routes: RouteRecordRaw[] = [
@@ -121,6 +124,22 @@ const routes: RouteRecordRaw[] = [
           navSection: 'Operación',
         },
       },
+      {
+        path: 'servicios',
+        name: 'servicios',
+        component: ServiciosView,
+        meta: {
+          navLabel: 'Servicios',
+          navDescription: 'Visor operativo con búsqueda y scroll infinito.',
+          navOrder: 31,
+          navSection: 'Operación',
+        },
+      },
+      {
+        path: 'servicios/ID/:idServicio',
+        name: 'servicios-detail',
+        component: ServicioDetalleView,
+      },
       { path: 'infra/Camaras/:id(\\d+)', name: 'camara-detail', component: CamaraDetailView },
     ],
   },
@@ -174,6 +193,18 @@ const routes: RouteRecordRaw[] = [
           navLabel: 'Baneos',
           navDescription: 'Controles y monitoreo del servicio de baneos.',
           navOrder: 130,
+          navSection: 'Administración',
+        },
+      },
+      {
+        path: 'ingesta',
+        name: 'admin-ingesta',
+        component: AdminIngesta,
+        meta: {
+          requiresAdmin: true,
+          navLabel: 'Ingesta',
+          navDescription: 'Ingesta de excel para servicios SLA.',
+          navOrder: 140,
           navSection: 'Administración',
         },
       },
