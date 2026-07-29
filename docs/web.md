@@ -67,6 +67,21 @@ web/
 - `panel.css` y `admin.css` consumen estos tokens en lugar de redeclarar su propia paleta base.
 - El objetivo de la capa es concentrar identidad cromática, spacing, radios y layout en variables CSS nativas (`--color-*`, `--space-*`, `--layout-*`).
 
+**Sistema de diseño Nocturne (2026-07-29).** `tokens.css` implementa el sistema Nocturne:
+fondo `#161826`, superficie `#232532`, texto `#e9e9ed`, acento blurple `#9184d9`, rampas
+tonales `--color-neutral-100..900` / `--color-accent-100..900` en OKLCH, tipografía Inter
+(400/500, nunca más de 500 en títulos), espaciado con densidad 0.70× y tres niveles de
+elevación (`--shadow-sm/md/lg`) basados en hairline + oscuridad ambiente — nunca sombras
+apiladas. Los estados semánticos (`--color-state-ok/warn/error/idle`) se derivaron en OKLCH
+a la misma luminosidad/croma que el acento porque Nocturne es monocromo y no trae
+verde/ámbar/rojo saturados. Los alias legacy cortos (`--bg`, `--surface`, `--text`,
+`--primary`, `--border`, `--muted`, `--radius`, `--color-bg-*`, `--shadow-card`,
+`--shadow-focus`) se conservan apuntando a los tokens nuevos para no romper `panel.css`,
+`admin.css` ni las pantallas todavía sin rediseñar (`/toolkit/vlan`, `/fo`, `/dwdm/ciena`,
+`/infra/Camaras/:id`, `/admin`). Iconografía: `@phosphor-icons/web`, importado en `main.ts`;
+reemplaza los emojis del sidebar, la toolbar principal de Infra FO y las tarjetas de
+servicio/cámara. Detalle completo del rediseño en `docs/PR/2026-07-29.md`.
+
 El contenedor se lanza con:
 ```
 uvicorn app.main:app --host 0.0.0.0 --port 8080
@@ -204,7 +219,7 @@ El modal **Editar estado** en la vista dedicada recupera el mismo modo oscuro y 
 
 ### InfraTab — Baneos Activos (gestión de incidentes)
 
-El botón **🔒 Baneos Activos** en la toolbar (junto a "Protocolo Protección") muestra un badge numérico cuando hay incidentes abiertos. Al hacer clic abre el modal de gestión:
+El botón **Baneos activos** (icono `ph-lock-key`) en el encabezado, junto a "Protocolo Protección", muestra un badge numérico cuando hay incidentes abiertos. Al hacer clic abre el modal de gestión:
 
 **Carga**: Al abrir, hace `GET /api/infra/ban/active` y lista las tarjetas de incidentes.
 **Botón ↻ Actualizar**: recarga la lista sin cerrar el modal.
@@ -248,7 +263,7 @@ Al activar un filtro aparece un **chip removible** junto al área de búsqueda i
 
 ### InfraTab — Protocolo de Protección (Wizard 3 pasos)
 
-El botón **🔴 Protocolo Protección** abre un wizard guiado de 3 pasos con stepper visual:
+El botón **Protocolo Protección** (icono `ph-shield-warning`) abre un wizard guiado de 3 pasos con stepper visual:
 
 **Paso 1 — Identificación**:
 - Ticket del incidente (opcional)
@@ -300,27 +315,7 @@ El flujo de carga de trackings opera en 2 fases:
 
 > **Nota de nomenclatura**: La acción `BRANCH` se presenta como **"Crear Camino"** en la UI (caminos alternativos/redundantes de FO). La opción **"Nuevo Pelo"** es visible tanto cuando el status es `NEW_STRAND` como dentro del modal `CONFLICT`, permitiendo al usuario agregar manualmente un pelo adicional a un camino existente.
 
-**Zona de upload — Drag & Drop**: La zona "📁 Subir Tracking" acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia a azul (`--drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
-
-El flujo de carga de trackings opera en 2 fases:
-
-**Fase 1 — Análisis (`/analyze`)**: Se sube el `.txt`; la API responde con el `status` del archivo y, si corresponde, lista de rutas existentes (`rutas_existentes`).
-
-**Fase 2 — Resolución (`/resolve`)**: El usuario elige la acción y se envía el JSON con `action` + extras según la tabla:
-
-| Acción UI | `action` enviado | Extras |
-|---|---|---|
-| Crear nuevo servicio | `CREATE_NEW` | — |
-| Merge empalmes | `MERGE_APPEND` | `target_ruta_id` |
-| Reemplazar ruta | `REPLACE` | `target_ruta_id` |
-| **Crear Camino** | `BRANCH` | `new_ruta_name`, `new_ruta_tipo: "ALTERNATIVA"` |
-| **Nuevo Pelo** | `ADD_STRAND` | `target_ruta_id` |
-| Confirmar upgrade | `CONFIRM_UPGRADE` | `old_service_id` |
-| Agregar pelo (auto-detect) | `ADD_STRAND` | `target_ruta_id` (de `strand_info.ruta_id`) |
-
-> **Nota de nomenclatura**: La acción `BRANCH` se presenta como **"Crear Camino"** en la UI (caminos alternativos/redundantes de FO). La opción **"Nuevo Pelo"** es visible tanto cuando el status es `NEW_STRAND` como dentro del modal `CONFLICT`, permitiendo al usuario agregar manualmente un pelo adicional a un camino existente.
-
-**Zona de upload — Drag & Drop**: La zona "📁 Subir Tracking" acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia a azul (`--drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
+**Zona de upload — Drag & Drop**: El botón "Subir tracking" (icono `ph-folder-simple-plus`, sin emoji) acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia al acento Nocturne (`.drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
 
 ## Frontend SPA (Vue 3)
 
