@@ -22,6 +22,8 @@ const AdminDashboard = () => import('../admin/views/AdminDashboard.vue');
 const AdminUsuarios = () => import('../admin/views/AdminUsuarios.vue');
 const AdminServicios = () => import('../admin/views/AdminServicios.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
+const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
+const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
 const AdminBaneos = () => import('../admin/views/AdminBaneos.vue');
 
 const routes: RouteRecordRaw[] = [
@@ -207,6 +209,18 @@ const routes: RouteRecordRaw[] = [
           navOrder: 140,
           navSection: 'Administración',
         },
+      },
+      {
+        path: 'ingesta/servicios',
+        name: 'admin-ingesta-servicios',
+        component: AdminIngestaServicios,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'ingesta/camaras',
+        name: 'admin-ingesta-camaras',
+        component: AdminIngestaCamaras,
+        meta: { requiresAdmin: true },
       },
       { path: ':pathMatch(.*)*', redirect: '/admin' },
     ],

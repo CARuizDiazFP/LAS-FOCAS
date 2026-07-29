@@ -297,9 +297,9 @@ El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina 
 
 ### Secretos dev adicionales
 
-- `api_key_v1`: API key interna para proteger rutas sensibles del servicio `api`.
-- `web_secret_key_v1`: firma de cookie de sesión del panel web.
-- `scripts/setup_local_secrets.sh` genera ambos archivos de forma idempotente; en CI usa valores determinísticos de prueba.
+- `api_key_v1` (dev: `.secrets/Dev_api_key_v1.txt`; prod: `.secrets/api_key_v1.txt`): API key interna para proteger rutas sensibles del servicio `api`.
+- `web_secret_key_v1` (dev: `.secrets/Dev_web_secret_key_v1.txt`; prod: `.secrets/web_secret_key_v1.txt`): firma de cookie de sesión del panel web.
+- `scripts/setup_local_secrets.sh` genera los archivos `Dev_*.txt` de forma idempotente para dev/CI; en producción, `deploy/compose.yml` usa el mismo mecanismo de Docker Compose Secrets pero con archivos sin prefijo (ver `docs/Seguridad.md`).
 
 ```bash
 ssh -L 8090:localhost:8090 usuario@172.18.208.162
@@ -337,10 +337,15 @@ docker compose -f deploy/docker-compose.dev.yml down
 `deploy/env.dev.sample` → copiar a `.env.dev` en la raíz. Diferencias clave respecto a `.env`:
 
 En dev, las credenciales reales se leen primero desde Docker Secrets montados en
-`/run/secrets/*`. Si falta un archivo, el código cae a `.env.dev` para mantener
-compatibilidad durante la transición. Si se cambia `db_password_v1.txt` sobre un
-volumen PostgreSQL ya inicializado, recrear el volumen dev o actualizar la clave
-del usuario dentro de la base antes de levantar el stack.
+`/run/secrets/*`, cuyos archivos fuente en `.secrets/` usan el prefijo `Dev_`
+(ej. `Dev_db_password_v1.txt`). En producción se usa el mismo mecanismo con
+archivos sin prefijo (ej. `.secrets/db_password_v1.txt`), ya implementado en
+`deploy/compose.yml`. Si falta un archivo, el código cae a `.env`/`.env.dev`
+para mantener compatibilidad durante la transición. Si se cambia
+`db_password_v1.txt` (o `Dev_db_password_v1.txt`) sobre un volumen PostgreSQL
+ya inicializado, el valor debe coincidir exactamente con la contraseña vigente
+del rol — cambiarlo sin actualizar el rol o recrear el volumen rompe la
+autenticación (ver `docs/Seguridad.md`).
 
 | Variable              | Producción                       | Dev                          |
 |-----------------------|----------------------------------|------------------------------|

@@ -22,8 +22,8 @@ if [ -n "$tracked_sensitive" ]; then
   printf '%s\n' "$tracked_sensitive" >&2
 fi
 
-if grep -nE 'POSTGRES_PASSWORD[[:space:]]*:' deploy/docker-compose.dev.yml >/tmp/las-focas-postgres-password.txt; then
-  report "deploy/docker-compose.dev.yml contiene POSTGRES_PASSWORD en texto plano; usar POSTGRES_PASSWORD_FILE."
+if grep -nE 'POSTGRES_PASSWORD[[:space:]]*:' deploy/docker-compose.dev.yml deploy/compose.yml >/tmp/las-focas-postgres-password.txt; then
+  report "Se encontró POSTGRES_PASSWORD en texto plano en el compose; usar POSTGRES_PASSWORD_FILE."
   cat /tmp/las-focas-postgres-password.txt >&2
 fi
 rm -f /tmp/las-focas-postgres-password.txt

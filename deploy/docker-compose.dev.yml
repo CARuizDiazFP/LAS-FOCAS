@@ -243,18 +243,18 @@ networks:
 
 secrets:
   api_key_v1:
-    file: ../.secrets/api_key_v1.txt
+    file: ../.secrets/Dev_api_key_v1.txt
   db_password_v1:
-    file: ../.secrets/db_password_v1.txt
+    file: ../.secrets/Dev_db_password_v1.txt
   web_secret_key_v1:
-    file: ../.secrets/web_secret_key_v1.txt
+    file: ../.secrets/Dev_web_secret_key_v1.txt
   telegram_bot_token_v1:
-    file: ../.secrets/telegram_bot_token_v1.txt
+    file: ../.secrets/Dev_telegram_bot_token_v1.txt
   openai_api_key_v1:
-    file: ../.secrets/openai_api_key_v1.txt
+    file: ../.secrets/Dev_openai_api_key_v1.txt
   smtp_password_v1:
-    file: ../.secrets/smtp_password_v1.txt
+    file: ../.secrets/Dev_smtp_password_v1.txt
   slack_bot_token_v1:
-    file: ../.secrets/slack_bot_token_v1.txt
+    file: ../.secrets/Dev_slack_bot_token_v1.txt
   slack_app_token_v1:
-    file: ../.secrets/slack_app_token_v1.txt
+    file: ../.secrets/Dev_slack_app_token_v1.txt

@@ -87,7 +87,7 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 
 Todas las rutas sensibles del servicio `api` requieren API key interna. Se acepta
 `Authorization: Bearer <LAS_FOCAS_API_KEY>` o `X-API-Key: <LAS_FOCAS_API_KEY>`.
-La key se lee desde el secret `api_key_v1` y cae a `LAS_FOCAS_API_KEY` en dev.
+La key se lee desde el secret `api_key_v1` (dev: `.secrets/Dev_api_key_v1.txt`; prod: `.secrets/api_key_v1.txt`) y cae a `LAS_FOCAS_API_KEY` como fallback.
 Sin credenciales se responde `401`, con credencial inválida `403` y sin key
 configurada en el servidor `503`. Permanecen públicas sólo `/health` y
 `/health/version`; `/db-check` queda protegido.
@@ -1030,7 +1030,7 @@ Notas:
 
 - El script `./Start` ejecuta las migraciones Alembic dentro del contenedor `api` luego de que PostgreSQL esté healthy.
 - Para alinear credenciales, `Start` construye `ALEMBIC_URL` a partir de `.env` (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`).
-- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; las credenciales deben reemplazarse por valores seguros propios. En dev, preferir `.secrets/db_password_v1.txt` para la contraseña de PostgreSQL.
+- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; las credenciales deben reemplazarse por valores seguros propios. En dev, preferir `.secrets/Dev_db_password_v1.txt` para la contraseña de PostgreSQL.
 
 #### Códigos de error resumidos
 | Código | Causa principal | Mitigación |

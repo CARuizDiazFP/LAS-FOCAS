@@ -41,7 +41,7 @@ import secrets
 import sys
 
 name = sys.argv[1]
-if name.endswith("_token_v1") or name == "openai_api_key_v1":
+if name.endswith("_token_v1") or name.endswith("openai_api_key_v1"):
     print("")
 else:
     print(secrets.token_urlsafe(48))
@@ -68,13 +68,13 @@ write_secret() {
 mkdir -p "$SECRETS_DIR"
 chmod 700 "$SECRETS_DIR"
 
-write_secret db_password_v1.txt
-write_secret web_secret_key_v1.txt
-write_secret api_key_v1.txt
-write_secret telegram_bot_token_v1.txt
-write_secret openai_api_key_v1.txt
-write_secret smtp_password_v1.txt
-write_secret slack_bot_token_v1.txt
-write_secret slack_app_token_v1.txt
+write_secret Dev_db_password_v1.txt
+write_secret Dev_web_secret_key_v1.txt
+write_secret Dev_api_key_v1.txt
+write_secret Dev_telegram_bot_token_v1.txt
+write_secret Dev_openai_api_key_v1.txt
+write_secret Dev_smtp_password_v1.txt
+write_secret Dev_slack_bot_token_v1.txt
+write_secret Dev_slack_app_token_v1.txt
 
 echo "Bootstrap de secretos locales completado."

@@ -4210,6 +4210,65 @@ async def servicios_ingest_web(
         return JSONResponse({"error": f"Error en ingesta de servicios: {exc!s}"}, status_code=500)
 
 
+@app.post("/api/admin/ingesta/camaras")
+async def camaras_ingest_web(
+    request: Request,
+    file: UploadFile = File(...),
+    csrf_token: str = Form(...),
+    motivo_baneo: str = Form(...),
+) -> JSONResponse:
+    """Ingesta masiva de cámaras desde Excel con baneo administrativo (solo admin)."""
+
+    username, role = _require_auth(request)
+    if role != "admin":
+        return JSONResponse({"error": "Solo admin"}, status_code=403)
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF invalido"}, status_code=403)
+
+    motivo_baneo = motivo_baneo.strip()
+    if not motivo_baneo:
+        return JSONResponse({"error": "El motivo de baneo no puede estar vacío"}, status_code=400)
+
+    if not file.filename:
+        return JSONResponse({"error": "Falta nombre de archivo"}, status_code=400)
+
+    name = file.filename.lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
+        return JSONResponse({"error": "Formato no soportado (use .xlsx o .xlsm)"}, status_code=415)
+
+    try:
+        content = await file.read()
+        files = {
+            "file": (file.filename, content, file.content_type or "application/octet-stream"),
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/ingest/camaras",
+                files=files,
+                data={"motivo_baneo": motivo_baneo, "usuario": username},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error en ingesta de cámaras"}
+
+        logger.info(
+            "action=camaras_ingest_proxy user=%s filename=%s status=%s",
+            username,
+            file.filename,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=camaras_ingest_proxy_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error en ingesta de cámaras: {exc!s}"}, status_code=500)
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,

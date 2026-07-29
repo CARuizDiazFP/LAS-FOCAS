@@ -7,16 +7,20 @@ import AdminDashboard from '../views/AdminDashboard.vue';
 import AdminUsuarios from '../views/AdminUsuarios.vue';
 import AdminServicios from '../views/AdminServicios.vue';
 import AdminIngesta from '../views/AdminIngesta.vue';
+import AdminIngestaServicios from '../views/AdminIngestaServicios.vue';
+import AdminIngestaCamaras from '../views/AdminIngestaCamaras.vue';
 import AdminBaneos from '../views/AdminBaneos.vue';
 
 const routes: RouteRecordRaw[] = [
   { path: '/admin',                  component: AdminDashboard },
   { path: '/admin/usuarios',         component: AdminUsuarios },
   { path: '/admin/servicios',        component: AdminServicios },
-  { path: '/admin/ingesta',          component: AdminIngesta },
-  { path: '/admin/Servicios/Baneos', component: AdminBaneos },
+  { path: '/admin/ingesta',              component: AdminIngesta },
+  { path: '/admin/ingesta/servicios',    component: AdminIngestaServicios },
+  { path: '/admin/ingesta/camaras',      component: AdminIngestaCamaras },
+  { path: '/admin/Servicios/Baneos',     component: AdminBaneos },
   // Redirige cualquier sub-ruta desconocida al dashboard
-  { path: '/admin/:pathMatch(.*)*',  redirect: '/admin' },
+  { path: '/admin/:pathMatch(.*)*',      redirect: '/admin' },
 ];
 
 const router = createRouter({

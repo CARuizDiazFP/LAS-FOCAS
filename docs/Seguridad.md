@@ -111,13 +111,26 @@ bash scripts/firewall_hardening.sh
 
 ## Estrategia de secretos en producción
 
-- No montar `.secrets/` locales en producción.
-- Si se adopta Docker Swarm, declarar secretos productivos como `external: true` y crearlos previamente en los nodos:
-  - `printf '%s' "$POSTGRES_PASSWORD" | docker secret create db_password_v1 -`
-  - repetir para tokens Slack, Telegram, SMTP, OpenAI, `WEB_SECRET_KEY` y `LAS_FOCAS_API_KEY` (`api_key_v1`).
-- Los servicios deben consumir `/run/secrets/<nombre>` con el helper compartido y mantener fallback solo durante la transición.
-- La rotación se hará creando una nueva versión (`*_v2`), actualizando el stack y retirando la versión anterior cuando todos los contenedores hayan sido recreados.
-- Antes de desplegar, validar que no se use `POSTGRES_PASSWORD` en texto plano y que el secret exista en el clúster.
+- Implementado: `deploy/compose.yml` usa Docker Compose Secrets basados en archivo (el host corre Docker en
+  modo no-Swarm — `docker info` reporta `Swarm.LocalNodeState: inactive` —, así que no aplica
+  `docker secret create`/`external: true`; Compose monta el archivo directamente en `/run/secrets/<nombre>`
+  sin necesidad de Swarm).
+- Los 8 secretos (`db_password_v1`, `api_key_v1`, `web_secret_key_v1`, `telegram_bot_token_v1`,
+  `openai_api_key_v1`, `smtp_password_v1`, `slack_bot_token_v1`, `slack_app_token_v1`) usan archivos
+  **sin prefijo** en `.secrets/*.txt` (el prefijo `Dev_` queda reservado exclusivamente para el stack dev,
+  ver `deploy/docker-compose.dev.yml`).
+- Los servicios consumen `/run/secrets/<nombre>` con el helper compartido `get_secret()` (`core/config.py`)
+  y mantienen fallback a `.env` solo durante la transición.
+- **Importante**: si `DATABASE_URL` (o `ALEMBIC_URL`) está seteada en `.env`, tiene prioridad sobre el
+  secreto `db_password_v1` en `_engine_url()` (`db/session.py`, `core/services/repetitividad.py`) y lo anula
+  por completo. Debe quedar comentada (no solo vacía: una variable vacía igual gana sobre el default en
+  `os.getenv`) para que el secret realmente se use.
+- La rotación se hará sobrescribiendo el archivo `.secrets/<nombre>_v1.txt` (o creando `*_v2` si se requiere
+  convivencia temporal) y recreando los contenedores afectados de a uno, verificando health/DB entre cada
+  paso antes de continuar (no usar `./Start`, que reinicia todo el stack de un saque).
+- Antes de desplegar, validar que no se use `POSTGRES_PASSWORD` en texto plano en `deploy/compose.yml`
+  (`scripts/check_no_plaintext_secrets.sh` lo verifica) y que el archivo `.secrets/<nombre>_v1.txt`
+  correspondiente exista y tenga el valor correcto.
 
 ## Autenticación y sesiones
 
@@ -136,7 +149,6 @@ bash scripts/firewall_hardening.sh
 
 ## Próximos pasos
 
-- Completar plan de Docker Secrets productivo con Swarm o secret store equivalente.
 - Automatizar escaneo de vulnerabilidades en CI.
 - Endurecer headers/CORS en servicios web.
 - Revisión periódica de permisos en DB y contenedores.

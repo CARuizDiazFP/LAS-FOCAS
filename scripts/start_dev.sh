@@ -90,7 +90,7 @@ if [ ! -f "$ENV_DEV_FILE" ]; then
   echo -e "${YELLOW}IMPORTANTE: Completá los secretos reales en .secrets/ cuando corresponda.${NC}"
 fi
 
-if [ ! -f "$DEV_SECRETS_DIR/db_password_v1.txt" ] || [ ! -f "$DEV_SECRETS_DIR/api_key_v1.txt" ]; then
+if [ ! -f "$DEV_SECRETS_DIR/Dev_db_password_v1.txt" ] || [ ! -f "$DEV_SECRETS_DIR/Dev_api_key_v1.txt" ]; then
   echo -e "${YELLOW}Faltan Docker Secrets locales. Generando .secrets/*.txt faltantes...${NC}"
   "$ROOT_DIR/scripts/setup_local_secrets.sh"
 fi
@@ -160,7 +160,7 @@ if $CLONE_DB; then
   # Leer credenciales dev desde .env.dev
   DEV_USER=$(read_env_file "POSTGRES_USER" "FOCALBOT")
   DEV_DB=$(read_env_file "POSTGRES_DB" "focas_dev")
-  DEV_PASS=$(read_secret_or_env "db_password_v1.txt" "POSTGRES_PASSWORD" "cambiar_por_password_dev_seguro")
+  DEV_PASS=$(read_secret_or_env "Dev_db_password_v1.txt" "POSTGRES_PASSWORD" "cambiar_por_password_dev_seguro")
   set -u
 
   echo -e "${GREEN}pg_dump '${PROD_DB_NAME}' (prod) | pg_restore '${DEV_DB}' (dev)...${NC}"
@@ -177,7 +177,7 @@ fi
 ########################################
 # Leer variables dev con grep para no contaminar el entorno del script
 DEV_PG_USER=$(read_env_file "POSTGRES_USER" "FOCALBOT")
-DEV_PG_PASS=$(read_secret_or_env "db_password_v1.txt" "POSTGRES_PASSWORD" "cambiar_por_password_dev_seguro")
+DEV_PG_PASS=$(read_secret_or_env "Dev_db_password_v1.txt" "POSTGRES_PASSWORD" "cambiar_por_password_dev_seguro")
 DEV_PG_DB=$(read_env_file "POSTGRES_DB" "focas_dev")
 DEV_PG_PASS_URL=$(urlencode "$DEV_PG_PASS")
 ALEMBIC_URL="postgresql+psycopg://${DEV_PG_USER}:${DEV_PG_PASS_URL}@postgres:5432/${DEV_PG_DB}"

@@ -57,6 +57,8 @@ web/
 2. Centralizar llamadas HTTP en servicios (`web/frontend/src/api/`).
 3. Mantener componentes reutilizables en `web/frontend/src/components/` y vistas en `web/frontend/src/views/`.
 4. Actualizar rutas de Vue Router al introducir pantallas nuevas.
+   - **CRÍTICO**: El SPA tiene un único entry point (`src/main.ts` → `src/router/index.ts`). El archivo `src/admin/router/index.ts` es **código huérfano** y no está conectado a ningún entry point activo. Toda ruta nueva — incluyendo rutas admin — debe agregarse en `src/router/index.ts`.
+   - Las rutas admin son children anidadas bajo `{ path: '/admin', component: AppShell }` en el router unificado. Siempre colocar nuevas rutas **antes** del catch-all `':pathMatch(.*)*'`.
 5. Usar CSS modular y tokens del proyecto; Tailwind solo si ya estuviera activo en ese modulo.
 
 ## Seguridad Obligatoria

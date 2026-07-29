@@ -16,6 +16,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - `db/`: modelos SQLAlchemy async, sesión y migraciones Alembic.
 - `nlp_intent/`: microservicio aislado para clasificación de intención por HTTP.
 - `office_service/`: microservicio de LibreOffice headless para conversiones.
+- `deploy/`: `compose.yml` (producción) y `docker-compose.dev.yml` (desarrollo). Puertos: postgres 5432, api 8001→8000, web 8080, nlp_intent 8100, office 8090, pgadmin 5050.
 - Arquitectura objetivo de nuevas implementaciones: SPA pura con comunicación por API REST (JSON) y WebSocket.
 
 ## Convenciones
@@ -29,6 +30,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ```
 
 - Idioma obligatorio: español en código, commits, PRs y documentación.
+- Rama de trabajo habitual: `dev`. Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
+- Compose de desarrollo: `deploy/docker-compose.dev.yml`. No usar `deploy/compose.yml` en entorno local ni de agentes.
 - Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
 - Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.
 - Mantener type hints y estilos cercanos a PEP 8. Las dependencias se versionan de forma estricta.
@@ -38,6 +41,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 ## Build y Test
 
+- Virtualenv: `source .venv/bin/activate` (activar antes de pytest, pip-audit, alembic y scripts Python)
 - Arranque principal desde la raíz: `./Start`
 - Iteración rápida: `./Start --no-down`
 - Rebuild selectivo: `./Start --rebuild-api`, `./Start --rebuild-frontend`
@@ -80,7 +84,10 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ## Agentes y Skills
 
 - Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
-- Usar skills de `.github/skills/` para workflows repetibles como pytest, alembic, Docker, mantenimiento y sincronización trazable del repositorio.
+- Usar skills de `.github/skills/` para workflows repetibles como pytest, alembic, Docker, mantenimiento, sincronización trazable del repositorio y verificación de arquitectura frontend.
+- Para tareas de frontend (agregar rutas, vistas o componentes Vue), usar la skill `frontend-spa-architecture` para verificar el entry point activo y el router unificado antes de escribir código.
 - Para revisiones safe-by-design de seguridad, usar `security` junto con `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`; priorizar `.env`, `deploy/`, `Keys/`, Docker, red y superficies expuestas.
+- Para migrar o rotar Docker Secrets file-based (dev y prod), usar la skill `secrets-rollout`: recreate de a un servicio con verificación de health/DB entre pasos, nunca password como argumento de shell.
 - El agente `security` se enfoca en APIs y SPAs modernas: XSS en Vue 3, CORS en FastAPI y manejo seguro de tokens/sesiones.
 - Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.github/skills/skill-generator/`.
+- **Claude Code**: comandos slash disponibles en `.claude/commands/` (`/repo-updater`, `/generar-pr-diario`, `/mantenimiento-disco`, `/migracion-alembic`, `/nuevo-modulo`, `/revisar-seguridad`, `/crear-skill`). Catálogo detallado de agentes, skills y comandos en `CLAUDE.md`.

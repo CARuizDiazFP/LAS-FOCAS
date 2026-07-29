@@ -11,10 +11,17 @@ La cadena DSN se construye a partir de variables de entorno:
 - `POSTGRES_USER`: usuario para la conexión.
 - `POSTGRES_PASSWORD`: contraseña del usuario como fallback de transición.
 
-En el stack de desarrollo, la contraseña se lee primero desde
-`/run/secrets/db_password_v1`, montado por Docker Compose desde
-`.secrets/db_password_v1.txt`. Si el archivo no existe, el código conserva el
-fallback a `POSTGRES_PASSWORD` para no bloquear entornos locales antiguos.
+En dev, la contraseña se lee primero desde `/run/secrets/db_password_v1`,
+montado por Docker Compose desde `.secrets/Dev_db_password_v1.txt` (prefijo
+`Dev_`). En producción (`deploy/compose.yml`) se usa el mismo mecanismo pero
+con el archivo sin prefijo `.secrets/db_password_v1.txt`. Si el archivo no
+existe, el código conserva el fallback a `POSTGRES_PASSWORD` para no bloquear
+entornos locales antiguos.
+
+**Atención:** si `DATABASE_URL`/`ALEMBIC_URL` está seteada en el `.env`
+correspondiente, tiene prioridad sobre el secreto y lo anula por completo
+(ver `_engine_url()`). Debe quedar comentada (no solo vacía) para que el
+secret realmente se use.
 
 La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la versión del servidor
 para verificar el estado de la base de datos.

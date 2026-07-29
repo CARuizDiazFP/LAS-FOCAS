@@ -55,7 +55,11 @@ web/
 - `web/frontend/src/router/index.ts` carga `Login`, `Panel`, `SLA`, `Reportes`, `Cámara Detail` y vistas admin mediante `import()` dinámico.
 - Los módulos migrados desde las tabs legacy se cargan como rutas dedicadas y conservan lazy loading por componente.
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
-- La administración incorpora `/admin/ingesta` para cargar el Excel de Servicios SLA con barra de progreso dark y subida automática al seleccionar archivo.
+- La administración incorpora `/admin/ingesta` como **hub de navegación** con dos sub-módulos:
+  - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
+  - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo.
+
+> **CRITICAL — Arquitectura del router admin**: Existe el archivo `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts`, pero ambos son **código huérfano**. El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y usa `src/router/index.ts` como router unificado. Las rutas `/admin/*` son **children anidadas** de `{ path: '/admin', component: AppShell }` dentro de ese router. Toda ruta admin nueva debe agregarse en `src/router/index.ts`, no en `src/admin/router/index.ts`.
 
 ### Tokens y estilos compartidos
 
