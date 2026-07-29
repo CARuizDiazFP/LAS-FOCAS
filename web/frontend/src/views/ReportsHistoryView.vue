@@ -4,14 +4,23 @@
   Descripción: Vista de histórico persistente de reportes generados desde /api/reports/history
 -->
 <template>
-  <div class="reports-view">
-    <header class="reports-header">
-      <h1>Historial de Reportes</h1>
-      <button class="btn subtle" @click="loadFiles">Actualizar</button>
+  <section class="reports-view">
+    <header class="reports-view__header">
+      <div>
+        <span class="reports-view__kicker">Reportes</span>
+        <h1>Historial</h1>
+        <p class="reports-view__subtitle">Todas las corridas registradas, con sus salidas.</p>
+      </div>
+      <button class="btn subtle" @click="loadFiles">
+        <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+        Actualizar
+      </button>
     </header>
 
-    <section class="filters" aria-label="Filtros de reportes">
-      <label>
+    <hr class="noc-rule" />
+
+    <section class="reports-view__filters" aria-label="Filtros de reportes">
+      <label class="reports-view__field reports-view__field--type">
         <span>Tipo</span>
         <select v-model="filters.type" @change="loadFiles">
           <option value="">Todos</option>
@@ -19,7 +28,7 @@
           <option value="repetitividad">Repetitividad</option>
         </select>
       </label>
-      <label>
+      <label class="reports-view__field reports-view__field--status">
         <span>Estado</span>
         <select v-model="filters.status" @change="loadFiles">
           <option value="">Todos</option>
@@ -28,64 +37,74 @@
           <option value="running">En curso</option>
         </select>
       </label>
-      <label>
+      <label class="reports-view__field reports-view__field--month">
         <span>Mes</span>
         <input v-model.number="filters.month" min="1" max="12" type="number" @change="loadFiles" />
       </label>
-      <label>
+      <label class="reports-view__field reports-view__field--year">
         <span>Año</span>
         <input v-model.number="filters.year" min="2000" max="2100" type="number" @change="loadFiles" />
       </label>
-      <button class="btn subtle small" @click="clearFilters">Limpiar</button>
+      <button class="btn reports-view__clear" @click="clearFilters">Limpiar</button>
+      <span class="reports-view__count"><strong>{{ items.length }}</strong> corridas</span>
     </section>
 
-    <div v-if="loading" class="result-box info">Cargando...</div>
-    <div v-else-if="error" class="result-box error">{{ error }}</div>
-    <div v-else-if="items.length === 0" class="result-box muted">No hay reportes disponibles aún.</div>
-    <table v-else class="reports-table">
-      <thead>
-        <tr>
-          <th>Estado</th>
-          <th>Informe</th>
-          <th>Período</th>
-          <th>Fuente</th>
-          <th>Usuario</th>
-          <th>Fecha</th>
-          <th>Duración</th>
-          <th>Salidas</th>
-          <th>Error</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="item in items" :key="item.id">
-          <td><span :class="['status-pill', item.status]">{{ statusLabel(item.status) }}</span></td>
-          <td>{{ reportLabel(item.report_type) }}</td>
-          <td>{{ formatPeriod(item.period_month, item.period_year) }}</td>
-          <td>{{ sourceLabel(item.source) }}</td>
-          <td>{{ item.username }}</td>
-          <td class="file-date">{{ formatIsoDate(item.started_at) }}</td>
-          <td class="file-size">{{ formatDuration(item.duration_ms) }}</td>
-          <td>
-            <div class="outputs">
-              <a
-                v-for="link in outputLinks(item)"
-                :key="`${item.id}-${link.label}-${link.href}`"
-                :href="link.href"
-                target="_blank"
-                rel="noopener"
-                class="btn subtle small"
-              >
-                {{ link.label }}
-              </a>
-            </div>
-          </td>
-          <td class="error-cell">
-            {{ item.error_message || item.error_code || '-' }}
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
+    <div class="reports-view__scroll">
+      <div v-if="loading" class="reports-view__state-box">
+        <i class="ph ph-circle-notch reports-view__spin" aria-hidden="true"></i>
+        Cargando...
+      </div>
+      <div v-else-if="error" class="reports-view__state-box is-error">
+        <i class="ph ph-warning-circle" aria-hidden="true"></i>
+        <p>{{ error }}</p>
+      </div>
+      <div v-else-if="items.length === 0" class="reports-view__state-box">
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+        <p>No hay reportes disponibles aún.</p>
+      </div>
+      <table v-else class="reports-view__table">
+        <thead>
+          <tr>
+            <th>Estado</th>
+            <th>Informe</th>
+            <th>Período</th>
+            <th>Fuente</th>
+            <th>Usuario</th>
+            <th>Fecha</th>
+            <th>Duración</th>
+            <th>Salidas</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in items" :key="item.id">
+            <td><span :class="['reports-view__pill', `is-${item.status}`]">{{ statusLabel(item.status) }}</span></td>
+            <td>{{ reportLabel(item.report_type) }}</td>
+            <td class="reports-view__num">{{ formatPeriod(item.period_month, item.period_year) }}</td>
+            <td class="reports-view__muted">{{ sourceLabel(item.source) }}</td>
+            <td class="reports-view__muted">{{ item.username }}</td>
+            <td class="reports-view__num reports-view__muted">{{ formatIsoDate(item.started_at) }}</td>
+            <td class="reports-view__num reports-view__muted">{{ formatDuration(item.duration_ms) }}</td>
+            <td>
+              <div class="reports-view__outputs">
+                <a
+                  v-for="link in outputLinks(item)"
+                  :key="`${item.id}-${link.label}-${link.href}`"
+                  :href="link.href"
+                  target="_blank"
+                  rel="noopener"
+                  class="reports-view__output-link"
+                >{{ link.label }}</a>
+              </div>
+            </td>
+            <td class="reports-view__error-cell">
+              {{ item.error_message || item.error_code || '—' }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 </template>
 
 <script setup lang="ts">
@@ -172,13 +191,13 @@ function formatPeriod(month: number, year: number): string {
 }
 
 function formatDuration(ms: number | null): string {
-  if (ms === null || ms === undefined) return '-';
+  if (ms === null || ms === undefined) return '—';
   if (ms < 1000) return `${ms} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
 function formatIsoDate(value: string | null): string {
-  if (!value) return '-';
+  if (!value) return '—';
   return new Date(value).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
 }
 
@@ -209,85 +228,248 @@ onMounted(loadFiles);
 </script>
 
 <style scoped>
-.reports-view { padding: 24px; }
-.reports-header {
+.reports-view {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.reports-view__header {
+  display: flex;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 20px;
+  gap: 16px;
+  padding: 22px 26px 0;
 }
-.reports-header h1 { margin: 0; font-size: 1.4rem; color: var(--text); }
-.filters {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
-  gap: 10px;
-  align-items: end;
-  margin-bottom: 18px;
+
+.reports-view__kicker {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-accent);
 }
-.filters label {
-  display: grid;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 0.78rem;
+
+.reports-view__header h1 {
+  font-size: 27px;
+  margin: 3px 0 0;
 }
-.filters select,
-.filters input {
-  width: 100%;
+
+.reports-view__subtitle {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+}
+
+.reports-view__header .btn {
+  min-height: 34px;
+  font-size: 12.5px;
+}
+
+.reports-view__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 11px;
+  padding: 15px 26px 14px;
+  flex-wrap: wrap;
+}
+
+.reports-view__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+
+.reports-view__field--type,
+.reports-view__field--status { width: 150px; }
+.reports-view__field--month { width: 92px; }
+.reports-view__field--year { width: 104px; }
+
+.reports-view__field select,
+.reports-view__field input {
   min-height: 36px;
-  border: 1px solid var(--border);
-  color: var(--text);
-  background: rgba(255,255,255,0.04);
-  padding: 7px 9px;
+  padding: 0 10px;
+  font-size: 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
 }
-.reports-table {
+
+.reports-view__clear {
+  color: var(--color-accent);
+  padding-inline: 2.8px;
+}
+
+.reports-view__clear:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.reports-view__count {
+  margin-left: auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.reports-view__count strong {
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.reports-view__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 26px 26px;
+}
+
+.reports-view__state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  margin: 34px auto;
+  padding: 34px 22px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
+  text-align: center;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
+.reports-view__state-box i {
+  font-size: 26px;
+  color: var(--color-neutral-600);
+}
+
+.reports-view__state-box p {
+  margin: 0;
+}
+
+.reports-view__state-box.is-error {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-state-error) 45%, transparent);
+}
+
+.reports-view__state-box.is-error i {
+  color: var(--color-state-error);
+}
+
+.reports-view__spin {
+  animation: spin 1s linear infinite;
+}
+
+.reports-view__table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: 14px;
 }
-.reports-table th {
+
+.reports-view__table th {
   text-align: left;
-  padding: 10px 12px;
-  color: var(--muted);
-  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  border-bottom: 1px solid var(--border);
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  padding: var(--space-2);
+  border-bottom: 1px solid transparent;
 }
-.reports-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  vertical-align: top;
+
+.reports-view__table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid transparent;
 }
-.reports-table tr:hover td { background: rgba(255,255,255,0.02); }
-.file-size, .file-date { color: var(--muted); font-size: 0.82rem; }
-.btn.small { padding: 5px 10px; font-size: 0.8rem; }
-.outputs {
+
+.reports-view__table thead tr {
+  background: linear-gradient(to right, transparent,
+    var(--color-divider) 48px, var(--color-divider) calc(100% - 48px), transparent)
+    no-repeat bottom / 100% 1px;
+}
+
+.reports-view__table tbody tr {
+  background: linear-gradient(to right, transparent,
+    color-mix(in srgb, var(--color-text) 8%, transparent) 48px,
+    color-mix(in srgb, var(--color-text) 8%, transparent) calc(100% - 48px), transparent)
+    no-repeat bottom / 100% 1px;
+}
+
+.reports-view__table tbody tr:hover {
+  background:
+    linear-gradient(color-mix(in srgb, var(--color-text) 4%, transparent),
+                    color-mix(in srgb, var(--color-text) 4%, transparent)) no-repeat 0 0 / 100% 100%,
+    linear-gradient(to right, transparent,
+      color-mix(in srgb, var(--color-text) 8%, transparent) 48px,
+      color-mix(in srgb, var(--color-text) 8%, transparent) calc(100% - 48px), transparent)
+      no-repeat bottom / 100% 1px;
+}
+
+.reports-view__num {
+  font-variant-numeric: tabular-nums;
+}
+
+.reports-view__muted {
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
+.reports-view__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--color-text) 82%, transparent);
+}
+
+.reports-view__pill::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.reports-view__pill.is-success { border: 1px solid color-mix(in srgb, var(--color-state-ok) 40%, transparent); }
+.reports-view__pill.is-running { border: 1px solid color-mix(in srgb, var(--color-state-warn) 40%, transparent); }
+.reports-view__pill.is-error { border: 1px solid color-mix(in srgb, var(--color-state-error) 40%, transparent); }
+
+.reports-view__outputs {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.status-pill {
-  display: inline-flex;
-  min-width: 72px;
-  justify-content: center;
-  padding: 4px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  font-size: 0.76rem;
+
+.reports-view__output-link {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-divider);
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  text-decoration: none;
 }
-.status-pill.success { color: #7ee787; border-color: rgba(126,231,135,0.45); }
-.status-pill.error { color: #ff9b9b; border-color: rgba(255,155,155,0.45); }
-.status-pill.running { color: #ffd166; border-color: rgba(255,209,102,0.45); }
-.error-cell {
+
+.reports-view__output-link:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.reports-view__error-cell {
   max-width: 260px;
-  color: var(--muted);
   overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
 }
+
+.reports-view__error-cell:not(:empty) {
+  color: var(--color-state-error);
+}
+
 @media (max-width: 900px) {
-  .filters { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
-  .reports-table { min-width: 920px; }
-  .reports-view { overflow-x: auto; }
+  .reports-view__table { min-width: 920px; }
+  .reports-view__scroll { overflow-x: auto; }
 }
 </style>

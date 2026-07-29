@@ -1,115 +1,173 @@
 <!--
   Nombre de archivo: ServicioDetalleView.vue
   Ubicación de archivo: web/frontend/src/views/ServicioDetalleView.vue
-  Descripción: Vista de detalle de servicio con cabecera técnica e interior dashboard de tarjetas operativas
+  Descripción: Vista de detalle de servicio — cabecera, histórico de IDs, tira de métricas y paneles operativos
 -->
 <template>
   <section class="servicio-detalle">
+    <nav class="servicio-detalle__migas" aria-label="Ruta de navegación">
+      <RouterLink to="/servicios">Servicios</RouterLink>
+      <i class="ph ph-caret-right" aria-hidden="true"></i>
+      <span class="servicio-detalle__migas-actual">{{ idParam || '—' }}</span>
+    </nav>
+
     <header class="servicio-detalle__header">
-      <div>
-        <p class="servicio-detalle__kicker">Servicio · ID origen {{ servicio?.numero_primer_servicio || '---' }}</p>
+      <div class="servicio-detalle__identity">
+        <span class="servicio-detalle__kicker">Servicio · ID origen {{ servicio?.numero_primer_servicio || '---' }}</span>
         <h1>{{ servicio?.nombre_cliente || 'Cliente sin dato' }}</h1>
-        <p class="servicio-detalle__subline">{{ domicilio }}</p>
+        <p class="servicio-detalle__domicilio">{{ domicilio }}</p>
       </div>
 
-      <div class="servicio-detalle__badges">
-        <span class="badge">Estado: {{ servicio?.estado_servicio || 'DESCONOCIDO' }}</span>
-        <span class="badge">Tipo: {{ servicio?.tipo_servicio || 'Sin dato' }}</span>
-        <span class="badge">SLA: {{ servicio?.sla_prometido || 'Sin dato' }}</span>
+      <div class="servicio-detalle__side">
+        <div class="servicio-detalle__estado-row">
+          <span :class="['servicio-detalle__estado-dot', `is-${estadoToken}`]" aria-hidden="true"></span>
+          <span class="servicio-detalle__estado-text">{{ servicio?.estado_servicio || 'Desconocido' }}</span>
+          <span class="servicio-detalle__separator" aria-hidden="true"></span>
+          <span class="servicio-detalle__chip">{{ (servicio?.tipo_servicio || 'Sin dato').toUpperCase() }}</span>
+          <span v-if="servicio?.sla_prometido" class="servicio-detalle__chip is-outline">SLA {{ servicio.sla_prometido }}</span>
+        </div>
+
+        <div class="servicio-detalle__actions">
+          <button class="btn subtle" type="button" disabled title="Próximamente">
+            <i class="ph ph-file-arrow-down" aria-hidden="true"></i>
+            Exportar
+          </button>
+          <RouterLink class="btn primary" to="/infra">
+            <i class="ph ph-tree-structure" aria-hidden="true"></i>
+            Ver camino FO
+          </RouterLink>
+        </div>
       </div>
     </header>
 
-    <section class="servicio-detalle__history" aria-label="Histórico de IDs">
-      <strong>Histórico de IDs</strong>
-      <div class="servicio-detalle__history-track">
-        <span v-for="(id, index) in historicoIds" :key="`${id}-${index}`" class="history-node">
-          {{ id }}
-        </span>
+    <hr class="noc-rule" />
+
+    <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
+      <span class="servicio-detalle__historico-label">Histórico de IDs</span>
+      <div class="servicio-detalle__historico-track">
+        <template v-for="(id, index) in historicoIds" :key="`${id}-${index}`">
+          <span :class="['servicio-detalle__nodo', { 'is-current': index === historicoIds.length - 1 }]">{{ id }}</span>
+          <i v-if="index < historicoIds.length - 1" class="ph ph-arrow-right" aria-hidden="true"></i>
+        </template>
       </div>
     </section>
 
     <p v-if="error" class="servicio-detalle__error">{{ error }}</p>
     <p v-if="loading" class="servicio-detalle__loading">Cargando detalle del servicio...</p>
 
-    <section v-if="servicio" class="servicio-detalle__dashboard">
-      <article class="dash-card" role="button" tabindex="0">
-        <header>
-          <h2>RECLAMOS</h2>
-          <small>SLA + Repetitividad</small>
-        </header>
-
-        <p class="dash-line">
-          Reclamos asociados en servicio: <strong>{{ reclamosCount }}</strong>
-        </p>
-        <p class="dash-line" v-if="reportesLoading">Cargando histórico de informes...</p>
-        <p class="dash-line error" v-else-if="reportesError">{{ reportesError }}</p>
-        <p class="dash-line" v-else>
-          SLA: <strong>{{ resumenSla }}</strong>
-        </p>
-        <p class="dash-line" v-if="!reportesLoading && !reportesError">
-          Repetitividad: <strong>{{ resumenRepetitividad }}</strong>
-        </p>
-
-        <div class="dash-actions">
-          <RouterLink class="chip-link" to="/sla">Abrir SLA</RouterLink>
-          <RouterLink class="chip-link" to="/repetitividad">Abrir Repetitividad</RouterLink>
-          <RouterLink class="chip-link" to="/reports-history">Historial</RouterLink>
+    <template v-if="servicio">
+      <section class="servicio-detalle__metrics" aria-label="Métricas del servicio">
+        <div class="servicio-detalle__metric">
+          <span class="servicio-detalle__metric-label">Reclamos 12m</span>
+          <strong class="servicio-detalle__metric-value">{{ reclamosCount }}</strong>
+          <span class="servicio-detalle__metric-note">—</span>
         </div>
-      </article>
-
-      <article class="dash-card" role="button" tabindex="0">
-        <header>
-          <h2>FO</h2>
-          <small>Camino de fibra óptica</small>
-        </header>
-
-        <p class="dash-line" v-if="foLoading">Cargando rutas FO del servicio...</p>
-        <p class="dash-line error" v-else-if="foError">{{ foError }}</p>
-        <template v-else>
-          <p class="dash-line">
-            Rutas detectadas: <strong>{{ foRutas.length }}</strong>
-          </p>
-          <p class="dash-line" v-if="rutaPrincipal">
-            Ruta principal: <strong>{{ rutaPrincipal.nombre }}</strong> ({{ rutaPrincipal.tipo }})
-          </p>
-          <p class="dash-line" v-if="foTrackingResumen">
-            Topología: <strong>{{ foTrackingResumen.camaras }}</strong> cámaras ·
-            <strong>{{ foTrackingResumen.cables }}</strong> cables
-          </p>
-          <p class="dash-line" v-if="foTrackingResumen?.puntaA || foTrackingResumen?.puntaB">
-            Puntas: {{ foTrackingResumen?.puntaA || 'N/D' }} -> {{ foTrackingResumen?.puntaB || 'N/D' }}
-          </p>
-        </template>
-
-        <div class="dash-actions">
-          <RouterLink class="chip-link" to="/infra">Ir a Infra FO</RouterLink>
+        <div class="servicio-detalle__metric">
+          <span class="servicio-detalle__metric-label">SLA</span>
+          <strong class="servicio-detalle__metric-value">{{ reportesLoading ? '—' : slaEstadoCorto }}</strong>
+          <span class="servicio-detalle__metric-note">prometido {{ servicio.sla_prometido || '—' }}</span>
         </div>
-      </article>
+        <div class="servicio-detalle__metric">
+          <span class="servicio-detalle__metric-label">Rutas FO</span>
+          <strong class="servicio-detalle__metric-value">{{ foLoading ? '—' : foRutas.length }}</strong>
+          <span class="servicio-detalle__metric-note">principal + backup</span>
+        </div>
+        <div class="servicio-detalle__metric">
+          <span class="servicio-detalle__metric-label">Cámaras</span>
+          <strong class="servicio-detalle__metric-value">{{ foLoading ? '—' : (foTrackingResumen?.camaras ?? '—') }}</strong>
+          <span class="servicio-detalle__metric-note">{{ foTrackingResumen?.cables ?? 0 }} cables tributando</span>
+        </div>
+      </section>
 
-      <article class="dash-card" role="button" tabindex="0">
-        <header>
-          <h2>Ingresos</h2>
-          <small>Registro de intervención</small>
-        </header>
-        <p>
-          Contenedor preparado para registrar ingresos a cámaras por las que tributa
-          el servicio con trazabilidad operativa.
-        </p>
-      </article>
+      <section class="servicio-detalle__panels">
+        <article class="servicio-detalle__panel">
+          <header>
+            <i class="ph ph-warning-octagon" aria-hidden="true"></i>
+            <h2>Reclamos</h2>
+            <small>SLA + Repetitividad</small>
+          </header>
+          <div class="servicio-detalle__hairline"></div>
 
-      <article class="dash-card" role="button" tabindex="0">
-        <header>
-          <h2>Análisis de mejora</h2>
-          <small>Asistencia LLM</small>
-        </header>
-        <p class="dash-line">
-          Contexto listo para análisis: cliente, estado, SLA, histórico de IDs y resumen FO.
-        </p>
-        <p class="dash-line">
-          Próximo paso: integrar endpoint de recomendación con prompt técnico y trazabilidad.
-        </p>
-      </article>
-    </section>
+          <p class="servicio-detalle__kv">
+            <span>Reclamos asociados</span>
+            <span>{{ reclamosCount }}</span>
+          </p>
+          <p v-if="reportesLoading" class="servicio-detalle__kv"><span>Informes</span><span>Cargando...</span></p>
+          <p v-else-if="reportesError" class="servicio-detalle__kv is-error"><span>Informes</span><span>{{ reportesError }}</span></p>
+          <template v-else>
+            <p class="servicio-detalle__kv"><span>SLA</span><span>{{ resumenSla }}</span></p>
+            <p class="servicio-detalle__kv"><span>Repetitividad</span><span>{{ resumenRepetitividad }}</span></p>
+          </template>
+
+          <div class="servicio-detalle__panel-actions">
+            <RouterLink class="servicio-detalle__panel-link" to="/sla">Abrir SLA</RouterLink>
+            <RouterLink class="servicio-detalle__panel-link" to="/repetitividad">Abrir Repetitividad</RouterLink>
+            <RouterLink class="servicio-detalle__panel-link" to="/reports-history">Historial</RouterLink>
+          </div>
+        </article>
+
+        <article class="servicio-detalle__panel">
+          <header>
+            <i class="ph ph-tree-structure" aria-hidden="true"></i>
+            <h2>Camino FO</h2>
+            <small>Infraestructura</small>
+          </header>
+          <div class="servicio-detalle__hairline"></div>
+
+          <p v-if="foLoading" class="servicio-detalle__kv"><span>Rutas FO</span><span>Cargando...</span></p>
+          <p v-else-if="foError" class="servicio-detalle__kv is-error"><span>Rutas FO</span><span>{{ foError }}</span></p>
+          <template v-else>
+            <p class="servicio-detalle__kv"><span>Rutas detectadas</span><span>{{ foRutas.length }}</span></p>
+            <p v-if="rutaPrincipal" class="servicio-detalle__kv">
+              <span>Ruta principal</span><span>{{ rutaPrincipal.nombre }} ({{ rutaPrincipal.tipo }})</span>
+            </p>
+            <p v-if="foTrackingResumen" class="servicio-detalle__kv">
+              <span>Topología</span><span>{{ foTrackingResumen.camaras }} cámaras · {{ foTrackingResumen.cables }} cables</span>
+            </p>
+            <p v-if="foTrackingResumen?.puntaA || foTrackingResumen?.puntaB" class="servicio-detalle__kv">
+              <span>Puntas</span><span>{{ foTrackingResumen?.puntaA || 'N/D' }} → {{ foTrackingResumen?.puntaB || 'N/D' }}</span>
+            </p>
+          </template>
+
+          <div class="servicio-detalle__panel-actions">
+            <RouterLink class="servicio-detalle__panel-link" to="/infra">Ir a Infra FO</RouterLink>
+            <RouterLink class="servicio-detalle__panel-link" to="/infra">Ver tracking</RouterLink>
+          </div>
+        </article>
+
+        <article class="servicio-detalle__panel">
+          <header>
+            <i class="ph ph-sign-in" aria-hidden="true"></i>
+            <h2>Ingresos</h2>
+            <small>Trazabilidad</small>
+          </header>
+          <div class="servicio-detalle__hairline"></div>
+          <p class="servicio-detalle__kv-text">
+            Contenedor preparado para registrar ingresos a cámaras por las que tributa el servicio, con trazabilidad operativa.
+          </p>
+
+          <div class="servicio-detalle__panel-actions">
+            <button class="servicio-detalle__panel-link" type="button" disabled title="Próximamente">Registrar ingreso</button>
+          </div>
+        </article>
+
+        <article class="servicio-detalle__panel">
+          <header>
+            <i class="ph ph-sparkle" aria-hidden="true"></i>
+            <h2>Análisis de mejora</h2>
+            <small>Asistencia LLM</small>
+          </header>
+          <div class="servicio-detalle__hairline"></div>
+          <p class="servicio-detalle__kv-text">
+            Contexto listo para análisis: cliente, estado, SLA, histórico de IDs y resumen FO.
+          </p>
+
+          <div class="servicio-detalle__panel-actions">
+            <button class="servicio-detalle__panel-link" type="button" disabled title="Próximamente">Generar análisis</button>
+          </div>
+        </article>
+      </section>
+    </template>
   </section>
 </template>
 
@@ -117,7 +175,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { getServicioDetail, type ServicioItem } from '../api/servicios';
+import { estadoServicioToken, getServicioDetail, type ServicioItem } from '../api/servicios';
 
 const route = useRoute();
 const router = useRouter();
@@ -189,6 +247,7 @@ const historicoIds = computed(() => {
 });
 
 const reclamosCount = computed(() => servicio.value?.reclamos?.length ?? 0);
+const estadoToken = computed(() => estadoServicioToken(servicio.value?.estado_servicio));
 
 const rutaPrincipal = computed(() => {
   const rutas = foRutas.value;
@@ -201,6 +260,11 @@ const rutaPrincipal = computed(() => {
 
 const resumenSla = computed(() => formatReporteSummary(reporteSla.value));
 const resumenRepetitividad = computed(() => formatReporteSummary(reporteRepetitividad.value));
+
+const slaEstadoCorto = computed(() => {
+  if (!reporteSla.value) return 'Sin informes';
+  return reporteSla.value.status === 'success' ? 'Informe OK' : reporteSla.value.status;
+});
 
 const domicilio = computed(() => {
   if (!servicio.value) return 'Sin dato';
@@ -343,161 +407,316 @@ watch(
 
 <style scoped>
 .servicio-detalle {
-  display: grid;
-  gap: var(--space-4);
+  padding-bottom: 26px;
+}
+
+.servicio-detalle__migas {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 16px 26px 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 48%, transparent);
+}
+
+.servicio-detalle__migas a {
+  color: inherit;
+}
+
+.servicio-detalle__migas i {
+  font-size: 11px;
+}
+
+.servicio-detalle__migas-actual {
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  font-variant-numeric: tabular-nums;
 }
 
 .servicio-detalle__header {
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
-  background: linear-gradient(155deg, rgba(8, 18, 34, 0.92), rgba(17, 37, 66, 0.88));
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-3);
+  align-items: end;
+  gap: 20px;
+  padding: 14px 26px 18px;
+}
+
+.servicio-detalle__identity {
+  min-width: 0;
 }
 
 .servicio-detalle__kicker {
-  margin: 0 0 var(--space-1);
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  color: var(--color-accent);
 }
 
 .servicio-detalle__header h1 {
-  margin: 0;
-  font-size: 1.25rem;
+  margin: 6px 0 0;
+  font-size: 34px;
+  line-height: 1.1;
+  text-wrap: pretty;
 }
 
-.servicio-detalle__subline {
-  margin: var(--space-2) 0 0;
-  color: var(--color-text-muted);
+.servicio-detalle__domicilio {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
-.servicio-detalle__badges {
+.servicio-detalle__side {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-content: flex-start;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 9px;
 }
 
-.badge {
-  border: 1px solid rgba(96, 165, 250, 0.45);
-  background: rgba(59, 130, 246, 0.16);
-  border-radius: var(--radius-pill);
-  padding: 4px 10px;
-  font-size: 0.76rem;
-  color: #dbeafe;
-}
-
-.servicio-detalle__history {
-  border: 1px dashed var(--color-border-default);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  display: grid;
-  gap: var(--space-2);
-}
-
-.servicio-detalle__history-track {
+.servicio-detalle__estado-row {
   display: flex;
   align-items: center;
+  gap: 7px;
+}
+
+.servicio-detalle__estado-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-state-idle);
+}
+.servicio-detalle__estado-dot.is-ok { background: var(--color-state-ok); }
+.servicio-detalle__estado-dot.is-warn { background: var(--color-state-warn); }
+.servicio-detalle__estado-dot.is-error { background: var(--color-state-error); }
+
+.servicio-detalle__estado-text {
+  font-family: var(--font-heading);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.servicio-detalle__separator {
+  width: 1px;
+  height: 13px;
+  background: var(--color-divider);
+}
+
+.servicio-detalle__chip {
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  background: var(--color-neutral-800);
+  color: var(--color-neutral-100);
+}
+
+.servicio-detalle__chip.is-outline {
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+}
+
+.servicio-detalle__actions {
+  display: flex;
+  gap: 7px;
+}
+
+.servicio-detalle__actions .btn {
+  min-height: 34px;
+  font-size: 12.5px;
+}
+
+.servicio-detalle__historico {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 16px 26px;
+}
+
+.servicio-detalle__historico-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-neutral-500);
+}
+
+.servicio-detalle__historico-track {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
-  gap: var(--space-2);
 }
 
-.history-node {
-  border: 1px solid rgba(96, 165, 250, 0.42);
-  border-radius: var(--radius-pill);
-  padding: 4px 10px;
-  font-size: 0.82rem;
-  color: #bfdbfe;
-  background: rgba(30, 58, 96, 0.35);
+.servicio-detalle__historico-track i {
+  font-size: 13px;
+  color: var(--color-neutral-600);
 }
 
-.history-node:not(:last-child)::after {
-  content: '->';
-  margin-left: 10px;
-  color: var(--color-text-muted);
+.servicio-detalle__nodo {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 11px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: color-mix(in srgb, var(--color-text) 68%, transparent);
+}
+
+.servicio-detalle__nodo.is-current {
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
 }
 
 .servicio-detalle__error {
-  margin: 0;
-  color: #fca5a5;
+  margin: 0 26px;
+  color: var(--color-state-error);
 }
 
 .servicio-detalle__loading {
-  margin: 0;
-  color: var(--color-text-muted);
+  margin: 0 26px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
-.servicio-detalle__dashboard {
+.servicio-detalle__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 11px;
+  padding: 0 26px 16px;
+}
+
+.servicio-detalle__metric {
+  padding: 11px 13px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.servicio-detalle__metric-label {
+  display: block;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-neutral-500);
+}
+
+.servicio-detalle__metric-value {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-heading);
+  font-size: 24px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.servicio-detalle__metric-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.servicio-detalle__panels {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: 11px;
+  padding: 0 26px 26px;
 }
 
-.dash-card {
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  padding: var(--space-3);
-  background: linear-gradient(165deg, rgba(12, 20, 34, 0.95), rgba(19, 32, 54, 0.9));
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
-  min-height: 170px;
+.servicio-detalle__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  min-height: 158px;
 }
 
-.dash-card header {
+.servicio-detalle__panel header {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  gap: 8px;
 }
 
-.dash-card h2 {
+.servicio-detalle__panel header i {
+  font-size: 16px;
+  color: var(--color-accent);
+  align-self: center;
+}
+
+.servicio-detalle__panel h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 15px;
 }
 
-.dash-card small {
-  color: var(--color-text-muted);
+.servicio-detalle__panel small {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-neutral-500);
 }
 
-.dash-card p {
+.servicio-detalle__hairline {
+  height: 1px;
+  background: var(--color-divider);
+}
+
+.servicio-detalle__kv {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   margin: 0;
-  color: var(--color-text-secondary, #cbd5e1);
-  line-height: 1.45;
+  font-size: 12.5px;
 }
 
-.dash-line {
+.servicio-detalle__kv span:first-child {
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.servicio-detalle__kv span:last-child {
+  margin-left: auto;
+  text-align: right;
+  color: var(--color-text);
+}
+
+.servicio-detalle__kv.is-error span:last-child {
+  color: var(--color-state-error);
+}
+
+.servicio-detalle__kv-text {
   margin: 0;
-  font-size: 0.88rem;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
 }
 
-.dash-line.error {
-  color: #fca5a5;
-}
-
-.dash-actions {
+.servicio-detalle__panel-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 4px;
 }
 
-.chip-link {
+.servicio-detalle__panel-link {
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 1px solid var(--color-divider);
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--color-text) 72%, transparent);
   text-decoration: none;
-  border: 1px solid rgba(96, 165, 250, 0.48);
-  border-radius: var(--radius-pill);
-  padding: 4px 10px;
-  font-size: 0.78rem;
-  color: #bfdbfe;
-  background: rgba(37, 99, 235, 0.15);
+  background: transparent;
+  cursor: pointer;
 }
 
-.chip-link:hover {
-  background: rgba(37, 99, 235, 0.28);
+.servicio-detalle__panel-link:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.servicio-detalle__panel-link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 @media (max-width: 960px) {
@@ -505,11 +724,15 @@ watch(
     grid-template-columns: 1fr;
   }
 
-  .servicio-detalle__badges {
-    justify-content: flex-start;
+  .servicio-detalle__side {
+    align-items: flex-start;
   }
 
-  .servicio-detalle__dashboard {
+  .servicio-detalle__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .servicio-detalle__panels {
     grid-template-columns: 1fr;
   }
 }
