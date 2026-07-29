@@ -4,7 +4,7 @@
   Descripción: Tab de Infraestructura / Dashboard de Cámaras — migrado desde panel.js
 -->
 <template>
-  <article class="card" style="padding:0">
+  <article class="infra-view">
     <!-- Toast container -->
     <teleport to="body">
       <div id="infra-toast-container" class="toast-container" aria-live="polite">
@@ -1467,6 +1467,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 </script>
 
 <style scoped>
+.infra-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--color-bg); }
 .infra-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .infra-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 22px 26px 0; flex-wrap: wrap; }
 .infra-kicker { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-accent); }
@@ -1504,8 +1505,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-state-box {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   max-width: 260px; margin: 34px auto; padding: 34px 22px;
-  border-radius: var(--radius-md); box-shadow: 0 0 0 1px var(--color-neutral-800);
-  text-align: center; color: color-mix(in srgb, var(--color-text) 60%, transparent); font-size: 12.5px;
+  text-align: center; color: color-mix(in srgb, var(--color-text) 48%, transparent); font-size: 12.5px;
 }
 .infra-state-box i { font-size: 26px; color: var(--color-neutral-600); }
 .infra-state-box p { margin: 0; }
@@ -1514,7 +1514,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .fop-grid {
   flex: 1; min-height: 0; overflow: auto;
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px;
-  padding: 0 26px 26px;
+  padding: 12px 26px 30px;
 }
 @media (max-width: 1280px) { .fop-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1024px) { .fop-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
