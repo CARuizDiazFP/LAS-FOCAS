@@ -544,7 +544,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0 26px 26px;
+  padding: 12px 26px 30px;
 }
 
 .servicios-view__grid {
