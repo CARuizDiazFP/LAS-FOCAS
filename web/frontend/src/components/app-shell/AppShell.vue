@@ -1,40 +1,36 @@
 <!--
   Nombre de archivo: AppShell.vue
   Ubicación de archivo: web/frontend/src/components/app-shell/AppShell.vue
-  Descripción: Shell unificado del SPA con header mínimo, sidebar modular y área de contenido
+  Descripción: Shell del SPA sobre el sistema Nocturne — sidebar compacto de 224px con iconos Phosphor, perfil al pie
 -->
 <template>
   <div class="app-shell">
     <div class="app-shell__body">
       <aside class="app-shell__sidebar" aria-label="Navegación principal">
         <header class="app-shell__sidebar-header">
+          <div class="app-shell__brand">
+            <span class="app-shell__brand-mark" aria-hidden="true"><i class="ph ph-broadcast"></i></span>
+            <span class="app-shell__brand-text">LAS-FOCAS</span>
+          </div>
           <RouterLink
             v-if="isAdmin"
-            class="app-shell__icon-action"
+            class="app-shell__gear"
             to="/admin"
             title="Configuración"
             aria-label="Configuración"
           >
-            <span aria-hidden="true">⚙</span>
+            <i class="ph ph-gear" aria-hidden="true"></i>
           </RouterLink>
           <button
             v-else
-            class="app-shell__icon-action is-disabled"
+            class="app-shell__gear is-disabled"
             type="button"
             title="Configuración no disponible"
             aria-label="Configuración no disponible"
             aria-disabled="true"
             disabled
           >
-            <span aria-hidden="true">⚙</span>
-          </button>
-
-          <button class="app-shell__profile" type="button" :title="profileTooltip" aria-label="Perfil">
-            <span class="app-shell__profile-icon" aria-hidden="true">👤</span>
-            <span class="app-shell__profile-text">
-              <strong>{{ profileName }}</strong>
-              <small v-if="roleLabel">{{ roleLabel }}</small>
-            </span>
+            <i class="ph ph-gear" aria-hidden="true"></i>
           </button>
         </header>
 
@@ -43,25 +39,31 @@
             v-for="item in primaryLinks"
             :key="item.id"
             :to="item.to"
-            :class="['app-shell__link', 'app-shell__link--root', { 'is-active': isSidebarLinkActive(item.id) }]"
+            :class="['app-shell__link', { 'is-active': isSidebarLinkActive(item.id) }]"
           >
+            <span v-if="isSidebarLinkActive(item.id)" class="app-shell__link-accent" aria-hidden="true"></span>
+            <i :class="['ph', item.icon]" aria-hidden="true"></i>
             <span class="app-shell__link-label">{{ item.label }}</span>
-            <small v-if="item.description" class="app-shell__link-description">{{ item.description }}</small>
+            <small v-if="item.count !== undefined" class="app-shell__link-count">{{ item.count }}</small>
           </RouterLink>
+
+          <div class="app-shell__divider" role="separator"></div>
 
           <section v-for="module in sidebarModules" :key="module.id" class="app-shell__module">
             <button
               type="button"
-              :class="['app-shell__module-trigger', { 'is-active': isModuleActive(module.id) }]"
+              :class="['app-shell__link', 'app-shell__module-trigger', { 'is-active': isModuleActive(module.id) }]"
               :aria-controls="`submenu-${module.id}`"
               :aria-expanded="isModuleExpanded(module.id)"
               @click="toggleModule(module.id)"
             >
-              <span class="app-shell__module-label">{{ module.label }}</span>
-              <span
-                :class="['app-shell__module-chevron', { 'is-open': isModuleExpanded(module.id) }]"
+              <span v-if="isModuleActive(module.id)" class="app-shell__link-accent" aria-hidden="true"></span>
+              <i :class="['ph', module.icon]" aria-hidden="true"></i>
+              <span class="app-shell__link-label">{{ module.label }}</span>
+              <i
+                :class="['ph', isModuleExpanded(module.id) ? 'ph-caret-down' : 'ph-caret-right', 'app-shell__module-chevron']"
                 aria-hidden="true"
-              >></span>
+              ></i>
             </button>
 
             <Transition name="app-shell-submenu">
@@ -74,14 +76,25 @@
                   v-for="item in module.items"
                   :key="item.id"
                   :to="item.to"
-                  :class="['app-shell__link', 'app-shell__link--sub', { 'is-active': isSidebarLinkActive(item.id) }]"
+                  :class="['app-shell__sublink', { 'is-active': isSidebarLinkActive(item.id) }]"
                 >
-                  <span class="app-shell__link-label">{{ item.label }}</span>
+                  {{ item.label }}
                 </RouterLink>
               </div>
             </Transition>
           </section>
         </nav>
+
+        <footer class="app-shell__sidebar-footer">
+          <button class="app-shell__profile" type="button" :title="profileTooltip" aria-label="Perfil">
+            <i class="ph-fill ph-user-circle app-shell__profile-icon" aria-hidden="true"></i>
+            <span class="app-shell__profile-text">
+              <strong>{{ profileName }}</strong>
+              <small v-if="roleLabel">{{ roleLabel }}</small>
+            </span>
+            <i class="ph ph-caret-up-down app-shell__profile-caret" aria-hidden="true"></i>
+          </button>
+        </footer>
       </aside>
 
       <main class="app-shell__main">
@@ -116,14 +129,16 @@ type ExpandableModuleId = 'reportes' | 'dwdmCiena' | 'toolKit';
 interface SidebarItem {
   id: Exclude<SidebarViewId, 'none'>;
   label: string;
-  description?: string;
+  icon: string;
+  count?: number;
   to: RouteLocationRaw;
 }
 
 interface SidebarModule {
   id: ExpandableModuleId;
   label: string;
-  items: SidebarItem[];
+  icon: string;
+  items: Omit<SidebarItem, 'icon' | 'count'>[];
 }
 
 const route = useRoute();
@@ -144,17 +159,19 @@ const primaryLinks: SidebarItem[] = [
   {
     id: 'home',
     label: 'Home',
-    description: 'Abre el Chat',
+    icon: 'ph-chat-circle-dots',
     to: { path: '/' },
   },
   {
     id: 'infraFo',
     label: 'Infraestructura FO',
+    icon: 'ph-tree-structure',
     to: { path: '/infra' },
   },
   {
     id: 'servicios',
-    label: 'Servicios 🌐',
+    label: 'Servicios',
+    icon: 'ph-globe-hemisphere-west',
     to: { path: '/servicios' },
   },
 ];
@@ -163,6 +180,7 @@ const sidebarModules: SidebarModule[] = [
   {
     id: 'reportes',
     label: 'Reportes',
+    icon: 'ph-chart-line-up',
     items: [
       { id: 'repetitividad', label: 'Repetitividad', to: { path: '/repetitividad' } },
       { id: 'sla', label: 'SLA', to: { path: '/sla' } },
@@ -172,6 +190,7 @@ const sidebarModules: SidebarModule[] = [
   {
     id: 'dwdmCiena',
     label: 'DWDM Ciena',
+    icon: 'ph-waveform',
     items: [
       { id: 'alarmasCiena', label: 'Alarmas Ciena', to: { path: '/dwdm/ciena' } },
     ],
@@ -179,6 +198,7 @@ const sidebarModules: SidebarModule[] = [
   {
     id: 'toolKit',
     label: 'Tool Kit',
+    icon: 'ph-toolbox',
     items: [
       { id: 'comparadorVlans', label: 'Comparador de VLANs', to: { path: '/toolkit/vlan' } },
       { id: 'comparadorFo', label: 'Comparador FO', to: { path: '/fo' } },
@@ -268,67 +288,253 @@ watch(
 <style scoped>
 .app-shell {
   min-height: 100vh;
-  background: var(--color-bg-canvas);
-  color: var(--color-text-primary);
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
-.app-shell__icon-action,
-.app-shell__profile {
+.app-shell__body {
+  display: grid;
+  grid-template-columns: var(--layout-shell-sidebar) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.app-shell__sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-divider);
+}
+
+.app-shell__sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.app-shell__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.app-shell__brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 40px;
-  border: 1px solid var(--color-primary);
-  background: var(--color-bg-panel);
-  color: var(--color-text-primary);
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--color-accent-800);
+  color: var(--color-accent-200);
+  font-size: 12px;
+}
+
+.app-shell__brand-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text);
+}
+
+.app-shell__gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-neutral-400);
+  font-size: 15px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.app-shell__icon-action {
-  width: 40px;
-  padding: 0;
-  border-radius: var(--radius-pill);
-  color: var(--color-primary);
   text-decoration: none;
-  font-size: 1.1rem;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
-.app-shell__profile {
-  flex: 1 1 auto;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border-color: var(--color-border-default);
-  border-radius: var(--radius-md);
-  text-align: left;
+.app-shell__gear:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
-.app-shell__icon-action:hover,
-.app-shell__icon-action:focus-visible,
-.app-shell__profile:hover,
-.app-shell__profile:focus-visible {
-  background: var(--color-brand-primary-soft);
-  border-color: var(--color-primary);
-  outline: none;
-}
-
-.app-shell__icon-action.is-disabled,
-.app-shell__icon-action:disabled {
-  border-color: var(--color-border-default);
-  color: var(--color-text-muted);
+.app-shell__gear.is-disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
+.app-shell__sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 10px 8px;
+  flex: 1;
+  overflow: auto;
+}
+
+.app-shell__module {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.app-shell__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px 5px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.app-shell__link i.ph,
+.app-shell__link i.ph-fill {
+  width: 16px;
+  flex: none;
+  font-size: 16px;
+  text-align: center;
+}
+
+.app-shell__link-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell__link-count {
+  flex: none;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-neutral-500);
+}
+
+.app-shell__link:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.app-shell__link.is-active {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-200);
+  font-weight: 500;
+}
+
+.app-shell__link-accent {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 15px;
+  border-radius: 1px;
+  background: var(--color-accent);
+}
+
+.app-shell__module-trigger {
+  justify-content: flex-start;
+}
+
+.app-shell__module-chevron {
+  flex: none;
+  font-size: 13px;
+  color: var(--color-neutral-500);
+}
+
+.app-shell__divider {
+  height: 1px;
+  margin: 9px 10px;
+  background: var(--color-divider);
+}
+
+.app-shell__submenu {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px 25px;
+  padding-left: 9px;
+  border-left: 1px solid var(--color-divider);
+}
+
+.app-shell__sublink {
+  display: block;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.app-shell__sublink:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.app-shell__sublink.is-active {
+  color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.app-shell__sidebar-footer {
+  padding: 9px 10px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.app-shell__profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.app-shell__profile:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
 .app-shell__profile-icon {
-  flex: 0 0 auto;
+  flex: none;
+  font-size: 22px;
+  color: var(--color-neutral-500);
 }
 
 .app-shell__profile-text {
   display: flex;
+  flex: 1;
   min-width: 0;
   flex-direction: column;
   line-height: 1.1;
+  text-align: left;
 }
 
 .app-shell__profile-text strong,
@@ -339,155 +545,28 @@ watch(
 }
 
 .app-shell__profile-text strong {
-  color: var(--color-text-primary);
-  font-size: 0.85rem;
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .app-shell__profile-text small {
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
+  color: var(--color-neutral-500);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.app-shell__body {
-  display: grid;
-  grid-template-columns: minmax(220px, var(--layout-shell-sidebar)) minmax(0, 1fr);
-  min-height: 100vh;
-}
-
-.app-shell__sidebar {
-  position: sticky;
-  top: 0;
-  align-self: start;
-  height: 100vh;
-  padding: 0 var(--space-4) var(--space-6);
-  border-right: 1px solid var(--color-border-default);
-  background: var(--color-bg-elevated);
-}
-
-.app-shell__sidebar-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--layout-shell-topbar);
-  margin: 0 calc(var(--space-4) * -1) var(--space-5);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-border-default);
-  background: var(--color-bg-panel);
-}
-
-.app-shell__sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.app-shell__module {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.app-shell__link {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  color: var(--color-text-primary);
-  text-decoration: none;
-  background: var(--color-bg-surface-alt);
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.app-shell__link--root {
-  background: var(--color-bg-panel);
-}
-
-.app-shell__link--sub {
-  min-height: 44px;
-  margin-left: var(--space-4);
-  padding-left: var(--space-5);
-}
-
-.app-shell__module-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  min-height: 44px;
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-panel);
-  box-shadow: var(--shadow-card);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.app-shell__module-trigger:hover,
-.app-shell__module-trigger:focus-visible,
-.app-shell__module-trigger.is-active,
-.app-shell__link:hover,
-.app-shell__link:focus-visible,
-.app-shell__link.is-active {
-  background: var(--color-brand-primary-soft);
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-  transform: translateX(2px);
-  outline: none;
-}
-
-.app-shell__module-trigger:hover,
-.app-shell__module-trigger:focus-visible,
-.app-shell__module-trigger.is-active {
-  transform: translateY(-1px);
-}
-
-.app-shell__module-label {
-  font-size: 0.95rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.app-shell__module-chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  color: var(--color-text-muted);
-  font-size: 1rem;
-  line-height: 1;
-  transition: transform 0.2s ease, color 0.2s ease;
-}
-
-.app-shell__module-chevron.is-open {
-  color: var(--color-primary);
-  transform: rotate(90deg);
-}
-
-.app-shell__submenu {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding-left: var(--space-2);
-  border-left: 1px solid var(--color-border-default);
-}
-
-.app-shell__link-label {
-  font-weight: 600;
-}
-
-.app-shell__link-description {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
+.app-shell__profile-caret {
+  flex: none;
+  font-size: 13px;
+  color: var(--color-neutral-600);
 }
 
 .app-shell__main {
   min-width: 0;
   min-height: 100vh;
-  padding: var(--space-4);
+  padding: 0;
 }
 
 .app-shell__module-actions {
@@ -495,8 +574,11 @@ watch(
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
-  min-height: 0;
   min-width: 0;
+}
+
+.app-shell__module-actions:empty {
+  display: none;
 }
 
 .app-shell-submenu-enter-active,
@@ -527,17 +609,8 @@ watch(
   .app-shell__sidebar {
     position: static;
     height: auto;
-    padding-top: 0;
     border-right: none;
-    border-bottom: 1px solid var(--color-border-default);
-  }
-
-  .app-shell__sidebar-header {
-    margin-bottom: var(--space-4);
-  }
-
-  .app-shell__main {
-    padding: var(--space-4);
+    border-bottom: 1px solid var(--color-divider);
   }
 }
 </style>

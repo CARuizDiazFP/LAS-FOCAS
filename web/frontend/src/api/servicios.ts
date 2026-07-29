@@ -54,6 +54,16 @@ export interface SearchServiciosParams {
   offset?: number;
 }
 
+export type EstadoServicioToken = 'ok' | 'warn' | 'error' | 'idle';
+
+export function estadoServicioToken(estado: string | null | undefined): EstadoServicioToken {
+  const value = (estado ?? '').trim().toLowerCase();
+  if (value === 'activo') return 'ok';
+  if (['observado', 'en observación', 'degradado'].includes(value)) return 'warn';
+  if (['baja', 'dado de baja', 'inactivo'].includes(value)) return 'error';
+  return 'idle';
+}
+
 function toQuery(params: SearchServiciosParams): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {

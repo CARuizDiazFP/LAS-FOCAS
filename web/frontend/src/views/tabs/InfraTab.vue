@@ -472,13 +472,23 @@
 
     <!-- Main content -->
     <div class="infra-panel">
-      <div class="infra-toolbar">
-        <h2 class="infra-toolbar-title">Infraestructura FO</h2>
+      <header class="infra-header">
+        <div>
+          <span class="infra-kicker">Planta externa</span>
+          <h1>Infraestructura FO</h1>
+        </div>
         <div class="infra-toolbar-actions">
-          <button class="btn danger" @click="openBanModal">🔴 Protocolo Protección</button>
-          <button class="btn subtle active-bans-btn" @click="openActiveBansModal">🔒 Baneos Activos<span v-if="activeBans.length > 0" class="active-bans-badge">{{ activeBans.length }}</span></button>
+          <button class="btn danger" @click="openBanModal">
+            <i class="ph ph-shield-warning" aria-hidden="true"></i>
+            Protocolo Protección
+          </button>
+          <button class="btn subtle active-bans-btn" @click="openActiveBansModal">
+            <i class="ph ph-lock-key" aria-hidden="true"></i>
+            Baneos activos
+            <span v-if="activeBans.length > 0" class="active-bans-badge">{{ activeBans.length }}</span>
+          </button>
           <div
-            class="upload-drop-zone"
+            class="btn subtle upload-drop-zone"
             :class="{ 'drag-over': isDragOver }"
             role="button"
             tabindex="0"
@@ -489,90 +499,126 @@
             @dragenter.prevent="onDragEnter"
             @dragleave="onDragLeave"
             @drop.prevent="onDrop"
-          >📁 Subir Tracking</div>
-          <button class="btn danger-subtle" @click="openLimpiarModal">🗑 Limpiar Servicio</button>
+          >
+            <i class="ph ph-folder-simple-plus" aria-hidden="true"></i>
+            Subir tracking
+          </div>
+          <button class="btn subtle" @click="openLimpiarModal">
+            <i class="ph ph-eraser" aria-hidden="true"></i>
+            Limpiar servicio
+          </button>
           <div class="download-dropdown-wrapper" ref="downloadDropdownEl">
-            <button class="btn success" @click.stop="toggleDownloadMenu">
-              ⬇ Descargar <span class="dropdown-caret" :class="{ open: isDownloadMenuOpen }">▾</span>
+            <button class="btn primary" @click.stop="toggleDownloadMenu">
+              <i class="ph ph-download-simple" aria-hidden="true"></i>
+              Descargar
+              <i :class="['ph', 'ph-caret-down', 'dropdown-caret', { open: isDownloadMenuOpen }]" aria-hidden="true"></i>
             </button>
             <ul v-if="isDownloadMenuOpen" class="download-dropdown-menu" @click.stop>
-              <li class="dropdown-item" @click="downloadCameras('xlsx', null)">📊 Todas (XLSX)</li>
-              <li class="dropdown-item" @click="downloadCameras('csv', null)">📄 Todas (CSV)</li>
+              <li class="dropdown-item" @click="downloadCameras('xlsx', null)"><i class="ph ph-file-xls" aria-hidden="true"></i>Todas (XLSX)</li>
+              <li class="dropdown-item" @click="downloadCameras('csv', null)"><i class="ph ph-file-csv" aria-hidden="true"></i>Todas (CSV)</li>
               <li class="dropdown-divider"></li>
-              <li class="dropdown-item" @click="downloadCameras('xlsx', 'BANEADA')">🔴 Solo Baneadas</li>
-              <li class="dropdown-item" @click="downloadCameras('xlsx', 'OCUPADA')">🟡 Con Ingreso</li>
+              <li class="dropdown-item" @click="downloadCameras('xlsx', 'BANEADA')"><span class="infra-legend-dot baneada"></span>Solo Baneadas</li>
+              <li class="dropdown-item" @click="downloadCameras('xlsx', 'OCUPADA')"><span class="infra-legend-dot ocupada"></span>Con Ingreso</li>
             </ul>
           </div>
         </div>
-      </div>
+      </header>
+
+      <hr class="noc-rule" />
+
       <div class="infra-search-area">
-        <div class="infra-search-row">
-          <input
-            v-model="searchInput"
-            type="text"
-            placeholder="Buscar por nombre, dirección, servicio..."
-            @keydown.enter="addTerm"
-          />
-          <button class="btn" @click="addTerm">Agregar</button>
-          <button class="btn primary" :disabled="loading || (searchTerms.length === 0 && !activeStateFilter)" @click="searchCamaras">Buscar</button>
-          <button class="btn subtle" @click="clearAll">Limpiar</button>
+        <div class="fop-search-row">
+          <div class="fop-search-input">
+            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+            <input
+              v-model="searchInput"
+              type="text"
+              placeholder="Buscar por nombre, dirección, servicio…"
+              @keydown.enter="addTerm"
+            />
+          </div>
+          <button class="btn subtle" @click="addTerm">Agregar término</button>
+          <button class="btn primary" :disabled="loading || (searchTerms.length === 0 && !activeStateFilter)" @click="searchCamaras">
+            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+            Buscar
+          </button>
+          <button class="btn infra-btn-ghost" @click="clearAll">Limpiar</button>
         </div>
-        <div v-if="searchTerms.length" class="infra-search-terms">
-          <span v-for="(term, i) in searchTerms" :key="i" class="infra-search-term">
-            <span class="infra-search-term-value">{{ term }}</span>
-            <button class="infra-search-term-remove" @click="removeTerm(i)">×</button>
+
+        <div class="infra-chips-row">
+          <span v-if="searchTerms.length" class="fop-search-terms">
+            <span v-for="(term, i) in searchTerms" :key="i" class="fop-search-term">
+              <span class="fop-search-term-value">{{ term }}</span>
+              <button class="fop-search-term-remove" @click="removeTerm(i)">×</button>
+            </span>
+          </span>
+
+          <span v-if="searchTerms.length" class="infra-chips-separator" aria-hidden="true"></span>
+
+          <button
+            v-for="item in legendItems"
+            :key="item.estado"
+            type="button"
+            :class="['infra-legend-item', { active: activeStateFilter === item.estado }]"
+            @click="toggleStateFilter(item.estado)"
+          >
+            <span v-if="item.estado !== 'TRACKING'" :class="['infra-legend-dot', item.dotClass]"></span>
+            <i v-else class="ph ph-map-pin" aria-hidden="true"></i>
+            {{ item.estado }}
+            <span class="infra-legend-count">{{ legendCounts[item.estado] ?? 0 }}</span>
+          </button>
+
+          <span class="infra-count">
+            <strong>{{ filteredCamaras.length }}</strong> cámaras
           </span>
         </div>
-        <div v-if="activeStateFilter" class="infra-state-filter-chip">
-          <span v-if="activeStateFilter !== 'TRACKING'" class="infra-legend-dot" :class="activeStateFilter.toLowerCase()"></span>
-          <span v-else style="font-size:.85rem;line-height:1">📍</span>
-          <span>{{ activeStateFilter }}</span>
-          <button class="infra-state-filter-remove" @click="clearStateFilter" aria-label="Quitar filtro de estado">×</button>
-        </div>
-        <div v-if="statusText" :class="['infra-status', statusVariant]">{{ statusText }}</div>
+
+        <div v-if="statusText" :class="['fop-status', statusVariant]">{{ statusText }}</div>
       </div>
 
-      <!-- Leyenda de estados (atajos de filtrado rápido) (atajos de filtrado rápido) -->
-      <div class="infra-legend">
-        <button :class="['infra-legend-item', { active: activeStateFilter === 'LIBRE' }]" @click="toggleStateFilter('LIBRE')"><span class="infra-legend-dot libre"></span>LIBRE</button>
-        <button :class="['infra-legend-item', { active: activeStateFilter === 'OCUPADA' }]" @click="toggleStateFilter('OCUPADA')"><span class="infra-legend-dot ocupada"></span>OCUPADA</button>
-        <button :class="['infra-legend-item', { active: activeStateFilter === 'BANEADA' }]" @click="toggleStateFilter('BANEADA')"><span class="infra-legend-dot baneada"></span>BANEADA</button>
-        <button :class="['infra-legend-item', { active: activeStateFilter === 'DETECTADA' }]" @click="toggleStateFilter('DETECTADA')"><span class="infra-legend-dot detectada"></span>DETECTADA</button>
-        <button :class="['infra-legend-item', { active: activeStateFilter === 'TRACKING' }]" @click="toggleStateFilter('TRACKING')"><span style="font-size:.85rem;line-height:1">📍</span>TRACKING</button>
+      <div v-if="loading" class="infra-state-box">
+        <i class="ph ph-circle-notch infra-spin" aria-hidden="true"></i>
+        Buscando...
       </div>
-
-      <div v-if="loading" class="infra-loading">Buscando...</div>
-      <div v-else-if="!hasSearched" class="infra-empty">
-        <span>Agregá términos de búsqueda y presioná "Buscar"</span>
+      <div v-else-if="!hasSearched" class="infra-state-box">
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+        <p>Agregá términos de búsqueda y presioná "Buscar"</p>
       </div>
-      <div v-else-if="camaras.length === 0" class="infra-empty">Sin resultados para estos términos.</div>
-      <div v-else-if="filteredCamaras.length === 0" class="infra-empty">
-        Sin cámaras en TRACKING con los términos actuales.
+      <div v-else-if="camaras.length === 0" class="infra-state-box">
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+        <p>Sin resultados para estos términos.</p>
       </div>
-      <div v-else class="infra-grid">
-        <div
+      <div v-else-if="filteredCamaras.length === 0" class="infra-state-box">
+        <i class="ph ph-map-pin" aria-hidden="true"></i>
+        <p>Sin cámaras en TRACKING con los términos actuales.</p>
+      </div>
+      <div v-else class="fop-grid">
+        <article
           v-for="camara in filteredCamaras"
           :key="camara.id"
-          :class="['infra-camara-card']"
+          class="fop-camara-card"
           :data-estado="camara.estado ?? 'LIBRE'"
           :data-inconsistente="camara.inconsistente ? 'true' : 'false'"
         >
-          <div class="infra-camara-header">
-            <div class="infra-camara-estado">
-              <span :class="['infra-estado-icon', (camara.estado ?? 'libre').toLowerCase()]"></span>
-              <span class="infra-estado-text">{{ camara.estado || 'LIBRE' }}</span>
-            </div>
-            <div class="infra-camara-header-actions">
-              <span v-if="camara.id != null" class="infra-camara-id">ID {{ camara.id }}</span>
-              <RouterLink
-                v-if="camara.id != null"
-                class="infra-edit-btn"
-                :to="`/infra/Camaras/${camara.id}`"
-              >Detalle</RouterLink>
-            </div>
+          <div class="infra-camara-row">
+            <span :class="['infra-camara-dot', estadoDotClass(camara.estado)]" aria-hidden="true"></span>
+            <span class="infra-camara-estado-text">{{ camara.estado || 'LIBRE' }}</span>
+            <span v-if="camara.id != null" class="fop-camara-id">ID {{ camara.id }}</span>
           </div>
-          <div class="infra-camara-nombre">{{ camara.nombre || camara.direccion || 'Sin nombre' }}</div>
-        </div>
+
+          <h3 class="fop-camara-nombre">{{ camara.nombre || camara.direccion || 'Sin nombre' }}</h3>
+
+          <div class="infra-camara-hairline"></div>
+
+          <div class="infra-camara-row">
+            <span class="fop-camara-meta">{{ camaraMeta(camara) }}</span>
+            <RouterLink
+              v-if="camara.id != null"
+              class="fop-edit-btn"
+              :to="`/infra/Camaras/${camara.id}`"
+            >Detalle</RouterLink>
+          </div>
+        </article>
       </div>
     </div>
   </article>
@@ -652,17 +698,6 @@ function toggleStateFilter(estado: string) {
   }
 }
 
-function clearStateFilter() {
-  activeStateFilter.value = null;
-  // Si la búsqueda fue disparada sólo por el filtro (sin términos de texto),
-  // limpiar la grilla para volver al estado inicial vacío.
-  if (searchTerms.value.length === 0) {
-    camaras.value = [];
-    hasSearched.value = false;
-    setStatus('');
-  }
-}
-
 // El filtro de estado se aplica en el servidor (salvo TRACKING, que depende de la relación rutas).
 // Este computed solo filtra client-side para el caso especial TRACKING.
 const filteredCamaras = computed(() => {
@@ -671,6 +706,34 @@ const filteredCamaras = computed(() => {
   }
   return camaras.value;
 });
+
+const legendItems = [
+  { estado: 'LIBRE', dotClass: 'libre' },
+  { estado: 'OCUPADA', dotClass: 'ocupada' },
+  { estado: 'BANEADA', dotClass: 'baneada' },
+  { estado: 'DETECTADA', dotClass: 'detectada' },
+  { estado: 'TRACKING', dotClass: 'tracking' },
+];
+
+const legendCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = { LIBRE: 0, OCUPADA: 0, BANEADA: 0, DETECTADA: 0, TRACKING: 0 };
+  for (const camara of camaras.value) {
+    const estado = String(camara.estado ?? 'LIBRE').toUpperCase();
+    if (estado in counts) counts[estado] += 1;
+    if (((camara.rutas as unknown[]) ?? []).length > 0) counts.TRACKING += 1;
+  }
+  return counts;
+});
+
+function estadoDotClass(estado: unknown): string {
+  const value = String(estado ?? 'libre').toLowerCase();
+  return ['libre', 'ocupada', 'baneada', 'detectada'].includes(value) ? value : 'libre';
+}
+
+function camaraMeta(camara: Record<string, unknown>): string {
+  const servicios = ((camara.servicios as unknown[]) ?? []).length;
+  return servicios > 0 ? `${servicios} servicio${servicios !== 1 ? 's' : ''}` : 'Sin relevar';
+}
 
 async function searchCamaras() {
   // Permitir la búsqueda si hay términos de texto O si hay un filtro de estado activo.
@@ -1404,44 +1467,99 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 </script>
 
 <style scoped>
-.infra-panel { padding: 16px; }
-.infra-search-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.infra-search-row input { flex: 1; min-width: 220px; }
-.infra-search-terms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.infra-search-term {
-  display: inline-flex; align-items: center; gap: 4px;
-  background: rgba(59,130,246,.15); color: #60a5fa;
-  border: 1px solid rgba(59,130,246,.3); border-radius: 14px;
-  padding: 3px 10px 3px 10px; font-size: .82rem;
+.infra-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.infra-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 22px 26px 0; flex-wrap: wrap; }
+.infra-kicker { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-accent); }
+.infra-header h1 { font-size: 27px; margin: 3px 0 0; }
+
+.infra-search-area { padding: 15px 26px 14px; display: flex; flex-direction: column; gap: 11px; }
+.fop-search-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.fop-search-input { position: relative; flex: 1; min-width: 220px; }
+.fop-search-input i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--color-neutral-500); font-size: 15px; pointer-events: none; }
+.fop-search-input input {
+  width: 100%; min-height: 38px; padding: 6px 10px 6px 33px; font-size: 14px;
+  background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+  color: var(--color-text); caret-color: var(--color-accent);
 }
-.infra-search-term-remove { background: none; border: none; cursor: pointer; color: inherit; padding: 0; line-height: 1; }
-.infra-status { margin-top: 10px; font-size: .85rem; }
-.infra-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 16px; }
-.infra-empty { margin-top: 32px; text-align: center; color: var(--muted); }
-.infra-loading { margin-top: 32px; text-align: center; color: var(--muted); }
-.infra-camara-card { background: #1a1a1a; border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-.infra-camara-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.infra-camara-estado { display: flex; align-items: center; gap: 6px; font-size: .85rem; }
-.infra-estado-icon { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #6b7280; }
-.infra-estado-icon.libre { background: #22c55e; }
-.infra-estado-icon.baneada { background: #ef4444; }
-.infra-estado-icon.en_mantenimiento { background: #f59e0b; }
-.infra-estado-icon.inaccesible { background: #9ca3af; }
-.infra-camara-nombre { font-weight: 600; font-size: .9rem; color: var(--text); margin-bottom: 8px; }
-.infra-camara-warning { font-size: .78rem; color: #f59e0b; margin-bottom: 6px; }
-.infra-camara-servicios { display: flex; flex-wrap: wrap; gap: 6px; }
-.infra-servicio-chip { padding: 3px 8px; border-radius: 12px; font-size: .78rem; color: #fff; display: inline-flex; align-items: center; gap: 4px; }
-.infra-no-servicios { color: var(--muted); font-size: .82rem; }
-.infra-edit-btn { font-size: .75rem; padding: 3px 8px; background: rgba(255,255,255,.07); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text); }
-.infra-ban-ticket { margin-top: 6px; font-size: .78rem; color: #ef4444; }
+.fop-search-input input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+.infra-btn-ghost { color: var(--color-accent); padding-inline: 2.8px; background: transparent; }
+.infra-btn-ghost:hover { background: transparent; text-decoration: underline; }
+
+.infra-chips-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.fop-search-terms { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.fop-search-term {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--color-accent-200);
+  border: 1px solid var(--color-accent); border-radius: var(--radius-pill);
+  padding: 3px 6px 3px 10px; font-size: 11.5px;
+}
+.fop-search-term-remove { background: none; border: none; cursor: pointer; color: inherit; padding: 0; line-height: 1; }
+.infra-chips-separator { width: 1px; height: 15px; background: var(--color-divider); }
+.infra-count { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 55%, transparent); white-space: nowrap; }
+.infra-count strong { color: var(--color-text); font-weight: 500; }
+.fop-status { font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.fop-status.error { color: var(--color-state-error); }
+.fop-status.success { color: var(--color-state-ok); }
+
+.infra-state-box {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  max-width: 260px; margin: 34px auto; padding: 34px 22px;
+  border-radius: var(--radius-md); box-shadow: 0 0 0 1px var(--color-neutral-800);
+  text-align: center; color: color-mix(in srgb, var(--color-text) 60%, transparent); font-size: 12.5px;
+}
+.infra-state-box i { font-size: 26px; color: var(--color-neutral-600); }
+.infra-state-box p { margin: 0; }
+.infra-spin { animation: spin 1s linear infinite; }
+
+.fop-grid {
+  flex: 1; min-height: 0; overflow: auto;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px;
+  padding: 0 26px 26px;
+}
+@media (max-width: 1280px) { .fop-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1024px) { .fop-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .fop-grid { grid-template-columns: 1fr; } }
+
+.fop-camara-card {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 12px 13px 11px; border-radius: var(--radius-md);
+  background: var(--color-surface); box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease;
+}
+.fop-camara-card:hover { box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5); }
+.infra-camara-row { display: flex; align-items: center; gap: 7px; }
+.infra-camara-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--color-state-idle); }
+.infra-camara-dot.libre { background: var(--color-state-ok); }
+.infra-camara-dot.ocupada { background: var(--color-state-warn); }
+.infra-camara-dot.baneada { background: var(--color-state-error); }
+.infra-camara-dot.detectada { background: var(--color-state-idle); }
+.infra-camara-estado-text {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+.fop-camara-id { margin-left: auto; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--color-neutral-500); }
+.fop-camara-nombre {
+  margin: 0; min-height: 36px; font-size: 14.5px; font-weight: 500; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.infra-camara-hairline { height: 1px; background: var(--color-divider); }
+.fop-camara-meta {
+  font-size: 10.5px; color: color-mix(in srgb, var(--color-text) 48%, transparent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fop-edit-btn {
+  margin-left: auto; flex: none; padding: 3px 9px; border: 1px solid var(--color-accent);
+  border-radius: 4px; font-family: var(--font-heading); font-size: 11px; font-weight: 500;
+  color: var(--color-accent); text-decoration: none;
+}
 /* Modal */
-.camera-state-modal, .tracking-detail-modal { position: fixed; inset: 0; margin: auto; border: 1px solid var(--border); border-radius: 10px; background: #1c1c1c; color: var(--text); padding: 24px; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto; }
+.camera-state-modal, .tracking-detail-modal { position: fixed; inset: 0; margin: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--color-surface); color: var(--text); padding: 24px; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto; }
 .camera-state-modal::backdrop, .tracking-detail-modal::backdrop { background: rgba(0,0,0,.6); }
 .camera-state-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .camera-state-meta-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: .85rem; margin-bottom: 8px; color: var(--muted); }
 .camera-state-badge { padding: 2px 8px; border-radius: 10px; font-size: .75rem; }
-.camera-state-badge.ok { background: rgba(34,197,94,.15); color: #22c55e; }
-.camera-state-badge.warning { background: rgba(245,158,11,.15); color: #f59e0b; }
+.camera-state-badge.ok { background: color-mix(in srgb, var(--color-state-ok) 15%, transparent); color: var(--color-state-ok); }
+.camera-state-badge.warning { background: color-mix(in srgb, var(--color-state-warn) 15%, transparent); color: var(--color-state-warn); }
 .camera-state-incidents { margin: 12px 0; }
 .camera-state-incidents-title { font-size: .8rem; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
 .camera-state-incident-item { font-size: .82rem; padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; gap: 12px; flex-wrap: wrap; }
@@ -1453,27 +1571,27 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .tracking-detail-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .tracking-detail-title { margin: 0; font-size: 1rem; flex: 1; }
 .tracking-detail-close { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.3rem; }
-.tracking-download-btn { font-size: .78rem; padding: 4px 10px; background: rgba(255,255,255,.07); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text); }
+.tracking-download-btn { font-size: .78rem; padding: 4px 10px; background: color-mix(in srgb, var(--color-text) 7%, transparent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text); }
 .tracking-rutas-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .tracking-ruta-tab { padding: 5px 12px; border-radius: 14px; font-size: .8rem; border: 1px solid var(--border); background: none; cursor: pointer; color: var(--text); }
-.tracking-ruta-tab.active { background: var(--tab-color, #3b82f6); color: #fff; border-color: transparent; }
+.tracking-ruta-tab.active { background: var(--tab-color, var(--color-accent)); color: var(--color-neutral-100); border-color: transparent; }
 .tracking-sequence { display: flex; flex-direction: column; gap: 6px; }
 .tracking-item { display: flex; align-items: flex-start; gap: 8px; font-size: .85rem; padding: 6px 0; border-bottom: 1px solid var(--border); }
-.tracking-punta { color: #60a5fa; }
+.tracking-punta { color: var(--color-accent); }
 .tracking-punta-label { font-size: .72rem; color: var(--muted); display: block; }
 .tracking-cable { flex-direction: column; gap: 2px; }
 .tracking-cable-name { font-weight: 600; }
-.tracking-atenuacion { color: #f59e0b; font-size: .78rem; }
+.tracking-atenuacion { color: var(--color-state-warn); font-size: .78rem; }
 .tracking-empalme-id { color: var(--muted); font-size: .75rem; }
 .tracking-loading, .tracking-error, .tracking-empty { padding: 16px; color: var(--muted); font-size: .85rem; }
-.tracking-error { color: #ef4444; }
+.tracking-error { color: var(--color-state-error); }
 /* Toasts */
 .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-.toast { display: flex; align-items: flex-start; gap: 10px; background: #1e1e1e; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-width: 260px; max-width: 380px; pointer-events: all; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
-.toast.success { border-left: 3px solid #22c55e; }
-.toast.error { border-left: 3px solid #ef4444; }
-.toast.warning { border-left: 3px solid #f59e0b; }
-.toast.info { border-left: 3px solid #3b82f6; }
+.toast { display: flex; align-items: flex-start; gap: 10px; background: var(--color-surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-width: 260px; max-width: 380px; pointer-events: all; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+.toast.success { border-left: 3px solid var(--color-state-ok); }
+.toast.error { border-left: 3px solid var(--color-state-error); }
+.toast.warning { border-left: 3px solid var(--color-state-warn); }
+.toast.info { border-left: 3px solid var(--color-accent); }
 .toast-icon { font-size: 1rem; line-height: 1; }
 .toast-content { flex: 1; }
 .toast-title { font-weight: 600; font-size: .88rem; }
@@ -1482,40 +1600,22 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .toast-anim-enter-active, .toast-anim-leave-active { transition: all .25s ease; }
 .toast-anim-enter-from, .toast-anim-leave-to { opacity: 0; transform: translateX(24px); }
 
-/* Estado icons — colores faltantes en la migración */
-.infra-estado-icon.ocupada { background: #f59e0b; }
-.infra-estado-icon.detectada { background: #9ca3af; }
-
 /* Toolbar */
-.infra-toolbar {
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
-  gap: 10px; padding: 12px 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
-}
-.infra-toolbar-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: var(--text); }
-.infra-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.infra-toolbar-actions { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.infra-toolbar-actions .btn { min-height: 34px; font-size: 12.5px; }
 
-/* Zona Drag & Drop de upload tracking */
-.upload-drop-zone {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 7px 14px; border-radius: 8px; font-size: .88rem; font-weight: 500; cursor: pointer;
-  user-select: none; transition: background .15s, border-color .15s;
-  background: rgba(255,255,255,.06); color: var(--text);
-  border: 1.5px dashed var(--border);
-  min-height: 36px;
-}
-.upload-drop-zone:hover { background: rgba(255,255,255,.12); border-color: #60a5fa; }
+/* Zona Drag & Drop de upload tracking (reusa el look de .btn.subtle) */
 .upload-drop-zone.drag-over {
-  background: rgba(96,165,250,.12); border-color: #60a5fa;
-  color: #60a5fa; outline: none;
+  border-color: var(--color-accent); color: var(--color-accent);
 }
 
 /* Botones extra (modificadores de .btn global) */
-.btn.danger { background: rgba(239,68,68,.15); color: #ef4444; border: 1px solid rgba(239,68,68,.3); }
-.btn.danger:hover:not(:disabled) { background: rgba(239,68,68,.25); }
-.btn.danger-subtle { background: none; color: #ef4444; border: 1px solid rgba(239,68,68,.2); }
-.btn.danger-subtle:hover:not(:disabled) { background: rgba(239,68,68,.1); }
-.btn.success { background: rgba(34,197,94,.15); color: #22c55e; border: 1px solid rgba(34,197,94,.3); }
-.btn.success:hover:not(:disabled) { background: rgba(34,197,94,.25); }
+.btn.danger { background: transparent; color: oklch(0.72 0.11 25); border: 1px solid color-mix(in srgb, var(--color-state-error) 50%, transparent); }
+.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
+.btn.danger-subtle { background: transparent; color: var(--color-state-error); border: 1px solid color-mix(in srgb, var(--color-state-error) 20%, transparent); }
+.btn.danger-subtle:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 10%, transparent); }
+.btn.success { background: transparent; color: var(--color-state-ok); border: 1px solid color-mix(in srgb, var(--color-state-ok) 50%, transparent); }
+.btn.success:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-ok) 12%, transparent); }
 
 /* Dropdown descargar */
 .download-dropdown-wrapper { position: relative; }
@@ -1524,50 +1624,41 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .download-dropdown-menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 200;
   min-width: 180px; margin: 0; padding: 4px 0; list-style: none;
-  background: #1e1e1e; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--color-surface); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 18px rgba(0,0,0,.45);
 }
 .dropdown-item {
   padding: 9px 14px; font-size: .85rem; cursor: pointer;
   color: var(--text); display: flex; align-items: center; gap: 7px; white-space: nowrap;
 }
-.dropdown-item:hover { background: rgba(255,255,255,.07); }
+.dropdown-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .dropdown-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
-.btn.warning { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.3); }
-.btn.warning:hover:not(:disabled) { background: rgba(245,158,11,.25); }
+.btn.warning { background: transparent; color: var(--color-state-warn); border: 1px solid color-mix(in srgb, var(--color-state-warn) 50%, transparent); }
+.btn.warning:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-warn) 12%, transparent); }
 
-/* Leyenda de estados — atajos de filtrado rápido */
-.infra-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 8px; }
+/* Leyenda de estados — fusionada como chips de filtro */
 .infra-legend-item {
   display: inline-flex; align-items: center; gap: 5px;
-  background: none; border: 1px solid transparent; cursor: pointer;
-  padding: 3px 10px; border-radius: 14px; font-size: .8rem;
-  color: var(--muted); transition: background .15s, color .15s, border-color .15s;
+  padding: 3px 10px; border-radius: var(--radius-pill); font-size: 11.5px; cursor: pointer;
+  border: 1px solid var(--color-divider); background: transparent;
+  color: color-mix(in srgb, var(--color-text) 66%, transparent);
 }
-.infra-legend-item:hover { background: rgba(255,255,255,.07); color: var(--text); }
-.infra-legend-item.active { background: rgba(255,255,255,.10); color: var(--text); border-color: var(--border); }
-.infra-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-.infra-legend-dot.libre { background: #22c55e; }
-.infra-legend-dot.ocupada { background: #f59e0b; }
-.infra-legend-dot.baneada { background: #ef4444; }
-.infra-legend-dot.detectada { background: #9ca3af; }
-/* Chip de filtro de estado activo */
-.infra-state-filter-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 6px 3px 10px; border-radius: 14px; font-size: .82rem;
-  background: rgba(96,165,250,.12); color: #60a5fa;
-  border: 1px solid rgba(96,165,250,.3); margin-top: 8px;
+.infra-legend-item:hover { border-color: var(--color-accent); }
+.infra-legend-item.active {
+  border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent-200);
 }
-.infra-state-filter-remove {
-  background: none; border: none; cursor: pointer; color: #60a5fa;
-  font-size: 1rem; padding: 0 2px; line-height: 1;
-}
-.infra-state-filter-remove:hover { color: var(--text); }
+.infra-legend-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.infra-legend-dot.libre { background: var(--color-state-ok); }
+.infra-legend-dot.ocupada { background: var(--color-state-warn); }
+.infra-legend-dot.baneada { background: var(--color-state-error); }
+.infra-legend-dot.detectada { background: var(--color-state-idle); }
+.infra-legend-count { font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 42%, transparent); }
 
 /* Modal genérico compartido */
 .infra-generic-modal {
   position: fixed; inset: 0; margin: auto;
-  border: 1px solid var(--border); border-radius: 10px; background: #1c1c1c;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--color-surface);
   color: var(--text); padding: 0; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto;
 }
 .infra-generic-modal::backdrop { background: rgba(0,0,0,.6); }
@@ -1575,8 +1666,8 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .modal-header-row { display: flex; align-items: center; margin-bottom: 10px; }
 .modal-title { margin: 0; font-size: 1rem; flex: 1; }
 .modal-desc { margin: 0 0 6px; font-size: .83rem; color: var(--muted); }
-.danger-text { color: #f59e0b; }
-.req { color: #ef4444; }
+.danger-text { color: var(--color-state-warn); }
+.req { color: var(--color-state-error); }
 .modal-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .resolve-conflict-actions { gap: 6px; }
 
@@ -1596,50 +1687,50 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   flex-shrink: 0;
 }
 .wizard-step-label { font-size: .78rem; color: var(--muted); white-space: nowrap; }
-.wizard-step-item.active .wizard-step-num { border-color: #60a5fa; background: rgba(96,165,250,.15); color: #60a5fa; }
-.wizard-step-item.active .wizard-step-label { color: #60a5fa; font-weight: 600; }
-.wizard-step-item.done .wizard-step-num { border-color: #22c55e; background: rgba(34,197,94,.15); color: #22c55e; }
-.wizard-step-item.done .wizard-step-label { color: #22c55e; }
+.wizard-step-item.active .wizard-step-num { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
+.wizard-step-item.active .wizard-step-label { color: var(--color-accent); font-weight: 600; }
+.wizard-step-item.done .wizard-step-num { border-color: var(--color-state-ok); background: color-mix(in srgb, var(--color-state-ok) 15%, transparent); color: var(--color-state-ok); }
+.wizard-step-item.done .wizard-step-label { color: var(--color-state-ok); }
 .wizard-step-connector { flex: 1; height: 1px; background: var(--border); margin: 0 6px; }
 
 /* Paso 2 */
 .ban-step2-affected {
   font-size: .84rem; color: var(--muted); padding: 6px 10px;
-  background: rgba(255,255,255,.04); border-radius: 6px; margin-bottom: 10px;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); border-radius: 6px; margin-bottom: 10px;
 }
 .ban-prot-tabs { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
 .ban-prot-tab {
   flex: 1; padding: 8px 10px; font-size: .82rem; cursor: pointer; text-align: center;
   background: transparent; color: var(--muted); border: none; transition: background .15s;
 }
-.ban-prot-tab:hover { background: rgba(255,255,255,.06); }
-.ban-prot-tab.active { background: rgba(96,165,250,.12); color: #60a5fa; font-weight: 600; }
+.ban-prot-tab:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+.ban-prot-tab.active { background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--color-accent); font-weight: 600; }
 .ban-search-row { display: flex; gap: 8px; margin-bottom: 4px; }
 .ban-search-row input { flex: 1; }
-.ban-rutas-error { font-size: .83rem; color: #ef4444; padding: 6px 0; }
+.ban-rutas-error { font-size: .83rem; color: var(--color-state-error); padding: 6px 0; }
 .ban-rutas-empty { font-size: .83rem; color: var(--muted); padding: 10px 0; text-align: center; }
 .ban-ruta-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .ban-ruta-card {
   display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
-  background: rgba(255,255,255,.04); border: 1.5px solid var(--border);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); border: 1.5px solid var(--border);
   border-radius: 8px; cursor: pointer; transition: border-color .15s, background .15s;
 }
-.ban-ruta-card:hover { background: rgba(255,255,255,.07); border-color: rgba(96,165,250,.4); }
-.ban-ruta-card.selected { border-color: #60a5fa; background: rgba(96,165,250,.08); }
+.ban-ruta-card:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+.ban-ruta-card.selected { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
 .ban-ruta-card.all-option { border-style: dashed; }
 .ban-ruta-icon { font-size: 1.1rem; padding-top: 1px; flex-shrink: 0; }
 .ban-ruta-nombre { font-size: .88rem; font-weight: 600; color: var(--text); }
 .ban-ruta-meta { font-size: .78rem; color: var(--muted); margin-top: 2px; }
 .ban-tracking-alert {
   margin-top: 6px; padding: 6px 8px; border-radius: 6px; font-size: .78rem;
-  background: rgba(245,158,11,.12); color: #f59e0b; border: 1px solid rgba(245,158,11,.25);
+  background: color-mix(in srgb, var(--color-state-warn) 12%, transparent); color: var(--color-state-warn); border: 1px solid color-mix(in srgb, var(--color-state-warn) 25%, transparent);
 }
 .ban-tracking-alert-actions { display: flex; gap: 6px; margin-top: 6px; }
 .btn.small { padding: 4px 10px; font-size: .78rem; }
 
 /* Paso 3 */
 .ban-summary-block {
-  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); border: 1px solid var(--border);
   border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column;
   gap: 6px; margin-bottom: 12px; font-size: .85rem;
 }
@@ -1648,7 +1739,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .ban-confirm-row {
   display: flex; align-items: flex-start; gap: 8px; font-size: .85rem;
   cursor: pointer; padding: 8px 10px; border-radius: 6px;
-  background: rgba(239,68,68,.06); border: 1px solid rgba(239,68,68,.2);
+  background: color-mix(in srgb, var(--color-state-error) 6%, transparent); border: 1px solid color-mix(in srgb, var(--color-state-error) 20%, transparent);
 }
 .ban-confirm-row input[type=checkbox] { margin-top: 2px; flex-shrink: 0; }
 
@@ -1657,27 +1748,27 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .upload-analyzing { padding: 16px 0; font-size: .88rem; color: var(--muted); }
 .resolve-status-badge {
   display: inline-block; padding: 4px 12px; border-radius: 12px;
-  font-size: .82rem; font-weight: 700; margin-bottom: 6px; background: rgba(255,255,255,.07);
+  font-size: .82rem; font-weight: 700; margin-bottom: 6px; background: color-mix(in srgb, var(--color-text) 7%, transparent);
 }
-.resolve-status-badge.status-new { background: rgba(59,130,246,.15); color: #60a5fa; }
-.resolve-status-badge.status-identical { background: rgba(34,197,94,.15); color: #22c55e; }
-.resolve-status-badge.status-conflict { background: rgba(245,158,11,.15); color: #f59e0b; }
-.resolve-status-badge.status-potential_upgrade { background: rgba(168,85,247,.15); color: #c084fc; }
-.resolve-status-badge.status-new_strand { background: rgba(168,85,247,.15); color: #c084fc; }
-.resolve-status-badge.status-error { background: rgba(239,68,68,.15); color: #ef4444; }
+.resolve-status-badge.status-new { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
+.resolve-status-badge.status-identical { background: color-mix(in srgb, var(--color-state-ok) 15%, transparent); color: var(--color-state-ok); }
+.resolve-status-badge.status-conflict { background: color-mix(in srgb, var(--color-state-warn) 15%, transparent); color: var(--color-state-warn); }
+.resolve-status-badge.status-potential_upgrade { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
+.resolve-status-badge.status-new_strand { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); }
+.resolve-status-badge.status-error { background: color-mix(in srgb, var(--color-state-error) 15%, transparent); color: var(--color-state-error); }
 .resolve-message { margin: 0 0 8px; font-size: .85rem; }
 .resolve-svc-info { font-size: .83rem; color: var(--muted); margin-bottom: 8px; }
 .resolve-hint { font-size: .85rem; color: var(--muted); margin: 4px 0 8px; }
-.resolve-error { color: #ef4444; font-size: .85rem; margin: 8px 0; }
+.resolve-error { color: var(--color-state-error); font-size: .85rem; margin: 8px 0; }
 .resolve-rutas-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
 .resolve-ruta-item {
   display: flex; align-items: center; gap: 8px; font-size: .82rem;
-  padding: 6px 8px; background: rgba(255,255,255,.04); border-radius: 6px;
+  padding: 6px 8px; background: color-mix(in srgb, var(--color-text) 4%, transparent); border-radius: 6px;
 }
 .resolve-ruta-meta { font-size: .78rem; color: var(--muted); }
 .resolve-select { width: 100%; margin: 4px 0 10px; }
 .resolve-upgrade-info {
-  font-size: .83rem; background: rgba(255,255,255,.04); border-radius: 6px;
+  font-size: .83rem; background: color-mix(in srgb, var(--color-text) 4%, transparent); border-radius: 6px;
   padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 3px;
 }
 /* ─── Baneos Activos ─── */
@@ -1685,33 +1776,33 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .active-bans-badge {
   position: absolute; top: -6px; right: -6px;
   min-width: 18px; height: 18px; border-radius: 9px; padding: 0 4px;
-  background: #ef4444; color: #fff; font-size: .72rem; font-weight: 700;
+  background: var(--color-state-error); color: var(--color-neutral-100); font-size: .72rem; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
 .active-bans-modal { max-width: 640px; }
 .active-bans-loading, .active-bans-empty {
   padding: 20px 0; text-align: center; color: var(--muted); font-size: .88rem;
 }
-.active-bans-error { color: #ef4444; font-size: .85rem; padding: 8px 0; }
+.active-bans-error { color: var(--color-state-error); font-size: .85rem; padding: 8px 0; }
 .active-bans-count { font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
 .active-bans-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
 .active-ban-card {
-  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); border: 1px solid var(--border);
   border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
 }
 .active-ban-card-header { display: flex; justify-content: space-between; align-items: flex-start; }
 .active-ban-ticket { display: flex; flex-direction: column; gap: 2px; }
 .active-ban-ticket-label { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .active-ban-duracion {
-  font-size: .78rem; font-weight: 600; color: #f59e0b;
-  background: rgba(245,158,11,.1); padding: 2px 8px; border-radius: 10px;
+  font-size: .78rem; font-weight: 600; color: var(--color-state-warn);
+  background: color-mix(in srgb, var(--color-state-warn) 10%, transparent); padding: 2px 8px; border-radius: 10px;
   white-space: nowrap; align-self: flex-start;
 }
 .active-ban-servicios { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .85rem; }
 .active-ban-svc-item { display: flex; align-items: center; gap: 5px; }
 .active-ban-svc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.active-ban-svc-dot.afectado { background: #f59e0b; }
-.active-ban-svc-dot.protegido { background: #ef4444; }
+.active-ban-svc-dot.afectado { background: var(--color-state-warn); }
+.active-ban-svc-dot.protegido { background: var(--color-state-error); }
 .active-ban-arrow { color: var(--muted); font-size: .9rem; }
 .active-ban-ruta { font-size: .8rem; color: var(--muted); }
 .active-ban-motivo { font-size: .83rem; color: var(--text); font-style: italic; border-left: 2px solid var(--border); padding-left: 8px; }

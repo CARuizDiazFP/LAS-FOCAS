@@ -1,7 +1,7 @@
 <!--
   Nombre de archivo: ServicioCard.vue
   Ubicación de archivo: web/frontend/src/components/servicios/ServicioCard.vue
-  Descripción: Tarjeta de visualización para un servicio SLA en el visor con scroll infinito
+  Descripción: Tarjeta mínima de servicio (estado, tipo, cliente, histórico) para el visor con scroll infinito
 -->
 <template>
   <article
@@ -11,46 +11,26 @@
     @click="goToDetail"
     @keyup.enter="goToDetail"
   >
-    <header class="servicio-card__header">
-      <h3>{{ servicio.numero_primer_servicio }}</h3>
-      <span class="servicio-card__estado">{{ servicio.estado_servicio }}</span>
-    </header>
+    <div class="servicio-card__row">
+      <span :class="['servicio-card__dot', `is-${estadoToken}`]" :title="servicio.estado_servicio" aria-hidden="true"></span>
+      <span class="servicio-card__type">{{ tipoLabel }}</span>
+      <i class="ph ph-arrow-up-right servicio-card__arrow" aria-hidden="true"></i>
+    </div>
 
-    <dl class="servicio-card__grid">
-      <div>
-        <dt>Cliente</dt>
-        <dd>{{ servicio.nombre_cliente || 'Sin dato' }}</dd>
-      </div>
-      <div>
-        <dt>Línea</dt>
-        <dd>{{ servicio.numero_linea || 'Sin dato' }}</dd>
-      </div>
-      <div>
-        <dt>Tipo</dt>
-        <dd>{{ servicio.tipo_servicio || 'Sin dato' }}</dd>
-      </div>
-      <div>
-        <dt>SLA</dt>
-        <dd>{{ servicio.sla_prometido || 'Sin dato' }}</dd>
-      </div>
-      <div class="servicio-card__direccion">
-        <dt>Domicilio</dt>
-        <dd>{{ domicilio }}</dd>
-      </div>
-    </dl>
+    <h3 class="servicio-card__name">{{ servicio.nombre_cliente || 'Cliente sin dato' }}</h3>
 
-    <section class="servicio-card__footer">
-      <p class="servicio-card__history">Histórico ID: {{ historicoVisual }}</p>
-      <button class="servicio-card__cta" type="button" @click.stop="goToDetail">
-        {{ ctaLabel }}
-      </button>
-    </section>
+    <div class="servicio-card__hairline"></div>
+
+    <div class="servicio-card__row">
+      <span class="servicio-card__historico">{{ historicoVisual }}</span>
+      <span class="servicio-card__tag">{{ ctaLabel }}</span>
+    </div>
   </article>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { ServicioItem } from '../../api/servicios';
+import { estadoServicioToken, type ServicioItem } from '../../api/servicios';
 
 const props = defineProps<{
   servicio: ServicioItem;
@@ -59,13 +39,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   openDetail: [idOrigen: string];
 }>();
-
-const domicilio = computed(() => {
-  const parts = [props.servicio.direccion, props.servicio.direccion_2, props.servicio.localidad, props.servicio.provincia]
-    .map((value) => (value ?? '').trim())
-    .filter((value) => value.length > 0);
-  return parts.length > 0 ? parts.join(' · ') : 'Sin dato';
-});
 
 const idOrigen = computed(() => (props.servicio.numero_primer_servicio ?? '').trim());
 const idUltimaLinea = computed(() => {
@@ -82,10 +55,12 @@ const ctaLabel = computed(() => `${tipoLabel.value} ${idUltimaLinea.value}`);
 
 const historicoVisual = computed(() => {
   if (!idOrigen.value || !idUltimaLinea.value || idOrigen.value === idUltimaLinea.value) {
-    return idOrigen.value || 'Sin dato';
+    return `Hist. ${idOrigen.value || 'sin dato'}`;
   }
-  return `${idOrigen.value} -> ${idUltimaLinea.value}`;
+  return `${idOrigen.value} → ${idUltimaLinea.value}`;
 });
+
+const estadoToken = computed(() => estadoServicioToken(props.servicio.estado_servicio));
 
 function goToDetail(): void {
   if (!idOrigen.value) return;
@@ -95,106 +70,97 @@ function goToDetail(): void {
 
 <style scoped>
 .servicio-card {
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  background: linear-gradient(160deg, rgba(10, 15, 23, 0.95), rgba(18, 25, 36, 0.92));
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  padding: var(--space-4);
-  display: grid;
-  gap: var(--space-3);
-  cursor: pointer;
-}
-
-.servicio-card__header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.servicio-card__header h3 {
-  font-size: 0.98rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  margin: 0;
-}
-
-.servicio-card__estado {
-  border: 1px solid rgba(63, 185, 80, 0.4);
-  background: rgba(63, 185, 80, 0.12);
-  border-radius: var(--radius-pill);
-  padding: 2px 10px;
-  font-size: 0.74rem;
-  color: #9fe0ac;
-  white-space: nowrap;
-}
-
-.servicio-card__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-  margin: 0;
-}
-
-.servicio-card__grid dt {
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 2px;
-}
-
-.servicio-card__grid dd {
-  margin: 0;
-  color: var(--color-text-primary);
-  font-size: 0.88rem;
-  word-break: break-word;
-}
-
-.servicio-card__direccion {
-  grid-column: 1 / -1;
-}
-
-.servicio-card__footer {
-  border: 1px dashed rgba(116, 148, 190, 0.38);
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 13px 11px;
   border-radius: var(--radius-md);
-  background: rgba(30, 41, 59, 0.45);
-  padding: var(--space-2);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  overflow: hidden;
+  transition: box-shadow 0.15s ease;
+}
+
+.servicio-card:hover,
+.servicio-card:focus-visible {
+  box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.servicio-card__row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  gap: 7px;
 }
 
-.servicio-card__history {
+.servicio-card__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-state-idle);
+}
+
+.servicio-card__dot.is-ok { background: var(--color-state-ok); }
+.servicio-card__dot.is-warn { background: var(--color-state-warn); }
+.servicio-card__dot.is-error { background: var(--color-state-error); }
+.servicio-card__dot.is-idle { background: var(--color-state-idle); }
+
+.servicio-card__type {
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  background: var(--color-neutral-800);
+  color: var(--color-neutral-100);
+}
+
+.servicio-card__arrow {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--color-neutral-600);
+}
+
+.servicio-card__name {
   margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-}
-
-.servicio-card__cta {
-  border: 1px solid rgba(79, 156, 255, 0.48);
-  background: rgba(45, 102, 255, 0.2);
-  color: #dbeafe;
-  border-radius: var(--radius-sm);
   min-height: 36px;
-  padding: 0 12px;
-  font-weight: 600;
-  cursor: pointer;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.005em;
+  text-wrap: pretty;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.servicio-card__cta:hover {
-  background: rgba(45, 102, 255, 0.3);
+.servicio-card__hairline {
+  height: 1px;
+  background: var(--color-divider);
 }
 
-@media (max-width: 720px) {
-  .servicio-card__grid {
-    grid-template-columns: 1fr;
-  }
+.servicio-card__historico {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-  .servicio-card__footer {
-    flex-direction: column;
-    align-items: stretch;
-  }
+.servicio-card__tag {
+  margin-left: auto;
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-accent);
 }
 </style>

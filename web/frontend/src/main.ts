@@ -8,5 +8,7 @@ import router from './router/index';
 import './assets/styles/tokens.css';
 import './admin/admin.css';
 import './panel.css';
+import '@phosphor-icons/web/regular';
+import '@phosphor-icons/web/fill';
 
 createApp(App).use(router).mount('#app');

@@ -35,47 +35,25 @@ dialog {
 .container { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
 .panel { background: var(--surface); border:1px solid var(--border); border-radius: 8px; padding: 16px; }
 
-.btn { background: #1f2937; color: var(--text); border:1px solid var(--border); border-radius: 6px; padding: 8px 12px; cursor: pointer; }
-.btn:hover { border-color: var(--muted); }
-.btn.primary { background: var(--primary); border-color: var(--primary); }
-
-.chat { margin-top: 12px; }
-.chat-log { height: 320px; overflow: auto; border:1px solid var(--border); border-radius: 6px; padding: 8px; background: #0c1117; }
-.msg { padding: 6px 8px; margin-bottom: 6px; border-radius: 6px; }
-.msg.user { background: #102a43; }
-.msg.assistant { background: #1f2a37; }
-.msg.tool { background: transparent; color: var(--muted); font-size: 0.75rem; font-style: italic; }
-.msg.streaming::after { content: ' ▌'; color: var(--muted); animation: blink 1s steps(2, jump-none) infinite; }
-
-.chat-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; padding: 0; list-style: none; min-height: 0; }
-.chat-attachments.active { padding-bottom: 4px; }
-.attachment-chip { display: inline-flex; align-items: center; gap: 6px; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 999px; padding: 4px 10px; font-size: 0.8rem; }
-.attachment-chip span { max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.attachment-chip .remove-attachment { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 0.85rem; padding: 0 2px; }
-.attachment-chip .remove-attachment:hover { color: #fca5a5; }
-
-.chat-dropzone { border: 1px dashed var(--border); border-radius: 6px; padding: 10px; font-size: 0.85rem; color: var(--muted); display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
-.chat-dropzone.dragging { border-color: var(--primary); background: rgba(59, 130, 246, 0.08); color: var(--text); }
-.link-button { background: none; border: none; color: var(--primary); cursor: pointer; padding: 0; font: inherit; }
-.link-button:hover { text-decoration: underline; }
-.attachments-note { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.attachments-note > span { font-weight: 600; }
-.attachments-note a { color: var(--primary); font-size: 0.85rem; }
-
-.chat-status { font-size: 0.75rem; margin-bottom: 6px; min-height: 16px; }
-.chat-status.success { color: #86efac; }
-.chat-status.warn { color: #facc15; }
-.chat-status.error { color: #fca5a5; }
-
-@keyframes blink {
-  0% { opacity: 1; }
-  50% { opacity: 0; }
-  100% { opacity: 1; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; text-decoration: none;
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  font-size: 14px; line-height: 1.2; color: var(--color-text);
+  background: transparent; border: 1px solid transparent;
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border-radius: var(--radius-md);
 }
-
-.chat-form { display:flex; gap:8px; margin-top: 8px; }
-.chat-form input { flex:1; background:#0c1117; color: var(--text); border:1px solid var(--border); border-radius:6px; padding:10px; }
-.chat-form button { min-width: 96px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.primary  { color: var(--color-accent); border-color: var(--color-accent); background: transparent; box-shadow: none; }
+.btn.primary:hover  { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.btn.primary:active { background: color-mix(in srgb, var(--color-accent) 22%, transparent); }
+.btn.danger  { color: oklch(0.72 0.11 25); border-color: color-mix(in srgb, var(--color-state-error) 50%, transparent); background: transparent; }
+.btn.danger:hover  { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
+.btn.success { color: oklch(0.72 0.11 155); border-color: color-mix(in srgb, var(--color-state-ok) 50%, transparent); background: transparent; }
+.btn.success:hover { background: color-mix(in srgb, var(--color-state-ok) 12%, transparent); }
+.btn.warning { color: oklch(0.72 0.11 75); border-color: color-mix(in srgb, var(--color-state-warn) 50%, transparent); background: transparent; }
+.btn.warning:hover { background: color-mix(in srgb, var(--color-state-warn) 12%, transparent); }
 
 .grid { display:grid; gap:24px; }
 @media (min-width: 960px) {
@@ -89,8 +67,8 @@ dialog {
 .pill-list li { background: rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:999px; padding:6px 12px; font-size:0.8rem; }
 .small { font-size:0.82rem; }
 .card-actions { display:flex; flex-wrap:wrap; gap:12px; }
-.btn.subtle { background: transparent; border-style:dashed; color: var(--muted); }
-.btn.subtle:hover { color: var(--text); }
+.btn.subtle   { border-color: var(--color-divider); color: var(--color-text); border-style: solid; }
+.btn.subtle:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 
 .result-box { border:1px dashed var(--border); border-radius:8px; padding:12px; min-height:48px; transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease; }
 .result-box.info { border-color: rgba(59,130,246,0.4); color: var(--text); background: rgba(59,130,246,0.08); }
@@ -137,7 +115,6 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
 .vlan-list.empty { color: var(--muted); font-style:italic; }
 .vlan-pill { background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.18); border-radius:999px; padding:4px 10px; font-size:0.85rem; }
 .checkbox { display:flex; align-items:center; gap:8px; font-size:0.85rem; color: var(--muted); }
-.btn.primary { box-shadow: 0 8px 20px rgba(59,130,246,0.3); }
 
 /* =====================================================
    INFRAESTRUCTURA / CÁMARAS DASHBOARD
@@ -2540,18 +2517,6 @@ textarea { background:#0c1117; color: var(--text); border:1px solid var(--border
 .ban-wizard-spacer { flex: 1; }
 
 .ban-wizard-footer .btn { padding: 10px 20px; }
-
-.ban-wizard-footer .btn.danger {
-  background: linear-gradient(135deg, #ff4444, #dc2626);
-  border: none;
-  color: white;
-  font-weight: 700;
-  box-shadow: 0 4px 15px rgba(255, 68, 68, 0.4);
-}
-
-.ban-wizard-footer .btn.danger:hover {
-  box-shadow: 0 6px 20px rgba(255, 68, 68, 0.5);
-}
 
 .ban-wizard-footer .btn[hidden] { display: none; }
 
