@@ -4,8 +4,8 @@
 
 ---
 name: Crear Skill
-description: "Crea una skill nueva o una tríada agent+prompt+skill con estructura, validaciones y documentación consistente"
-argument-hint: "Describe objetivo, alcance y artefactos, por ejemplo: skill para generar playbooks de incidentes con agent y prompt asociados"
+description: "Crea o evoluciona skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y criterios universales de aceptación"
+argument-hint: "Describe objetivo, alcance y restricciones; por ejemplo: skill para módulo web con reglas XSS/CORS/Pydantic y anti-legacy"
 agent: "skill-generator"
 ---
 
@@ -18,7 +18,13 @@ Crear una skill nueva o una tríada de customizations bajo `.github/` a partir d
 - estructurar el pedido antes de escribir archivos
 - inspeccionar customizations existentes para evitar duplicaciones
 - definir responsabilidades claras entre agente, prompt y skill
+- inyectar stack, seguridad y calidad de forma obligatoria
 - generar criterios de aceptación verificables
+
+## Restricción Principal
+
+- Este generador no escribe código de aplicación.
+- Su salida debe ser reglas, prompts, guardrails y criterios para que otros agentes implementen código.
 
 ## Entradas esperadas
 
@@ -28,6 +34,41 @@ Crear una skill nueva o una tríada de customizations bajo `.github/` a partir d
 - archivos o recursos complementarios esperados
 - restricciones de herramientas o contexto
 - documentación que debería actualizarse
+
+## Contexto Tecnológico Obligatorio (Inyección Requerida)
+
+Toda skill de desarrollo que genere este prompt debe incluir textual y explícitamente:
+
+```markdown
+## Contexto Tecnológico Obligatorio LAS-FOCAS
+
+- Frontend obligatorio: Vue 3 (Composition API) + Vite + TypeScript + CSS modular con tokens.
+- Backend obligatorio: FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL.
+- Arquitectura obligatoria: SPA pura; comunicación exclusivamente por API REST (JSON) y WebSocket.
+- Prohibido para nuevas implementaciones: UI en Vanilla JS, manipulación directa del DOM como patrón principal, plantillas Jinja para render de frontend.
+- No introducir Tailwind en nuevas directivas salvo solicitud explícita y aprobada por arquitectura.
+```
+
+## Reglas de Seguridad y Arquitectura (Inyección Requerida)
+
+Toda skill de desarrollo debe incluir directivas explícitas para:
+
+1. XSS en Vue 3: evitar `v-html` con contenido no confiable; si se usa HTML dinámico, exigir sanitización documentada.
+2. CORS en FastAPI: configuración strict allowlist; prohibido comodín en producción.
+3. Validación Pydantic: modelos tipados para entrada/salida; rechazo de payloads inválidos.
+4. API y sesión: controles de autenticación/autorización consistentes con el módulo.
+5. Manejo de secretos: uso de variables de entorno, sin hardcodeo ni exposición en logs.
+
+## Criterios Universales de Aceptación (Inyección Requerida)
+
+Sin importar el dominio de la skill, siempre agregar:
+
+- [ ] Arquitectura alineada al stack vigente y sin prácticas legacy.
+- [ ] Seguridad aplicada y verificable (XSS, CORS, validación de datos).
+- [ ] Plan de pruebas mínimo (unitarias/integración según alcance) y cobertura esperada para módulos nuevos.
+- [ ] Logging, observabilidad y manejo de errores definidos.
+- [ ] Documentación relacionada actualizada cuando haya cambios de directiva.
+- [ ] Dependencias e imágenes versionadas sin comodines ni `latest`.
 
 ## Flujo de trabajo
 
@@ -40,9 +81,10 @@ Crear una skill nueva o una tríada de customizations bajo `.github/` a partir d
    - nombre de carpeta y naming final
    - archivos a crear o actualizar
    - responsabilidad de cada archivo
-4. Crear o actualizar los archivos necesarios.
-5. Validar frontmatter, coherencia de descripciones y enlaces.
-6. Actualizar documentación relacionada si el ecosistema agéntico cambia.
+4. Inyectar el bloque tecnológico obligatorio, reglas de seguridad y criterios universales de aceptación.
+5. Crear o actualizar los archivos necesarios.
+6. Validar frontmatter, coherencia de descripciones, enlaces y prohibiciones legacy.
+7. Actualizar documentación relacionada si el ecosistema agéntico cambia o hay inconsistencias.
 
 ## Separación obligatoria de responsabilidades
 
@@ -76,11 +118,15 @@ Crear una skill nueva o una tríada de customizations bajo `.github/` a partir d
 2. No llevar conocimiento puntual a instrucciones globales.
 3. Priorizar enlaces y referencias sobre bloques largos duplicados.
 4. Mantener nombres consistentes con rutas y convención del repo.
-5. Todas las salidas deben quedar en `.md` y en español.
+5. Prohibir explícitamente directivas legacy en toda skill de desarrollo nueva.
+6. Todas las salidas deben quedar en `.md` y en español.
+7. No redactar código de aplicación; solo reglas/prompts y criterios.
 
 ## Salida esperada
 
 1. Arquitectura propuesta.
 2. Archivos creados o actualizados.
-3. Criterios de aceptación cubiertos.
-4. Documentación relacionada actualizada o pendiente explicitada.
+3. Contexto tecnológico obligatorio inyectado.
+4. Reglas de seguridad SPA/API inyectadas.
+5. Criterios universales de aceptación cubiertos.
+6. Documentación relacionada actualizada o pendiente explicitada.

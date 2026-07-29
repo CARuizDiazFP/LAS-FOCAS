@@ -4,97 +4,112 @@
   Descripción: Tab Alarmas Ciena — convierte CSV SiteManager/MCP a Excel — migrado desde panel.js
 -->
 <template>
-  <article class="card">
-    <header class="card-header">
-      <h1>Alarmas Ciena</h1>
+  <article class="module-screen card">
+    <header class="module-header">
+      <div class="module-heading">
+        <p class="module-eyebrow">DWDM Ciena</p>
+        <h1>Alarmas Ciena</h1>
+      </div>
       <span class="badge">Nuevo</span>
     </header>
-    <p class="muted">Seleccioná un CSV exportado desde SiteManager o MCP para convertirlo a Excel.</p>
-    <div class="stack">
-      <div
-        class="dropzone"
-        :class="{ drag: isDrag }"
-        @click="fileEl?.click()"
-        @dragover.prevent="isDrag = true"
-        @dragleave="isDrag = false"
-        @drop.prevent="handleDrop"
-      >
-        <input ref="fileEl" type="file" accept=".csv" hidden @change="onFileChange" />
-        <span>{{ selectedFile ? `Seleccionado: ${selectedFile.name}` : 'Arrastrá el .csv acá o hacé click' }}</span>
+
+    <section class="info-card" aria-label="Contexto del submódulo Alarmas Ciena">
+      <p>
+        Utilice esta pantalla para cargar un CSV exportado desde SiteManager o MCP, normalizar su contenido y
+        convertirlo a un archivo Excel listo para revisión operativa o distribución interna.
+      </p>
+    </section>
+
+    <main class="module-content">
+      <div class="stack">
+        <div
+          class="dropzone"
+          :class="{ drag: isDrag }"
+          @click="fileEl?.click()"
+          @dragover.prevent="isDrag = true"
+          @dragleave="isDrag = false"
+          @drop.prevent="handleDrop"
+        >
+          <input ref="fileEl" type="file" accept=".csv" hidden @change="onFileChange" />
+          <span>{{ selectedFile ? `Seleccionado: ${selectedFile.name}` : 'Arrastrá el .csv acá o hacé click' }}</span>
+        </div>
+        <div class="card-actions">
+          <button class="btn primary" :disabled="loading" @click="process">Procesar</button>
+        </div>
       </div>
-      <div class="card-actions">
-        <button class="btn primary" :disabled="loading" @click="process">Procesar</button>
-      </div>
-    </div>
-    <div :class="['result-box', resultClass]">{{ resultText }}</div>
+      <div :class="['result-box', resultClass]" role="status" aria-live="polite">{{ resultText }}</div>
+    </main>
   </article>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useSession } from '../../composables/useSession';
+import { useCiena } from '../../composables/useCiena';
 
-const { csrf } = useSession();
 const isDrag = ref(false);
-const loading = ref(false);
-const resultText = ref('Esperando archivo.');
-const resultClass = ref('muted');
 const fileEl = ref<HTMLInputElement | null>(null);
-let selectedFile: File | null = null;
+const {
+  selectedFile,
+  loading,
+  resultText,
+  resultClass,
+  setSelectedFile,
+  process,
+} = useCiena();
 
 function onFileChange(e: Event) {
-  selectedFile = (e.target as HTMLInputElement).files?.[0] ?? null;
-  resultText.value = 'Esperando archivo.';
-  resultClass.value = 'muted';
+  setSelectedFile((e.target as HTMLInputElement).files?.[0] ?? null);
 }
 
 function handleDrop(e: DragEvent) {
   isDrag.value = false;
-  selectedFile = e.dataTransfer?.files?.[0] ?? null;
-}
-
-async function process() {
-  if (!selectedFile) {
-    resultText.value = 'Seleccioná un archivo CSV';
-    resultClass.value = 'error';
-    return;
-  }
-  resultText.value = 'Procesando...';
-  resultClass.value = 'info';
-  loading.value = true;
-  const fd = new FormData();
-  fd.append('file', selectedFile);
-  fd.append('csrf_token', csrf());
-  try {
-    const res = await fetch('/api/tools/alarmas-ciena', { method: 'POST', body: fd, credentials: 'include' });
-    if (!res.ok) {
-      let errMsg = 'Error al procesar el archivo';
-      try {
-        const errData = await res.json();
-        if (errData.error) errMsg = errData.error;
-        else if (errData.detail) errMsg = errData.detail;
-      } catch { /* ignorar */ }
-      throw new Error(errMsg);
-    }
-    const formato = res.headers.get('X-Formato-Detectado') ?? 'desconocido';
-    const filas = res.headers.get('X-Filas-Procesadas') ?? '?';
-    const columnas = res.headers.get('X-Columnas') ?? '?';
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = selectedFile.name.replace(/\.csv$/i, '') + '_procesado.xlsx';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    resultText.value = `✔ Convertido (formato: ${formato}, ${filas} filas, ${columnas} columnas). La descarga comenzó.`;
-    resultClass.value = 'success';
-  } catch (e: unknown) {
-    resultText.value = `Error: ${e instanceof Error ? e.message : String(e)}`;
-    resultClass.value = 'error';
-  } finally {
-    loading.value = false;
-  }
+  setSelectedFile(e.dataTransfer?.files?.[0] ?? null);
 }
 </script>
+
+<style scoped>
+.module-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.module-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.module-heading h1 {
+  margin: 0;
+}
+
+.module-eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--color-primary);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.info-card {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-brand-primary-tint);
+}
+
+.info-card p {
+  margin: 0;
+  color: var(--color-text-muted);
+  line-height: 1.15;
+}
+
+.module-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+</style>

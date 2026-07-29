@@ -10,6 +10,7 @@
       <RouterLink class="btn" to="/admin">Inicio</RouterLink>
       <RouterLink class="btn" to="/admin/usuarios">Usuarios</RouterLink>
       <RouterLink class="btn" to="/admin/servicios">Servicios</RouterLink>
+      <RouterLink class="btn" to="/admin/ingesta">Ingesta</RouterLink>
       <a class="btn" href="/">Panel</a>
       <button class="btn" @click="doLogout">Salir</button>
       <span class="user-info">{{ adminUser }}</span>

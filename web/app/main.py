@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
+from core.config import get_secret
 from core.logging import setup_logging
 from core.utils.tz import TZ_ARG
 from core.password import hash_password, verify_password
@@ -40,6 +41,7 @@ import pandas as pd
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
+INTERNAL_API_BASE_URL = os.getenv("INTERNAL_API_BASE_URL", "http://api:8000")
 LOG_RAW_TEXT = os.getenv("LOG_RAW_TEXT", "false").lower() == "true"
 
 # Config DB (usa las variables del .env del stack)
@@ -47,12 +49,36 @@ DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
 DB_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 DB_NAME = os.getenv("POSTGRES_DB", "lasfocas")
 DB_USER = os.getenv("POSTGRES_USER", "lasfocas")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "superseguro")
+DB_PASS = get_secret("db_password_v1", "POSTGRES_PASSWORD")
 DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
 logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
+
+
+def _internal_api_auth_headers() -> dict[str, str]:
+    api_key = get_secret("api_key_v1", "LAS_FOCAS_API_KEY").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="API interna sin credenciales")
+    return {
+        "Authorization": f"Bearer {api_key}",
+    }
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        logger.warning("action=config_invalid_int name=%s default=%s", name, default)
+        return default
 
 
 def _detect_build_version() -> str:
@@ -67,6 +93,20 @@ def _detect_build_version() -> str:
 
 
 BUILD_VERSION = _detect_build_version()
+WEB_SESSION_HTTPS_ONLY = _env_bool("WEB_SESSION_HTTPS_ONLY", False)
+WEB_SESSION_MAX_AGE = _env_int("WEB_SESSION_MAX_AGE", 60 * 60 * 8)
+WEB_LOGIN_RATE_LIMIT_MAX = _env_int("WEB_LOGIN_RATE_LIMIT_MAX", 5)
+WEB_LOGIN_RATE_LIMIT_WINDOW = _env_int("WEB_LOGIN_RATE_LIMIT_WINDOW", 60)
+_LOGIN_ATTEMPTS: dict[tuple[str, str], tuple[int, float]] = {}
+
+
+def _session_middleware_options() -> dict[str, Any]:
+    return {
+        "secret_key": get_secret("web_secret_key_v1", "WEB_SECRET_KEY", "cambiar_por_clave_web_segura"),
+        "https_only": WEB_SESSION_HTTPS_ONLY,
+        "same_site": "lax",
+        "max_age": WEB_SESSION_MAX_AGE,
+    }
 
 # Métricas simples en memoria (MVP) con persistencia opcional
 INTENT_COUNTER: dict[str, int] = {"Solicitud de acción": 0, "Consulta/Generico": 0, "Otros": 0}
@@ -98,7 +138,10 @@ def _persist_metrics() -> None:
         logger.warning("action=metrics_persist error=%s", exc)
 
 app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION)
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("WEB_SECRET_KEY", "dev-secret-change"))
+app.add_middleware(
+    SessionMiddleware,
+    **_session_middleware_options(),
+)
 
 # Middleware de trazabilidad de requests (ayuda a depurar ERR_INVALID_HTTP_RESPONSE en navegador)
 @app.middleware("http")
@@ -159,6 +202,7 @@ os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
+from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
     ReportConfig,
@@ -168,6 +212,7 @@ from modules.informes_repetitividad.service import (  # noqa: E402
 )
 
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
+REPORT_HISTORY: ReportHistoryBackend = ReportHistoryService(DB_DSN)
 
 # Montar assets del build Vite si existen
 _vite_assets = DIST_DIR / "assets"
@@ -247,6 +292,36 @@ def get_current_user(request: Request) -> str | None:
     return request.session.get("username")
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_rate_limit_key(ip: str, username: str) -> tuple[str, str]:
+    user_key = username.strip().lower() or "-"
+    return (ip, user_key)
+
+
+def _login_rate_limit_exceeded(ip: str, username: str) -> bool:
+    timestamp = now()
+    window_start = timestamp - WEB_LOGIN_RATE_LIMIT_WINDOW
+    expired = [key for key, (_, ts) in _LOGIN_ATTEMPTS.items() if ts < window_start]
+    for key in expired:
+        _LOGIN_ATTEMPTS.pop(key, None)
+
+    key = _login_rate_limit_key(ip, username)
+    count, first_ts = _LOGIN_ATTEMPTS.get(key, (0, timestamp))
+    if timestamp - first_ts > WEB_LOGIN_RATE_LIMIT_WINDOW:
+        count = 0
+        first_ts = timestamp
+    count += 1
+    _LOGIN_ATTEMPTS[key] = (count, first_ts)
+    return count > WEB_LOGIN_RATE_LIMIT_MAX
+
+
+def _clear_login_rate_limit(ip: str, username: str) -> None:
+    _LOGIN_ATTEMPTS.pop(_login_rate_limit_key(ip, username), None)
+
+
 @app.get("/api/auth/session")
 async def api_auth_session(request: Request) -> JSONResponse:
     """Devuelve el estado de la sesión actual (sin autenticación requerida)."""
@@ -264,22 +339,16 @@ async def api_auth_session(request: Request) -> JSONResponse:
 @app.post("/api/auth/login")
 async def api_auth_login(request: Request) -> JSONResponse:
     """Login vía JSON. Devuelve sesión o error."""
-    # Rate limiting simple por IP (5 intentos/minuto)
-    ip = request.client.host if request.client else "unknown"
-    rl = request.session.get("rl_login", {"ip": ip, "count": 0, "ts": now()})
-    if rl["ip"] != ip or now() - rl["ts"] > 60:
-        rl = {"ip": ip, "count": 0, "ts": now()}
-    rl["count"] += 1
-    request.session["rl_login"] = rl
-    if rl["count"] > 5:
-        return JSONResponse({"ok": False, "error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
-
     try:
         body = await request.json()
         username = str(body.get("username", "")).strip()
         password = str(body.get("password", ""))
     except Exception:
         return JSONResponse({"ok": False, "error": "Body inválido"}, status_code=400)
+
+    ip = _client_ip(request)
+    if _login_rate_limit_exceeded(ip, username):
+        return JSONResponse({"ok": False, "error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
 
     if not username or not password:
         return JSONResponse({"ok": False, "error": "Usuario y contraseña requeridos"}, status_code=400)
@@ -306,6 +375,7 @@ async def api_auth_login(request: Request) -> JSONResponse:
     request.session["username"] = username
     request.session["role"] = row[1] if row else "user"
     request.session["csrf"] = csrf_token
+    _clear_login_rate_limit(ip, username)
     logger.info("action=api_login result=success username=%s role=%s ip=%s", username, row[1] if row else "user", ip)
     return JSONResponse({"ok": True, "username": username, "role": row[1] if row else "user", "csrf": csrf_token})
 
@@ -330,22 +400,66 @@ async def reports_index_redirect() -> RedirectResponse:
 
 
 @app.get("/api/reports/history")
-async def api_reports_history(request: Request) -> JSONResponse:
-    """Devuelve la lista de archivos de reportes generados."""
+async def api_reports_history(
+    request: Request,
+    type: str | None = None,  # noqa: A002 - nombre público del filtro
+    status: str | None = None,
+    username: str | None = None,
+    month: int | None = None,
+    year: int | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> JSONResponse:
+    """Devuelve el histórico persistente de reportes generados."""
+
     _require_auth(request)
-    files = []
-    try:
-        for p in sorted(_mount_reports.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
-            if p.is_file():
-                files.append({
-                    "name": p.name,
-                    "size": p.stat().st_size,
-                    "mtime": int(p.stat().st_mtime),
-                    "href": f"/reports/{p.name}",
-                })
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("action=reports_history_list error=%s", exc)
-    return JSONResponse({"files": files})
+    clean_limit = max(1, min(limit, 200))
+    clean_offset = max(0, offset)
+    records = REPORT_HISTORY.list_records(
+        report_type=type or None,
+        status=status or None,
+        username=username or None,
+        month=month,
+        year=year,
+        limit=clean_limit,
+        offset=clean_offset,
+    )
+    files = _legacy_files_from_report_history(records)
+    return JSONResponse(
+        {
+            "items": records,
+            "files": files,
+            "limit": clean_limit,
+            "offset": clean_offset,
+        }
+    )
+
+
+def _legacy_files_from_report_history(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Construye una vista compatible con el viejo listado de archivos."""
+
+    files: List[Dict[str, Any]] = []
+    for record in records:
+        output_metadata = record.get("output_metadata") or {}
+        outputs = output_metadata.get("outputs") or {}
+        if not isinstance(outputs, dict):
+            continue
+        for label, raw_href in outputs.items():
+            hrefs = raw_href if isinstance(raw_href, list) else [raw_href]
+            for href in hrefs:
+                if not href or not isinstance(href, str):
+                    continue
+                files.append(
+                    {
+                        "name": Path(href).name,
+                        "size": 0,
+                        "mtime": 0,
+                        "href": href,
+                        "report_id": record.get("id"),
+                        "label": label,
+                    }
+                )
+    return files
 
 
 def _merge_excel_sources(sources: List[tuple[str, bytes]]) -> bytes:
@@ -434,7 +548,29 @@ async def generar_informe_sla_web(
     archivos = [archivo for archivo in files if archivo and archivo.filename]
     
     archivo_count = len(archivos)
-    source = "db" if use_db else "excel"
+    source = "db" if use_db else "excel-legacy"
+    file_names = [Path(archivo.filename or "").name for archivo in archivos]
+    history_id = REPORT_HISTORY.start(
+        report_type="sla",
+        username=username,
+        source=source,
+        period_month=mes_num,
+        period_year=anio_num,
+        input_metadata={
+            "archivo_count": archivo_count,
+            "archivos": file_names,
+            "pdf_enabled": bool(pdf_enabled),
+            "use_db": bool(use_db),
+        },
+    )
+
+    def _history_error(error_code: str, message: str) -> None:
+        REPORT_HISTORY.finish_error(
+            history_id,
+            error_code=error_code,
+            error_message=message,
+            output_metadata={"source": source},
+        )
 
     if use_db and archivos:
         for archivo in archivos:
@@ -447,6 +583,7 @@ async def generar_informe_sla_web(
             if len(archivos) != 2:
                 await _close_uploads(archivos)
                 logger.warning("action=sla_web_report stage=validation error=archivos_incorrectos count=%s", len(archivos))
+                _history_error("HTTP_400", "Debés adjuntar dos archivos: servicios y reclamos")
                 return JSONResponse(
                     {"ok": False, "error": "Debés adjuntar dos archivos: servicios y reclamos"},
                     status_code=400,
@@ -461,6 +598,7 @@ async def generar_informe_sla_web(
                 if not nombre.lower().endswith(".xlsx"):
                     await archivo.close()
                     logger.warning("action=sla_web_report stage=validation error=extension file=%s", nombre)
+                    _history_error("HTTP_415", f"{nombre} debe tener extensión .xlsx")
                     return JSONResponse(
                         {"ok": False, "error": f"{nombre} debe tener extensión .xlsx"},
                         status_code=415,
@@ -469,25 +607,30 @@ async def generar_informe_sla_web(
                 await archivo.close()
                 if not contenido:
                     logger.warning("action=sla_web_report stage=validation error=empty file=%s", nombre)
+                    _history_error("HTTP_400", f"{nombre} está vacío")
                     return JSONResponse({"ok": False, "error": f"{nombre} está vacío"}, status_code=400)
                 try:
                     tipo = sla_service.identify_excel_kind(contenido)
                     logger.info("action=sla_web_report stage=identify file=%s tipo=%s", nombre, tipo)
                 except ValueError as exc:
                     logger.warning("action=sla_web_report stage=identify error=%s file=%s", exc, nombre)
+                    _history_error("HTTP_422", str(exc))
                     return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
                 if tipo == "servicios":
                     if servicios_bytes is not None:
+                        _history_error("HTTP_422", "Se recibió más de un Excel de servicios")
                         return JSONResponse({"ok": False, "error": "Se recibió más de un Excel de servicios"}, status_code=422)
                     servicios_bytes = contenido
                 else:
                     if reclamos_bytes is not None:
+                        _history_error("HTTP_422", "Se recibió más de un Excel de reclamos")
                         return JSONResponse({"ok": False, "error": "Se recibió más de un Excel de reclamos"}, status_code=422)
                     reclamos_bytes = contenido
 
             if servicios_bytes is None or reclamos_bytes is None:
                 logger.warning("action=sla_web_report stage=validation error=missing_files servicios=%s reclamos=%s", servicios_bytes is not None, reclamos_bytes is not None)
+                _history_error("HTTP_400", "Adjuntá los archivos de servicios y reclamos")
                 return JSONResponse({"ok": False, "error": "Adjuntá los archivos de servicios y reclamos"}, status_code=400)
 
             logger.info("action=sla_web_report stage=generate_legacy mes=%s anio=%s pdf=%s", mes_num, anio_num, pdf_enabled)
@@ -519,6 +662,7 @@ async def generar_informe_sla_web(
             anio_num,
             exc,
         )
+        _history_error("HTTP_422", str(exc))
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -530,6 +674,7 @@ async def generar_informe_sla_web(
             exc,
         )
         detalle = str(exc) or exc.__class__.__name__
+        _history_error("HTTP_500", f"No se pudo generar el informe SLA: {detalle}")
         return JSONResponse({"ok": False, "error": f"No se pudo generar el informe SLA: {detalle}"}, status_code=500)
 
     report_paths = {
@@ -546,6 +691,14 @@ async def generar_informe_sla_web(
         anio_num,
         bool(resultado_pdf),
         archivo_count,
+    )
+    REPORT_HISTORY.finish_success(
+        history_id,
+        output_metadata={
+            "source": source,
+            "outputs": report_paths,
+            "archivo_count": archivo_count,
+        },
     )
 
     return JSONResponse(
@@ -1367,17 +1520,42 @@ async def flow_repetitividad(
 ):
     """Genera el informe de Repetitividad desde Excel o DB según los parámetros."""
 
-    _require_auth(request)
+    username, _ = _require_auth(request)
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     periodo_titulo = f"{mes:02d}/{anio}"
     use_db = use_db or file is None
+    source = "db" if use_db else "excel"
+    history_id = REPORT_HISTORY.start(
+        report_type="repetitividad",
+        username=username,
+        source=source,
+        period_month=mes,
+        period_year=anio,
+        input_metadata={
+            "archivo": Path(file.filename).name if file and file.filename else None,
+            "archivo_count": 0 if use_db else 1,
+            "include_pdf": bool(include_pdf),
+            "with_geo": bool(with_geo),
+            "use_db": bool(use_db),
+        },
+    )
+
+    def _history_error(error_code: str, message: str) -> None:
+        REPORT_HISTORY.finish_error(
+            history_id,
+            error_code=error_code,
+            error_message=message,
+            output_metadata={"source": source},
+        )
+
     start = time.time()
 
     try:
         if not use_db:
             if not file or not file.filename or not file.filename.lower().endswith(".xlsx"):
+                _history_error("HTTP_400", "El archivo debe ser .xlsx")
                 return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
 
             upload_path = _save_upload(file)
@@ -1385,9 +1563,11 @@ async def flow_repetitividad(
                 size_bytes = upload_path.stat().st_size
                 if size_bytes > 10 * 1024 * 1024:
                     upload_path.unlink(missing_ok=True)
+                    _history_error("HTTP_413", "Archivo demasiado grande (límite 10MB)")
                     return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
                 if not zipfile.is_zipfile(upload_path):
                     upload_path.unlink(missing_ok=True)
+                    _history_error("HTTP_400", "El archivo subido no es un Excel .xlsx válido")
                     return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
                 logger.info(
                     "action=flow_repetitividad stage=start source=excel periodo=%s include_pdf=%s with_geo=%s size_bytes=%s",
@@ -1420,6 +1600,7 @@ async def flow_repetitividad(
             df_db = reclamos_from_db(mes, anio)
             df_proc = db_to_processor_frame(df_db)
             if df_proc.empty:
+                _history_error("HTTP_404", "No hay reclamos registrados para el período")
                 return JSONResponse({"error": "No hay reclamos registrados para el período"}, status_code=404)
             logger.info(
                 "action=flow_repetitividad stage=start source=db periodo=%s include_pdf=%s with_geo=%s filas=%s",
@@ -1441,6 +1622,7 @@ async def flow_repetitividad(
         logger.warning(
             "action=flow_repetitividad stage=validation error=%s periodo=%s", exc, periodo_titulo
         )
+        _history_error("HTTP_422", str(exc))
         return JSONResponse({"error": str(exc)}, status_code=422)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -1448,6 +1630,7 @@ async def flow_repetitividad(
             periodo_titulo,
             exc,
         )
+        _history_error("HTTP_500", "No se pudo generar el informe")
         return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
 
     image_maps = [f"/reports/{Path(m).name}" for m in result.map_images]
@@ -1475,6 +1658,19 @@ async def flow_repetitividad(
         payload["map_image"] = image_maps[0]
 
     elapsed = round((time.time() - start) * 1000)
+    outputs = {key: payload[key] for key in ("docx", "pdf", "map_image") if payload.get(key)}
+    if image_maps:
+        outputs["map_images"] = image_maps
+    REPORT_HISTORY.finish_success(
+        history_id,
+        output_metadata={
+            "source": payload["source"],
+            "outputs": outputs,
+            "stats": payload["stats"],
+            "pdf_requested": include_pdf,
+            "with_geo": bool(with_geo),
+        },
+    )
     logger.info(
         "action=flow_repetitividad stage=success periodo=%s source=%s docx=%s pdf=%s map_images=%s filas=%s repetitivos=%s ms=%s",
         periodo_titulo,
@@ -1782,6 +1978,84 @@ def _serialize_camara_response(
     }
 
 
+def _collect_camara_rutas_info(camara: Any) -> list[dict[str, Any]]:
+    """Obtiene las rutas asociadas a una cámara a través de sus empalmes."""
+
+    rutas_info: list[dict[str, Any]] = []
+    seen_rutas: set[int] = set()
+    for empalme in camara.empalmes:
+        for ruta in empalme.rutas:
+            if ruta.id in seen_rutas:
+                continue
+            seen_rutas.add(ruta.id)
+            alias_ids = ruta.servicio.alias_ids or []
+            transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
+            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
+            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
+            rutas_info.append(
+                {
+                    "ruta_id": ruta.id,
+                    "servicio_id": ruta.servicio.servicio_id,
+                    "ruta_nombre": ruta.nombre,
+                    "ruta_tipo": ruta.tipo.value,
+                    "alias_ids": alias_ids,
+                    "transitos_count": transitos_count,
+                    "punta_a_sitio": punta_a_sitio,
+                    "punta_b_sitio": punta_b_sitio,
+                }
+            )
+    return rutas_info
+
+
+def _collect_camara_servicios_ids(camara: Any, rutas_info: list[dict[str, Any]] | None = None) -> list[str]:
+    """Obtiene servicios asociados a una cámara desde rutas o relación legacy."""
+
+    if rutas_info:
+        return sorted({str(ruta["servicio_id"]) for ruta in rutas_info if ruta.get("servicio_id")})
+
+    servicios_ids: list[str] = []
+    for empalme in camara.empalmes:
+        for servicio in empalme.servicios:
+            if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
+                servicios_ids.append(servicio.servicio_id)
+    return servicios_ids
+
+
+def _serialize_camara_alias(alias: Any) -> dict[str, Any]:
+    return {
+        "id": alias.id,
+        "nombre": alias.alias_nombre,
+        "created_at": alias.created_at.isoformat() if alias.created_at else None,
+    }
+
+
+def _serialize_camara_auditoria(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "usuario": item.usuario,
+        "motivo": item.motivo,
+        "estado_anterior": item.estado_anterior.value if item.estado_anterior else None,
+        "estado_nuevo": item.estado_nuevo.value if item.estado_nuevo else None,
+        "estado_sugerido": item.estado_sugerido.value if item.estado_sugerido else None,
+        "incidentes_activos": item.incidentes_activos or [],
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "ticket_asociado": item.ticket_asociado,
+        "servicio_afectado_id": item.servicio_afectado_id,
+        "servicio_protegido_id": item.servicio_protegido_id,
+        "ruta_protegida_id": item.ruta_protegida_id,
+        "motivo": item.motivo,
+        "activo": bool(item.activo),
+        "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
+        "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
+    }
+
+
 @app.get("/api/infra/camaras")
 async def search_camaras_web(
     request: Request,
@@ -1913,6 +2187,134 @@ async def search_camaras_web(
         )
 
 
+@app.get("/api/infra/camaras/{camara_id}")
+async def get_camara_detail_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene el resumen operativo base de una cámara para la vista de detalle."""
+
+    _, role = _require_auth(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import Camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            rutas_info = _collect_camara_rutas_info(camara)
+            servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
+            payload = _serialize_camara_response(
+                camara=camara,
+                rutas_info=rutas_info,
+                servicios_ids=servicios_ids,
+                contexto=get_camara_estado_contexto(session, camara.id),
+                editable=role == "admin",
+            )
+            return JSONResponse({"status": "ok", "camara": payload})
+    except Exception as exc:
+        logger.exception("action=get_camara_detail_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudo obtener el detalle de la cámara"}, status_code=500)
+
+
+@app.get("/api/infra/camaras/{camara_id}/aliases")
+async def get_camara_aliases_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene los alias conocidos de una cámara."""
+
+    _require_auth(request)
+
+    try:
+        from db.models.infra import Camara, CamaraAlias
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara.id, Camara.nombre).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            aliases = (
+                session.query(CamaraAlias)
+                .filter(CamaraAlias.camara_id == camara_id)
+                .order_by(CamaraAlias.alias_nombre.asc())
+                .all()
+            )
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "camara_id": camara_id,
+                    "camara_nombre": camara.nombre,
+                    "total": len(aliases),
+                    "aliases": [_serialize_camara_alias(alias) for alias in aliases],
+                }
+            )
+    except Exception as exc:
+        logger.exception("action=get_camara_aliases_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudieron obtener los alias de la cámara"}, status_code=500)
+
+
+@app.get("/api/infra/camaras/{camara_id}/registros")
+async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
+
+    _require_auth(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import Camara, CamaraEstadoAuditoria, IncidenteBaneo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            rutas_info = _collect_camara_rutas_info(camara)
+            rutas_ids = {int(ruta["ruta_id"]) for ruta in rutas_info if ruta.get("ruta_id") is not None}
+            servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
+
+            auditoria = (
+                session.query(CamaraEstadoAuditoria)
+                .filter(CamaraEstadoAuditoria.camara_id == camara_id)
+                .order_by(CamaraEstadoAuditoria.created_at.desc())
+                .limit(20)
+                .all()
+            )
+
+            baneos: list[Any] = []
+            if servicios_ids:
+                candidatos = (
+                    session.query(IncidenteBaneo)
+                    .filter(IncidenteBaneo.servicio_protegido_id.in_(servicios_ids))
+                    .order_by(IncidenteBaneo.fecha_inicio.desc())
+                    .limit(50)
+                    .all()
+                )
+                baneos = [
+                    incidente
+                    for incidente in candidatos
+                    if incidente.ruta_protegida_id is None or incidente.ruta_protegida_id in rutas_ids
+                ][:20]
+
+            contexto = get_camara_estado_contexto(session, camara_id)
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "camara_id": camara_id,
+                    "contexto": contexto.to_dict() if contexto else None,
+                    "auditoria": [_serialize_camara_auditoria(item) for item in auditoria],
+                    "baneos": [_serialize_camara_baneo(item) for item in baneos],
+                    "placeholders": {
+                        "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
+                        "egresos": "Pendiente de integrar registros de egresos en una próxima iteración.",
+                    },
+                }
+            )
+    except Exception as exc:
+        logger.exception("action=get_camara_registros_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudieron obtener los registros de la cámara"}, status_code=500)
+
+
 @app.get("/api/infra/servicios/{servicio_id}/rutas")
 async def get_servicio_rutas_web(
     request: Request,
@@ -1925,10 +2327,15 @@ async def get_servicio_rutas_web(
     try:
         from db.models.infra import Servicio, RutaServicio
         from db.session import SessionLocal
+        from sqlalchemy import or_
         
         with SessionLocal() as session:
             servicio = session.query(Servicio).filter(
-                Servicio.servicio_id == servicio_id
+                or_(
+                    Servicio.servicio_id == servicio_id,
+                    Servicio.numero_primer_servicio == servicio_id,
+                    Servicio.numero_linea == servicio_id,
+                )
             ).first()
             
             if not servicio:
@@ -3753,6 +4160,210 @@ async def smart_search_camaras_web(
             {"error": f"Error en smart search: {exc!s}"},
             status_code=500
         )
+
+
+@app.post("/api/servicios/ingest")
+async def servicios_ingest_web(
+    request: Request,
+    file: UploadFile = File(...),
+    csrf_token: str = Form(...),
+) -> JSONResponse:
+    """Ingesta de servicios SLA (solo admin) delegada a la API interna."""
+
+    username, role = _require_auth(request)
+    if role != "admin":
+        return JSONResponse({"error": "Solo admin"}, status_code=403)
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF invalido"}, status_code=403)
+    if not file.filename:
+        return JSONResponse({"error": "Falta nombre de archivo"}, status_code=400)
+
+    try:
+        content = await file.read()
+        files = {
+            "file": (file.filename, content, file.content_type or "application/octet-stream"),
+        }
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/servicios/ingest",
+                files=files,
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error en ingesta"}
+
+        logger.info(
+            "action=servicios_ingest_proxy user=%s filename=%s status=%s",
+            username,
+            file.filename,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_ingest_proxy_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error en ingesta de servicios: {exc!s}"}, status_code=500)
+
+
+@app.post("/api/admin/ingesta/camaras")
+async def camaras_ingest_web(
+    request: Request,
+    file: UploadFile = File(...),
+    csrf_token: str = Form(...),
+    motivo_baneo: str = Form(...),
+) -> JSONResponse:
+    """Ingesta masiva de cámaras desde Excel con baneo administrativo (solo admin)."""
+
+    username, role = _require_auth(request)
+    if role != "admin":
+        return JSONResponse({"error": "Solo admin"}, status_code=403)
+    if csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF invalido"}, status_code=403)
+
+    motivo_baneo = motivo_baneo.strip()
+    if not motivo_baneo:
+        return JSONResponse({"error": "El motivo de baneo no puede estar vacío"}, status_code=400)
+
+    if not file.filename:
+        return JSONResponse({"error": "Falta nombre de archivo"}, status_code=400)
+
+    name = file.filename.lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
+        return JSONResponse({"error": "Formato no soportado (use .xlsx o .xlsm)"}, status_code=415)
+
+    try:
+        content = await file.read()
+        files = {
+            "file": (file.filename, content, file.content_type or "application/octet-stream"),
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/ingest/camaras",
+                files=files,
+                data={"motivo_baneo": motivo_baneo, "usuario": username},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error en ingesta de cámaras"}
+
+        logger.info(
+            "action=camaras_ingest_proxy user=%s filename=%s status=%s",
+            username,
+            file.filename,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=camaras_ingest_proxy_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error en ingesta de cámaras: {exc!s}"}, status_code=500)
+
+
+@app.get("/api/servicios/search")
+async def servicios_search_web(
+    request: Request,
+    q: str | None = None,
+    numero_primer_servicio: str | None = None,
+    cliente: str | None = None,
+    domicilio: str | None = None,
+    tipo: str | None = None,
+    estado: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> JSONResponse:
+    """Búsqueda paginada de servicios para usuarios autenticados."""
+
+    username, _ = _require_auth(request)
+    params = {
+        "q": q,
+        "numero_primer_servicio": numero_primer_servicio,
+        "cliente": cliente,
+        "domicilio": domicilio,
+        "tipo": tipo,
+        "estado": estado,
+        "limit": max(1, min(limit, 200)),
+        "offset": max(offset, 0),
+    }
+    params = {k: v for k, v in params.items() if v not in (None, "")}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE_URL}/servicios/search",
+                params=params,
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error consultando servicios"}
+
+        logger.info(
+            "action=servicios_search_proxy user=%s q=%s limit=%s offset=%s status=%s",
+            username,
+            q,
+            params.get("limit"),
+            params.get("offset"),
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_search_proxy_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error buscando servicios: {exc!s}"}, status_code=500)
+
+
+@app.get("/api/servicios/detail")
+async def servicios_detail_web(
+    request: Request,
+    id: str,
+) -> JSONResponse:
+    """Detalle de servicio por ID (origen o línea), con resolución a ID canónico."""
+
+    username, _ = _require_auth(request)
+    id_consultado = (id or "").strip()
+    if not id_consultado:
+        return JSONResponse({"error": "ID requerido"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{INTERNAL_API_BASE_URL}/servicios/detail",
+                params={"id": id_consultado},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error consultando detalle de servicio"}
+
+        logger.info(
+            "action=servicios_detail_proxy user=%s id=%s status=%s",
+            username,
+            id_consultado,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_detail_proxy_error user=%s id=%s error=%s", username, id_consultado, exc)
+        return JSONResponse({"error": f"Error consultando detalle de servicio: {exc!s}"}, status_code=500)
 
 
 @app.post("/api/infra/upload_tracking")

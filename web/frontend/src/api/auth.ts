@@ -17,22 +17,21 @@ export interface LoginResult {
   error?: string;
 }
 
+import { request, requestJson } from './client';
+
 export async function getSession(): Promise<SessionData> {
-  const res = await fetch('/api/auth/session', { credentials: 'include' });
+  const res = await request('/api/auth/session', { throwOnError: false });
   if (!res.ok) return { authenticated: false, username: null, role: null, csrf: null };
   return res.json() as Promise<SessionData>;
 }
 
 export async function login(username: string, password: string): Promise<LoginResult> {
-  const res = await fetch('/api/auth/login', {
+  return requestJson<LoginResult>('/api/auth/login', {
     method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    json: { username, password },
   });
-  return res.json() as Promise<LoginResult>;
 }
 
 export async function logout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  await request('/api/auth/logout', { method: 'POST', throwOnError: false });
 }

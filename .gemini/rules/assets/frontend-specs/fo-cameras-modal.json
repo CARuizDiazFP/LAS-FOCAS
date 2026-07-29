@@ -1,0 +1,48 @@
+{
+  "nombre_archivo": "fo-cameras-modal.json",
+  "ubicacion_archivo": ".github/skills/frontend-specs/fo-cameras-modal.json",
+  "descripcion": "Especificación documental del modal y detalle de cámaras FO para la capa Infraestructura.",
+  "feature": "fo-cameras-modal",
+  "owner": "web/frontend",
+  "design_tokens": [
+    "--color-status-fo",
+    "--color-accent-danger",
+    "--color-bg-surface-alt",
+    "--space-2",
+    "--space-4",
+    "--radius-md"
+  ],
+  "entry_points": [
+    "/?tab=infra",
+    "/infra/Camaras/:id"
+  ],
+  "modals": [
+    {
+      "id": "estado",
+      "purpose": "Editar estado de la cámara con permisos admin.",
+      "security": [
+        "credentials include",
+        "csrf token",
+        "sin render HTML arbitrario"
+      ]
+    },
+    {
+      "id": "registros",
+      "purpose": "Exponer auditoría, baneos e ingresos futuros sin datos fake persistidos."
+    },
+    {
+      "id": "servicios",
+      "purpose": "Navegar rutas y tracking asociado desde la cámara seleccionada."
+    }
+  ],
+  "detail_cards": [
+    "alias conocidos",
+    "registros",
+    "servicios asociados"
+  ],
+  "ux_rules": [
+    "Los modales deben apilar correctamente sobre el modal padre.",
+    "El estado visible debe usar tokens semánticos en vez de hex hardcodeados.",
+    "Las acciones destructivas requieren confirmación explícita."
+  ]
+}

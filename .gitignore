@@ -5,6 +5,7 @@
 # Entornos y secretos
 .env
 .env.*
+.secrets/
 
 !.env.sample
 .envrc

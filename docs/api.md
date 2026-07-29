@@ -4,6 +4,8 @@
 
 # API — LAS-FOCAS
 
+La API de LAS-FOCAS funciona como backend de una SPA Vue 3 desacoplada. Todo endpoint nuevo debe ser asíncrono, tipado con Pydantic y pensado para consumo JSON/WebSocket desde el frontend.
+
 ## Estructura canónica del microservicio
 
 ```
@@ -22,6 +24,14 @@ api/
 
 Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 (el Dockerfile crea un symlink `/app/app → /app/api/app` para el resolver de módulos).
+
+## Reglas del backend API
+
+- Usar `async def` en endpoints, dependencias y servicios nuevos.
+- Validar request, response y errores con Pydantic.
+- Mantener autenticación por API key interna o sesión según la superficie.
+- No mezclar renderizado de UI ni lógica de presentación.
+- Todo acceso a I/O debe ser asíncrono cuando aplique.
 
 ## Endpoint de salud
 
@@ -72,11 +82,21 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
 ## Infraestructura
+
+### Autenticación de API core
+
+Todas las rutas sensibles del servicio `api` requieren API key interna. Se acepta
+`Authorization: Bearer <LAS_FOCAS_API_KEY>` o `X-API-Key: <LAS_FOCAS_API_KEY>`.
+La key se lee desde el secret `api_key_v1` (dev: `.secrets/Dev_api_key_v1.txt`; prod: `.secrets/api_key_v1.txt`) y cae a `LAS_FOCAS_API_KEY` como fallback.
+Sin credenciales se responde `401`, con credencial inválida `403` y sin key
+configurada en el servidor `503`. Permanecen públicas sólo `/health` y
+`/health/version`; `/db-check` queda protegido.
+
 ### POST `/sync/camaras`
 
 Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la tabla `app.camaras`.
 
-- **Autenticación:** pendiente (usar sólo en entornos controlados hasta integrar API key / JWT).
+- **Autenticación:** requiere API key interna.
 - **Body (JSON opcional):**
 
   | Campo            | Tipo   | Descripción |
@@ -109,7 +129,7 @@ Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la 
 
 Busca cámaras en la base de datos con filtrado por texto y/o estado.
 
-- **Autenticación:** requiere sesión activa (panel web) o API key (pendiente).
+- **Autenticación:** requiere sesión activa en el panel web o API key interna en la API core.
 - **Parámetros (query string):**
 
   | Campo   | Tipo   | Requerido | Default | Descripción |
@@ -158,7 +178,7 @@ Busca cámaras en la base de datos con filtrado por texto y/o estado.
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.
 
-- **Autenticación:** requiere sesión activa (panel web) o API key (pendiente).
+- **Autenticación:** requiere sesión activa en el panel web o API key interna en la API core.
 - **Content-Type:** `application/json`
 - **Body (JSON):**
 
@@ -259,7 +279,7 @@ Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite bu
 
 Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos con servicios, cámaras y empalmes.
 
-- **Autenticación:** pendiente (usar sólo en entornos controlados hasta integrar API key / JWT).
+- **Autenticación:** requiere API key interna.
 - **Content-Type:** `multipart/form-data`
 - **Parámetros:**
 
@@ -314,6 +334,105 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
   Empalme 2: Calle Florida 567
   F-003: ... 0.42 dB
   ...
+  ```
+
+### Módulo Servicios (Fase 1)
+
+Se incorporan endpoints dedicados para ingesta masiva de Excel y búsqueda paginada para scroll infinito del visor SPA.
+
+#### POST `/servicios/ingest`
+
+- **Autenticación:** API key interna (`Authorization: Bearer <token>` o `X-API-Key`).
+- **Content-Type:** `multipart/form-data`
+- **Parámetros:**
+
+  | Campo  | Tipo       | Requerido | Descripción |
+  |--------|------------|-----------|-------------|
+  | `file` | UploadFile | Sí        | Archivo `.xlsx`, `.xlsm` o `.csv` de servicios SLA. |
+
+- **Comportamiento:**
+  - Usa `numero_primer_servicio` como identificador lógico padre.
+  - Si no existe: inserta registro.
+  - Si existe: actualiza sólo columnas cambiadas.
+  - Siempre considera `estado_servicio` dentro de la lógica de upsert.
+
+- **Respuesta ejemplo:**
+  ```json
+  {
+    "status": "ok",
+    "rows_ok": 1200,
+    "rows_bad": 15,
+    "inserted": 300,
+    "updated": 120,
+    "unchanged": 780
+  }
+  ```
+
+#### GET `/servicios/search`
+
+- **Autenticación:** API key interna.
+- **Query params:**
+  - `q` (opcional): buscador multipropósito.
+  - `numero_primer_servicio`, `cliente`, `domicilio`, `tipo`, `estado` (opcionales).
+  - `limit` (1..200), `offset` (>=0).
+
+- **Respuesta ejemplo:**
+  ```json
+  {
+    "status": "ok",
+    "total": 542,
+    "limit": 30,
+    "offset": 60,
+    "servicios": [
+      {
+        "id": 1042,
+        "numero_primer_servicio": "111995",
+        "nombre_cliente": "ACME SA",
+        "numero_linea": "43120000",
+        "tipo_servicio": "Datos",
+        "sla_prometido": "8h",
+        "direccion": "Av. Corrientes 1234",
+        "localidad": "CABA",
+        "provincia": "Buenos Aires",
+        "direccion_2": null,
+        "estado_servicio": "ACTIVO",
+        "reclamos": null
+      }
+    ]
+  }
+  ```
+
+#### GET `/servicios/detail`
+
+- **Autenticación:** API key interna.
+- **Query params:**
+  - `id` (requerido): admite ID origen (`numero_primer_servicio`) o ID de línea actual (`numero_linea`).
+
+- **Comportamiento:**
+  - Resuelve el servicio consultado y devuelve siempre el `id_origen` canónico.
+  - Permite unificar el enrutamiento histórico del SPA en `/servicios/ID/{id_origen}`.
+
+- **Respuesta ejemplo:**
+  ```json
+  {
+    "status": "ok",
+    "id_consultado": "121118",
+    "id_origen": "120559",
+    "servicio": {
+      "id": 1820,
+      "numero_primer_servicio": "120559",
+      "nombre_cliente": "ACME SA",
+      "numero_linea": "121118",
+      "tipo_servicio": "TLS",
+      "sla_prometido": "99.7",
+      "direccion": "Av. Siempre Viva 742",
+      "localidad": "Rosario",
+      "provincia": "Santa Fe",
+      "direccion_2": null,
+      "estado_servicio": "ACTIVO",
+      "reclamos": null
+    }
+  }
   ```
 
 ### Sistema de Versionado de Rutas FO (v2)
@@ -551,11 +670,13 @@ Elimina todas las asociaciones de empalmes de un servicio (limpia el servicio si
   - `404`: Servicio no encontrado.
   - `500`: Error durante la eliminación.
 
+- **Host de referencia:** los ejemplos siguientes apuntan al panel productivo en `http://172.18.208.162:8080`. En el stack dev equivalente usar `http://localhost:8090`.
+
 - **Ejemplo (cURL):**
   ```bash
   curl -X DELETE \
     -H "X-CSRF-Token: $TOKEN" \
-    "http://localhost:8080/api/infra/servicios/52547/empalmes"
+    "http://172.18.208.162:8080/api/infra/servicios/52547/empalmes"
   ```
 
 ### POST `/api/infra/smart-search`
@@ -594,17 +715,209 @@ Búsqueda de cámaras por texto libre con múltiples términos (lógica AND).
 
 - **Ejemplo (cURL):**
   ```bash
-  curl -X POST http://localhost:8080/api/infra/smart-search \
+  curl -X POST http://172.18.208.162:8080/api/infra/smart-search \
     -H "Content-Type: application/json" \
     -H "X-CSRF-Token: $TOKEN" \
     -d '{"terms": ["111995", "OCUPADA"]}'
   ```
+
+### GET `/api/infra/camaras/{camara_id}`
+
+Obtiene el resumen operativo base de una cámara para la vista dedicada del panel web.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "camara": {
+      "id": 7,
+      "nombre": "Cámara Canon Norte",
+      "fontine_id": "CAM-007",
+      "direccion": "Av. Siempre Viva 742",
+      "estado": "LIBRE",
+      "origen_datos": "TRACKING",
+      "latitud": -34.6,
+      "longitud": -58.4,
+      "servicios": ["2001"],
+      "rutas": [
+        {
+          "ruta_id": 33,
+          "servicio_id": "2001",
+          "ruta_nombre": "Ruta Principal",
+          "ruta_tipo": "PRINCIPAL",
+          "alias_ids": ["O1C1"],
+          "transitos_count": 1,
+          "punta_a_sitio": "POP A",
+          "punta_b_sitio": "POP B"
+        }
+      ],
+      "tiene_baneo_activo": true,
+      "tiene_ingreso_activo": false,
+      "inconsistente": true,
+      "estado_sugerido": "BANEADA",
+      "ticket_baneo": "INC-11",
+      "editable": true,
+      "incidentes_activos": [
+        {
+          "id": 11,
+          "ticket_asociado": "INC-11",
+          "servicio_protegido_id": "2001",
+          "ruta_protegida_id": 33,
+          "fecha_inicio": "2026-04-20T10:00:00+00:00",
+          "motivo": "Protección temporal"
+        }
+      ]
+    }
+  }
+  ```
+
+- **Notas:** el `id` numérico de cámara es el identificador canónico usado por la tarjeta principal y por la ruta SPA `/infra/Camaras/:id`.
+
+### GET `/api/infra/camaras/{camara_id}/aliases`
+
+Obtiene los alias conocidos de una cámara.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "camara_id": 7,
+    "camara_nombre": "Cámara Canon Norte",
+    "total": 1,
+    "aliases": [
+      {
+        "id": 1,
+        "nombre": "Canon Norte",
+        "created_at": "2026-05-01T15:30:00+00:00"
+      }
+    ]
+  }
+  ```
+
+### GET `/api/infra/camaras/{camara_id}/registros`
+
+Obtiene registros operativos parciales de una cámara para la vista dedicada.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "camara_id": 7,
+    "contexto": {
+      "camara_id": 7,
+      "estado_actual": "LIBRE",
+      "estado_sugerido": "BANEADA",
+      "tiene_baneo_activo": true,
+      "tiene_ingreso_activo": false,
+      "inconsistente": true,
+      "incidentes_activos": [
+        {
+          "id": 11,
+          "ticket_asociado": "INC-11",
+          "servicio_protegido_id": "2001",
+          "ruta_protegida_id": 33,
+          "fecha_inicio": "2026-04-20T10:00:00+00:00",
+          "motivo": "Protección temporal"
+        }
+      ],
+      "ticket_baneo": "INC-11"
+    },
+    "auditoria": [
+      {
+        "id": 19,
+        "usuario": "admin",
+        "motivo": "Corrección manual validada",
+        "estado_anterior": "BANEADA",
+        "estado_nuevo": "LIBRE",
+        "estado_sugerido": "BANEADA",
+        "incidentes_activos": [11],
+        "created_at": "2026-05-12T09:45:00+00:00"
+      }
+    ],
+    "baneos": [
+      {
+        "id": 11,
+        "ticket_asociado": "INC-11",
+        "servicio_afectado_id": "1999",
+        "servicio_protegido_id": "2001",
+        "ruta_protegida_id": 33,
+        "motivo": "Protección temporal",
+        "activo": true,
+        "fecha_inicio": "2026-04-20T10:00:00+00:00",
+        "fecha_fin": null
+      }
+    ],
+    "placeholders": {
+      "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
+      "egresos": "Pendiente de integrar registros de egresos en una próxima iteración."
+    }
+  }
+  ```
+
+- **Notas:** en esta iteración los registros de ingresos y egresos no se exponen todavía; el endpoint devuelve placeholders explícitos para que la UI pueda maquetar esa expansión futura.
+
+### GET `/api/infra/rutas/{ruta_id}/tracking`
+
+Obtiene la secuencia de tracking completa de una ruta para el modal de servicios de la vista dedicada.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "ruta_id": 33,
+    "servicio_id": "2001",
+    "ruta_nombre": "Ruta Principal",
+    "ruta_tipo": "PRINCIPAL",
+    "tracking": [
+      {
+        "tipo": "camara",
+        "descripcion": "BOT carlos mujica 1450",
+        "empalme_id": 901
+      },
+      {
+        "tipo": "cable",
+        "nombre": "Cable FO 24F",
+        "atenuacion_db": 0.2
+      }
+    ],
+    "punta_a": {
+      "sitio": "POP A",
+      "identificador": "ODF-A-01",
+      "conector": "12"
+    },
+    "punta_b": {
+      "sitio": "POP B",
+      "identificador": "ODF-B-09",
+      "conector": "12"
+    }
+  }
+  ```
+
+- **Notas:** la UI reutiliza este payload para renderizar la secuencia óptica (`punta A → empalmes/cables → punta B`) y alternar entre rutas de un mismo servicio.
+
+### GET `/api/infra/tracking/{ruta_id}/download`
+
+Descarga el TXT actual del tracking de una ruta.
+
+- **Autenticación:** requiere sesión activa.
+- **Respuesta 200:** archivo plano `text/plain` con `Content-Disposition: attachment; filename="..."`.
+- **Notas:** este endpoint es el alias de compatibilidad usado por la SPA actual para mantener la descarga del tracking desde el modal de servicios.
 
 ## Informes
 
 ### POST `/reports/repetitividad`
 
 Genera el informe de Repetitividad para un mes/año determinado ya sea a partir de un archivo Excel cargado por el usuario (modo Excel) o directamente desde la base de datos (modo DB, si no se adjunta archivo).
+
+- **Autenticación:** requiere API key interna.
 
 #### Descripción general
 Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Las Horas Netas se normalizan a minutos enteros y al renderizar el informe se muestran como `HH:MM`. Cuando hay datos georreferenciados genera un PNG por servicio repetitivo usando `matplotlib` (con tiles de `contextily` si están disponibles) y adjunta las rutas en la respuesta. Si se solicita, intenta producir un PDF (LibreOffice headless vía `SOFFICE_BIN`). Cuando existen PDFs y/o mapas, el endpoint empaqueta todos los artefactos en un ZIP.
@@ -687,6 +1000,7 @@ Devuelve métricas básicas del período consultando la DB.
   ```
 
 Notas:
+- Requiere API key interna.
 - Requiere que la tabla `app.reclamos` exista (migraciones Alembic aplicadas) y que las variables de conexión estén configuradas.
 
 ### Ingesta de reclamos (nuevo)
@@ -708,7 +1022,7 @@ Notas:
   Las Horas Netas aceptan formatos `HH:MM[:SS]`, decimales (`1,5`) o enteros y se convierten a minutos (`Int64`).
 
 #### Seguridad y consideraciones
-- El endpoint no exige aún autenticación ni rate limiting: agregar API key / token interno (TODO) antes de exponer en ambientes sensibles.
+- Requiere API key interna. El rate limiting distribuido queda pendiente si se expone fuera de redes controladas.
 - Los datos cargados se procesan con `pandas` (openpyxl). No se evalúa código embebido en el XLSX.
 - Se recomienda escanear/limitar tamaño de archivo para mitigar ataques de compresión o payloads muy grandes.
 
@@ -716,7 +1030,7 @@ Notas:
 
 - El script `./Start` ejecuta las migraciones Alembic dentro del contenedor `api` luego de que PostgreSQL esté healthy.
 - Para alinear credenciales, `Start` construye `ALEMBIC_URL` a partir de `.env` (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`).
-- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; por defecto, las credenciales de ejemplo son `FOCALBOT` / `LASFOCAS2026!` y DB `FOCALDB`.
+- Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; las credenciales deben reemplazarse por valores seguros propios. En dev, preferir `.secrets/Dev_db_password_v1.txt` para la contraseña de PostgreSQL.
 
 #### Códigos de error resumidos
 | Código | Causa principal | Mitigación |
@@ -781,6 +1095,46 @@ Notas:
 - `intention` mapea las etiquetas raw a la taxonomía unificada.
 - Si `need_clarification=true`, `clarification_question` contendrá una pregunta breve.
 - `next_action` se reserva para futura orquestación de flujos.
+
+## Histórico de Reportes Web
+
+### GET `/api/reports/history`
+
+Devuelve el histórico persistente de reportes generados desde el panel web. La v1 cubre `sla` y `repetitividad`.
+
+- **Autenticación:** requiere sesión activa del panel.
+- **Filtros query opcionales:** `type`, `status`, `username`, `month`, `year`, `limit`, `offset`.
+- **Estados:** `running`, `success`, `error`.
+
+Respuesta:
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "report_type": "sla",
+      "status": "success",
+      "username": "user",
+      "source": "excel-legacy",
+      "period_month": 6,
+      "period_year": 2026,
+      "started_at": "2026-06-25T12:00:00+00:00",
+      "finished_at": "2026-06-25T12:00:04+00:00",
+      "duration_ms": 4200,
+      "input_metadata": {"archivo_count": 2},
+      "output_metadata": {"outputs": {"docx": "/reports/InformeSLA.docx"}},
+      "error_code": null,
+      "error_message": null
+    }
+  ],
+  "files": [],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+El campo `files` se conserva como compatibilidad básica para consumidores antiguos, pero la vista nueva usa `items`.
 
 ## Herramientas del panel web
 

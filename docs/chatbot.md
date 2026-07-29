@@ -1,16 +1,16 @@
 # Nombre de archivo: chatbot.md
 # Ubicación de archivo: docs/chatbot.md
-# Descripción: Documentación del chatbot del panel web y canal WebSocket
+# Descripción: Documentación del chatbot de la SPA web y su canal WebSocket
 
-# Chatbot del Panel Web
+# Chatbot de la SPA Web
 
-El chatbot del Panel Web expone un WebSocket autenticado que conecta la interfaz oscura del panel con el orquestador MCP del backend.
+El chatbot de la SPA Web expone un WebSocket autenticado que conecta la interfaz Vue 3 con el orquestador MCP del backend.
 
 ## 🔌 Conexión WebSocket
 
 - **URL:** `/ws/chat`
 - **Protocolo:** WebSocket seguro (`wss`) o `ws` según esquema de la página.
-- **Autenticación:** reutiliza la cookie de sesión del panel (login básico). Si no existe sesión válida, el servidor emite un `error` con `metadata.code = WS_UNAUTHORIZED` y cierra la conexión con código `4401`.
+- **Autenticación:** reutiliza la cookie de sesión del panel. Si no existe sesión válida, el servidor emite un `error` con `metadata.code = WS_UNAUTHORIZED` y cierra la conexión con código `4401`.
 - **Orígenes admitidos:** configurables vía `WEB_CHAT_ALLOWED_ORIGINS` (lista separada por comas). Si no se define, se acepta el mismo host del panel.
 
 ### Mensaje de inicialización

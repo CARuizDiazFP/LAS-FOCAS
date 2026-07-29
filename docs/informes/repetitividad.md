@@ -1,6 +1,6 @@
 # Nombre de archivo: repetitividad.md
 # Ubicación de archivo: docs/informes/repetitividad.md
-# Descripción: Documentación del informe de Repetitividad
+# Descripción: Documentación del informe de Repetitividad para SPA, bot y API
 
 ## Insumos requeridos
 - Excel "Casos" en formato `.xlsx` con encabezados en español.
@@ -23,9 +23,16 @@
 4. El bot devuelve el `.docx`, adjunta el `.pdf` si está disponible y reenvía cada mapa `.png` generado.
 
 ## Integración con otros canales
-- Tanto la UI web como (a futuro) el bot de Telegram llaman a la misma función de servicio: `modules.informes_repetitividad.service.generar_informe_desde_excel`.
+- Tanto la SPA web como el bot de Telegram llaman a la misma función de servicio: `modules.informes_repetitividad.service.generar_informe_desde_excel`.
 - La API web (`/api/flows/repetitividad`) devuelve rutas absolutas de descarga bajo `/reports/*` incluyendo los mapas `.png` generados por servicio y la lista completa en `assets`.
-- El histórico se lista con `/reports-history`.
+- Cada generación desde la UI web registra una entrada en `app.report_history` con usuario, período, fuente (`excel` o `db`), estado, duración, estadísticas y enlaces de salida.
+- El histórico persistente se consulta desde `/reports-history`.
+
+## Contratos y alineación
+
+- La lógica funcional vive en backend y se expone a canales distintos sin duplicarse.
+- La UI moderna no utiliza Jinja ni DOM directo; consume enlaces y estados desde JSON.
+- El worker geoespacial y el bot son consumidores del mismo servicio, no fuentes de lógica divergente.
 
 ## Cobertura de pruebas automatizadas
 - `tests/test_docx_utils.py`, `tests/test_static_map.py`, `tests/test_repetitividad_docx_render.py`: casos actualizados para nuevas funcionalidades.
@@ -39,6 +46,7 @@
 
 ## Paths de salida
 - Archivos generados en `/app/data/reports/` en el contenedor `web` (o en `REPORTS_DIR` configurado). La descarga se sirve en `/reports/*`.
+- Histórico operativo persistido en PostgreSQL (`app.report_history`).
 
 ## Variables de entorno
 - `REP_TEMPLATE_PATH=/app/Templates/Plantilla_Informe_Repetitividad.docx` ruta de la plantilla oficial (copiada desde `Templates/`).

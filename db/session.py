@@ -4,20 +4,30 @@
 
 from __future__ import annotations
 
-from os import getenv
 from typing import AsyncGenerator
+from urllib.parse import quote
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from core.config import get_secret
+
+
+def _env(name: str, default: str = "") -> str:
+    return get_secret(name, name, default)
+
+
+def _db_password_url() -> str:
+    return quote(get_secret("db_password_v1", "POSTGRES_PASSWORD"), safe="")
+
 
 def _engine_url() -> str:
-    return getenv(
+    return _env(
         "ALEMBIC_URL",
-        getenv(
+        _env(
             "DATABASE_URL",
-            f"postgresql+psycopg://{getenv('POSTGRES_USER', 'lasfocas')}:{getenv('POSTGRES_PASSWORD', 'superseguro')}@{getenv('POSTGRES_HOST', 'postgres')}:{getenv('POSTGRES_PORT', '5432')}/{getenv('POSTGRES_DB', 'lasfocas')}",
+            f"postgresql+psycopg://{_env('POSTGRES_USER', 'lasfocas')}:{_db_password_url()}@{_env('POSTGRES_HOST', 'postgres')}:{_env('POSTGRES_PORT', '5432')}/{_env('POSTGRES_DB', 'lasfocas')}",
         ),
     )
 

@@ -1,6 +1,6 @@
 # Nombre de archivo: alarmas_ciena.md
 # Ubicación de archivo: docs/informes/alarmas_ciena.md
-# Descripción: Documentación del módulo de procesamiento de alarmas Ciena
+# Descripción: Documentación del módulo de procesamiento de alarmas Ciena para la SPA y la API
 
 # Alarmas Ciena
 
@@ -83,7 +83,7 @@ Detailed description: Temperature sensor reading 85°C",Environment,Environmenta
 
 ### Acceso
 
-1. Acceder al panel web de LAS-FOCAS
+1. Acceder a la SPA web de LAS-FOCAS
 2. Hacer clic en el botón **"Alarmas Ciena"** en la barra de navegación superior
 
 ### Proceso
@@ -111,6 +111,12 @@ El sistema validará:
 - ✅ Formato reconocible (SiteManager o MCP)
 - ✅ Usuario autenticado
 - ✅ Token CSRF válido
+
+## Contratos y alineación
+
+- El procesamiento vive en backend y la SPA solo orquesta carga, estado y descarga.
+- No se debe duplicar parser ni lógica de limpieza en frontend.
+- La salida debe seguir siendo JSON + enlace de descarga, no render HTML legacy.
 
 En caso de error, se mostrará un mensaje descriptivo:
 - "Por favor subí un archivo .CSV válido" → extensión incorrecta
@@ -153,12 +159,14 @@ En caso de error, se mostrará un mensaje descriptivo:
 
 **Ejemplo con curl**:
 ```bash
-curl -X POST "http://localhost:8080/api/tools/alarmas-ciena" \
+curl -X POST "http://172.18.208.162:8080/api/tools/alarmas-ciena" \
   -H "Cookie: session=<tu_session>" \
   -F "file=@alarmas.csv" \
   -F "csrf_token=<tu_csrf_token>" \
   --output alarmas_procesado.xlsx
 ```
+
+En el stack dev equivalente, reemplazar el host por `http://localhost:8090`.
 
 **Logs generados**:
 ```

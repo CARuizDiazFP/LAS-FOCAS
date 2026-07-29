@@ -9,16 +9,35 @@ La cadena DSN se construye a partir de variables de entorno:
 - `POSTGRES_PORT`: puerto del servicio.
 - `POSTGRES_DB`: nombre de la base de datos.
 - `POSTGRES_USER`: usuario para la conexión.
-- `POSTGRES_PASSWORD`: contraseña del usuario.
+- `POSTGRES_PASSWORD`: contraseña del usuario como fallback de transición.
+
+En dev, la contraseña se lee primero desde `/run/secrets/db_password_v1`,
+montado por Docker Compose desde `.secrets/Dev_db_password_v1.txt` (prefijo
+`Dev_`). En producción (`deploy/compose.yml`) se usa el mismo mecanismo pero
+con el archivo sin prefijo `.secrets/db_password_v1.txt`. Si el archivo no
+existe, el código conserva el fallback a `POSTGRES_PASSWORD` para no bloquear
+entornos locales antiguos.
+
+**Atención:** si `DATABASE_URL`/`ALEMBIC_URL` está seteada en el `.env`
+correspondiente, tiene prioridad sobre el secreto y lo anula por completo
+(ver `_engine_url()`). Debe quedar comentada (no solo vacía) para que el
+secret realmente se use.
 
 La función `db_health` ejecuta una consulta simple `SELECT 1` y obtiene la versión del servidor
 para verificar el estado de la base de datos.
+
+## Reglas de persistencia
+
+- Todo acceso nuevo a datos debe usar `AsyncSession` y `create_async_engine`.
+- Evitar consultas sincrónicas en rutas y repositorios nuevos.
+- Usar Pydantic en la capa de API para complementar la validación de datos.
+- Mantener constraints, índices y migraciones reversibles en Alembic.
 
 Se limpiaron imports innecesarios en los repositorios de conversaciones y mensajes para mantener el código conforme a PEP8.
 
 ## Infraestructura (cámaras, cables y servicios)
 
-- Base común: `db/base.py` expone `Base = declarative_base()` para todos los modelos.
+- Base común: `db/base.py` expone la base declarativa; en desarrollos nuevos preferir SQLAlchemy 2.0 style y sesiones async.
 - Nuevas tablas en esquema `app` definidas en `db/models/infra.py`:
 
 ### Tabla `camaras`
@@ -71,6 +90,16 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 |-----------------------|----------------|-------------|
 | `id`                  | Integer (PK)   | ID autoincremental. |
 | `servicio_id`         | String(64), unique | ID del servicio (ej: "111995"). |
+| `numero_primer_servicio` | String(64), unique, index | ID lógico padre usado por ingesta SLA. |
+| `nombre_cliente`      | String(255)    | Nombre del cliente en origen SLA. |
+| `numero_linea`        | String(128), index | Línea asociada al servicio. |
+| `tipo_servicio`       | String(128), index | Tipo comercial/técnico del servicio. |
+| `sla_prometido`       | String(128)    | SLA comprometido en el origen. |
+| `direccion`           | String(255)    | Dirección principal del servicio. |
+| `localidad`           | String(128)    | Localidad del servicio. |
+| `provincia`           | String(128)    | Provincia del servicio. |
+| `direccion_2`         | String(255)    | Dirección complementaria. |
+| `estado_servicio`     | String(128), index | Estado actual informado en ingesta SLA. |
 | `cliente`             | String(255)    | Nombre del cliente (opcional). |
 | `categoria`           | Integer        | Categoría del servicio (opcional). |
 | `nombre_archivo_origen`| String(255)   | Nombre del archivo de tracking original. |
@@ -252,6 +281,25 @@ por incidentes activos o ingresos abiertos.
 ### Tabla `config_servicios`
 
 Almacena configuración dinámica de workers y servicios automatizados. Definida en `db/models/servicios.py`.
+
+## Histórico de Reportes Web
+
+La tabla `app.report_history` registra la ejecución de informes generados desde el panel web. En la primera versión cubre sólo SLA y Repetitividad.
+
+| Columna | Descripción |
+|---------|-------------|
+| `id` | ID autoincremental del registro. |
+| `report_type` | Tipo de informe: `sla` o `repetitividad`. |
+| `status` | Estado operativo: `running`, `success` o `error`. |
+| `username` | Usuario autenticado que inició la generación. |
+| `source` | Origen de datos: `excel`, `excel-legacy` o `db`. |
+| `period_month`, `period_year` | Período informado por el usuario. |
+| `started_at`, `finished_at`, `duration_ms` | Tiempos de ejecución. |
+| `input_metadata` | Metadata segura de entrada, como nombres de archivos, flags y cantidad de adjuntos. |
+| `output_metadata` | Enlaces públicos `/reports/*`, estadísticas y conteos devueltos por el generador. |
+| `error_code`, `error_message` | Error amigable cuando la ejecución falla. |
+
+No se almacenan bytes de archivos, contenido de planillas, secretos ni payloads crudos extensos. La migración asociada es `20260625_01_report_history.py`.
 
 | Columna           | Tipo              | Descripción |
 |-------------------|-------------------|-------------|

@@ -9,6 +9,12 @@
 
   <div class="service-grid">
     <ServiceCard
+      to="/admin/ingesta"
+      title="Ingesta"
+      description="Carga de Excel de Servicios SLA con barra de progreso y resumen de upsert."
+      icon="🍽️"
+    />
+    <ServiceCard
       to="/admin/Servicios/Baneos"
       title="Baneos"
       description="Notificaciones Slack del worker de cámaras baneadas. Configura intervalo, canales y estado."

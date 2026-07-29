@@ -1,12 +1,12 @@
 # Nombre de archivo: infra.md
 # Ubicación de archivo: docs/infra.md
-# Descripción: Documentación del módulo Infraestructura FO (fibra óptica)
+# Descripción: Documentación del módulo Infraestructura FO para la SPA Vue 3 y la API asociada
 
 # Infraestructura FO — LAS-FOCAS
 
 ## Resumen
 
-El módulo **Infraestructura FO** permite la gestión de cámaras de fibra óptica, trackings de servicio y el **Protocolo de Protección** (baneo de cámaras). Parte del panel web (`/` > tab "Infra/Cámaras").
+El módulo **Infraestructura FO** permite la gestión de cámaras de fibra óptica, trackings de servicio y el **Protocolo de Protección** (baneo de cámaras). Vive en la SPA Vue 3 del panel web y consume endpoints JSON del backend.
 
 ## Funcionalidades principales
 
@@ -14,6 +14,36 @@ El módulo **Infraestructura FO** permite la gestión de cámaras de fibra ópti
 - **Smart Search**: búsqueda libre por servicio, dirección, cámara, cable
 - **Filtros rápidos**: por estado (Libre, Ocupada, Baneada, Detectada, Tracking)
 - **Upload de tracking**: carga archivos `.txt` de tracking para asociar cámaras a servicios
+
+### Vista principal y detalle dedicado
+- **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
+- **Vista dedicada por cámara**: `GET /infra/Camaras/:id` dentro de la SPA Vue 3.
+- **Dashboard de detalle**: tarjetas clickeables para alias, registros y servicios asociados.
+- **Edición de estado reubicada**: el botón `Editar estado` sale de la tarjeta principal y vive en el header del detalle.
+
+### Detalle operativo por cámara
+La vista dedicada realiza carga paralela contra endpoints same-origin del servicio `web`:
+
+- `GET /api/infra/camaras/{id}`
+- `GET /api/infra/camaras/{id}/aliases`
+- `GET /api/infra/camaras/{id}/registros`
+- `GET/POST /api/infra/camaras/{id}/estado` para edición admin con CSRF
+
+En esta iteración, **Registros** muestra solo la lógica operativa ya existente:
+
+- pestaña **Ingresos** estructurada sobre un arreglo reactivo vacío, lista para futura hidratación desde backend
+- pestaña **Baneos** con historial ordenado por fecha de inicio descendente y accordions retraídos por defecto
+- auditoría manual de cambios de estado (`app.camaras_estado_auditoria`) como trazabilidad complementaria dentro de la pestaña de baneos
+
+La tarjeta **Servicios Asociados** muestra la lista de IDs de servicio asociados ordenada de mayor a menor. Cada ID abre un segundo `dialog` modal superpuesto con el tracking detallado del servicio, reutilizando `TrackingDetail.vue` y la descarga del TXT actual.
+
+Para el detalle fino de la UX web y del apilado de modales, la referencia principal queda en `docs/web.md`.
+
+### Contratos y seguridad
+
+- La vista usa contratos JSON del backend y no duplica lógica de negocio en el frontend.
+- Las ediciones de estado requieren sesión válida y CSRF.
+- Los listados se renderizan desde datos tipados; no se debe introducir DOM directo ni plantillas legacy.
 
 ### Protocolo de Protección (Baneo)
 Sistema para proteger cámaras durante afectaciones de servicio, impidiendo trabajos en ellas hasta resolución.
@@ -96,6 +126,21 @@ Este indicador:
 
 ## API Endpoints
 
+### GET /api/infra/camaras/{camara_id}
+Obtiene el resumen operativo base de una cámara para la vista dedicada. Incluye nombre, ID, estado, editabilidad y servicios/rutas asociados.
+
+### GET /api/infra/rutas/{ruta_id}/tracking
+Obtiene la secuencia de tracking de una ruta FO (`punta_a`, `tracking[]`, `punta_b`) para el modal de servicios de la vista dedicada.
+
+### GET /api/infra/tracking/{ruta_id}/download
+Descarga el TXT actual de una ruta. La vista dedicada lo usa desde la tarjeta **Servicios Asociados** para mantener paridad con el flujo productivo.
+
+### GET /api/infra/camaras/{camara_id}/aliases
+Obtiene los alias conocidos de una cámara desde `app.camara_alias`.
+
+### GET /api/infra/camaras/{camara_id}/registros
+Obtiene registros operativos parciales: auditoría manual de estado, baneos relacionados y placeholders de ingresos/egresos.
+
 ### GET /api/infra/ban/active
 Lista todos los incidentes de baneo activos con conteo de cámaras.
 
@@ -139,15 +184,27 @@ Genera archivo EML para descargar y abrir en Outlook.
 
 ## Archivos relacionados
 
-- `web/templates/panel.html` - Template HTML del panel
-- `web/static/panel.js` - Lógica JavaScript del módulo
-- `web/static/styles.css` - Estilos CSS
-- `web/app/main.py` - Endpoints web
-- `api/app/routes/infra.py` - Endpoints API
+- `web/frontend/src/views/tabs/InfraTab.vue` - Tab principal de Infraestructura FO
+- `web/frontend/src/views/CamaraDetailView.vue` - Vista dedicada por cámara
+- `web/frontend/src/components/infra/` - Modales aislados de alias, servicios, registros y edición de estado
+- `web/frontend/src/router/index.ts` - Ruta SPA `/infra/Camaras/:id`
+- `web/app/main.py` - Endpoints web same-origin para listado y detalle
+- `api/app/routes/infra.py` - Endpoints API base y búsquedas de infraestructura
+- `core/services/camara_estado_service.py` - Lógica de contexto y auditoría de estado
 - `core/services/protection_service.py` - Lógica de negocio del Protocolo de Protección
-- `db/models/infra.py` - Modelos de base de datos
+- `db/models/infra.py` - Modelos de cámaras, alias, auditoría e incidentes
 
 ## Historial de cambios
+
+### 2026-05-13 - Refactor de tarjetas FO y vista dedicada por cámara
+- **Corregido**: la grilla principal vuelve a mostrar el `id` numérico real de cámara en lugar de depender de `fontine_id`.
+- **Modificado**: las tarjetas principales se simplifican a `Nombre canon + ID + Estado`, removiendo detalle operativo inline.
+- **Agregado**: ruta SPA `/infra/Camaras/:id` con vista dedicada `CamaraDetailView.vue`.
+- **Agregado**: endpoints web same-origin `GET /api/infra/camaras/{id}`, `GET /api/infra/camaras/{id}/aliases` y `GET /api/infra/camaras/{id}/registros`.
+- **Agregado**: modales aislados para alias conocidos, servicios asociados, registros y edición manual de estado.
+- **Recuperado**: la tarjeta `Servicios Asociados` vuelve a exponer la secuencia de tracking productiva con tabs por ruta y descarga del TXT actual.
+- **Corregido**: el modal `Editar estado` de la vista dedicada vuelve a usar el estilo dark coherente con el dashboard.
+- **Diseño**: la tarjeta `Registros` se divide en tabs `Ingresos/Baneos`; los baneos usan accordions ordenados por fecha y los ingresos quedan maquetados hasta contar con backend dedicado.
 
 ### 2026-04-17 - Refactor de avisos individuales y conteo de cámaras
 - **Eliminado**: Botón global "Dar Aviso" del header principal
@@ -238,6 +295,12 @@ Stack Docker Compose independiente (`lasfocasdev`) que corre en paralelo al prod
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota usar SSH tunneling:
 
+### Secretos dev adicionales
+
+- `api_key_v1` (dev: `.secrets/Dev_api_key_v1.txt`; prod: `.secrets/api_key_v1.txt`): API key interna para proteger rutas sensibles del servicio `api`.
+- `web_secret_key_v1` (dev: `.secrets/Dev_web_secret_key_v1.txt`; prod: `.secrets/web_secret_key_v1.txt`): firma de cookie de sesión del panel web.
+- `scripts/setup_local_secrets.sh` genera los archivos `Dev_*.txt` de forma idempotente para dev/CI; en producción, `deploy/compose.yml` usa el mismo mecanismo de Docker Compose Secrets pero con archivos sin prefijo (ver `docs/Seguridad.md`).
+
 ```bash
 ssh -L 8090:localhost:8090 usuario@172.18.208.162
 ```
@@ -247,8 +310,11 @@ ssh -L 8090:localhost:8090 usuario@172.18.208.162
 ```bash
 # Primera vez: crear .env.dev desde la plantilla
 cp deploy/env.dev.sample .env.dev
-# Editar credenciales — en especial SLACK_BOT_TOKEN y SLACK_APP_TOKEN (app Slack de dev separada)
+# Editar valores no sensibles y placeholders de compatibilidad
 nano .env.dev
+
+# Crear Docker Secrets locales de desarrollo
+./scripts/setup_local_secrets.sh
 
 # Levantar stack dev (build + migraciones + healthchecks)
 ./scripts/start_dev.sh
@@ -269,6 +335,17 @@ docker compose -f deploy/docker-compose.dev.yml down
 ### Variables de entorno
 
 `deploy/env.dev.sample` → copiar a `.env.dev` en la raíz. Diferencias clave respecto a `.env`:
+
+En dev, las credenciales reales se leen primero desde Docker Secrets montados en
+`/run/secrets/*`, cuyos archivos fuente en `.secrets/` usan el prefijo `Dev_`
+(ej. `Dev_db_password_v1.txt`). En producción se usa el mismo mecanismo con
+archivos sin prefijo (ej. `.secrets/db_password_v1.txt`), ya implementado en
+`deploy/compose.yml`. Si falta un archivo, el código cae a `.env`/`.env.dev`
+para mantener compatibilidad durante la transición. Si se cambia
+`db_password_v1.txt` (o `Dev_db_password_v1.txt`) sobre un volumen PostgreSQL
+ya inicializado, el valor debe coincidir exactamente con la contraseña vigente
+del rol — cambiarlo sin actualizar el rol o recrear el volumen rompe la
+autenticación (ver `docs/Seguridad.md`).
 
 | Variable              | Producción                       | Dev                          |
 |-----------------------|----------------------------------|------------------------------|
@@ -296,7 +373,31 @@ El servicio `web` monta `/var/run/docker.sock` para permitir al panel admin cont
 
 - `deploy/docker-compose.dev.yml` — Stack Docker Compose dev
 - `deploy/env.dev.sample` — Plantilla de variables de entorno dev
+- `.secrets/` — Secretos locales dev ignorados por Git
+- `scripts/setup_local_secrets.sh` — Bootstrap idempotente de secretos dev/CI
+- `scripts/check_no_plaintext_secrets.sh` — Control preventivo anti-secretos
 - `scripts/start_dev.sh` — Script de inicio con healthchecks y clonado opcional de DB
+
+### Purga local de secretos históricos
+
+Antes de publicar una rama reescrita, coordinar ventana de trabajo, partir de un
+árbol limpio y conservar un backup del repo. En esta VM `git filter-repo` debe
+estar instalado previamente.
+
+```bash
+cat > /tmp/las-focas-replacements.txt <<'EOF'
+<password_db_historico_prod>==>***REMOVED***
+<password_db_historico_dev>==>***REMOVED***
+<password_default_historico>==>***REMOVED***
+<hash_bcrypt_admin_historico>==>***REMOVED***
+EOF
+
+git filter-repo --replace-text /tmp/las-focas-replacements.txt --force
+git grep -n "<patron_historico_a_validar>" $(git rev-list --all)
+```
+
+Después de validar, publicar con `git push --force-with-lease origin dev` y
+avisar al equipo que debe resincronizar sus clones.
 
 ---
 

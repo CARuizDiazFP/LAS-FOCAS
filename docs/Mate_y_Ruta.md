@@ -54,12 +54,12 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 | `reports.agent.md` | Informes SLA/Repetitividad | → office, db, testing |
 | `mcp-chatbot.agent.md` | MCP Registry, orquestador | → nlp, reports, web |
 | `bot.agent.md` | Telegram (aiogram), flows | → nlp, testing, mcp |
-| `web.agent.md` | Panel web, auth, frontend | → api, mcp, security |
-| `api.agent.md` | Endpoints FastAPI | → db, testing, security |
-| `db.agent.md` | SQLAlchemy, Alembic, PostgreSQL | → api, docker |
+| `web.agent.md` | SPA Vue 3 (Composition API), auth web y consumo API JSON desacoplado | → api, mcp, security |
+| `api.agent.md` | FastAPI async, Pydantic, contratos JSON y dependencias | → db, testing, security |
+| `db.agent.md` | PostgreSQL async, SQLAlchemy, Alembic y repositorios | → api, docker |
 | `nlp.agent.md` | Clasificación de intención | → mcp, bot |
 | `office.agent.md` | LibreOffice, conversiones | → reports, docker |
-| `security.agent.md` | Hardening, secrets, auditoría | → docker, web, api |
+| `security.agent.md` | Seguridad de APIs/SPAs, XSS Vue 3, CORS, tokens | → web, api, db |
 | `infra.agent.md` | Cámaras, rutas, servicios | → db, api, reports |
 | `skill-generator.agent.md` | Meta-customizations, skills, prompts y agentes | → sin handoff fijo |
 
@@ -68,8 +68,8 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 - **crear-skill.prompt.md**: Crea skills nuevas o tríadas completas del ecosistema agéntico
 - **generar-pr-diario.prompt.md**: Genera `docs/PR/YYYY-MM-DD.md` automáticamente
 - **mantenimiento-disco.prompt.md**: Diagnostica disco y propone limpieza segura
-- **repo-updater.prompt.md**: Audita trazabilidad documental, genera commit técnico y hace push a `main`
-- **nuevo-modulo.prompt.md**: Scaffolding de módulo con tests y docs
+- **repo-updater.prompt.md**: Audita trazabilidad documental, genera commit técnico y hace push a `dev`
+- **nuevo-modulo.prompt.md**: Andamiaje estandar de modulo/submodulo SPA (views, components, router, api, composables) con reglas anti-legacy
 - **migracion-alembic.prompt.md**: Crear migraciones de base de datos
 - **revisar-seguridad.prompt.md**: Auditoría de seguridad del proyecto
 
@@ -78,6 +78,8 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 - El agente `security` ahora orquesta revisiones de seguridad apoyándose en cuatro skills especializadas: `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`.
 - El prompt `revisar-seguridad.prompt.md` quedó alineado a ese flujo: prioriza `.env`, `deploy/`, `Keys/`, Docker, red, auth y superficies expuestas antes de emitir hallazgos.
 - La regla quedó consolidada también en `AGENTS.md` para que las revisiones del repo sigan el mismo estándar.
+- Las directivas de `web.agent.md` y `nuevo-modulo.prompt.md` obligan frontend desacoplado por API REST JSON/WebSocket y prohiben Jinja, DOM directo y Vanilla JS clasico en nuevos desarrollos.
+- Las directivas de `api.agent.md`, `db.agent.md` y `security.agent.md` ahora asumen FastAPI async, PostgreSQL async, SQLAlchemy async y foco de seguridad en APIs/SPAs Vue 3.
 
 ### Cambios en AGENTS.md
 
@@ -104,7 +106,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
   - Worker `slack_baneo_worker` incorporado al stack para reportes periódicos de cámaras baneadas en Slack, con health check interno, logs centralizados en `Logs/slack_baneo_worker.log` y configuración dinámica persistida en `app.config_servicios`.
 - Servicios del repo
   - `api` (FastAPI): endpoints `/health`, `/health/version`, `/db-check`, `POST /ingest/reclamos` (alias `POST /import/reclamos`), `POST /reports/repetitividad` (Excel o DB) y `GET /reports/repetitividad` (métricas JSON).
-  - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, listado histórico en `/reports-history`, validación de adjuntos y persistencia en DB.
+  - `web` (FastAPI): login básico, Panel con Chat por defecto (HTTP y WS), tabs para flujos (Repetitividad, Comparador VLAN, Comparador FO) + enlace `/sla`, histórico persistente en `/reports-history`, validación de adjuntos y persistencia en DB.
     - Infra/Cámaras: las tarjetas ahora exponen edición manual del `estado` para usuarios `admin`, muestran inconsistencias entre estado persistido y estado sugerido, y consumen endpoints web protegidos por sesión + CSRF para consultar/aplicar overrides.
     - Protocolo de Protección: el badge y el modal de baneos distinguen entre cámaras cubiertas por incidentes y cámaras efectivamente persistidas como `BANEADA`, evitando falsos positivos cuando hay normalización manual.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` y `POST /v1/intent:analyze` con `openai` como proveedor LLM por defecto; `heuristic` se mantiene como opción de desarrollo/local test sin dependencia GPU.
@@ -252,7 +254,8 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Detección de Conflictos Inteligente**: Escenarios POTENTIAL_UPGRADE y NEW_STRAND en analyze/resolve de trackings, UI con modales específicos para cada tipo de conflicto (2026-01-13).
 - [x] **Corrección crítica SLA**: `core/sla/legacy_report.py` ahora usa exclusivamente columna "Horas Netas Reclamo" (columna U) para el cálculo de horas, eliminando el fallback incorrecto a columna P. Tests actualizados y validados con datos reales (2026-01-13).
 - [x] **Sistema Multi-Agente**: Modernización de AGENTS.md a ecosistema modular con 12 agentes especializados, 4 prompts automatizados y 4 habilidades reutilizables en `.github/` (2026-03-03).
-- [x] **Trazabilidad Git autónoma**: incorporación de `repo-updater` como workflow para auditar `docs/PR/`, verificar documentación temática en `docs/` y ejecutar `git add`, `git commit` y `git push` hacia `main` con CLI del sistema (2026-04-17).
+- [x] **Trazabilidad Git autónoma**: incorporación de `repo-updater` como workflow para auditar `docs/PR/`, verificar documentación temática en `docs/` y ejecutar `git add`, `git commit` y `git push` hacia `dev` con CLI del sistema (2026-04-17).
+- [x] **Reglas portables Codex/Gemini**: migración de 17 skills, 13 agentes y 7 prompts desde `.github/` hacia reglas versionadas en `.gemini/rules/`, índice `GEMINI.md` y skills Codex portables en `.codex-skills/skills/` por bloqueo de escritura en `.codex/` durante la sesión (2026-06-17).
 - [x] **Worker Slack de Baneos**: servicio `slack_baneo_worker`, tabla `app.config_servicios`, panel admin `/admin/Servicios/Baneos`, health check interno y logs centralizados en `Logs/slack_baneo_worker.log` (2026-04-17).
 - [x] **Edición Manual de Estado de Cámaras**: overrides admin auditados en `app.camaras_estado_auditoria`, modal de edición en Infra/Cámaras y conteo efectivo de baneadas alineado al estado persistido (2026-04-20).
 

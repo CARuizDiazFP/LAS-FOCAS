@@ -88,7 +88,7 @@ Esta guía describe los prerrequisitos, configuraciones necesarias y pasos detal
 
 ## 5. Informes de Repetitividad
 
-1. Acceso web: iniciar sesión en el panel (`http://localhost:8080`).
+1. Acceso web: iniciar sesión en el panel productivo (`http://172.18.208.162:8080`). Para desarrollo aislado usar `http://localhost:8090`.
 2. Seleccionar la pestaña "Informe de Repetitividad".
 3. Elegir modo de operación:
    - Modo Excel: adjuntar archivo `.xlsx` válido.

@@ -1,6 +1,6 @@
 # Nombre de archivo: sla.md
 # Ubicación de archivo: docs/informes/sla.md
-# Descripción: Documentación del informe de SLA - Generación desde Excel (modo legacy) o desde DB
+# Descripción: Documentación del informe de SLA para consumo desde SPA, bot y API
 
 ## Resumen
 
@@ -9,7 +9,7 @@ El informe de SLA analiza el cumplimiento de tiempos de resolución de tickets/r
 1. **Modo Excel (legacy)**: Dos archivos separados ("Servicios Fuera de SLA" + "Reclamos SLA").
 2. **Modo DB**: Consulta directa a la tabla `app.reclamos` con normalización automática.
 
-**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo").
+**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo"). El flujo moderno se consume desde la SPA Vue 3, el bot y la API.
 
 ## Columnas esperadas y mapeos
 
@@ -52,10 +52,12 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 
 **Endpoint**: `POST /api/reports/sla`
 
-**URL**: `http://localhost:8080/sla`
+**URL productiva**: `http://172.18.208.162:8080/sla`
+
+**URL dev**: `http://localhost:8090/sla`
 
 ### Pasos:
-1. Acceder a la vista `/sla` (requiere login).
+1. Acceder a la vista `/sla` de la SPA (requiere login).
 2. Arrastrar y soltar **dos archivos Excel obligatorios**:
    - "Servicios Fuera de SLA.xlsx" (o similar)
    - "Reclamos SLA.xlsx" (o similar)
@@ -64,6 +66,8 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 5. Opcional: activar "Usar base de datos" para ignorar archivos y consultar desde `app.reclamos`.
 6. Click en "Generar informe".
 7. El sistema devuelve JSON con rutas de descarga del `.docx` y opcionalmente `.pdf`.
+
+Cada generación desde el panel web registra una entrada en `app.report_history` con usuario, período, fuente (`excel-legacy` o `db`), estado, duración, errores y enlaces de salida. La vista `/reports-history` consume ese histórico persistente.
 
 ### Validaciones:
 - Se requieren **exactamente 2 archivos** si no se usa DB.
@@ -86,12 +90,19 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 3. Indicar el período `mm/aaaa`.
 4. El bot devuelve un `.docx` y opcionalmente `.pdf`.
 
+## Contratos y alineación
+
+- La lógica de cálculo vive en backend y se consume desde UI web, bot y API sin duplicación.
+- La interfaz moderna no depende de Jinja ni de JavaScript legacy; solo expone contratos JSON y enlaces de descarga.
+- Cualquier ajuste nuevo debe mantener validación de entrada, trazabilidad de report history y respuesta tipada.
+
 ## Límites y notas
 - Se muestran hasta 2000 filas en el detalle.
 - Horas calendario (horario laboral pendiente).
 
 ## Paths de salida
 - Archivos en `/app/data/reports/` dentro del contenedor.
+- Histórico operativo persistido en PostgreSQL (`app.report_history`).
 
 ## Variables de entorno
 
@@ -216,4 +227,3 @@ print('Columna horas:', RECLAMOS_REQUIRED.get('horas'))
 "
 # Output: ['Horas Netas Reclamo']
 ```
-

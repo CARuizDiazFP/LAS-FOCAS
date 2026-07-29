@@ -25,7 +25,8 @@ Workflow enfocado en detectar material sensible expuesto o mal gestionado.
 2. Detectar patrones de secreto en código, YAML, JSON, scripts y documentación.
 3. Revisar si el secreto está en ejemplo seguro o en valor real reusable.
 4. Verificar si existe mitigación: `.gitignore`, secret store, rotación o variable vacía por defecto.
-5. Reportar exposición, alcance, vector y parche sugerido.
+5. Ejecutar `./scripts/check_no_plaintext_secrets.sh` si existe y tomar su salida como gate bloqueante.
+6. Reportar exposición, alcance, vector y parche sugerido.
 
 ## Comandos de referencia
 
@@ -34,6 +35,7 @@ rg -n --hidden --glob '!*.pyc' --glob '!node_modules/**' '(password|secret|token
 rg -n --hidden --glob '.env*' --glob 'deploy/*.sample' '.'
 rg -n --hidden 'sk-[A-Za-z0-9_-]+'
 git ls-files | rg '(^|/)\.env($|\.)|Keys/|credentials|\.pem$|\.key$'
+./scripts/check_no_plaintext_secrets.sh
 ```
 
 ## Qué confirmar antes de elevar un hallazgo

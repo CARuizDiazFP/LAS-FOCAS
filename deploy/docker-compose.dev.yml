@@ -11,12 +11,12 @@ services:
     image: postgres:16-alpine
     container_name: lasfocasdev-postgres
     restart: unless-stopped
-    env_file:
-      - ../.env.dev
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password_v1
+    secrets:
+      - db_password_v1
     expose:
       - "5432"
     ports:
@@ -42,6 +42,12 @@ services:
       - ../.env.dev
     environment:
       POSTGRES_HOST: postgres
+    secrets:
+      - api_key_v1
+      - db_password_v1
+      - smtp_password_v1
+      - slack_bot_token_v1
+      - slack_app_token_v1
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,6 +78,13 @@ services:
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
+    secrets:
+      - api_key_v1
+      - db_password_v1
+      - web_secret_key_v1
+      - smtp_password_v1
+      - slack_bot_token_v1
+      - slack_app_token_v1
     depends_on:
       - api
       - nlp_intent
@@ -103,6 +116,8 @@ services:
       dockerfile: deploy/docker/nlp_intent.Dockerfile
     env_file:
       - ../.env.dev
+    secrets:
+      - openai_api_key_v1
     expose:
       - "8100"
     restart: unless-stopped
@@ -120,11 +135,16 @@ services:
       dockerfile: deploy/docker/bot.Dockerfile
     env_file:
       - ../.env.dev
+    secrets:
+      - db_password_v1
+      - telegram_bot_token_v1
     depends_on:
       - api
     restart: unless-stopped
     volumes:
       - bot_dev_data:/app/data
+    networks:
+      - lasfocas_dev_net
 
   office:
     build:
@@ -175,6 +195,10 @@ services:
       LOGS_DIR: /app/Logs
       TZ: America/Argentina/Buenos_Aires
       APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - slack_bot_token_v1
+      - slack_app_token_v1
     depends_on:
       postgres:
         condition: service_healthy
@@ -216,3 +240,21 @@ volumes:
 networks:
   lasfocas_dev_net:
     driver: bridge
+
+secrets:
+  api_key_v1:
+    file: ../.secrets/Dev_api_key_v1.txt
+  db_password_v1:
+    file: ../.secrets/Dev_db_password_v1.txt
+  web_secret_key_v1:
+    file: ../.secrets/Dev_web_secret_key_v1.txt
+  telegram_bot_token_v1:
+    file: ../.secrets/Dev_telegram_bot_token_v1.txt
+  openai_api_key_v1:
+    file: ../.secrets/Dev_openai_api_key_v1.txt
+  smtp_password_v1:
+    file: ../.secrets/Dev_smtp_password_v1.txt
+  slack_bot_token_v1:
+    file: ../.secrets/Dev_slack_bot_token_v1.txt
+  slack_app_token_v1:
+    file: ../.secrets/Dev_slack_app_token_v1.txt

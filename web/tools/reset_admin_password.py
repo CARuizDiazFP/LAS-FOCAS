@@ -16,6 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
+from core.config import get_secret
 from core.password import hash_password, verify_password
 
 
@@ -24,7 +25,7 @@ def build_dsn() -> str:
     port = os.getenv("POSTGRES_PORT", "5432")
     db = os.getenv("POSTGRES_DB", "lasfocas")
     user = os.getenv("POSTGRES_USER", "lasfocas")
-    pwd = os.getenv("POSTGRES_PASSWORD", "")
+    pwd = get_secret("db_password_v1", "POSTGRES_PASSWORD")
     return f"dbname={db} user={user} password={pwd} host={host} port={port}"
 
 def reset(password: str, username: str = "admin") -> None:

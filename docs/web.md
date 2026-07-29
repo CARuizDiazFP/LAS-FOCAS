@@ -32,11 +32,40 @@ web/
   app/main.py          ← FastAPI app: API REST + SPA serving
   frontend/
     src/               ← código fuente Vue 3 + TypeScript
+      assets/styles/   ← tokens CSS globales del panel
+      api/client.ts    ← cliente HTTP compartido con credenciales + CSRF
+      composables/     ← lógica reactiva desacoplada de vistas
     dist/              ← build Vite (generado, no en git)
     vite.config.ts
     index.html
   Dockerfile           ← multi-stage: Node 20 build → Python serve
 ```
+
+### Shell y navegación modular
+
+- El SPA ahora usa un **App Shell compartido** en `web/frontend/src/components/app-shell/AppShell.vue` para panel y admin.
+- La navegación lateral se organiza por módulos y apunta a rutas dedicadas: `/`, `/infra`, `/servicios`, `/servicios/ID/:idServicio`, `/repetitividad`, `/toolkit/vlan`, `/fo`, `/dwdm/ciena`, `/sla` y `/reports-history`.
+- El header horizontal legacy fue eliminado para ampliar el área de trabajo. Los controles fijos de sesión viven arriba del sidebar: configuración y perfil de usuario.
+- La esquina superior derecha del área principal queda reservada para acciones dinámicas de módulo, sin botones estáticos.
+- El contenedor `#dynamic-module-actions` permite que una vista inyecte acciones con `Teleport`; el mismo bloque expone el slot `module-actions` para usos futuros donde el shell se componga directamente.
+- La ruta `/` renderiza el Home/Chat limpio mediante `PanelView.vue`; los módulos operativos ya no viven como tabs internas del panel.
+
+### Lazy loading
+
+- `web/frontend/src/router/index.ts` carga `Login`, `Panel`, `SLA`, `Reportes`, `Cámara Detail` y vistas admin mediante `import()` dinámico.
+- Los módulos migrados desde las tabs legacy se cargan como rutas dedicadas y conservan lazy loading por componente.
+- Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
+- La administración incorpora `/admin/ingesta` como **hub de navegación** con dos sub-módulos:
+  - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
+  - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo.
+
+> **CRITICAL — Arquitectura del router admin**: Existe el archivo `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts`, pero ambos son **código huérfano**. El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y usa `src/router/index.ts` como router unificado. Las rutas `/admin/*` son **children anidadas** de `{ path: '/admin', component: AppShell }` dentro de ese router. Toda ruta admin nueva debe agregarse en `src/router/index.ts`, no en `src/admin/router/index.ts`.
+
+### Tokens y estilos compartidos
+
+- Los tokens visuales viven en `web/frontend/src/assets/styles/tokens.css`.
+- `panel.css` y `admin.css` consumen estos tokens en lugar de redeclarar su propia paleta base.
+- El objetivo de la capa es concentrar identidad cromática, spacing, radios y layout en variables CSS nativas (`--color-*`, `--space-*`, `--layout-*`).
 
 El contenedor se lanza con:
 ```
@@ -46,6 +75,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 ## Autenticación y sesión
 
 - Cookie de sesión (`starlette.middleware.sessions.SessionMiddleware`).
+- Flags explícitos: `HttpOnly`, `SameSite=Lax`, `max_age` configurable y `Secure` configurable por entorno.
 - Keys de sesión: `username`, `role`, `csrf`.
 - **No hay rutas HTML de login**: el SPA usa los endpoints JSON de autenticación.
 
@@ -54,14 +84,36 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | `GET` | `/api/auth/session` | Devuelve estado de sesión actual (sin auth requerida). Respuesta: `{authenticated, username, role, csrf}` |
-| `POST` | `/api/auth/login` | Login vía JSON `{username, password}`. Rate limit: 5 intentos/min. Respuesta: `{ok, username, role, csrf}` o `{ok:false, error}` |
+| `POST` | `/api/auth/login` | Login vía JSON `{username, password}`. Rate limit en memoria por IP + usuario, default 5 intentos/min. Respuesta: `{ok, username, role, csrf}` o `{ok:false, error}` |
 | `POST` | `/api/auth/logout` | Cierra sesión. Respuesta: `{ok: true}` |
 | `GET` | `/logout` | Compatibilidad hacia atrás — limpia sesión y redirige a `/` (el SPA detecta sesión vacía y muestra login) |
 
 ### CSRF
 
-El token CSRF se incluye en la respuesta de `/api/auth/session` y `/api/auth/login`. El composable `useSession.ts` lo almacena y lo inyecta en `window.CSRF_TOKEN` para compatibilidad con el código admin existente.  
+El token CSRF se incluye en la respuesta de `/api/auth/session` y `/api/auth/login`. El composable `useSession.ts` lo almacena en estado reactivo y sincroniza un fallback `window.CSRF_TOKEN` solo por compatibilidad con superficies legacy aún no migradas.
 Todos los endpoints POST que mutan datos validan el CSRF token.
+
+### Cliente HTTP y composables
+
+- `web/frontend/src/api/client.ts` centraliza `fetch` same-origin con `credentials: 'include'`, serialización JSON/FormData, inyección de CSRF y normalización de errores.
+- `web/frontend/src/composables/useSla.ts` contiene el flujo reactivo del informe SLA y corrige el manejo de archivos seleccionados, que antes no era reactivo en la vista.
+- `web/frontend/src/composables/useCiena.ts` desacopla el procesamiento del CSV de alarmas Ciena y la descarga del XLSX resultante.
+- Esta capa es la base para seguir extrayendo lógica desde `RepetitividadTab`, `VlanTab` e `InfraTab`.
+
+### Superficies legacy del frontend
+
+- `web/frontend/src/chat/main.ts` sigue existiendo como cliente standalone heredado para WebSocket, pero **no forma parte del bundle actual del SPA** porque `index.html` solo entra por `src/main.ts`.
+- Si se reactiva ese cliente en el futuro, debe sanearse el uso de `innerHTML` antes de volver a exponerlo en runtime.
+
+## Build Dev del frontend
+
+La validación del frontend debe ejecutarse **solo** en el stack Dev. El comando operativo para rebuild explícito del servicio web es:
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d --build web
+```
+
+Ese flujo recompila los assets Vite dentro del `Dockerfile` multi-stage del servicio `web` y actualiza `/app/frontend/dist` dentro del contenedor dev.
 
 ## Logging
 
@@ -79,7 +131,7 @@ Centralizado vía `core.logging.setup_logging`.
 
 - `GET /health` → status simple.
 - `GET /reports/index` → redirección a `/reports-history` (compatibilidad).
-- `GET /api/reports/history` → JSON `{files: [{name, size, mtime, href}]}` — lista de reportes. Requiere auth.
+- `GET /api/reports/history` → histórico persistente de reportes. Devuelve `items` con estado, usuario, período, fuente, duración, metadata segura y salidas; conserva `files` como compatibilidad básica. Requiere auth. Filtros: `type`, `status`, `username`, `month`, `year`, `limit`, `offset`.
 - `POST /api/chat/message` → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min.
 - `GET /api/chat/history?limit=N` → últimos N (máx 100) mensajes. Devuelve `conversation_id` y `history`.
 - `GET /api/chat/metrics` → métricas simples en memoria.
@@ -93,6 +145,9 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/tools/alarmas-ciena` → multipart con archivo CSV. Devuelve Excel como blob.
 - `GET /api/infra/camaras` → búsqueda simple de cámaras (legacy, query params).
 - `POST /api/infra/smart-search` → búsqueda avanzada `{terms, limit, offset}`.
+- `GET /api/infra/camaras/{id}` → resumen operativo de una cámara para la vista dedicada.
+- `GET /api/infra/camaras/{id}/aliases` → alias conocidos de una cámara.
+- `GET /api/infra/camaras/{id}/registros` → históricos parciales de auditoría manual y baneos relacionados.
 - `GET/POST /api/infra/camaras/{id}/estado` → estado de cámara (admin).
 - `GET /api/infra/servicios/{svcId}/rutas` → rutas de un servicio.
 - `GET /api/infra/rutas/{rutaId}/tracking` → tracking de una ruta.
@@ -103,8 +158,49 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/ban/create` → Crear baneo. JSON body: `{ticket_asociado?, servicio_afectado_id, servicio_protegido_id, ruta_protegida_id?, motivo?, usuario_ejecutor?}`. Responde con `{success, incidente_id, camaras_baneadas, ...}`.
 - `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
+- `POST /api/servicios/ingest` → proxy autenticado (admin + CSRF) hacia API interna para ingesta masiva de servicios SLA.
+- `GET /api/servicios/search` → proxy autenticado para búsqueda multipropósito con `limit/offset` (scroll infinito en `/servicios`).
+- `GET /api/servicios/detail?id=...` → proxy autenticado de detalle que resuelve el ID origen canónico para navegación histórica en `/servicios/ID/:idServicio`.
+
+En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras integraciones operativas:
+
+- **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
+- **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
+
+### InfraTab — Tarjeta resumida y detalle por cámara
+
+La grilla principal de `InfraTab.vue` fue simplificada para operar como tablero de consulta rápida:
+
+- Cada tarjeta muestra solo `Nombre canon`, `ID` numérico interno y `estado` con su color actual.
+- El identificador visible ahora es `camara.id`; `fontine_id` sigue existiendo en backend pero ya no se usa como dato primario de la tarjeta.
+- El CTA de la tarjeta pasó de **Editar estado** a **Detalle** y navega a `/infra/Camaras/:id`.
+
+La vista dedicada `CamaraDetailView.vue` cuelga del router principal y carga en paralelo, vía `Promise.all`, tres fuentes same-origin:
+
+- `GET /api/infra/camaras/{id}` para el header operativo y servicios/rutas asociados.
+- `GET /api/infra/camaras/{id}/aliases` para alias conocidos.
+- `GET /api/infra/camaras/{id}/registros` para auditoría manual y baneos relacionados.
+
+En el header de detalle se reubica el botón **Editar estado** solo para admin, reutilizando el endpoint `GET/POST /api/infra/camaras/{id}/estado` y el mismo flujo de CSRF.
+
+Debajo del header se expone un dashboard de tres tarjetas clickeables con modales aislados:
+
+- **Alias Conocidos**
+- **Registros**
+- **Servicios Asociados**
+
+La tarjeta **Servicios Asociados** ahora muestra únicamente la lista de IDs de servicio asociados a la cámara, ordenados de mayor a menor. Al hacer clic sobre un ID se abre un segundo `dialog` modal real superpuesto con `TrackingDetail.vue`, para asegurar el apilado correcto por delante del modal padre. Se conserva la secuencia óptica (`punta A → empalmes/cables → punta B`) y la descarga del TXT actual mediante `GET /api/infra/tracking/{rutaId}/download`.
+
+La tarjeta **Registros** ahora se divide en dos pestañas internas:
+
+- **Ingresos**: queda estructurada sobre un arreglo reactivo vacío, preparada para hidratar desde backend y sin generar listados fake largos. La plantilla del detalle ya reserva el campo `Técnico solicitante` para la futura integración.
+- **Baneos**: ordena el historial por `fecha_inicio` descendente y lo presenta como accordions retraídos por defecto mediante transiciones nativas de Vue 3 sobre `AccordionItem.vue`. Cada encabezado muestra solo el rango `inicio - fin` y, si el baneo sigue activo, `En curso`.
+
+Dentro de la pestaña **Baneos** también se conserva una sección compacta de auditoría manual de estado para no perder trazabilidad operativa ya disponible.
+
+El modal **Editar estado** en la vista dedicada recupera el mismo modo oscuro y jerarquía visual del panel actual; mantiene `credentials: 'include'` para lectura y usa `csrf_token` desde `useSession.ts` al persistir cambios.
 
 ### InfraTab — Baneos Activos (gestión de incidentes)
 
@@ -241,10 +337,12 @@ composables/
 api/
   auth.ts              ← wrappers fetch: getSession, login, logout
 components/
-  PanelLayout.vue      ← topbar con nav, usuario y logout
+  app-shell/
+    AppShell.vue       ← shell compartido con controles fijos en sidebar y toolbar dinámica vacía
 views/
   LoginView.vue        ← formulario de login
-  PanelView.vue        ← panel con tabs
+  PanelView.vue        ← Home/Chat limpio
+  CamaraDetailView.vue ← detalle dedicado de cámara FO
   SlaView.vue          ← vista independiente /sla
   ReportsHistoryView.vue ← historial de reportes
   tabs/
@@ -255,8 +353,6 @@ views/
     CienaTab.vue       ← alarmas Ciena
     InfraTab.vue       ← dashboard cámaras
 admin/
-  components/
-    AdminLayout.vue    ← layout admin con RouterView
   (resto de admin Vue)
 ```
 
@@ -265,15 +361,24 @@ admin/
 | Ruta | Componente | Auth | Admin |
 |------|------------|------|-------|
 | `/login` | LoginView | No | No |
-| `/` | PanelView (en PanelLayout) | Sí | No |
-| `/sla` | SlaView (en PanelLayout) | Sí | No |
-| `/reports-history` | ReportsHistoryView (en PanelLayout) | Sí | No |
-| `/admin` | AdminLayout + children | Sí | Sí |
-| `/admin/usuarios` | AdminLayout + children | Sí | Sí |
-| `/admin/servicios` | AdminLayout + children | Sí | Sí |
-| `/admin/Servicios/Baneos` | AdminLayout + children | Sí | Sí |
+| `/` | AppShell + PanelView | Sí | No |
+| `/infra` | AppShell + InfraTab | Sí | No |
+| `/infra/Camaras/:id` | AppShell + CamaraDetailView | Sí | No |
+| `/repetitividad` | AppShell + RepetitividadTab | Sí | No |
+| `/toolkit/vlan` | AppShell + VlanTab | Sí | No |
+| `/fo` | AppShell + FoTab | Sí | No |
+| `/dwdm/ciena` | AppShell + CienaTab | Sí | No |
+| `/sla` | AppShell + SlaView | Sí | No |
+| `/reports-history` | AppShell + ReportsHistoryView | Sí | No |
+| `/servicios` | AppShell + ServiciosView | Sí | No |
+| `/servicios/ID/:idServicio` | AppShell + ServicioDetalleView | Sí | No |
+| `/admin` | AppShell + AdminDashboard | Sí | Sí |
+| `/admin/usuarios` | AppShell + AdminUsuarios | Sí | Sí |
+| `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
+| `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
 
 El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`.
+Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida para preservar marcadores antiguos sin reintroducir tabs en el Home.
 
 ### Composable `useSession`
 
@@ -283,6 +388,10 @@ Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad
 ## Variables de entorno
 
 - `WEB_SECRET_KEY` → secreto para cookie de sesión (**obligatorio en prod**).
+- `WEB_SESSION_HTTPS_ONLY` → agrega flag `Secure` a la cookie (`false` en dev HTTP; usar `true` detrás de HTTPS/proxy).
+- `WEB_SESSION_MAX_AGE` → vida máxima de la sesión en segundos (default: 28800).
+- `WEB_LOGIN_RATE_LIMIT_MAX` → intentos de login permitidos por ventana (default: 5).
+- `WEB_LOGIN_RATE_LIMIT_WINDOW` → ventana del rate limit en segundos (default: 60).
 - `LOG_LEVEL` → nivel de logging (default: INFO).
 - `NLP_INTENT_URL` → URL del servicio NLP (default: `http://nlp_intent:8100`).
 - `API_BASE` → base de la API externa (default: `http://localhost:8001`).
