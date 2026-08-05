@@ -74,3 +74,6 @@ backup_*.dump
 
 # Repositorios legacy
 Legacy/
+
+# Documentación privada de la empresa (no debe subirse al repo)
+docs/Doc Privada/
