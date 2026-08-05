@@ -2,7 +2,6 @@
 # Ubicación de archivo: tests/test_web_infra_camera_state.py
 # Descripción: Pruebas del flujo web para consulta y edición manual del estado de cámaras
 
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -149,15 +148,13 @@ def _login(client: TestClient, monkeypatch, *, role: str, password: str = "secre
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok(role, password))
     response = client.post(
-        "/login",
-        data={"username": role, "password": password},
-        follow_redirects=False,
+        "/api/auth/login",
+        json={"username": role, "password": password},
     )
-    assert response.status_code == 302
-    html = client.get("/").text
-    csrf = re.search(r'window.CSRF_TOKEN = "([\w-]+)";', html)
-    assert csrf is not None
-    return csrf.group(1)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    return data["csrf"]
 
 
 def _build_contexto() -> CamaraEstadoContexto:
@@ -245,15 +242,6 @@ def _build_baneos() -> list[Any]:
             fecha_fin=None,
         )
     ]
-
-
-def test_panel_inyecta_user_role(monkeypatch):
-    client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
-
-    html = client.get("/").text
-
-    assert 'window.USER_ROLE = "admin";' in html
 
 
 def test_get_camara_estado_forbidden_para_no_admin(monkeypatch):

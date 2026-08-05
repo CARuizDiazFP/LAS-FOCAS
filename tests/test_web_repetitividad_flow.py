@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import io
-import re
 import sys
 from pathlib import Path
 
@@ -32,10 +31,8 @@ def _excel_bytes() -> bytes:
 
 def _login_as_user(client: TestClient, monkeypatch, password: str = "userpass") -> str:
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok(password))
-    client.post("/login", data={"username": "user", "password": password})
-    html = client.get("/").text
-    csrf = re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", html).group(1)
-    return csrf
+    res = client.post("/api/auth/login", json={"username": "user", "password": password})
+    return res.json()["csrf"]
 
 
 def test_flow_repetitividad_success_excel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

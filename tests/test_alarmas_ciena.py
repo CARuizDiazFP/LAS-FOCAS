@@ -16,7 +16,6 @@ Cubre:
 from __future__ import annotations
 
 import io
-import re
 from pathlib import Path
 
 import pandas as pd
@@ -85,9 +84,8 @@ def web_client_logged(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, str]
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
 
     client = TestClient(app)
-    client.post("/login", data={"username": "user", "password": "userpass"})
-    html = client.get("/").text
-    csrf = re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", html).group(1)
+    res = client.post("/api/auth/login", json={"username": "user", "password": "userpass"})
+    csrf = res.json()["csrf"]
     return client, csrf
 
 

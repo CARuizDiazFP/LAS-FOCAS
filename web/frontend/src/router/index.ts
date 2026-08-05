@@ -253,11 +253,15 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // Rutas públicas
-  if (to.meta.requiresAuth === false) return true;
-
   const { ensureSession, state } = useSession();
   await ensureSession();
+
+  if (to.path === '/login') {
+    return state.value.authenticated ? '/' : true;
+  }
+
+  // Rutas públicas
+  if (to.meta.requiresAuth === false) return true;
 
   if (!state.value.authenticated) {
     return '/login';

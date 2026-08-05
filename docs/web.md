@@ -372,13 +372,13 @@ admin/
 | `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
 | `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
 
-El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`.
+El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`. Si la ruta es `/login` y ya hay sesión autenticada, redirige a `/` (evita ver el formulario estando logueado).
 Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida para preservar marcadores antiguos sin reintroducir tabs en el Home.
 
 ### Composable `useSession`
 
 Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession()}`.  
-Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con el código `admin.ts` existente.
+Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con `chat/main.ts` (widget de chat embebible, superficie legacy separada del SPA principal). El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
 
 ## Variables de entorno
 

@@ -4,7 +4,6 @@
 
 from pathlib import Path
 import sys
-import re
 from typing import Any, Optional
 
 
@@ -74,16 +73,12 @@ def test_login_success_and_csrf_injected(monkeypatch):
     monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_ok("admin", "admin", role="admin"))
 
     client = TestClient(app)
-    res = client.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=False)
-    assert res.status_code == 302 and res.headers["location"].endswith("/")
+    res = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
 
-    # Accedemos al panel para obtener el CSRF inyectado en la plantilla
-    res2 = client.get("/")
-    assert res2.status_code == 200
-    html = res2.text
-    m = re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", html)
-    assert m, "No se encontró CSRF en la plantilla"
-    csrf = m.group(1)
+    csrf = data["csrf"]
     assert len(csrf) >= 16
 
 
@@ -92,16 +87,29 @@ def test_login_invalid_credentials(monkeypatch):
     # Mock DB sin usuario
     monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_fail())
     client = TestClient(app)
-    res = client.post("/login", data={"username": "admin", "password": "wrong"})
-    assert res.status_code in (400, 500)
+    res = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+    assert res.status_code == 401
 
 
-def test_login_redirect_when_already_logged(monkeypatch):
+def test_session_endpoint_devuelve_rol_autenticado(monkeypatch):
+    """GET /api/auth/session es la fuente de rol/csrf que usa el SPA (reemplaza window.USER_ROLE)."""
     from web.app import main as web_main
-    monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_ok("admin", "admin", role="user"))
+    monkeypatch.setattr(web_main.psycopg, "connect", _mock_connect_ok("admin", "admin", role="admin"))
     client = TestClient(app)
-    # Primer login
-    client.post("/login", data={"username": "admin", "password": "admin"})
-    # Acceso a /login debe redirigir al panel
-    res = client.get("/login", follow_redirects=False)
-    assert res.status_code == 302 and res.headers["location"].endswith("/")
+    client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    res = client.get("/api/auth/session")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["authenticated"] is True
+    assert data["username"] == "admin"
+    assert data["role"] == "admin"
+    assert data["csrf"]
+
+
+def test_session_endpoint_sin_sesion():
+    client = TestClient(app)
+    res = client.get("/api/auth/session")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["authenticated"] is False
+    assert data["role"] is None

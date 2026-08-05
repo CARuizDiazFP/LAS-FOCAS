@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -20,9 +19,8 @@ from web.tools.vlan_comparator import compare_vlan_sets, parse_cisco_vlans  # no
 
 def _login_user(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
-    client.post("/login", data={"username": "user", "password": "userpass"})
-    html = client.get("/").text
-    return re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", html).group(1)  # type: ignore[union-attr]
+    res = client.post("/api/auth/login", json={"username": "user", "password": "userpass"})
+    return res.json()["csrf"]
 
 
 def test_parse_cisco_vlans_expande_rangos_y_unifica() -> None:

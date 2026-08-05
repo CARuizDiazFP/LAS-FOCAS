@@ -240,6 +240,11 @@ volumes:
 networks:
   lasfocas_dev_net:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.19.0.0/24
+          gateway: 172.19.0.1
 
 secrets:
   api_key_v1:

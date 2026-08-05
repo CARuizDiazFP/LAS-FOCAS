@@ -1162,7 +1162,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
 
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("✅", texto)
-        self.assertIn("Podés proceder", texto)
+        self.assertIn("puede continuar con el proceso de aprobación", texto)
         mock_motivo.assert_not_called()
 
 

@@ -72,7 +72,7 @@ class TestEmailService(unittest.TestCase):
         # 1. Verificar cabeceras
         self.assertEqual(msg["Subject"], subject)
         self.assertEqual(msg["To"], recipients)
-        self.assertEqual(msg["From"], "no-reply@las-focas.com")
+        self.assertEqual(msg["From"], "LAS-FOCAS Notificaciones <no-reply@las-focas.com>")
 
         # 2. Verificar cuerpo y adjuntos
         self.assertTrue(msg.is_multipart())
@@ -119,4 +119,5 @@ class TestEmailService(unittest.TestCase):
 
         self.assertEqual(msg["Subject"], "AVISO DE BANEO - Ticket INC-TEST-123")
         self.assertIsNone(msg["To"])
-        self.assertIn("Se informa baneo de cámaras", msg.get_payload()[0].get_payload())
+        body_payload = msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+        self.assertIn("Se informa baneo de cámaras", body_payload)

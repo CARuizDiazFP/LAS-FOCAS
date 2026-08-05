@@ -138,7 +138,7 @@ class IngresoListener:
             )
             return (
                 "✅ Cámara no registrada previamente, se registra automáticamente "
-                "bajo revisión. Sin incidentes activos. puede cotinuar con el proceso de aprobacion."
+                "bajo revisión. Sin incidentes activos. puede continuar con el proceso de aprobación."
             )
 
         incidentes = _obtener_incidentes_activos_camara(camara, session)
@@ -172,7 +172,7 @@ class IngresoListener:
         logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
         return (
             f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
-            f"Sin incidentes activos.\n_puede cotinuar con el proceso de aprobacion._"
+            f"Sin incidentes activos.\n_puede continuar con el proceso de aprobación._"
         )
 
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:

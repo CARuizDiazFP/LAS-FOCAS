@@ -32,6 +32,10 @@ main  ────────────────────────�
 
 El entorno dev corre en paralelo al productivo sin compartir puertos, volúmenes ni red.
 
+### Red Docker
+
+La red `lasfocas_dev_net` usa una subred explícita **`172.19.0.0/24`** (no el default `/16` que asigna Docker) para evitar que la ruta conectada del bridge "secuestre" tráfico hacia hosts externos reales que caigan dentro del mismo bloque `/16` (ver `docs/decisiones.md`, entrada 2026-08-05). Si se agrega una nueva red Docker a este repo, declarar siempre `ipam.config.subnet` explícito en vez de dejar que Docker asigne un `/16` por default.
+
 ### Puertos
 
 | Servicio             | Producción                   | Dev (loopback)      |
