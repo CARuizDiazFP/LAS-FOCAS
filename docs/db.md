@@ -318,6 +318,159 @@ No se almacenan bytes de archivos, contenido de planillas, secretos ni payloads 
 
 **Uso:** El worker `slack_baneo_notifier` lee esta tabla en cada ejecución para obtener la configuración actualizada (intervalo, canales, estado activo). El panel admin en `/admin/Servicios/Baneos` permite modificar estos valores sin reiniciar el worker.
 
+## Inventario de Fibra Óptica (Cromo)
+
+Namespace `cromo_*` en el esquema `app`, aislado del modelo de infraestructura poblado desde los
+trackings `.txt` (`app.camaras`, `app.cables`, `app.empalmes`). Ingesta de sólo lectura desde el sistema
+externo Cromo Red de Metrotel — LAS-FOCAS nunca escribe en Cromo. Contexto funcional en
+`docs/modulo_ingesta_cromo.md`; modelo de datos y autenticación completos (documento interno, no
+versionado): `docs/Doc Privada/ingesta_cromo.md`. Definidos en `db/models/cromo.py`.
+
+**Sin FK duras entre familias**: un cable puede apuntar a una botella que todavía no bajó, y un tubo a
+un cable que puede no existir aún. Las referencias cruzadas (`*_n_id`, `extremo_a/b_*`) se guardan como
+`BigInteger` indexado y se resuelven en la fase de reconciliación de la Etapa 3 (todavía no
+implementada). Las únicas FK duras son las cuatro listadas al final de esta sección.
+
+### Tabla `cromo_clases`
+
+Catálogo de clases de objeto de Cromo. Vive en tabla, no en un `CHECK`: incorporar una clase nueva es
+un `INSERT`, no una migración.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `clase` (PK) | SmallInteger | Código de clase tal como lo usa Cromo. |
+| `etiqueta` | Text | Etiqueta corta de Cromo (ej. `6-1`), si existe. |
+| `entidad` | Text | `BOTELLA` \| `CABLE` \| `TUBO` \| `PELO` \| `FUSION` \| `ODF` \| `PARCELA`. |
+| `ingerible` | Boolean | Si la ingesta debe traer objetos de esta clase. |
+| `homologada` | Boolean | `false` para clases estructuralmente válidas pero sin homologar (ej. clase 124, `code: "NO-SABE"`). |
+| `motivo_exclusion` | Text | Motivo si `ingerible = false` (ej. clase 120, parcela catastral). |
+| `count_cromo` | BigInteger | Último count observado en Cromo (`stats[].count`), referencial. |
+| `count_fecha` | DateTime(tz) | Fecha del último count observado. |
+
+Seed inicial (verificado contra Cromo real el 2026-08-05): clases `68/121/122/123/125` (botella,
+ingerible/homologada), `124` (botella, ingerible pero no homologada), `120` (parcela, excluida), `69`
+(ODF — punto terminal de fibra donde se conectan clientes), `51` (cable), `129/130/132` (tubo/pelo/fusión,
+sin colección propia — llegan siempre dentro de `cable.inner[]`/`botella.inner[]`).
+
+### Tabla `cromo_ingesta_corridas`
+
+Auditoría de una corrida de ingesta completa (Etapa 3, todavía no implementada — la tabla ya existe).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | BigInteger | — |
+| `usuario` | String(128) | Quién disparó la corrida. |
+| `estado` | String(32) | `EN_CURSO` \| `OK` \| `OK_CON_ERRORES` \| `FALLIDA` \| `CANCELADA`. Texto libre, no enum: el vocabulario todavía lo termina de fijar la Etapa 3. |
+| `params` | JSONB | Clases, `psize`, `max_paginas`, `show` de la corrida. |
+| `total_objetivo`, `leidas`, `creadas`, `actualizadas`, `sin_cambios`, `errores`, `refs_colgadas` | Integer | Contadores en vivo. |
+| `iniciada_at`, `finalizada_at` | DateTime(tz) | — |
+
+### Tabla `cromo_ingesta_eventos`
+
+Evento puntual por objeto dentro de una corrida. `corrida_id → cromo_ingesta_corridas.id` (`ON DELETE CASCADE`).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | BigInteger | — |
+| `corrida_id` (FK) | BigInteger | — |
+| `n_id`, `clase` | BigInteger, SmallInteger | Identifica el objeto de Cromo afectado. |
+| `accion` | String(32) | `CREADA` \| `ACTUALIZADA` \| `SIN_CAMBIOS` \| `ERROR` \| `REF_COLGADA`. |
+| `detalle` | Text | Mensaje libre. |
+| `created_at` | DateTime(tz) | — |
+
+Índice: `(corrida_id, id)`.
+
+### Tabla `cromo_botellas`
+
+Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones); `version_id` es el
+`id` de la versión vigente. `clase → cromo_clases.clase` es la única FK dura hacia el catálogo.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `n_id` (PK) | BigInteger | Linaje estable en Cromo. |
+| `version_id` | BigInteger | `id` de la versión vigente. |
+| `vmax` | Integer | Detector de cambios. |
+| `clase` (FK) | SmallInteger | → `cromo_clases.clase`. |
+| `nombre`, `codigo_modelo`, `id_legacy`, `notas`, `calle`, `altura`, `localidad`, `provincia`, `ubicacion_fisica`, `tendido` | Text | Atributos de Cromo, texto libre. |
+| `latitud`, `longitud` | Float | WGS84. |
+| `pts_raw` | JSONB | Coordenadas Gauss-Krüger originales, sin reproyectar. |
+| `payload_raw` | JSONB | Payload crudo completo, para auditoría. |
+| `vigente` | Boolean | Baja lógica, nunca `DELETE`. |
+| `primera_ingesta`, `ultima_ingesta`, `ultima_modificacion` | DateTime(tz) | — |
+
+Índices: parcial en `id_legacy` (`WHERE id_legacy IS NOT NULL`), compuesto `(latitud, longitud)`, y GIN
+funcional `to_tsvector('spanish', nombre)` para búsqueda de texto.
+
+### Tabla `cromo_cables`
+
+Cable de FO. Extremos (`extremo_a/b_*`) sin FK dura — apuntan a la botella/ODF de cada punta, que puede
+no haber bajado todavía.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `n_id` (PK) | BigInteger | — |
+| `version_id`, `vmax` | BigInteger, Integer | — |
+| `nombre`, `propietario`, `jerarquia`, `tendido`, `id_legacy`, `notas` | Text | — |
+| `capacidad` | Text | Crudo (ej. `"72-BRUG"`). |
+| `capacidad_pelos` | SmallInteger | Derivado: prefijo numérico de `capacidad`. |
+| `distancia_geo`, `distancia_real` | Numeric(12,2) | — |
+| `extremo_a_n_id`, `extremo_b_n_id` | BigInteger | Sin FK dura. |
+| `extremo_a_clase`, `extremo_b_clase` | SmallInteger | Sin FK dura (puede ser una clase todavía no catalogada). |
+| `extremo_a_legacy`, `extremo_a_nombre`, `extremo_b_legacy`, `extremo_b_nombre` | Text | — |
+| `pts_raw`, `payload_raw` | JSONB | — |
+| `vigente`, `primera_ingesta`, `ultima_ingesta` | Boolean, DateTime(tz) | — |
+
+Índices: `nombre`, compuesto `(extremo_a_n_id, extremo_b_n_id)`.
+
+### Tablas `cromo_tubos` y `cromo_pelos`
+
+El pelo pertenece al tubo, nunca directamente a la botella. Ambas columnas de parentesco van sin FK
+dura (`cable_n_id`, `tubo_n_id`).
+
+| Tabla | Columnas propias | Descripción |
+|---|---|---|
+| `cromo_tubos` | `n_id` (PK), `cable_n_id`, `orden`, `nombre_color`, `vigente`, `ultima_ingesta` | Índice en `cable_n_id`. |
+| `cromo_pelos` | `n_id` (PK), `tubo_n_id`, `cable_n_id` (desnormalizado a propósito), `numero_pelo`, `orden`, `color`, `servicio_raw`, `servicio_numero`, `tipo_asociacion`, `vigente`, `ultima_ingesta` | Índices en `cable_n_id`, `tubo_n_id`, parcial en `servicio_numero`. |
+
+`tipo_asociacion` usa el enum de Postgres `app.cromo_tipo_asociacion_pelo` (`CLIENTE` \| `TRUNK_DWDM` \|
+`OLT_LASER` \| `INFRA` \| `LIBRE` \| `INDETERMINADO`, default `LIBRE`), mismo patrón que `camara_estado`.
+`servicio_raw` guarda `at.61` crudo (texto libre); `servicio_numero` es el número parseado por regex —
+nunca se descarta un pelo si no matchea.
+
+### Tabla `cromo_fusiones`
+
+Fusión entre dos pelos, colgada de una botella (`parent` = `botella_n_id`, sin FK dura).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `n_id` (PK) | BigInteger | — |
+| `botella_n_id` | BigInteger | Sin FK dura. Índice simple. |
+| `nombre_par`, `tipo` | Text | `tipo` no siempre es `"FUSION"` — se persiste el valor crudo. |
+| `pelo_a_n_id`, `pelo_b_n_id` | BigInteger | Índice compuesto. |
+| `latitud`, `longitud` | Float | — |
+| `vigente`, `ultima_ingesta` | Boolean, DateTime(tz) | — |
+
+### Tabla `cromo_servicio_match`
+
+Puente entre un pelo con servicio parseado y el maestro `app.servicios`. Únicas FK duras de esta tabla:
+`pelo_n_id → cromo_pelos.n_id` (`ON DELETE CASCADE`) y `servicio_id → app.servicios.id` (sin cascade).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | BigInteger | — |
+| `pelo_n_id` (FK) | BigInteger | → `cromo_pelos.n_id`, `ON DELETE CASCADE`. |
+| `servicio_numero` | Text | — |
+| `servicio_id` (FK, nullable) | Integer | → `app.servicios.id`. `NULL` si no matcheó. |
+| `metodo` | String(32) | `REGEX_EXACTO` \| `REGEX_PARCIAL` \| `MANUAL`. |
+| `confianza` | SmallInteger | — |
+| `created_at` | DateTime(tz) | — |
+
+Índice único compuesto `(pelo_n_id, servicio_numero)`.
+
+**Migración:** `20260805_01_cromo_ingesta.py` — crea las 9 tablas, el enum `cromo_tipo_asociacion_pelo`
+y siembra `cromo_clases`. Fuera de alcance de esta migración (Etapa 2): ningún código todavía escribe en
+estas tablas — eso es la Etapa 3 (servicio de ingesta).
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -348,6 +501,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260427_01` | `20260427_01_unaccent_extension.py` | Extensión `unaccent` para búsquedas sin acento |
 | `20260428_01` | `20260428_01_listener_workflow_ids.py` | Columnas `workflow_ids` y `solo_workflows` en `app.config_servicios` |
 | `20260428_02` | `20260428_02_camara_alias_pendiente.py` | Tabla `app.camara_alias` + valor `PENDIENTE_REVISION` en enum `camara_estado` |
+| `20260805_01` | `20260805_01_cromo_ingesta.py` | Tablas `app.cromo_*` (catálogo + auditoría + inventario) y enum `cromo_tipo_asociacion_pelo`, para la Etapa 2 de ingesta desde Cromo Red |
 
 ---
 

@@ -4,7 +4,7 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** en desarrollo, por etapas. Etapa 1 (acceso y parseo) completa.
+**Estado:** en desarrollo, por etapas. Etapa 1 (acceso y parseo) y Etapa 2 (persistencia) completas.
 
 ## Qué resuelve
 
@@ -24,9 +24,11 @@ El volumen (del orden de 10 mil botellas y sus cables asociados) y la necesidad 
 datos contra la API real antes de comprometerse a un esquema de base llevaron a dividir el trabajo:
 
 1. **Etapa 1 — Acceso y parseo** (completa): cliente HTTP de sólo lectura, parser puro de payloads a
-   estructuras de dominio, script de sondeo, tests. Sin tocar la base de datos ni la interfaz.
-2. **Etapa 2 — Persistencia**: migración Alembic y modelos SQLAlchemy para las tablas propias del
-   módulo, aisladas del resto del esquema.
+   estructuras de dominio, script de sondeo, tests. Sin tocar la base de datos ni la interfaz. La sonda
+   corrió contra el Cromo real de Metrotel y cerró los puntos abiertos del diseño (autenticación OAuth2,
+   formato de respuesta, identificación de clases, peso de página).
+2. **Etapa 2 — Persistencia** (completa): migración Alembic y modelos SQLAlchemy para las tablas propias
+   del módulo, aisladas del resto del esquema. Sin código todavía que escriba en ellas.
 3. **Etapa 3 — Servicio de ingesta**: orquesta la lectura paginada, clasifica cada objeto como
    creado/actualizado/sin cambios, reconcilia referencias cruzadas y audita cada corrida.
 4. **Etapa 4 — API**: endpoints para disparar una corrida y seguir su progreso en vivo.
@@ -52,6 +54,10 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/fixtures/cromo/`: cobertura de
   parser y cliente sin red real, con payloads de ejemplo como fixtures.
+- `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
+  corridas/eventos e inventario). Documentación de cada tabla en `docs/db.md`.
+- `db/alembic/versions/20260805_01_cromo_ingesta.py`: migración que crea esas tablas y siembra el
+  catálogo de clases conocidas.
 
 ## Principios de diseño
 

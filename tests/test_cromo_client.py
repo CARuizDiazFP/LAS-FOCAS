@@ -313,7 +313,7 @@ def test_config_completa_se_construye_ok(monkeypatch):
 
     assert config.base_url == "http://cromo.invalido.test"
     assert config.timeout == 30.0
-    assert config.psize_default == 10
+    assert config.psize_default == 5
     assert config.url_servidor == "http://cromo.invalido.test/cromo-api/v1/server"
     # Sin CROMO_OAUTH_URL explícito, se deriva del host de base_url en el puerto 9999.
     assert config.oauth_url == "http://cromo.invalido.test:9999/oauth2/oauth/token"
@@ -337,6 +337,19 @@ def test_config_respeta_oauth_url_y_client_credentials_explicitos(monkeypatch):
     assert config.oauth_url == "http://otro-host.test:9999/oauth2/oauth/token"
     assert config.client_id == "mi_client_id"
     assert config.client_secret == "mi_client_secret"
+    get_cromo_config.cache_clear()
+
+
+def test_config_rechaza_psize_fuera_del_conjunto_permitido(monkeypatch):
+    # Decisión de producto: psize de producción = 5, sólo {1,5,10,20,50} son válidos.
+    monkeypatch.setenv("CROMO_BASE_URL", "http://cromo.invalido.test")
+    monkeypatch.setenv("CROMO_USER", "user_test")
+    monkeypatch.setenv("CROMO_PASSWORD", "pass_test")
+    monkeypatch.setenv("CROMO_PSIZE_DEFAULT", "7")
+    get_cromo_config.cache_clear()
+
+    with pytest.raises(CromoConfigError, match="CROMO_PSIZE_DEFAULT"):
+        get_cromo_config()
     get_cromo_config.cache_clear()
 
 

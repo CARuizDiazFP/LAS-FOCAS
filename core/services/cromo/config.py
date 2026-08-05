@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 
 _RUTA_SERVIDOR_DEFAULT = "/cromo-api/v1/server"
 _TIMEOUT_DEFAULT = 30.0
-_PSIZE_DEFAULT = 10
+_PSIZE_DEFAULT = 5
+# Valores permitidos para psize, decididos por el dueño del producto tras medir peso de
+# página real contra Cromo (ver docs/Doc Privada/ingesta_cromo.md capítulo 12.2): psize=5
+# es el default de producción; el resto queda disponible para ajustar por corrida en las
+# etapas siguientes (servicio de ingesta, API, interfaz).
+PSIZE_PERMITIDOS = frozenset({1, 5, 10, 20, 50})
 _OAUTH_PUERTO_DEFAULT = 9999
 _OAUTH_PATH_DEFAULT = "/oauth2/oauth/token"
 # Valores por defecto de fábrica documentados en el manual de la API (OAUTH_CLIENT_DETAILS).
@@ -97,6 +102,11 @@ def _construir_config() -> CromoConfig:
         psize_default = int(os.getenv("CROMO_PSIZE_DEFAULT", str(_PSIZE_DEFAULT)))
     except ValueError as exc:
         raise CromoConfigError("CROMO_PSIZE_DEFAULT debe ser entero") from exc
+    if psize_default not in PSIZE_PERMITIDOS:
+        raise CromoConfigError(
+            f"CROMO_PSIZE_DEFAULT={psize_default} no es válido. "
+            f"Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"
+        )
 
     oauth_url = os.getenv("CROMO_OAUTH_URL", "").strip() or _derivar_oauth_url(base_url)
     client_id = os.getenv("CROMO_CLIENT_ID", "").strip() or _CLIENT_ID_DEFAULT
@@ -126,4 +136,4 @@ def get_cromo_config() -> CromoConfig:
     return _construir_config()
 
 
-__all__ = ["CromoConfig", "CromoConfigError", "get_cromo_config", "enmascarar"]
+__all__ = ["CromoConfig", "CromoConfigError", "get_cromo_config", "enmascarar", "PSIZE_PERMITIDOS"]

@@ -5,7 +5,13 @@
 from __future__ import annotations
 
 from core.services.cromo.client import CromoClient, CromoClientError
-from core.services.cromo.config import CromoConfig, CromoConfigError, enmascarar, get_cromo_config
+from core.services.cromo.config import (
+    PSIZE_PERMITIDOS,
+    CromoConfig,
+    CromoConfigError,
+    enmascarar,
+    get_cromo_config,
+)
 from core.services.cromo.modelos import Botella, Cable, Fusion, Pelo, Tubo
 from core.services.cromo.parser import (
     ArbolBotella,
@@ -30,6 +36,7 @@ __all__ = [
     "CromoClientError",
     "CromoConfig",
     "CromoConfigError",
+    "PSIZE_PERMITIDOS",
     "enmascarar",
     "get_cromo_config",
     "Botella",
