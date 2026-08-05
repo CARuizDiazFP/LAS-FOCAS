@@ -80,6 +80,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Office service: `docs/office_service.md`
 - Infraestructura: `docs/infra.md`
 - PRs diarios: `docs/PR/YYYY-MM-DD.md`
+- Documentación privada de la empresa: `docs/Doc Privada/` — **ignorada por git** (ver `.gitignore`), nunca debe commitearse ni subirse al repo
+- Ingesta de inventario FO desde Cromo (contexto estructural, sin datos sensibles): `docs/modulo_ingesta_cromo.md`. Modelo de datos y autenticación (privado, no versionado): `docs/Doc Privada/ingesta_cromo.md`
 
 ## Agentes y Skills
 

@@ -1,0 +1,15 @@
+{
+  "_fuente": "Reconstruido a partir de docs/Doc Privada/ingesta_cromo.md capítulo 4.2: clase 124 se parsea como botella pero se marca clase_no_homologada.",
+  "id": 10444555,
+  "n_id": 10444555,
+  "vmax": 1,
+  "class": 124,
+  "type": 1,
+  "is_container": 1,
+  "code": "NO-SABE",
+  "name": "Cra Sinclair 3252 C.F",
+  "ll": [-58.5, -34.55],
+  "at": [
+    {"seq": 1, "id": 34, "value": "Cra Sinclair 3252 C.F"}
+  ]
+}

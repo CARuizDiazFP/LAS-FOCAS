@@ -1,0 +1,120 @@
+{
+  "_fuente": "Reconstruido a partir de los valores documentados en docs/Doc Privada/ingesta_cromo.md (capítulos 2, 3 y 5) sobre la botella real 10193090/10178728. No es una respuesta HTTP capturada: el sondeo original (Cromo_Sondeo_Ingesta_Botellas.docx) no está disponible en el repo. Los n_id/id de fusión, cable, tubos y pelos son sintéticos pero preservan la forma del árbol verificado.",
+  "id": 10193090,
+  "n_id": 10178728,
+  "vmax": 3,
+  "vfrom": 2,
+  "class": 68,
+  "type": 1,
+  "is_container": 1,
+  "name": "Cra San Martin 201 Bot 2 CF",
+  "ll": [-58.4173, -34.6037],
+  "pts": [5347123.45, 6789012.34],
+  "hist": [
+    {"id": 10178728, "next_id": 10193090, "from": "2016-07-11", "vfrom": 1, "to": "2020-02-03", "vto": 2},
+    {"id": 10193090, "next_id": 0, "from": "2020-02-03", "vfrom": 2, "to": null, "vto": 3}
+  ],
+  "at": [
+    {"seq": 1, "id": 34, "value": "Cra San Martin 201 Bot 2 CF"},
+    {"seq": 2, "id": 35, "value": "11-07-16: Faltan todos los modulos y bandejas del Lado B (FIST)."},
+    {"seq": 3, "id": 41, "value": "FIST-BC16"},
+    {"seq": 4, "id": 91, "value": "1242388"},
+    {"seq": 5, "id": 67, "value": "SAN MARTIN"},
+    {"seq": 6, "id": 68, "value": "Capital Federal"},
+    {"seq": 7, "id": 69, "value": "Buenos Aires"},
+    {"seq": 8, "id": 16, "value": "201"},
+    {"seq": 9, "id": 118, "value": "VEREDA"},
+    {"seq": 10, "id": 20, "value": "Canalizado"}
+  ],
+  "inner": [
+    {
+      "id": 90099,
+      "n_id": 90010,
+      "vmax": 1,
+      "class": 132,
+      "parent": 10178728,
+      "name": "53-17",
+      "at": [
+        {"seq": 1, "id": 84, "value": "53-17"},
+        {"seq": 2, "id": 85, "value": "FUSION"}
+      ],
+      "tp": [
+        {"type": 1, "nfrom": 0, "id_to": 70010, "nto": 0, "class": 130},
+        {"type": 1, "nfrom": 1, "id_to": 70020, "nto": 0, "class": 130}
+      ]
+    }
+  ],
+  "tp": [
+    {
+      "type": 2,
+      "nfrom": 0,
+      "id_to": 50010,
+      "nto": 1,
+      "class": 51,
+      "id": 50099,
+      "n_id": 50010,
+      "vmax": 2,
+      "name": "F-PLB-ART",
+      "at": [
+        {"seq": 1, "id": 26, "value": "F-PLB-ART"},
+        {"seq": 2, "id": 23, "value": "14.4"}
+      ],
+      "inner": [
+        {
+          "id": 60099,
+          "n_id": 60010,
+          "class": 129,
+          "parent": 50010,
+          "at": [
+            {"seq": 1, "id": 72, "value": "0"},
+            {"seq": 2, "id": 73, "value": "AZ"}
+          ]
+        },
+        {
+          "id": 70010,
+          "n_id": 70010,
+          "class": 130,
+          "parent": 60010,
+          "at": [
+            {"seq": 1, "id": 74, "value": "1"},
+            {"seq": 2, "id": 75, "value": "1"},
+            {"seq": 3, "id": 77, "value": "AZ"},
+            {"seq": 4, "id": 61, "value": "FO 114830 - EDGE - CIRION - Pelo 1 de 2"}
+          ]
+        },
+        {
+          "id": 70020,
+          "n_id": 70020,
+          "class": 130,
+          "parent": 60010,
+          "at": [
+            {"seq": 1, "id": 74, "value": "2"},
+            {"seq": 2, "id": 75, "value": "2"},
+            {"seq": 3, "id": 77, "value": "AZ"}
+          ]
+        },
+        {
+          "id": 60020,
+          "n_id": 60020,
+          "class": 129,
+          "parent": 50010,
+          "at": [
+            {"seq": 1, "id": 72, "value": "1"},
+            {"seq": 2, "id": 73, "value": "VR"}
+          ]
+        },
+        {
+          "id": 70030,
+          "n_id": 70030,
+          "class": 130,
+          "parent": 60020,
+          "at": [
+            {"seq": 1, "id": 74, "value": "1"},
+            {"seq": 2, "id": 75, "value": "1"},
+            {"seq": 3, "id": 77, "value": "VR"}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -5,6 +5,7 @@
 fastapi==0.112.2  # Framework web para APIs (unificado)
 uvicorn[standard]==0.30.6  # Servidor ASGI para FastAPI (unificado)
 httpx==0.27.0  # Cliente HTTP asíncrono
+json5==0.15.0  # Parser tolerante para las respuestas pseudo-JSON (claves sin comillas) de Cromo Red API v1
 sqlalchemy==2.0.36  # ORM para interactuar con la base de datos (armonizado con common-requirements.txt)
 psycopg[binary]==3.2.1  # Driver PostgreSQL en formato binario (armonizado con common-requirements.txt)
 orjson==3.10.6  # Serializador JSON de alto rendimiento (unificado)
