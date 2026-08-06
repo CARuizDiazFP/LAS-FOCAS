@@ -78,6 +78,8 @@ services:
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
+      # Resto de la config de Cromo Red (CROMO_BASE_URL, CROMO_USER, etc.) llega vía
+      # env_file (../.env.dev) igual que POSTGRES_*; sólo la contraseña va por secreto.
     secrets:
       - api_key_v1
       - db_password_v1
@@ -85,6 +87,7 @@ services:
       - smtp_password_v1
       - slack_bot_token_v1
       - slack_app_token_v1
+      - cromo_password_v1
     depends_on:
       - api
       - nlp_intent
@@ -263,3 +266,5 @@ secrets:
     file: ../.secrets/Dev_slack_bot_token_v1.txt
   slack_app_token_v1:
     file: ../.secrets/Dev_slack_app_token_v1.txt
+  cromo_password_v1:
+    file: ../.secrets/Dev_cromo_password_v1.txt

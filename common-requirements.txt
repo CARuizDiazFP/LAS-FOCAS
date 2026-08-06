@@ -29,6 +29,7 @@ pandas==2.2.2
 openpyxl==3.1.2
 python-docx==1.1.2
 Unidecode==1.3.8
+json5==0.15.0  # Parser tolerante para las respuestas pseudo-JSON (claves sin comillas) de Cromo Red API v1
 
 # Geo / Maps
 matplotlib==3.9.2

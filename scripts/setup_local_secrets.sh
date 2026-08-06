@@ -41,7 +41,7 @@ import secrets
 import sys
 
 name = sys.argv[1]
-if name.endswith("_token_v1") or name.endswith("openai_api_key_v1"):
+if name.endswith("_token_v1") or name.endswith("openai_api_key_v1") or name.endswith("cromo_password_v1"):
     print("")
 else:
     print(secrets.token_urlsafe(48))
@@ -76,5 +76,6 @@ write_secret Dev_openai_api_key_v1.txt
 write_secret Dev_smtp_password_v1.txt
 write_secret Dev_slack_bot_token_v1.txt
 write_secret Dev_slack_app_token_v1.txt
+write_secret Dev_cromo_password_v1.txt
 
 echo "Bootstrap de secretos locales completado."

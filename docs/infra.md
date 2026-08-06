@@ -299,6 +299,12 @@ El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina 
 
 - `api_key_v1` (dev: `.secrets/Dev_api_key_v1.txt`; prod: `.secrets/api_key_v1.txt`): API key interna para proteger rutas sensibles del servicio `api`.
 - `web_secret_key_v1` (dev: `.secrets/Dev_web_secret_key_v1.txt`; prod: `.secrets/web_secret_key_v1.txt`): firma de cookie de sesión del panel web.
+- `cromo_password_v1` (dev: `.secrets/Dev_cromo_password_v1.txt`; **sólo dev por ahora**, no provisionado en
+  `deploy/compose.yml`/prod): contraseña de la cuenta de sólo lectura contra Cromo Red
+  (`core/services/cromo/config.py`). `scripts/setup_local_secrets.sh` la deja vacía por defecto (igual que
+  los tokens opcionales) — sin ella, la ingesta Cromo falla con un `CromoConfigError` claro en vez de
+  bloquear el resto del servicio `web`. El resto de la config (`CROMO_BASE_URL`, `CROMO_USER`, etc., no
+  sensible) viaja por `.env.dev`, igual que `POSTGRES_*`.
 - `scripts/setup_local_secrets.sh` genera los archivos `Dev_*.txt` de forma idempotente para dev/CI; en producción, `deploy/compose.yml` usa el mismo mecanismo de Docker Compose Secrets pero con archivos sin prefijo (ver `docs/Seguridad.md`).
 
 ```bash
