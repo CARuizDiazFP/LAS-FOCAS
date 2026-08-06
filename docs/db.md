@@ -474,6 +474,10 @@ y siembra `cromo_clases`.
 declara `SQLEnum(..., schema="app", ...)` explícito en el modelo — sin eso, `asyncpg` no resuelve el
 tipo porque el `search_path` de la conexión no incluye `app` (confirmado real al validar la Etapa 3).
 
+**Lectura:** `core/services/cromo/verificador.py` (Etapa 6) — consultas de sólo lectura (`text()` SQL
+crudo) para responder qué servicios pasan por un cable/tubo/botella. Tolerante a referencias colgadas:
+un objeto sin fila propia pero referenciado por otro (pelo, cable) no se trata como inexistente.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
