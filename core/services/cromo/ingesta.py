@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,11 @@ from db.models.cromo import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _CorridaCancelada(Exception):
+    """Señal interna: la corrida fue cancelada externamente (POST .../cancelar). No es un error."""
+
 
 CLASE_CABLE = 51
 CLASES_BOTELLA: tuple[int, ...] = (68, 121, 122, 123, 125)
@@ -198,6 +204,39 @@ def _sincronizar_contadores(corrida: CromoIngestaCorrida, contadores: Contadores
     corrida.refs_colgadas = contadores.refs_colgadas
 
 
+async def _fue_cancelada_externamente(sesion: AsyncSession, corrida_id: int) -> bool:
+    """Lee `estado` con una consulta fresca (no el objeto ya cargado en la sesión, que no ve
+    cambios comiteados por otra sesión/request — p.ej. el endpoint de cancelar).
+    """
+    fila = (
+        await sesion.execute(text("SELECT estado FROM app.cromo_ingesta_corridas WHERE id = :id"), {"id": corrida_id})
+    ).first()
+    return bool(fila and fila[0] == "CANCELADA")
+
+
+async def _registrar_pagina(
+    sesion: AsyncSession, corrida_id: int, fase: str, numero_pagina: int, pagina: dict[str, Any], contadores: ContadoresCorrida
+) -> None:
+    detalle = json.dumps(
+        {
+            "fase": fase,
+            "pagina": numero_pagina,
+            "next": pagina.get("next"),
+            "leidas": contadores.leidas,
+            "creadas": contadores.creadas,
+            "actualizadas": contadores.actualizadas,
+            "sin_cambios": contadores.sin_cambios,
+            "errores": contadores.errores,
+        }
+    )
+    await _registrar_evento(sesion, corrida_id, None, None, "PAGINA", detalle)
+
+
+async def _registrar_inicio_fase(sesion: AsyncSession, corrida_id: int, fase: str, descripcion: str) -> None:
+    await _registrar_evento(sesion, corrida_id, None, None, "FASE", json.dumps({"fase": fase, "descripcion": descripcion}))
+    await sesion.commit()
+
+
 async def iniciar_corrida(
     sesion: AsyncSession,
     *,
@@ -258,12 +297,18 @@ async def fase_cables(
     max_paginas: Optional[int],
 ) -> None:
     """FASE 2 · CABLES: maestro de cables (atributos + extremos). No trae tubos/pelos (ver §2, corrección 8)."""
+    await _registrar_inicio_fase(sesion, corrida.id, "CABLES", "Barrido directo de cables (filter=51)")
+    numero_pagina = 0
     async for pagina in cliente.iterar_coleccion(str(CLASE_CABLE), psize=psize, show=["SHOW", "TIME"], max_paginas=max_paginas):
+        numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
             await _procesar_cable_directo(sesion, corrida.id, obj, contadores)
         _sincronizar_contadores(corrida, contadores)
+        await _registrar_pagina(sesion, corrida.id, "CABLES", numero_pagina, pagina, contadores)
         await sesion.commit()
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
 
 
 async def _procesar_botella_completa(
@@ -316,15 +361,21 @@ async def fase_botellas(
     clases: Iterable[int],
 ) -> None:
     """FASE 3 · BOTELLAS: botellas + fusiones + cables/tubos/pelos embebidos en cada una."""
+    await _registrar_inicio_fase(sesion, corrida.id, "BOTELLAS", "Barrido de botellas con árbol completo")
     filtro = ",".join(str(c) for c in clases)
+    numero_pagina = 0
     async for pagina in cliente.iterar_coleccion(
         filtro, psize=psize, show=["SHOW", "REL_ATTRIBUTE", "TIME"], max_paginas=max_paginas
     ):
+        numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
             await _procesar_botella_completa(sesion, corrida.id, obj, contadores)
         _sincronizar_contadores(corrida, contadores)
+        await _registrar_pagina(sesion, corrida.id, "BOTELLAS", numero_pagina, pagina, contadores)
         await sesion.commit()
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
 
 
 _RECONCILIACIONES: tuple[tuple[str, int, str], ...] = (
@@ -379,6 +430,7 @@ async def fase_reconciliacion(sesion: AsyncSession, corrida: CromoIngestaCorrida
     No repara nada — sólo reporta. Un evento agregado por tipo de relación, no uno por fila, para no
     inflar `cromo_ingesta_eventos` en un universo con muchas referencias colgadas.
     """
+    await _registrar_inicio_fase(sesion, corrida.id, "RECONCILIACION", "Detección de referencias colgadas")
     for descripcion, clase, sql in _RECONCILIACIONES:
         filas = (await sesion.execute(text(sql))).scalars().all()
         if not filas:
@@ -424,6 +476,7 @@ async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, con
     (método REGEX_EXACTO). Se deja constancia por cada pelo con servicio parseado, matchee o no
     (servicio_id NULL si no matcheó) — es la traza de auditoría, no sólo los matches exitosos.
     """
+    await _registrar_inicio_fase(sesion, corrida.id, "SERVICIOS", "Matching de servicio_numero contra app.servicios")
     pendientes = (await sesion.execute(_SQL_PELOS_SIN_MATCH)).all()
     for pelo_n_id, servicio_numero in pendientes:
         try:
@@ -479,6 +532,14 @@ async def ejecutar_ingesta(
     try:
         totales = await fase_conteo(cliente)
         corrida.total_objetivo = sum(totales.get(c, 0) for c in (*clases_final, CLASE_CABLE))
+        await _registrar_evento(
+            sesion,
+            corrida.id,
+            None,
+            None,
+            "INICIO",
+            json.dumps({"corrida_id": corrida.id, "total_objetivo": corrida.total_objetivo, "clases": list(clases_final)}),
+        )
         await sesion.commit()
 
         await fase_cables(cliente, sesion, corrida, contadores, psize=psize_final, max_paginas=max_paginas)
@@ -489,6 +550,12 @@ async def ejecutar_ingesta(
         await fase_servicios(sesion, corrida, contadores)
 
         estado_final = "OK" if contadores.errores == 0 else "OK_CON_ERRORES"
+    except _CorridaCancelada:
+        # No es una falla: alguien pidió cancelar (POST .../cancelar) y el chequeo cooperativo entre
+        # páginas la interrumpió al cerrar la página en curso, tal como especifica el diseño.
+        await sesion.rollback()
+        logger.info("action=cromo_ingesta evento=corrida_cancelada corrida_id=%s", corrida.id)
+        estado_final = "CANCELADA"
     except Exception as exc:  # noqa: BLE001 - una falla inesperada cierra la corrida, no propaga
         # Una excepción no capturada por los savepoints de cada fase deja la transacción de la sesión
         # abortada (p.ej. un error de flush fuera de un begin_nested()). Hay que rollback-earla antes de
@@ -500,6 +567,24 @@ async def ejecutar_ingesta(
     corrida.estado = estado_final
     corrida.finalizada_at = datetime.now(timezone.utc)
     _sincronizar_contadores(corrida, contadores)
+    await _registrar_evento(
+        sesion,
+        corrida.id,
+        None,
+        None,
+        "RESUMEN",
+        json.dumps(
+            {
+                "estado": estado_final,
+                "leidas": contadores.leidas,
+                "creadas": contadores.creadas,
+                "actualizadas": contadores.actualizadas,
+                "sin_cambios": contadores.sin_cambios,
+                "errores": contadores.errores,
+                "refs_colgadas": contadores.refs_colgadas,
+            }
+        ),
+    )
     await sesion.commit()
     logger.info(
         "action=cromo_ingesta evento=corrida_finalizada corrida_id=%s estado=%s leidas=%d creadas=%d actualizadas=%d sin_cambios=%d errores=%d refs_colgadas=%d",

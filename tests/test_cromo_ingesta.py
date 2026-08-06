@@ -461,7 +461,8 @@ async def test_fase_reconciliacion_sin_hallazgos_no_registra_eventos():
     await ingesta.fase_reconciliacion(sesion, corrida, contadores)
 
     assert contadores.refs_colgadas == 0
-    assert sesion.agregados == []
+    # Se registra el evento FASE de inicio, pero ningún REF_COLGADA (no hubo hallazgos).
+    assert [o.accion for o in sesion.agregados] == ["FASE"]
 
 
 # ── Matching de servicios ───────────────────────────────────────────────────
@@ -505,3 +506,46 @@ async def test_fase_servicios_matchea_y_deja_traza_de_no_matcheados():
     assert matcheado.confianza == 100
     assert sin_match.servicio_id is None
     assert sin_match.confianza == 0
+
+
+# ── Cancelación cooperativa entre páginas ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fase_cables_se_detiene_si_fue_cancelada_externamente():
+    cable_obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
+    # 3 páginas disponibles, pero la corrida "ya fue cancelada" desde la primera consulta de estado.
+    cliente = _ClientePaginado([{"response": [cable_obj]}, {"response": [cable_obj]}, {"response": [cable_obj]}])
+    sesion = _SesionFake(respuestas_execute={"SELECT estado FROM app.cromo_ingesta_corridas": [("CANCELADA",)]})
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    with pytest.raises(ingesta._CorridaCancelada):
+        await ingesta.fase_cables(cliente, sesion, corrida, contadores, psize=5, max_paginas=None)
+
+    # Se procesó la página en curso antes de detenerse (cierra la página, no la corta a mitad).
+    assert contadores.leidas == 1
+
+
+@pytest.mark.asyncio
+async def test_ejecutar_ingesta_marca_cancelada_sin_tratarla_como_falla(monkeypatch):
+    sesion = _SesionFakeCorrida()
+
+    async def _fase_conteo_fake(cliente):
+        return {}
+
+    async def _fase_cables_cancela(*args, **kwargs):
+        raise ingesta._CorridaCancelada()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta, "fase_cables", _fase_cables_cancela)
+    monkeypatch.setattr(ingesta, "fase_botellas", _noop)
+    monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
+    monkeypatch.setattr(ingesta, "fase_servicios", _noop)
+
+    corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
+
+    assert corrida.estado == "CANCELADA"
