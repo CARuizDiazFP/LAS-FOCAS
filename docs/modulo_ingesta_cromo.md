@@ -5,7 +5,7 @@
 # Módulo de ingesta de inventario FO desde Cromo
 
 **Estado:** en desarrollo, por etapas. Etapas 1 (acceso y parseo), 2 (persistencia), 3 (servicio de
-ingesta) y 4 (API + progreso en vivo) completas.
+ingesta), 4 (API + progreso en vivo) y 5 (interfaz) completas.
 
 ## Qué resuelve
 
@@ -38,7 +38,13 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
 4. **Etapa 4 — API** (completa): endpoints para disparar una corrida y seguir su progreso en vivo por
    SSE, con cancelación cooperativa. Primer uso de sesión async de DB y de tareas en background en
    `web/app/main.py` (detalle de la decisión de arquitectura en `docs/PR/2026-08-06.md`).
-5. **Etapa 5 — Interfaz**: vista de administración para operar la ingesta manualmente.
+5. **Etapa 5 — Interfaz** (completa): vista `/admin/ingesta/cromo` — selector de clases, `psize` fijo a
+   5 valores, progreso en vivo consumiendo el SSE de la Etapa 4 con `EventSource` nativo del browser
+   (primer uso en el proyecto), histórico y detalle de corridas. Validada de punta a punta contra el
+   backend real (Cromo + `lasfocasdev-postgres`) por HTTP/SSE crudo — el entorno de esta sesión no pudo
+   levantar un browser real (sin permisos para instalar las librerías de sistema de Chromium), así que
+   la renderización de Vue en sí no se vio en pantalla; el contrato de datos que consume sí se validó
+   byte a byte. Detalle en `docs/PR/2026-08-06.md`.
 6. **Etapa 6 — Verificador**: consultas sobre las tablas ya pobladas para responder "qué servicios
    pasan por este cable/buffer/botella".
 
@@ -73,6 +79,12 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   stream SSE de progreso, histórico, detalle y cancelación. Sigue el patrón vigente del archivo
   (`_require_admin`, CSRF contra `request.session`), con imports locales de `core.services.cromo.*` y
   `db.*` dentro de cada función, como el resto del archivo.
+- `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
+  `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración).
+- `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — dispara la
+  corrida, consume el SSE con `EventSource` nativo (replay por `Last-Event-ID` automático del browser,
+  sin código propio), histórico y detalle. Registrada en `web/frontend/src/router/index.ts` y con su
+  tarjeta en el hub `AdminIngesta.vue`, siguiendo la skill `frontend-spa-architecture`.
 
 ## Principios de diseño
 

@@ -1,7 +1,7 @@
 <!--
   Nombre de archivo: AdminIngesta.vue
   Ubicación de archivo: web/frontend/src/admin/views/AdminIngesta.vue
-  Descripción: Hub de navegación del módulo de ingesta — redirige a Servicios SLA o Cámaras
+  Descripción: Hub de navegación del módulo de ingesta — redirige a Servicios SLA, Cámaras o Cromo
 -->
 <template>
   <section class="admin-ingesta">
@@ -19,6 +19,12 @@
         <span class="card-icon">📷</span>
         <span class="card-title">Cámaras</span>
         <span class="card-desc">Ingesta masiva de cámaras críticas con baneo administrativo.</span>
+      </RouterLink>
+
+      <RouterLink to="/admin/ingesta/cromo" class="service-card">
+        <span class="card-icon">🧵</span>
+        <span class="card-title">Cromo</span>
+        <span class="card-desc">Inventario de fibra óptica desde Cromo Red, con progreso en vivo.</span>
       </RouterLink>
     </div>
   </section>

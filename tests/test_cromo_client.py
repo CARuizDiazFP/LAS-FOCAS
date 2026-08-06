@@ -382,3 +382,12 @@ def test_enmascarar_solo_muestra_los_ultimos_caracteres():
     assert enmascarar("un-token-secreto-largo") == "*" * 18 + "argo"
     assert enmascarar("abc") == "***"
     assert enmascarar("") == ""
+
+
+def test_enmascarar_acota_asteriscos_en_tokens_muy_largos():
+    # Hallazgo real: un access_token JWT de Cromo puede tener miles de caracteres; sin tope,
+    # una sola línea de log queda inutilizable.
+    token_largo = "x" * 2000 + "tP-g"
+    resultado = enmascarar(token_largo)
+    assert resultado == "*" * 20 + "tP-g"
+    assert len(resultado) == 24

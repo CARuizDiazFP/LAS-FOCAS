@@ -53,13 +53,19 @@ class CromoConfig:
         return f"{self.base_url.rstrip('/')}{self.ruta_servidor}"
 
 
-def enmascarar(valor: str, visibles: int = 4) -> str:
-    """Devuelve un secreto enmascarado, mostrando sólo los últimos `visibles` caracteres."""
+def enmascarar(valor: str, visibles: int = 4, max_asteriscos: int = 20) -> str:
+    """Devuelve un secreto enmascarado, mostrando sólo los últimos `visibles` caracteres.
+
+    Acota la cantidad de asteriscos (no 1:1 con la longitud real): un JWT de OAuth2 puede tener
+    miles de caracteres, y sin este tope una sola línea de log queda inutilizable (hallazgo real
+    al loguear el access_token de Cromo — ver `client.py::_obtener_token`).
+    """
     if not valor:
         return ""
     if len(valor) <= visibles:
         return "*" * len(valor)
-    return "*" * (len(valor) - visibles) + valor[-visibles:]
+    asteriscos = min(len(valor) - visibles, max_asteriscos)
+    return "*" * asteriscos + valor[-visibles:]
 
 
 def _derivar_oauth_url(base_url: str) -> str:

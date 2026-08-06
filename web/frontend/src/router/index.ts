@@ -24,6 +24,7 @@ const AdminServicios = () => import('../admin/views/AdminServicios.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
+const AdminIngestaCromo = () => import('../admin/views/AdminIngestaCromo.vue');
 const AdminBaneos = () => import('../admin/views/AdminBaneos.vue');
 
 const routes: RouteRecordRaw[] = [
@@ -220,6 +221,12 @@ const routes: RouteRecordRaw[] = [
         path: 'ingesta/camaras',
         name: 'admin-ingesta-camaras',
         component: AdminIngestaCamaras,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'ingesta/cromo',
+        name: 'admin-ingesta-cromo',
+        component: AdminIngestaCromo,
         meta: { requiresAdmin: true },
       },
       { path: ':pathMatch(.*)*', redirect: '/admin' },
