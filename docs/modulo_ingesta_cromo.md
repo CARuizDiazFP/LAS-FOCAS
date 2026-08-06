@@ -4,8 +4,9 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** en desarrollo, por etapas. Etapas 1 (acceso y parseo), 2 (persistencia), 3 (servicio de
-ingesta), 4 (API + progreso en vivo) y 5 (interfaz) completas.
+**Estado:** completo. Las 6 etapas (acceso y parseo, persistencia, servicio de ingesta, API + progreso
+en vivo, interfaz de ingesta, verificador de servicios) están implementadas, probadas y validadas
+contra el Cromo real de Metrotel y `lasfocasdev-postgres`.
 
 ## Qué resuelve
 
@@ -45,8 +46,12 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    levantar un browser real (sin permisos para instalar las librerías de sistema de Chromium), así que
    la renderización de Vue en sí no se vio en pantalla; el contrato de datos que consume sí se validó
    byte a byte. Detalle en `docs/PR/2026-08-06.md`.
-6. **Etapa 6 — Verificador**: consultas sobre las tablas ya pobladas para responder "qué servicios
-   pasan por este cable/buffer/botella".
+6. **Etapa 6 — Verificador** (completa): tres consultas de sólo lectura sobre las tablas ya pobladas
+   — qué servicios pasan por un cable entero, por un tubo/buffer específico, o por los cables que
+   tienen una botella como extremo. Vista `/infra/cromo/verificador`, disponible para cualquier
+   usuario autenticado (no requiere rol admin: es consulta, no administración). Validada contra datos
+   reales de la Etapa 3 — encontró y corrigió un caso real de referencia colgada (detalle en
+   `docs/PR/2026-08-06.md`).
 
 Cada etapa se habilita una vez cerrada la anterior; las decisiones de una etapa pueden ajustar el diseño
 de las siguientes si el sondeo contra la API real revela algo distinto de lo asumido.
@@ -65,12 +70,16 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
     reconciliación de referencias colgadas y matching de servicios. Transacción por página (un
     commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
     cancelación cooperativa entre páginas.
+  - `verificador.py`: consultas de sólo lectura sobre el inventario ya ingerido — qué servicios
+    pasan por un cable, un tubo/buffer o una botella. Tolerante a referencias colgadas: un objeto sin
+    fila propia pero referenciado por otro (pelo, cable) no se trata como "no encontrado".
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
-  `tests/test_web_cromo_ingesta.py`, `tests/fixtures/cromo/`: cobertura de parser, cliente, servicio
-  de ingesta y endpoints web, sin red ni DB real.
+  `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
+  `tests/test_web_cromo_verificador.py`, `tests/fixtures/cromo/`: cobertura de parser, cliente,
+  servicio de ingesta, verificador y endpoints web, sin red ni DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos e inventario). Documentación de cada tabla en `docs/db.md`.
 - `db/alembic/versions/20260805_01_cromo_ingesta.py`: migración que crea esas tablas y siembra el
@@ -78,13 +87,20 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
 - `web/app/main.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) — disparo de corrida,
   stream SSE de progreso, histórico, detalle y cancelación. Sigue el patrón vigente del archivo
   (`_require_admin`, CSRF contra `request.session`), con imports locales de `core.services.cromo.*` y
-  `db.*` dentro de cada función, como el resto del archivo.
+  `db.*` dentro de cada función, como el resto del archivo. También los endpoints del verificador
+  (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`), con `_require_auth` en vez de
+  `_require_admin` — son consulta, no administración.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
-  `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración).
+  `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
+  del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`).
 - `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — dispara la
   corrida, consume el SSE con `EventSource` nativo (replay por `Last-Event-ID` automático del browser,
   sin código propio), histórico y detalle. Registrada en `web/frontend/src/router/index.ts` y con su
   tarjeta en el hub `AdminIngesta.vue`, siguiendo la skill `frontend-spa-architecture`.
+- `web/frontend/src/views/VerificadorCromoView.vue`: vista en `/infra/cromo/verificador` — selector de
+  tipo de objeto (cable/tubo/botella), búsqueda por `n_id`, tabla de servicios encontrados. Vista del
+  panel operativo (no de `/admin`): cualquier usuario autenticado puede usarla. Registrada en
+  `router/index.ts` y con su entrada de navegación en `AppShell.vue` (grupo "Tool Kit").
 
 ## Principios de diseño
 

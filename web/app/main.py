@@ -4547,6 +4547,101 @@ async def cromo_ingesta_cancelar_web(
     return JSONResponse({"ok": True})
 
 
+# ── Endpoints: verificador de servicios sobre inventario Cromo (Etapa 6) ─────
+# Contrato: docs/Doc Privada/ingesta_cromo.md §8.2. Sólo lectura, cualquier usuario autenticado
+# (no requiere rol admin: a diferencia de disparar una ingesta, consultar el inventario ya ingerido
+# no es una operación administrativa).
+
+
+def _serializar_servicio_encontrado(servicio: Any) -> dict[str, Any]:
+    return {
+        "servicio_id": servicio.servicio_id,
+        "servicio_id_externo": servicio.servicio_id_externo,
+        "numero_primer_servicio": servicio.numero_primer_servicio,
+        "nombre_cliente": servicio.nombre_cliente,
+        "cliente": servicio.cliente,
+        "estado_servicio": servicio.estado_servicio,
+        "categoria": servicio.categoria,
+        "tipo_servicio": servicio.tipo_servicio,
+        "pelo_n_id": servicio.pelo_n_id,
+        "servicio_numero_match": servicio.servicio_numero_match,
+        "metodo": servicio.metodo,
+    }
+
+
+@app.get("/api/infra/cromo/cables/{cable_n_id}/servicios")
+async def cromo_verificador_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
+    """Servicios que pasan por un cable entero (cualquiera de sus tubos/pelos)."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_cable
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_cable(sesion, cable_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "cable_n_id": resultado.cable_n_id,
+            "nombre": resultado.nombre,
+            "capacidad": resultado.capacidad,
+            "extremo_a_nombre": resultado.extremo_a_nombre,
+            "extremo_b_nombre": resultado.extremo_b_nombre,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/tubos/{tubo_n_id}/servicios")
+async def cromo_verificador_por_tubo_web(request: Request, tubo_n_id: int) -> JSONResponse:
+    """Servicios que pasan por un tubo/buffer específico dentro de un cable."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_tubo
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_tubo(sesion, tubo_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "tubo_n_id": resultado.tubo_n_id,
+            "cable_n_id": resultado.cable_n_id,
+            "orden": resultado.orden,
+            "nombre_color": resultado.nombre_color,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/botellas/{botella_n_id}/servicios")
+async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
+    """Servicios que pasan por los cables que tienen esta botella como uno de sus extremos."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_botella
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_botella(sesion, botella_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "botella_n_id": resultado.botella_n_id,
+            "nombre": resultado.nombre,
+            "clase": resultado.clase,
+            "localidad": resultado.localidad,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+        }
+    )
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,
