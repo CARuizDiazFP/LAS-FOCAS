@@ -4,7 +4,8 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** en desarrollo, por etapas. Etapa 1 (acceso y parseo) y Etapa 2 (persistencia) completas.
+**Estado:** en desarrollo, por etapas. Etapas 1 (acceso y parseo), 2 (persistencia) y 3 (servicio de
+ingesta) completas.
 
 ## Qué resuelve
 
@@ -29,8 +30,11 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    formato de respuesta, identificación de clases, peso de página).
 2. **Etapa 2 — Persistencia** (completa): migración Alembic y modelos SQLAlchemy para las tablas propias
    del módulo, aisladas del resto del esquema. Sin código todavía que escriba en ellas.
-3. **Etapa 3 — Servicio de ingesta**: orquesta la lectura paginada, clasifica cada objeto como
-   creado/actualizado/sin cambios, reconcilia referencias cruzadas y audita cada corrida.
+3. **Etapa 3 — Servicio de ingesta** (completa): orquesta la lectura paginada, clasifica cada objeto
+   como creado/actualizado/sin cambios, reconcilia referencias cruzadas y audita cada corrida. Validada
+   con una corrida real acotada contra Cromo y la base dev — encontró y corrigió tres incompatibilidades
+   reales entre el diseño y el comportamiento efectivo de la API/el driver async (detalle en
+   `docs/PR/2026-08-06.md`).
 4. **Etapa 4 — API**: endpoints para disparar una corrida y seguir su progreso en vivo.
 5. **Etapa 5 — Interfaz**: vista de administración para operar la ingesta manualmente.
 6. **Etapa 6 — Verificador**: consultas sobre las tablas ya pobladas para responder "qué servicios
@@ -52,8 +56,11 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
-- `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/fixtures/cromo/`: cobertura de
-  parser y cliente sin red real, con payloads de ejemplo como fixtures.
+  - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas,
+    reconciliación de referencias colgadas y matching de servicios. Transacción por página (un
+    commit por página, con savepoints por objeto para que uno malformado no aborte el resto).
+- `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
+  `tests/fixtures/cromo/`: cobertura de parser, cliente y servicio de ingesta sin red ni DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos e inventario). Documentación de cada tabla en `docs/db.md`.
 - `db/alembic/versions/20260805_01_cromo_ingesta.py`: migración que crea esas tablas y siembra el

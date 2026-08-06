@@ -206,7 +206,10 @@ class CromoPelo(Base):
     servicio_raw = Column(Text, nullable=True)  # at.61 sin tocar
     servicio_numero = Column(Text, nullable=True)  # parseado de at.61
     tipo_asociacion = Column(
-        SQLEnum(TipoAsociacionPelo, name="cromo_tipo_asociacion_pelo", create_type=False),
+        # schema="app" explícito: asyncpg no reconoce el tipo por nombre corto porque el
+        # search_path de la conexión no incluye "app" (confirmado real, ver docs/db.md).
+        # Sin esto, cualquier INSERT/UPDATE vía AsyncSession falla con "type ... does not exist".
+        SQLEnum(TipoAsociacionPelo, name="cromo_tipo_asociacion_pelo", schema="app", create_type=False),
         nullable=False,
         server_default=TipoAsociacionPelo.LIBRE.value,
     )

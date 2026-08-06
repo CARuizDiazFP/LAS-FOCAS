@@ -468,8 +468,11 @@ Puente entre un pelo con servicio parseado y el maestro `app.servicios`. Únicas
 Índice único compuesto `(pelo_n_id, servicio_numero)`.
 
 **Migración:** `20260805_01_cromo_ingesta.py` — crea las 9 tablas, el enum `cromo_tipo_asociacion_pelo`
-y siembra `cromo_clases`. Fuera de alcance de esta migración (Etapa 2): ningún código todavía escribe en
-estas tablas — eso es la Etapa 3 (servicio de ingesta).
+y siembra `cromo_clases`.
+
+**Escritura:** `core/services/cromo/ingesta.py` (Etapa 3). Nota de esquema: `CromoPelo.tipo_asociacion`
+declara `SQLEnum(..., schema="app", ...)` explícito en el modelo — sin eso, `asyncpg` no resuelve el
+tipo porque el `search_path` de la conexión no incluye `app` (confirmado real al validar la Etapa 3).
 
 ## Extensiones PostgreSQL requeridas
 
