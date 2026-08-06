@@ -254,6 +254,9 @@ class _SesionFakeCorrida(_SesionFake):
     async def refresh(self, obj: Any) -> None:
         if isinstance(obj, CromoIngestaCorrida) and obj.id is None:
             obj.id = 1
+        if isinstance(obj, CromoIngestaCorrida):
+            # continuar_corrida() re-obtiene la corrida por id con sesion.get(): que la encuentre.
+            self._existentes[(CromoIngestaCorrida, obj.id)] = obj
 
 
 @pytest.mark.asyncio
@@ -549,3 +552,41 @@ async def test_ejecutar_ingesta_marca_cancelada_sin_tratarla_como_falla(monkeypa
     corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
 
     assert corrida.estado == "CANCELADA"
+
+
+# ── continuar_corrida (llamado directo, sin pasar por ejecutar_ingesta) ────
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_falla_clara_si_no_existe():
+    sesion = _SesionFakeCorrida()
+    with pytest.raises(ValueError, match="corrida 999"):
+        await ingesta.continuar_corrida(
+            cliente=object(), sesion=sesion, corrida_id=999, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+        )
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    corrida_existente = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+    sesion._existentes[(CromoIngestaCorrida, 42)] = corrida_existente
+
+    async def _fase_conteo_fake(cliente):
+        return {}
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_botellas", _noop)
+    monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
+    monkeypatch.setattr(ingesta, "fase_servicios", _noop)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+    )
+
+    assert corrida is corrida_existente
+    assert corrida.estado == "OK"

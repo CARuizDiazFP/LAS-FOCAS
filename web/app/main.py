@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
@@ -4267,6 +4267,284 @@ async def camaras_ingest_web(
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=camaras_ingest_proxy_error user=%s error=%s", username, exc)
         return JSONResponse({"error": f"Error en ingesta de cámaras: {exc!s}"}, status_code=500)
+
+
+# ── Endpoints admin: ingesta de inventario FO desde Cromo Red (Etapa 4) ──────
+# Contrato completo: docs/Doc Privada/ingesta_cromo.md §9. Contexto público: docs/modulo_ingesta_cromo.md.
+
+
+class CromoIngestaIniciarRequest(BaseModel):
+    """Payload para disparar una corrida de ingesta Cromo."""
+
+    csrf_token: str
+    clases: List[int] | None = None
+    psize: int | None = None
+    max_paginas: int | None = None
+
+
+class CromoIngestaCancelarRequest(BaseModel):
+    """Payload para cancelar una corrida en curso."""
+
+    csrf_token: str
+
+
+async def _correr_ingesta_cromo_en_background(
+    corrida_id: int,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    clases: tuple[int, ...],
+) -> None:
+    """Corre las fases de la corrida ya creada, en su propia sesión/cliente — vive más que el request."""
+    from core.services.cromo.client import CromoClient
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.ingesta import continuar_corrida
+    from db.session import AsyncSessionLocal
+
+    try:
+        async with CromoClient(config=get_cromo_config()) as cliente, AsyncSessionLocal() as sesion:
+            await continuar_corrida(cliente, sesion, corrida_id, psize=psize, max_paginas=max_paginas, clases=clases)
+    except Exception as exc:  # noqa: BLE001 - tarea de background: no hay nadie a quien propagar
+        logger.exception("action=cromo_ingesta_background_error corrida_id=%s error=%s", corrida_id, exc)
+
+
+@app.post("/api/admin/ingesta/cromo")
+async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarRequest) -> JSONResponse:
+    """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Corre en background."""
+    from core.services.cromo.config import CromoConfigError, PSIZE_PERMITIDOS, get_cromo_config
+    from core.services.cromo.ingesta import CLASES_BOTELLA, iniciar_corrida
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if body.psize is not None and body.psize not in PSIZE_PERMITIDOS:
+        return JSONResponse(
+            {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
+        )
+
+    try:
+        cromo_config = get_cromo_config()
+    except CromoConfigError as exc:
+        return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=503)
+
+    psize_final = body.psize if body.psize is not None else cromo_config.psize_default
+    clases_final = tuple(body.clases) if body.clases else CLASES_BOTELLA
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await iniciar_corrida(
+            sesion, usuario=username, psize=psize_final, max_paginas=body.max_paginas, clases=clases_final
+        )
+        corrida_id = corrida.id
+
+    asyncio.create_task(
+        _correr_ingesta_cromo_en_background(
+            corrida_id, psize=psize_final, max_paginas=body.max_paginas, clases=clases_final
+        )
+    )
+
+    logger.info("action=cromo_ingesta_iniciar user=%s corrida_id=%s psize=%s", username, corrida_id, psize_final)
+    return JSONResponse({"corrida_id": corrida_id}, status_code=202)
+
+
+_CROMO_ACCION_A_EVENTO_SSE = {
+    "INICIO": "inicio",
+    "FASE": "fase",
+    "PAGINA": "pagina",
+    "RESUMEN": "resumen",
+    "ERROR": "error",
+    "REF_COLGADA": "error",
+}
+
+
+async def _cromo_eventos_a_sse(corrida_id: int, ultimo_id: int):
+    """Traduce `cromo_ingesta_eventos` a mensajes SSE, con heartbeat y corte al terminar la corrida.
+
+    No emite un mensaje por cada CREADA/ACTUALIZADA/SIN_CAMBIOS/OMITIDA (serían miles) — el progreso
+    granular ya viaja en el evento `pagina`. `ultimo_id` sigue avanzando sobre esas filas igual, para
+    que el replay por Last-Event-ID (que sólo conoce ids de mensajes SÍ emitidos) no las repita ni las
+    pierda.
+    """
+    from sqlalchemy import text
+
+    from db.session import AsyncSessionLocal
+
+    ultima_actividad = time.monotonic()
+    async with AsyncSessionLocal() as sesion:
+        while True:
+            filas = (
+                await sesion.execute(
+                    text(
+                        "SELECT id, n_id, clase, accion, detalle FROM app.cromo_ingesta_eventos "
+                        "WHERE corrida_id = :corrida_id AND id > :ultimo_id ORDER BY id"
+                    ),
+                    {"corrida_id": corrida_id, "ultimo_id": ultimo_id},
+                )
+            ).all()
+
+            for evento_id, n_id, clase, accion, detalle in filas:
+                ultimo_id = evento_id
+                tipo_sse = _CROMO_ACCION_A_EVENTO_SSE.get(accion)
+                if tipo_sse is None:
+                    continue
+                ultima_actividad = time.monotonic()
+                if accion in ("INICIO", "FASE", "PAGINA", "RESUMEN"):
+                    data = detalle or "{}"
+                else:
+                    data = json.dumps({"n_id": n_id, "clase": clase, "detalle": detalle})
+                yield f"id: {evento_id}\nevent: {tipo_sse}\ndata: {data}\n\n"
+
+            estado_fila = (
+                await sesion.execute(
+                    text("SELECT estado FROM app.cromo_ingesta_corridas WHERE id = :id"), {"id": corrida_id}
+                )
+            ).first()
+            if estado_fila is None:
+                return
+            if estado_fila[0] != "EN_CURSO" and not filas:
+                return
+
+            if time.monotonic() - ultima_actividad > 15:
+                yield ": heartbeat\n\n"
+                ultima_actividad = time.monotonic()
+
+            await asyncio.sleep(1.0)
+
+
+@app.get("/api/admin/ingesta/cromo/corridas/{corrida_id}/stream")
+async def cromo_ingesta_stream_web(request: Request, corrida_id: int) -> StreamingResponse:
+    """SSE de progreso de una corrida. `EventSource` no manda headers custom (salvo `Last-Event-ID`,
+    que el browser agrega solo al reconectar) — por eso no hay CSRF acá; la escritura ya quedó
+    protegida en el POST que dispara la corrida. Igual requiere cookie de sesión autenticada.
+    """
+    _require_admin(request)
+
+    ultimo_id = 0
+    last_event_id = request.headers.get("last-event-id")
+    if last_event_id and last_event_id.isdigit():
+        ultimo_id = int(last_event_id)
+
+    return StreamingResponse(
+        _cromo_eventos_a_sse(corrida_id, ultimo_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _serializar_cromo_corrida(corrida: Any) -> dict[str, Any]:
+    return {
+        "id": corrida.id,
+        "usuario": corrida.usuario,
+        "estado": corrida.estado,
+        "params": corrida.params,
+        "total_objetivo": corrida.total_objetivo,
+        "leidas": corrida.leidas,
+        "creadas": corrida.creadas,
+        "actualizadas": corrida.actualizadas,
+        "sin_cambios": corrida.sin_cambios,
+        "errores": corrida.errores,
+        "refs_colgadas": corrida.refs_colgadas,
+        "iniciada_at": corrida.iniciada_at.isoformat() if corrida.iniciada_at else None,
+        "finalizada_at": corrida.finalizada_at.isoformat() if corrida.finalizada_at else None,
+    }
+
+
+@app.get("/api/admin/ingesta/cromo/corridas")
+async def cromo_ingesta_historico_web(request: Request, limit: int = 20, offset: int = 0) -> JSONResponse:
+    """Histórico paginado de corridas, más recientes primero."""
+    from sqlalchemy import func, select
+
+    from db.models.cromo import CromoIngestaCorrida
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        total = (await sesion.execute(select(func.count()).select_from(CromoIngestaCorrida))).scalar_one()
+        filas = (
+            await sesion.execute(
+                select(CromoIngestaCorrida).order_by(CromoIngestaCorrida.id.desc()).limit(limit).offset(offset)
+            )
+        ).scalars().all()
+
+    return JSONResponse(
+        {"total": total, "limit": limit, "offset": offset, "corridas": [_serializar_cromo_corrida(c) for c in filas]}
+    )
+
+
+@app.get("/api/admin/ingesta/cromo/corridas/{corrida_id}")
+async def cromo_ingesta_detalle_web(request: Request, corrida_id: int, limit: int = 200) -> JSONResponse:
+    """Detalle de una corrida con sus últimos eventos (más recientes primero)."""
+    from sqlalchemy import text
+
+    from db.models.cromo import CromoIngestaCorrida
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    limit = max(1, min(limit, 1000))
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return JSONResponse({"error": "Corrida no encontrada"}, status_code=404)
+        eventos = (
+            await sesion.execute(
+                text(
+                    "SELECT id, n_id, clase, accion, detalle, created_at FROM app.cromo_ingesta_eventos "
+                    "WHERE corrida_id = :id ORDER BY id DESC LIMIT :limit"
+                ),
+                {"id": corrida_id, "limit": limit},
+            )
+        ).all()
+
+    return JSONResponse(
+        {
+            "corrida": _serializar_cromo_corrida(corrida),
+            "eventos": [
+                {
+                    "id": e[0],
+                    "n_id": e[1],
+                    "clase": e[2],
+                    "accion": e[3],
+                    "detalle": e[4],
+                    "created_at": e[5].isoformat() if e[5] else None,
+                }
+                for e in eventos
+            ],
+        }
+    )
+
+
+@app.post("/api/admin/ingesta/cromo/corridas/{corrida_id}/cancelar")
+async def cromo_ingesta_cancelar_web(
+    request: Request, corrida_id: int, body: CromoIngestaCancelarRequest
+) -> JSONResponse:
+    """Marca la corrida para detenerse: el chequeo cooperativo entre páginas la corta y la cierra
+    como CANCELADA al terminar la página en curso — no la interrumpe a mitad de una página.
+    """
+    from db.models.cromo import CromoIngestaCorrida
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return JSONResponse({"error": "Corrida no encontrada"}, status_code=404)
+        if corrida.estado != "EN_CURSO":
+            return JSONResponse(
+                {"error": f"La corrida ya está {corrida.estado}, no se puede cancelar"}, status_code=409
+            )
+        corrida.estado = "CANCELADA"
+        await sesion.commit()
+
+    logger.info("action=cromo_ingesta_cancelar user=%s corrida_id=%s", username, corrida_id)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/servicios/search")

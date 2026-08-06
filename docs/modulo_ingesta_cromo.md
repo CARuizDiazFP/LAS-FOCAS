@@ -4,8 +4,8 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** en desarrollo, por etapas. Etapas 1 (acceso y parseo), 2 (persistencia) y 3 (servicio de
-ingesta) completas.
+**Estado:** en desarrollo, por etapas. Etapas 1 (acceso y parseo), 2 (persistencia), 3 (servicio de
+ingesta) y 4 (API + progreso en vivo) completas.
 
 ## Qué resuelve
 
@@ -35,7 +35,9 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    con una corrida real acotada contra Cromo y la base dev — encontró y corrigió tres incompatibilidades
    reales entre el diseño y el comportamiento efectivo de la API/el driver async (detalle en
    `docs/PR/2026-08-06.md`).
-4. **Etapa 4 — API**: endpoints para disparar una corrida y seguir su progreso en vivo.
+4. **Etapa 4 — API** (completa): endpoints para disparar una corrida y seguir su progreso en vivo por
+   SSE, con cancelación cooperativa. Primer uso de sesión async de DB y de tareas en background en
+   `web/app/main.py` (detalle de la decisión de arquitectura en `docs/PR/2026-08-06.md`).
 5. **Etapa 5 — Interfaz**: vista de administración para operar la ingesta manualmente.
 6. **Etapa 6 — Verificador**: consultas sobre las tablas ya pobladas para responder "qué servicios
    pasan por este cable/buffer/botella".
@@ -53,18 +55,24 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   - `parser.py`: funciones puras que traducen los payloads recibidos a las estructuras de dominio.
     Sin acceso a red ni a base de datos.
   - `modelos.py`: las estructuras de dominio del inventario (botella, cable, tubo, pelo, fusión).
+  - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas,
+    reconciliación de referencias colgadas y matching de servicios. Transacción por página (un
+    commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
+    cancelación cooperativa entre páginas.
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
-  - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas,
-    reconciliación de referencias colgadas y matching de servicios. Transacción por página (un
-    commit por página, con savepoints por objeto para que uno malformado no aborte el resto).
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
-  `tests/fixtures/cromo/`: cobertura de parser, cliente y servicio de ingesta sin red ni DB real.
+  `tests/test_web_cromo_ingesta.py`, `tests/fixtures/cromo/`: cobertura de parser, cliente, servicio
+  de ingesta y endpoints web, sin red ni DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos e inventario). Documentación de cada tabla en `docs/db.md`.
 - `db/alembic/versions/20260805_01_cromo_ingesta.py`: migración que crea esas tablas y siembra el
   catálogo de clases conocidas.
+- `web/app/main.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) — disparo de corrida,
+  stream SSE de progreso, histórico, detalle y cancelación. Sigue el patrón vigente del archivo
+  (`_require_admin`, CSRF contra `request.session`), con imports locales de `core.services.cromo.*` y
+  `db.*` dentro de cada función, como el resto del archivo.
 
 ## Principios de diseño
 

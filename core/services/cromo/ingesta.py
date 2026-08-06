@@ -514,20 +514,46 @@ async def ejecutar_ingesta(
     max_paginas: Optional[int] = None,
     clases: Optional[Iterable[int]] = None,
 ) -> CromoIngestaCorrida:
-    """Orquesta una corrida completa: conteo, cables, botellas, reconciliación y matching de servicios.
+    """Crea la corrida y corre las 5 fases de punta a punta, en la misma sesión/tarea.
 
-    Cierra la corrida como OK, OK_CON_ERRORES o FALLIDA. Nunca lanza: una falla inesperada se registra
-    como FALLIDA en la propia corrida en vez de propagar la excepción al llamador.
+    Conveniencia para scripts/tests/uso síncrono. El endpoint web (Etapa 4) necesita el `corrida_id`
+    de inmediato para responder, así que llama `iniciar_corrida()` y `continuar_corrida()` por separado
+    (esta función es sólo azúcar sintáctica sobre esas dos).
     """
     psize_final = psize if psize is not None else get_cromo_config().psize_default
     if psize_final not in PSIZE_PERMITIDOS:
         raise ValueError(f"psize={psize_final} no es válido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}")
     clases_final = tuple(clases) if clases is not None else CLASES_BOTELLA
 
-    contadores = ContadoresCorrida()
     corrida = await iniciar_corrida(
         sesion, usuario=usuario, psize=psize_final, max_paginas=max_paginas, clases=clases_final
     )
+    return await continuar_corrida(
+        cliente, sesion, corrida.id, psize=psize_final, max_paginas=max_paginas, clases=clases_final
+    )
+
+
+async def continuar_corrida(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida_id: int,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    clases: Iterable[int],
+) -> CromoIngestaCorrida:
+    """Corre las 5 fases sobre una corrida ya creada (`iniciar_corrida()`), en su propia sesión.
+
+    Pensado para lanzarse en una tarea de background separada del request que la disparó — por eso
+    recibe `corrida_id`, no el objeto ORM (que pertenece a la sesión donde se creó, no a esta).
+    Cierra la corrida como OK, OK_CON_ERRORES, CANCELADA o FALLIDA. Nunca lanza: una falla inesperada
+    se registra como FALLIDA en la propia corrida en vez de propagar la excepción al llamador.
+    """
+    clases_final = tuple(clases)
+    contadores = ContadoresCorrida()
+    corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+    if corrida is None:
+        raise ValueError(f"No existe la corrida {corrida_id}")
 
     try:
         totales = await fase_conteo(cliente)
@@ -542,9 +568,9 @@ async def ejecutar_ingesta(
         )
         await sesion.commit()
 
-        await fase_cables(cliente, sesion, corrida, contadores, psize=psize_final, max_paginas=max_paginas)
+        await fase_cables(cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas)
         await fase_botellas(
-            cliente, sesion, corrida, contadores, psize=psize_final, max_paginas=max_paginas, clases=clases_final
+            cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, clases=clases_final
         )
         await fase_reconciliacion(sesion, corrida, contadores)
         await fase_servicios(sesion, corrida, contadores)
@@ -604,6 +630,7 @@ __all__ = [
     "CLASES_BOTELLA",
     "CLASES_CONTEO",
     "ContadoresCorrida",
+    "continuar_corrida",
     "ejecutar_ingesta",
     "fase_botellas",
     "fase_cables",
