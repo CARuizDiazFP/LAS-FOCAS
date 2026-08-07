@@ -4776,6 +4776,54 @@ async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int)
     )
 
 
+@app.get("/api/infra/cromo/cables")
+async def cromo_inventario_cables_web(
+    request: Request,
+    q: Optional[str] = None,
+    jerarquia: Optional[str] = None,
+    propietario: Optional[str] = None,
+    vigente: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Inventario navegable de cables ya ingeridos (Etapa 8b) — búsqueda + paginación. Sólo lectura,
+    cualquier usuario autenticado (es consulta, no administración, mismo criterio que el verificador)."""
+    from core.services.cromo.inventario import buscar_cables
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_cables(
+            sesion, q=q, jerarquia=jerarquia, propietario=propietario, vigente=vigente, limit=limit, offset=offset
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "cables": [
+                {
+                    "n_id": c.n_id,
+                    "nombre": c.nombre,
+                    "capacidad": c.capacidad,
+                    "capacidad_pelos": c.capacidad_pelos,
+                    "jerarquia": c.jerarquia,
+                    "propietario": c.propietario,
+                    "extremo_a_nombre": c.extremo_a_nombre,
+                    "extremo_b_nombre": c.extremo_b_nombre,
+                    "vigente": c.vigente,
+                    "cantidad_servicios": c.cantidad_servicios,
+                }
+                for c in resultado.cables
+            ],
+        }
+    )
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,

@@ -123,6 +123,7 @@ type SidebarViewId =
   | 'comparadorVlans'
   | 'comparadorFo'
   | 'verificadorCromo'
+  | 'inventarioCablesCromo'
   | 'none';
 
 type ExpandableModuleId = 'reportes' | 'dwdmCiena' | 'toolKit';
@@ -204,6 +205,7 @@ const sidebarModules: SidebarModule[] = [
       { id: 'comparadorVlans', label: 'Comparador de VLANs', to: { path: '/toolkit/vlan' } },
       { id: 'comparadorFo', label: 'Comparador FO', to: { path: '/fo' } },
       { id: 'verificadorCromo', label: 'Verificador Cromo', to: { path: '/infra/cromo/verificador' } },
+      { id: 'inventarioCablesCromo', label: 'Inventario Cables Cromo', to: { path: '/infra/cromo/cables' } },
     ],
   },
 ];
@@ -216,6 +218,7 @@ const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
   comparadorVlans: 'toolKit',
   comparadorFo: 'toolKit',
   verificadorCromo: 'toolKit',
+  inventarioCablesCromo: 'toolKit',
 };
 
 function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): SidebarViewId {
@@ -255,6 +258,9 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
   }
   if (currentRoute.path === '/infra/cromo/verificador') {
     return 'verificadorCromo';
+  }
+  if (currentRoute.path === '/infra/cromo/cables') {
+    return 'inventarioCablesCromo';
   }
 
   return 'none';

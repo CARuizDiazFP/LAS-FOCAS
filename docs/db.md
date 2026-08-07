@@ -422,6 +422,12 @@ no haber bajado todavía.
 
 Índices: `nombre`, compuesto `(extremo_a_n_id, extremo_b_n_id)`.
 
+**Lectura:** `core/services/cromo/inventario.py` (Etapa 8b) — búsqueda paginada (`ILIKE` parcial sobre
+`nombre`/`jerarquia`/`propietario`, exacto sobre `vigente`) con conteo de servicios matcheados por
+cable vía `cromo_pelos`/`cromo_servicio_match`. Nota real: los parámetros de filtro necesitan
+`CAST(:param AS tipo)` explícito en el SQL — sin eso, `asyncpg` no puede preparar el statement cuando
+los 4 filtros llegan en `NULL` a la vez (sin ningún filtro puesto) y tira `AmbiguousParameterError`.
+
 ### Tablas `cromo_tubos` y `cromo_pelos`
 
 El pelo pertenece al tubo, nunca directamente a la botella. Ambas columnas de parentesco van sin FK

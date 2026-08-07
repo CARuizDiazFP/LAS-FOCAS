@@ -227,3 +227,45 @@ export async function verificarServiciosPorTubo(tuboNId: number): Promise<CromoV
 export async function verificarServiciosPorBotella(botellaNId: number): Promise<CromoVerificacionBotella> {
   return requestJson(`/api/infra/cromo/botellas/${botellaNId}/servicios`);
 }
+
+// ── Inventario de cables (Etapa 8b) ──────────────────────────────────────────
+// Distinto del verificador: "listame/buscame cables" (con paginación), no "qué servicios pasan por
+// este cable puntual". Mismo criterio de auth que el verificador — cualquier usuario autenticado.
+
+export interface CromoCableInventario {
+  n_id: number;
+  nombre: string | null;
+  capacidad: string | null;
+  capacidad_pelos: number | null;
+  jerarquia: string | null;
+  propietario: string | null;
+  extremo_a_nombre: string | null;
+  extremo_b_nombre: string | null;
+  vigente: boolean;
+  cantidad_servicios: number;
+}
+
+export interface CromoInventarioCablesResultado {
+  total: number;
+  limit: number;
+  offset: number;
+  cables: CromoCableInventario[];
+}
+
+export async function buscarInventarioCables(opciones: {
+  q?: string;
+  jerarquia?: string;
+  propietario?: string;
+  vigente?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<CromoInventarioCablesResultado> {
+  const params = new URLSearchParams();
+  if (opciones.q) params.set('q', opciones.q);
+  if (opciones.jerarquia) params.set('jerarquia', opciones.jerarquia);
+  if (opciones.propietario) params.set('propietario', opciones.propietario);
+  if (opciones.vigente !== undefined) params.set('vigente', String(opciones.vigente));
+  params.set('limit', String(opciones.limit ?? 50));
+  params.set('offset', String(opciones.offset ?? 0));
+  return requestJson(`/api/infra/cromo/cables?${params.toString()}`);
+}

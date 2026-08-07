@@ -14,6 +14,7 @@ const ServiciosView = () => import('../views/ServiciosView.vue');
 const ServicioDetalleView = () => import('../views/ServicioDetalleView.vue');
 const CamaraDetailView = () => import('../views/CamaraDetailView.vue');
 const VerificadorCromoView = () => import('../views/VerificadorCromoView.vue');
+const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const RepetitividadTab = () => import('../views/tabs/RepetitividadTab.vue');
 const VlanTab = () => import('../views/tabs/VlanTab.vue');
 const FoTab = () => import('../views/tabs/FoTab.vue');
@@ -146,6 +147,7 @@ const routes: RouteRecordRaw[] = [
       },
       { path: 'infra/Camaras/:id(\\d+)', name: 'camara-detail', component: CamaraDetailView },
       { path: 'infra/cromo/verificador', name: 'infra-cromo-verificador', component: VerificadorCromoView },
+      { path: 'infra/cromo/cables', name: 'infra-cromo-cables', component: InventarioCablesCromoView },
     ],
   },
   {

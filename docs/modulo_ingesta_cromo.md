@@ -4,10 +4,9 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** completo, con una Etapa 7 de hardening (worker dedicado + scheduler). Las 7 etapas (acceso
-y parseo, persistencia, servicio de ingesta, API + progreso en vivo, interfaz de ingesta, verificador
-de servicios, worker dedicado con scheduler configurable) están implementadas, probadas y validadas
-contra el Cromo real de Metrotel y `lasfocasdev-postgres`.
+**Estado:** completo, con Etapas 7 y 8 de hardening/explotación de datos (worker dedicado + scheduler;
+tratamiento de datos ya ingeridos + inventario navegable). Las 8 etapas están implementadas, probadas
+y validadas contra el Cromo real de Metrotel y `lasfocasdev-postgres`.
 
 ## Qué resuelve
 
@@ -65,6 +64,14 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    frontend (`k.value.trim is not a function` al poner un valor en "Máximo de páginas") y una
    normalización visual de las 6 vistas admin al mismo patrón de cabecera que ya usaba `/servicios`.
    Detalle en `docs/PR/2026-08-07.md`.
+8. **Etapa 8 — Tratamiento de datos e inventario** (completa): con las primeras corridas reales
+   completas ya hechas, aparecieron y se corrigieron tres problemas reales de calidad de dato —
+   fusiones que nunca llegaban (necesitan su propio barrido directo, no vienen embebidas como se
+   documentaba), geolocalización nunca calculada (el dato real viaja proyectado, no en la clave
+   documentada — reproyección + backfill de las filas ya ingeridas), y una clasificación de pelos
+   invertida (`LIBRE`↔`CLIENTE`). Sobre esos datos ya corregidos, un **inventario de cables**
+   navegable (búsqueda + paginación) en `/infra/cromo/cables`, complementario al verificador puntual
+   de la Etapa 6. Detalle en `docs/PR/2026-08-07.md`.
 
 Cada etapa se habilita una vez cerrada la anterior; las decisiones de una etapa pueden ajustar el diseño
 de las siguientes si el sondeo contra la API real revela algo distinto de lo asumido.
@@ -86,18 +93,25 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   - `verificador.py`: consultas de sólo lectura sobre el inventario ya ingerido — qué servicios
     pasan por un cable, un tubo/buffer o una botella. Tolerante a referencias colgadas: un objeto sin
     fila propia pero referenciado por otro (pelo, cable) no se trata como "no encontrado".
+  - `inventario.py`: búsqueda paginada de cables (Etapa 8b) — distinto del verificador ("listame
+    cables", no "qué servicios pasan por este cable puntual"). `ILIKE` parcial sobre
+    nombre/jerarquía/propietario, exacto sobre vigente, con conteo de servicios matcheados por cable.
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
+- `scripts/cromo_backfill_geo.py`: backfill one-off (Etapa 8b) de `latitud`/`longitud` en
+  `cromo_botellas` ya ingeridas, a partir de `pts_raw` ya almacenado — no pega contra Cromo, idempotente.
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
   `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
-  `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/fixtures/cromo/`:
-  cobertura de parser, cliente, servicio de ingesta, verificador, worker y endpoints web, sin red ni
-  DB real.
+  `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/test_cromo_inventario.py`,
+  `tests/test_web_cromo_inventario.py`, `tests/fixtures/cromo/`: cobertura de parser, cliente,
+  servicio de ingesta, verificador, worker, inventario y endpoints web, sin red ni DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos, inventario y config del scheduler). Documentación de cada tabla en `docs/db.md`.
-- `db/alembic/versions/20260805_01_cromo_ingesta.py`, `20260806_01_cromo_ingesta_config.py`:
-  migraciones que crean esas tablas, siembran el catálogo de clases y la config inicial del scheduler.
+- `db/alembic/versions/20260805_01_cromo_ingesta.py`, `20260806_01_cromo_ingesta_config.py`,
+  `20260807_01_cromo_fusiones_botella_nullable.py`: migraciones que crean esas tablas, siembran el
+  catálogo de clases, la config inicial del scheduler, y relajan `cromo_fusiones.botella_n_id` a
+  nullable (Etapa 8a — las fusiones del barrido directo no traen `parent`).
 - `modules/cromo_worker/`: worker dedicado (Etapa 7) — `worker.py` (FastAPI + `AsyncIOScheduler` en
   el mismo loop de asyncio, sin threads; rutas `/health`, `/reload`, `/run`), `config.py` (constantes),
   `requirements.txt` (sólo `apscheduler`, no está en `common-requirements.txt`). Importa
@@ -110,13 +124,14 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   (`GET`/`POST /api/admin/ingesta/cromo/config`, `.../config/health`, `.../config/trigger`). Sigue el
   patrón vigente del archivo (`_require_admin`, CSRF contra `request.session`), con imports locales de
   `core.services.cromo.*` y `db.*` dentro de cada función, como el resto del archivo. También los
-  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`), con
-  `_require_auth` en vez de `_require_admin` — son consulta, no administración.
+  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`) y del
+  inventario (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`limit`/
+  `offset`), ambos con `_require_auth` en vez de `_require_admin` — son consulta, no administración.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
   del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`) + funciones del scheduler del worker
   (`obtenerConfigSchedulerCromo`, `guardarConfigSchedulerCromo`, `obtenerSaludWorkerCromo`,
-  `dispararSchedulerCromo`).
+  `dispararSchedulerCromo`) + `buscarInventarioCables` (Etapa 8b).
 - `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — card de
   scheduler automático (habilitar/deshabilitar, intervalo, hora de inicio, clases/psize/max_páginas
   del ciclo periódico, estado del worker, "Ejecutar ahora"), dispara corridas manuales y consume el
@@ -130,6 +145,10 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   tipo de objeto (cable/tubo/botella), búsqueda por `n_id`, tabla de servicios encontrados. Vista del
   panel operativo (no de `/admin`): cualquier usuario autenticado puede usarla. Registrada en
   `router/index.ts` y con su entrada de navegación en `AppShell.vue` (grupo "Tool Kit").
+- `web/frontend/src/views/InventarioCablesCromoView.vue` (Etapa 8b): inventario navegable en
+  `/infra/cromo/cables` — buscador (nombre/jerarquía/propietario/vigente) + paginación. Vista del
+  panel operativo, mismo criterio de auth que el verificador. Registrada junto al verificador en
+  `router/index.ts` y `AppShell.vue` (mismo grupo "Tool Kit").
 
 ## Principios de diseño
 
