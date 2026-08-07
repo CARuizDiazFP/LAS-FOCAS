@@ -5,8 +5,7 @@
 -->
 <template>
   <section class="admin-ingesta">
-    <h1>Ingesta</h1>
-    <p class="section-subtitle">Seleccioná el módulo de ingesta.</p>
+    <AdminPageHeader kicker="Panel admin" title="Ingesta" subtitle="Seleccioná el módulo de ingesta." />
 
     <div class="service-grid">
       <RouterLink to="/admin/ingesta/servicios" class="service-card">
@@ -32,6 +31,8 @@
 
 <script setup lang="ts">
 import { RouterLink } from 'vue-router';
+
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 </script>
 
 <style scoped>

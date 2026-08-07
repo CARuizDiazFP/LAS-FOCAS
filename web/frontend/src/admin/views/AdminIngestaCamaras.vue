@@ -5,8 +5,11 @@
 -->
 <template>
   <section class="admin-ingesta">
-    <h1>Ingesta de Cámaras</h1>
-    <p class="section-subtitle">Carga masiva de cámaras desde Excel y aplicación de baneo administrativo.</p>
+    <AdminPageHeader
+      kicker="Ingesta · Cámaras"
+      title="Ingesta de Cámaras"
+      subtitle="Carga masiva de cámaras desde Excel y aplicación de baneo administrativo."
+    />
 
     <article class="card ingesta-card">
       <header class="ingesta-card__header">
@@ -109,6 +112,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 import { ingestCamarasFile, type IngestCamarasResponse } from '../../api/camaras';
 
 const fileInput = ref<HTMLInputElement | null>(null);

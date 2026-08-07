@@ -4,8 +4,7 @@
   Descripción: Vista /admin/servicios — grid de tarjetas de servicios configurables
 -->
 <template>
-  <h1>Servicios</h1>
-  <p class="section-subtitle">Configuración y estado de los servicios del sistema.</p>
+  <AdminPageHeader kicker="Panel admin" title="Servicios" subtitle="Configuración y estado de los servicios del sistema." />
 
   <div class="service-grid">
     <ServiceCard
@@ -25,5 +24,6 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ServiceCard from '../components/ServiceCard.vue';
 </script>

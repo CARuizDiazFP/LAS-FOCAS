@@ -4,8 +4,7 @@
   Descripción: Vista /admin/usuarios — crear usuario y cambiar contraseña
 -->
 <template>
-  <h1>Usuarios</h1>
-  <p class="section-subtitle">Gestión de cuentas del sistema.</p>
+  <AdminPageHeader kicker="Panel admin" title="Usuarios" subtitle="Gestión de cuentas del sistema." />
 
   <div class="two-col">
 
@@ -62,6 +61,8 @@
 
 <script setup lang="ts">
 import { reactive } from 'vue';
+
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 import { createUser, changePassword } from '../api/admin';
 
 const crear = reactive({

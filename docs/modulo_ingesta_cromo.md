@@ -4,8 +4,9 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** completo. Las 6 etapas (acceso y parseo, persistencia, servicio de ingesta, API + progreso
-en vivo, interfaz de ingesta, verificador de servicios) están implementadas, probadas y validadas
+**Estado:** completo, con una Etapa 7 de hardening (worker dedicado + scheduler). Las 7 etapas (acceso
+y parseo, persistencia, servicio de ingesta, API + progreso en vivo, interfaz de ingesta, verificador
+de servicios, worker dedicado con scheduler configurable) están implementadas, probadas y validadas
 contra el Cromo real de Metrotel y `lasfocasdev-postgres`.
 
 ## Qué resuelve
@@ -52,6 +53,18 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    usuario autenticado (no requiere rol admin: es consulta, no administración). Validada contra datos
    reales de la Etapa 3 — encontró y corrigió un caso real de referencia colgada (detalle en
    `docs/PR/2026-08-06.md`).
+7. **Etapa 7 — Worker dedicado y scheduler** (completa): la ejecución de la ingesta se movió a un
+   contenedor propio (`cromo_worker`), separado del proceso del panel — pedido explícito para poder
+   programar corridas periódicas sin competir con el tráfico web. El worker expone un pequeño control
+   HTTP (FastAPI + `AsyncIOScheduler`, todo en el mismo loop de asyncio, sin threads) con `/health`,
+   `/reload` y `/run`; `web/app/main.py` sigue siendo el único punto de entrada del panel, pero ahora
+   delega la ejecución real vía HTTP en vez de un `asyncio.create_task` local. El intervalo, hora de
+   inicio, `psize`/`max_paginas`/clases del scheduler se configuran desde una tabla propia
+   (`app.cromo_ingesta_config`) editable desde el panel — arranca **deshabilitado por defecto**. De
+   paso, dos correcciones reales encontradas al usar la vista contra datos ya ingeridos: un bug de
+   frontend (`k.value.trim is not a function` al poner un valor en "Máximo de páginas") y una
+   normalización visual de las 6 vistas admin al mismo patrón de cabecera que ya usaba `/servicios`.
+   Detalle en `docs/PR/2026-08-07.md`.
 
 Cada etapa se habilita una vez cerrada la anterior; las decisiones de una etapa pueden ajustar el diseño
 de las siguientes si el sondeo contra la API real revela algo distinto de lo asumido.
@@ -78,25 +91,41 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
   `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
-  `tests/test_web_cromo_verificador.py`, `tests/fixtures/cromo/`: cobertura de parser, cliente,
-  servicio de ingesta, verificador y endpoints web, sin red ni DB real.
+  `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/fixtures/cromo/`:
+  cobertura de parser, cliente, servicio de ingesta, verificador, worker y endpoints web, sin red ni
+  DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
-  corridas/eventos e inventario). Documentación de cada tabla en `docs/db.md`.
-- `db/alembic/versions/20260805_01_cromo_ingesta.py`: migración que crea esas tablas y siembra el
-  catálogo de clases conocidas.
-- `web/app/main.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) — disparo de corrida,
-  stream SSE de progreso, histórico, detalle y cancelación. Sigue el patrón vigente del archivo
-  (`_require_admin`, CSRF contra `request.session`), con imports locales de `core.services.cromo.*` y
-  `db.*` dentro de cada función, como el resto del archivo. También los endpoints del verificador
-  (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`), con `_require_auth` en vez de
-  `_require_admin` — son consulta, no administración.
+  corridas/eventos, inventario y config del scheduler). Documentación de cada tabla en `docs/db.md`.
+- `db/alembic/versions/20260805_01_cromo_ingesta.py`, `20260806_01_cromo_ingesta_config.py`:
+  migraciones que crean esas tablas, siembran el catálogo de clases y la config inicial del scheduler.
+- `modules/cromo_worker/`: worker dedicado (Etapa 7) — `worker.py` (FastAPI + `AsyncIOScheduler` en
+  el mismo loop de asyncio, sin threads; rutas `/health`, `/reload`, `/run`), `config.py` (constantes),
+  `requirements.txt` (sólo `apscheduler`, no está en `common-requirements.txt`). Importa
+  `core.services.cromo.*` — no reimplementa nada del dominio.
+- `deploy/docker/cromo_worker.Dockerfile`, bloque `cromo_worker` en `deploy/docker-compose.dev.yml`:
+  imagen y servicio del worker (sólo dev por ahora). Hereda `focas-base:latest`, usuario no-root.
+- `web/app/main.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) — disparo de corrida
+  (delega la ejecución al worker por HTTP desde la Etapa 7, ya no `asyncio.create_task` local), stream
+  SSE de progreso, histórico, detalle, cancelación, y config del scheduler
+  (`GET`/`POST /api/admin/ingesta/cromo/config`, `.../config/health`, `.../config/trigger`). Sigue el
+  patrón vigente del archivo (`_require_admin`, CSRF contra `request.session`), con imports locales de
+  `core.services.cromo.*` y `db.*` dentro de cada función, como el resto del archivo. También los
+  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`), con
+  `_require_auth` en vez de `_require_admin` — son consulta, no administración.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
-  del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`).
-- `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — dispara la
-  corrida, consume el SSE con `EventSource` nativo (replay por `Last-Event-ID` automático del browser,
-  sin código propio), histórico y detalle. Registrada en `web/frontend/src/router/index.ts` y con su
-  tarjeta en el hub `AdminIngesta.vue`, siguiendo la skill `frontend-spa-architecture`.
+  del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`) + funciones del scheduler del worker
+  (`obtenerConfigSchedulerCromo`, `guardarConfigSchedulerCromo`, `obtenerSaludWorkerCromo`,
+  `dispararSchedulerCromo`).
+- `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — card de
+  scheduler automático (habilitar/deshabilitar, intervalo, hora de inicio, clases/psize/max_páginas
+  del ciclo periódico, estado del worker, "Ejecutar ahora"), dispara corridas manuales y consume el
+  SSE con `EventSource` nativo (replay por `Last-Event-ID` automático del browser, sin código propio),
+  histórico y detalle. Registrada en `web/frontend/src/router/index.ts` y con su tarjeta en el hub
+  `AdminIngesta.vue`, siguiendo la skill `frontend-spa-architecture`.
+- `web/frontend/src/admin/components/AdminPageHeader.vue`: cabecera estándar (kicker + título +
+  subtítulo) de las vistas admin, calcada del patrón ya usado en `/servicios`. Aplicada a las 6 vistas
+  admin existentes (Etapa 7).
 - `web/frontend/src/views/VerificadorCromoView.vue`: vista en `/infra/cromo/verificador` — selector de
   tipo de objeto (cable/tubo/botella), búsqueda por `n_id`, tabla de servicios encontrados. Vista del
   panel operativo (no de `/admin`): cualquier usuario autenticado puede usarla. Registrada en

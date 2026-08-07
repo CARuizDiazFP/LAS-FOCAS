@@ -4,10 +4,11 @@
   Descripción: Vista /admin/Servicios/Baneos — config del worker de notificaciones Slack y estado del worker
 -->
 <template>
-  <h1>Servicios — Notificaciones de Baneos</h1>
-  <p class="section-subtitle">
-    Configuración del worker que envía reportes periódicos de cámaras baneadas a Slack.
-  </p>
+  <AdminPageHeader
+    kicker="Servicios · Automatización"
+    title="Notificaciones de Baneos"
+    subtitle="Configuración del worker que envía reportes periódicos de cámaras baneadas a Slack."
+  />
 
   <div v-if="cargando" style="color:var(--muted);padding:24px 0">Cargando configuración…</div>
 
@@ -405,6 +406,8 @@
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue';
+
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, darDeAltaComoCanon, eliminarCamaraPendiente, type CamaraPendiente } from '../api/admin';
 
 // ─── Estado del formulario ────────────────────────────────────────────────

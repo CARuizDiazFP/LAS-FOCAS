@@ -19,6 +19,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    false,
     text,
     true,
 )
@@ -257,3 +258,23 @@ class CromoServicioMatch(Base):
 
     def __repr__(self) -> str:
         return f"<CromoServicioMatch pelo_n_id={self.pelo_n_id} servicio_numero='{self.servicio_numero}'>"
+
+
+class CromoIngestaConfig(Base):
+    """Configuración persistente del scheduler de ingesta automática (Etapa 7). Fila única (id=1)."""
+
+    __tablename__ = "cromo_ingesta_config"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    habilitado = Column(Boolean, nullable=False, server_default=false())  # arranca deshabilitado
+    intervalo_horas = Column(Integer, nullable=False, server_default=text("24"))
+    hora_inicio = Column(SmallInteger, nullable=True)  # 0-23, ancla el ciclo; NULL = sin anclar
+    psize = Column(Integer, nullable=False, server_default=text("5"))
+    max_paginas = Column(Integer, nullable=True)  # NULL = corrida real completa, sin límite
+    clases = Column(JSONB(astext_type=Text()), nullable=False)  # lista de int, ej. [68,121,122,123,125]
+    ultima_ejecucion = Column(DateTime(timezone=True), nullable=True)
+    ultimo_error = Column(Text, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<CromoIngestaConfig habilitado={self.habilitado} intervalo_horas={self.intervalo_horas}>"

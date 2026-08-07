@@ -17,7 +17,7 @@ ENV_DEV_FILE="$ROOT_DIR/.env.dev"
 DEV_SECRETS_DIR="$ROOT_DIR/.secrets"
 COMPOSE_DEV=(docker compose -f "$DEV_COMPOSE_FILE" --env-file "$ENV_DEV_FILE")
 
-SERVICES=(postgres nlp_intent api web office slack_baneo_worker)
+SERVICES=(postgres nlp_intent api web office slack_baneo_worker cromo_worker)
 
 CLONE_DB=false
 NO_BUILD=false

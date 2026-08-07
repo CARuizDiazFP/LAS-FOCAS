@@ -1,0 +1,5 @@
+# Nombre de archivo: requirements.txt
+# Ubicación de archivo: modules/cromo_worker/requirements.txt
+# Descripción: Dependencias específicas del worker de ingesta Cromo (fastapi/uvicorn/httpx/asyncpg ya están en focas-base)
+
+apscheduler>=3.10,<4

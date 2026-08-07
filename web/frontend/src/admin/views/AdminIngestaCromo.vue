@@ -5,11 +5,112 @@
 -->
 <template>
   <section class="admin-ingesta">
-    <h1>Ingesta de Cromo</h1>
-    <p class="section-subtitle">
-      Trae el inventario de fibra óptica (botellas, cables, tubos, pelos, fusiones) desde Cromo Red.
-      Sólo lectura sobre Cromo — nunca escribe ahí.
-    </p>
+    <AdminPageHeader
+      kicker="Ingesta · Cromo Red"
+      title="Ingesta de Cromo"
+      subtitle="Trae el inventario de fibra óptica (botellas, cables, tubos, pelos, fusiones) desde Cromo Red. Sólo lectura sobre Cromo — nunca escribe ahí."
+    />
+
+    <!-- Card: scheduler automático (Etapa 7) -->
+    <div v-if="scheduler.cargando" style="color:var(--muted);padding:12px 0">Cargando configuración del scheduler…</div>
+    <div v-else class="two-col">
+      <article class="card ingesta-card">
+        <header class="ingesta-card__header">
+          <h2>Scheduler automático</h2>
+        </header>
+
+        <form @submit.prevent="guardarScheduler">
+          <div class="toggle-row">
+            <label class="toggle-wrap">
+              <input type="checkbox" v-model="scheduler.habilitado" />
+              <span class="toggle-slider" />
+            </label>
+            <span>Corrida periódica activa</span>
+          </div>
+          <p class="hint">
+            Corre en el worker dedicado (<code>cromo_worker</code>), separado del panel. Empieza
+            deshabilitado a propósito: activarlo dispara corridas reales contra Cromo sin supervisión.
+          </p>
+
+          <label>Intervalo de ejecución (horas)</label>
+          <input v-model.number="scheduler.intervaloHoras" type="number" min="1" required />
+
+          <label>Hora de inicio del ciclo <span style="color:var(--muted);font-size:0.8rem">(GMT -3)</span></label>
+          <select v-model="scheduler.horaInicio">
+            <option :value="null">Sin horario fijo — comenzar de inmediato</option>
+            <option v-for="h in 24" :key="h - 1" :value="h - 1">{{ String(h - 1).padStart(2, '0') }}:00 hs</option>
+          </select>
+
+          <label>Clases de botella a incluir</label>
+          <div class="clases-grid">
+            <label v-for="c in CROMO_CATALOGO_BOTELLAS" :key="c.clase" class="clase-check">
+              <input
+                type="checkbox"
+                :checked="clasesSchedulerSeleccionadas.has(c.clase)"
+                @change="toggleClaseScheduler(c.clase)"
+              />
+              <span>{{ c.clase }}<template v-if="c.etiqueta"> · {{ c.etiqueta }}</template></span>
+            </label>
+          </div>
+
+          <label>Tamaño de página (psize)</label>
+          <select v-model.number="scheduler.psize">
+            <option v-for="p in CROMO_PSIZE_OPCIONES" :key="p" :value="p">{{ p }}</option>
+          </select>
+
+          <label>Máximo de páginas (opcional)</label>
+          <input v-model="scheduler.maxPaginasInput" type="number" min="1" placeholder="Sin límite (corrida real completa)" />
+          <p class="hint">Sin límite: barrido completo real, del orden de horas. Usar un valor bajo sólo para probar el ciclo.</p>
+
+          <button class="btn primary" type="submit" :disabled="scheduler.guardando || clasesSchedulerSeleccionadas.size === 0">
+            {{ scheduler.guardando ? 'Guardando…' : 'Guardar configuración' }}
+          </button>
+        </form>
+
+        <p v-if="scheduler.msg" :class="['msg', scheduler.error ? 'err' : 'ok', 'visible']">{{ scheduler.msg }}</p>
+      </article>
+
+      <article class="card ingesta-card">
+        <header class="ingesta-card__header">
+          <h2>Estado del worker</h2>
+        </header>
+
+        <div style="text-align:center;padding:20px 0">
+          <span class="status-badge" :class="schedulerHealth.estadoClase">
+            <span class="status-dot" :class="schedulerHealth.estadoClase" />
+            {{ schedulerHealth.etiqueta }}
+          </span>
+        </div>
+
+        <div class="info-row">
+          <span class="info-label">Última ejecución</span>
+          <span class="info-value">{{ formatFecha(schedulerHealth.ultimaEjecucion) }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Último error</span>
+          <span class="info-value">{{ schedulerHealth.ultimoError || 'Ninguno' }}</span>
+        </div>
+
+        <button
+          type="button"
+          class="btn primary"
+          style="width:100%;margin-top:16px"
+          :disabled="schedulerHealth.cargando"
+          @click="verificarSaludScheduler"
+        >
+          {{ schedulerHealth.cargando ? 'Verificando…' : 'Verificar estado' }}
+        </button>
+        <button
+          type="button"
+          class="btn subtle"
+          style="width:100%;margin-top:8px"
+          :disabled="ejecutandoAhora"
+          @click="ejecutarSchedulerAhora"
+        >
+          {{ ejecutandoAhora ? 'Ejecutando…' : 'Ejecutar ahora' }}
+        </button>
+      </article>
+    </div>
 
     <!-- Card: disparar corrida -->
     <article class="card ingesta-card">
@@ -191,14 +292,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 import {
   CROMO_CATALOGO_BOTELLAS,
   CROMO_CLASE_EXCLUIDA,
   CROMO_PSIZE_OPCIONES,
   cancelarIngestaCromo,
+  dispararSchedulerCromo,
+  guardarConfigSchedulerCromo,
   iniciarIngestaCromo,
+  obtenerConfigSchedulerCromo,
   obtenerDetalleCromo,
   obtenerHistoricoCromo,
+  obtenerSaludWorkerCromo,
   streamUrlIngestaCromo,
   type CromoCorrida,
   type CromoDetalle,
@@ -227,6 +333,29 @@ const detalle = ref<CromoDetalle | null>(null);
 const dialogDetalleEl = ref<HTMLDialogElement | null>(null);
 
 let eventSource: EventSource | null = null;
+
+// ── Scheduler automático (Etapa 7) — formulario independiente del de "Nueva corrida" ────────────
+const clasesSchedulerSeleccionadas = ref<Set<number>>(new Set());
+const scheduler = ref({
+  habilitado: false,
+  intervaloHoras: 24,
+  horaInicio: null as number | null,
+  psize: 5 as CromoPsize,
+  maxPaginasInput: '',
+  cargando: true,
+  guardando: false,
+  msg: '',
+  error: false,
+});
+const schedulerHealth = ref({
+  verificado: false,
+  cargando: false,
+  estadoClase: 'unknown' as 'ok' | 'offline' | 'unknown',
+  etiqueta: 'Sin verificar',
+  ultimaEjecucion: null as string | null,
+  ultimoError: null as string | null,
+});
+const ejecutandoAhora = ref(false);
 
 const corridaActiva = computed(() => corridaActual.value?.estado === 'EN_CURSO');
 const porcentajeProgreso = computed(() => {
@@ -323,7 +452,11 @@ async function onDisparar(): Promise<void> {
   erroresRecientes.value = [];
   faseActual.value = '';
   try {
-    const maxPaginas = maxPaginasInput.value.trim() ? Number(maxPaginasInput.value) : null;
+    // Vue castea automáticamente a Number en cada evento `input` sólo por ser type="number" (aun sin
+    // el modificador .number) — en runtime `.value` puede terminar siendo number, no string. String()
+    // lo normaliza antes de `.trim()` sin importar cuál de los dos haya quedado.
+    const maxPaginasTexto = String(maxPaginasInput.value ?? '').trim();
+    const maxPaginas = maxPaginasTexto ? Number(maxPaginasTexto) : null;
     const { corrida_id } = await iniciarIngestaCromo({
       psize: psize.value,
       maxPaginas,
@@ -398,8 +531,97 @@ function cerrarDetalle(): void {
   dialogDetalleEl.value?.close();
 }
 
+function toggleClaseScheduler(clase: number): void {
+  if (clasesSchedulerSeleccionadas.value.has(clase)) {
+    clasesSchedulerSeleccionadas.value.delete(clase);
+  } else {
+    clasesSchedulerSeleccionadas.value.add(clase);
+  }
+  clasesSchedulerSeleccionadas.value = new Set(clasesSchedulerSeleccionadas.value);
+}
+
+async function cargarConfigScheduler(): Promise<void> {
+  scheduler.value.cargando = true;
+  try {
+    const cfg = await obtenerConfigSchedulerCromo();
+    scheduler.value.habilitado = cfg.habilitado;
+    scheduler.value.intervaloHoras = cfg.intervalo_horas;
+    scheduler.value.horaInicio = cfg.hora_inicio;
+    scheduler.value.psize = cfg.psize;
+    scheduler.value.maxPaginasInput = cfg.max_paginas != null ? String(cfg.max_paginas) : '';
+    clasesSchedulerSeleccionadas.value = new Set(cfg.clases);
+    schedulerHealth.value.ultimaEjecucion = cfg.ultima_ejecucion;
+    schedulerHealth.value.ultimoError = cfg.ultimo_error;
+  } catch {
+    // Sin config todavía visible — el form queda con los defaults declarados arriba.
+  } finally {
+    scheduler.value.cargando = false;
+  }
+}
+
+async function guardarScheduler(): Promise<void> {
+  scheduler.value.guardando = true;
+  scheduler.value.msg = '';
+  try {
+    const raw = String(scheduler.value.maxPaginasInput ?? '').trim();
+    await guardarConfigSchedulerCromo({
+      habilitado: scheduler.value.habilitado,
+      intervaloHoras: scheduler.value.intervaloHoras,
+      horaInicio: scheduler.value.horaInicio,
+      psize: scheduler.value.psize,
+      maxPaginas: raw ? Number(raw) : null,
+      clases: Array.from(clasesSchedulerSeleccionadas.value),
+    });
+    scheduler.value.msg = 'Configuración guardada.';
+    scheduler.value.error = false;
+    await verificarSaludScheduler();
+  } catch (err: unknown) {
+    scheduler.value.msg = err instanceof Error ? err.message : 'No se pudo guardar la configuración.';
+    scheduler.value.error = true;
+  } finally {
+    scheduler.value.guardando = false;
+  }
+}
+
+async function verificarSaludScheduler(): Promise<void> {
+  schedulerHealth.value.cargando = true;
+  try {
+    const data = await obtenerSaludWorkerCromo();
+    const activo = data.status === 'ok';
+    schedulerHealth.value.estadoClase = activo ? 'ok' : 'offline';
+    schedulerHealth.value.etiqueta = activo ? 'Activo' : data.status || 'Inactivo';
+    schedulerHealth.value.ultimaEjecucion = data.ultima_ejecucion ?? schedulerHealth.value.ultimaEjecucion;
+    schedulerHealth.value.ultimoError = data.ultimo_error ?? schedulerHealth.value.ultimoError;
+    schedulerHealth.value.verificado = true;
+  } catch {
+    schedulerHealth.value.estadoClase = 'offline';
+    schedulerHealth.value.etiqueta = 'Error de conexión';
+    schedulerHealth.value.verificado = true;
+  } finally {
+    schedulerHealth.value.cargando = false;
+  }
+}
+
+async function ejecutarSchedulerAhora(): Promise<void> {
+  ejecutandoAhora.value = true;
+  scheduler.value.msg = '';
+  try {
+    const res = await dispararSchedulerCromo();
+    scheduler.value.msg = `Corrida iniciada (id ${res.corrida_id}). Mirá "Histórico de corridas" para seguirla.`;
+    scheduler.value.error = false;
+    await cargarHistorico();
+  } catch (err: unknown) {
+    scheduler.value.msg = err instanceof Error ? err.message : 'No se pudo disparar la ejecución manual.';
+    scheduler.value.error = true;
+  } finally {
+    ejecutandoAhora.value = false;
+  }
+}
+
 onMounted(() => {
   cargarHistorico();
+  cargarConfigScheduler();
+  verificarSaludScheduler();
 });
 
 onUnmounted(() => {

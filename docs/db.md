@@ -478,6 +478,29 @@ tipo porque el `search_path` de la conexión no incluye `app` (confirmado real a
 crudo) para responder qué servicios pasan por un cable/tubo/botella. Tolerante a referencias colgadas:
 un objeto sin fila propia pero referenciado por otro (pelo, cable) no se trata como inexistente.
 
+### Tabla `cromo_ingesta_config`
+
+Configuración persistente del scheduler del worker dedicado de ingesta (Etapa 7). Fila única (`id=1`),
+sembrada por la migración — el worker nunca arranca sin config.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | Siempre `1`. |
+| `habilitado` | Boolean | Si `false` (default), el job periódico no corre — sólo el trigger manual. |
+| `intervalo_horas` | Integer | Cada cuántas horas se dispara la corrida automática. Default `24`. |
+| `hora_inicio` | SmallInteger, nullable | 0-23 (GMT-3), ancla el ciclo. `NULL` = arranca de inmediato. |
+| `psize` | Integer | Debe estar en `PSIZE_PERMITIDOS` (`{1,5,10,20,50}`). Default `5`. |
+| `max_paginas` | Integer, nullable | `NULL` = corrida real completa, sin límite. |
+| `clases` | JSONB | Lista de clases de botella a incluir, ej. `[68,121,122,123,125]`. |
+| `ultima_ejecucion` | DateTime(tz), nullable | Actualizado por el worker al terminar cada corrida (manual o programada). |
+| `ultimo_error` | Text, nullable | Mensaje de la última corrida fallida, si la hubo. |
+
+**Migración:** `20260806_01_cromo_ingesta_config.py`.
+
+**Lectura y escritura:** `modules/cromo_worker/worker.py` (el worker relee esta fila en cada
+`/reload` y actualiza `ultima_ejecucion`/`ultimo_error` al final de cada corrida) y
+`web/app/main.py` (`GET`/`POST /api/admin/ingesta/cromo/config`, panel admin).
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -509,6 +532,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260428_01` | `20260428_01_listener_workflow_ids.py` | Columnas `workflow_ids` y `solo_workflows` en `app.config_servicios` |
 | `20260428_02` | `20260428_02_camara_alias_pendiente.py` | Tabla `app.camara_alias` + valor `PENDIENTE_REVISION` en enum `camara_estado` |
 | `20260805_01` | `20260805_01_cromo_ingesta.py` | Tablas `app.cromo_*` (catálogo + auditoría + inventario) y enum `cromo_tipo_asociacion_pelo`, para la Etapa 2 de ingesta desde Cromo Red |
+| `20260806_01` | `20260806_01_cromo_ingesta_config.py` | Tabla `app.cromo_ingesta_config` (fila única, config del scheduler del worker dedicado), para la Etapa 7 de ingesta desde Cromo Red |
 
 ---
 

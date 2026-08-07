@@ -4288,29 +4288,57 @@ class CromoIngestaCancelarRequest(BaseModel):
     csrf_token: str
 
 
-async def _correr_ingesta_cromo_en_background(
-    corrida_id: int,
-    *,
-    psize: int,
-    max_paginas: Optional[int],
-    clases: tuple[int, ...],
-) -> None:
-    """Corre las fases de la corrida ya creada, en su propia sesión/cliente — vive más que el request."""
-    from core.services.cromo.client import CromoClient
-    from core.services.cromo.config import get_cromo_config
-    from core.services.cromo.ingesta import continuar_corrida
+class CromoSchedulerConfigRequest(BaseModel):
+    """Payload para configurar el scheduler del worker dedicado (Etapa 7)."""
+
+    csrf_token: str
+    habilitado: bool
+    intervalo_horas: int
+    hora_inicio: Optional[int] = None
+    psize: int
+    max_paginas: Optional[int] = None
+    clases: List[int]
+
+
+# Etapa 7: la ingesta corre en su propio worker Docker (modules/cromo_worker/), no en este proceso.
+_CROMO_WORKER_BASE_URL = os.getenv("CROMO_WORKER_BASE_URL", "http://cromo_worker:8096")
+_CROMO_WORKER_RUN_URL = f"{_CROMO_WORKER_BASE_URL}/run"
+_CROMO_WORKER_RELOAD_URL = f"{_CROMO_WORKER_BASE_URL}/reload"
+_CROMO_WORKER_HEALTH_URL = f"{_CROMO_WORKER_BASE_URL}/health"
+
+
+async def _marcar_corrida_fallida(corrida_id: int, motivo: str) -> None:
+    """La corrida ya se creó como EN_CURSO — si no se pudo delegar al worker, no debe quedar huérfana."""
+    from datetime import datetime, timezone
+
+    from db.models.cromo import CromoIngestaCorrida, CromoIngestaEvento
     from db.session import AsyncSessionLocal
 
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return
+        corrida.estado = "FALLIDA"
+        corrida.finalizada_at = datetime.now(timezone.utc)
+        sesion.add(CromoIngestaEvento(corrida_id=corrida_id, accion="ERROR", detalle=motivo))
+        await sesion.commit()
+
+
+async def _reload_cromo_worker_config() -> None:
+    """Solicita al worker de Cromo que relea su configuración en caliente. Best-effort: si el worker
+    está caído, el próximo `/health`/corrida manual lo va a evidenciar; no bloquea el guardado."""
     try:
-        async with CromoClient(config=get_cromo_config()) as cliente, AsyncSessionLocal() as sesion:
-            await continuar_corrida(cliente, sesion, corrida_id, psize=psize, max_paginas=max_paginas, clases=clases)
-    except Exception as exc:  # noqa: BLE001 - tarea de background: no hay nadie a quien propagar
-        logger.exception("action=cromo_ingesta_background_error corrida_id=%s error=%s", corrida_id, exc)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(_CROMO_WORKER_RELOAD_URL)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning("No se pudo recargar la config del worker de Cromo: %s", exc)
 
 
 @app.post("/api/admin/ingesta/cromo")
 async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarRequest) -> JSONResponse:
-    """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Corre en background."""
+    """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Crea la corrida acá (para devolver
+    el `corrida_id` de inmediato) y delega su ejecución al worker dedicado (Etapa 7)."""
     from core.services.cromo.config import CromoConfigError, PSIZE_PERMITIDOS, get_cromo_config
     from core.services.cromo.ingesta import CLASES_BOTELLA, iniciar_corrida
     from db.session import AsyncSessionLocal
@@ -4338,14 +4366,120 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
         )
         corrida_id = corrida.id
 
-    asyncio.create_task(
-        _correr_ingesta_cromo_en_background(
-            corrida_id, psize=psize_final, max_paginas=body.max_paginas, clases=clases_final
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(_CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username})
+            response.raise_for_status()
+    except Exception as exc:
+        motivo = f"No se pudo delegar la corrida al worker de ingesta: {exc}"
+        logger.error("action=cromo_ingesta_iniciar_error corrida_id=%s error=%s", corrida_id, exc)
+        await _marcar_corrida_fallida(corrida_id, motivo)
+        return JSONResponse(
+            {"error": "El worker de ingesta no está disponible. Intentá nuevamente en unos segundos."},
+            status_code=503,
         )
-    )
 
     logger.info("action=cromo_ingesta_iniciar user=%s corrida_id=%s psize=%s", username, corrida_id, psize_final)
     return JSONResponse({"corrida_id": corrida_id}, status_code=202)
+
+
+@app.get("/api/admin/ingesta/cromo/config")
+async def cromo_scheduler_config_obtener_web(request: Request) -> JSONResponse:
+    """Devuelve la configuración persistida del scheduler del worker de ingesta Cromo."""
+    from db.models.cromo import CromoIngestaConfig
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        config = await sesion.get(CromoIngestaConfig, 1)
+    if config is None:
+        return JSONResponse({"error": "Configuración no encontrada"}, status_code=404)
+
+    return JSONResponse(
+        {
+            "habilitado": config.habilitado,
+            "intervalo_horas": config.intervalo_horas,
+            "hora_inicio": config.hora_inicio,
+            "psize": config.psize,
+            "max_paginas": config.max_paginas,
+            "clases": config.clases,
+            "ultima_ejecucion": config.ultima_ejecucion.isoformat() if config.ultima_ejecucion else None,
+            "ultimo_error": config.ultimo_error,
+        }
+    )
+
+
+@app.post("/api/admin/ingesta/cromo/config")
+async def cromo_scheduler_config_guardar_web(request: Request, body: CromoSchedulerConfigRequest) -> JSONResponse:
+    """Actualiza la configuración del scheduler y le pide al worker que la relea (best-effort)."""
+    from core.services.cromo.config import PSIZE_PERMITIDOS
+    from db.models.cromo import CromoIngestaConfig
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if body.psize not in PSIZE_PERMITIDOS:
+        return JSONResponse(
+            {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
+        )
+    if body.intervalo_horas < 1:
+        return JSONResponse({"error": "El intervalo debe ser al menos 1 hora"}, status_code=400)
+    if body.hora_inicio is not None and not (0 <= body.hora_inicio <= 23):
+        return JSONResponse({"error": "hora_inicio debe estar entre 0 y 23"}, status_code=400)
+    if not body.clases:
+        return JSONResponse({"error": "Elegí al menos una clase de botella"}, status_code=400)
+
+    async with AsyncSessionLocal() as sesion:
+        config = await sesion.get(CromoIngestaConfig, 1)
+        if config is None:
+            return JSONResponse({"error": "Configuración no encontrada"}, status_code=404)
+        config.habilitado = body.habilitado
+        config.intervalo_horas = body.intervalo_horas
+        config.hora_inicio = body.hora_inicio
+        config.psize = body.psize
+        config.max_paginas = body.max_paginas
+        config.clases = body.clases
+        await sesion.commit()
+
+    await _reload_cromo_worker_config()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/admin/ingesta/cromo/config/health")
+async def cromo_scheduler_health_web(request: Request) -> JSONResponse:
+    """Proxy al health check del worker dedicado de ingesta Cromo."""
+    _require_admin(request)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(_CROMO_WORKER_HEALTH_URL)
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"status": "offline", "service": "cromo_ingesta", "error": "Worker no accesible"}, status_code=503
+        )
+    except Exception as exc:
+        logger.error("Error consultando health del worker de Cromo: %s", exc)
+        return JSONResponse({"status": "error", "service": "cromo_ingesta"}, status_code=500)
+
+
+@app.post("/api/admin/ingesta/cromo/config/trigger")
+async def cromo_scheduler_trigger_web(request: Request, body: CromoIngestaCancelarRequest) -> JSONResponse:
+    """Dispara una ejecución manual inmediata usando la configuración guardada ("Ejecutar ahora")."""
+    username = _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(_CROMO_WORKER_RUN_URL, json={"usuario": username})
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.ConnectError:
+        return JSONResponse({"error": "Worker no accesible. Verificá que esté corriendo."}, status_code=503)
+    except Exception as exc:
+        logger.error("Error disparando ejecución manual del worker de Cromo: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 _CROMO_ACCION_A_EVENTO_SSE = {

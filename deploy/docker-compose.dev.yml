@@ -218,6 +218,38 @@ services:
     networks:
       - lasfocas_dev_net
 
+  cromo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/cromo_worker.Dockerfile
+    container_name: lasfocasdev-cromo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - cromo_password_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8096"
+    volumes:
+      - ../Logs/dev:/app/Logs  # Mismo subdir dev que el servicio web
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_dev_net
+
   # (Opcional) pgAdmin dev. Levantar con: docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d
   pgadmin:
     image: dpage/pgadmin4:8
