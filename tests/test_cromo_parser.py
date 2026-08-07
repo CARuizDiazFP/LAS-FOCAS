@@ -11,6 +11,7 @@ import pytest
 
 from core.services.cromo.parser import (
     ClaseExcluidaError,
+    _resolver_geo,
     atributo,
     extraer_tubos_y_pelos,
     parse_arbol_botella,
@@ -20,6 +21,7 @@ from core.services.cromo.parser import (
     parse_pagina,
     parse_pelo,
     resolver_lat_lon,
+    resolver_lat_lon_gauss_kruger,
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
@@ -61,6 +63,47 @@ def test_resolver_lat_lon_orden_correcto():
 def test_resolver_lat_lon_ausente():
     assert resolver_lat_lon(None) == (None, None)
     assert resolver_lat_lon([]) == (None, None)
+
+
+# ── pts (Gauss-Krüger Faja 5) → latitud/longitud (Etapa 8) ──────────────────
+# `ll` nunca aparece en un barrido real (0/11.100 botellas verificadas) — el dato geo real viaja en
+# `pts`, proyectado (POSGAR94 Faja 5, EPSG:22185), no en grados. Valores reales de dos direcciones
+# conocidas verificadas contra Cromo real: Av. Santa Fe 2600 CABA y Saenz Valiente 2420 San Isidro.
+
+
+def test_resolver_lat_lon_gauss_kruger_direccion_real_caba():
+    latitud, longitud = resolver_lat_lon_gauss_kruger([5646459.588986, 6171230.830909])
+    assert latitud == pytest.approx(-34.5942, abs=1e-3)
+    assert longitud == pytest.approx(-58.4035, abs=1e-3)
+
+
+def test_resolver_lat_lon_gauss_kruger_direccion_real_san_isidro():
+    latitud, longitud = resolver_lat_lon_gauss_kruger([5635059.104375, 6182088.510236])
+    assert latitud == pytest.approx(-34.4979, abs=1e-3)
+    assert longitud == pytest.approx(-58.5295, abs=1e-3)
+
+
+def test_resolver_lat_lon_gauss_kruger_ausente():
+    assert resolver_lat_lon_gauss_kruger(None) == (None, None)
+    assert resolver_lat_lon_gauss_kruger([]) == (None, None)
+
+
+def test_resolver_geo_prioriza_ll_si_esta_presente():
+    # Defensivo: si algún día un objeto sí trae "ll", no debe ignorarse a favor de "pts".
+    obj = {"ll": [-58.4173, -34.6037], "pts": [5646459.588986, 6171230.830909]}
+    latitud, longitud = _resolver_geo(obj)
+    assert (latitud, longitud) == (-34.6037, -58.4173)
+
+
+def test_resolver_geo_usa_pts_si_no_hay_ll():
+    obj = {"pts": [5646459.588986, 6171230.830909]}
+    latitud, longitud = _resolver_geo(obj)
+    assert latitud == pytest.approx(-34.5942, abs=1e-3)
+    assert longitud == pytest.approx(-58.4035, abs=1e-3)
+
+
+def test_resolver_geo_sin_ll_ni_pts():
+    assert _resolver_geo({}) == (None, None)
 
 
 # ── n_id como PK, id como version_id ────────────────────────────────────────
@@ -139,6 +182,9 @@ def test_pelo_con_at61_extrae_numero_de_servicio():
     pelo = parse_pelo(obj)
     assert pelo.servicio_numero == "114830"
     assert pelo.servicio_raw == "FO 114830 - EDGE - CIRION - Pelo 1 de 2"
+    # Hallazgo real (Etapa 8): un servicio_numero extraído es justamente lo opuesto de "libre" — este
+    # assert faltaba y dejó pasar un swap semántico (quedaba "LIBRE" en vez de "CLIENTE").
+    assert pelo.tipo_asociacion == "CLIENTE"
 
 
 # ── botella.inner[] → sólo fusiones ──────────────────────────────────────────

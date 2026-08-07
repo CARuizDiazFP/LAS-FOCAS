@@ -9,9 +9,16 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Union
 
+from pyproj import Transformer
+
 from core.services.cromo.modelos import Botella, Cable, Fusion, Pelo, Tubo
 
 logger = logging.getLogger(__name__)
+
+# Gauss-Krüger Faja 5, datum POSGAR94 — confirmado real (Etapa 8) contra dos direcciones conocidas
+# (Av. Santa Fe 2600 CABA, Saenz Valiente 2420 San Isidro). Instancia a nivel de módulo: crearla es
+# el costo caro de pyproj (carga la grilla de PROJ), reusarla es gratis.
+_TRANSFORMER_GAUSS_KRUGER_FAJA5 = Transformer.from_crs("EPSG:22185", "EPSG:4326", always_xy=True)
 
 # Clase 120: parcelas catastrales, no botellas. Ver docs/ingesta_cromo.md capítulo 2, fila 1.
 _CLASES_EXCLUIDAS: dict[int, str] = {
@@ -99,8 +106,29 @@ def resolver_lat_lon(ll: Optional[Iterable[float]]) -> tuple[Optional[float], Op
     return latitud, longitud
 
 
+def resolver_lat_lon_gauss_kruger(pts: Optional[Iterable[float]]) -> tuple[Optional[float], Optional[float]]:
+    """`pts` viene en Gauss-Krüger Faja 5 / POSGAR94 (`EPSG:22185`) como [este, norte]. Reproyecta a
+    WGS84 y devuelve (latitud, longitud) — es la clave que realmente trae el punto geográfico en la
+    práctica; `ll` (`resolver_lat_lon`, documentada originalmente) nunca apareció en un barrido
+    paginado real completo (Etapa 8, 11.100 botellas verificadas, 0 con clave `ll`)."""
+    if pts is None:
+        return None, None
+    valores = list(pts)
+    if len(valores) < 2:
+        return None, None
+    este, norte = valores[0], valores[1]
+    try:
+        longitud, latitud = _TRANSFORMER_GAUSS_KRUGER_FAJA5.transform(este, norte)
+    except Exception:
+        logger.warning("action=cromo_parser evento=error_reproyeccion_geo pts=%s", valores)
+        return None, None
+    return latitud, longitud
+
+
 def _resolver_geo(obj: Mapping[str, Any]) -> tuple[Optional[float], Optional[float]]:
-    return resolver_lat_lon(obj.get("ll"))
+    if obj.get("ll") is not None:
+        return resolver_lat_lon(obj.get("ll"))
+    return resolver_lat_lon_gauss_kruger(obj.get("pts"))
 
 
 def _a_entero(valor: Optional[str]) -> Optional[int]:
@@ -133,13 +161,24 @@ def _capacidad_a_entero(capacidad: Optional[str]) -> Optional[int]:
 
 
 def _parsear_servicio(servicio_raw: Optional[str]) -> tuple[Optional[str], str]:
-    """Extrae el número de servicio de at.61 (texto libre). Nunca descarta el pelo si no matchea."""
+    """Extrae el número de servicio de at.61 (texto libre). Nunca descarta el pelo si no matchea.
+
+    Hallazgo real (Etapa 8): un pelo con número de servicio extraído quedaba clasificado `LIBRE`
+    ("pelo libre/sin asignar" según el propio enum `TipoAsociacionPelo`) — semánticamente invertido,
+    un match significa justamente lo contrario: está asignado a un cliente. Corregido a `CLIENTE`.
+
+    `TRUNK_DWDM`/`OLT_LASER`/`INFRA` (tráfico de infraestructura interna, no de cliente) y `LIBRE`
+    propiamente dicho (pelo con `at.61` presente pero indicando explícitamente que no hay asignación)
+    quedan sin implementar — requieren mirar una muestra real de valores de `at.61` que no matchean el
+    regex de número de servicio para saber qué patrones usa Metrotel, no se puede diseñar a ciegas.
+    Mientras tanto, todo lo que no matchea (incluido ese tráfico) cae en `INDETERMINADO`.
+    """
     if not servicio_raw:
         return None, "INDETERMINADO"
     coincidencia = _REGEX_SERVICIO.search(servicio_raw)
     if not coincidencia:
         return None, "INDETERMINADO"
-    return coincidencia.group(1), "LIBRE"
+    return coincidencia.group(1), "CLIENTE"
 
 
 def parse_botella(obj: Mapping[str, Any]) -> Botella:

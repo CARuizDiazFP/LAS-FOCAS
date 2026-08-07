@@ -439,12 +439,15 @@ nunca se descarta un pelo si no matchea.
 
 ### Tabla `cromo_fusiones`
 
-Fusión entre dos pelos, colgada de una botella (`parent` = `botella_n_id`, sin FK dura).
+Fusión entre dos pelos. Puede llegar embebida en `botella.inner[]` (`parent` = `botella_n_id`) o por
+barrido directo de clase 132 (Etapa 8, mismo patrón que cables) — este segundo camino no trae
+`parent`, por eso `botella_n_id` es `nullable` (migración `20260807_01`; `NULL` no es una referencia
+colgada, es la forma esperada de una fusión ingerida directo).
 
 | Columna | Tipo | Descripción |
 |---|---|---|
 | `n_id` (PK) | BigInteger | — |
-| `botella_n_id` | BigInteger | Sin FK dura. Índice simple. |
+| `botella_n_id` (nullable) | BigInteger | Sin FK dura. Índice simple. `NULL` = ingerida por barrido directo, sin contenedor conocido. |
 | `nombre_par`, `tipo` | Text | `tipo` no siempre es `"FUSION"` — se persiste el valor crudo. |
 | `pelo_a_n_id`, `pelo_b_n_id` | BigInteger | Índice compuesto. |
 | `latitud`, `longitud` | Float | — |
@@ -533,6 +536,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260428_02` | `20260428_02_camara_alias_pendiente.py` | Tabla `app.camara_alias` + valor `PENDIENTE_REVISION` en enum `camara_estado` |
 | `20260805_01` | `20260805_01_cromo_ingesta.py` | Tablas `app.cromo_*` (catálogo + auditoría + inventario) y enum `cromo_tipo_asociacion_pelo`, para la Etapa 2 de ingesta desde Cromo Red |
 | `20260806_01` | `20260806_01_cromo_ingesta_config.py` | Tabla `app.cromo_ingesta_config` (fila única, config del scheduler del worker dedicado), para la Etapa 7 de ingesta desde Cromo Red |
+| `20260807_01` | `20260807_01_cromo_fusiones_botella_nullable.py` | `cromo_fusiones.botella_n_id` pasa a nullable — el fetch directo de clase 132 no trae `parent`, para la Etapa 8 de ingesta desde Cromo Red |
 
 ---
 

@@ -272,6 +272,7 @@ async def test_ejecutar_ingesta_cierra_ok_sin_errores(monkeypatch):
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
+    monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 
@@ -297,6 +298,7 @@ async def test_ejecutar_ingesta_marca_ok_con_errores_si_hubo_errores(monkeypatch
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _fase_botellas_con_error)
+    monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 
@@ -434,7 +436,36 @@ async def test_fase_botellas_procesa_pagina_de_botellas():
     assert corrida.creadas >= 1
 
 
+@pytest.mark.asyncio
+async def test_fase_fusiones_procesa_pagina_y_suma_leidas():
+    """Etapa 8: fusiones vía barrido directo (filter=132) — hallazgo real, no llegan embebidas en
+    botella.inner[] en un barrido paginado real. Sin vmax propio: no suman creadas/actualizadas
+    (mismo criterio que tubo/pelo), pero sí `leidas` porque ahora es una colección contada."""
+    fusion_obj = json.loads((FIXTURES_DIR / "fusion_barrido_directo.json").read_text())
+    cliente = _ClientePaginado([{"response": [fusion_obj]}, {"response": []}])
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    await ingesta.fase_fusiones(cliente, sesion, corrida, contadores, psize=5, max_paginas=None)
+
+    assert contadores.leidas == 1
+    assert contadores.errores == 0
+    # Sin evento individual (igual que tubo/pelo) — sólo el evento FASE de inicio + PAGINA.
+    acciones = [getattr(o, "accion", None) for o in sesion.agregados]
+    assert "REF_COLGADA" not in acciones
+    assert "ERROR" not in acciones
+
+
 # ── Reconciliación ───────────────────────────────────────────────────────────
+
+
+def test_reconciliacion_fusion_sin_botella_excluye_null_explicitamente():
+    """Hallazgo real (Etapa 8): las fusiones del barrido directo no traen `parent`, así que
+    `botella_n_id` queda NULL de forma estructural, no como referencia colgada — la consulta debe
+    excluir NULL explícitamente o marcaría cada fusión directa como colgada."""
+    sql_fusion = next(sql for descripcion, _clase, sql in ingesta._RECONCILIACIONES if "fusión" in descripcion)
+    assert "botella_n_id IS NOT NULL" in sql_fusion
 
 
 @pytest.mark.asyncio
@@ -581,6 +612,7 @@ async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
+    monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 

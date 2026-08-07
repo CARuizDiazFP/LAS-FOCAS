@@ -41,9 +41,10 @@ class _CorridaCancelada(Exception):
 
 
 CLASE_CABLE = 51
+CLASE_FUSION = 132
 CLASES_BOTELLA: tuple[int, ...] = (68, 121, 122, 123, 125)
 # Clases con colección propia contable vía stats[].count (fase de conteo).
-CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE)
+CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION)
 
 _BOTELLA_CAMPOS = (
     "version_id",
@@ -258,7 +259,8 @@ async def iniciar_corrida(
 
 
 async def fase_conteo(cliente: CromoClient) -> dict[int, int]:
-    """FASE 1 · CONTEO: 6 requests baratos (psize=1&show=BASIC) para el `total_objetivo`."""
+    """FASE 1 · CONTEO: requests baratos (psize=1&show=BASIC) para el `total_objetivo`, uno por clase
+    en `CLASES_CONTEO` (botellas + cables + fusiones)."""
     totales: dict[int, int] = {}
     for clase in CLASES_CONTEO:
         respuesta = await cliente.get_coleccion(str(clase), psize=1, show=["BASIC"])
@@ -306,6 +308,63 @@ async def fase_cables(
             await _procesar_cable_directo(sesion, corrida.id, obj, contadores)
         _sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "CABLES", numero_pagina, pagina, contadores)
+        await sesion.commit()
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
+
+
+async def _procesar_fusion_directa(
+    sesion: AsyncSession, corrida_id: int, obj: dict[str, Any], contadores: ContadoresCorrida
+) -> None:
+    """Procesa una fusión del barrido directo (filter=132). Un savepoint propio: si falla, no aborta
+    la página. Sin vmax propio: se sobreescribe siempre, sin evento individual de auditoría — mismo
+    criterio que tubo/pelo/fusión embebidos (`_upsert_simple`, ver docstring). `leidas` sí se
+    incrementa porque, a diferencia de tubo/pelo, la clase 132 ahora tiene colección propia contada en
+    `CLASES_CONTEO` — si no incrementara acá, la barra de progreso nunca llegaría al 100%."""
+    try:
+        async with sesion.begin_nested():
+            fusion = cromo_parser.parse_fusion(obj)
+            await _upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
+            contadores.leidas += 1
+    except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
+        contadores.errores += 1
+        n_id = obj.get("n_id") or obj.get("id")
+        logger.error("action=cromo_ingesta evento=error_fusion n_id=%s error=%s", n_id, exc)
+        await _registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+
+
+async def fase_fusiones(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+) -> None:
+    """FASE 4 · FUSIONES: barrido directo de clase 132 (Etapa 8).
+
+    Hallazgo real: pese a que el diseño documentaba que `botella.inner[]` trae las fusiones embebidas
+    (`show=SHOW,REL_ATTRIBUTE,TIME` sobre `filter=68,121,122,123,125`), un barrido paginado real
+    completo (corrida real de producción dev, 11.100 botellas) no trajo la clave `inner` en ninguna —
+    la fase de Etapa 3 que procesa botellas queda como estaba (sigue leyendo fusiones embebidas si
+    algún día aparecen, es una lectura sin costo), pero la única fuente real de fusiones es este
+    barrido directo, confirmado contra Cromo real: `filter=132&show=SHOW,TIME` sí devuelve objetos.
+
+    Los objetos de este barrido no traen `parent` (a diferencia de los embebidos en `botella.inner[]`,
+    que si algún día aparecen sí lo traerían) — por eso `cromo_fusiones.botella_n_id` es nullable
+    (migración `20260807_01`): no hay forma de resolver la botella contenedora sin un request por
+    fusión a `GET /db/objects/{id}/container`, que no se justifica a esta escala (miles de fusiones).
+    """
+    await _registrar_inicio_fase(sesion, corrida.id, "FUSIONES", "Barrido directo de fusiones (filter=132)")
+    numero_pagina = 0
+    async for pagina in cliente.iterar_coleccion(str(CLASE_FUSION), psize=psize, show=["SHOW", "TIME"], max_paginas=max_paginas):
+        numero_pagina += 1
+        objetos = pagina.get("response") or pagina.get("data") or []
+        for obj in objetos:
+            await _procesar_fusion_directa(sesion, corrida.id, obj, contadores)
+        _sincronizar_contadores(corrida, contadores)
+        await _registrar_pagina(sesion, corrida.id, "FUSIONES", numero_pagina, pagina, contadores)
         await sesion.commit()
         if await _fue_cancelada_externamente(sesion, corrida.id):
             raise _CorridaCancelada()
@@ -418,14 +477,17 @@ _RECONCILIACIONES: tuple[tuple[str, int, str], ...] = (
         132,
         """
         SELECT n_id FROM app.cromo_fusiones f
-        WHERE NOT EXISTS (SELECT 1 FROM app.cromo_botellas b WHERE b.n_id = f.botella_n_id)
+        WHERE f.botella_n_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM app.cromo_botellas b WHERE b.n_id = f.botella_n_id)
         """,
+        # `botella_n_id IS NULL` es la norma para fusiones del barrido directo (Etapa 8, filter=132):
+        # no traen `parent`, así que NULL no es una referencia colgada, es la forma esperada del dato.
     ),
 )
 
 
 async def fase_reconciliacion(sesion: AsyncSession, corrida: CromoIngestaCorrida, contadores: ContadoresCorrida) -> None:
-    """FASE 4 · RECONCILIACIÓN: detecta referencias cruzadas colgadas (sin FK dura, ver Etapa 2).
+    """FASE 5 · RECONCILIACIÓN: detecta referencias cruzadas colgadas (sin FK dura, ver Etapa 2).
 
     No repara nada — sólo reporta. Un evento agregado por tipo de relación, no uno por fila, para no
     inflar `cromo_ingesta_eventos` en un universo con muchas referencias colgadas.
@@ -470,7 +532,7 @@ _SQL_BUSCAR_SERVICIO = text(
 
 
 async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, contadores: ContadoresCorrida) -> None:
-    """FASE 5 · SERVICIOS: matchea `cromo_pelos.servicio_numero` contra `app.servicios`.
+    """FASE 6 · SERVICIOS: matchea `cromo_pelos.servicio_numero` contra `app.servicios`.
 
     Primera versión: sólo match exacto contra `servicio_id`, `numero_primer_servicio` o `alias_ids`
     (método REGEX_EXACTO). Se deja constancia por cada pelo con servicio parseado, matchee o no
@@ -542,7 +604,7 @@ async def continuar_corrida(
     max_paginas: Optional[int],
     clases: Iterable[int],
 ) -> CromoIngestaCorrida:
-    """Corre las 5 fases sobre una corrida ya creada (`iniciar_corrida()`), en su propia sesión.
+    """Corre las 6 fases sobre una corrida ya creada (`iniciar_corrida()`), en su propia sesión.
 
     Pensado para lanzarse en una tarea de background separada del request que la disparó — por eso
     recibe `corrida_id`, no el objeto ORM (que pertenece a la sesión donde se creó, no a esta).
@@ -557,7 +619,7 @@ async def continuar_corrida(
 
     try:
         totales = await fase_conteo(cliente)
-        corrida.total_objetivo = sum(totales.get(c, 0) for c in (*clases_final, CLASE_CABLE))
+        corrida.total_objetivo = sum(totales.get(c, 0) for c in (*clases_final, CLASE_CABLE, CLASE_FUSION))
         await _registrar_evento(
             sesion,
             corrida.id,
@@ -572,6 +634,7 @@ async def continuar_corrida(
         await fase_botellas(
             cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, clases=clases_final
         )
+        await fase_fusiones(cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas)
         await fase_reconciliacion(sesion, corrida, contadores)
         await fase_servicios(sesion, corrida, contadores)
 

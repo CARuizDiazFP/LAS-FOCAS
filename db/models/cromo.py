@@ -222,13 +222,15 @@ class CromoPelo(Base):
 
 
 class CromoFusion(Base):
-    """Fusión entre dos pelos, colgada de una botella (`botella.inner[]`)."""
+    """Fusión entre dos pelos. Puede llegar embebida en `botella.inner[]` (nunca visto en la práctica
+    contra el barrido paginado real, Etapa 8) o por barrido directo de clase 132 (Etapa 8, fase propia
+    como cables) — este segundo camino no trae `parent`, por eso `botella_n_id` es nullable."""
 
     __tablename__ = "cromo_fusiones"
     __table_args__ = {"schema": "app"}
 
     n_id = Column(BigInteger, primary_key=True)
-    botella_n_id = Column(BigInteger, nullable=False, index=True)  # parent, sin FK dura
+    botella_n_id = Column(BigInteger, nullable=True, index=True)  # parent, sin FK dura; ver docstring
     nombre_par = Column(Text, nullable=True)  # at.84 / name, ej. "53-17"
     tipo = Column(Text, nullable=True)  # at.85, no siempre "FUSION"
     pelo_a_n_id = Column(BigInteger, nullable=True)  # tp[0].id_to
