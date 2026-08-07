@@ -49,6 +49,8 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
    - `app.chat_sessions`, `app.chat_messages` - Historial de chat
    - `app.incidentes_baneo` - Protocolo de protección
    - `app.reports` - Informes generados
+   - `app.cromo_*` - Inventario FO ingerido desde Cromo Red (cables, botellas, tubos, pelos, fusiones,
+     corridas de ingesta, config de scheduler) — ver sección 4 más abajo
 
 2. **Solo Lectura (Read-Only)**: Utiliza el MCP **estrictamente para consultas `SELECT`**. Si necesitas modificaciones:
    - Cambios de esquema → Migraciones Alembic (`db/alembic/`)
@@ -135,7 +137,38 @@ ORDER BY created_at DESC
 LIMIT 10;
 ```
 
-### 4. Verificación de Migraciones
+### 4. Inventario Cromo Red (planta externa FO)
+
+Tablas pobladas por el módulo de ingesta Cromo (ver `docs/modulo_ingesta_cromo.md` y
+`.github/skills/cromo-inventario/SKILL.md` para el detalle completo). Datos reales, no de prueba:
+
+```sql
+-- Cables por jerarquía (ojo: jerarquia tiene ~10 valores reales distintos, no sólo
+-- "Acceso"/"Troncal"/"Subtroncal" — usar ILIKE, nunca comparación exacta)
+SELECT jerarquia, count(*) FROM app.cromo_cables GROUP BY 1 ORDER BY 2 DESC;
+
+-- Última corrida de ingesta y su estado
+SELECT id, estado, iniciada_at, finalizada_at, ultimo_error
+FROM app.cromo_ingesta_corridas ORDER BY id DESC LIMIT 5;
+
+-- Configuración del scheduler automático (fila única)
+SELECT habilitado, intervalo_horas, hora_inicio, psize, clases, ultima_ejecucion, ultimo_error
+FROM app.cromo_ingesta_config;
+```
+
+**Gotcha real de `asyncpg`** (encontrado en `core/services/cromo/inventario.py`): si escribís un
+`WHERE` con varios filtros opcionales que pueden venir todos `NULL` a la vez, `asyncpg` no puede
+inferir el tipo del bind parameter y tira `AmbiguousParameterError`. Desde el MCP (que ejecuta SQL
+literal, sin bind params) esto no aplica — pero si estás **escribiendo código** con `sqlalchemy.text()`
+y parámetros opcionales, casteá explícito: `CAST(:param AS text)`, no el atajo `:param::text`
+(SQLAlchemy interpreta mal el `::` pegado al bind parameter).
+
+**Archivos de código relacionados:**
+- `core/services/cromo/inventario.py` - Inventario navegable (búsqueda + paginación)
+- `core/services/cromo/verificador.py` - Qué servicios pasan por un cable/tubo/botella puntual
+- `core/services/cromo/ingesta.py` - Fases del barrido periódico
+
+### 5. Verificación de Migraciones
 
 ```sql
 -- Ver estado de migraciones Alembic

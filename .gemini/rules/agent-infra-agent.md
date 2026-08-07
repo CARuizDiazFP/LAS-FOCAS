@@ -48,6 +48,10 @@ Soy el agente especializado en la infraestructura interna de Metrotel en LAS-FOC
 - Servicios de búsqueda de infraestructura
 - Consultas a tablas `app.camaras` y `app.ruta_servicio`
 - Comparador de trazas de fibra óptica
+- Inventario FO externo ingerido desde Cromo Red (`app.cromo_*`) — ver `docs/modulo_ingesta_cromo.md`,
+  `core/services/cromo/` (ingesta, parser, verificador, inventario) y las reglas
+  `skill-cromo-inventario`/`skill-cromo-diagnostico-real`. Worker dedicado propio
+  (`modules/cromo_worker/`), no corre dentro de `api`/`web`.
 
 ## Estructura
 
@@ -195,3 +199,5 @@ POST /api/infra/comparar-trazas  # Comparar dos trazas
 - **→ DB Agent**: para modificar modelos de infraestructura
 - **→ API Agent**: para crear endpoints de consulta
 - **→ Reports Agent**: para generar informes basados en infraestructura
+- **→ Docker Agent**: para el worker dedicado de ingesta Cromo (`modules/cromo_worker/`) y su
+  scheduler configurable

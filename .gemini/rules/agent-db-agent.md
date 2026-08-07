@@ -11,8 +11,8 @@ triggers:
   - "modelos"
   - "consultas"
   - "alembic"
-    - "async"
-    - "sesion"
+  - "async"
+  - "sesion"
 globs:
   - "db/**"
 commands:
@@ -150,6 +150,7 @@ async def get_db():
 | `app.ruta_servicio` | app | Rutas de servicios de infra |
 | `app.camaras` | app | Cámaras de fibra óptica |
 | `app.reports` | app | Informes generados |
+| `app.cromo_*` | app | Inventario FO ingerido desde Cromo Red (cables, botellas, tubos, pelos, fusiones, corridas, config de scheduler) — ver `docs/modulo_ingesta_cromo.md` |
 
 ## Consultas Comunes
 
@@ -195,6 +196,7 @@ DB_MAX_OVERFLOW=10
 ## Documentación
 
 - `docs/db.md` - Documentación de la base de datos
+- `docs/modulo_ingesta_cromo.md` - Esquema e ingesta del inventario Cromo (`app.cromo_*`)
 
 ## Traspasos (Handoffs)
 
