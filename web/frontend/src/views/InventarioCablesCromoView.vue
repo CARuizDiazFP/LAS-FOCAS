@@ -37,6 +37,18 @@
             <option value="false">Sólo no vigentes</option>
           </select>
         </div>
+        <div class="inventario-cables__campo">
+          <label>Id de Cable</label>
+          <input v-model="filtros.nId" type="text" inputmode="numeric" placeholder="n_id exacto…" />
+        </div>
+        <div class="inventario-cables__campo">
+          <label>Botella asociada</label>
+          <input v-model="filtros.botella" type="text" placeholder="Nombre de botella (extremo A o B)…" />
+        </div>
+        <div class="inventario-cables__campo">
+          <label>Servicio asociado</label>
+          <input v-model="filtros.servicio" type="text" placeholder="N° de servicio o ID externo…" />
+        </div>
         <button class="btn primary" type="submit" :disabled="cargando">
           <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
           {{ cargando ? 'Buscando…' : 'Buscar' }}
@@ -84,7 +96,16 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in resultado.cables" :key="c.n_id">
+          <tr
+            v-for="c in resultado.cables"
+            :key="c.n_id"
+            class="tabla-cables__fila"
+            tabindex="0"
+            role="button"
+            :aria-label="`Ver detalle del cable ${c.nombre || c.n_id}`"
+            @click="abrirDetalle(c.n_id)"
+            @keydown.enter="abrirDetalle(c.n_id)"
+          >
             <td>
               {{ c.nombre || '—' }}
               <small class="inventario-cables__n_id">n_id {{ c.n_id }}</small>
@@ -109,16 +130,21 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { RouterLink } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 
 import { ApiError } from '../api/client';
 import { buscarInventarioCables, type CromoInventarioCablesResultado } from '../api/cromo';
+
+const router = useRouter();
 
 const filtros = reactive({
   q: '',
   jerarquia: '',
   propietario: '',
   vigente: '' as '' | 'true' | 'false',
+  nId: '',
+  botella: '',
+  servicio: '',
 });
 
 const limit = 50;
@@ -131,6 +157,12 @@ const paginaActual = computed(() => Math.floor(offset.value / limit) + 1);
 const totalPaginas = computed(() => Math.max(1, Math.ceil((resultado.value?.total ?? 0) / limit)));
 
 async function buscar(nuevoOffset: number): Promise<void> {
+  const nIdTexto = filtros.nId.trim();
+  if (nIdTexto && !/^\d+$/.test(nIdTexto)) {
+    error.value = 'Id de Cable debe ser numérico.';
+    return;
+  }
+
   offset.value = Math.max(0, nuevoOffset);
   cargando.value = true;
   error.value = '';
@@ -140,6 +172,9 @@ async function buscar(nuevoOffset: number): Promise<void> {
       jerarquia: filtros.jerarquia.trim() || undefined,
       propietario: filtros.propietario.trim() || undefined,
       vigente: filtros.vigente === '' ? undefined : filtros.vigente === 'true',
+      nId: nIdTexto ? Number(nIdTexto) : undefined,
+      botella: filtros.botella.trim() || undefined,
+      servicio: filtros.servicio.trim() || undefined,
       limit,
       offset: offset.value,
     });
@@ -148,6 +183,10 @@ async function buscar(nuevoOffset: number): Promise<void> {
   } finally {
     cargando.value = false;
   }
+}
+
+function abrirDetalle(nId: number): void {
+  void router.push(`/infra/cromo/cables/ID${nId}`);
 }
 
 onMounted(() => buscar(0));
@@ -240,5 +279,18 @@ onMounted(() => buscar(0));
   font-weight: 500;
   color: color-mix(in srgb, var(--color-text) 60%, transparent);
   font-size: 12px;
+}
+
+.tabla-cables__fila {
+  cursor: pointer;
+}
+
+.tabla-cables__fila:hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.tabla-cables__fila:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 </style>

@@ -67,9 +67,19 @@ _COLUMNAS_SERVICIO = """
     s.estado_servicio, s.categoria, s.tipo_servicio, p.n_id, m.servicio_numero, m.metodo
 """
 
+# extremo_a_nombre/extremo_b_nombre vía JOIN a cromo_botellas, no las columnas crudas de cromo_cables
+# (at.34/at.37 del payload Cromo) — hallazgo real (Etapa 9c): at.37 nunca existe, Cromo manda ambos
+# nombres concatenados en at.34 únicamente. Ver el mismo comentario, más extenso, en inventario.py.
 _SQL_CABLE_POR_N_ID = text(
-    "SELECT n_id, nombre, capacidad, extremo_a_nombre, extremo_b_nombre "
-    "FROM app.cromo_cables WHERE n_id = :n_id"
+    """
+    SELECT c.n_id, c.nombre, c.capacidad,
+           COALESCE(ba.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
+           COALESCE(bb.nombre, c.extremo_b_nombre) AS extremo_b_nombre
+    FROM app.cromo_cables c
+    LEFT JOIN app.cromo_botellas ba ON ba.n_id = c.extremo_a_n_id
+    LEFT JOIN app.cromo_botellas bb ON bb.n_id = c.extremo_b_n_id
+    WHERE c.n_id = :n_id
+    """
 )
 
 # Un cable/tubo/botella puede tener servicios matcheados aunque su fila propia todavía no se haya

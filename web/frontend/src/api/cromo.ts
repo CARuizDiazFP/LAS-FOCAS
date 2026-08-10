@@ -257,6 +257,9 @@ export async function buscarInventarioCables(opciones: {
   jerarquia?: string;
   propietario?: string;
   vigente?: boolean;
+  nId?: number;
+  botella?: string;
+  servicio?: string;
   limit?: number;
   offset?: number;
 }): Promise<CromoInventarioCablesResultado> {
@@ -265,7 +268,65 @@ export async function buscarInventarioCables(opciones: {
   if (opciones.jerarquia) params.set('jerarquia', opciones.jerarquia);
   if (opciones.propietario) params.set('propietario', opciones.propietario);
   if (opciones.vigente !== undefined) params.set('vigente', String(opciones.vigente));
+  if (opciones.nId !== undefined) params.set('n_id', String(opciones.nId));
+  if (opciones.botella) params.set('botella', opciones.botella);
+  if (opciones.servicio) params.set('servicio', opciones.servicio);
   params.set('limit', String(opciones.limit ?? 50));
   params.set('offset', String(opciones.offset ?? 0));
   return requestJson(`/api/infra/cromo/cables?${params.toString()}`);
+}
+
+// ── Detalle jerárquico de un cable (Etapa 9) ─────────────────────────────────
+// Distinto del verificador (servicios que pasan por el cable) y del inventario (listar/buscar):
+// esto es "mostrame la jerarquía completa de este cable puntual" — extremos, tubos/buffers y sus
+// pelos, con el servicio matcheado de cada pelo si existe.
+
+export interface CromoExtremoCable {
+  n_id: number | null;
+  clase: number | null;
+  legacy: string | null;
+  nombre: string | null;
+}
+
+export interface CromoPeloDetalle {
+  n_id: number;
+  numero_pelo: string | null;
+  orden: number | null;
+  color: string | null;
+  tipo_asociacion: string;
+  servicio_raw: string | null;
+  servicio_numero: string | null;
+  vigente: boolean;
+  servicios: CromoServicioEncontrado[];
+}
+
+export interface CromoTuboDetalle {
+  n_id: number;
+  orden: number | null;
+  nombre_color: string | null;
+  vigente: boolean | null;
+  tiene_fila_propia: boolean;
+  pelos: CromoPeloDetalle[];
+}
+
+export interface CromoDetalleCable {
+  n_id: number;
+  nombre: string | null;
+  capacidad: string | null;
+  capacidad_pelos: number | null;
+  jerarquia: string | null;
+  propietario: string | null;
+  tendido: string | null;
+  distancia_geo: number | null;
+  distancia_real: number | null;
+  id_legacy: string | null;
+  notas: string | null;
+  vigente: boolean;
+  extremo_a: CromoExtremoCable;
+  extremo_b: CromoExtremoCable;
+  tubos: CromoTuboDetalle[];
+}
+
+export async function obtenerDetalleCable(nId: number): Promise<CromoDetalleCable> {
+  return requestJson(`/api/infra/cromo/cables/${nId}/detalle`);
 }

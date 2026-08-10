@@ -4,9 +4,10 @@
 
 # Módulo de ingesta de inventario FO desde Cromo
 
-**Estado:** completo, con Etapas 7 y 8 de hardening/explotación de datos (worker dedicado + scheduler;
-tratamiento de datos ya ingeridos + inventario navegable). Las 8 etapas están implementadas, probadas
-y validadas contra el Cromo real de Metrotel y `lasfocasdev-postgres`.
+**Estado:** completo, con Etapas 7-9 de hardening/explotación de datos (worker dedicado + scheduler;
+tratamiento de datos ya ingeridos + inventario navegable; filtros extendidos + detalle jerárquico +
+navegación cruzada). Las 9 etapas están implementadas, probadas y validadas contra el Cromo real de
+Metrotel y `lasfocasdev-postgres`.
 
 ## Qué resuelve
 
@@ -72,9 +73,27 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    invertida (`LIBRE`↔`CLIENTE`). Sobre esos datos ya corregidos, un **inventario de cables**
    navegable (búsqueda + paginación) en `/infra/cromo/cables`, complementario al verificador puntual
    de la Etapa 6. Detalle en `docs/PR/2026-08-07.md`.
+9. **Etapa 9 — Filtros extendidos, detalle jerárquico y navegación cruzada** (completa): el inventario
+   de cables de la Etapa 8b ganó 3 filtros nuevos (Id de cable exacto; Botella asociada, `ILIKE` sobre
+   los extremos ya desnormalizados; Servicio asociado, vía subquery **no correlacionada** — `c.n_id IN
+   (...)`, no `EXISTS (...)`, para que Postgres resuelva el join una sola vez por request y no una vez
+   por cada una de las 30.000+ filas candidatas), y un endpoint + panel de detalle jerárquico en
+   acordeón por cable (`core/services/cromo/detalle.py`, nuevo): extremos, Buffers/tubos y sus Pelos,
+   con el servicio matcheado de cada pelo si existe — 3 queries fijas, nunca N+1. Navegación cruzada
+   real: click en un servicio matcheado navega a `/servicios/ID/...`; click en una Botella extremo
+   navega al Verificador Cromo (única vista de detalle de botella que existe — no hay relación entre
+   `cromo_botellas.n_id` y la tabla de Cámaras de Infra) precargado vía query params. El link "Cables"
+   del sidebar se movió del grupo "Tool Kit" al nuevo grupo expandible "Infraestructura FO" (pedido
+   explícito, distinto del Verificador, que se queda en "Tool Kit"). Detalle en `docs/PR/2026-08-10.md`.
 
 Cada etapa se habilita una vez cerrada la anterior; las decisiones de una etapa pueden ajustar el diseño
 de las siguientes si el sondeo contra la API real revela algo distinto de lo asumido.
+
+**Nota (2026-08-10, fuera de las etapas de ingesta — módulo Infra/Baneos)**: `cromo_botellas` ganó un
+segundo consumidor de sólo lectura, un listado unificado que combina Cromo con las Botellas "legado" de
+la jerarquía Cámara→Botella de Infra/Baneos (`app.camaras` con `camara_padre_id`). No agrega ni modifica
+ningún campo/relación de la ingesta — es una nueva query de agregación (`UNION ALL`) del lado consumidor.
+Documentado en `docs/infra.md`, sección "Submódulo Botellas (listado unificado)".
 
 ## Dónde vive el código
 
@@ -93,19 +112,33 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   - `verificador.py`: consultas de sólo lectura sobre el inventario ya ingerido — qué servicios
     pasan por un cable, un tubo/buffer o una botella. Tolerante a referencias colgadas: un objeto sin
     fila propia pero referenciado por otro (pelo, cable) no se trata como "no encontrado".
-  - `inventario.py`: búsqueda paginada de cables (Etapa 8b) — distinto del verificador ("listame
-    cables", no "qué servicios pasan por este cable puntual"). `ILIKE` parcial sobre
-    nombre/jerarquía/propietario, exacto sobre vigente, con conteo de servicios matcheados por cable.
+  - `inventario.py`: búsqueda paginada de cables (Etapa 8b, filtros extendidos en Etapa 9) — distinto
+    del verificador ("listame cables", no "qué servicios pasan por este cable puntual"). `ILIKE`
+    parcial sobre nombre/jerarquía/propietario/botella (extremos ya desnormalizados), exacto sobre
+    vigente/n_id, `IN (subquery no correlacionada)` sobre servicio asociado (evita re-ejecutar el join
+    por cada una de las filas candidatas), con conteo de servicios matcheados por cable.
+  - `detalle.py` (Etapa 9): detalle jerárquico de un cable puntual — metadata + extremos + Buffers/
+    tubos + Pelos de cada tubo, con el servicio matcheado de cada pelo si existe. 3 queries fijas
+    (cable, tubos del cable, todos los pelos del cable con su match ya resuelto por LEFT JOIN),
+    agrupadas en Python por `tubo_n_id` — nunca N+1. Mismo criterio de referencia colgada tolerante
+    que `verificador.py`, extendido a nivel tubo.
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
 - `scripts/cromo_backfill_geo.py`: backfill one-off (Etapa 8b) de `latitud`/`longitud` en
   `cromo_botellas` ya ingeridas, a partir de `pts_raw` ya almacenado — no pega contra Cromo, idempotente.
+- `scripts/cromo_backfill_servicio_prefijos.py` (Etapa 9c): backfill one-off de `servicio_numero`/
+  `tipo_asociacion` en `cromo_pelos` ya ingeridos, tras ampliar los prefijos que reconoce
+  `parser.py::parsear_servicio()` (antes sólo "FO", ahora también TLS/DWDM/INT/EWS/RPV/TDM/ATD/VID/
+  TRUNK). Reusa las queries de `ingesta.fase_servicios()` para el matching contra `app.servicios`, sin
+  duplicar lógica. Corrido contra `lasfocasdev-postgres`: 91.654 pelos re-clasificados de
+  `INDETERMINADO` a `CLIENTE`, 7.042 con match real resuelto.
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
   `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
   `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/test_cromo_inventario.py`,
-  `tests/test_web_cromo_inventario.py`, `tests/fixtures/cromo/`: cobertura de parser, cliente,
-  servicio de ingesta, verificador, worker, inventario y endpoints web, sin red ni DB real.
+  `tests/test_web_cromo_inventario.py`, `tests/test_cromo_detalle.py`, `tests/test_web_cromo_detalle.py`,
+  `tests/fixtures/cromo/`: cobertura de parser, cliente, servicio de ingesta, verificador, worker,
+  inventario, detalle jerárquico y endpoints web, sin red ni DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos, inventario y config del scheduler). Documentación de cada tabla en `docs/db.md`.
 - `db/alembic/versions/20260805_01_cromo_ingesta.py`, `20260806_01_cromo_ingesta_config.py`,
@@ -124,14 +157,17 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
   (`GET`/`POST /api/admin/ingesta/cromo/config`, `.../config/health`, `.../config/trigger`). Sigue el
   patrón vigente del archivo (`_require_admin`, CSRF contra `request.session`), con imports locales de
   `core.services.cromo.*` y `db.*` dentro de cada función, como el resto del archivo. También los
-  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`) y del
-  inventario (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`limit`/
-  `offset`), ambos con `_require_auth` en vez de `_require_admin` — son consulta, no administración.
+  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`), del
+  inventario (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`n_id`/
+  `botella`/`servicio`/`limit`/`offset`, los 3 últimos agregados en la Etapa 9) y del detalle
+  jerárquico (`GET /api/infra/cromo/cables/{n_id}/detalle`, Etapa 9), todos con `_require_auth` en vez
+  de `_require_admin` — son consulta, no administración.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
   del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`) + funciones del scheduler del worker
   (`obtenerConfigSchedulerCromo`, `guardarConfigSchedulerCromo`, `obtenerSaludWorkerCromo`,
-  `dispararSchedulerCromo`) + `buscarInventarioCables` (Etapa 8b).
+  `dispararSchedulerCromo`) + `buscarInventarioCables` (Etapa 8b, filtros `nId`/`botella`/`servicio`
+  agregados en Etapa 9) + `obtenerDetalleCable` (Etapa 9, detalle jerárquico).
 - `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — card de
   scheduler automático (habilitar/deshabilitar, intervalo, hora de inicio, clases/psize/max_páginas
   del ciclo periódico, estado del worker, "Ejecutar ahora"), dispara corridas manuales y consume el
@@ -144,11 +180,30 @@ de las siguientes si el sondeo contra la API real revela algo distinto de lo asu
 - `web/frontend/src/views/VerificadorCromoView.vue`: vista en `/infra/cromo/verificador` — selector de
   tipo de objeto (cable/tubo/botella), búsqueda por `n_id`, tabla de servicios encontrados. Vista del
   panel operativo (no de `/admin`): cualquier usuario autenticado puede usarla. Registrada en
-  `router/index.ts` y con su entrada de navegación en `AppShell.vue` (grupo "Tool Kit").
+  `router/index.ts` y con su entrada de navegación en `AppShell.vue` (grupo "Tool Kit"). Desde la
+  Etapa 9 también lee `route.query.tipo`/`route.query.n_id` en `onMounted` y dispara la búsqueda
+  automáticamente si vienen presentes — es el destino de la navegación cruzada desde el detalle de un
+  cable (click en una Botella extremo).
 - `web/frontend/src/views/InventarioCablesCromoView.vue` (Etapa 8b): inventario navegable en
-  `/infra/cromo/cables` — buscador (nombre/jerarquía/propietario/vigente) + paginación. Vista del
-  panel operativo, mismo criterio de auth que el verificador. Registrada junto al verificador en
-  `router/index.ts` y `AppShell.vue` (mismo grupo "Tool Kit").
+  `/infra/cromo/cables` — buscador (nombre/jerarquía/propietario/vigente, + Id de cable/Botella/
+  Servicio desde la Etapa 9) + paginación. Cada fila es clickeable (Etapa 9) y navega a la vista de
+  detalle dedicada. Vista del panel operativo, mismo criterio de auth que el verificador. Registrada
+  en `router/index.ts`; su entrada de navegación en `AppShell.vue` vive desde la Etapa 9 en el grupo
+  "Infraestructura FO" (antes "Tool Kit", junto al Verificador — se separaron a pedido explícito).
+- `web/frontend/src/views/CableDetalleCromoView.vue` (Etapa 9, reemplaza el modal inicial de la misma
+  etapa): vista dedicada en `/infra/cromo/cables/ID:nId` — metadata del cable, extremos (clickeables →
+  Verificador Cromo precargado) y un acordeón de Buffers/tubos (reusa `AccordionItem.vue`, patrón
+  single-open) con la tabla de Pelos de cada uno (número, color, tipo de asociación, **descripción
+  cruda** `servicio_raw` — siempre visible, incluso sin match resuelto — y servicio matcheado
+  clickeable → `/servicios/ID/...`). Mismo patrón de página dedicada que `CamaraDetailView.vue`
+  (hero + back-link, no modal): un cable con 24 tubos no cabe cómodo en un `<dialog>`, y el pedido
+  explícito fue que el detalle sea una vista propia, navegable con URL directa
+  (`/infra/cromo/cables/ID<n_id>`), no un panel superpuesto.
+- Los nombres de extremo (`extremo_a`/`extremo_b`) que muestran `InventarioCablesCromoView.vue`,
+  `CableDetalleCromoView.vue` y `VerificadorCromoView.vue` se resuelven en `core/services/cromo/
+  {inventario,detalle,verificador}.py` vía `LEFT JOIN` a `cromo_botellas` (Etapa 9c) — no desde las
+  columnas crudas `cromo_cables.extremo_a_nombre`/`extremo_b_nombre` (Cromo nunca manda un atributo
+  separado para el extremo B, ver §13.10 de la doc privada).
 
 ## Principios de diseño
 

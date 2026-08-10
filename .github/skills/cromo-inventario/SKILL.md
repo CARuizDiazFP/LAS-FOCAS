@@ -45,11 +45,17 @@ un estado válido observado en datos reales.
   `at.61` todavía no está implementada, requiere mirar una muestra real primero).
   `jerarquia` en `cromo_cables`: texto libre real con ~10 valores — usar `ILIKE`, nunca igualdad
   exacta, para cualquier filtro que reciba input de usuario.
+- `cromo_cables.extremo_a_nombre`/`extremo_b_nombre` (crudos, de `at.34`/`at.37`): **no confiables para
+  el extremo B**. Cromo nunca manda `at.37` (0/32.782 cables) — ambos nombres viajan concatenados en el
+  único atributo `at.34`. Resolver siempre vía `LEFT JOIN app.cromo_botellas` por `extremo_a_n_id`/
+  `extremo_b_n_id` (con `COALESCE` a la columna cruda como único fallback, para referencia colgada) —
+  ver `inventario.py`/`verificador.py`/`detalle.py` como plantilla ya aplicada.
 
 ## Patrón para nuevas consultas/endpoints de sólo lectura
 
-Seguir `core/services/cromo/inventario.py` (búsqueda paginada) o `core/services/cromo/verificador.py`
-(resolución puntual) como plantilla, no reinventar el estilo:
+Seguir `core/services/cromo/inventario.py` (búsqueda paginada), `core/services/cromo/verificador.py`
+(resolución puntual) o `core/services/cromo/detalle.py` (detalle jerárquico de un objeto con hijos, ver
+abajo) como plantilla, no reinventar el estilo:
 
 - SQL crudo con `sqlalchemy.text()`, no el ORM — mismo estilo ya establecido en todo `core/services/cromo/`
   para joins de varias tablas.
@@ -59,10 +65,26 @@ Seguir `core/services/cromo/inventario.py` (búsqueda paginada) o `core/services
   ningún filtro puesto" ocurre — el bug más común de este esquema, y el único que ningún test
   unitario con sesión fake puede detectar (hace falta el driver real).
 - Filtros de texto libre (`jerarquia`, `propietario`, nombres): `ILIKE` con `%...%`, no exacto.
+- **Filtro que agrega un `WHERE` sobre un listado grande (30.000+ cables) vía join a otra tabla**:
+  usar `columna IN (subquery NO correlacionada)`, nunca `EXISTS (subquery correlacionada a la fila
+  externa, ej. `WHERE p.cable_n_id = c.n_id`)`. El `WHERE` de un listado paginado se evalúa dos veces
+  por request (COUNT + SELECT) sobre las filas candidatas *antes* de `LIMIT/OFFSET` — un `EXISTS`
+  correlacionado obliga a Postgres a re-ejecutar el join una vez por fila candidata; un `IN` no
+  correlacionado permite resolverlo como "hashed subplan" (el join corre una sola vez por statement).
+  Ejemplo real en el repo: filtro `servicio` de `inventario.py::_FILTROS_SQL` (Etapa 9). No es el
+  mismo caso que un subselect correlacionado sobre las filas *ya paginadas* (ej. `cantidad_servicios`
+  en el `SELECT` de `inventario.py`) — ese sí es correcto tal cual está, corre sobre ≤200 filas.
 - Conteo de servicios por cable/tubo/pelo: reusar el join ya existente en
   `verificador.servicios_por_cable` (`cromo_pelos` → `cromo_servicio_match`), no reimplementarlo.
+- **Detalle jerárquico de un objeto con hijos (cable→tubos→pelos, o similar) sin N+1**: una query por
+  nivel de la jerarquía (no una por hijo), agrupando en Python por la FK del nivel anterior. Plantilla
+  real: `core/services/cromo/detalle.py::obtener_detalle_cable` — 3 queries fijas sin importar cuántos
+  tubos/pelos tenga el cable. Extender el criterio de "referencia colgada tolerante" (`verificador.py`)
+  a cada nivel nuevo: un hijo referenciado sin fila propia en su tabla no es "no encontrado", aparece
+  igual con su metadata en `None`.
 - Endpoints de sólo consulta van con `_require_auth` (no `_require_admin`) en `web/app/main.py` —
-  ver la convención ya usada en `/api/infra/cromo/cables` y `/api/infra/cromo/verificar`.
+  ver la convención ya usada en `/api/infra/cromo/cables`, `/api/infra/cromo/cables/{n_id}/detalle` y
+  `/api/infra/cromo/verificar`.
 
 ## Antes de confiar en un dato o construir una vista nueva
 

@@ -177,9 +177,14 @@ def test_inventario_cables_query_params_pasan_a_buscar_cables(monkeypatch):
     client = TestClient(app)
     _login(client, "user", "userpass")
 
-    res = client.get("/api/infra/cromo/cables?q=troncal&jerarquia=Troncal&propietario=SBASE&vigente=true&limit=10&offset=5")
+    res = client.get(
+        "/api/infra/cromo/cables"
+        "?q=troncal&jerarquia=Troncal&propietario=SBASE&vigente=true"
+        "&n_id=51&botella=Botella&servicio=1234&limit=10&offset=5"
+    )
 
     assert res.status_code == 200
     assert llamada == {
-        "q": "troncal", "jerarquia": "Troncal", "propietario": "SBASE", "vigente": True, "limit": 10, "offset": 5,
+        "q": "troncal", "jerarquia": "Troncal", "propietario": "SBASE", "vigente": True,
+        "n_id": 51, "botella": "Botella", "servicio": "1234", "limit": 10, "offset": 5,
     }

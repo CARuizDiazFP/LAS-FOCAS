@@ -41,20 +41,60 @@ class ResultadoBusquedaCables:
 # `AmbiguousParameterError: could not determine data type of parameter $1` — hallazgo real al probar
 # el inventario sin filtros contra el contenedor real (Etapa 8b). El atajo `:param::tipo` de Postgres
 # no sirve acá: SQLAlchemy interpreta mal el `::` pegado al bind parameter (`:param` seguido de `:`).
+#
+# El filtro `servicio` usa `c.n_id IN (subquery)` **sin correlacionar** con `c` (Etapa 9) — no
+# `EXISTS (... WHERE p.cable_n_id = c.n_id)`. Este WHERE se evalúa dos veces por request (COUNT +
+# SELECT paginado) sobre las 30.000+ filas candidatas, antes de LIMIT/OFFSET. Un EXISTS correlacionado
+# obliga a Postgres a re-ejecutar el join pelos⋈match⋈servicios una vez por fila candidata; al no
+# correlacionar, Postgres puede resolverlo como "hashed subplan": el join corre una sola vez por
+# statement (arma un set de cable_n_id en memoria), y cada fila hace un lookup O(1). No es el mismo
+# patrón que el subselect correlacionado de `cantidad_servicios` de abajo — ese sí es correcto porque
+# corre sólo sobre las ≤200 filas ya paginadas, no sobre las candidatas antes de paginar.
+# `extremo_a_nombre`/`extremo_b_nombre` desnormalizados en `cromo_cables` vienen de `at.34`/`at.37` del
+# payload de Cromo — hallazgo real (Etapa 9c, contra `lasfocasdev-postgres`): `at.37` NUNCA existe
+# (0/32.782 cables), Cromo manda AMBOS nombres concatenados en el único atributo `at.34`
+# ("LEGACY_A: dirección_A  LEGACY_B: dirección_B"). El JOIN a `cromo_botellas` por `extremo_a_n_id`/
+# `extremo_b_n_id` sí da el nombre real y ya separado de cada botella (14.049 cables recuperables sólo
+# para extremo B). `COALESCE` cae al valor crudo de `cromo_cables` únicamente si la botella todavía no
+# bajó (referencia colgada, mismo criterio tolerante que `verificador.py`).
 _FILTROS_SQL = """
     WHERE (CAST(:q AS text) IS NULL OR c.nombre ILIKE CAST(:q AS text))
       AND (CAST(:jerarquia AS text) IS NULL OR c.jerarquia ILIKE CAST(:jerarquia AS text))
       AND (CAST(:propietario AS text) IS NULL OR c.propietario ILIKE CAST(:propietario AS text))
       AND (CAST(:vigente AS boolean) IS NULL OR c.vigente = CAST(:vigente AS boolean))
+      AND (CAST(:n_id AS bigint) IS NULL OR c.n_id = CAST(:n_id AS bigint))
+      AND (
+        CAST(:botella AS text) IS NULL
+        OR COALESCE(ba.nombre, c.extremo_a_nombre) ILIKE CAST(:botella AS text)
+        OR COALESCE(bb.nombre, c.extremo_b_nombre) ILIKE CAST(:botella AS text)
+      )
+      AND (
+        CAST(:servicio AS text) IS NULL
+        OR c.n_id IN (
+            SELECT p.cable_n_id
+            FROM app.cromo_pelos p
+            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            JOIN app.servicios s ON s.id = m.servicio_id
+            WHERE s.servicio_id ILIKE CAST(:servicio AS text)
+               OR s.numero_primer_servicio ILIKE CAST(:servicio AS text)
+        )
+      )
 """
 
-_SQL_CONTAR = text(f"SELECT count(*) FROM app.cromo_cables c {_FILTROS_SQL}")
+_JOIN_EXTREMOS_SQL = """
+    LEFT JOIN app.cromo_botellas ba ON ba.n_id = c.extremo_a_n_id
+    LEFT JOIN app.cromo_botellas bb ON bb.n_id = c.extremo_b_n_id
+"""
+
+_SQL_CONTAR = text(f"SELECT count(*) FROM app.cromo_cables c {_JOIN_EXTREMOS_SQL} {_FILTROS_SQL}")
 
 _SQL_BUSCAR = text(
     f"""
     SELECT
         c.n_id, c.nombre, c.capacidad, c.capacidad_pelos, c.jerarquia, c.propietario,
-        c.extremo_a_nombre, c.extremo_b_nombre, c.vigente,
+        COALESCE(ba.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
+        COALESCE(bb.nombre, c.extremo_b_nombre) AS extremo_b_nombre,
+        c.vigente,
         (
             SELECT count(DISTINCT m.servicio_id)
             FROM app.cromo_pelos p
@@ -62,6 +102,7 @@ _SQL_BUSCAR = text(
             WHERE p.cable_n_id = c.n_id AND m.servicio_id IS NOT NULL
         ) AS cantidad_servicios
     FROM app.cromo_cables c
+    {_JOIN_EXTREMOS_SQL}
     {_FILTROS_SQL}
     ORDER BY c.nombre NULLS LAST, c.n_id
     LIMIT :limit OFFSET :offset
@@ -76,10 +117,14 @@ async def buscar_cables(
     jerarquia: Optional[str] = None,
     propietario: Optional[str] = None,
     vigente: Optional[bool] = None,
+    n_id: Optional[int] = None,
+    botella: Optional[str] = None,
+    servicio: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> ResultadoBusquedaCables:
-    """Búsqueda paginada de cables. `q`/`jerarquia`/`propietario` son `ILIKE` parcial; `vigente` exacto.
+    """Búsqueda paginada de cables. `q`/`jerarquia`/`propietario`/`botella`/`servicio` son `ILIKE`
+    parcial (o `IN` sobre subquery en el caso de `servicio`); `vigente`/`n_id` exacto.
 
     `jerarquia` es `ILIKE`, no exacto, a propósito: los valores reales observados (Etapa 8b, contra
     `lasfocasdev-postgres`) son mucho más variados que los tres documentados originalmente
@@ -87,6 +132,13 @@ async def buscar_cables(
     "PatchCord", "Bajada", "Troncal LD", "No indicado" y vacío. Forzar match exacto desde un input
     libre sería frágil; parcial es más tolerante sin perder precisión (nadie escribe "Troncal" para
     buscar "Troncal LD" por accidente, pero si lo hace, es una ambigüedad real del dato, no del filtro.
+
+    `botella` matchea contra el nombre real de la botella de cada extremo (JOIN a `cromo_botellas` por
+    `extremo_a_n_id`/`extremo_b_n_id`, con fallback a los `extremo_a_nombre`/`extremo_b_nombre` crudos
+    de `cromo_cables` si la botella todavía no bajó) — ver comentario sobre `at.34`/`at.37` arriba de
+    `_FILTROS_SQL`. `servicio` (Etapa 9) matchea contra `servicio_id`/`numero_primer_servicio` de
+    `app.servicios`, alcanzado vía `cromo_pelos`+`cromo_servicio_match`; ver el comentario en
+    `_FILTROS_SQL` sobre por qué es un `IN` no correlacionado.
 
     El conteo de servicios es por `servicio_id` distinto matcheado en cualquiera de los pelos del
     cable (vía `cromo_servicio_match`) — mismo join que ya usa `verificador.servicios_por_cable`.
@@ -96,6 +148,9 @@ async def buscar_cables(
         "jerarquia": f"%{jerarquia.strip()}%" if jerarquia and jerarquia.strip() else None,
         "propietario": f"%{propietario.strip()}%" if propietario and propietario.strip() else None,
         "vigente": vigente,
+        "n_id": n_id,
+        "botella": f"%{botella.strip()}%" if botella and botella.strip() else None,
+        "servicio": f"%{servicio.strip()}%" if servicio and servicio.strip() else None,
     }
 
     total = (await sesion.execute(_SQL_CONTAR, params)).scalar_one()

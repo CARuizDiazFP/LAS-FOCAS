@@ -34,7 +34,19 @@ _CLASE_PELO = 130
 _CLASE_FUSION = 132
 
 # Texto libre de at.61, p.ej. "FO 114830 - EDGE - CIRION - Pelo 1 de 2".
-_REGEX_SERVICIO = re.compile(r"FO\s*[:\-]?\s*(\d+)", re.IGNORECASE)
+#
+# Prefijos más allá de "FO" agregados en Etapa 9c — hallazgo real contra `lasfocasdev-postgres`: de
+# los ~1,28M pelos vigentes, 96,6% queda `INDETERMINADO`; de esos, ~250K SÍ tienen `servicio_raw` pero
+# el regex original (sólo "FO") nunca les extraía número. Catalogando esos ~250K por el prefijo real
+# que antecede al número: "INT"/"TLS"/"EWS"/"RPV"/"DWDM"/"TDM"/"ATD"/"VID"/"TRUNK" agregan ~89.361
+# pelos candidatos, de los cuales ~6.738 matchean de verdad contra `app.servicios` (que ya trackea
+# esos mismos `tipo_servicio` para FO — no son inventados). Confirmado con `app.servicios.tipo_servicio`
+# real: RPV/TLS/INT/EWS/FO/VID conviven en la misma tabla, mismo esquema de numeración. Prefijos con 0
+# matches reales en la muestra (OS/RED/ISI/ATI/MZ/ADVA) quedaron afuera a propósito — mayor riesgo de
+# falso positivo (texto libre que empieza con esas letras por coincidencia, no un código de servicio).
+_REGEX_SERVICIO = re.compile(
+    r"\b(?:FO|TLS|DWDM|INT|EWS|RPV|TDM|ATD|VID|TRUNK)\s*[:\-]?\s*(\d+)", re.IGNORECASE
+)
 
 
 class ClaseExcluidaError(ValueError):
@@ -160,8 +172,12 @@ def _capacidad_a_entero(capacidad: Optional[str]) -> Optional[int]:
     return int(coincidencia.group(1)) if coincidencia else None
 
 
-def _parsear_servicio(servicio_raw: Optional[str]) -> tuple[Optional[str], str]:
+def parsear_servicio(servicio_raw: Optional[str]) -> tuple[Optional[str], str]:
     """Extrae el número de servicio de at.61 (texto libre). Nunca descarta el pelo si no matchea.
+
+    Pública (no `_parsear_servicio`) a propósito desde Etapa 9c: además de `parse_pelo()` la usa
+    `scripts/cromo_backfill_servicio_prefijos.py` para reintentar la extracción sobre pelos ya
+    ingeridos con el regex viejo, sin duplicar la lógica.
 
     Hallazgo real (Etapa 8): un pelo con número de servicio extraído quedaba clasificado `LIBRE`
     ("pelo libre/sin asignar" según el propio enum `TipoAsociacionPelo`) — semánticamente invertido,
@@ -268,7 +284,7 @@ def parse_tubo(obj: Mapping[str, Any]) -> Tubo:
 def parse_pelo(obj: Mapping[str, Any]) -> Pelo:
     """Parsea pelo/hilo (class 130). Un pelo sin at.61 se parsea igual, sin excepción."""
     servicio_raw = atributo(obj, 61)
-    servicio_numero, tipo_asociacion = _parsear_servicio(servicio_raw)
+    servicio_numero, tipo_asociacion = parsear_servicio(servicio_raw)
     return Pelo(
         n_id=_resolver_n_id(obj),
         tubo_n_id=obj.get("parent"),
@@ -426,6 +442,7 @@ __all__ = [
     "parse_cable",
     "parse_tubo",
     "parse_pelo",
+    "parsear_servicio",
     "parse_fusion",
     "parse_arbol_botella",
     "extraer_tubos_y_pelos",

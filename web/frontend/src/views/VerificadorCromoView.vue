@@ -90,7 +90,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 
 import { ApiError } from '../api/client';
 import {
@@ -113,6 +114,8 @@ interface ResultadoVista {
   meta: Array<{ etiqueta: string; valor: string | number | null }>;
   servicios: CromoServicioEncontrado[];
 }
+
+const route = useRoute();
 
 const tipo = ref<TipoObjeto>('cable');
 const nIdTexto = ref('');
@@ -177,6 +180,20 @@ async function onBuscar(): Promise<void> {
     buscando.value = false;
   }
 }
+
+// Navegación cruzada desde otras vistas (ej. click en una Botella extremo dentro del detalle de un
+// cable): precarga tipo + n_id desde la URL y dispara la búsqueda automáticamente.
+onMounted(() => {
+  const tipoQuery = route.query.tipo;
+  const nIdQuery = route.query.n_id;
+  const tipoValido = typeof tipoQuery === 'string' && TIPOS.some((t) => t.valor === tipoQuery);
+  const nIdValidoQuery = typeof nIdQuery === 'string' && /^\d+$/.test(nIdQuery);
+  if (tipoValido && nIdValidoQuery) {
+    tipo.value = tipoQuery as TipoObjeto;
+    nIdTexto.value = nIdQuery;
+    void onBuscar();
+  }
+});
 </script>
 
 <style scoped>

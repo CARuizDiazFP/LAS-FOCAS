@@ -187,6 +187,62 @@ def test_pelo_con_at61_extrae_numero_de_servicio():
     assert pelo.tipo_asociacion == "CLIENTE"
 
 
+@pytest.mark.parametrize(
+    "servicio_raw,numero_esperado",
+    [
+        ("TLS 79932 - Cecilia Grierson 355 Piso 25", "79932"),
+        ("DWDM 91719 - Prisma Medios de Pago SA (x LU)", "91719"),
+        ("INT 45678 - Cliente X", "45678"),
+        ("EWS 12345 - Cliente Y", "12345"),
+        ("RPV 60207 / RPV 60209 - Macacha Güemes 515", "60207"),
+        ("TDM 555 - Cliente Z", "555"),
+        ("TRUNK 512 - SIDERCA - TENARIS CAMPANA", "512"),
+        ("VID 525 - Cliente W", "525"),
+        ("tls 79932 minúscula", "79932"),
+    ],
+)
+def test_pelo_con_at61_extrae_numero_con_prefijos_no_fo(servicio_raw, numero_esperado):
+    """Hallazgo real (Etapa 9c): el regex original sólo reconocía "FO" — ~89.361 pelos vigentes con
+    descripción real (`servicio_raw`) nunca intentaban matchear porque usan otro prefijo de tipo de
+    servicio. `app.servicios.tipo_servicio` ya trackea TLS/DWDM/INT/EWS/RPV/TDM/VID con el mismo
+    esquema de numeración que FO — no son prefijos inventados."""
+    obj = {"id": 1, "n_id": 1, "class": 130, "parent": 60010, "at": [{"id": 61, "value": servicio_raw}]}
+    pelo = parse_pelo(obj)
+    assert pelo.servicio_numero == numero_esperado
+    assert pelo.tipo_asociacion == "CLIENTE"
+
+
+def test_pelo_con_at61_prefijo_no_reconocido_queda_indeterminado():
+    """Prefijos con match real 0 en la muestra (ej. "OS", "RED") quedan deliberadamente afuera —
+    mayor riesgo de falso positivo que valor real agregado."""
+    obj = {
+        "id": 1,
+        "n_id": 1,
+        "class": 130,
+        "parent": 60010,
+        "at": [{"id": 61, "value": "OS 2749 - texto libre sin relación a un servicio"}],
+    }
+    pelo = parse_pelo(obj)
+    assert pelo.servicio_numero is None
+    assert pelo.tipo_asociacion == "INDETERMINADO"
+
+
+def test_pelo_con_at61_infono_no_matchea_por_falta_de_word_boundary():
+    """El `\\b` antes del prefijo evita que "INFO" (contiene "FO" como substring) o similares
+    disparen un falso positivo — antes de Etapa 9c el regex viejo no tenía este boundary tampoco
+    delante de "FO", así que no es una regresión, es una mejora agregada junto con los prefijos nuevos."""
+    obj = {
+        "id": 1,
+        "n_id": 1,
+        "class": 130,
+        "parent": 60010,
+        "at": [{"id": 61, "value": "INFO 12345 - esto no es un número de servicio real"}],
+    }
+    pelo = parse_pelo(obj)
+    assert pelo.servicio_numero is None
+    assert pelo.tipo_asociacion == "INDETERMINADO"
+
+
 # ── botella.inner[] → sólo fusiones ──────────────────────────────────────────
 
 

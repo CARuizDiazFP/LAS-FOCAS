@@ -124,3 +124,41 @@ async def test_buscar_cables_filtro_vigente_exacto():
     await inventario.buscar_cables(sesion, vigente=False)
 
     assert sesion.llamadas[0]["vigente"] is False
+
+
+@pytest.mark.asyncio
+async def test_buscar_cables_filtro_n_id_exacto():
+    sesion = _SesionFake(total=0, filas=[])
+
+    await inventario.buscar_cables(sesion, n_id=51)
+
+    assert sesion.llamadas[0]["n_id"] == 51
+
+
+@pytest.mark.asyncio
+async def test_buscar_cables_filtro_botella_ilike():
+    sesion = _SesionFake(total=0, filas=[])
+
+    await inventario.buscar_cables(sesion, botella=" Botella A ")
+
+    assert sesion.llamadas[0]["botella"] == "%Botella A%"
+
+
+@pytest.mark.asyncio
+async def test_buscar_cables_filtro_servicio_ilike():
+    sesion = _SesionFake(total=0, filas=[])
+
+    await inventario.buscar_cables(sesion, servicio="1234")
+
+    assert sesion.llamadas[0]["servicio"] == "%1234%"
+
+
+@pytest.mark.asyncio
+async def test_buscar_cables_filtros_nuevos_vacios_no_filtran():
+    sesion = _SesionFake(total=0, filas=[])
+
+    await inventario.buscar_cables(sesion, n_id=None, botella="  ", servicio="")
+
+    assert sesion.llamadas[0]["n_id"] is None
+    assert sesion.llamadas[0]["botella"] is None
+    assert sesion.llamadas[0]["servicio"] is None
