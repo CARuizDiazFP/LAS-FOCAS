@@ -70,34 +70,35 @@ core/
 
 ## Tablas de Infraestructura
 
-### app.camaras
-```sql
-CREATE TABLE app.camaras (
-    id SERIAL PRIMARY KEY,
-    nombre VARCHAR(100) NOT NULL,
-    tipo VARCHAR(50),
-    latitud DECIMAL(10, 8),
-    longitud DECIMAL(11, 8),
-    direccion TEXT,
-    zona VARCHAR(50),
-    estado VARCHAR(20) DEFAULT 'activa',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
+> **Nota de vigencia (2026-08-10)**: los bloques `app.camaras`/`app.rutas_servicio` de abajo fueron
+> corregidos contra el modelo real (`db/models/infra.py`). El resto del archivo (`InfraSearchService`,
+> `core/parsers/alarmas_ciena.py`, `core/maps/static_map.py`) **no se verificó** en esa sesión — puede
+> seguir sin corresponder a la estructura real del repo.
 
-### app.ruta_servicio
-```sql
-CREATE TABLE app.ruta_servicio (
-    id SERIAL PRIMARY KEY,
-    servicio VARCHAR(100) NOT NULL,
-    cliente VARCHAR(100),
-    tecnologia VARCHAR(50),
-    traza TEXT,  -- JSON con puntos de la ruta
-    camaras_ids INTEGER[],  -- Referencias a cámaras
-    estado VARCHAR(20) DEFAULT 'activa',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
+### app.camaras (real, `db/models/infra.py::Camara`)
+
+Columnas reales: `id` (PK), `fontine_id` (String, unique, opcional), `nombre` (String, requerido),
+`direccion`, `latitud`/`longitud` (Float), `estado` (Enum `camara_estado`: `LIBRE`/`OCUPADA`/`BANEADA`/
+`DETECTADA`/`PENDIENTE_REVISION`), `origen_datos` (Enum `camara_origen_datos`: `MANUAL`/`TRACKING`/
+`SHEET`/`INFERIDO`), `camara_padre_id` (FK auto-referencial nullable a `app.camaras.id`, jerarquía de
+2 niveles — ver sección "Jerarquía Cámara→Botellas" abajo), `last_update`. Sin columnas `tipo`/`zona`.
+
+### app.rutas_servicio (real, `db/models/infra.py::RutaServicio` — no `app.ruta_servicio`)
+
+Columnas reales: `id` (PK), `servicio_id` (FK a `app.servicios.id`), `nombre` (String, default
+"Principal"), `tipo` (Enum `ruta_tipo`). Sin columnas `cliente`/`tecnologia`/`traza`/`camaras_ids[]` —
+las cámaras de una ruta se resuelven vía `RutaServicio → Empalme → Camara`, no un array de IDs.
+
+### Jerarquía Cámara→Botellas y Protocolo de Protección (Baneos) — 2026-08-10
+
+Muchas filas de `app.camaras` no son cámaras físicas distintas — son "Botellas" dentro de la MISMA
+cámara física, diferenciadas por sufijo "Bot N" en `nombre`. Modelado con `camara_padre_id`
+auto-referencial (2 niveles). Ver `core/services/camara_hierarchy_service.py`,
+`core/services/camara_estado_service.py::aplicar_estado_a_grupo()` (único punto que debe escribir
+`Camara.estado`), `core/services/protection_service.py` (Protocolo de Protección con cascada de
+grupo), `core/services/botellas_unificadas_service.py` (submódulo "Botellas" unificado con
+`app.cromo_botellas`, esquema homónimo SIN relación real). Skill dedicada para probar cascadas sin
+causar drift: `.gemini/rules/skill-baneo-qa-real.md`. Doc completa: `docs/infra.md`.
 
 ## Servicios de Infraestructura
 

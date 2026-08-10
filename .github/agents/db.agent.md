@@ -121,8 +121,8 @@ async def get_db():
 |-------|--------|-------------|
 | `app.users` | app | Usuarios del sistema |
 | `app.conversations` | app | Historial de chat |
-| `app.ruta_servicio` | app | Rutas de servicios de infra |
-| `app.camaras` | app | Cámaras de fibra óptica |
+| `app.rutas_servicio` | app | Rutas de servicios de infra (no `app.ruta_servicio` — nombre real en plural) |
+| `app.camaras` | app | Cámaras FO. Desde 2026-08-10 tiene `camara_padre_id` auto-referencial (jerarquía Cámara→Botella, 2 niveles) — ver `docs/infra.md` |
 | `app.reports` | app | Informes generados |
 | `app.cromo_*` | app | Inventario FO ingerido desde Cromo Red (cables, botellas, tubos, pelos, fusiones, corridas, config de scheduler) — ver `docs/modulo_ingesta_cromo.md` |
 
@@ -158,6 +158,18 @@ async def search_rutas(db: AsyncSession, query: str):
 6. **Pooling controlado**: ajustar `pool_size` y `max_overflow` según carga.
 7. **Evitar N+1**: usar eager loading o selectinload cuando corresponda.
 8. **Validación en capas**: la DB complementa a Pydantic, no la reemplaza.
+
+## Gotchas reales encontrados en sesión (2026-08-10)
+
+**`SQLEnum(...)` sin `schema="app"` rompe inserts batch de 2+ filas.** Al insertar 2+ filas con una
+columna `Enum` en el mismo `flush()`, SQLAlchemy 2.0 activa el batching "insertmanyvalues", que genera
+casts (`p3::camara_estado`) SIN calificar por schema. Como `db/session.py` no fija `search_path` en la
+conexión, el cast falla con `UndefinedObject: type "camara_estado" does not exist` aunque el tipo
+exista perfectamente en `app.camara_estado` — el error sólo aparece con 2+ filas en un mismo flush (una
+sola fila no dispara el batching, por eso pasa tests unitarios con sesión fake y falla contra la DB
+real). **Fix**: todo `Column(SQLEnum(...))` debe llevar `schema="app"` explícito
+(`SQLEnum(MiEnum, name="mi_enum", create_type=False, schema="app")`), no sólo `name=`. Verificar con
+`grep -n "SQLEnum(" db/models/*.py` que ningún modelo nuevo repita el patrón sin `schema=`.
 
 ## Configuración
 

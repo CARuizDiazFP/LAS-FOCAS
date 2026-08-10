@@ -77,6 +77,7 @@ Definidas en `.github/skills/` (fuente de verdad) y en `.codex-skills/skills/` (
 | `db-mcp-postgres` | Consultas read-only via MCP al esquema `app.*` | Solo `SELECT`; migraciones → Alembic |
 | `cromo-inventario` | Consultar/explotar datos ya ingeridos de Cromo Red (`app.cromo_*`) | `jerarquia`/`propietario` siempre `ILIKE`, nunca exacto |
 | `cromo-diagnostico-real` | Validar supuestos de ingesta/parseo contra la API o DB real de Cromo | Nunca declarar una fase "correcta" sin diagnóstico contra el sistema real |
+| `baneo-qa-real` | Probar create_ban/lift_ban y cascadas de estado de Cámara contra datos reales | Resolver el blast radius completo antes de mutar; revertir sólo vía `aplicar_estado_a_grupo`, nunca `UPDATE` directo |
 | `libreoffice-convert` | DOCX/XLSX→PDF via API puerto 8090 | Timeout 30-60s, máx 50 MB |
 | `repo-updater` | Commits técnicos a `dev` con auditoría de docs | Nunca `git push origin main` |
 | `repo-update` | Legacy — redirige a `repo-updater` | — |

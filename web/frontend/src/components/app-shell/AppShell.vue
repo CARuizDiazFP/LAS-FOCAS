@@ -114,7 +114,7 @@ import { useSession } from '../../composables/useSession';
 
 type SidebarViewId =
   | 'home'
-  | 'infraFo'
+  | 'infraFoDashboard'
   | 'servicios'
   | 'repetitividad'
   | 'sla'
@@ -124,9 +124,10 @@ type SidebarViewId =
   | 'comparadorFo'
   | 'verificadorCromo'
   | 'inventarioCablesCromo'
+  | 'inventarioBotellas'
   | 'none';
 
-type ExpandableModuleId = 'reportes' | 'dwdmCiena' | 'toolKit';
+type ExpandableModuleId = 'infraFo' | 'reportes' | 'dwdmCiena' | 'toolKit';
 
 interface SidebarItem {
   id: Exclude<SidebarViewId, 'none'>;
@@ -165,12 +166,6 @@ const primaryLinks: SidebarItem[] = [
     to: { path: '/' },
   },
   {
-    id: 'infraFo',
-    label: 'Infraestructura FO',
-    icon: 'ph-tree-structure',
-    to: { path: '/infra' },
-  },
-  {
     id: 'servicios',
     label: 'Servicios',
     icon: 'ph-globe-hemisphere-west',
@@ -179,6 +174,16 @@ const primaryLinks: SidebarItem[] = [
 ];
 
 const sidebarModules: SidebarModule[] = [
+  {
+    id: 'infraFo',
+    label: 'Infraestructura FO',
+    icon: 'ph-tree-structure',
+    items: [
+      { id: 'infraFoDashboard', label: 'Dashboard', to: { path: '/infra' } },
+      { id: 'inventarioCablesCromo', label: 'Cables', to: { path: '/infra/cromo/cables' } },
+      { id: 'inventarioBotellas', label: 'Botellas', to: { path: '/infra/Botellas' } },
+    ],
+  },
   {
     id: 'reportes',
     label: 'Reportes',
@@ -205,12 +210,14 @@ const sidebarModules: SidebarModule[] = [
       { id: 'comparadorVlans', label: 'Comparador de VLANs', to: { path: '/toolkit/vlan' } },
       { id: 'comparadorFo', label: 'Comparador FO', to: { path: '/fo' } },
       { id: 'verificadorCromo', label: 'Verificador Cromo', to: { path: '/infra/cromo/verificador' } },
-      { id: 'inventarioCablesCromo', label: 'Inventario Cables Cromo', to: { path: '/infra/cromo/cables' } },
     ],
   },
 ];
 
 const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
+  infraFoDashboard: 'infraFo',
+  inventarioCablesCromo: 'infraFo',
+  inventarioBotellas: 'infraFo',
   repetitividad: 'reportes',
   sla: 'reportes',
   historial: 'reportes',
@@ -218,7 +225,6 @@ const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
   comparadorVlans: 'toolKit',
   comparadorFo: 'toolKit',
   verificadorCromo: 'toolKit',
-  inventarioCablesCromo: 'toolKit',
 };
 
 function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): SidebarViewId {
@@ -227,7 +233,7 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
   }
 
   if (currentRoute.path === '/infra') {
-    return 'infraFo';
+    return 'infraFoDashboard';
   }
   if (currentRoute.path === '/servicios') {
     return 'servicios';
@@ -253,13 +259,16 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
   if (currentRoute.path === '/reports-history') {
     return 'historial';
   }
+  if (currentRoute.path.startsWith('/infra/Camaras/Botellas/') || currentRoute.path === '/infra/Botellas') {
+    return 'inventarioBotellas';
+  }
   if (currentRoute.path.startsWith('/infra/Camaras/')) {
-    return 'infraFo';
+    return 'infraFoDashboard';
   }
   if (currentRoute.path === '/infra/cromo/verificador') {
     return 'verificadorCromo';
   }
-  if (currentRoute.path === '/infra/cromo/cables') {
+  if (currentRoute.path === '/infra/cromo/cables' || currentRoute.path.startsWith('/infra/cromo/cables/ID')) {
     return 'inventarioCablesCromo';
   }
 

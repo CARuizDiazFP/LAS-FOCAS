@@ -44,15 +44,16 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 
 | Columna       | Tipo                 | Descripción |
 |---------------|----------------------|-------------|
-| `id`          | Integer (PK)         | ID autoincremental. |
-| `fontine_id`  | String(64), unique   | Referencia externa (opcional si se crea desde tracking). |
-| `nombre`      | String(255), index   | Nombre/dirección de la cámara (requerido). |
-| `latitud`     | Float                | Coordenada latitud (opcional). |
-| `longitud`    | Float                | Coordenada longitud (opcional). |
-| `direccion`   | String(255)          | Dirección alternativa (opcional). |
-| `estado`      | Enum                 | `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `PENDIENTE_REVISION`. |
-| `origen_datos`| Enum                 | `MANUAL`, `TRACKING`, `SHEET`. |
-| `last_update` | DateTime(tz)         | Última actualización. |
+| `id`               | Integer (PK)         | ID autoincremental. |
+| `fontine_id`       | String(64), unique   | Referencia externa (opcional si se crea desde tracking). |
+| `nombre`           | String(255), index   | Nombre/dirección de la cámara (requerido). |
+| `latitud`          | Float                | Coordenada latitud (opcional). |
+| `longitud`         | Float                | Coordenada longitud (opcional). |
+| `direccion`        | String(255)          | Dirección alternativa (opcional). |
+| `estado`           | Enum                 | `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `PENDIENTE_REVISION`. |
+| `origen_datos`     | Enum                 | `MANUAL`, `TRACKING`, `SHEET`, `INFERIDO`. |
+| `camara_padre_id`  | FK → camaras, index, nullable | Jerarquía Cámara→Botella (2026-08-10): si está seteado, esta fila es una **Botella** y apunta a su Cámara padre (`camara_padre_id IS NULL`). Exactamente 2 niveles — `CHECK` anti-autoreferencia. Ver `docs/infra.md` sección "Jerarquía Cámara → Botellas". |
+| `last_update`      | DateTime(tz)         | Última actualización. |
 
 **Estados:**
 - `LIBRE`: cámara disponible para nuevos servicios.
@@ -65,6 +66,7 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 - `MANUAL`: ingresada manualmente.
 - `TRACKING`: detectada al procesar un archivo de tracking.
 - `SHEET`: importada desde Google Sheets.
+- `INFERIDO`: Cámara padre sintetizada automáticamente al agrupar Botellas (backfill o alta en vivo vía `resolver_o_crear_padre`) — no proviene de ningún origen de datos real, es un artefacto de la jerarquía.
 
 ### Tabla `cables`
 
@@ -234,7 +236,8 @@ cuando la fibra principal está cortada. Esto se implementa mediante la tabla `i
 **Características:**
 - **Redundancia cruzada:** El servicio afectado puede ser diferente al protegido.
 - **Baneo a nivel de entidad:** El estado de `Camara` cambia a `BANEADA`.
-- **Restauración inteligente:** Al levantar baneo, las cámaras vuelven a `LIBRE` u `OCUPADA` según ingresos activos.
+- **Cascada de grupo (2026-08-10):** banear o desbanear cualquier `Camara` cascadea a TODO su grupo Cámara→Botellas (padre + botellas hermanas, ver `docs/infra.md`) vía `aplicar_estado_a_grupo`.
+- **Restauración inteligente:** al levantar un baneo, cada cámara del grupo se evalúa por separado — vuelve a `LIBRE` u `OCUPADA` según ingresos activos, preserva `DETECTADA` si ese era su estado antes de ser baneada, y se mantiene en `BANEADA` si la última transición a ese estado es anterior al inicio del incidente que se levanta (baneo independiente sin `IncidenteBaneo` que lo respalde — override manual o heredado del backfill de jerarquía). Ver `core/services/protection_service.py::_determinar_estado_restauracion` y `camara_estado_service.obtener_ultima_transicion_a_baneada`.
 - **Cámaras nuevas:** Si se carga un tracking de un servicio baneado, las cámaras nuevas nacen `BANEADAS`.
 
 ### Tabla `camaras_estado_auditoria`
@@ -267,6 +270,7 @@ por incidentes activos o ingresos abiertos.
 - `Camara.empalmes`: lista de empalmes ubicados en la cámara.
 - `Camara.ingresos`: historial de ingresos de técnicos.
 - `Camara.cables_origen` / `Camara.cables_destino`: cables conectados.
+- `Camara.camara_padre` / `Camara.botellas`: jerarquía self-referencial de 2 niveles (ver `docs/infra.md`, sección "Jerarquía Cámara → Botellas").
 - `Servicio.empalmes`: empalmes por los que pasa el servicio (N-a-N).
 - `Empalme.servicios`: servicios que pasan por el empalme (N-a-N).
 - `Empalme.camara`: cámara donde se ubica el empalme.
@@ -416,17 +420,30 @@ no haber bajado todavía.
 | `distancia_geo`, `distancia_real` | Numeric(12,2) | — |
 | `extremo_a_n_id`, `extremo_b_n_id` | BigInteger | Sin FK dura. |
 | `extremo_a_clase`, `extremo_b_clase` | SmallInteger | Sin FK dura (puede ser una clase todavía no catalogada). |
-| `extremo_a_legacy`, `extremo_a_nombre`, `extremo_b_legacy`, `extremo_b_nombre` | Text | — |
+| `extremo_a_legacy`, `extremo_a_nombre`, `extremo_b_legacy`, `extremo_b_nombre` | Text | Crudos de `at.28`/`at.34`/`at.29`/`at.37` — **no confiables para el nombre del extremo B**, ver nota abajo. |
 | `pts_raw`, `payload_raw` | JSONB | — |
 | `vigente`, `primera_ingesta`, `ultima_ingesta` | Boolean, DateTime(tz) | — |
 
 Índices: `nombre`, compuesto `(extremo_a_n_id, extremo_b_n_id)`.
 
-**Lectura:** `core/services/cromo/inventario.py` (Etapa 8b) — búsqueda paginada (`ILIKE` parcial sobre
-`nombre`/`jerarquia`/`propietario`, exacto sobre `vigente`) con conteo de servicios matcheados por
-cable vía `cromo_pelos`/`cromo_servicio_match`. Nota real: los parámetros de filtro necesitan
+**`extremo_a_nombre`/`extremo_b_nombre` crudos no son confiables** (hallazgo real, Etapa 9c): Cromo
+nunca manda `at.37` (0/32.782 cables) — ambos nombres de extremo viajan concatenados en el único
+atributo `at.34` (`"LEG_A: dirección_A  LEG_B: dirección_B"`). Todo código de lectura nuevo debe
+resolver el nombre real vía `LEFT JOIN app.cromo_botellas` por `extremo_a_n_id`/`extremo_b_n_id` (con
+`COALESCE` a la columna cruda sólo si la botella todavía no bajó) — mismo patrón ya aplicado en
+`inventario.py`, `verificador.py` y `detalle.py`. No usar `extremo_b_nombre` crudo directamente.
+
+**Lectura:** `core/services/cromo/inventario.py` (Etapa 8b, filtros extendidos en Etapa 9) — búsqueda
+paginada (`ILIKE` parcial sobre `nombre`/`jerarquia`/`propietario`/`botella` —ésta contra
+`extremo_a_nombre`/`extremo_b_nombre`, ya en la propia fila—, exacto sobre `vigente`/`n_id`, y un
+filtro `servicio` vía `n_id IN (subquery no correlacionada)` sobre `cromo_pelos`+
+`cromo_servicio_match`+`app.servicios` — no correlacionada a propósito, para que Postgres resuelva el
+join una sola vez por request en vez de una vez por fila candidata) con conteo de servicios matcheados
+por cable vía `cromo_pelos`/`cromo_servicio_match`. Nota real: los parámetros de filtro necesitan
 `CAST(:param AS tipo)` explícito en el SQL — sin eso, `asyncpg` no puede preparar el statement cuando
-los 4 filtros llegan en `NULL` a la vez (sin ningún filtro puesto) y tira `AmbiguousParameterError`.
+todos los filtros llegan en `NULL` a la vez (sin ningún filtro puesto) y tira `AmbiguousParameterError`.
+Detalle jerárquico completo de un cable puntual (extremos, tubos y pelos con servicio matcheado) en
+`core/services/cromo/detalle.py` (Etapa 9) — 3 queries fijas, sin N+1.
 
 ### Tablas `cromo_tubos` y `cromo_pelos`
 
@@ -441,7 +458,11 @@ dura (`cable_n_id`, `tubo_n_id`).
 `tipo_asociacion` usa el enum de Postgres `app.cromo_tipo_asociacion_pelo` (`CLIENTE` \| `TRUNK_DWDM` \|
 `OLT_LASER` \| `INFRA` \| `LIBRE` \| `INDETERMINADO`, default `LIBRE`), mismo patrón que `camara_estado`.
 `servicio_raw` guarda `at.61` crudo (texto libre); `servicio_numero` es el número parseado por regex —
-nunca se descarta un pelo si no matchea.
+nunca se descarta un pelo si no matchea. El regex (`parser.py::parsear_servicio()`) reconoce los
+prefijos `FO`/`TLS`/`DWDM`/`INT`/`EWS`/`RPV`/`TDM`/`ATD`/`VID`/`TRUNK` (ampliado en Etapa 9c —
+`app.servicios.tipo_servicio` ya trackea esos mismos tipos con el mismo esquema de numeración que FO).
+Backfill de las filas ya ingeridas antes de esa ampliación: `scripts/cromo_backfill_servicio_prefijos.py`
+(91.654 pelos re-clasificados a `CLIENTE`, 7.042 con match real).
 
 ### Tabla `cromo_fusiones`
 
@@ -543,6 +564,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260805_01` | `20260805_01_cromo_ingesta.py` | Tablas `app.cromo_*` (catálogo + auditoría + inventario) y enum `cromo_tipo_asociacion_pelo`, para la Etapa 2 de ingesta desde Cromo Red |
 | `20260806_01` | `20260806_01_cromo_ingesta_config.py` | Tabla `app.cromo_ingesta_config` (fila única, config del scheduler del worker dedicado), para la Etapa 7 de ingesta desde Cromo Red |
 | `20260807_01` | `20260807_01_cromo_fusiones_botella_nullable.py` | `cromo_fusiones.botella_n_id` pasa a nullable — el fetch directo de clase 132 no trae `parent`, para la Etapa 8 de ingesta desde Cromo Red |
+| `20260810_01` | `20260810_01_camara_padre_botella.py` | Columna `camaras.camara_padre_id` (FK auto-referencial + índice + `CHECK` anti-autoreferencia) y valor `INFERIDO` en enum `camara_origen_datos`, para la jerarquía Cámara→Botella (ver `docs/infra.md`) |
 
 ---
 

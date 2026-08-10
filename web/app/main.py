@@ -1975,35 +1975,50 @@ def _serialize_camara_response(
         "ticket_baneo": ticket_baneo,
         "editable": editable,
         "incidentes_activos": incidentes_activos,
+        # Etapa Cámara/Botella: `es_botella`/`botellas_count` sólo tienen sentido si `camara` trae
+        # cargada la columna/relación nueva — con getattr por si algún caller viejo pasa un objeto
+        # sin esos atributos (tests con SimpleNamespace, por ejemplo).
+        "es_botella": bool(getattr(camara, "camara_padre_id", None)),
+        "botellas_count": len(getattr(camara, "botellas", None) or []),
     }
 
 
-def _collect_camara_rutas_info(camara: Any) -> list[dict[str, Any]]:
-    """Obtiene las rutas asociadas a una cámara a través de sus empalmes."""
+def _collect_camara_rutas_info(camara: Any, *, incluir_botellas: bool = False) -> list[dict[str, Any]]:
+    """Obtiene las rutas asociadas a una cámara a través de sus empalmes.
+
+    `incluir_botellas=True` (Etapa Cámara/Botella) también recorre los empalmes de todas las Botellas
+    de `camara` — para que una cámara-raíz muestre los servicios de todo su grupo físico, no sólo los
+    que pasan por su propia fila (los empalmes reales de un grupo suelen vivir en las botellas, no en
+    la cámara padre sintetizada por el backfill)."""
+
+    camaras_a_recorrer = [camara]
+    if incluir_botellas:
+        camaras_a_recorrer.extend(getattr(camara, "botellas", None) or [])
 
     rutas_info: list[dict[str, Any]] = []
     seen_rutas: set[int] = set()
-    for empalme in camara.empalmes:
-        for ruta in empalme.rutas:
-            if ruta.id in seen_rutas:
-                continue
-            seen_rutas.add(ruta.id)
-            alias_ids = ruta.servicio.alias_ids or []
-            transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
-            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
-            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
-            rutas_info.append(
-                {
-                    "ruta_id": ruta.id,
-                    "servicio_id": ruta.servicio.servicio_id,
-                    "ruta_nombre": ruta.nombre,
-                    "ruta_tipo": ruta.tipo.value,
-                    "alias_ids": alias_ids,
-                    "transitos_count": transitos_count,
-                    "punta_a_sitio": punta_a_sitio,
-                    "punta_b_sitio": punta_b_sitio,
-                }
-            )
+    for cam in camaras_a_recorrer:
+        for empalme in cam.empalmes:
+            for ruta in empalme.rutas:
+                if ruta.id in seen_rutas:
+                    continue
+                seen_rutas.add(ruta.id)
+                alias_ids = ruta.servicio.alias_ids or []
+                transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
+                punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
+                punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
+                rutas_info.append(
+                    {
+                        "ruta_id": ruta.id,
+                        "servicio_id": ruta.servicio.servicio_id,
+                        "ruta_nombre": ruta.nombre,
+                        "ruta_tipo": ruta.tipo.value,
+                        "alias_ids": alias_ids,
+                        "transitos_count": transitos_count,
+                        "punta_a_sitio": punta_a_sitio,
+                        "punta_b_sitio": punta_b_sitio,
+                    }
+                )
     return rutas_info
 
 
@@ -2203,7 +2218,7 @@ async def get_camara_detail_web(request: Request, camara_id: int) -> JSONRespons
             if not camara:
                 return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
 
-            rutas_info = _collect_camara_rutas_info(camara)
+            rutas_info = _collect_camara_rutas_info(camara, incluir_botellas=True)
             servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
             payload = _serialize_camara_response(
                 camara=camara,
@@ -2253,6 +2268,49 @@ async def get_camara_aliases_web(request: Request, camara_id: int) -> JSONRespon
         return JSONResponse({"error": "No se pudieron obtener los alias de la cámara"}, status_code=500)
 
 
+@app.get("/api/infra/camaras/{camara_id}/botellas")
+async def get_camara_botellas_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene las Botellas (jerarquía Cámara/Botella) de una cámara — sólo lectura.
+
+    Si `camara_id` es en sí una Botella (`camara_padre_id` seteado), devuelve una lista vacía — el
+    modelo es de exactamente 2 niveles, una Botella no tiene sus propias botellas."""
+
+    _, role = _require_auth(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import Camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            botellas = [
+                _serialize_camara_response(
+                    camara=botella,
+                    rutas_info=_collect_camara_rutas_info(botella),
+                    servicios_ids=_collect_camara_servicios_ids(botella),
+                    contexto=get_camara_estado_contexto(session, botella.id),
+                    editable=role == "admin",
+                )
+                for botella in camara.botellas
+            ]
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "camara_id": camara_id,
+                    "camara_nombre": camara.nombre,
+                    "total": len(botellas),
+                    "botellas": botellas,
+                }
+            )
+    except Exception as exc:
+        logger.exception("action=get_camara_botellas_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudieron obtener las botellas de la cámara"}, status_code=500)
+
+
 @app.get("/api/infra/camaras/{camara_id}/registros")
 async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResponse:
     """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
@@ -2269,7 +2327,7 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
             if not camara:
                 return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
 
-            rutas_info = _collect_camara_rutas_info(camara)
+            rutas_info = _collect_camara_rutas_info(camara, incluir_botellas=True)
             rutas_ids = {int(ruta["ruta_id"]) for ruta in rutas_info if ruta.get("ruta_id") is not None}
             servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
 
@@ -3773,9 +3831,20 @@ async def admin_aprobar_camara(request: Request, camara_id: int) -> JSONResponse
                     status_code=400,
                 )
             camara.estado = CamaraEstado.LIBRE
+
+            # Jerarquía Cámara/Botella: si el nombre ya registrado matchea el sufijo "Bot N",
+            # resolver (o crear) la cámara padre y vincularla — ver camara_hierarchy_service.py.
+            from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+            padre = resolver_o_crear_padre(session, camara.nombre, usuario="admin:aprobar")
+            if padre is not None:
+                camara.camara_padre_id = padre.id
+                if padre.estado == CamaraEstado.BANEADA:
+                    camara.estado = CamaraEstado.BANEADA
+
             session.commit()
             logger.info("action=aprobar_camara camara_id=%s nombre='%s'", camara_id, camara.nombre)
-            return JSONResponse({"ok": True, "camara_id": camara_id, "estado": "LIBRE"})
+            return JSONResponse({"ok": True, "camara_id": camara_id, "estado": camara.estado.value})
     except HTTPException:
         raise
     except Exception as exc:
@@ -3893,6 +3962,16 @@ async def admin_dar_de_alta_camara(
                     session.add(CamaraAlias(camara_id=camara_id, alias_nombre=nombre_original))
                     alias_creado = True
 
+            # Jerarquía Cámara/Botella: recién ahora se conoce el nombre FINAL de la cámara — si
+            # matchea el sufijo "Bot N", resolver (o crear) la cámara padre y vincularla.
+            from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+            padre = resolver_o_crear_padre(session, nombre_canon, usuario="admin:dar-de-alta")
+            if padre is not None:
+                camara.camara_padre_id = padre.id
+                if padre.estado == CamaraEstado.BANEADA:
+                    camara.estado = CamaraEstado.BANEADA
+
             session.commit()
             logger.info(
                 "action=definir_nombre_canon camara_id=%s nombre_original='%s' nombre_canon='%s' alias_creado=%s",
@@ -3972,6 +4051,8 @@ async def smart_search_camaras_web(
     username, role = _require_auth(request)
 
     try:
+        from sqlalchemy.orm import selectinload
+
         from core.services.camara_estado_service import get_camara_estado_contexto
         from db.models.infra import Camara
         from db.session import SessionLocal
@@ -3981,7 +4062,13 @@ async def smart_search_camaras_web(
 
         with SessionLocal() as session:
             from db.models.infra import CamaraEstado as _CamaraEstado
-            _query = session.query(Camara)
+            # Etapa Cámara/Botella: el dashboard sólo muestra cámaras-raíz — sus Botellas viven en el
+            # detalle (GET /api/infra/camaras/{id}/botellas). `selectinload(Camara.botellas)` evita que
+            # `incluir_botellas=True` (abajo) dispare una query lazy por cada cámara de la página
+            # encima del N+1 ya preexistente de este endpoint (empalmes/rutas/cables sin eager load).
+            _query = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).options(
+                selectinload(Camara.botellas)
+            )
             estado_filter: Optional[str] = None
             if body.estado:
                 estado_upper = body.estado.strip().upper()
@@ -3991,43 +4078,13 @@ async def smart_search_camaras_web(
             all_camaras = _query.order_by(Camara.nombre).all()
 
             def get_camara_rutas(camara: Camara) -> list[dict]:
-                """Obtiene las rutas asociadas a una cámara a través de empalmes."""
-                rutas_info = []
-                seen_rutas = set()
-                for empalme in camara.empalmes:
-                    for ruta in empalme.rutas:
-                        if ruta.id not in seen_rutas:
-                            seen_rutas.add(ruta.id)
-                            # Obtener alias del servicio
-                            alias_ids = ruta.servicio.alias_ids or []
-                            # Contar tránsitos en esta ruta
-                            transitos_count = sum(1 for e in ruta.empalmes if e.es_transito)
-                            # Obtener puntas
-                            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
-                            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
-                            rutas_info.append({
-                                "ruta_id": ruta.id,
-                                "servicio_id": ruta.servicio.servicio_id,
-                                "ruta_nombre": ruta.nombre,
-                                "ruta_tipo": ruta.tipo.value,
-                                "alias_ids": alias_ids,
-                                "transitos_count": transitos_count,
-                                "punta_a_sitio": punta_a_sitio,
-                                "punta_b_sitio": punta_b_sitio,
-                            })
-                return rutas_info
+                """Rutas del grupo completo (cámara + sus botellas) — reusa la función módulo-level
+                que ya usan `get_camara_detail_web`/`get_camara_registros_web`, sin duplicar lógica."""
+                return _collect_camara_rutas_info(camara, incluir_botellas=True)
 
             def get_camara_servicios(camara: Camara, rutas_info: list[dict] = None) -> list[str]:
-                """Obtiene servicios desde rutas (preferido) o empalmes legacy."""
-                if rutas_info:
-                    return list(set(r["servicio_id"] for r in rutas_info))
-                # Fallback: relación legacy
-                servicios_ids = []
-                for empalme in camara.empalmes:
-                    for servicio in empalme.servicios:
-                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                            servicios_ids.append(servicio.servicio_id)
-                return servicios_ids
+                """Servicios del grupo completo — idem, reusa la función módulo-level."""
+                return _collect_camara_servicios_ids(camara, rutas_info)
 
             def get_camara_cables(camara: Camara) -> list[str]:
                 cables_nombres = []
@@ -4783,11 +4840,15 @@ async def cromo_inventario_cables_web(
     jerarquia: Optional[str] = None,
     propietario: Optional[str] = None,
     vigente: Optional[bool] = None,
+    n_id: Optional[int] = None,
+    botella: Optional[str] = None,
+    servicio: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> JSONResponse:
-    """Inventario navegable de cables ya ingeridos (Etapa 8b) — búsqueda + paginación. Sólo lectura,
-    cualquier usuario autenticado (es consulta, no administración, mismo criterio que el verificador)."""
+    """Inventario navegable de cables ya ingeridos (Etapa 8b, filtros extendidos en Etapa 9) —
+    búsqueda + paginación. Sólo lectura, cualquier usuario autenticado (es consulta, no
+    administración, mismo criterio que el verificador)."""
     from core.services.cromo.inventario import buscar_cables
     from db.session import AsyncSessionLocal
 
@@ -4797,7 +4858,16 @@ async def cromo_inventario_cables_web(
 
     async with AsyncSessionLocal() as sesion:
         resultado = await buscar_cables(
-            sesion, q=q, jerarquia=jerarquia, propietario=propietario, vigente=vigente, limit=limit, offset=offset
+            sesion,
+            q=q,
+            jerarquia=jerarquia,
+            propietario=propietario,
+            vigente=vigente,
+            n_id=n_id,
+            botella=botella,
+            servicio=servicio,
+            limit=limit,
+            offset=offset,
         )
 
     return JSONResponse(
@@ -4822,6 +4892,111 @@ async def cromo_inventario_cables_web(
             ],
         }
     )
+
+
+@app.get("/api/infra/botellas/buscar")
+async def botellas_unificadas_buscar_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> JSONResponse:
+    """Listado unificado de Botellas: `app.cromo_botellas` (Cromo, siempre primero, sin estado
+    operativo) + `app.camaras` con `camara_padre_id` seteado (legado Infra/Baneos, con estado real).
+    Sólo lectura, cualquier usuario autenticado — es consulta, no administración."""
+    from core.services.botellas_unificadas_service import buscar_botellas_unificadas
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_botellas_unificadas(sesion, q=q, limit=limit, offset=offset)
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "botellas": [
+                {"origen": b.origen, "id": b.id, "nombre": b.nombre, "estado": b.estado}
+                for b in resultado.botellas
+            ],
+        }
+    )
+
+
+def _serializar_extremo_cable(n_id: Any, clase: Any, legacy: Any, nombre: Any) -> dict[str, Any]:
+    return {"n_id": n_id, "clase": clase, "legacy": legacy, "nombre": nombre}
+
+
+def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
+    return {
+        "n_id": pelo.n_id,
+        "numero_pelo": pelo.numero_pelo,
+        "orden": pelo.orden,
+        "color": pelo.color,
+        "tipo_asociacion": pelo.tipo_asociacion,
+        "servicio_raw": pelo.servicio_raw,
+        "servicio_numero": pelo.servicio_numero,
+        "vigente": pelo.vigente,
+        "servicios": [_serializar_servicio_encontrado(s) for s in pelo.servicios],
+    }
+
+
+def _serializar_detalle_cable(detalle: Any) -> dict[str, Any]:
+    return {
+        "n_id": detalle.n_id,
+        "nombre": detalle.nombre,
+        "capacidad": detalle.capacidad,
+        "capacidad_pelos": detalle.capacidad_pelos,
+        "jerarquia": detalle.jerarquia,
+        "propietario": detalle.propietario,
+        "tendido": detalle.tendido,
+        # Decimal no es serializable por JSONResponse/json.dumps — a float explícito.
+        "distancia_geo": float(detalle.distancia_geo) if detalle.distancia_geo is not None else None,
+        "distancia_real": float(detalle.distancia_real) if detalle.distancia_real is not None else None,
+        "id_legacy": detalle.id_legacy,
+        "notas": detalle.notas,
+        "vigente": detalle.vigente,
+        "extremo_a": _serializar_extremo_cable(
+            detalle.extremo_a_n_id, detalle.extremo_a_clase, detalle.extremo_a_legacy, detalle.extremo_a_nombre
+        ),
+        "extremo_b": _serializar_extremo_cable(
+            detalle.extremo_b_n_id, detalle.extremo_b_clase, detalle.extremo_b_legacy, detalle.extremo_b_nombre
+        ),
+        "tubos": [
+            {
+                "n_id": t.n_id,
+                "orden": t.orden,
+                "nombre_color": t.nombre_color,
+                "vigente": t.vigente,
+                "tiene_fila_propia": t.tiene_fila_propia,
+                "pelos": [_serializar_pelo_detalle(p) for p in t.pelos],
+            }
+            for t in detalle.tubos
+        ],
+    }
+
+
+@app.get("/api/infra/cromo/cables/{n_id}/detalle")
+async def cromo_cable_detalle_web(request: Request, n_id: int) -> JSONResponse:
+    """Detalle jerárquico completo de un cable: metadata, extremos, tubos/buffers y pelos con su
+    servicio matcheado (Etapa 9). Sólo lectura, cualquier usuario autenticado (mismo criterio que el
+    verificador/inventario)."""
+    from core.services.cromo.detalle import obtener_detalle_cable
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            detalle = await obtener_detalle_cable(sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(_serializar_detalle_cable(detalle))
 
 
 @app.get("/api/servicios/search")

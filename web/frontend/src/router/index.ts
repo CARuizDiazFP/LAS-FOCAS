@@ -15,6 +15,9 @@ const ServicioDetalleView = () => import('../views/ServicioDetalleView.vue');
 const CamaraDetailView = () => import('../views/CamaraDetailView.vue');
 const VerificadorCromoView = () => import('../views/VerificadorCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
+const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
+const BotellasInventarioView = () => import('../views/BotellasInventarioView.vue');
+const BotellaDetalleUnificadaView = () => import('../views/BotellaDetalleUnificadaView.vue');
 const RepetitividadTab = () => import('../views/tabs/RepetitividadTab.vue');
 const VlanTab = () => import('../views/tabs/VlanTab.vue');
 const FoTab = () => import('../views/tabs/FoTab.vue');
@@ -148,6 +151,17 @@ const routes: RouteRecordRaw[] = [
       { path: 'infra/Camaras/:id(\\d+)', name: 'camara-detail', component: CamaraDetailView },
       { path: 'infra/cromo/verificador', name: 'infra-cromo-verificador', component: VerificadorCromoView },
       { path: 'infra/cromo/cables', name: 'infra-cromo-cables', component: InventarioCablesCromoView },
+      {
+        path: 'infra/cromo/cables/ID:nId(\\d+)',
+        name: 'infra-cromo-cable-detalle',
+        component: CableDetalleCromoView,
+      },
+      { path: 'infra/Botellas', name: 'infra-botellas', component: BotellasInventarioView },
+      {
+        path: 'infra/Camaras/Botellas/ID:id(\\d+)',
+        name: 'infra-botellas-detalle',
+        component: BotellaDetalleUnificadaView,
+      },
     ],
   },
   {
