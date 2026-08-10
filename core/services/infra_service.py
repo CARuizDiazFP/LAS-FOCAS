@@ -307,6 +307,19 @@ def _get_or_create_camara(
     )
     session.add(camara)
     session.flush()
+
+    # Jerarquía Cámara/Botella: si el nombre matchea el sufijo "Bot N", resolver (o crear) la cámara
+    # padre y vincularla — ver `core/services/camara_hierarchy_service.py`.
+    from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+    padre = resolver_o_crear_padre(session, nombre, usuario="sistema:tracking")
+    if padre is not None:
+        camara.camara_padre_id = padre.id
+        # Si el grupo ya está baneado, la botella nueva no debe nacer en un estado más laxo.
+        if padre.estado == CamaraEstado.BANEADA and camara.estado != CamaraEstado.BANEADA:
+            camara.estado = CamaraEstado.BANEADA
+        session.flush()
+
     return camara, True
 
 

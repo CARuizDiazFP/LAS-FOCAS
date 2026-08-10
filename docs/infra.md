@@ -14,6 +14,122 @@ El módulo **Infraestructura FO** permite la gestión de cámaras de fibra ópti
 - **Smart Search**: búsqueda libre por servicio, dirección, cámara, cable
 - **Filtros rápidos**: por estado (Libre, Ocupada, Baneada, Detectada, Tracking)
 - **Upload de tracking**: carga archivos `.txt` de tracking para asociar cámaras a servicios
+- El grid sólo devuelve **Cámaras raíz** (`camara_padre_id IS NULL`, ver "Jerarquía Cámara → Botellas"
+  más abajo) — las Botellas viven dentro del detalle de su Cámara, no como tarjetas propias en el
+  dashboard.
+
+### Jerarquía Cámara → Botellas
+
+Muchas filas de `app.camaras` no son cámaras físicas distintas sino **Botellas** (cajas de empalme)
+dentro de la MISMA cámara física, distinguidas sólo por un sufijo textual en el nombre — ej.
+"Cra 14 de Julio 240 CF" y "Cra 14 de Julio 240 Bot 2 CF" son la misma cámara con 2 botellas. Desde
+2026-08-10 esa jerarquía es explícita vía `Camara.camara_padre_id` (FK auto-referencial, exactamente
+2 niveles — una Cámara tiene `camara_padre_id IS NULL`, una Botella lo tiene seteado apuntando a su
+Cámara).
+
+> **Nota de naming**: el módulo Cromo (`app.cromo_botellas`, ~11.100 filas) también usa el término
+> "Botella" para un concepto de dominio totalmente distinto y sin ninguna relación con
+> `app.camaras`/`camara_padre_id`. Son dos homónimos de dos dominios separados — no confundir al leer
+> código o datos de ambos módulos. Ver `docs/modulo_ingesta_cromo.md`.
+
+**Detección de agrupación**: `modules/slack_baneo_notifier/camara_search.py::RE_BOT_SUFIJO`
+(`\bbot\.?\s*[1-9](?!\d)`, case-insensitive) detecta el sufijo "Bot N"; usa una clase de un solo dígito
+a propósito para no confundir un nombre de calle como "Bot 30 de Septiembre..." con un índice de
+botella. `core/services/camara_hierarchy_service.py::extraer_base()` remueve sólo el token "Bot N" del
+nombre (preservando el resto, ej. el sufijo "CF" final) para obtener el nombre base con el que agrupar.
+
+**Alta en vivo**: `core/services/camara_hierarchy_service.py::resolver_o_crear_padre()` se invoca desde
+los 6 caminos de alta/promoción de `Camara` (tracking `.txt`, import Excel, sync Google Sheets, alta
+Slack, y los dos endpoints admin `admin_dar_de_alta_camara`/`admin_aprobar_camara` en `web/app/main.py`)
+— si el nombre nuevo matchea `RE_BOT_SUFIJO`, reusa la Cámara padre `INFERIDO` existente para esa base
+o crea una nueva, y vincula la fila nueva como Botella.
+
+**Backfill histórico** (`scripts/camara_backfill_padre_botella.py`, corrido una vez contra dev el
+2026-08-10): agrupa TODAS las filas raíz existentes por nombre base normalizado; para cada grupo con
+algún sufijo "Bot N" crea SIEMPRE una Cámara padre nueva (`origen_datos=INFERIDO`) y vincula como
+Botellas tanto las filas con sufijo como la variante "pelada" (sin sufijo) — **nunca promueve una fila
+existente a padre**, para no heredar por accidente un `origen_datos`/historial que no corresponde.
+El estado de la Cámara padre nueva se calcula como el más restrictivo del grupo
+(`BANEADA > OCUPADA/DETECTADA > LIBRE`; `PENDIENTE_REVISION` queda excluido de este cálculo — es un
+estado administrativo, no de severidad física, y grupos con algún miembro en `PENDIENTE_REVISION` se
+saltan por completo en la escalada). Resultado real en dev: 1645→1931 filas, 286 Cámaras padre creadas,
+424 Botellas vinculadas, 188 grupos escalados de estado, 9 grupos saltados por `PENDIENTE_REVISION`.
+
+**Cascada de baneo (bidireccional y completa)**: banear o desbanear CUALQUIER miembro de un grupo
+(Cámara o Botella) afecta a TODO el grupo — Cámara padre + todas las Botellas hermanas.
+`core/services/camara_estado_service.py::aplicar_estado_a_grupo()` es el único punto del código que
+debe escribir `Camara.estado` directamente; `create_ban`/`lift_ban`
+(`core/services/protection_service.py`) y `override_camara_estado_manual` (import Excel masivo + modal
+admin de un click) lo usan en vez de asignar `camara.estado = X` a mano. Sin esto, banear una Botella
+por Excel o por el modal admin dejaba a su Cámara padre mostrándose libre — el hueco de seguridad de
+campo real que motivó este diseño.
+
+**Limitación conocida — duplicados sin sufijo "Bot N"**: el backfill y `resolver_o_crear_padre` sólo
+agrupan por el patrón "Bot N". Direcciones duplicadas con una plantilla de nombre distinta (ej.
+"Cámara 14 de Julio 240", origen `SHEET`, sin ningún sufijo ni palabra en común con "Cra 14 de Julio
+240 CF" más allá de la dirección) NO se detectan ni se fusionan — quedan como una segunda Cámara raíz
+independiente, visible como una tarjeta separada en el dashboard. Confirmado en dev: id=1638 "Cámara 14
+de Julio 240" (BANEADA, origen SHEET) coexiste con el grupo real id=2663/753/1065. Fusionar estos casos
+requiere reasignar FKs de `empalmes`/`cables`/`ingresos`/`camara_alias` de forma potencialmente
+destructiva — queda fuera de alcance de este backfill, es trabajo de un ticket separado con su propio
+plan de validación.
+
+**Escritura de `Ingreso` sobre el grupo**: fuera de alcance — la tabla `app.ingresos` no tiene ningún
+camino de escritura real hoy (0 filas, 0 endpoints), por lo que no hay nada que propagar todavía. Ver
+"Registros" más abajo, pestaña Ingresos placeholder.
+
+**Endpoint nuevo**: `GET /api/infra/camaras/{camara_id}/botellas` — devuelve las Botellas de una Cámara
+(lista vacía si `camara_id` es en sí una Botella, el modelo es de 2 niveles). Consumido por
+`ModalBotellas.vue` desde una 4ª tarjeta "Botellas" en `CamaraDetailView.vue`.
+
+### Submódulo Botellas (listado unificado, 2026-08-10)
+
+Vista independiente en el sidebar (`Infraestructura FO → Botellas`, ruta `/infra/Botellas`) que lista
+**dos fuentes de datos sin relación real entre sí**, ambas llamadas históricamente "Botella":
+
+1. **`app.cromo_botellas`** (mirror de sólo lectura de Cromo Red, ~11.100 filas vigentes) — siempre
+   ordenadas primero. Sin campo de estado operativo: Cromo no trackea BANEADA/LIBRE/OCUPADA, así que
+   estas tarjetas muestran "Sin estado operativo" en vez de inventar un valor. Verificado contra datos
+   reales que Cromo tampoco distingue Cámara/Poste/Botella como entidades separadas — `app.cromo_clases`
+   sólo tiene la entidad `BOTELLA` (clases 68/121/122/123/124/125) para las tres cosas a la vez,
+   diferenciadas sólo por texto libre en `nombre` (ej. "Poste Marcos Paz 2111" y "Cra. Pumacahua 48"
+   conviven en la misma clase 68).
+2. **`app.camaras` con `camara_padre_id` seteado** (Botellas "legado" de la jerarquía Cámara→Botella de
+   Infra/Baneos, ~424 filas) — con estado operativo real, ordenadas después de Cromo.
+
+Se combinan en **una sola query SQL `UNION ALL`** (`core/services/botellas_unificadas_service.py::buscar_botellas_unificadas`,
+mismo patrón de `core/services/cromo/inventario.py::buscar_cables`: CTE reusado por COUNT y SELECT,
+`CAST(:param AS tipo)` explícito) en vez de dos queries por engine (una async contra Cromo, una sync
+contra Infra) combinadas con aritmética de paginación en Python — evita mezclar sesiones sync+async en
+el mismo handler y evita lógica de "ventaneo" nueva. Endpoint: `GET /api/infra/botellas/buscar` (ver
+más abajo). Frontend: `BotellasInventarioView.vue`, mismo patrón de scroll infinito + toggle
+tarjeta/lista que `ServiciosView.vue` (`IntersectionObserver`, debounce 320ms, `localStorage` para el
+modo de vista) — no el patrón de páginas numeradas de `InventarioCablesCromoView.vue`.
+
+**Identidad NO unificada, a propósito**: un `n_id` de Cromo y un `Camara.id` legado son espacios de ID
+independientes que pueden coincidir en valor sin ser la misma fila (ej. ambos pueden ser `753`). El
+frontend nunca usa `id` solo como clave — siempre el compuesto `${origen}:${id}` (dedup, `:key` de Vue,
+y el query param `?origen=` de la ruta de detalle). Un mismo sitio físico con fila en ambas fuentes
+sigue apareciendo dos veces en la lista, por diseño explícito del usuario ("sin eliminarlas").
+
+**Click-through sin UI de detalle nueva**: la ruta `/infra/Camaras/Botellas/ID:id(\d+)?origen=` (mismo
+patrón de "ID" pegado al param que `/infra/cromo/cables/ID:nId(\d+)`) es un **shim de redirección**
+(`BotellaDetalleUnificadaView.vue`) que reenvía a la vista real según origen: `?origen=legado` →
+`/infra/Camaras/{id}` (reusa `CamaraDetailView.vue` tal cual, una Botella legado ya es una `Camara`
+más); cualquier otro valor (incluido Cromo) → `/infra/cromo/verificador?tipo=botella&n_id={id}` (reusa
+`VerificadorCromoView.vue` tal cual). No se construyó una segunda UI de detalle para datos que ya se
+muestran correctamente en otro lado.
+
+**Explícitamente fuera de alcance de este pase, decisión directa del usuario**:
+- Resolución de "Cámara/Poste padre" para Botellas Cromo. Existe el mismo patrón de sufijo "Bot N" en
+  `cromo_botellas.nombre` que ya se resolvió para `app.camaras` (confirmado con un ejemplo real: n_id
+  6638808/6633661/6639188/9772850 = "Cra Plaza de los Ingleses CF" + variantes "Bot 2/3/4"), pero
+  resolverlo requeriría construir de cero la misma heurística sobre esta tabla — el usuario aclaró que
+  primero va a ingerir cámaras/postes como objetos propios desde Cromo (trabajo de ingesta futuro) y
+  sólo después construirá el script de vinculación.
+- Cualquier inferencia de estado operativo para Botellas Cromo por coincidencia de nombre contra
+  `app.camaras` — rechazado explícitamente por riesgo de mostrar un estado de seguridad incorrecto.
+- Fusión/deduplicación real de identidad entre ambas fuentes.
 
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
@@ -141,6 +257,12 @@ Obtiene los alias conocidos de una cámara desde `app.camara_alias`.
 ### GET /api/infra/camaras/{camara_id}/registros
 Obtiene registros operativos parciales: auditoría manual de estado, baneos relacionados y placeholders de ingresos/egresos.
 
+### GET /api/infra/camaras/{camara_id}/botellas
+Obtiene las Botellas (jerarquía Cámara/Botella, ver sección homónima más arriba) de una Cámara. Lista vacía si `camara_id` es en sí una Botella.
+
+### GET /api/infra/botellas/buscar
+Listado unificado de Botellas Cromo + legado (ver sección "Submódulo Botellas" más arriba). Query params: `q` (`ILIKE` sobre nombre, +calle/localidad para Cromo), `limit` (default 30, clamp 1-100), `offset`. Respuesta: `{total, limit, offset, botellas: [{origen: "cromo"|"legado", id, nombre, estado}]}` — `estado` siempre `null` para `origen="cromo"`.
+
 ### GET /api/infra/ban/active
 Lista todos los incidentes de baneo activos con conteo de cámaras.
 
@@ -184,17 +306,35 @@ Genera archivo EML para descargar y abrir en Outlook.
 
 ## Archivos relacionados
 
-- `web/frontend/src/views/tabs/InfraTab.vue` - Tab principal de Infraestructura FO
-- `web/frontend/src/views/CamaraDetailView.vue` - Vista dedicada por cámara
-- `web/frontend/src/components/infra/` - Modales aislados de alias, servicios, registros y edición de estado
-- `web/frontend/src/router/index.ts` - Ruta SPA `/infra/Camaras/:id`
-- `web/app/main.py` - Endpoints web same-origin para listado y detalle
-- `api/app/routes/infra.py` - Endpoints API base y búsquedas de infraestructura
-- `core/services/camara_estado_service.py` - Lógica de contexto y auditoría de estado
-- `core/services/protection_service.py` - Lógica de negocio del Protocolo de Protección
-- `db/models/infra.py` - Modelos de cámaras, alias, auditoría e incidentes
+- `web/frontend/src/views/tabs/InfraTab.vue` - Tab principal de Infraestructura FO (dashboard, sólo Cámaras raíz)
+- `web/frontend/src/views/CamaraDetailView.vue` - Vista dedicada por cámara (Alias, Registros, Servicios, Botellas)
+- `web/frontend/src/components/infra/` - Modales aislados de alias, servicios, registros, botellas y edición de estado
+- `web/frontend/src/router/index.ts` - Ruta SPA `/infra/Camaras/:id` (una Botella es una Camara más — reusa la misma ruta/vista)
+- `web/app/main.py` - Endpoints web same-origin para listado y detalle; único consumidor real del frontend hoy
+- `api/app/routes/infra.py` - Router montado en el servicio `api` (puerto 8011 dev / 8001 prod) con endpoints de cámaras/búsqueda equivalentes; **sin consumidor real en el frontend actual** (la SPA usa exclusivamente los endpoints same-origin de `web/app/main.py`) — deuda técnica preexistente, no se tocó en esta iteración
+- `core/services/camara_estado_service.py` - Contexto/auditoría de estado, `miembros_del_grupo()`, `aplicar_estado_a_grupo()` (único punto que escribe `Camara.estado`), `obtener_ultima_transicion_a_baneada()`
+- `core/services/camara_hierarchy_service.py` - Detección de sufijo "Bot N", extracción de nombre base, `resolver_o_crear_padre()` (alta en vivo), `estado_mas_restrictivo()`
+- `core/services/protection_service.py` - Lógica de negocio del Protocolo de Protección (`create_ban`/`lift_ban`), con cascada de grupo completa
+- `scripts/camara_backfill_padre_botella.py` - Backfill histórico de la jerarquía (idempotente, soporta `--dry-run`)
+- `db/models/infra.py` - Modelos de cámaras (incl. `camara_padre_id`/`botellas`/`es_botella`), alias, auditoría e incidentes
+- `db/alembic/versions/20260810_01_camara_padre_botella.py` - Migración: columna `camara_padre_id`, índice, `CHECK` anti-autoreferencia, valor `INFERIDO` en `camara_origen_datos`
+- `core/services/botellas_unificadas_service.py` - Listado unificado Botellas Cromo + legado (`buscar_botellas_unificadas`, query `UNION ALL`)
+- `web/frontend/src/views/BotellasInventarioView.vue` - Submódulo "Botellas" del sidebar (scroll infinito + toggle tarjeta/lista, patrón `ServiciosView.vue`)
+- `web/frontend/src/views/BotellaDetalleUnificadaView.vue` - Shim de redirección por origen en `/infra/Camaras/Botellas/ID:id`
+- `web/frontend/src/components/infra/BotellaCard.vue` - Tarjeta mínima (origen, ID, nombre, estado) del submódulo Botellas
+- `web/frontend/src/api/botellas.ts` - Cliente frontend del listado unificado
 
 ## Historial de cambios
+
+### 2026-08-10 - Submódulo Botellas: listado unificado Cromo + legado
+
+- **Agregado**: submódulo "Botellas" en el sidebar (`Infraestructura FO → Botellas`, ruta `/infra/Botellas`) — lista `app.cromo_botellas` (siempre primero, sin estado operativo) y `app.camaras` con `camara_padre_id` seteado (legado, con estado real), sin fusionar ni eliminar duplicados entre fuentes, sólo diferenciadas con un badge de origen.
+- **Agregado**: `core/services/botellas_unificadas_service.py::buscar_botellas_unificadas` — una sola query SQL `UNION ALL` (COUNT + SELECT, mismo patrón que `buscar_cables`) en vez de combinar dos engines (async Cromo + sync Infra) con aritmética de paginación en Python.
+- **Agregado**: endpoint `GET /api/infra/botellas/buscar` (ver "API Endpoints" más arriba).
+- **Agregado**: ruta `/infra/Camaras/Botellas/ID:id(\d+)?origen=` — shim de redirección (`BotellaDetalleUnificadaView.vue`), sin UI de detalle nueva: reenvía a `/infra/Camaras/{id}` (legado) o al verificador Cromo existente (`?tipo=botella&n_id=`).
+- **Hallazgo real, confirmado contra `lasfocasdev-postgres`**: Cromo no distingue Cámara/Poste/Botella como entidades separadas (una sola entidad `BOTELLA` en `app.cromo_clases` cubre las clases 68/121/122/123/124/125) y sí tiene el mismo patrón de sufijo "Bot N" que `app.camaras` (ejemplo real: n_id 6638808 "Cra Plaza de los Ingleses CF" + 3 variantes "Bot 2/3/4") — pero resolver esa jerarquía sobre `cromo_botellas` queda deliberadamente fuera de este pase (decisión del usuario: primero ingesta de cámaras/postes propios desde Cromo, después script de vinculación).
+- **Explícitamente fuera de alcance**: tarjeta "Cámara Padre" para Botellas Cromo, inferencia de estado operativo Cromo por coincidencia de nombre (riesgo de mostrar un estado de seguridad incorrecto), fusión/deduplicación real de identidad entre ambas fuentes.
+- **Verificado end-to-end** contra `lasfocasdev-postgres`/`lasfocasdev-web` real (usuario QA temporal): `total=11524` sin filtro (11100 Cromo vigentes + 424 legado, exacto); orden "Cromo siempre primero" confirmado con `limit=5` sin filtro (las 5 primeras filas son Cromo); búsquedas reales ("Plaza de los Ingleses", "14 de Julio 240") devuelven los ejemplos esperados con `estado` correcto por origen.
 
 ### 2026-05-13 - Refactor de tarjetas FO y vista dedicada por cámara
 - **Corregido**: la grilla principal vuelve a mostrar el `id` numérico real de cámara en lugar de depender de `fontine_id`.
@@ -270,6 +410,18 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Actualizado**: `Start` y `scripts/start_dev.sh` — llaman a `build_base.sh` automáticamente antes de levantar el stack.
 - **Excluido**: `office_service/Dockerfile` queda sin cambios (usa fastapi 0.111.1/pydantic 2.8.2/uvicorn 0.30.1 + LibreOffice, incompatible con la base común).
 - **Armonización de versiones**: `SQLAlchemy` 2.0.32→2.0.36, `psycopg[binary]` 3.1.19→3.2.1 en `requirements.txt` raíz y `slack_baneo_notifier/requirements.txt`.
+
+### 2026-08-10 - Jerarquía Cámara → Botellas y fix de restauración de baneo
+
+- **Agregado**: `Camara.camara_padre_id` (FK auto-referencial, 2 niveles) + relaciones `camara_padre`/`botellas`/propiedad `es_botella`. Migración `20260810_01_camara_padre_botella.py` (agrega también `INFERIDO` a `camara_origen_datos`).
+- **Agregado**: `core/services/camara_hierarchy_service.py` — detección de sufijo "Bot N" (reusa/promueve `RE_BOT_SUFIJO` de `camara_search.py`), extracción de nombre base, `resolver_o_crear_padre()` conectado a los 6 caminos reales de alta/promoción de `Camara`.
+- **Agregado**: `core/services/camara_estado_service.py::aplicar_estado_a_grupo()` — único punto de escritura de `Camara.estado`, con cascada bidireccional completa al grupo (Cámara + todas sus Botellas). `create_ban`/`lift_ban` y `override_camara_estado_manual` reescritos para usarlo.
+- **Agregado**: `scripts/camara_backfill_padre_botella.py` — backfill histórico, corrido contra dev: 1645→1931 filas, 286 Cámaras padre creadas, 424 Botellas vinculadas, 188 grupos escalados de estado, 9 grupos con `PENDIENTE_REVISION` saltados intencionalmente.
+- **Agregado**: endpoint `GET /api/infra/camaras/{id}/botellas`; `_serialize_camara_response` expone `es_botella`/`botellas_count`; el dashboard (`smart-search`) sólo devuelve Cámaras raíz.
+- **Agregado**: frontend — `ModalBotellas.vue` (tarjetas independientes por Botella) y 4ª tarjeta "Botellas" en `CamaraDetailView.vue`; `InfraTab.vue` muestra conteo de botellas junto al de servicios y usa `fontine_id` como label si existe (fallback al ID interno).
+- **Corregido (bug real encontrado durante la verificación, no sólo en dry-run)**: `_determinar_estado_restauracion` en `protection_service.py::lift_ban` sólo sabía restaurar a `LIBRE`/`OCUPADA` — nunca a `DETECTADA`, y no distinguía una Cámara/Botella con un baneo INDEPENDIENTE de este incidente (override manual o heredado del backfill, sin `IncidenteBaneo` que lo respalde) de una recién baneada por el incidente que se está levantando. El bug ya existía antes de esta iteración (un `lift_ban` de una sola cámara sin agrupar habría tenido el mismo problema), pero la cascada de grupo multiplicó el radio de impacto de 1 cámara a todo el grupo por cada `lift_ban`. Se detectó en una verificación real contra dev (grupo de prueba arrastró 8 cámaras de otros 2 grupos reales a `LIBRE` perdiendo su `DETECTADA`/`BANEADA` real) y se revirtió manualmente antes de aplicar el fix. **Fix**: nueva consulta `camara_estado_service.obtener_ultima_transicion_a_baneada()` sobre `app.camaras_estado_auditoria`; si la última transición a `BANEADA` es anterior al inicio del incidente que se levanta, la cámara se mantiene `BANEADA` (baneo independiente); si el estado previo a esa transición era `DETECTADA`, se preserva. Tests de regresión en `tests/test_protection_service.py`.
+- **Limitación conocida documentada**: direcciones duplicadas con una plantilla de nombre distinta a "Bot N" (ej. "Cámara 14 de Julio 240" vs "Cra 14 de Julio 240 CF") no se detectan ni fusionan — ver sección "Jerarquía Cámara → Botellas" más arriba.
+- **Fuera de alcance**: escritura de `Ingreso` sobre el grupo (la tabla no tiene ningún camino de escritura real hoy), fusión de duplicados sin patrón "Bot N", unificación de las 3 implementaciones divergentes de conteo de servicios, limpieza de `api/app/routes/infra.py` (huérfano, sin consumidor real).
 
 ### 2026-05-12 - Restauración de avisos Slack en Protocolo de Protección
 - **Corregido**: los baneos ejecutados desde el panel Vue 3 entran por `web/app/main.py`; esa ruta persistía el incidente pero no disparaba el aviso inmediato a Slack ni el reporte actualizado.

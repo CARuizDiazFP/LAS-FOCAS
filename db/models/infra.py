@@ -47,6 +47,7 @@ class CamaraOrigenDatos(str, Enum):
     MANUAL = "MANUAL"
     TRACKING = "TRACKING"
     SHEET = "SHEET"
+    INFERIDO = "INFERIDO"  # Cámara padre sintetizada por el backfill de jerarquía Cámara/Botella
 
 
 class RutaTipo(str, Enum):
@@ -90,7 +91,16 @@ ruta_empalme_association = Table(
 
 
 class Camara(Base):
-    """Cámara de fibra óptica en la red de infraestructura."""
+    """Cámara de fibra óptica en la red de infraestructura.
+
+    Jerarquía Cámara/Botella (`camara_padre_id`, self-FK): una fila con
+    `camara_padre_id IS NULL` es una Cámara (nodo físico, contenedor); una fila
+    con `camara_padre_id` seteado es una Botella (caja de empalme) dentro de esa
+    cámara. Exactamente 2 niveles — nunca cadenas. "Botella" acá es un concepto
+    de este módulo de Infraestructura, sin relación con `CromoBotella`
+    (`app.cromo_botellas`, módulo de ingesta Cromo Red) — son entidades
+    homónimas de dominios distintos, esquemas separados, sin FK entre ambas.
+    """
 
     __tablename__ = "camaras"
     __table_args__ = {"schema": "app"}
@@ -102,27 +112,48 @@ class Camara(Base):
     longitud = Column(Float, nullable=True)
     direccion = Column(String(255), nullable=True)
     estado = Column(
-        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
         nullable=False,
         default=CamaraEstado.LIBRE,
     )
     origen_datos = Column(
-        SQLEnum(CamaraOrigenDatos, name="camara_origen_datos", create_type=False),
+        SQLEnum(CamaraOrigenDatos, name="camara_origen_datos", create_type=False, schema="app"),
         nullable=False,
         default=CamaraOrigenDatos.MANUAL,
     )
     last_update = Column(DateTime(timezone=True), nullable=True)
+    camara_padre_id = Column(
+        Integer,
+        ForeignKey("app.camaras.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     empalmes = relationship("Empalme", back_populates="camara", cascade="all, delete-orphan")
     cables_origen = relationship("Cable", back_populates="origen_camara", foreign_keys="Cable.origen_camara_id")
     cables_destino = relationship("Cable", back_populates="destino_camara", foreign_keys="Cable.destino_camara_id")
     ingresos = relationship("Ingreso", back_populates="camara", cascade="all, delete-orphan")
     aliases = relationship("CamaraAlias", back_populates="camara", cascade="all, delete-orphan")
+    camara_padre = relationship(
+        "Camara",
+        remote_side=[id],
+        back_populates="botellas",
+        foreign_keys=[camara_padre_id],
+    )
+    botellas = relationship(
+        "Camara",
+        back_populates="camara_padre",
+        foreign_keys=[camara_padre_id],
+    )
 
     @property
     def cables(self) -> list["Cable"]:
         """Retorna todos los cables asociados a esta cámara (origen + destino)."""
         return self.cables_origen + self.cables_destino
+
+    @property
+    def es_botella(self) -> bool:
+        return self.camara_padre_id is not None
 
     def __repr__(self) -> str:
         return f"<Camara id={self.id} nombre='{self.nombre}' estado={self.estado.value}>"
@@ -224,7 +255,7 @@ class RutaServicio(Base):
     servicio_id = Column(Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True)
     nombre = Column(String(255), nullable=False, default="Principal")
     tipo = Column(
-        SQLEnum(RutaTipo, name="ruta_tipo", create_type=False),
+        SQLEnum(RutaTipo, name="ruta_tipo", create_type=False, schema="app"),
         nullable=False,
         default=RutaTipo.PRINCIPAL,
     )
@@ -298,7 +329,7 @@ class PuntoTerminal(Base):
     id = Column(Integer, primary_key=True)
     ruta_id = Column(Integer, ForeignKey("app.rutas_servicio.id", ondelete="CASCADE"), nullable=False, index=True)
     tipo = Column(
-        SQLEnum(PuntoTerminalTipo, name="punto_terminal_tipo", create_type=False),
+        SQLEnum(PuntoTerminalTipo, name="punto_terminal_tipo", create_type=False, schema="app"),
         nullable=False,
     )
     sitio_descripcion = Column(String(255), nullable=True)  # ODF MAIPU 316 1
@@ -493,15 +524,15 @@ class CamaraEstadoAuditoria(Base):
     usuario = Column(String(128), nullable=False)
     motivo = Column(Text, nullable=False)
     estado_anterior = Column(
-        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
         nullable=False,
     )
     estado_nuevo = Column(
-        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
         nullable=False,
     )
     estado_sugerido = Column(
-        SQLEnum(CamaraEstado, name="camara_estado", create_type=False),
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
         nullable=True,
     )
     incidentes_activos = Column(JSON, nullable=True)

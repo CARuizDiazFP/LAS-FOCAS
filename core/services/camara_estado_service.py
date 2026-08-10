@@ -86,15 +86,28 @@ class ActualizacionEstadoResultado:
         }
 
 
+def miembros_del_grupo(camara: Camara) -> list[Camara]:
+    """Cámara + todas sus Botellas hermanas (cascada completa bidireccional, Etapa Cámara/Botella).
+
+    Si `camara` es una Botella (`camara_padre_id` seteado), se resuelve primero su cámara padre y se
+    devuelve el grupo completo (padre + todas sus botellas, incluida `camara` misma)."""
+    raiz = camara.camara_padre or camara
+    return [raiz, *raiz.botellas]
+
+
 def _collect_servicios_y_rutas(camara: Camara) -> tuple[set[str], set[int]]:
+    """Servicios/rutas que tocan cualquier empalme del GRUPO (cámara + todas sus botellas) — no sólo
+    los de `camara` directamente, para que el baneo/ingreso de una botella se refleje en la
+    visibilidad de toda la cámara y viceversa."""
     servicios_ids: set[str] = set()
     rutas_ids: set[int] = set()
 
-    for empalme in camara.empalmes:
-        for ruta in empalme.rutas:
-            rutas_ids.add(ruta.id)
-            if ruta.servicio and ruta.servicio.servicio_id:
-                servicios_ids.add(ruta.servicio.servicio_id)
+    for miembro in miembros_del_grupo(camara):
+        for empalme in miembro.empalmes:
+            for ruta in empalme.rutas:
+                rutas_ids.add(ruta.id)
+                if ruta.servicio and ruta.servicio.servicio_id:
+                    servicios_ids.add(ruta.servicio.servicio_id)
 
     return servicios_ids, rutas_ids
 
@@ -147,10 +160,11 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
             incidente for incidente in candidatos if _incidente_afecta_camara(incidente, servicios_ids, rutas_ids)
         ]
 
+    ids_grupo = [miembro.id for miembro in miembros_del_grupo(camara)]
     tiene_ingreso_activo = (
         session.query(Ingreso.id)
         .filter(
-            Ingreso.camara_id == camara.id,
+            Ingreso.camara_id.in_(ids_grupo),
             Ingreso.fecha_fin == None,  # noqa: E711
         )
         .first()
@@ -189,6 +203,71 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
     )
 
 
+def aplicar_estado_a_grupo(
+    session: Session,
+    camara: Camara,
+    nuevo_estado: CamaraEstado,
+    *,
+    usuario: str,
+    motivo: str,
+    estado_sugerido: CamaraEstado | None = None,
+    incidentes_activos_ids: list[int] | None = None,
+) -> list[CamaraEstadoAuditoria]:
+    """Aplica `nuevo_estado` a `camara` Y a TODO su grupo (cámara padre + todas las botellas
+    hermanas) — cascada completa bidireccional (Etapa Cámara/Botella): banear cualquier botella banea
+    también a la cámara y a sus hermanas; banear la cámara banea a todas sus botellas.
+
+    Es el único lugar del código que debe escribir `Camara.estado` directamente.
+    `override_camara_estado_manual` (este mismo archivo, usado por el override admin/import Excel) y
+    `create_ban`/`lift_ban` (`core/services/protection_service.py`, el "Protocolo de Protección")
+    llaman a esta función en vez de asignar `camara.estado = X` a mano — así CUALQUIER camino de
+    escritura (protección por servicio, override manual, código futuro) queda con la cascada correcta
+    sin tener que auditar cada punto de escritura por separado. Sin esto, banear una botella por Excel
+    o por el modal admin de un click deja a su cámara padre mostrándose libre mientras la botella
+    hermana está inaccesible — el hueco de seguridad de campo real que motivó este diseño.
+
+    Registra una fila de auditoría (`CamaraEstadoAuditoria`) por cada miembro efectivamente
+    modificado (estado distinto al que ya tenía) — sólo la fila del miembro `camara` (el objetivo
+    directo de la acción) lleva `estado_sugerido`/`incidentes_activos_ids`, si se pasan; esos campos
+    describen el contexto de la acción original, no de sus hermanas.
+
+    Devuelve las filas de auditoría creadas (una por miembro modificado, puede ser lista vacía si el
+    grupo entero ya estaba en `nuevo_estado`).
+    """
+    ahora = datetime.now(timezone.utc)
+    auditorias: list[CamaraEstadoAuditoria] = []
+
+    for miembro in miembros_del_grupo(camara):
+        if miembro.estado == nuevo_estado:
+            continue
+        es_objetivo_directo = miembro.id == camara.id
+        auditoria = CamaraEstadoAuditoria(
+            camara_id=miembro.id,
+            usuario=usuario,
+            motivo=motivo,
+            estado_anterior=miembro.estado,
+            estado_nuevo=nuevo_estado,
+            estado_sugerido=estado_sugerido if es_objetivo_directo else None,
+            incidentes_activos=incidentes_activos_ids if es_objetivo_directo else None,
+        )
+        session.add(auditoria)
+        auditorias.append(auditoria)
+        miembro.estado = nuevo_estado
+        miembro.last_update = ahora
+
+    if auditorias:
+        session.flush()
+        logger.info(
+            "action=aplicar_estado_a_grupo camara_id=%d nuevo_estado=%s usuario=%s miembros_modificados=%s",
+            camara.id,
+            nuevo_estado.value,
+            usuario,
+            [a.camara_id for a in auditorias],
+        )
+
+    return auditorias
+
+
 def override_camara_estado_manual(
     session: Session,
     camara_id: int,
@@ -197,7 +276,8 @@ def override_camara_estado_manual(
     usuario: str,
     motivo: str,
 ) -> ActualizacionEstadoResultado:
-    """Aplica un override manual sobre el estado de una cámara y lo audita."""
+    """Aplica un override manual sobre el estado de una cámara (y su grupo Cámara/Botella completo —
+    ver `aplicar_estado_a_grupo`) y lo audita."""
     camara = session.query(Camara).filter(Camara.id == camara_id).first()
     if not camara:
         return ActualizacionEstadoResultado(success=False, error="Cámara no encontrada")
@@ -214,20 +294,16 @@ def override_camara_estado_manual(
             contexto=contexto_actual,
         )
 
-    auditoria = CamaraEstadoAuditoria(
-        camara_id=camara.id,
+    auditorias = aplicar_estado_a_grupo(
+        session,
+        camara,
+        nuevo_estado,
         usuario=usuario,
         motivo=motivo,
-        estado_anterior=camara.estado,
-        estado_nuevo=nuevo_estado,
         estado_sugerido=contexto_actual.estado_sugerido,
-        incidentes_activos=[incidente.id for incidente in contexto_actual.incidentes_activos],
+        incidentes_activos_ids=[incidente.id for incidente in contexto_actual.incidentes_activos],
     )
-    session.add(auditoria)
-
-    camara.estado = nuevo_estado
-    camara.last_update = datetime.now(timezone.utc)
-    session.flush()
+    audit_id_directo = next((a.id for a in auditorias if a.camara_id == camara.id), None)
 
     logger.info(
         "action=override_camara_estado camara_id=%d usuario=%s estado_anterior=%s estado_nuevo=%s incidentes_activos=%d",
@@ -242,8 +318,29 @@ def override_camara_estado_manual(
         success=True,
         camara_id=camara.id,
         changed=True,
-        audit_id=auditoria.id,
+        audit_id=audit_id_directo,
         contexto=get_camara_estado_contexto(session, camara.id),
+    )
+
+
+def obtener_ultima_transicion_a_baneada(session: Session, camara_id: int) -> CamaraEstadoAuditoria | None:
+    """Última fila de auditoría que transicionó `camara_id` A estado BANEADA (la más reciente).
+
+    Hallazgo real (QA de cascada, 2026-08-10): `lift_ban` restauraba TODO el grupo a LIBRE/OCUPADA
+    sin considerar que (a) el estado previo a ser baneado pudo ser DETECTADA, no LIBRE, y (b) un
+    miembro pudo quedar BANEADA por un baneo independiente (override manual o herencia del backfill)
+    anterior al incidente que se está levantando, sin ningún `IncidenteBaneo` que lo respalde — por lo
+    que `_camara_tiene_otro_baneo_activo` (que sólo mira `IncidenteBaneo`) no lo detecta. Esta consulta
+    permite reconstruir ambos casos a partir de la única fuente de verdad histórica: la auditoría.
+    """
+    return (
+        session.query(CamaraEstadoAuditoria)
+        .filter(
+            CamaraEstadoAuditoria.camara_id == camara_id,
+            CamaraEstadoAuditoria.estado_nuevo == CamaraEstado.BANEADA,
+        )
+        .order_by(CamaraEstadoAuditoria.created_at.desc())
+        .first()
     )
 
 
@@ -270,7 +367,10 @@ __all__ = [
     "ActualizacionEstadoResultado",
     "CamaraEstadoContexto",
     "IncidenteActivoResumen",
+    "aplicar_estado_a_grupo",
     "get_camara_estado_contexto",
+    "miembros_del_grupo",
+    "obtener_ultima_transicion_a_baneada",
     "obtener_ultimo_motivo_baneo_manual",
     "override_camara_estado_manual",
 ]

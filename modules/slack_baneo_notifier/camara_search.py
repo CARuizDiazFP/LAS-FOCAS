@@ -62,6 +62,16 @@ _RE_MULTI_BOT = re.compile(
     r"(?i)\bbot(?:ella)?s?\s+(\d+)\s+(?:y|&)\s+(\d+)\b"
 )
 
+# Detecta el sufijo "Bot N" (botella secundaria) dentro de un nombre de cámara — constante
+# exportable, compartida con `core/services/camara_hierarchy_service.py` (jerarquía Cámara/Botella,
+# Etapa Infra). Clase de un solo dígito [1-9] a propósito: evita el falso positivo real encontrado en
+# datos reales, "Bot 30 de Septiembre y J.M.Estrada" ("30" es parte del nombre de la calle, no un
+# índice de botella) — con una clase de un solo carácter, el lookahead `(?!\d)` falla porque a "3" le
+# sigue otro dígito ("0"), y la coincidencia se descarta. El lookahead (no un `\b` de cierre) es
+# necesario porque hay nombres reales sin espacio tras el número ("Bot 3CF") donde un `\b` de cierre
+# fallaría (dígito seguido de letra, ambos \w, sin límite de palabra entre ellos).
+RE_BOT_SUFIJO = re.compile(r"\bbot\.?\s*[1-9](?!\d)", re.IGNORECASE)
+
 # Detecta sufijos de ruido operativo: "- CUADRILLA DE HIDROCONS", "/ Móvil 4", etc.
 # Solo corta en separador (-, /, |) SEGUIDO de una stopword operativa conocida.
 # Preserva localidades con guion: "Poste Lavalle - Campana" (Campana no es stopword).
@@ -391,8 +401,7 @@ def _filtrar_bots_secundarios(
     """
     if tiene_bot:
         return candidatos
-    _re_bot_sec = re.compile(r"\bbot\s+[2-9]\b", re.IGNORECASE)
-    return [c for c in candidatos if not _re_bot_sec.search(c.nombre or "")]
+    return [c for c in candidatos if not RE_BOT_SUFIJO.search(c.nombre or "")]
 
 
 def _buscar_ilike_lista(patron: str, session: Session) -> list["Camara"]:

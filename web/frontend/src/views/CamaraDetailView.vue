@@ -53,6 +53,17 @@
             <strong>{{ serviciosCount }}</strong>
             <p>{{ camara.rutas.length }} ruta{{ camara.rutas.length !== 1 ? 's' : '' }} asociada{{ camara.rutas.length !== 1 ? 's' : '' }}. Cada ID de servicio abre su tracking en un modal superpuesto.</p>
           </button>
+
+          <button
+            v-if="!camara.es_botella"
+            class="camara-detail-card"
+            type="button"
+            @click="botellasModalOpen = true"
+          >
+            <span class="camara-detail-card__eyebrow">Botellas</span>
+            <strong>{{ botellas.length }}</strong>
+            <p>{{ botellas.length ? 'Cajas de empalme agrupadas bajo esta cámara física.' : 'Sin botellas asociadas — esta cámara no tiene sub-jerarquía.' }}</p>
+          </button>
         </section>
       </template>
     </div>
@@ -93,6 +104,14 @@
       :placeholders="registros.placeholders"
       @close="registrosModalOpen = false"
     />
+
+    <ModalBotellas
+      :open="botellasModalOpen"
+      :camara-id="camara?.id ?? null"
+      :camara-nombre="camara?.nombre || camara?.direccion || ''"
+      :botellas="botellas"
+      @close="botellasModalOpen = false"
+    />
   </section>
 </template>
 
@@ -104,6 +123,7 @@ import CamaraEstadoModal from '../components/infra/CamaraEstadoModal.vue';
 import ModalAlias from '../components/infra/ModalAlias.vue';
 import ModalServicios from '../components/infra/ModalServicios.vue';
 import ModalRegistros from '../components/infra/ModalRegistros.vue';
+import ModalBotellas from '../components/infra/ModalBotellas.vue';
 
 interface RutaItem {
   ruta_id: number;
@@ -123,12 +143,20 @@ interface CamaraDetail {
   estado: string;
   editable: boolean;
   rutas: RutaItem[];
+  es_botella: boolean;
 }
 
 interface AliasItem {
   id: number;
   nombre: string;
   created_at: string | null;
+}
+
+interface BotellaItem {
+  id: number;
+  nombre: string | null;
+  estado: string | null;
+  servicios: string[];
 }
 
 interface RegistrosContexto {
@@ -172,6 +200,7 @@ const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin
 
 const camara = ref<CamaraDetail | null>(null);
 const aliases = ref<AliasItem[]>([]);
+const botellas = ref<BotellaItem[]>([]);
 const registros = ref<RegistrosPayload>({
   contexto: null,
   baneos: [],
@@ -188,6 +217,7 @@ const estadoModalOpen = ref(false);
 const aliasModalOpen = ref(false);
 const serviciosModalOpen = ref(false);
 const registrosModalOpen = ref(false);
+const botellasModalOpen = ref(false);
 
 const serviciosCount = computed(() => new Set((camara.value?.rutas ?? []).map((ruta) => ruta.servicio_id)).size);
 const registrosCount = computed(() => registros.value.baneos.length + registros.value.auditoria.length);
@@ -221,18 +251,21 @@ async function loadCamaraDetail(): Promise<void> {
   errorMessage.value = '';
   try {
     const camaraId = getCamaraId();
-    const [camaraResponse, aliasesResponse, registrosResponse] = await Promise.all([
+    const [camaraResponse, aliasesResponse, registrosResponse, botellasResponse] = await Promise.all([
       fetch(`/api/infra/camaras/${camaraId}`, { credentials: 'include' }),
       fetch(`/api/infra/camaras/${camaraId}/aliases`, { credentials: 'include' }),
       fetch(`/api/infra/camaras/${camaraId}/registros`, { credentials: 'include' }),
+      fetch(`/api/infra/camaras/${camaraId}/botellas`, { credentials: 'include' }),
     ]);
 
     const camaraData = await parseResponse<{ camara: CamaraDetail }>(camaraResponse);
     const aliasesData = await parseResponse<{ aliases: AliasItem[] }>(aliasesResponse);
     const registrosData = await parseResponse<RegistrosPayload>(registrosResponse);
+    const botellasData = await parseResponse<{ botellas: BotellaItem[] }>(botellasResponse);
 
     camara.value = camaraData.camara;
     aliases.value = aliasesData.aliases ?? [];
+    botellas.value = botellasData.botellas ?? [];
     registros.value = {
       contexto: registrosData.contexto ?? null,
       baneos: registrosData.baneos ?? [],
@@ -243,6 +276,7 @@ async function loadCamaraDetail(): Promise<void> {
     errorMessage.value = error instanceof Error ? error.message : String(error);
     camara.value = null;
     aliases.value = [];
+    botellas.value = [];
   } finally {
     loading.value = false;
   }

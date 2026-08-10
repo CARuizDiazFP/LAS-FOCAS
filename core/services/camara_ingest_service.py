@@ -81,6 +81,17 @@ def procesar_ingesta_camaras(
                         camara.id,
                         usuario,
                     )
+
+                    # Jerarquía Cámara/Botella: si `alias` matchea el sufijo "Bot N", resolver (o
+                    # crear) la cámara padre y vincularla — ver camara_hierarchy_service.py. El baneo
+                    # administrativo de abajo se aplica DESPUÉS de este hook, así que ya alcanza al
+                    # grupo completo (padre + hermanas) vía `aplicar_estado_a_grupo`.
+                    from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+                    padre = resolver_o_crear_padre(session, alias, usuario=f"sistema:excel:{usuario}")
+                    if padre is not None:
+                        camara.camara_padre_id = padre.id
+                        session.flush()
                 else:
                     resultado.preexistentes += 1
 

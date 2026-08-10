@@ -161,6 +161,16 @@ def _sync_rows(rows: Sequence[Mapping[str, Any]], session: Session) -> InfraSync
             session.add(camara)
             created += 1
             logger.info("action=infra_sync created fontine_id=%s estado=%s", fontine_id, estado.value)
+
+            # Jerarquía Cámara/Botella: si `nombre` matchea el sufijo "Bot N", resolver (o crear) la
+            # cámara padre y vincularla — ver core/services/camara_hierarchy_service.py.
+            if nombre:
+                from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+                padre = resolver_o_crear_padre(session, nombre, usuario="sistema:sheet_sync")
+                if padre is not None:
+                    camara.camara_padre_id = padre.id
+
             continue
 
         changed = False

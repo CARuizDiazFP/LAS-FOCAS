@@ -603,7 +603,7 @@
           <div class="infra-camara-row">
             <span :class="['infra-camara-dot', estadoDotClass(camara.estado)]" aria-hidden="true"></span>
             <span class="infra-camara-estado-text">{{ camara.estado || 'LIBRE' }}</span>
-            <span v-if="camara.id != null" class="fop-camara-id">ID {{ camara.id }}</span>
+            <span v-if="camara.id != null" class="fop-camara-id">{{ camaraIdLabel(camara) }}</span>
           </div>
 
           <h3 class="fop-camara-nombre">{{ camara.nombre || camara.direccion || 'Sin nombre' }}</h3>
@@ -732,7 +732,19 @@ function estadoDotClass(estado: unknown): string {
 
 function camaraMeta(camara: Record<string, unknown>): string {
   const servicios = ((camara.servicios as unknown[]) ?? []).length;
-  return servicios > 0 ? `${servicios} servicio${servicios !== 1 ? 's' : ''}` : 'Sin relevar';
+  const botellas = Number(camara.botellas_count ?? 0);
+  const partes: string[] = [];
+  if (botellas > 0) partes.push(`${botellas} botella${botellas !== 1 ? 's' : ''}`);
+  partes.push(servicios > 0 ? `${servicios} servicio${servicios !== 1 ? 's' : ''}` : 'Sin relevar');
+  return partes.join(' · ');
+}
+
+function camaraIdLabel(camara: Record<string, unknown>): string {
+  // Etapa Cámara/Botella: fallback al ID interno — el ID de Cromo/Fontine aún no está garantizado
+  // para todas las cámaras (hoy 0% poblado en dev, ver docs/infra.md).
+  const fontineId = camara.fontine_id;
+  if (typeof fontineId === 'string' && fontineId.trim()) return fontineId;
+  return `ID ${camara.id}`;
 }
 
 async function searchCamaras() {
