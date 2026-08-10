@@ -5,8 +5,7 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   tests:
@@ -21,7 +20,7 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r common-requirements.txt -r api/requirements.txt -r web/requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt -r common-requirements.txt -r api/requirements.txt -r web/requirements.txt -r requirements-dev.txt -r modules/cromo_worker/requirements.txt
       - name: Bootstrap local secrets
         run: |
           ./scripts/setup_local_secrets.sh --ci

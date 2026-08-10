@@ -12,7 +12,7 @@ httpx==0.27.0
 orjson==3.10.6
 
 # Web extras
-jinja2==3.1.4
+jinja2==3.1.6  # Parche de seguridad, ver pip-audit
 itsdangerous==2.2.0
 python-multipart==0.0.9
 bcrypt==4.1.2

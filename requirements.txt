@@ -9,7 +9,7 @@ json5==0.15.0  # Parser tolerante para las respuestas pseudo-JSON (claves sin co
 sqlalchemy==2.0.36  # ORM para interactuar con la base de datos (armonizado con common-requirements.txt)
 psycopg[binary]==3.2.1  # Driver PostgreSQL en formato binario (armonizado con common-requirements.txt)
 orjson==3.10.6  # Serializador JSON de alto rendimiento (unificado)
-jinja2==3.1.4  # Motor de plantillas para UI
+jinja2==3.1.6  # Motor de plantillas para UI (parche de seguridad, ver pip-audit)
 python-multipart==0.0.9  # Soporte de formularios para FastAPI
 bcrypt==4.1.2  # Hash de contraseñas (uso directo sin Passlib)
 itsdangerous==2.2.0  # Firmas para sesiones (SessionMiddleware)

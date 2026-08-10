@@ -3,7 +3,7 @@
 # Descripción: Dependencias específicas de la API (las comunes están en focas-base vía common-requirements.txt)
 
 # Solo paquetes específicos de este servicio
-python-dotenv==1.0.1
+python-dotenv==1.2.2  # Parche de seguridad, ver pip-audit
 folium==0.16.0
 gspread==6.0.0
 slack_sdk==3.33.5  # Avisos a Slack al crear/levantar baneos desde Infra
