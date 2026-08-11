@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r /app/bot_requirements.txt
 COPY bot_telegram /app/bot_telegram
 COPY core /app/core
 
-# Usuario no root opcional (hardening)
-# RUN useradd -m bot && chown -R bot:bot /app && USER bot
+RUN chown -R focas:focas /app
+USER focas
 
 CMD ["python", "-m", "bot_telegram.app"]

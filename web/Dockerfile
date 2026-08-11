@@ -32,6 +32,9 @@ COPY modules /app/modules
 COPY db /app/db
 COPY --from=web-build /frontend/dist /app/frontend/dist
 
+RUN chown -R focas:focas /app
+USER focas
+
 EXPOSE 8080
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

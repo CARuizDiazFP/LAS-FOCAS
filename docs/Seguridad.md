@@ -115,12 +115,16 @@ bash scripts/firewall_hardening.sh
   modo no-Swarm — `docker info` reporta `Swarm.LocalNodeState: inactive` —, así que no aplica
   `docker secret create`/`external: true`; Compose monta el archivo directamente en `/run/secrets/<nombre>`
   sin necesidad de Swarm).
-- Los 8 secretos (`db_password_v1`, `api_key_v1`, `web_secret_key_v1`, `telegram_bot_token_v1`,
-  `openai_api_key_v1`, `smtp_password_v1`, `slack_bot_token_v1`, `slack_app_token_v1`) usan archivos
-  **sin prefijo** en `.secrets/*.txt` (el prefijo `Dev_` queda reservado exclusivamente para el stack dev,
-  ver `deploy/docker-compose.dev.yml`).
-- Los servicios consumen `/run/secrets/<nombre>` con el helper compartido `get_secret()` (`core/config.py`)
-  y mantienen fallback a `.env` solo durante la transición.
+- Los 9 secretos (`db_password_v1`, `api_key_v1`, `web_secret_key_v1`, `telegram_bot_token_v1`,
+  `openai_api_key_v1`, `smtp_password_v1`, `slack_bot_token_v1`, `slack_app_token_v1`,
+  `pgadmin_password_v1`) usan archivos **sin prefijo** en `.secrets/*.txt` (el prefijo `Dev_` queda
+  reservado exclusivamente para el stack dev, ver `deploy/docker-compose.dev.yml`).
+- Los servicios propios consumen `/run/secrets/<nombre>` con el helper compartido `get_secret()`
+  (`core/config.py`) y mantienen fallback a `.env` solo durante la transición. `pgadmin_password_v1` es la
+  excepción: lo consume directamente la imagen `dpage/pgadmin4` vía `PGADMIN_DEFAULT_PASSWORD_FILE` (no
+  pasa por `get_secret()`). El servicio `pgadmin` es opcional (`profiles: ["pgadmin"]`), publicado solo en
+  `127.0.0.1` para acceso vía túnel SSH, y `PGADMIN_DEFAULT_EMAIL` se lee de la variable `PGADMIN_EMAIL`
+  en `.env`/`.env.dev` (no hay variante `_FILE` para el email en esa imagen).
 - **Importante**: si `DATABASE_URL` (o `ALEMBIC_URL`) está seteada en `.env`, tiene prioridad sobre el
   secreto `db_password_v1` en `_engine_url()` (`db/session.py`, `core/services/repetitividad.py`) y lo anula
   por completo. Debe quedar comentada (no solo vacía: una variable vacía igual gana sobre el default en

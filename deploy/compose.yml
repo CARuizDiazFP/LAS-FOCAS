@@ -37,6 +37,7 @@ services:
       dockerfile: api/Dockerfile
     container_name: lasfocas-api
     restart: unless-stopped
+    user: "1001:1001"
     env_file:
       - ../.env
     environment:
@@ -61,11 +62,51 @@ services:
     networks:
       - lasfocas_net
 
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: lasfocas-docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # Acota la API de Docker a lo mínimo que necesita web/app/main.py:
+      # containers.get() + container.start() + container.reload() sobre un único
+      # contenedor (slack_baneo_worker). Nada de create/exec/remove/images/volumes/redes.
+      CONTAINERS: 1
+      ALLOW_START: 1
+      POST: 0
+      AUTH: 0
+      SECRETS: 0
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      EXEC: 0
+      BUILD: 0
+      SWARM: 0
+      SYSTEM: 0
+      INFO: 0
+      SERVICES: 0
+      NODES: 0
+      TASKS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    expose:
+      - "2375"
+    networks:
+      - docker_proxy_net
+
   web:
     build:
       context: ..
       dockerfile: web/Dockerfile
     container_name: lasfocas-web
+    user: "1001:1001"
     env_file:
       - ../.env
     environment:
@@ -77,6 +118,9 @@ services:
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
+      # Gestión del worker de baneos desde el panel admin vía proxy acotado (ver docker-socket-proxy),
+      # sin montar /var/run/docker.sock directamente en este contenedor.
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
       # LOG_LEVEL se toma de .env; si se desea sobreescribir aquí se puede definir.
     secrets:
       - api_key_v1
@@ -89,6 +133,7 @@ services:
       - api
       - nlp_intent
       - postgres
+      - docker-socket-proxy
     ports:
       - "172.18.208.162:8080:8080"
     volumes:
@@ -96,7 +141,6 @@ services:
       - ../Templates:/app/Templates:ro
       - reports_data:/app/data/reports
       - uploads_data:/app/data/uploads
-      - /var/run/docker.sock:/var/run/docker.sock  # Gestión del worker de baneos desde el panel admin
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || curl -fsS http://172.18.208.162:8080/health || exit 1"]
       interval: 10s
@@ -104,6 +148,7 @@ services:
       retries: 12
     networks:
       - lasfocas_net
+      - docker_proxy_net
 
   nlp_intent:
     build:
@@ -128,6 +173,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/bot.Dockerfile
+    user: "1001:1001"
     env_file:
       - ../.env
     secrets:
@@ -166,6 +212,7 @@ services:
       context: ..
       dockerfile: deploy/docker/repetitividad_worker.Dockerfile
     profiles: ["reports-worker"]
+    user: "1001:1001"
     env_file:
       - ../.env
     environment:
@@ -215,10 +262,19 @@ services:
     profiles: ["pgadmin"]
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@local
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password_v1
+    secrets:
+      - pgadmin_password_v1
+    # pgAdmin corre como uid 5050 (no root, no coincide con el dueño del secreto en el
+    # host). Compose sin Swarm monta los secretos como bind mount preservando los
+    # permisos del host tal cual (ignora uid/gid/mode de la sintaxis larga), así que
+    # necesita leer el archivo por grupo: el secreto queda en 640 + group support-focal-01,
+    # y acá se agrega ese grupo como suplementario al contenedor.
+    group_add:
+      - "1001"
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     depends_on:
       - postgres
     networks:
@@ -238,6 +294,16 @@ networks:
       config:
         - subnet: 172.20.0.0/24
           gateway: 172.20.0.1
+  # Red dedicada web <-> docker-socket-proxy: ningún otro servicio de lasfocas_net
+  # (api, postgres, nlp_intent, office, pgadmin) puede alcanzar el proxy aunque se comprometa.
+  docker_proxy_net:
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.21.0.0/24
+          gateway: 172.21.0.1
 
 secrets:
   api_key_v1:
@@ -256,3 +322,5 @@ secrets:
     file: ../.secrets/slack_bot_token_v1.txt
   slack_app_token_v1:
     file: ../.secrets/slack_app_token_v1.txt
+  pgadmin_password_v1:
+    file: ../.secrets/pgadmin_password_v1.txt

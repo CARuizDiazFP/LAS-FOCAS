@@ -16,7 +16,7 @@ COPY db/ /app/db/
 COPY modules/__init__.py /app/modules/__init__.py
 COPY modules/cromo_worker/ /app/modules/cromo_worker/
 
-RUN useradd -m -u 1000 worker
-USER worker
+RUN chown -R focas:focas /app
+USER focas
 
 CMD ["python", "-m", "modules.cromo_worker.worker"]

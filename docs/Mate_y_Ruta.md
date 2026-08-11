@@ -4,7 +4,7 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-04-20
+Fecha de última actualización: 2026-08-11
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
@@ -260,6 +260,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Edición Manual de Estado de Cámaras**: overrides admin auditados en `app.camaras_estado_auditoria`, modal de edición en Infra/Cámaras y conteo efectivo de baneadas alineado al estado persistido (2026-04-20).
 - [x] **Jerarquía Cámara → Botellas**: relación auto-referencial (`camara_padre_id`, 2 niveles) para agrupar botellas bajo su cámara física real, cascada de baneo/estado a todo el grupo (`aplicar_estado_a_grupo`), backfill contra dev (286 padres creados, 424 botellas vinculadas) y fix crítico de restauración de baneo que preservaba mal el estado previo de cámaras de otros grupos. Skill `baneo-qa-real` agregada como metodología obligatoria para probar cascadas de estado sin drift no controlado. Detalle en `docs/PR/2026-08-10.md` (2026-08-10).
 - [x] **CI desactivado por defecto**: `.github/workflows/ci.yml` corregido (faltaba instalar `modules/cromo_worker/requirements.txt`, abortaba toda la colección de pytest) y cambiado a `workflow_dispatch` (ejecución manual) para no consumir minutos/créditos en cada push/PR; bump de `jinja2`/`python-dotenv` por CVEs reales (2026-08-10).
+- [x] **Auditoría de seguridad + fix de los 2 hallazgos Critical**: `web` dejó de montar `/var/run/docker.sock` (reemplazado por `tecnativa/docker-socket-proxy` en red dedicada) y de correr como root (`api`/`web`/`bot`/`repetitividad_worker` migrados a usuario compartido no-root `focas`); pgAdmin pasó de credenciales `admin`/`admin` hardcodeadas y publicado en `0.0.0.0` a Docker Secret real + bind `127.0.0.1`. Dos incidentes reales de producción durante el rollout (drift de red `/16` vs `/24`, colisión de UID entre `base.Dockerfile` y los workers) resueltos y documentados como guardrails nuevos en las skills `docker-rebuild`/`secrets-rollout` (`.github/`, `.gemini/rules/`, `.codex-skills/skills/`). Detalle en `docs/decisiones.md` y `docs/PR/2026-08-11.md` (2026-08-11).
 
 ### Pendiente (prioridad)
 - [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).

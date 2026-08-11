@@ -16,7 +16,7 @@ COPY db/ /app/db/
 COPY modules/__init__.py /app/modules/__init__.py
 COPY modules/slack_baneo_notifier/ /app/modules/slack_baneo_notifier/
 
-RUN useradd -m -u 1000 worker
-USER worker
+RUN chown -R focas:focas /app
+USER focas
 
 CMD ["python", "-m", "modules.slack_baneo_notifier.worker"]

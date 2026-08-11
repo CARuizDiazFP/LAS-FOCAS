@@ -43,7 +43,7 @@ La red `lasfocas_dev_net` usa una subred explícita **`172.19.0.0/24`** (no el d
 | PostgreSQL           | `127.0.0.1:5432`             | `127.0.0.1:5433`    |
 | API (docs: `/docs`)  | `:8001`                      | `:8011`             |
 | Web (panel)          | `172.18.208.162:8080`        | `127.0.0.1:8090`    |
-| pgAdmin (profile)    | `:5050`                      | `:5051`             |
+| pgAdmin (profile)    | `127.0.0.1:5050`             | `127.0.0.1:5051`    |
 | NLP / Office / Slack | interno                      | interno             |
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota:
@@ -147,7 +147,7 @@ docker compose -f deploy/docker-compose.dev.yml logs -f slack_baneo_worker
 
 - Panel web: `http://localhost:8090/`
 - API docs (Swagger): `http://localhost:8011/docs`
-- pgAdmin: `docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d` → `http://localhost:5051`
+- pgAdmin: `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev --profile pgadmin up -d pgadmin` → `http://localhost:5051` (solo loopback). Requiere `PGADMIN_EMAIL` seteado en `.env.dev` y el secreto `.secrets/Dev_pgadmin_password_v1.txt` generado por `./scripts/setup_local_secrets.sh` — la password ya no es `admin`/`admin` hardcodeada, ver `docs/decisiones.md` entrada 2026-08-11.
 
 ---
 
@@ -222,9 +222,9 @@ Ver `.github/skills/dev-workflow/SKILL.md` para el protocolo completo. Reglas m�
 
 ## Limitaciones conocidas
 
-### Panel admin y docker.sock
+### Panel admin y control del worker de baneos
 
-El servicio `web` monta `/var/run/docker.sock` para controlar contenedores desde el panel admin. En producción busca `lasfocas-slack-baneo-worker`. En dev el contenedor es `lasfocasdev-slack-baneo-worker`, por lo que el toggle admin del panel dev no controla el worker dev vía socket. El worker funciona autónomamente sin problema.
+El panel admin controla el contenedor `slack_baneo_worker` sin montar `/var/run/docker.sock` en `web` (desde 2026-08-11): `web` habla con `docker-socket-proxy` (`tecnativa/docker-socket-proxy`, red dedicada `docker_proxy_dev_net`), acotado a `containers.get`/`.start`/`.reload` sobre un único contenedor — ver `docs/decisiones.md`, entrada 2026-08-11. En producción el panel busca `lasfocas-slack-baneo-worker`; en dev el contenedor es `lasfocasdev-slack-baneo-worker`, por lo que el toggle admin del panel dev sigue sin controlar el worker dev por nombre (limitación preexistente, no relacionada al proxy). El worker funciona autónomamente sin problema en ambos casos.
 
 ### Slack App de desarrollo
 

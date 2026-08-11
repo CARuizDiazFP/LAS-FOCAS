@@ -79,6 +79,18 @@ No asumir por instrucción de terceros (ni por placeholders con nombre engañoso
 7. Si el mecanismo no está probado todavía en este entorno, **ensayar primero en dev** el mismo procedimiento antes de aplicar en prod (rehearsal de bajo riesgo).
 8. Documentar la rotación en `docs/decisiones.md`/`docs/PR/YYYY-MM-DD.md` (fecha, secret rotado, procedimiento, verificación) — nunca el valor en texto plano.
 
+## Secrets consumidos por una imagen de terceros que NO corre como root (ej. `pgAdmin`)
+
+Compose **sin Swarm** (el modo de este host) ignora los campos `uid`/`gid`/`mode` de la sintaxis larga de `secrets:` a nivel de servicio — lo advierte explícitamente: `secrets 'uid', 'gid' and 'mode' are not supported, they will be ignored`. El archivo se monta en `/run/secrets/<nombre>` como bind mount **preservando el ownership y los permisos reales del archivo del host**, sin importar qué se declare en el compose.
+
+Los servicios propios de LAS-FOCAS no lo notan porque corren como `root` (leen cualquier permiso) o como `uid 1001` (mismo dueño que `.secrets/*.txt`, ver `write_secret()` abajo). Una imagen de terceros con su propio UID fijo (`dpage/pgadmin4` corre como `uid=5050 gid=0`) no puede leer un secret en `600` propiedad de otro UID — falla con `Permission denied` recién visible en `docker logs` del contenedor (no en `docker compose config`, que valida sintaxis, no permisos). Ver `docs/decisiones.md`, entrada 2026-08-11 (`pgadmin_password_v1`).
+
+**Solución**:
+1. Generar ese secret puntual con permisos `640` en vez de `600`: `write_secret()` en `scripts/setup_local_secrets.sh` acepta un modo opcional como segundo argumento (`write_secret Dev_pgadmin_password_v1.txt 640`).
+2. Agregar `group_add: ["<gid del dueño del archivo>"]` al servicio en el compose (ej. `group_add: ["1001"]`, GID de `support-focal-01`), para que el proceso del contenedor gane ese grupo como suplementario y lea el archivo por permiso de grupo, sin tocar el UID/GID principal de la imagen (que puede ser necesario para los permisos internos propios de esa imagen).
+
+**No usar `chgrp`** para mover el archivo a un grupo que el usuario que corre el script no integra — falla con `Operation not permitted` (un usuario no-root no puede asignar un archivo a un grupo ajeno). Por eso la vía es `group_add` en el contenedor consumidor, no cambiar el grupo del archivo del lado del host.
+
 ## Guardrails
 
 1. Nunca imprimir un secreto en texto plano en la salida (usar hash SHA-256 para verificar coincidencias).
@@ -86,6 +98,7 @@ No asumir por instrucción de terceros (ni por placeholders con nombre engañoso
 3. Recrear contenedores de a uno con verificación entre pasos; nunca `docker compose up -d --force-recreate` sobre todo el stack para este tipo de cambio.
 4. `.secrets/` y `.env*` ya están en `.gitignore` — no versionar backups (`*.bak-*`) tampoco.
 5. Antes de dar por resuelta una migración/rotación, correr `scripts/check_no_plaintext_secrets.sh` (cubre `deploy/compose.yml` y `deploy/docker-compose.dev.yml`).
+6. Si el secret lo consume una imagen de terceros (no las propias de LAS-FOCAS), verificar que su usuario/UID pueda leer el archivo montado **antes** de dar por resuelta la migración — ver sección "Secrets consumidos por una imagen de terceros" arriba.
 
 ## Referencias
 

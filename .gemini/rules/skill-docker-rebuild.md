@@ -251,6 +251,29 @@ Ambas redes (`lasfocas_net` en prod, `lasfocas_dev_net` en dev) declaran subred 
 
 **Docker no permite cambiar la subred de una red existente sin recrearla** (`down` + `up`). Ningún servicio del proyecto usa `ipv4_address` (IP estática); si se agrega una, debe quedar entre `.1` y `.254` del `/24` correspondiente.
 
+## Antes de un `up` incremental sobre servicios ya corriendo: verificar drift de red
+
+**CRÍTICO**: antes de `docker compose ... up -d <un_servicio>` (contenedores ya arriba, no un stack recién levantado), comparar la subred *declarada* en el compose contra la *real* de la red viva:
+
+```bash
+docker network inspect <proyecto>_lasfocas_net --format '{{json .IPAM.Config}}'   # real
+grep -A6 '^networks:' deploy/compose.yml                                          # declarada
+```
+
+Si difieren (ej. código ya migrado a `/24` pero la red viva sigue en `/16` de una migración pendiente — ver `docs/mantenimiento_redes_produccion.md`), Compose intenta recrear la red en el primer `up` que detecte el drift, **aunque se pida un solo servicio**. Si otros contenedores siguen conectados, la eliminación de la red falla a mitad de camino y deja esos contenedores desconectados (DNS de servicio roto entre ellos, sin un error obvio) — pasó en prod el 2026-08-11 con un `up -d api` que dejó a `api`/`postgres` sin poder resolverse mutuamente. Se reconecta a mano con `docker network connect --alias <nombre_servicio> <red> <contenedor>` (el alias de servicio no se restaura solo).
+
+**Regla**: si hay drift de subred pendiente, no hacer `up` incremental de un servicio — usar `./Start` (down + up completo de los 6 servicios), que recrea la red limpia sin dejar nada a mitad de camino.
+
+## Antes de agregar `useradd`/`USER` a `deploy/docker/base.Dockerfile`
+
+`slack_baneo_worker.Dockerfile` y `cromo_worker.Dockerfile` heredan de `focas-base:latest` y crean su propio usuario con UID hardcodeado (antes: `useradd -m -u 1000 worker`; hoy reutilizan el `focas` compartido de la base). Si se agrega o cambia un usuario en la base con un UID que algún hijo ya usa, ese `useradd` falla en build con `UID <n> is not unique` y tumba el `docker compose up --build` completo si corre en el mismo `bake` — pasó en prod el 2026-08-11 al agregar `focas` (UID 1000) a la base sin revisar los hijos primero: outage completo de los 6 contenedores hasta corregirlo. Detalle en `docs/decisiones.md`, entrada 2026-08-11.
+
+**Checklist obligatorio antes de tocar `base.Dockerfile`**:
+```bash
+grep -rn 'useradd\|^USER' deploy/docker/*.Dockerfile api/Dockerfile web/Dockerfile
+```
+Si algún Dockerfile hijo ya crea un usuario con el mismo UID que se va a agregar/cambiar en la base, migrarlo para que reutilice el usuario compartido (`chown -R <user>:<user> /app` + `USER <user>`) **en el mismo cambio**, no como nota al margen para después — el `user: "UID:GID"` de `compose.yml` manda en runtime independientemente del `USER` del Dockerfile, así que ese refactor no cambia el comportamiento real del contenedor.
+
 ## Script de Inicio Rápido
 
 ```bash
@@ -266,3 +289,5 @@ Ambas redes (`lasfocas_net` en prod, `lasfocas_dev_net` en dev) declaran subred 
 4. **Versiones**: nunca cambiar a `latest`, mantener versiones fijas
 5. **`--env-file` obligatorio**: en todo comando `docker compose` manual sobre estos archivos (ver aviso arriba)
 6. **Producción**: no bajar/recrear contenedores `lasfocas-*` sin autorización explícita y puntual del usuario
+7. **Drift de red antes de `up` incremental**: comparar subred declarada vs. real antes de tocar un solo servicio de un stack ya corriendo (ver sección arriba)
+8. **UID compartido en `base.Dockerfile`**: verificar colisiones con `useradd`/`USER` de los Dockerfiles hijos antes de tocar la imagen base (ver sección arriba)

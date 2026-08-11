@@ -442,7 +442,7 @@ Stack Docker Compose independiente (`lasfocasdev`) que corre en paralelo al prod
 | PostgreSQL           | `127.0.0.1:5432`              | `127.0.0.1:5433`        |
 | API (docs: `/docs`)  | `:8001`                       | `:8011`                 |
 | Web (panel)          | `172.18.208.162:8080`         | `127.0.0.1:8090`        |
-| pgAdmin (profile)    | `:5050`                       | `:5051`                 |
+| pgAdmin (profile)    | `127.0.0.1:5050`              | `127.0.0.1:5051`        |
 | NLP / Office / Slack | interno (sin exposición)      | interno (sin exposición) |
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota usar SSH tunneling:
@@ -523,9 +523,11 @@ autenticación (ver `docs/Seguridad.md`).
 
 Requisito: el contenedor `lasfocas-postgres` (prod) debe estar corriendo. El script hace `pg_dump` del esquema prod y lo restaura en `focas_dev` con `--clean --if-exists`.
 
-### Limitación conocida: panel admin y docker.sock
+### Control del worker de baneos desde el panel admin
 
-El servicio `web` monta `/var/run/docker.sock` para permitir al panel admin controlar el `slack_baneo_worker`. En producción el panel busca el contenedor `lasfocas-slack-baneo-worker`. En dev, el contenedor se llama `lasfocasdev-slack-baneo-worker`, por lo que el toggle del panel dev no controlará el worker dev vía socket. El worker dev funciona correctamente de forma autónoma; solo el control desde la UI admin queda limitado en este entorno.
+Desde 2026-08-11, `web` ya no monta `/var/run/docker.sock` — controla `slack_baneo_worker` a través de `docker-socket-proxy` (`tecnativa/docker-socket-proxy`, red dedicada `docker_proxy_net`/`docker_proxy_dev_net`, acotado a `containers.get`/`.start`/`.reload` sobre un único contenedor). Detalle completo, motivo y verificación en `docs/decisiones.md`, entrada 2026-08-11.
+
+**Limitación conocida (preexistente, no relacionada al proxy):** en producción el panel busca el contenedor `lasfocas-slack-baneo-worker`; en dev el contenedor se llama `lasfocasdev-slack-baneo-worker`, por lo que el toggle del panel dev no controla el worker dev por nombre. El worker dev funciona correctamente de forma autónoma; solo el control desde la UI admin queda limitado en este entorno.
 
 ### Archivos relacionados
 

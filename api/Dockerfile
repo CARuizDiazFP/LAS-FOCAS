@@ -21,6 +21,9 @@ COPY Templates /app/Templates
 # Incluir migraciones Alembic para ejecutar dentro del contenedor API
 COPY db /app/db
 
+RUN chown -R focas:focas /app
+USER focas
+
 EXPOSE 8000
 
 # Arranque de la API
