@@ -7,6 +7,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from core.services.camara_estado_service import aplicar_estado_a_grupo, miembros_del_grupo
+from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
 
@@ -84,6 +85,42 @@ def test_aplicar_estado_a_grupo_grupo_entero_ya_en_estado_no_hace_nada() -> None
 
     assert auditorias == []
     session.flush.assert_not_called()
+    session.query.assert_not_called()  # sin miembros modificados, tampoco se toca CromoBotella
+
+
+def test_aplicar_estado_a_grupo_propaga_a_cromo_botella_vinculada() -> None:
+    """Hallazgo real (2026-08-12): 295 `CromoBotella` quedaron con estado stale porque
+    `aplicar_estado_a_grupo` nunca las tocaba — sólo escribía `Camara.estado`. Cada miembro
+    modificado del grupo debe sincronizar sus Botellas Cromo propias con el mismo estado mapeado."""
+    padre, bot1, bot2 = _grupo()
+    session = MagicMock()
+
+    aplicar_estado_a_grupo(session, padre, CamaraEstado.BANEADA, usuario="test", motivo="prueba")
+
+    assert any(call.args and call.args[0] is CromoBotella for call in session.query.call_args_list)
+    update_kwargs = session.query.return_value.filter.return_value.update.call_args[0][0]
+    assert update_kwargs[CromoBotella.estado] == CamaraEstado.BANEADA
+
+
+def test_aplicar_estado_a_grupo_no_propaga_a_miembro_sin_cambios() -> None:
+    """Sólo los miembros efectivamente modificados sincronizan sus CromoBotella — uno que ya estaba
+    en el estado destino no necesita tocarse (sus Botellas ya deberían estar en sync)."""
+    padre, bot1, bot2 = _grupo(estado_padre=CamaraEstado.BANEADA, estado_bot1=CamaraEstado.LIBRE, estado_bot2=CamaraEstado.BANEADA)
+    session = MagicMock()
+
+    aplicar_estado_a_grupo(session, bot1, CamaraEstado.BANEADA, usuario="test", motivo="prueba")
+
+    ids_filtrados = session.query.return_value.filter.call_args[0][0]
+    # sólo bot1 (id=2) cambió — padre y bot2 ya estaban BANEADA.
+    assert list(ids_filtrados.right.value) == [2]
+
+
+def test_mapeo_estado_cromo_mapea_estados_sin_equivalente_propio() -> None:
+    from core.services.camara_estado_service import MAPEO_ESTADO_CROMO
+
+    assert MAPEO_ESTADO_CROMO[CamaraEstado.DETECTADA] == CamaraEstado.OCUPADA
+    assert MAPEO_ESTADO_CROMO[CamaraEstado.PENDIENTE_REVISION] == CamaraEstado.NO_OPERATIVA
+    assert MAPEO_ESTADO_CROMO[CamaraEstado.LIBRE] == CamaraEstado.LIBRE
 
 
 def test_aplicar_estado_a_grupo_contexto_solo_en_el_objetivo_directo() -> None:

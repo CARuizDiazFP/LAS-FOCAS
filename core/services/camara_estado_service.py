@@ -11,9 +11,24 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraEstadoAuditoria, IncidenteBaneo, Ingreso
 
 logger = logging.getLogger("infra_camera_state")
+
+# Mapa de estado Cámara -> CromoBotella: el `CHECK` de `cromo_botellas` sólo admite
+# LIBRE/OCUPADA/BANEADA/NO_OPERATIVA (Cromo no tiene equivalente de DETECTADA/PENDIENTE_REVISION,
+# workflows exclusivos del legado). Misma tabla que usa `scripts/cromo_backfill_camara_padre.py`
+# para la carga inicial — vive acá porque `aplicar_estado_a_grupo` (abajo) también la necesita para
+# mantener sincronizadas las Botellas Cromo en cada cambio de estado real, no sólo en el backfill.
+MAPEO_ESTADO_CROMO: dict[CamaraEstado, CamaraEstado] = {
+    CamaraEstado.LIBRE: CamaraEstado.LIBRE,
+    CamaraEstado.OCUPADA: CamaraEstado.OCUPADA,
+    CamaraEstado.BANEADA: CamaraEstado.BANEADA,
+    CamaraEstado.NO_OPERATIVA: CamaraEstado.NO_OPERATIVA,
+    CamaraEstado.DETECTADA: CamaraEstado.OCUPADA,
+    CamaraEstado.PENDIENTE_REVISION: CamaraEstado.NO_OPERATIVA,
+}
 
 
 @dataclass(slots=True)
@@ -232,9 +247,18 @@ def aplicar_estado_a_grupo(
 
     Devuelve las filas de auditoría creadas (una por miembro modificado, puede ser lista vacía si el
     grupo entero ya estaba en `nuevo_estado`).
+
+    **Propaga a `CromoBotella` vinculada** (2026-08-12, cierra un gap real encontrado en producción:
+    295 `CromoBotella` quedaron con `estado='OCUPADA'`/`'BANEADA'` mucho después de que su Cámara
+    padre volviera a `LIBRE` — porque `CromoBotella.estado` era una foto fijada sólo al momento del
+    backfill, y ningún cambio posterior de `Camara.estado` la tocaba). Cada miembro efectivamente
+    modificado del grupo actualiza también sus `CromoBotella` propias (`camara_id`), vía
+    `MAPEO_ESTADO_CROMO` — así un baneo/liberación real deja sincronizadas ambas tablas sin
+    necesidad de una corrida manual de resync.
     """
     ahora = datetime.now(timezone.utc)
     auditorias: list[CamaraEstadoAuditoria] = []
+    ids_miembros_modificados: list[int] = []
 
     for miembro in miembros_del_grupo(camara):
         if miembro.estado == nuevo_estado:
@@ -253,6 +277,7 @@ def aplicar_estado_a_grupo(
         auditorias.append(auditoria)
         miembro.estado = nuevo_estado
         miembro.last_update = ahora
+        ids_miembros_modificados.append(miembro.id)
 
     if auditorias:
         session.flush()
@@ -263,6 +288,18 @@ def aplicar_estado_a_grupo(
             usuario,
             [a.camara_id for a in auditorias],
         )
+        estado_cromo = MAPEO_ESTADO_CROMO[nuevo_estado]
+        cromo_actualizadas = (
+            session.query(CromoBotella)
+            .filter(CromoBotella.camara_id.in_(ids_miembros_modificados))
+            .update({CromoBotella.estado: estado_cromo}, synchronize_session=False)
+        )
+        if cromo_actualizadas:
+            logger.info(
+                "action=aplicar_estado_a_grupo evento=cromo_botella_sincronizada estado_cromo=%s filas=%s",
+                estado_cromo.value,
+                cromo_actualizadas,
+            )
 
     return auditorias
 

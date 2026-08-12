@@ -92,7 +92,7 @@ if str(ROOT_DIR) not in sys.path:
 from sqlalchemy.orm import selectinload
 
 from core.logging import setup_logging
-from core.services.camara_estado_service import aplicar_estado_a_grupo, miembros_del_grupo
+from core.services.camara_estado_service import MAPEO_ESTADO_CROMO, aplicar_estado_a_grupo, miembros_del_grupo
 from core.services.camara_hierarchy_service import (
     estado_mas_restrictivo,
     ids_camaras_con_cromo_hijos,
@@ -107,15 +107,11 @@ logger = setup_logging("cromo_backfill_camara_padre")
 
 # El CHECK ck_cromo_botellas_estado_valido sólo admite estos 4 valores — un padre reutilizado
 # (Camara legado real) puede estar en DETECTADA/PENDIENTE_REVISION, que no tienen equivalente en
-# el vocabulario Cromo. Mapeo obligatorio antes de escribir CromoBotella.estado.
-_MAPEO_ESTADO_CROMO: dict[CamaraEstado, CamaraEstado] = {
-    CamaraEstado.LIBRE: CamaraEstado.LIBRE,
-    CamaraEstado.OCUPADA: CamaraEstado.OCUPADA,
-    CamaraEstado.BANEADA: CamaraEstado.BANEADA,
-    CamaraEstado.NO_OPERATIVA: CamaraEstado.NO_OPERATIVA,
-    CamaraEstado.DETECTADA: CamaraEstado.OCUPADA,  # señal real de uso vía tracking, sin equivalente propio
-    CamaraEstado.PENDIENTE_REVISION: CamaraEstado.NO_OPERATIVA,  # triage admin pendiente, sin equivalente propio
-}
+# el vocabulario Cromo. Mapeo compartido con `aplicar_estado_a_grupo` (2026-08-12) — antes era una
+# copia local acá, movida a `camara_estado_service.py` para que el mismo mapeo sirva tanto a la
+# carga inicial (este script) como a la propagación en vivo (cualquier cambio de estado real
+# posterior sobre la Cámara padre).
+_MAPEO_ESTADO_CROMO = MAPEO_ESTADO_CROMO
 
 
 def _detectar_camara_id_invalido(session) -> list[int]:

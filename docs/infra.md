@@ -174,12 +174,12 @@ legado en desuso a futuro (no se tocó ningún flujo en vivo en este pase, ver `
   con su propia resolución en memoria (una única carga de raíces con `selectinload` + diccionarios),
   corriendo en ~90 segundos contra los mismos datos. La función compartida del legado no se tocó — sigue
   siendo correcta para sus llamadores en vivo.
-- **Limitación conocida, no resuelta en este pase**: `CromoBotella.estado` es una foto fijada en el
-  momento del backfill (o su próxima corrida) — `aplicar_estado_a_grupo` sigue escribiendo sólo
-  `Camara.estado` (único punto de escritura, no se tocó), así que un cambio de estado real posterior
-  sobre la Cámara padre (ej. un baneo nuevo) no se propaga automáticamente a las `CromoBotella` ya
-  vinculadas hasta la siguiente corrida manual del script (mitigado en parte por el endpoint de
-  cambio de estado masivo del 2026-08-12, ver más abajo, para correcciones puntuales).
+- **Limitación cerrada (2026-08-12)**: `CromoBotella.estado` era una foto fijada sólo al momento del
+  backfill — `aplicar_estado_a_grupo` escribía sólo `Camara.estado`, así que un cambio de estado real
+  posterior sobre la Cámara padre (ej. un baneo nuevo, o la corrección de un `DETECTADA` legado) no se
+  propagaba a las `CromoBotella` ya vinculadas. Encontrado con impacto real (295 filas desincronizadas)
+  y cerrado estructuralmente — ver sección "Propagación de estado a CromoBotella + resync real
+  (2026-08-12)" más abajo.
 
 ### Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)
 
@@ -219,6 +219,33 @@ sin el patrón "Bot N"/"Botella N" (ej. real "Av Rivadavia 6041"). Se agregó un
   (`@click.stop` para no disparar la navegación al detalle de la fila) y una barra de acciones masivas
   con selector de estado — **"No operativa" es la primera opción** (la más relevante para marcar
   infraestructura fantasma detectada manualmente), seguida de Libre/Ocupada/Baneada.
+
+### Propagación de estado a CromoBotella + resync real (2026-08-12)
+
+Hallazgo real reportado desde el dashboard (captura del inventario de Botellas): muchas filas
+mostraban `OCUPADA` sin ningún `Ingreso` activo detrás — verificado contra `lasfocasdev-postgres`:
+**0 `Ingreso` activos en todo el sistema**, pero **295 `CromoBotella` mostraban un estado que ya no
+coincidía con el de su propia Cámara padre** (291 en `OCUPADA`/4 en `BANEADA` con el padre ya en
+`LIBRE`).
+
+- **Causa raíz**: el 2026-08-11 a la mañana, el primer backfill de Cromo mapeó `DETECTADA→OCUPADA`
+  al fijar el estado inicial de varias `CromoBotella` (padres legado reusados que en ese momento
+  estaban en `DETECTADA`). Horas después, `scripts/retirar_estado_detectada.py` corrigió esos
+  mismos padres a su estado real (`LIBRE`) — pero `aplicar_estado_a_grupo`, en ese momento, sólo
+  escribía `Camara.estado`; nunca tocaba las `CromoBotella` ya vinculadas. La foto vieja quedó
+  fijada para siempre, sin ningún evento que la refrescara.
+- **Cierre estructural**: `core/services/camara_estado_service.py::aplicar_estado_a_grupo` (el único
+  punto de escritura sancionado de `Camara.estado`, usado por el override manual, `create_ban`/
+  `lift_ban` y el backfill) ahora también actualiza, en la misma transacción, las `CromoBotella`
+  vinculadas a cualquier miembro del grupo efectivamente modificado — vía el mismo
+  `MAPEO_ESTADO_CROMO` que ya usaba el backfill (movido a este módulo para que ambos lo compartan).
+  Verificado real contra dev: banear una Cámara padre con Botellas Cromo propias sincroniza ambas
+  tablas en la misma operación (probado con rollback, sin tocar datos reales).
+- **Corrección retroactiva**: `scripts/resync_cromo_botella_estado.py` (nuevo, `--dry-run`
+  soportado) — corrida única que resincroniza cualquier `CromoBotella` cuyo estado no coincida con
+  el de su padre actual. Corrida real: **295 filas corregidas → 0 desincronizadas** (verificado
+  contra las 11.100 `CromoBotella` vinculadas). No es un proceso recurrente: desde el cierre
+  estructural, cualquier cambio de estado futuro ya se propaga solo.
 
 ### Estados operables: retiro de DETECTADA y del pseudo-estado "Tracking" (2026-08-11)
 
@@ -557,7 +584,7 @@ Genera archivo EML para descargar y abrir en Outlook.
 
 ## Historial de cambios
 
-### 2026-08-12 - Fallback de nombre exacto, fix de idempotencia real, cambio de estado masivo
+### 2026-08-12 - Fallback de nombre exacto, fix de idempotencia real, cambio de estado masivo, propagación de estado a CromoBotella
 
 - **Agregado**: fallback de nombre exacto en `extraer_base_cromo` (3er paso, tras sufijo/prefijo) —
   resuelve el 100% de las Botellas Cromo con `nombre` no vacío. Botellas Cromo huérfanas: **9.512 →
@@ -575,8 +602,15 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Agregado**: en `BotellasInventarioView.vue`, checkbox de selección por fila en la vista lista
   (con `@click.stop` para no colisionar con la navegación al detalle) y barra de acciones masivas con
   selector de estado ("No operativa" primero).
-- Ver sección "Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)" más
-  arriba para el detalle completo.
+- **Corregido — bug real de propagación de estado** (reportado por el usuario desde el dashboard:
+  Botellas mostrando `OCUPADA` sin ningún `Ingreso` activo real): 295 `CromoBotella` quedaron con un
+  estado stale porque `aplicar_estado_a_grupo` nunca las tocaba tras el backfill inicial. Cerrado
+  estructuralmente (`aplicar_estado_a_grupo` ahora sincroniza las `CromoBotella` vinculadas en cada
+  cambio real de estado) + corrección retroactiva (`scripts/resync_cromo_botella_estado.py`, 295
+  filas corregidas → 0 desincronizadas). Ver sección "Propagación de estado a CromoBotella + resync
+  real (2026-08-12)" más arriba.
+- Ver también sección "Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)"
+  más arriba para el detalle del resto de esta tanda.
 
 ### 2026-08-11 (cont.) - Retiro de DETECTADA, unificación de Cámaras, huérfanas Cromo, ingresos sin match
 
