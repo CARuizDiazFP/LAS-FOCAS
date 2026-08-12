@@ -24,8 +24,15 @@ from sqlalchemy import (
     true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import relationship
 
 from db.base import Base
+
+# CromoBotella.camara_id referencia "app.camaras.id" y su relationship depende de que el modelo
+# Camara (db/models/infra.py) ya esté registrado en Base.metadata — no ocurre sólo por importar
+# db.models.cromo. Import explícito, mismo patrón que ya usa core/services/cromo/ingesta.py para
+# Servicio: este módulo no debe depender de que quien lo use haya importado infra.py por otro motivo.
+from db.models.infra import Camara, CamaraEstado  # noqa: F401
 
 
 class TipoAsociacionPelo(str, Enum):
@@ -106,7 +113,12 @@ class CromoIngestaEvento(Base):
 
 
 class CromoBotella(Base):
-    """Botella/empalme/ODF ingerido desde Cromo. `n_id` es la PK de linaje (estable entre versiones)."""
+    """Botella/empalme/ODF ingerido desde Cromo. `n_id` es la PK de linaje (estable entre versiones).
+
+    `camara_id`/`estado` (desde 2026-08-11) los pone `core/services/cromo/camara_padre_service.py`
+    vía `scripts/cromo_backfill_camara_padre.py` — deliberadamente excluidos de `_BOTELLA_CAMPOS`
+    (`core/services/cromo/ingesta.py`) para que ninguna re-ingesta futura los pise (ver ese módulo).
+    """
 
     __tablename__ = "cromo_botellas"
     __table_args__ = {"schema": "app"}
@@ -133,6 +145,19 @@ class CromoBotella(Base):
     primera_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     ultima_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     ultima_modificacion = Column(DateTime(timezone=True), nullable=True)
+    camara_id = Column(
+        Integer,
+        ForeignKey("app.camaras.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    estado = Column(
+        SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
+        nullable=False,
+        server_default="NO_OPERATIVA",
+    )
+
+    camara = relationship("Camara", back_populates="cromo_botellas", foreign_keys=[camara_id])
 
     def __repr__(self) -> str:
         return f"<CromoBotella n_id={self.n_id} nombre='{self.nombre}'>"

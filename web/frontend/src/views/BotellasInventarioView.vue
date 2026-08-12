@@ -52,92 +52,177 @@
           </button>
         </div>
 
-        <button class="btn primary" type="button" :disabled="loading" @click="reloadFromZero">
+        <button
+          class="btn primary"
+          type="button"
+          :disabled="soloHuerfanas ? loadingHuerfanas : loading"
+          @click="soloHuerfanas ? reloadHuerfanasFromZero() : reloadFromZero()"
+        >
           <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          {{ loading && items.length === 0 ? 'Buscando...' : 'Actualizar' }}
+          {{ (soloHuerfanas ? loadingHuerfanas && huerfanas.length === 0 : loading && items.length === 0) ? 'Buscando...' : 'Actualizar' }}
         </button>
       </div>
 
       <div class="botellas-view__toolbar-row">
+        <label class="botellas-view__toggle">
+          <input type="checkbox" v-model="incluirNoOperativas" @change="reloadFromZero" :disabled="soloHuerfanas" />
+          Mostrar No operativas
+        </label>
+
+        <label class="botellas-view__toggle">
+          <input type="checkbox" v-model="soloHuerfanas" @change="onToggleSoloHuerfanas" />
+          Sólo huérfanas (sin Cámara asociada)
+        </label>
+
         <span class="botellas-view__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> botellas · mostrando {{ items.length }}
+          <strong>{{ (soloHuerfanas ? totalHuerfanas : total).toLocaleString('es-AR') }}</strong>
+          {{ soloHuerfanas ? 'huérfanas' : 'botellas' }} · mostrando {{ (soloHuerfanas ? huerfanas : items).length }}
         </span>
+      </div>
+
+      <div v-if="soloHuerfanas && seleccionadas.size > 0" class="botellas-view__bulk-bar">
+        <span>{{ seleccionadas.size }} seleccionada{{ seleccionadas.size !== 1 ? 's' : '' }}</span>
+        <button class="btn primary" type="button" @click="modalAsociarOpen = true">Asociar a Cámara</button>
+        <button class="btn subtle" type="button" @click="seleccionadas.clear()">Deseleccionar todo</button>
       </div>
     </div>
 
     <div ref="scrollEl" class="botellas-view__scroll">
-      <template v-if="items.length > 0">
-        <div v-if="vista === 'grid'" class="botellas-view__grid">
-          <BotellaCard
-            v-for="item in items"
-            :key="itemKey(item)"
-            :botella="item"
-            @open-detail="openBotellaDetail"
-          />
-        </div>
-
-        <div v-else class="botellas-view__list">
-          <div
-            v-for="item in items"
-            :key="itemKey(item)"
-            role="button"
-            tabindex="0"
-            class="botellas-view__list-row"
-            @click="openBotellaDetail(item)"
-            @keyup.enter="openBotellaDetail(item)"
+      <template v-if="soloHuerfanas">
+        <div v-if="huerfanas.length > 0" class="botellas-view__list">
+          <label
+            v-for="h in huerfanas"
+            :key="h.n_id"
+            class="botellas-view__list-row botellas-view__list-row--huerfana"
           >
-            <span :class="['botellas-view__list-origen', `is-${item.origen}`]">{{ item.origen === 'cromo' ? 'Cromo' : 'Legado' }}</span>
-            <span
-              v-if="item.origen === 'legado'"
-              :class="['botellas-view__list-dot', `is-${estadoBotellaToken(item.estado)}`]"
-              aria-hidden="true"
-            ></span>
-            <span class="botellas-view__list-nombre">{{ item.nombre || `Botella ${item.id}` }}</span>
-            <span class="botellas-view__list-id">ID {{ item.id }}</span>
-            <span class="botellas-view__list-estado">{{ item.origen === 'legado' ? (item.estado || 'LIBRE') : '—' }}</span>
-          </div>
+            <input
+              type="checkbox"
+              :checked="seleccionadas.has(h.n_id)"
+              @change="toggleSeleccion(h.n_id)"
+            />
+            <span class="botellas-view__list-nombre">{{ h.nombre || `Botella ${h.n_id}` }}</span>
+            <span class="botellas-view__list-id">n_id {{ h.n_id }}</span>
+            <span class="botellas-view__list-estado">{{ h.localidad || h.calle || '—' }}</span>
+            <button
+              class="btn subtle"
+              type="button"
+              style="padding:3px 9px;font-size:11.5px"
+              @click="abrirAsociarIndividual(h.n_id)"
+            >Asociar</button>
+          </label>
         </div>
+        <div v-else-if="error" class="botellas-view__state-box is-error">
+          <i class="ph ph-warning-circle" aria-hidden="true"></i>
+          <h3>No se pudo consultar huérfanas</h3>
+          <p>{{ error }}</p>
+          <button class="btn primary" type="button" @click="reloadHuerfanasFromZero">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            Reintentar
+          </button>
+        </div>
+        <div v-else-if="!loadingHuerfanas" class="botellas-view__state-box">
+          <i class="ph ph-check-circle" aria-hidden="true"></i>
+          <h3>Sin huérfanas</h3>
+          <p>Ninguna Botella Cromo sin Cámara asociada coincide con la búsqueda actual.</p>
+        </div>
+        <div v-if="loadingHuerfanas && huerfanas.length > 0" class="botellas-view__loading-more">
+          <i class="ph ph-circle-notch botellas-view__spin" aria-hidden="true"></i>
+          Cargando más huérfanas...
+        </div>
+        <div ref="sentinel" class="botellas-view__sentinel" aria-hidden="true"></div>
       </template>
 
-      <div v-else-if="!loading && !error" class="botellas-view__state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <h3>Ninguna botella coincide</h3>
-        <p>Probá con el nombre, la calle o la localidad, o quitá el filtro.</p>
-        <button class="btn subtle" type="button" @click="clearFiltros">Limpiar búsqueda</button>
-      </div>
+      <template v-else>
+        <template v-if="items.length > 0">
+          <div v-if="vista === 'grid'" class="botellas-view__grid">
+            <BotellaCard
+              v-for="item in items"
+              :key="itemKey(item)"
+              :botella="item"
+              @open-detail="openBotellaDetail"
+            />
+          </div>
 
-      <div v-else-if="error && items.length === 0" class="botellas-view__state-box is-error">
-        <i class="ph ph-warning-circle" aria-hidden="true"></i>
-        <h3>No se pudo consultar botellas</h3>
-        <p>{{ error }}</p>
-        <button class="btn primary" type="button" @click="reloadFromZero">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Reintentar
-        </button>
-      </div>
+          <div v-else class="botellas-view__list">
+            <div
+              v-for="item in items"
+              :key="itemKey(item)"
+              role="button"
+              tabindex="0"
+              class="botellas-view__list-row"
+              @click="openBotellaDetail(item)"
+              @keyup.enter="openBotellaDetail(item)"
+            >
+              <span :class="['botellas-view__list-origen', `is-${item.origen}`]">{{ item.origen === 'cromo' ? 'Cromo' : 'Legado' }}</span>
+              <span
+                v-if="item.estado"
+                :class="['botellas-view__list-dot', `is-${estadoBotellaToken(item.estado)}`]"
+                aria-hidden="true"
+              ></span>
+              <span class="botellas-view__list-nombre">{{ item.nombre || `Botella ${item.id}` }}</span>
+              <span class="botellas-view__list-id">ID {{ item.id }}</span>
+              <span class="botellas-view__list-estado">{{ item.estado || '—' }}</span>
+            </div>
+          </div>
+        </template>
 
-      <div v-if="loading && items.length > 0" class="botellas-view__loading-more">
-        <i class="ph ph-circle-notch botellas-view__spin" aria-hidden="true"></i>
-        Cargando más botellas...
-      </div>
+        <div v-else-if="!loading && !error" class="botellas-view__state-box">
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+          <h3>Ninguna botella coincide</h3>
+          <p>Probá con el nombre, la calle o la localidad, o quitá el filtro.</p>
+          <button class="btn subtle" type="button" @click="clearFiltros">Limpiar búsqueda</button>
+        </div>
 
-      <div ref="sentinel" class="botellas-view__sentinel" aria-hidden="true"></div>
+        <div v-else-if="error && items.length === 0" class="botellas-view__state-box is-error">
+          <i class="ph ph-warning-circle" aria-hidden="true"></i>
+          <h3>No se pudo consultar botellas</h3>
+          <p>{{ error }}</p>
+          <button class="btn primary" type="button" @click="reloadFromZero">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            Reintentar
+          </button>
+        </div>
+
+        <div v-if="loading && items.length > 0" class="botellas-view__loading-more">
+          <i class="ph ph-circle-notch botellas-view__spin" aria-hidden="true"></i>
+          Cargando más botellas...
+        </div>
+
+        <div ref="sentinel" class="botellas-view__sentinel" aria-hidden="true"></div>
+      </template>
     </div>
+
+    <ModalAsociarHuerfanas
+      :open="modalAsociarOpen"
+      :n-ids="nIdsParaAsociar"
+      @close="modalAsociarOpen = false"
+      @asociada="handleAsociada"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { estadoBotellaToken, searchBotellas, type BotellaUnificadaItem } from '../api/botellas';
 import BotellaCard from '../components/infra/BotellaCard.vue';
+import ModalAsociarHuerfanas from '../components/infra/ModalAsociarHuerfanas.vue';
+import { botellaDetailPath } from '../utils/botellaLinks';
+
+interface BotellaHuerfanaItem {
+  n_id: number;
+  nombre: string | null;
+  calle: string | null;
+  localidad: string | null;
+}
 
 const LIMIT = 30;
 const VISTA_STORAGE_KEY = 'botellas.vista';
 const router = useRouter();
 
 const query = ref('');
+const incluirNoOperativas = ref(false);
 const items = ref<BotellaUnificadaItem[]>([]);
 const total = ref(0);
 const loading = ref(false);
@@ -146,6 +231,17 @@ const offset = ref(0);
 const hasMore = ref(true);
 const sentinel = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
+
+// --- Botellas Cromo huérfanas (Caso 1: sin camara_id, no matchearon el backfill automático) ---
+const soloHuerfanas = ref(false);
+const huerfanas = ref<BotellaHuerfanaItem[]>([]);
+const totalHuerfanas = ref(0);
+const loadingHuerfanas = ref(false);
+const offsetHuerfanas = ref(0);
+const hasMoreHuerfanas = ref(true);
+const seleccionadas = ref<Set<number>>(new Set());
+const modalAsociarOpen = ref(false);
+const nIdsParaAsociar = ref<number[]>([]);
 
 const vista = ref<'grid' | 'list'>(
   (localStorage.getItem(VISTA_STORAGE_KEY) as 'grid' | 'list' | null) === 'list' ? 'list' : 'grid',
@@ -176,7 +272,12 @@ async function loadNextPage(): Promise<void> {
   loading.value = true;
   error.value = '';
   try {
-    const response = await searchBotellas({ q: query.value.trim(), limit: LIMIT, offset: offset.value });
+    const response = await searchBotellas({
+      q: query.value.trim(),
+      limit: LIMIT,
+      offset: offset.value,
+      incluirNoOperativas: incluirNoOperativas.value,
+    });
 
     total.value = response.total;
     mergeItems(response.botellas);
@@ -200,13 +301,13 @@ async function reloadFromZero(): Promise<void> {
 function onSearchInput(): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    void reloadFromZero();
+    void (soloHuerfanas.value ? reloadHuerfanasFromZero() : reloadFromZero());
   }, 320);
 }
 
 function clearFiltros(): void {
   query.value = '';
-  void reloadFromZero();
+  void (soloHuerfanas.value ? reloadHuerfanasFromZero() : reloadFromZero());
 }
 
 function setVista(next: 'grid' | 'list'): void {
@@ -215,8 +316,82 @@ function setVista(next: 'grid' | 'list'): void {
 }
 
 function openBotellaDetail(item: BotellaUnificadaItem): void {
-  void router.push({ path: `/infra/Camaras/Botellas/ID${item.id}`, query: { origen: item.origen } });
+  void router.push(botellaDetailPath(item.origen, item.id));
 }
+
+// --- Botellas Cromo huérfanas ---
+async function loadNextPageHuerfanas(): Promise<void> {
+  if (loadingHuerfanas.value || !hasMoreHuerfanas.value) return;
+
+  loadingHuerfanas.value = true;
+  error.value = '';
+  try {
+    const params = new URLSearchParams({
+      q: query.value.trim(),
+      limit: String(LIMIT),
+      offset: String(offsetHuerfanas.value),
+    });
+    const res = await fetch(`/api/infra/cromo-botellas/huerfanas?${params}`, { credentials: 'include' });
+    const data = await res.json() as { error?: string; total?: number; botellas?: BotellaHuerfanaItem[] };
+    if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
+
+    const nuevas = data.botellas ?? [];
+    totalHuerfanas.value = data.total ?? 0;
+    const vistos = new Set(huerfanas.value.map((h) => h.n_id));
+    for (const h of nuevas) {
+      if (vistos.has(h.n_id)) continue;
+      vistos.add(h.n_id);
+      huerfanas.value.push(h);
+    }
+    offsetHuerfanas.value += nuevas.length;
+    hasMoreHuerfanas.value = nuevas.length === LIMIT && offsetHuerfanas.value < totalHuerfanas.value;
+  } catch (err: unknown) {
+    error.value = err instanceof Error ? err.message : 'No se pudo consultar huérfanas';
+  } finally {
+    loadingHuerfanas.value = false;
+  }
+}
+
+async function reloadHuerfanasFromZero(): Promise<void> {
+  huerfanas.value = [];
+  totalHuerfanas.value = 0;
+  offsetHuerfanas.value = 0;
+  hasMoreHuerfanas.value = true;
+  seleccionadas.value = new Set();
+  await loadNextPageHuerfanas();
+}
+
+function onToggleSoloHuerfanas(): void {
+  error.value = '';
+  if (soloHuerfanas.value) {
+    void reloadHuerfanasFromZero();
+  }
+}
+
+function toggleSeleccion(nId: number): void {
+  const next = new Set(seleccionadas.value);
+  if (next.has(nId)) next.delete(nId);
+  else next.add(nId);
+  seleccionadas.value = next;
+}
+
+function abrirAsociarIndividual(nId: number): void {
+  nIdsParaAsociar.value = [nId];
+  modalAsociarOpen.value = true;
+}
+
+async function handleAsociada(): Promise<void> {
+  // Las Botellas recién asociadas ya no son huérfanas — recargar limpia la lista.
+  nIdsParaAsociar.value = [];
+  await reloadHuerfanasFromZero();
+}
+
+// El botón "Asociar a Cámara" de la barra masiva usa la selección actual, no una sola Botella.
+watch(modalAsociarOpen, (isOpen) => {
+  if (isOpen && nIdsParaAsociar.value.length === 0) {
+    nIdsParaAsociar.value = Array.from(seleccionadas.value);
+  }
+});
 
 onMounted(async () => {
   await reloadFromZero();
@@ -225,7 +400,8 @@ onMounted(async () => {
     (entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
-          void loadNextPage();
+          if (soloHuerfanas.value) void loadNextPageHuerfanas();
+          else void loadNextPage();
         }
       }
     },
@@ -362,6 +538,20 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
+.botellas-view__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 65%, transparent);
+  cursor: pointer;
+  user-select: none;
+}
+
+.botellas-view__toggle input {
+  accent-color: var(--color-accent);
+}
+
 .botellas-view__count {
   margin-left: auto;
   font-size: 12px;
@@ -416,6 +606,26 @@ onBeforeUnmount(() => {
 
 .botellas-view__list-row:hover {
   background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.botellas-view__list-row--huerfana {
+  cursor: default;
+}
+
+.botellas-view__list-row--huerfana input[type='checkbox'] {
+  flex: none;
+  accent-color: var(--color-accent);
+}
+
+.botellas-view__bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px -26px -14px;
+  padding: 8px 26px;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
 .botellas-view__list-origen {

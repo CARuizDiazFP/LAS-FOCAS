@@ -15,7 +15,7 @@
       <span :class="['botella-card-min__origen', `is-${botella.origen}`]">
         {{ botella.origen === 'cromo' ? 'Cromo' : 'Legado' }}
       </span>
-      <span v-if="botella.origen === 'legado'" :class="['botella-card-min__dot', `is-${estadoToken}`]" :title="botella.estado ?? ''" aria-hidden="true"></span>
+      <span v-if="botella.estado" :class="['botella-card-min__dot', `is-${estadoToken}`]" :title="botella.estado ?? ''" aria-hidden="true"></span>
       <i class="ph ph-arrow-up-right botella-card-min__arrow" aria-hidden="true"></i>
     </div>
 
@@ -25,7 +25,7 @@
 
     <div class="botella-card-min__row">
       <span class="botella-card-min__id">ID {{ botella.id }}</span>
-      <span v-if="botella.origen === 'legado'" class="botella-card-min__estado">{{ botella.estado || 'LIBRE' }}</span>
+      <span v-if="botella.estado" class="botella-card-min__estado">{{ botella.estado }}</span>
       <span v-else class="botella-card-min__estado is-muted">Sin estado operativo</span>
     </div>
   </article>

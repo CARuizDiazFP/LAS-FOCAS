@@ -3,13 +3,18 @@
 # Descripción: Jerarquía Cámara/Botella — detecta el sufijo "Bot N" y resuelve/crea la cámara padre
 
 """Resuelve la jerarquía Cámara/Botella (`Camara.camara_padre_id`, self-FK) sobre nombres de cámara ya
-existentes o recién dados de alta. "Botella" acá es un concepto de este módulo de Infraestructura —
-sin relación con `CromoBotella` (`app.cromo_botellas`, módulo de ingesta Cromo Red, esquema separado).
+existentes o recién dados de alta. "Botella" acá es un concepto de este módulo de Infraestructura,
+homónimo de `CromoBotella` (`app.cromo_botellas`, módulo de ingesta Cromo Red, esquema separado).
 
 No reinventa la detección de "Bot N": reusa `RE_BOT_SUFIJO`
 (`modules/slack_baneo_notifier/camara_search.py`), la misma regex de negocio ya probada contra datos
 reales del listener de ingresos Slack — clase de un solo dígito a propósito, evita el falso positivo
 real "Bot 30 de Septiembre y J.M.Estrada" (no es la botella 30, es una calle que empieza con "30").
+
+`resolver_o_crear_padre_desde_base()` es el núcleo reutilizable (parametrizado en
+estado/origen_datos) del que también depende `core/services/cromo/camara_padre_service.py` para
+vincular Botellas Cromo a una Cámara padre — mismo mecanismo de resolución, sin duplicar código,
+para dos backfills con políticas de estado por defecto distintas (ver ese módulo).
 """
 
 from __future__ import annotations
@@ -36,11 +41,21 @@ logger = logging.getLogger(__name__)
 # revisó"). Incluirlo en esta escala hacía que una botella LIBRE con una hermana PENDIENTE_REVISION
 # "escalara" a PENDIENTE_REVISION — corrompiendo silenciosamente cámaras que nunca deberían pasar por
 # el flujo de triage admin. `estado_mas_restrictivo()` filtra estos casos antes de calcular.
+#
+# `NO_OPERATIVA` (2026-08-11, backfill de Botellas Cromo) sí participa, con peso intermedio entre
+# LIBRE y OCUPADA: es más conservador que LIBRE (no hay ninguna señal real detrás) pero no debe
+# ocultar un uso/baneo confirmado del resto del grupo.
+#
+# `DETECTADA` fue retirado del sistema (2026-08-11, mismo pase) — el estado operable de
+# Cámara/Botella se redujo a LIBRE/OCUPADA/BANEADA/NO_OPERATIVA (ver
+# `scripts/retirar_estado_detectada.py`). Ya no tiene entrada propia acá; si alguna fila legado
+# quedara sin backfillear, cae al fallback `.get(e, 0)` — mismo peso que LIBRE, nunca bloquea el
+# cálculo.
 _ORDEN_SEVERIDAD_ESTADO: dict[CamaraEstado, int] = {
     CamaraEstado.LIBRE: 0,
-    CamaraEstado.DETECTADA: 1,
-    CamaraEstado.OCUPADA: 1,
-    CamaraEstado.BANEADA: 2,
+    CamaraEstado.NO_OPERATIVA: 1,
+    CamaraEstado.OCUPADA: 2,
+    CamaraEstado.BANEADA: 3,
 }
 
 
@@ -95,23 +110,29 @@ def _advisory_lock_para(session: Session, clave: str) -> None:
     session.execute(text("SELECT pg_advisory_xact_lock(:clave)"), {"clave": clave_hash})
 
 
-def resolver_o_crear_padre(session: Session, nombre_hijo: str, *, usuario: str = "sistema") -> Optional[Camara]:
-    """Resuelve (o crea) la cámara padre para `nombre_hijo`, si el nombre matchea el sufijo "Bot N".
+def resolver_o_crear_padre_desde_base(
+    session: Session,
+    base: str,
+    *,
+    usuario: str = "sistema",
+    estado_si_nuevo: CamaraEstado = CamaraEstado.LIBRE,
+    origen_si_nuevo: CamaraOrigenDatos = CamaraOrigenDatos.INFERIDO,
+) -> Camara:
+    """Resuelve (o crea) la cámara padre para una `base` ya extraída (sin el token "Bot N"/prefijo).
+
+    Núcleo reutilizable de `resolver_o_crear_padre` — parametrizado en `estado_si_nuevo`/
+    `origen_si_nuevo` para que otros backfills (ej. `core/services/cromo/camara_padre_service.py`,
+    Botellas Cromo) puedan reusar exactamente esta lógica (advisory lock, no-promoción de filas
+    existentes, absorción de "peladas") sin duplicarla, sólo cambiando con qué estado/origen nace
+    la fila si hay que crearla.
 
     Nunca promueve una fila existente a "padre": si ya existe una fila raíz (`camara_padre_id IS
     NULL`) cuyo nombre normalizado coincide con la base extraída, esa fila se re-vincula como botella
     del padre (mismo criterio que aplica `scripts/camara_backfill_padre_botella.py`) en vez de
     convertirse ella misma en el padre — mantiene consistencia con cómo el backfill trató el caso real
     "Cra 14 de Julio 240 CF" / "Cra 14 de Julio 240 Bot 2 CF" (ninguna de las dos filas existentes se
-    promueve; se crea una tercera fila `INFERIDO` como padre y ambas quedan como sus botellas).
-
-    Devuelve `None` si `nombre_hijo` no matchea el patrón — el llamador no debe tocar
-    `camara_padre_id` en ese caso (la fila sigue siendo una cámara raíz normal).
+    promueve; se crea una tercera fila como padre y ambas quedan como sus botellas).
     """
-    base = extraer_base(nombre_hijo)
-    if base is None:
-        return None
-
     base_norm = normalizar_para_agrupar(base)
     _advisory_lock_para(session, base_norm)
 
@@ -132,8 +153,8 @@ def resolver_o_crear_padre(session: Session, nombre_hijo: str, *, usuario: str =
     #    nunca se promueve esa fila a padre, siempre queda como botella más del padre nuevo.
     nuevo_padre = Camara(
         nombre=base,
-        estado=CamaraEstado.LIBRE,
-        origen_datos=CamaraOrigenDatos.INFERIDO,
+        estado=estado_si_nuevo,
+        origen_datos=origen_si_nuevo,
     )
     session.add(nuevo_padre)
     session.flush()
@@ -145,20 +166,34 @@ def resolver_o_crear_padre(session: Session, nombre_hijo: str, *, usuario: str =
             hermanas_absorbidas.append(candidata.id)
 
     logger.info(
-        "action=camara_hierarchy evento=padre_creado padre_id=%s nombre='%s' hijo='%s' "
-        "hermanas_absorbidas=%s usuario=%s",
+        "action=camara_hierarchy evento=padre_creado padre_id=%s nombre='%s' estado=%s "
+        "origen_datos=%s hermanas_absorbidas=%s usuario=%s",
         nuevo_padre.id,
         base,
-        nombre_hijo,
+        estado_si_nuevo.value,
+        origen_si_nuevo.value,
         hermanas_absorbidas,
         usuario,
     )
     return nuevo_padre
 
 
+def resolver_o_crear_padre(session: Session, nombre_hijo: str, *, usuario: str = "sistema") -> Optional[Camara]:
+    """Resuelve (o crea) la cámara padre para `nombre_hijo`, si el nombre matchea el sufijo "Bot N".
+
+    Devuelve `None` si `nombre_hijo` no matchea el patrón — el llamador no debe tocar
+    `camara_padre_id` en ese caso (la fila sigue siendo una cámara raíz normal).
+    """
+    base = extraer_base(nombre_hijo)
+    if base is None:
+        return None
+    return resolver_o_crear_padre_desde_base(session, base, usuario=usuario)
+
+
 __all__ = [
     "extraer_base",
     "normalizar_para_agrupar",
     "estado_mas_restrictivo",
+    "resolver_o_crear_padre_desde_base",
     "resolver_o_crear_padre",
 ]

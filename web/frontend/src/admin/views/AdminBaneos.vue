@@ -402,13 +402,75 @@
       </div>
     </div>
   </div>
+
+  <!-- Acordeón: Ingresos sin match -->
+  <div v-if="!cargando" class="card" style="margin-top:24px">
+    <div
+      class="accordion-header"
+      style="display:flex;align-items:center;justify-content:space-between;cursor:pointer"
+      @click="sinMatch.abierto = !sinMatch.abierto"
+    >
+      <h2 style="margin:0">🔍 Ingresos sin match</h2>
+      <span style="font-size:1.2rem">{{ sinMatch.abierto ? '▲' : '▼' }}</span>
+    </div>
+
+    <div v-if="sinMatch.abierto" style="margin-top:16px">
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:16px">
+        Casos donde un técnico (Slack) o una ubicación de tracking no matchearon contra el
+        inventario. No son cámaras — es información para revisar manualmente y mejorar el regex de
+        búsqueda. El ingreso del técnico nunca se bloqueó por esto.
+      </p>
+
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;margin-bottom:12px;cursor:pointer">
+        <input type="checkbox" v-model="sinMatch.soloPendientes" @change="cargarSinMatch" />
+        Mostrar sólo no revisados
+      </label>
+
+      <div v-if="sinMatch.cargando" style="color:var(--muted)">Cargando…</div>
+      <div v-else-if="sinMatch.error" style="color:var(--danger)">{{ sinMatch.error }}</div>
+      <div v-else-if="sinMatch.lista.length === 0" style="color:var(--muted)">
+        No hay casos {{ sinMatch.soloPendientes ? 'sin revisar' : 'registrados' }}.
+      </div>
+      <table v-else class="table" style="width:100%">
+        <thead>
+          <tr>
+            <th>Texto original</th>
+            <th>Origen</th>
+            <th>Contexto</th>
+            <th>Registrado</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="caso in sinMatch.lista" :key="caso.id" :style="caso.revisado ? 'opacity:0.55' : ''">
+            <td>{{ caso.texto_original }}</td>
+            <td>{{ caso.origen === 'slack' ? '💬 Slack' : '📄 Tracking' }}</td>
+            <td style="font-size:0.85rem;color:var(--muted)">{{ caso.contexto || '—' }}</td>
+            <td style="font-size:0.85rem;color:var(--muted)">{{ caso.created_at ? new Date(caso.created_at).toLocaleString('es-AR') : '—' }}</td>
+            <td>
+              <button
+                v-if="!caso.revisado"
+                class="btn"
+                style="padding:4px 10px;font-size:0.82rem"
+                :disabled="sinMatch.accionando === caso.id"
+                @click="handleMarcarRevisado(caso.id)"
+              >
+                ✅ Marcar revisado
+              </button>
+              <span v-else style="font-size:0.82rem;color:var(--muted)">Revisado</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
-import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, darDeAltaComoCanon, eliminarCamaraPendiente, type CamaraPendiente } from '../api/admin';
+import { getBaneosConfig, saveBaneosConfig, getBaneosHealth, startWorker, triggerManualNotification, getListenerConfig, saveListenerConfig, getCamarasPendientes, aprobarCamara, convertirAlias, darDeAltaComoCanon, eliminarCamaraPendiente, getIngresosSinMatch, marcarRevisadoIngresoSinMatch, type CamaraPendiente, type IngresoSinMatch } from '../api/admin';
 
 // ─── Estado del formulario ────────────────────────────────────────────────
 const form = reactive({
@@ -482,6 +544,16 @@ const pendientes = reactive({
   msgError: false,
 });
 
+// ─── Estado ingresos sin match ────────────────────────────────────────────
+const sinMatch = reactive({
+  abierto: false,
+  cargando: false,
+  soloPendientes: true,
+  lista: [] as IngresoSinMatch[],
+  error: '' as string,
+  accionando: null as number | null,
+});
+
 // ─── Carga inicial de configuración ──────────────────────────────────────
 onMounted(async () => {
   try {
@@ -504,6 +576,7 @@ onMounted(async () => {
   }
   // Cargar lista de pendientes en background
   void cargarPendientes();
+  void cargarSinMatch();
 });
 
 // ─── Guardar configuración ────────────────────────────────────────────────
@@ -712,6 +785,31 @@ async function handleDarDeAlta(id: number) {
     pendientes.msgError = true;
   } finally {
     pendientes.accionando = null;
+  }
+}
+
+// ─── Ingresos sin match ────────────────────────────────────────────────────
+async function cargarSinMatch() {
+  sinMatch.cargando = true;
+  sinMatch.error = '';
+  try {
+    sinMatch.lista = await getIngresosSinMatch(sinMatch.soloPendientes ? false : undefined);
+  } catch (e: unknown) {
+    sinMatch.error = e instanceof Error ? e.message : 'Error cargando ingresos sin match.';
+  } finally {
+    sinMatch.cargando = false;
+  }
+}
+
+async function handleMarcarRevisado(id: number) {
+  sinMatch.accionando = id;
+  try {
+    await marcarRevisadoIngresoSinMatch(id);
+    await cargarSinMatch();
+  } catch {
+    // El botón vuelve a habilitarse; el usuario puede reintentar.
+  } finally {
+    sinMatch.accionando = null;
   }
 }
 </script>

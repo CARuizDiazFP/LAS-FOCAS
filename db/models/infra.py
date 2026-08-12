@@ -39,6 +39,7 @@ class CamaraEstado(str, Enum):
     BANEADA = "BANEADA"
     DETECTADA = "DETECTADA"  # Cámaras creadas automáticamente desde tracking
     PENDIENTE_REVISION = "PENDIENTE_REVISION"  # Auto-registradas por el listener; requieren revisión admin
+    NO_OPERATIVA = "NO_OPERATIVA"  # Sin señal operativa real (ej. Cámara/Botella sintetizada desde Cromo)
 
 
 class CamaraOrigenDatos(str, Enum):
@@ -47,7 +48,8 @@ class CamaraOrigenDatos(str, Enum):
     MANUAL = "MANUAL"
     TRACKING = "TRACKING"
     SHEET = "SHEET"
-    INFERIDO = "INFERIDO"  # Cámara padre sintetizada por el backfill de jerarquía Cámara/Botella
+    INFERIDO = "INFERIDO"  # Cámara padre sintetizada por el backfill de jerarquía Cámara/Botella (Bot-N legado)
+    INFERIDO_CROMO = "INFERIDO_CROMO"  # Cámara padre sintetizada por el backfill de Botellas Cromo (nombre, no dato real)
 
 
 class RutaTipo(str, Enum):
@@ -97,9 +99,12 @@ class Camara(Base):
     `camara_padre_id IS NULL` es una Cámara (nodo físico, contenedor); una fila
     con `camara_padre_id` seteado es una Botella (caja de empalme) dentro de esa
     cámara. Exactamente 2 niveles — nunca cadenas. "Botella" acá es un concepto
-    de este módulo de Infraestructura, sin relación con `CromoBotella`
-    (`app.cromo_botellas`, módulo de ingesta Cromo Red) — son entidades
-    homónimas de dominios distintos, esquemas separados, sin FK entre ambas.
+    de este módulo de Infraestructura, homónimo de `CromoBotella`
+    (`app.cromo_botellas`, módulo de ingesta Cromo Red) pero de origen distinto.
+    Desde 2026-08-11 SÍ existe una FK entre ambos dominios: `CromoBotella.camara_id`
+    apunta a una fila raíz de esta tabla (relationship `Camara.cromo_botellas`) —
+    Cromo es la fuente de verdad para ese vínculo, resuelto por
+    `core/services/cromo/camara_padre_service.py`, no por esta jerarquía self-FK.
     """
 
     __tablename__ = "camaras"
@@ -145,6 +150,7 @@ class Camara(Base):
         back_populates="camara_padre",
         foreign_keys=[camara_padre_id],
     )
+    cromo_botellas = relationship("CromoBotella", back_populates="camara")
 
     @property
     def cables(self) -> list["Cable"]:
@@ -442,6 +448,35 @@ class Ingreso(Base):
 
     def __repr__(self) -> str:
         return f"<Ingreso id={self.id} camara_id={self.camara_id}>"
+
+
+class IngresoSinMatch(Base):
+    """Caso de ingreso de técnico (Slack) o ubicación de tracking cuya cámara no matcheó contra el
+    inventario (2026-08-11) — reemplaza el auto-registro de una `Camara` ``PENDIENTE_REVISION``
+    (esa lógica queda retirada: Cromo es la fuente de verdad, y si algo no matchea es porque el
+    técnico lo escribió distinto o el regex de búsqueda tiene un gap, no porque falte dar de alta una
+    cámara nueva). No crea ninguna entidad de infraestructura — es sólo información para revisión
+    manual del caso y para mejorar el regex de búsqueda/normalización de nombres. El ingreso del
+    técnico NUNCA se bloquea por esto: registrar el caso es de sólo lectura respecto del flujo real.
+    """
+
+    __tablename__ = "ingresos_sin_match"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    texto_original = Column(String(512), nullable=False)
+    origen = Column(String(32), nullable=False)  # "slack" | "tracking"
+    contexto = Column(Text, nullable=True)  # canal Slack, nombre de archivo de tracking, etc.
+    revisado = Column(Boolean, nullable=False, default=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<IngresoSinMatch id={self.id} origen='{self.origen}' texto_original='{self.texto_original}'>"
 
 
 class IncidenteBaneo(Base):

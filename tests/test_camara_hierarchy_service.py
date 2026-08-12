@@ -13,6 +13,7 @@ from core.services.camara_hierarchy_service import (
     extraer_base,
     normalizar_para_agrupar,
     resolver_o_crear_padre,
+    resolver_o_crear_padre_desde_base,
 )
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
@@ -85,6 +86,20 @@ def test_estado_mas_restrictivo_solo_pendiente_revision_da_libre() -> None:
     assert resultado == CamaraEstado.LIBRE
 
 
+def test_estado_mas_restrictivo_no_operativa_sobre_libre() -> None:
+    """NO_OPERATIVA (sin señal real, backfill Cromo) es más conservador que LIBRE — no debe quedar
+    oculto por una hermana LIBRE del mismo grupo."""
+    resultado = estado_mas_restrictivo([CamaraEstado.LIBRE, CamaraEstado.NO_OPERATIVA])
+    assert resultado == CamaraEstado.NO_OPERATIVA
+
+
+def test_estado_mas_restrictivo_ocupada_sobre_no_operativa() -> None:
+    """Un uso/baneo confirmado del resto del grupo no debe quedar oculto por una hermana sin señal
+    real (NO_OPERATIVA)."""
+    resultado = estado_mas_restrictivo([CamaraEstado.NO_OPERATIVA, CamaraEstado.OCUPADA])
+    assert resultado == CamaraEstado.OCUPADA
+
+
 def test_resolver_o_crear_padre_nombre_sin_sufijo_no_toca_la_db() -> None:
     session = MagicMock()
 
@@ -153,3 +168,44 @@ def test_resolver_o_crear_padre_crea_uno_nuevo_si_no_existe() -> None:
     assert resultado.origen_datos == CamaraOrigenDatos.INFERIDO
     session.add.assert_called_once_with(resultado)
     session.flush.assert_called()
+
+
+def test_resolver_o_crear_padre_desde_base_permite_estado_y_origen_custom() -> None:
+    """Núcleo reutilizable por otros backfills (ej. Botellas Cromo) — parametrizado en
+    estado_si_nuevo/origen_si_nuevo, sin duplicar la lógica de advisory lock/absorción."""
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = []
+
+    resultado = resolver_o_crear_padre_desde_base(
+        session,
+        "Cra Plaza de los Ingleses CF",
+        usuario="cromo_backfill",
+        estado_si_nuevo=CamaraEstado.NO_OPERATIVA,
+        origen_si_nuevo=CamaraOrigenDatos.INFERIDO_CROMO,
+    )
+
+    assert resultado.nombre == "Cra Plaza de los Ingleses CF"
+    assert resultado.estado == CamaraEstado.NO_OPERATIVA
+    assert resultado.origen_datos == CamaraOrigenDatos.INFERIDO_CROMO
+    session.add.assert_called_once_with(resultado)
+
+
+def test_resolver_o_crear_padre_desde_base_reusa_padre_existente_sin_tocar_su_estado() -> None:
+    """Si ya existe un padre real (con estado propio, trackeado), se reutiliza tal cual — no se
+    inventa ni se sobreescribe su estado sólo porque el llamador pasó un default distinto."""
+    session = MagicMock()
+    padre_existente = Camara(id=99, nombre="Cra 14 de Julio 240 CF", estado=CamaraEstado.BANEADA, camara_padre_id=None)
+    padre_existente.botellas = [Camara(id=50, nombre="Cra 14 de Julio 240 Bot 5 CF")]
+    session.query.return_value.filter.return_value.all.return_value = [padre_existente]
+
+    resultado = resolver_o_crear_padre_desde_base(
+        session,
+        "Cra 14 de Julio 240 CF",
+        usuario="cromo_backfill",
+        estado_si_nuevo=CamaraEstado.NO_OPERATIVA,
+        origen_si_nuevo=CamaraOrigenDatos.INFERIDO_CROMO,
+    )
+
+    assert resultado is padre_existente
+    assert resultado.estado == CamaraEstado.BANEADA
+    session.add.assert_not_called()

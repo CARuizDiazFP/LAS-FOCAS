@@ -156,9 +156,10 @@ def test_determinar_estado_restauracion_mantiene_baneo_independiente_anterior_al
     assert resultado == CamaraEstado.BANEADA
 
 
-def test_determinar_estado_restauracion_preserva_detectada() -> None:
-    """DETECTADA es un estado administrativo/de triage, no de ocupación — perderlo al desbanear haría
-    ver "libre" una cámara que en realidad no fue verificada."""
+def test_determinar_estado_restauracion_ya_no_preserva_detectada() -> None:
+    """DETECTADA fue retirado del sistema (2026-08-11) — una transición previa con
+    estado_anterior=DETECTADA ya no se preserva, cae al mismo cálculo LIBRE/OCUPADA por defecto que
+    cualquier otra transición sin motivo independiente de baneo."""
     camara = Camara(id=9, nombre="Cra Test CF", estado=CamaraEstado.BANEADA)
     incidente = IncidenteBaneo(id=1, fecha_inicio=datetime(2026, 8, 10, 13, 0, 0, tzinfo=timezone.utc))
     transicion = CamaraEstadoAuditoria(
@@ -169,11 +170,12 @@ def test_determinar_estado_restauracion_preserva_detectada() -> None:
     )
     session = MagicMock()
     session.query.return_value.filter.return_value.order_by.return_value.first.return_value = transicion
+    session.query.return_value.filter.return_value.first.return_value = None  # sin ingreso activo
 
     service = ProtectionService(session)
     resultado = service._determinar_estado_restauracion(camara, incidente)
 
-    assert resultado == CamaraEstado.DETECTADA
+    assert resultado == CamaraEstado.LIBRE
 
 
 def test_determinar_estado_restauracion_transicion_del_propio_incidente_restaura_libre() -> None:

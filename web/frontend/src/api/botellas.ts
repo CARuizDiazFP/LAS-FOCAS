@@ -24,7 +24,10 @@ export interface SearchBotellasParams {
   q?: string;
   limit?: number;
   offset?: number;
+  incluirNoOperativas?: boolean;
 }
+
+const PARAM_KEY_MAP: Record<string, string> = { incluirNoOperativas: 'incluir_no_operativas' };
 
 export type EstadoBotellaToken = 'ok' | 'warn' | 'error' | 'idle';
 
@@ -39,8 +42,10 @@ export function estadoBotellaToken(estado: string | null | undefined): EstadoBot
 function toQuery(params: SearchBotellasParams): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === '') return;
-    query.set(key, String(value));
+    // `false` se omite a propósito además de undefined/null/'': el default del backend ya es
+    // `incluir_no_operativas=false`, no hace falta viajarlo cuando el toggle está apagado.
+    if (value === undefined || value === null || value === '' || value === false) return;
+    query.set(PARAM_KEY_MAP[key] ?? key, String(value));
   });
   const qs = query.toString();
   return qs ? `?${qs}` : '';

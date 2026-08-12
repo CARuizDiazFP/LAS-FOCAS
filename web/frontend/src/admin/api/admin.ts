@@ -178,3 +178,25 @@ export async function eliminarCamaraPendiente(id: number): Promise<void> {
     method: 'DELETE',
   });
 }
+
+// ── Ingresos sin match (reemplaza el auto-registro PENDIENTE_REVISION, 2026-08-11) ─────────
+
+export interface IngresoSinMatch {
+  id: number;
+  texto_original: string;
+  origen: 'slack' | 'tracking';
+  contexto: string | null;
+  revisado: boolean;
+  created_at: string | null;
+}
+
+export async function getIngresosSinMatch(revisado?: boolean): Promise<IngresoSinMatch[]> {
+  const query = revisado === undefined ? '' : `?revisado=${revisado}`;
+  return requestJson<IngresoSinMatch[]>(`/api/admin/infra/ingresos-sin-match${query}`);
+}
+
+export async function marcarRevisadoIngresoSinMatch(id: number): Promise<void> {
+  await request(`/api/admin/infra/ingresos-sin-match/${id}/marcar-revisado`, {
+    method: 'POST',
+  });
+}

@@ -50,23 +50,37 @@ Se limpiaron imports innecesarios en los repositorios de conversaciones y mensaj
 | `latitud`          | Float                | Coordenada latitud (opcional). |
 | `longitud`         | Float                | Coordenada longitud (opcional). |
 | `direccion`        | String(255)          | Dirección alternativa (opcional). |
-| `estado`           | Enum                 | `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `PENDIENTE_REVISION`. |
-| `origen_datos`     | Enum                 | `MANUAL`, `TRACKING`, `SHEET`, `INFERIDO`. |
+| `estado`           | Enum                 | `LIBRE`, `OCUPADA`, `BANEADA`, `DETECTADA`, `PENDIENTE_REVISION`, `NO_OPERATIVA`. |
+| `origen_datos`     | Enum                 | `MANUAL`, `TRACKING`, `SHEET`, `INFERIDO`, `INFERIDO_CROMO`. |
 | `camara_padre_id`  | FK → camaras, index, nullable | Jerarquía Cámara→Botella (2026-08-10): si está seteado, esta fila es una **Botella** y apunta a su Cámara padre (`camara_padre_id IS NULL`). Exactamente 2 niveles — `CHECK` anti-autoreferencia. Ver `docs/infra.md` sección "Jerarquía Cámara → Botellas". |
 | `last_update`      | DateTime(tz)         | Última actualización. |
 
-**Estados:**
+Relationship inverso desde 2026-08-11: `Camara.cromo_botellas` (`CromoBotella.camara_id`, ver tabla
+`cromo_botellas` más abajo) — una Cámara padre puede tener Botellas legado (self-FK) **y** Botellas
+Cromo a la vez, son colecciones independientes.
+
+**Estados operables (desde 2026-08-11): sólo estos 4 son seteables** — `estados_disponibles` (`GET
+/api/infra/camaras/{id}/estado`) y la validación de `POST /api/infra/camaras/{id}/estado` sólo
+aceptan los siguientes:
 - `LIBRE`: cámara disponible para nuevos servicios.
 - `OCUPADA`: cámara en uso.
 - `BANEADA`: cámara excluida de operaciones.
-- `DETECTADA`: cámara creada automáticamente desde tracking (pendiente de validación).
-- `PENDIENTE_REVISION`: cámara auto-registrada por el listener de ingresos Slack al recibir una cámara desconocida.  Requiere que un administrador la apruebe (estado → `LIBRE`) o la convierta en alias de otra cámara existente.
+- `NO_OPERATIVA` (2026-08-11): sin ninguna señal operativa real — default de toda Cámara padre nueva sintetizada por `scripts/cromo_backfill_camara_padre.py`/`core/services/cromo/orfanas_service.py` (fail-closed: `cromo_botellas` no trackea estado, asumir `LIBRE` sería inventar un dato). También es el `estado` por defecto de una `CromoBotella` sin backfillear.
+
+**Estados retirados de la asignación activa (2026-08-11), aún presentes en el enum de Postgres por
+filas legado — no removibles sin recrear el tipo**:
+- `DETECTADA`: cámara creada automáticamente desde tracking (pendiente de validación). Retirado —
+  `scripts/retirar_estado_detectada.py` migró retroactivamente toda fila existente a su estado real
+  (corrida real 2026-08-11: 1.053 filas → 100% `LIBRE`). Ningún código nuevo debe crear filas con
+  este estado.
+- `PENDIENTE_REVISION`: cámara auto-registrada por el listener de ingresos Slack al recibir una cámara desconocida. El *auto-registro* quedó retirado (2026-08-11, ver `app.ingresos_sin_match` más abajo) — el panel admin de aprobación sigue vigente sólo para las 34 filas legado ya existentes a esa fecha, no recibe filas nuevas.
 
 **Origen de datos:**
 - `MANUAL`: ingresada manualmente.
 - `TRACKING`: detectada al procesar un archivo de tracking.
 - `SHEET`: importada desde Google Sheets.
-- `INFERIDO`: Cámara padre sintetizada automáticamente al agrupar Botellas (backfill o alta en vivo vía `resolver_o_crear_padre`) — no proviene de ningún origen de datos real, es un artefacto de la jerarquía.
+- `INFERIDO`: Cámara padre sintetizada automáticamente al agrupar Botellas legado (backfill Bot-N o alta en vivo vía `resolver_o_crear_padre`) — no proviene de ningún origen de datos real, es un artefacto de la jerarquía.
+- `INFERIDO_CROMO` (2026-08-11): Cámara padre sintetizada por `scripts/cromo_backfill_camara_padre.py` a partir de un nombre de Botella Cromo — mismo concepto que `INFERIDO` pero de un pipeline distinto (permite distinguir con una query trivial qué backfill sintetizó cada fila).
 
 ### Tabla `cables`
 
@@ -209,6 +223,22 @@ Ejecuta la acción elegida por el usuario:
 | `fecha_inicio`| DateTime(tz)   | Fecha/hora de inicio. |
 | `fecha_fin`   | DateTime(tz)   | Fecha/hora de fin. |
 
+### Tabla `ingresos_sin_match` (2026-08-11)
+
+Reemplaza el auto-registro `PENDIENTE_REVISION` en ingresos sin match (ver `docs/infra.md`, sección
+homónima) — no crea ninguna `Camara`, es sólo información de sólo lectura para revisión manual y
+mejora del regex de búsqueda. Poblada por `modules/slack_baneo_notifier/listener.py` (bot de Slack)
+y `web/app/main.py::upload_tracking_web` (carga de tracking).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | — |
+| `texto_original` | String(512) | Nombre buscado que no matcheó, ya limpio de ruido operativo. |
+| `origen` | String(32) | `"slack"` \| `"tracking"`. |
+| `contexto` | Text, nullable | Canal de Slack o nombre de archivo de tracking, según `origen`. |
+| `revisado` | Boolean | `false` por defecto — flag de triage admin. |
+| `created_at` | DateTime(tz), index | — |
+
 ---
 
 ## Protocolo de Protección (Baneo de Cámaras)
@@ -237,7 +267,7 @@ cuando la fibra principal está cortada. Esto se implementa mediante la tabla `i
 - **Redundancia cruzada:** El servicio afectado puede ser diferente al protegido.
 - **Baneo a nivel de entidad:** El estado de `Camara` cambia a `BANEADA`.
 - **Cascada de grupo (2026-08-10):** banear o desbanear cualquier `Camara` cascadea a TODO su grupo Cámara→Botellas (padre + botellas hermanas, ver `docs/infra.md`) vía `aplicar_estado_a_grupo`.
-- **Restauración inteligente:** al levantar un baneo, cada cámara del grupo se evalúa por separado — vuelve a `LIBRE` u `OCUPADA` según ingresos activos, preserva `DETECTADA` si ese era su estado antes de ser baneada, y se mantiene en `BANEADA` si la última transición a ese estado es anterior al inicio del incidente que se levanta (baneo independiente sin `IncidenteBaneo` que lo respalde — override manual o heredado del backfill de jerarquía). Ver `core/services/protection_service.py::_determinar_estado_restauracion` y `camara_estado_service.obtener_ultima_transicion_a_baneada`.
+- **Restauración inteligente:** al levantar un baneo, cada cámara del grupo se evalúa por separado — vuelve a `LIBRE` u `OCUPADA` según ingresos activos, y se mantiene en `BANEADA` si la última transición a ese estado es anterior al inicio del incidente que se levanta (baneo independiente sin `IncidenteBaneo` que lo respalde — override manual o heredado del backfill de jerarquía). Ver `core/services/protection_service.py::_determinar_estado_restauracion` y `camara_estado_service.obtener_ultima_transicion_a_baneada`. Hasta 2026-08-11 también preservaba `DETECTADA` si ese era el estado previo a ser baneada — retirado junto con el resto del estado `DETECTADA` (ver tabla `camaras`, sección "Estados").
 - **Cámaras nuevas:** Si se carga un tracking de un servicio baneado, las cámaras nuevas nacen `BANEADAS`.
 
 ### Tabla `camaras_estado_auditoria`
@@ -401,9 +431,11 @@ Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones
 | `payload_raw` | JSONB | Payload crudo completo, para auditoría. |
 | `vigente` | Boolean | Baja lógica, nunca `DELETE`. |
 | `primera_ingesta`, `ultima_ingesta`, `ultima_modificacion` | DateTime(tz) | — |
+| `camara_id` (FK) | Integer, nullable | → `camaras.id` (`ON DELETE SET NULL`). Desde 2026-08-11 (migración `20260811_01`); poblada por `scripts/cromo_backfill_camara_padre.py`, no por la ingesta — deliberadamente excluida de `_BOTELLA_CAMPOS`, sobrevive intacta a reingestas. |
+| `estado` | Enum `camara_estado` | `NOT NULL DEFAULT 'NO_OPERATIVA'`. `CHECK` sólo admite `LIBRE`/`OCUPADA`/`BANEADA`/`NO_OPERATIVA` (reusa el mismo tipo Postgres de `camaras.estado`, sin `DETECTADA`/`PENDIENTE_REVISION`, exclusivos del legado). |
 
-Índices: parcial en `id_legacy` (`WHERE id_legacy IS NOT NULL`), compuesto `(latitud, longitud)`, y GIN
-funcional `to_tsvector('spanish', nombre)` para búsqueda de texto.
+Índices: parcial en `id_legacy` (`WHERE id_legacy IS NOT NULL`), compuesto `(latitud, longitud)`,
+`camara_id`, y GIN funcional `to_tsvector('spanish', nombre)` para búsqueda de texto.
 
 ### Tabla `cromo_cables`
 
@@ -565,6 +597,8 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260806_01` | `20260806_01_cromo_ingesta_config.py` | Tabla `app.cromo_ingesta_config` (fila única, config del scheduler del worker dedicado), para la Etapa 7 de ingesta desde Cromo Red |
 | `20260807_01` | `20260807_01_cromo_fusiones_botella_nullable.py` | `cromo_fusiones.botella_n_id` pasa a nullable — el fetch directo de clase 132 no trae `parent`, para la Etapa 8 de ingesta desde Cromo Red |
 | `20260810_01` | `20260810_01_camara_padre_botella.py` | Columna `camaras.camara_padre_id` (FK auto-referencial + índice + `CHECK` anti-autoreferencia) y valor `INFERIDO` en enum `camara_origen_datos`, para la jerarquía Cámara→Botella (ver `docs/infra.md`) |
+| `20260811_01` | `20260811_01_cromo_botella_camara_padre.py` | Columnas `cromo_botellas.camara_id` (FK a `camaras.id`) y `estado` (+ `CHECK`), valores `NO_OPERATIVA` en `camara_estado` e `INFERIDO_CROMO` en `camara_origen_datos` — vincula Botellas Cromo a una Cámara padre propia (ver `docs/infra.md`, sección "Cámara padre para Botellas Cromo") |
+| `20260811_02` | `20260811_02_ingresos_sin_match.py` | Tabla `app.ingresos_sin_match` — reemplaza el auto-registro `PENDIENTE_REVISION` en ingresos sin match (ver `docs/infra.md`, sección homónima) |
 
 ---
 

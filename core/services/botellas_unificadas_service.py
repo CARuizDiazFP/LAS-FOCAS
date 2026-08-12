@@ -2,11 +2,14 @@
 # Ubicación de archivo: core/services/botellas_unificadas_service.py
 # Descripción: Listado unificado de Botellas (Cromo + legado Infra/Baneos), sólo lectura, sin cruzar identidad entre ambas fuentes
 
-"""Combina dos fuentes de datos sin relación real entre sí, ambas llamadas "Botella":
+"""Combina dos fuentes de datos, ambas llamadas "Botella":
 
-- `app.cromo_botellas` (mirror de sólo lectura de Cromo Red, sin campo de estado operativo ni FK de
-  "padre" — Cromo no distingue Cámara/Poste/Botella como entidades separadas, ver
-  `docs/infra.md` sección "Submódulo Botellas").
+- `app.cromo_botellas` (mirror de sólo lectura de Cromo Red). Desde 2026-08-11 tiene `camara_id`
+  (FK a `app.camaras.id`) y `estado` propios (`NOT NULL DEFAULT 'NO_OPERATIVA'`, nunca `NULL`),
+  poblados por `scripts/cromo_backfill_camara_padre.py`: una fila sin backfillear expone
+  `estado='NO_OPERATIVA'` (el default seguro, fail-closed, no una ausencia de dato), una
+  backfilleada expone su estado real (heredado del padre si se reutilizó una Cámara legado
+  existente).
 - `app.camaras` con `camara_padre_id` seteado (Botellas "legado" de la jerarquía Cámara→Botella del
   módulo Infra/Baneos, con estado operativo real).
 
@@ -35,7 +38,7 @@ class BotellaUnificada:
     origen: str  # "cromo" | "legado"
     id: int
     nombre: Optional[str]
-    estado: Optional[str]  # siempre None para origen "cromo" — Cromo no trackea estado operativo
+    estado: Optional[str]  # real desde 2026-08-11 para ambos orígenes (ver docstring del módulo)
 
 
 @dataclass(slots=True)
@@ -49,7 +52,7 @@ class ResultadoBusquedaBotellas:
 _CTE_COMBINADO = """
     WITH combinado AS (
         SELECT
-            'cromo'::text AS origen, cb.n_id AS id, cb.nombre AS nombre, NULL::text AS estado, 0 AS prioridad
+            'cromo'::text AS origen, cb.n_id AS id, cb.nombre AS nombre, cb.estado::text AS estado, 0 AS prioridad
         FROM app.cromo_botellas cb
         WHERE cb.vigente = true
           AND (
@@ -58,12 +61,14 @@ _CTE_COMBINADO = """
             OR cb.calle ILIKE CAST(:q AS text)
             OR cb.localidad ILIKE CAST(:q AS text)
           )
+          AND (CAST(:incluir_no_operativas AS boolean) OR cb.estado != 'NO_OPERATIVA')
         UNION ALL
         SELECT
             'legado'::text AS origen, c.id AS id, c.nombre AS nombre, c.estado::text AS estado, 1 AS prioridad
         FROM app.camaras c
         WHERE c.camara_padre_id IS NOT NULL
           AND (CAST(:q AS text) IS NULL OR c.nombre ILIKE CAST(:q AS text))
+          AND (CAST(:incluir_no_operativas AS boolean) OR c.estado != 'NO_OPERATIVA')
     )
 """
 
@@ -86,10 +91,16 @@ async def buscar_botellas_unificadas(
     q: Optional[str] = None,
     limit: int = 30,
     offset: int = 0,
+    incluir_no_operativas: bool = False,
 ) -> ResultadoBusquedaBotellas:
     """Búsqueda paginada sobre el listado unificado. `q` es `ILIKE` parcial contra nombre (Cromo
-    también contra calle/localidad); vacío o `None` no filtra."""
-    params = {"q": f"%{q.strip()}%" if q and q.strip() else None}
+    también contra calle/localidad); vacío o `None` no filtra. `incluir_no_operativas=False`
+    (default) oculta filas con `estado='NO_OPERATIVA'` de ambos orígenes — infraestructura
+    fantasma/sin señal real que de otro modo contamina el listado."""
+    params = {
+        "q": f"%{q.strip()}%" if q and q.strip() else None,
+        "incluir_no_operativas": incluir_no_operativas,
+    }
 
     total = (await sesion.execute(_SQL_CONTAR, params)).scalar_one()
     filas = (await sesion.execute(_SQL_BUSCAR, {**params, "limit": limit, "offset": offset})).all()

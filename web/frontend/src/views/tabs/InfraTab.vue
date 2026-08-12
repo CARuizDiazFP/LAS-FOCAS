@@ -562,15 +562,19 @@
             :class="['infra-legend-item', { active: activeStateFilter === item.estado }]"
             @click="toggleStateFilter(item.estado)"
           >
-            <span v-if="item.estado !== 'TRACKING'" :class="['infra-legend-dot', item.dotClass]"></span>
-            <i v-else class="ph ph-map-pin" aria-hidden="true"></i>
+            <span :class="['infra-legend-dot', item.dotClass]"></span>
             {{ item.estado }}
             <span class="infra-legend-count">{{ legendCounts[item.estado] ?? 0 }}</span>
           </button>
 
           <span class="infra-count">
-            <strong>{{ filteredCamaras.length }}</strong> cámaras
+            <strong>{{ camaras.length }}</strong> cámaras
           </span>
+
+          <label class="infra-toggle-no-operativas">
+            <input type="checkbox" v-model="incluirNoOperativas" @change="onToggleIncluirNoOperativas" />
+            Mostrar No operativas
+          </label>
         </div>
 
         <div v-if="statusText" :class="['fop-status', statusVariant]">{{ statusText }}</div>
@@ -588,13 +592,9 @@
         <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
         <p>Sin resultados para estos términos.</p>
       </div>
-      <div v-else-if="filteredCamaras.length === 0" class="infra-state-box">
-        <i class="ph ph-map-pin" aria-hidden="true"></i>
-        <p>Sin cámaras en TRACKING con los términos actuales.</p>
-      </div>
       <div v-else class="fop-grid">
         <article
-          v-for="camara in filteredCamaras"
+          v-for="camara in camaras"
           :key="camara.id"
           class="fop-camara-card"
           :data-estado="camara.estado ?? 'LIBRE'"
@@ -683,11 +683,22 @@ function clearAll() {
   camaras.value = [];
   hasSearched.value = false;
   activeStateFilter.value = null;
+  incluirNoOperativas.value = false;
   setStatus('');
 }
 
 // --- Filtro rápido por estado ---
 const activeStateFilter = ref<string | null>(null);
+
+// --- Toggle "Mostrar No operativas" — ortogonal al chip de estado, oculto por defecto (hay que
+// activarlo para verlas), se combina con cualquier chip activo en vez de competir con ellos.
+const incluirNoOperativas = ref(false);
+
+function onToggleIncluirNoOperativas() {
+  // Mismo criterio que toggleStateFilter: si ya hay resultados, re-consulta con el filtro nuevo;
+  // si todavía no se buscó nada, searchCamaras() no-opea sola (mismo guard que el botón "Buscar").
+  searchCamaras();
+}
 
 function toggleStateFilter(estado: string) {
   activeStateFilter.value = activeStateFilter.value === estado ? null : estado;
@@ -698,36 +709,28 @@ function toggleStateFilter(estado: string) {
   }
 }
 
-// El filtro de estado se aplica en el servidor (salvo TRACKING, que depende de la relación rutas).
-// Este computed solo filtra client-side para el caso especial TRACKING.
-const filteredCamaras = computed(() => {
-  if (activeStateFilter.value === 'TRACKING') {
-    return camaras.value.filter(c => ((c.rutas as unknown[]) ?? []).length > 0);
-  }
-  return camaras.value;
-});
-
+// DETECTADA y el pseudo-estado "TRACKING" (client-side, basado en camara.rutas.length > 0) fueron
+// retirados del sistema (2026-08-11) — el estado operable de Cámara/Botella se redujo a
+// LIBRE/OCUPADA/BANEADA/NO_OPERATIVA (ver scripts/retirar_estado_detectada.py).
 const legendItems = [
   { estado: 'LIBRE', dotClass: 'libre' },
   { estado: 'OCUPADA', dotClass: 'ocupada' },
   { estado: 'BANEADA', dotClass: 'baneada' },
-  { estado: 'DETECTADA', dotClass: 'detectada' },
-  { estado: 'TRACKING', dotClass: 'tracking' },
+  { estado: 'NO_OPERATIVA', dotClass: 'no_operativa' },
 ];
 
 const legendCounts = computed<Record<string, number>>(() => {
-  const counts: Record<string, number> = { LIBRE: 0, OCUPADA: 0, BANEADA: 0, DETECTADA: 0, TRACKING: 0 };
+  const counts: Record<string, number> = { LIBRE: 0, OCUPADA: 0, BANEADA: 0, NO_OPERATIVA: 0 };
   for (const camara of camaras.value) {
     const estado = String(camara.estado ?? 'LIBRE').toUpperCase();
     if (estado in counts) counts[estado] += 1;
-    if (((camara.rutas as unknown[]) ?? []).length > 0) counts.TRACKING += 1;
   }
   return counts;
 });
 
 function estadoDotClass(estado: unknown): string {
   const value = String(estado ?? 'libre').toLowerCase();
-  return ['libre', 'ocupada', 'baneada', 'detectada'].includes(value) ? value : 'libre';
+  return ['libre', 'ocupada', 'baneada', 'no_operativa'].includes(value) ? value : 'libre';
 }
 
 function camaraMeta(camara: Record<string, unknown>): string {
@@ -764,12 +767,10 @@ async function searchCamaras() {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         terms: searchTerms.value,
-        limit: activeStateFilter.value === 'TRACKING' ? 500 : 100,
+        limit: 100,
         offset: 0,
-        // Para TRACKING no enviamos estado al backend (no es un CamaraEstado enum); filtramos client-side.
-        ...(activeStateFilter.value && activeStateFilter.value !== 'TRACKING'
-          ? { estado: activeStateFilter.value }
-          : {}),
+        incluir_no_operativas: incluirNoOperativas.value,
+        ...(activeStateFilter.value ? { estado: activeStateFilter.value } : {}),
       }),
     });
     if (!res.ok) {
@@ -1510,6 +1511,8 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-chips-separator { width: 1px; height: 15px; background: var(--color-divider); }
 .infra-count { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 55%, transparent); white-space: nowrap; }
 .infra-count strong { color: var(--color-text); font-weight: 500; }
+.infra-toggle-no-operativas { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent); cursor: pointer; user-select: none; white-space: nowrap; }
+.infra-toggle-no-operativas input { accent-color: var(--color-accent); }
 .fop-status { font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
 .fop-status.error { color: var(--color-state-error); }
 .fop-status.success { color: var(--color-state-ok); }
@@ -1544,7 +1547,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-camara-dot.libre { background: var(--color-state-ok); }
 .infra-camara-dot.ocupada { background: var(--color-state-warn); }
 .infra-camara-dot.baneada { background: var(--color-state-error); }
-.infra-camara-dot.detectada { background: var(--color-state-idle); }
+.infra-camara-dot.no_operativa { background: var(--color-state-idle); }
 .infra-camara-estado-text {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
   color: color-mix(in srgb, var(--color-text) 62%, transparent);
@@ -1664,7 +1667,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-legend-dot.libre { background: var(--color-state-ok); }
 .infra-legend-dot.ocupada { background: var(--color-state-warn); }
 .infra-legend-dot.baneada { background: var(--color-state-error); }
-.infra-legend-dot.detectada { background: var(--color-state-idle); }
+.infra-legend-dot.no_operativa { background: var(--color-state-idle); }
 .infra-legend-count { font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 42%, transparent); }
 
 /* Modal genérico compartido */

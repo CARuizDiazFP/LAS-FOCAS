@@ -267,7 +267,8 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         client_mock.chat_postMessage.assert_called_once()
 
     def test_responde_camara_no_encontrada(self) -> None:
-        """Cuando buscar_camara no encuentra la cámara, el listener la auto-registra."""
+        """Cuando buscar_camara no encuentra la cámara, el listener NUNCA bloquea el ingreso — sólo
+        registra el caso para revisión manual (2026-08-11, ya no auto-registra una Camara)."""
         listener = self._make_listener()
         client_mock = MagicMock()
         event = self._make_event(text="Cámara: Cám Inexistente 9999\nTécnico: Juan")
@@ -284,7 +285,8 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
 
         client_mock.chat_postMessage.assert_called_once()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
-        self.assertIn("bajo revisión", texto_respuesta)
+        self.assertIn("Podés continuar con el ingreso", texto_respuesta)
+        self.assertNotIn("bajo revisión", texto_respuesta)
 
     def test_responde_camara_libre(self) -> None:
         listener = self._make_listener()
@@ -747,8 +749,10 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
         self.assertIsNotNone(camara)
         self.assertEqual(camara.nombre, "Bot 2 Cra Poste 202")
 
-    def test_autoregistro_camara_pendiente(self) -> None:
-        """Cuando buscar_camara retorna None, listener registra cámara como PENDIENTE_REVISION."""
+    def test_registra_ingreso_sin_match_en_vez_de_autoregistrar_camara(self) -> None:
+        """Cuando buscar_camara retorna None, el listener registra un `IngresoSinMatch` (para
+        revisión manual/mejora del regex) — ya NO crea una `Camara` PENDIENTE_REVISION (2026-08-11,
+        Cromo es la fuente de verdad, ese flujo quedó retirado)."""
         from modules.slack_baneo_notifier.listener import IngresoListener
 
         listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
@@ -770,14 +774,18 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
             mock_session_cls.return_value = session_mock
             listener._handle_message(event, client_mock)
 
-        # Verificar que se llamó session.add (auto-registro)
+        # Se registra el caso (IngresoSinMatch), nunca una Camara.
         session_mock.add.assert_called_once()
+        registrado = session_mock.add.call_args[0][0]
+        self.assertEqual(registrado.origen, "slack")
+        self.assertEqual(registrado.texto_original, "CRA Inexistente XYZ 9999")
+        self.assertEqual(registrado.contexto, "C123")
         session_mock.commit.assert_called_once()
 
-        # Verificar que la respuesta indica auto-registro
+        # El técnico nunca ve un rechazo — puede continuar con el ingreso igual.
         client_mock.chat_postMessage.assert_called_once()
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
-        self.assertIn("bajo revisión", texto)
+        self.assertIn("Podés continuar con el ingreso", texto)
 
 
 # ─── Tests de filtros: número estricto y exclusión de Bots secundarios ────────

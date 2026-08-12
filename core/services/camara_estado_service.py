@@ -124,15 +124,14 @@ def _incidente_afecta_camara(
     return incidente.ruta_protegida_id in rutas_ids
 
 
-def _estado_sugerido(
-    estado_actual: CamaraEstado,
-    tiene_baneo_activo: bool,
-    tiene_ingreso_activo: bool,
-) -> CamaraEstado:
+def _estado_sugerido(tiene_baneo_activo: bool, tiene_ingreso_activo: bool) -> CamaraEstado:
+    """Ya no preserva `DETECTADA` (retirado del sistema, 2026-08-11 — el estado operable de
+    Cámara/Botella se redujo a LIBRE/OCUPADA/BANEADA/NO_OPERATIVA, ver
+    `scripts/retirar_estado_detectada.py`). Una fila legado que todavía tuviera `DETECTADA` cae al
+    mismo cálculo que cualquier otro estado retirado: baneo activo gana, sino ingreso activo, sino
+    LIBRE — nunca se preserva un estado fuera del vocabulario vigente."""
     if tiene_baneo_activo:
         return CamaraEstado.BANEADA
-    if estado_actual == CamaraEstado.DETECTADA:
-        return CamaraEstado.DETECTADA
     if tiene_ingreso_activo:
         return CamaraEstado.OCUPADA
     return CamaraEstado.LIBRE
@@ -173,7 +172,7 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
 
     estado_actual = camara.estado or CamaraEstado.LIBRE
     tiene_baneo_activo = len(incidentes_activos_db) > 0
-    estado_sugerido = _estado_sugerido(estado_actual, tiene_baneo_activo, tiene_ingreso_activo)
+    estado_sugerido = _estado_sugerido(tiene_baneo_activo, tiene_ingreso_activo)
     incidentes_activos = [
         IncidenteActivoResumen(
             id=incidente.id,

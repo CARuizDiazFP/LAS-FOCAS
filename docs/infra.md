@@ -78,24 +78,36 @@ plan de validación.
 camino de escritura real hoy (0 filas, 0 endpoints), por lo que no hay nada que propagar todavía. Ver
 "Registros" más abajo, pestaña Ingresos placeholder.
 
-**Endpoint nuevo**: `GET /api/infra/camaras/{camara_id}/botellas` — devuelve las Botellas de una Cámara
-(lista vacía si `camara_id` es en sí una Botella, el modelo es de 2 niveles). Consumido por
-`ModalBotellas.vue` desde una 4ª tarjeta "Botellas" en `CamaraDetailView.vue`.
+**Endpoint**: `GET /api/infra/camaras/{camara_id}/botellas` — devuelve las Botellas de una Cámara,
+unificando legado (self-FK de esta sección, lista vacía si `camara_id` es en sí una Botella) y Cromo
+(`CromoBotella.camara_id`, desde 2026-08-11, ver sección "Cámara padre para Botellas Cromo" más abajo).
+Consumido por `ModalBotellas.vue` desde una 4ª tarjeta "Botellas" en `CamaraDetailView.vue`.
 
-### Submódulo Botellas (listado unificado, 2026-08-10)
+### Submódulo Botellas (listado unificado, 2026-08-10; Cámara padre + estado para Cromo desde 2026-08-11)
 
 Vista independiente en el sidebar (`Infraestructura FO → Botellas`, ruta `/infra/Botellas`) que lista
-**dos fuentes de datos sin relación real entre sí**, ambas llamadas históricamente "Botella":
+**dos fuentes de datos**, ambas llamadas históricamente "Botella":
 
 1. **`app.cromo_botellas`** (mirror de sólo lectura de Cromo Red, ~11.100 filas vigentes) — siempre
-   ordenadas primero. Sin campo de estado operativo: Cromo no trackea BANEADA/LIBRE/OCUPADA, así que
-   estas tarjetas muestran "Sin estado operativo" en vez de inventar un valor. Verificado contra datos
-   reales que Cromo tampoco distingue Cámara/Poste/Botella como entidades separadas — `app.cromo_clases`
-   sólo tiene la entidad `BOTELLA` (clases 68/121/122/123/124/125) para las tres cosas a la vez,
-   diferenciadas sólo por texto libre en `nombre` (ej. "Poste Marcos Paz 2111" y "Cra. Pumacahua 48"
-   conviven en la misma clase 68).
+   ordenadas primero. Verificado contra datos reales que Cromo tampoco distingue Cámara/Poste/Botella
+   como entidades separadas — `app.cromo_clases` sólo tiene la entidad `BOTELLA` (clases
+   68/121/122/123/124/125) para las tres cosas a la vez, diferenciadas sólo por texto libre en `nombre`
+   (ej. "Poste Marcos Paz 2111" y "Cra. Pumacahua 48" conviven en la misma clase 68).
+   Desde 2026-08-11 (ver sección "Cámara padre para Botellas Cromo" más abajo) **sí tiene** `camara_id`
+   y `estado` propios, poblados por `scripts/cromo_backfill_camara_padre.py` — una fila sin backfillear
+   expone `estado='NO_OPERATIVA'` (default seguro, nunca ausencia de dato).
 2. **`app.camaras` con `camara_padre_id` seteado** (Botellas "legado" de la jerarquía Cámara→Botella de
    Infra/Baneos, ~424 filas) — con estado operativo real, ordenadas después de Cromo.
+
+Filtro **"Mostrar No operativas"** (checkbox, oculto por defecto): tanto este listado unificado
+(`incluir_no_operativas` en `GET /api/infra/botellas/buscar`) como el dashboard principal de Cámaras
+(`InfraTab.vue`, `incluir_no_operativas` en `POST /api/infra/smart-search`) ocultan por defecto las
+filas con `estado='NO_OPERATIVA'` de ambos orígenes — infraestructura sintetizada por nombre sin
+ninguna señal operativa real detrás, que de otro modo contamina la vista con "fantasmas". El toggle
+revela esas filas sin necesidad de tocar el selector de estado existente (son ortogonales, se
+combinan). El detalle de una Cámara puntual (`GET /api/infra/camaras/{id}/botellas`) **nunca** aplica
+este filtro — mostrar menos botellas de las que un grupo realmente tiene sería el mismo riesgo de
+seguridad de campo que motivó todo este diseño.
 
 Se combinan en **una sola query SQL `UNION ALL`** (`core/services/botellas_unificadas_service.py::buscar_botellas_unificadas`,
 mismo patrón de `core/services/cromo/inventario.py::buscar_cables`: CTE reusado por COUNT y SELECT,
@@ -120,16 +132,166 @@ más); cualquier otro valor (incluido Cromo) → `/infra/cromo/verificador?tipo=
 `VerificadorCromoView.vue` tal cual). No se construyó una segunda UI de detalle para datos que ya se
 muestran correctamente en otro lado.
 
-**Explícitamente fuera de alcance de este pase, decisión directa del usuario**:
-- Resolución de "Cámara/Poste padre" para Botellas Cromo. Existe el mismo patrón de sufijo "Bot N" en
-  `cromo_botellas.nombre` que ya se resolvió para `app.camaras` (confirmado con un ejemplo real: n_id
-  6638808/6633661/6639188/9772850 = "Cra Plaza de los Ingleses CF" + variantes "Bot 2/3/4"), pero
-  resolverlo requeriría construir de cero la misma heurística sobre esta tabla — el usuario aclaró que
-  primero va a ingerir cámaras/postes como objetos propios desde Cromo (trabajo de ingesta futuro) y
-  sólo después construirá el script de vinculación.
-- Cualquier inferencia de estado operativo para Botellas Cromo por coincidencia de nombre contra
-  `app.camaras` — rechazado explícitamente por riesgo de mostrar un estado de seguridad incorrecto.
-- Fusión/deduplicación real de identidad entre ambas fuentes.
+**Fuera de alcance, aún vigente**: fusión/deduplicación real de identidad entre ambas fuentes (un mismo
+sitio físico con fila en Cromo y en legado sigue apareciendo dos veces, por diseño explícito).
+
+### Cámara padre para Botellas Cromo (2026-08-11)
+
+La resolución de "Cámara/Poste padre" para Botellas Cromo, diferida en el pase del 2026-08-10 (el
+usuario había planteado primero ingerir cámaras/postes como objetos propios desde Cromo), se retomó
+directamente sobre `cromo_botellas.nombre` por decisión explícita del usuario — **Cromo pasa a ser la
+fuente de verdad** para esta jerarquía; el alta manual/por tracking de `app.camaras` queda como
+legado en desuso a futuro (no se tocó ningún flujo en vivo en este pase, ver `docs/db.md`).
+
+- **`CromoBotella` (`db/models/cromo.py`)** gana `camara_id` (FK a `app.camaras.id`, `ON DELETE SET
+  NULL`) y `estado` (reusa el enum Postgres `camara_estado`, `NOT NULL DEFAULT 'NO_OPERATIVA'`, `CHECK`
+  sólo admite `LIBRE/OCUPADA/BANEADA/NO_OPERATIVA` — Cromo no tiene equivalente de
+  `DETECTADA`/`PENDIENTE_REVISION`, workflows exclusivos del legado). Migración `20260811_01`.
+- Nuevos valores de enum: `CamaraEstado.NO_OPERATIVA` (default seguro, fail-closed, para entidades sin
+  ninguna señal operativa real) y `CamaraOrigenDatos.INFERIDO_CROMO` (Cámara padre sintetizada por
+  *este* backfill — distinto de `INFERIDO`, que es del backfill legado Bot-N).
+- **Regex combinado** (`core/services/cromo/camara_padre_service.py::extraer_base_cromo`): intenta
+  primero el sufijo real "Bot N" (mismo `RE_BOT_SUFIJO` que ya usa el legado — confirmado con el
+  ejemplo real n_id 6638808 "Cra Plaza de los Ingleses CF" + variantes "Bot 2/3/4") y, si no matchea,
+  un prefijo "Botella N &lt;nombre&gt;" (pedido explícito; sólo visto hasta ahora en texto libre de Slack,
+  instrumentado con logging para confirmar/descartar su uso real en Cromo).
+- **Política de estado**: una Cámara padre *nueva* nace siempre en `NO_OPERATIVA` (nunca `LIBRE` —
+  `cromo_botellas` no aporta ninguna señal operativa real, así que asumir disponibilidad sería el mismo
+  riesgo de seguridad de campo ya rechazado en 2026-08-10). Si el nombre coincide con una `Camara`
+  legado ya existente, se reutiliza esa fila y se hereda su estado real (no es inferencia — es un dato
+  que ya existe y tiene auditoría en `app.camaras_estado_auditoria`), mapeado al vocabulario de 4
+  valores de Cromo (`DETECTADA→OCUPADA`, `PENDIENTE_REVISION→NO_OPERATIVA`).
+- **Script**: `scripts/cromo_backfill_camara_padre.py` (`--dry-run` soportado). Corrida real contra
+  `lasfocasdev-postgres` (2026-08-11): 11.100 Botellas vigentes, 1.588 matchearon el regex, 1.172
+  Cámaras padre nuevas creadas (`NO_OPERATIVA`), 416 vinculaciones reutilizaron 258 Cámaras legado
+  reales (heredando `OCUPADA`/`LIBRE`/`BANEADA` según corresponda), 125 grupos escalados de estado, 1
+  grupo con `PENDIENTE_REVISION` saltado a propósito.
+- **Hallazgo de performance real** (no teórico): la primera implementación reutilizaba
+  `resolver_o_crear_padre_desde_base` (la misma función del legado) llamándola una vez por cada
+  Botella candidata — esa función re-consulta TODAS las Cámaras raíz en cada llamada, aceptable para
+  1 llamada aislada por evento en vivo pero no para 1.588 llamadas en un loop batch (más de 25 minutos
+  sin terminar, 78% CPU sostenido dentro de `lasfocasdev-api`, abortado manualmente). El script quedó
+  con su propia resolución en memoria (una única carga de raíces con `selectinload` + diccionarios),
+  corriendo en ~90 segundos contra los mismos datos. La función compartida del legado no se tocó — sigue
+  siendo correcta para sus llamadores en vivo.
+- **Limitación conocida, no resuelta en este pase**: `CromoBotella.estado` es una foto fijada en el
+  momento del backfill (o su próxima corrida) — `aplicar_estado_a_grupo` sigue escribiendo sólo
+  `Camara.estado` (único punto de escritura, no se tocó), así que un cambio de estado real posterior
+  sobre la Cámara padre (ej. un baneo nuevo) no se propaga automáticamente a las `CromoBotella` ya
+  vinculadas hasta la siguiente corrida manual del script.
+
+### Estados operables: retiro de DETECTADA y del pseudo-estado "Tracking" (2026-08-11)
+
+Decisión explícita del usuario: el estado operable de Cámara/Botella se redujo a **4 valores** —
+`LIBRE`, `OCUPADA`, `BANEADA`, `NO_OPERATIVA`. `DETECTADA` (y el filtro client-side "Tracking" del
+dashboard, basado en `rutas.length > 0`) quedaron retirados:
+
+- `DETECTADA`/`PENDIENTE_REVISION` **siguen existiendo en el enum de Postgres** (no se puede remover
+  un valor de enum sin recrear el tipo) — sólo dejaron de ser **seteables**: `estados_disponibles`
+  (`GET /api/infra/camaras/{id}/estado`) y la validación de `POST /api/infra/camaras/{id}/estado`
+  ahora sólo aceptan los 4 valores vigentes.
+- `core/services/camara_estado_service.py::_estado_sugerido` y
+  `core/services/protection_service.py::_determinar_estado_restauracion` dejaron de preservar
+  `DETECTADA` — cualquier cómputo de estado sugerido/restauración cae al mismo cálculo
+  BANEADA/OCUPADA/LIBRE que el resto de los casos.
+- `scripts/retirar_estado_detectada.py` (nuevo, `--dry-run` soportado): migra retroactivamente toda
+  fila `estado=DETECTADA` a su estado real, vía `aplicar_estado_a_grupo` (cascada de grupo completa).
+  Corrida real contra `lasfocasdev-postgres` (2026-08-11): **1.053 filas migradas, 100% a `LIBRE`**
+  (0 incidentes de baneo activos y 0 ingresos activos en todo el sistema en ese momento). **Hallazgo
+  real durante la corrida**: 6 filas no fueron alcanzadas por la cascada de grupo porque estaban en
+  una **cadena de más de 2 niveles** (`camara_padre_id` apuntando a otra fila que a su vez es Botella
+  de una tercera — ej. reales ids 163→2552→2553), violando la invariante "exactamente 2 niveles" que
+  toda la jerarquía Cámara/Botella asume. El script tiene una Fase 2 que corrige esas filas
+  directamente (sin cascada de grupo, que no puede alcanzarlas) — la cadena rota en sí **no se
+  corrigió**, queda como el mismo tipo de anomalía de datos ya documentada para duplicados de Cámara
+  sin sufijo Bot-N (ver más abajo).
+- `InfraTab.vue`: el chip "TRACKING" se quitó de `legendItems`/`legendCounts`; el filtro rápido de
+  estado ahora sólo ofrece Libre/Ocupada/Baneada/No operativa.
+
+### Cámaras duplicadas — Unificación manual (2026-08-11)
+
+Limitación conocida desde el 2026-08-10 (duplicados de Cámara sin sufijo "Bot N", que
+`resolver_o_crear_padre_desde_base` no agrupa por no compartir ningún token normalizado — ej. real
+"Cámara 14 de Julio 240" vs "Cra 14 de Julio 240 CF") — confirmada a mayor escala: **47 grupos de
+duplicados reales, 99 Cámaras raíz involucradas** de un total de 2.554. Resuelto con un flujo manual
+de unificación, no automático (un humano decide qué dos Cámaras son en verdad el mismo sitio físico).
+
+- **Estrategia deliberada**: en vez de un hard delete o un flag "archivada" nuevo, la Cámara
+  secundaria queda **re-parentada como Botella de la principal** (mismo `camara_padre_id` self-FK de
+  la jerarquía Bot-N) — conserva el 100% de su auditoría/historial (`CamaraEstadoAuditoria` nunca se
+  toca), desaparece sola del dashboard de raíces, y sus rutas/servicios/empalmes propios se agregan
+  automáticamente al ver el detalle de la principal vía la misma lógica de "grupo" que ya usa toda la
+  jerarquía Cámara/Botella. Lo único que SÍ hay que mover explícitamente: las Botellas propias de la
+  secundaria (se aplanan directo a la principal, para no crear una cadena de 3 niveles) y las
+  `CromoBotella` vinculadas a la secundaria (la agregación de Botellas Cromo no es recursiva por
+  grupo — se reasignan directo). Ver `core/services/camara_merge_service.py`.
+- El nombre de la secundaria queda como alias de la principal (`CamaraAlias`, si difiere y no existe
+  ya). El estado final del grupo completo es el más restrictivo (`estado_mas_restrictivo`), mismo
+  criterio que la cascada de baneo.
+- **Endpoint**: `POST /api/infra/camaras/merge` (admin, CSRF). **Búsqueda liviana**:
+  `GET /api/infra/camaras/buscar?q=...` (sólo `id/nombre/direccion/estado/botellas_count`, sin el
+  N+1 de rutas/servicios/cables de `smart-search` — pensada para selectores/autocomplete, no para el
+  dashboard). **Frontend**: botón "Unificar Cámara" en el header del detalle (`CamaraDetailView.vue`,
+  sólo admin, sólo si la Cámara no es ella misma una Botella) → `ModalUnificarCamara.vue` (buscar
+  duplicada → confirmar).
+- **Hallazgo real de routing durante la verificación**: `GET /api/infra/camaras/buscar` chocaba con
+  `GET /api/infra/camaras/{camara_id}` (registrada antes en `web/app/main.py`) — FastAPI matchea por
+  orden de registro, así que "buscar" se interpretaba como `camara_id: int` y devolvía 422. Corregido
+  registrando `/camaras/buscar` ANTES de la ruta con parámetro.
+
+### Botellas Cromo huérfanas — resolución manual (2026-08-11)
+
+El backfill automático (`scripts/cromo_backfill_camara_padre.py`) sólo vincula el 14% de las
+Botellas Cromo vigentes (1.588/11.100) — el resto, **9.512 filas, quedan "huérfanas"** (`camara_id
+IS NULL`). Verificado contra una muestra real: **no son nombres sin información** — son direcciones
+válidas con ruido de formato que el regex no cubre (paréntesis "(a instalar)", sufijo de localidad
+tras guión, abreviatura "Tza" no reconocida, puntuación interna en "C.F"). Resuelto con un flujo
+manual, individual o masivo — un humano reconoce la dirección real donde el matcher automático no
+llega.
+
+- **Backend**: `core/services/cromo/orfanas_service.py` — `buscar_huerfanas` (lectura async, paginada,
+  `ILIKE` sobre nombre/calle/localidad) y `asociar_huerfanas` (síncrona, toca `CromoBotella` y
+  `Camara` en la misma sesión — mismo patrón que el script de backfill). Asociar a una Cámara
+  existente hereda su estado real; crear una nueva la deja en `NO_OPERATIVA` (mismo criterio
+  fail-closed del backfill automático).
+- **Endpoints**: `GET /api/infra/cromo-botellas/huerfanas`, `POST /api/infra/cromo-botellas/asociar`
+  (body `{n_ids, camara_id?, nombre_nueva_camara?}` — exactamente uno de los dos últimos), y
+  `GET /api/infra/cromo-botellas/{n_id}/estado-asociacion` (chequeo liviano de una sola fila).
+- **Frontend — masivo**: `BotellasInventarioView.vue` gana el toggle "Sólo huérfanas (sin Cámara
+  asociada)", que cambia la fuente de datos al endpoint de huérfanas y habilita checkboxes de
+  selección múltiple + una barra de acción masiva ("Asociar a Cámara").
+- **Frontend — individual**: `BotellaDetalleUnificadaView.vue` (antes un shim de redirección puro)
+  ahora chequea primero si la Botella Cromo está huérfana; si lo está, muestra un panel de resolución
+  en vez de redirigir directo al Verificador.
+- Ambos flujos comparten el mismo componente `ModalAsociarHuerfanas.vue` (buscar Cámara existente o
+  escribir el nombre de una nueva), recibiendo 1 o N `n_ids` según el caso.
+
+### Ingresos sin match — reemplaza el auto-registro `PENDIENTE_REVISION` (2026-08-11)
+
+Decisión explícita del usuario: **el ingreso de un técnico nunca se rechaza**, y si no matchea contra
+el inventario ya no se auto-registra una `Camara` nueva en `PENDIENTE_REVISION` — ese flujo quedaba
+sin sentido con Cromo como fuente de verdad ("si no se encuentra una cámara es porque el técnico la
+escribió mal o no matchea por diferencias de escritura", no porque falte darla de alta). En su lugar,
+se registra el caso en `app.ingresos_sin_match` — información de sólo lectura para revisión manual y
+mejora del regex de búsqueda, sin crear ninguna entidad de infraestructura.
+
+- **Alcance**: los dos flujos que auto-registraban una Cámara al no encontrar match — el bot de Slack
+  (`modules/slack_baneo_notifier/listener.py::_construir_respuesta_camara`) y la carga de tracking
+  (`web/app/main.py::upload_tracking_web`). El técnico de Slack recibe un mensaje que aclara que
+  puede ser un error de formato/tipeo y que **puede continuar con el ingreso igual** — nunca lee como
+  un rechazo. El tracking simplemente deja `Empalme.camara_id = NULL` para esa ubicación (columna ya
+  nullable) en vez de crear una Cámara `DETECTADA`/`TRACKING`.
+- **No se toca** el panel admin "Cámaras Pendientes de Revisión" (`GET/POST /api/admin/infra/camaras/pendientes*`)
+  — sigue disponible para gestionar las 34 filas legado ya existentes al 2026-08-11, simplemente deja
+  de recibir filas nuevas.
+- **Endpoints nuevos**: `GET /api/admin/infra/ingresos-sin-match` (filtro opcional `revisado`),
+  `POST /api/admin/infra/ingresos-sin-match/{id}/marcar-revisado`. **Frontend**: nueva sección
+  acordeón "Ingresos sin match" en `AdminBaneos.vue`, mismo patrón visual que "Cámaras Pendientes".
+- **Fuera de alcance, encontrado pero no corregido**: `core/services/infra_service.py::_get_or_create_camara`
+  (líneas ~260-310, usado por el flujo "Tracking V2"/`TrackingResolutionService`) tiene el mismo
+  patrón de auto-creación `DETECTADA`/`TRACKING` — no fue parte del alcance confirmado para este pase
+  (que cubrió específicamente el bot de Slack y `upload_tracking_web`), queda como hallazgo para una
+  iteración futura.
 
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
@@ -258,10 +420,31 @@ Obtiene los alias conocidos de una cámara desde `app.camara_alias`.
 Obtiene registros operativos parciales: auditoría manual de estado, baneos relacionados y placeholders de ingresos/egresos.
 
 ### GET /api/infra/camaras/{camara_id}/botellas
-Obtiene las Botellas (jerarquía Cámara/Botella, ver sección homónima más arriba) de una Cámara. Lista vacía si `camara_id` es en sí una Botella.
+Obtiene las Botellas de una Cámara, unificando ambos orígenes: legado (self-FK, jerarquía Cámara/Botella de esta sección) + Cromo (`CromoBotella.camara_id`, vigentes). Cada ítem lleva `origen: "legado"|"cromo"`. Nunca aplica el filtro de "No operativa" — es un drill-down sobre un grupo ya identificado. Lista de legado vacía si `camara_id` es en sí una Botella legado.
 
 ### GET /api/infra/botellas/buscar
-Listado unificado de Botellas Cromo + legado (ver sección "Submódulo Botellas" más arriba). Query params: `q` (`ILIKE` sobre nombre, +calle/localidad para Cromo), `limit` (default 30, clamp 1-100), `offset`. Respuesta: `{total, limit, offset, botellas: [{origen: "cromo"|"legado", id, nombre, estado}]}` — `estado` siempre `null` para `origen="cromo"`.
+Listado unificado de Botellas Cromo + legado (ver sección "Submódulo Botellas" más arriba). Query params: `q` (`ILIKE` sobre nombre, +calle/localidad para Cromo), `limit` (default 30, clamp 1-100), `offset`, `incluir_no_operativas` (bool, default `false` — oculta `estado='NO_OPERATIVA'` de ambos orígenes). Respuesta: `{total, limit, offset, incluir_no_operativas, botellas: [{origen: "cromo"|"legado", id, nombre, estado}]}` — `estado` real para ambos orígenes desde 2026-08-11 (antes, siempre `null` para `origen="cromo"`).
+
+### GET /api/infra/camaras/buscar
+Búsqueda liviana de Cámaras raíz por nombre (`ILIKE`), para selectores/autocomplete (unificación, asociación de huérfanas) — no para el dashboard. Query params: `q`, `limit` (default 10, clamp 1-50), `excluir_id`. Respuesta: `{camaras: [{id, nombre, direccion, estado, botellas_count}]}`. Registrada antes de `GET /api/infra/camaras/{camara_id}` en el código — ver nota de routing en "Cámaras duplicadas" más arriba.
+
+### POST /api/infra/camaras/merge
+Unifica dos Cámaras raíz duplicadas (admin, CSRF). Body: `{camara_principal_id, camara_secundaria_id, csrf_token}`. La secundaria pasa a ser Botella de la principal — ver sección "Cámaras duplicadas — Unificación manual" más arriba.
+
+### GET /api/infra/cromo-botellas/huerfanas
+Botellas Cromo vigentes sin `camara_id` (no matchearon el backfill automático). Query params: `q`, `limit` (default 30, clamp 1-100), `offset`. Respuesta: `{total, limit, offset, botellas: [{n_id, nombre, calle, localidad}]}`.
+
+### GET /api/infra/cromo-botellas/{n_id}/estado-asociacion
+Chequeo liviano de una Botella Cromo puntual — `{n_id, nombre, huerfana: bool}`. Usado por `BotellaDetalleUnificadaView.vue` antes de decidir si redirige o muestra el panel de resolución.
+
+### POST /api/infra/cromo-botellas/asociar
+Asocia una o más Botellas Cromo huérfanas a una Cámara existente o nueva. Body: `{n_ids, camara_id?, nombre_nueva_camara?, csrf_token}` — exactamente uno de `camara_id`/`nombre_nueva_camara`. Ver sección "Botellas Cromo huérfanas — resolución manual" más arriba.
+
+### GET /api/admin/infra/ingresos-sin-match
+Lista casos de ingreso (Slack o tracking) sin match contra el inventario — reemplaza el auto-registro `PENDIENTE_REVISION` (ver sección homónima más arriba). Query param opcional `revisado` (bool).
+
+### POST /api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado
+Marca un caso como revisado — no muta ningún dato de infraestructura, sólo el flag de triage.
 
 ### GET /api/infra/ban/active
 Lista todos los incidentes de baneo activos con conteo de cámaras.
@@ -325,6 +508,56 @@ Genera archivo EML para descargar y abrir en Outlook.
 - `web/frontend/src/api/botellas.ts` - Cliente frontend del listado unificado
 
 ## Historial de cambios
+
+### 2026-08-11 (cont.) - Retiro de DETECTADA, unificación de Cámaras, huérfanas Cromo, ingresos sin match
+
+- **Retirado**: `CamaraEstado.DETECTADA` y el pseudo-estado "Tracking" del dashboard — estado
+  operable reducido a LIBRE/OCUPADA/BANEADA/NO_OPERATIVA. `scripts/retirar_estado_detectada.py`
+  migró 1.053 filas reales a `LIBRE` (0 incidentes/ingresos activos en el sistema); encontró y
+  corrigió 6 filas en una cadena de más de 2 niveles (hallazgo de integridad de datos preexistente,
+  no corregido en sí). Ver sección "Estados operables" más arriba.
+- **Agregado**: unificación de Cámaras duplicadas (`POST /api/infra/camaras/merge`,
+  `core/services/camara_merge_service.py`, `ModalUnificarCamara.vue`) — la secundaria pasa a ser
+  Botella de la principal, conserva auditoría completa. 47 grupos de duplicados reales confirmados.
+- **Agregado**: resolución manual de Botellas Cromo huérfanas (`core/services/cromo/orfanas_service.py`,
+  3 endpoints nuevos, `ModalAsociarHuerfanas.vue`, toggle en `BotellasInventarioView.vue`, panel en
+  `BotellaDetalleUnificadaView.vue`) — 9.512/11.100 Botellas Cromo vigentes son huérfanas hoy.
+- **Reemplazado**: el auto-registro `PENDIENTE_REVISION` en ingresos sin match (bot de Slack +
+  `upload_tracking_web`) por `app.ingresos_sin_match` (migración `20260811_02`) — el ingreso nunca
+  se rechaza, sólo se registra el caso para revisión manual/mejora del regex. Panel admin
+  "Cámaras Pendientes de Revisión" sigue disponible para las 34 filas legado, sin recibir nuevas.
+- **Hallazgo real de routing**: `GET /api/infra/camaras/buscar` chocaba con
+  `GET /api/infra/camaras/{camara_id}` por orden de registro de FastAPI — corregido reordenando.
+- **Fuera de alcance, encontrado**: `core/services/infra_service.py::_get_or_create_camara`
+  (flujo "Tracking V2") tiene el mismo patrón de auto-creación DETECTADA/TRACKING, no confirmado en
+  el alcance de este pase.
+
+### 2026-08-11 - Cámara padre + estado real para Botellas Cromo, filtro "No operativa"
+
+- **Agregado**: `CromoBotella.camara_id`/`estado` (migración `20260811_01`), valores de enum
+  `CamaraEstado.NO_OPERATIVA`/`CamaraOrigenDatos.INFERIDO_CROMO`, `core/services/cromo/camara_padre_service.py`
+  (regex combinado sufijo+prefijo), `scripts/cromo_backfill_camara_padre.py`. Detalle completo en la
+  sección "Cámara padre para Botellas Cromo" más arriba — retoma y resuelve lo que el pase del
+  2026-08-10 había diferido explícitamente.
+- **Agregado**: filtro "Mostrar No operativas" (oculto por defecto) en `InfraTab.vue` y
+  `BotellasInventarioView.vue`, parámetro `incluir_no_operativas` en `smart-search` y
+  `botellas/buscar`.
+- **Corregido**: `buscar_botellas_unificadas` dejó de exponer `estado=NULL` fijo para Cromo — lee la
+  columna real. `BotellaCard.vue`/`BotellasInventarioView.vue` dejaron de decidir "Sin estado
+  operativo" mirando el origen; ahora miran si `estado` es `null` (compatible con filas pre y post
+  backfill sin flag nuevo).
+- **Corrida real contra `lasfocasdev-postgres`**: 1.588/11.100 Botellas vigentes vinculadas, 1.172
+  Cámaras padre nuevas, 416 vinculaciones reusando 258 Cámaras legado reales, 125 grupos escalados de
+  estado.
+- **Hallazgo de performance real durante la verificación**: la implementación inicial reutilizaba la
+  función de resolución del backfill legado (O(n) por llamada, pensada para 1 evento en vivo) en un
+  loop de 1.588 iteraciones — no terminaba en 25+ minutos, 78% CPU sostenido en `lasfocasdev-api`.
+  Corregido con resolución en memoria propia del script (~90s). Ver sección técnica arriba.
+- **Fuera de alcance, documentado explícitamente**: deprecar el alta manual (`modules/slack_baneo_notifier/listener.py`)
+  y por tracking (`POST /api/infra/upload_tracking`, sin consumidor Vue encontrado) de Cámaras legado —
+  dirección estratégica declarada por el usuario, no un entregable de este pase. Propagación en vivo de
+  cambios de estado de una Cámara padre hacia sus `CromoBotella` ya vinculadas (hoy es una foto fijada
+  al momento del backfill, no hay push automático).
 
 ### 2026-08-10 - Submódulo Botellas: listado unificado Cromo + legado
 

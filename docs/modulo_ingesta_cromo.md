@@ -81,8 +81,9 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    acordeón por cable (`core/services/cromo/detalle.py`, nuevo): extremos, Buffers/tubos y sus Pelos,
    con el servicio matcheado de cada pelo si existe — 3 queries fijas, nunca N+1. Navegación cruzada
    real: click en un servicio matcheado navega a `/servicios/ID/...`; click en una Botella extremo
-   navega al Verificador Cromo (única vista de detalle de botella que existe — no hay relación entre
-   `cromo_botellas.n_id` y la tabla de Cámaras de Infra) precargado vía query params. El link "Cables"
+   navega al Verificador Cromo (única vista de detalle de botella que existe — al momento de esta
+   etapa, no había relación entre `cromo_botellas.n_id` y la tabla de Cámaras de Infra; desde
+   2026-08-11 sí existe, ver nota más abajo) precargado vía query params. El link "Cables"
    del sidebar se movió del grupo "Tool Kit" al nuevo grupo expandible "Infraestructura FO" (pedido
    explícito, distinto del Verificador, que se queda en "Tool Kit"). Detalle en `docs/PR/2026-08-10.md`.
 
@@ -94,6 +95,18 @@ segundo consumidor de sólo lectura, un listado unificado que combina Cromo con 
 la jerarquía Cámara→Botella de Infra/Baneos (`app.camaras` con `camara_padre_id`). No agrega ni modifica
 ningún campo/relación de la ingesta — es una nueva query de agregación (`UNION ALL`) del lado consumidor.
 Documentado en `docs/infra.md`, sección "Submódulo Botellas (listado unificado)".
+
+**Nota (2026-08-11)**: a diferencia de la nota anterior, este cambio **sí** agrega columnas a
+`cromo_botellas` — `camara_id` (FK a `app.camaras.id`) y `estado` (migración `20260811_01`), poblados
+por `scripts/cromo_backfill_camara_padre.py` para vincular cada Botella a una Cámara padre propia con
+estado operativo. Deliberadamente **excluidas** de `_BOTELLA_CAMPOS` (`core/services/cromo/ingesta.py`)
+y del dataclass `Botella` (`core/services/cromo/modelos.py`) — ninguna corrida futura de la ingesta las
+toca (`_upsert_versionado`/`_copiar_campos` sólo `setattr`ean los campos listados explícitamente), así
+que el vínculo sobrevive intacto a reingestas periódicas. Costo aceptado: filas *nuevas* que aparezcan
+en una reingesta futura (`n_id` nunca visto) entran con `camara_id=NULL`/`estado='NO_OPERATIVA'` hasta
+la siguiente corrida manual de ese script — mismo patrón operativo que `cromo_backfill_geo.py`/
+`cromo_backfill_servicio_prefijos.py` (correr después de cada ingesta relevante, no auto-encadenado).
+Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
 
 ## Dónde vive el código
 

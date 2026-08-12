@@ -20,14 +20,15 @@
       <div v-else class="botellas-grid">
         <RouterLink
           v-for="botella in botellas"
-          :key="botella.id"
-          :to="`/infra/Camaras/${botella.id}`"
+          :key="`${botella.origen}:${botella.id}`"
+          :to="botellaDetailPath(botella.origen, botella.id)"
           class="botella-card"
           @click="handleClose"
         >
           <div class="botella-card__row">
-            <span :class="['botella-card__dot', estadoDotClass(botella.estado)]" aria-hidden="true"></span>
-            <span class="botella-card__estado">{{ botella.estado || 'LIBRE' }}</span>
+            <span :class="['botella-card__origen', `is-${botella.origen}`]">{{ botella.origen === 'cromo' ? 'Cromo' : 'Legado' }}</span>
+            <span v-if="botella.estado" :class="['botella-card__dot', estadoDotClass(botella.estado)]" aria-hidden="true"></span>
+            <span class="botella-card__estado">{{ botella.estado || 'Sin estado operativo' }}</span>
             <span class="botella-card__id">ID {{ botella.id }}</span>
           </div>
           <strong class="botella-card__nombre">{{ botella.nombre || `Botella ${botella.id}` }}</strong>
@@ -44,11 +45,15 @@
 import { ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 
+import type { BotellaOrigen } from '../../api/botellas';
+import { botellaDetailPath } from '../../utils/botellaLinks';
+
 interface BotellaItem {
   id: number;
   nombre: string | null;
   estado: string | null;
   servicios: string[];
+  origen: BotellaOrigen;
 }
 
 const props = defineProps<{
@@ -68,7 +73,7 @@ function handleClose(): void {
 
 function estadoDotClass(estado: string | null): string {
   const value = (estado || 'LIBRE').toLowerCase();
-  return ['libre', 'ocupada', 'baneada', 'detectada'].includes(value) ? value : 'libre';
+  return ['libre', 'ocupada', 'baneada', 'detectada', 'no_operativa'].includes(value) ? value : 'libre';
 }
 
 watch(
@@ -177,6 +182,22 @@ watch(
 .botella-card__dot.ocupada { background: #facc15; }
 .botella-card__dot.baneada { background: #f87171; }
 .botella-card__dot.detectada { background: #60a5fa; }
+.botella-card__dot.no_operativa { background: #94a3b8; }
+
+.botella-card__origen {
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.botella-card__origen.is-cromo {
+  background: rgba(125, 211, 252, 0.16);
+  color: #7dd3fc;
+}
 
 .botella-card__estado {
   font-size: 0.72rem;

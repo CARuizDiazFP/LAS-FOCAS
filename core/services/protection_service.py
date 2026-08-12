@@ -560,9 +560,10 @@ class ProtectionService:
           herencia del backfill de jerarquía Cámara/Botella, etc. — sin `IncidenteBaneo` que lo
           respalde, por lo que `_camara_tiene_otro_baneo_activo` no lo detecta) → se mantiene BANEADA,
           no se toca.
-        - Si el estado previo a esa transición era DETECTADA, se preserva DETECTADA en vez de
-          colapsarla a LIBRE — DETECTADA es un estado administrativo/de triage, no de ocupación, y
-          perderlo haría ver "libre" una cámara que en realidad no fue verificada.
+        `DETECTADA` fue retirado del sistema (2026-08-11, ver `scripts/retirar_estado_detectada.py`)
+        — una transición previa que tuviera `estado_anterior == DETECTADA` ya no se preserva, cae al
+        mismo cálculo LIBRE/OCUPADA por defecto que cualquier otro estado fuera del vocabulario
+        vigente (LIBRE/OCUPADA/BANEADA/NO_OPERATIVA).
 
         Lógica por defecto (sin historial aplicable):
         - Si tiene ingreso activo (sin fecha_fin) → OCUPADA
@@ -573,8 +574,8 @@ class ProtectionService:
             incidente: Incidente que se está levantando (para comparar contra su fecha_inicio)
 
         Returns:
-            Estado de restauración (BANEADA si se mantiene por un motivo independiente, DETECTADA,
-            LIBRE u OCUPADA)
+            Estado de restauración (BANEADA si se mantiene por un motivo independiente, LIBRE u
+            OCUPADA)
         """
         from core.services.camara_estado_service import obtener_ultima_transicion_a_baneada
 
@@ -586,8 +587,6 @@ class ProtectionService:
                 and ultima_transicion.created_at < incidente.fecha_inicio
             ):
                 return CamaraEstado.BANEADA
-            if ultima_transicion.estado_anterior == CamaraEstado.DETECTADA:
-                return CamaraEstado.DETECTADA
 
         # Verificar si hay un ingreso activo
         ingreso_activo = self.session.query(Ingreso).filter(

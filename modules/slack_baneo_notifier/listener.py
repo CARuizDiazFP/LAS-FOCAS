@@ -99,15 +99,20 @@ class IngresoListener:
         self,
         nombre_buscado: str,
         session: Any,
+        *,
+        channel: str = "",
     ) -> str:
         """Busca una cámara por nombre y construye el texto de respuesta.
 
         Aplica el filtro de ruido operativo antes de buscar y antes de registrar,
         descartando sufijos como '- CUADRILLA DE HIDROCONS' o '/ Móvil 4'.
 
-        Si no la encuentra, la auto-registra como ``PENDIENTE_REVISION`` y
-        retorna el mensaje correspondiente.  Si la encuentra, evalúa el estado
-        de acceso siguiendo esta jerarquía:
+        Si no la encuentra, NUNCA bloquea el ingreso ni crea una `Camara` nueva (2026-08-11 — Cromo
+        es la fuente de verdad del inventario; un caso sin match es un problema de escritura/regex,
+        no una cámara faltante de alta). Registra el caso en `IngresoSinMatch` para revisión manual
+        posterior y mejora del regex, y responde dejando explícito que el técnico puede continuar
+        igual — nunca lee como un rechazo. Si la encuentra, evalúa el estado de acceso siguiendo
+        esta jerarquía:
 
         1. Incidente de red activo (``IncidenteBaneo.activo``) → 🚨 ATENCIÓN.
         2. Estado ``BANEADA`` sin incidente activo (baneo manual desde el panel)
@@ -119,27 +124,25 @@ class IngresoListener:
         logger.info("Resultado búsqueda — cámara: %s (normalizado: '%s')", camara, nombre_norm)
 
         if camara is None:
-            from datetime import datetime, timezone
+            from db.models.infra import IngresoSinMatch
 
-            from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
-
-            nueva_camara = Camara(
-                nombre=nombre_buscado,
-                estado=CamaraEstado.PENDIENTE_REVISION,
-                origen_datos=CamaraOrigenDatos.MANUAL,
-                last_update=datetime.now(timezone.utc),
+            caso = IngresoSinMatch(
+                texto_original=nombre_buscado,
+                origen="slack",
+                contexto=channel or None,
             )
-            session.add(nueva_camara)
+            session.add(caso)
             session.commit()
             logger.info(
-                "Cámara desconocida '%s' auto-registrada PENDIENTE_REVISION (id=%s)",
+                "Cámara '%s' sin match — registrado IngresoSinMatch id=%s para revisión manual",
                 nombre_buscado,
-                nueva_camara.id,
+                caso.id,
             )
             return (
-                "✅ Cámara no registrada previamente, se registra automáticamente "
-                "bajo revisión. Sin incidentes activos. puede continuar con el proceso de aprobación."
-            )
+                "⚠️ No pude confirmar automáticamente la cámara *{}* contra el inventario — "
+                "quedó registrada para revisión manual (puede ser un error de tipeo o una "
+                "diferencia de formato). *Podés continuar con el ingreso con normalidad.*"
+            ).format(nombre_buscado)
 
         incidentes = _obtener_incidentes_activos_camara(camara, session)
         if incidentes:
@@ -249,7 +252,7 @@ class IngresoListener:
                 nombres_a_buscar = [nombre_raw]
 
             respuestas = [
-                self._construir_respuesta_camara(nombre, session)
+                self._construir_respuesta_camara(nombre, session, channel=channel)
                 for nombre in nombres_a_buscar
             ]
 

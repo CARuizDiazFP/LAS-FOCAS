@@ -40,7 +40,8 @@ class _SesionFake:
         return _ResultadoFake(filas=self._filas)
 
 
-_FILA_CROMO = ("cromo", 6638808, "Cra Plaza de los Ingleses CF", None)
+_FILA_CROMO = ("cromo", 6638808, "Cra Plaza de los Ingleses CF", "LIBRE")
+_FILA_CROMO_SIN_BACKFILL = ("cromo", 9999999, "Cra Sin Backfillear CF", "NO_OPERATIVA")
 _FILA_LEGADO = ("legado", 1065, "Cra 14 de Julio 240 CF", "LIBRE")
 
 
@@ -57,7 +58,7 @@ async def test_buscar_botellas_sin_filtros_devuelve_pagina_con_ambos_origenes():
     cromo, legado = resultado.botellas
     assert cromo.origen == "cromo"
     assert cromo.id == 6638808
-    assert cromo.estado is None
+    assert cromo.estado == "LIBRE"
     assert legado.origen == "legado"
     assert legado.id == 1065
     assert legado.estado == "LIBRE"
@@ -106,11 +107,34 @@ async def test_buscar_botellas_respeta_limit_offset():
 
 
 @pytest.mark.asyncio
-async def test_buscar_botellas_estado_none_para_origen_cromo():
-    """Cromo no trackea estado operativo — decisión explícita del usuario, nunca inferido."""
+async def test_buscar_botellas_estado_real_para_origen_cromo_post_backfill():
+    """Desde 2026-08-11 Cromo aporta estado real (poblado por
+    scripts/cromo_backfill_camara_padre.py) — la columna nunca es NULL (NOT NULL DEFAULT
+    'NO_OPERATIVA'), así que una fila sin backfillear expone 'NO_OPERATIVA', no ausencia de dato."""
     sesion = _SesionFake(total=1, filas=[_FILA_CROMO])
 
     resultado = await servicio.buscar_botellas_unificadas(sesion)
 
     assert resultado.botellas[0].origen == "cromo"
-    assert resultado.botellas[0].estado is None
+    assert resultado.botellas[0].estado == "LIBRE"
+
+
+@pytest.mark.asyncio
+async def test_buscar_botellas_default_no_incluye_no_operativas():
+    sesion = _SesionFake(total=0, filas=[])
+
+    await servicio.buscar_botellas_unificadas(sesion)
+
+    for llamada in sesion.llamadas:
+        assert llamada["incluir_no_operativas"] is False
+
+
+@pytest.mark.asyncio
+async def test_buscar_botellas_incluir_no_operativas_true_viaja_a_la_query():
+    sesion = _SesionFake(total=1, filas=[_FILA_CROMO_SIN_BACKFILL])
+
+    resultado = await servicio.buscar_botellas_unificadas(sesion, incluir_no_operativas=True)
+
+    for llamada in sesion.llamadas:
+        assert llamada["incluir_no_operativas"] is True
+    assert resultado.botellas[0].estado == "NO_OPERATIVA"

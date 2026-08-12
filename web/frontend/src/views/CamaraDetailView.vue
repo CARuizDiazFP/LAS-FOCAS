@@ -32,6 +32,12 @@
               type="button"
               @click="estadoModalOpen = true"
             >Editar estado</button>
+            <button
+              v-if="isAdmin && !camara.es_botella"
+              class="btn subtle"
+              type="button"
+              @click="unificarModalOpen = true"
+            >Unificar Cámara</button>
           </div>
         </header>
 
@@ -112,6 +118,14 @@
       :botellas="botellas"
       @close="botellasModalOpen = false"
     />
+
+    <ModalUnificarCamara
+      :open="unificarModalOpen"
+      :camara-id="camara?.id ?? null"
+      :camara-nombre="camara?.nombre || camara?.direccion || ''"
+      @close="unificarModalOpen = false"
+      @merged="handleUnificacionCompletada"
+    />
   </section>
 </template>
 
@@ -124,6 +138,8 @@ import ModalAlias from '../components/infra/ModalAlias.vue';
 import ModalServicios from '../components/infra/ModalServicios.vue';
 import ModalRegistros from '../components/infra/ModalRegistros.vue';
 import ModalBotellas from '../components/infra/ModalBotellas.vue';
+import ModalUnificarCamara from '../components/infra/ModalUnificarCamara.vue';
+import type { BotellaOrigen } from '../api/botellas';
 
 interface RutaItem {
   ruta_id: number;
@@ -157,6 +173,7 @@ interface BotellaItem {
   nombre: string | null;
   estado: string | null;
   servicios: string[];
+  origen: BotellaOrigen;
 }
 
 interface RegistrosContexto {
@@ -218,6 +235,7 @@ const aliasModalOpen = ref(false);
 const serviciosModalOpen = ref(false);
 const registrosModalOpen = ref(false);
 const botellasModalOpen = ref(false);
+const unificarModalOpen = ref(false);
 
 const serviciosCount = computed(() => new Set((camara.value?.rutas ?? []).map((ruta) => ruta.servicio_id)).size);
 const registrosCount = computed(() => registros.value.baneos.length + registros.value.auditoria.length);
@@ -227,6 +245,7 @@ function statusClass(status: string): string {
   if (normalized === 'baneada') return 'baneada';
   if (normalized === 'ocupada') return 'ocupada';
   if (normalized === 'detectada') return 'detectada';
+  if (normalized === 'no_operativa') return 'no_operativa';
   return 'libre';
 }
 
@@ -283,6 +302,12 @@ async function loadCamaraDetail(): Promise<void> {
 }
 
 async function handleEstadoActualizado(): Promise<void> {
+  await loadCamaraDetail();
+}
+
+async function handleUnificacionCompletada(): Promise<void> {
+  // La Cámara secundaria pasó a ser Botella de esta — recarga el detalle completo para reflejar
+  // el estado final del grupo y la Botella nueva en la tarjeta correspondiente.
   await loadCamaraDetail();
 }
 
@@ -414,6 +439,11 @@ onMounted(async () => {
 .camara-detail-status.detectada {
   background: rgba(59, 130, 246, 0.18);
   color: #bfdbfe;
+}
+
+.camara-detail-status.no_operativa {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
 }
 
 .camara-detail-dashboard {
