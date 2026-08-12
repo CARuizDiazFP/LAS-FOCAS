@@ -1,6 +1,6 @@
 # Nombre de archivo: test_cromo_camara_padre_service.py
 # Ubicación de archivo: tests/test_cromo_camara_padre_service.py
-# Descripción: Pruebas del regex combinado (sufijo+prefijo) y resolución de Cámara padre para Botellas Cromo
+# Descripción: Pruebas de la extracción de nombre de Cámara padre (sufijo, prefijo, fallback de nombre exacto) y resolución de Cámara padre para Botellas Cromo
 
 from __future__ import annotations
 
@@ -12,11 +12,20 @@ from core.services.cromo.camara_padre_service import extraer_base_cromo, resolve
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
 
+@pytest.fixture(autouse=True)
+def _sin_botellas_cromo(monkeypatch):
+    """Por defecto, ninguna Cámara candidata tiene Botellas Cromo propias — ver el mismo fixture y su
+    razón de ser en `tests/test_camara_hierarchy_service.py` (hallazgo real, 2026-08-12)."""
+    monkeypatch.setattr(
+        "core.services.camara_hierarchy_service.ids_camaras_con_cromo_hijos",
+        lambda session: set(),
+    )
+
+
 @pytest.mark.parametrize(
     "nombre,base_esperada",
     [
         # Patrón real confirmado (sufijo "Bot N") — mismo caso real documentado en docs/infra.md.
-        ("Cra Plaza de los Ingleses CF", None),  # sin sufijo/prefijo, no matchea
         ("Cra Plaza de los Ingleses Bot 2 CF", "Cra Plaza de los Ingleses CF"),
         # Patrón de prefijo pedido explícitamente (número después de la palabra completa "Botella").
         ("Botella 2 Combate de los pozos 1881 CF", "Combate de los pozos 1881 CF"),
@@ -32,18 +41,47 @@ def test_extraer_base_cromo_prioriza_sufijo_sobre_prefijo_si_ambos_pudieran_apli
     assert extraer_base_cromo("Cra Test 100 Bot 2 CF") == "Cra Test 100 CF"
 
 
-@pytest.mark.parametrize("nombre", [None, "", "Cra Sin Ningun Patron 100 CF"])
+@pytest.mark.parametrize("nombre", [None, "", "   "])
 def test_extraer_base_cromo_no_matchea_casos_ausentes(nombre) -> None:
+    """Único caso sin resolución automática: nombre vacío/`None`/sólo espacios."""
     assert extraer_base_cromo(nombre) is None
 
 
-def test_resolver_o_crear_padre_cromo_nombre_sin_patron_no_toca_la_db() -> None:
+@pytest.mark.parametrize(
+    "nombre,base_esperada",
+    [
+        # Sin sufijo "Bot N" ni prefijo "Botella N" — no es "sin información", Cromo ya la
+        # trackea como sitio real. Ejemplo real del pedido de negocio (2026-08-12).
+        ("Av Rivadavia 6041", "Av Rivadavia 6041"),
+        ("Cra Sin Ningun Patron 100 CF", "Cra Sin Ningun Patron 100 CF"),
+        ("  Av Rivadavia 6041  ", "Av Rivadavia 6041"),  # recorta espacios en los extremos
+    ],
+)
+def test_extraer_base_cromo_fallback_nombre_exacto_sin_patron(nombre: str, base_esperada: str) -> None:
+    assert extraer_base_cromo(nombre) == base_esperada
+
+
+def test_resolver_o_crear_padre_cromo_nombre_vacio_no_toca_la_db() -> None:
     session = MagicMock()
 
-    resultado = resolver_o_crear_padre_cromo(session, "Cra Sin Ningun Patron 100 CF")
+    resultado = resolver_o_crear_padre_cromo(session, "   ")
 
     assert resultado is None
     session.add.assert_not_called()
+
+
+def test_resolver_o_crear_padre_cromo_fallback_nombre_exacto_crea_padre_no_operativa() -> None:
+    """El fallback de nombre exacto crea Cámara padre igual que el camino de sufijo/prefijo —
+    misma política fail-closed, ninguna señal operativa real de por medio en ningún caso."""
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = []
+
+    resultado = resolver_o_crear_padre_cromo(session, "Av Rivadavia 6041")
+
+    assert resultado is not None
+    assert resultado.nombre == "Av Rivadavia 6041"
+    assert resultado.estado == CamaraEstado.NO_OPERATIVA
+    assert resultado.origen_datos == CamaraOrigenDatos.INFERIDO_CROMO
 
 
 def test_resolver_o_crear_padre_cromo_crea_padre_nuevo_no_operativa() -> None:

@@ -85,6 +85,21 @@
         <button class="btn primary" type="button" @click="modalAsociarOpen = true">Asociar a Cámara</button>
         <button class="btn subtle" type="button" @click="seleccionadas.clear()">Deseleccionar todo</button>
       </div>
+
+      <div v-if="!soloHuerfanas && seleccionadas.size > 0" class="botellas-view__bulk-bar">
+        <span>{{ seleccionadas.size }} seleccionada{{ seleccionadas.size !== 1 ? 's' : '' }}</span>
+        <select v-model="estadoMasivoSeleccionado" class="botellas-view__bulk-select">
+          <option value="NO_OPERATIVA">No operativa</option>
+          <option value="LIBRE">Libre</option>
+          <option value="OCUPADA">Ocupada</option>
+          <option value="BANEADA">Baneada</option>
+        </select>
+        <button class="btn primary" type="button" :disabled="aplicandoEstadoMasivo" @click="aplicarEstadoMasivo">
+          {{ aplicandoEstadoMasivo ? 'Aplicando...' : 'Aplicar' }}
+        </button>
+        <button class="btn subtle" type="button" @click="seleccionadas.clear()">Deseleccionar todo</button>
+        <span v-if="errorEstadoMasivo" class="botellas-view__bulk-error">{{ errorEstadoMasivo }}</span>
+      </div>
     </div>
 
     <div ref="scrollEl" class="botellas-view__scroll">
@@ -97,8 +112,8 @@
           >
             <input
               type="checkbox"
-              :checked="seleccionadas.has(h.n_id)"
-              @change="toggleSeleccion(h.n_id)"
+              :checked="seleccionadas.has(claveHuerfana(h))"
+              @change="toggleSeleccion(claveHuerfana(h))"
             />
             <span class="botellas-view__list-nombre">{{ h.nombre || `Botella ${h.n_id}` }}</span>
             <span class="botellas-view__list-id">n_id {{ h.n_id }}</span>
@@ -153,6 +168,13 @@
               @click="openBotellaDetail(item)"
               @keyup.enter="openBotellaDetail(item)"
             >
+              <input
+                type="checkbox"
+                class="botellas-view__list-checkbox"
+                :checked="seleccionadas.has(itemKey(item))"
+                @click.stop
+                @change="toggleSeleccion(itemKey(item))"
+              />
               <span :class="['botellas-view__list-origen', `is-${item.origen}`]">{{ item.origen === 'cromo' ? 'Cromo' : 'Legado' }}</span>
               <span
                 v-if="item.estado"
@@ -205,7 +227,15 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { estadoBotellaToken, searchBotellas, type BotellaUnificadaItem } from '../api/botellas';
+import {
+  estadoBotellaToken,
+  searchBotellas,
+  updateBotellasEstadoMasivo,
+  type BotellaClave,
+  type BotellaOrigen,
+  type BotellaUnificadaItem,
+  type EstadoBotellaValor,
+} from '../api/botellas';
 import BotellaCard from '../components/infra/BotellaCard.vue';
 import ModalAsociarHuerfanas from '../components/infra/ModalAsociarHuerfanas.vue';
 import { botellaDetailPath } from '../utils/botellaLinks';
@@ -239,9 +269,14 @@ const totalHuerfanas = ref(0);
 const loadingHuerfanas = ref(false);
 const offsetHuerfanas = ref(0);
 const hasMoreHuerfanas = ref(true);
-const seleccionadas = ref<Set<number>>(new Set());
+const seleccionadas = ref<Set<string>>(new Set());
 const modalAsociarOpen = ref(false);
 const nIdsParaAsociar = ref<number[]>([]);
+
+// --- Cambio de estado masivo (Cromo + legado, clave compuesta origen:id) ---
+const estadoMasivoSeleccionado = ref<EstadoBotellaValor>('NO_OPERATIVA');
+const aplicandoEstadoMasivo = ref(false);
+const errorEstadoMasivo = ref('');
 
 const vista = ref<'grid' | 'list'>(
   (localStorage.getItem(VISTA_STORAGE_KEY) as 'grid' | 'list' | null) === 'list' ? 'list' : 'grid',
@@ -251,9 +286,19 @@ let observer: IntersectionObserver | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Un n_id de Cromo y un Camara.id legado son espacios de ID independientes que pueden coincidir en
-// valor sin ser la misma fila — la key SIEMPRE es el compuesto origen+id, nunca el id solo.
+// valor sin ser la misma fila — la key SIEMPRE es el compuesto origen+id, nunca el id solo. Se
+// reusa como clave de selección masiva además de key de Vue (`seleccionadas` guarda este string).
 function itemKey(item: BotellaUnificadaItem): string {
   return `${item.origen}:${item.id}`;
+}
+
+function claveHuerfana(h: BotellaHuerfanaItem): string {
+  return `cromo:${h.n_id}`;
+}
+
+function parseClave(clave: string): BotellaClave {
+  const [origen, idTexto] = clave.split(':');
+  return { origen: origen as BotellaOrigen, id: Number(idTexto) };
 }
 
 function mergeItems(next: BotellaUnificadaItem[]): void {
@@ -295,6 +340,7 @@ async function reloadFromZero(): Promise<void> {
   total.value = 0;
   offset.value = 0;
   hasMore.value = true;
+  seleccionadas.value = new Set();
   await loadNextPage();
 }
 
@@ -363,16 +409,36 @@ async function reloadHuerfanasFromZero(): Promise<void> {
 
 function onToggleSoloHuerfanas(): void {
   error.value = '';
+  seleccionadas.value = new Set();
   if (soloHuerfanas.value) {
     void reloadHuerfanasFromZero();
   }
 }
 
-function toggleSeleccion(nId: number): void {
+function toggleSeleccion(clave: string): void {
   const next = new Set(seleccionadas.value);
-  if (next.has(nId)) next.delete(nId);
-  else next.add(nId);
+  if (next.has(clave)) next.delete(clave);
+  else next.add(clave);
   seleccionadas.value = next;
+}
+
+async function aplicarEstadoMasivo(): Promise<void> {
+  if (seleccionadas.value.size === 0 || aplicandoEstadoMasivo.value) return;
+
+  aplicandoEstadoMasivo.value = true;
+  errorEstadoMasivo.value = '';
+  try {
+    const seleccion = Array.from(seleccionadas.value).map(parseClave);
+    const respuesta = await updateBotellasEstadoMasivo(seleccion, estadoMasivoSeleccionado.value);
+    if (respuesta.no_encontrados.length > 0) {
+      errorEstadoMasivo.value = `${respuesta.no_encontrados.length} botella(s) ya no existían y no se actualizaron.`;
+    }
+    await reloadFromZero();
+  } catch (err: unknown) {
+    errorEstadoMasivo.value = err instanceof Error ? err.message : 'No se pudo actualizar el estado';
+  } finally {
+    aplicandoEstadoMasivo.value = false;
+  }
 }
 
 function abrirAsociarIndividual(nId: number): void {
@@ -386,10 +452,14 @@ async function handleAsociada(): Promise<void> {
   await reloadHuerfanasFromZero();
 }
 
-// El botón "Asociar a Cámara" de la barra masiva usa la selección actual, no una sola Botella.
+// El botón "Asociar a Cámara" de la barra masiva usa la selección actual, no una sola Botella —
+// sólo huérfanas Cromo pasan por este modal, así que se descarta cualquier clave de otro origen.
 watch(modalAsociarOpen, (isOpen) => {
   if (isOpen && nIdsParaAsociar.value.length === 0) {
-    nIdsParaAsociar.value = Array.from(seleccionadas.value);
+    nIdsParaAsociar.value = Array.from(seleccionadas.value)
+      .map(parseClave)
+      .filter((clave) => clave.origen === 'cromo')
+      .map((clave) => clave.id);
   }
 });
 
@@ -626,6 +696,24 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   color: color-mix(in srgb, var(--color-text) 70%, transparent);
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.botellas-view__bulk-select {
+  padding: 4px 8px;
+  font-size: 12.5px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+}
+
+.botellas-view__bulk-error {
+  color: var(--color-state-error);
+}
+
+.botellas-view__list-checkbox {
+  flex: none;
+  accent-color: var(--color-accent);
 }
 
 .botellas-view__list-origen {

@@ -11,11 +11,23 @@ import pytest
 from core.services.camara_hierarchy_service import (
     estado_mas_restrictivo,
     extraer_base,
+    ids_camaras_con_cromo_hijos,
     normalizar_para_agrupar,
     resolver_o_crear_padre,
     resolver_o_crear_padre_desde_base,
 )
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
+
+
+@pytest.fixture(autouse=True)
+def _sin_botellas_cromo(monkeypatch):
+    """Por defecto, ninguna Cámara candidata tiene Botellas Cromo propias — los tests que sí quieren
+    ejercitar esa protección (hallazgo real, 2026-08-12: ver `test_resolver_o_crear_padre_desde_base_*
+    _con_botellas_cromo*`) sobreescriben este mismo patch dentro del test."""
+    monkeypatch.setattr(
+        "core.services.camara_hierarchy_service.ids_camaras_con_cromo_hijos",
+        lambda session: set(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,3 +221,31 @@ def test_resolver_o_crear_padre_desde_base_reusa_padre_existente_sin_tocar_su_es
     assert resultado is padre_existente
     assert resultado.estado == CamaraEstado.BANEADA
     session.add.assert_not_called()
+
+
+def test_resolver_o_crear_padre_desde_base_reusa_camara_con_solo_botellas_cromo(monkeypatch) -> None:
+    """Hallazgo real (2026-08-12, detectado en --dry-run del backfill de Cromo, nunca llegó a tocar
+    datos reales): una Cámara padre creada por el backfill de Cromo tiene CERO Botellas legado
+    (`.botellas` vacío) — sin este chequeo se la trataría como "pelada" y NO se reusaría como padre."""
+    session = MagicMock()
+    padre_cromo = Camara(id=6526, nombre="Cra Bernardo de Irigoyen 194 CF", estado=CamaraEstado.NO_OPERATIVA, camara_padre_id=None)
+    padre_cromo.botellas = []  # cero Botellas legado — sus hijas son CromoBotella, tabla distinta
+    session.query.return_value.filter.return_value.all.return_value = [padre_cromo]
+    monkeypatch.setattr(
+        "core.services.camara_hierarchy_service.ids_camaras_con_cromo_hijos",
+        lambda session: {6526},
+    )
+
+    resultado = resolver_o_crear_padre_desde_base(session, "Cra Bernardo de Irigoyen 194 CF", usuario="test")
+
+    assert resultado is padre_cromo
+    session.add.assert_not_called()
+
+
+def test_ids_camaras_con_cromo_hijos_dedupe_y_descarta_nulos() -> None:
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = [(6526,), (6526,), (6529,)]
+
+    resultado = ids_camaras_con_cromo_hijos(session)
+
+    assert resultado == {6526, 6529}

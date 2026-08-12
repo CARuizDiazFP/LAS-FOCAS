@@ -178,7 +178,47 @@ legado en desuso a futuro (no se tocó ningún flujo en vivo en este pase, ver `
   momento del backfill (o su próxima corrida) — `aplicar_estado_a_grupo` sigue escribiendo sólo
   `Camara.estado` (único punto de escritura, no se tocó), así que un cambio de estado real posterior
   sobre la Cámara padre (ej. un baneo nuevo) no se propaga automáticamente a las `CromoBotella` ya
-  vinculadas hasta la siguiente corrida manual del script.
+  vinculadas hasta la siguiente corrida manual del script (mitigado en parte por el endpoint de
+  cambio de estado masivo del 2026-08-12, ver más abajo, para correcciones puntuales).
+
+### Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)
+
+Extiende el backfill del 2026-08-11: de las 9.512 Botellas Cromo que quedaban huérfanas (86% del
+total), la muestra real mostraba que casi ninguna era "sin información" — eran direcciones válidas
+sin el patrón "Bot N"/"Botella N" (ej. real "Av Rivadavia 6041"). Se agregó un tercer paso a
+`extraer_base_cromo`: si ni el sufijo ni el prefijo matchean, usa el **nombre exacto de la Botella**
+(recortado de espacios) como nombre de su propia Cámara padre — política de estado sin cambios
+(nace `NO_OPERATIVA`, fail-closed, igual que los dos caminos de regex). Sólo una Botella con
+`nombre` vacío/`NULL` sigue sin resolución automática.
+
+- **Bug real de idempotencia encontrado en `--dry-run` antes de aplicar (nunca tocó datos reales)**:
+  la clasificación de una Cámara raíz como "padre ya establecido" vs. "pelada absorbible" (tanto en
+  `resolver_o_crear_padre_desde_base` como en la resolución en memoria propia del script) sólo miraba
+  `Camara.botellas` (self-FK legado) — una Cámara padre creada por el backfill de Cromo tiene CERO
+  Botellas legado (sus hijas son `CromoBotella`, tabla distinta), así que en **cualquier corrida
+  posterior** del backfill (o cualquier llamada en vivo con el mismo nombre normalizado, ej. el
+  listener de Slack) se la trataba como "pelada" y se la absorbía como Botella de un padre nuevo
+  duplicado — dejando su `camara_id` de Cromo apuntando a una fila que dejó de ser raíz. El `--dry-run`
+  de esta corrida detectó **~400 vinculaciones que habrían quedado inválidas** de no corregirse antes
+  de aplicar. Corregido con `core/services/camara_hierarchy_service.py::ids_camaras_con_cromo_hijos`
+  (set de IDs con `CromoBotella.camara_id` propio, consultado una vez y usado en ambos chequeos) —
+  fix compartido entre el backfill y la función en vivo, así que también protege contra el mismo
+  problema en el listener de Slack y en `camara_backfill_padre_botella.py` a futuro.
+- **Corrida real contra `lasfocasdev-postgres` (post-fix)**: 9.512 candidatas, **9.512 resueltas por
+  el fallback** (8.598 Cámaras padre nuevas, 914 reutilizando Cámaras existentes — incluidas las 1.172
+  creadas por la corrida del 2026-08-11, ahora protegidas), 933 grupos escalados de estado. **Botellas
+  Cromo huérfanas: 9.512 → 0.** Auditoría de invariante (`camara_id` siempre apunta a una raíz):
+  0 violaciones post-commit.
+- **Endpoint de cambio de estado masivo**: `PUT /api/infra/botellas/estado` (admin, CSRF) — recibe una
+  lista de items `{origen, id}` (misma clave compuesta del inventario unificado, nunca un id numérico
+  solo) + un `estado` de los 4 vigentes. Origen `legado` cascada por grupo completo vía
+  `aplicar_estado_a_grupo` (dedupeado por raíz de grupo); origen `cromo` hace un `UPDATE` masivo
+  directo sobre `CromoBotella.estado` (foto propia, no cascada — ver limitación arriba). Ver
+  `core/services/botellas_estado_masivo_service.py`.
+- **Frontend (`BotellasInventarioView.vue`)**: la vista lista gana un checkbox de selección por fila
+  (`@click.stop` para no disparar la navegación al detalle de la fila) y una barra de acciones masivas
+  con selector de estado — **"No operativa" es la primera opción** (la más relevante para marcar
+  infraestructura fantasma detectada manualmente), seguida de Libre/Ocupada/Baneada.
 
 ### Estados operables: retiro de DETECTADA y del pseudo-estado "Tracking" (2026-08-11)
 
@@ -239,15 +279,20 @@ de unificación, no automático (un humano decide qué dos Cámaras son en verda
   orden de registro, así que "buscar" se interpretaba como `camara_id: int` y devolvía 422. Corregido
   registrando `/camaras/buscar` ANTES de la ruta con parámetro.
 
-### Botellas Cromo huérfanas — resolución manual (2026-08-11)
+### Botellas Cromo huérfanas — resolución manual (2026-08-11; automatizado casi al 100% desde 2026-08-12)
 
-El backfill automático (`scripts/cromo_backfill_camara_padre.py`) sólo vincula el 14% de las
-Botellas Cromo vigentes (1.588/11.100) — el resto, **9.512 filas, quedan "huérfanas"** (`camara_id
-IS NULL`). Verificado contra una muestra real: **no son nombres sin información** — son direcciones
-válidas con ruido de formato que el regex no cubre (paréntesis "(a instalar)", sufijo de localidad
-tras guión, abreviatura "Tza" no reconocida, puntuación interna en "C.F"). Resuelto con un flujo
-manual, individual o masivo — un humano reconoce la dirección real donde el matcher automático no
-llega.
+**Estado 2026-08-11**: el backfill automático (`scripts/cromo_backfill_camara_padre.py`) sólo
+vinculaba el 14% de las Botellas Cromo vigentes (1.588/11.100) — el resto, 9.512 filas, quedaban
+"huérfanas" (`camara_id IS NULL`). Verificado contra una muestra real: **no eran nombres sin
+información** — eran direcciones válidas con ruido de formato que el regex de sufijo/prefijo no
+cubría (paréntesis "(a instalar)", sufijo de localidad tras guión, abreviatura "Tza" no reconocida,
+puntuación interna en "C.F").
+
+**Actualizado 2026-08-12**: el fallback de nombre exacto (ver sección más arriba) resolvió las
+9.512 restantes — hoy **0 Botellas Cromo vigentes quedan huérfanas**. El flujo manual descripto
+abajo sigue existiendo (endpoints, componentes, todo vigente) para el único caso que el fallback no
+puede resolver — `nombre` vacío/`NULL` — y para reasociar a mano si el resultado automático de una
+Botella puntual fuera incorrecto.
 
 - **Backend**: `core/services/cromo/orfanas_service.py` — `buscar_huerfanas` (lectura async, paginada,
   `ILIKE` sobre nombre/calle/localidad) y `asociar_huerfanas` (síncrona, toca `CromoBotella` y
@@ -425,6 +470,9 @@ Obtiene las Botellas de una Cámara, unificando ambos orígenes: legado (self-FK
 ### GET /api/infra/botellas/buscar
 Listado unificado de Botellas Cromo + legado (ver sección "Submódulo Botellas" más arriba). Query params: `q` (`ILIKE` sobre nombre, +calle/localidad para Cromo), `limit` (default 30, clamp 1-100), `offset`, `incluir_no_operativas` (bool, default `false` — oculta `estado='NO_OPERATIVA'` de ambos orígenes). Respuesta: `{total, limit, offset, incluir_no_operativas, botellas: [{origen: "cromo"|"legado", id, nombre, estado}]}` — `estado` real para ambos orígenes desde 2026-08-11 (antes, siempre `null` para `origen="cromo"`).
 
+### PUT /api/infra/botellas/estado
+Cambia el estado de un lote de Botellas de origen mixto (admin, CSRF). Body: `{items: [{origen: "cromo"|"legado", id}], estado, motivo?, csrf_token}` — `estado` uno de `LIBRE/OCUPADA/BANEADA/NO_OPERATIVA`. Legado cascada por grupo completo (`aplicar_estado_a_grupo`, dedupeado por raíz); Cromo actualiza `CromoBotella.estado` directo (foto propia, sin cascada). Respuesta: `{ok, estado_nuevo, legado_actualizadas, cromo_actualizadas, no_encontrados: [{origen, id}]}`. Ver sección "Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)" más arriba y `core/services/botellas_estado_masivo_service.py`.
+
 ### GET /api/infra/camaras/buscar
 Búsqueda liviana de Cámaras raíz por nombre (`ILIKE`), para selectores/autocomplete (unificación, asociación de huérfanas) — no para el dashboard. Query params: `q`, `limit` (default 10, clamp 1-50), `excluir_id`. Respuesta: `{camaras: [{id, nombre, direccion, estado, botellas_count}]}`. Registrada antes de `GET /api/infra/camaras/{camara_id}` en el código — ver nota de routing en "Cámaras duplicadas" más arriba.
 
@@ -508,6 +556,27 @@ Genera archivo EML para descargar y abrir en Outlook.
 - `web/frontend/src/api/botellas.ts` - Cliente frontend del listado unificado
 
 ## Historial de cambios
+
+### 2026-08-12 - Fallback de nombre exacto, fix de idempotencia real, cambio de estado masivo
+
+- **Agregado**: fallback de nombre exacto en `extraer_base_cromo` (3er paso, tras sufijo/prefijo) —
+  resuelve el 100% de las Botellas Cromo con `nombre` no vacío. Botellas Cromo huérfanas: **9.512 →
+  0** tras la corrida real.
+- **Corregido — bug real de idempotencia** (detectado en `--dry-run` antes de aplicar, nunca tocó
+  datos reales): una Cámara padre de Cromo (cero Botellas legado) se clasificaba como "pelada" en
+  cualquier corrida posterior del backfill o llamada en vivo con el mismo nombre, y se absorbía como
+  Botella de un padre duplicado — rompiendo el invariante "`camara_id` siempre apunta a una raíz"
+  (~400 vinculaciones habrían quedado inválidas). Corregido con
+  `core/services/camara_hierarchy_service.py::ids_camaras_con_cromo_hijos`, compartido entre el
+  backfill y `resolver_o_crear_padre_desde_base` (protege también al listener de Slack y a
+  `camara_backfill_padre_botella.py`).
+- **Agregado**: `PUT /api/infra/botellas/estado` — cambio de estado masivo sobre Botellas de origen
+  mixto (`core/services/botellas_estado_masivo_service.py`).
+- **Agregado**: en `BotellasInventarioView.vue`, checkbox de selección por fila en la vista lista
+  (con `@click.stop` para no colisionar con la navegación al detalle) y barra de acciones masivas con
+  selector de estado ("No operativa" primero).
+- Ver sección "Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)" más
+  arriba para el detalle completo.
 
 ### 2026-08-11 (cont.) - Retiro de DETECTADA, unificación de Cámaras, huérfanas Cromo, ingresos sin match
 

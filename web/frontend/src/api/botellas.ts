@@ -54,3 +54,33 @@ function toQuery(params: SearchBotellasParams): string {
 export async function searchBotellas(params: SearchBotellasParams): Promise<SearchBotellasResponse> {
   return requestJson<SearchBotellasResponse>(`/api/infra/botellas/buscar${toQuery(params)}`);
 }
+
+// Estados operables vigentes (2026-08-11): LIBRE/OCUPADA/BANEADA/NO_OPERATIVA — mismo vocabulario
+// que `estados_disponibles` de `GET /api/infra/camaras/{id}/estado`.
+export type EstadoBotellaValor = 'NO_OPERATIVA' | 'LIBRE' | 'OCUPADA' | 'BANEADA';
+
+export interface BotellaClave {
+  origen: BotellaOrigen;
+  id: number;
+}
+
+export interface BotellasEstadoMasivoResponse {
+  ok: boolean;
+  estado_nuevo: string;
+  legado_actualizadas: number;
+  cromo_actualizadas: number;
+  no_encontrados: BotellaClave[];
+}
+
+/** Cambia el estado de un lote de Botellas (Cromo + legado) en una sola operación — clave siempre
+ * compuesta `{origen, id}`, nunca un id numérico solo. Ver `PUT /api/infra/botellas/estado`. */
+export async function updateBotellasEstadoMasivo(
+  items: BotellaClave[],
+  estado: EstadoBotellaValor,
+): Promise<BotellasEstadoMasivoResponse> {
+  return requestJson<BotellasEstadoMasivoResponse>('/api/infra/botellas/estado', {
+    method: 'PUT',
+    json: { items: items.map((item) => ({ origen: item.origen, id: item.id })), estado },
+    csrf: true,
+  });
+}

@@ -1,13 +1,15 @@
 # Nombre de archivo: camara_padre_service.py
 # Ubicación de archivo: core/services/cromo/camara_padre_service.py
-# Descripción: Extrae el nombre de Cámara padre de una Botella Cromo (regex combinado sufijo+prefijo) y resuelve/crea la Cámara
+# Descripción: Extrae el nombre de Cámara padre de una Botella Cromo (sufijo, prefijo, o nombre exacto como fallback) y resuelve/crea la Cámara
 
 """Vincula una `CromoBotella` (`app.cromo_botellas`) a una `Camara` padre (`app.camaras`), reusando
 el mismo mecanismo de resolución que ya usa la jerarquía Bot-N legado
 (`core/services/camara_hierarchy_service.py::resolver_o_crear_padre_desde_base`) — advisory lock,
 no-promoción de filas existentes, absorción de "peladas" — pero con una política de estado por
 defecto distinta: como Cromo no trackea ninguna señal operativa real, toda Cámara padre *nueva*
-sintetizada acá nace en `NO_OPERATIVA` (fail-closed), nunca en `LIBRE`. Si en cambio se reutiliza
+sintetizada acá nace en `NO_OPERATIVA` (fail-closed), nunca en `LIBRE` — sea porque matcheó un
+patrón de nombre (sufijo/prefijo) o porque cayó en el fallback de nombre exacto (2026-08-12):
+ninguno de los dos caminos aporta más señal operativa real que el otro. Si en cambio se reutiliza
 una `Camara` legado ya existente (nombre coincidente), no se toca su estado — ese es dato real, no
 inferencia, y el llamador (`scripts/cromo_backfill_camara_padre.py`) decide qué hacer con él.
 """
@@ -35,35 +37,48 @@ RE_BOTELLA_PREFIJO = re.compile(r"^\s*botella\.?\s*[1-9](?!\d)\s*", re.IGNORECAS
 
 
 def extraer_base_cromo(nombre: Optional[str]) -> Optional[str]:
-    """Extrae el nombre base de Cámara padre de un nombre de Botella Cromo, intentando primero el
-    sufijo real "Bot N" (`extraer_base`, probado contra datos reales — ej. n_id 6638808 "Cra Plaza
-    de los Ingleses CF" + variantes "Bot 2/3/4") y, si no matchea, el prefijo "Botella N <nombre>"
-    como fallback. Orden deliberado: el sufijo es el único patrón confirmado en datos reales;
-    probarlo primero evita que el prefijo (no confirmado) le robe un match a un nombre que de otro
-    modo resolvería por el camino ya probado. Ambos patrones son mutuamente excluyentes por
-    construcción (tras "Bot" de `RE_BOT_SUFIJO` viene "ella", nunca punto/espacio/dígito; el prefijo
-    está anclado a `^`, nunca matchea un sufijo al final)."""
+    """Extrae el nombre base de Cámara padre de un nombre de Botella Cromo, en 3 pasos:
+
+    1. Sufijo real "Bot N" (`extraer_base`, probado contra datos reales — ej. n_id 6638808 "Cra
+       Plaza de los Ingleses CF" + variantes "Bot 2/3/4").
+    2. Prefijo "Botella N <nombre>" (nunca confirmado en datos persistidos reales, sólo visto en
+       texto libre de Slack — se contempla igual por pedido explícito).
+    3. **Fallback de nombre exacto** (2026-08-12): si ninguno de los dos patrones matchea (ej.
+       "Av Rivadavia 6041" — una Botella sin sufijo/prefijo, no un dato "sin información", Cromo ya
+       la trackea como sitio real), usar el nombre de la Botella tal cual, limpio de espacios en los
+       extremos, como nombre de su propia Cámara padre (relación 1:1 si no hay otra Botella que
+       comparta esa misma base). Antes de este fallback, estas Botellas quedaban huérfanas
+       (`camara_id IS NULL`) sin ningún camino de resolución automática — ver
+       `core/services/cromo/orfanas_service.py` para la resolución manual que sigue existiendo para
+       los casos con nombre vacío (únicos que este fallback no puede resolver).
+
+    Orden deliberado entre 1 y 2: el sufijo es el único patrón confirmado en datos reales; probarlo
+    primero evita que el prefijo (no confirmado) le robe un match a un nombre que de otro modo
+    resolvería por el camino ya probado. Ambos son mutuamente excluyentes por construcción (tras
+    "Bot" de `RE_BOT_SUFIJO` viene "ella", nunca punto/espacio/dígito; el prefijo está anclado a `^`,
+    nunca matchea un sufijo al final). El fallback de nombre exacto sólo puede devolver `None` si
+    `nombre` es vacío/`None` — no hay ningún nombre no vacío que quede sin resolver."""
     base = extraer_base(nombre)
     if base is not None:
         return base
     if not nombre:
         return None
     match = RE_BOTELLA_PREFIJO.match(nombre)
-    if not match:
-        return None
-    resto = re.sub(r"\s+", " ", nombre[match.end():]).strip()
-    if not resto:
-        return None
-    logger.info("action=cromo_camara_padre hallazgo=patron_prefijo_matcheo nombre='%s'", nombre)
-    return resto
+    if match:
+        resto = re.sub(r"\s+", " ", nombre[match.end():]).strip()
+        if resto:
+            logger.info("action=cromo_camara_padre hallazgo=patron_prefijo_matcheo nombre='%s'", nombre)
+            return resto
+    return nombre.strip() or None
 
 
 def resolver_o_crear_padre_cromo(
     session: Session, nombre_botella_cromo: Optional[str], *, usuario: str = "cromo_backfill"
 ) -> Optional[Camara]:
-    """Resuelve (o crea) la Cámara padre para una Botella Cromo con `nombre_botella_cromo`, si el
-    nombre matchea alguno de los dos patrones de `extraer_base_cromo`. Devuelve `None` si no
-    matchea — el llamador no debe tocar `CromoBotella.camara_id` en ese caso."""
+    """Resuelve (o crea) la Cámara padre para una Botella Cromo con `nombre_botella_cromo`, vía
+    `extraer_base_cromo` (sufijo, prefijo, o el nombre exacto como último recurso). Devuelve `None`
+    únicamente si `nombre_botella_cromo` es vacío/`None` — el llamador no debe tocar
+    `CromoBotella.camara_id` en ese caso."""
     base = extraer_base_cromo(nombre_botella_cromo)
     if base is None:
         return None

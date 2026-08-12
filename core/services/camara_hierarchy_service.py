@@ -27,6 +27,7 @@ from typing import Iterable, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 from modules.slack_baneo_notifier.camara_search import RE_BOT_SUFIJO, _limpiar_puntuacion, _normalizar
 
@@ -100,6 +101,24 @@ def estado_mas_restrictivo(estados: Iterable[CamaraEstado]) -> CamaraEstado:
     return max(candidatos, key=lambda e: _ORDEN_SEVERIDAD_ESTADO.get(e, 0))
 
 
+def ids_camaras_con_cromo_hijos(session: Session) -> set[int]:
+    """IDs de `Camara` raíz que ya tienen al menos una `CromoBotella` propia (`camara_id`).
+
+    Bug real encontrado corriendo `scripts/cromo_backfill_camara_padre.py` una segunda vez
+    (2026-08-12, detectado en `--dry-run` antes de aplicar — nunca llegó a tocar datos reales): una
+    Cámara padre creada por el backfill de Cromo tiene CERO Botellas legado (`.botellas`, el self-FK
+    que sí chequean el paso 1 y la absorción de "peladas" de `resolver_o_crear_padre_desde_base`),
+    así que cualquier caller de esa función — este mismo backfill en una corrida posterior, el
+    listener de Slack, `camara_backfill_padre_botella.py` — la veía como una fila "pelada" sin
+    hijos y la absorbía como Botella de una Cámara padre nueva, duplicando el padre y dejando su
+    `camara_id` de Cromo apuntando a una fila que dejó de ser raíz (invariante roto, ver
+    `_detectar_camara_id_invalido` en el backfill). Este set protege esas filas en ambos chequeos."""
+    return {
+        camara_id
+        for (camara_id,) in session.query(CromoBotella.camara_id).filter(CromoBotella.camara_id.isnot(None)).all()
+    }
+
+
 def _advisory_lock_para(session: Session, clave: str) -> None:
     """Toma un advisory lock de Postgres (`pg_advisory_xact_lock`) para la duración de la transacción
     actual, keyed por un hash estable de `clave`. No requiere ningún constraint de unicidad en la
@@ -139,12 +158,17 @@ def resolver_o_crear_padre_desde_base(
     # O(n) sobre las filas raíz — mismo orden de magnitud que ya usa `_get_or_create_camara`
     # (`core/services/infra_service.py`) para su propio dedup; el dataset es chico (~1800 filas).
     raices = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).all()
+    ids_con_cromo_hijos = ids_camaras_con_cromo_hijos(session)
+
+    def _tiene_hijos(candidata: Camara) -> bool:
+        # Botella legado (self-FK) O Botella Cromo propia — ver `ids_camaras_con_cromo_hijos`.
+        return bool(candidata.botellas) or candidata.id in ids_con_cromo_hijos
 
     # 1. ¿Ya existe un padre para esta base? Sólo cuentan como "padre" las filas que YA tienen al
     #    menos una botella — una fila raíz sin botellas es una cámara normal, no un padre, aunque su
     #    nombre coincida (evita promover una fila ajena por casualidad de nombre).
     for candidata in raices:
-        if candidata.botellas and normalizar_para_agrupar(candidata.nombre) == base_norm:
+        if _tiene_hijos(candidata) and normalizar_para_agrupar(candidata.nombre) == base_norm:
             return candidata
 
     # 2. No existe ningún padre todavía — crear uno nuevo. Antes de devolverlo, absorber como
@@ -161,9 +185,15 @@ def resolver_o_crear_padre_desde_base(
 
     hermanas_absorbidas = []
     for candidata in raices:
-        if normalizar_para_agrupar(candidata.nombre) == base_norm:
-            candidata.camara_padre_id = nuevo_padre.id
-            hermanas_absorbidas.append(candidata.id)
+        if normalizar_para_agrupar(candidata.nombre) != base_norm:
+            continue
+        if _tiene_hijos(candidata):
+            # No debería llegar acá (el paso 1 ya habría devuelto esta fila) — defensivo: nunca
+            # absorber una raíz con Botellas propias, rompería el invariante "camara_id siempre
+            # apunta a una raíz" (ver `ids_camaras_con_cromo_hijos`).
+            continue
+        candidata.camara_padre_id = nuevo_padre.id
+        hermanas_absorbidas.append(candidata.id)
 
     logger.info(
         "action=camara_hierarchy evento=padre_creado padre_id=%s nombre='%s' estado=%s "
@@ -191,6 +221,7 @@ def resolver_o_crear_padre(session: Session, nombre_hijo: str, *, usuario: str =
 
 
 __all__ = [
+    "ids_camaras_con_cromo_hijos",
     "extraer_base",
     "normalizar_para_agrupar",
     "estado_mas_restrictivo",

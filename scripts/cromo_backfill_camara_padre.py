@@ -7,10 +7,13 @@ asigna un `estado` operativo — mismo criterio de resolución que ya usa la jer
 (`core/services/camara_hierarchy_service.py::resolver_o_crear_padre_desde_base`: nunca promover una
 fila "pelada" existente a padre, sino absorberla; reusar un padre ya establecido por nombre
 normalizado), pero con resolución en memoria en vez de reusar esa función por-fila — ver nota de
-performance más abajo. Cromo como fuente de verdad: para cada nombre de Botella que matchee el
-regex combinado (sufijo real "Bot N" o prefijo "Botella N <nombre>", ver
-`core/services/cromo/camara_padre_service.py::extraer_base_cromo`), resuelve (o crea) su Cámara
-padre.
+performance más abajo. Cromo como fuente de verdad: para cada nombre de Botella no vacío, resuelve
+(o crea) su Cámara padre vía `core/services/cromo/camara_padre_service.py::extraer_base_cromo` —
+sufijo real "Bot N", prefijo "Botella N <nombre>", o (2026-08-12) el nombre exacto de la Botella
+como último recurso si ninguno de los dos patrones matchea (ej. "Av Rivadavia 6041"). Con el
+fallback de nombre exacto, prácticamente ninguna Botella con `nombre` no vacío queda sin Cámara
+padre — sólo las de `nombre` vacío/`NULL` siguen sin resolución automática (quedan para
+`core/services/cromo/orfanas_service.py`, resolución manual).
 
 **Nota de performance (hallazgo real, no teórico)**: la primera versión de este script reusaba
 `core/services/cromo/camara_padre_service.py::resolver_o_crear_padre_cromo()` (que delega en
@@ -57,6 +60,18 @@ correcta para una corrida de este script a la vez (uso previsto: manual/periódi
 `cromo_backfill_geo.py`/`cromo_backfill_servicio_prefijos.py`), pero dos corridas simultáneas de este
 mismo script SÍ podrían crear Cámaras padre duplicadas. No correr dos instancias en paralelo.
 
+**Bug real de idempotencia corregido (2026-08-12, detectado en `--dry-run` de esta misma sesión antes
+de aplicar — nunca llegó a tocar datos reales)**: la clasificación "pelada" (ver arriba) originalmente
+sólo miraba `raiz.botellas` (self-FK legado) para decidir si una Cámara raíz ya era un padre
+establecido. Una Cámara padre creada por una corrida ANTERIOR de este script tiene CERO Botellas
+legado (sus hijas son `CromoBotella`, tabla distinta) — en una segunda corrida se la clasificaba
+como "pelada" y se la absorbía como Botella de un padre nuevo duplicado, dejando su `camara_id` de
+Cromo apuntando a una fila que dejó de ser raíz (invariante roto, ver `_detectar_camara_id_invalido`
+más abajo, que fue justo lo que lo detectó: ~400 vinculaciones habrían quedado inválidas). Corregido
+reusando `core/services/camara_hierarchy_service.py::ids_camaras_con_cromo_hijos` (mismo fix aplicado
+también en `resolver_o_crear_padre_desde_base`, compartido con el listener de Slack y el backfill
+legado — ver ese módulo).
+
 No pega contra la API de Cromo — sólo lee/escribe tablas ya pobladas por la ingesta.
 
 Uso:
@@ -78,7 +93,11 @@ from sqlalchemy.orm import selectinload
 
 from core.logging import setup_logging
 from core.services.camara_estado_service import aplicar_estado_a_grupo, miembros_del_grupo
-from core.services.camara_hierarchy_service import estado_mas_restrictivo, normalizar_para_agrupar
+from core.services.camara_hierarchy_service import (
+    estado_mas_restrictivo,
+    ids_camaras_con_cromo_hijos,
+    normalizar_para_agrupar,
+)
 from core.services.cromo.camara_padre_service import extraer_base_cromo
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
@@ -138,11 +157,18 @@ def main(dry_run: bool) -> None:
             .options(selectinload(Camara.botellas))
             .all()
         )
+        # Hallazgo real (2026-08-12, detectado en --dry-run antes de aplicar — nunca tocó datos
+        # reales): una Cámara padre creada por una corrida ANTERIOR de este mismo script tiene CERO
+        # Botellas legado (`.botellas`, self-FK) — sin este chequeo se la clasifica como "pelada" y
+        # se la absorbe como Botella de un padre NUEVO duplicado en cualquier corrida posterior,
+        # dejando su `camara_id` de Cromo apuntando a una fila que dejó de ser raíz (mismo invariante
+        # que audita `_detectar_camara_id_invalido`, ver `ids_camaras_con_cromo_hijos`).
+        ids_con_cromo_hijos = ids_camaras_con_cromo_hijos(session)
         padres_por_nombre: dict[str, Camara] = {}
         peladas_por_nombre: dict[str, list[Camara]] = {}
         for raiz in raices:
             clave = normalizar_para_agrupar(raiz.nombre)
-            if raiz.botellas:
+            if raiz.botellas or raiz.id in ids_con_cromo_hijos:
                 padres_por_nombre.setdefault(clave, raiz)
             else:
                 peladas_por_nombre.setdefault(clave, []).append(raiz)
@@ -223,16 +249,19 @@ def main(dry_run: bool) -> None:
                     padre.estado.value,
                     estado_mapeado.value,
                 )
-            if estado_mapeado != CamaraEstado.NO_OPERATIVA:
+            if estado_mapeado == CamaraEstado.NO_OPERATIVA:
+                herencias_no_operativa += 1
+            else:
+                # Etiqueta corregida (2026-08-12): la condición original decía "hereda_estado_no_operativa"
+                # pero disparaba justo en el caso contrario (estado_mapeado != NO_OPERATIVA) — sin impacto en
+                # el estado escrito (siempre fue `botella.estado = estado_mapeado`), sólo en el texto del log.
                 logger.warning(
-                    "action=cromo_backfill_camara_padre hallazgo=hereda_estado_no_operativa n_id=%s "
+                    "action=cromo_backfill_camara_padre hallazgo=hereda_estado_restrictivo_real n_id=%s "
                     "camara_id=%s estado=%s",
                     botella.n_id,
                     padre_id,
                     estado_mapeado.value,
                 )
-            else:
-                herencias_no_operativa += 1
             botella.estado = estado_mapeado
 
         logger.info(

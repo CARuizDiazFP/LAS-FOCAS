@@ -5099,6 +5099,85 @@ async def botellas_unificadas_buscar_web(
     )
 
 
+class BotellaEstadoMasivoItemModel(BaseModel):
+    """Item de la clave compuesta `{origen, id}` del inventario unificado — nunca un id numérico
+    solo (`CromoBotella.n_id` y `Camara.id` son espacios de ID independientes que pueden colisionar
+    en valor)."""
+
+    origen: str  # "cromo" | "legado"
+    id: int
+
+
+class BotellasEstadoMasivoRequestModel(BaseModel):
+    """Payload para cambiar el estado de un lote de Botellas de origen mixto (Cromo + legado)."""
+
+    items: list[BotellaEstadoMasivoItemModel]
+    estado: str
+    motivo: str = "Cambio de estado masivo"
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.put("/api/infra/botellas/estado")
+async def botellas_estado_masivo_web(request: Request, body: BotellasEstadoMasivoRequestModel) -> JSONResponse:
+    """Cambia el estado de un lote de Botellas (Cromo + legado) en una sola operación. Legado
+    cascadea por grupo completo vía `aplicar_estado_a_grupo`; Cromo actualiza `CromoBotella.estado`
+    directo (foto propia, ver `core/services/botellas_estado_masivo_service.py`)."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_estado_masivo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.items:
+        return JSONResponse({"error": "No se especificaron botellas a actualizar"}, status_code=400)
+
+    try:
+        from core.services.botellas_estado_masivo_service import (
+            ESTADOS_ADMISIBLES,
+            EstadoMasivoError,
+            ItemBotellaEstado,
+            actualizar_estado_masivo,
+        )
+        from db.models.infra import CamaraEstado
+        from db.session import SessionLocal
+
+        estado_normalizado = body.estado.strip().upper()
+        if estado_normalizado not in {estado.value for estado in ESTADOS_ADMISIBLES}:
+            return JSONResponse({"error": "Estado inválido"}, status_code=400)
+
+        items = [ItemBotellaEstado(origen=item.origen, id=item.id) for item in body.items]
+
+        with SessionLocal() as session:
+            try:
+                resultado = actualizar_estado_masivo(
+                    session,
+                    items,
+                    CamaraEstado(estado_normalizado),
+                    usuario=username,
+                    motivo=body.motivo.strip() or "Cambio de estado masivo",
+                )
+            except EstadoMasivoError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_estado_masivo user=%s estado_nuevo=%s legado=%d cromo=%d no_encontrados=%d",
+                username,
+                resultado.estado_nuevo,
+                resultado.legado_actualizadas,
+                resultado.cromo_actualizadas,
+                len(resultado.no_encontrados),
+            )
+            return JSONResponse({"ok": True, **resultado.to_dict()})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_estado_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo actualizar el estado de las Botellas"}, status_code=500)
+
+
 @app.get("/api/infra/cromo-botellas/{n_id}/estado-asociacion")
 async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JSONResponse:
     """Chequeo liviano de una Botella Cromo puntual: ¿está huérfana (sin `camara_id`)? Usado por
