@@ -12,7 +12,8 @@ from typing import Any, Optional
 import pytest
 
 from core.services.cromo import ingesta
-from db.models.cromo import CromoBotella, CromoCable, CromoIngestaCorrida
+from core.services.cromo.alias_service import AliasBotella
+from db.models.cromo import CromoBotella, CromoCable, CromoFusion, CromoIngestaCorrida
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
 
@@ -370,6 +371,85 @@ async def test_procesar_cable_directo_objeto_malformado_no_rompe_registra_error(
 
 
 @pytest.mark.asyncio
+async def test_procesar_cable_directo_remapea_extremo_fusionar():
+    obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
+
+    await ingesta._procesar_cable_directo(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    cables_agregados = [o for o in sesion.agregados if isinstance(o, CromoCable)]
+    assert len(cables_agregados) == 1
+    assert cables_agregados[0].extremo_a_n_id == 999999
+    assert cables_agregados[0].extremo_b_n_id == 10444555  # sin alias, sin cambios
+
+
+@pytest.mark.asyncio
+async def test_procesar_cable_directo_anula_extremo_ignorar():
+    obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {10444555: AliasBotella(accion="ignorar", id_cromo_destino=None)}
+
+    await ingesta._procesar_cable_directo(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    cables_agregados = [o for o in sesion.agregados if isinstance(o, CromoCable)]
+    assert cables_agregados[0].extremo_a_n_id == 10178728  # sin alias, sin cambios
+    assert cables_agregados[0].extremo_b_n_id is None
+
+
+@pytest.mark.asyncio
+async def test_procesar_cable_directo_sin_alias_no_cambia_extremos():
+    """Regresión explícita: sin `alias_por_origen`, el comportamiento es idéntico al de antes."""
+    obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_cable_directo(sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    cables_agregados = [o for o in sesion.agregados if isinstance(o, CromoCable)]
+    assert cables_agregados[0].extremo_a_n_id == 10178728
+    assert cables_agregados[0].extremo_b_n_id == 10444555
+
+
+@pytest.mark.asyncio
+async def test_procesar_fusion_directa_remapea_botella_n_id_fusionar():
+    obj = {"class": 132, "n_id": 90010, "parent": 10178728, "at": [{"seq": 1, "id": 84, "value": "53-17"}]}
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
+
+    await ingesta._procesar_fusion_directa(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    fusiones_agregadas = [o for o in sesion.agregados if isinstance(o, CromoFusion)]
+    assert len(fusiones_agregadas) == 1
+    assert fusiones_agregadas[0].botella_n_id == 999999
+
+
+@pytest.mark.asyncio
+async def test_procesar_fusion_directa_anula_botella_n_id_ignorar():
+    obj = {"class": 132, "n_id": 90020, "parent": 10178728, "at": [{"seq": 1, "id": 84, "value": "53-18"}]}
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {10178728: AliasBotella(accion="ignorar", id_cromo_destino=None)}
+
+    await ingesta._procesar_fusion_directa(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    fusiones_agregadas = [o for o in sesion.agregados if isinstance(o, CromoFusion)]
+    assert len(fusiones_agregadas) == 1
+    assert fusiones_agregadas[0].botella_n_id is None
+
+
+@pytest.mark.asyncio
 async def test_procesar_botella_completa_con_fixture_real():
     obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
     sesion = _SesionFake()
@@ -387,6 +467,84 @@ async def test_procesar_botella_completa_con_fixture_real():
     assert CromoTubo in tipos_agregados
     assert CromoPelo in tipos_agregados
     assert CromoFusion in tipos_agregados
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_alias_ignorar_omite_creacion_de_la_botella():
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {10178728: AliasBotella(accion="ignorar", id_cromo_destino=None)}
+
+    await ingesta._procesar_botella_completa(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    assert contadores.errores == 0
+    assert [o for o in sesion.agregados if isinstance(o, CromoBotella)] == []
+    eventos = [o for o in sesion.agregados if getattr(o, "accion", None) == "ALIAS_IGNORADA"]
+    assert len(eventos) == 1
+    assert eventos[0].n_id == 10178728
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_alias_fusionar_omite_creacion_y_registra_destino():
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
+
+    await ingesta._procesar_botella_completa(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    assert contadores.errores == 0
+    assert [o for o in sesion.agregados if isinstance(o, CromoBotella)] == []
+    eventos = [o for o in sesion.agregados if getattr(o, "accion", None) == "ALIAS_FUSIONADA"]
+    assert len(eventos) == 1
+    assert eventos[0].n_id == 10178728
+    assert "999999" in eventos[0].detalle
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_remapea_extremos_de_cable_embebido():
+    """Fixture sintética: `botella_con_arbol.json` tiene un cable embebido sin `tp[]` propio (vista
+    parcial real, ver docstring de `_upsert_versionado`), así que no sirve para probar el remapeo
+    de extremos embebidos. Acá el cable embebido SÍ trae su propio `tp[]` con dos extremos."""
+    obj = {
+        "n_id": 5001,
+        "vmax": 1,
+        "class": 68,
+        "name": "Botella Test",
+        "tp": [
+            {
+                "type": 2,
+                "nfrom": 0,
+                "id_to": 5001,
+                "nto": 1,
+                "class": 51,
+                "n_id": 6001,
+                "vmax": 1,
+                "name": "Cable embebido",
+                "tp": [
+                    {"type": 1, "nfrom": 0, "id_to": 5001, "nto": 0, "class": 68},
+                    {"type": 1, "nfrom": 1, "id_to": 7001, "nto": 0, "class": 68},
+                ],
+            }
+        ],
+    }
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {7001: AliasBotella(accion="fusionar", id_cromo_destino=9001)}
+
+    await ingesta._procesar_botella_completa(
+        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    cables_agregados = [o for o in sesion.agregados if isinstance(o, CromoCable)]
+    assert len(cables_agregados) == 1
+    assert cables_agregados[0].extremo_a_n_id == 5001  # sin alias, sin cambios
+    assert cables_agregados[0].extremo_b_n_id == 9001  # remapeado
 
 
 # ── Fases con cliente/páginas fake ──────────────────────────────────────────
@@ -457,6 +615,79 @@ async def test_fase_fusiones_procesa_pagina_y_suma_leidas():
     assert "ERROR" not in acciones
 
 
+@pytest.mark.asyncio
+async def test_fase_cables_pasa_alias_por_origen_a_procesar_cable_directo(monkeypatch):
+    cable_obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
+    cliente = _ClientePaginado([{"response": [cable_obj]}])
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+    alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
+    recibido: dict[str, Any] = {}
+
+    async def _procesar_fake(sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+        recibido["alias_por_origen"] = alias_por_origen
+
+    monkeypatch.setattr(ingesta, "_procesar_cable_directo", _procesar_fake)
+
+    await ingesta.fase_cables(
+        cliente, sesion, corrida, contadores, psize=5, max_paginas=None, alias_por_origen=alias_por_origen
+    )
+
+    assert recibido["alias_por_origen"] is alias_por_origen
+
+
+@pytest.mark.asyncio
+async def test_fase_botellas_pasa_alias_por_origen_a_procesar_botella_completa(monkeypatch):
+    botella_obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    cliente = _ClientePaginado([{"response": [botella_obj]}])
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+    alias_por_origen = {10178728: AliasBotella(accion="ignorar", id_cromo_destino=None)}
+    recibido: dict[str, Any] = {}
+
+    async def _procesar_fake(sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+        recibido["alias_por_origen"] = alias_por_origen
+
+    monkeypatch.setattr(ingesta, "_procesar_botella_completa", _procesar_fake)
+
+    await ingesta.fase_botellas(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        psize=5,
+        max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA,
+        alias_por_origen=alias_por_origen,
+    )
+
+    assert recibido["alias_por_origen"] is alias_por_origen
+
+
+@pytest.mark.asyncio
+async def test_fase_fusiones_pasa_alias_por_origen_a_procesar_fusion_directa(monkeypatch):
+    fusion_obj = json.loads((FIXTURES_DIR / "fusion_barrido_directo.json").read_text())
+    cliente = _ClientePaginado([{"response": [fusion_obj]}])
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+    alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
+    recibido: dict[str, Any] = {}
+
+    async def _procesar_fake(sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+        recibido["alias_por_origen"] = alias_por_origen
+
+    monkeypatch.setattr(ingesta, "_procesar_fusion_directa", _procesar_fake)
+
+    await ingesta.fase_fusiones(
+        cliente, sesion, corrida, contadores, psize=5, max_paginas=None, alias_por_origen=alias_por_origen
+    )
+
+    assert recibido["alias_por_origen"] is alias_por_origen
+
+
 # ── Reconciliación ───────────────────────────────────────────────────────────
 
 
@@ -504,19 +735,27 @@ async def test_fase_reconciliacion_sin_hallazgos_no_registra_eventos():
 
 @pytest.mark.asyncio
 async def test_fase_servicios_matchea_y_deja_traza_de_no_matcheados():
+    # "99" (2 dígitos) es implausible a propósito (fuera de LONGITUD_SERVICIO_PLAUSIBLE=4-6) — sigue
+    # probando "no matchea, no se crea ningún placeholder". Antes de la heurística (2026-08-14) acá
+    # había un número de 6 dígitos ("999999"), que con la heurística nueva sí dispararía un intento
+    # de creación — cambiado para no confundir dos comportamientos distintos en el mismo test.
     sesion = _SesionFake(
         respuestas_execute={
-            "cromo_servicio_match m": [(10, "114699"), (11, "999999")],
+            "cromo_servicio_match m": [(10, "114699"), (11, "99")],
             "servicio_id = :numero": [],  # default: sin match: se sobreescribe por caso abajo
         }
     )
 
     # El fake resuelve por substring; para diferenciar el pelo que matchea, usamos un execute custom.
     llamadas = {"n": 0}
+    intentos_insert = {"n": 0}
     original_execute = sesion.execute
 
     async def execute_custom(stmt, params=None):
         texto = str(stmt)
+        if "INSERT INTO app.servicios" in texto:
+            intentos_insert["n"] += 1
+            return _ResultadoFilas([])
         if "servicio_id = :numero" in texto:
             llamadas["n"] += 1
             if params and params.get("numero") == "114699":
@@ -535,11 +774,90 @@ async def test_fase_servicios_matchea_y_deja_traza_de_no_matcheados():
     matches = [o for o in sesion.agregados if isinstance(o, CromoServicioMatch)]
     assert len(matches) == 2
     matcheado = next(m for m in matches if m.servicio_numero == "114699")
-    sin_match = next(m for m in matches if m.servicio_numero == "999999")
+    sin_match = next(m for m in matches if m.servicio_numero == "99")
     assert matcheado.servicio_id == 1429
     assert matcheado.confianza == 100
     assert sin_match.servicio_id is None
     assert sin_match.confianza == 0
+    # "99" es implausible (2 dígitos, fuera de 4-6): nunca debe intentar el INSERT de placeholder.
+    assert intentos_insert["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fase_servicios_crea_placeholder_para_numero_plausible_sin_match():
+    """Número de 5 dígitos ("84213") sin match real → crea un Servicio placeholder y el
+    CromoServicioMatch queda apuntando a él, con confianza=100 (matcheó, aunque contra algo recién
+    creado) — y se registra un evento PLACEHOLDER_CREADO."""
+    sesion = _SesionFake(
+        respuestas_execute={
+            "cromo_servicio_match m": [(20, "84213")],
+        }
+    )
+    original_execute = sesion.execute
+
+    async def execute_custom(stmt, params=None):
+        texto = str(stmt)
+        if "INSERT INTO app.servicios" in texto:
+            return _ResultadoFilas([(555,)])
+        if "servicio_id = :numero" in texto:
+            return _ResultadoFilas([])  # nunca hay un Servicio real con ese número
+        return await original_execute(stmt, params)
+
+    sesion.execute = execute_custom
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    await ingesta.fase_servicios(sesion, corrida, contadores)
+
+    from db.models.cromo import CromoIngestaEvento, CromoServicioMatch
+
+    matches = [o for o in sesion.agregados if isinstance(o, CromoServicioMatch)]
+    assert len(matches) == 1
+    assert matches[0].servicio_id == 555
+    assert matches[0].confianza == 100
+
+    eventos_placeholder = [
+        o for o in sesion.agregados if isinstance(o, CromoIngestaEvento) and o.accion == "PLACEHOLDER_CREADO"
+    ]
+    assert len(eventos_placeholder) == 1
+    assert "84213" in eventos_placeholder[0].detalle
+    assert "555" in eventos_placeholder[0].detalle
+
+
+@pytest.mark.asyncio
+async def test_fase_servicios_cache_evita_recrear_placeholder_para_numero_repetido():
+    """Dos pelos distintos con el MISMO número plausible sin match → sólo UN intento de INSERT
+    (cache en memoria de la corrida) — evita crear el mismo placeholder cientos de veces cuando un
+    número se repite en muchos pelos, hallazgo real documentado en fase_servicios."""
+    sesion = _SesionFake(
+        respuestas_execute={
+            "cromo_servicio_match m": [(30, "77123"), (31, "77123")],
+        }
+    )
+    original_execute = sesion.execute
+    intentos_insert = {"n": 0}
+
+    async def execute_custom(stmt, params=None):
+        texto = str(stmt)
+        if "INSERT INTO app.servicios" in texto:
+            intentos_insert["n"] += 1
+            return _ResultadoFilas([(777,)])
+        if "servicio_id = :numero" in texto:
+            return _ResultadoFilas([])
+        return await original_execute(stmt, params)
+
+    sesion.execute = execute_custom
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    await ingesta.fase_servicios(sesion, corrida, contadores)
+
+    from db.models.cromo import CromoServicioMatch
+
+    matches = [o for o in sesion.agregados if isinstance(o, CromoServicioMatch)]
+    assert len(matches) == 2
+    assert all(m.servicio_id == 777 for m in matches)
+    assert intentos_insert["n"] == 1
 
 
 # ── Cancelación cooperativa entre páginas ───────────────────────────────────
@@ -622,3 +940,50 @@ async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
 
     assert corrida is corrida_existente
     assert corrida.estado == "OK"
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_tres_fases(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    corrida_existente = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+    sesion._existentes[(CromoIngestaCorrida, 42)] = corrida_existente
+    alias_falso = {10178728: AliasBotella(accion="ignorar", id_cromo_destino=None)}
+    llamadas_cargar: list[int] = []
+    recibidos: dict[str, Any] = {}
+
+    async def _fase_conteo_fake(cliente):
+        return {}
+
+    async def _cargar_alias_fake(sesion):
+        llamadas_cargar.append(1)
+        return alias_falso
+
+    async def _fase_cables_fake(*args, **kwargs):
+        recibidos["cables"] = kwargs.get("alias_por_origen")
+
+    async def _fase_botellas_fake(*args, **kwargs):
+        recibidos["botellas"] = kwargs.get("alias_por_origen")
+
+    async def _fase_fusiones_fake(*args, **kwargs):
+        recibidos["fusiones"] = kwargs.get("alias_por_origen")
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta.alias_service, "cargar_alias_vigentes", _cargar_alias_fake)
+    monkeypatch.setattr(ingesta, "fase_cables", _fase_cables_fake)
+    monkeypatch.setattr(ingesta, "fase_botellas", _fase_botellas_fake)
+    monkeypatch.setattr(ingesta, "fase_fusiones", _fase_fusiones_fake)
+    monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
+    monkeypatch.setattr(ingesta, "fase_servicios", _noop)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+    )
+
+    assert corrida.estado == "OK"
+    assert len(llamadas_cargar) == 1
+    assert recibidos["cables"] is alias_falso
+    assert recibidos["botellas"] is alias_falso
+    assert recibidos["fusiones"] is alias_falso

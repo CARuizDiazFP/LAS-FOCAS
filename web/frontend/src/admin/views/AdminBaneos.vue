@@ -131,7 +131,7 @@
           <button
             type="button"
             class="btn"
-            style="width:100%;background:var(--warning,#d97706);color:#fff"
+            style="width:100%;background:var(--warning);color:#fff"
             :disabled="workerStart.loading"
             @click="handleStartWorker"
           >
@@ -248,7 +248,7 @@
       <div class="msg" :class="{ visible: !!listener.msg, ok: !listener.error, err: listener.error }">
         {{ listener.msg }}
       </div>
-      <div v-if="listener.ultimoError" style="color:var(--danger);font-size:0.85rem;margin-top:4px">
+      <div v-if="listener.ultimoError" style="color:var(--error);font-size:0.85rem;margin-top:4px">
         Último error: {{ listener.ultimoError }}
       </div>
     </form>
@@ -272,7 +272,7 @@
       </p>
 
       <div v-if="pendientes.cargando" style="color:var(--muted)">Cargando…</div>
-      <div v-else-if="pendientes.error" style="color:var(--danger)">{{ pendientes.error }}</div>
+      <div v-else-if="pendientes.error" style="color:var(--error)">{{ pendientes.error }}</div>
       <div v-else-if="pendientes.lista.length === 0" style="color:var(--muted)">
         No hay cámaras pendientes de revisión.
       </div>
@@ -309,7 +309,7 @@
               </button>
               <button
                 class="btn"
-                style="padding:4px 10px;font-size:0.82rem;background:var(--warning,#f59e0b);color:#fff;border-color:transparent"
+                style="padding:4px 10px;font-size:0.82rem;background:var(--warning);color:#fff;border-color:transparent"
                 :disabled="pendientes.accionando === cam.id"
                 @click="toggleFormCanon(cam.id, cam.nombre)"
               >
@@ -317,7 +317,7 @@
               </button>
               <button
                 class="btn"
-                style="padding:4px 10px;font-size:0.82rem;background:var(--danger,#ef4444);color:#fff;border-color:transparent"
+                style="padding:4px 10px;font-size:0.82rem;background:var(--error);color:#fff;border-color:transparent"
                 :disabled="pendientes.accionando === cam.id"
                 @click="toggleEliminar(cam.id)"
               >
@@ -372,13 +372,13 @@
                 </button>
               </div>
               <!-- Confirmación de eliminación -->
-              <div v-if="pendientes.eliminandoId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%;background:var(--danger-bg,#fee2e2);padding:8px;border-radius:6px">
-                <span style="font-size:0.85rem;color:var(--danger,#ef4444);flex:1">
+              <div v-if="pendientes.eliminandoId === cam.id" style="display:flex;gap:8px;align-items:center;margin-top:6px;width:100%;background:color-mix(in srgb, var(--error) 15%, transparent);padding:8px;border-radius:6px">
+                <span style="font-size:0.85rem;color:var(--error);flex:1">
                   ⚠️ ¿Eliminar permanentemente <strong>{{ cam.nombre }}</strong>? Esta acción no se puede deshacer.
                 </span>
                 <button
                   class="btn"
-                  style="padding:4px 10px;font-size:0.82rem;background:var(--danger,#ef4444);color:#fff;border-color:transparent"
+                  style="padding:4px 10px;font-size:0.82rem;background:var(--error);color:#fff;border-color:transparent"
                   :disabled="pendientes.accionando === cam.id"
                   @click="handleEliminar(cam.id)"
                 >
@@ -427,7 +427,7 @@
       </label>
 
       <div v-if="sinMatch.cargando" style="color:var(--muted)">Cargando…</div>
-      <div v-else-if="sinMatch.error" style="color:var(--danger)">{{ sinMatch.error }}</div>
+      <div v-else-if="sinMatch.error" style="color:var(--error)">{{ sinMatch.error }}</div>
       <div v-else-if="sinMatch.lista.length === 0" style="color:var(--muted)">
         No hay casos {{ sinMatch.soloPendientes ? 'sin revisar' : 'registrados' }}.
       </div>

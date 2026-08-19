@@ -260,6 +260,20 @@ async def test_nunca_reintenta_4xx_no_relacionado_con_auth(monkeypatch):
     assert llamadas["n"] == 1
 
 
+@pytest.mark.asyncio
+async def test_error_4xx_expone_status_code_para_distinguir_404_de_otras_fallas(monkeypatch):
+    monkeypatch.setattr("core.services.cromo.client.asyncio.sleep", _sin_espera)
+
+    def handler_get(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="no encontrado")
+
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(handler_get)))
+    with pytest.raises(CromoClientError) as excinfo:
+        await cliente.get_objeto(999999)
+
+    assert excinfo.value.status_code == 404
+
+
 # ── Paginación ───────────────────────────────────────────────────────────────
 
 

@@ -174,10 +174,6 @@ onMounted(() => void cargar());
 <style scoped>
 .cable-detalle-page {
   min-height: 100%;
-  background:
-    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 35%),
-    radial-gradient(circle at top right, rgba(16, 185, 129, 0.1), transparent 30%),
-    linear-gradient(180deg, #0b1118 0%, #0f1419 100%);
 }
 
 .cable-detalle-shell {
@@ -190,20 +186,20 @@ onMounted(() => void cargar());
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #93c5fd;
+  color: var(--color-accent);
   text-decoration: none;
   margin-bottom: 18px;
 }
 
 .cable-detalle-back:hover {
-  color: #dbeafe;
+  color: var(--color-accent-300);
 }
 
 .cable-detalle-state {
   padding: 24px;
   border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(15, 23, 42, 0.56);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
   color: var(--muted);
 }
 
@@ -211,8 +207,8 @@ onMounted(() => void cargar());
   display: flex;
   flex-direction: column;
   gap: 10px;
-  color: #fecaca;
-  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 30%, transparent);
 }
 
 .cable-detalle-hero {
@@ -225,7 +221,7 @@ onMounted(() => void cargar());
 
 .cable-detalle-hero__eyebrow {
   margin: 0;
-  color: #7dd3fc;
+  color: var(--color-accent);
   font-size: 0.76rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -234,7 +230,7 @@ onMounted(() => void cargar());
 .cable-detalle-hero__content h1 {
   margin: 6px 0 0;
   font-size: 1.6rem;
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .cable-detalle-hero__meta {
@@ -253,19 +249,19 @@ onMounted(() => void cargar());
   border-radius: 999px;
   padding: 3px 10px;
   font-size: 0.75rem;
-  background: rgba(16, 185, 129, 0.16);
-  color: #bbf7d0;
+  background: color-mix(in srgb, var(--color-state-ok) 16%, transparent);
+  color: var(--color-state-ok);
 }
 
 .cable-detalle-vigente.is-no {
-  background: rgba(148, 163, 184, 0.16);
+  background: color-mix(in srgb, var(--color-state-idle) 16%, transparent);
   color: var(--muted);
 }
 
 .cable-detalle-section-title {
   margin: 24px 0 12px;
   font-size: 1.05rem;
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .cable-detalle-modal__meta {
@@ -276,23 +272,23 @@ onMounted(() => void cargar());
 }
 
 .cable-detalle-modal__meta div {
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border: 1px solid var(--color-divider);
   border-radius: 12px;
   padding: 10px 12px;
-  background: rgba(15, 23, 42, 0.56);
+  background: var(--color-surface);
 }
 
 .cable-detalle-modal__meta dt {
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #7dd3fc;
+  color: var(--color-accent);
 }
 
 .cable-detalle-modal__meta dd {
   margin: 4px 0 0;
   font-size: 0.9rem;
-  color: #f8fafc;
+  color: var(--color-text);
   word-break: break-word;
 }
 
@@ -309,16 +305,16 @@ onMounted(() => void cargar());
   gap: 4px;
   padding: 12px 14px;
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(15, 23, 42, 0.56);
-  color: #e2e8f0;
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-text);
   text-align: left;
   cursor: pointer;
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
 .cable-detalle-modal__extremo:hover:not(:disabled) {
-  border-color: rgba(96, 165, 250, 0.4);
+  border-color: var(--color-accent);
   transform: translateY(-1px);
 }
 
@@ -331,7 +327,7 @@ onMounted(() => void cargar());
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #7dd3fc;
+  color: var(--color-accent);
 }
 
 .cable-detalle-modal__tubos {
@@ -350,7 +346,7 @@ onMounted(() => void cargar());
 .tabla-pelos td {
   text-align: left;
   padding: 6px 8px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid var(--color-divider);
 }
 
 .tabla-pelos th {
@@ -365,14 +361,14 @@ onMounted(() => void cargar());
   padding: 2px 8px;
   border: none;
   border-radius: 999px;
-  background: rgba(96, 165, 250, 0.16);
-  color: #dbeafe;
+  background: var(--color-brand-primary-tint);
+  color: var(--color-accent-200);
   font-size: 0.78rem;
   cursor: pointer;
 }
 
 .cable-detalle-modal__servicio-link:hover {
-  background: rgba(96, 165, 250, 0.28);
+  background: var(--color-brand-primary-soft);
 }
 
 @media (max-width: 720px) {

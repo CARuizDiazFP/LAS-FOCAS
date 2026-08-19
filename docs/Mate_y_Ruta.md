@@ -33,11 +33,13 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 │   ├── generar-pr-diario.prompt.md
 │   ├── nuevo-modulo.prompt.md
 │   ├── migracion-alembic.prompt.md
-│   └── revisar-seguridad.prompt.md
+│   ├── revisar-seguridad.prompt.md
+│   └── cierre-sesion.prompt.md
 └── skills/          # Habilidades reutilizables
     ├── docker-rebuild/SKILL.md
     ├── pytest-focas/SKILL.md
     ├── alembic-migrations/SKILL.md
+    ├── cierre-sesion/SKILL.md
   ├── libreoffice-convert/SKILL.md
   ├── security-scan/SKILL.md
   ├── dependency-audit/SKILL.md
@@ -65,6 +67,7 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 
 ### Prompts Automatizados
 
+- **cierre-sesion.prompt.md**: Retrospectiva técnica de cierre de sesión (tareas verificadas, errores, soluciones, mejoras de prevención y aceleración), gateada por declaración explícita de cierre, guardada en `docs/cierres/YYYY-MM-DD.md`
 - **crear-skill.prompt.md**: Crea skills nuevas o tríadas completas del ecosistema agéntico
 - **generar-pr-diario.prompt.md**: Genera `docs/PR/YYYY-MM-DD.md` automáticamente
 - **mantenimiento-disco.prompt.md**: Diagnostica disco y propone limpieza segura
@@ -261,6 +264,8 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Jerarquía Cámara → Botellas**: relación auto-referencial (`camara_padre_id`, 2 niveles) para agrupar botellas bajo su cámara física real, cascada de baneo/estado a todo el grupo (`aplicar_estado_a_grupo`), backfill contra dev (286 padres creados, 424 botellas vinculadas) y fix crítico de restauración de baneo que preservaba mal el estado previo de cámaras de otros grupos. Skill `baneo-qa-real` agregada como metodología obligatoria para probar cascadas de estado sin drift no controlado. Detalle en `docs/PR/2026-08-10.md` (2026-08-10).
 - [x] **CI desactivado por defecto**: `.github/workflows/ci.yml` corregido (faltaba instalar `modules/cromo_worker/requirements.txt`, abortaba toda la colección de pytest) y cambiado a `workflow_dispatch` (ejecución manual) para no consumir minutos/créditos en cada push/PR; bump de `jinja2`/`python-dotenv` por CVEs reales (2026-08-10).
 - [x] **Auditoría de seguridad + fix de los 2 hallazgos Critical**: `web` dejó de montar `/var/run/docker.sock` (reemplazado por `tecnativa/docker-socket-proxy` en red dedicada) y de correr como root (`api`/`web`/`bot`/`repetitividad_worker` migrados a usuario compartido no-root `focas`); pgAdmin pasó de credenciales `admin`/`admin` hardcodeadas y publicado en `0.0.0.0` a Docker Secret real + bind `127.0.0.1`. Dos incidentes reales de producción durante el rollout (drift de red `/16` vs `/24`, colisión de UID entre `base.Dockerfile` y los workers) resueltos y documentados como guardrails nuevos en las skills `docker-rebuild`/`secrets-rollout` (`.github/`, `.gemini/rules/`, `.codex-skills/skills/`). Detalle en `docs/decisiones.md` y `docs/PR/2026-08-11.md` (2026-08-11).
+- [x] **Skill `cierre-sesion`**: formalización del prompt manual `.github/prompts/Cierre.md` (usado ad-hoc desde 2026-08-11) como tríada completa `.github/prompts/cierre-sesion.prompt.md` + `.github/skills/cierre-sesion/SKILL.md` + `/cierre-sesion` en `.claude/commands/`, replicada a `.codex-skills/skills/las-focas-cierre-sesion/` y `.gemini/rules/`. Genera retrospectiva técnica (tareas, errores, soluciones, propuestas de mejora agéntica) persistida en `docs/cierres/YYYY-MM-DD.md` (2026-08-13).
+- [x] **Skill `cierre-sesion` — evolución a dos carriles**: agrega gate de activación explícito (declaración inequívoca de cierre; nombrar la skill o pedir estado ya no dispara la retrospectiva), clasificación de tareas contra evidencia (completada/parcial/bloqueada/no verificada), y separa las mejoras propuestas en carril de **prevención** (obstáculos reales de la sesión) y carril de **aceleración** (pasos repetibles observados que agilizan implementaciones futuras similares, aunque la sesión no haya tenido fricción), cada una con evidencia/frecuencia/beneficio/costo/opción recomendada. De paso cierra el mirror faltante `.claude/skills/cierre-sesion/SKILL.md` (el mismo gap que esta skill documentaba para `docker-rebuild`/`nocturne-token-compliance`), verificado con `Skill(skill="cierre-sesion")` resolviendo a `SKILL.md` en vez de al comando (2026-08-19).
 
 ### Pendiente (prioridad)
 - [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).
@@ -309,6 +314,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - `deploy/compose.yml` — servicios, redes, puertos y healthchecks.
 - `docs/decisiones.md` — registro de decisiones técnicas.
 - `docs/PR/` — PR diario con cambios y validaciones.
+- `docs/cierres/` — retrospectivas técnicas de cierre de sesión (`/cierre-sesion`): tareas, errores, soluciones y propuestas de mejora agéntica.
 - `docs/Seguridad.md` — lineamientos de seguridad.
 - `docs/office_service.md` — detalles del microservicio LibreOffice/UNO.
 - `Templates/` — repositorio centralizado de plantillas (SLA, Repetitividad y futuras).

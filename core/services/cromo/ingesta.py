@@ -13,7 +13,9 @@ from typing import Any, Iterable, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.services.cromo import alias_service
 from core.services.cromo import parser as cromo_parser
+from core.services.cromo.alias_service import AliasBotella
 from core.services.cromo.client import CromoClient
 from core.services.cromo.config import PSIZE_PERMITIDOS, get_cromo_config
 
@@ -21,7 +23,7 @@ from core.services.cromo.config import PSIZE_PERMITIDOS, get_cromo_config
 # SQLAlchemy sólo puede resolverla si el modelo Servicio (db/models/infra.py) ya se registró en
 # Base.metadata — no ocurre solo por importar db.models.cromo. Import explícito, autocontenido:
 # este módulo no debe depender de que quien lo use haya importado infra.py por otro motivo.
-from db.models.infra import Servicio  # noqa: F401
+from db.models.infra import Servicio, ServicioOrigenDatos
 from db.models.cromo import (
     CromoBotella,
     CromoCable,
@@ -272,12 +274,20 @@ async def fase_conteo(cliente: CromoClient) -> dict[int, int]:
 
 
 async def _procesar_cable_directo(
-    sesion: AsyncSession, corrida_id: int, obj: dict[str, Any], contadores: ContadoresCorrida
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """Procesa un cable del barrido directo (filter=51). Un savepoint propio: si falla, no aborta la página."""
+    alias_por_origen = alias_por_origen or {}
     try:
         async with sesion.begin_nested():
             cable = cromo_parser.parse_cable(obj)
+            cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
+            cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
             accion = await _upsert_versionado(sesion, CromoCable, cable, _CABLE_CAMPOS)
             contadores.leidas += 1
             contadores.contar(accion)
@@ -297,6 +307,7 @@ async def fase_cables(
     *,
     psize: int,
     max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """FASE 2 · CABLES: maestro de cables (atributos + extremos). No trae tubos/pelos (ver §2, corrección 8)."""
     await _registrar_inicio_fase(sesion, corrida.id, "CABLES", "Barrido directo de cables (filter=51)")
@@ -305,7 +316,7 @@ async def fase_cables(
         numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
-            await _procesar_cable_directo(sesion, corrida.id, obj, contadores)
+            await _procesar_cable_directo(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
         _sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "CABLES", numero_pagina, pagina, contadores)
         await sesion.commit()
@@ -314,16 +325,23 @@ async def fase_cables(
 
 
 async def _procesar_fusion_directa(
-    sesion: AsyncSession, corrida_id: int, obj: dict[str, Any], contadores: ContadoresCorrida
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """Procesa una fusión del barrido directo (filter=132). Un savepoint propio: si falla, no aborta
     la página. Sin vmax propio: se sobreescribe siempre, sin evento individual de auditoría — mismo
     criterio que tubo/pelo/fusión embebidos (`_upsert_simple`, ver docstring). `leidas` sí se
     incrementa porque, a diferencia de tubo/pelo, la clase 132 ahora tiene colección propia contada en
     `CLASES_CONTEO` — si no incrementara acá, la barra de progreso nunca llegaría al 100%."""
+    alias_por_origen = alias_por_origen or {}
     try:
         async with sesion.begin_nested():
             fusion = cromo_parser.parse_fusion(obj)
+            fusion.botella_n_id = alias_service.resolver_referencia(fusion.botella_n_id, alias_por_origen)
             await _upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
             contadores.leidas += 1
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
@@ -341,6 +359,7 @@ async def fase_fusiones(
     *,
     psize: int,
     max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """FASE 4 · FUSIONES: barrido directo de clase 132 (Etapa 8).
 
@@ -362,7 +381,7 @@ async def fase_fusiones(
         numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
-            await _procesar_fusion_directa(sesion, corrida.id, obj, contadores)
+            await _procesar_fusion_directa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
         _sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "FUSIONES", numero_pagina, pagina, contadores)
         await sesion.commit()
@@ -371,24 +390,57 @@ async def fase_fusiones(
 
 
 async def _procesar_botella_completa(
-    sesion: AsyncSession, corrida_id: int, obj: dict[str, Any], contadores: ContadoresCorrida
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """Procesa una botella y todo su árbol (fusiones, cables embebidos, tubos, pelos) en un savepoint propio."""
+    alias_por_origen = alias_por_origen or {}
     try:
         async with sesion.begin_nested():
             arbol = cromo_parser.parse_arbol_botella(obj)
 
-            accion_botella = await _upsert_versionado(sesion, CromoBotella, arbol.botella, _BOTELLA_CAMPOS)
-            contadores.leidas += 1
-            contadores.contar(accion_botella)
-            await _registrar_evento(sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, accion_botella)
+            alias_botella = alias_por_origen.get(arbol.botella.n_id)
+            if alias_botella is not None:
+                # n_id marcado como basura/duplicado ('ignorar') o como el mismo objeto que otro
+                # n_id ya bueno ('fusionar') — en ambos casos no se crea/actualiza una CromoBotella
+                # propia para este origen; sus fusiones/cables/tubos/pelos embebidos sí se procesan
+                # más abajo, con cualquier referencia a este n_id ya redirigida por
+                # `alias_service.resolver_referencia`.
+                contadores.leidas += 1
+                if alias_botella.accion == alias_service.ACCION_FUSIONAR:
+                    await _registrar_evento(
+                        sesion,
+                        corrida_id,
+                        arbol.botella.n_id,
+                        arbol.botella.clase,
+                        "ALIAS_FUSIONADA",
+                        f"id_cromo_destino={alias_botella.id_cromo_destino}",
+                    )
+                else:
+                    await _registrar_evento(
+                        sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, "ALIAS_IGNORADA"
+                    )
+            else:
+                accion_botella = await _upsert_versionado(sesion, CromoBotella, arbol.botella, _BOTELLA_CAMPOS)
+                contadores.leidas += 1
+                contadores.contar(accion_botella)
+                await _registrar_evento(
+                    sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, accion_botella
+                )
 
             for fusion in arbol.fusiones:
+                fusion.botella_n_id = alias_service.resolver_referencia(fusion.botella_n_id, alias_por_origen)
                 await _upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
 
             for cable in arbol.cables:
                 # Duplicación deliberada (§6.1): el mismo cable llega una vez por cada botella extremo.
                 # El segundo arribo es un upsert sin cambios — control de consistencia gratuito.
+                cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
+                cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
                 accion_cable = await _upsert_versionado(sesion, CromoCable, cable, _CABLE_CAMPOS)
                 contadores.leidas += 1
                 contadores.contar(accion_cable)
@@ -418,6 +470,7 @@ async def fase_botellas(
     psize: int,
     max_paginas: Optional[int],
     clases: Iterable[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """FASE 3 · BOTELLAS: botellas + fusiones + cables/tubos/pelos embebidos en cada una."""
     await _registrar_inicio_fase(sesion, corrida.id, "BOTELLAS", "Barrido de botellas con árbol completo")
@@ -429,7 +482,7 @@ async def fase_botellas(
         numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
-            await _procesar_botella_completa(sesion, corrida.id, obj, contadores)
+            await _procesar_botella_completa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
         _sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "BOTELLAS", numero_pagina, pagina, contadores)
         await sesion.commit()
@@ -530,21 +583,111 @@ _SQL_BUSCAR_SERVICIO = text(
     """
 )
 
+# `ON CONFLICT DO NOTHING` sin nombrar índice a propósito: `servicio_id` y `numero_primer_servicio`
+# son DOS unique constraints independientes sobre la misma tabla, y acá se inserta el mismo valor en
+# ambas columnas — cualquiera de los dos puede disparar el conflicto (ej. otra sesión/corrida ganó la
+# carrera de creación para el mismo número). Sin `DO NOTHING` sobre un índice puntual, absorbe
+# cualquiera de los dos en vez de acoplarse al nombre de uno.
+_SQL_CREAR_PLACEHOLDER_SERVICIO = text(
+    """
+    INSERT INTO app.servicios (servicio_id, numero_primer_servicio, categoria, origen_datos, estado_servicio)
+    VALUES (:numero, :numero, 0, :origen::app.servicio_origen_datos, 'DESCONOCIDO')
+    ON CONFLICT DO NOTHING
+    RETURNING id
+    """
+)
+
+
+async def _resolver_o_crear_servicio(
+    sesion: AsyncSession, numero: str, cache: dict[str, Optional[int]]
+) -> tuple[Optional[int], bool]:
+    """Resuelve `servicio_id` para `numero`. Devuelve `(servicio_id, fue_creado_ahora)`.
+
+    Tres capas, en orden:
+    1. Cache en memoria de ESTA corrida (`numero -> servicio_id`) — evita repetir la consulta o el
+       intento de creación para números que se repiten entre muchos pelos (hallazgo real: un mismo
+       número puede aparecer en cientos de pelos distintos). Sin esto, una corrida con miles de
+       pendientes reintentaría crear el MISMO placeholder cientos de veces.
+    2. Búsqueda real (`_SQL_BUSCAR_SERVICIO`) — cubre tanto servicios reales como placeholders ya
+       creados por una corrida ANTERIOR o por `scripts/cromo_backfill_placeholders_servicios.py`.
+    3. Si no existe y `numero` es plausible (`es_numero_servicio_plausible`, 4-6 dígitos), intenta
+       crear un placeholder con `INSERT ... ON CONFLICT DO NOTHING RETURNING id`. Si el INSERT no
+       devuelve fila (otra sesión ganó la carrera — otra corrida solapada, o este mismo backfill
+       corriendo en paralelo), se relee con `_SQL_BUSCAR_SERVICIO` para tomar el id de quien ganó. No
+       es un error: es el resultado esperado de una carrera legítima.
+
+    Deliberadamente NO usa un advisory lock (patrón ya establecido en
+    `core/services/camara_hierarchy_service.py` para la jerarquía Cámara/Botella): acá el `INSERT ...
+    ON CONFLICT` resuelve la carrera en el momento exacto del intento, sin retener nada por más
+    tiempo. Un advisory lock transaccional se libera recién al COMMIT/ROLLBACK final de
+    `fase_servicios` — con miles de pendientes en una corrida, retendría el lock de un número por toda
+    la duración de la fase, bloqueando una corrida concurrente mucho más de lo necesario.
+    """
+    if numero in cache:
+        return cache[numero], False
+
+    fila = (await sesion.execute(_SQL_BUSCAR_SERVICIO, {"numero": numero})).first()
+    if fila:
+        cache[numero] = fila[0]
+        return fila[0], False
+
+    if not cromo_parser.es_numero_servicio_plausible(numero):
+        cache[numero] = None
+        return None, False
+
+    creado = (
+        await sesion.execute(
+            _SQL_CREAR_PLACEHOLDER_SERVICIO,
+            {"numero": numero, "origen": ServicioOrigenDatos.INFERIDO_CROMO.value},
+        )
+    ).first()
+    if creado:
+        cache[numero] = creado[0]
+        return creado[0], True
+
+    # Perdió la carrera de creación: otra sesión ya comiteó una fila para este número.
+    fila = (await sesion.execute(_SQL_BUSCAR_SERVICIO, {"numero": numero})).first()
+    cache[numero] = fila[0] if fila else None
+    return cache[numero], False
+
 
 async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, contadores: ContadoresCorrida) -> None:
     """FASE 6 · SERVICIOS: matchea `cromo_pelos.servicio_numero` contra `app.servicios`.
 
-    Primera versión: sólo match exacto contra `servicio_id`, `numero_primer_servicio` o `alias_ids`
-    (método REGEX_EXACTO). Se deja constancia por cada pelo con servicio parseado, matchee o no
-    (servicio_id NULL si no matcheó) — es la traza de auditoría, no sólo los matches exitosos.
+    Match exacto contra `servicio_id`, `numero_primer_servicio` o `alias_ids` (método
+    REGEX_EXACTO). Se deja constancia por cada pelo con servicio parseado, matchee o no.
+
+    Desde 2026-08-14: si `servicio_numero` no matchea NINGÚN `Servicio` existente y tiene 4-6
+    dígitos (heurística de plausibilidad, ver `core/services/cromo/parser.py::
+    es_numero_servicio_plausible` y docs/decisiones.md — descarta basura de 1-3 dígitos y ruido de
+    8+ sin perder servicios reales), se crea un `Servicio` placeholder (`categoria=0`,
+    `origen_datos=INFERIDO_CROMO`) para que el pelo quede matcheado igual. Un futuro ingest real
+    por Excel lo enriquece vía el `ON CONFLICT (numero_primer_servicio) DO UPDATE` ya existente en
+    `api/app/routes/servicios.py::ingest_servicios` (mismo `numero_primer_servicio`), que también
+    re-etiqueta `origen_datos=INGEST_EXCEL` al enriquecerlo.
+
+    `metodo`/`confianza` de `CromoServicioMatch` NO distinguen "matchee contra un Servicio real" de
+    "matchee contra un placeholder recién creado" — la procedencia real/placeholder es una propiedad
+    de `Servicio.origen_datos`, no de cada match (se consulta con un join trivial).
     """
     await _registrar_inicio_fase(sesion, corrida.id, "SERVICIOS", "Matching de servicio_numero contra app.servicios")
     pendientes = (await sesion.execute(_SQL_PELOS_SIN_MATCH)).all()
+    cache_servicio_id: dict[str, Optional[int]] = {}
+    placeholders_creados = 0
     for pelo_n_id, servicio_numero in pendientes:
         try:
             async with sesion.begin_nested():
-                fila = (await sesion.execute(_SQL_BUSCAR_SERVICIO, {"numero": servicio_numero})).first()
-                servicio_id = fila[0] if fila else None
+                servicio_id, fue_creado = await _resolver_o_crear_servicio(sesion, servicio_numero, cache_servicio_id)
+                if fue_creado:
+                    placeholders_creados += 1
+                    await _registrar_evento(
+                        sesion,
+                        corrida.id,
+                        pelo_n_id,
+                        130,
+                        "PLACEHOLDER_CREADO",
+                        f"servicio_numero={servicio_numero} servicio_id={servicio_id}",
+                    )
                 sesion.add(
                     CromoServicioMatch(
                         pelo_n_id=pelo_n_id,
@@ -563,6 +706,12 @@ async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, con
                 exc,
             )
             await _registrar_evento(sesion, corrida.id, pelo_n_id, 130, "ERROR", str(exc))
+    if placeholders_creados:
+        logger.info(
+            "action=cromo_ingesta evento=placeholders_creados corrida_id=%s cantidad=%d",
+            corrida.id,
+            placeholders_creados,
+        )
     _sincronizar_contadores(corrida, contadores)
     await sesion.commit()
 
@@ -630,11 +779,28 @@ async def continuar_corrida(
         )
         await sesion.commit()
 
-        await fase_cables(cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas)
-        await fase_botellas(
-            cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, clases=clases_final
+        # Una sola carga en memoria para toda la corrida (nunca una query por objeto) — ver
+        # `alias_service.cargar_alias_vigentes`. Una corrida es una unidad snapshot-consistente
+        # (nunca se resume desde una página intermedia), así que un alias creado mientras esta
+        # corrida ya está en curso recién aplica en la corrida siguiente.
+        alias_por_origen = await alias_service.cargar_alias_vigentes(sesion)
+
+        await fase_cables(
+            cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
         )
-        await fase_fusiones(cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas)
+        await fase_botellas(
+            cliente,
+            sesion,
+            corrida,
+            contadores,
+            psize=psize,
+            max_paginas=max_paginas,
+            clases=clases_final,
+            alias_por_origen=alias_por_origen,
+        )
+        await fase_fusiones(
+            cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
+        )
         await fase_reconciliacion(sesion, corrida, contadores)
         await fase_servicios(sesion, corrida, contadores)
 

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import (
@@ -154,7 +155,7 @@ class CromoBotella(Base):
     estado = Column(
         SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
         nullable=False,
-        server_default="NO_OPERATIVA",
+        server_default="LIBRE",
     )
 
     camara = relationship("Camara", back_populates="cromo_botellas", foreign_keys=[camara_id])
@@ -267,6 +268,38 @@ class CromoFusion(Base):
 
     def __repr__(self) -> str:
         return f"<CromoFusion n_id={self.n_id} botella_n_id={self.botella_n_id}>"
+
+
+class CromoBotellaAlias(Base):
+    """Aliasing manual de un n_id de Cromo "junk/duplicado" — fusionado a un golden record o
+    ignorado directamente. `id_cromo_origen`/`id_cromo_destino` son referencias blandas (mismo
+    criterio "sin FK dura" que el resto de Cromo, ver docstrings de CromoCable/CromoFusion):
+    Cromo puede tener el destino en una clase que este repo nunca ingiere (ODF, clase excluida),
+    y el origen puede no tener nunca una fila propia en `cromo_botellas` (si sólo existe como
+    referencia colgada desde un cable/fusión). Cargada una vez por corrida en memoria — ver
+    `core/services/cromo/alias_service.py::cargar_alias_vigentes` — nunca una query por objeto.
+
+    Riesgo a tener presente al cargar filas a mano: si `id_cromo_destino` corresponde a una clase
+    que este repo nunca ingiere como `CromoBotella` (ODF, o cualquier clase fuera de
+    `CLASES_BOTELLA`), esa fila queda como `REF_COLGADA` permanente en `fase_reconciliacion` —
+    comportamiento esperado, no un bug: el destino de una fusión debe ser un n_id de botella real
+    e ingerible.
+    """
+
+    __tablename__ = "cromo_botella_alias"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    id_cromo_origen = Column(BigInteger, nullable=False, unique=True, index=True)
+    id_cromo_destino = Column(BigInteger, nullable=True, index=True)
+    accion = Column(String(20), nullable=False)  # 'fusionar' | 'ignorar' — CHECK en la migración
+    motivo = Column(Text, nullable=True)
+    creado_por = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self) -> str:
+        return f"<CromoBotellaAlias id_cromo_origen={self.id_cromo_origen} accion='{self.accion}'>"
 
 
 class CromoServicioMatch(Base):

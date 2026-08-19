@@ -24,6 +24,10 @@ _BACKOFF_BASE_SEGUNDOS = 1.0
 class CromoClientError(RuntimeError):
     """Error de comunicación con la API de Cromo tras agotar los reintentos, o respuesta 4xx."""
 
+    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def _parsear_cuerpo(texto: str) -> dict[str, Any]:
     """Cromo v1 (vía api-gateway) responde "pseudo-JSON": claves sin comillas.
@@ -178,7 +182,10 @@ class CromoClient:
                 logger.error(
                     "action=cromo_get ruta=%s resultado=error_4xx status=%d", ruta, respuesta.status_code
                 )
-                raise CromoClientError(f"Cromo respondió {respuesta.status_code} en {ruta}: {respuesta.text}")
+                raise CromoClientError(
+                    f"Cromo respondió {respuesta.status_code} en {ruta}: {respuesta.text}",
+                    status_code=respuesta.status_code,
+                )
 
             try:
                 return _parsear_cuerpo(respuesta.text)

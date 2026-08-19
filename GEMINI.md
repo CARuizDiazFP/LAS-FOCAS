@@ -20,6 +20,7 @@ Las fuentes originales viven en `.github/skills/`, `.github/agents/` y `.github/
 ## Skills Migradas
 
 - [skill-alembic-migrations](.gemini/rules/skill-alembic-migrations.md)
+- [skill-cierre-sesion](.gemini/rules/skill-cierre-sesion.md)
 - [skill-db-mcp-postgres](.gemini/rules/skill-db-mcp-postgres.md)
 - [skill-dependency-audit](.gemini/rules/skill-dependency-audit.md)
 - [skill-dev-workflow](.gemini/rules/skill-dev-workflow.md)
@@ -55,6 +56,7 @@ Las fuentes originales viven en `.github/skills/`, `.github/agents/` y `.github/
 
 ## Prompts Migrados
 
+- [prompt-cierre-sesion-prompt](.gemini/rules/prompt-cierre-sesion-prompt.md)
 - [prompt-crear-skill-prompt](.gemini/rules/prompt-crear-skill-prompt.md)
 - [prompt-generar-pr-diario-prompt](.gemini/rules/prompt-generar-pr-diario-prompt.md)
 - [prompt-mantenimiento-disco-prompt](.gemini/rules/prompt-mantenimiento-disco-prompt.md)

@@ -29,7 +29,12 @@ from sqlalchemy.orm import Session
 
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
-from modules.slack_baneo_notifier.camara_search import RE_BOT_SUFIJO, _limpiar_puntuacion, _normalizar
+from modules.slack_baneo_notifier.camara_search import (
+    RE_BOT_SUFIJO,
+    _limpiar_puntuacion,
+    _normalizar,
+    expandir_abreviaturas_y_sinonimos,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,29 @@ def normalizar_para_agrupar(nombre: Optional[str]) -> str:
     sin la expansión de abreviaturas ni los sinónimos (esos son específicos de la búsqueda difusa de
     texto libre de técnicos, no aplican a comparar dos nombres ya estructurados de la DB)."""
     return _normalizar(_limpiar_puntuacion(nombre or ""))
+
+
+def normalizar_para_agrupar_extendido(nombre: Optional[str]) -> str:
+    """Compone `normalizar_para_agrupar()` con `expandir_abreviaturas_y_sinonimos()`
+    (`modules/slack_baneo_notifier/camara_search.py`, mismas tablas `_ABREVIATURAS`/`_SINONIMOS` que ya
+    usa `buscar_camara` para texto libre de técnicos) — colapsa abreviaturas viales y sinónimos
+    ("Cámara"↔"Cra", "cf"→"") antes de comparar dos nombres ya estructurados de la DB.
+
+    Movida acá (2026-08-14) desde `core/services/camara_duplicados_service.py`, donde nació el mismo
+    día como `normalizar_para_detectar_duplicados` sólo para sugerir candidatas a fusión MANUAL — ahora
+    también la usa `resolver_o_crear_padre_desde_base()` (abajo) para decidir si ya existe una Cámara
+    padre, cerrando el gap que permitía crear duplicados nuevos con nombres que sólo difieren en
+    abreviatura/sinónimo (ej. real: "Bot Tza San Antonio 640" vs "Bot. Tza.San Antonio 640 CF", "Cra
+    Balcarce 302" vs "Cra Balcarce 302 CF"). Vive acá y no al revés (`camara_duplicados_service`
+    importando de acá) porque ese archivo ya depende de este módulo (`estado_mas_restrictivo`/
+    `extraer_base`); moverla en sentido contrario habría creado un ciclo de import.
+
+    **Riesgo aceptado explícitamente por el usuario (2026-08-14)**: usar esta normalización más
+    agresiva para decidir "¿ya existe esta Cámara?" (no sólo para sugerir candidatas a revisión manual)
+    puede generar falsos positivos — dos sitios físicos distintos que compartan una abreviatura podrían
+    fusionarse automáticamente. Decisión consciente, sin flag ni modo de prueba.
+    """
+    return expandir_abreviaturas_y_sinonimos(normalizar_para_agrupar(nombre))
 
 
 def estado_mas_restrictivo(estados: Iterable[CamaraEstado]) -> CamaraEstado:
@@ -146,13 +174,15 @@ def resolver_o_crear_padre_desde_base(
     la fila si hay que crearla.
 
     Nunca promueve una fila existente a "padre": si ya existe una fila raíz (`camara_padre_id IS
-    NULL`) cuyo nombre normalizado coincide con la base extraída, esa fila se re-vincula como botella
-    del padre (mismo criterio que aplica `scripts/camara_backfill_padre_botella.py`) en vez de
-    convertirse ella misma en el padre — mantiene consistencia con cómo el backfill trató el caso real
-    "Cra 14 de Julio 240 CF" / "Cra 14 de Julio 240 Bot 2 CF" (ninguna de las dos filas existentes se
-    promueve; se crea una tercera fila como padre y ambas quedan como sus botellas).
+    NULL`) cuyo nombre normalizado (extendido: abreviaturas + sinónimos, no sólo unaccent/lowercase/
+    puntuación — ver `normalizar_para_agrupar_extendido`) coincide con la base extraída, esa fila se
+    re-vincula como botella del padre (mismo criterio que aplica
+    `scripts/camara_backfill_padre_botella.py`) en vez de convertirse ella misma en el padre — mantiene
+    consistencia con cómo el backfill trató el caso real "Cra 14 de Julio 240 CF" / "Cra 14 de Julio
+    240 Bot 2 CF" (ninguna de las dos filas existentes se promueve; se crea una tercera fila como padre
+    y ambas quedan como sus botellas).
     """
-    base_norm = normalizar_para_agrupar(base)
+    base_norm = normalizar_para_agrupar_extendido(base)
     _advisory_lock_para(session, base_norm)
 
     # O(n) sobre las filas raíz — mismo orden de magnitud que ya usa `_get_or_create_camara`
@@ -168,7 +198,7 @@ def resolver_o_crear_padre_desde_base(
     #    menos una botella — una fila raíz sin botellas es una cámara normal, no un padre, aunque su
     #    nombre coincida (evita promover una fila ajena por casualidad de nombre).
     for candidata in raices:
-        if _tiene_hijos(candidata) and normalizar_para_agrupar(candidata.nombre) == base_norm:
+        if _tiene_hijos(candidata) and normalizar_para_agrupar_extendido(candidata.nombre) == base_norm:
             return candidata
 
     # 2. No existe ningún padre todavía — crear uno nuevo. Antes de devolverlo, absorber como
@@ -185,7 +215,7 @@ def resolver_o_crear_padre_desde_base(
 
     hermanas_absorbidas = []
     for candidata in raices:
-        if normalizar_para_agrupar(candidata.nombre) != base_norm:
+        if normalizar_para_agrupar_extendido(candidata.nombre) != base_norm:
             continue
         if _tiene_hijos(candidata):
             # No debería llegar acá (el paso 1 ya habría devuelto esta fila) — defensivo: nunca
@@ -224,6 +254,7 @@ __all__ = [
     "ids_camaras_con_cromo_hijos",
     "extraer_base",
     "normalizar_para_agrupar",
+    "normalizar_para_agrupar_extendido",
     "estado_mas_restrictivo",
     "resolver_o_crear_padre_desde_base",
     "resolver_o_crear_padre",

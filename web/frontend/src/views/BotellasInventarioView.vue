@@ -83,22 +83,7 @@
       <div v-if="soloHuerfanas && seleccionadas.size > 0" class="botellas-view__bulk-bar">
         <span>{{ seleccionadas.size }} seleccionada{{ seleccionadas.size !== 1 ? 's' : '' }}</span>
         <button class="btn primary" type="button" @click="modalAsociarOpen = true">Asociar a Cámara</button>
-        <button class="btn subtle" type="button" @click="seleccionadas.clear()">Deseleccionar todo</button>
-      </div>
-
-      <div v-if="!soloHuerfanas && seleccionadas.size > 0" class="botellas-view__bulk-bar">
-        <span>{{ seleccionadas.size }} seleccionada{{ seleccionadas.size !== 1 ? 's' : '' }}</span>
-        <select v-model="estadoMasivoSeleccionado" class="botellas-view__bulk-select">
-          <option value="NO_OPERATIVA">No operativa</option>
-          <option value="LIBRE">Libre</option>
-          <option value="OCUPADA">Ocupada</option>
-          <option value="BANEADA">Baneada</option>
-        </select>
-        <button class="btn primary" type="button" :disabled="aplicandoEstadoMasivo" @click="aplicarEstadoMasivo">
-          {{ aplicandoEstadoMasivo ? 'Aplicando...' : 'Aplicar' }}
-        </button>
-        <button class="btn subtle" type="button" @click="seleccionadas.clear()">Deseleccionar todo</button>
-        <span v-if="errorEstadoMasivo" class="botellas-view__bulk-error">{{ errorEstadoMasivo }}</span>
+        <button class="btn subtle" type="button" @click="limpiarSeleccion">Deseleccionar todo</button>
       </div>
     </div>
 
@@ -122,7 +107,7 @@
               class="btn subtle"
               type="button"
               style="padding:3px 9px;font-size:11.5px"
-              @click="abrirAsociarIndividual(h.n_id)"
+              @click.stop="abrirAsociarIndividual(h.n_id)"
             >Asociar</button>
           </label>
         </div>
@@ -154,7 +139,9 @@
               v-for="item in items"
               :key="itemKey(item)"
               :botella="item"
+              :selected="seleccionadas.has(itemKey(item))"
               @open-detail="openBotellaDetail"
+              @toggle-select="toggleSeleccion(itemKey(item))"
             />
           </div>
 
@@ -181,7 +168,11 @@
                 :class="['botellas-view__list-dot', `is-${estadoBotellaToken(item.estado)}`]"
                 aria-hidden="true"
               ></span>
-              <span class="botellas-view__list-nombre">{{ item.nombre || `Botella ${item.id}` }}</span>
+              <RouterLink
+                class="botellas-view__list-nombre"
+                :to="botellaDetailPath(item.origen, item.id)"
+                @click.stop
+              >{{ item.nombre || `Botella ${item.id}` }}</RouterLink>
               <span class="botellas-view__list-id">ID {{ item.id }}</span>
               <span class="botellas-view__list-estado">{{ item.estado || '—' }}</span>
             </div>
@@ -220,6 +211,16 @@
       @close="modalAsociarOpen = false"
       @asociada="handleAsociada"
     />
+
+    <BotellasBulkActionsPanel
+      v-if="!soloHuerfanas && seleccionadas.size > 0"
+      :count="seleccionadas.size"
+      v-model="estadoMasivoSeleccionado"
+      :applying="aplicandoEstadoMasivo"
+      :error="errorEstadoMasivo"
+      @apply="aplicarEstadoMasivo"
+      @clear="limpiarSeleccion"
+    />
   </section>
 </template>
 
@@ -237,6 +238,7 @@ import {
   type EstadoBotellaValor,
 } from '../api/botellas';
 import BotellaCard from '../components/infra/BotellaCard.vue';
+import BotellasBulkActionsPanel from '../components/infra/BotellasBulkActionsPanel.vue';
 import ModalAsociarHuerfanas from '../components/infra/ModalAsociarHuerfanas.vue';
 import { botellaDetailPath } from '../utils/botellaLinks';
 
@@ -420,6 +422,10 @@ function toggleSeleccion(clave: string): void {
   if (next.has(clave)) next.delete(clave);
   else next.add(clave);
   seleccionadas.value = next;
+}
+
+function limpiarSeleccion(): void {
+  seleccionadas.value = new Set();
 }
 
 async function aplicarEstadoMasivo(): Promise<void> {
@@ -698,19 +704,6 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
-.botellas-view__bulk-select {
-  padding: 4px 8px;
-  font-size: 12.5px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-divider);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-}
-
-.botellas-view__bulk-error {
-  color: var(--color-state-error);
-}
-
 .botellas-view__list-checkbox {
   flex: none;
   accent-color: var(--color-accent);
@@ -750,6 +743,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: inherit;
+  text-decoration: none;
+}
+
+a.botellas-view__list-nombre:hover,
+a.botellas-view__list-nombre:focus-visible {
+  color: var(--color-accent);
+  text-decoration: underline;
 }
 
 .botellas-view__list-id {

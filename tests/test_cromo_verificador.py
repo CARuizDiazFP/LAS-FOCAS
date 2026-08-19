@@ -168,7 +168,7 @@ async def test_servicios_por_botella_con_matches():
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_botellas": [(68001, "ODF Central", 69, "CABA")],
-            "FROM app.cromo_cables c": [_FILA_SERVICIO],
+            "JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id": [_FILA_SERVICIO],
         }
     )
     resultado = await verificador.servicios_por_botella(sesion, 68001)
@@ -177,13 +177,14 @@ async def test_servicios_por_botella_con_matches():
     assert resultado.clase == 69
     assert len(resultado.servicios) == 1
     assert resultado.servicios[0].nombre_cliente == "Cliente Uno"
+    assert resultado.cables == []  # sin fixture para _SQL_CABLES_DE_BOTELLA en este test
 
 
 @pytest.mark.asyncio
 async def test_servicios_por_botella_referencia_colgada_con_matches():
     """Mismo hallazgo real: la botella puede tener servicios matcheados vía sus cables aunque su
     propia fila todavía no haya bajado (bottella extremo de un cable ya ingerido, ella no)."""
-    sesion = _SesionFake(respuestas={"FROM app.cromo_cables c": [_FILA_SERVICIO]})
+    sesion = _SesionFake(respuestas={"JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id": [_FILA_SERVICIO]})
     resultado = await verificador.servicios_por_botella(sesion, 68003)
 
     assert resultado.botella_n_id == 68003
@@ -198,3 +199,69 @@ async def test_servicios_por_botella_sin_matches():
 
     assert resultado.nombre is None
     assert resultado.servicios == []
+    assert resultado.cables == []
+
+
+# ── servicios_por_botella — cables asociados (tarjeta "Cables asociados") ───
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_cables_asociados():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(68001, "ODF Central", 69, "CABA")],
+            "SELECT c.n_id, c.nombre": [(51, "Cable Troncal 1", 3), (52, None, 0)],
+        }
+    )
+    resultado = await verificador.servicios_por_botella(sesion, 68001)
+
+    assert len(resultado.cables) == 2
+    assert resultado.cables[0].n_id == 51
+    assert resultado.cables[0].nombre == "Cable Troncal 1"
+    assert resultado.cables[0].cantidad_servicios == 3
+    assert resultado.cables[1].nombre is None
+    assert resultado.cables[1].cantidad_servicios == 0
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_sin_cables_asociados():
+    """Botella existente pero sin ningún cable que la tenga como extremo: `cables` queda vacío, no
+    es motivo de "no encontrada" (ese chequeo depende de la fila propia o de los servicios, no de
+    esta lista)."""
+    sesion = _SesionFake(respuestas={"FROM app.cromo_botellas": [(68004, "Botella aislada", 68, None)]})
+    resultado = await verificador.servicios_por_botella(sesion, 68004)
+
+    assert resultado.cables == []
+
+
+# ── tiene_cables_asociados_batch_sync — señal "operativa" para el dashboard de duplicados ──────
+
+
+class _SesionSyncFake:
+    """Igual que `_SesionFake`, pero `execute` es sync — `tiene_cables_asociados_batch_sync` usa
+    `Session` (sqlalchemy.orm), no `AsyncSession`."""
+
+    def __init__(self, respuestas: Optional[dict[str, list[tuple]]] = None) -> None:
+        self._respuestas = respuestas or {}
+
+    def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
+        texto = str(stmt)
+        for clave, filas in self._respuestas.items():
+            if clave in texto:
+                return _ResultadoFilas(filas)
+        return _ResultadoFilas([])
+
+
+def test_tiene_cables_asociados_batch_sync_lista_vacia_no_consulta():
+    sesion = _SesionSyncFake()
+    assert verificador.tiene_cables_asociados_batch_sync(sesion, []) == set()
+
+
+def test_tiene_cables_asociados_batch_sync_arma_set_con_ambos_extremos():
+    sesion = _SesionSyncFake(
+        respuestas={"FROM app.cromo_cables WHERE extremo_a_n_id": [(111,), (222,)]}
+    )
+    resultado = verificador.tiene_cables_asociados_batch_sync(sesion, [111, 222, 333])
+
+    assert resultado == {111, 222}
+    assert 333 not in resultado

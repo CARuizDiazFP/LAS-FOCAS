@@ -25,6 +25,7 @@ Invocar con `/nombre-comando [argumentos opcionales]`.
 | `/nuevo-modulo` | Andamia módulo SPA Vue 3 completo: vista, componentes, composable, API client y ruta | nombre del módulo y objetivo funcional |
 | `/revisar-seguridad` | Auditoría integral: secretos, CVEs de dependencias, SAST, red/contenedores | alcance (`full`, `secrets`, `dependencies`, etc.) |
 | `/crear-skill` | Crea o evoluciona skills/agentes/prompts del ecosistema agéntico con stack y seguridad obligatorios | objetivo y alcance de la skill |
+| `/cierre-sesion` | Retrospectiva técnica de la conversación activa: tareas, errores/bloqueos, soluciones y propuestas de skills/agentes/prompts, guardada en `docs/cierres/YYYY-MM-DD.md` | palabra clave "Cierre chat" o alcance/fecha |
 
 ---
 
@@ -58,10 +59,20 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 
 Definidas en `.github/skills/` (fuente de verdad) y en `.codex-skills/skills/` (formato OpenAI Codex).
 
+> **Para que sean invocables por el `Skill` tool de Claude Code hace falta además un mirror en
+> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.github/skills/`. Descubierto
+> 2026-08-14: `Skill(skill="docker-rebuild")` falló con "Unknown skill" pese a estar catalogada acá,
+> porque `.claude/skills/` no existía. `docker-rebuild` y `nocturne-token-compliance` tienen mirror
+> hoy (esta última se creó ya con las 4 copias desde el arranque); el resto de la tabla de abajo
+> **todavía no es invocable vía `/nombre-skill` o el tool `Skill` en este entorno** — hay que
+> copiarla a `.claude/skills/` (mismo contenido que `.github/skills/`) antes de poder usarla así. Hasta
+> entonces, seguir sus procedimientos manualmente vía Bash. Ver `docs/cierres/2026-08-14.md`.
+
 | Skill | Propósito | Guardrail crítico |
 |---|---|---|
 | `dev-workflow` | Validación obligatoria antes de cualquier cambio | Rama `dev`, compose dev, nunca push a `main` |
 | `frontend-spa-architecture` | Verifica entry point, router activo y archivos huérfanos del SPA | Usar antes de agregar rutas o vistas en `src/router/index.ts` |
+| `nocturne-token-compliance` | Audita colores hardcodeados en Vue 3 (vista + árbol de imports) contra `tokens.css`, y cómo verificar sin navegador disponible | Nunca hex/rgba literal para superficie/texto/borde/estado; grepear también los componentes importados, no sólo la vista |
 | `docker-cleanup` | Limpia imágenes/contenedores/cache Docker | Nunca `docker volume prune` |
 | `docker-rebuild` | Reconstruye servicios con compose correcto | Versiones fijas, no tocar `postgres_data` |
 | `disk-analysis` | Diagnóstico de espacio con umbrales | <70% OK, 70-85% warn, >85% crítico |
@@ -82,6 +93,7 @@ Definidas en `.github/skills/` (fuente de verdad) y en `.codex-skills/skills/` (
 | `repo-updater` | Commits técnicos a `dev` con auditoría de docs | Nunca `git push origin main` |
 | `repo-update` | Legacy — redirige a `repo-updater` | — |
 | `skill-generator` | Crea nuevas skills con stack Vue 3 + FastAPI | Inyección obligatoria de stack y seguridad |
+| `cierre-sesion` | Retrospectiva técnica de cierre de sesión: tareas verificadas contra evidencia, errores/soluciones y mejoras agénticas de prevención (obstáculos reales) y aceleración (pasos repetibles observados) | Requiere declaración explícita de cierre del usuario; basarse solo en hechos reales de la conversación activa; nunca inventar errores/soluciones |
 
 ---
 
@@ -89,9 +101,9 @@ Definidas en `.github/skills/` (fuente de verdad) y en `.codex-skills/skills/` (
 
 | Entorno | Plataforma | Ubicación |
 |---|---|---|
-| Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` |
+| Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` (slash commands) + `.claude/skills/` (skills invocables — `docker-rebuild` y `nocturne-token-compliance` mirroradas hoy, ver nota arriba) |
 | GitHub Copilot / VS Code | Agentes, prompts, skills | `.github/agents/`, `.github/prompts/`, `.github/skills/` |
 | Gemini CLI | Rules flat | `.gemini/rules/` |
 | OpenAI Codex | Skills (formato Codex) | `.codex-skills/skills/` |
 
-**Fuente de verdad para sincronización:** `.github/` → replicar cambios a `.gemini/`, `.codex-skills/` y `.claude/commands/`.
+**Fuente de verdad para sincronización:** `.github/` → replicar cambios a `.gemini/`, `.codex-skills/`, `.claude/commands/` y `.claude/skills/` (esta última, agregada 2026-08-14, es la que hace que una skill sea invocable por el tool `Skill` en Claude Code — antes no estaba en esta lista y ninguna skill tenía mirror ahí).

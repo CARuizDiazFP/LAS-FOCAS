@@ -1,7 +1,7 @@
 <!--
   Nombre de archivo: ModalUnificarCamara.vue
   Ubicación de archivo: web/frontend/src/components/infra/ModalUnificarCamara.vue
-  Descripción: Modal para unificar la Cámara actual (principal) con una Cámara duplicada (secundaria) — la secundaria pasa a ser Botella de la principal
+  Descripción: Modal para fusionar la Cámara actual (principal) con una Cámara duplicada (secundaria) — la principal hereda todo lo heredable y la secundaria se elimina
 -->
 <template>
   <dialog ref="dialogEl" class="unificar-modal" @click.self="handleClose">
@@ -12,9 +12,9 @@
       </div>
 
       <p class="unificar-hint">
-        <strong>{{ camaraNombre || `Cámara ${camaraId ?? ''}` }}</strong> absorberá a la Cámara que
-        elijas: sus Botellas, servicios y rutas quedan bajo esta Cámara, y su nombre pasa a ser un
-        alias. No se elimina ningún dato — la Cámara elegida conserva su historial completo.
+        <strong>{{ camaraNombre || `Cámara ${camaraId ?? ''}` }}</strong> absorberá todo lo heredable
+        de la Cámara que elijas — Botellas, Cables, Empalmes, Ingresos y su historial de auditoría —
+        y esa Cámara se eliminará. No se pierde ningún dato: todo queda transferido a esta Cámara.
       </p>
 
       <template v-if="!seleccionada">
@@ -40,7 +40,7 @@
           >
             <strong>{{ candidata.nombre }}</strong>
             <span class="unificar-result-meta">
-              ID {{ candidata.id }} · {{ candidata.estado }} · {{ candidata.botellas_count }} botella{{ candidata.botellas_count !== 1 ? 's' : '' }}
+              ID {{ candidata.id }} · {{ candidata.estado }} · {{ candidata.botellas_count }} botella{{ candidata.botellas_count !== 1 ? 's' : '' }} · {{ candidata.cables_count }} cable{{ candidata.cables_count !== 1 ? 's' : '' }}
             </span>
           </li>
         </ul>
@@ -53,12 +53,19 @@
             <strong>{{ camaraNombre }}</strong>
           </div>
           <div class="unificar-confirmacion-row">
-            <span class="unificar-badge secundaria">Secundaria (pasa a ser Botella + alias)</span>
+            <span class="unificar-badge secundaria">Secundaria (se elimina tras transferir todo)</span>
             <strong>{{ seleccionada.nombre }}</strong>
           </div>
-          <p v-if="seleccionada.botellas_count > 0" class="unificar-hint">
-            Esta Cámara ya tiene {{ seleccionada.botellas_count }} Botella{{ seleccionada.botellas_count !== 1 ? 's' : '' }} propia{{ seleccionada.botellas_count !== 1 ? 's' : '' }} — también pasarán a ser Botellas de {{ camaraNombre }}.
+          <p class="unificar-hint">
+            Se transferirán a <strong>{{ camaraNombre }}</strong>: {{ seleccionada.botellas_count }}
+            Botella{{ seleccionada.botellas_count !== 1 ? 's' : '' }} y {{ seleccionada.cables_count }}
+            cable{{ seleccionada.cables_count !== 1 ? 's' : '' }} propios, además de sus Empalmes,
+            Ingresos, alias e historial de auditoría.
           </p>
+          <label class="unificar-checkbox">
+            <input v-model="guardarAlias" type="checkbox" />
+            Guardar "{{ seleccionada.nombre }}" como alias de {{ camaraNombre }}
+          </label>
         </div>
 
         <div v-if="error" class="unificar-empty error">{{ error }}</div>
@@ -84,17 +91,20 @@ interface CamaraCandidata {
   direccion: string | null;
   estado: string;
   botellas_count: number;
+  cables_count: number;
 }
 
 const props = defineProps<{
   open: boolean;
   camaraId: number | null;
   camaraNombre: string;
+  sugerenciaInicial?: string;
 }>();
 
 const emit = defineEmits<{
   close: [];
   merged: [];
+  error: [message: string];
 }>();
 
 const { csrf } = useSession();
@@ -105,6 +115,7 @@ const seleccionada = ref<CamaraCandidata | null>(null);
 const buscando = ref(false);
 const confirmando = ref(false);
 const error = ref('');
+const guardarAlias = ref(true);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onSearchInput(): void {
@@ -134,10 +145,11 @@ async function buscar(): Promise<void> {
 }
 
 function resetState(): void {
-  query.value = '';
+  query.value = props.sugerenciaInicial ?? '';
   resultados.value = [];
   seleccionada.value = null;
   error.value = '';
+  guardarAlias.value = true;
 }
 
 function handleClose(): void {
@@ -158,6 +170,7 @@ async function handleConfirmar(): Promise<void> {
       body: JSON.stringify({
         camara_principal_id: props.camaraId,
         camara_secundaria_id: seleccionada.value.id,
+        guardar_alias: guardarAlias.value,
         csrf_token: csrf(),
       }),
     });
@@ -166,7 +179,9 @@ async function handleConfirmar(): Promise<void> {
     emit('merged');
     handleClose();
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'No se pudo unificar las cámaras.';
+    const message = e instanceof Error ? e.message : 'No se pudo unificar las cámaras.';
+    error.value = message;
+    emit('error', message);
   } finally {
     confirmando.value = false;
   }
@@ -178,6 +193,7 @@ watch(
     if (isOpen) {
       resetState();
       dialogEl.value?.showModal();
+      if (props.sugerenciaInicial) void buscar();
       return;
     }
     if (dialogEl.value?.open) {
@@ -201,12 +217,12 @@ watch(
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .unificar-title-row {
@@ -227,24 +243,24 @@ watch(
   width: 100%;
   padding: 8px 12px;
   margin-bottom: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid var(--color-divider);
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--color-bg);
   color: var(--text);
 }
 
 .unificar-empty {
   padding: 14px;
   border-radius: 10px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
   font-size: 0.85rem;
   text-align: center;
 }
 
 .unificar-empty.error {
-  border-color: rgba(239, 68, 68, 0.4);
-  color: #fecaca;
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+  color: var(--error);
 }
 
 .unificar-results {
@@ -264,14 +280,14 @@ watch(
   gap: 2px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   cursor: pointer;
   transition: border-color 0.15s ease;
 }
 
 .unificar-result-item:hover {
-  border-color: rgba(96, 165, 250, 0.4);
+  border-color: var(--color-accent);
 }
 
 .unificar-result-meta {
@@ -292,8 +308,8 @@ watch(
   gap: 4px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
 }
 
 .unificar-badge {
@@ -307,17 +323,26 @@ watch(
 }
 
 .unificar-badge.principal {
-  background: rgba(16, 185, 129, 0.18);
-  color: #bbf7d0;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
 }
 
 .unificar-badge.secundaria {
-  background: rgba(250, 204, 21, 0.16);
-  color: #fde68a;
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
 }
 
 .unificar-actions {
   display: flex;
   gap: 10px;
+}
+
+.unificar-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
 }
 </style>

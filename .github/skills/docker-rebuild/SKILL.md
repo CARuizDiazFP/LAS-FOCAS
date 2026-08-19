@@ -185,6 +185,39 @@ grep -rn 'useradd\|^USER' deploy/docker/*.Dockerfile api/Dockerfile web/Dockerfi
 ```
 Si algún Dockerfile hijo ya crea un usuario con el mismo UID que se va a agregar/cambiar en la base, migrarlo para que reutilice el usuario compartido (`chown -R <user>:<user> /app` + `USER <user>`) **en el mismo cambio**, no como nota al margen para después — el `user: "UID:GID"` de `compose.yml` manda en runtime independientemente del `USER` del Dockerfile, así que ese refactor no cambia el comportamiento real del contenedor.
 
+## Contenedores `api` vs `web` en dev: mismo comando, código fuente distinto
+
+`lasfocasdev-api` y `lasfocasdev-web` corren ambos `uvicorn app.main:app` desde el mismo path interno `/app/app/main.py` (sólo cambia el puerto: 8000 vs 8080) — pero cada imagen copia ahí un archivo fuente **distinto** del repo:
+
+- `lasfocasdev-api` → `api/app/main.py` ("LAS-FOCAS API", auth por API key, rutas `reports`/`ingest`/`infra`/`servicios` para consumidores externos/scripts).
+- `lasfocasdev-web` → `web/app/main.py` (backend de la SPA Vue 3, auth por sesión/CSRF — la mayoría de los endpoints `/api/infra/...`/`/api/admin/...` que se tocan en el día a día).
+
+**Síntoma real** (2026-08-12, verificando un endpoint nuevo de `web/app/main.py`): un `docker exec lasfocasdev-api curl ...` contra un endpoint de la SPA devuelve 404 con `{"detail":"Not Found"}` — no porque la ruta esté mal, sino porque ese contenedor corre otra app FastAPI completa. `GET /openapi.json` en `lasfocasdev-api` no lista ningún `/api/infra/...` de la SPA (misma prueba rápida para confirmar cuál es cuál: `docker inspect <contenedor> --format '{{.Config.Cmd}}'` da el mismo comando en los dos, pero `docker exec <contenedor> grep -n 'Ubicación de archivo' /app/app/main.py` muestra el path real distinto).
+
+**Regla**: para verificar wiring de un endpoint de `web/app/main.py` (nuevo o modificado), apuntar siempre a `lasfocasdev-web`:
+
+```bash
+docker exec lasfocasdev-web curl -s http://localhost:8080/api/infra/...
+```
+
+`docker exec`/`docker cp` para SCRIPTS batch (`scripts/*.py`, que sólo dependen de `core/`, `db/`, `scripts/`) sí es válido en `lasfocasdev-api` — esos directorios existen en ambas imágenes; el mix-up sólo afecta a endpoints HTTP servidos por `web/app/main.py`.
+
+Si un curl da 404 con `{"detail":"Not Found"}` en vez del 401/403 esperado para un endpoint autenticado real, sospechar primero del contenedor equivocado antes de asumir que la ruta está mal registrada (para el otro patrón real de fallo — 422 por orden de registro de rutas en el mismo archivo — ver `docs/infra.md`, hallazgo de routing 2026-08-11).
+
+## El directorio `scripts/` no está incluido en ninguna imagen
+
+Ni `api/Dockerfile` ni `web/Dockerfile` copian `scripts/` a la imagen — es intencional (son scripts de mantenimiento/backfill manual, no parte del runtime de la app). Esto significa que **tras cualquier `build` seguido de `up -d`/`up -d --force-recreate`**, el contenedor recreado NO tiene `/app/scripts` — aunque una sesión anterior lo haya copiado ahí a mano con `docker cp`, ese cambio vivía sólo en la capa *writable* del contenedor viejo y se pierde al recrearlo desde la imagen.
+
+**Síntoma real** (2026-08-12): después de un `build`+`up -d --force-recreate` de `api`, `docker cp scripts/mi_script.py lasfocasdev-api:/app/scripts/mi_script.py` falló con `Could not find the file /app/scripts` — el directorio padre no existía en el contenedor nuevo.
+
+**Fix**: copiar el directorio completo (no archivo por archivo) para recrearlo de una:
+
+```bash
+docker cp scripts lasfocasdev-api:/app/scripts
+```
+
+Después de eso, los `docker cp` de archivos individuales dentro de `scripts/` vuelven a funcionar hasta la próxima recreación del contenedor.
+
 ## Script de Inicio Rápido
 
 ```bash
@@ -202,3 +235,22 @@ Si algún Dockerfile hijo ya crea un usuario con el mismo UID que se va a agrega
 6. **Producción**: no bajar/recrear contenedores `lasfocas-*` sin autorización explícita y puntual del usuario
 7. **Drift de red antes de `up` incremental**: comparar subred declarada vs. real antes de tocar un solo servicio de un stack ya corriendo (ver sección arriba)
 8. **UID compartido en `base.Dockerfile`**: verificar colisiones con `useradd`/`USER` de los Dockerfiles hijos antes de tocar la imagen base (ver sección arriba)
+9. **Contenedores `api`/`web`, mismo comando distinto `main.py`**: antes de un curl de verificación contra un endpoint de `web/app/main.py`, confirmar que se apunta a `lasfocasdev-web`, no a `lasfocasdev-api` (ver sección arriba)
+10. **`scripts/` no está en ninguna imagen**: tras cualquier rebuild/recreate de `api`/`web`, `docker cp scripts <contenedor>:/app/scripts` antes de intentar correr un script vía `docker exec` (ver sección arriba)
+
+
+## Script contra dev real desde el HOST (fuera de un contenedor)
+
+Un script de mantenimiento (`scripts/*.py`) corrido directamente con el `.venv` del host (no vía `docker exec`) no puede resolver `POSTGRES_HOST=postgres` (nombre DNS interno del compose) y necesita las 4 variables explícitas para apuntar al puerto publicado de dev:
+
+```bash
+source .venv/bin/activate
+POSTGRES_USER=FOCALBOT \
+POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" \
+POSTGRES_HOST=localhost \
+POSTGRES_PORT=5433 \
+POSTGRES_DB=focas_dev \
+python scripts/mi_script.py --dry-run
+```
+
+`.env`/`.env.dev` NO sirven para esto: `POSTGRES_PASSWORD` ahí es un placeholder que nunca se usa en runtime real (los contenedores arrancan con `POSTGRES_PASSWORD_FILE`, ver `docs/decisiones.md`), y sourcearlos con `source .env.dev` puede romper el shell si algún valor trae paréntesis o dos puntos sin comillas (ej. `SMTP_FROM_NAME`). El puerto real de Postgres dev (`5433`) y el nombre de la base (`focas_dev`, no `lasfocas`) están declarados en `deploy/docker-compose.dev.yml`/`.env.dev` — confirmar ahí si cambian.

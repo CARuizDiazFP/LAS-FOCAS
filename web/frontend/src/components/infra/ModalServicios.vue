@@ -217,12 +217,12 @@ watch(
 }
 
 .infra-detail-modal__content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .infra-detail-modal__header {
@@ -240,7 +240,7 @@ watch(
 
 .infra-detail-modal__eyebrow {
   margin: 0;
-  color: #fcd34d;
+  color: var(--color-accent);
   font-size: 0.76rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -254,15 +254,15 @@ watch(
 .infra-service-list-copy {
   padding: 16px 18px;
   border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.56);
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
   color: var(--muted);
 }
 
 .infra-service-list-copy__eyebrow,
 .infra-service-overlay__eyebrow {
   margin: 0 0 8px;
-  color: #fcd34d;
+  color: var(--color-accent);
   font-size: 0.72rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -280,10 +280,10 @@ watch(
 
 .infra-service-id-btn {
   min-height: 78px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  border: 1px solid var(--color-divider);
   border-radius: 16px;
-  background: linear-gradient(160deg, rgba(15, 23, 42, 0.92), rgba(8, 12, 20, 0.98));
-  color: #f8fafc;
+  background: var(--color-bg);
+  color: var(--color-text);
   font-size: 1.15rem;
   font-weight: 700;
   letter-spacing: 0.03em;
@@ -293,12 +293,12 @@ watch(
 
 .infra-service-id-btn:hover {
   transform: translateY(-2px);
-  border-color: rgba(96, 165, 250, 0.32);
-  box-shadow: 0 18px 38px rgba(2, 6, 23, 0.2);
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .infra-service-id-btn:focus-visible {
-  outline: 2px solid rgba(96, 165, 250, 0.62);
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
 
@@ -320,10 +320,10 @@ watch(
   max-height: calc(100vh - 48px);
   overflow: auto;
   border-radius: 20px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
   color: var(--text);
-  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.42);
+  box-shadow: var(--shadow-lg);
   padding: 24px;
 }
 
@@ -337,7 +337,7 @@ watch(
 
 .infra-service-overlay__header h4 {
   margin: 0;
-  color: #f8fafc;
+  color: var(--color-text);
   font-size: 1.4rem;
 }
 
@@ -351,7 +351,7 @@ watch(
 .infra-service-overlay__summary span {
   border-radius: 999px;
   padding: 4px 10px;
-  background: rgba(148, 163, 184, 0.12);
+  background: color-mix(in srgb, var(--color-neutral-400) 12%, transparent);
   color: var(--muted);
   font-size: 0.76rem;
 }
@@ -359,9 +359,9 @@ watch(
 .infra-detail-empty {
   padding: 18px;
   border-radius: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--color-bg);
 }
 
 @media (max-width: 720px) {

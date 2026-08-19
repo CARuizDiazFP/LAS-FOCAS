@@ -21,6 +21,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
@@ -50,6 +51,20 @@ class CamaraOrigenDatos(str, Enum):
     SHEET = "SHEET"
     INFERIDO = "INFERIDO"  # Cámara padre sintetizada por el backfill de jerarquía Cámara/Botella (Bot-N legado)
     INFERIDO_CROMO = "INFERIDO_CROMO"  # Cámara padre sintetizada por el backfill de Botellas Cromo (nombre, no dato real)
+
+
+class ServicioOrigenDatos(str, Enum):
+    """Origen de los datos de un Servicio — distingue un servicio real (alta manual, ingest SLA por
+    Excel, tracking) de un placeholder sintetizado por el matching Cromo↔Servicio (2026-08-14, ver
+    `core/services/cromo/ingesta.py::fase_servicios`). Las 1.488 filas existentes antes de este campo
+    quedaron en `MANUAL` uniforme (no reconstruible con certeza cuáles vinieron de tracking vs. Excel,
+    ver `docs/decisiones.md`). `TRACKING` está en el vocabulario pero ningún código lo emite todavía —
+    `core/services/infra_service.py`/`upload_tracking` sigue sin fijarlo explícito."""
+
+    MANUAL = "MANUAL"
+    TRACKING = "TRACKING"
+    INGEST_EXCEL = "INGEST_EXCEL"
+    INFERIDO_CROMO = "INFERIDO_CROMO"  # Placeholder sintetizado por el matching Cromo (nombre, no dato real)
 
 
 class RutaTipo(str, Enum):
@@ -379,7 +394,15 @@ class Servicio(Base):
     direccion_2 = Column(String(255), nullable=True)
     estado_servicio = Column(String(128), nullable=False, default="DESCONOCIDO", index=True)
     cliente = Column(String(255), nullable=True)
-    categoria = Column(Integer, nullable=True)
+    # 0-6, CHECK ck_servicios_categoria_valida (DDL-only, ver migración 20260814_01) — 6 = "sin
+    # categorizar todavía" (default de altas nuevas), 0 = placeholder sintetizado por Cromo (ver
+    # origen_datos), 1-5 asignados manualmente por un admin.
+    categoria = Column(Integer, nullable=False, server_default=text("6"))
+    origen_datos = Column(
+        SQLEnum(ServicioOrigenDatos, name="servicio_origen_datos", create_type=False, schema="app"),
+        nullable=False,
+        server_default="MANUAL",
+    )
     nombre_archivo_origen = Column(String(255), nullable=True)  # DEPRECATED: Mover a RutaServicio
     raw_tracking_data = Column(JSON, nullable=True)  # DEPRECATED: Mover a RutaServicio
 

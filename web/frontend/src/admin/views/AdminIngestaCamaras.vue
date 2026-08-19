@@ -204,7 +204,6 @@ async function confirmarBaneo(): Promise<void> {
 .ingesta-card {
   display: grid;
   gap: var(--space-3);
-  background: linear-gradient(180deg, rgba(16, 22, 31, 0.98), rgba(10, 14, 20, 0.96));
 }
 
 .ingesta-card__header {
@@ -220,23 +219,23 @@ async function confirmarBaneo(): Promise<void> {
 
 .ingesta-card__chip {
   font-size: 0.75rem;
-  color: #dbeafe;
-  background: rgba(37, 99, 235, 0.25);
-  border: 1px solid rgba(37, 99, 235, 0.55);
+  color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
   border-radius: var(--radius-pill);
   padding: 2px 10px;
 }
 
 .ingesta-card__chip--warn {
-  color: #fef3c7;
-  background: rgba(217, 119, 6, 0.25);
-  border-color: rgba(217, 119, 6, 0.55);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 25%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
 }
 
 .ingesta-card__dropzone {
-  border: 1px dashed rgba(251, 191, 36, 0.55);
+  border: 1px dashed color-mix(in srgb, var(--warning) 55%, transparent);
   border-radius: var(--radius-lg);
-  background: rgba(30, 41, 59, 0.45);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
   min-height: 110px;
   display: grid;
   place-content: center;
@@ -247,8 +246,8 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .ingesta-card__dropzone:hover:not(.ingesta-card__dropzone--disabled) {
-  border-color: rgba(251, 191, 36, 0.9);
-  background: rgba(30, 41, 59, 0.65);
+  border-color: color-mix(in srgb, var(--warning) 90%, transparent);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
 }
 
 .ingesta-card__dropzone--disabled {
@@ -272,28 +271,28 @@ async function confirmarBaneo(): Promise<void> {
 .progress-track {
   height: 12px;
   border-radius: 999px;
-  background: #0b1220;
-  border: 1px solid #1f2937;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #2563eb, #38bdf8 60%, #22d3ee);
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.5);
+  background: linear-gradient(90deg, var(--color-accent-700), var(--color-accent) 60%, var(--color-accent-300));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 50%, transparent);
   transition: width 0.2s ease;
 }
 
 .progress-bar--warn {
-  background: linear-gradient(90deg, #d97706, #f59e0b 60%, #fbbf24);
-  box-shadow: 0 0 16px rgba(251, 191, 36, 0.5);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--warning) 70%, black), var(--warning) 60%, color-mix(in srgb, var(--warning) 70%, white));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--warning) 50%, transparent);
 }
 
 .progress-meta {
   display: flex;
   justify-content: space-between;
   font-size: 0.82rem;
-  color: #bfdbfe;
+  color: var(--color-neutral-400);
 }
 
 .summary-grid {
@@ -307,7 +306,7 @@ async function confirmarBaneo(): Promise<void> {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--color-bg);
 }
 
 .summary-grid dt {
@@ -322,11 +321,11 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .dd--warn {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .dd--err {
-  color: #f87171;
+  color: var(--error);
 }
 
 .errores-detalle {
@@ -336,7 +335,7 @@ async function confirmarBaneo(): Promise<void> {
 
 .errores-detalle summary {
   cursor: pointer;
-  color: #f87171;
+  color: var(--error);
   margin-bottom: 8px;
 }
 
@@ -348,31 +347,8 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .errores-list li {
-  color: #fca5a5;
+  color: var(--error);
   word-break: break-word;
-}
-
-.msg {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font-size: 0.88rem;
-  display: none;
-}
-
-.msg.visible {
-  display: block;
-}
-
-.msg.ok {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.35);
-  color: #6ee7b7;
-}
-
-.msg.err {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #fca5a5;
 }
 
 /* ─── Modal ─────────────────────────────────────────────────────────────── */
@@ -389,8 +365,8 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 28px;
   display: grid;
@@ -433,9 +409,9 @@ async function confirmarBaneo(): Promise<void> {
 .badge-baneada {
   font-size: 0.75rem;
   font-weight: 700;
-  color: #fef3c7;
-  background: rgba(217, 119, 6, 0.3);
-  border: 1px solid rgba(217, 119, 6, 0.6);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 60%, transparent);
   border-radius: var(--radius-pill);
   padding: 1px 8px;
 }
@@ -447,12 +423,12 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .required {
-  color: #f87171;
+  color: var(--error);
 }
 
 .modal-textarea {
   width: 100%;
-  background: rgba(15, 23, 42, 0.7);
+  background: var(--color-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
@@ -476,7 +452,7 @@ async function confirmarBaneo(): Promise<void> {
 
 .modal-error {
   font-size: 0.82rem;
-  color: #f87171;
+  color: var(--error);
   margin: -8px 0 0;
 }
 
@@ -487,13 +463,13 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .btn.subtle {
-  background: rgba(30, 41, 59, 0.5);
+  background: var(--color-neutral-900);
   border: 1px solid var(--border);
   color: var(--muted);
 }
 
 .btn.subtle:hover:not(:disabled) {
-  background: rgba(30, 41, 59, 0.8);
+  background: var(--color-neutral-800);
   color: var(--text);
 }
 </style>

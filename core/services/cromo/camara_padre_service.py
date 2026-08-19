@@ -5,13 +5,17 @@
 """Vincula una `CromoBotella` (`app.cromo_botellas`) a una `Camara` padre (`app.camaras`), reusando
 el mismo mecanismo de resolución que ya usa la jerarquía Bot-N legado
 (`core/services/camara_hierarchy_service.py::resolver_o_crear_padre_desde_base`) — advisory lock,
-no-promoción de filas existentes, absorción de "peladas" — pero con una política de estado por
-defecto distinta: como Cromo no trackea ninguna señal operativa real, toda Cámara padre *nueva*
-sintetizada acá nace en `NO_OPERATIVA` (fail-closed), nunca en `LIBRE` — sea porque matcheó un
-patrón de nombre (sufijo/prefijo) o porque cayó en el fallback de nombre exacto (2026-08-12):
-ninguno de los dos caminos aporta más señal operativa real que el otro. Si en cambio se reutiliza
-una `Camara` legado ya existente (nombre coincidente), no se toca su estado — ese es dato real, no
-inferencia, y el llamador (`scripts/cromo_backfill_camara_padre.py`) decide qué hacer con él.
+no-promoción de filas existentes, absorción de "peladas".
+
+**Actualización 2026-08-13 (decisión explícita del usuario, revierte la política fail-closed del
+2026-08-11)**: toda Cámara padre *nueva* sintetizada acá nace en `LIBRE`, sea porque matcheó un
+patrón de nombre (sufijo/prefijo) o porque cayó en el fallback de nombre exacto — una Cámara recién
+creada no tiene todavía ningún empalme/ruta propio, así que no puede existir un `IncidenteBaneo`
+activo que la afecte (los baneos cruzan vía `servicio_protegido_id`/`ruta_protegida_id` sobre los
+empalmes de la cámara); no hay nada real que "chequear" en el momento del alta. Si en cambio se
+reutiliza una `Camara` legado ya existente (nombre coincidente), no se toca su estado — ese es dato
+real, con auditoría propia, y puede legítimamente estar `BANEADA`; el llamador
+(`scripts/cromo_backfill_camara_padre.py`) decide qué hacer con él. Ver `docs/decisiones.md`.
 """
 
 from __future__ import annotations
@@ -33,7 +37,14 @@ logger = logging.getLogger(__name__)
 # pedido explícito del negocio; cada match se loguea para poder confirmar/descartar su uso real.
 # Ancla ^ deliberada: sólo cubre "al inicio" (lo pedido) — un 3er patrón (p.ej. "Botella N" como
 # sufijo con palabra completa) queda fuera de alcance si apareciera en datos reales.
-RE_BOTELLA_PREFIJO = re.compile(r"^\s*botella\.?\s*[1-9](?!\d)\s*", re.IGNORECASE)
+#
+# `\.?` antes del `\s*` final (2026-08-14): mismo fix de raíz que `RE_BOT_SUFIJO`
+# (`modules/slack_baneo_notifier/camara_search.py`) — un punto inmediatamente después del dígito
+# ("Botella 2. Resto...") quedaba sin consumir y sobrevivía como residuo al inicio del nombre
+# resultante. Nunca confirmado en datos reales para este camino de PREFIJO específico (a diferencia
+# del sufijo, que sí tiene 7 casos reales, ver `docs/decisiones.md` 2026-08-14) — se corrige igual por
+# consistencia y para no dejar la misma trampa latente si este patrón empieza a aparecer.
+RE_BOTELLA_PREFIJO = re.compile(r"^\s*botella\.?\s*[1-9](?!\d)\.?\s*", re.IGNORECASE)
 
 
 def extraer_base_cromo(nombre: Optional[str]) -> Optional[str]:
@@ -86,7 +97,7 @@ def resolver_o_crear_padre_cromo(
         session,
         base,
         usuario=usuario,
-        estado_si_nuevo=CamaraEstado.NO_OPERATIVA,
+        estado_si_nuevo=CamaraEstado.LIBRE,
         origen_si_nuevo=CamaraOrigenDatos.INFERIDO_CROMO,
     )
 

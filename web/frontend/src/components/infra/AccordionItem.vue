@@ -113,14 +113,14 @@ function afterLeave(element: Element): void {
 <style scoped>
 .accordion-item {
   border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
   overflow: hidden;
 }
 
 .accordion-item.is-open {
-  border-color: rgba(96, 165, 250, 0.34);
-  box-shadow: 0 18px 36px rgba(2, 6, 23, 0.2);
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .accordion-trigger {
@@ -138,11 +138,11 @@ function afterLeave(element: Element): void {
 }
 
 .accordion-trigger:hover .accordion-title {
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .accordion-trigger:focus-visible {
-  outline: 2px solid rgba(96, 165, 250, 0.62);
+  outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
 
@@ -153,14 +153,14 @@ function afterLeave(element: Element): void {
 
 .accordion-eyebrow {
   margin: 0;
-  color: #7dd3fc;
+  color: var(--color-accent);
   font-size: 0.72rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .accordion-title {
-  color: #e2e8f0;
+  color: var(--color-neutral-200);
   font-size: 0.98rem;
   line-height: 1.45;
 }
@@ -184,8 +184,8 @@ function afterLeave(element: Element): void {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(96, 165, 250, 0.16);
-  color: #dbeafe;
+  background: var(--color-brand-primary-soft);
+  color: var(--color-accent-200);
   font-size: 1.1rem;
   font-weight: 700;
 }
@@ -196,7 +196,7 @@ function afterLeave(element: Element): void {
 
 .accordion-panel__inner {
   padding: 0 18px 18px;
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  border-top: 1px solid var(--color-divider);
 }
 
 @media (max-width: 720px) {

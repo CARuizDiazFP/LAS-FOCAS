@@ -104,12 +104,12 @@ watch(
 }
 
 .infra-detail-modal__content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .infra-detail-modal__header {
@@ -127,7 +127,7 @@ watch(
 
 .infra-detail-modal__eyebrow {
   margin: 0;
-  color: #7dd3fc;
+  color: var(--color-accent);
   font-size: 0.76rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -136,9 +136,9 @@ watch(
 .infra-detail-empty {
   padding: 18px;
   border-radius: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--color-bg);
 }
 
 .botellas-grid {
@@ -152,15 +152,15 @@ watch(
   gap: 8px;
   padding: 14px 16px;
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   text-decoration: none;
   color: inherit;
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
 .botella-card:hover {
-  border-color: rgba(96, 165, 250, 0.4);
+  border-color: var(--color-accent);
   transform: translateY(-2px);
 }
 
@@ -174,15 +174,15 @@ watch(
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #94a3b8;
+  background: var(--color-state-idle);
   flex: none;
 }
 
-.botella-card__dot.libre { background: #34d399; }
-.botella-card__dot.ocupada { background: #facc15; }
-.botella-card__dot.baneada { background: #f87171; }
-.botella-card__dot.detectada { background: #60a5fa; }
-.botella-card__dot.no_operativa { background: #94a3b8; }
+.botella-card__dot.libre { background: var(--color-state-ok); }
+.botella-card__dot.ocupada { background: var(--color-state-warn); }
+.botella-card__dot.baneada { background: var(--color-state-error); }
+.botella-card__dot.detectada { background: var(--color-accent); }
+.botella-card__dot.no_operativa { background: var(--color-state-idle); }
 
 .botella-card__origen {
   padding: 2px 7px;
@@ -190,13 +190,13 @@ watch(
   font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  background: rgba(148, 163, 184, 0.16);
-  color: #cbd5e1;
+  background: color-mix(in srgb, var(--color-neutral-400) 16%, transparent);
+  color: var(--color-neutral-300);
 }
 
 .botella-card__origen.is-cromo {
-  background: rgba(125, 211, 252, 0.16);
-  color: #7dd3fc;
+  background: var(--color-brand-primary-soft);
+  color: var(--color-accent-200);
 }
 
 .botella-card__estado {
@@ -214,7 +214,7 @@ watch(
 
 .botella-card__nombre {
   font-size: 0.92rem;
-  color: #f8fafc;
+  color: var(--color-text);
   word-break: break-word;
 }
 

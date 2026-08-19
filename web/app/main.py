@@ -1957,6 +1957,17 @@ def _serialize_camara_response(
         estado_sugerido = contexto.estado_sugerido.value
         incidentes_activos = [incidente.to_dict() for incidente in contexto.incidentes_activos]
 
+    # Navegación cruzada Botella→Cámara padre (2026-08-13): sólo tiene datos si `camara_padre_id`
+    # está seteado (es una Botella legado) — el acceso a `.camara_padre` es lazy-load, pero acá
+    # nunca dispara N+1 real: los listados batch (smart-search/search) sólo traen cámaras raíz
+    # (`camara_padre_id IS NULL`), así que este branch sólo se ejecuta en fetches de una Botella
+    # puntual (GET /api/infra/camaras/{id} con un id de Botella).
+    camara_padre_id = getattr(camara, "camara_padre_id", None)
+    camara_padre_nombre = None
+    if camara_padre_id:
+        camara_padre = getattr(camara, "camara_padre", None)
+        camara_padre_nombre = camara_padre.nombre if camara_padre is not None else None
+
     return {
         "id": camara.id,
         "nombre": camara.nombre or "",
@@ -1978,7 +1989,9 @@ def _serialize_camara_response(
         # Etapa Cámara/Botella: `es_botella`/`botellas_count` sólo tienen sentido si `camara` trae
         # cargada la columna/relación nueva — con getattr por si algún caller viejo pasa un objeto
         # sin esos atributos (tests con SimpleNamespace, por ejemplo).
-        "es_botella": bool(getattr(camara, "camara_padre_id", None)),
+        "es_botella": bool(camara_padre_id),
+        "camara_padre_id": camara_padre_id,
+        "camara_padre_nombre": camara_padre_nombre,
         "botellas_count": len(getattr(camara, "botellas", None) or []),
     }
 
@@ -2248,6 +2261,7 @@ async def camaras_buscar_ligero_web(
                         "direccion": c.direccion,
                         "estado": c.estado,
                         "botellas_count": c.botellas_count,
+                        "cables_count": c.cables_count,
                     }
                     for c in candidatas
                 ]
@@ -4193,6 +4207,92 @@ async def admin_eliminar_camara_pendiente(
         return JSONResponse({"error": "Error al eliminar la cámara"}, status_code=500)
 
 
+@app.get("/api/admin/infra/camaras/viewer")
+async def camaras_viewer_listado_web(
+    request: Request,
+    q: Optional[str] = None,
+    estado: Optional[str] = None,
+    limit: int = 60,
+    offset: int = 0,
+) -> JSONResponse:
+    """Listado paginado de Cámaras raíz para el dashboard `/admin/servicios/viewer/Camaras` (vista
+    dual grid/lista). Paginación real en SQL, sin el N+1 en memoria de `smart-search`."""
+    _require_admin(request)
+    try:
+        from db.models.infra import Camara, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            query = session.query(Camara).filter(Camara.camara_padre_id.is_(None))
+            if estado and estado.upper() in {e.value for e in CamaraEstado}:
+                query = query.filter(Camara.estado == CamaraEstado(estado.upper()))
+            if q and q.strip():
+                query = query.filter(Camara.nombre.ilike(f"%{q.strip()}%"))
+
+            total = query.count()
+            limit = max(1, min(limit, 100))
+            offset = max(0, offset)
+            filas = query.order_by(Camara.nombre).offset(offset).limit(limit).all()
+
+            return JSONResponse({
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "camaras": [
+                    {
+                        "id": c.id,
+                        "nombre": c.nombre,
+                        "estado": c.estado.value if c.estado else "LIBRE",
+                        "botellas_count": len(c.botellas),
+                        "cables_count": len(c.cables),
+                    }
+                    for c in filas
+                ],
+            })
+    except Exception as exc:
+        logger.exception("action=camaras_viewer_listado_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo obtener el listado de cámaras"}, status_code=500)
+
+
+@app.get("/api/admin/infra/camaras/viewer/duplicados")
+async def camaras_viewer_duplicados_web(request: Request) -> JSONResponse:
+    """Grupos de Cámaras raíz candidatas a duplicado por nombre normalizado extendido (sin
+    similitud difusa). Devuelve TODOS los grupos sin paginar — la cantidad de grupos es órdenes de
+    magnitud menor que el total de Cámaras raíz. Ver `core/services/camara_duplicados_service.py`."""
+    _require_admin(request)
+    try:
+        from core.services.camara_duplicados_service import detectar_grupos_duplicados
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            grupos = detectar_grupos_duplicados(session)
+            return JSONResponse({
+                "total_grupos": len(grupos),
+                "grupos": [
+                    {
+                        "clave_normalizada": g.clave_normalizada,
+                        "criterio": g.criterio,
+                        "estados_en_conflicto": g.estados_en_conflicto,
+                        "estado_mas_restrictivo": g.estado_mas_restrictivo,
+                        "miembros": [
+                            {
+                                "id": m.id,
+                                "nombre": m.nombre,
+                                "estado": m.estado,
+                                "botellas_count": m.botellas_count,
+                                "cables_count": m.cables_count,
+                            }
+                            for m in g.miembros
+                        ],
+                    }
+                    for g in grupos
+                ],
+            })
+    except Exception as exc:
+        logger.exception("action=camaras_viewer_duplicados_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo calcular los grupos de duplicados"}, status_code=500)
+
+
 @app.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
     request: Request,
@@ -4238,8 +4338,6 @@ async def smart_search_camaras_web(
             # estado ya apunte explícitamente a NO_OPERATIVA.
             if not body.incluir_no_operativas and estado_filter != _CamaraEstado.NO_OPERATIVA.value:
                 _query = _query.filter(Camara.estado != _CamaraEstado.NO_OPERATIVA)
-
-            all_camaras = _query.order_by(Camara.nombre).all()
 
             def get_camara_rutas(camara: Camara) -> list[dict]:
                 """Rutas del grupo completo (cámara + sus botellas) — reusa la función módulo-level
@@ -4294,10 +4392,12 @@ async def smart_search_camaras_web(
 
                 return False
 
-            # Si no hay términos, devolver todas
+            # Si no hay términos, devolver todas — LIMIT/OFFSET real en SQL (no hay términos que
+            # matchear contra servicios/cables computados, así que no hace falta materializar todo
+            # el resultado en memoria como sí requiere la rama con términos, más abajo).
             if not body.terms:
-                total = len(all_camaras)
-                paginated = all_camaras[offset:offset + limit]
+                total = _query.count()
+                paginated = _query.order_by(Camara.nombre).offset(offset).limit(limit).all()
                 camaras_response = []
                 for cam in paginated:
                     rutas_info = get_camara_rutas(cam)
@@ -4323,7 +4423,10 @@ async def smart_search_camaras_web(
                     "camaras": camaras_response,
                 })
 
-            # Aplicar términos con lógica AND
+            # Aplicar términos con lógica AND — necesita el set completo en memoria porque el match
+            # incluye campos computados (servicios/cables/rutas) que no se pueden filtrar en SQL sin
+            # reescribir esto como un join; a la escala real de cámaras raíz (~10k) es aceptable.
+            all_camaras = _query.order_by(Camara.nombre).all()
             matching_camaras = []
             for camara in all_camaras:
                 rutas_info = get_camara_rutas(camara)
@@ -4978,7 +5081,9 @@ async def cromo_verificador_por_tubo_web(request: Request, tubo_n_id: int) -> JS
 
 @app.get("/api/infra/cromo/botellas/{botella_n_id}/servicios")
 async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
-    """Servicios que pasan por los cables que tienen esta botella como uno de sus extremos."""
+    """Servicios que pasan por los cables que tienen esta botella como uno de sus extremos, más el
+    listado de esos cables (id, nombre, cantidad de servicios) para la tarjeta "Cables asociados"
+    del detalle de Botella en el Verificador."""
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_botella
     from db.session import AsyncSessionLocal
 
@@ -4996,6 +5101,12 @@ async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int)
             "clase": resultado.clase,
             "localidad": resultado.localidad,
             "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+            "cables": [
+                {"n_id": c.n_id, "nombre": c.nombre, "cantidad_servicios": c.cantidad_servicios}
+                for c in resultado.cables
+            ],
+            # Futuro: "empalmes": [...] — fusiones internas de la botella (`app.cromo_fusiones`),
+            # todavía no expuestas (ver comentario en `ResultadoBotella`, verificador.py).
         }
     )
 
@@ -5178,21 +5289,453 @@ async def botellas_estado_masivo_web(request: Request, body: BotellasEstadoMasiv
         return JSONResponse({"error": "No se pudo actualizar el estado de las Botellas"}, status_code=500)
 
 
+@app.get("/api/admin/infra/botellas/viewer")
+async def botellas_viewer_listado_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 30,
+    offset: int = 0,
+    incluir_no_operativas: bool = False,
+) -> JSONResponse:
+    """Listado paginado dual (Cromo + legado) para `/admin/servicios/viewer/Botellas` — delega
+    íntegramente en `buscar_botellas_unificadas` (mismo servicio y patrón `AsyncSessionLocal` que ya
+    usa `GET /api/infra/botellas/buscar`), con guarda admin adicional para el namespace del dashboard."""
+    _require_admin(request)
+    try:
+        from core.services.botellas_unificadas_service import buscar_botellas_unificadas
+        from db.session import AsyncSessionLocal
+
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        async with AsyncSessionLocal() as sesion:
+            resultado = await buscar_botellas_unificadas(
+                sesion, q=q, limit=limit, offset=offset, incluir_no_operativas=incluir_no_operativas
+            )
+
+        return JSONResponse({
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "incluir_no_operativas": incluir_no_operativas,
+            "botellas": [
+                {"origen": b.origen, "id": b.id, "nombre": b.nombre, "estado": b.estado}
+                for b in resultado.botellas
+            ],
+        })
+    except Exception as exc:
+        logger.exception("action=botellas_viewer_listado_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo obtener el listado de Botellas"}, status_code=500)
+
+
+@app.get("/api/admin/infra/botellas/viewer/duplicados")
+async def botellas_viewer_duplicados_web(request: Request) -> JSONResponse:
+    """Grupos de Botellas (Cromo + legado) candidatas a duplicado dentro de la misma Cámara padre.
+    Sin paginar — ver `core/services/botella_duplicados_service.py`. Cada miembro Cromo lleva
+    `tiene_cables` (señal "operativa" para elegir el destino al consolidar un grupo no `resoluble`,
+    ver `core/services/cromo/verificador.py::tiene_cables_asociados_batch_sync` — una sola query
+    batcheada para todos los n_ids de la página, nunca una por miembro); `None` para legado, donde esa
+    señal no existe."""
+    _require_admin(request)
+    try:
+        from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
+        from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            grupos = detectar_grupos_duplicados_botellas(session)
+            ids_cromo = [m.id for g in grupos for m in g.miembros if m.origen == "cromo"]
+            operativos = tiene_cables_asociados_batch_sync(session, ids_cromo)
+            return JSONResponse({
+                "total_grupos": len(grupos),
+                "grupos": [
+                    {
+                        "camara_padre_id": g.camara_padre_id,
+                        "camara_padre_nombre": g.camara_padre_nombre,
+                        "clave_normalizada": g.clave_normalizada,
+                        "criterio": g.criterio,
+                        "estados_en_conflicto": g.estados_en_conflicto,
+                        "estado_mas_restrictivo": g.estado_mas_restrictivo,
+                        "resoluble": g.resoluble,
+                        "miembros": [
+                            {
+                                "origen": m.origen,
+                                "id": m.id,
+                                "nombre": m.nombre,
+                                "estado": m.estado,
+                                "tiene_cables": (m.id in operativos) if m.origen == "cromo" else None,
+                            }
+                            for m in g.miembros
+                        ],
+                    }
+                    for g in grupos
+                ],
+            })
+    except Exception as exc:
+        logger.exception("action=botellas_viewer_duplicados_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo calcular los grupos de duplicados"}, status_code=500)
+
+
+class BotellasOperatividadRequestModel(BaseModel):
+    """Payload para consultar, en lote, cuáles de los n_ids Cromo dados tienen cables asociados."""
+
+    n_ids: list[int]
+
+
+@app.post("/api/admin/infra/botellas/operatividad")
+async def botellas_operatividad_web(request: Request, body: BotellasOperatividadRequestModel) -> JSONResponse:
+    """Cuáles de los n_ids Cromo dados tienen al menos un cable asociado (extremo_a/b) — señal
+    "operativa" para el flujo de consolidación manual con IDs tipeados a mano (sin pasar por un grupo
+    ya detectado). Una sola query batcheada, sin N+1."""
+    _require_admin(request)
+    try:
+        from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            operativos = tiene_cables_asociados_batch_sync(session, body.n_ids)
+        return JSONResponse({"operativos": sorted(operativos)})
+    except Exception as exc:
+        logger.exception("action=botellas_operatividad_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo calcular operatividad"}, status_code=500)
+
+
+class BotellaApropiarRequestModel(BaseModel):
+    """Payload para apropiar una Botella legado hacia su CromoBotella hermana (mismo padre)."""
+
+    legado_id: int
+    cromo_n_id: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/apropiar")
+async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestModel) -> JSONResponse:
+    """Apropia una Botella legado hacia su CromoBotella hermana: Cromo se conserva, la legado se
+    elimina físicamente tras reasignar sus FKs reales a la Cámara padre. Ver
+    `core/services/botella_merge_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_apropiar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = apropiar_legado_a_cromo(
+                    session, legado_id=body.legado_id, cromo_n_id=body.cromo_n_id, usuario=username,
+                )
+            except ApropiacionBotellaError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_apropiar user=%s legado_id=%s cromo_n_id=%s camara_padre_id=%s "
+                "estado_final=%s cables=%d empalmes=%d ingresos=%d aliases=%d",
+                username,
+                resultado.legado_id,
+                resultado.cromo_n_id,
+                resultado.camara_padre_id,
+                resultado.estado_final,
+                resultado.cables_migrados,
+                resultado.empalmes_migrados,
+                resultado.ingresos_migrados,
+                resultado.aliases_migrados,
+            )
+            return JSONResponse({
+                "ok": True,
+                "legado_id": resultado.legado_id,
+                "legado_nombre": resultado.legado_nombre,
+                "cromo_n_id": resultado.cromo_n_id,
+                "cromo_nombre": resultado.cromo_nombre,
+                "camara_padre_id": resultado.camara_padre_id,
+                "camara_padre_nombre": resultado.camara_padre_nombre,
+                "botellas_legado_migradas": resultado.botellas_legado_migradas,
+                "cromo_reasignadas": resultado.cromo_reasignadas,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "aliases_migrados": resultado.aliases_migrados,
+                "estado_final": resultado.estado_final,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_apropiar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo apropiar la Botella"}, status_code=500)
+
+
+class BotellaApropiarMasivoRequestModel(BaseModel):
+    """Payload para apropiar automáticamente TODOS los grupos de Botellas duplicadas resolubles."""
+
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/apropiar-masivo")
+async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMasivoRequestModel) -> JSONResponse:
+    """Apropia automáticamente TODOS los grupos de Botellas duplicadas `resoluble` (1 legado + 1
+    Cromo dentro del mismo padre) detectados en este momento — mismo patrón que
+    `POST /api/infra/camaras/merge-masivo`: cada grupo corre en su PROPIA transacción, así que un
+    fallo aislado no revierte los grupos ya apropiados exitosamente. Grupos no `resoluble` (todo
+    legado, todo cromo, o mixto con 2+ legado) se omiten — no tienen política de resolución
+    automática definida, ver `core/services/botella_duplicados_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_apropiar_masivo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.botella_duplicados_service import (
+            detectar_grupos_duplicados_botellas,
+            sugerir_apropiacion,
+        )
+        from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session_deteccion:
+            grupos = detectar_grupos_duplicados_botellas(session_deteccion)
+
+        resolubles = [(grupo, sugerir_apropiacion(grupo)) for grupo in grupos]
+        resolubles = [(grupo, par) for grupo, par in resolubles if par is not None]
+
+        detalle: list[dict[str, Any]] = []
+        for grupo, (legado_id, cromo_n_id) in resolubles:
+            with SessionLocal() as session:
+                try:
+                    resultado = apropiar_legado_a_cromo(
+                        session, legado_id=legado_id, cromo_n_id=cromo_n_id, usuario=username,
+                    )
+                except ApropiacionBotellaError as exc:
+                    session.rollback()
+                    detalle.append({
+                        "exito": False,
+                        "legado_id": legado_id,
+                        "cromo_n_id": cromo_n_id,
+                        "camara_padre_nombre": grupo.camara_padre_nombre,
+                        "error": str(exc),
+                    })
+                    continue
+
+                session.commit()
+                detalle.append({
+                    "exito": True,
+                    "legado_id": resultado.legado_id,
+                    "cromo_n_id": resultado.cromo_n_id,
+                    "camara_padre_nombre": resultado.camara_padre_nombre,
+                    "estado_final": resultado.estado_final,
+                })
+
+        grupos_apropiados = sum(1 for item in detalle if item["exito"])
+        grupos_con_error = len(detalle) - grupos_apropiados
+        logger.info(
+            "action=botellas_apropiar_masivo user=%s total_grupos=%d grupos_resolubles=%d "
+            "grupos_apropiados=%d grupos_con_error=%d",
+            username,
+            len(grupos),
+            len(resolubles),
+            grupos_apropiados,
+            grupos_con_error,
+        )
+        return JSONResponse({
+            "ok": True,
+            "total_grupos": len(grupos),
+            "grupos_resolubles": len(resolubles),
+            "grupos_apropiados": grupos_apropiados,
+            "grupos_con_error": grupos_con_error,
+            "detalle": detalle,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_apropiar_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo ejecutar la apropiación masiva"}, status_code=500)
+
+
+class BotellaConsolidarRequestModel(BaseModel):
+    """Payload para consolidar un grupo LIBRE de n_ids Cromo (no restringido a un grupo detectado
+    automáticamente) hacia un único n_id destino, más opcionalmente una o más Botellas legado y un
+    nombre corregido para el destino."""
+
+    ids_origen_cromo: list[int] = Field(default_factory=list)
+    id_destino_cromo: int
+    ids_legado: list[int] = Field(default_factory=list)
+    nombre_destino: str | None = None
+    motivo: str | None = None
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/consolidar")
+async def botellas_consolidar_web(request: Request, body: BotellaConsolidarRequestModel) -> JSONResponse:
+    """Consolida un grupo libre de Botellas Cromo duplicadas hacia un único n_id destino: crea/
+    actualiza filas en `app.cromo_botella_alias` (`accion='fusionar'`), opcionalmente migra una o más
+    Botellas legado hacia el destino (reusa `apropiar_legado_a_cromo` tal cual) y opcionalmente
+    corrige el nombre del destino si falta. Cierra el gap "Revisión manual" documentado 2026-08-14 en
+    `core/services/botella_duplicados_service.py`. Ver `core/services/cromo/consolidacion_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_consolidar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.botella_merge_service import ApropiacionBotellaError
+        from core.services.cromo.consolidacion_service import (
+            ConsolidacionBotellaError,
+            consolidar_grupo_botellas,
+        )
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = consolidar_grupo_botellas(
+                    session,
+                    ids_origen_cromo=body.ids_origen_cromo,
+                    id_destino_cromo=body.id_destino_cromo,
+                    ids_legado=body.ids_legado,
+                    nombre_destino=body.nombre_destino,
+                    motivo=body.motivo,
+                    usuario=username,
+                )
+            except (ConsolidacionBotellaError, ApropiacionBotellaError) as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_consolidar user=%s destino=%s origenes=%s legados=%s "
+                "alias_creados=%d alias_actualizados=%d repuntados=%d",
+                username,
+                resultado.id_destino_cromo,
+                body.ids_origen_cromo,
+                body.ids_legado,
+                resultado.alias_creados,
+                resultado.alias_actualizados,
+                len(resultado.alias_repuntados),
+            )
+            return JSONResponse({
+                "ok": True,
+                "id_destino_cromo": resultado.id_destino_cromo,
+                "alias_creados": resultado.alias_creados,
+                "alias_actualizados": resultado.alias_actualizados,
+                "alias_repuntados": resultado.alias_repuntados,
+                "alias_dependientes_recableados": resultado.alias_dependientes_recableados,
+                "legados_migrados": resultado.legados_migrados,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "camara_aliases_migrados": resultado.camara_aliases_migrados,
+                "nombre_anterior": resultado.nombre_anterior,
+                "nombre_nuevo": resultado.nombre_nuevo,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_consolidar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo consolidar el grupo"}, status_code=500)
+
+
+@app.get("/api/admin/infra/botellas/inconsistencias/exportar")
+async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
+    """Excel de inconsistencias de Botellas sin resolver: huérfanas (sin Cámara padre) + miembros de
+    grupos duplicados no `resoluble` automáticamente. Columnas: ID Cromo, Nombre, Cámara Padre,
+    Motivo — mismo patrón de export ya usado en este archivo para Cámaras (`pd.ExcelWriter(engine=
+    "openpyxl")` + `Response` con `Content-Disposition`)."""
+    username = _require_admin(request)
+    try:
+        from datetime import datetime, timezone
+
+        import pandas as pd
+
+        from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
+        from core.services.cromo.orfanas_service import buscar_huerfanas
+        from db.session import AsyncSessionLocal, SessionLocal
+
+        rows: list[dict[str, Any]] = []
+
+        async with AsyncSessionLocal() as sesion:
+            huerfanas = await buscar_huerfanas(sesion, limit=100_000, offset=0)
+        for h in huerfanas.botellas:
+            rows.append({
+                "ID Cromo": h.n_id,
+                "Nombre": h.nombre or "",
+                "Cámara Padre": "",
+                "Motivo": "Huérfana — sin Cámara padre asociada",
+            })
+
+        with SessionLocal() as session:
+            grupos = detectar_grupos_duplicados_botellas(session)
+        for g in grupos:
+            if g.resoluble:
+                continue
+            cuenta_cromo = sum(1 for m in g.miembros if m.origen == "cromo")
+            cuenta_legado = sum(1 for m in g.miembros if m.origen == "legado")
+            descripcion_grupo = (
+                f"Duplicado no resoluble — grupo de {len(g.miembros)} miembros "
+                f"({cuenta_cromo} Cromo, {cuenta_legado} legado)"
+            )
+            for m in g.miembros:
+                motivo = descripcion_grupo
+                if m.origen == "legado":
+                    motivo += f"; miembro legado (Camara.id={m.id})"
+                rows.append({
+                    "ID Cromo": m.id if m.origen == "cromo" else "",
+                    "Nombre": m.nombre,
+                    "Cámara Padre": g.camara_padre_nombre,
+                    "Motivo": motivo,
+                })
+
+        logger.info("action=botellas_inconsistencias_exportar user=%s filas=%d", username, len(rows))
+
+        df = pd.DataFrame(rows, columns=["ID Cromo", "Nombre", "Cámara Padre", "Motivo"])
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Inconsistencias", index=False)
+        output.seek(0)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return Response(
+            content=output.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="botellas_inconsistencias_{timestamp}.xlsx"'},
+        )
+    except Exception as exc:
+        logger.exception("action=botellas_inconsistencias_exportar_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
+
+
 @app.get("/api/infra/cromo-botellas/{n_id}/estado-asociacion")
 async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JSONResponse:
     """Chequeo liviano de una Botella Cromo puntual: ¿está huérfana (sin `camara_id`)? Usado por
     `BotellaDetalleUnificadaView.vue` para decidir si mostrar el panel de resolución individual en
-    vez de redirigir directo al Verificador Cromo."""
+    vez de redirigir directo al Verificador Cromo. Desde 2026-08-13 también trae `camara_id`/
+    `camara_nombre` (Cámara padre) cuando no está huérfana, para la navegación cruzada del
+    Verificador hacia `CamaraDetailView.vue`."""
     from sqlalchemy import select
 
     from db.models.cromo import CromoBotella
+    from db.models.infra import Camara
     from db.session import AsyncSessionLocal
 
     _require_auth(request)
     async with AsyncSessionLocal() as sesion:
         botella = (
             await sesion.execute(
-                select(CromoBotella.n_id, CromoBotella.nombre, CromoBotella.camara_id).where(CromoBotella.n_id == n_id)
+                select(
+                    CromoBotella.n_id,
+                    CromoBotella.nombre,
+                    CromoBotella.camara_id,
+                    Camara.nombre,
+                )
+                .outerjoin(Camara, Camara.id == CromoBotella.camara_id)
+                .where(CromoBotella.n_id == n_id)
             )
         ).first()
     if botella is None:
@@ -5201,6 +5744,8 @@ async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JS
         "n_id": botella[0],
         "nombre": botella[1],
         "huerfana": botella[2] is None,
+        "camara_id": botella[2],
+        "camara_nombre": botella[3],
     })
 
 
@@ -5298,14 +5843,15 @@ class CamaraMergeRequestModel(BaseModel):
 
     camara_principal_id: int
     camara_secundaria_id: int
+    guardar_alias: bool = True
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @app.post("/api/infra/camaras/merge")
 async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> JSONResponse:
-    """Unifica dos Cámaras raíz duplicadas: la secundaria pasa a ser Botella de la principal
-    (conserva auditoría/historial completo), sus Botellas propias y Botellas Cromo se reasignan a la
-    principal, y su nombre queda como alias. Ver `core/services/camara_merge_service.py`."""
+    """Fusiona dos Cámaras raíz duplicadas: la principal hereda todo lo heredable de la secundaria
+    (Botellas propias, Botellas Cromo, Cables, Empalmes, Ingresos, alias y auditoría/historial) y la
+    secundaria se elimina físicamente. Ver `core/services/camara_merge_service.py`."""
     username = _require_admin(request)
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
@@ -5324,6 +5870,7 @@ async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> 
                     principal_id=body.camara_principal_id,
                     secundaria_id=body.camara_secundaria_id,
                     usuario=username,
+                    guardar_alias=body.guardar_alias,
                 )
             except MergeCamarasError as exc:
                 session.rollback()
@@ -5332,12 +5879,17 @@ async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> 
             session.commit()
             logger.info(
                 "action=camaras_merge user=%s principal=%s secundaria=%s botellas_legado=%d "
-                "botellas_cromo=%d alias_creado=%s estado_final=%s",
+                "botellas_cromo=%d cables=%d empalmes=%d ingresos=%d aliases=%d alias_creado=%s "
+                "estado_final=%s",
                 username,
                 resultado.principal_id,
                 resultado.secundaria_id,
                 resultado.botellas_legado_migradas,
                 resultado.botellas_cromo_migradas,
+                resultado.cables_migrados,
+                resultado.empalmes_migrados,
+                resultado.ingresos_migrados,
+                resultado.aliases_migrados,
                 resultado.alias_creado,
                 resultado.estado_final,
             )
@@ -5345,8 +5897,13 @@ async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> 
                 "ok": True,
                 "principal_id": resultado.principal_id,
                 "secundaria_id": resultado.secundaria_id,
+                "secundaria_nombre": resultado.secundaria_nombre,
                 "botellas_legado_migradas": resultado.botellas_legado_migradas,
                 "botellas_cromo_migradas": resultado.botellas_cromo_migradas,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "aliases_migrados": resultado.aliases_migrados,
                 "alias_creado": resultado.alias_creado,
                 "estado_final": resultado.estado_final,
             })
@@ -5355,6 +5912,173 @@ async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> 
     except Exception as exc:
         logger.exception("action=camaras_merge_error user=%s error=%s", username, exc)
         return JSONResponse({"error": "No se pudo unificar las cámaras"}, status_code=500)
+
+
+class CamaraMergeGrupoRequestModel(BaseModel):
+    """Payload para fusionar TODAS las Cámaras de un grupo de duplicados dentro de una sola principal."""
+
+    camara_principal_id: int
+    camara_secundaria_ids: list[int]
+    guardar_alias: bool = True
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/merge-grupo")
+async def camaras_merge_grupo_web(request: Request, body: CamaraMergeGrupoRequestModel) -> JSONResponse:
+    """Fusiona TODAS las Cámaras de un grupo de duplicados dentro de una única principal, con un solo
+    click admin. Mismo mecanismo que `POST /api/infra/camaras/merge` (`unificar_camaras`), aplicado en
+    loop con `session.expire_all()` entre cada llamada — ver
+    `core/services/camara_merge_service.py::fusionar_grupo_camaras`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_merge_grupo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_merge_service import MergeCamarasError, fusionar_grupo_camaras
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = fusionar_grupo_camaras(
+                    session,
+                    principal_id=body.camara_principal_id,
+                    secundaria_ids=body.camara_secundaria_ids,
+                    usuario=username,
+                    guardar_alias=body.guardar_alias,
+                )
+            except MergeCamarasError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=camaras_merge_grupo user=%s principal=%s secundarias=%s botellas_legado=%d "
+                "botellas_cromo=%d cables=%d empalmes=%d ingresos=%d aliases=%d aliases_creados=%d "
+                "estado_final=%s",
+                username,
+                resultado.principal_id,
+                resultado.secundarias_fusionadas,
+                resultado.botellas_legado_migradas,
+                resultado.botellas_cromo_migradas,
+                resultado.cables_migrados,
+                resultado.empalmes_migrados,
+                resultado.ingresos_migrados,
+                resultado.aliases_migrados,
+                resultado.aliases_creados,
+                resultado.estado_final,
+            )
+            return JSONResponse({
+                "ok": True,
+                "principal_id": resultado.principal_id,
+                "secundarias_fusionadas": resultado.secundarias_fusionadas,
+                "secundarias_nombres": resultado.secundarias_nombres,
+                "botellas_legado_migradas": resultado.botellas_legado_migradas,
+                "botellas_cromo_migradas": resultado.botellas_cromo_migradas,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "aliases_migrados": resultado.aliases_migrados,
+                "aliases_creados": resultado.aliases_creados,
+                "estado_final": resultado.estado_final,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_merge_grupo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo fusionar el grupo de Cámaras"}, status_code=500)
+
+
+class CamaraMergeMasivoRequestModel(BaseModel):
+    """Payload para fusionar automáticamente TODOS los grupos de Cámaras duplicadas detectados."""
+
+    guardar_alias: bool = True
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/merge-masivo")
+async def camaras_merge_masivo_web(request: Request, body: CamaraMergeMasivoRequestModel) -> JSONResponse:
+    """Fusiona automáticamente TODOS los grupos de Cámaras duplicadas detectados en este momento —
+    para cada grupo, `sugerir_principal()` (`core/services/camara_duplicados_service.py`) elige la
+    Cámara con más `botellas_count + cables_count` (empate → id más bajo) y fusiona las demás dentro
+    de ella vía `fusionar_grupo_camaras()` (mismo mecanismo que la fusión de un grupo individual).
+
+    A diferencia de los demás endpoints de este dominio, cada grupo corre en su PROPIA transacción
+    (`with SessionLocal()` independiente por grupo, no una sola sesión compartida) — si un grupo falla
+    (ej. una Cámara ya fue tocada por otra operación concurrente entre la detección y la fusión), los
+    grupos anteriores que ya se commitearon exitosamente NO se revierten; el error de ese grupo queda
+    reportado en `detalle` y se sigue con el resto. Es una desviación deliberada del patrón habitual
+    (una única sesión/transacción por request) porque acá cada grupo es independiente por diseño
+    (nunca comparten Cámaras entre sí) y una falla aislada no debe descartar el resto del lote."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_merge_masivo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_duplicados_service import detectar_grupos_duplicados, sugerir_principal
+        from core.services.camara_merge_service import MergeCamarasError, fusionar_grupo_camaras
+        from db.session import SessionLocal
+
+        with SessionLocal() as session_deteccion:
+            grupos = detectar_grupos_duplicados(session_deteccion)
+
+        detalle: list[dict[str, Any]] = []
+        for grupo in grupos:
+            principal_id = sugerir_principal(grupo)
+            secundaria_ids = [m.id for m in grupo.miembros if m.id != principal_id]
+            with SessionLocal() as session:
+                try:
+                    resultado = fusionar_grupo_camaras(
+                        session,
+                        principal_id=principal_id,
+                        secundaria_ids=secundaria_ids,
+                        usuario=username,
+                        guardar_alias=body.guardar_alias,
+                    )
+                except MergeCamarasError as exc:
+                    session.rollback()
+                    detalle.append({
+                        "exito": False,
+                        "principal_id": principal_id,
+                        "secundaria_ids": secundaria_ids,
+                        "error": str(exc),
+                    })
+                    continue
+
+                session.commit()
+                detalle.append({
+                    "exito": True,
+                    "principal_id": resultado.principal_id,
+                    "secundarias_fusionadas": resultado.secundarias_fusionadas,
+                    "estado_final": resultado.estado_final,
+                })
+
+        grupos_fusionados = sum(1 for item in detalle if item["exito"])
+        grupos_con_error = len(detalle) - grupos_fusionados
+        logger.info(
+            "action=camaras_merge_masivo user=%s total_grupos=%d grupos_fusionados=%d grupos_con_error=%d",
+            username,
+            len(grupos),
+            grupos_fusionados,
+            grupos_con_error,
+        )
+        return JSONResponse({
+            "ok": True,
+            "total_grupos": len(grupos),
+            "grupos_fusionados": grupos_fusionados,
+            "grupos_con_error": grupos_con_error,
+            "detalle": detalle,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_merge_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo ejecutar la fusión masiva"}, status_code=500)
 
 
 def _serializar_extremo_cable(n_id: Any, clase: Any, legacy: Any, nombre: Any) -> dict[str, Any]:
@@ -5429,6 +6153,130 @@ async def cromo_cable_detalle_web(request: Request, n_id: int) -> JSONResponse:
     return JSONResponse(_serializar_detalle_cable(detalle))
 
 
+def _serializar_elemento_vivo(elemento: Any) -> dict[str, Any]:
+    return {
+        "n_id": elemento.n_id,
+        "version_id": elemento.version_id,
+        "clase": elemento.clase,
+        "clase_etiqueta": elemento.clase_etiqueta,
+        "clase_entidad": elemento.clase_entidad,
+        "nombre": elemento.nombre,
+        "notas": elemento.notas,
+        "atributos": [{"id": a.id, "etiqueta": a.etiqueta, "valor": a.valor} for a in elemento.atributos],
+        "payload_raw": elemento.payload_raw,
+    }
+
+
+@app.get("/api/infra/cromo/elementos/{n_id}/vivo")
+async def cromo_elemento_vivo_web(request: Request, n_id: int) -> JSONResponse:
+    """Visor en vivo de un elemento Cromo por `n_id` — GET directo contra Cromo (nunca contra las
+    tablas ya ingeridas), para auditar inconsistencias sin esperar a la próxima corrida de ingesta.
+    Sólo lectura, cualquier usuario autenticado (mismo criterio que el resto de `/api/infra/cromo/*`).
+    Nunca persiste nada."""
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.live_lookup_service import obtener_elemento_vivo
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
+            elemento = await obtener_elemento_vivo(cliente, sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    return JSONResponse(_serializar_elemento_vivo(elemento))
+
+
+def _serializar_cable_validacion(cable: Any) -> dict[str, Any]:
+    return {
+        "n_id": cable.n_id,
+        "nombre": cable.nombre,
+        "capacidad": cable.capacidad,
+        "extremo_a_n_id": cable.extremo_a_n_id,
+        "extremo_a_nombre": cable.extremo_a_nombre,
+        "extremo_b_n_id": cable.extremo_b_n_id,
+        "extremo_b_nombre": cable.extremo_b_nombre,
+    }
+
+
+def _serializar_tubo_validacion(tubo: Any) -> dict[str, Any]:
+    return {"n_id": tubo.n_id, "cable_n_id": tubo.cable_n_id, "orden": tubo.orden, "nombre_color": tubo.nombre_color}
+
+
+def _serializar_pelo_validacion(pelo: Any) -> dict[str, Any]:
+    return {
+        "n_id": pelo.n_id,
+        "tubo_n_id": pelo.tubo_n_id,
+        "cable_n_id": pelo.cable_n_id,
+        "numero_pelo": pelo.numero_pelo,
+        "color": pelo.color,
+        "servicio_raw": pelo.servicio_raw,
+        "servicio_numero": pelo.servicio_numero,
+    }
+
+
+def _serializar_fusion_validacion(fusion: Any) -> dict[str, Any]:
+    return {
+        "n_id": fusion.n_id,
+        "botella_n_id": fusion.botella_n_id,
+        "nombre_par": fusion.nombre_par,
+        "pelo_a_n_id": fusion.pelo_a_n_id,
+        "pelo_b_n_id": fusion.pelo_b_n_id,
+    }
+
+
+def _serializar_validacion_cromo(resultado: Any) -> dict[str, Any]:
+    return {
+        "n_id": resultado.n_id,
+        "clase": resultado.clase,
+        "tipo_objeto": resultado.tipo_objeto,
+        "nombre": resultado.nombre,
+        "notas": resultado.notas,
+        "latitud": resultado.latitud,
+        "longitud": resultado.longitud,
+        "codigo_modelo": resultado.codigo_modelo,
+        "id_legacy": resultado.id_legacy,
+        "cables": [_serializar_cable_validacion(c) for c in resultado.cables],
+        "tubos": [_serializar_tubo_validacion(t) for t in resultado.tubos],
+        "pelos": [_serializar_pelo_validacion(p) for p in resultado.pelos],
+        "fusiones": [_serializar_fusion_validacion(f) for f in resultado.fusiones],
+        "errores_parseo": [{"n_id": e.n_id, "clase": e.clase, "motivo": e.motivo} for e in resultado.errores_parseo],
+        "payload_raw": resultado.payload_raw,
+    }
+
+
+@app.get("/api/infra/cromo/validar/{n_id}")
+async def cromo_validar_datos_web(request: Request, n_id: int) -> JSONResponse:
+    """"Validar datos DB Cromo" (Tool Kit) — consulta un n_id en vivo contra Cromo y le aplica el
+    MISMO parseo que usa la ingesta (`parse_objeto`/`parse_arbol_botella`/`extraer_tubos_y_pelos`):
+    árbol completo de cables/tubos/pelos/fusiones, no sólo los atributos planos del objeto. Distinto
+    de `GET /api/infra/cromo/elementos/{n_id}/vivo` (ese es plano, sin árbol) y de
+    `VerificadorCromoView.vue` (que consulta servicios ya matcheados contra el inventario YA
+    ingerido) — herramienta separada, confirmada explícitamente con el usuario. Sin sesión de DB en
+    absoluto: cero acceso a la base de datos local, ni siquiera en lectura. Los servicios de cada
+    pelo se devuelven crudos (`servicio_raw`/`servicio_numero`), nunca matcheados contra
+    `app.servicios`. Sólo lectura, cualquier usuario autenticado."""
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.validador_datos_service import validar_elemento_cromo
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+
+    _require_auth(request)
+    try:
+        async with CromoClient(config=get_cromo_config()) as cliente:
+            resultado = await validar_elemento_cromo(cliente, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    return JSONResponse(_serializar_validacion_cromo(resultado))
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,
@@ -5438,6 +6286,7 @@ async def servicios_search_web(
     domicilio: str | None = None,
     tipo: str | None = None,
     estado: str | None = None,
+    categoria: str | None = None,
     limit: int = 30,
     offset: int = 0,
 ) -> JSONResponse:
@@ -5451,6 +6300,7 @@ async def servicios_search_web(
         "domicilio": domicilio,
         "tipo": tipo,
         "estado": estado,
+        "categoria": categoria,
         "limit": max(1, min(limit, 200)),
         "offset": max(offset, 0),
     }
@@ -5524,6 +6374,99 @@ async def servicios_detail_web(
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=servicios_detail_proxy_error user=%s id=%s error=%s", username, id_consultado, exc)
         return JSONResponse({"error": f"Error consultando detalle de servicio: {exc!s}"}, status_code=500)
+
+
+class ServicioCategoriaUpdateRequestModel(BaseModel):
+    categoria: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/{id}/categoria")
+async def servicio_categoria_web(request: Request, id: int, body: ServicioCategoriaUpdateRequestModel) -> JSONResponse:
+    """Cambia la categoría (C0-C6) de un Servicio individual — sólo admin. Proxya al endpoint
+    interno, mismo patrón que `servicios_search_web`/`servicios_detail_web`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_categoria result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria",
+                json={"categoria": body.categoria},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error actualizando categoría"}
+
+        logger.info(
+            "action=servicio_categoria user=%s id=%s categoria=%s status=%s",
+            username,
+            id,
+            body.categoria,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_categoria_error user=%s id=%s error=%s", username, id, exc)
+        return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+
+
+class ServiciosCategoriaMasivaRequestModel(BaseModel):
+    servicio_ids: list[int]
+    categoria: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/bulk-categoria")
+async def servicios_categoria_masiva_web(request: Request, body: ServiciosCategoriaMasivaRequestModel) -> JSONResponse:
+    """Cambia la categoría (C0-C6) de un lote de Servicios — sólo admin. Proxya al endpoint interno."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicios_categoria_masiva result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.servicio_ids:
+        return JSONResponse({"error": "No se especificaron servicios a actualizar"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/bulk-categoria",
+                json={"servicio_ids": body.servicio_ids, "categoria": body.categoria},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error actualizando categoría"}
+
+        logger.info(
+            "action=servicios_categoria_masiva user=%s cantidad=%d categoria=%s status=%s",
+            username,
+            len(body.servicio_ids),
+            body.categoria,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_categoria_masiva_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
 
 
 @app.post("/api/infra/upload_tracking")

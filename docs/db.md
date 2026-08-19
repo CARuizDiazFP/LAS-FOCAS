@@ -65,7 +65,12 @@ aceptan los siguientes:
 - `LIBRE`: cámara disponible para nuevos servicios.
 - `OCUPADA`: cámara en uso.
 - `BANEADA`: cámara excluida de operaciones.
-- `NO_OPERATIVA` (2026-08-11): sin ninguna señal operativa real — default de toda Cámara padre nueva sintetizada por `scripts/cromo_backfill_camara_padre.py`/`core/services/cromo/orfanas_service.py` (fail-closed: `cromo_botellas` no trackea estado, asumir `LIBRE` sería inventar un dato). También es el `estado` por defecto de una `CromoBotella` sin backfillear.
+- `NO_OPERATIVA`: sin ninguna señal operativa real. **Ya no es el default de alta** (revertido
+  2026-08-13, ver `docs/decisiones.md`) — sigue siendo un estado seteable/heredable válido (una
+  Cámara reusada, o un grupo escalado al más restrictivo, puede legítimamente terminar acá), pero
+  toda Cámara padre nueva sintetizada por `scripts/cromo_backfill_camara_padre.py`/
+  `core/services/cromo/orfanas_service.py`/`core/services/cromo/camara_padre_service.py` nace ahora
+  en `LIBRE`.
 
 **Estados retirados de la asignación activa (2026-08-11), aún presentes en el enum de Postgres por
 filas legado — no removibles sin recrear el tipo**:
@@ -117,9 +122,20 @@ filas legado — no removibles sin recrear el tipo**:
 | `direccion_2`         | String(255)    | Dirección complementaria. |
 | `estado_servicio`     | String(128), index | Estado actual informado en ingesta SLA. |
 | `cliente`             | String(255)    | Nombre del cliente (opcional). |
-| `categoria`           | Integer        | Categoría del servicio (opcional). |
+| `categoria`           | Integer, `NOT NULL DEFAULT 6`, `CHECK BETWEEN 0 AND 6` | Prioridad de reporting C0 (máxima) a C6 (sin clasificar/default). Editable sólo por admin vía `PATCH /servicios/{id}/categoria` y `PATCH /servicios/bulk-categoria`. Desde 2026-08-14 (antes existía sin CHECK/default, 100% NULL). |
+| `origen_datos`        | enum `app.servicio_origen_datos` (`MANUAL`\|`TRACKING`\|`INGEST_EXCEL`\|`INFERIDO_CROMO`), `NOT NULL DEFAULT 'MANUAL'` | Distingue un `Servicio` real de un placeholder sintetizado por el matching Cromo↔Servicio (`INFERIDO_CROMO`, `categoria=0`). Mismo patrón que `CamaraOrigenDatos`. Desde 2026-08-14. |
 | `nombre_archivo_origen`| String(255)   | Nombre del archivo de tracking original. |
 | `raw_tracking_data`   | JSON           | Datos crudos del tracking parseado. |
+
+**Placeholders de `origen_datos=INFERIDO_CROMO`** (2026-08-14): `core/services/cromo/ingesta.py::fase_servicios`
+crea un `Servicio` placeholder (`categoria=0`) cuando un pelo Cromo referencia un `servicio_numero` sin
+match y ese número es "plausible" (longitud 4-6 dígitos, ver `core/services/cromo/parser.py::es_numero_servicio_plausible`)
+— antes esos casos quedaban sólo como traza (`CromoServicioMatch.servicio_id = NULL`), nunca creaban
+fila. Backfill retroactivo (`scripts/cromo_backfill_placeholders_servicios.py`) corrido contra dev el
+2026-08-14: 9.054 placeholders creados, 112.340 filas de `cromo_servicio_match` resueltas, 3.144 quedaron
+sin resolver (números de 1-3 u 8-10 dígitos, basura de parseo). Un ingest real por Excel
+(`POST /servicios/ingest`) reetiqueta el placeholder a `origen_datos=INGEST_EXCEL` cuando lo enriquece
+por el mismo `numero_primer_servicio` (nunca toca `categoria`, que es admin-only).
 
 ### Tabla `servicio_empalme_association` (Legacy)
 
@@ -432,7 +448,7 @@ Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones
 | `vigente` | Boolean | Baja lógica, nunca `DELETE`. |
 | `primera_ingesta`, `ultima_ingesta`, `ultima_modificacion` | DateTime(tz) | — |
 | `camara_id` (FK) | Integer, nullable | → `camaras.id` (`ON DELETE SET NULL`). Desde 2026-08-11 (migración `20260811_01`); poblada por `scripts/cromo_backfill_camara_padre.py`, no por la ingesta — deliberadamente excluida de `_BOTELLA_CAMPOS`, sobrevive intacta a reingestas. |
-| `estado` | Enum `camara_estado` | `NOT NULL DEFAULT 'NO_OPERATIVA'`. `CHECK` sólo admite `LIBRE`/`OCUPADA`/`BANEADA`/`NO_OPERATIVA` (reusa el mismo tipo Postgres de `camaras.estado`, sin `DETECTADA`/`PENDIENTE_REVISION`, exclusivos del legado). |
+| `estado` | Enum `camara_estado` | `NOT NULL DEFAULT 'LIBRE'` (desde migración `20260813_01`, antes `'NO_OPERATIVA'`). `CHECK` sólo admite `LIBRE`/`OCUPADA`/`BANEADA`/`NO_OPERATIVA` (reusa el mismo tipo Postgres de `camaras.estado`, sin `DETECTADA`/`PENDIENTE_REVISION`, exclusivos del legado). |
 
 Índices: parcial en `id_legacy` (`WHERE id_legacy IS NOT NULL`), compuesto `(latitud, longitud)`,
 `camara_id`, y GIN funcional `to_tsvector('spanish', nombre)` para búsqueda de texto.
@@ -563,6 +579,41 @@ sembrada por la migración — el worker nunca arranca sin config.
 `/reload` y actualiza `ultima_ejecucion`/`ultimo_error` al final de cada corrida) y
 `web/app/main.py` (`GET`/`POST /api/admin/ingesta/cromo/config`, panel admin).
 
+### Tabla `cromo_botella_alias` (2026-08-19)
+
+Escudo manual contra la mala calidad de datos de Cromo (botellas duplicadas/triplicadas): cada fila
+decide, para un `id_cromo_origen` (n_id de Cromo, basura conocida), si debe ignorarse por completo o
+tratarse como el mismo objeto que otro `id_cromo_destino` ("golden record") ya bueno.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | Autoincrement. |
+| `id_cromo_origen` | BigInteger, `NOT NULL UNIQUE` | El n_id basura/duplicado. **Sin FK dura** — mismo criterio que el resto del dominio Cromo (`CromoCable.extremo_a_n_id`, `CromoFusion.botella_n_id`, etc.): puede cargarse antes de que Cromo entregue esa fila, que es justamente lo que se busca evitar. |
+| `id_cromo_destino` | BigInteger, nullable | El n_id "golden". Obligatorio sólo si `accion='fusionar'`, `NULL` si `accion='ignorar'` (CHECK `ck_cromo_botella_alias_destino_coherente`). |
+| `accion` | String(20) | `'fusionar'` \| `'ignorar'`, restringido por CHECK `ck_cromo_botella_alias_accion_valida` (no es un enum de Postgres — mismo criterio que `CromoIngestaEvento.accion`). |
+| `motivo` | Text, nullable | Por qué se marcó — única traza de auditoría mientras no exista un CRUD/UI para esta tabla. |
+| `creado_por` | String(128), nullable | Quién cargó la fila. |
+| `created_at` / `updated_at` | DateTime(tz) | `updated_at` sigue el mismo patrón `onupdate` que `RutaServicio.updated_at`. |
+
+**Migración:** `20260819_01_cromo_botella_alias.py`.
+
+**Uso:** `core/services/cromo/alias_service.py::cargar_alias_vigentes` carga TODAS las filas en
+memoria una sola vez por corrida (nunca una query por objeto) y `resolver_referencia` la usa para
+reescribir cualquier referencia blanda (`CromoCable.extremo_a_n_id`/`extremo_b_n_id`,
+`CromoFusion.botella_n_id`) que apunte al origen: `'fusionar'` la redirige al destino, `'ignorar'` la
+anula a `NULL`. `core/services/cromo/ingesta.py` la consulta en `_procesar_cable_directo`,
+`_procesar_botella_completa` y `_procesar_fusion_directa` antes de cada upsert — para un `n_id`
+aliaseado (cualquiera de las 2 acciones), la propia `CromoBotella` nunca se crea/actualiza.
+
+**Riesgo a tener presente al cargar filas a mano**: si `id_cromo_destino` corresponde a una clase que
+este repo nunca ingiere como `CromoBotella` (ODF, o cualquier clase fuera de `CLASES_BOTELLA`), esa
+fila queda como `REF_COLGADA` permanente en `fase_reconciliacion` — comportamiento esperado, no un
+bug: el destino de una fusión debe ser un n_id de botella real e ingerible.
+
+**Sin CRUD/API todavía** (fuera de alcance de este cambio): las filas se cargan por SQL directo o un
+script puntual. Tampoco se retira retroactivamente una `CromoBotella` que ya existía de una corrida
+ANTERIOR a que se cargara el alias — "saltar el upsert" sólo detiene escrituras futuras.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -599,6 +650,9 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260810_01` | `20260810_01_camara_padre_botella.py` | Columna `camaras.camara_padre_id` (FK auto-referencial + índice + `CHECK` anti-autoreferencia) y valor `INFERIDO` en enum `camara_origen_datos`, para la jerarquía Cámara→Botella (ver `docs/infra.md`) |
 | `20260811_01` | `20260811_01_cromo_botella_camara_padre.py` | Columnas `cromo_botellas.camara_id` (FK a `camaras.id`) y `estado` (+ `CHECK`), valores `NO_OPERATIVA` en `camara_estado` e `INFERIDO_CROMO` en `camara_origen_datos` — vincula Botellas Cromo a una Cámara padre propia (ver `docs/infra.md`, sección "Cámara padre para Botellas Cromo") |
 | `20260811_02` | `20260811_02_ingresos_sin_match.py` | Tabla `app.ingresos_sin_match` — reemplaza el auto-registro `PENDIENTE_REVISION` en ingresos sin match (ver `docs/infra.md`, sección homónima) |
+| `20260813_01` | `20260813_01_cromo_botella_default_libre.py` | `ALTER COLUMN cromo_botellas.estado SET DEFAULT 'LIBRE'` (antes `'NO_OPERATIVA'`) — reversión de la política fail-closed del `20260811_01`, metadata-only (ver `docs/decisiones.md`) |
+| `20260814_01` | `20260814_01_servicios_categoria_check.py` | Backfill `servicios.categoria` NULL→6, luego `SET DEFAULT 6` + `SET NOT NULL` + `CHECK ck_servicios_categoria_valida (categoria BETWEEN 0 AND 6)` — la columna ya existía sin restricciones, 100% NULL (ver `docs/decisiones.md`) |
+| `20260814_02` | `20260814_02_servicios_origen_datos.py` | Enum `app.servicio_origen_datos` (`MANUAL`/`TRACKING`/`INGEST_EXCEL`/`INFERIDO_CROMO`) + columna `servicios.origen_datos NOT NULL DEFAULT 'MANUAL'`, mismo patrón que `camara_origen_datos` |
 
 ---
 

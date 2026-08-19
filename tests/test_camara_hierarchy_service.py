@@ -13,6 +13,7 @@ from core.services.camara_hierarchy_service import (
     extraer_base,
     ids_camaras_con_cromo_hijos,
     normalizar_para_agrupar,
+    normalizar_para_agrupar_extendido,
     resolver_o_crear_padre,
     resolver_o_crear_padre_desde_base,
 )
@@ -45,6 +46,13 @@ def _sin_botellas_cromo(monkeypatch):
         ("Bot 2 Tunel Calle 1 N 2670", "Tunel Calle 1 N 2670"),
         # Minúscula — la regex es case-insensitive.
         ("bot 2 calle principal 100", "calle principal 100"),
+        # Punto DESPUÉS del dígito (2026-08-14, bug real): sin el `\.?` final, el punto sobrevivía
+        # como residuo al inicio del resultado — ids reales 7683 y 6561.
+        ("Bot 2. Cra Marcos Sastre y Colectora Este", "Cra Marcos Sastre y Colectora Este"),
+        # El punto interno legítimo ("Poste Est .") no debe tocarse — sólo el residuo del token "Bot N.".
+        ("Bot 2. Poste Est . Bs. As. C.F", "Poste Est . Bs. As. C.F"),
+        # Punto pegado sin espacio tras el dígito, análogo al caso ya cubierto "Bot 3CF" sin punto.
+        ("Cra Test 100 Bot 2.CF", "Cra Test 100 CF"),
     ],
 )
 def test_extraer_base_casos_reales(nombre: str, base_esperada: str) -> None:
@@ -70,6 +78,15 @@ def test_normalizar_para_agrupar_ignora_acentos_mayusculas_y_puntuacion() -> Non
     a = normalizar_para_agrupar("Cra. 14 de Julio 240, CF")
     b = normalizar_para_agrupar("cra 14 de julio 240 cf")
     assert a == b
+
+
+def test_normalizar_para_agrupar_extendido_colapsa_caso_real() -> None:
+    """Caso real documentado (docs/decisiones.md, docs/infra.md): ninguna comparte sufijo/prefijo, ni
+    siquiera el mismo token inicial ("Cámara" vs "Cra") — sólo colapsan aplicando abreviatura
+    ("cf" -> "") y sinónimo ("camara" -> "cra") sobre el string ya normalizado."""
+    a = normalizar_para_agrupar_extendido("Cámara 14 de Julio 240")
+    b = normalizar_para_agrupar_extendido("Cra 14 de Julio 240 CF")
+    assert a == b == "cra 14 de julio 240"
 
 
 def test_estado_mas_restrictivo_prioriza_baneada() -> None:
@@ -240,6 +257,33 @@ def test_resolver_o_crear_padre_desde_base_reusa_camara_con_solo_botellas_cromo(
 
     assert resultado is padre_cromo
     session.add.assert_not_called()
+
+
+def test_resolver_o_crear_padre_desde_base_reusa_padre_que_solo_coincide_por_normalizacion_extendida() -> None:
+    """Hallazgo real 2026-08-14: con la normalización básica, 'Bot Tza San Antonio 640' (ya padre) y
+    'Bot. Tza.San Antonio 640 CF' (nueva base a resolver) generaban 2 filas para el mismo sitio."""
+    session = MagicMock()
+    padre_existente = Camara(id=10, nombre="Bot Tza San Antonio 640", camara_padre_id=None)
+    padre_existente.botellas = [Camara(id=11, nombre="Bot Tza San Antonio 640 Bot 2")]
+    session.query.return_value.filter.return_value.all.return_value = [padre_existente]
+
+    resultado = resolver_o_crear_padre_desde_base(session, "Bot. Tza.San Antonio 640 CF", usuario="test")
+
+    assert resultado is padre_existente
+    session.add.assert_not_called()
+
+
+def test_resolver_o_crear_padre_desde_base_absorbe_pelada_que_solo_coincide_por_normalizacion_extendida() -> None:
+    """Ídem, sin hijos previos: la pelada 'Cra Balcarce 302' se absorbe como botella del padre nuevo en
+    vez de quedar como una segunda fila raíz para el mismo sitio."""
+    session = MagicMock()
+    pelada = Camara(id=20, nombre="Cra Balcarce 302", camara_padre_id=None)
+    session.query.return_value.filter.return_value.all.return_value = [pelada]
+
+    resultado = resolver_o_crear_padre_desde_base(session, "Cra Balcarce 302 CF", usuario="test")
+
+    assert resultado is not pelada
+    assert pelada.camara_padre_id == resultado.id
 
 
 def test_ids_camaras_con_cromo_hijos_dedupe_y_descarta_nulos() -> None:

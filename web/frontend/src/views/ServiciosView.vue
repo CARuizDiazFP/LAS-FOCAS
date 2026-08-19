@@ -84,6 +84,20 @@
           <strong>{{ total.toLocaleString('es-AR') }}</strong> servicios · mostrando {{ items.length }}
         </span>
       </div>
+
+      <div class="servicios-view__toolbar-row servicios-view__chips-row">
+        <span class="servicios-view__chips-label">Categoría</span>
+
+        <button
+          v-for="chip in categoriaChips"
+          :key="chip.value"
+          type="button"
+          :class="['servicios-view__chip', { 'is-active': filtros.categoria === chip.value }]"
+          @click="setCategoria(chip.value)"
+        >
+          {{ chip.label }}
+        </button>
+      </div>
     </div>
 
     <div ref="scrollEl" class="servicios-view__scroll">
@@ -93,7 +107,9 @@
             v-for="item in items"
             :key="item.numero_primer_servicio"
             :servicio="item"
+            :selected="seleccionadas.has(item.id)"
             @open-detail="openServicioDetail"
+            @toggle-select="toggleSeleccion(item.id)"
           />
         </div>
 
@@ -108,8 +124,16 @@
               @click="selectedIdOrigen = item.numero_primer_servicio"
               @keyup.enter="selectedIdOrigen = item.numero_primer_servicio"
             >
+              <input
+                type="checkbox"
+                class="servicios-view__list-checkbox"
+                :checked="seleccionadas.has(item.id)"
+                @click.stop
+                @change="toggleSeleccion(item.id)"
+              />
               <span :class="['servicios-view__list-dot', `is-${estadoServicioToken(item.estado_servicio)}`]" aria-hidden="true"></span>
               <span class="servicios-view__list-cliente">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
+              <span class="servicios-view__list-categoria">{{ categoriaLabel(item.categoria) }}</span>
               <span class="servicios-view__list-historico">{{ historicoLabel(item) }}</span>
               <span class="servicios-view__list-tipo">{{ (item.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
               <span class="servicios-view__list-cta">{{ ctaLabel(item) }}</span>
@@ -185,6 +209,23 @@
 
       <div ref="sentinel" class="servicios-view__sentinel" aria-hidden="true"></div>
     </div>
+
+    <ServiciosCambioCategoriaModal
+      :open="modalCategoriaOpen"
+      :servicio-ids="Array.from(seleccionadas)"
+      :categoria="categoriaMasivaSeleccionada"
+      @close="modalCategoriaOpen = false"
+      @aplicada="handleCategoriaAplicada"
+    />
+
+    <ServiciosBulkActionsPanel
+      v-if="seleccionadas.size > 0"
+      :count="seleccionadas.size"
+      v-model="categoriaMasivaSeleccionada"
+      :error="errorCategoriaMasiva"
+      @apply="modalCategoriaOpen = true"
+      @clear="limpiarSeleccion"
+    />
   </section>
 </template>
 
@@ -192,8 +233,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { estadoServicioToken, searchServicios, type ServicioItem } from '../api/servicios';
+import { categoriaLabel, estadoServicioToken, searchServicios, type ServicioItem } from '../api/servicios';
 import ServicioCard from '../components/servicios/ServicioCard.vue';
+import ServiciosBulkActionsPanel from '../components/servicios/ServiciosBulkActionsPanel.vue';
+import ServiciosCambioCategoriaModal from '../components/servicios/ServiciosCambioCategoriaModal.vue';
 
 const LIMIT = 30;
 const VISTA_STORAGE_KEY = 'servicios.vista';
@@ -208,8 +251,13 @@ const offset = ref(0);
 const hasMore = ref(true);
 const sentinel = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
-const filtros = ref({ tipo: '', estado: '' });
+// Default C6 (sin clasificar) — prioriza la cola de triage al entrar a la vista.
+const filtros = ref({ tipo: '', estado: '', categoria: '6' });
 const selectedIdOrigen = ref('');
+const seleccionadas = ref<Set<number>>(new Set());
+const categoriaMasivaSeleccionada = ref(6);
+const modalCategoriaOpen = ref(false);
+const errorCategoriaMasiva = ref('');
 
 const vista = ref<'grid' | 'list'>(
   (localStorage.getItem(VISTA_STORAGE_KEY) as 'grid' | 'list' | null) === 'list' ? 'list' : 'grid',
@@ -225,6 +273,11 @@ const estadoChips = [
   { label: 'Activo', value: 'activo', token: 'ok' as const },
   { label: 'Observado', value: 'observado', token: 'warn' as const },
   { label: 'Baja', value: 'baja', token: 'error' as const },
+];
+
+const categoriaChips = [
+  { label: 'Todas', value: '' },
+  ...[0, 1, 2, 3, 4, 5, 6].map((categoria) => ({ label: categoriaLabel(categoria), value: String(categoria) })),
 ];
 
 const selectedItem = computed(() => {
@@ -253,6 +306,7 @@ async function loadNextPage(): Promise<void> {
       q: query.value.trim(),
       tipo: filtros.value.tipo,
       estado: filtros.value.estado,
+      categoria: filtros.value.categoria,
       limit: LIMIT,
       offset: offset.value,
     });
@@ -273,6 +327,7 @@ async function reloadFromZero(): Promise<void> {
   total.value = 0;
   offset.value = 0;
   hasMore.value = true;
+  seleccionadas.value = new Set();
   await loadNextPage();
 }
 
@@ -294,9 +349,34 @@ function setEstado(value: string): void {
   void reloadFromZero();
 }
 
+function setCategoria(value: string): void {
+  if (filtros.value.categoria === value) return;
+  filtros.value.categoria = value;
+  void reloadFromZero();
+}
+
 function clearFiltros(): void {
   query.value = '';
-  filtros.value = { tipo: '', estado: '' };
+  filtros.value = { tipo: '', estado: '', categoria: '' };
+  void reloadFromZero();
+}
+
+function toggleSeleccion(id: number): void {
+  const next = new Set(seleccionadas.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  seleccionadas.value = next;
+}
+
+function limpiarSeleccion(): void {
+  seleccionadas.value = new Set();
+}
+
+function handleCategoriaAplicada(payload: { actualizados: number; noEncontrados: number[] }): void {
+  errorCategoriaMasiva.value =
+    payload.noEncontrados.length > 0
+      ? `${payload.noEncontrados.length} servicio(s) ya no existían y no se actualizaron.`
+      : '';
   void reloadFromZero();
 }
 
@@ -595,6 +675,11 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
 
+.servicios-view__list-checkbox {
+  flex: none;
+  accent-color: var(--color-accent);
+}
+
 .servicios-view__list-dot {
   width: 6px;
   height: 6px;
@@ -605,6 +690,16 @@ onBeforeUnmount(() => {
 .servicios-view__list-dot.is-ok { background: var(--color-state-ok); }
 .servicios-view__list-dot.is-warn { background: var(--color-state-warn); }
 .servicios-view__list-dot.is-error { background: var(--color-state-error); }
+
+.servicios-view__list-categoria {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-200);
+}
 
 .servicios-view__list-cliente {
   flex: 1;

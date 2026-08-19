@@ -19,6 +19,12 @@
       description="Notificaciones Slack del worker de cámaras baneadas. Configura intervalo, canales y estado."
       icon="🚫"
     />
+    <ServiceCard
+      to="/admin/servicios/viewer"
+      title="Viewer"
+      description="Dashboards de datos operativos para mantenimiento — Cámaras y próximos módulos."
+      icon="📡"
+    />
     <!-- Futuras tarjetas de servicio se agregan aquí -->
   </div>
 </template>

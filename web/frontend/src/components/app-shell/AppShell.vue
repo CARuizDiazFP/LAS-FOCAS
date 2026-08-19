@@ -97,7 +97,7 @@
         </footer>
       </aside>
 
-      <main class="app-shell__main">
+      <main :class="['app-shell__main', { 'app-shell__main--admin': isAdminSection }]">
         <div id="dynamic-module-actions" class="app-shell__module-actions">
           <slot name="module-actions"></slot>
         </div>
@@ -123,6 +123,7 @@ type SidebarViewId =
   | 'comparadorVlans'
   | 'comparadorFo'
   | 'verificadorCromo'
+  | 'validarDatosCromo'
   | 'inventarioCablesCromo'
   | 'inventarioBotellas'
   | 'none';
@@ -147,6 +148,7 @@ interface SidebarModule {
 const route = useRoute();
 const { state } = useSession();
 
+const isAdminSection = computed(() => route.path.startsWith('/admin'));
 const username = computed(() => state.value.username ?? '');
 const roleLabel = computed(() => state.value.role ?? '');
 const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
@@ -210,6 +212,7 @@ const sidebarModules: SidebarModule[] = [
       { id: 'comparadorVlans', label: 'Comparador de VLANs', to: { path: '/toolkit/vlan' } },
       { id: 'comparadorFo', label: 'Comparador FO', to: { path: '/fo' } },
       { id: 'verificadorCromo', label: 'Verificador Cromo', to: { path: '/infra/cromo/verificador' } },
+      { id: 'validarDatosCromo', label: 'Validar datos DB Cromo', to: { path: '/toolkit/validar-datos-cromo' } },
     ],
   },
 ];
@@ -225,6 +228,7 @@ const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
   comparadorVlans: 'toolKit',
   comparadorFo: 'toolKit',
   verificadorCromo: 'toolKit',
+  validarDatosCromo: 'toolKit',
 };
 
 function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): SidebarViewId {
@@ -267,6 +271,9 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
   }
   if (currentRoute.path === '/infra/cromo/verificador') {
     return 'verificadorCromo';
+  }
+  if (currentRoute.path === '/toolkit/validar-datos-cromo') {
+    return 'validarDatosCromo';
   }
   if (currentRoute.path === '/infra/cromo/cables' || currentRoute.path.startsWith('/infra/cromo/cables/ID')) {
     return 'inventarioCablesCromo';
@@ -588,6 +595,10 @@ watch(
   min-width: 0;
   min-height: 100vh;
   padding: 0;
+}
+
+.app-shell__main--admin {
+  padding: 24px 26px 40px;
 }
 
 .app-shell__module-actions {

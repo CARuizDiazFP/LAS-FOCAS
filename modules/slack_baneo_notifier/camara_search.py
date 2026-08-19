@@ -70,7 +70,16 @@ _RE_MULTI_BOT = re.compile(
 # sigue otro dígito ("0"), y la coincidencia se descarta. El lookahead (no un `\b` de cierre) es
 # necesario porque hay nombres reales sin espacio tras el número ("Bot 3CF") donde un `\b` de cierre
 # fallaría (dígito seguido de letra, ambos \w, sin límite de palabra entre ellos).
-RE_BOT_SUFIJO = re.compile(r"\bbot\.?\s*[1-9](?!\d)", re.IGNORECASE)
+#
+# `\.?` final (2026-08-14): bug real encontrado en datos de Cromo — nombres con el punto DESPUÉS del
+# dígito ("Bot 2. Cra Marcos Sastre y Colectora Este") dejaban ese punto como residuo al inicio del
+# nombre resultante ("`. Cra Marcos Sastre y Colectora Este`"), porque el regex sólo consumía un punto
+# ANTES del dígito ("Bot. 2"), nunca después. Va después del lookahead a propósito: el lookahead sigue
+# evaluando el carácter inmediatamente siguiente al dígito sin que el punto opcional interfiera (
+# "Bot 30 de Septiembre..." sigue sin matchear, el lookahead ve "0" antes de que el `\.?` entre en
+# juego). Confirmado real contra `lasfocasdev-postgres`: 7 Cámaras con este residuo, ver
+# `docs/decisiones.md` entrada 2026-08-14.
+RE_BOT_SUFIJO = re.compile(r"\bbot\.?\s*[1-9](?!\d)\.?", re.IGNORECASE)
 
 # Detecta sufijos de ruido operativo: "- CUADRILLA DE HIDROCONS", "/ Móvil 4", etc.
 # Solo corta en separador (-, /, |) SEGUIDO de una stopword operativa conocida.
@@ -186,6 +195,15 @@ def _expandir_abreviaturas(texto: str) -> str:
         texto = re.sub(patron, reemplazo, texto, flags=re.IGNORECASE)
     texto = re.sub(r"\s+", " ", texto).strip()
     return texto
+
+
+def expandir_abreviaturas_y_sinonimos(texto_normalizado: str) -> str:
+    """Aplica sobre un texto YA normalizado (unaccent+lowercase+sin puntuación — ej. la salida de
+    `camara_hierarchy_service.normalizar_para_agrupar`) la misma expansión de abreviaturas viales y
+    sinónimos que ya usa `buscar_camara()` para texto libre de técnicos — reusa `_ABREVIATURAS`/
+    `_SINONIMOS` sin duplicar las tablas. Pensada para detectar candidatas a duplicado entre nombres
+    ya estructurados de la DB (`core/services/camara_duplicados_service.py`), no sólo texto libre."""
+    return _aplicar_sinonimos(_expandir_abreviaturas(texto_normalizado))
 
 
 def extraer_nombre_camara(mensaje: str) -> str:

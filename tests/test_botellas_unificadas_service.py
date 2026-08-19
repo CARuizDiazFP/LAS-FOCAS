@@ -41,7 +41,7 @@ class _SesionFake:
 
 
 _FILA_CROMO = ("cromo", 6638808, "Cra Plaza de los Ingleses CF", "LIBRE")
-_FILA_CROMO_SIN_BACKFILL = ("cromo", 9999999, "Cra Sin Backfillear CF", "NO_OPERATIVA")
+_FILA_CROMO_NO_OPERATIVA = ("cromo", 9999999, "Cra No Operativa CF", "NO_OPERATIVA")
 _FILA_LEGADO = ("legado", 1065, "Cra 14 de Julio 240 CF", "LIBRE")
 
 
@@ -110,7 +110,8 @@ async def test_buscar_botellas_respeta_limit_offset():
 async def test_buscar_botellas_estado_real_para_origen_cromo_post_backfill():
     """Desde 2026-08-11 Cromo aporta estado real (poblado por
     scripts/cromo_backfill_camara_padre.py) — la columna nunca es NULL (NOT NULL DEFAULT
-    'NO_OPERATIVA'), así que una fila sin backfillear expone 'NO_OPERATIVA', no ausencia de dato."""
+    'LIBRE' desde 2026-08-13, antes 'NO_OPERATIVA'), así que una fila sin backfillear expone
+    'LIBRE', no ausencia de dato."""
     sesion = _SesionFake(total=1, filas=[_FILA_CROMO])
 
     resultado = await servicio.buscar_botellas_unificadas(sesion)
@@ -131,7 +132,7 @@ async def test_buscar_botellas_default_no_incluye_no_operativas():
 
 @pytest.mark.asyncio
 async def test_buscar_botellas_incluir_no_operativas_true_viaja_a_la_query():
-    sesion = _SesionFake(total=1, filas=[_FILA_CROMO_SIN_BACKFILL])
+    sesion = _SesionFake(total=1, filas=[_FILA_CROMO_NO_OPERATIVA])
 
     resultado = await servicio.buscar_botellas_unificadas(sesion, incluir_no_operativas=True)
 

@@ -89,7 +89,9 @@ const emit = defineEmits<{
 const { csrf } = useSession();
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const contexto = ref<EstadoContexto | null>(null);
-const estadosDisponibles = ref<string[]>(['LIBRE', 'BANEADA', 'EN_MANTENIMIENTO', 'INACCESIBLE']);
+// Fallback si el fetch de /estado todavía no resolvió — vocabulario vigente desde 2026-08-11
+// (LIBRE/OCUPADA/BANEADA/NO_OPERATIVA); se pisa siempre con `data.estados_disponibles` real abajo.
+const estadosDisponibles = ref<string[]>(['LIBRE', 'OCUPADA', 'BANEADA', 'NO_OPERATIVA']);
 const newEstado = ref('LIBRE');
 const motivo = ref('');
 const loading = ref(false);
@@ -194,12 +196,12 @@ watch(
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .camera-state-title-row {
@@ -212,7 +214,7 @@ watch(
 
 .camera-state-title-row strong {
   font-size: 1.2rem;
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .close-btn {
@@ -241,13 +243,13 @@ watch(
 }
 
 .camera-state-badge.ok {
-  background: rgba(16, 185, 129, 0.16);
-  color: #bbf7d0;
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
 }
 
 .camera-state-badge.warning {
-  background: rgba(249, 115, 22, 0.16);
-  color: #fed7aa;
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
 }
 
 .camera-state-meta-row {
@@ -260,7 +262,7 @@ watch(
 .camera-state-meta-row span {
   border-radius: 999px;
   padding: 8px 12px;
-  background: rgba(148, 163, 184, 0.12);
+  background: color-mix(in srgb, var(--color-neutral-400) 12%, transparent);
   color: var(--muted);
   font-size: 0.82rem;
 }
@@ -269,13 +271,13 @@ watch(
   margin-bottom: 18px;
   padding: 16px;
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
 }
 
 .camera-state-incidents-title {
   margin-bottom: 10px;
-  color: #93c5fd;
+  color: var(--color-accent);
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -289,11 +291,11 @@ watch(
 }
 
 .camera-state-incident-item + .camera-state-incident-item {
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  border-top: 1px solid var(--color-divider);
 }
 
 .camera-state-incident-item strong {
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .camera-state-incident-item span {
@@ -305,9 +307,9 @@ watch(
   margin-bottom: 16px;
   padding: 16px;
   border-radius: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--color-bg);
 }
 
 .camera-state-select {
@@ -326,7 +328,7 @@ watch(
 }
 
 .error {
-  color: #fecaca;
+  color: var(--error);
 }
 
 @media (max-width: 720px) {

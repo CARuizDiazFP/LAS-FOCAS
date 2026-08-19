@@ -538,7 +538,7 @@
             />
           </div>
           <button class="btn subtle" @click="addTerm">Agregar término</button>
-          <button class="btn primary" :disabled="loading || (searchTerms.length === 0 && !activeStateFilter)" @click="searchCamaras">
+          <button class="btn primary" :disabled="loading" @click="runSearch">
             <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
             Buscar
           </button>
@@ -585,12 +585,12 @@
         Buscando...
       </div>
       <div v-else-if="!hasSearched" class="infra-state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <p>Agregá términos de búsqueda y presioná "Buscar"</p>
+        <i class="ph ph-circle-notch infra-spin" aria-hidden="true"></i>
+        Cargando cámaras...
       </div>
       <div v-else-if="camaras.length === 0" class="infra-state-box">
         <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <p>Sin resultados para estos términos.</p>
+        <p>Sin resultados.</p>
       </div>
       <div v-else class="fop-grid">
         <article
@@ -619,6 +619,14 @@
             >Detalle</RouterLink>
           </div>
         </article>
+      </div>
+
+      <div v-if="!loading && hasSearched && total > PAGE_SIZE" class="infra-pagination">
+        <button class="btn subtle" type="button" :disabled="offset === 0" @click="prevPage">‹ Anterior</button>
+        <span class="infra-pagination-info">
+          Página {{ Math.floor(offset / PAGE_SIZE) + 1 }} de {{ Math.max(1, Math.ceil(total / PAGE_SIZE)) }}
+        </span>
+        <button class="btn subtle" type="button" :disabled="offset + PAGE_SIZE >= total" @click="nextPage">Siguiente ›</button>
       </div>
     </div>
   </article>
@@ -657,6 +665,13 @@ const hasSearched = ref(false);
 const statusText = ref('');
 const statusVariant = ref('muted');
 
+// --- Paginación del lado del servidor (2026-08-13) — antes /infra no cargaba nada hasta que el
+// usuario escribía un término o tocaba un chip de estado; ahora carga sin filtros al montar,
+// paginado en `offset`/`limit`, igual contrato que ya soporta POST /api/infra/smart-search.
+const PAGE_SIZE = 100;
+const offset = ref(0);
+const total = ref(0);
+
 function setStatus(text: string, variant = 'muted') {
   statusText.value = text;
   statusVariant.value = variant;
@@ -680,11 +695,9 @@ function removeTerm(i: number) {
 function clearAll() {
   searchTerms.value = [];
   searchInput.value = '';
-  camaras.value = [];
-  hasSearched.value = false;
   activeStateFilter.value = null;
   incluirNoOperativas.value = false;
-  setStatus('');
+  void runSearch();
 }
 
 // --- Filtro rápido por estado ---
@@ -695,18 +708,12 @@ const activeStateFilter = ref<string | null>(null);
 const incluirNoOperativas = ref(false);
 
 function onToggleIncluirNoOperativas() {
-  // Mismo criterio que toggleStateFilter: si ya hay resultados, re-consulta con el filtro nuevo;
-  // si todavía no se buscó nada, searchCamaras() no-opea sola (mismo guard que el botón "Buscar").
-  searchCamaras();
+  void runSearch();
 }
 
 function toggleStateFilter(estado: string) {
   activeStateFilter.value = activeStateFilter.value === estado ? null : estado;
-  // Si ya hay resultados, el computed filtra instantáneamente sin nueva llamada.
-  // Si no hay resultados aún (primera interacción), disparar búsqueda "traer todo".
-  if (activeStateFilter.value !== null && !hasSearched.value) {
-    searchCamaras();
-  }
+  void runSearch();
 }
 
 // DETECTADA y el pseudo-estado "TRACKING" (client-side, basado en camara.rutas.length > 0) fueron
@@ -751,14 +758,13 @@ function camaraIdLabel(camara: Record<string, unknown>): string {
 }
 
 async function searchCamaras() {
-  // Permitir la búsqueda si hay términos de texto O si hay un filtro de estado activo.
-  // Con terms:[] la API devuelve todas las cámaras (ver SmartSearchRequestModel).
-  if (searchTerms.value.length === 0 && !activeStateFilter.value) return;
   loading.value = true;
   hasSearched.value = true;
   const statusMsg = searchTerms.value.length > 0
     ? `Buscando con ${searchTerms.value.length} término(s)...`
-    : `Cargando cámaras ${activeStateFilter.value}...`;
+    : activeStateFilter.value
+      ? `Cargando cámaras ${activeStateFilter.value}...`
+      : 'Cargando cámaras...';
   setStatus(statusMsg, 'loading');
   try {
     const res = await fetch('/api/infra/smart-search', {
@@ -767,8 +773,8 @@ async function searchCamaras() {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         terms: searchTerms.value,
-        limit: 100,
-        offset: 0,
+        limit: PAGE_SIZE,
+        offset: offset.value,
         incluir_no_operativas: incluirNoOperativas.value,
         ...(activeStateFilter.value ? { estado: activeStateFilter.value } : {}),
       }),
@@ -779,23 +785,46 @@ async function searchCamaras() {
     }
     const data = await res.json();
     camaras.value = data.camaras ?? [];
+    total.value = data.total ?? camaras.value.length;
     const count = camaras.value.length;
-    const total = data.total ?? count;
     setStatus(
       count === 0
-        ? 'Sin resultados para estos términos'
-        : total > count
-          ? `Mostrando ${count} de ${total} cámaras`
-          : `${count} cámara${count !== 1 ? 's' : ''} encontrada${count !== 1 ? 's' : ''}`,
+        ? 'Sin resultados'
+        : `Mostrando ${offset.value + 1}–${offset.value + count} de ${total.value} cámaras`,
       count > 0 ? 'success' : 'muted',
     );
   } catch (e: unknown) {
     camaras.value = [];
+    total.value = 0;
     setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`, 'error');
   } finally {
     loading.value = false;
   }
 }
+
+// Cualquier cambio de términos/filtro es una consulta NUEVA — vuelve a la página 1.
+function runSearch(): Promise<void> {
+  offset.value = 0;
+  return searchCamaras();
+}
+
+function goToPage(newOffset: number): void {
+  if (newOffset < 0 || newOffset >= total.value || loading.value) return;
+  offset.value = newOffset;
+  void searchCamaras();
+}
+
+function nextPage(): void {
+  goToPage(offset.value + PAGE_SIZE);
+}
+
+function prevPage(): void {
+  goToPage(offset.value - PAGE_SIZE);
+}
+
+onMounted(() => {
+  void runSearch();
+});
 
 // --- Camera cards ---
 const RUTA_COLORS: Record<string, string> = {
@@ -1534,6 +1563,15 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 @media (max-width: 1280px) { .fop-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1024px) { .fop-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .fop-grid { grid-template-columns: 1fr; } }
+
+.infra-pagination {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 4px 26px 16px; flex-shrink: 0;
+}
+.infra-pagination-info {
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
 
 .fop-camara-card {
   display: flex; flex-direction: column; gap: 9px;

@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 
 class ObjetoNoEncontrado(RuntimeError):
@@ -52,12 +53,27 @@ class ResultadoTubo:
 
 
 @dataclass(slots=True)
+class CableDeBotella:
+    """Un cable que tiene esta botella como uno de sus extremos, para la tarjeta de "Cables
+    asociados" del detalle de Botella en el Verificador — no expone tubos/pelos (para eso está
+    `detalle.py`/`CableDetalleCromoView.vue`), sólo identidad + conteo de servicios."""
+
+    n_id: int
+    nombre: Optional[str]
+    cantidad_servicios: int
+
+
+@dataclass(slots=True)
 class ResultadoBotella:
     botella_n_id: int
     nombre: Optional[str]
     clase: Optional[int]  # None si la botella sólo se conoce por referencia colgada (sin fila propia)
     localidad: Optional[str]
     servicios: list[ServicioEncontrado]
+    cables: list[CableDeBotella] = field(default_factory=list)
+    # Futuro: `empalmes: list[EmpalmeDeBotella]` — fusiones internas de la botella
+    # (`app.cromo_fusiones` con `botella_n_id` propio), para una tarjeta "Empalmes" análoga a
+    # `cables` en el Verificador. Todavía no expuesto: sin query ni consumidor en el frontend.
 
 
 # Columnas de `app.servicios` + `cromo_pelos`/`cromo_servicio_match` comunes a las tres consultas,
@@ -124,6 +140,26 @@ _SQL_BOTELLA_POR_N_ID = text(
     "SELECT n_id, nombre, clase, localidad FROM app.cromo_botellas WHERE n_id = :n_id"
 )
 
+# Subselect correlacionado para `cantidad_servicios`, mismo patrón (y misma justificación de
+# rendimiento) que `inventario.py::_SQL_BUSCAR`: acá corre sólo sobre los cables de UNA botella
+# (siempre pocos), no sobre miles de filas candidatas antes de paginar — un JOIN normal a
+# `cromo_pelos`/`cromo_servicio_match` multiplicaría filas por pelo y obligaría a un DISTINCT sobre
+# todas las columnas de cable en vez de sólo sobre `servicio_id`.
+_SQL_CABLES_DE_BOTELLA = text(
+    """
+    SELECT c.n_id, c.nombre,
+        (
+            SELECT count(DISTINCT m.servicio_id)
+            FROM app.cromo_pelos p
+            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            WHERE p.cable_n_id = c.n_id AND m.servicio_id IS NOT NULL
+        ) AS cantidad_servicios
+    FROM app.cromo_cables c
+    WHERE c.extremo_a_n_id = :botella_n_id OR c.extremo_b_n_id = :botella_n_id
+    ORDER BY c.nombre NULLS LAST, c.n_id
+    """
+)
+
 _SQL_SERVICIOS_POR_BOTELLA = text(
     f"""
     SELECT DISTINCT {_COLUMNAS_SERVICIO}
@@ -133,6 +169,17 @@ _SQL_SERVICIOS_POR_BOTELLA = text(
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE c.extremo_a_n_id = :botella_n_id OR c.extremo_b_n_id = :botella_n_id
     ORDER BY s.id
+    """
+)
+
+# Versión batcheada de `_SQL_EXISTE_BOTELLA_POR_CABLES` para N n_ids en una sola query — usada por el
+# dashboard de duplicados (`AdminBotellasViewer.vue`) para marcar cuál de varias `CromoBotella`
+# candidatas de un grupo es la "operativa" (tiene cables reales asociados), sin una query por miembro.
+_SQL_TIENE_CABLES_BATCH = text(
+    """
+    SELECT extremo_a_n_id AS n_id FROM app.cromo_cables WHERE extremo_a_n_id = ANY(:ids ::bigint[])
+    UNION
+    SELECT extremo_b_n_id AS n_id FROM app.cromo_cables WHERE extremo_b_n_id = ANY(:ids ::bigint[])
     """
 )
 
@@ -213,6 +260,28 @@ async def servicios_por_tubo(sesion: AsyncSession, tubo_n_id: int) -> ResultadoT
     )
 
 
+def servicios_por_tubo_sync(session: Session, tubo_n_id: int) -> ResultadoTubo:
+    """Gemela síncrona de `servicios_por_tubo` — mismas queries (`text()` funciona igual sobre
+    `Session` que sobre `AsyncSession`, sólo cambia el `await`), para el comando de Slack
+    "Verificar cable <nombre> B<N>" (`modules/slack_baneo_notifier/cable_info.py`), que corre dentro
+    de un callback síncrono de Slack Bolt."""
+    tubo = session.execute(_SQL_TUBO_POR_N_ID, {"n_id": tubo_n_id}).first()
+    filas = session.execute(_SQL_SERVICIOS_POR_TUBO, {"tubo_n_id": tubo_n_id}).all()
+
+    if tubo is None and not filas:
+        existe = session.execute(_SQL_EXISTE_TUBO_POR_PELOS, {"tubo_n_id": tubo_n_id}).first()
+        if existe is None:
+            raise ObjetoNoEncontrado(f"No existe un tubo con n_id={tubo_n_id} en el inventario ingerido.")
+
+    return ResultadoTubo(
+        tubo_n_id=tubo_n_id,
+        cable_n_id=tubo[1] if tubo else None,
+        orden=tubo[2] if tubo else None,
+        nombre_color=tubo[3] if tubo else None,
+        servicios=[_fila_a_servicio(f) for f in filas],
+    )
+
+
 async def servicios_por_botella(sesion: AsyncSession, botella_n_id: int) -> ResultadoBotella:
     """Servicios que pasan por los cables que tienen esta botella como uno de sus extremos.
 
@@ -229,13 +298,27 @@ async def servicios_por_botella(sesion: AsyncSession, botella_n_id: int) -> Resu
         if existe is None:
             raise ObjetoNoEncontrado(f"No existe una botella con n_id={botella_n_id} en el inventario ingerido.")
 
+    filas_cables = (await sesion.execute(_SQL_CABLES_DE_BOTELLA, {"botella_n_id": botella_n_id})).all()
+
     return ResultadoBotella(
         botella_n_id=botella_n_id,
         nombre=botella[1] if botella else None,
         clase=botella[2] if botella else None,
         localidad=botella[3] if botella else None,
         servicios=[_fila_a_servicio(f) for f in filas],
+        cables=[CableDeBotella(n_id=f[0], nombre=f[1], cantidad_servicios=f[2]) for f in filas_cables],
     )
+
+
+def tiene_cables_asociados_batch_sync(session: Session, n_ids: list[int]) -> set[int]:
+    """Gemela síncrona BATCHEADA de `_SQL_EXISTE_BOTELLA_POR_CABLES` — una sola query para N n_ids en
+    vez de una por objeto (mismo espíritu que `servicios_por_tubo_sync`, adaptado a lote). Sólo tiene
+    sentido para Cromo: `extremo_a_n_id`/`extremo_b_n_id` no existen del lado de la jerarquía legado.
+    Devuelve el subconjunto de `n_ids` que aparece como extremo de al menos un cable."""
+    if not n_ids:
+        return set()
+    filas = session.execute(_SQL_TIENE_CABLES_BATCH, {"ids": n_ids}).all()
+    return {f[0] for f in filas}
 
 
 __all__ = [
@@ -243,8 +326,11 @@ __all__ = [
     "ServicioEncontrado",
     "ResultadoCable",
     "ResultadoTubo",
+    "CableDeBotella",
     "ResultadoBotella",
     "servicios_por_cable",
     "servicios_por_tubo",
+    "servicios_por_tubo_sync",
     "servicios_por_botella",
+    "tiene_cables_asociados_batch_sync",
 ]

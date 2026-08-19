@@ -25,7 +25,21 @@
           <span class="servicio-detalle__separator" aria-hidden="true"></span>
           <span class="servicio-detalle__chip">{{ (servicio?.tipo_servicio || 'Sin dato').toUpperCase() }}</span>
           <span v-if="servicio?.sla_prometido" class="servicio-detalle__chip is-outline">SLA {{ servicio.sla_prometido }}</span>
+          <span class="servicio-detalle__separator" aria-hidden="true"></span>
+          <select
+            v-if="isAdmin && servicio"
+            class="servicio-detalle__categoria-select"
+            :value="servicio.categoria"
+            :disabled="guardandoCategoria"
+            @change="onCambiarCategoria(Number(($event.target as HTMLSelectElement).value))"
+          >
+            <option v-for="categoria in CATEGORIAS_SERVICIO" :key="categoria" :value="categoria">
+              {{ categoriaLabel(categoria) }}
+            </option>
+          </select>
+          <span v-else-if="servicio" class="servicio-detalle__chip is-outline">{{ categoriaLabel(servicio.categoria) }}</span>
         </div>
+        <p v-if="errorCategoria" class="servicio-detalle__categoria-error">{{ errorCategoria }}</p>
 
         <div class="servicio-detalle__actions">
           <button class="btn subtle" type="button" disabled title="Próximamente">
@@ -175,14 +189,26 @@
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { estadoServicioToken, getServicioDetail, type ServicioItem } from '../api/servicios';
+import {
+  CATEGORIAS_SERVICIO,
+  categoriaLabel,
+  estadoServicioToken,
+  getServicioDetail,
+  updateServicioCategoria,
+  type ServicioItem,
+} from '../api/servicios';
+import { useSession } from '../composables/useSession';
 
 const route = useRoute();
 const router = useRouter();
+const { state } = useSession();
+const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
 
 const servicio = ref<ServicioItem | null>(null);
 const loading = ref(false);
 const error = ref('');
+const guardandoCategoria = ref(false);
+const errorCategoria = ref('');
 
 interface InfraRutaItem {
   id: number;
@@ -303,6 +329,21 @@ async function loadDetalle(): Promise<void> {
     error.value = err instanceof Error ? err.message : 'No se pudo cargar el detalle del servicio';
   } finally {
     loading.value = false;
+  }
+}
+
+async function onCambiarCategoria(categoria: number): Promise<void> {
+  if (!servicio.value || guardandoCategoria.value) return;
+  const anterior = servicio.value.categoria;
+  guardandoCategoria.value = true;
+  errorCategoria.value = '';
+  try {
+    servicio.value = await updateServicioCategoria(servicio.value.id, categoria);
+  } catch (err: unknown) {
+    errorCategoria.value = err instanceof Error ? err.message : 'No se pudo cambiar la categoría';
+    if (servicio.value) servicio.value.categoria = anterior;
+  } finally {
+    guardandoCategoria.value = false;
   }
 }
 
@@ -512,6 +553,22 @@ watch(
   background: transparent;
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
+}
+
+.servicio-detalle__categoria-select {
+  padding: 3px 8px;
+  font-size: 10.5px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+}
+
+.servicio-detalle__categoria-error {
+  margin: -4px 0 0;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--color-state-error);
 }
 
 .servicio-detalle__actions {

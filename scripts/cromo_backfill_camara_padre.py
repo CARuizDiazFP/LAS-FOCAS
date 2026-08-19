@@ -29,6 +29,14 @@ intrascendente) — este script implementa su propia resolución equivalente per
 única carga de raíces con `botellas` precargada (`selectinload`) + diccionarios en memoria, en vez
 de una consulta completa por cada una de las 1588 filas.
 
+**Normalización extendida (2026-08-14)**: la resolución en memoria de este script usa
+`normalizar_para_agrupar_extendido` (abreviaturas + sinónimos, no sólo unaccent/lowercase/
+puntuación) — mismo cambio aplicado a `resolver_o_crear_padre_desde_base` el mismo día para cerrar
+el gap que permitía crear Cámaras padre duplicadas para el mismo sitio físico (ej. real "Bot Tza San
+Antonio 640" vs "Bot. Tza.San Antonio 640 CF"). Sin este cambio, correr este script periódicamente
+seguiría generando duplicados nuevos por este camino de código aunque el gap ya estuviera cerrado en
+la función compartida.
+
 Tres fases:
 1. Vincular `CromoBotella.camara_id` resolviendo/creando la Cámara padre por nombre (resolución en
    memoria, ver nota de performance).
@@ -40,11 +48,13 @@ Tres fases:
    NO_OPERATIVA (Cromo no tiene equivalente de DETECTADA/PENDIENTE_REVISION, workflows exclusivos
    del dominio legado).
 
-Toda Cámara padre NUEVA nace en `NO_OPERATIVA` (fail-closed): `cromo_botellas` no aporta ninguna
-señal operativa real, así que asumir `LIBRE` sería el mismo riesgo de seguridad de campo ya
-rechazado una vez para este dominio ("mostrar un estado incorrecto"). Si en cambio el backfill
-reutiliza una `Camara` legado ya existente (nombre coincidente), hereda su estado real — no es
-inferencia, es un dato que ya existe y tiene auditoría propia (`CamaraEstadoAuditoria`).
+**Actualización 2026-08-13 (decisión explícita del usuario, revierte la política fail-closed del
+2026-08-11)**: toda Cámara padre NUEVA nace en `LIBRE` — una Cámara recién creada no tiene todavía
+ningún empalme/ruta propio, así que no puede existir un `IncidenteBaneo` activo real que la afecte,
+no hay nada que "chequear" en el momento del alta. Si en cambio el backfill reutiliza una `Camara`
+legado ya existente (nombre coincidente), hereda su estado real — no es inferencia, es un dato que
+ya existe y tiene auditoría propia (`CamaraEstadoAuditoria`), y puede legítimamente estar `BANEADA`.
+Ver `docs/decisiones.md`.
 
 Idempotente vía `WHERE vigente=true AND camara_id IS NULL` — sin columna de progreso extra
 (re-escanear en memoria es barato a ~11k filas). La reingesta periódica de Cromo (`ingesta.py`)
@@ -96,7 +106,7 @@ from core.services.camara_estado_service import MAPEO_ESTADO_CROMO, aplicar_esta
 from core.services.camara_hierarchy_service import (
     estado_mas_restrictivo,
     ids_camaras_con_cromo_hijos,
-    normalizar_para_agrupar,
+    normalizar_para_agrupar_extendido,
 )
 from core.services.cromo.camara_padre_service import extraer_base_cromo
 from db.models.cromo import CromoBotella
@@ -163,7 +173,7 @@ def main(dry_run: bool) -> None:
         padres_por_nombre: dict[str, Camara] = {}
         peladas_por_nombre: dict[str, list[Camara]] = {}
         for raiz in raices:
-            clave = normalizar_para_agrupar(raiz.nombre)
+            clave = normalizar_para_agrupar_extendido(raiz.nombre)
             if raiz.botellas or raiz.id in ids_con_cromo_hijos:
                 padres_por_nombre.setdefault(clave, raiz)
             else:
@@ -175,10 +185,10 @@ def main(dry_run: bool) -> None:
         padres_creados = 0
         padres_reusados = 0
         for botella, base in con_patron:
-            clave = normalizar_para_agrupar(base)
+            clave = normalizar_para_agrupar_extendido(base)
             padre = padres_por_nombre.get(clave)
             if padre is None:
-                padre = Camara(nombre=base, estado=CamaraEstado.NO_OPERATIVA, origen_datos=CamaraOrigenDatos.INFERIDO_CROMO)
+                padre = Camara(nombre=base, estado=CamaraEstado.LIBRE, origen_datos=CamaraOrigenDatos.INFERIDO_CROMO)
                 session.add(padre)
                 session.flush()
                 padres_por_nombre[clave] = padre

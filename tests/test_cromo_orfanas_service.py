@@ -128,7 +128,7 @@ def test_asociar_huerfanas_a_camara_existente_hereda_estado_real():
     assert botella.estado == CamaraEstado.OCUPADA
 
 
-def test_asociar_huerfanas_crea_camara_nueva_no_operativa():
+def test_asociar_huerfanas_crea_camara_nueva_libre():
     botella = CromoBotella(n_id=1, nombre="Botella 2 Combate de los pozos 1881 CF")
 
     session = MagicMock()
@@ -165,9 +165,9 @@ def test_asociar_huerfanas_crea_camara_nueva_no_operativa():
         )
 
     camara_creada = nueva_camara_creada["camara"]
-    assert camara_creada.estado == CamaraEstado.NO_OPERATIVA
+    assert camara_creada.estado == CamaraEstado.LIBRE
     assert camara_creada.origen_datos == CamaraOrigenDatos.INFERIDO_CROMO
     assert resultado.camara_creada is True
     assert resultado.botellas_vinculadas == 1
-    assert resultado.estado_asignado == "NO_OPERATIVA"
+    assert resultado.estado_asignado == "LIBRE"
     assert botella.camara_id == 777

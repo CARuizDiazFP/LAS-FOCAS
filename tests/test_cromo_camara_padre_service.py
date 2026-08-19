@@ -30,6 +30,14 @@ def _sin_botellas_cromo(monkeypatch):
         # Patrón de prefijo pedido explícitamente (número después de la palabra completa "Botella").
         ("Botella 2 Combate de los pozos 1881 CF", "Combate de los pozos 1881 CF"),
         ("botella 3  Calle Con Espacios Extra", "Calle Con Espacios Extra"),
+        # Punto DESPUÉS del dígito (2026-08-14, bug real vía el camino de sufijo — ids reales 7683 y
+        # 6561, ver docs/decisiones.md). El punto interno legítimo ("Poste Est .") se preserva intacto.
+        ("Bot 2. Cra Marcos Sastre y Colectora Este", "Cra Marcos Sastre y Colectora Este"),
+        ("Bot 2. Poste Est . Bs. As. C.F", "Poste Est . Bs. As. C.F"),
+        # Mismo fix aplicado también al camino de PREFIJO por consistencia — nunca confirmado en datos
+        # reales para este camino específico (a diferencia del sufijo), ver docstring de
+        # `RE_BOTELLA_PREFIJO`.
+        ("Botella 2. Nombre De Prueba Sintetico", "Nombre De Prueba Sintetico"),
     ],
 )
 def test_extraer_base_cromo_combina_sufijo_y_prefijo(nombre: str, base_esperada: str | None) -> None:
@@ -70,9 +78,10 @@ def test_resolver_o_crear_padre_cromo_nombre_vacio_no_toca_la_db() -> None:
     session.add.assert_not_called()
 
 
-def test_resolver_o_crear_padre_cromo_fallback_nombre_exacto_crea_padre_no_operativa() -> None:
+def test_resolver_o_crear_padre_cromo_fallback_nombre_exacto_crea_padre_libre() -> None:
     """El fallback de nombre exacto crea Cámara padre igual que el camino de sufijo/prefijo —
-    misma política fail-closed, ninguna señal operativa real de por medio en ningún caso."""
+    misma política (2026-08-13: LIBRE por defecto), ninguna señal operativa real de por medio en
+    ningún caso."""
     session = MagicMock()
     session.query.return_value.filter.return_value.all.return_value = []
 
@@ -80,13 +89,14 @@ def test_resolver_o_crear_padre_cromo_fallback_nombre_exacto_crea_padre_no_opera
 
     assert resultado is not None
     assert resultado.nombre == "Av Rivadavia 6041"
-    assert resultado.estado == CamaraEstado.NO_OPERATIVA
+    assert resultado.estado == CamaraEstado.LIBRE
     assert resultado.origen_datos == CamaraOrigenDatos.INFERIDO_CROMO
 
 
-def test_resolver_o_crear_padre_cromo_crea_padre_nuevo_no_operativa() -> None:
-    """Sin señal operativa real de origen, el padre nuevo nace NO_OPERATIVA (fail-closed), nunca
-    LIBRE — resuelve el riesgo de seguridad de campo ya señalado para este dominio."""
+def test_resolver_o_crear_padre_cromo_crea_padre_nuevo_libre() -> None:
+    """Decisión 2026-08-13: el padre nuevo nace LIBRE — una Cámara recién creada no tiene
+    empalmes/rutas propios todavía, así que no puede haber un IncidenteBaneo activo real que la
+    afecte en el momento del alta."""
     session = MagicMock()
     session.query.return_value.filter.return_value.all.return_value = []
 
@@ -94,7 +104,7 @@ def test_resolver_o_crear_padre_cromo_crea_padre_nuevo_no_operativa() -> None:
 
     assert resultado is not None
     assert resultado.nombre == "Combate de los pozos 1881 CF"
-    assert resultado.estado == CamaraEstado.NO_OPERATIVA
+    assert resultado.estado == CamaraEstado.LIBRE
     assert resultado.origen_datos == CamaraOrigenDatos.INFERIDO_CROMO
 
 

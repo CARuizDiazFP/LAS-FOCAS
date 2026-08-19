@@ -28,6 +28,7 @@ class CamaraLigera:
     direccion: Optional[str]
     estado: str
     botellas_count: int
+    cables_count: int
 
 
 def buscar_camaras_ligero(
@@ -39,7 +40,12 @@ def buscar_camaras_ligero(
 ) -> list[CamaraLigera]:
     """Busca Cámaras raíz por nombre (`ILIKE` parcial). `q` vacío/`None` devuelve las primeras
     `limit` por nombre. `excluir_id` omite una Cámara puntual (ej. la que ya se está viendo en el
-    picker, para no ofrecerla como su propia unificación/asociación)."""
+    picker, para no ofrecerla como su propia unificación/asociación).
+
+    `cables_count` (como `botellas_count`) acepta el mismo costo por-candidata ya asumido acá (lista
+    acotada a `limit<=50`, no la lista completa de cámaras raíz que sí evita `smart-search`).
+    `botellas_count` suma botellas propias (self-FK legado) + Botellas Cromo propias — sin la segunda
+    parte, las Cámaras `INFERIDO_CROMO` (la mayoría del dataset real) siempre daban 0."""
     query = session.query(Camara).filter(Camara.camara_padre_id.is_(None))
     if q and q.strip():
         query = query.filter(Camara.nombre.ilike(f"%{q.strip()}%"))
@@ -53,7 +59,8 @@ def buscar_camaras_ligero(
             nombre=c.nombre or "",
             direccion=c.direccion,
             estado=c.estado.value if c.estado else "LIBRE",
-            botellas_count=len(c.botellas),
+            botellas_count=len(c.botellas) + len(c.cromo_botellas),
+            cables_count=len(c.cables),
         )
         for c in candidatas
     ]

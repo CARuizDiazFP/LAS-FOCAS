@@ -23,6 +23,14 @@
             <div class="camara-detail-hero__meta">
               <span class="camara-detail-id">ID {{ camara.id }}</span>
               <span :class="['camara-detail-status', statusClass(camara.estado)]">{{ camara.estado || 'LIBRE' }}</span>
+              <RouterLink
+                v-if="camara.es_botella && camara.camara_padre_id"
+                class="camara-detail-padre-link"
+                :to="`/infra/Camaras/${camara.camara_padre_id}`"
+              >
+                <i class="ph ph-arrow-bend-left-up" aria-hidden="true"></i>
+                Cámara padre: {{ camara.camara_padre_nombre || `ID ${camara.camara_padre_id}` }}
+              </RouterLink>
             </div>
           </div>
           <div class="camara-detail-hero__actions">
@@ -125,6 +133,7 @@
       :camara-nombre="camara?.nombre || camara?.direccion || ''"
       @close="unificarModalOpen = false"
       @merged="handleUnificacionCompletada"
+      @error="showInlineError"
     />
   </section>
 </template>
@@ -160,6 +169,8 @@ interface CamaraDetail {
   editable: boolean;
   rutas: RutaItem[];
   es_botella: boolean;
+  camara_padre_id: number | null;
+  camara_padre_nombre: string | null;
 }
 
 interface AliasItem {
@@ -306,8 +317,8 @@ async function handleEstadoActualizado(): Promise<void> {
 }
 
 async function handleUnificacionCompletada(): Promise<void> {
-  // La Cámara secundaria pasó a ser Botella de esta — recarga el detalle completo para reflejar
-  // el estado final del grupo y la Botella nueva en la tarjeta correspondiente.
+  // La Cámara secundaria se eliminó tras transferir todo lo heredable a esta — recarga el detalle
+  // completo para reflejar Botellas, Cables, alias y estado final ya consolidados.
   await loadCamaraDetail();
 }
 
@@ -330,10 +341,6 @@ onMounted(async () => {
 <style scoped>
 .camara-detail-page {
   min-height: 100%;
-  background:
-    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 35%),
-    radial-gradient(circle at top right, rgba(16, 185, 129, 0.1), transparent 30%),
-    linear-gradient(180deg, #0b1118 0%, #0f1419 100%);
 }
 
 .camara-detail-shell {
@@ -346,13 +353,13 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #93c5fd;
+  color: var(--color-accent);
   text-decoration: none;
   margin-bottom: 18px;
 }
 
 .camara-detail-back:hover {
-  color: #dbeafe;
+  color: var(--color-accent-300);
 }
 
 .camara-detail-state {
@@ -360,13 +367,13 @@ onMounted(async () => {
   gap: 12px;
   padding: 22px;
   border-radius: 18px;
-  background: rgba(15, 23, 42, 0.74);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   color: var(--text);
 }
 
 .camara-detail-state.error {
-  color: #fecaca;
+  color: var(--error);
 }
 
 .camara-detail-hero {
@@ -376,23 +383,21 @@ onMounted(async () => {
   gap: 18px;
   padding: 28px;
   border-radius: 24px;
-  background:
-    linear-gradient(135deg, rgba(15, 23, 42, 0.94), rgba(10, 15, 25, 0.96)),
-    linear-gradient(135deg, rgba(59, 130, 246, 0.12), transparent 50%);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-md);
 }
 
 .camara-detail-hero__content h1 {
   margin: 8px 0 12px;
   font-size: clamp(2rem, 4vw, 3rem);
   line-height: 1.05;
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .camara-detail-hero__eyebrow {
   margin: 0;
-  color: #67e8f9;
+  color: var(--color-accent);
   text-transform: uppercase;
   letter-spacing: 0.16em;
   font-size: 0.76rem;
@@ -416,34 +421,55 @@ onMounted(async () => {
 }
 
 .camara-detail-id {
-  color: #e2e8f0;
-  background: rgba(148, 163, 184, 0.14);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-neutral-400) 14%, transparent);
+  border: 1px solid var(--color-divider);
 }
 
 .camara-detail-status.libre {
-  background: rgba(16, 185, 129, 0.18);
-  color: #bbf7d0;
+  background: color-mix(in srgb, var(--color-state-ok) 18%, transparent);
+  color: var(--color-state-ok);
 }
 
 .camara-detail-status.ocupada {
-  background: rgba(250, 204, 21, 0.16);
-  color: #fde68a;
+  background: color-mix(in srgb, var(--color-state-warn) 18%, transparent);
+  color: var(--color-state-warn);
 }
 
 .camara-detail-status.baneada {
-  background: rgba(239, 68, 68, 0.18);
-  color: #fecaca;
+  background: color-mix(in srgb, var(--color-state-error) 18%, transparent);
+  color: var(--color-state-error);
 }
 
 .camara-detail-status.detectada {
-  background: rgba(59, 130, 246, 0.18);
-  color: #bfdbfe;
+  background: var(--color-brand-primary-soft);
+  color: var(--color-accent-200);
 }
 
 .camara-detail-status.no_operativa {
-  background: rgba(148, 163, 184, 0.16);
-  color: #cbd5e1;
+  background: color-mix(in srgb, var(--color-state-idle) 18%, transparent);
+  color: var(--color-state-idle);
+}
+
+.camara-detail-padre-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-accent-200);
+  background: var(--color-brand-primary-tint);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.camara-detail-padre-link:hover,
+.camara-detail-padre-link:focus-visible {
+  background: var(--color-brand-primary-soft);
 }
 
 .camara-detail-dashboard {
@@ -460,23 +486,22 @@ onMounted(async () => {
   padding: 22px;
   min-height: 220px;
   border-radius: 20px;
-  background:
-    linear-gradient(160deg, rgba(15, 23, 42, 0.94), rgba(8, 12, 20, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   color: var(--text);
   cursor: pointer;
-  box-shadow: 0 20px 46px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-sm);
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .camara-detail-card:hover {
   transform: translateY(-4px);
-  border-color: rgba(96, 165, 250, 0.34);
-  box-shadow: 0 28px 52px rgba(0, 0, 0, 0.28);
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-md);
 }
 
 .camara-detail-card__eyebrow {
-  color: #94a3b8;
+  color: var(--color-neutral-500);
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.74rem;
@@ -484,12 +509,12 @@ onMounted(async () => {
 
 .camara-detail-card strong {
   font-size: clamp(1.8rem, 3vw, 2.4rem);
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .camara-detail-card p {
   margin: 0;
-  color: #cbd5e1;
+  color: var(--color-neutral-300);
   line-height: 1.5;
 }
 

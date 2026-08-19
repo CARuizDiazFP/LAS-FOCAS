@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from typing import Any
@@ -16,8 +17,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.parsers.servicios_excel import parse_servicios_df
-from db.models.infra import Servicio
-from db.session import get_async_db
+from core.services.servicios_categoria_service import (
+    CategoriaInvalidaError,
+    actualizar_categoria_masiva,
+    validar_categoria,
+)
+from db.models.infra import Servicio, ServicioOrigenDatos
+from db.session import SessionLocal, get_async_db
 
 
 router = APIRouter(prefix="/servicios", tags=["servicios"])
@@ -36,6 +42,8 @@ class ServicioItemResponse(BaseModel):
     provincia: str | None = None
     direccion_2: str | None = None
     estado_servicio: str
+    categoria: int
+    origen_datos: str
     reclamos: list[dict[str, Any]] | None = None
 
 
@@ -99,6 +107,8 @@ def _to_servicio_item(svc: Servicio) -> ServicioItemResponse | None:
         provincia=svc.provincia,
         direccion_2=svc.direccion_2,
         estado_servicio=svc.estado_servicio,
+        categoria=svc.categoria,
+        origen_datos=svc.origen_datos.value if hasattr(svc.origen_datos, "value") else str(svc.origen_datos),
         reclamos=None,
     )
 
@@ -156,6 +166,11 @@ async def ingest_servicios(
             "provincia": _normalize_value(row.get("provincia")),
             "direccion_2": _normalize_value(row.get("direccion_2")),
             "estado_servicio": _normalize_value(row.get("estado_servicio")) or "DESCONOCIDO",
+            # 2026-08-14: re-etiqueta también un placeholder Cromo (origen_datos=INFERIDO_CROMO)
+            # preexistente cuando el ingest real lo enriquece por el mismo numero_primer_servicio —
+            # sin esto quedaría marcado INFERIDO_CROMO para siempre pese a tener datos reales, ver
+            # docs/decisiones.md.
+            "origen_datos": ServicioOrigenDatos.INGEST_EXCEL.value,
         }
 
     rows = list(rows_by_id.values())
@@ -178,6 +193,7 @@ async def ingest_servicios(
             "provincia": excluded.provincia,
             "direccion_2": excluded.direccion_2,
             "estado_servicio": excluded.estado_servicio,
+            "origen_datos": excluded.origen_datos,
         }
 
         changed_where = or_(
@@ -191,6 +207,7 @@ async def ingest_servicios(
             Servicio.direccion_2.is_distinct_from(excluded.direccion_2),
             Servicio.estado_servicio.is_distinct_from(excluded.estado_servicio),
             Servicio.servicio_id.is_distinct_from(excluded.servicio_id),
+            Servicio.origen_datos.is_distinct_from(excluded.origen_datos),
         )
 
         stmt = stmt.on_conflict_do_update(
@@ -224,6 +241,7 @@ async def search_servicios(
     domicilio: str | None = Query(None),
     tipo: str | None = Query(None),
     estado: str | None = Query(None),
+    categoria: str | None = Query(None, description="Categorías separadas por coma, ej. '6' o '0,3,5'"),
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_async_db),
@@ -262,6 +280,13 @@ async def search_servicios(
         filters.append(Servicio.tipo_servicio.ilike(f"%{tipo.strip()}%"))
     if estado and estado.strip():
         filters.append(Servicio.estado_servicio.ilike(f"%{estado.strip()}%"))
+    if categoria and categoria.strip():
+        try:
+            categorias = [int(valor.strip()) for valor in categoria.split(",") if valor.strip()]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="categoria inválida") from exc
+        if categorias:
+            filters.append(Servicio.categoria.in_(categorias))
 
     where_clause = and_(*filters) if filters else None
 
@@ -316,3 +341,66 @@ async def detail_servicio(
         id_origen=item.numero_primer_servicio,
         servicio=item,
     )
+
+
+class ServicioCategoriaUpdateRequest(BaseModel):
+    categoria: int
+
+
+class ServiciosCategoriaMasivaRequest(BaseModel):
+    servicio_ids: list[int]
+    categoria: int
+
+
+class ServiciosCategoriaMasivaResponse(BaseModel):
+    status: str = "ok"
+    categoria_nueva: int
+    actualizados: int
+    no_encontrados: list[int]
+
+
+@router.patch("/bulk-categoria", response_model=ServiciosCategoriaMasivaResponse)
+async def actualizar_categoria_servicios_masivo(
+    body: ServiciosCategoriaMasivaRequest,
+) -> ServiciosCategoriaMasivaResponse:
+    """Cambia la categoría de un lote de Servicios. Usa `SessionLocal` (sync) en un thread aparte
+    — mismo patrón que `api/app/routes/infra.py` para servicios que reusan una capa sync existente
+    dentro de un endpoint async (`asyncio.to_thread`, no bloquea el event loop)."""
+
+    def _actualizar() -> Any:
+        with SessionLocal() as session:
+            resultado = actualizar_categoria_masiva(session, body.servicio_ids, body.categoria)
+            session.commit()
+            return resultado
+
+    try:
+        resultado = await asyncio.to_thread(_actualizar)
+    except CategoriaInvalidaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ServiciosCategoriaMasivaResponse(**resultado.to_dict())
+
+
+@router.patch("/{id}/categoria", response_model=ServicioItemResponse)
+async def actualizar_categoria_servicio(
+    id: int,
+    body: ServicioCategoriaUpdateRequest,
+    db: AsyncSession = Depends(get_async_db),
+) -> ServicioItemResponse:
+    try:
+        validar_categoria(body.categoria)
+    except CategoriaInvalidaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    svc = await db.get(Servicio, id)
+    if svc is None:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+
+    svc.categoria = body.categoria
+    await db.commit()
+    await db.refresh(svc)
+
+    item = _to_servicio_item(svc)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+    return item

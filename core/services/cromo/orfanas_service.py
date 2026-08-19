@@ -124,7 +124,7 @@ def asociar_huerfanas(
             raise AsociarHuerfanasError("El nombre de la nueva Cámara no puede estar vacío")
         camara = Camara(
             nombre=nombre,
-            estado=CamaraEstado.NO_OPERATIVA,
+            estado=CamaraEstado.LIBRE,
             origen_datos=CamaraOrigenDatos.INFERIDO_CROMO,
             last_update=datetime.now(timezone.utc),
         )

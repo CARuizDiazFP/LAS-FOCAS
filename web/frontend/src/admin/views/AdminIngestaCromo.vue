@@ -638,7 +638,6 @@ onUnmounted(() => {
 .ingesta-card {
   display: grid;
   gap: var(--space-3);
-  background: linear-gradient(180deg, rgba(16, 22, 31, 0.98), rgba(10, 14, 20, 0.96));
 }
 
 .ingesta-card__header {
@@ -654,36 +653,36 @@ onUnmounted(() => {
 
 .ingesta-card__chip {
   font-size: 0.75rem;
-  color: #dbeafe;
-  background: rgba(37, 99, 235, 0.25);
-  border: 1px solid rgba(37, 99, 235, 0.55);
+  color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
   border-radius: var(--radius-pill);
   padding: 2px 10px;
   white-space: nowrap;
 }
 
 .ingesta-card__chip--info {
-  color: #dbeafe;
-  background: rgba(37, 99, 235, 0.25);
-  border-color: rgba(37, 99, 235, 0.55);
+  color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 .ingesta-card__chip--ok {
-  color: #6ee7b7;
-  background: rgba(16, 185, 129, 0.15);
-  border-color: rgba(16, 185, 129, 0.4);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
 }
 
 .ingesta-card__chip--warn {
-  color: #fef3c7;
-  background: rgba(217, 119, 6, 0.25);
-  border-color: rgba(217, 119, 6, 0.55);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 25%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
 }
 
 .ingesta-card__chip--err {
-  color: #fca5a5;
-  background: rgba(239, 68, 68, 0.18);
-  border-color: rgba(239, 68, 68, 0.45);
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
 
 .clases-grid {
@@ -735,15 +734,15 @@ onUnmounted(() => {
 .progress-track {
   height: 12px;
   border-radius: 999px;
-  background: #0b1220;
-  border: 1px solid #1f2937;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #2563eb, #38bdf8 60%, #22d3ee);
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.5);
+  background: linear-gradient(90deg, var(--color-accent-700), var(--color-accent) 60%, var(--color-accent-300));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 50%, transparent);
   transition: width 0.2s ease;
 }
 
@@ -751,7 +750,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   font-size: 0.82rem;
-  color: #bfdbfe;
+  color: var(--color-neutral-400);
 }
 
 .summary-grid {
@@ -765,7 +764,7 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--color-bg);
 }
 
 .summary-grid dt {
@@ -780,11 +779,11 @@ onUnmounted(() => {
 }
 
 .dd--warn {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .dd--err {
-  color: #f87171;
+  color: var(--error);
 }
 
 .errores-detalle {
@@ -794,7 +793,7 @@ onUnmounted(() => {
 
 .errores-detalle summary {
   cursor: pointer;
-  color: #f87171;
+  color: var(--error);
   margin-bottom: 8px;
 }
 
@@ -809,7 +808,7 @@ onUnmounted(() => {
 }
 
 .errores-list li {
-  color: #fca5a5;
+  color: var(--error);
   word-break: break-word;
   font-size: 0.82rem;
 }
@@ -832,37 +831,14 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.msg {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font-size: 0.88rem;
-  display: none;
-}
-
-.msg.visible {
-  display: block;
-}
-
-.msg.ok {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.35);
-  color: #6ee7b7;
-}
-
-.msg.err {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #fca5a5;
-}
-
 .btn.subtle {
-  background: rgba(30, 41, 59, 0.5);
+  background: var(--color-neutral-900);
   border: 1px solid var(--border);
   color: var(--muted);
 }
 
 .btn.subtle:hover:not(:disabled) {
-  background: rgba(30, 41, 59, 0.8);
+  background: var(--color-neutral-800);
   color: var(--text);
 }
 
@@ -882,7 +858,7 @@ onUnmounted(() => {
 
 .tabla-historico td {
   padding: 6px 10px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid var(--color-divider);
 }
 
 .tabla-historico__fila {
@@ -891,7 +867,7 @@ onUnmounted(() => {
 }
 
 .tabla-historico__fila:hover {
-  background: rgba(37, 99, 235, 0.1);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
 /* ─── Modal de detalle ──────────────────────────────────────────────────── */
@@ -908,8 +884,8 @@ onUnmounted(() => {
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 28px;
   display: grid;

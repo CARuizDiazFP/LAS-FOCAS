@@ -46,7 +46,26 @@
     <article v-if="resultado" class="card verificador-cromo__card">
       <header class="verificador-cromo__resultado-header">
         <h2>{{ tipoActual.etiqueta }} <code>{{ resultado.nId }}</code></h2>
-        <span class="verificador-cromo__chip">{{ resultado.servicios.length }} servicio(s)</span>
+        <div class="verificador-cromo__resultado-header-right">
+          <RouterLink
+            v-if="camaraPadre"
+            class="verificador-cromo__padre-link"
+            :to="`/infra/Camaras/${camaraPadre.id}`"
+          >
+            <i class="ph ph-arrow-bend-left-up" aria-hidden="true"></i>
+            Cámara padre: {{ camaraPadre.nombre || `ID ${camaraPadre.id}` }}
+          </RouterLink>
+          <button
+            v-if="tipo === 'botella'"
+            class="btn subtle"
+            type="button"
+            @click="mostrarModalCromo = true"
+          >
+            <i class="ph ph-eye" aria-hidden="true"></i>
+            Ver info en Cromo
+          </button>
+          <span class="verificador-cromo__chip">{{ resultado.servicios.length }} servicio(s)</span>
+        </div>
       </header>
 
       <dl class="verificador-cromo__meta">
@@ -86,20 +105,72 @@
         </tbody>
       </table>
     </article>
+
+    <article v-if="tipo === 'botella' && resultado" class="card verificador-cromo__card">
+      <header class="verificador-cromo__resultado-header">
+        <h2>Cables asociados</h2>
+        <span class="verificador-cromo__chip">{{ cablesBotella.length }} cable(s)</span>
+      </header>
+
+      <p v-if="cablesBotella.length === 0" class="hint">
+        No se encontró ningún cable con esta botella como extremo en el inventario ingerido.
+      </p>
+
+      <table v-else class="tabla-cables">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Nombre de Cable</th>
+            <th>Servicios Asociados</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="c in cablesBotella"
+            :key="c.n_id"
+            class="tabla-cables__fila"
+            tabindex="0"
+            role="button"
+            :aria-label="`Ver detalle del cable ${c.nombre || c.n_id}`"
+            @click="irACable(c)"
+            @keydown.enter="irACable(c)"
+          >
+            <td>{{ c.n_id }}</td>
+            <td>{{ c.nombre || '—' }}</td>
+            <td>{{ c.cantidad_servicios }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Futuro (Empalmes): tarjeta con la tabla de fusiones internas de esta botella
+           (`app.cromo_fusiones` con `botella_n_id` propio) — misma estructura minimalista que la
+           tabla de Cables de arriba. El backend todavía no expone este dato (ver comentario en
+           `ResultadoBotella`, core/services/cromo/verificador.py, y en `CromoVerificacionBotella`,
+           src/api/cromo.ts). -->
+    </article>
+
+    <ModalVerificadorCromo
+      :open="mostrarModalCromo"
+      :n-id="resultado?.nId ?? null"
+      @close="mostrarModalCromo = false"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
+import { getCromoBotellaEstadoAsociacion } from '../api/botellas';
 import { ApiError } from '../api/client';
 import {
   verificarServiciosPorBotella,
   verificarServiciosPorCable,
   verificarServiciosPorTubo,
+  type CromoCableDeBotella,
   type CromoServicioEncontrado,
 } from '../api/cromo';
+import ModalVerificadorCromo from '../components/infra/ModalVerificadorCromo.vue';
 
 type TipoObjeto = 'cable' | 'tubo' | 'botella';
 
@@ -113,18 +184,26 @@ interface ResultadoVista {
   nId: number;
   meta: Array<{ etiqueta: string; valor: string | number | null }>;
   servicios: CromoServicioEncontrado[];
+  // Sólo presente cuando tipo === 'botella' — cables que la tienen como extremo.
+  cables?: CromoCableDeBotella[];
 }
 
 const route = useRoute();
+const router = useRouter();
 
 const tipo = ref<TipoObjeto>('cable');
 const nIdTexto = ref('');
 const buscando = ref(false);
 const error = ref('');
 const resultado = ref<ResultadoVista | null>(null);
+// Navegación cruzada (2026-08-13): sólo se completa cuando tipo === 'botella' y la Botella tiene
+// Cámara padre vinculada — ver core/services/cromo/camara_padre_service.py.
+const camaraPadre = ref<{ id: number; nombre: string | null } | null>(null);
+const mostrarModalCromo = ref(false);
 
 const tipoActual = computed(() => TIPOS.find((t) => t.valor === tipo.value) ?? TIPOS[0]);
 const nIdValido = computed(() => /^\d+$/.test(nIdTexto.value.trim()));
+const cablesBotella = computed(() => resultado.value?.cables ?? []);
 
 async function onBuscar(): Promise<void> {
   if (!nIdValido.value) return;
@@ -133,6 +212,7 @@ async function onBuscar(): Promise<void> {
   buscando.value = true;
   error.value = '';
   resultado.value = null;
+  camaraPadre.value = null;
 
   try {
     if (tipo.value === 'cable') {
@@ -168,7 +248,18 @@ async function onBuscar(): Promise<void> {
           { etiqueta: 'Localidad', valor: r.localidad },
         ],
         servicios: r.servicios,
+        cables: r.cables,
       };
+      // Best-effort: si falla, la Botella se sigue mostrando igual, sólo sin el link de navegación
+      // cruzada — no es motivo para tratar la búsqueda completa como un error.
+      try {
+        const asociacion = await getCromoBotellaEstadoAsociacion(nId);
+        camaraPadre.value = asociacion.camara_id
+          ? { id: asociacion.camara_id, nombre: asociacion.camara_nombre }
+          : null;
+      } catch {
+        camaraPadre.value = null;
+      }
     }
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) {
@@ -182,7 +273,11 @@ async function onBuscar(): Promise<void> {
 }
 
 // Navegación cruzada desde otras vistas (ej. click en una Botella extremo dentro del detalle de un
-// cable): precarga tipo + n_id desde la URL y dispara la búsqueda automáticamente.
+// cable): precarga tipo + n_id desde la URL y dispara la búsqueda automáticamente. Siempre llega por
+// una navegación completa a esta ruta (nunca un cambio de query dentro del propio Verificador ya
+// montado — el único click que vivía dentro de esta vista, el de un cable de "Cables asociados",
+// navega directo al detalle dedicado del cable, no actualiza el query de esta ruta), así que alcanza
+// con `onMounted`.
 onMounted(() => {
   const tipoQuery = route.query.tipo;
   const nIdQuery = route.query.n_id;
@@ -194,6 +289,12 @@ onMounted(() => {
     void onBuscar();
   }
 });
+
+// Navega al detalle jerárquico dedicado del cable (Etapa 9, `CableDetalleCromoView.vue`) — no se
+// queda en este Verificador con `tipo=cable`: esa tarjeta sólo muestra servicios, no tubos/pelos.
+function irACable(cable: { n_id: number }): void {
+  void router.push(`/infra/cromo/cables/ID${cable.n_id}`);
+}
 </script>
 
 <style scoped>
@@ -260,6 +361,30 @@ onMounted(() => {
   margin: 0;
 }
 
+.verificador-cromo__resultado-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.verificador-cromo__padre-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.verificador-cromo__padre-link:hover,
+.verificador-cromo__padre-link:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
 .verificador-cromo__chip {
   font-size: 12px;
   padding: 3px 10px;
@@ -316,5 +441,39 @@ onMounted(() => {
   font-weight: 500;
   color: color-mix(in srgb, var(--color-text) 60%, transparent);
   font-size: 12px;
+}
+
+/* Misma estructura minimalista que .tabla-servicios, filas clickeables como en
+   InventarioCablesCromoView.vue (mismo patrón accesible: role="button" + tabindex + @keydown.enter). */
+.tabla-cables {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tabla-cables th,
+.tabla-cables td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.tabla-cables th {
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  font-size: 12px;
+}
+
+.tabla-cables__fila {
+  cursor: pointer;
+}
+
+.tabla-cables__fila:hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.tabla-cables__fila:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 </style>

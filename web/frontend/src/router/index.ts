@@ -14,6 +14,7 @@ const ServiciosView = () => import('../views/ServiciosView.vue');
 const ServicioDetalleView = () => import('../views/ServicioDetalleView.vue');
 const CamaraDetailView = () => import('../views/CamaraDetailView.vue');
 const VerificadorCromoView = () => import('../views/VerificadorCromoView.vue');
+const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
 const BotellasInventarioView = () => import('../views/BotellasInventarioView.vue');
@@ -26,6 +27,9 @@ const InfraTab = () => import('../views/tabs/InfraTab.vue');
 const AdminDashboard = () => import('../admin/views/AdminDashboard.vue');
 const AdminUsuarios = () => import('../admin/views/AdminUsuarios.vue');
 const AdminServicios = () => import('../admin/views/AdminServicios.vue');
+const AdminServiciosViewer = () => import('../admin/views/AdminServiciosViewer.vue');
+const AdminCamarasViewer = () => import('../admin/views/AdminCamarasViewer.vue');
+const AdminBotellasViewer = () => import('../admin/views/AdminBotellasViewer.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
@@ -98,6 +102,11 @@ const routes: RouteRecordRaw[] = [
           navOrder: 18,
           navSection: 'Operación',
         },
+      },
+      {
+        path: 'toolkit/validar-datos-cromo',
+        name: 'toolkit-validar-datos-cromo',
+        component: ValidarDatosCromoView,
       },
       {
         path: 'dwdm/ciena',
@@ -245,6 +254,24 @@ const routes: RouteRecordRaw[] = [
         path: 'ingesta/cromo',
         name: 'admin-ingesta-cromo',
         component: AdminIngestaCromo,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer',
+        name: 'admin-servicios-viewer',
+        component: AdminServiciosViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/Camaras',
+        name: 'admin-servicios-viewer-camaras',
+        component: AdminCamarasViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/Botellas',
+        name: 'admin-servicios-viewer-botellas',
+        component: AdminBotellasViewer,
         meta: { requiresAdmin: true },
       },
       { path: ':pathMatch(.*)*', redirect: '/admin' },

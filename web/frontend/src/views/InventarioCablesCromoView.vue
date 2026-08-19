@@ -255,7 +255,7 @@ onMounted(() => buscar(0));
 }
 
 .inventario-cables__vigente {
-  color: var(--color-state-ok, #16a34a);
+  color: var(--color-state-ok);
 }
 
 .inventario-cables__vigente.is-no {

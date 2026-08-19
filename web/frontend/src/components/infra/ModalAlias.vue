@@ -90,12 +90,12 @@ watch(
 }
 
 .infra-detail-modal__content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .infra-detail-modal__header {
@@ -113,7 +113,7 @@ watch(
 
 .infra-detail-modal__eyebrow {
   margin: 0;
-  color: #7dd3fc;
+  color: var(--color-accent);
   font-size: 0.76rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -134,8 +134,8 @@ watch(
   align-items: center;
   padding: 14px 16px;
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
 }
 
 .infra-detail-list__item span {
@@ -147,8 +147,8 @@ watch(
 .infra-detail-empty {
   padding: 18px;
   border-radius: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--color-bg);
 }
 </style>

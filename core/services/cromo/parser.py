@@ -33,6 +33,38 @@ _CLASE_TUBO = 129
 _CLASE_PELO = 130
 _CLASE_FUSION = 132
 
+# Etiquetas de los `at[].id` ya conocidos por este parser — dispersos como números mágicos en
+# `parse_botella`/`parse_cable`/`parse_fusion` de más abajo, centralizados acá para que un consumidor
+# externo (visor en vivo de un elemento Cromo) pueda mostrar una etiqueta legible sin reinventar el
+# mapeo. El significado puede variar levemente según la clase del objeto (p.ej. `34` es el nombre en
+# una botella pero el nombre crudo del extremo A en un cable) — las etiquetas se redactan en forma
+# neutral a propósito. Un id ausente de este dict no es un error: sólo cae a un fallback genérico en
+# el consumidor (nunca se oculta un atributo desconocido, el propósito es auditar, no filtrar).
+ATRIBUTOS_CONOCIDOS: dict[int, str] = {
+    16: "Altura",
+    20: "Tendido",
+    23: "Distancia geo",
+    24: "Distancia real",
+    25: "Propietario",
+    26: "Nombre (cable)",
+    27: "Jerarquía",
+    28: "Extremo A (legado)",
+    29: "Extremo B (legado)",
+    32: "Capacidad",
+    34: "Nombre / Extremo A",
+    35: "Notas",
+    37: "Extremo B",
+    41: "Código de modelo",
+    61: "Servicio (crudo)",
+    67: "Calle",
+    68: "Localidad",
+    69: "Provincia",
+    84: "Nombre del par",
+    85: "Tipo",
+    91: "ID legado",
+    118: "Ubicación física",
+}
+
 # Texto libre de at.61, p.ej. "FO 114830 - EDGE - CIRION - Pelo 1 de 2".
 #
 # Prefijos más allá de "FO" agregados en Etapa 9c — hallazgo real contra `lasfocasdev-postgres`: de
@@ -195,6 +227,22 @@ def parsear_servicio(servicio_raw: Optional[str]) -> tuple[Optional[str], str]:
     if not coincidencia:
         return None, "INDETERMINADO"
     return coincidencia.group(1), "CLIENTE"
+
+
+# Heurística de plausibilidad (dato-informada, 2026-08-14, ver docs/decisiones.md): de los 1488
+# `Servicio.numero_primer_servicio` reales curados hoy, 99.8% tiene 4-6 dígitos (61 de 4, 1032 de
+# 5, 392 de 6; sólo 3 outliers de 10-11 dígitos, basura vieja). Sobre los 9078 servicio_numero
+# distintos sin match acumulados en cromo_servicio_match, longitud 1-3 (21 distintos, 3138 filas)
+# es basura obvia ("1","2","387" ambiguo) y 8-10 (3 distintos, 6 filas) es ruido — ninguno de los
+# dos genera placeholder.
+LONGITUD_SERVICIO_PLAUSIBLE = range(4, 7)  # 4, 5, 6
+
+
+def es_numero_servicio_plausible(numero: str) -> bool:
+    """True si `numero` (dígitos puros, ver `_REGEX_SERVICIO`) tiene una longitud consistente con un
+    número de servicio real — controla si `fase_servicios`/`scripts/cromo_backfill_placeholders_servicios.py` sintetizan un `Servicio` placeholder para un número sin match, o lo dejan
+    como antes (`servicio_id=NULL`)."""
+    return len(numero) in LONGITUD_SERVICIO_PLAUSIBLE
 
 
 def parse_botella(obj: Mapping[str, Any]) -> Botella:
@@ -430,6 +478,7 @@ def parse_arbol_botella(obj: Mapping[str, Any]) -> ArbolBotella:
 
 
 __all__ = [
+    "ATRIBUTOS_CONOCIDOS",
     "ArbolBotella",
     "ErrorParseo",
     "ClaseExcluidaError",

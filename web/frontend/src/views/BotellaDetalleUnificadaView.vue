@@ -117,7 +117,7 @@ onMounted(async () => {
 
 .botella-detalle-shim__huerfana i {
   font-size: 28px;
-  color: var(--color-state-warn, #facc15);
+  color: var(--color-state-warn);
 }
 
 .botella-detalle-shim__huerfana h2 {

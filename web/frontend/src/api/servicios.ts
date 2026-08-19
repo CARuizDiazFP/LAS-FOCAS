@@ -25,6 +25,8 @@ export interface ServicioItem {
   provincia: string | null;
   direccion_2: string | null;
   estado_servicio: string;
+  categoria: number;
+  origen_datos: string;
   reclamos: Array<Record<string, unknown>> | null;
 }
 
@@ -50,8 +52,17 @@ export interface SearchServiciosParams {
   domicilio?: string;
   tipo?: string;
   estado?: string;
+  categoria?: string;
   limit?: number;
   offset?: number;
+}
+
+/** Categorías admisibles (C0 = máxima prioridad, C6 = sin clasificar / default). */
+export const CATEGORIAS_SERVICIO = [0, 1, 2, 3, 4, 5, 6] as const;
+export type CategoriaServicio = (typeof CATEGORIAS_SERVICIO)[number];
+
+export function categoriaLabel(categoria: number): string {
+  return `C${categoria}`;
 }
 
 export type EstadoServicioToken = 'ok' | 'warn' | 'error' | 'idle';
@@ -128,5 +139,35 @@ export function ingestServiciosFile(
     data.append('file', file, file.name);
     data.append('csrf_token', getCsrfToken());
     xhr.send(data);
+  });
+}
+
+/** Cambia la categoría (C0-C6) de un Servicio individual — sólo admin. Devuelve el item actualizado
+ * para refrescar la vista sin recargar. Ver `PATCH /api/servicios/{id}/categoria`. */
+export async function updateServicioCategoria(id: number, categoria: number): Promise<ServicioItem> {
+  return requestJson<ServicioItem>(`/api/servicios/${id}/categoria`, {
+    method: 'PATCH',
+    json: { categoria },
+    csrf: true,
+  });
+}
+
+export interface ServiciosCategoriaMasivaResponse {
+  status: string;
+  categoria_nueva: number;
+  actualizados: number;
+  no_encontrados: number[];
+}
+
+/** Cambia la categoría (C0-C6) de un lote de Servicios en una sola operación — sólo admin. Ver
+ * `PATCH /api/servicios/bulk-categoria`. */
+export async function updateServiciosCategoriaMasivo(
+  servicioIds: number[],
+  categoria: number,
+): Promise<ServiciosCategoriaMasivaResponse> {
+  return requestJson<ServiciosCategoriaMasivaResponse>('/api/servicios/bulk-categoria', {
+    method: 'PATCH',
+    json: { servicio_ids: servicioIds, categoria },
+    csrf: true,
   });
 }

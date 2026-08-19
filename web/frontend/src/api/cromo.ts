@@ -208,12 +208,24 @@ export interface CromoVerificacionTubo {
   servicios: CromoServicioEncontrado[];
 }
 
+/** Un cable que tiene la botella como uno de sus extremos — fila de la tarjeta "Cables asociados"
+ * del detalle de Botella (sin tubos/pelos, eso vive en `CromoDetalleCable`). */
+export interface CromoCableDeBotella {
+  n_id: number;
+  nombre: string | null;
+  cantidad_servicios: number;
+}
+
 export interface CromoVerificacionBotella {
   botella_n_id: number;
   nombre: string | null;
   clase: number | null;
   localidad: string | null;
   servicios: CromoServicioEncontrado[];
+  cables: CromoCableDeBotella[];
+  // Futuro: `empalmes?: CromoEmpalmeDeBotella[]` — fusiones internas de la botella
+  // (`app.cromo_fusiones`), para una tarjeta "Empalmes" análoga a `cables`. Aún no expuesto por el
+  // backend (ver comentario en `ResultadoBotella`, core/services/cromo/verificador.py).
 }
 
 export async function verificarServiciosPorCable(cableNId: number): Promise<CromoVerificacionCable> {
@@ -329,4 +341,99 @@ export interface CromoDetalleCable {
 
 export async function obtenerDetalleCable(nId: number): Promise<CromoDetalleCable> {
   return requestJson(`/api/infra/cromo/cables/${nId}/detalle`);
+}
+
+// ── Visor en vivo de un elemento Cromo ───────────────────────────────────────
+// GET directo contra Cromo (nunca contra las tablas ya ingeridas) — para auditar inconsistencias sin
+// esperar a la próxima corrida de ingesta. Mismo criterio de auth que el resto: cualquier usuario
+// autenticado. A diferencia de `CromoDetalleCable`/`CromoVerificacion*`, esto nunca se persiste.
+
+export interface CromoAtributoVivo {
+  id: number;
+  etiqueta: string;
+  valor: unknown;
+}
+
+export interface CromoElementoVivo {
+  n_id: number;
+  version_id: number | null;
+  clase: number | null;
+  clase_etiqueta: string | null;
+  clase_entidad: string | null;
+  nombre: string | null;
+  notas: string | null;
+  atributos: CromoAtributoVivo[];
+  payload_raw: Record<string, unknown>;
+}
+
+export async function obtenerElementoVivoCromo(nId: number): Promise<CromoElementoVivo> {
+  return requestJson(`/api/infra/cromo/elementos/${nId}/vivo`);
+}
+
+// ── "Validar datos DB Cromo" (Tool Kit) ──────────────────────────────────────
+// Distinto de `obtenerElementoVivoCromo`: acá se le aplica el MISMO parseo que usa la ingesta
+// (árbol completo de cables/tubos/pelos/fusiones), no sólo los atributos planos del objeto. Cero
+// acceso a la base de datos local — los servicios de cada pelo viajan crudos, sin matchear.
+
+export interface CromoCableValidacion {
+  n_id: number;
+  nombre: string | null;
+  capacidad: string | null;
+  extremo_a_n_id: number | null;
+  extremo_a_nombre: string | null;
+  extremo_b_n_id: number | null;
+  extremo_b_nombre: string | null;
+}
+
+export interface CromoTuboValidacion {
+  n_id: number;
+  cable_n_id: number | null;
+  orden: number | null;
+  nombre_color: string | null;
+}
+
+export interface CromoPeloValidacion {
+  n_id: number;
+  tubo_n_id: number | null;
+  cable_n_id: number | null;
+  numero_pelo: string | null;
+  color: string | null;
+  servicio_raw: string | null;
+  servicio_numero: string | null;
+}
+
+export interface CromoFusionValidacion {
+  n_id: number;
+  botella_n_id: number | null;
+  nombre_par: string | null;
+  pelo_a_n_id: number | null;
+  pelo_b_n_id: number | null;
+}
+
+export interface CromoErrorParseo {
+  n_id: number | null;
+  clase: number | null;
+  motivo: string;
+}
+
+export interface CromoValidacionDatos {
+  n_id: number;
+  clase: number | null;
+  tipo_objeto: string;
+  nombre: string | null;
+  notas: string | null;
+  latitud: number | null;
+  longitud: number | null;
+  codigo_modelo: string | null;
+  id_legacy: string | null;
+  cables: CromoCableValidacion[];
+  tubos: CromoTuboValidacion[];
+  pelos: CromoPeloValidacion[];
+  fusiones: CromoFusionValidacion[];
+  errores_parseo: CromoErrorParseo[];
+  payload_raw: Record<string, unknown>;
+}
+
+export async function validarElementoCromo(nId: number): Promise<CromoValidacionDatos> {
+  return requestJson(`/api/infra/cromo/validar/${nId}`);
 }

@@ -7,7 +7,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from core.services.camara_busqueda_service import buscar_camaras_ligero
-from db.models.infra import Camara, CamaraEstado
+from db.models.cromo import CromoBotella
+from db.models.infra import Cable, Camara, CamaraEstado
 
 
 def _sesion_con_resultado(camaras: list[Camara]) -> MagicMock:
@@ -24,6 +25,8 @@ def _sesion_con_resultado(camaras: list[Camara]) -> MagicMock:
 def test_buscar_camaras_ligero_devuelve_campos_minimos() -> None:
     camara = Camara(id=1, nombre="Cra Plaza de los Ingleses CF", direccion="Plaza de los Ingleses", estado=CamaraEstado.LIBRE)
     camara.botellas = [Camara(id=2, nombre="Cra Plaza de los Ingleses Bot 2 CF")]
+    camara.cromo_botellas = []
+    camara.cables_origen = [Cable(id=3, nombre="Cable A")]
     session = _sesion_con_resultado([camara])
 
     resultado = buscar_camaras_ligero(session, "Plaza")
@@ -34,6 +37,7 @@ def test_buscar_camaras_ligero_devuelve_campos_minimos() -> None:
     assert item.nombre == "Cra Plaza de los Ingleses CF"
     assert item.estado == "LIBRE"
     assert item.botellas_count == 1
+    assert item.cables_count == 1
 
 
 def test_buscar_camaras_ligero_q_vacio_no_filtra_por_texto() -> None:
@@ -78,3 +82,16 @@ def test_buscar_camaras_ligero_estado_default_libre_si_falta() -> None:
     resultado = buscar_camaras_ligero(session, None)
 
     assert resultado[0].estado == "LIBRE"
+
+
+def test_buscar_camaras_ligero_cuenta_botellas_cromo_de_camara_inferida() -> None:
+    """~9.770/10.212 Cámaras raíz son INFERIDO_CROMO y nunca tienen Botellas legado propias —
+    botellas_count debía incluir también cromo_botellas."""
+    camara = Camara(id=1, nombre="Cra Bernardo de Irigoyen 194 CF", estado=CamaraEstado.LIBRE)
+    camara.botellas = []
+    camara.cromo_botellas = [CromoBotella(n_id=100), CromoBotella(n_id=101)]
+    session = _sesion_con_resultado([camara])
+
+    resultado = buscar_camaras_ligero(session, None)
+
+    assert resultado[0].botellas_count == 2

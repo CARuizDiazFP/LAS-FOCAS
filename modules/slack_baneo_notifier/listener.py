@@ -1,15 +1,22 @@
 # Nombre de archivo: listener.py
 # Ubicación de archivo: modules/slack_baneo_notifier/listener.py
-# Descripción: Listener de ingresos técnicos via Slack Bolt (Socket Mode) — responde en hilo con estado de baneo
+# Descripción: Listener de ingresos técnicos + comandos de Cables via Slack Bolt (Socket Mode)
 
 """Escucha en tiempo real los formularios de ingreso a cámaras enviados por técnicos
 en un canal de Slack.  Cuando llega un mensaje, extrae el nombre de cámara del campo
 "Cámara:", normaliza el texto, consulta la DB y responde en el **hilo original**
 con uno de los tres estados posibles.
 
+Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
+Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
+listener de ingresos, sólo un evento distinto de Slack. Implementados los 3 comandos: "Info cable
+<nombre>", "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (ver `cable_info.py`).
+
 Requiere:
   - SLACK_BOT_TOKEN  (xoxb-...)  — ya existente en .env
   - SLACK_APP_TOKEN  (xapp-...)  — nuevo, para Socket Mode
+  - Scope adicional para app_mention: `app_mentions:read` en la Slack App (verificar en Slack, no
+    asumible desde el código)
 
 Se integra en worker.py como un daemon thread independiente.
 """
@@ -19,13 +26,33 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any
+from typing import Any, Optional
 
 from core.services.camara_estado_service import obtener_ultimo_motivo_baneo_manual
+from core.services.cromo.detalle import pelos_de_tubo_sync
+from core.services.cromo.verificador import servicios_por_tubo_sync
+from db.models.cromo import CromoCable
 from db.session import SessionLocal
+from modules.slack_baneo_notifier.cable_info import (
+    buscar_cable_por_nombre,
+    construir_respuesta_ambiguo,
+    construir_respuesta_buffer_no_encontrado,
+    construir_respuesta_info_buffer,
+    construir_respuesta_info_cable,
+    construir_respuesta_no_encontrado,
+    construir_respuesta_verificar_buffer,
+    contar_buffers_cable,
+    extraer_comando_cable_buffer,
+    extraer_comando_info_cable,
+    resolver_tubo_por_numero,
+)
 from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
 
 logger = logging.getLogger("slack_baneo_worker.listener")
+
+# Slack antepone el mention token (ej. "<@U01ABCXYZ> ") al texto de un evento app_mention — se
+# recorta antes de intentar matchear cualquier comando.
+_RE_MENTION_PREFIX = re.compile(r"^\s*<@[^>]+>\s*")
 
 _NOMBRE_SERVICIO_LISTENER = "slack_ingreso_listener"
 _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
@@ -297,6 +324,95 @@ class IngresoListener:
         finally:
             session.close()
 
+    # ── Comandos de Cables (docs/slack_app_cables.md) ───────────────────────
+
+    def _resolver_cable_o_responder(
+        self, session: Any, nombre_cable: str, client: Any, channel: str, thread_ts: str
+    ) -> Optional[CromoCable]:
+        """Busca el cable por nombre; si no hay exactamente un match, ya responde el aviso
+        correspondiente (no encontrado / ambiguo) y devuelve `None` para que el caller corte."""
+        cables = buscar_cable_por_nombre(session, nombre_cable)
+        if not cables:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=construir_respuesta_no_encontrado(nombre_cable), mrkdwn=True
+            )
+            return None
+        if len(cables) > 1:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=construir_respuesta_ambiguo(nombre_cable, cables), mrkdwn=True
+            )
+            return None
+        return cables[0]
+
+    def _handle_app_mention(self, event: dict[str, Any], client: Any) -> None:
+        """Procesa una mención directa al bot (`@bot <comando>`) — soporta "Info cable <nombre>",
+        "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (docs/slack_app_cables.md).
+        Mismo canal/config que el listener de ingresos; no se pisan entre sí porque escuchan eventos
+        distintos de Slack (`message` vs `app_mention`).
+
+        El comando CON buffer se intenta primero: `extraer_comando_info_cable` es "goloso" (toma todo
+        el resto de la línea como nombre de cable) y matchearía de más si un mensaje con sufijo
+        "B<N>" llegara primero acá."""
+        texto = _RE_MENTION_PREFIX.sub("", event.get("text", ""))
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        channel = event.get("channel", "")
+
+        comando_buffer = extraer_comando_cable_buffer(texto)
+        if comando_buffer is not None:
+            self._handle_cable_buffer(comando_buffer, client, channel, thread_ts)
+            return
+
+        nombre_cable = extraer_comando_info_cable(texto)
+        if nombre_cable is None:
+            logger.debug("Mención sin comando reconocido: '%s'", texto)
+            return
+
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+            respuesta = construir_respuesta_info_cable(cable, session)
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error("Error procesando 'Info cable %s': %s", nombre_cable, exc, exc_info=True)
+        finally:
+            session.close()
+
+    def _handle_cable_buffer(
+        self, comando: tuple[str, str, int], client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"Verificar cable <nombre> B<N>" / "Info cable <nombre> B<N>" — resuelve cable, resuelve
+        buffer por número (1-indexado, ver `cable_info.py`), y arma la respuesta según el verbo."""
+        verbo, nombre_cable, numero_buffer = comando
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+
+            tubo = resolver_tubo_por_numero(session, cable.n_id, numero_buffer)
+            if tubo is None:
+                total = contar_buffers_cable(session, cable.n_id)
+                respuesta = construir_respuesta_buffer_no_encontrado(nombre_cable, numero_buffer, total)
+                client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+                return
+
+            if verbo == "verificar":
+                resultado = servicios_por_tubo_sync(session, tubo.n_id)
+                respuesta = construir_respuesta_verificar_buffer(cable, tubo, resultado)
+            else:
+                pelos = pelos_de_tubo_sync(session, tubo.n_id)
+                respuesta = construir_respuesta_info_buffer(cable, tubo, pelos)
+
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error(
+                "Error procesando '%s cable %s B%s': %s", verbo, nombre_cable, numero_buffer, exc, exc_info=True
+            )
+        finally:
+            session.close()
+
     # ── Ciclo de vida ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -317,9 +433,13 @@ class IngresoListener:
         def on_message(event: dict[str, Any], client: Any) -> None:
             self._handle_message(event, client)
 
+        @app.event("app_mention")
+        def on_app_mention(event: dict[str, Any], client: Any) -> None:
+            self._handle_app_mention(event, client)
+
         self._handler = SocketModeHandler(app, self._app_token)
         self._running = True
-        logger.info("IngresoListener iniciado en modo Socket (escuchando eventos message)")
+        logger.info("IngresoListener iniciado en modo Socket (escuchando eventos message + app_mention)")
         try:
             self._handler.start()
         finally:

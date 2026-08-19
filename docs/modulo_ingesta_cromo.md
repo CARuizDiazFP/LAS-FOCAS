@@ -118,13 +118,32 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   - `parser.py`: funciones puras que traducen los payloads recibidos a las estructuras de dominio.
     Sin acceso a red ni a base de datos.
   - `modelos.py`: las estructuras de dominio del inventario (botella, cable, tubo, pelo, fusión).
+  - `alias_service.py` (2026-08-19): escudo manual contra basura conocida de Cromo — carga en
+    memoria (una sola query por corrida) la tabla `app.cromo_botella_alias` y resuelve, para un
+    `n_id` de botella marcado a mano, si debe fusionarse dentro de otro n_id "golden" o anularse
+    directamente. Ver `docs/db.md` (tabla `cromo_botella_alias`) y `docs/decisiones.md` (2026-08-19).
   - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas,
     reconciliación de referencias colgadas y matching de servicios. Transacción por página (un
     commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
-    cancelación cooperativa entre páginas.
+    cancelación cooperativa entre páginas. Desde 2026-08-19, las fases de cables/botellas/fusiones
+    consultan `alias_service` antes de cada upsert: un `n_id` aliaseado nunca crea/actualiza su
+    propia `CromoBotella`, y cualquier referencia blanda hacia él (extremo de cable, parent de
+    fusión) se redirige o se anula según corresponda. Desde 2026-08-14, `fase_servicios` ya no deja un
+    `servicio_numero` sin match como sólo traza de auditoría: si el número es "plausible" (longitud
+    4-6 dígitos, `parser.py::es_numero_servicio_plausible`) crea un `Servicio` placeholder
+    (`categoria=0`, `origen_datos=INFERIDO_CROMO`) vía `ON CONFLICT DO NOTHING RETURNING id`, con
+    cache en memoria por corrida para no reintentar la misma alta cientos de veces cuando muchos
+    pelos comparten número. Ver `docs/decisiones.md` (2026-08-14) para el detalle completo, incluida
+    la re-etiqueta a `INGEST_EXCEL` cuando un Excel real enriquece después el mismo placeholder.
   - `verificador.py`: consultas de sólo lectura sobre el inventario ya ingerido — qué servicios
     pasan por un cable, un tubo/buffer o una botella. Tolerante a referencias colgadas: un objeto sin
-    fila propia pero referenciado por otro (pelo, cable) no se trata como "no encontrado".
+    fila propia pero referenciado por otro (pelo, cable) no se trata como "no encontrado". Desde
+    2026-08-18, `servicios_por_botella` también resuelve `cables: list[CableDeBotella]` (id, nombre,
+    cantidad de servicios de cada cable que tiene la botella como extremo) con una query propia
+    (`_SQL_CABLES_DE_BOTELLA`, subselect correlacionado para el conteo — mismo patrón que
+    `inventario.py`) — alimenta la tarjeta "Cables asociados" del detalle de Botella en el
+    Verificador. `ResultadoBotella` deja un campo comentado para `empalmes` (fusiones internas de la
+    botella, `app.cromo_fusiones`), todavía sin query ni consumidor.
   - `inventario.py`: búsqueda paginada de cables (Etapa 8b, filtros extendidos en Etapa 9) — distinto
     del verificador ("listame cables", no "qué servicios pasan por este cable puntual"). `ILIKE`
     parcial sobre nombre/jerarquía/propietario/botella (extremos ya desnormalizados), exacto sobre
@@ -135,6 +154,30 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     (cable, tubos del cable, todos los pelos del cable con su match ya resuelto por LEFT JOIN),
     agrupadas en Python por `tubo_n_id` — nunca N+1. Mismo criterio de referencia colgada tolerante
     que `verificador.py`, extendido a nivel tubo.
+  - `live_lookup_service.py` (2026-08-19): visor en vivo de un elemento Cromo por `n_id` — un único
+    `GET /db/objects/{id}` (`CromoClient.get_objeto`) contra Cromo, **nunca** contra las tablas ya
+    ingeridas y **nunca** persiste nada. Distinto de todo lo demás en este paquete: es la única
+    consulta que golpea la API externa fuera de una corrida de ingesta. Etiquetas legibles para los
+    `at[]` crudos vía `parser.ATRIBUTOS_CONOCIDOS`; la clase se resuelve contra el catálogo ya
+    existente `app.cromo_clases` (sin duplicar el mapeo clase→etiqueta). 404 de Cromo se traduce a
+    `ObjetoNoEncontrado` (mismo contrato que `verificador.py`/`detalle.py`); cualquier otra falla de
+    Cromo se deja propagar para que la ruta la mapee a 502. Endpoint
+    `GET /api/infra/cromo/elementos/{n_id}/vivo` en `web/app/main.py`, modal
+    `ModalVerificadorCromo.vue` desde el botón "Ver info en Cromo" del detalle de Botella
+    (`VerificadorCromoView.vue`). Ver `docs/decisiones.md` (entrada 2026-08-19).
+  - `validador_datos_service.py` (2026-08-19): herramienta de Tool Kit "Validar datos DB Cromo" —
+    distinta de `live_lookup_service.py` (que sólo devuelve los atributos planos de un objeto): acá se
+    le aplica el MISMO parseo que usa esta ingesta (`parser.parse_objeto` — el dispatcher genérico por
+    clase que también usa `parse_pagina` — más `parse_arbol_botella`/`extraer_tubos_y_pelos` si el
+    objeto es una botella o un cable con `inner[]` propio), armando el árbol completo
+    (cables/tubos/pelos/fusiones) para diagnóstico visual. Cero acceso a la base de datos local, ni
+    siquiera en lectura — los servicios de cada pelo se muestran crudos
+    (`servicio_raw`/`servicio_numero`), nunca matcheados contra `app.servicios`. Una clase excluida o
+    no soportada no rompe la herramienta — queda en `errores_parseo`, `tipo_objeto="Desconocido"`.
+    Endpoint `GET /api/infra/cromo/validar/{n_id}` en `web/app/main.py` (sin sesión de DB en
+    absoluto), vista dedicada `ValidarDatosCromoView.vue` en `/toolkit/validar-datos-cromo` (Tool
+    Kit) — herramienta separada de "Verificador Cromo", confirmado explícitamente con el usuario. Ver
+    `docs/decisiones.md` (entrada 2026-08-19, tercera del día).
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
@@ -146,6 +189,13 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   TRUNK). Reusa las queries de `ingesta.fase_servicios()` para el matching contra `app.servicios`, sin
   duplicar lógica. Corrido contra `lasfocasdev-postgres`: 91.654 pelos re-clasificados de
   `INDETERMINADO` a `CLIENTE`, 7.042 con match real resuelto.
+- `scripts/cromo_backfill_placeholders_servicios.py` (2026-08-14): backfill one-off del historial
+  acumulado de `cromo_servicio_match` sin match (`servicio_id IS NULL`) — mismo criterio de
+  plausibilidad de longitud que la lógica en vivo de `fase_servicios`, un placeholder por
+  `servicio_numero` distinto (no por fila de match), re-validado contra el estado actual de
+  `app.servicios` (incluido `alias_ids`) antes de crear nada. Corrido contra `lasfocasdev-postgres`:
+  9.054 `Servicio` placeholder creados, 112.340 filas de `cromo_servicio_match` resueltas, 3.144 sin
+  resolver (números de 1-3 u 8-10 dígitos, basura de parseo). Idempotente por construcción.
 - `tests/test_cromo_parser.py`, `tests/test_cromo_client.py`, `tests/test_cromo_ingesta.py`,
   `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
   `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/test_cromo_inventario.py`,
@@ -170,14 +220,16 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   (`GET`/`POST /api/admin/ingesta/cromo/config`, `.../config/health`, `.../config/trigger`). Sigue el
   patrón vigente del archivo (`_require_admin`, CSRF contra `request.session`), con imports locales de
   `core.services.cromo.*` y `db.*` dentro de cada función, como el resto del archivo. También los
-  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios`), del
+  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios` — el de
+  botella agrega `cables: [{n_id, nombre, cantidad_servicios}]` desde 2026-08-18), del
   inventario (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`n_id`/
   `botella`/`servicio`/`limit`/`offset`, los 3 últimos agregados en la Etapa 9) y del detalle
   jerárquico (`GET /api/infra/cromo/cables/{n_id}/detalle`, Etapa 9), todos con `_require_auth` en vez
   de `_require_admin` — son consulta, no administración.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
-  del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`) + funciones del scheduler del worker
+  del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`, con `CromoVerificacionBotella.cables:
+  CromoCableDeBotella[]` desde 2026-08-18) + funciones del scheduler del worker
   (`obtenerConfigSchedulerCromo`, `guardarConfigSchedulerCromo`, `obtenerSaludWorkerCromo`,
   `dispararSchedulerCromo`) + `buscarInventarioCables` (Etapa 8b, filtros `nId`/`botella`/`servicio`
   agregados en Etapa 9) + `obtenerDetalleCable` (Etapa 9, detalle jerárquico).
@@ -196,7 +248,16 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `router/index.ts` y con su entrada de navegación en `AppShell.vue` (grupo "Tool Kit"). Desde la
   Etapa 9 también lee `route.query.tipo`/`route.query.n_id` en `onMounted` y dispara la búsqueda
   automáticamente si vienen presentes — es el destino de la navegación cruzada desde el detalle de un
-  cable (click en una Botella extremo).
+  cable (click en una Botella extremo). Desde 2026-08-18, cuando `tipo === 'botella'` el resultado
+  agrega una tarjeta "Cables asociados" (tabla minimalista ID/Nombre de Cable/Servicios Asociados,
+  mismo patrón accesible `role="button"` + `tabindex` + `@keydown.enter` que
+  `InventarioCablesCromoView.vue`) cuyo click navega con `router.push` directo al detalle jerárquico
+  dedicado del cable (`/infra/cromo/cables/ID<n_id>`, `CableDetalleCromoView.vue`) — no se queda en
+  este Verificador con `tipo=cable`, porque esa tarjeta sólo expone servicios, no tubos/pelos (primer
+  intento, corregido el mismo día: hacía `router.push({ query: { tipo: 'cable', n_id } })` para
+  quedarse en la misma vista; se descartó porque el detalle real de un cable — tubos/buffers/pelos —
+  sólo existe en `CableDetalleCromoView.vue`, no en esta tarjeta de servicios). Queda un bloque
+  comentado en la plantilla marcando dónde iría a futuro la tarjeta de Empalmes.
 - `web/frontend/src/views/InventarioCablesCromoView.vue` (Etapa 8b): inventario navegable en
   `/infra/cromo/cables` — buscador (nombre/jerarquía/propietario/vigente, + Id de cable/Botella/
   Servicio desde la Etapa 9) + paginación. Cada fila es clickeable (Etapa 9) y navega a la vista de

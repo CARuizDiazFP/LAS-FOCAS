@@ -234,12 +234,12 @@ watch(
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .asociar-title-row {
@@ -254,7 +254,7 @@ watch(
   gap: 4px;
   margin-bottom: 14px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--color-bg);
   padding: 3px;
 }
 
@@ -270,17 +270,17 @@ watch(
 }
 
 .asociar-tab.active {
-  background: rgba(96, 165, 250, 0.18);
-  color: #bfdbfe;
+  background: var(--color-brand-primary-soft);
+  color: var(--color-accent-200);
 }
 
 .asociar-search {
   width: 100%;
   padding: 8px 12px;
   margin-bottom: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid var(--color-divider);
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--color-bg);
   color: var(--text);
 }
 
@@ -293,7 +293,7 @@ watch(
 .asociar-empty {
   padding: 12px;
   border-radius: 10px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
   font-size: 0.85rem;
   text-align: center;
@@ -301,8 +301,8 @@ watch(
 }
 
 .asociar-empty.error {
-  border-color: rgba(239, 68, 68, 0.4);
-  color: #fecaca;
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+  color: var(--error);
 }
 
 .asociar-results {
@@ -322,13 +322,13 @@ watch(
   gap: 2px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   cursor: pointer;
 }
 
 .asociar-result-item:hover {
-  border-color: rgba(96, 165, 250, 0.4);
+  border-color: var(--color-accent);
 }
 
 .asociar-result-meta {
@@ -342,8 +342,8 @@ watch(
   justify-content: space-between;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   margin-bottom: 10px;
   font-size: 0.85rem;
 }

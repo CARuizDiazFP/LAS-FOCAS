@@ -6,12 +6,20 @@
 <template>
   <article
     class="botella-card-min"
+    :class="{ 'is-selected': selected }"
     role="button"
     tabindex="0"
     @click="goToDetail"
     @keyup.enter="goToDetail"
   >
     <div class="botella-card-min__row">
+      <input
+        type="checkbox"
+        class="botella-card-min__checkbox"
+        :checked="selected"
+        @click.stop
+        @change="$emit('toggleSelect', botella)"
+      />
       <span :class="['botella-card-min__origen', `is-${botella.origen}`]">
         {{ botella.origen === 'cromo' ? 'Cromo' : 'Legado' }}
       </span>
@@ -37,10 +45,12 @@ import { estadoBotellaToken, type BotellaUnificadaItem } from '../../api/botella
 
 const props = defineProps<{
   botella: BotellaUnificadaItem;
+  selected?: boolean;
 }>();
 
 const emit = defineEmits<{
   openDetail: [botella: BotellaUnificadaItem];
+  toggleSelect: [botella: BotellaUnificadaItem];
 }>();
 
 const estadoToken = computed(() => estadoBotellaToken(props.botella.estado));
@@ -69,10 +79,19 @@ function goToDetail(): void {
   box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5);
 }
 
+.botella-card-min.is-selected {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
 .botella-card-min__row {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.botella-card-min__checkbox {
+  flex: none;
+  accent-color: var(--color-accent);
 }
 
 .botella-card-min__origen {

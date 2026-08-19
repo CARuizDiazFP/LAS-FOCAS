@@ -15,6 +15,7 @@ from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from core.services.cromo.verificador import ObjetoNoEncontrado, ServicioEncontrado
 
@@ -113,6 +114,25 @@ _SQL_PELOS_DE_CABLE = text(
     LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.cable_n_id = :cable_n_id
+    ORDER BY p.orden NULLS LAST, p.n_id
+    """
+)
+
+
+# Misma forma que _SQL_PELOS_DE_CABLE, acotada a un único tubo/buffer — para el comando de Slack
+# "Info cable <nombre> B<N>" (modules/slack_baneo_notifier/cable_info.py), que necesita el listado
+# completo de pelos de UN buffer puntual, no del cable entero.
+_SQL_PELOS_DE_TUBO = text(
+    """
+    SELECT
+        p.n_id, p.tubo_n_id, p.numero_pelo, p.orden, p.color, p.tipo_asociacion,
+        p.servicio_raw, p.servicio_numero, p.vigente,
+        s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
+        s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo
+    FROM app.cromo_pelos p
+    LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    LEFT JOIN app.servicios s ON s.id = m.servicio_id
+    WHERE p.tubo_n_id = :tubo_n_id
     ORDER BY p.orden NULLS LAST, p.n_id
     """
 )
@@ -247,4 +267,38 @@ async def obtener_detalle_cable(sesion: AsyncSession, n_id: int) -> DetalleCable
     )
 
 
-__all__ = ["PeloDetalle", "TuboDetalle", "DetalleCable", "obtener_detalle_cable"]
+def pelos_de_tubo_sync(session: Session, tubo_n_id: int) -> list[PeloDetalle]:
+    """Listado completo de los pelos de UN tubo/buffer (matcheados o no, con `servicio_raw` crudo
+    siempre visible) — versión síncrona y acotada a un tubo de la misma query/agrupación que usa
+    `obtener_detalle_cable` para el cable entero. Para el comando de Slack "Info cable <nombre> B<N>"
+    (`modules/slack_baneo_notifier/cable_info.py`), que corre dentro de un callback síncrono de Slack
+    Bolt y sólo necesita un buffer puntual, no el árbol completo del cable."""
+    filas = session.execute(_SQL_PELOS_DE_TUBO, {"tubo_n_id": tubo_n_id}).all()
+
+    pelos_index: dict[int, PeloDetalle] = {}
+    pelos: list[PeloDetalle] = []
+    for fila in filas:
+        pelo_n_id = fila[0]
+        pelo = pelos_index.get(pelo_n_id)
+        if pelo is None:
+            pelo = PeloDetalle(
+                n_id=pelo_n_id,
+                tubo_n_id=fila[1],
+                numero_pelo=fila[2],
+                orden=fila[3],
+                color=fila[4],
+                tipo_asociacion=fila[5],
+                servicio_raw=fila[6],
+                servicio_numero=fila[7],
+                vigente=fila[8],
+            )
+            pelos_index[pelo_n_id] = pelo
+            pelos.append(pelo)
+        servicio = _fila_a_servicio_opcional(fila[9:19], pelo_n_id)
+        if servicio is not None:
+            pelo.servicios.append(servicio)
+
+    return pelos
+
+
+__all__ = ["PeloDetalle", "TuboDetalle", "DetalleCable", "obtener_detalle_cable", "pelos_de_tubo_sync"]

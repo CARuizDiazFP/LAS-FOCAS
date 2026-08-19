@@ -44,6 +44,15 @@ Slack, y los dos endpoints admin `admin_dar_de_alta_camara`/`admin_aprobar_camar
 — si el nombre nuevo matchea `RE_BOT_SUFIJO`, reusa la Cámara padre `INFERIDO` existente para esa base
 o crea una nueva, y vincula la fila nueva como Botella.
 
+**Normalización extendida en la resolución de padre (2026-08-14)**: `resolver_o_crear_padre_desde_base`
+(núcleo compartido por los 6 caminos legado de arriba y por `resolver_o_crear_padre_cromo`) usa ahora
+`normalizar_para_agrupar_extendido()` (abreviaturas + sinónimos, misma tabla que la detección de
+duplicados de la sección "Dashboard Viewer" más abajo) para decidir si ya existe una Cámara padre —
+antes usaba `normalizar_para_agrupar` (básica), que seguía generando duplicados nuevos con nombres que
+sólo difieren en "CF"/abreviatura vial (ej. real "Bot Tza San Antonio 640" vs "Bot. Tza.San Antonio 640
+CF"). Riesgo aceptado explícitamente por el usuario: más falsos positivos posibles si dos sitios reales
+comparten abreviatura. Ver `docs/decisiones.md` 2026-08-14.
+
 **Backfill histórico** (`scripts/camara_backfill_padre_botella.py`, corrido una vez contra dev el
 2026-08-10): agrupa TODAS las filas raíz existentes por nombre base normalizado; para cada grupo con
 algún sufijo "Bot N" crea SIEMPRE una Cámara padre nueva (`origen_datos=INFERIDO`) y vincula como
@@ -73,6 +82,10 @@ de Julio 240" (BANEADA, origen SHEET) coexiste con el grupo real id=2663/753/106
 requiere reasignar FKs de `empalmes`/`cables`/`ingresos`/`camara_alias` de forma potencialmente
 destructiva — queda fuera de alcance de este backfill, es trabajo de un ticket separado con su propio
 plan de validación.
+
+Nota (2026-08-14): la normalización extendida de arriba reduce la creación de **nuevos** duplicados de
+este tipo hacia adelante, pero no fusiona retroactivamente los ya existentes (como el caso id=1638) —
+eso sigue siendo responsabilidad del flujo manual de la sección "Dashboard Viewer de Cámaras" más abajo.
 
 **Escritura de `Ingreso` sobre el grupo**: fuera de alcance — la tabla `app.ingresos` no tiene ningún
 camino de escritura real hoy (0 filas, 0 endpoints), por lo que no hay nada que propagar todavía. Ver
@@ -220,6 +233,91 @@ sin el patrón "Bot N"/"Botella N" (ej. real "Av Rivadavia 6041"). Se agregó un
   con selector de estado — **"No operativa" es la primera opción** (la más relevante para marcar
   infraestructura fantasma detectada manualmente), seguida de Libre/Ocupada/Baneada.
 
+### Cambio de política de estado, paginación real y navegación cruzada (2026-08-13)
+
+**Reversión explícita del usuario** de la política fail-closed descripta arriba: toda Cámara padre
+*nueva* sintetizada desde Cromo (por sufijo, prefijo, o el fallback de nombre exacto) nace ahora en
+**`LIBRE`**, no `NO_OPERATIVA`. Aplica a los 3 caminos de alta (`core/services/cromo/camara_padre_service.py`,
+`scripts/cromo_backfill_camara_padre.py`, `core/services/cromo/orfanas_service.py`) y al
+`server_default` de `app.cromo_botellas.estado` (migración `20260813_01`, metadata-only, no reescribe
+filas ya ingeridas). **Por qué es seguro pese al riesgo que motivó la política original**: una Cámara
+recién creada no tiene todavía ningún empalme/ruta propio, así que estructuralmente no puede existir
+un `IncidenteBaneo` activo real que la afecte en el momento del alta — no hay nada que "chequear". El
+caso que sí importaba proteger (reutilizar una `Camara` legado ya existente, potencialmente `BANEADA`)
+sigue intacto: ese camino nunca tocó el estado de una fila reusada, con o sin esta reversión. **No se
+re-corrieron los backfills históricos** — las ~9.672 Cámaras padre ya creadas en `NO_OPERATIVA` (ver
+arriba) no se tocaron retroactivamente; el cambio aplica sólo hacia adelante, a cualquier alta nueva.
+Ver `docs/decisiones.md`.
+
+> **Actualización 2026-08-14**: el backfill retroactivo que este párrafo decía explícitamente que NO
+> se había corrido, se corrió — ver la sección "Fix de nombres residuales y backfill retroactivo de
+> estado (2026-08-14)" más abajo. Las ~9.672 Cámaras mencionadas arriba ya no están en `NO_OPERATIVA`.
+
+**Paginación real en el dashboard `/infra`**: hasta esta fecha, `InfraTab.vue` no cargaba nada al
+montar — el usuario debía escribir un término o tocar un chip de estado para disparar la primera
+consulta (guard explícito en `searchCamaras()`), y aun con resultados cargados no había forma de
+pedir una página más allá de la primera tanda de 100. Ahora la vista carga sin filtros al montar
+(mismo contrato `POST /api/infra/smart-search` con `terms: []`) y expone controles reales
+"Anterior"/"Siguiente" sobre `offset`/`limit`/`total`. El toggle "Mostrar No operativas" (oculto por
+defecto, decisión de UX previa) **no se tocó** — se decidió explícitamente mantenerlo así. Del lado
+del backend, la rama sin términos de `smart_search_camaras_web` pasó de traer TODAS las cámaras raíz
+a memoria y paginar en Python a un `LIMIT`/`OFFSET`/`COUNT` real en SQL; la rama con términos de
+búsqueda libre sigue en memoria (necesita computar servicios/cables/rutas por cámara para matchear,
+que no está en una columna filtrable en SQL sin un join mayor) — aceptable a la escala real medida
+(~10.200 cámaras raíz en dev).
+
+**UX del inventario de Botellas** (`/infra/Botellas`): la barra de acciones masivas de cambio de
+estado (ver "Endpoint de cambio de estado masivo" arriba) se extrajo a un componente propio,
+`components/infra/BotellasBulkActionsPanel.vue`, con posicionamiento `fixed` (panel flotante, visible
+incluso con scroll, en vez de la barra inline dentro del toolbar). Además: la vista **grid**
+(`BotellaCard.vue`) ganó su propio checkbox de selección — antes sólo la vista lista permitía
+selección múltiple; el nombre de cada Botella en la vista lista pasó de texto plano a un link real
+(`RouterLink`); y se corrigió un bug real en el modo "huérfanas" donde el botón "Asociar" (anidado
+dentro del `<label>` que envuelve el checkbox de selección) también togglaba el checkbox por el
+comportamiento nativo de `<label>` — corregido con `@click.stop` en el botón.
+
+**Navegación cruzada Botella → Cámara padre**: `BotellaDetalleUnificadaView.vue` sigue siendo un shim
+de redirección puro (nunca se renderiza visible, ver "Submódulo Botellas" más abajo) — el link
+"Cámara padre" se agregó en los destinos reales a los que redirige, no en el shim: `CamaraDetailView.vue`
+(Botella legado, `camara_padre_id`/`camara_padre_nombre` agregados a `_serialize_camara_response`) y
+`VerificadorCromoView.vue` (Botella Cromo con `camara_id` resuelto, vía el mismo
+`GET /api/infra/cromo-botellas/{n_id}/estado-asociacion` ya usado por el shim, extendido para
+devolver `camara_id`/`camara_nombre` además de `huerfana`).
+
+### Fix de nombres residuales y backfill retroactivo de estado (2026-08-14)
+
+**Bug real reportado desde el dashboard `/infra`**: varias Cámaras padre de Cromo mostraban nombres
+rotos con un punto residual al inicio (ej. `". Cra Marcos Sastre y Colectora Este"`,
+`". Poste Est . Bs. As. C.F"`). **Causa raíz**: `RE_BOT_SUFIJO`
+(`modules/slack_baneo_notifier/camara_search.py`) y `RE_BOTELLA_PREFIJO`
+(`core/services/cromo/camara_padre_service.py`) consumían un punto ANTES del dígito de "Bot N"
+("Bot. 2") pero ninguno consumía un punto DESPUÉS del dígito — cuando el nombre real de Cromo traía
+el punto ahí (ej. `"Bot 2. Cra Marcos Sastre y Colectora Este"`), el match terminaba en el dígito y el
+punto sobrevivía como residuo (ni el colapso de espacios ni el `.strip()` posterior lo tocan, no es
+whitespace). Fix: `\.?` agregado después del lookahead `(?!\d)` en ambos regex — `extraer_base_cromo()`
+llama internamente a `extraer_base()` (la función que usa `RE_BOT_SUFIJO`), así que corregir esa única
+constante compartida arregla ambos caminos (legado Bot-N y Cromo) a la vez.
+
+**Alcance real, verificado contra `lasfocasdev-postgres`**: sólo **7 de 9.770** Cámaras
+`INFERIDO_CROMO` tenían el residuo real (ids 6557, 6561, 6564, 6813, 7361, 7466, 7683). El punto AL
+FINAL de muchos nombres (ej. `"...C.F."`, 732 filas) es formato legítimo original de Cromo — no es el
+bug, no se tocó. Corrección retroactiva vía `scripts/cromo_fix_nombre_camara_padre_residual.py`
+(quirúrgica: recorta el residuo del valor ya guardado, no re-deriva desde la `CromoBotella` vinculada
+— preserva intacto cualquier punto interno legítimo, ej. `"Poste Est ."` del id 6561). Resultado real:
+7/7 nombres corregidos, 0 residuos restantes.
+
+**Backfill retroactivo de estado** (pendiente explícito de la entrada 2026-08-13): las ~9.672 Cámaras
+`INFERIDO_CROMO` que habían nacido `NO_OPERATIVA` bajo el default fail-closed ya revertido se
+corrigieron a `LIBRE` vía `scripts/cromo_backfill_estado_no_operativa_retroactivo.py` — candidatas
+filtradas por `origen_datos=INFERIDO_CROMO` + `estado=NO_OPERATIVA` + sin ninguna fila en
+`camaras_estado_auditoria` (de las 98 Cámaras `INFERIDO_CROMO` con auditoría propia, el 100% fue
+escrita por procesos automáticos — `cromo_backfill`/`retiro_detectada` —, cero por un humano). Aplicado
+vía `aplicar_estado_a_grupo` (único punto de escritura sancionado, sincroniza `CromoBotella.estado` en
+la misma transacción) — `--dry-run` cronometrado confirmó 9.672 filas en 35.6 segundos reales antes de
+aplicar, sin el problema de performance que sí afectó a `resolver_o_crear_padre_desde_base` en el
+backfill original del 2026-08-11. Resultado real: 0 `NO_OPERATIVA` restantes en `origen_datos=
+INFERIDO_CROMO` (9.753 en `LIBRE`, 17 `BANEADA` sin tocar). Ver `docs/decisiones.md`.
+
 ### Propagación de estado a CromoBotella + resync real (2026-08-12)
 
 Hallazgo real reportado desde el dashboard (captura del inventario de Botellas): muchas filas
@@ -275,36 +373,185 @@ dashboard, basado en `rutas.length > 0`) quedaron retirados:
 - `InfraTab.vue`: el chip "TRACKING" se quitó de `legendItems`/`legendCounts`; el filtro rápido de
   estado ahora sólo ofrece Libre/Ocupada/Baneada/No operativa.
 
-### Cámaras duplicadas — Unificación manual (2026-08-11)
+### Cámaras duplicadas — Unificación manual: fusión real Cámara-a-Cámara (2026-08-11, rediseñado 2026-08-14)
 
 Limitación conocida desde el 2026-08-10 (duplicados de Cámara sin sufijo "Bot N", que
 `resolver_o_crear_padre_desde_base` no agrupa por no compartir ningún token normalizado — ej. real
-"Cámara 14 de Julio 240" vs "Cra 14 de Julio 240 CF") — confirmada a mayor escala: **47 grupos de
-duplicados reales, 99 Cámaras raíz involucradas** de un total de 2.554. Resuelto con un flujo manual
-de unificación, no automático (un humano decide qué dos Cámaras son en verdad el mismo sitio físico).
+"Cámara 14 de Julio 240" vs "Cra 14 de Julio 240 CF"). Un análisis manual puntual del 2026-08-11
+había estimado **47 grupos de duplicados reales, 99 Cámaras raíz involucradas de un total de 2.554**
+— cifra **obsoleta**: no fue producida por ningún script reusable (fue una revisión manual de esa
+única sesión), y el universo de Cámaras raíz creció ~4x con los backfills de Cromo del
+2026-08-11/12/14, hasta **10.212** raíces reales (verificado contra `lasfocasdev-postgres` el
+2026-08-14). Resuelto con un flujo manual de unificación, no automático (un humano decide qué dos
+Cámaras son en verdad el mismo sitio físico) — pero ya no depende de un análisis manual para
+**encontrar** los candidatos: `/admin/servicios/viewer/Camaras` (`GET
+/api/admin/infra/camaras/viewer/duplicados`, `core/services/camara_duplicados_service.py`) recalcula
+los grupos en cada carga.
 
-- **Estrategia deliberada**: en vez de un hard delete o un flag "archivada" nuevo, la Cámara
-  secundaria queda **re-parentada como Botella de la principal** (mismo `camara_padre_id` self-FK de
-  la jerarquía Bot-N) — conserva el 100% de su auditoría/historial (`CamaraEstadoAuditoria` nunca se
-  toca), desaparece sola del dashboard de raíces, y sus rutas/servicios/empalmes propios se agregan
-  automáticamente al ver el detalle de la principal vía la misma lógica de "grupo" que ya usa toda la
-  jerarquía Cámara/Botella. Lo único que SÍ hay que mover explícitamente: las Botellas propias de la
-  secundaria (se aplanan directo a la principal, para no crear una cadena de 3 niveles) y las
-  `CromoBotella` vinculadas a la secundaria (la agregación de Botellas Cromo no es recursiva por
-  grupo — se reasignan directo). Ver `core/services/camara_merge_service.py`.
-- El nombre de la secundaria queda como alias de la principal (`CamaraAlias`, si difiere y no existe
-  ya). El estado final del grupo completo es el más restrictivo (`estado_mas_restrictivo`), mismo
-  criterio que la cascada de baneo.
-- **Endpoint**: `POST /api/infra/camaras/merge` (admin, CSRF). **Búsqueda liviana**:
-  `GET /api/infra/camaras/buscar?q=...` (sólo `id/nombre/direccion/estado/botellas_count`, sin el
-  N+1 de rutas/servicios/cables de `smart-search` — pensada para selectores/autocomplete, no para el
-  dashboard). **Frontend**: botón "Unificar Cámara" en el header del detalle (`CamaraDetailView.vue`,
-  sólo admin, sólo si la Cámara no es ella misma una Botella) → `ModalUnificarCamara.vue` (buscar
-  duplicada → confirmar).
-- **Hallazgo real de routing durante la verificación**: `GET /api/infra/camaras/buscar` chocaba con
-  `GET /api/infra/camaras/{camara_id}` (registrada antes en `web/app/main.py`) — FastAPI matchea por
-  orden de registro, así que "buscar" se interpretaba como `camara_id: int` y devolvía 422. Corregido
-  registrando `/camaras/buscar` ANTES de la ruta con parámetro.
+### Dashboard Viewer de Cámaras — listado dual + detección de duplicados en vivo (2026-08-14)
+
+`/admin/servicios` → tarjeta "Viewer" → `/admin/servicios/viewer` (hub de dashboards de datos
+operativos para mantenimiento, pensado para crecer con más módulos) → tarjeta "Cámaras" →
+`/admin/servicios/viewer/Camaras`:
+
+- **Listado general**: mismo estilo dual grid/lista con scroll infinito de `ServiciosView.vue`
+  (`GET /api/admin/infra/camaras/viewer`, paginación real en SQL — `q`, `estado`, `limit<=100`,
+  `offset` — sin el N+1 en memoria de `smart-search`).
+- **Filtro "Sólo duplicadas"**: cambia el contenido a una tarjeta por cada grupo de 2+ Cámaras
+  candidatas a duplicado (`GET /api/admin/infra/camaras/viewer/duplicados`,
+  `core/services/camara_duplicados_service.py::detectar_grupos_duplicados`) — sin paginar, calculado
+  sobre el universo completo de Cámaras raíz (~10.212 filas, O(n) en Python, sub-segundo, sin cache).
+  Cada tarjeta muestra un badge "⚠ Estados distintos" si los miembros no coinciden en estado, y un
+  botón "Fusionar" por miembro que abre `ModalUnificarCamara.vue` (reusado tal cual, con el nombre
+  del otro miembro del grupo precargado como sugerencia de búsqueda vía el prop nuevo
+  `sugerenciaInicial`). Tras un merge exitoso se recalculan tanto los grupos como el listado general.
+- **Criterio de detección — "normalización extendida"** (decisión explícita del usuario, sin
+  similitud difusa): `camara_hierarchy_service.normalizar_para_agrupar_extendido()` compone
+  `normalizar_para_agrupar()` (sin modificarla) con `expandir_abreviaturas_y_sinonimos()` (pública, en
+  `modules/slack_baneo_notifier/camara_search.py` — reusa `_ABREVIATURAS`/`_SINONIMOS`, las mismas
+  tablas que ya usa `buscar_camara` para texto libre de técnicos, sin duplicarlas). Resuelve el caso
+  documentado: "Cámara 14 de Julio 240" y "Cra 14 de Julio 240 CF" colapsan a la misma clave
+  (`"cra 14 de julio 240"`) por la abreviatura `cf→""` y el sinónimo `camara→cra`. Excluye sufijo
+  Bot-N (ya resuelto por la jerarquía Cámara/Botella). **Movida (2026-08-14) desde
+  `camara_duplicados_service.py` (donde nació el mismo día como `normalizar_para_detectar_duplicados`)
+  hacia `camara_hierarchy_service.py`** — ahora `resolver_o_crear_padre_desde_base()` también la usa
+  para prevenir duplicados nuevos en el alta, no sólo para sugerir candidatas a revisión manual (ver
+  sección "Jerarquía Cámara → Botellas" más arriba); moverla evita un ciclo de import, ya que
+  `camara_duplicados_service.py` depende de `camara_hierarchy_service.py`, no al revés.
+- **"Fusionar todas" (2026-08-14)**: botón nuevo por tarjeta de grupo que abre
+  `ModalFusionarGrupo.vue` — sugiere como principal la Cámara con más `botellas_count + cables_count`
+  del grupo (empate → id más bajo, el admin puede cambiar la elección) y fusiona todas las demás de un
+  solo click vía `POST /api/infra/camaras/merge-grupo`
+  (`core/services/camara_merge_service.py::fusionar_grupo_camaras`, loop de `unificar_camaras()` con
+  `session.expire_all()` obligatorio entre cada llamada — sin esto, `Camara.estado` queda
+  desincronizado en botellas absorbidas por fusiones intermedias del mismo grupo, hallazgo real de
+  investigación).
+- **"Fusión masiva" (2026-08-14)**: botón en el toolbar (visible con "Sólo duplicadas" activo) que
+  fusiona TODOS los grupos detectados de un click, vía `POST /api/infra/camaras/merge-masivo` —
+  `sugerir_principal()` (`camara_duplicados_service.py`) elige la principal de cada grupo con el
+  mismo criterio de arriba, sin que el admin tenga que abrir cada grupo. Cada grupo corre en su
+  propia transacción (`SessionLocal` independiente) — un grupo con error no revierte los ya
+  fusionados, queda reportado en la respuesta. Confirmación previa vía
+  `ModalConfirmarAccionMasiva.vue` (genérico, reusado también en el viewer de Botellas).
+
+- **Estrategia vigente (2026-08-14)**: fusión real entre dos Cámaras, no entre Cámara y Botella. La
+  principal hereda todo lo heredable de la secundaria y la secundaria se **elimina físicamente**
+  (`session.delete`). Para que el hard delete no pierda nada por una cascada, `unificar_camaras()`
+  reasigna explícitamente, con `session.flush()` antes del delete, las 7 FK reales hacia
+  `app.camaras.id`: Botellas propias (self-FK `camara_padre_id`), `CromoBotella.camara_id`,
+  `Cable.origen_camara_id`/`destino_camara_id`, `Empalme.camara_id` (crítico: `Camara.empalmes` tiene
+  `cascade="all, delete-orphan"`), `Ingreso.camara_id` (mismo riesgo de cascada), `CamaraAlias.camara_id`
+  (se migran los alias que la secundaria ya tenía, no sólo se crea uno con su nombre) y
+  `CamaraEstadoAuditoria.camara_id` (tiene `ondelete="CASCADE"` en Postgres — sin reasignar, el DELETE
+  hubiera borrado el historial completo de la secundaria). `CromoPelo`/`CromoFusion`/`CromoCable`/
+  `CromoTubo` no tienen `camara_id` propio y viajan solos en cuanto se reasigna `CromoBotella.camara_id`.
+  Ver `core/services/camara_merge_service.py` y la entrada de decisión 2026-08-14 en `docs/decisiones.md`
+  (reemplaza el diseño anterior de reparentado-como-Botella del 2026-08-11).
+- El nombre de la secundaria queda como alias de la principal sólo si se pide explícitamente
+  (`guardar_alias: bool`, default `True`). El estado final es el más restrictivo entre el grupo de la
+  principal (`miembros_del_grupo`, que ya no incluye a la secundaria) y el estado que tenía la
+  secundaria antes de desaparecer (`estado_mas_restrictivo`, mismo criterio que la cascada de baneo).
+  Se registra siempre un evento explícito en `CamaraEstadoAuditoria` de la principal ("Cámara 'X'
+  (ID N) fusionada dentro de esta cámara"), incluso si el estado no cambió.
+- **Endpoint**: `POST /api/infra/camaras/merge` (admin, CSRF) — body
+  `{camara_principal_id, camara_secundaria_id, guardar_alias, csrf_token}`, devuelve contadores de
+  todo lo migrado (`botellas_legado_migradas`, `botellas_cromo_migradas`, `cables_migrados`,
+  `empalmes_migrados`, `ingresos_migrados`, `aliases_migrados`, `alias_creado`, `estado_final`).
+  **Fusión de grupo**: `POST /api/infra/camaras/merge-grupo` — body `{camara_principal_id,
+  camara_secundaria_ids: [...], guardar_alias, csrf_token}`, mismos contadores acumulados de las N
+  fusiones. **Búsqueda liviana**: `GET /api/infra/camaras/buscar?q=...` (`id/nombre/direccion/estado/
+  botellas_count/cables_count` — `botellas_count` suma botellas legado + Botellas Cromo propias desde
+  2026-08-14, sin el N+1 de rutas/servicios de `smart-search` — pensada para selectores/autocomplete,
+  no para el dashboard). **Frontend**: botón "Unificar Cámara" en el header del detalle
+  (`CamaraDetailView.vue`, sólo admin, sólo si la Cámara no es ella misma una Botella) →
+  `ModalUnificarCamara.vue` (buscar duplicada → resumen de impacto + checkbox de alias → confirmar).
+- **Hallazgo real de routing durante la verificación (2026-08-11, sigue vigente)**:
+  `GET /api/infra/camaras/buscar` chocaba con `GET /api/infra/camaras/{camara_id}` (registrada antes
+  en `web/app/main.py`) — FastAPI matchea por orden de registro, así que "buscar" se interpretaba
+  como `camara_id: int` y devolvía 422. Corregido registrando `/camaras/buscar` ANTES de la ruta con
+  parámetro — cualquier ruta GET literal nueva bajo `/api/infra/camaras/` debe seguir este orden.
+
+### Dashboard Viewer de Botellas — duplicados dentro de la misma Cámara padre y apropiación legado→Cromo (2026-08-14)
+
+`/admin/servicios` → "Viewer" → tarjeta "Botellas" → `/admin/servicios/viewer/Botellas`: mismo estilo
+dual grid/lista que el de Cámaras, pero el concepto de "duplicado" acá es distinto: no son dos
+Cámaras raíz con nombre parecido, son dos hijas (Botella legado y/o `CromoBotella`) de la MISMA
+Cámara padre que representan el mismo sitio físico — típicamente aparece después de fusionar dos
+Cámaras raíz duplicadas (sección anterior), cuando ambas traían botellas que ahora conviven bajo el
+mismo padre.
+
+- **Listado general**: `GET /api/admin/infra/botellas/viewer`, delega en
+  `core/services/botellas_unificadas_service.py::buscar_botellas_unificadas` (mismo servicio y
+  patrón `AsyncSessionLocal` que ya usa `GET /api/infra/botellas/buscar`), con guarda admin
+  adicional. Sin chips de estado individuales (el servicio subyacente sólo soporta el booleano
+  `incluir_no_operativas`) — sólo el toggle "Mostrar no operativas" ya conocido de
+  `BotellasInventarioView.vue`.
+- **Filtro "Sólo duplicadas"**: `GET /api/admin/infra/botellas/viewer/duplicados`
+  (`core/services/botella_duplicados_service.py::detectar_grupos_duplicados_botellas`) — agrupa las
+  Botellas de ambos orígenes por Cámara padre común (`camara.botellas` self-FK + `CromoBotella.
+  camara_id`, vigentes) y, dentro de cada padre, por nombre normalizado extendido (misma
+  `normalizar_para_agrupar_extendido` de `camara_hierarchy_service.py`). Sólo 2 queries totales (con
+  `joinedload` al padre), sin iterar las ~10.212 Cámaras raíz una por una. Cada tarjeta de grupo
+  muestra la Cámara padre como encabezado (a diferencia de Cámaras, acá el agrupador natural es el
+  padre, no el propio nombre) y un badge "⚠ Estados distintos"/"Revisión manual" según corresponda.
+- **Política de resolución (2026-08-14, confirmada explícitamente por el usuario)**: "Cromo gana".
+  Sólo el caso mixto de exactamente 1 legado + 1 Cromo dentro del mismo padre tiene botón "Apropiar"
+  — la `CromoBotella` se conserva sin cambios, la Botella legado se elimina físicamente tras
+  reasignar sus 7 tipos de FK reales (mismo mecanismo que `camara_merge_service.py`, adaptado) a la
+  Cámara padre. Estado heredado vía `aplicar_estado_a_grupo` (ya sincroniza la `CromoBotella` del
+  grupo). Evento explícito en `CamaraEstadoAuditoria` del padre. A diferencia de `unificar_camaras`,
+  NO se crea un alias automático con el nombre de la legado — sólo se migran los que ya tenía. Ver
+  `core/services/botella_merge_service.py`.
+- **Endpoint**: `POST /api/infra/botellas/apropiar` (admin, CSRF) — body `{legado_id, cromo_n_id,
+  csrf_token}`. Frontend: `AdminBotellasViewer.vue`, `ModalApropiarBotella.vue` (confirmación directa,
+  sin paso de búsqueda — el par ya viene resuelto del grupo `resoluble`).
+- **"Apropiación masiva" (2026-08-14)**: botón en el toolbar (con "Sólo duplicadas" activo) que
+  apropia TODOS los grupos `resoluble` de un click, vía `POST /api/infra/botellas/apropiar-masivo` —
+  `sugerir_apropiacion()` (`botella_duplicados_service.py`) resuelve el par legado/cromo de cada
+  grupo. Grupos no resolubles se omiten (no tienen política automática). Mismo patrón de transacción
+  por grupo que "Fusión masiva" de Cámaras — un grupo con error no revierte los ya apropiados.
+- **Cierre del gap "Revisión manual" (2026-08-19)**: ver sección siguiente — legado↔legado,
+  cromo↔cromo, y mixtos con 2+ legado, que hasta acá sólo se detectaban y mostraban sin acción, ahora
+  tienen un botón "Consolidar".
+
+### Consolidación manual de duplicados Cromo — cierra el gap "Revisión manual" (2026-08-19)
+
+Cierra el gap consciente de la sección anterior. Política confirmada: Cromo siempre gana — si el
+grupo a consolidar incluye una o más Botellas legado, sus datos se heredan a la `CromoBotella` elegida
+como destino (reusando `apropiar_legado_a_cromo` tal cual). A diferencia de "Apropiar"/"Apropiación
+masiva" (restringidos al par exacto 1 legado + 1 Cromo que el detector arma por nombre normalizado),
+"Consolidar" opera sobre un **grupo libre**: el admin puede tipear a mano n_ids Cromo que el detector
+nunca agrupó (el caso real que motivó `app.cromo_botella_alias` — botellas sin nombre no se agrupan
+por normalización).
+
+- **Señal "operativa" (tiene cables)**: `core/services/cromo/verificador.py::
+  tiene_cables_asociados_batch_sync` — una sola query batcheada (`extremo_a_n_id`/`extremo_b_n_id`
+  contra todos los n_ids de la página) para marcar qué miembro Cromo de un grupo tiene cables
+  asociados, sin N+1. `GET /api/admin/infra/botellas/viewer/duplicados` ahora incluye
+  `tiene_cables: boolean | null` por miembro (`null` para legado, esa señal no existe de ese lado).
+  `POST /api/admin/infra/botellas/operatividad` (body `{n_ids}` → `{operativos}`) cubre el mismo
+  chequeo para n_ids tipeados a mano, fuera de cualquier grupo detectado.
+- **`POST /api/infra/botellas/consolidar`** (admin, CSRF) — body `{ids_origen_cromo, id_destino_cromo,
+  ids_legado, nombre_destino, motivo, csrf_token}`. `core/services/cromo/consolidacion_service.py::
+  consolidar_grupo_botellas`: crea/actualiza filas en `app.cromo_botella_alias`
+  (`accion='fusionar'`) para cada origen, migra cada `id_legado` hacia el destino reusando
+  `apropiar_legado_a_cromo` sin envolver su validación de mismo padre (si el admin combina un legado y
+  un destino de otra Cámara padre, la función lo rechaza — mismo motivo por el que esa validación
+  existe: evita reasignar Cables/Empalmes/Ingresos reales al sitio equivocado), y opcionalmente
+  corrige `CromoBotella.nombre` si venía en blanco. Guardas explícitas: el destino no puede estar ya
+  marcado como basura de otra fila de alias; repuntear un origen ya aliaseado se reporta
+  (`alias_repuntados`), nunca es silencioso; cualquier alias que ya apuntaba a un origen que ahora
+  desaparece se recablea directo al destino final (evita una cadena de 2 saltos —
+  `resolver_referencia`, en la ingesta, nunca persigue cadenas).
+- **Frontend**: `ModalConsolidarBotellas.vue` — botón "Consolidar" en cada tarjeta de grupo no
+  `resoluble` (pre-completa destino/orígenes/legado desde el grupo), más botón de toolbar "Consolidar
+  manualmente" (mismo modal, sin grupo — orígenes y destino 100% libres).
+- **Export de inconsistencias**: `GET /api/admin/infra/botellas/inconsistencias/exportar` (admin) —
+  Excel (`pandas.ExcelWriter(engine="openpyxl")`, mismo patrón ya usado para el export de Cámaras) con
+  columnas `ID Cromo | Nombre | Cámara Padre | Motivo`: huérfanas (`orfanas_service.buscar_huerfanas`)
+  + un renglón por miembro de cada grupo `resoluble=False`. Para un miembro legado, `ID Cromo` queda
+  vacío a propósito (no existe tal id en ese espacio) — su `Camara.id` se referencia dentro del propio
+  `Motivo` en su lugar. Botón "Exportar inconsistencias" en el toolbar del viewer.
 
 ### Botellas Cromo huérfanas — resolución manual (2026-08-11; automatizado casi al 100% desde 2026-08-12)
 
@@ -501,10 +748,43 @@ Listado unificado de Botellas Cromo + legado (ver sección "Submódulo Botellas"
 Cambia el estado de un lote de Botellas de origen mixto (admin, CSRF). Body: `{items: [{origen: "cromo"|"legado", id}], estado, motivo?, csrf_token}` — `estado` uno de `LIBRE/OCUPADA/BANEADA/NO_OPERATIVA`. Legado cascada por grupo completo (`aplicar_estado_a_grupo`, dedupeado por raíz); Cromo actualiza `CromoBotella.estado` directo (foto propia, sin cascada). Respuesta: `{ok, estado_nuevo, legado_actualizadas, cromo_actualizadas, no_encontrados: [{origen, id}]}`. Ver sección "Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)" más arriba y `core/services/botellas_estado_masivo_service.py`.
 
 ### GET /api/infra/camaras/buscar
-Búsqueda liviana de Cámaras raíz por nombre (`ILIKE`), para selectores/autocomplete (unificación, asociación de huérfanas) — no para el dashboard. Query params: `q`, `limit` (default 10, clamp 1-50), `excluir_id`. Respuesta: `{camaras: [{id, nombre, direccion, estado, botellas_count}]}`. Registrada antes de `GET /api/infra/camaras/{camara_id}` en el código — ver nota de routing en "Cámaras duplicadas" más arriba.
+Búsqueda liviana de Cámaras raíz por nombre (`ILIKE`), para selectores/autocomplete (unificación, asociación de huérfanas) — no para el dashboard. Query params: `q`, `limit` (default 10, clamp 1-50), `excluir_id`. Respuesta: `{camaras: [{id, nombre, direccion, estado, botellas_count, cables_count}]}` (`botellas_count` suma botellas legado + Cromo desde 2026-08-14). Registrada antes de `GET /api/infra/camaras/{camara_id}` en el código — ver nota de routing en "Cámaras duplicadas" más arriba.
 
 ### POST /api/infra/camaras/merge
-Unifica dos Cámaras raíz duplicadas (admin, CSRF). Body: `{camara_principal_id, camara_secundaria_id, csrf_token}`. La secundaria pasa a ser Botella de la principal — ver sección "Cámaras duplicadas — Unificación manual" más arriba.
+Fusiona dos Cámaras raíz duplicadas (admin, CSRF). Body: `{camara_principal_id, camara_secundaria_id, guardar_alias, csrf_token}`. La secundaria se elimina físicamente tras heredar todo lo heredable — ver sección "Cámaras duplicadas — Unificación manual" más arriba.
+
+### POST /api/infra/camaras/merge-grupo
+Fusiona TODAS las Cámaras de un grupo de duplicados dentro de una sola principal (admin, CSRF). Body: `{camara_principal_id, camara_secundaria_ids: [...], guardar_alias, csrf_token}`. Loop de `unificar_camaras()` con `session.expire_all()` entre cada llamada — ver sección "Dashboard Viewer de Cámaras" más arriba y `core/services/camara_merge_service.py::fusionar_grupo_camaras`.
+
+### POST /api/infra/camaras/merge-masivo
+Fusiona automáticamente TODOS los grupos de Cámaras duplicadas detectados en el momento de la ejecución (admin, CSRF). Body: `{guardar_alias, csrf_token}`. Cada grupo elige su principal vía `sugerir_principal()` y corre en su propia transacción — un grupo con error no revierte los ya fusionados. Respuesta: `{ok, total_grupos, grupos_fusionados, grupos_con_error, detalle: [...]}`. Ver sección "Dashboard Viewer de Cámaras" más arriba.
+
+### GET /api/admin/infra/camaras/viewer
+Listado paginado dual de Cámaras raíz para `/admin/servicios/viewer/Camaras` (admin). Query params: `q`, `estado`, `limit` (clamp 1-100), `offset`. Respuesta: `{total, limit, offset, camaras: [{id, nombre, estado, botellas_count, cables_count}]}`.
+
+### GET /api/admin/infra/camaras/viewer/duplicados
+Grupos de Cámaras raíz candidatas a duplicado por nombre normalizado extendido (admin, sin paginar) — ver `core/services/camara_duplicados_service.py`.
+
+### GET /api/admin/infra/botellas/viewer
+Listado paginado dual de Botellas (Cromo + legado) para `/admin/servicios/viewer/Botellas` (admin) — delega en `buscar_botellas_unificadas`, mismo shape que `GET /api/infra/botellas/buscar`.
+
+### GET /api/admin/infra/botellas/viewer/duplicados
+Grupos de Botellas candidatas a duplicado dentro de la misma Cámara padre (admin, sin paginar) — ver `core/services/botella_duplicados_service.py`.
+
+### POST /api/infra/botellas/apropiar
+Apropia una Botella legado hacia su CromoBotella hermana (admin, CSRF). Body: `{legado_id, cromo_n_id, csrf_token}` — ver sección "Dashboard Viewer de Botellas" más arriba y `core/services/botella_merge_service.py`.
+
+### POST /api/infra/botellas/apropiar-masivo
+Apropia automáticamente TODOS los grupos `resoluble` detectados en el momento de la ejecución (admin, CSRF). Body: `{csrf_token}`. Grupos no resolubles se omiten. Cada grupo corre en su propia transacción. Respuesta: `{ok, total_grupos, grupos_resolubles, grupos_apropiados, grupos_con_error, detalle: [...]}`. Ver sección "Dashboard Viewer de Botellas" más arriba.
+
+### POST /api/infra/botellas/consolidar
+Consolida un grupo LIBRE de n_ids Cromo (no restringido a un grupo detectado por nombre) hacia un único destino, opcionalmente migrando una o más Botellas legado y corrigiendo el nombre del destino (admin, CSRF). Body: `{ids_origen_cromo, id_destino_cromo, ids_legado, nombre_destino, motivo, csrf_token}`. Ver sección "Consolidación manual de duplicados Cromo" más arriba y `core/services/cromo/consolidacion_service.py`.
+
+### POST /api/admin/infra/botellas/operatividad
+Cuáles de los n_ids Cromo dados tienen al menos un cable asociado — señal "operativa" para elegir un destino al consolidar IDs tipeados a mano (admin). Body: `{n_ids}`. Respuesta: `{operativos: [...]}`.
+
+### GET /api/admin/infra/botellas/inconsistencias/exportar
+Excel de inconsistencias sin resolver — huérfanas + miembros de grupos duplicados no `resoluble` (admin). Columnas: `ID Cromo | Nombre | Cámara Padre | Motivo`.
 
 ### GET /api/infra/cromo-botellas/huerfanas
 Botellas Cromo vigentes sin `camara_id` (no matchearon el backfill automático). Query params: `q`, `limit` (default 30, clamp 1-100), `offset`. Respuesta: `{total, limit, offset, botellas: [{n_id, nombre, calle, localidad}]}`.
@@ -622,6 +902,8 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Agregado**: unificación de Cámaras duplicadas (`POST /api/infra/camaras/merge`,
   `core/services/camara_merge_service.py`, `ModalUnificarCamara.vue`) — la secundaria pasa a ser
   Botella de la principal, conserva auditoría completa. 47 grupos de duplicados reales confirmados.
+  **Diseño reemplazado el 2026-08-14** por hard delete real de la secundaria con reasignación
+  explícita de 7 FKs — ver sección "Cámaras duplicadas — Unificación manual" más arriba.
 - **Agregado**: resolución manual de Botellas Cromo huérfanas (`core/services/cromo/orfanas_service.py`,
   3 endpoints nuevos, `ModalAsociarHuerfanas.vue`, toggle en `BotellasInventarioView.vue`, panel en
   `BotellaDetalleUnificadaView.vue`) — 9.512/11.100 Botellas Cromo vigentes son huérfanas hoy.
