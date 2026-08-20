@@ -553,6 +553,57 @@ por normalización).
   vacío a propósito (no existe tal id en ese espacio) — su `Camara.id` se referencia dentro del propio
   `Motivo` en su lugar. Botón "Exportar inconsistencias" en el toolbar del viewer.
 
+### Eliminación de Cámaras/Botellas basura + exclusión automática en Cromo (2026-08-20)
+
+El "Verificador Cromo"/"Validar datos DB Cromo" (2026-08-19) dejaron a la vista basura heredada de
+backfills viejos: Botellas Cromo con nombre "0", sin cables asociados, cuya Cámara padre a veces
+tampoco tiene nada más. Se agrega un borrado permanente admin-only, con política **bloquear, nunca
+forzar** (confirmada explícitamente por el usuario): si el elemento — o cualquier hijo, en el caso de
+una Cámara — tiene Cables/Empalmes/Ingresos (legado) o Cables/Fusiones (Cromo) reales asociados, la
+eliminación se rechaza sin borrar nada. `eliminar_camara` es además **todo o nada**: si un solo hijo
+bloquea, se aborta la operación completa antes de tocar la sesión.
+
+- **`core/services/camara_botella_delete_service.py`** (nuevo) — dos funciones públicas que comparten
+  los mismos helpers de chequeo (`_bloqueo_camara`, `_bloqueo_cromo_botella`) usados tanto para el
+  borrado individual como para el cascada, evitando dos implementaciones divergentes del mismo
+  criterio "¿esto está realmente vacío?":
+  - `eliminar_botella(origen, id, usuario)` — Cromo: bloquea por `CromoCable.extremo_a/b_n_id`,
+    `CromoFusion.botella_n_id`, o ser destino de otra fila de `cromo_botella_alias`; si está limpia,
+    registra el `n_id` en `app.cromo_botella_alias` (`accion='ignorar'`, upsert-por-origen — mismo
+    patrón que `consolidacion_service.py`) y borra. Legado: exige que sea una Botella
+    (`camara_padre_id is not None`), bloquea por `Cable.origen/destino_camara_id`, `Empalme.camara_id`,
+    `Ingreso.camara_id`. En ambos casos, tras `session.flush()` (obligatorio — con `autoflush=False` la
+    comprobación de "padre vacío" todavía vería el hijo recién borrado), intenta `eliminar_camara()`
+    sobre la Cámara padre; si esta levanta `EliminacionBloqueadaError` (el padre tiene otros datos), se
+    atrapa en silencio — el padre sobrevive, no es un error.
+  - `eliminar_camara(camara_id, usuario)` — rechaza si es en realidad una Botella
+    (`camara_padre_id is not None`, mismo criterio que `unificar_camaras`). Reúne TODOS los hijos
+    (self-FK `Camara.camara_padre_id` + `CromoBotella.camara_id`) y corre TODOS los chequeos de
+    bloqueo antes de cualquier `session.delete`/`add` — todo-o-nada real. Si está limpia: alias +
+    delete por cada `CromoBotella` hijo, delete por cada Cámara hijo self-FK, flush, delete de la raíz.
+  - **Sin sobreviviente, sin auditoría persistente**: a diferencia de `unificar_camaras`/
+    `apropiar_legado_a_cromo` (que siempre dejan un evento en `CamaraEstadoAuditoria` del
+    sobreviviente), acá no hay sobreviviente — `CamaraEstadoAuditoria` de la fila borrada cascadea
+    (`ondelete=CASCADE`) junto con ella. No queda rastro en base de datos de que existió, sólo el
+    `logger.info(...)` del endpoint. Agregar una tabla de auditoría dedicada quedó fuera de alcance de
+    este ticket.
+- **Endpoints** (admin, CSRF, `web/app/main.py`):
+  - `POST /api/infra/botellas/eliminar` — body `{origen, id, csrf_token}`. 400 con
+    `{"error", "bloqueos": [{origen, id, nombre, razon}]}` si se rechaza; 200 con
+    `{ok, origen, id, camara_padre_eliminada, alias_registrado}` si se borra.
+  - `POST /api/infra/camaras/eliminar` — body `{camara_id, csrf_token}`. Mismo 400 con `bloqueos`; 200
+    con `{ok, camara_id, botellas_legado_eliminadas, botellas_cromo_eliminadas, aliases_registrados}`.
+- **Frontend**: botón "Eliminar Botella"/"Eliminar Cámara" gateado por `isAdmin` (mismo idiom
+  `useSession` ya usado en el resto de la app — no hay export compartido, cada vista lo re-deriva) en
+  `CamaraDetailView.vue` (`.camara-detail-hero__actions`, etiqueta condicional según
+  `camara.es_botella`) y `VerificadorCromoView.vue` (junto a "Ver info en Cromo", sólo con
+  `tipo === 'botella'`). Confirmación inline estilo `AdminBaneos.vue` (no un modal): "⚠️ ¿Eliminar
+  permanentemente...? Esta acción no se puede deshacer." + "Sí, eliminar"/"Cancelar"; si el backend
+  responde 400 con `bloqueos`, se listan con su `razon`. En `CamaraDetailView.vue`, al confirmar con
+  éxito se redirige a `/infra` (la vista deja de tener sentido — el elemento que mostraba ya no
+  existe); en `VerificadorCromoView.vue` se limpia el resultado local y se muestra un mensaje de éxito
+  transitorio.
+
 ### Botellas Cromo huérfanas — resolución manual (2026-08-11; automatizado casi al 100% desde 2026-08-12)
 
 **Estado 2026-08-11**: el backfill automático (`scripts/cromo_backfill_camara_padre.py`) sólo
@@ -785,6 +836,12 @@ Cuáles de los n_ids Cromo dados tienen al menos un cable asociado — señal "o
 
 ### GET /api/admin/infra/botellas/inconsistencias/exportar
 Excel de inconsistencias sin resolver — huérfanas + miembros de grupos duplicados no `resoluble` (admin). Columnas: `ID Cromo | Nombre | Cámara Padre | Motivo`.
+
+### POST /api/infra/botellas/eliminar
+Elimina permanentemente una Botella (Cromo o legado) genuinamente vacía — rechaza con 400 y `{error, bloqueos}` si tiene Cables/Empalmes/Ingresos/Fusiones reales asociados (admin, CSRF). Body: `{origen, id, csrf_token}`. Si es Cromo y se borra, registra el `n_id` en `app.cromo_botella_alias` (`accion='ignorar'`) para que la ingesta no la resucite. Intenta además eliminar la Cámara padre si queda vacía. Respuesta: `{ok, origen, id, camara_padre_eliminada, alias_registrado}`. Ver sección "Eliminación de Cámaras/Botellas basura" más arriba y `core/services/camara_botella_delete_service.py`.
+
+### POST /api/infra/camaras/eliminar
+Elimina permanentemente una Cámara raíz y sus Botellas — todo o nada: si la Cámara o cualquiera de sus Botellas tiene datos reales asociados, rechaza con 400 y `{error, bloqueos}` sin borrar nada (admin, CSRF). Body: `{camara_id, csrf_token}`. Cada Botella Cromo eliminada registra su `n_id` en `app.cromo_botella_alias` (`accion='ignorar'`). Respuesta: `{ok, camara_id, botellas_legado_eliminadas, botellas_cromo_eliminadas, aliases_registrados}`. Ver sección "Eliminación de Cámaras/Botellas basura" más arriba.
 
 ### GET /api/infra/cromo-botellas/huerfanas
 Botellas Cromo vigentes sin `camara_id` (no matchearon el backfill automático). Query params: `q`, `limit` (default 30, clamp 1-100), `offset`. Respuesta: `{total, limit, offset, botellas: [{n_id, nombre, calle, localidad}]}`.

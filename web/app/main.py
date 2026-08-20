@@ -5711,6 +5711,126 @@ async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
         return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
 
 
+def _serializar_bloqueos(bloqueos: list[Any]) -> list[dict[str, Any]]:
+    return [{"origen": b.origen, "id": b.id, "nombre": b.nombre, "razon": b.razon} for b in bloqueos]
+
+
+class BotellaEliminarRequestModel(BaseModel):
+    """Payload para eliminar permanentemente una Botella (legado o Cromo) genuinamente vacía."""
+
+    origen: str
+    id: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/eliminar")
+async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestModel) -> JSONResponse:
+    """Elimina permanentemente una Botella (legado o Cromo) — se rechaza si tiene Cables/Empalmes/
+    Ingresos (legado) o Cables/Fusiones Cromo (o si ya es destino de otra fila de alias) asociados;
+    sólo se puede eliminar lo que esté genuinamente vacío. Para Cromo, registra automáticamente el
+    n_id en `app.cromo_botella_alias` (`accion='ignorar'`) para que la ingesta no la resucite. Si la
+    Cámara padre queda vacía como consecuencia, también se elimina. Ver
+    `core/services/camara_botella_delete_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_eliminar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_botella
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = eliminar_botella(session, origen=body.origen, id=body.id, usuario=username)
+            except EliminacionBloqueadaError as exc:
+                session.rollback()
+                return JSONResponse(
+                    {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
+                )
+
+            session.commit()
+            logger.info(
+                "action=botellas_eliminar user=%s origen=%s id=%s camara_padre_eliminada=%s alias_registrado=%s",
+                username,
+                resultado.origen,
+                resultado.id,
+                resultado.camara_padre_eliminada,
+                resultado.alias_registrado,
+            )
+            return JSONResponse({
+                "ok": True,
+                "origen": resultado.origen,
+                "id": resultado.id,
+                "camara_padre_eliminada": resultado.camara_padre_eliminada,
+                "alias_registrado": resultado.alias_registrado,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_eliminar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo eliminar la Botella"}, status_code=500)
+
+
+class CamaraEliminarRequestModel(BaseModel):
+    """Payload para eliminar permanentemente una Cámara raíz genuinamente vacía (cascada a sus Botellas)."""
+
+    camara_id: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/eliminar")
+async def camaras_eliminar_web(request: Request, body: CamaraEliminarRequestModel) -> JSONResponse:
+    """Elimina permanentemente una Cámara raíz junto con TODAS sus Botellas (legado + Cromo) — todo
+    o nada: si un solo hijo (o la propia Cámara) tiene Cables/Empalmes/Ingresos/Fusiones reales
+    asociados, se rechaza la operación completa sin borrar nada. Cada Botella Cromo eliminada
+    registra su n_id en `app.cromo_botella_alias` (`accion='ignorar'`). Ver
+    `core/services/camara_botella_delete_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_eliminar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = eliminar_camara(session, camara_id=body.camara_id, usuario=username)
+            except EliminacionBloqueadaError as exc:
+                session.rollback()
+                return JSONResponse(
+                    {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
+                )
+
+            session.commit()
+            logger.info(
+                "action=camaras_eliminar user=%s camara_id=%s legado=%d cromo=%d aliases=%d",
+                username,
+                resultado.camara_id,
+                resultado.botellas_legado_eliminadas,
+                resultado.botellas_cromo_eliminadas,
+                resultado.aliases_registrados,
+            )
+            return JSONResponse({
+                "ok": True,
+                "camara_id": resultado.camara_id,
+                "botellas_legado_eliminadas": resultado.botellas_legado_eliminadas,
+                "botellas_cromo_eliminadas": resultado.botellas_cromo_eliminadas,
+                "aliases_registrados": resultado.aliases_registrados,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_eliminar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo eliminar la Cámara"}, status_code=500)
+
+
 @app.get("/api/infra/cromo-botellas/{n_id}/estado-asociacion")
 async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JSONResponse:
     """Chequeo liviano de una Botella Cromo puntual: ¿está huérfana (sin `camara_id`)? Usado por

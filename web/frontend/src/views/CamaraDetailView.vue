@@ -46,8 +46,35 @@
               type="button"
               @click="unificarModalOpen = true"
             >Unificar Cámara</button>
+            <button
+              v-if="isAdmin"
+              class="btn subtle"
+              type="button"
+              @click="eliminarConfirmarAbierto = true"
+            >{{ camara.es_botella ? 'Eliminar Botella' : 'Eliminar Cámara' }}</button>
           </div>
         </header>
+
+        <div v-if="eliminarConfirmarAbierto" class="camara-detail-eliminar-confirm">
+          <p>
+            ⚠️ ¿Eliminar permanentemente <strong>{{ camara.nombre || `ID ${camara.id}` }}</strong>?
+            Esta acción no se puede deshacer.
+          </p>
+          <ul v-if="eliminarBloqueos.length > 0" class="camara-detail-eliminar-bloqueos">
+            <li v-for="b in eliminarBloqueos" :key="`${b.origen}:${b.id}`">
+              {{ b.nombre || `ID ${b.id}` }} ({{ b.origen }}): {{ b.razon }}
+            </li>
+          </ul>
+          <p v-else-if="eliminarErrorMsg" class="camara-detail-eliminar-error">{{ eliminarErrorMsg }}</p>
+          <div class="camara-detail-eliminar-actions">
+            <button class="btn danger" type="button" :disabled="eliminando" @click="handleEliminar">
+              {{ eliminando ? 'Eliminando...' : 'Sí, eliminar' }}
+            </button>
+            <button class="btn subtle" type="button" :disabled="eliminando" @click="cerrarConfirmacionEliminar">
+              Cancelar
+            </button>
+          </div>
+        </div>
 
         <section class="camara-detail-dashboard">
           <button class="camara-detail-card" type="button" @click="aliasModalOpen = true">
@@ -140,7 +167,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useSession } from '../composables/useSession';
 import CamaraEstadoModal from '../components/infra/CamaraEstadoModal.vue';
 import ModalAlias from '../components/infra/ModalAlias.vue';
@@ -148,7 +175,9 @@ import ModalServicios from '../components/infra/ModalServicios.vue';
 import ModalRegistros from '../components/infra/ModalRegistros.vue';
 import ModalBotellas from '../components/infra/ModalBotellas.vue';
 import ModalUnificarCamara from '../components/infra/ModalUnificarCamara.vue';
-import type { BotellaOrigen } from '../api/botellas';
+import { ApiError } from '../api/client';
+import { eliminarCamara } from '../api/camaras';
+import { eliminarBotella, type BloqueoEliminacion, type BotellaOrigen } from '../api/botellas';
 
 interface RutaItem {
   ruta_id: number;
@@ -223,6 +252,7 @@ interface RegistrosPayload {
 }
 
 const route = useRoute();
+const router = useRouter();
 const { state } = useSession();
 const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
 
@@ -247,6 +277,10 @@ const serviciosModalOpen = ref(false);
 const registrosModalOpen = ref(false);
 const botellasModalOpen = ref(false);
 const unificarModalOpen = ref(false);
+const eliminarConfirmarAbierto = ref(false);
+const eliminando = ref(false);
+const eliminarErrorMsg = ref('');
+const eliminarBloqueos = ref<BloqueoEliminacion[]>([]);
 
 const serviciosCount = computed(() => new Set((camara.value?.rutas ?? []).map((ruta) => ruta.servicio_id)).size);
 const registrosCount = computed(() => registros.value.baneos.length + registros.value.auditoria.length);
@@ -324,6 +358,36 @@ async function handleUnificacionCompletada(): Promise<void> {
 
 function showInlineError(message: string): void {
   errorMessage.value = message;
+}
+
+function cerrarConfirmacionEliminar(): void {
+  eliminarConfirmarAbierto.value = false;
+  eliminarErrorMsg.value = '';
+  eliminarBloqueos.value = [];
+}
+
+async function handleEliminar(): Promise<void> {
+  if (!camara.value) return;
+  eliminando.value = true;
+  eliminarErrorMsg.value = '';
+  eliminarBloqueos.value = [];
+  try {
+    if (camara.value.es_botella) {
+      await eliminarBotella('legado', camara.value.id);
+    } else {
+      await eliminarCamara(camara.value.id);
+    }
+    // El elemento que esta vista mostraba ya no existe — volver al listado general.
+    void router.push('/infra');
+  } catch (e: unknown) {
+    if (e instanceof ApiError && e.status === 400 && e.payload && typeof e.payload === 'object') {
+      const payload = e.payload as { bloqueos?: BloqueoEliminacion[] };
+      eliminarBloqueos.value = payload.bloqueos ?? [];
+    }
+    eliminarErrorMsg.value = e instanceof Error ? e.message : 'No se pudo eliminar.';
+  } finally {
+    eliminando.value = false;
+  }
 }
 
 watch(
@@ -516,6 +580,36 @@ onMounted(async () => {
   margin: 0;
   color: var(--color-neutral-300);
   line-height: 1.5;
+}
+
+.camara-detail-eliminar-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
+  color: var(--error);
+}
+
+.camara-detail-eliminar-confirm p {
+  margin: 0;
+}
+
+.camara-detail-eliminar-bloqueos {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.camara-detail-eliminar-error {
+  font-size: 13px;
+}
+
+.camara-detail-eliminar-actions {
+  display: flex;
+  gap: 10px;
 }
 
 @media (max-width: 720px) {

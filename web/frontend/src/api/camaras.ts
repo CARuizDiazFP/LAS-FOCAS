@@ -150,3 +150,31 @@ export function ingestCamarasFile(
     xhr.send(data);
   });
 }
+
+// ── Eliminación permanente de una Cámara raíz genuinamente vacía ────────────
+// Todo o nada: si la Cámara o cualquiera de sus Botellas tiene Cables/Empalmes/Ingresos/Fusiones
+// reales asociados, se rechaza sin borrar nada. Cada Botella Cromo eliminada registra su n_id en
+// app.cromo_botella_alias (accion='ignorar'). Ver POST /api/infra/camaras/eliminar.
+
+export interface BloqueoEliminacion {
+  origen: 'legado' | 'cromo' | 'camara';
+  id: number;
+  nombre: string | null;
+  razon: string;
+}
+
+export interface EliminarCamaraResponse {
+  ok: boolean;
+  camara_id: number;
+  botellas_legado_eliminadas: number;
+  botellas_cromo_eliminadas: number;
+  aliases_registrados: number;
+}
+
+export async function eliminarCamara(camaraId: number): Promise<EliminarCamaraResponse> {
+  return requestJson<EliminarCamaraResponse>('/api/infra/camaras/eliminar', {
+    method: 'POST',
+    json: { camara_id: camaraId },
+    csrf: true,
+  });
+}

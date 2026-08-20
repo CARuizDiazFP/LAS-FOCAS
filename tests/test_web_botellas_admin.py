@@ -105,3 +105,38 @@ def test_exportar_inconsistencias_requiere_autenticacion():
     client = TestClient(app)
     res = client.get("/api/admin/infra/botellas/inconsistencias/exportar")
     assert res.status_code == 401
+
+
+# ── POST /api/infra/botellas/eliminar ────────────────────────────────────────
+
+
+def test_eliminar_botella_requiere_autenticacion():
+    client = TestClient(app)
+    res = client.post("/api/infra/botellas/eliminar", json={"origen": "cromo", "id": 100})
+    assert res.status_code == 401
+
+
+def test_eliminar_botella_rechaza_csrf_invalido(monkeypatch):
+    from web.app import main as web_main
+
+    # Ver nota en test_consolidar_rechaza_csrf_invalido: algunos tests de Slack dejan
+    # TESTING=true seteado a nivel de módulo sin revertirlo.
+    monkeypatch.setenv("TESTING", "false")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.post(
+        "/api/infra/botellas/eliminar",
+        json={"origen": "cromo", "id": 100, "csrf_token": "invalido"},
+    )
+    assert res.status_code == 403
+
+
+# ── POST /api/infra/camaras/eliminar ─────────────────────────────────────────
+
+
+def test_eliminar_camara_requiere_autenticacion():
+    client = TestClient(app)
+    res = client.post("/api/infra/camaras/eliminar", json={"camara_id": 1})
+    assert res.status_code == 401

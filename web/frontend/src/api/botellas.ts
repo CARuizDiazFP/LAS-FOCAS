@@ -259,3 +259,30 @@ export async function getBotellasOperatividad(nIds: number[]): Promise<number[]>
 export function exportarBotellasInconsistenciasUrl(): string {
   return '/api/admin/infra/botellas/inconsistencias/exportar';
 }
+
+// ── Eliminación permanente de una Botella genuinamente vacía ────────────────
+// Se rechaza si tiene Cables/Empalmes/Ingresos (legado) o Cables/Fusiones Cromo asociados, o si
+// (Cromo) ya es destino de otra fila de alias. Ver POST /api/infra/botellas/eliminar.
+
+export interface BloqueoEliminacion {
+  origen: 'legado' | 'cromo' | 'camara';
+  id: number;
+  nombre: string | null;
+  razon: string;
+}
+
+export interface EliminarBotellaResponse {
+  ok: boolean;
+  origen: BotellaOrigen;
+  id: number;
+  camara_padre_eliminada: number | null;
+  alias_registrado: boolean;
+}
+
+export async function eliminarBotella(origen: BotellaOrigen, id: number): Promise<EliminarBotellaResponse> {
+  return requestJson<EliminarBotellaResponse>('/api/infra/botellas/eliminar', {
+    method: 'POST',
+    json: { origen, id },
+    csrf: true,
+  });
+}

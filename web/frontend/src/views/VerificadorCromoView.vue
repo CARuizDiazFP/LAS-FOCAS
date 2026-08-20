@@ -41,6 +41,7 @@
       </form>
 
       <p v-if="error" class="msg err visible">{{ error }}</p>
+      <p v-if="eliminarExito" class="msg ok visible">{{ eliminarExito }}</p>
     </article>
 
     <article v-if="resultado" class="card verificador-cromo__card">
@@ -64,9 +65,39 @@
             <i class="ph ph-eye" aria-hidden="true"></i>
             Ver info en Cromo
           </button>
+          <button
+            v-if="tipo === 'botella' && isAdmin"
+            class="btn subtle"
+            type="button"
+            @click="eliminarConfirmarAbierto = true"
+          >
+            <i class="ph ph-trash" aria-hidden="true"></i>
+            Eliminar Botella
+          </button>
           <span class="verificador-cromo__chip">{{ resultado.servicios.length }} servicio(s)</span>
         </div>
       </header>
+
+      <div v-if="eliminarConfirmarAbierto" class="verificador-cromo__eliminar-confirm">
+        <p>
+          ⚠️ ¿Eliminar permanentemente la Botella <strong>{{ resultado.meta[0]?.valor || `ID ${resultado.nId}` }}</strong>?
+          Esta acción no se puede deshacer.
+        </p>
+        <ul v-if="eliminarBloqueos.length > 0" class="verificador-cromo__eliminar-bloqueos">
+          <li v-for="b in eliminarBloqueos" :key="`${b.origen}:${b.id}`">
+            {{ b.nombre || `ID ${b.id}` }} ({{ b.origen }}): {{ b.razon }}
+          </li>
+        </ul>
+        <p v-else-if="eliminarErrorMsg" class="verificador-cromo__eliminar-error">{{ eliminarErrorMsg }}</p>
+        <div class="verificador-cromo__eliminar-actions">
+          <button class="btn danger" type="button" :disabled="eliminando" @click="handleEliminar">
+            {{ eliminando ? 'Eliminando...' : 'Sí, eliminar' }}
+          </button>
+          <button class="btn subtle" type="button" :disabled="eliminando" @click="cerrarConfirmacionEliminar">
+            Cancelar
+          </button>
+        </div>
+      </div>
 
       <dl class="verificador-cromo__meta">
         <div v-for="dato in resultado.meta" :key="dato.etiqueta">
@@ -161,7 +192,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { getCromoBotellaEstadoAsociacion } from '../api/botellas';
+import { eliminarBotella, getCromoBotellaEstadoAsociacion, type BloqueoEliminacion } from '../api/botellas';
 import { ApiError } from '../api/client';
 import {
   verificarServiciosPorBotella,
@@ -171,6 +202,7 @@ import {
   type CromoServicioEncontrado,
 } from '../api/cromo';
 import ModalVerificadorCromo from '../components/infra/ModalVerificadorCromo.vue';
+import { useSession } from '../composables/useSession';
 
 type TipoObjeto = 'cable' | 'tubo' | 'botella';
 
@@ -201,6 +233,15 @@ const resultado = ref<ResultadoVista | null>(null);
 const camaraPadre = ref<{ id: number; nombre: string | null } | null>(null);
 const mostrarModalCromo = ref(false);
 
+const { state } = useSession();
+const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
+
+const eliminarConfirmarAbierto = ref(false);
+const eliminando = ref(false);
+const eliminarErrorMsg = ref('');
+const eliminarBloqueos = ref<BloqueoEliminacion[]>([]);
+const eliminarExito = ref('');
+
 const tipoActual = computed(() => TIPOS.find((t) => t.valor === tipo.value) ?? TIPOS[0]);
 const nIdValido = computed(() => /^\d+$/.test(nIdTexto.value.trim()));
 const cablesBotella = computed(() => resultado.value?.cables ?? []);
@@ -213,6 +254,8 @@ async function onBuscar(): Promise<void> {
   error.value = '';
   resultado.value = null;
   camaraPadre.value = null;
+  eliminarExito.value = '';
+  cerrarConfirmacionEliminar();
 
   try {
     if (tipo.value === 'cable') {
@@ -269,6 +312,34 @@ async function onBuscar(): Promise<void> {
     }
   } finally {
     buscando.value = false;
+  }
+}
+
+function cerrarConfirmacionEliminar(): void {
+  eliminarConfirmarAbierto.value = false;
+  eliminarErrorMsg.value = '';
+  eliminarBloqueos.value = [];
+}
+
+async function handleEliminar(): Promise<void> {
+  if (!resultado.value) return;
+  eliminando.value = true;
+  eliminarErrorMsg.value = '';
+  eliminarBloqueos.value = [];
+  try {
+    await eliminarBotella('cromo', resultado.value.nId);
+    eliminarExito.value = `Botella ID ${resultado.value.nId} eliminada correctamente.`;
+    resultado.value = null;
+    camaraPadre.value = null;
+    cerrarConfirmacionEliminar();
+  } catch (e: unknown) {
+    if (e instanceof ApiError && e.status === 400 && e.payload && typeof e.payload === 'object') {
+      const payload = e.payload as { bloqueos?: BloqueoEliminacion[] };
+      eliminarBloqueos.value = payload.bloqueos ?? [];
+    }
+    eliminarErrorMsg.value = e instanceof Error ? e.message : 'No se pudo eliminar.';
+  } finally {
+    eliminando.value = false;
   }
 }
 
@@ -392,6 +463,37 @@ function irACable(cable: { n_id: number }): void {
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
   color: var(--color-accent);
   white-space: nowrap;
+}
+
+.verificador-cromo__eliminar-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
+  color: var(--error);
+}
+
+.verificador-cromo__eliminar-confirm p {
+  margin: 0;
+}
+
+.verificador-cromo__eliminar-bloqueos {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.verificador-cromo__eliminar-error {
+  font-size: 13px;
+}
+
+.verificador-cromo__eliminar-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .verificador-cromo__meta {
