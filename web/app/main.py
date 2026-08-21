@@ -201,6 +201,7 @@ os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))
 os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
+from core.services.botella_recompute_queue import guardar_cache_duplicados, leer_cache_duplicados  # noqa: E402
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
@@ -5343,7 +5344,10 @@ async def botellas_viewer_duplicados_web(request: Request) -> JSONResponse:
         from db.session import SessionLocal
 
         with SessionLocal() as session:
-            grupos = detectar_grupos_duplicados_botellas(session)
+            grupos = await leer_cache_duplicados()
+            if grupos is None:
+                grupos = detectar_grupos_duplicados_botellas(session)
+                await guardar_cache_duplicados(grupos)
             ids_cromo = [m.id for g in grupos for m in g.miembros if m.origen == "cromo"]
             operativos = tiene_cables_asociados_batch_sync(session, ids_cromo)
             return JSONResponse({
@@ -5499,8 +5503,11 @@ async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMa
         from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
         from db.session import SessionLocal
 
-        with SessionLocal() as session_deteccion:
-            grupos = detectar_grupos_duplicados_botellas(session_deteccion)
+        grupos = await leer_cache_duplicados()
+        if grupos is None:
+            with SessionLocal() as session_deteccion:
+                grupos = detectar_grupos_duplicados_botellas(session_deteccion)
+            await guardar_cache_duplicados(grupos)
 
         resolubles = [(grupo, sugerir_apropiacion(grupo)) for grupo in grupos]
         resolubles = [(grupo, par) for grupo, par in resolubles if par is not None]
@@ -5673,7 +5680,10 @@ async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
             })
 
         with SessionLocal() as session:
-            grupos = detectar_grupos_duplicados_botellas(session)
+            grupos = await leer_cache_duplicados()
+            if grupos is None:
+                grupos = detectar_grupos_duplicados_botellas(session)
+                await guardar_cache_duplicados(grupos)
         for g in grupos:
             if g.resoluble:
                 continue

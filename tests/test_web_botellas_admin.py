@@ -60,6 +60,74 @@ def _login(client: TestClient, username: str, password: str) -> str:
     return res.json()["csrf"]
 
 
+# ── GET /api/admin/infra/botellas/viewer/duplicados ──────────────────────────
+
+
+def test_viewer_duplicados_usa_cache_si_hay_hit(monkeypatch):
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    grupo_cacheado = []  # lista vacía es un hit válido — distinto de None
+
+    async def _fake_leer_cache():
+        return grupo_cacheado
+
+    llamado = {"detectar": False}
+
+    def _fake_detectar(session):
+        llamado["detectar"] = True
+        return []
+
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados")
+    assert res.status_code == 200
+    assert res.json()["grupos"] == []
+    assert llamado["detectar"] is False, "no debió recalcular con un cache hit"
+
+
+def test_viewer_duplicados_cache_miss_cae_a_computo_sincrono(monkeypatch):
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    async def _fake_leer_cache():
+        return None
+
+    guardado = {"grupos": "no_llamado"}
+
+    async def _fake_guardar_cache(grupos):
+        guardado["grupos"] = grupos
+
+    llamado = {"detectar": False}
+
+    def _fake_detectar(session):
+        llamado["detectar"] = True
+        return []
+
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados")
+    assert res.status_code == 200
+    assert res.json()["grupos"] == []
+    assert llamado["detectar"] is True, "un cache miss debe caer al cómputo síncrono"
+    assert guardado["grupos"] == [], "el resultado fresco debe poblar la caché tras un miss"
+
+
 # ── POST /api/infra/botellas/consolidar ──────────────────────────────────────
 
 
