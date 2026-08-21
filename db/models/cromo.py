@@ -125,6 +125,12 @@ class CromoBotella(Base):
     `nombre` en corridas futuras (mismo criterio de protección que `camara_id`/`estado`, pero
     condicional en vez de estructural, porque `nombre` sí debe seguir viniendo de Cromo para el
     resto de las botellas nunca editadas a mano).
+
+    `separada_manualmente`/`separada_motivo`/`separada_por`/`separada_at` (desde 2026-08-22) los
+    pone `POST /api/infra/botellas/{n_id}/separar-padre` (admin) cuando se separa una Botella
+    agrupada erróneamente por nombre bajo una Cámara padre compartida —
+    `core/services/cromo/separacion_service.py`. `scripts/cromo_backfill_camara_padre.py` excluye
+    estas filas de su filtro de idempotencia como blindaje explícito adicional (ver ese script).
     """
 
     __tablename__ = "cromo_botellas"
@@ -136,6 +142,10 @@ class CromoBotella(Base):
     clase = Column(SmallInteger, ForeignKey("app.cromo_clases.clase"), nullable=False)
     nombre = Column(Text, nullable=True)
     nombre_editado_manual = Column(Boolean, nullable=False, default=False, server_default=false())
+    separada_manualmente = Column(Boolean, nullable=False, default=False, server_default=false())
+    separada_motivo = Column(Text, nullable=True)
+    separada_por = Column(String(128), nullable=True)
+    separada_at = Column(DateTime(timezone=True), nullable=True)
     codigo_modelo = Column(Text, nullable=True)
     id_legacy = Column(Text, nullable=True)  # at.91, candidato a ID de FOntime
     notas = Column(Text, nullable=True)
