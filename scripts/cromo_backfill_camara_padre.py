@@ -56,9 +56,13 @@ legado ya existente (nombre coincidente), hereda su estado real — no es infere
 ya existe y tiene auditoría propia (`CamaraEstadoAuditoria`), y puede legítimamente estar `BANEADA`.
 Ver `docs/decisiones.md`.
 
-Idempotente vía `WHERE vigente=true AND camara_id IS NULL` — sin columna de progreso extra
-(re-escanear en memoria es barato a ~11k filas). La reingesta periódica de Cromo (`ingesta.py`)
-nunca pisa `camara_id`/`estado`: no están en `_BOTELLA_CAMPOS` ni en el dataclass `Botella`.
+Idempotente vía `WHERE vigente=true AND camara_id IS NULL AND NOT separada_manualmente` — sin
+columna de progreso extra. El tercer término es redundante hoy (`separada_manualmente=true`
+implica `camara_id` ya seteado, ver `core/services/cromo/separacion_service.py`), pero es el
+blindaje explícito pedido para que un futuro `--force` que resetee `camara_id` a NULL no vuelva a
+agrupar una fila que un admin separó a mano a propósito. Re-escanear en memoria es barato a ~11k
+filas. La reingesta periódica de Cromo (`ingesta.py`) nunca pisa `camara_id`/`estado`: no están en
+`_BOTELLA_CAMPOS` ni en el dataclass `Botella`.
 
 Sesión síncrona (`SessionLocal`, no `AsyncSessionLocal`): toda la lógica reutilizada
 (`aplicar_estado_a_grupo`, `miembros_del_grupo`) es síncrona; mezclar dos engines en un script batch
@@ -144,7 +148,11 @@ def main(dry_run: bool) -> None:
     try:
         candidatas = (
             session.query(CromoBotella)
-            .filter(CromoBotella.vigente.is_(True), CromoBotella.camara_id.is_(None))
+            .filter(
+                CromoBotella.vigente.is_(True),
+                CromoBotella.camara_id.is_(None),
+                CromoBotella.separada_manualmente.is_(False),
+            )
             .order_by(CromoBotella.n_id)
             .all()
         )
