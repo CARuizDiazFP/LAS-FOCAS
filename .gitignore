@@ -75,5 +75,8 @@ backup_*.dump
 # Repositorios legacy
 Legacy/
 
+# Workspace de subagent-driven-development (ledgers, briefs, reportes por plan)
+.superpowers/
+
 # Documentación privada de la empresa (no debe subirse al repo)
 docs/Doc Privada/
