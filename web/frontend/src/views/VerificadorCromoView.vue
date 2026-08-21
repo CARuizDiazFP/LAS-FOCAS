@@ -42,6 +42,7 @@
 
       <p v-if="error" class="msg err visible">{{ error }}</p>
       <p v-if="eliminarExito" class="msg ok visible">{{ eliminarExito }}</p>
+      <p v-if="separarExito" class="msg ok visible">{{ separarExito }}</p>
     </article>
 
     <article v-if="resultado" class="card verificador-cromo__card">
@@ -74,6 +75,15 @@
             <i class="ph ph-trash" aria-hidden="true"></i>
             Eliminar Botella
           </button>
+          <button
+            v-if="tipo === 'botella' && isAdmin && camaraPadre"
+            class="btn subtle"
+            type="button"
+            @click="abrirConfirmacionSeparar"
+          >
+            <i class="ph ph-arrows-split" aria-hidden="true"></i>
+            Separar a nueva Cámara
+          </button>
           <span class="verificador-cromo__chip">{{ resultado.servicios.length }} servicio(s)</span>
         </div>
       </header>
@@ -94,6 +104,37 @@
             {{ eliminando ? 'Eliminando...' : 'Sí, eliminar' }}
           </button>
           <button class="btn subtle" type="button" :disabled="eliminando" @click="cerrarConfirmacionEliminar">
+            Cancelar
+          </button>
+        </div>
+      </div>
+
+      <div v-if="separarConfirmarAbierto" class="verificador-cromo__separar-confirm">
+        <p>
+          Se va a crear una <strong>Cámara nueva e independiente</strong> para esta Botella,
+          separándola de <strong>{{ camaraPadre?.nombre || `ID ${camaraPadre?.id}` }}</strong>.
+        </p>
+        <label for="separar-nombre">Nombre de la Botella / Cámara nueva</label>
+        <input id="separar-nombre" v-model="separarNombreNuevo" type="text" maxlength="500" />
+        <label for="separar-motivo">Motivo</label>
+        <input
+          id="separar-motivo"
+          v-model="separarMotivo"
+          type="text"
+          maxlength="1000"
+          placeholder="ej. agrupada por error con otra dirección de nombre parecido"
+        />
+        <p v-if="separarErrorMsg" class="verificador-cromo__eliminar-error">{{ separarErrorMsg }}</p>
+        <div class="verificador-cromo__eliminar-actions">
+          <button
+            class="btn primary"
+            type="button"
+            :disabled="separando || !separarNombreNuevo.trim() || !separarMotivo.trim()"
+            @click="handleSepararPadre"
+          >
+            {{ separando ? 'Separando...' : 'Sí, separar' }}
+          </button>
+          <button class="btn subtle" type="button" :disabled="separando" @click="cerrarConfirmacionSeparar">
             Cancelar
           </button>
         </div>
@@ -291,8 +332,10 @@ import {
   eliminarBotella,
   getCromoBotellaEstadoAsociacion,
   repoblarCablesCromo,
+  separarBotellaDeCamaraPadre,
   type BloqueoEliminacion,
   type RepoblarCablesResponse,
+  type SepararBotellaDePadreResponse,
 } from '../api/botellas';
 import { ApiError } from '../api/client';
 import {
@@ -360,6 +403,15 @@ const nombreEditado = ref('');
 const guardandoNombre = ref(false);
 const nombreGuardadoOk = ref(false);
 const nombreError = ref('');
+
+// "Separar a nueva Cámara" (sólo admin) — crea una Cámara padre nueva e independiente cuando el
+// backfill de Cromo agrupó esta Botella con otra por nombre parecido.
+const separarConfirmarAbierto = ref(false);
+const separarNombreNuevo = ref('');
+const separarMotivo = ref('');
+const separando = ref(false);
+const separarErrorMsg = ref('');
+const separarExito = ref('');
 
 const tipoActual = computed(() => TIPOS.find((t) => t.valor === tipo.value) ?? TIPOS[0]);
 const nIdValido = computed(() => /^\d+$/.test(nIdTexto.value.trim()));
@@ -523,6 +575,44 @@ async function onGuardarNombre(): Promise<void> {
   }
 }
 
+function abrirConfirmacionSeparar(): void {
+  if (!resultado.value) return;
+  separarNombreNuevo.value = (resultado.value.meta.find((m) => m.etiqueta === 'Nombre')?.valor as string) ?? '';
+  separarMotivo.value = '';
+  separarErrorMsg.value = '';
+  separarConfirmarAbierto.value = true;
+}
+
+function cerrarConfirmacionSeparar(): void {
+  separarConfirmarAbierto.value = false;
+  separarErrorMsg.value = '';
+}
+
+async function handleSepararPadre(): Promise<void> {
+  if (!resultado.value) return;
+  const nombreLimpio = separarNombreNuevo.value.trim();
+  const motivoLimpio = separarMotivo.value.trim();
+  if (!nombreLimpio || !motivoLimpio) return;
+
+  separando.value = true;
+  separarErrorMsg.value = '';
+  try {
+    const r: SepararBotellaDePadreResponse = await separarBotellaDeCamaraPadre(resultado.value.nId, nombreLimpio, motivoLimpio);
+    separarExito.value = `Botella separada a la nueva Cámara "${r.camara_nueva_nombre}" (ID ${r.camara_nueva_id}).`;
+    resultado.value = {
+      ...resultado.value,
+      meta: resultado.value.meta.map((m) => (m.etiqueta === 'Nombre' ? { ...m, valor: r.camara_nueva_nombre } : m)),
+    };
+    nombreEditado.value = r.camara_nueva_nombre;
+    camaraPadre.value = { id: r.camara_nueva_id, nombre: r.camara_nueva_nombre };
+    cerrarConfirmacionSeparar();
+  } catch (e) {
+    separarErrorMsg.value = e instanceof Error ? e.message : 'No se pudo separar la Botella.';
+  } finally {
+    separando.value = false;
+  }
+}
+
 // Navegación cruzada desde otras vistas (ej. click en una Botella extremo dentro del detalle de un
 // cable): precarga tipo + n_id desde la URL y dispara la búsqueda automáticamente. Siempre llega por
 // una navegación completa a esta ruta (nunca un cambio de query dentro del propio Verificador ya
@@ -674,6 +764,30 @@ function irACable(cable: { n_id: number }): void {
 .verificador-cromo__eliminar-actions {
   display: flex;
   gap: 10px;
+}
+
+.verificador-cromo__separar-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.verificador-cromo__separar-confirm p {
+  margin: 0;
+}
+
+.verificador-cromo__separar-confirm label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.verificador-cromo__separar-confirm input {
+  max-width: 420px;
 }
 
 .verificador-cromo__meta {
