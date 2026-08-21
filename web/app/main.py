@@ -5627,6 +5627,8 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
                 "alias_actualizados": resultado.alias_actualizados,
                 "alias_repuntados": resultado.alias_repuntados,
                 "alias_dependientes_recableados": resultado.alias_dependientes_recableados,
+                "cables_existentes_recableados": resultado.cables_existentes_recableados,
+                "fusiones_existentes_recableadas": resultado.fusiones_existentes_recableadas,
                 "legados_migrados": resultado.legados_migrados,
                 "cables_migrados": resultado.cables_migrados,
                 "empalmes_migrados": resultado.empalmes_migrados,

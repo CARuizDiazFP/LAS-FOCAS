@@ -217,6 +217,8 @@ export interface ConsolidarBotellasResponse {
   alias_actualizados: number;
   alias_repuntados: AliasRepuntadoItem[];
   alias_dependientes_recableados: number;
+  cables_existentes_recableados: number;
+  fusiones_existentes_recableadas: number;
   legados_migrados: number[];
   cables_migrados: number;
   empalmes_migrados: number;

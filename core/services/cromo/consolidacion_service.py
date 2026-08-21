@@ -20,10 +20,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.services.botella_merge_service import apropiar_legado_a_cromo
-from db.models.cromo import CromoBotella, CromoBotellaAlias
+from db.models.cromo import CromoBotella, CromoBotellaAlias, CromoCable, CromoFusion
 
 ACCION_FUSIONAR = "fusionar"
 
@@ -45,6 +46,11 @@ class ResultadoConsolidacion:
     # recableados directo al destino final para no dejar una cadena de 2 saltos (resolver_referencia,
     # en la ingesta, nunca persigue cadenas — ver core/services/cromo/alias_service.py).
     alias_dependientes_recableados: int = 0
+    # `CromoCable`/`CromoFusion` YA ingeridos que apuntaban al origen antes de consolidar — el
+    # `resolver_referencia` de la ingesta sólo redirige referencias que lleguen en una corrida
+    # futura, así que estos hay que recablearlos ahora mismo o quedan huérfanos.
+    cables_existentes_recableados: int = 0
+    fusiones_existentes_recableadas: int = 0
     legados_migrados: list[int] = field(default_factory=list)
     cables_migrados: int = 0
     empalmes_migrados: int = 0
@@ -139,6 +145,39 @@ def consolidar_grupo_botellas(
     for dependiente in dependientes:
         dependiente.id_cromo_destino = id_destino_cromo
 
+    cables_existentes_recableados = 0
+    fusiones_existentes_recableadas = 0
+    if ids_origen_cromo:
+        cables_afectados = (
+            session.query(CromoCable)
+            .filter(
+                or_(
+                    CromoCable.extremo_a_n_id.in_(ids_origen_cromo),
+                    CromoCable.extremo_b_n_id.in_(ids_origen_cromo),
+                )
+            )
+            .all()
+        )
+        for cable in cables_afectados:
+            if cable.extremo_a_n_id in ids_origen_cromo:
+                cable.extremo_a_n_id = id_destino_cromo
+            if cable.extremo_b_n_id in ids_origen_cromo:
+                cable.extremo_b_n_id = id_destino_cromo
+        cables_existentes_recableados = len(cables_afectados)
+
+        fusiones_afectadas = (
+            session.query(CromoFusion).filter(CromoFusion.botella_n_id.in_(ids_origen_cromo)).all()
+        )
+        for fusion in fusiones_afectadas:
+            fusion.botella_n_id = id_destino_cromo
+        fusiones_existentes_recableadas = len(fusiones_afectadas)
+
+        # El origen deja de contar como Botella Cromo vigente — mismo flag que ya filtran
+        # `detectar_grupos_duplicados_botellas`/`buscar_huerfanas`/`buscar_botellas_unificadas`;
+        # sin esto, el grupo "duplicado" recién consolidado sigue apareciendo tal cual.
+        for origen_botella in session.query(CromoBotella).filter(CromoBotella.n_id.in_(ids_origen_cromo)).all():
+            origen_botella.vigente = False
+
     session.flush()
 
     legados_migrados: list[int] = []
@@ -170,6 +209,8 @@ def consolidar_grupo_botellas(
         alias_actualizados=alias_actualizados,
         alias_repuntados=alias_repuntados,
         alias_dependientes_recableados=len(dependientes),
+        cables_existentes_recableados=cables_existentes_recableados,
+        fusiones_existentes_recableadas=fusiones_existentes_recableadas,
         legados_migrados=legados_migrados,
         cables_migrados=cables_migrados,
         empalmes_migrados=empalmes_migrados,

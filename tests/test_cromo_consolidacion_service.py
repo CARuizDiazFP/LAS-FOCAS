@@ -13,7 +13,7 @@ from core.services.cromo.consolidacion_service import (
     ConsolidacionBotellaError,
     consolidar_grupo_botellas,
 )
-from db.models.cromo import CromoBotella, CromoBotellaAlias
+from db.models.cromo import CromoBotella, CromoBotellaAlias, CromoCable, CromoFusion
 
 
 def _build_session(
@@ -22,6 +22,9 @@ def _build_session(
     destino_ya_marcado: CromoBotellaAlias | None = None,
     existentes_en_orden: list[CromoBotellaAlias | None] | None = None,
     dependientes: list[CromoBotellaAlias] | None = None,
+    origenes_cromo_rows: list[CromoBotella] | None = None,
+    cables_afectados: list[CromoCable] | None = None,
+    fusiones_afectadas: list[CromoFusion] | None = None,
 ) -> MagicMock:
     session = MagicMock()
     model_mocks: dict[object, MagicMock] = {}
@@ -32,12 +35,15 @@ def _build_session(
         return model_mocks[modelo]
 
     mock_para(CromoBotella).filter.return_value.first.return_value = destino
+    mock_para(CromoBotella).filter.return_value.all.return_value = origenes_cromo_rows or []
     # Orden real de llamadas del servicio: primero el chequeo "destino ya marcado", luego una por
     # cada origen (en el mismo orden que la lista de-dup que se le pasa).
     mock_para(CromoBotellaAlias).filter.return_value.first.side_effect = [destino_ya_marcado] + list(
         existentes_en_orden or []
     )
     mock_para(CromoBotellaAlias).filter.return_value.all.return_value = dependientes or []
+    mock_para(CromoCable).filter.return_value.all.return_value = cables_afectados or []
+    mock_para(CromoFusion).filter.return_value.all.return_value = fusiones_afectadas or []
 
     session.query.side_effect = lambda modelo, *a: mock_para(modelo)
     session.model_mocks = model_mocks
@@ -191,3 +197,44 @@ def test_consolidar_dedup_origenes_repetidos_no_duplica_alias():
     )
 
     assert resultado.alias_creados == 1
+
+
+def test_consolidar_retira_origen_cromo_de_vigente_para_que_deje_de_verse_duplicado():
+    """Bug real (2026-08-21): consolidar sólo escribía en `cromo_botella_alias` (aplicado a futuro
+    por la ingesta) — el `CromoBotella` origen seguía `vigente=True` con el mismo `camara_id` y
+    nombre, así que `detectar_grupos_duplicados_botellas` seguía devolviendo el mismo grupo
+    "duplicado" después de consolidar. El origen debe quedar `vigente=False` de inmediato — mismo
+    flag que ya filtran `botella_duplicados_service`/`orfanas_service`/`botellas_unificadas_service`."""
+    destino = CromoBotella(n_id=999, nombre="Golden")
+    origen = CromoBotella(n_id=100, nombre="Golden (dup)", vigente=True, camara_id=10)
+    session = _build_session(destino=destino, existentes_en_orden=[None], origenes_cromo_rows=[origen])
+
+    consolidar_grupo_botellas(session, ids_origen_cromo=[100], id_destino_cromo=999, usuario="admin")
+
+    assert origen.vigente is False
+
+
+def test_consolidar_recablea_cables_y_fusiones_ya_ingeridos_del_origen_al_destino():
+    """El `resolver_referencia` de la ingesta sólo redirige referencias que lleguen en una corrida
+    FUTURA — los `CromoCable`/`CromoFusion` que ya apuntaban al origen (ingeridos antes de
+    consolidar) quedaban huérfanos, apuntando a un n_id retirado. Deben recablearse al destino ahí
+    mismo, igual que ya se hace para los alias dependientes (`alias_dependientes_recableados`)."""
+    destino = CromoBotella(n_id=999, nombre="Golden")
+    cable_extremo_a = CromoCable(n_id=1, extremo_a_n_id=100, extremo_b_n_id=200)
+    cable_extremo_b = CromoCable(n_id=2, extremo_a_n_id=300, extremo_b_n_id=100)
+    fusion = CromoFusion(n_id=3, botella_n_id=100)
+    session = _build_session(
+        destino=destino,
+        existentes_en_orden=[None],
+        cables_afectados=[cable_extremo_a, cable_extremo_b],
+        fusiones_afectadas=[fusion],
+    )
+
+    resultado = consolidar_grupo_botellas(session, ids_origen_cromo=[100], id_destino_cromo=999, usuario="admin")
+
+    assert cable_extremo_a.extremo_a_n_id == 999
+    assert cable_extremo_a.extremo_b_n_id == 200
+    assert cable_extremo_b.extremo_b_n_id == 999
+    assert fusion.botella_n_id == 999
+    assert resultado.cables_existentes_recableados == 2
+    assert resultado.fusiones_existentes_recableadas == 1

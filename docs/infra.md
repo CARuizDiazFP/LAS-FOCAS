@@ -545,6 +545,16 @@ por normalización).
   (`alias_repuntados`), nunca es silencioso; cualquier alias que ya apuntaba a un origen que ahora
   desaparece se recablea directo al destino final (evita una cadena de 2 saltos —
   `resolver_referencia`, en la ingesta, nunca persigue cadenas).
+  - **Fix real (2026-08-21)**: la fila `cromo_botella_alias` sólo la lee la ingesta FUTURA
+    (`resolver_referencia`) — el `CromoBotella` origen, ya materializado de una corrida anterior,
+    seguía `vigente=true` con el mismo nombre/`camara_id`, así que `detectar_grupos_duplicados_botellas`
+    volvía a devolver el mismo grupo "duplicado" siempre, sin que ninguna corrida futura lo corrigiera
+    (la ingesta sólo se abstiene de re-tocar un n_id aliaseado, nunca lo retira). Ahora
+    `consolidar_grupo_botellas` también repuntea los `CromoCable.extremo_a/b_n_id`/
+    `CromoFusion.botella_n_id` YA ingeridos que apuntaban al origen (el `resolver_referencia` de la
+    ingesta nunca los toca retroactivamente) y marca el origen `vigente=False` — mismo flag que ya
+    filtran `botella_duplicados_service`/`orfanas_service`/`botellas_unificadas_service`. Nuevos
+    campos de respuesta: `cables_existentes_recableados`, `fusiones_existentes_recableadas`.
 - **Frontend**: `ModalConsolidarBotellas.vue` — botón "Consolidar" en cada tarjeta de grupo no
   `resoluble` (pre-completa destino/orígenes/legado desde el grupo), más botón de toolbar "Consolidar
   manualmente" (mismo modal, sin grupo — orígenes y destino 100% libres).

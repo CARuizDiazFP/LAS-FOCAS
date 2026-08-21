@@ -112,7 +112,8 @@
 
       <div v-if="error" class="consolidar-empty error">{{ error }}</div>
       <div v-if="resultado" class="consolidar-resultado">
-        Consolidado: {{ resultado.alias_creados }} alias nuevo(s), {{ resultado.alias_actualizados }}
+        Consolidado: {{ origenesConsolidadosCount }} Botella(s) Cromo retirada(s) de duplicados,
+        {{ resultado.alias_creados }} alias nuevo(s), {{ resultado.alias_actualizados }}
         actualizado(s)<span v-if="resultado.legados_migrados.length">
           · {{ resultado.legados_migrados.length }} Botella(s) legado migrada(s)</span
         ><span v-if="resultado.nombre_nuevo"> · nombre actualizado</span>.
@@ -160,6 +161,7 @@ const dialogEl = ref<HTMLDialogElement | null>(null);
 const consolidando = ref(false);
 const error = ref('');
 const resultado = ref<ConsolidarBotellasResponse | null>(null);
+const origenesConsolidadosCount = ref(0);
 
 const destinoModo = ref<'lista' | 'manual'>('manual');
 const destinoListaId = ref<number | null>(null);
@@ -254,12 +256,14 @@ async function handleConsolidar(): Promise<void> {
   consolidando.value = true;
   error.value = '';
   try {
+    const origenes = origenesFinal.value;
     const data = await consolidarBotellasCromo({
-      idsOrigenCromo: origenesFinal.value,
+      idsOrigenCromo: origenes,
       idDestinoCromo: destinoId.value,
       idsLegado: idsLegadoSeleccionados.value,
       nombreDestino: nombreDestino.value.trim() || null,
     });
+    origenesConsolidadosCount.value = origenes.length;
     resultado.value = data;
     emit('consolidado');
   } catch (e: unknown) {
