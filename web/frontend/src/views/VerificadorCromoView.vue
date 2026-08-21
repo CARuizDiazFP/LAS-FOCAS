@@ -115,7 +115,7 @@
           separándola de <strong>{{ camaraPadre?.nombre || `ID ${camaraPadre?.id}` }}</strong>.
         </p>
         <label for="separar-nombre">Nombre de la Botella / Cámara nueva</label>
-        <input id="separar-nombre" v-model="separarNombreNuevo" type="text" maxlength="500" />
+        <input id="separar-nombre" v-model="separarNombreNuevo" type="text" maxlength="255" />
         <label for="separar-motivo">Motivo</label>
         <input
           id="separar-motivo"

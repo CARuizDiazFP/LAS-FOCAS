@@ -6533,7 +6533,7 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
 class BotellaSepararPadreRequestModel(BaseModel):
     """Payload para separar una Botella Cromo de su Cámara padre actual hacia una Cámara nueva."""
 
-    nombre: str = Field(min_length=1, max_length=500)
+    nombre: str = Field(min_length=1, max_length=255)
     motivo: str = Field(min_length=1, max_length=1000)
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 

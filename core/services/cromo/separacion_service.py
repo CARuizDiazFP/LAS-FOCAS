@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from core.services.camara_hierarchy_service import normalizar_para_agrupar_extendido
 from db.models.cromo import CromoBotella
-from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
+from db.models.infra import Camara, CamaraEstado, CamaraEstadoAuditoria, CamaraOrigenDatos
 
 
 class BotellaNoEncontradaError(Exception):
@@ -57,6 +57,11 @@ def separar_botella_de_padre(
     if botella is None:
         raise BotellaNoEncontradaError(f"No existe una Botella Cromo con n_id={botella_n_id}.")
 
+    if botella.camara_id is None:
+        raise SeparacionBotellaError(
+            f"La Botella n_id={botella_n_id} no tiene Cámara padre — usá 'Asociar huérfana' en vez de separar."
+        )
+
     nombre_final = nombre.strip()
     if not nombre_final:
         raise SeparacionBotellaError("El nombre no puede quedar vacío.")
@@ -72,12 +77,25 @@ def separar_botella_de_padre(
 
     nueva_camara = Camara(
         nombre=nombre_final,
-        estado=CamaraEstado.LIBRE,
+        estado=botella.estado,
         origen_datos=CamaraOrigenDatos.MANUAL,
         last_update=datetime.now(timezone.utc),
     )
     session.add(nueva_camara)
     session.flush()  # necesito nueva_camara.id antes de asignarlo a la Botella
+
+    session.add(
+        CamaraEstadoAuditoria(
+            camara_id=nueva_camara.id,
+            usuario=usuario,
+            motivo=(
+                f"Cámara creada al separar la Botella Cromo n_id={botella.n_id} de su Cámara padre "
+                f"anterior (id={camara_anterior_id}) — hereda el estado real de la Botella."
+            ),
+            estado_anterior=CamaraEstado.LIBRE,
+            estado_nuevo=nueva_camara.estado,
+        )
+    )
 
     ahora = datetime.now(timezone.utc)
     botella.nombre = nombre_final
