@@ -37,3 +37,6 @@ Pillow==10.4.0
 staticmap==0.5.7
 contextily==1.5.2
 pyproj==3.6.1
+
+# Cache / cola liviana
+redis==5.0.8
