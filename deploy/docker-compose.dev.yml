@@ -32,6 +32,23 @@ services:
     networks:
       - lasfocas_dev_net
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: lasfocasdev-redis
+    restart: unless-stopped
+    command: ["sh", "-c", "redis-server --requirepass \"$$(cat /run/secrets/redis_password_v1)\""]
+    secrets:
+      - redis_password_v1
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password_v1)\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - lasfocas_dev_net
+
   api:
     build:
       context: ..
@@ -122,6 +139,8 @@ services:
       # env_file (../.env.dev) igual que POSTGRES_*; sólo la contraseña va por secreto.
       # Gestión del worker de baneos vía proxy acotado, sin montar el socket directamente.
       DOCKER_HOST: tcp://docker-socket-proxy:2375
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     secrets:
       - api_key_v1
       - db_password_v1
@@ -130,11 +149,13 @@ services:
       - slack_bot_token_v1
       - slack_app_token_v1
       - cromo_password_v1
+      - redis_password_v1
     depends_on:
       - api
       - nlp_intent
       - postgres
       - docker-socket-proxy
+      - redis
     ports:
       # Bind solo a loopback: más seguro en servidor compartido.
       # Para acceso remoto: ssh -L 8090:localhost:8090 usuario@servidor
@@ -296,6 +317,42 @@ services:
     networks:
       - lasfocas_dev_net
 
+  botellas_recalculo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/botellas_recalculo_worker.Dockerfile
+    container_name: lasfocasdev-botellas-recalculo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - redis_password_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8097"
+    volumes:
+      - ../Logs/dev:/app/Logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8097/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_dev_net
+
   # (Opcional) pgAdmin dev. Levantar con: docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d
   pgadmin:
     image: dpage/pgadmin4:8
@@ -365,3 +422,5 @@ secrets:
     file: ../.secrets/Dev_cromo_password_v1.txt
   pgadmin_password_v1:
     file: ../.secrets/Dev_pgadmin_password_v1.txt
+  redis_password_v1:
+    file: ../.secrets/Dev_redis_password_v1.txt
