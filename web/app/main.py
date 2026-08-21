@@ -6504,7 +6504,8 @@ async def botella_repoblar_cables_web(request: Request, n_id: int, body: Botella
         logger.exception("action=botella_repoblar_cables_error user=%s n_id=%s error=%s", username, n_id, exc)
         return JSONResponse({"error": "No se pudo repoblar cables"}, status_code=500)
 
-    await encolar_recalculo_duplicados_botellas(motivo=f"repoblar-cables n_id={n_id} usuario={username}")
+    if resultado.corrida_id is not None:
+        await encolar_recalculo_duplicados_botellas(motivo=f"repoblar-cables n_id={n_id} usuario={username}")
     return JSONResponse(
         {
             "ok": True,

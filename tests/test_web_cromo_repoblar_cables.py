@@ -302,6 +302,13 @@ def test_repoblar_cables_happy_path_crea_cable_faltante(monkeypatch):
         _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE, CABLE_N_ID: CABLE_COMPLETO}),
     )
 
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")
 
@@ -317,6 +324,106 @@ def test_repoblar_cables_happy_path_crea_cable_faltante(monkeypatch):
     assert len(cables_creados) == 1
     assert cables_creados[0].n_id == CABLE_N_ID
     assert BOTELLA_N_ID in (cables_creados[0].extremo_a_n_id, cables_creados[0].extremo_b_n_id)
+    # Corrida real creada (payload["corrida_id"] no es None) → sí debe encolar recálculo.
+    assert len(llamadas) == 1
+    assert llamadas[0]
+
+
+def test_repoblar_cables_sin_pendientes_no_encola_recalculo(monkeypatch):
+    """Si `repoblar_cables` no encuentra cables pendientes (ej. click repetido tras ya haber
+    repoblado todo), devuelve `ResultadoRepoblarCables(corrida_id=None, ...)` sin haber commiteado
+    nada (`core/services/cromo/repoblacion_service.py` línea 239-242, retorno temprano antes de
+    crear la corrida) — el endpoint NO debe encolar un recálculo en ese caso, nada mutó."""
+    from web.app import main as web_main
+    from core.services.cromo.repoblacion_service import ResultadoRepoblarCables
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({}))
+
+    resultado_sin_op = ResultadoRepoblarCables(
+        corrida_id=None,
+        botella_n_id=BOTELLA_N_ID,
+        creados=0,
+        actualizados=0,
+        sin_cambios=0,
+        errores=0,
+        detalle=[],
+    )
+
+    async def _fake_repoblar_cables(cliente, sesion, *, botella_n_id, usuario):
+        return resultado_sin_op
+
+    monkeypatch.setattr(
+        "core.services.cromo.repoblacion_service.repoblar_cables", _fake_repoblar_cables
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.post(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={"csrf_token": csrf}
+    )
+    assert res.status_code == 200
+    assert res.json()["corrida_id"] is None
+    assert llamadas == [], "no debe encolar recálculo si repoblar_cables no mutó nada"
+
+
+def test_repoblar_cables_con_corrida_real_encola_recalculo(monkeypatch):
+    """Simétrico al anterior, mockeando directamente el servicio: si `repoblar_cables` devuelve un
+    `corrida_id` real (int, no None), el endpoint debe encolar exactamente un recálculo con un
+    motivo no vacío."""
+    from web.app import main as web_main
+    from core.services.cromo.repoblacion_service import ItemRepoblado, ResultadoRepoblarCables
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({}))
+
+    resultado_con_corrida = ResultadoRepoblarCables(
+        corrida_id=1,
+        botella_n_id=BOTELLA_N_ID,
+        creados=1,
+        actualizados=0,
+        sin_cambios=0,
+        errores=0,
+        detalle=[ItemRepoblado(n_id=CABLE_N_ID, accion="CREADA")],
+    )
+
+    async def _fake_repoblar_cables(cliente, sesion, *, botella_n_id, usuario):
+        return resultado_con_corrida
+
+    monkeypatch.setattr(
+        "core.services.cromo.repoblacion_service.repoblar_cables", _fake_repoblar_cables
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.post(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={"csrf_token": csrf}
+    )
+    assert res.status_code == 200
+    assert res.json()["corrida_id"] == 1
+    assert len(llamadas) == 1
+    assert llamadas[0]
+    assert "repoblar-cables" in llamadas[0]
 
 
 # ── PATCH /api/infra/botellas/{n_id}/nombre ──────────────────────────────────
