@@ -434,6 +434,8 @@ async function onBuscar(): Promise<void> {
   repoblarError.value = '';
   nombreGuardadoOk.value = false;
   nombreError.value = '';
+  separarExito.value = '';
+  cerrarConfirmacionSeparar();
 
   try {
     if (tipo.value === 'cable') {
