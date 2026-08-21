@@ -99,35 +99,49 @@ async def test_procesar_job_kind_no_hasheable_no_lanza() -> None:
 
 @pytest.mark.asyncio
 async def test_loop_principal_redis_error_resilience(monkeypatch) -> None:
-    """Prueba que _loop_principal sobreviva a un error de blpop (Redis error) sin crashear.
+    """Prueba que _loop_principal se RECUPERE de un error de blpop y siga sondeando después.
 
-    Verifica que: 1) el loop atrapa excepciones de BLPOP, 2) el loop sigue vivo después del error."""
+    El fake sólo falla en la PRIMERA llamada a blpop; desde la segunda responde None (el timeout
+    normal de "sin jobs"). Esto es deliberado: un fake que falla en TODAS las llamadas no puede
+    distinguir "el loop se recupera y sigue sondeando" de "el loop se rindió para siempre tras el
+    primer error" — una implementación rota que deja de sondear después del primer error pasa
+    igual con ese fake (ver Fix Round 3 en docs del Task 4). Al recuperarse desde la segunda
+    llamada, sólo una implementación que efectivamente vuelve a hacer `continue` y reintentar el
+    BLPOP puede acumular llamadas *después* del ciclo de error+backoff.
+    """
 
-    error_count = {"redis_errors": 0}
+    class _FakeRedisRecupera:
+        def __init__(self) -> None:
+            self.calls = 0
 
-    class _FakeRedisThatErrors:
         async def blpop(self, key, timeout):
-            error_count["redis_errors"] += 1
-            raise RuntimeError("redis connection lost")
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("redis connection lost")
+            await asyncio.sleep(timeout)  # simula el bloqueo real de BLPOP hasta el timeout
+            return None
 
-    monkeypatch.setattr(worker_mod, "get_redis", lambda: _FakeRedisThatErrors())
-    # Fast backoff to prevent long sleeps
-    monkeypatch.setattr(worker_mod, "BLPOP_TIMEOUT_SECONDS", 0.001)
+    fake_redis = _FakeRedisRecupera()
+    monkeypatch.setattr(worker_mod, "get_redis", lambda: fake_redis)
+    # Se mockea sólo la CONSTANTE (no asyncio.sleep) para acelerar el backoff sin romper el
+    # scheduling real del propio test — mockear asyncio.sleep globalmente impide que el loop
+    # ceda el control al event loop y el task nunca llega a ejecutarse (ver Fix Round 2/3).
+    monkeypatch.setattr(worker_mod, "BLPOP_TIMEOUT_SECONDS", 0.01)
 
     loop_task = asyncio.create_task(worker_mod._loop_principal())
-    await asyncio.sleep(0.05)  # Let it iterate a few times
-
-    # Key test: loop must not be done (not crashed)
-    assert not loop_task.done(), "Loop should still be running after Redis errors"
-    # And we should have had some errors caught (at least 1 BLPOP error occurred)
-    assert error_count["redis_errors"] >= 1, "Loop should have attempted BLPOP at least once"
-
-    # Cleanup
-    loop_task.cancel()
     try:
-        await loop_task
-    except asyncio.CancelledError:
-        pass
+        await asyncio.sleep(0.3)  # ventana real y SIN mockear: tiempo de sobra para varios ciclos
+        assert not loop_task.done(), "El loop no debe terminar tras un error de Redis"
+        assert fake_redis.calls >= 3, (
+            "El loop debe seguir llamando a blpop bien después del ciclo error+backoff, no sólo "
+            f"una vez — se registraron {fake_redis.calls} llamadas"
+        )
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
 
 
 @pytest.mark.asyncio
