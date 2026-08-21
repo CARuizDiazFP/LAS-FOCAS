@@ -329,3 +329,23 @@ export async function editarNombreBotellaCromo(nId: number, nombre: string): Pro
     csrf: true,
   });
 }
+
+export interface SepararBotellaDePadreResponse {
+  ok: boolean;
+  botella_n_id: number;
+  camara_anterior_id: number | null;
+  camara_nueva_id: number;
+  camara_nueva_nombre: string;
+}
+
+export async function separarBotellaDeCamaraPadre(
+  nId: number,
+  nombre: string,
+  motivo: string,
+): Promise<SepararBotellaDePadreResponse> {
+  return requestJson<SepararBotellaDePadreResponse>(`/api/infra/botellas/${nId}/separar-padre`, {
+    method: 'POST',
+    json: { nombre, motivo },
+    csrf: true,
+  });
+}
