@@ -119,6 +119,12 @@ class CromoBotella(Base):
     `camara_id`/`estado` (desde 2026-08-11) los pone `core/services/cromo/camara_padre_service.py`
     vía `scripts/cromo_backfill_camara_padre.py` — deliberadamente excluidos de `_BOTELLA_CAMPOS`
     (`core/services/cromo/ingesta.py`) para que ninguna re-ingesta futura los pise (ver ese módulo).
+
+    `nombre_editado_manual` (desde 2026-08-21) lo pone `PATCH /api/infra/botellas/{n_id}/nombre`
+    (Verificador Cromo) — cuando está en `True`, `_procesar_botella_completa` deja de pisar
+    `nombre` en corridas futuras (mismo criterio de protección que `camara_id`/`estado`, pero
+    condicional en vez de estructural, porque `nombre` sí debe seguir viniendo de Cromo para el
+    resto de las botellas nunca editadas a mano).
     """
 
     __tablename__ = "cromo_botellas"
@@ -129,6 +135,7 @@ class CromoBotella(Base):
     vmax = Column(Integer, nullable=False)  # detector de cambios
     clase = Column(SmallInteger, ForeignKey("app.cromo_clases.clase"), nullable=False)
     nombre = Column(Text, nullable=True)
+    nombre_editado_manual = Column(Boolean, nullable=False, default=False, server_default=false())
     codigo_modelo = Column(Text, nullable=True)
     id_legacy = Column(Text, nullable=True)  # at.91, candidato a ID de FOntime
     notas = Column(Text, nullable=True)

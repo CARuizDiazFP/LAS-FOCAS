@@ -52,7 +52,10 @@ _BOTELLA_CAMPOS = (
     "version_id",
     "vmax",
     "clase",
-    "nombre",
+    # "nombre" removido deliberadamente (ver CromoBotella.nombre_editado_manual, db/models/cromo.py):
+    # una corrección manual vía PATCH /api/infra/botellas/{n_id}/nombre no debe perderse en la
+    # próxima corrida. El caso especial vive en _procesar_botella_completa, justo después del
+    # upsert de botella — mismo criterio ya usado acá para excluir camara_id/estado.
     "codigo_modelo",
     "id_legacy",
     "notas",
@@ -67,7 +70,7 @@ _BOTELLA_CAMPOS = (
     "pts_raw",
     "payload_raw",
 )
-_CABLE_CAMPOS = (
+CABLE_CAMPOS = (
     "version_id",
     "vmax",
     "nombre",
@@ -91,8 +94,8 @@ _CABLE_CAMPOS = (
     "pts_raw",
     "payload_raw",
 )
-_TUBO_CAMPOS = ("cable_n_id", "orden", "nombre_color")
-_PELO_CAMPOS = (
+TUBO_CAMPOS = ("cable_n_id", "orden", "nombre_color")
+PELO_CAMPOS = (
     "tubo_n_id",
     "cable_n_id",
     "numero_pelo",
@@ -130,7 +133,7 @@ def _copiar_campos(destino: Any, origen: Any, campos: tuple[str, ...]) -> None:
         setattr(destino, campo, getattr(origen, campo))
 
 
-async def _upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> str:
+async def upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> str:
     """Clasifica y upsertea un objeto con `vmax` (botella o cable). CREADA | ACTUALIZADA | SIN_CAMBIOS | OMITIDA.
 
     En SIN_CAMBIOS no se toca ningún campo de datos, sólo `ultima_ingesta` — así una vista parcial
@@ -170,7 +173,7 @@ async def _upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj
     return "ACTUALIZADA"
 
 
-async def _upsert_simple(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> None:
+async def upsert_simple(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> None:
     """Upsert de tubo/pelo/fusión: sin `vmax` propio, se sobrescribe siempre. Sin clasificación ni evento
     individual — el diseño (docs/Doc Privada/ingesta_cromo.md §7.1) sólo clasifica botella y cable;
     tubo/pelo/fusión "viajan" con su padre.
@@ -187,7 +190,34 @@ async def _upsert_simple(sesion: AsyncSession, modelo_cls: type, dominio_obj: An
     existente.ultima_ingesta = ahora
 
 
-async def _registrar_evento(
+async def upsert_forzado(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> str:
+    """Variante de `upsert_versionado` que SIEMPRE copia `campos`, sin comparar `vmax`. CREADA si
+    no existe, ACTUALIZADA si existe.
+
+    Sólo la usa `core/services/cromo/repoblacion_service.py`, nunca una corrida regular. Hallazgo
+    real (Verificador Cromo, caso "ID dual" B2-FO-CAR, 2026-08-21): el `vmax` de un cable es una
+    propiedad de la entidad estable, no de qué extremo trae el snapshot — un cable ya ingerido con
+    `extremo_x_n_id` apuntando a un id de versión vieja de la botella (en vez de su `n_id` estable)
+    puede tener el mismo `vmax` que el vigente, así que `upsert_versionado` lo clasificaría
+    SIN_CAMBIOS y jamás corregiría el extremo tras el anclaje. `upsert_forzado` no tiene ese riesgo
+    porque siempre persiste lo que se le pasa.
+    """
+    ahora = datetime.now(timezone.utc)
+    existente = await sesion.get(modelo_cls, dominio_obj.n_id)
+    if existente is None:
+        nuevo = modelo_cls(n_id=dominio_obj.n_id)
+        _copiar_campos(nuevo, dominio_obj, campos)
+        nuevo.ultima_ingesta = ahora
+        sesion.add(nuevo)
+        return "CREADA"
+    _copiar_campos(existente, dominio_obj, campos)
+    existente.ultima_ingesta = ahora
+    if hasattr(existente, "ultima_modificacion"):
+        existente.ultima_modificacion = ahora
+    return "ACTUALIZADA"
+
+
+async def registrar_evento(
     sesion: AsyncSession,
     corrida_id: int,
     n_id: Optional[int],
@@ -198,7 +228,7 @@ async def _registrar_evento(
     sesion.add(CromoIngestaEvento(corrida_id=corrida_id, n_id=n_id, clase=clase, accion=accion, detalle=detalle))
 
 
-def _sincronizar_contadores(corrida: CromoIngestaCorrida, contadores: ContadoresCorrida) -> None:
+def sincronizar_contadores(corrida: CromoIngestaCorrida, contadores: ContadoresCorrida) -> None:
     corrida.leidas = contadores.leidas
     corrida.creadas = contadores.creadas
     corrida.actualizadas = contadores.actualizadas
@@ -232,11 +262,11 @@ async def _registrar_pagina(
             "errores": contadores.errores,
         }
     )
-    await _registrar_evento(sesion, corrida_id, None, None, "PAGINA", detalle)
+    await registrar_evento(sesion, corrida_id, None, None, "PAGINA", detalle)
 
 
 async def _registrar_inicio_fase(sesion: AsyncSession, corrida_id: int, fase: str, descripcion: str) -> None:
-    await _registrar_evento(sesion, corrida_id, None, None, "FASE", json.dumps({"fase": fase, "descripcion": descripcion}))
+    await registrar_evento(sesion, corrida_id, None, None, "FASE", json.dumps({"fase": fase, "descripcion": descripcion}))
     await sesion.commit()
 
 
@@ -247,11 +277,19 @@ async def iniciar_corrida(
     psize: int,
     max_paginas: Optional[int],
     clases: Iterable[int],
+    params_extra: Optional[dict[str, Any]] = None,
 ) -> CromoIngestaCorrida:
+    """`params_extra` es aditivo: sin pasarlo, reproduce el `params` de siempre byte a byte. Lo usa
+    `core/services/cromo/repoblacion_service.py` para marcar una corrida sintética de un solo
+    click (`{"tipo": "MANUAL_REPOBLAR_CABLES", "botella_n_id": ...}`), visible en el mismo
+    histórico admin que una corrida regular."""
+    params: dict[str, Any] = {"psize": psize, "max_paginas": max_paginas, "clases": list(clases)}
+    if params_extra:
+        params.update(params_extra)
     corrida = CromoIngestaCorrida(
         usuario=usuario,
         estado="EN_CURSO",
-        params={"psize": psize, "max_paginas": max_paginas, "clases": list(clases)},
+        params=params,
     )
     sesion.add(corrida)
     await sesion.commit()
@@ -288,15 +326,15 @@ async def _procesar_cable_directo(
             cable = cromo_parser.parse_cable(obj)
             cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
             cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
-            accion = await _upsert_versionado(sesion, CromoCable, cable, _CABLE_CAMPOS)
+            accion = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
             contadores.leidas += 1
             contadores.contar(accion)
-            await _registrar_evento(sesion, corrida_id, cable.n_id, CLASE_CABLE, accion)
+            await registrar_evento(sesion, corrida_id, cable.n_id, CLASE_CABLE, accion)
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
         contadores.errores += 1
         n_id = obj.get("n_id") or obj.get("id")
         logger.error("action=cromo_ingesta evento=error_cable n_id=%s error=%s", n_id, exc)
-        await _registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
 
 
 async def fase_cables(
@@ -317,7 +355,7 @@ async def fase_cables(
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
             await _procesar_cable_directo(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
-        _sincronizar_contadores(corrida, contadores)
+        sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "CABLES", numero_pagina, pagina, contadores)
         await sesion.commit()
         if await _fue_cancelada_externamente(sesion, corrida.id):
@@ -334,7 +372,7 @@ async def _procesar_fusion_directa(
 ) -> None:
     """Procesa una fusión del barrido directo (filter=132). Un savepoint propio: si falla, no aborta
     la página. Sin vmax propio: se sobreescribe siempre, sin evento individual de auditoría — mismo
-    criterio que tubo/pelo/fusión embebidos (`_upsert_simple`, ver docstring). `leidas` sí se
+    criterio que tubo/pelo/fusión embebidos (`upsert_simple`, ver docstring). `leidas` sí se
     incrementa porque, a diferencia de tubo/pelo, la clase 132 ahora tiene colección propia contada en
     `CLASES_CONTEO` — si no incrementara acá, la barra de progreso nunca llegaría al 100%."""
     alias_por_origen = alias_por_origen or {}
@@ -342,13 +380,13 @@ async def _procesar_fusion_directa(
         async with sesion.begin_nested():
             fusion = cromo_parser.parse_fusion(obj)
             fusion.botella_n_id = alias_service.resolver_referencia(fusion.botella_n_id, alias_por_origen)
-            await _upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
+            await upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
             contadores.leidas += 1
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
         contadores.errores += 1
         n_id = obj.get("n_id") or obj.get("id")
         logger.error("action=cromo_ingesta evento=error_fusion n_id=%s error=%s", n_id, exc)
-        await _registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
 
 
 async def fase_fusiones(
@@ -382,7 +420,7 @@ async def fase_fusiones(
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
             await _procesar_fusion_directa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
-        _sincronizar_contadores(corrida, contadores)
+        sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "FUSIONES", numero_pagina, pagina, contadores)
         await sesion.commit()
         if await _fue_cancelada_externamente(sesion, corrida.id):
@@ -412,7 +450,7 @@ async def _procesar_botella_completa(
                 # `alias_service.resolver_referencia`.
                 contadores.leidas += 1
                 if alias_botella.accion == alias_service.ACCION_FUSIONAR:
-                    await _registrar_evento(
+                    await registrar_evento(
                         sesion,
                         corrida_id,
                         arbol.botella.n_id,
@@ -421,44 +459,52 @@ async def _procesar_botella_completa(
                         f"id_cromo_destino={alias_botella.id_cromo_destino}",
                     )
                 else:
-                    await _registrar_evento(
+                    await registrar_evento(
                         sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, "ALIAS_IGNORADA"
                     )
             else:
-                accion_botella = await _upsert_versionado(sesion, CromoBotella, arbol.botella, _BOTELLA_CAMPOS)
+                accion_botella = await upsert_versionado(sesion, CromoBotella, arbol.botella, _BOTELLA_CAMPOS)
                 contadores.leidas += 1
                 contadores.contar(accion_botella)
-                await _registrar_evento(
+                if accion_botella in ("CREADA", "ACTUALIZADA"):
+                    # "nombre" no está en _BOTELLA_CAMPOS (ver comentario ahí): una corrección
+                    # manual vía PATCH /api/infra/botellas/{n_id}/nombre marca
+                    # nombre_editado_manual=True para que la próxima corrida no la pise. Ya está
+                    # en el identity map (lo acaba de tocar upsert_versionado), sin round-trip extra.
+                    fila_botella = await sesion.get(CromoBotella, arbol.botella.n_id)
+                    if accion_botella == "CREADA" or not fila_botella.nombre_editado_manual:
+                        fila_botella.nombre = arbol.botella.nombre
+                await registrar_evento(
                     sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, accion_botella
                 )
 
             for fusion in arbol.fusiones:
                 fusion.botella_n_id = alias_service.resolver_referencia(fusion.botella_n_id, alias_por_origen)
-                await _upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
+                await upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
 
             for cable in arbol.cables:
                 # Duplicación deliberada (§6.1): el mismo cable llega una vez por cada botella extremo.
                 # El segundo arribo es un upsert sin cambios — control de consistencia gratuito.
                 cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
                 cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
-                accion_cable = await _upsert_versionado(sesion, CromoCable, cable, _CABLE_CAMPOS)
+                accion_cable = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
                 contadores.leidas += 1
                 contadores.contar(accion_cable)
-                await _registrar_evento(sesion, corrida_id, cable.n_id, CLASE_CABLE, accion_cable)
+                await registrar_evento(sesion, corrida_id, cable.n_id, CLASE_CABLE, accion_cable)
 
             for tubo in arbol.tubos:
-                await _upsert_simple(sesion, CromoTubo, tubo, _TUBO_CAMPOS)
+                await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
             for pelo in arbol.pelos:
-                await _upsert_simple(sesion, CromoPelo, pelo, _PELO_CAMPOS)
+                await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
 
             for error in arbol.errores:
                 contadores.errores += 1
-                await _registrar_evento(sesion, corrida_id, error.n_id, error.clase, "ERROR", error.motivo)
+                await registrar_evento(sesion, corrida_id, error.n_id, error.clase, "ERROR", error.motivo)
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
         contadores.errores += 1
         n_id = obj.get("n_id") or obj.get("id")
         logger.error("action=cromo_ingesta evento=error_botella n_id=%s error=%s", n_id, exc)
-        await _registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
 
 
 async def fase_botellas(
@@ -483,7 +529,7 @@ async def fase_botellas(
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
             await _procesar_botella_completa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
-        _sincronizar_contadores(corrida, contadores)
+        sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "BOTELLAS", numero_pagina, pagina, contadores)
         await sesion.commit()
         if await _fue_cancelada_externamente(sesion, corrida.id):
@@ -551,7 +597,7 @@ async def fase_reconciliacion(sesion: AsyncSession, corrida: CromoIngestaCorrida
         if not filas:
             continue
         contadores.refs_colgadas += len(filas)
-        await _registrar_evento(
+        await registrar_evento(
             sesion,
             corrida.id,
             None,
@@ -559,7 +605,7 @@ async def fase_reconciliacion(sesion: AsyncSession, corrida: CromoIngestaCorrida
             "REF_COLGADA",
             f"{descripcion}: {len(filas)} fila(s), ejemplos n_id={filas[:10]}",
         )
-    _sincronizar_contadores(corrida, contadores)
+    sincronizar_contadores(corrida, contadores)
     await sesion.commit()
 
 
@@ -680,7 +726,7 @@ async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, con
                 servicio_id, fue_creado = await _resolver_o_crear_servicio(sesion, servicio_numero, cache_servicio_id)
                 if fue_creado:
                     placeholders_creados += 1
-                    await _registrar_evento(
+                    await registrar_evento(
                         sesion,
                         corrida.id,
                         pelo_n_id,
@@ -705,14 +751,14 @@ async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, con
                 servicio_numero,
                 exc,
             )
-            await _registrar_evento(sesion, corrida.id, pelo_n_id, 130, "ERROR", str(exc))
+            await registrar_evento(sesion, corrida.id, pelo_n_id, 130, "ERROR", str(exc))
     if placeholders_creados:
         logger.info(
             "action=cromo_ingesta evento=placeholders_creados corrida_id=%s cantidad=%d",
             corrida.id,
             placeholders_creados,
         )
-    _sincronizar_contadores(corrida, contadores)
+    sincronizar_contadores(corrida, contadores)
     await sesion.commit()
 
 
@@ -769,7 +815,7 @@ async def continuar_corrida(
     try:
         totales = await fase_conteo(cliente)
         corrida.total_objetivo = sum(totales.get(c, 0) for c in (*clases_final, CLASE_CABLE, CLASE_FUSION))
-        await _registrar_evento(
+        await registrar_evento(
             sesion,
             corrida.id,
             None,
@@ -821,8 +867,8 @@ async def continuar_corrida(
 
     corrida.estado = estado_final
     corrida.finalizada_at = datetime.now(timezone.utc)
-    _sincronizar_contadores(corrida, contadores)
-    await _registrar_evento(
+    sincronizar_contadores(corrida, contadores)
+    await registrar_evento(
         sesion,
         corrida.id,
         None,
@@ -856,9 +902,13 @@ async def continuar_corrida(
 
 
 __all__ = [
+    "CABLE_CAMPOS",
+    "CLASE_CABLE",
     "CLASES_BOTELLA",
     "CLASES_CONTEO",
     "ContadoresCorrida",
+    "PELO_CAMPOS",
+    "TUBO_CAMPOS",
     "continuar_corrida",
     "ejecutar_ingesta",
     "fase_botellas",
@@ -867,4 +917,9 @@ __all__ = [
     "fase_reconciliacion",
     "fase_servicios",
     "iniciar_corrida",
+    "registrar_evento",
+    "sincronizar_contadores",
+    "upsert_forzado",
+    "upsert_simple",
+    "upsert_versionado",
 ]

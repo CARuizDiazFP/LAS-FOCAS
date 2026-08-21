@@ -106,6 +106,23 @@
         </div>
       </dl>
 
+      <div v-if="tipo === 'botella' && isAdmin" class="verificador-cromo__nombre-editar">
+        <label for="verificador-cromo-nombre">Corregir nombre (local, no escribe hacia Cromo)</label>
+        <div class="verificador-cromo__nombre-editar-row">
+          <input id="verificador-cromo-nombre" v-model="nombreEditado" type="text" maxlength="500" />
+          <button
+            class="btn subtle"
+            type="button"
+            :disabled="guardandoNombre || !nombreEditado.trim()"
+            @click="onGuardarNombre"
+          >
+            {{ guardandoNombre ? 'Guardando…' : 'Guardar nombre' }}
+          </button>
+        </div>
+        <p v-if="nombreGuardadoOk" class="msg ok visible">Nombre actualizado.</p>
+        <p v-if="nombreError" class="msg err visible">{{ nombreError }}</p>
+      </div>
+
       <p v-if="resultado.servicios.length === 0" class="hint">
         No se encontró ningún servicio matcheado que pase por acá — puede que todavía no haya sido
         ingerido, que no tenga servicio asociado (`at.61`), o que el match no se haya resuelto.
@@ -180,6 +197,83 @@
            src/api/cromo.ts). -->
     </article>
 
+    <article v-if="tipo === 'botella' && resultado" class="card verificador-cromo__card">
+      <header class="verificador-cromo__resultado-header">
+        <h2>Cables detectados en Cromo</h2>
+        <div class="verificador-cromo__resultado-header-right">
+          <button
+            class="btn subtle"
+            type="button"
+            :disabled="cablesDetectadosCargando"
+            @click="onConsultarCablesCromo"
+          >
+            <i class="ph ph-cloud-arrow-down" aria-hidden="true"></i>
+            {{ cablesDetectadosCargando ? 'Consultando…' : 'Consultar Cromo' }}
+          </button>
+          <button
+            v-if="isAdmin && cablesPendientes.length > 0"
+            class="btn primary"
+            type="button"
+            :disabled="repoblando"
+            @click="onRepoblarCables"
+          >
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            {{ repoblando ? 'Repoblando…' : `Repoblar Cables (${cablesPendientes.length})` }}
+          </button>
+          <span v-if="cablesDetectados" class="verificador-cromo__chip">
+            {{ cablesDetectados.length }} detectado(s)
+          </span>
+        </div>
+      </header>
+
+      <p v-if="cablesDetectadosError" class="msg err visible">{{ cablesDetectadosError }}</p>
+      <p v-if="repoblarError" class="msg err visible">{{ repoblarError }}</p>
+      <p v-if="repoblarResultado" class="msg ok visible">
+        Repoblado: {{ repoblarResultado.creados }} creado(s), {{ repoblarResultado.actualizados }} actualizado(s),
+        {{ repoblarResultado.sin_cambios }} sin cambios{{
+          repoblarResultado.errores ? `, ${repoblarResultado.errores} con error` : ''
+        }}.
+      </p>
+
+      <p v-if="cablesDetectados === null" class="hint">
+        Consulta en vivo contra Cromo (no se dispara automáticamente en cada búsqueda) — sirve para
+        detectar cables que la ingesta omitió por un caso de "ID dual" (<code>hist</code>/<code>next_id</code>).
+      </p>
+      <p v-else-if="cablesDetectados.length === 0" class="hint">
+        Cromo no reporta ningún cable conectado a esta botella.
+      </p>
+
+      <table v-else class="tabla-cables">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Nombre</th>
+            <th>Extremo A</th>
+            <th>Extremo B</th>
+            <th>Estado local</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="c in cablesDetectados" :key="c.n_id">
+            <td>{{ c.n_id }}</td>
+            <td>{{ c.nombre || '—' }}</td>
+            <td>{{ c.extremo_a_n_id ?? '—' }}</td>
+            <td>{{ c.extremo_b_n_id ?? '—' }}</td>
+            <td>
+              <span
+                :class="[
+                  'verificador-cromo__estado-chip',
+                  `verificador-cromo__estado-chip--${c.estado_local.toLowerCase()}`,
+                ]"
+              >
+                {{ c.estado_local }}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
+
     <ModalVerificadorCromo
       :open="mostrarModalCromo"
       :n-id="resultado?.nId ?? null"
@@ -192,13 +286,22 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { eliminarBotella, getCromoBotellaEstadoAsociacion, type BloqueoEliminacion } from '../api/botellas';
+import {
+  editarNombreBotellaCromo,
+  eliminarBotella,
+  getCromoBotellaEstadoAsociacion,
+  repoblarCablesCromo,
+  type BloqueoEliminacion,
+  type RepoblarCablesResponse,
+} from '../api/botellas';
 import { ApiError } from '../api/client';
 import {
+  detectarCablesCromo,
   verificarServiciosPorBotella,
   verificarServiciosPorCable,
   verificarServiciosPorTubo,
   type CromoCableDeBotella,
+  type CromoCableDetectado,
   type CromoServicioEncontrado,
 } from '../api/cromo';
 import ModalVerificadorCromo from '../components/infra/ModalVerificadorCromo.vue';
@@ -242,9 +345,26 @@ const eliminarErrorMsg = ref('');
 const eliminarBloqueos = ref<BloqueoEliminacion[]>([]);
 const eliminarExito = ref('');
 
+// "Cables detectados en Cromo" (ID dual: hist[]/next_id) — consulta EN VIVO, deliberadamente
+// manual (no se dispara en cada búsqueda, mismo criterio que "Ver info en Cromo").
+const cablesDetectados = ref<CromoCableDetectado[] | null>(null);
+const cablesDetectadosCargando = ref(false);
+const cablesDetectadosError = ref('');
+const repoblando = ref(false);
+const repoblarResultado = ref<RepoblarCablesResponse | null>(null);
+const repoblarError = ref('');
+
+// Nombre editable (sólo admin) — se inicializa al buscar una botella, se refleja en `resultado`
+// in-place al guardar (sin re-disparar la búsqueda).
+const nombreEditado = ref('');
+const guardandoNombre = ref(false);
+const nombreGuardadoOk = ref(false);
+const nombreError = ref('');
+
 const tipoActual = computed(() => TIPOS.find((t) => t.valor === tipo.value) ?? TIPOS[0]);
 const nIdValido = computed(() => /^\d+$/.test(nIdTexto.value.trim()));
 const cablesBotella = computed(() => resultado.value?.cables ?? []);
+const cablesPendientes = computed(() => (cablesDetectados.value ?? []).filter((c) => c.estado_local !== 'OK'));
 
 async function onBuscar(): Promise<void> {
   if (!nIdValido.value) return;
@@ -256,6 +376,12 @@ async function onBuscar(): Promise<void> {
   camaraPadre.value = null;
   eliminarExito.value = '';
   cerrarConfirmacionEliminar();
+  cablesDetectados.value = null;
+  cablesDetectadosError.value = '';
+  repoblarResultado.value = null;
+  repoblarError.value = '';
+  nombreGuardadoOk.value = false;
+  nombreError.value = '';
 
   try {
     if (tipo.value === 'cable') {
@@ -293,6 +419,7 @@ async function onBuscar(): Promise<void> {
         servicios: r.servicios,
         cables: r.cables,
       };
+      nombreEditado.value = r.nombre ?? '';
       // Best-effort: si falla, la Botella se sigue mostrando igual, sólo sin el link de navegación
       // cruzada — no es motivo para tratar la búsqueda completa como un error.
       try {
@@ -340,6 +467,59 @@ async function handleEliminar(): Promise<void> {
     eliminarErrorMsg.value = e instanceof Error ? e.message : 'No se pudo eliminar.';
   } finally {
     eliminando.value = false;
+  }
+}
+
+async function onConsultarCablesCromo(): Promise<void> {
+  if (!resultado.value) return;
+  cablesDetectadosCargando.value = true;
+  cablesDetectadosError.value = '';
+  try {
+    const r = await detectarCablesCromo(resultado.value.nId);
+    cablesDetectados.value = r.cables;
+  } catch (e) {
+    cablesDetectadosError.value = e instanceof Error ? e.message : 'No se pudo consultar Cromo.';
+  } finally {
+    cablesDetectadosCargando.value = false;
+  }
+}
+
+async function onRepoblarCables(): Promise<void> {
+  if (!resultado.value) return;
+  repoblando.value = true;
+  repoblarError.value = '';
+  repoblarResultado.value = null;
+  try {
+    const r = await repoblarCablesCromo(resultado.value.nId);
+    repoblarResultado.value = r;
+    await onConsultarCablesCromo(); // refresca la detección para reflejar el estado post-repoblado
+  } catch (e) {
+    repoblarError.value = e instanceof Error ? e.message : 'No se pudo repoblar cables.';
+  } finally {
+    repoblando.value = false;
+  }
+}
+
+async function onGuardarNombre(): Promise<void> {
+  if (!resultado.value) return;
+  const nombreLimpio = nombreEditado.value.trim();
+  if (!nombreLimpio) return;
+  guardandoNombre.value = true;
+  nombreError.value = '';
+  nombreGuardadoOk.value = false;
+  try {
+    const r = await editarNombreBotellaCromo(resultado.value.nId, nombreLimpio);
+    // Se refleja inmediato en la UI, sin re-disparar la búsqueda.
+    resultado.value = {
+      ...resultado.value,
+      meta: resultado.value.meta.map((m) => (m.etiqueta === 'Nombre' ? { ...m, valor: r.nombre } : m)),
+    };
+    nombreEditado.value = r.nombre;
+    nombreGuardadoOk.value = true;
+  } catch (e) {
+    nombreError.value = e instanceof Error ? e.message : 'No se pudo guardar el nombre.';
+  } finally {
+    guardandoNombre.value = false;
   }
 }
 
@@ -577,5 +757,50 @@ function irACable(cable: { n_id: number }): void {
 .tabla-cables__fila:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
+}
+
+.verificador-cromo__nombre-editar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.verificador-cromo__nombre-editar label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.verificador-cromo__nombre-editar-row {
+  display: flex;
+  gap: 10px;
+}
+
+.verificador-cromo__nombre-editar-row input {
+  flex: 1;
+  max-width: 360px;
+}
+
+.verificador-cromo__estado-chip {
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: var(--radius-md);
+}
+
+.verificador-cromo__estado-chip--ok {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.verificador-cromo__estado-chip--desactualizado {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
+}
+
+.verificador-cromo__estado-chip--falta {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
 }
 </style>

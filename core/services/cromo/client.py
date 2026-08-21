@@ -204,6 +204,13 @@ class CromoClient:
         """`GET /db/objects/{id}/container`."""
         return await self._get(f"/db/objects/{n_id_o_id}/container")
 
+    async def get_objeto_con_topologia(self, n_id_o_id: int) -> dict[str, Any]:
+        """`GET /db/objects/{id}?show=TOPOLOGIES&show=REL_ATTRIBUTE` — params REPETIDOS (no
+        coma-separados como `get_coleccion`, que pega a `/db/select/model`, un endpoint distinto).
+        Resuelve la topología conectada vigente de un objeto e incluye `hist[]` para seguir
+        `next_id` en casos de "ID dual" (un objeto queda vacío y su topología pasa a otro id)."""
+        return await self._get(f"/db/objects/{n_id_o_id}", params={"show": ["TOPOLOGIES", "REL_ATTRIBUTE"]})
+
     async def get_coleccion(
         self,
         filtro: str,

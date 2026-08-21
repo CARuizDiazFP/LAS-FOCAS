@@ -68,6 +68,13 @@ class _SesionFake:
 
     def add(self, obj: Any) -> None:
         self.agregados.append(obj)
+        # Refleja el identity map real de SQLAlchemy: un objeto con PK manual (n_id) ya asignada
+        # es encontrable vía session.get() apenas se agrega, sin necesitar flush/commit
+        # (verificado empíricamente contra una Session real — ver docstring de
+        # _procesar_botella_completa en ingesta.py, protección de nombre_editado_manual).
+        n_id = getattr(obj, "n_id", None)
+        if n_id is not None:
+            self._existentes[(type(obj), n_id)] = obj
 
     def begin_nested(self) -> _NestedCM:
         return _NestedCM()
@@ -119,7 +126,7 @@ def _botella(n_id=1, version_id=1, vmax=1, **kwargs) -> _BotellaDominioFake:
 @pytest.mark.asyncio
 async def test_upsert_versionado_crea_si_no_existe():
     sesion = _SesionFake()
-    accion = await ingesta._upsert_versionado(sesion, CromoBotella, _botella(n_id=10, vmax=1), ingesta._BOTELLA_CAMPOS)
+    accion = await ingesta.upsert_versionado(sesion, CromoBotella, _botella(n_id=10, vmax=1), ingesta._BOTELLA_CAMPOS)
 
     assert accion == "CREADA"
     assert len(sesion.agregados) == 1
@@ -133,7 +140,7 @@ async def test_upsert_versionado_sin_cambios_no_toca_campos():
     sesion = _SesionFake({(CromoBotella, 10): existente})
 
     # Llega una vista parcial (nombre=None) con el mismo vmax: no debe pisar el nombre ya cargado.
-    accion = await ingesta._upsert_versionado(
+    accion = await ingesta.upsert_versionado(
         sesion, CromoBotella, _botella(n_id=10, version_id=1, vmax=5, nombre=None), ingesta._BOTELLA_CAMPOS
     )
 
@@ -144,15 +151,19 @@ async def test_upsert_versionado_sin_cambios_no_toca_campos():
 
 @pytest.mark.asyncio
 async def test_upsert_versionado_actualizada_pisa_campos_y_marca_modificacion():
+    # "nombre" ya no está en _BOTELLA_CAMPOS (ver comentario ahí) — lo protege
+    # _procesar_botella_completa, no este helper genérico. Este test verifica el resto de los
+    # campos de _BOTELLA_CAMPOS (ej. version_id), no nombre.
     existente = CromoBotella(n_id=10, version_id=1, vmax=5, nombre="Viejo")
     sesion = _SesionFake({(CromoBotella, 10): existente})
 
-    accion = await ingesta._upsert_versionado(
+    accion = await ingesta.upsert_versionado(
         sesion, CromoBotella, _botella(n_id=10, version_id=2, vmax=6, nombre="Nuevo"), ingesta._BOTELLA_CAMPOS
     )
 
     assert accion == "ACTUALIZADA"
-    assert existente.nombre == "Nuevo"
+    assert existente.nombre == "Viejo"  # no tocado por upsert_versionado: no está en _BOTELLA_CAMPOS
+    assert existente.version_id == 2
     assert existente.vmax == 6
     assert existente.ultima_modificacion is not None
 
@@ -187,8 +198,8 @@ async def test_upsert_versionado_funciona_igual_para_cable():
         pts_raw: Optional[list] = None
         payload_raw: Optional[dict] = None
 
-    accion = await ingesta._upsert_versionado(
-        sesion, CromoCable, _CableFake(n_id=50, version_id=1, vmax=1, payload_raw={}), ingesta._CABLE_CAMPOS
+    accion = await ingesta.upsert_versionado(
+        sesion, CromoCable, _CableFake(n_id=50, version_id=1, vmax=1, payload_raw={}), ingesta.CABLE_CAMPOS
     )
 
     assert accion == "CREADA"
@@ -467,6 +478,52 @@ async def test_procesar_botella_completa_con_fixture_real():
     assert CromoTubo in tipos_agregados
     assert CromoPelo in tipos_agregados
     assert CromoFusion in tipos_agregados
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_crea_copia_nombre_con_flag_false_por_defecto():
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    botella_creada = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert botella_creada.nombre == "Cra San Martin 201 Bot 2 CF"
+    # nombre_editado_manual queda None hasta el flush real (el default de la columna se aplica en
+    # el INSERT, no al instanciar en Python) — lo que importa es que no bloquea la copia de nombre.
+    assert not botella_creada.nombre_editado_manual
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_respeta_nombre_editado_manual():
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    existente = CromoBotella(
+        n_id=10178728, version_id=1, vmax=1, nombre="Nombre corregido a mano", nombre_editado_manual=True
+    )
+    sesion = _SesionFake({(CromoBotella, 10178728): existente})
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    assert existente.nombre == "Nombre corregido a mano"  # protegido: no lo pisa Cromo
+    assert existente.vmax == 3  # el resto de los campos SÍ se actualiza normalmente
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_actualiza_nombre_si_flag_false():
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    existente = CromoBotella(
+        n_id=10178728, version_id=1, vmax=1, nombre="Nombre viejo de Cromo", nombre_editado_manual=False
+    )
+    sesion = _SesionFake({(CromoBotella, 10178728): existente})
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    assert existente.nombre == "Cra San Martin 201 Bot 2 CF"  # regresión: sigue actualizándose
 
 
 @pytest.mark.asyncio

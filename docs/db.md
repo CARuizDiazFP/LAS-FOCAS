@@ -449,6 +449,7 @@ Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones
 | `primera_ingesta`, `ultima_ingesta`, `ultima_modificacion` | DateTime(tz) | — |
 | `camara_id` (FK) | Integer, nullable | → `camaras.id` (`ON DELETE SET NULL`). Desde 2026-08-11 (migración `20260811_01`); poblada por `scripts/cromo_backfill_camara_padre.py`, no por la ingesta — deliberadamente excluida de `_BOTELLA_CAMPOS`, sobrevive intacta a reingestas. |
 | `estado` | Enum `camara_estado` | `NOT NULL DEFAULT 'LIBRE'` (desde migración `20260813_01`, antes `'NO_OPERATIVA'`). `CHECK` sólo admite `LIBRE`/`OCUPADA`/`BANEADA`/`NO_OPERATIVA` (reusa el mismo tipo Postgres de `camaras.estado`, sin `DETECTADA`/`PENDIENTE_REVISION`, exclusivos del legado). |
+| `nombre_editado_manual` | Boolean | `NOT NULL DEFAULT false` (desde 2026-08-21, migración `20260821_01`). Puesta en `True` únicamente desde `PATCH /api/infra/botellas/{n_id}/nombre` (Verificador Cromo, admin). Cuando está en `True`, `core/services/cromo/ingesta.py::_procesar_botella_completa` deja de pisar `nombre` en corridas futuras — protección condicional, distinta de la exclusión estructural de `camara_id`/`estado` (`nombre` sigue viniendo de Cromo para el resto de las botellas). |
 
 Índices: parcial en `id_legacy` (`WHERE id_legacy IS NOT NULL`), compuesto `(latitud, longitud)`,
 `camara_id`, y GIN funcional `to_tsvector('spanish', nombre)` para búsqueda de texto.
@@ -614,6 +615,24 @@ bug: el destino de una fusión debe ser un n_id de botella real e ingerible.
 script puntual. Tampoco se retira retroactivamente una `CromoBotella` que ya existía de una corrida
 ANTERIOR a que se cargara el alias — "saltar el upsert" sólo detiene escrituras futuras.
 
+### Repoblación de cables con historial "ID dual" (2026-08-21)
+
+Caso real confirmado (Verificador Cromo, botella "B2-FO-CAR", `n_id=9057909`): Cromo versiona
+objetos internamente — un `id` de versión queda "vacío" (`tp[]=[]`) cuando la topología pasa a un
+`next_id` (`hist[]` de la respuesta de `GET /db/objects/{id}?show=TOPOLOGIES&show=REL_ATTRIBUTE`).
+El extremo de un cable conectado a esa botella reporta ese id de VERSIÓN (ej. `9057952`), no el
+`n_id` ESTABLE (`9057909`) que usa la fila local de `cromo_botellas` — nunca matchean, así que el
+cable puede quedar sin ingerir o vinculado a un id que no existe como Botella local.
+
+`core/services/cromo/repoblacion_service.py` (nuevo) resuelve la cadena `hist[]`/`next_id` en vivo
+contra Cromo, ancla cualquier extremo de cable que caiga en esa cadena al `n_id` local (nunca toca
+`cromo_botellas`/`cromo_fusiones`, sólo `cromo_cables`/`cromo_tubos`/`cromo_pelos`), y persiste vía
+`core/services/cromo/ingesta.py::upsert_versionado`/`upsert_simple` (promovidas a públicas) y una
+nueva `upsert_forzado` — necesaria porque el `vmax` de un cable no cambia sólo porque su extremo
+apuntaba a un id de versión vieja de la botella, así que `upsert_versionado` normal lo clasificaría
+`SIN_CAMBIOS` y nunca corregiría el extremo. Expuesto vía `GET /api/infra/cromo/botellas/{n_id}/cables-detectados`
+(sólo lectura) y `POST /api/infra/botellas/{n_id}/repoblar-cables` (admin) — ver `docs/infra.md`.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -653,6 +672,8 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260813_01` | `20260813_01_cromo_botella_default_libre.py` | `ALTER COLUMN cromo_botellas.estado SET DEFAULT 'LIBRE'` (antes `'NO_OPERATIVA'`) — reversión de la política fail-closed del `20260811_01`, metadata-only (ver `docs/decisiones.md`) |
 | `20260814_01` | `20260814_01_servicios_categoria_check.py` | Backfill `servicios.categoria` NULL→6, luego `SET DEFAULT 6` + `SET NOT NULL` + `CHECK ck_servicios_categoria_valida (categoria BETWEEN 0 AND 6)` — la columna ya existía sin restricciones, 100% NULL (ver `docs/decisiones.md`) |
 | `20260814_02` | `20260814_02_servicios_origen_datos.py` | Enum `app.servicio_origen_datos` (`MANUAL`/`TRACKING`/`INGEST_EXCEL`/`INFERIDO_CROMO`) + columna `servicios.origen_datos NOT NULL DEFAULT 'MANUAL'`, mismo patrón que `camara_origen_datos` |
+| `20260819_01` | `20260819_01_cromo_botella_alias.py` | Tabla `app.cromo_botella_alias` — escudo manual de aliasing para botellas duplicadas/basura (ver sección "Tabla `cromo_botella_alias`" arriba) |
+| `20260821_01` | `20260821_01_cromo_botella_nombre_editado_manual.py` | Columna `cromo_botellas.nombre_editado_manual BOOLEAN NOT NULL DEFAULT false` — protege un nombre corregido a mano (Verificador Cromo) de que una corrida futura lo pise (ver sección "Repoblación de cables con historial 'ID dual'" arriba) |
 
 ---
 

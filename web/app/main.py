@@ -6397,6 +6397,139 @@ async def cromo_validar_datos_web(request: Request, n_id: int) -> JSONResponse:
     return JSONResponse(_serializar_validacion_cromo(resultado))
 
 
+def _serializar_cable_detectado(cable: Any) -> dict[str, Any]:
+    return {
+        "n_id": cable.n_id,
+        "nombre": cable.nombre,
+        "extremo_a_n_id": cable.extremo_a_n_id,
+        "extremo_b_n_id": cable.extremo_b_n_id,
+        "estado_local": cable.estado_local,
+    }
+
+
+@app.get("/api/infra/cromo/botellas/{n_id}/cables-detectados")
+async def cromo_botella_cables_detectados_web(request: Request, n_id: int) -> JSONResponse:
+    """Verificador Cromo — "Cables detectados en Cromo": consulta la botella en vivo (siguiendo
+    `hist[]`/`next_id` si el `n_id` quedó vacío por un caso de "ID dual") y compara sus cables
+    contra `app.cromo_cables` local. Sólo lectura, nunca persiste — mismo criterio que el resto de
+    `/api/infra/cromo/*`, cualquier usuario autenticado. El botón de escritura correspondiente es
+    `POST /api/infra/botellas/{n_id}/repoblar-cables` (sólo admin)."""
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.repoblacion_service import detectar_cables_faltantes
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
+            resultado = await detectar_cables_faltantes(cliente, sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    return JSONResponse(
+        {
+            "botella_n_id": resultado.botella_n_id,
+            "ids_cadena": resultado.ids_cadena,
+            "cables": [_serializar_cable_detectado(c) for c in resultado.cables],
+        }
+    )
+
+
+class BotellaRepoblarCablesRequestModel(BaseModel):
+    """Payload para repoblar los cables detectados en Cromo hacia la base local de una Botella."""
+
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/{n_id}/repoblar-cables")
+async def botella_repoblar_cables_web(request: Request, n_id: int, body: BotellaRepoblarCablesRequestModel) -> JSONResponse:
+    """Verificador Cromo — "Repoblar Cables": toma los cables que `GET .../cables-detectados`
+    encontró faltantes o desactualizados y los persiste en `app.cromo_cables`/`cromo_tubos`/
+    `cromo_pelos` local, con el extremo correctamente anclado a esta Botella. Nunca escribe hacia
+    Cromo (`CromoClient` es de sólo lectura por diseño) ni toca `CromoBotella`/`CromoFusion`. Sólo
+    admin — ver `core/services/cromo/repoblacion_service.py::repoblar_cables`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botella_repoblar_cables result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.repoblacion_service import repoblar_cables
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
+            resultado = await repoblar_cables(cliente, sesion, botella_n_id=n_id, usuario=username)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botella_repoblar_cables_error user=%s n_id=%s error=%s", username, n_id, exc)
+        return JSONResponse({"error": "No se pudo repoblar cables"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "corrida_id": resultado.corrida_id,
+            "botella_n_id": resultado.botella_n_id,
+            "creados": resultado.creados,
+            "actualizados": resultado.actualizados,
+            "sin_cambios": resultado.sin_cambios,
+            "errores": resultado.errores,
+            "detalle": [{"n_id": i.n_id, "accion": i.accion, "detalle": i.detalle} for i in resultado.detalle],
+        }
+    )
+
+
+class BotellaActualizarNombreRequestModel(BaseModel):
+    """Payload para corregir a mano el nombre de una Botella Cromo."""
+
+    nombre: str = Field(min_length=1, max_length=500)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/infra/botellas/{n_id}/nombre")
+async def botella_actualizar_nombre_web(request: Request, n_id: int, body: BotellaActualizarNombreRequestModel) -> JSONResponse:
+    """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Escritura local pura
+    (sin `CromoClient`, nunca toca Cromo): marca `nombre_editado_manual=True` para que ninguna
+    corrida de ingesta futura la pise (ver `core/services/cromo/ingesta.py::_procesar_botella_completa`).
+    Sólo admin."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botella_actualizar_nombre result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    from db.models.cromo import CromoBotella
+    from db.session import AsyncSessionLocal
+
+    nombre_normalizado = body.nombre.strip()
+    if not nombre_normalizado:
+        return JSONResponse({"error": "El nombre no puede quedar vacío."}, status_code=400)
+
+    async with AsyncSessionLocal() as sesion:
+        botella = await sesion.get(CromoBotella, n_id)
+        if botella is None:
+            return JSONResponse({"error": f"No existe una Botella Cromo con n_id={n_id}."}, status_code=404)
+        botella.nombre = nombre_normalizado
+        botella.nombre_editado_manual = True
+        await sesion.commit()
+
+    logger.info("action=botella_actualizar_nombre user=%s n_id=%s nombre=%r", username, n_id, nombre_normalizado)
+    return JSONResponse({"ok": True, "n_id": n_id, "nombre": nombre_normalizado})
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,

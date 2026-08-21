@@ -286,3 +286,46 @@ export async function eliminarBotella(origen: BotellaOrigen, id: number): Promis
     csrf: true,
   });
 }
+
+// ── Repoblar Cables / editar nombre (Verificador Cromo, sólo admin) ──────────
+// Ver `detectarCablesCromo` (api/cromo.ts) para la detección de sólo lectura que alimenta el botón
+// "Repoblar Cables". Ninguna de las dos escribe hacia Cromo — sólo actualizan la base local.
+
+export interface RepoblarCablesItemResultado {
+  n_id: number;
+  accion: 'CREADA' | 'ACTUALIZADA' | 'SIN_CAMBIOS' | 'ERROR';
+  detalle: string | null;
+}
+
+export interface RepoblarCablesResponse {
+  ok: boolean;
+  corrida_id: number | null;
+  botella_n_id: number;
+  creados: number;
+  actualizados: number;
+  sin_cambios: number;
+  errores: number;
+  detalle: RepoblarCablesItemResultado[];
+}
+
+export async function repoblarCablesCromo(botellaNId: number): Promise<RepoblarCablesResponse> {
+  return requestJson<RepoblarCablesResponse>(`/api/infra/botellas/${botellaNId}/repoblar-cables`, {
+    method: 'POST',
+    json: {},
+    csrf: true,
+  });
+}
+
+export interface EditarNombreBotellaResponse {
+  ok: boolean;
+  n_id: number;
+  nombre: string;
+}
+
+export async function editarNombreBotellaCromo(nId: number, nombre: string): Promise<EditarNombreBotellaResponse> {
+  return requestJson<EditarNombreBotellaResponse>(`/api/infra/botellas/${nId}/nombre`, {
+    method: 'PATCH',
+    json: { nombre },
+    csrf: true,
+  });
+}

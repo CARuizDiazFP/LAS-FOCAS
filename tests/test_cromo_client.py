@@ -175,6 +175,25 @@ async def test_get_objeto_construye_ruta_correcta():
 
 
 @pytest.mark.asyncio
+async def test_get_objeto_con_topologia_manda_show_repetido_no_coma_separado():
+    capturado = {}
+
+    def handler_get(request: httpx.Request) -> httpx.Response:
+        capturado["url"] = str(request.url)
+        capturado["show_list"] = request.url.params.get_list("show")
+        return httpx.Response(200, json={"st": 0, "response": {"n_id": 9057909}})
+
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(handler_get)))
+    resultado = await cliente.get_objeto_con_topologia(9057909)
+
+    assert resultado == {"st": 0, "response": {"n_id": 9057909}}
+    assert capturado["url"] == f"{BASE_URL}/db/objects/9057909?show=TOPOLOGIES&show=REL_ATTRIBUTE"
+    # Contrato explícito: repetido, NO coma-separado como get_coleccion (que pega a otro endpoint)
+    # — blindaje contra un futuro copy-paste desde ahí.
+    assert capturado["show_list"] == ["TOPOLOGIES", "REL_ATTRIBUTE"]
+
+
+@pytest.mark.asyncio
 async def test_get_inner_y_get_container_construyen_ruta_correcta():
     rutas = []
 

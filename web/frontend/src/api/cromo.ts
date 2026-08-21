@@ -437,3 +437,30 @@ export interface CromoValidacionDatos {
 export async function validarElementoCromo(nId: number): Promise<CromoValidacionDatos> {
   return requestJson(`/api/infra/cromo/validar/${nId}`);
 }
+
+// ── Cables detectados en Cromo (ID dual: hist[]/next_id) ─────────────────────
+// Distinto de `verificarServiciosPorBotella().cables` (ese lee `app.cromo_cables` YA ingerido):
+// esto consulta la botella EN VIVO contra Cromo, siguiendo `hist[]`/`next_id` si el n_id quedó
+// vacío por un caso de "ID dual", para detectar cables que la ingesta omitió o vinculó a un id de
+// versión viejo en vez del n_id estable. Sólo lectura, nunca persiste — el botón de escritura
+// correspondiente es `repoblarCablesCromo` (api/botellas.ts, sólo admin).
+
+export interface CromoCableDetectado {
+  n_id: number;
+  nombre: string | null;
+  extremo_a_n_id: number | null;
+  extremo_b_n_id: number | null;
+  /** "OK" = ya vinculado correctamente local · "FALTA" = no existe local · "DESACTUALIZADO" =
+   * existe pero con un extremo desactualizado (apunta a un id de versión viejo de la botella). */
+  estado_local: 'OK' | 'FALTA' | 'DESACTUALIZADO';
+}
+
+export interface CromoCablesDetectadosResultado {
+  botella_n_id: number;
+  ids_cadena: number[];
+  cables: CromoCableDetectado[];
+}
+
+export async function detectarCablesCromo(botellaNId: number): Promise<CromoCablesDetectadosResultado> {
+  return requestJson(`/api/infra/cromo/botellas/${botellaNId}/cables-detectados`);
+}
