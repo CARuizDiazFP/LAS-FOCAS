@@ -6530,6 +6530,61 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
     return JSONResponse({"ok": True, "n_id": n_id, "nombre": nombre_normalizado})
 
 
+class BotellaSepararPadreRequestModel(BaseModel):
+    """Payload para separar una Botella Cromo de su Cámara padre actual hacia una Cámara nueva."""
+
+    nombre: str = Field(min_length=1, max_length=500)
+    motivo: str = Field(min_length=1, max_length=1000)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/{n_id}/separar-padre")
+async def botella_separar_padre_web(request: Request, n_id: int, body: BotellaSepararPadreRequestModel) -> JSONResponse:
+    """Verificador Cromo — separa una Botella agrupada erróneamente por nombre bajo una Cámara
+    padre compartida: crea una Cámara nueva e independiente y reasigna `camara_id`. Rechaza si el
+    nombre (siempre editable en el modal) colisiona, tras normalizar, con cualquier Cámara raíz
+    existente. Nunca toca la Cámara padre anterior. Sólo admin — ver
+    `core/services/cromo/separacion_service.py::separar_botella_de_padre`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botella_separar_padre result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    from core.services.cromo.separacion_service import (
+        BotellaNoEncontradaError,
+        SeparacionBotellaError,
+        separar_botella_de_padre,
+    )
+    from db.session import SessionLocal
+
+    with SessionLocal() as session:
+        try:
+            resultado = separar_botella_de_padre(
+                session, botella_n_id=n_id, nombre=body.nombre, motivo=body.motivo, usuario=username
+            )
+        except BotellaNoEncontradaError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except SeparacionBotellaError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        session.commit()
+
+    logger.info(
+        "action=botella_separar_padre user=%s botella_n_id=%s camara_anterior_id=%s camara_nueva_id=%s",
+        username, resultado.botella_n_id, resultado.camara_anterior_id, resultado.camara_nueva_id,
+    )
+    return JSONResponse({
+        "ok": True,
+        "botella_n_id": resultado.botella_n_id,
+        "camara_anterior_id": resultado.camara_anterior_id,
+        "camara_nueva_id": resultado.camara_nueva_id,
+        "camara_nueva_nombre": resultado.camara_nueva_nombre,
+    })
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,
