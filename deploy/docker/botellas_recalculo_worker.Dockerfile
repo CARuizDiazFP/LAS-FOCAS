@@ -1,3 +1,7 @@
+# Nombre de archivo: botellas_recalculo_worker.Dockerfile
+# Ubicación de archivo: deploy/docker/botellas_recalculo_worker.Dockerfile
+# Descripción: Dockerfile del worker dedicado de recálculo de Botellas duplicadas
+
 FROM focas-base:latest
 # curl, tzdata y dependencias Python comunes (fastapi, uvicorn, redis, ...) ya están en focas-base.
 

@@ -26,6 +26,7 @@ from core.cache.redis_client import get_redis
 from core.logging import setup_logging
 from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
 from core.services.botella_recompute_queue import (
+    JOB_KIND_BOTELLAS_DUPLICADOS,
     QUEUE_KEY,
     guardar_cache_duplicados,
 )
@@ -66,19 +67,28 @@ async def _recalcular_botellas_duplicados() -> None:
 
 
 DISPATCH: dict[str, Callable[[], Awaitable[None]]] = {
-    "botellas_duplicados": _recalcular_botellas_duplicados,
+    JOB_KIND_BOTELLAS_DUPLICADOS: _recalcular_botellas_duplicados,
 }
 
 
 async def _procesar_job(raw: str) -> None:
     try:
         payload = json.loads(raw)
-        kind = payload.get("kind")
     except json.JSONDecodeError:
         logger.warning("action=botellas_recalculo_worker evento=job_invalido raw=%s", raw)
         return
 
-    handler = DISPATCH.get(kind)
+    if not isinstance(payload, dict):
+        logger.warning("action=botellas_recalculo_worker evento=job_invalido reason=no_es_dict raw=%s", raw)
+        return
+
+    kind = payload.get("kind")
+    try:
+        handler = DISPATCH.get(kind)
+    except TypeError:
+        logger.warning("action=botellas_recalculo_worker evento=job_invalido reason=kind_no_hasheable raw=%s", raw)
+        return
+
     if handler is None:
         logger.warning("action=botellas_recalculo_worker evento=kind_desconocido kind=%s", kind)
         return
@@ -106,7 +116,10 @@ async def _loop_principal() -> None:
         if resultado is None:
             continue  # timeout del BLPOP sin jobs — vuelta normal del loop
         _, raw = resultado
-        await _procesar_job(raw)
+        try:
+            await _procesar_job(raw)
+        except Exception:  # noqa: BLE001 - el loop nunca debe morir por un job individual
+            logger.exception("action=botellas_recalculo_worker evento=loop_error_inesperado")
 
 
 @asynccontextmanager
@@ -128,7 +141,12 @@ app = FastAPI(title="botellas_recalculo_worker", lifespan=_lifespan)
 
 @app.get("/health")
 async def health() -> dict:
-    return {**_worker_status, "time": datetime.now(timezone.utc).isoformat()}
+    loop_vivo = _loop_task is not None and not _loop_task.done()
+    return {
+        **_worker_status,
+        "status": "ok" if loop_vivo else "loop_muerto",
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def main() -> None:
