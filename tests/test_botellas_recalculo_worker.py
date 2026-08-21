@@ -98,40 +98,36 @@ async def test_procesar_job_kind_no_hasheable_no_lanza() -> None:
 
 
 @pytest.mark.asyncio
-async def test_procesar_job_loop_redis_error_caught_and_logged(monkeypatch) -> None:
-    """Verifica que _loop_principal atrape errores de Redis (BLPOP) sin lanzar, y continúe el loop.
+async def test_loop_principal_redis_error_resilience(monkeypatch) -> None:
+    """Prueba que _loop_principal sobreviva a un error de blpop (Redis error) sin crashear.
 
-    Prueba la doble capa de error handling: BLPOP error en el loop, y la corrutina sigue viva."""
+    Verifica que: 1) el loop atrapa excepciones de BLPOP, 2) el loop sigue vivo después del error."""
 
-    error_raised_and_caught = {"caught": False}
+    error_count = {"redis_errors": 0}
 
-    class _FakRedisThatErrors:
+    class _FakeRedisThatErrors:
         async def blpop(self, key, timeout):
-            raise RuntimeError("Redis connection lost")
+            error_count["redis_errors"] += 1
+            raise RuntimeError("redis connection lost")
 
-    # Patcher para que asyncio.sleep sea instant
-    async def _fake_sleep(dur):
-        return
+    monkeypatch.setattr(worker_mod, "get_redis", lambda: _FakeRedisThatErrors())
+    # Fast backoff to prevent long sleeps
+    monkeypatch.setattr(worker_mod, "BLPOP_TIMEOUT_SECONDS", 0.001)
 
-    monkeypatch.setattr(worker_mod, "get_redis", lambda: _FakRedisThatErrors())
-    monkeypatch.setattr(worker_mod.asyncio, "sleep", _fake_sleep)
-
-    # Ejecutar el loop
     loop_task = asyncio.create_task(worker_mod._loop_principal())
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.05)  # Let it iterate a few times
 
-    # El loop debe estar vivo (no ha crasheado)
-    assert not loop_task.done(), "Loop should still be running (not crashed on Redis error)"
+    # Key test: loop must not be done (not crashed)
+    assert not loop_task.done(), "Loop should still be running after Redis errors"
+    # And we should have had some errors caught (at least 1 BLPOP error occurred)
+    assert error_count["redis_errors"] >= 1, "Loop should have attempted BLPOP at least once"
 
-    # Cancelar el task
+    # Cleanup
     loop_task.cancel()
     try:
         await loop_task
     except asyncio.CancelledError:
-        error_raised_and_caught["caught"] = True
-
-    # Si llegamos aquí, el loop sobrevivió al error de Redis
-    assert error_raised_and_caught["caught"], "Loop task should be cancellable (no unhandled exception)"
+        pass
 
 
 @pytest.mark.asyncio
