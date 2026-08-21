@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient  # type: ignore
 
@@ -58,6 +59,28 @@ def _connect_admin_ok(password: str = "adminpass"):
 def _login(client: TestClient, username: str, password: str) -> str:
     res = client.post("/api/auth/login", json={"username": username, "password": password})
     return res.json()["csrf"]
+
+
+class _FakeSyncSessionCtx:
+    """Contexto `with SessionLocal() as session:` fake — para tests que mockean el servicio de
+    dominio invocado dentro del bloque y no necesitan una sesión SQLAlchemy real (evita depender de
+    una DB real disponible en el entorno de test)."""
+
+    def __init__(self, session: MagicMock) -> None:
+        self._session = session
+
+    def __enter__(self) -> MagicMock:
+        return self._session
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+def _fake_session_local(session: MagicMock):
+    def _factory():
+        return _FakeSyncSessionCtx(session)
+
+    return _factory
 
 
 # ── GET /api/admin/infra/botellas/viewer/duplicados ──────────────────────────
@@ -157,6 +180,78 @@ def test_consolidar_rechaza_csrf_invalido(monkeypatch):
     assert res.status_code == 403
 
 
+def test_consolidar_exitoso_encola_recalculo_duplicados(monkeypatch):
+    """Camino feliz completo: `consolidar_grupo_botellas` (mockeado) devuelve un resultado válido,
+    la transacción se confirma y el endpoint encola exactamente un job de recálculo con un motivo
+    no vacío antes de responder 200. `SessionLocal` se mockea para no depender de una DB real — la
+    lógica de negocio de `consolidar_grupo_botellas` ya está cubierta a fondo en
+    test_cromo_consolidacion_service.py, acá se verifica el wiring del endpoint."""
+    from web.app import main as web_main
+    from core.services.cromo.consolidacion_service import ResultadoConsolidacion
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    resultado = ResultadoConsolidacion(id_destino_cromo=999)
+    monkeypatch.setattr(
+        "core.services.cromo.consolidacion_service.consolidar_grupo_botellas",
+        lambda session, **kwargs: resultado,
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/consolidar",
+        json={"id_destino_cromo": 999, "ids_origen_cromo": [100], "csrf_token": "cualquiera"},
+    )
+    assert res.status_code == 200
+    assert len(llamadas) == 1
+    assert llamadas[0], "el motivo no debe quedar vacío"
+    assert "consolidar" in llamadas[0]
+
+
+def test_consolidar_fallido_no_encola_recalculo_duplicados(monkeypatch):
+    """Si `consolidar_grupo_botellas` lanza su excepción de validación (400), la sesión hace
+    rollback y el endpoint NUNCA debe encolar un recálculo — no hubo mutación confirmada."""
+    from web.app import main as web_main
+    from core.services.cromo.consolidacion_service import ConsolidacionBotellaError
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    def _fake_consolidar(session, **kwargs):
+        raise ConsolidacionBotellaError("No existe una Botella Cromo con n_id=999.")
+
+    monkeypatch.setattr(
+        "core.services.cromo.consolidacion_service.consolidar_grupo_botellas", _fake_consolidar
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/consolidar",
+        json={"id_destino_cromo": 999, "ids_origen_cromo": [100], "csrf_token": "cualquiera"},
+    )
+    assert res.status_code == 400
+    assert llamadas == []
+
+
 # ── POST /api/admin/infra/botellas/operatividad ──────────────────────────────
 
 
@@ -199,6 +294,78 @@ def test_eliminar_botella_rechaza_csrf_invalido(monkeypatch):
         json={"origen": "cromo", "id": 100, "csrf_token": "invalido"},
     )
     assert res.status_code == 403
+
+
+def test_eliminar_botella_exitoso_encola_recalculo_duplicados(monkeypatch):
+    """Camino feliz: `eliminar_botella` (mockeado) devuelve un resultado válido, se confirma la
+    transacción y el endpoint encola exactamente un job de recálculo con motivo no vacío antes de
+    responder 200."""
+    from web.app import main as web_main
+    from core.services.camara_botella_delete_service import ResultadoEliminacionBotella
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    resultado = ResultadoEliminacionBotella(
+        origen="cromo", id=100, camara_padre_eliminada=None, alias_registrado=True
+    )
+    monkeypatch.setattr(
+        "core.services.camara_botella_delete_service.eliminar_botella",
+        lambda session, **kwargs: resultado,
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/eliminar",
+        json={"origen": "cromo", "id": 100, "csrf_token": "cualquiera"},
+    )
+    assert res.status_code == 200
+    assert len(llamadas) == 1
+    assert llamadas[0], "el motivo no debe quedar vacío"
+    assert "eliminar" in llamadas[0]
+
+
+def test_eliminar_botella_fallido_no_encola_recalculo_duplicados(monkeypatch):
+    """Si `eliminar_botella` lanza `EliminacionBloqueadaError` (400, hay datos reales asociados),
+    la sesión hace rollback y el endpoint NUNCA debe encolar un recálculo."""
+    from web.app import main as web_main
+    from core.services.camara_botella_delete_service import EliminacionBloqueadaError
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    def _fake_eliminar(session, **kwargs):
+        raise EliminacionBloqueadaError("Tiene Cables asociados", [])
+
+    monkeypatch.setattr(
+        "core.services.camara_botella_delete_service.eliminar_botella", _fake_eliminar
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/eliminar",
+        json={"origen": "cromo", "id": 100, "csrf_token": "cualquiera"},
+    )
+    assert res.status_code == 400
+    assert llamadas == []
 
 
 # ── POST /api/infra/camaras/eliminar ─────────────────────────────────────────

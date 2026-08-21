@@ -201,7 +201,11 @@ os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))
 os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
-from core.services.botella_recompute_queue import guardar_cache_duplicados, leer_cache_duplicados  # noqa: E402
+from core.services.botella_recompute_queue import (  # noqa: E402
+    encolar_recalculo_duplicados_botellas,
+    guardar_cache_duplicados,
+    leer_cache_duplicados,
+)
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
@@ -5451,6 +5455,9 @@ async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestMo
                 resultado.ingresos_migrados,
                 resultado.aliases_migrados,
             )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"apropiar legado_id={resultado.legado_id} cromo_n_id={resultado.cromo_n_id} usuario={username}"
+            )
             return JSONResponse({
                 "ok": True,
                 "legado_id": resultado.legado_id,
@@ -5550,6 +5557,8 @@ async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMa
             grupos_apropiados,
             grupos_con_error,
         )
+        if grupos_apropiados > 0:
+            await encolar_recalculo_duplicados_botellas(motivo=f"apropiar-masivo usuario={username}")
         return JSONResponse({
             "ok": True,
             "total_grupos": len(grupos),
@@ -5626,6 +5635,9 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
                 resultado.alias_creados,
                 resultado.alias_actualizados,
                 len(resultado.alias_repuntados),
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"consolidar destino={resultado.id_destino_cromo} usuario={username}"
             )
             return JSONResponse({
                 "ok": True,
@@ -5771,6 +5783,9 @@ async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestMo
                 resultado.id,
                 resultado.camara_padre_eliminada,
                 resultado.alias_registrado,
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"eliminar origen={resultado.origen} id={resultado.id} usuario={username}"
             )
             return JSONResponse({
                 "ok": True,
@@ -6489,6 +6504,7 @@ async def botella_repoblar_cables_web(request: Request, n_id: int, body: Botella
         logger.exception("action=botella_repoblar_cables_error user=%s n_id=%s error=%s", username, n_id, exc)
         return JSONResponse({"error": "No se pudo repoblar cables"}, status_code=500)
 
+    await encolar_recalculo_duplicados_botellas(motivo=f"repoblar-cables n_id={n_id} usuario={username}")
     return JSONResponse(
         {
             "ok": True,
@@ -6539,6 +6555,7 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
         await sesion.commit()
 
     logger.info("action=botella_actualizar_nombre user=%s n_id=%s nombre=%r", username, n_id, nombre_normalizado)
+    await encolar_recalculo_duplicados_botellas(motivo=f"actualizar-nombre n_id={n_id} usuario={username}")
     return JSONResponse({"ok": True, "n_id": n_id, "nombre": nombre_normalizado})
 
 
@@ -6588,6 +6605,7 @@ async def botella_separar_padre_web(request: Request, n_id: int, body: BotellaSe
         "action=botella_separar_padre user=%s botella_n_id=%s camara_anterior_id=%s camara_nueva_id=%s",
         username, resultado.botella_n_id, resultado.camara_anterior_id, resultado.camara_nueva_id,
     )
+    await encolar_recalculo_duplicados_botellas(motivo=f"separar-padre n_id={n_id} usuario={username}")
     return JSONResponse({
         "ok": True,
         "botella_n_id": resultado.botella_n_id,
