@@ -450,6 +450,7 @@ Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones
 | `camara_id` (FK) | Integer, nullable | → `camaras.id` (`ON DELETE SET NULL`). Desde 2026-08-11 (migración `20260811_01`); poblada por `scripts/cromo_backfill_camara_padre.py`, no por la ingesta — deliberadamente excluida de `_BOTELLA_CAMPOS`, sobrevive intacta a reingestas. |
 | `estado` | Enum `camara_estado` | `NOT NULL DEFAULT 'LIBRE'` (desde migración `20260813_01`, antes `'NO_OPERATIVA'`). `CHECK` sólo admite `LIBRE`/`OCUPADA`/`BANEADA`/`NO_OPERATIVA` (reusa el mismo tipo Postgres de `camaras.estado`, sin `DETECTADA`/`PENDIENTE_REVISION`, exclusivos del legado). |
 | `nombre_editado_manual` | Boolean | `NOT NULL DEFAULT false` (desde 2026-08-21, migración `20260821_01`). Puesta en `True` únicamente desde `PATCH /api/infra/botellas/{n_id}/nombre` (Verificador Cromo, admin). Cuando está en `True`, `core/services/cromo/ingesta.py::_procesar_botella_completa` deja de pisar `nombre` en corridas futuras — protección condicional, distinta de la exclusión estructural de `camara_id`/`estado` (`nombre` sigue viniendo de Cromo para el resto de las botellas). |
+| `separada_manualmente`, `separada_motivo`, `separada_por`, `separada_at` | Boolean, Text, String(128), DateTime(tz) | Desde 2026-08-22 (migración `20260822_01`). Puestas por `POST /api/infra/botellas/{n_id}/separar-padre` (admin) al separar una Botella agrupada erróneamente por nombre — ver `core/services/cromo/separacion_service.py`. `scripts/cromo_backfill_camara_padre.py` las excluye de su filtro de idempotencia como blindaje adicional (redundante con `camara_id IS NULL` hoy, pensado para un futuro `--force`). |
 
 Índices: parcial en `id_legacy` (`WHERE id_legacy IS NOT NULL`), compuesto `(latitud, longitud)`,
 `camara_id`, y GIN funcional `to_tsvector('spanish', nombre)` para búsqueda de texto.
@@ -674,6 +675,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260814_02` | `20260814_02_servicios_origen_datos.py` | Enum `app.servicio_origen_datos` (`MANUAL`/`TRACKING`/`INGEST_EXCEL`/`INFERIDO_CROMO`) + columna `servicios.origen_datos NOT NULL DEFAULT 'MANUAL'`, mismo patrón que `camara_origen_datos` |
 | `20260819_01` | `20260819_01_cromo_botella_alias.py` | Tabla `app.cromo_botella_alias` — escudo manual de aliasing para botellas duplicadas/basura (ver sección "Tabla `cromo_botella_alias`" arriba) |
 | `20260821_01` | `20260821_01_cromo_botella_nombre_editado_manual.py` | Columna `cromo_botellas.nombre_editado_manual BOOLEAN NOT NULL DEFAULT false` — protege un nombre corregido a mano (Verificador Cromo) de que una corrida futura lo pise (ver sección "Repoblación de cables con historial 'ID dual'" arriba) |
+| `20260822_01` | `20260822_01_cromo_botella_separada_manualmente.py` | Columnas de auditoría `cromo_botellas.separada_manualmente/separada_motivo/separada_por/separada_at` — separación manual de Botella agrupada erróneamente por nombre bajo una Cámara padre compartida |
 
 ---
 

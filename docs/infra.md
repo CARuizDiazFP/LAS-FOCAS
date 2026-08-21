@@ -53,6 +53,8 @@ sólo difieren en "CF"/abreviatura vial (ej. real "Bot Tza San Antonio 640" vs "
 CF"). Riesgo aceptado explícitamente por el usuario: más falsos positivos posibles si dos sitios reales
 comparten abreviatura. Ver `docs/decisiones.md` 2026-08-14.
 
+**Nota (2026-08-22):** `resolver_o_crear_padre_desde_base` no tiene llamador productivo desde `resolver_o_crear_padre_cromo` hoy — el mecanismo real de agrupamiento de Botellas Cromo es la resolución en memoria de `scripts/cromo_backfill_camara_padre.py`, que reimplementa la resolución por separado debido al incidente de performance de 2026-08-12 documentado en el propio script.
+
 **Backfill histórico** (`scripts/camara_backfill_padre_botella.py`, corrido una vez contra dev el
 2026-08-10): agrupa TODAS las filas raíz existentes por nombre base normalizado; para cada grupo con
 algún sufijo "Bot N" crea SIEMPRE una Cámara padre nueva (`origen_datos=INFERIDO`) y vincula como
@@ -848,6 +850,9 @@ Verificador Cromo — "Repoblar Cables": toma los cables que el endpoint anterio
 
 ### PATCH /api/infra/botellas/{n_id}/nombre
 Verificador Cromo — corrección manual de un nombre de Botella Cromo duplicado/incorrecto (admin, CSRF). Body: `{nombre, csrf_token}`. Escritura local pura (nunca llama a Cromo): marca `cromo_botellas.nombre_editado_manual=True` para que ninguna corrida de ingesta futura la pise. Respuesta: `{ok, n_id, nombre}`. 404 si la Botella no existe local, 400 si el nombre queda vacío tras `.strip()`.
+
+### POST /api/infra/botellas/{n_id}/separar-padre
+Separa una Botella Cromo agrupada erróneamente por nombre bajo una Cámara padre compartida: crea una Cámara nueva e independiente (`origen_datos=MANUAL`) y reasigna `camara_id` (admin, CSRF). Body: `{nombre, motivo, csrf_token}` — `nombre` siempre editable en el modal, se aplica también a `cromo_botellas.nombre` (`nombre_editado_manual=True`, mismo mecanismo que el endpoint de edición de nombre). Rechaza con 400 si el nombre, tras normalizar (`normalizar_para_agrupar_extendido`, mismo criterio que el detector de Cámaras duplicadas), colisiona con cualquier Cámara raíz existente — incluida la Cámara padre original si no se cambió el nombre. 404 si la Botella no existe. Nunca toca la Cámara padre anterior (ni la elimina ni la audita) — usar "Eliminar Cámara" por separado si corresponde. Respuesta: `{ok, botella_n_id, camara_anterior_id, camara_nueva_id, camara_nueva_nombre}`. Ver `docs/decisiones.md` y `core/services/cromo/separacion_service.py`.
 
 ### POST /api/infra/camaras/eliminar
 Elimina permanentemente una Cámara raíz y sus Botellas — todo o nada: si la Cámara o cualquiera de sus Botellas tiene datos reales asociados, rechaza con 400 y `{error, bloqueos}` sin borrar nada (admin, CSRF). Body: `{camara_id, csrf_token}`. Cada Botella Cromo eliminada registra su `n_id` en `app.cromo_botella_alias` (`accion='ignorar'`). Respuesta: `{ok, camara_id, botellas_legado_eliminadas, botellas_cromo_eliminadas, aliases_registrados}`. Ver sección "Eliminación de Cámaras/Botellas basura" más arriba.
