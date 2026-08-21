@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from redis.asyncio import Redis, from_url
 
 from core.config import get_secret
@@ -15,7 +17,7 @@ def _build_redis_url() -> str:
     host = get_secret("REDIS_HOST", "REDIS_HOST", "redis")
     port = get_secret("REDIS_PORT", "REDIS_PORT", "6379")
     password = get_secret("redis_password_v1", "REDIS_PASSWORD", "")
-    auth = f":{password}@" if password else ""
+    auth = f":{quote(password, safe='')}@" if password else ""
     return f"redis://{auth}{host}:{port}/0"
 
 
