@@ -28,6 +28,7 @@ from core.password import hash_password, verify_password
 from core.repositories.conversations import get_or_create_conversation_for_web_user
 from core.repositories.messages import insert_message, get_last_messages
 from core.chatbot import ChatMessage
+from web.admin_ws import mount_admin_websocket
 from web.chat_ws import ChatWebSocketSettings, mount_chat_websocket
 from web.tools.vlan_comparator import compare_vlan_sets, parse_cisco_vlans
 import psycopg
@@ -251,6 +252,7 @@ mount_chat_websocket(
     ),
     logger=logger,
 )
+mount_admin_websocket(app, allowed_origins=CHAT_ALLOWED_ORIGINS, logger=logger)
 
 
 @dataclass
