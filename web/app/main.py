@@ -6540,10 +6540,12 @@ class BotellaActualizarNombreRequestModel(BaseModel):
 
 @app.patch("/api/infra/botellas/{n_id}/nombre")
 async def botella_actualizar_nombre_web(request: Request, n_id: int, body: BotellaActualizarNombreRequestModel) -> JSONResponse:
-    """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Escritura local pura
-    (sin `CromoClient`, nunca toca Cromo): marca `nombre_editado_manual=True` para que ninguna
-    corrida de ingesta futura la pise (ver `core/services/cromo/ingesta.py::_procesar_botella_completa`).
-    Sólo admin."""
+    """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Escritura local pura:
+    marca `nombre_editado_manual=True` para que ninguna corrida de ingesta futura la pise (ver
+    `core/services/cromo/ingesta.py::_procesar_botella_completa`). Si la Botella todavía no existe
+    localmente (caso "ID dual": Cromo reportó la misma Botella física bajo otro n_id en una corrida
+    anterior), LEE Cromo en vivo (`CromoClient` de sólo lectura) para crearla antes de aplicar la
+    corrección — nunca escribe hacia Cromo. Sólo admin."""
     username = _require_admin(request)
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
@@ -6561,7 +6563,40 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
     async with AsyncSessionLocal() as sesion:
         botella = await sesion.get(CromoBotella, n_id)
         if botella is None:
-            return JSONResponse({"error": f"No existe una Botella Cromo con n_id={n_id}."}, status_code=404)
+            from core.services.cromo.botella_creacion_service import (
+                IdentidadYaResueltaError,
+                crear_o_actualizar_botella_desde_vivo,
+            )
+            from core.services.cromo.client import CromoClient, CromoClientError
+            from core.services.cromo.config import get_cromo_config
+            from core.services.cromo.parser import ClaseExcluidaError
+            from core.services.cromo.verificador import ObjetoNoEncontrado
+
+            try:
+                async with CromoClient(config=get_cromo_config()) as cliente:
+                    resultado = await crear_o_actualizar_botella_desde_vivo(
+                        cliente, sesion, n_id=n_id, usuario=username
+                    )
+            except ObjetoNoEncontrado as exc:
+                return JSONResponse({"error": str(exc)}, status_code=404)
+            except IdentidadYaResueltaError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "n_id_correcto": exc.n_id_resuelto}, status_code=409
+                )
+            except ClaseExcluidaError as exc:
+                return JSONResponse({"error": f"n_id={n_id} no es una Botella: {exc}"}, status_code=400)
+            except CromoClientError as exc:
+                return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+            logger.info(
+                "action=botella_creada_desde_vivo user=%s n_id=%s accion=%s corrida_id=%s",
+                username,
+                n_id,
+                resultado.accion,
+                resultado.corrida_id,
+            )
+            botella = await sesion.get(CromoBotella, n_id)
+
         botella.nombre = nombre_normalizado
         botella.nombre_editado_manual = True
         await sesion.commit()

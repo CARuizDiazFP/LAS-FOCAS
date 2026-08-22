@@ -476,11 +476,16 @@ def test_actualizar_nombre_rechaza_vacio(monkeypatch):
     assert res.status_code == 422 or res.status_code == 400  # min_length=1 puede rechazarlo antes
 
 
-def test_actualizar_nombre_404_si_no_existe(monkeypatch):
+def test_actualizar_nombre_404_si_no_existe_ni_local_ni_en_cromo(monkeypatch):
+    """Antes (sin Task 2) el 404 salía sin tocar Cromo en absoluto. Ahora la fila local ausente
+    dispara una consulta en vivo — este caso cubre que, si Cromo TAMPOCO lo conoce, el 404 se
+    mantiene (vía `ObjetoNoEncontrado`)."""
     from web.app import main as web_main
+    from core.services.cromo.client import CromoClientError
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake(error=CromoClientError("no existe", status_code=404)))
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")
 
@@ -488,6 +493,138 @@ def test_actualizar_nombre_404_si_no_existe(monkeypatch):
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
     )
     assert res.status_code == 404
+
+
+def test_actualizar_nombre_crea_botella_desde_vivo_si_no_existe_local(monkeypatch):
+    """Caso "ID dual": la fila local no existe, pero Cromo la reconoce en vivo — el endpoint la
+    crea y aplica igual la corrección de nombre pedida, en vez de devolver 404."""
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _SesionFake()
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE}))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
+        json={"nombre": "  Nombre corregido  ", "csrf_token": csrf},
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload == {"ok": True, "n_id": BOTELLA_N_ID, "nombre": "Nombre corregido"}
+
+    fila = sesion._existentes[(CromoBotella, BOTELLA_N_ID)]
+    assert fila.n_id == BOTELLA_N_ID
+    assert fila.nombre == "Nombre corregido"
+    assert fila.nombre_editado_manual is True
+
+
+def test_actualizar_nombre_409_si_identidad_ya_resuelta(monkeypatch):
+    """La cadena hist[]/next_id del n_id solicitado resuelve a un n_id que YA tiene fila local
+    propia — el endpoint debe rechazar con 409 en vez de crear una fila duplicada."""
+    from web.app import main as web_main
+
+    OTRO_N_ID = 9057952
+    obj_vacio = {
+        "id": BOTELLA_N_ID,
+        "hist": [{"id": BOTELLA_N_ID, "next_id": OTRO_N_ID}, {"id": OTRO_N_ID, "next_id": 0}],
+        "tp": [],
+    }
+    obj_vigente = {
+        "id": OTRO_N_ID,
+        "n_id": OTRO_N_ID,
+        "class": 68,
+        "hist": [{"id": BOTELLA_N_ID, "next_id": OTRO_N_ID}, {"id": OTRO_N_ID, "next_id": 0}],
+        "tp": [{"type": 0, "nfrom": 0, "id_to": CABLE_N_ID, "class": 51}],
+    }
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    fila_ya_existente = CromoBotella(n_id=OTRO_N_ID, version_id=1, vmax=1, nombre="Ya existe", clase=68, payload_raw={})
+    sesion = _SesionFake({(CromoBotella, OTRO_N_ID): fila_ya_existente})
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: obj_vacio, OTRO_N_ID: obj_vigente}))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
+    )
+    assert res.status_code == 409
+    payload = res.json()
+    assert payload["n_id_correcto"] == OTRO_N_ID
+    assert (CromoBotella, BOTELLA_N_ID) not in sesion._existentes  # no se creó fila duplicada
+
+
+def test_actualizar_nombre_400_si_clase_excluida(monkeypatch):
+    from web.app import main as web_main
+
+    obj_clase_excluida = {"id": BOTELLA_N_ID, "n_id": BOTELLA_N_ID, "class": 120, "hist": [], "tp": []}
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _SesionFake()
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: obj_clase_excluida}))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
+    )
+    assert res.status_code == 400
+    assert (CromoBotella, BOTELLA_N_ID) not in sesion._existentes
+
+
+def test_actualizar_nombre_502_si_cromo_no_responde(monkeypatch):
+    from web.app import main as web_main
+    from core.services.cromo.client import CromoClientError
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _SesionFake()
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake(error=CromoClientError("caído", status_code=503)))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
+    )
+    assert res.status_code == 502
+
+
+def test_actualizar_nombre_no_llama_a_cromo_si_ya_existe_localmente(monkeypatch):
+    """REGRESIÓN: el camino feliz existente (la Botella ya existe local) no debe instanciar
+    `CromoClient` en absoluto — un `CromoClient` fake que lanza si se instancia confirma esto."""
+    from web.app import main as web_main
+    import core.services.cromo.client as cromo_client_module
+    import core.services.cromo.config as cromo_config_module
+
+    class _ClienteQueExplotaSiSeInstancia:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise AssertionError("no debe instanciarse CromoClient si la Botella ya existe localmente")
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    botella = _botella_local()
+    sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): botella})
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
+    monkeypatch.setattr(cromo_client_module, "CromoClient", _ClienteQueExplotaSiSeInstancia)
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
+        json={"nombre": "Nombre corregido", "csrf_token": csrf},
+    )
+    assert res.status_code == 200
+    assert botella.nombre == "Nombre corregido"
+    assert botella.nombre_editado_manual is True
 
 
 def test_actualizar_nombre_happy_path_marca_editado_manual(monkeypatch):
