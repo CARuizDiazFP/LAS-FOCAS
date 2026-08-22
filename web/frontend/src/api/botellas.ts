@@ -39,7 +39,10 @@ export function estadoBotellaToken(estado: string | null | undefined): EstadoBot
   return 'idle';
 }
 
-function toQuery(params: SearchBotellasParams): string {
+// `object` y no `Record<string, ...>`: las interfaces de params de este archivo no declaran index
+// signature, así que no son asignables a un Record — pero sí a `object`, que es lo único que
+// `Object.entries` necesita.
+function toQuery(params: object): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     // `false` se omite a propósito además de undefined/null/'': el default del backend ya es
@@ -131,9 +134,20 @@ export interface BotellasDuplicadosResponse {
   grupos: GrupoBotellasDuplicadas[];
 }
 
+export interface BotellasDuplicadosParams {
+  /** `true` saltea la caché Redis del backend y fuerza el recálculo síncrono. Sólo para el botón
+   * "Actualizar" — es la escotilla manual para cuando algo cambió por fuera de los 7 mutadores que
+   * invalidan la caché (ingesta Cromo, baneos/estados, merge/eliminar Cámaras, backfill). */
+  refrescar?: boolean;
+}
+
 /** Grupos de Botellas candidatas a duplicado dentro de la misma Cámara padre (sin paginar). */
-export async function getBotellasDuplicados(): Promise<BotellasDuplicadosResponse> {
-  return requestJson<BotellasDuplicadosResponse>('/api/admin/infra/botellas/viewer/duplicados');
+export async function getBotellasDuplicados(
+  params: BotellasDuplicadosParams = {},
+): Promise<BotellasDuplicadosResponse> {
+  return requestJson<BotellasDuplicadosResponse>(
+    `/api/admin/infra/botellas/viewer/duplicados${toQuery(params)}`,
+  );
 }
 
 export interface ApropiarBotellaResponse {

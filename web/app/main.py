@@ -5336,13 +5336,20 @@ async def botellas_viewer_listado_web(
 
 
 @app.get("/api/admin/infra/botellas/viewer/duplicados")
-async def botellas_viewer_duplicados_web(request: Request) -> JSONResponse:
+async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = False) -> JSONResponse:
     """Grupos de Botellas (Cromo + legado) candidatas a duplicado dentro de la misma Cámara padre.
     Sin paginar — ver `core/services/botella_duplicados_service.py`. Cada miembro Cromo lleva
     `tiene_cables` (señal "operativa" para elegir el destino al consolidar un grupo no `resoluble`,
     ver `core/services/cromo/verificador.py::tiene_cables_asociados_batch_sync` — una sola query
     batcheada para todos los n_ids de la página, nunca una por miembro); `None` para legado, donde esa
-    señal no existe."""
+    señal no existe.
+
+    `?refrescar=true` (el botón "Actualizar" del visor) saltea la lectura de caché y fuerza el cómputo
+    síncrono, repoblando la caché con el resultado fresco. Es la escotilla manual para los escritores
+    que NO invalidan la caché (ingesta Cromo, cambios de estado/baneo, merge/eliminar Cámaras, el
+    backfill de Cámara padre): sin esto, un admin que sabe que algo cambió por fuera de los 7
+    mutadores cableados tendría que esperar hasta el TTL de 24h — ver `docs/decisiones.md`,
+    entrada 2026-08-21 (cont.)."""
     _require_admin(request)
     try:
         from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
@@ -5350,7 +5357,7 @@ async def botellas_viewer_duplicados_web(request: Request) -> JSONResponse:
         from db.session import SessionLocal
 
         with SessionLocal() as session:
-            grupos = await leer_cache_duplicados()
+            grupos = None if refrescar else await leer_cache_duplicados()
             if grupos is None:
                 grupos = detectar_grupos_duplicados_botellas(session)
                 await guardar_cache_duplicados(grupos)

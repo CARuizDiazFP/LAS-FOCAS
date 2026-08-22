@@ -151,6 +151,76 @@ def test_viewer_duplicados_cache_miss_cae_a_computo_sincrono(monkeypatch):
     assert guardado["grupos"] == [], "el resultado fresco debe poblar la caché tras un miss"
 
 
+def test_viewer_duplicados_refrescar_ignora_la_cache(monkeypatch):
+    """`?refrescar=true` es la escotilla manual: ni siquiera intenta leer la caché, recalcula y
+    repuebla. Cubre los escritores que NO invalidan (ingesta Cromo, baneos, merge de Cámaras,
+    backfill) — ver docs/decisiones.md, entrada 2026-08-21 (cont.)."""
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    llamado = {"leer_cache": False, "detectar": False}
+
+    async def _fake_leer_cache():
+        llamado["leer_cache"] = True
+        return []  # un hit válido: si se leyera, se saltearía el cómputo
+
+    guardado = {"grupos": "no_llamado"}
+
+    async def _fake_guardar_cache(grupos):
+        guardado["grupos"] = grupos
+
+    def _fake_detectar(session):
+        llamado["detectar"] = True
+        return []
+
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados?refrescar=true")
+    assert res.status_code == 200
+    assert res.json()["grupos"] == []
+    assert llamado["leer_cache"] is False, "refrescar=true no debe ni intentar leer la caché"
+    assert llamado["detectar"] is True, "refrescar=true debe forzar el cómputo síncrono"
+    assert guardado["grupos"] == [], "el resultado fresco debe repoblar la caché"
+
+
+def test_viewer_duplicados_refrescar_false_sigue_usando_la_cache(monkeypatch):
+    """El default (y `?refrescar=false` explícito) no cambia: la caché manda."""
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    llamado = {"leer_cache": False, "detectar": False}
+
+    async def _fake_leer_cache():
+        llamado["leer_cache"] = True
+        return []
+
+    def _fake_detectar(session):
+        llamado["detectar"] = True
+        return []
+
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados?refrescar=false")
+    assert res.status_code == 200
+    assert llamado["leer_cache"] is True
+    assert llamado["detectar"] is False, "sin refrescar, un cache hit evita el cómputo"
+
+
 # ── POST /api/infra/botellas/consolidar ──────────────────────────────────────
 
 

@@ -376,11 +376,13 @@ async function reloadFromZero(): Promise<void> {
   await loadNextPage();
 }
 
-async function reloadDuplicados(): Promise<void> {
+// `forzar` sólo lo usa el botón "Actualizar": saltea la caché Redis del backend y fuerza el
+// recálculo. El refetch automático por WebSocket NO fuerza — el worker ya dejó la caché fresca.
+async function reloadDuplicados(forzar = false): Promise<void> {
   loadingGrupos.value = true;
   errorGrupos.value = '';
   try {
-    const response = await getBotellasDuplicados();
+    const response = await getBotellasDuplicados({ refrescar: forzar });
     grupos.value = response.grupos;
   } catch (err: unknown) {
     errorGrupos.value = err instanceof Error ? err.message : 'No se pudo calcular los grupos de duplicados';
@@ -408,7 +410,7 @@ function toggleSoloDuplicados(): void {
 
 function refrescar(): void {
   if (soloDuplicados.value) {
-    void reloadDuplicados();
+    void reloadDuplicados(true);
   } else {
     void reloadFromZero();
   }
