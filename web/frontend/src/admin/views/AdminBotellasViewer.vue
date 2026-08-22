@@ -273,6 +273,7 @@ import {
   type GrupoBotellasDuplicadas,
 } from '../../api/botellas';
 import { botellaDetailPath } from '../../utils/botellaLinks';
+import { useAdminNotifications } from '../../composables/useAdminNotifications';
 
 const LIMIT = 30;
 const VISTA_STORAGE_KEY = 'botellas-admin-viewer.vista';
@@ -329,6 +330,11 @@ const mensajeApropiacionMasiva = computed(
 
 let observer: IntersectionObserver | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+const { on } = useAdminNotifications();
+on('botellas_duplicados_recalculado', () => {
+  void reloadDuplicados();
+});
 
 function mergeItems(next: BotellaUnificadaItem[]): void {
   const seen = new Set(items.value.map((item) => `${item.origen}:${item.id}`));
@@ -421,7 +427,7 @@ function abrirApropiacion(grupo: GrupoBotellasDuplicadas, miembro: BotellaDuplic
 
 async function handleApropiada(): Promise<void> {
   modalOpen.value = false;
-  await Promise.all([reloadDuplicados(), reloadFromZero()]);
+  await reloadFromZero();
 }
 
 function abrirApropiacionMasiva(): void {
@@ -439,7 +445,7 @@ async function confirmarApropiacionMasiva(): Promise<void> {
     resultadoMasiva.value =
       `${respuesta.grupos_apropiados} de ${respuesta.grupos_resolubles} grupos resolubles apropiados` +
       (respuesta.grupos_con_error > 0 ? ` — ${respuesta.grupos_con_error} con error.` : '.');
-    await Promise.all([reloadDuplicados(), reloadFromZero()]);
+    await reloadFromZero();
   } catch (err: unknown) {
     errorMasiva.value = err instanceof Error ? err.message : 'No se pudo ejecutar la apropiación masiva.';
   } finally {
@@ -462,7 +468,7 @@ function abrirConsolidarManual(): void {
 }
 
 async function handleConsolidado(): Promise<void> {
-  await Promise.all([reloadDuplicados(), reloadFromZero()]);
+  await reloadFromZero();
 }
 
 onMounted(async () => {
