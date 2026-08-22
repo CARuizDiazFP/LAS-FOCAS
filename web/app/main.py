@@ -5344,6 +5344,12 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
     batcheada para todos los n_ids de la página, nunca una por miembro); `None` para legado, donde esa
     señal no existe.
 
+    Cada grupo también lleva `sugerencia_placeholders` (`{id_destino_cromo, ids_origen_cromo}` o
+    `null`) — patrón "ID dual" (ver `core/services/botella_duplicados_service.py::
+    sugerir_consolidacion_placeholders`): grupo 100% Cromo con exactamente un miembro operativo y el
+    resto placeholders vacíos del mismo nombre. Es sólo detección/exposición para que un admin la
+    consolide manualmente vía `POST /api/infra/botellas/consolidar` — no ejecuta nada acá.
+
     `?refrescar=true` (el botón "Actualizar" del visor) saltea la lectura de caché y fuerza el cómputo
     síncrono, repoblando la caché con el resultado fresco. Es la escotilla manual para los escritores
     que NO invalidan la caché (ingesta Cromo, cambios de estado/baneo, merge/eliminar Cámaras, el
@@ -5354,7 +5360,10 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
     `modules/botellas_recalculo_worker/worker.py`, ver `docs/decisiones.md`, entrada 2026-08-22."""
     _require_admin(request)
     try:
-        from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
+        from core.services.botella_duplicados_service import (
+            detectar_grupos_duplicados_botellas,
+            sugerir_consolidacion_placeholders,
+        )
         from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
         from db.session import SessionLocal
 
@@ -5376,6 +5385,11 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
                         "estados_en_conflicto": g.estados_en_conflicto,
                         "estado_mas_restrictivo": g.estado_mas_restrictivo,
                         "resoluble": g.resoluble,
+                        "sugerencia_placeholders": (
+                            {"id_destino_cromo": s.id_destino_cromo, "ids_origen_cromo": s.ids_origen_cromo}
+                            if (s := sugerir_consolidacion_placeholders(g, operativos))
+                            else None
+                        ),
                         "miembros": [
                             {
                                 "origen": m.origen,

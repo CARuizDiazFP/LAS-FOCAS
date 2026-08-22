@@ -9,8 +9,10 @@ from unittest.mock import MagicMock
 from core.services.botella_duplicados_service import (
     BotellaDuplicadaItem,
     GrupoBotellasDuplicadas,
+    SugerenciaConsolidacionPlaceholders,
     detectar_grupos_duplicados_botellas,
     sugerir_apropiacion,
+    sugerir_consolidacion_placeholders,
 )
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado
@@ -190,3 +192,66 @@ def test_sugerir_apropiacion_devuelve_none_si_no_es_resoluble() -> None:
         resoluble=False,
     )
     assert sugerir_apropiacion(grupo) is None
+
+
+def test_sugerir_consolidacion_placeholders_un_operativo_resto_vacios() -> None:
+    grupo = _grupo(
+        [
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=201, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=202, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=203, nombre="Botella 2", estado="LIBRE"),
+        ],
+        resoluble=False,
+    )
+    sugerencia = sugerir_consolidacion_placeholders(grupo, operativos={200})
+
+    assert sugerencia == SugerenciaConsolidacionPlaceholders(
+        id_destino_cromo=200, ids_origen_cromo=[201, 202, 203]
+    )
+
+
+def test_sugerir_consolidacion_placeholders_none_si_hay_legado() -> None:
+    grupo = _grupo(
+        [
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=201, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=202, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="legado", id=1, nombre="Bot 2", estado="LIBRE"),
+        ],
+        resoluble=False,
+    )
+    assert sugerir_consolidacion_placeholders(grupo, operativos={200}) is None
+
+
+def test_sugerir_consolidacion_placeholders_none_si_dos_operativos() -> None:
+    grupo = _grupo(
+        [
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=201, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=202, nombre="Botella 2", estado="LIBRE"),
+        ],
+        resoluble=False,
+    )
+    assert sugerir_consolidacion_placeholders(grupo, operativos={200, 201}) is None
+
+
+def test_sugerir_consolidacion_placeholders_none_si_cero_operativos() -> None:
+    grupo = _grupo(
+        [
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=201, nombre="Botella 2", estado="LIBRE"),
+        ],
+        resoluble=False,
+    )
+    assert sugerir_consolidacion_placeholders(grupo, operativos=set()) is None
+
+
+def test_sugerir_consolidacion_placeholders_none_si_menos_de_dos_miembros_cromo() -> None:
+    grupo = _grupo(
+        [
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+        ],
+        resoluble=False,
+    )
+    assert sugerir_consolidacion_placeholders(grupo, operativos={200}) is None

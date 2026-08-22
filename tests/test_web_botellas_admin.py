@@ -288,6 +288,89 @@ def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch)
     assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
 
 
+def test_viewer_duplicados_incluye_sugerencia_placeholders_cuando_aplica(monkeypatch):
+    """Grupo 100% Cromo con exactamente un miembro operativo (con cables) y el resto placeholders
+    vacíos — patrón "ID dual" (ver core/services/botella_duplicados_service.py::
+    sugerir_consolidacion_placeholders) — debe traer la sugerencia con los ids correctos."""
+    from web.app import main as web_main
+    from core.services.botella_duplicados_service import BotellaDuplicadaItem, GrupoBotellasDuplicadas
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    grupo = GrupoBotellasDuplicadas(
+        camara_padre_id=100,
+        camara_padre_nombre="Cra Rivadavia 100 CF",
+        clave_normalizada="clave",
+        criterio="normalizacion_extendida",
+        miembros=[
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=201, nombre="Botella 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=202, nombre="Botella 2", estado="LIBRE"),
+        ],
+        estados_en_conflicto=False,
+        estado_mas_restrictivo="LIBRE",
+        resoluble=False,
+    )
+
+    async def _fake_leer_cache():
+        return [grupo]
+
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(
+        "core.services.cromo.verificador.tiene_cables_asociados_batch_sync",
+        lambda session, ids: {200},
+    )
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados")
+    assert res.status_code == 200
+    sugerencia = res.json()["grupos"][0]["sugerencia_placeholders"]
+    assert sugerencia is not None
+    assert sugerencia["id_destino_cromo"] == 200
+    assert set(sugerencia["ids_origen_cromo"]) == {201, 202}
+
+
+def test_viewer_duplicados_sugerencia_placeholders_null_cuando_no_aplica(monkeypatch):
+    """Un grupo `resoluble` (1 legado + 1 cromo) no cumple el patrón "placeholders" (tiene un
+    miembro legado) — la sugerencia debe venir `null`."""
+    from web.app import main as web_main
+    from core.services.botella_duplicados_service import BotellaDuplicadaItem, GrupoBotellasDuplicadas
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    grupo = GrupoBotellasDuplicadas(
+        camara_padre_id=100,
+        camara_padre_nombre="Cra Rivadavia 100 CF",
+        clave_normalizada="clave",
+        criterio="normalizacion_extendida",
+        miembros=[
+            BotellaDuplicadaItem(origen="legado", id=1, nombre="Bot 2", estado="LIBRE"),
+            BotellaDuplicadaItem(origen="cromo", id=200, nombre="Botella 2", estado="LIBRE"),
+        ],
+        estados_en_conflicto=False,
+        estado_mas_restrictivo="LIBRE",
+        resoluble=True,
+    )
+
+    async def _fake_leer_cache():
+        return [grupo]
+
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(
+        "core.services.cromo.verificador.tiene_cables_asociados_batch_sync",
+        lambda session, ids: {200},
+    )
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados")
+    assert res.status_code == 200
+    assert res.json()["grupos"][0]["sugerencia_placeholders"] is None
+
+
 # ── POST /api/infra/botellas/consolidar ──────────────────────────────────────
 
 

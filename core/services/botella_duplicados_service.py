@@ -145,6 +145,35 @@ def detectar_grupos_duplicados_botellas(session: Session) -> list[GrupoBotellasD
     return resultado
 
 
+@dataclass(slots=True)
+class SugerenciaConsolidacionPlaceholders:
+    id_destino_cromo: int
+    ids_origen_cromo: list[int]
+
+
+def sugerir_consolidacion_placeholders(
+    grupo: GrupoBotellasDuplicadas, operativos: set[int]
+) -> SugerenciaConsolidacionPlaceholders | None:
+    """Grupo 100% Cromo (sin miembros legado) donde EXACTAMENTE un miembro tiene cables
+    asociados (`operativos`, ver core/services/cromo/verificador.py::tiene_cables_asociados_batch_sync)
+    — ese es el destino; el resto son placeholders vacíos (mismo nombre, sin cables, creados por
+    corridas sucesivas antes del fix de raíz de "ID dual"). None si no aplica: hay algún miembro
+    legado, o el conteo de operativos no es exactamente 1 (0 = nada que hacer, 2+ = ambigüo, no
+    es este patrón)."""
+    if any(m.origen == "legado" for m in grupo.miembros):
+        return None
+    miembros_cromo = [m for m in grupo.miembros if m.origen == "cromo"]
+    if len(miembros_cromo) < 2:
+        return None
+    con_cables = [m for m in miembros_cromo if m.id in operativos]
+    sin_cables = [m for m in miembros_cromo if m.id not in operativos]
+    if len(con_cables) != 1 or not sin_cables:
+        return None
+    return SugerenciaConsolidacionPlaceholders(
+        id_destino_cromo=con_cables[0].id, ids_origen_cromo=[m.id for m in sin_cables]
+    )
+
+
 def sugerir_apropiacion(grupo: GrupoBotellasDuplicadas) -> tuple[int, int] | None:
     """Devuelve `(legado_id, cromo_n_id)` si el grupo es `resoluble` (único caso con política de
     resolución automática, ver `botella_merge_service.py::apropiar_legado_a_cromo`), o `None` si no
@@ -163,6 +192,8 @@ def sugerir_apropiacion(grupo: GrupoBotellasDuplicadas) -> tuple[int, int] | Non
 __all__ = [
     "BotellaDuplicadaItem",
     "GrupoBotellasDuplicadas",
+    "SugerenciaConsolidacionPlaceholders",
     "detectar_grupos_duplicados_botellas",
     "sugerir_apropiacion",
+    "sugerir_consolidacion_placeholders",
 ]
