@@ -38,6 +38,8 @@ class IdentidadYaResueltaError(RuntimeError):
 
 @dataclass(slots=True)
 class ResultadoCrearBotellaVivo:
+    # Identidad FINAL bajo la que quedó la fila local — puede diferir del n_id solicitado cuando
+    # ese n_id era un id de versión y Cromo reportó otro n_id de linaje (ver la función).
     n_id: int
     accion: str  # "CREADA" | "ACTUALIZADA"
     ids_cadena: list[int]
@@ -53,9 +55,13 @@ async def crear_o_actualizar_botella_desde_vivo(
     el `n_id` que el admin está mirando (404 local) es real en Cromo, pero la cadena `hist[]`/
     `next_id` puede resolver a otra versión vigente con los datos completos.
 
-    La fila local queda ANCLADA a `n_id` (el solicitado, el que el admin ya está mirando), nunca al
-    `id`/`n_id` que reporte el objeto vigente al final de la cadena — mismo criterio de estabilidad
-    que `repoblacion_service.detectar_cables_faltantes` usa para extremos de cable.
+    La fila local queda bajo la identidad de LINAJE que Cromo reporta para el objeto vigente al
+    final de la cadena (`n_id`, o `id` como fallback — la misma que resuelve
+    `cromo_parser.parse_botella`), que puede NO ser el `n_id` solicitado: el que el admin está
+    mirando suele ser un id de VERSIÓN. Sólo se cae al `n_id` solicitado cuando Cromo no reporta
+    ningún identificador propio utilizable (caso degenerado). Por eso el `n_id` del resultado es la
+    identidad final, no la solicitada — el caller debe usar `resultado.n_id` para releer/mostrar la
+    fila (hallazgo I1, revisión final 2026-08-22).
 
     Usa `ingesta.upsert_forzado` (no `upsert_versionado`): el objeto viene de un fetch directo con
     topología, no de una vista parcial embebida, así que no aplica el gate de `vmax`.
@@ -88,9 +94,20 @@ async def crear_o_actualizar_botella_desde_vivo(
         if ya_existe is not None:
             raise IdentidadYaResueltaError(n_id, n_id_reportado)
 
-    # Anclar la identidad LOCAL al n_id solicitado (el que dispara el 404 en el Verificador), nunca
-    # al que reporte obj_vigente al final de la cadena.
-    botella.n_id = n_id
+    # Sólo anclamos al n_id solicitado cuando Cromo no reportó ningún id propio utilizable — ahí no
+    # hay mejor identidad que la que el admin ya está mirando en el Verificador. Cuando Cromo SÍ
+    # reportó un n_id/id propio (n_id_reportado is not None), `botella.n_id` ya quedó correctamente
+    # resuelto por `parse_botella` a ese valor: anclarlo al n_id solicitado plantaría la fila bajo un
+    # id de VERSIÓN en vez del n_id de linaje real, y la corrida de ingesta siguiente crearía una
+    # segunda fila bajo el n_id estable — el mismo duplicado "ID dual" que esta herramienta existe
+    # para evitar (hallazgo I1, revisión final 2026-08-22, confirmado contra datos reales de Cromo).
+    if n_id_reportado is None:
+        botella.n_id = n_id
+
+    params_extra: dict[str, object] = {"tipo": "MANUAL_CREAR_BOTELLA_VIVO", "n_id": n_id}
+    if botella.n_id != n_id:
+        # Traza auditable de la redirección de identidad: el admin pidió n_id, la fila quedó en otro.
+        params_extra["n_id_resuelto"] = botella.n_id
 
     corrida = await ingesta.iniciar_corrida(
         sesion,
@@ -98,11 +115,11 @@ async def crear_o_actualizar_botella_desde_vivo(
         psize=0,
         max_paginas=0,
         clases=(),
-        params_extra={"tipo": "MANUAL_CREAR_BOTELLA_VIVO", "n_id": n_id},
+        params_extra=params_extra,
     )
 
     accion = await ingesta.upsert_forzado(sesion, CromoBotella, botella, ingesta.BOTELLA_CAMPOS)
-    fila = await sesion.get(CromoBotella, n_id)
+    fila = await sesion.get(CromoBotella, botella.n_id)
     # Mismo criterio de protección de nombre que ingesta._procesar_botella_completa: el caller del
     # endpoint va a pisar este nombre de inmediato con el valor corregido de todas formas — esto es
     # sólo para que la fila no quede sin nombre si el endpoint fallara justo después.
@@ -110,7 +127,7 @@ async def crear_o_actualizar_botella_desde_vivo(
         fila.nombre = botella.nombre
 
     await ingesta.registrar_evento(
-        sesion, corrida.id, n_id, botella.clase, accion, f"ids_cadena={sorted(ids_cadena)}"
+        sesion, corrida.id, botella.n_id, botella.clase, accion, f"ids_cadena={sorted(ids_cadena)}"
     )
 
     corrida.estado = "OK"
@@ -124,7 +141,9 @@ async def crear_o_actualizar_botella_desde_vivo(
     await sesion.commit()
 
     logger.info(
-        "action=cromo_crear_botella_vivo evento=finalizado n_id=%s accion=%s usuario=%s corrida_id=%s ids_cadena=%s",
+        "action=cromo_crear_botella_vivo evento=finalizado n_id=%s n_id_solicitado=%s accion=%s "
+        "usuario=%s corrida_id=%s ids_cadena=%s",
+        botella.n_id,
         n_id,
         accion,
         usuario,
@@ -133,7 +152,11 @@ async def crear_o_actualizar_botella_desde_vivo(
     )
 
     return ResultadoCrearBotellaVivo(
-        n_id=n_id, accion=accion, ids_cadena=sorted(ids_cadena), nombre=fila.nombre, corrida_id=corrida.id
+        n_id=botella.n_id,
+        accion=accion,
+        ids_cadena=sorted(ids_cadena),
+        nombre=fila.nombre,
+        corrida_id=corrida.id,
     )
 
 

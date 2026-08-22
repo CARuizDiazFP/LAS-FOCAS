@@ -109,12 +109,17 @@ async def test_crear_botella_caso_simple_sin_hist():
     assert resultado.corrida_id is not None
 
     fila = sesion._existentes[(CromoBotella, BOTELLA_N_ID)]
-    assert fila.n_id == BOTELLA_N_ID  # anclado al solicitado, no al reportado por Cromo
+    assert fila.n_id == BOTELLA_N_ID  # acá el reportado por Cromo coincide con el solicitado
     assert fila.nombre == "B-NUEVA"
 
 
 @pytest.mark.asyncio
 async def test_crear_botella_sigue_next_id_cuando_objeto_esta_vacio():
+    """El n_id solicitado es un id de VERSIÓN: la cadena hist[]/next_id resuelve a 9936500, que es la
+    identidad de linaje real que reporta Cromo. La fila local tiene que quedar bajo ESE n_id — si se
+    la anclara al solicitado, la próxima corrida de ingesta traería el objeto bajo 9936500 y crearía
+    una SEGUNDA fila: exactamente el duplicado "ID dual" que este plan busca evitar (hallazgo I1 de
+    la revisión final, 2026-08-22)."""
     cliente = _ClienteFake({BOTELLA_N_ID: OBJ_VACIO, 9936500: OBJ_VIGENTE})
     sesion = _SesionFake()
 
@@ -125,10 +130,40 @@ async def test_crear_botella_sigue_next_id_cuando_objeto_esta_vacio():
     assert resultado.accion == "CREADA"
     assert resultado.nombre == "B-VIGENTE"  # datos del objeto vigente
     assert set(resultado.ids_cadena) == {BOTELLA_N_ID, 9936500}
+    assert resultado.n_id == 9936500  # el resultado expone la identidad FINAL, no la solicitada
 
+    fila = sesion._existentes[(CromoBotella, 9936500)]
+    assert fila.n_id == 9936500  # identidad de linaje que reportó Cromo
+    assert fila.nombre == "B-VIGENTE"
+    # nunca se crea una fila bajo el id de versión solicitado: sería la fila huérfana que ninguna
+    # corrida futura vuelve a tocar, porque Cromo nunca reporta ese id como n_id de nada
+    assert (CromoBotella, BOTELLA_N_ID) not in sesion._existentes
+
+
+# Caso degenerado: Cromo devuelve el objeto vigente SIN `n_id` ni `id` propios (sin identidad
+# utilizable). Es el único caso en que se cae al n_id solicitado como último recurso.
+OBJ_SIN_IDENTIDAD = {
+    "class": 68,
+    "hist": [],
+    "tp": [{"type": 0, "nfrom": 0, "id_to": 111, "class": 51}],
+    "at": [{"id": 34, "value": "B-SIN-ID"}],
+}
+
+
+@pytest.mark.asyncio
+async def test_crear_botella_cae_al_n_id_solicitado_si_cromo_no_reporta_identidad():
+    cliente = _ClienteFake({BOTELLA_N_ID: OBJ_SIN_IDENTIDAD})
+    sesion = _SesionFake()
+
+    resultado = await servicio.crear_o_actualizar_botella_desde_vivo(
+        cliente, sesion, n_id=BOTELLA_N_ID, usuario="tester"
+    )
+
+    assert resultado.accion == "CREADA"
+    assert resultado.n_id == BOTELLA_N_ID  # sin mejor información, el solicitado es la identidad
     fila = sesion._existentes[(CromoBotella, BOTELLA_N_ID)]
-    assert fila.n_id == BOTELLA_N_ID  # anclado al SOLICITADO, no al 9936500 que reporta obj_vigente
-    assert (CromoBotella, 9936500) not in sesion._existentes  # nunca se crea fila bajo el id de la cadena
+    assert fila.n_id == BOTELLA_N_ID
+    assert fila.nombre == "B-SIN-ID"
 
 
 @pytest.mark.asyncio

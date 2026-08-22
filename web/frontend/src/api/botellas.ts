@@ -334,8 +334,12 @@ export async function repoblarCablesCromo(botellaNId: number): Promise<RepoblarC
 
 export interface EditarNombreBotellaResponse {
   ok: boolean;
+  /** n_id REAL bajo el que quedó la fila — puede diferir del pedido si el n_id de la URL era un id
+   *  de versión y Cromo reportó otro n_id de linaje al crearla desde vivo (caso "ID dual"). */
   n_id: number;
   nombre: string;
+  /** Sólo presente cuando `n_id` difiere del que se pidió: el n_id original de la URL. */
+  n_id_solicitado?: number;
 }
 
 export async function editarNombreBotellaCromo(nId: number, nombre: string): Promise<EditarNombreBotellaResponse> {

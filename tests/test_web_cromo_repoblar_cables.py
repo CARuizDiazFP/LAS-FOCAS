@@ -522,6 +522,104 @@ def test_actualizar_nombre_crea_botella_desde_vivo_si_no_existe_local(monkeypatc
     assert fila.nombre_editado_manual is True
 
 
+def test_actualizar_nombre_devuelve_el_n_id_real_si_la_cadena_redirige(monkeypatch):
+    """El n_id de la URL es un id de VERSIÓN y la cadena hist[]/next_id resuelve a otro n_id de
+    linaje que todavía NO tiene fila local: la fila se crea bajo el n_id de linaje (no bajo el de la
+    URL, que quedaría huérfano y volvería a duplicarse en la próxima ingesta — hallazgo I1) y la
+    respuesta devuelve ese n_id real, con `n_id_solicitado` para que el frontend pueda redirigir."""
+    from web.app import main as web_main
+
+    OTRO_N_ID = 9057952
+    obj_vacio = {
+        "id": BOTELLA_N_ID,
+        "hist": [{"id": BOTELLA_N_ID, "next_id": OTRO_N_ID}, {"id": OTRO_N_ID, "next_id": 0}],
+        "tp": [],
+    }
+    obj_vigente = {
+        "id": OTRO_N_ID,
+        "n_id": OTRO_N_ID,
+        "class": 68,
+        "hist": [{"id": BOTELLA_N_ID, "next_id": OTRO_N_ID}, {"id": OTRO_N_ID, "next_id": 0}],
+        "tp": [{"type": 0, "nfrom": 0, "id_to": CABLE_N_ID, "class": 51}],
+    }
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _SesionFake()
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: obj_vacio, OTRO_N_ID: obj_vigente}))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
+        json={"nombre": "Nombre corregido", "csrf_token": csrf},
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload == {
+        "ok": True,
+        "n_id": OTRO_N_ID,
+        "nombre": "Nombre corregido",
+        "n_id_solicitado": BOTELLA_N_ID,
+    }
+
+    fila = sesion._existentes[(CromoBotella, OTRO_N_ID)]
+    assert fila.nombre == "Nombre corregido"
+    assert fila.nombre_editado_manual is True
+    assert (CromoBotella, BOTELLA_N_ID) not in sesion._existentes
+
+
+def test_actualizar_nombre_502_si_cromo_no_esta_configurado(monkeypatch):
+    """`get_cromo_config()` puede fallar por credenciales/URL faltantes — eso es "no pudimos hablar
+    con Cromo" (502 con causa logueada), no un 500 opaco (hallazgo I5)."""
+    from web.app import main as web_main
+    import core.services.cromo.client as cromo_client_module
+    import core.services.cromo.config as cromo_config_module
+    from core.services.cromo.config import CromoConfigError
+
+    def _config_rota():
+        raise CromoConfigError("Configuración de Cromo incompleta. Definir en el entorno: CROMO_USER")
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(cromo_config_module, "get_cromo_config", _config_rota)
+    monkeypatch.setattr(cromo_client_module, "CromoClient", _cliente_cromo_fake({}))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
+    )
+    assert res.status_code == 502
+    assert "no está configurado" in res.json()["error"]
+
+
+def test_actualizar_nombre_500_controlado_ante_error_inesperado(monkeypatch):
+    """Red de seguridad final (hallazgo I5): cualquier excepción no prevista del alta desde vivo
+    devuelve un 500 con mensaje de dominio, no una traza propagada sin logging."""
+    from web.app import main as web_main
+    import core.services.cromo.botella_creacion_service as creacion_module
+
+    async def _explota(*args: Any, **kwargs: Any):
+        raise ValueError("boom inesperado")
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE}))
+    monkeypatch.setattr(creacion_module, "crear_o_actualizar_botella_desde_vivo", _explota)
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "adminpass")
+
+    res = client.patch(
+        f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
+    )
+    assert res.status_code == 500
+    assert res.json() == {"error": "Error inesperado al crear la Botella desde Cromo."}
+
+
 def test_actualizar_nombre_409_si_identidad_ya_resuelta(monkeypatch):
     """La cadena hist[]/next_id del n_id solicitado resuelve a un n_id que YA tiene fila local
     propia — el endpoint debe rechazar con 409 en vez de crear una fila duplicada."""

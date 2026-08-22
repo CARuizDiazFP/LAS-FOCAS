@@ -214,6 +214,12 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `core.services.cromo.*` — no reimplementa nada del dominio.
 - `deploy/docker/cromo_worker.Dockerfile`, bloque `cromo_worker` en `deploy/docker-compose.dev.yml`:
   imagen y servicio del worker (sólo dev por ahora). Hereda `focas-base:latest`, usuario no-root.
+  Copia además `modules/slack_baneo_notifier/` (2026-08-22): `core/services/cromo/ingesta.py` importa
+  `botella_recompute_queue` → `botella_duplicados_service` → `camara_hierarchy_service`, que reusa los
+  helpers de normalización de ese submódulo. Sin ese `COPY` el worker arranca en
+  `ModuleNotFoundError` y, con `restart: unless-stopped`, queda en crash-loop — al agregar un import
+  nuevo en `core/` hay que revisar qué arrastra a los Dockerfiles de los workers, que copian sólo un
+  subconjunto de `modules/`.
 - `web/app/main.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) — disparo de corrida
   (delega la ejecución al worker por HTTP desde la Etapa 7, ya no `asyncio.create_task` local), stream
   SSE de progreso, histórico, detalle, cancelación, y config del scheduler

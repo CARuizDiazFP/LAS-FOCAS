@@ -6554,12 +6554,16 @@ class BotellaActualizarNombreRequestModel(BaseModel):
 
 @app.patch("/api/infra/botellas/{n_id}/nombre")
 async def botella_actualizar_nombre_web(request: Request, n_id: int, body: BotellaActualizarNombreRequestModel) -> JSONResponse:
-    """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Escritura local pura:
-    marca `nombre_editado_manual=True` para que ninguna corrida de ingesta futura la pise (ver
-    `core/services/cromo/ingesta.py::_procesar_botella_completa`). Si la Botella todavía no existe
+    """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Marca
+    `nombre_editado_manual=True` para que ninguna corrida de ingesta futura la pise (ver
+    `core/services/cromo/ingesta.py::_procesar_botella_completa`). Si la Botella ya existe
+    localmente es escritura local pura y no toca Cromo. Si todavía no existe
     localmente (caso "ID dual": Cromo reportó la misma Botella física bajo otro n_id en una corrida
     anterior), LEE Cromo en vivo (`CromoClient` de sólo lectura) para crearla antes de aplicar la
-    corrección — nunca escribe hacia Cromo. Sólo admin."""
+    corrección — nunca escribe hacia Cromo. En ese camino la fila puede quedar bajo un n_id DISTINTO
+    al de la URL (el de la URL puede ser un id de versión; Cromo manda con su n_id de linaje), así
+    que el `n_id` de la respuesta es siempre el real, más `n_id_solicitado` cuando difieren.
+    Sólo admin."""
     username = _require_admin(request)
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
@@ -6582,7 +6586,7 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
                 crear_o_actualizar_botella_desde_vivo,
             )
             from core.services.cromo.client import CromoClient, CromoClientError
-            from core.services.cromo.config import get_cromo_config
+            from core.services.cromo.config import CromoConfigError, get_cromo_config
             from core.services.cromo.parser import ClaseExcluidaError
             from core.services.cromo.verificador import ObjetoNoEncontrado
 
@@ -6601,23 +6605,61 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
                 return JSONResponse({"error": f"n_id={n_id} no es una Botella: {exc}"}, status_code=400)
             except CromoClientError as exc:
                 return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+            except CromoConfigError as exc:
+                # Faltan credenciales/URL de Cromo: no es un 500 opaco, es "no pudimos hablar con
+                # Cromo" — mismo 502 que `CromoClientError`, con la causa real en el log.
+                logger.error(
+                    "action=botella_actualizar_nombre result=fail reason=cromo_no_configurado n_id=%s error=%s",
+                    n_id,
+                    exc,
+                )
+                return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=502)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                # Red de seguridad final, mismo patrón que `botella_repoblar_cables_web`: cualquier
+                # otra falla queda logueada con traza en vez de propagarse como 500 sin contexto.
+                logger.exception(
+                    "action=botella_actualizar_nombre result=fail reason=error_inesperado n_id=%s error=%s",
+                    n_id,
+                    exc,
+                )
+                return JSONResponse(
+                    {"error": "Error inesperado al crear la Botella desde Cromo."}, status_code=500
+                )
 
             logger.info(
-                "action=botella_creada_desde_vivo user=%s n_id=%s accion=%s corrida_id=%s",
+                "action=botella_creada_desde_vivo user=%s n_id=%s n_id_solicitado=%s accion=%s corrida_id=%s",
                 username,
+                resultado.n_id,
                 n_id,
                 resultado.accion,
                 resultado.corrida_id,
             )
-            botella = await sesion.get(CromoBotella, n_id)
+            # La fila puede haber quedado bajo un n_id distinto al del path: el solicitado puede ser
+            # un id de versión y `crear_o_actualizar_botella_desde_vivo` ancla a la identidad de
+            # linaje que reporta Cromo (ver su docstring).
+            botella = await sesion.get(CromoBotella, resultado.n_id)
 
+        n_id_final = botella.n_id
         botella.nombre = nombre_normalizado
         botella.nombre_editado_manual = True
         await sesion.commit()
 
-    logger.info("action=botella_actualizar_nombre user=%s n_id=%s nombre=%r", username, n_id, nombre_normalizado)
-    await encolar_recalculo_duplicados_botellas(motivo=f"actualizar-nombre n_id={n_id} usuario={username}")
-    return JSONResponse({"ok": True, "n_id": n_id, "nombre": nombre_normalizado})
+    logger.info(
+        "action=botella_actualizar_nombre user=%s n_id=%s n_id_solicitado=%s nombre=%r",
+        username,
+        n_id_final,
+        n_id,
+        nombre_normalizado,
+    )
+    await encolar_recalculo_duplicados_botellas(
+        motivo=f"actualizar-nombre n_id={n_id_final} usuario={username}"
+    )
+    respuesta = {"ok": True, "n_id": n_id_final, "nombre": nombre_normalizado}
+    if n_id_final != n_id:
+        respuesta["n_id_solicitado"] = n_id
+    return JSONResponse(respuesta)
 
 
 class BotellaSepararPadreRequestModel(BaseModel):
