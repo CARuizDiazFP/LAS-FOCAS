@@ -5349,7 +5349,9 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
     que NO invalidan la caché (ingesta Cromo, cambios de estado/baneo, merge/eliminar Cámaras, el
     backfill de Cámara padre): sin esto, un admin que sabe que algo cambió por fuera de los 7
     mutadores cableados tendría que esperar hasta el TTL de 24h — ver `docs/decisiones.md`,
-    entrada 2026-08-21 (cont.)."""
+    entrada 2026-08-21 (cont.). El cómputo (cache miss o `refrescar=true`) corre en un hilo aparte
+    (`asyncio.to_thread`) para no bloquear el event loop del proceso `web` — mismo patrón ya usado en
+    `modules/botellas_recalculo_worker/worker.py`, ver `docs/decisiones.md`, entrada 2026-08-22."""
     _require_admin(request)
     try:
         from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
@@ -5359,7 +5361,7 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
         with SessionLocal() as session:
             grupos = None if refrescar else await leer_cache_duplicados()
             if grupos is None:
-                grupos = detectar_grupos_duplicados_botellas(session)
+                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)
                 await guardar_cache_duplicados(grupos)
             ids_cromo = [m.id for g in grupos for m in g.miembros if m.origen == "cromo"]
             operativos = tiene_cables_asociados_batch_sync(session, ids_cromo)
@@ -5522,7 +5524,7 @@ async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMa
         grupos = await leer_cache_duplicados()
         if grupos is None:
             with SessionLocal() as session_deteccion:
-                grupos = detectar_grupos_duplicados_botellas(session_deteccion)
+                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session_deteccion)
             await guardar_cache_duplicados(grupos)
 
         resolubles = [(grupo, sugerir_apropiacion(grupo)) for grupo in grupos]
@@ -5703,7 +5705,7 @@ async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
         with SessionLocal() as session:
             grupos = await leer_cache_duplicados()
             if grupos is None:
-                grupos = detectar_grupos_duplicados_botellas(session)
+                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)
                 await guardar_cache_duplicados(grupos)
         for g in grupos:
             if g.resoluble:

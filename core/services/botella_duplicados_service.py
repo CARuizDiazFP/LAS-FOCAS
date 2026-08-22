@@ -11,7 +11,9 @@ padre).
 
 Performance: NO se itera cada Cámara raíz consultando `CromoBotella` una por una (N+1 real a la
 escala de ~10.212 Cámaras raíz, 2026-08-14) — se hacen exactamente 2 queries con `joinedload` sobre
-la relación al padre, y se agrupa en Python.
+la relación al padre, y se agrupa en Python. Ambas queries se materializan en lotes (`yield_per`,
+2026-08-22) con un `time.sleep(0)` entre lotes para no retener el GIL de forma continua durante la
+construcción de miles de objetos ORM — ver docstring de `detectar_grupos_duplicados_botellas`.
 
 Sin similitud difusa (misma decisión que `camara_duplicados_service.py`, 2026-08-14): igualdad
 exacta de `normalizar_para_agrupar_extendido`. A diferencia de la detección de Cámaras, acá NO se
@@ -20,6 +22,7 @@ normalización no toca dígitos (nunca colapsa "Bot 2" con "Bot 3")."""
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Literal
@@ -29,6 +32,9 @@ from sqlalchemy.orm import Session, joinedload
 from core.services.camara_hierarchy_service import estado_mas_restrictivo, normalizar_para_agrupar_extendido
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado
+
+# Filas entre cada `time.sleep(0)` durante la materialización ORM (ver `detectar_grupos_duplicados_botellas`).
+_BATCH_SIZE = 500
 
 
 @dataclass(slots=True)
@@ -55,56 +61,64 @@ def detectar_grupos_duplicados_botellas(session: Session) -> list[GrupoBotellasD
     """2 queries totales (con `joinedload` al padre) + agrupación en Python — sin iterar Cámaras raíz
     una por una. `resoluble` sólo es `True` para grupos de exactamente 2 miembros con 1 legado + 1
     cromo — el único caso con política de resolución automática definida (ver
-    `botella_merge_service.py::apropiar_legado_a_cromo`)."""
-    legado_rows = (
-        session.query(Camara)
-        .filter(Camara.camara_padre_id.isnot(None))
-        .options(joinedload(Camara.camara_padre))
-        .all()
-    )
-    cromo_rows = (
-        session.query(CromoBotella)
-        .filter(CromoBotella.camara_id.isnot(None), CromoBotella.vigente.is_(True))
-        .options(joinedload(CromoBotella.camara))
-        .all()
-    )
+    `botella_merge_service.py::apropiar_legado_a_cromo`).
 
+    Materialización en lotes de `_BATCH_SIZE` filas (`yield_per` en vez de `.all()`) con un
+    `time.sleep(0)` entre lotes: `joinedload` many-to-one es compatible con `yield_per` (no multiplica
+    filas, a diferencia de una colección), y el `sleep(0)` fuerza un checkpoint de liberación del GIL
+    a intervalos predecibles — sin él, medido en vivo el 2026-08-22, la construcción de miles de
+    objetos ORM seguidos retiene el GIL el tiempo suficiente para bloquear el hilo del event loop que
+    espera este cómputo vía `asyncio.to_thread` (worker y `web/app/main.py`)."""
     # Agrupar primero por Cámara padre, luego dentro de cada padre por nombre normalizado extendido.
     por_padre: dict[int, dict[str, list[BotellaDuplicadaItem]]] = defaultdict(lambda: defaultdict(list))
     padres_nombre: dict[int, str] = {}
     estados_por_clave: dict[tuple[int, str], list[CamaraEstado]] = defaultdict(list)
 
-    for botella in legado_rows:
+    legado_query = (
+        session.query(Camara)
+        .filter(Camara.camara_padre_id.isnot(None))
+        .options(joinedload(Camara.camara_padre))
+        .yield_per(_BATCH_SIZE)
+    )
+    for indice, botella in enumerate(legado_query, start=1):
         padre = botella.camara_padre
-        if padre is None:
-            continue
-        clave = normalizar_para_agrupar_extendido(botella.nombre)
-        padres_nombre[padre.id] = padre.nombre or ""
-        por_padre[padre.id][clave].append(
-            BotellaDuplicadaItem(
-                origen="legado",
-                id=botella.id,
-                nombre=botella.nombre or "",
-                estado=(botella.estado.value if botella.estado else CamaraEstado.LIBRE.value),
+        if padre is not None:
+            clave = normalizar_para_agrupar_extendido(botella.nombre)
+            padres_nombre[padre.id] = padre.nombre or ""
+            por_padre[padre.id][clave].append(
+                BotellaDuplicadaItem(
+                    origen="legado",
+                    id=botella.id,
+                    nombre=botella.nombre or "",
+                    estado=(botella.estado.value if botella.estado else CamaraEstado.LIBRE.value),
+                )
             )
-        )
-        estados_por_clave[(padre.id, clave)].append(botella.estado or CamaraEstado.LIBRE)
+            estados_por_clave[(padre.id, clave)].append(botella.estado or CamaraEstado.LIBRE)
+        if indice % _BATCH_SIZE == 0:
+            time.sleep(0)
 
-    for cromo_botella in cromo_rows:
+    cromo_query = (
+        session.query(CromoBotella)
+        .filter(CromoBotella.camara_id.isnot(None), CromoBotella.vigente.is_(True))
+        .options(joinedload(CromoBotella.camara))
+        .yield_per(_BATCH_SIZE)
+    )
+    for indice, cromo_botella in enumerate(cromo_query, start=1):
         padre = cromo_botella.camara
-        if padre is None:
-            continue
-        clave = normalizar_para_agrupar_extendido(cromo_botella.nombre)
-        padres_nombre[padre.id] = padre.nombre or ""
-        por_padre[padre.id][clave].append(
-            BotellaDuplicadaItem(
-                origen="cromo",
-                id=cromo_botella.n_id,
-                nombre=cromo_botella.nombre or "",
-                estado=(cromo_botella.estado.value if cromo_botella.estado else CamaraEstado.LIBRE.value),
+        if padre is not None:
+            clave = normalizar_para_agrupar_extendido(cromo_botella.nombre)
+            padres_nombre[padre.id] = padre.nombre or ""
+            por_padre[padre.id][clave].append(
+                BotellaDuplicadaItem(
+                    origen="cromo",
+                    id=cromo_botella.n_id,
+                    nombre=cromo_botella.nombre or "",
+                    estado=(cromo_botella.estado.value if cromo_botella.estado else CamaraEstado.LIBRE.value),
+                )
             )
-        )
-        estados_por_clave[(padre.id, clave)].append(cromo_botella.estado or CamaraEstado.LIBRE)
+            estados_por_clave[(padre.id, clave)].append(cromo_botella.estado or CamaraEstado.LIBRE)
+        if indice % _BATCH_SIZE == 0:
+            time.sleep(0)
 
     resultado: list[GrupoBotellasDuplicadas] = []
     for padre_id, grupos_por_clave in por_padre.items():

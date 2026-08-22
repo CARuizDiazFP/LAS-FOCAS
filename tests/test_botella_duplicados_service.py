@@ -25,8 +25,8 @@ def _sesion_con_filas(legado_rows: list[Camara], cromo_rows: list[CromoBotella])
             model_mocks[modelo] = MagicMock()
         return model_mocks[modelo]
 
-    mock_para(Camara).filter.return_value.options.return_value.all.return_value = legado_rows
-    mock_para(CromoBotella).filter.return_value.options.return_value.all.return_value = cromo_rows
+    mock_para(Camara).filter.return_value.options.return_value.yield_per.return_value = legado_rows
+    mock_para(CromoBotella).filter.return_value.options.return_value.yield_per.return_value = cromo_rows
 
     session.query.side_effect = lambda modelo, *a: mock_para(modelo)
     return session
@@ -130,6 +130,31 @@ def test_detectar_sin_conflicto_de_estado() -> None:
     grupos = detectar_grupos_duplicados_botellas(session)
 
     assert grupos[0].estados_en_conflicto is False
+
+
+def test_detectar_libera_el_gil_periodicamente_en_datasets_grandes(monkeypatch) -> None:
+    """Sin el checkpoint `time.sleep(0)` cada `_BATCH_SIZE` filas, la materialización ORM de un
+    dataset grande retiene el GIL sin interrupción durante todo el cómputo, bloqueando el hilo que
+    espera este resultado vía `asyncio.to_thread` (worker y `web/app/main.py`) — ver docstring del
+    módulo. Este test es discriminante: falla si el checkpoint se quita o si el intervalo cambia sin
+    actualizar la expectativa."""
+    from core.services import botella_duplicados_service as servicio
+
+    total_filas = servicio._BATCH_SIZE * 2 + 2
+    padres = [Camara(id=i, nombre=f"Padre {i}") for i in range(1, total_filas + 1)]
+    # Cada Botella cuelga de un padre distinto: cero duplicados, así el test mide sólo el checkpoint
+    # de batching y no se mezcla con la lógica de agrupación (ya cubierta por los tests de arriba).
+    legado_rows = [_legado(i, f"Botella {i}", padres[i - 1]) for i in range(1, total_filas + 1)]
+    session = _sesion_con_filas(legado_rows, [])
+
+    llamadas_sleep: list[float] = []
+    monkeypatch.setattr(servicio.time, "sleep", lambda segundos: llamadas_sleep.append(segundos))
+
+    grupos = detectar_grupos_duplicados_botellas(session)
+
+    assert grupos == []
+    assert len(llamadas_sleep) == 2, "checkpoints esperados en la fila _BATCH_SIZE y en 2*_BATCH_SIZE"
+    assert all(segundos == 0 for segundos in llamadas_sleep)
 
 
 def _grupo(miembros: list[BotellaDuplicadaItem], resoluble: bool) -> GrupoBotellasDuplicadas:

@@ -605,7 +605,14 @@ admin abierto cuando el recálculo termina — sin tocar la función de detecci�
   seguía figurando `healthy`. El recálculo pesado corre en un hilo aparte (`asyncio.to_thread`)
   justamente para que ese `/health` siga contestando mientras el job trabaja: ejecutándolo directo en
   el event loop, el contenedor se marcaba `unhealthy` durante cada recálculo (~100s medidos, 3
-  healthchecks vencidos seguidos). Servicio `redis` (imagen
+  healthchecks vencidos seguidos). `detectar_grupos_duplicados_botellas` (compartida con `web`,
+  ver más abajo) materializa además en lotes de 500 filas (`yield_per`, no `.all()`) con un
+  `time.sleep(0)` entre lotes — sin esto, el hilo del `to_thread` retenía el GIL el tiempo
+  suficiente para que `/health` (en el hilo principal) tardara hasta ~20s en responder durante un
+  recompute real (2026-08-22). Verificado en vivo tras el fix: latencia máxima de `/health` durante
+  un recompute completo, **0.40s** (`GET /health` sondeado cada ~0.3s, `jobs_procesados`
+  incrementando durante la ventana medida) — ver `docs/decisiones.md`, entrada 2026-08-22 (cont. 2).
+  Servicio `redis` (imagen
   fijada `redis:7.4-alpine`) y `botellas_recalculo_worker` agregados a `deploy/docker-compose.dev.yml`
   y `deploy/compose.yml` — en dev, buildeados, levantados y verificados `healthy` reales; en prod,
   código listo pero sin recrear contenedores (ver `docs/decisiones.md`, entrada 2026-08-21 (cont.)).
@@ -642,8 +649,15 @@ admin abierto cuando el recálculo termina — sin tocar la función de detecci�
     backoff (verificado deteniendo el contenedor `redis` en vivo).
 - **Escotilla manual de refresco** (`?refrescar=true`): `GET
   /api/admin/infra/botellas/viewer/duplicados` acepta ese parámetro para **saltear la caché por
-  completo** y forzar el cómputo síncrono, repoblando la caché con el resultado fresco. Lo usa el
-  botón "Actualizar" del visor (`refrescar()` → `reloadDuplicados(true)`). Existe porque hay
+  completo** y forzar el cómputo, repoblando la caché con el resultado fresco. Lo usa el
+  botón "Actualizar" del visor (`refrescar()` → `reloadDuplicados(true)`). El cómputo (acá y en los
+  otros 2 call-sites directos de `detectar_grupos_duplicados_botellas` en `web/app/main.py` —
+  `apropiar-masivo` y el export de inconsistencias, ambos en su propio cache-miss) corre vía
+  `await asyncio.to_thread(...)`, no directo en el `async def` del endpoint (2026-08-22): antes del
+  fix, cualquiera de los 3 bloqueaba el event loop entero de `web` durante todo el cómputo — medido
+  en vivo, ~56-60s con **0 heartbeats** de una tarea `asyncio.sleep(0.2)` corriendo en paralelo.
+  Con el fix, la misma tarea siguió latiendo cada 0.56-0.68s durante un cómputo real de ~72s — ver
+  `docs/decisiones.md`, entrada 2026-08-22 (cont. 2). Existe porque hay
   escritores que tocan los mismos campos y **no** invalidan la caché — la ingesta Cromo
   (`modules/cromo_worker/`, su propio intervalo de 24h), los cambios de estado/baneo
   (`aplicar_estado_a_grupo`), merge/eliminar de Cámaras y `scripts/cromo_backfill_camara_padre.py`.

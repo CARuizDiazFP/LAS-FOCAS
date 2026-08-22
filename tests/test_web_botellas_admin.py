@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 from unittest.mock import MagicMock
 
@@ -81,6 +82,36 @@ def _fake_session_local(session: MagicMock):
         return _FakeSyncSessionCtx(session)
 
     return _factory
+
+
+def _fake_async_session_local(sesion):
+    """Contexto `async with AsyncSessionLocal() as sesion:` fake — mismo patrón ya usado en
+    test_web_cromo_inventario.py y test_web_cromo_repoblar_cables.py."""
+
+    class _CM:
+        async def __aenter__(self):
+            return sesion
+
+        async def __aexit__(self, *a):
+            return False
+
+    def factory():
+        return _CM()
+
+    return factory
+
+
+def _spy_to_thread(llamadas: list):
+    """Envoltorio discriminante para `asyncio.to_thread`: registra el callable recibido y delega en
+    la implementación real, para probar que un cómputo pesado corre en un hilo aparte (no directo en
+    el coroutine del endpoint) sin perder el resultado real."""
+    original = asyncio.to_thread
+
+    async def _fake(func, *args, **kwargs):
+        llamadas.append(func)
+        return await original(func, *args, **kwargs)
+
+    return _fake
 
 
 # ── GET /api/admin/infra/botellas/viewer/duplicados ──────────────────────────
@@ -221,6 +252,42 @@ def test_viewer_duplicados_refrescar_false_sigue_usando_la_cache(monkeypatch):
     assert llamado["detectar"] is False, "sin refrescar, un cache hit evita el cómputo"
 
 
+def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch):
+    """Hasta el fix del 2026-08-22, `detectar_grupos_duplicados_botellas` corría directo en el
+    coroutine del endpoint (~127s medidos contra el dataset real de dev), bloqueando el event loop
+    del proceso `web` para el resto de los usuarios. Discriminante: falla si el cómputo deja de pasar
+    por `asyncio.to_thread` — ver docs/decisiones.md, entrada 2026-08-22."""
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    async def _fake_leer_cache():
+        return None
+
+    async def _fake_guardar_cache(grupos):
+        return None
+
+    def _fake_detectar(session):
+        return []
+
+    llamadas_to_thread: list = []
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+    monkeypatch.setattr(web_main.asyncio, "to_thread", _spy_to_thread(llamadas_to_thread))
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/viewer/duplicados?refrescar=true")
+
+    assert res.status_code == 200
+    assert res.json()["grupos"] == []
+    assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
+
+
 # ── POST /api/infra/botellas/consolidar ──────────────────────────────────────
 
 
@@ -322,6 +389,52 @@ def test_consolidar_fallido_no_encola_recalculo_duplicados(monkeypatch):
     assert llamadas == []
 
 
+# ── POST /api/infra/botellas/apropiar-masivo ──────────────────────────────────
+
+
+def test_apropiar_masivo_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
+    """Mismo antipatrón que el visor (línea directa a `detectar_grupos_duplicados_botellas` dentro
+    de un `async def`) en el camino de cache miss de la apropiación masiva. Discriminante: falla si
+    el cómputo deja de pasar por `asyncio.to_thread`."""
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+
+    async def _fake_leer_cache():
+        return None
+
+    async def _fake_guardar_cache(grupos):
+        return None
+
+    def _fake_detectar(session):
+        return []
+
+    llamadas_to_thread: list = []
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+    monkeypatch.setattr(web_main.asyncio, "to_thread", _spy_to_thread(llamadas_to_thread))
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post("/api/infra/botellas/apropiar-masivo", json={"csrf_token": "cualquiera"})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body == {
+        "ok": True,
+        "total_grupos": 0,
+        "grupos_resolubles": 0,
+        "grupos_apropiados": 0,
+        "grupos_con_error": 0,
+        "detalle": [],
+    }
+    assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
+
+
 # ── POST /api/admin/infra/botellas/operatividad ──────────────────────────────
 
 
@@ -338,6 +451,52 @@ def test_exportar_inconsistencias_requiere_autenticacion():
     client = TestClient(app)
     res = client.get("/api/admin/infra/botellas/inconsistencias/exportar")
     assert res.status_code == 401
+
+
+def test_exportar_inconsistencias_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
+    """Mismo antipatrón que el visor en el camino de cache miss del export de inconsistencias.
+    Discriminante: falla si el cómputo deja de pasar por `asyncio.to_thread`."""
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(
+        "db.session.AsyncSessionLocal", _fake_async_session_local(MagicMock())
+    )
+    monkeypatch.setattr(
+        "core.services.cromo.orfanas_service.buscar_huerfanas",
+        lambda sesion, limit, offset: _async_resultado_vacio(),
+    )
+
+    async def _fake_leer_cache():
+        return None
+
+    async def _fake_guardar_cache(grupos):
+        return None
+
+    def _fake_detectar(session):
+        return []
+
+    llamadas_to_thread: list = []
+    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(
+        "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
+    )
+    monkeypatch.setattr(web_main.asyncio, "to_thread", _spy_to_thread(llamadas_to_thread))
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.get("/api/admin/infra/botellas/inconsistencias/exportar")
+
+    assert res.status_code == 200
+    assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
+
+
+async def _async_resultado_vacio():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(botellas=[])
 
 
 # ── POST /api/infra/botellas/eliminar ────────────────────────────────────────
