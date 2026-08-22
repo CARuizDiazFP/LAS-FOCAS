@@ -30,7 +30,12 @@ def get_redis() -> Redis:
             _build_redis_url(),
             decode_responses=True,
             socket_connect_timeout=2,
-            socket_timeout=2,
+            # BLPOP_TIMEOUT_SECONDS (modules/botellas_recalculo_worker/config.py) es 5s: el timeout
+            # de lectura del socket debe superarlo con margen, o cada ciclo BLPOP idle (el caso
+            # normal, sin jobs) lanza un TimeoutError espurio del lado cliente — server y cliente
+            # tienen relojes de timeout independientes, redis-py no los coordina para comandos
+            # bloqueantes. 10s = 2x BLPOP_TIMEOUT_SECONDS + margen por jitter de red/GC.
+            socket_timeout=10,
         )
     return _client
 
