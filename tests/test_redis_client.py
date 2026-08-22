@@ -74,3 +74,62 @@ def test_reset_redis_client_fuerza_reconstruccion(monkeypatch: pytest.MonkeyPatc
 
     # Limpiar
     redis_client.reset_redis_client()
+
+
+def _connection_kwargs(client) -> dict:
+    return client.connection_pool.connection_kwargs
+
+
+def test_pubsub_client_es_una_instancia_separada_del_compartido() -> None:
+    """El subscriber pub/sub NO debe compartir cliente con los comandos cortos."""
+    redis_client.reset_redis_client()
+    try:
+        compartido = redis_client.get_redis()
+        pubsub = redis_client.get_redis_pubsub_client()
+        assert pubsub is not compartido
+        # ...pero sigue siendo singleton por sí mismo.
+        assert pubsub is redis_client.get_redis_pubsub_client()
+    finally:
+        redis_client.reset_redis_client()
+
+
+def test_pubsub_client_sin_socket_timeout_de_lectura() -> None:
+    """Regresión del bug medido en dev (2026-08-22): con el `socket_timeout` finito del cliente
+    compartido, `PubSub.listen()` levantaba TimeoutError cada 10s de silencio del canal, se
+    desconectaba y resuscribía — dejando el canal SIN suscriptores ~5s de cada ~15s y perdiendo todo
+    lo publicado en esas ventanas (pub/sub es fire-and-forget)."""
+    redis_client.reset_redis_client()
+    try:
+        kwargs_pubsub = _connection_kwargs(redis_client.get_redis_pubsub_client())
+        assert kwargs_pubsub.get("socket_timeout") is None, (
+            "el cliente pub/sub debe bloquear indefinidamente en la lectura"
+        )
+        # Conectar a un host muerto sí debe seguir fallando rápido: es otra preocupación.
+        assert kwargs_pubsub.get("socket_connect_timeout") == 2
+        # Keepalive TCP: única defensa contra un peer que muere sin FIN/RST.
+        assert kwargs_pubsub.get("socket_keepalive") is True
+        assert kwargs_pubsub.get("socket_keepalive_options")
+    finally:
+        redis_client.reset_redis_client()
+
+
+def test_cliente_compartido_conserva_su_socket_timeout_finito() -> None:
+    """El cliente compartido NO cambia: el BLPOP del worker y los GET/SET/DEL/RPUSH son operaciones
+    acotadas que sí quieren un timeout finito."""
+    redis_client.reset_redis_client()
+    try:
+        kwargs = _connection_kwargs(redis_client.get_redis())
+        assert kwargs.get("socket_timeout") == 10
+        assert kwargs.get("socket_connect_timeout") == 2
+    finally:
+        redis_client.reset_redis_client()
+
+
+def test_reset_redis_client_tambien_resetea_el_pubsub() -> None:
+    redis_client.reset_redis_client()
+    try:
+        primero = redis_client.get_redis_pubsub_client()
+        redis_client.reset_redis_client()
+        assert redis_client.get_redis_pubsub_client() is not primero
+    finally:
+        redis_client.reset_redis_client()

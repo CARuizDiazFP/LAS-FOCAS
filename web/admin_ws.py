@@ -18,9 +18,9 @@ from typing import Optional
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 
-from core.cache.redis_client import get_redis
+from core.cache.redis_client import get_redis_pubsub_client
+from core.services.botella_recompute_queue import ADMIN_NOTIFICATIONS_CHANNEL
 
-ADMIN_NOTIFICATIONS_CHANNEL = "admin-notifications"
 _TESTING_HEADER = "x-test-user"
 
 
@@ -69,12 +69,32 @@ async def _get_admin_identity(websocket: WebSocket, allowed_origins: list[str]) 
     return username
 
 
+async def _cerrar_pubsub(pubsub) -> None:
+    """Best-effort: liberar la conexión pub/sub al pool. Nunca puede tapar el error original que
+    llevó a cerrarla, ni frenar un `CancelledError` en curso."""
+    if pubsub is None:
+        return
+    try:
+        await pubsub.aclose()
+    except Exception:  # noqa: BLE001 - cierre best-effort
+        pass
+
+
 async def _subscriber_loop(manager: ConnectionManager, logger: logging.Logger) -> None:
     """Se reintenta con backoff fijo si Redis no está disponible al arrancar o se cae — nunca tira
-    abajo la app: si Redis nunca vuelve, el canal simplemente no emite nada más."""
+    abajo la app: si Redis nunca vuelve, el canal simplemente no emite nada más.
+
+    Usa `get_redis_pubsub_client()` (conexión dedicada, `socket_timeout=None`) y NO el `get_redis()`
+    compartido: el `socket_timeout=10` de ese último está calibrado para el `BLPOP` del worker y
+    convertía cada 10s de silencio genuino del canal en un `TimeoutError` → desconexión →
+    resuscripción, dejando el canal sin suscriptores ~5s de cada ~15s (medido en dev con
+    `PUBSUB NUMSUB`). Todo lo publicado en esas ventanas se perdía: pub/sub es fire-and-forget.
+    Los fallos reales (Redis caído, conexión cerrada por el server) siguen cayendo en el `except` de
+    abajo con su reintento — sólo se eliminó el disparador FALSO."""
     while True:
+        pubsub = None
         try:
-            client = get_redis()
+            client = get_redis_pubsub_client()
             pubsub = client.pubsub()
             await pubsub.subscribe(ADMIN_NOTIFICATIONS_CHANNEL)
             logger.info("action=admin_ws_subscriber evento=suscripto canal=%s", ADMIN_NOTIFICATIONS_CHANNEL)
@@ -88,9 +108,14 @@ async def _subscriber_loop(manager: ConnectionManager, logger: logging.Logger) -
                     continue
                 await manager.broadcast(data)
         except asyncio.CancelledError:
+            await _cerrar_pubsub(pubsub)
             raise
         except Exception:  # noqa: BLE001 - Redis caído/reconectando: loguear y reintentar
             logger.warning("action=admin_ws_subscriber evento=error_reintentando", exc_info=True)
+            # Devolver la conexión al pool antes de reintentar: `PubSub.__del__` no la libera (sólo
+            # desregistra el callback de reconexión), así que abandonar el objeto en cada reintento
+            # iría dejando conexiones colgadas en el pool.
+            await _cerrar_pubsub(pubsub)
             await asyncio.sleep(5)
 
 
