@@ -48,7 +48,7 @@ CLASES_BOTELLA: tuple[int, ...] = (68, 121, 122, 123, 125)
 # Clases con colección propia contable vía stats[].count (fase de conteo).
 CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION)
 
-_BOTELLA_CAMPOS = (
+BOTELLA_CAMPOS = (
     "version_id",
     "vmax",
     "clase",
@@ -463,11 +463,11 @@ async def _procesar_botella_completa(
                         sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, "ALIAS_IGNORADA"
                     )
             else:
-                accion_botella = await upsert_versionado(sesion, CromoBotella, arbol.botella, _BOTELLA_CAMPOS)
+                accion_botella = await upsert_versionado(sesion, CromoBotella, arbol.botella, BOTELLA_CAMPOS)
                 contadores.leidas += 1
                 contadores.contar(accion_botella)
                 if accion_botella in ("CREADA", "ACTUALIZADA"):
-                    # "nombre" no está en _BOTELLA_CAMPOS (ver comentario ahí): una corrección
+                    # "nombre" no está en BOTELLA_CAMPOS (ver comentario ahí): una corrección
                     # manual vía PATCH /api/infra/botellas/{n_id}/nombre marca
                     # nombre_editado_manual=True para que la próxima corrida no la pise. Ya está
                     # en el identity map (lo acaba de tocar upsert_versionado), sin round-trip extra.
@@ -902,6 +902,7 @@ async def continuar_corrida(
 
 
 __all__ = [
+    "BOTELLA_CAMPOS",
     "CABLE_CAMPOS",
     "CLASE_CABLE",
     "CLASES_BOTELLA",

@@ -16,16 +16,12 @@ from core.services.cromo import alias_service
 from core.services.cromo import ingesta
 from core.services.cromo import parser as cromo_parser
 from core.services.cromo.client import CromoClient, CromoClientError
+from core.services.cromo import id_dual_resolver
 from core.services.cromo.modelos import Cable, Pelo, Tubo
 from core.services.cromo.verificador import ObjetoNoEncontrado
 from db.models.cromo import CromoBotella, CromoCable, CromoPelo, CromoTubo
 
 logger = logging.getLogger(__name__)
-
-# Cota defensiva de saltos hist[]/next_id: el caso real observado (B2-FO-CAR, 2026-08-21)
-# resuelve en 1-2 requests porque hist[] trae la cadena completa de entrada — este límite sólo
-# protege contra una cadena rota, cíclica o anormalmente larga.
-MAX_HOPS_HIST = 5
 
 
 @dataclass(slots=True)
@@ -74,66 +70,6 @@ class ResultadoRepoblarCables:
     detalle: list[ItemRepoblado]
 
 
-def _ids_de_hist(obj: dict[str, Any]) -> set[int]:
-    return {entrada["id"] for entrada in (obj.get("hist") or []) if isinstance(entrada, dict) and entrada.get("id") is not None}
-
-
-def _next_id_de(obj: dict[str, Any], id_actual: Optional[int]) -> Optional[int]:
-    """Busca, dentro del propio `hist[]` de `obj`, la entrada cuyo `id` es `id_actual` y devuelve
-    su `next_id` (0 = no hay más — es la vigente). Sigue la cadena salto a salto por el id propio
-    de cada objeto, no "salta directo" a la entrada con `next_id == 0`: así funciona igual si
-    `hist[]` trae la cadena completa (confirmado real, caso B2-FO-CAR, 2 saltos) o sólo una
-    ventana parcial alrededor del id consultado."""
-    for entrada in obj.get("hist") or []:
-        if isinstance(entrada, dict) and entrada.get("id") == id_actual:
-            return entrada.get("next_id") or None
-    return None
-
-
-async def _fetch_objeto(cliente: CromoClient, n_id: int) -> dict[str, Any]:
-    """Desenvuelve el `{"st": ..., "response": {...}}` con el que responde Cromo — confirmado real
-    contra `GET /db/objects/{id}?show=TOPOLOGIES&show=REL_ATTRIBUTE` (Paso 0, 2026-08-21)."""
-    respuesta = await cliente.get_objeto_con_topologia(n_id)
-    return respuesta.get("response", respuesta)
-
-
-async def _resolver_cadena_objetos(
-    cliente: CromoClient, n_id: int, obj_inicial: dict[str, Any]
-) -> tuple[dict[str, Any], set[int]]:
-    """Devuelve el objeto con la topología VIGENTE (`tp[]` poblado) + el set de ids de toda la
-    cadena `hist` (insumo del anclaje de extremo, ver `_anclar_extremo_a_botella`).
-
-    Confirmado con datos reales: `hist[]` trae la cadena completa sin importar qué id de la cadena
-    se consulte, así que 1-2 requests alcanzan casi siempre — el loop acotado por
-    `MAX_HOPS_HIST` es puramente defensivo (cadena que sigue en movimiento, respuesta parcial).
-    """
-    obj = obj_inicial
-    id_actual = obj.get("id", n_id)
-    ids_cadena = {n_id} | _ids_de_hist(obj)
-    visitados = {n_id}
-    saltos = 0
-    while not (obj.get("tp") or []) and saltos < MAX_HOPS_HIST:
-        siguiente_id = _next_id_de(obj, id_actual)
-        if siguiente_id is None or siguiente_id in visitados:
-            break
-        visitados.add(siguiente_id)
-        try:
-            obj = await _fetch_objeto(cliente, siguiente_id)
-        except CromoClientError as exc:
-            logger.warning(
-                "action=cromo_repoblar_cables evento=hop_no_resuelve botella_n_id=%s siguiente_id=%s error=%s",
-                n_id,
-                siguiente_id,
-                exc,
-            )
-            break
-        id_actual = siguiente_id
-        ids_cadena.add(siguiente_id)
-        ids_cadena |= _ids_de_hist(obj)
-        saltos += 1
-    return obj, ids_cadena
-
-
 def _anclar_extremo_a_botella(cable: Cable, botella_n_id: int, ids_cadena: set[int]) -> None:
     """Confirmado con datos reales (Paso 0, caso B2-FO-CAR): el extremo de un cable conectado a
     una botella con historial reporta el id de VERSIÓN vigente (ej. 9057952 = next_id), no el
@@ -156,13 +92,15 @@ async def detectar_cables_faltantes(
         raise ObjetoNoEncontrado(f"No existe una Botella con n_id={botella_n_id} en el inventario local.")
 
     try:
-        obj_inicial = await _fetch_objeto(cliente, botella_n_id)
+        obj_inicial = await id_dual_resolver.fetch_objeto(cliente, botella_n_id)
     except CromoClientError as exc:
         if exc.status_code == 404:
             raise ObjetoNoEncontrado(f"No existe un elemento con n_id={botella_n_id} en Cromo.") from exc
         raise
 
-    obj_vigente, ids_cadena = await _resolver_cadena_objetos(cliente, botella_n_id, obj_inicial)
+    obj_vigente, ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, botella_n_id, obj_inicial, esta_vigente=lambda o: bool(o.get("tp") or [])
+    )
 
     candidatos_id = [
         item.get("id_to")
@@ -177,7 +115,7 @@ async def detectar_cables_faltantes(
             # Fetch DIRECTO del cable por su propio id — el ítem embebido en botella.tp[] es una
             # vista PARCIAL (sin vmax/id de versión, con un solo extremo, at[] recortado; ver Paso
             # 0) y no alcanza para upsertear un CromoCable completo.
-            cable_obj = await _fetch_objeto(cliente, id_to)
+            cable_obj = await id_dual_resolver.fetch_objeto(cliente, id_to)
         except CromoClientError as exc:
             logger.warning(
                 "action=cromo_repoblar_cables evento=cable_no_resuelve botella_n_id=%s cable_id=%s error=%s",

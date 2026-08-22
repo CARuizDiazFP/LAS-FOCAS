@@ -126,7 +126,7 @@ def _botella(n_id=1, version_id=1, vmax=1, **kwargs) -> _BotellaDominioFake:
 @pytest.mark.asyncio
 async def test_upsert_versionado_crea_si_no_existe():
     sesion = _SesionFake()
-    accion = await ingesta.upsert_versionado(sesion, CromoBotella, _botella(n_id=10, vmax=1), ingesta._BOTELLA_CAMPOS)
+    accion = await ingesta.upsert_versionado(sesion, CromoBotella, _botella(n_id=10, vmax=1), ingesta.BOTELLA_CAMPOS)
 
     assert accion == "CREADA"
     assert len(sesion.agregados) == 1
@@ -141,7 +141,7 @@ async def test_upsert_versionado_sin_cambios_no_toca_campos():
 
     # Llega una vista parcial (nombre=None) con el mismo vmax: no debe pisar el nombre ya cargado.
     accion = await ingesta.upsert_versionado(
-        sesion, CromoBotella, _botella(n_id=10, version_id=1, vmax=5, nombre=None), ingesta._BOTELLA_CAMPOS
+        sesion, CromoBotella, _botella(n_id=10, version_id=1, vmax=5, nombre=None), ingesta.BOTELLA_CAMPOS
     )
 
     assert accion == "SIN_CAMBIOS"
@@ -151,18 +151,18 @@ async def test_upsert_versionado_sin_cambios_no_toca_campos():
 
 @pytest.mark.asyncio
 async def test_upsert_versionado_actualizada_pisa_campos_y_marca_modificacion():
-    # "nombre" ya no está en _BOTELLA_CAMPOS (ver comentario ahí) — lo protege
+    # "nombre" ya no está en BOTELLA_CAMPOS (ver comentario ahí) — lo protege
     # _procesar_botella_completa, no este helper genérico. Este test verifica el resto de los
-    # campos de _BOTELLA_CAMPOS (ej. version_id), no nombre.
+    # campos de BOTELLA_CAMPOS (ej. version_id), no nombre.
     existente = CromoBotella(n_id=10, version_id=1, vmax=5, nombre="Viejo")
     sesion = _SesionFake({(CromoBotella, 10): existente})
 
     accion = await ingesta.upsert_versionado(
-        sesion, CromoBotella, _botella(n_id=10, version_id=2, vmax=6, nombre="Nuevo"), ingesta._BOTELLA_CAMPOS
+        sesion, CromoBotella, _botella(n_id=10, version_id=2, vmax=6, nombre="Nuevo"), ingesta.BOTELLA_CAMPOS
     )
 
     assert accion == "ACTUALIZADA"
-    assert existente.nombre == "Viejo"  # no tocado por upsert_versionado: no está en _BOTELLA_CAMPOS
+    assert existente.nombre == "Viejo"  # no tocado por upsert_versionado: no está en BOTELLA_CAMPOS
     assert existente.version_id == 2
     assert existente.vmax == 6
     assert existente.ultima_modificacion is not None

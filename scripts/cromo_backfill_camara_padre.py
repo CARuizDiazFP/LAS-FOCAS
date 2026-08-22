@@ -62,7 +62,7 @@ implica `camara_id` ya seteado, ver `core/services/cromo/separacion_service.py`)
 blindaje explícito pedido para que un futuro `--force` que resetee `camara_id` a NULL no vuelva a
 agrupar una fila que un admin separó a mano a propósito. Re-escanear en memoria es barato a ~11k
 filas. La reingesta periódica de Cromo (`ingesta.py`) nunca pisa `camara_id`/`estado`: no están en
-`_BOTELLA_CAMPOS` ni en el dataclass `Botella`.
+`BOTELLA_CAMPOS` ni en el dataclass `Botella`.
 
 Sesión síncrona (`SessionLocal`, no `AsyncSessionLocal`): toda la lógica reutilizada
 (`aplicar_estado_a_grupo`, `miembros_del_grupo`) es síncrona; mezclar dos engines en un script batch

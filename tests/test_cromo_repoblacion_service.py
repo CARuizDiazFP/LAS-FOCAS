@@ -11,6 +11,7 @@ from typing import Any, Optional
 import pytest
 
 from core.services.cromo import repoblacion_service as repo
+from core.services.cromo import id_dual_resolver
 from core.services.cromo.client import CromoClientError
 from core.services.cromo.verificador import ObjetoNoEncontrado
 from db.models.cromo import CromoBotella, CromoCable
@@ -103,7 +104,9 @@ def _botella_local(n_id: int = 9057909) -> CromoBotella:
 async def test_resolver_cadena_sin_hist_usa_el_objeto_tal_cual():
     obj = {"id": 1, "hist": [], "tp": [{"class": 51, "id_to": 5}]}
     cliente = _ClienteFake({})
-    obj_vigente, ids_cadena = await repo._resolver_cadena_objetos(cliente, 1, obj)
+    obj_vigente, ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, 1, obj, esta_vigente=lambda o: bool(o.get("tp") or [])
+    )
     assert obj_vigente is obj
     assert ids_cadena == {1}
     assert cliente.llamadas == []  # no hizo falta ningún request adicional
@@ -112,7 +115,9 @@ async def test_resolver_cadena_sin_hist_usa_el_objeto_tal_cual():
 @pytest.mark.asyncio
 async def test_resolver_cadena_sigue_next_id_cuando_el_objeto_original_esta_vacio():
     cliente = _ClienteFake({9057952: BOTELLA_VIGENTE})
-    obj_vigente, ids_cadena = await repo._resolver_cadena_objetos(cliente, 9057909, BOTELLA_VIEJA)
+    obj_vigente, ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, 9057909, BOTELLA_VIEJA, esta_vigente=lambda o: bool(o.get("tp") or [])
+    )
     assert obj_vigente is BOTELLA_VIGENTE
     assert ids_cadena == {9057909, 9057952}
     assert cliente.llamadas == [9057952]
@@ -124,7 +129,9 @@ async def test_resolver_cadena_multi_hop():
     obj_b = {"id": 2, "hist": [{"id": 1, "next_id": 2}, {"id": 2, "next_id": 3}], "tp": []}
     obj_c = {"id": 3, "hist": [{"id": 2, "next_id": 3}, {"id": 3, "next_id": 0}], "tp": [{"class": 51, "id_to": 99}]}
     cliente = _ClienteFake({2: obj_b, 3: obj_c})
-    obj_vigente, ids_cadena = await repo._resolver_cadena_objetos(cliente, 1, obj_a)
+    obj_vigente, ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, 1, obj_a, esta_vigente=lambda o: bool(o.get("tp") or [])
+    )
     assert obj_vigente is obj_c
     assert ids_cadena == {1, 2, 3}
     assert cliente.llamadas == [2, 3]
@@ -135,7 +142,9 @@ async def test_resolver_cadena_ciclo_no_cuelga():
     obj_a = {"id": 1, "hist": [{"id": 1, "next_id": 2}], "tp": []}
     obj_b = {"id": 2, "hist": [{"id": 2, "next_id": 1}], "tp": []}  # vuelve a 1: ciclo
     cliente = _ClienteFake({2: obj_b})
-    obj_vigente, ids_cadena = await repo._resolver_cadena_objetos(cliente, 1, obj_a)
+    obj_vigente, ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, 1, obj_a, esta_vigente=lambda o: bool(o.get("tp") or [])
+    )
     assert obj_vigente is obj_b  # se detiene en el primer visitado repetido
     assert ids_cadena == {1, 2}
     assert cliente.llamadas == [2]  # nunca vuelve a pedir 1
@@ -145,7 +154,9 @@ async def test_resolver_cadena_ciclo_no_cuelga():
 async def test_resolver_cadena_hop_intermedio_404_no_aborta():
     obj_a = {"id": 1, "hist": [{"id": 1, "next_id": 2}], "tp": []}
     cliente = _ClienteFake({}, errores={2: CromoClientError("no existe", status_code=404)})
-    obj_vigente, ids_cadena = await repo._resolver_cadena_objetos(cliente, 1, obj_a)
+    obj_vigente, ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, 1, obj_a, esta_vigente=lambda o: bool(o.get("tp") or [])
+    )
     assert obj_vigente is obj_a  # devuelve lo último que tenía, sin tp
     assert ids_cadena == {1}
 

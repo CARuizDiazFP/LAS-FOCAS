@@ -117,7 +117,7 @@ class CromoBotella(Base):
     """Botella/empalme/ODF ingerido desde Cromo. `n_id` es la PK de linaje (estable entre versiones).
 
     `camara_id`/`estado` (desde 2026-08-11) los pone `core/services/cromo/camara_padre_service.py`
-    vía `scripts/cromo_backfill_camara_padre.py` — deliberadamente excluidos de `_BOTELLA_CAMPOS`
+    vía `scripts/cromo_backfill_camara_padre.py` — deliberadamente excluidos de `BOTELLA_CAMPOS`
     (`core/services/cromo/ingesta.py`) para que ninguna re-ingesta futura los pise (ver ese módulo).
 
     `nombre_editado_manual` (desde 2026-08-21) lo pone `PATCH /api/infra/botellas/{n_id}/nombre`
