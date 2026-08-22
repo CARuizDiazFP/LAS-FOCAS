@@ -565,6 +565,73 @@ por normalización).
   vacío a propósito (no existe tal id en ese espacio) — su `Camara.id` se referencia dentro del propio
   `Motivo` en su lugar. Botón "Exportar inconsistencias" en el toolbar del viewer.
 
+### Caché Redis + worker dedicado + WebSocket para el visor de duplicados (2026-08-21)
+
+`detectar_grupos_duplicados_botellas` (2 queries `joinedload` sin paginar, agrupadas en Python) se
+llama de forma síncrona en 3 endpoints; su costo escala con el tamaño total de `app.camaras`/
+`app.cromo_botellas`, no con la cantidad de duplicados reales. Se agregó una caché Redis de lectura +
+un worker dedicado que la recalcula en background + un canal WebSocket que avisa a cualquier panel
+admin abierto cuando el recálculo termina — sin tocar la función de detección en sí. Detalle completo
+(arquitectura, convenciones exactas, decisiones de infraestructura confirmadas y alcance YAGNI) en
+`docs/superpowers/specs/2026-08-21-botellas-duplicados-redis-ws.md`; acá sólo el resumen operativo.
+
+- **3 endpoints leen la caché antes de calcular** (`cache:botellas_duplicados:v1`, TTL 24h como red de
+  seguridad — la invalidación real es explícita en cada mutación, ver abajo):
+  `GET /api/admin/infra/botellas/viewer/duplicados` (el propio viewer), `GET
+  /api/admin/infra/botellas/inconsistencias/exportar` (export), y `POST
+  /api/infra/botellas/apropiar-masivo` (la necesita como insumo propio para decidir qué grupos son
+  `resoluble`, no sólo para responder). Hit → se salta el cómputo completo. Miss (frío o Redis caído)
+  → cómputo síncrono de siempre, sin cambios, más un `SET` oportunista del resultado.
+- **7 endpoints mutadores invalidan la caché y encolan un recálculo** — cambian datos que afectan la
+  agrupación (`vigente`, `camara_id`/`camara_padre_id`, `nombre`) pero ninguno recalculaba
+  server-side antes de esto: `POST /api/infra/botellas/apropiar` (individual), `POST
+  /api/infra/botellas/apropiar-masivo` (sólo si `grupos_apropiados > 0`), `POST
+  /api/infra/botellas/consolidar`, `POST /api/infra/botellas/eliminar`, `POST
+  /api/infra/botellas/{n_id}/repoblar-cables` (sólo si `resultado.corrida_id is not None` — hay un
+  camino "nada pendiente" que no debe encolar nada), `POST
+  /api/infra/botellas/{n_id}/separar-padre` y `PATCH /api/infra/botellas/{n_id}/nombre`. Los 7 llaman a
+  `core.services.botella_recompute_queue.encolar_recalculo_duplicados_botellas(motivo)`, que borra la
+  clave de caché (`DELETE`) y encola un job (`RPUSH admin:recompute:jobs {"kind":
+  "botellas_duplicados", "motivo": ...}`) — siempre después de confirmar la mutación.
+- **Worker dedicado** `modules/botellas_recalculo_worker/` (mismo layout que `modules/cromo_worker/`,
+  imagen `focas-base` + Dockerfile propio, sin `BackgroundTasks`/Celery): un loop `BLPOP` sobre
+  `admin:recompute:jobs` con un dispatch table (hoy un solo `kind` registrado,
+  `botellas_duplicados`) que recalcula con la misma `detectar_grupos_duplicados_botellas` sin tocar,
+  repuebla la caché y publica `{"type": "botellas_duplicados_recalculado", "at": "<iso8601 UTC>"}` en
+  el canal Redis `admin-notifications`. `GET /health` (puerto interno `8097`) refleja la vida real del
+  loop (`loop_muerto` si la tarea asyncio terminó), no un "ok" estático. Servicio `redis` (imagen
+  fijada `redis:7.4-alpine`) y `botellas_recalculo_worker` agregados a `deploy/docker-compose.dev.yml`
+  y `deploy/compose.yml` — en dev, buildeados, levantados y verificados `healthy` reales; en prod,
+  código listo pero sin recrear contenedores (ver `docs/decisiones.md`, entrada 2026-08-21 (cont.)).
+- **Canal WebSocket** `GET /ws/admin-notifications` (`web/admin_ws.py`) — a diferencia del WS de chat
+  preexistente (`web/chat_ws.py`, 1 conexión ↔ 1 orchestrator), éste hace broadcast: un
+  `ConnectionManager` registra todas las conexiones activas del panel admin y reenvía cada mensaje que
+  llega por el canal pub/sub `admin-notifications` a todas. Exige sesión con `role == "admin"` (más
+  estricto que el WS de chat) y valida `origin` igual que `chat_ws.py`; el proceso `web` se suscribe al
+  canal en el arranque (`@app.on_event("startup")`). Frontend:
+  `web/frontend/src/composables/useAdminNotifications.ts` (conecta al montar/desconecta al desmontar,
+  reconexión con backoff exponencial + jitter, nunca reconecta si el cierre es código `4401` — sesión
+  no admin). En `AdminBotellasViewer.vue`, los 3 handlers que antes bloqueaban en `Promise.all([
+  reloadDuplicados(), reloadFromZero()])` (apropiar individual, apropiar masiva, consolidar) ahora sólo
+  esperan `reloadFromZero()`; el evento WS dispara un `reloadDuplicados()` silencioso aparte. El botón
+  "Actualizar" ya existente (`refrescar()`) sigue como fallback manual — no se agregó ninguno nuevo.
+- **Redis nunca es una dependencia dura**: cada punto de fallo (lectura/escritura de caché, encolado,
+  publish, subscribe) se atrapa y loguea — el sistema completo degrada al comportamiento síncrono de
+  siempre, correcto, sólo sin la mejora de velocidad. `core/cache/redis_client.py::get_redis()` es un
+  singleton lazy (`socket_connect_timeout=2`, `socket_timeout=10` — subido desde `2` durante la
+  implementación: tiene que superar con margen el `BLPOP_TIMEOUT_SECONDS=5` del worker o cada ciclo
+  `BLPOP` sin jobs, el caso normal en operación idle, tira un `TimeoutError` espurio del lado cliente
+  tratado como "Redis caído").
+- **Issue conocido, diferido deliberadamente**: el subscriber de `web/admin_ws.py` cicla
+  timeout+reconexión cada ~15s cuando el canal está genuinamente idle (sin mensajes) — confirmado
+  contra el código fuente real de redis-py 5.0.8: el `listen()` bloqueante de pub/sub cae en el
+  `socket_timeout` del cliente, que no tiene un "timeout máximo conocido" equivalente al parámetro
+  explícito de `BLPOP`. Es autocurativo (el mismo diseño catch/log/sleep/retry ya lo maneja) y de
+  impacto acotado (ruido de logs + un eventual toast de UI en vivo perdido — nunca pérdida de datos, la
+  DB sigue siendo la fuente de verdad), pero es real. El fix correcto sería una conexión
+  Redis dedicada sin `socket_timeout` para este listener puntual — queda anotado como trabajo futuro,
+  no como parte de este alcance.
+
 ### Eliminación de Cámaras/Botellas basura + exclusión automática en Cromo (2026-08-20)
 
 El "Verificador Cromo"/"Validar datos DB Cromo" (2026-08-19) dejaron a la vista basura heredada de
