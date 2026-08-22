@@ -750,6 +750,103 @@ async def test_procesar_botella_completa_usa_objeto_vigente_de_la_cadena_en_vez_
     assert cliente.pedidos == [5001, 6001]
 
 
+def _cliente_cadena_5001_a_6001() -> _ClienteTopologiaFake:
+    """Cadena mínima del fenómeno: el barrido trae el cascarón 5001, cuya `hist[]` lleva al objeto
+    vigente 6001 (el que tiene `tp[]`, o sea topología real)."""
+    return _ClienteTopologiaFake(
+        {
+            5001: {
+                "n_id": 5001,
+                "id": 5001,
+                "class": 68,
+                "vmax": 1,
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+            },
+            6001: {
+                "n_id": 6001,
+                "id": 6001,
+                "class": 68,
+                "vmax": 2,
+                "name": "BOT interna Hotel Nuevo fondo Posadas 1557",
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+                "tp": [_cable_embebido(7001, botella_n_id=6001, otro_extremo=8001)],
+            },
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_registra_id_dual_redirigida_con_origen_y_destino():
+    """Traza auditable de la redirección: sin este evento el n_id del cascarón desaparece del
+    histórico (el único evento sería el CREADA bajo el n_id vigente) y no habría forma de medir
+    cuántas veces disparó esta rama tras una corrida masiva real."""
+    obj = _cascaron_sin_topologia(5001)
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(
+        _cliente_cadena_5001_a_6001(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
+
+    assert contadores.errores == 0
+    redirigidas = [o for o in sesion.agregados if getattr(o, "accion", None) == "ID_DUAL_REDIRIGIDA"]
+    assert len(redirigidas) == 1
+    assert redirigidas[0].n_id == 5001  # el cascarón que trajo el barrido, no el destino
+    assert redirigidas[0].detalle == "destino_n_id=6001"
+    assert redirigidas[0].clase == 68
+    # La redirección NO reemplaza al evento normal: siguen siendo dos señales distintas.
+    assert [o.n_id for o in sesion.agregados if getattr(o, "accion", None) == "CREADA"] == [6001, 7001]
+
+
+@pytest.mark.parametrize(
+    ("accion", "id_cromo_destino", "evento_alias", "extremo_esperado"),
+    [("ignorar", None, "ALIAS_IGNORADA", None), ("fusionar", 9001, "ALIAS_FUSIONADA", 9001)],
+)
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_respeta_alias_del_n_id_vigente_tras_redirigir(
+    accion, id_cromo_destino, evento_alias, extremo_esperado
+):
+    """El alias se evalúa primero sobre el n_id del cascarón; tras redirigir hay que volver a
+    evaluarlo sobre el n_id VIGENTE. Caso real: `camara_botella_delete_service` elimina a mano una
+    Botella (sólo permitido si no tiene cables/fusiones locales — el placeholder vacío que este
+    fenómeno genera) y registra su n_id con accion='ignorar' "para que la ingesta no la resucite".
+    Sin esta re-evaluación, la redirección la volvía a crear, ahora con sus cables.
+
+    Mismo criterio que el camino de alias original: se saltea sólo el upsert de la fila
+    `CromoBotella`; el resto del árbol (cables/fusiones/tubos/pelos) SÍ se procesa, con las
+    referencias al n_id aliaseado ya redirigidas por `alias_service.resolver_referencia`.
+    """
+    obj = _cascaron_sin_topologia(5001)
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    alias_por_origen = {6001: AliasBotella(accion=accion, id_cromo_destino=id_cromo_destino)}
+
+    await ingesta._procesar_botella_completa(
+        _cliente_cadena_5001_a_6001(),
+        sesion,
+        corrida_id=1,
+        obj=obj,
+        contadores=contadores,
+        alias_por_origen=alias_por_origen,
+    )
+
+    assert contadores.errores == 0
+    # Ni la fila del vigente (aliaseado) ni la del cascarón: no se resucita nada.
+    assert [o for o in sesion.agregados if isinstance(o, CromoBotella)] == []
+    eventos_alias = [o for o in sesion.agregados if getattr(o, "accion", None) == evento_alias]
+    assert len(eventos_alias) == 1
+    assert eventos_alias[0].n_id == 6001
+    # Las dos señales conviven: la redirección queda registrada igual.
+    redirigidas = [o for o in sesion.agregados if getattr(o, "accion", None) == "ID_DUAL_REDIRIGIDA"]
+    assert len(redirigidas) == 1
+    assert redirigidas[0].n_id == 5001
+    assert redirigidas[0].detalle == "destino_n_id=6001"
+    # El árbol del vigente sí se procesa, con el extremo aliaseado resuelto.
+    cables = [o for o in sesion.agregados if isinstance(o, CromoCable)]
+    assert [c.n_id for c in cables] == [7001]
+    assert {cables[0].extremo_a_n_id, cables[0].extremo_b_n_id} == {extremo_esperado, 8001}
+
+
 @pytest.mark.asyncio
 async def test_procesar_botella_completa_no_hace_request_extra_si_ya_tiene_cables():
     """REGRESIÓN DE COSTO: una botella con topología en el snapshot no es candidata — cero fetches

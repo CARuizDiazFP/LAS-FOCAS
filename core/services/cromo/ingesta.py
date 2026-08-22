@@ -492,6 +492,30 @@ async def _resolver_posible_id_dual(
     return _ResultadoIdDualBotella()
 
 
+async def _registrar_evento_alias_botella(
+    sesion: AsyncSession, corrida_id: int, botella: Any, alias_botella: AliasBotella
+) -> None:
+    """Traza del camino "esta botella tiene alias": n_id marcado como basura/duplicado ('ignorar') o
+    como el mismo objeto que otro n_id ya bueno ('fusionar'). En ambos casos NO se crea/actualiza
+    una `CromoBotella` propia para ese n_id; sus fusiones/cables/tubos/pelos embebidos sí se
+    procesan igual, con las referencias a él ya redirigidas por `alias_service.resolver_referencia`.
+
+    Vive aparte porque hay dos entradas al mismo criterio: el alias del n_id que trajo el barrido, y
+    (tras una redirección de "ID dual") el alias del n_id vigente al que resolvió la cadena.
+    """
+    if alias_botella.accion == alias_service.ACCION_FUSIONAR:
+        await registrar_evento(
+            sesion,
+            corrida_id,
+            botella.n_id,
+            botella.clase,
+            "ALIAS_FUSIONADA",
+            f"id_cromo_destino={alias_botella.id_cromo_destino}",
+        )
+    else:
+        await registrar_evento(sesion, corrida_id, botella.n_id, botella.clase, "ALIAS_IGNORADA")
+
+
 async def _procesar_botella_completa(
     cliente: CromoClient,
     sesion: AsyncSession,
@@ -508,31 +532,11 @@ async def _procesar_botella_completa(
             arbol = cromo_parser.parse_arbol_botella(obj)
 
             alias_botella = alias_por_origen.get(arbol.botella.n_id)
-            if alias_botella is not None:
-                # n_id marcado como basura/duplicado ('ignorar') o como el mismo objeto que otro
-                # n_id ya bueno ('fusionar') — en ambos casos no se crea/actualiza una CromoBotella
-                # propia para este origen; sus fusiones/cables/tubos/pelos embebidos sí se procesan
-                # más abajo, con cualquier referencia a este n_id ya redirigida por
-                # `alias_service.resolver_referencia`.
-                contadores.leidas += 1
-                if alias_botella.accion == alias_service.ACCION_FUSIONAR:
-                    await registrar_evento(
-                        sesion,
-                        corrida_id,
-                        arbol.botella.n_id,
-                        arbol.botella.clase,
-                        "ALIAS_FUSIONADA",
-                        f"id_cromo_destino={alias_botella.id_cromo_destino}",
-                    )
-                else:
-                    await registrar_evento(
-                        sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, "ALIAS_IGNORADA"
-                    )
-            else:
+            if alias_botella is None:
                 # Detección dirigida de "ID dual" (ver `_resolver_posible_id_dual`). Deliberadamente
-                # NO corre cuando hay alias manual: ese mecanismo ya resuelve el caso más arriba, sin
-                # gastar un fetch extra. El chequeo barato (en memoria) va primero para no agregar ni
-                # un `sesion.get()` de más a las botellas normales del barrido.
+                # NO corre cuando hay alias manual: ese mecanismo ya resuelve el caso, sin gastar un
+                # fetch extra. El chequeo barato (en memoria) va primero para no agregar ni un
+                # `sesion.get()` de más a las botellas normales del barrido.
                 if not arbol.cables and not arbol.fusiones and (await sesion.get(CromoBotella, arbol.botella.n_id)) is None:
                     resultado_id_dual = await _resolver_posible_id_dual(sesion, cliente, arbol.botella.n_id)
                     if resultado_id_dual.n_id_existente is not None:
@@ -556,12 +560,34 @@ async def _procesar_botella_completa(
                         # n_id "solicitado" (a diferencia de `botella_creacion_service.py`, que sí
                         # tiene un admin mirando un n_id puntual): acá simplemente se procede como si
                         # Cromo hubiera devuelto el objeto vigente en este mismo barrido.
-                        # Límite conocido (no cubierto por el diseño de esta tarea): el alias ya se
-                        # evaluó sobre el n_id del cascarón, no se re-evalúa sobre el del vigente —
-                        # si alguien aliaseó justo el n_id VIGENTE de la cadena y no el cascarón,
-                        # esta rama le crearía fila igual. Sin caso real observado hasta hoy.
+                        n_id_cascaron = arbol.botella.n_id
                         arbol = cromo_parser.parse_arbol_botella(resultado_id_dual.obj_vigente)
+                        # Traza auditable de la redirección: sin esto el n_id del cascarón desaparece
+                        # del histórico (el único evento posterior es el CREADA/ACTUALIZADA bajo el
+                        # n_id vigente) y no habría forma de medir cuántas veces disparó esta rama —
+                        # justamente la que se apoya en el supuesto no confirmado sobre `hist[]`.
+                        await registrar_evento(
+                            sesion,
+                            corrida_id,
+                            n_id_cascaron,
+                            arbol.botella.clase,
+                            "ID_DUAL_REDIRIGIDA",
+                            f"destino_n_id={arbol.botella.n_id}",
+                        )
+                        # El alias se evaluó sobre el n_id del cascarón; el n_id VIGENTE puede tener
+                        # el suyo propio. Caso real: `camara_botella_delete_service` hace hard delete
+                        # de una Botella y registra su n_id en `cromo_botella_alias` con
+                        # accion='ignorar' "para que la ingesta no la resucite" — y sólo permite
+                        # eliminar Botellas sin cables/fusiones locales, o sea exactamente los
+                        # placeholders que este fenómeno genera. Sin re-evaluar acá, la redirección
+                        # volvería a crear esa fila (ahora con sus cables), pasando por encima del
+                        # alias que existe para impedirlo.
+                        alias_botella = alias_por_origen.get(arbol.botella.n_id)
 
+            if alias_botella is not None:
+                contadores.leidas += 1
+                await _registrar_evento_alias_botella(sesion, corrida_id, arbol.botella, alias_botella)
+            else:
                 accion_botella = await upsert_versionado(sesion, CromoBotella, arbol.botella, BOTELLA_CAMPOS)
                 contadores.leidas += 1
                 contadores.contar(accion_botella)

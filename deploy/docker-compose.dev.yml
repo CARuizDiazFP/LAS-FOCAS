@@ -295,14 +295,23 @@ services:
       - ../.env.dev
     environment:
       POSTGRES_HOST: postgres
+      # Al cerrar una corrida productiva, `continuar_corrida` encola el recálculo de Botellas
+      # duplicadas (`core/services/botella_recompute_queue.py`). Redis corre con --requirepass, así
+      # que sin estas tres piezas (host/puerto + el secret) el enqueue falla con NOAUTH y el
+      # best-effort se lo traga como warning: la caché de duplicados quedaría vieja en silencio.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
       LOGS_DIR: /app/Logs
       TZ: America/Argentina/Buenos_Aires
       APP_TIMEZONE: America/Argentina/Buenos_Aires
     secrets:
       - db_password_v1
       - cromo_password_v1
+      - redis_password_v1
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     expose:
