@@ -1,6 +1,11 @@
 # Nombre de archivo: mantenimiento_redes_produccion.md
 # Ubicación de archivo: docs/mantenimiento_redes_produccion.md
-# Descripción: Procedimiento para aplicar en ventana de mantenimiento el cambio de subred Docker de producción (/16 → /24)
+# Descripción: Procedimiento para aplicar en ventana de mantenimiento el cambio de subred Docker de producción (/16 → /24) y los demás pre-requisitos de prod preparados en código
+
+> **Antes de cualquier `docker compose -f deploy/compose.yml up` en producción**, revisar las DOS
+> secciones de este documento: el cambio de subred `/16`→`/24` (abajo) y el
+> [secret `redis_password_v1`](#pre-requisito-obligatorio-secret-redis_password_v1-2026-08-21) — este
+> último **bloquea la creación del contenedor `web`** si falta, no degrada: falla duro.
 
 # Cambio de subred Docker en producción (/16 → /24)
 
@@ -143,3 +148,59 @@ Volumen de datos intacto en todo momento (nunca se usa `-v`).
 ## Hallazgo relacionado, no aplicado en este cambio
 
 `scripts/firewall_hardening.sh` define `DOCKER_NET_CIDR=${DOCKER_NET_CIDR:-172.18.0.0/16}` como default para una regla NAT `MASQUERADE` sobre `MGMT_IFACE` (`ens224`, interfaz que no existe en este host — solo hay `ens192`). Ese default no coincide con ninguna red Docker real del stack (`172.17.0.0/16` bridge default, `172.19.0.0/24` dev, `172.20.0.0/24` prod tras este cambio), lo que sugiere que el script está pensado para otro host/entorno o quedó desactualizado. No se modificó porque toca reglas de firewall/NAT de producción y excede el alcance de este cambio (subredes de red Docker) — requiere revisión y confirmación explícita aparte.
+
+---
+
+# Pre-requisito obligatorio: secret `redis_password_v1` (2026-08-21)
+
+## Estado
+
+- **Preparado en código, pendiente de aplicar.** Misma política que el cambio de subred de arriba: `deploy/compose.yml` ya define los servicios `redis` y `botellas_recalculo_worker` y agrega el secret `redis_password_v1` al servicio `web`, pero **no se recreó ningún contenedor de producción**. Ver [docs/decisiones.md](decisiones.md), entrada 2026-08-21 (cont.), y [docs/infra.md](infra.md), sección "Caché Redis + worker dedicado + WebSocket para el visor de duplicados".
+- Fecha de redacción: 2026-08-21 (pre-requisito documentado acá el 2026-08-22).
+- Alcance: stack `lasfocas` (producción), archivo `deploy/compose.yml`, servicios `web`, `redis` y `botellas_recalculo_worker`.
+
+## Por qué bloquea
+
+`deploy/compose.yml` declara el secret file-based:
+
+```yaml
+secrets:
+  redis_password_v1:
+    file: ../.secrets/redis_password_v1.txt
+```
+
+y lo consume desde `web`, `redis` y `botellas_recalculo_worker`. Ese archivo **no existe todavía en el host de producción** — a propósito: nunca se generó un valor de prod desde el entorno de desarrollo. Docker Compose **no** degrada cuando el archivo de un secret declarado no existe: falla la creación del contenedor que lo referencia. Es decir, el próximo `up` que toque `web` (o los dos servicios nuevos) **rompe el arranque de `web`**, no sólo el de Redis. Verificado empíricamente durante la revisión final de la rama, no asumido.
+
+## Qué hacer antes del `up` (en el host de producción, con acceso a `.secrets/`)
+
+```bash
+cd /ruta/al/repo
+openssl rand -base64 32 > .secrets/redis_password_v1.txt
+chmod 600 .secrets/redis_password_v1.txt
+ls -l .secrets/redis_password_v1.txt   # esperado: -rw------- , tamaño ~45 bytes
+```
+
+Mismo procedimiento con el que se generó el de dev (`.secrets/Dev_redis_password_v1.txt`). `.secrets/` está en `.gitignore` (línea 8), así que el archivo nunca se commitea. No copiar el valor de dev: es otro entorno, otra credencial.
+
+## Verificación post-despliegue
+
+```bash
+# Los dos servicios nuevos arriba y healthy
+docker ps --filter "name=lasfocas-redis" --filter "name=lasfocas-botellas-recalculo-worker" \
+  --format "table {{.Names}}\t{{.Status}}"
+
+# Redis responde con la credencial del secret (desde adentro del contenedor, sin exponer el valor)
+docker exec lasfocas-redis sh -c 'redis-cli -a "$(cat /run/secrets/redis_password_v1)" --no-auth-warning ping'
+# Esperado: PONG
+
+# El worker ve su loop vivo (el healthcheck ya valida que la respuesta no diga loop_muerto)
+docker exec lasfocas-botellas-recalculo-worker curl -fsS http://localhost:8097/health
+
+# El subscriber de `web` quedó suscripto al canal y NO cicla (debe mantenerse en 1 indefinidamente)
+docker exec lasfocas-redis sh -c 'redis-cli -a "$(cat /run/secrets/redis_password_v1)" --no-auth-warning PUBSUB NUMSUB admin-notifications'
+# Esperado: admin-notifications 1 — repetir varias veces en 60s; nunca debe caer a 0
+```
+
+## Rollback
+
+Si algo falla, Redis **no es una dependencia dura** del sistema: todo el circuito de Botellas duplicadas degrada al cómputo síncrono de siempre (ver `docs/infra.md`). El rollback es volver `deploy/compose.yml` al commit anterior y recrear, igual que en la sección de subred; el archivo `.secrets/redis_password_v1.txt` puede quedar (no molesta) o borrarse.

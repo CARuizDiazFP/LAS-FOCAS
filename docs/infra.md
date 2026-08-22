@@ -599,7 +599,13 @@ admin abierto cuando el recálculo termina — sin tocar la función de detecci�
   `botellas_duplicados`) que recalcula con la misma `detectar_grupos_duplicados_botellas` sin tocar,
   repuebla la caché y publica `{"type": "botellas_duplicados_recalculado", "at": "<iso8601 UTC>"}` en
   el canal Redis `admin-notifications`. `GET /health` (puerto interno `8097`) refleja la vida real del
-  loop (`loop_muerto` si la tarea asyncio terminó), no un "ok" estático. Servicio `redis` (imagen
+  loop (`loop_muerto` si la tarea asyncio terminó), no un "ok" estático — y el healthcheck de Docker
+  **mira el cuerpo de la respuesta**, no sólo el 200
+  (`curl -fsS .../health | grep -qv loop_muerto`): con el `CMD curl` pelado anterior, un loop muerto
+  seguía figurando `healthy`. El recálculo pesado corre en un hilo aparte (`asyncio.to_thread`)
+  justamente para que ese `/health` siga contestando mientras el job trabaja: ejecutándolo directo en
+  el event loop, el contenedor se marcaba `unhealthy` durante cada recálculo (~100s medidos, 3
+  healthchecks vencidos seguidos). Servicio `redis` (imagen
   fijada `redis:7.4-alpine`) y `botellas_recalculo_worker` agregados a `deploy/docker-compose.dev.yml`
   y `deploy/compose.yml` — en dev, buildeados, levantados y verificados `healthy` reales; en prod,
   código listo pero sin recrear contenedores (ver `docs/decisiones.md`, entrada 2026-08-21 (cont.)).
@@ -617,20 +623,40 @@ admin abierto cuando el recálculo termina — sin tocar la función de detecci�
   "Actualizar" ya existente (`refrescar()`) sigue como fallback manual — no se agregó ninguno nuevo.
 - **Redis nunca es una dependencia dura**: cada punto de fallo (lectura/escritura de caché, encolado,
   publish, subscribe) se atrapa y loguea — el sistema completo degrada al comportamiento síncrono de
-  siempre, correcto, sólo sin la mejora de velocidad. `core/cache/redis_client.py::get_redis()` es un
-  singleton lazy (`socket_connect_timeout=2`, `socket_timeout=10` — subido desde `2` durante la
-  implementación: tiene que superar con margen el `BLPOP_TIMEOUT_SECONDS=5` del worker o cada ciclo
-  `BLPOP` sin jobs, el caso normal en operación idle, tira un `TimeoutError` espurio del lado cliente
-  tratado como "Redis caído").
-- **Issue conocido, diferido deliberadamente**: el subscriber de `web/admin_ws.py` cicla
-  timeout+reconexión cada ~15s cuando el canal está genuinamente idle (sin mensajes) — confirmado
-  contra el código fuente real de redis-py 5.0.8: el `listen()` bloqueante de pub/sub cae en el
-  `socket_timeout` del cliente, que no tiene un "timeout máximo conocido" equivalente al parámetro
-  explícito de `BLPOP`. Es autocurativo (el mismo diseño catch/log/sleep/retry ya lo maneja) y de
-  impacto acotado (ruido de logs + un eventual toast de UI en vivo perdido — nunca pérdida de datos, la
-  DB sigue siendo la fuente de verdad), pero es real. El fix correcto sería una conexión
-  Redis dedicada sin `socket_timeout` para este listener puntual — queda anotado como trabajo futuro,
-  no como parte de este alcance.
+  siempre, correcto, sólo sin la mejora de velocidad. Hay **dos** factories en
+  `core/cache/redis_client.py`, y usar la equivocada rompe cosas sutiles:
+  - `get_redis()` — singleton para comandos CORTOS Y ACOTADOS (`GET`/`SET`/`DEL`/`RPUSH`/`PUBLISH` y
+    el `BLPOP` del worker). `socket_connect_timeout=2`, `socket_timeout=10` (subido desde `2` durante
+    la implementación: tiene que superar con margen el `BLPOP_TIMEOUT_SECONDS=5` del worker, o cada
+    ciclo `BLPOP` sin jobs tira un `TimeoutError` espurio tratado como "Redis caído").
+  - `get_redis_pubsub_client()` — conexión DEDICADA para el subscriber de larga vida de
+    `web/admin_ws.py`, con `socket_timeout=None` (bloquear indefinidamente en la lectura, que es lo
+    que un subscriber debe hacer) + keepalive TCP. Sin esto, `PubSub.listen()` heredaba el
+    `socket_timeout=10` del cliente compartido y **cada 10s de silencio genuino del canal** levantaba
+    `TimeoutError` → desconexión → resuscripción: medido con `PUBSUB NUMSUB` contra el dev real, el
+    canal quedaba **sin suscriptores 9 de cada 24 muestras (~1/3 del tiempo)**, y todo lo publicado
+    en esas ventanas se perdía para siempre (pub/sub es fire-and-forget). Tras el fix, 46/46 muestras
+    en 96s de idle dieron `1`, sin una sola caída a `0`. Los fallos REALES se siguen detectando
+    igual: cuando el server cierra la conexión, el parser levanta
+    `ConnectionError("Connection closed by server.")` y el mismo `except` de siempre reintenta con
+    backoff (verificado deteniendo el contenedor `redis` en vivo).
+- **Escotilla manual de refresco** (`?refrescar=true`): `GET
+  /api/admin/infra/botellas/viewer/duplicados` acepta ese parámetro para **saltear la caché por
+  completo** y forzar el cómputo síncrono, repoblando la caché con el resultado fresco. Lo usa el
+  botón "Actualizar" del visor (`refrescar()` → `reloadDuplicados(true)`). Existe porque hay
+  escritores que tocan los mismos campos y **no** invalidan la caché — la ingesta Cromo
+  (`modules/cromo_worker/`, su propio intervalo de 24h), los cambios de estado/baneo
+  (`aplicar_estado_a_grupo`), merge/eliminar de Cámaras y `scripts/cromo_backfill_camara_padre.py`.
+  Cablearles la invalidación a los cuatro es una decisión deliberadamente diferida (ver
+  `docs/decisiones.md`, entrada 2026-08-21 (cont.)); el refetch automático por WebSocket NO fuerza,
+  porque ahí el worker ya dejó la caché fresca.
+- **Prod: falta generar el secret `redis_password_v1`**. `deploy/compose.yml` ya declara el secret y
+  lo consume desde `web`/`redis`/`botellas_recalculo_worker`, pero `.secrets/redis_password_v1.txt`
+  **no existe en el host de producción** — a propósito. Compose no degrada ante un secret file-based
+  inexistente: **falla la creación del contenedor `web`**. Procedimiento completo (generación,
+  verificación post-despliegue, rollback) en
+  [docs/mantenimiento_redes_produccion.md](mantenimiento_redes_produccion.md), sección
+  "Pre-requisito obligatorio: secret `redis_password_v1`".
 
 ### Eliminación de Cámaras/Botellas basura + exclusión automática en Cromo (2026-08-20)
 
