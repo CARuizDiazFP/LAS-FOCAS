@@ -21,6 +21,11 @@ CACHE_KEY = "cache:botellas_duplicados:v1"
 CACHE_TTL_SECONDS = 86400
 QUEUE_KEY = "admin:recompute:jobs"
 JOB_KIND_BOTELLAS_DUPLICADOS = "botellas_duplicados"
+# Canal pub/sub del aviso "ya recalculé". Vive acá, junto a las otras claves del pipeline, para que
+# los dos extremos (el worker que publica y `web/admin_ws.py` que se suscribe) importen la MISMA
+# constante — antes cada uno declaraba su propio literal y un rename podía desincronizarlos en
+# silencio, sin que ningún test lo notara.
+ADMIN_NOTIFICATIONS_CHANNEL = "admin-notifications"
 
 
 def _grupo_to_dict(grupo: GrupoBotellasDuplicadas) -> dict:
@@ -95,6 +100,7 @@ async def encolar_recalculo_duplicados_botellas(motivo: str) -> None:
 
 
 __all__ = [
+    "ADMIN_NOTIFICATIONS_CHANNEL",
     "CACHE_KEY",
     "QUEUE_KEY",
     "JOB_KIND_BOTELLAS_DUPLICADOS",

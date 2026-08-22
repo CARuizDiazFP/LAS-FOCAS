@@ -26,6 +26,7 @@ from core.cache.redis_client import get_redis
 from core.logging import setup_logging
 from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
 from core.services.botella_recompute_queue import (
+    ADMIN_NOTIFICATIONS_CHANNEL,
     JOB_KIND_BOTELLAS_DUPLICADOS,
     QUEUE_KEY,
     guardar_cache_duplicados,
@@ -41,8 +42,6 @@ logger = setup_logging(
 )
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
-ADMIN_NOTIFICATIONS_CHANNEL = "admin-notifications"
-
 _worker_status: dict = {
     "status": "starting",
     "service": NOMBRE_SERVICIO,
@@ -53,9 +52,19 @@ _worker_status: dict = {
 _loop_task: asyncio.Task | None = None
 
 
-async def _recalcular_botellas_duplicados() -> None:
+def _detectar_duplicados_sync() -> list:
     with SessionLocal() as session:
-        grupos = detectar_grupos_duplicados_botellas(session)
+        return detectar_grupos_duplicados_botellas(session)
+
+
+async def _recalcular_botellas_duplicados() -> None:
+    # A un hilo aparte: `detectar_grupos_duplicados_botellas` es SÍNCRONA y pesada (2 queries sin
+    # paginar + agrupación en Python; ~100s medidos contra el dev real). Ejecutarla directo en el
+    # event loop lo bloqueaba entero, y `GET /health` — el que le dice a Docker si el loop sigue
+    # vivo — dejaba de responder durante todo el recálculo: el contenedor se marcaba `unhealthy`
+    # justo mientras hacía bien su trabajo. Medido en la verificación en vivo del 2026-08-22.
+    # El loop principal sigue serializando jobs (hace `await` de esto), no se paraleliza nada.
+    grupos = await asyncio.to_thread(_detectar_duplicados_sync)
     await guardar_cache_duplicados(grupos)
     await get_redis().publish(
         ADMIN_NOTIFICATIONS_CHANNEL,
@@ -105,9 +114,12 @@ async def _procesar_job(raw: str) -> None:
 
 
 async def _loop_principal() -> None:
-    client = get_redis()
     while True:
         try:
+            # `get_redis()` va DENTRO del try del loop: construir el cliente puede fallar (config/
+            # secreto ilegible, URL inválida) y si eso pasara afuera, el loop moriría antes de poder
+            # reintentar — justo el modo de falla que el resto de este loop ya evita.
+            client = get_redis()
             resultado = await client.blpop(QUEUE_KEY, timeout=BLPOP_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 - Redis caído: reintentar tras una pausa, nunca morir
             logger.warning("action=botellas_recalculo_worker evento=blpop_error", exc_info=True)

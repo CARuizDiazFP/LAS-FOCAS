@@ -305,7 +305,11 @@ services:
     volumes:
       - ../Logs:/app/Logs
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8097/health"]
+      # No alcanza con que /health responda 200: el loop de BLPOP puede estar muerto y el endpoint
+      # seguir contestando (devuelve status=loop_muerto en ese caso). `grep -qv` sobre la respuesta
+      # de una sola línea da 1 (unhealthy) tanto si dice loop_muerto como si curl falla y no
+      # imprime nada, y 0 sólo con un loop realmente vivo.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8097/health | grep -qv loop_muerto"]
       interval: 30s
       timeout: 5s
       retries: 3

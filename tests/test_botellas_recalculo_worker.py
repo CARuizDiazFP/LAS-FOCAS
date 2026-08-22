@@ -145,6 +145,100 @@ async def test_loop_principal_redis_error_resilience(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_recalculo_no_bloquea_el_event_loop(monkeypatch) -> None:
+    """El cómputo pesado va a un hilo (`asyncio.to_thread`): mientras corre, el event loop debe
+    seguir atendiendo — es lo que mantiene vivo el `GET /health` que Docker consulta. Antes se
+    ejecutaba directo en el loop y el contenedor se marcaba `unhealthy` durante cada recálculo
+    (~100s medidos contra el dev real, 2026-08-22)."""
+    import threading
+    import time
+
+    hilo_del_computo: dict = {}
+
+    def _detectar_lento(session):
+        hilo_del_computo["thread"] = threading.current_thread()
+        time.sleep(0.2)  # bloqueante a propósito: si corriera en el loop, lo congelaría
+        return []
+
+    async def _fake_guardar(grupos):
+        return None
+
+    class _FakeSessionLocal:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(worker_mod, "detectar_grupos_duplicados_botellas", _detectar_lento)
+    monkeypatch.setattr(worker_mod, "guardar_cache_duplicados", _fake_guardar)
+    monkeypatch.setattr(worker_mod, "SessionLocal", lambda: _FakeSessionLocal())
+    monkeypatch.setattr(worker_mod, "get_redis", lambda: _FakeRedisPublish())
+
+    hilo_principal = threading.current_thread()
+    latidos = {"veces": 0}
+
+    async def _latir():
+        # Simula al endpoint /health: si el loop está bloqueado, esta corrutina no avanza.
+        while True:
+            latidos["veces"] += 1
+            await asyncio.sleep(0.01)
+
+    latido_task = asyncio.create_task(_latir())
+    try:
+        await worker_mod._recalcular_botellas_duplicados()
+    finally:
+        latido_task.cancel()
+
+    assert hilo_del_computo["thread"] is not hilo_principal, "el cómputo debe correr en otro hilo"
+    assert latidos["veces"] >= 5, (
+        "el event loop debió seguir atendiendo durante el recálculo — "
+        f"sólo avanzó {latidos['veces']} veces"
+    )
+
+
+@pytest.mark.asyncio
+async def test_loop_principal_sobrevive_a_un_get_redis_que_falla(monkeypatch) -> None:
+    """`get_redis()` se construye DENTRO del try del loop: si construir el cliente falla (config o
+    secreto ilegible), el loop debe loguear, esperar y reintentar como con cualquier otro fallo —
+    no morir antes del primer BLPOP, que es lo que pasaba con el cliente creado fuera del `while`."""
+
+    class _FakeRedisOk:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def blpop(self, key, timeout):
+            self.calls += 1
+            await asyncio.sleep(timeout)
+            return None
+
+    fake_redis = _FakeRedisOk()
+    intentos = {"get_redis": 0}
+
+    def _get_redis_falla_la_primera():
+        intentos["get_redis"] += 1
+        if intentos["get_redis"] == 1:
+            raise RuntimeError("no se pudo leer el secreto de Redis")
+        return fake_redis
+
+    monkeypatch.setattr(worker_mod, "get_redis", _get_redis_falla_la_primera)
+    monkeypatch.setattr(worker_mod, "BLPOP_TIMEOUT_SECONDS", 0.01)
+
+    loop_task = asyncio.create_task(worker_mod._loop_principal())
+    try:
+        await asyncio.sleep(0.3)
+        assert not loop_task.done(), "el loop no debe morir si get_redis() falla"
+        assert intentos["get_redis"] >= 2, "debe volver a construir el cliente en el siguiente ciclo"
+        assert fake_redis.calls >= 1, "tras recuperarse debe llegar al BLPOP"
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
 async def test_health_reflects_loop_status(monkeypatch) -> None:
     """Verifica que /health reporta 'ok' si el loop está vivo, 'loop_muerto' si no."""
     try:
