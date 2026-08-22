@@ -13,6 +13,7 @@ import pytest
 
 from core.services.cromo import ingesta
 from core.services.cromo.alias_service import AliasBotella
+from core.services.cromo.client import CromoClientError
 from db.models.cromo import CromoBotella, CromoCable, CromoFusion, CromoIngestaCorrida
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
@@ -48,6 +49,9 @@ class _Escalares:
 
     def all(self):
         return self._valores
+
+    def first(self):
+        return self._valores[0] if self._valores else None
 
 
 class _SesionFake:
@@ -118,6 +122,22 @@ class _BotellaDominioFake:
 def _botella(n_id=1, version_id=1, vmax=1, **kwargs) -> _BotellaDominioFake:
     kwargs.setdefault("payload_raw", {})
     return _BotellaDominioFake(n_id=n_id, version_id=version_id, vmax=vmax, **kwargs)
+
+
+class _ClienteTopologiaFake:
+    """Lo único que `id_dual_resolver.fetch_objeto` le pide a `CromoClient`, más un contador de
+    pedidos: el barrido bulk de botellas NUNCA debe pegarle a este método (regresiones de costo de
+    la detección dirigida de "ID dual"). Un id no cargado responde 404, igual que Cromo real."""
+
+    def __init__(self, objetos: Optional[dict[int, dict]] = None) -> None:
+        self._objetos = objetos or {}
+        self.pedidos: list[int] = []
+
+    async def get_objeto_con_topologia(self, n_id_o_id: int) -> dict[str, Any]:
+        self.pedidos.append(n_id_o_id)
+        if n_id_o_id not in self._objetos:
+            raise CromoClientError(f"Cromo respondió 404 en /db/objects/{n_id_o_id}", status_code=404)
+        return {"st": "ok", "response": self._objetos[n_id_o_id]}
 
 
 # ── Clasificación por vmax (CREADA / ACTUALIZADA / SIN_CAMBIOS) ─────────────
@@ -466,7 +486,9 @@ async def test_procesar_botella_completa_con_fixture_real():
     sesion = _SesionFake()
     contadores = ingesta.ContadoresCorrida()
 
-    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
 
     assert contadores.errores == 0
     assert contadores.creadas >= 1  # la botella misma
@@ -486,7 +508,9 @@ async def test_procesar_botella_completa_crea_copia_nombre_con_flag_false_por_de
     sesion = _SesionFake()
     contadores = ingesta.ContadoresCorrida()
 
-    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
 
     botella_creada = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
     assert botella_creada.nombre == "Cra San Martin 201 Bot 2 CF"
@@ -504,7 +528,9 @@ async def test_procesar_botella_completa_respeta_nombre_editado_manual():
     sesion = _SesionFake({(CromoBotella, 10178728): existente})
     contadores = ingesta.ContadoresCorrida()
 
-    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
 
     assert contadores.errores == 0
     assert existente.nombre == "Nombre corregido a mano"  # protegido: no lo pisa Cromo
@@ -520,7 +546,9 @@ async def test_procesar_botella_completa_actualiza_nombre_si_flag_false():
     sesion = _SesionFake({(CromoBotella, 10178728): existente})
     contadores = ingesta.ContadoresCorrida()
 
-    await ingesta._procesar_botella_completa(sesion, corrida_id=1, obj=obj, contadores=contadores)
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
 
     assert contadores.errores == 0
     assert existente.nombre == "Cra San Martin 201 Bot 2 CF"  # regresión: sigue actualizándose
@@ -534,7 +562,12 @@ async def test_procesar_botella_completa_alias_ignorar_omite_creacion_de_la_bote
     alias_por_origen = {10178728: AliasBotella(accion="ignorar", id_cromo_destino=None)}
 
     await ingesta._procesar_botella_completa(
-        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+        _ClienteTopologiaFake(),
+        sesion,
+        corrida_id=1,
+        obj=obj,
+        contadores=contadores,
+        alias_por_origen=alias_por_origen,
     )
 
     assert contadores.errores == 0
@@ -552,7 +585,12 @@ async def test_procesar_botella_completa_alias_fusionar_omite_creacion_y_registr
     alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
 
     await ingesta._procesar_botella_completa(
-        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+        _ClienteTopologiaFake(),
+        sesion,
+        corrida_id=1,
+        obj=obj,
+        contadores=contadores,
+        alias_por_origen=alias_por_origen,
     )
 
     assert contadores.errores == 0
@@ -595,13 +633,179 @@ async def test_procesar_botella_completa_remapea_extremos_de_cable_embebido():
     alias_por_origen = {7001: AliasBotella(accion="fusionar", id_cromo_destino=9001)}
 
     await ingesta._procesar_botella_completa(
-        sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+        _ClienteTopologiaFake(),
+        sesion,
+        corrida_id=1,
+        obj=obj,
+        contadores=contadores,
+        alias_por_origen=alias_por_origen,
     )
 
     cables_agregados = [o for o in sesion.agregados if isinstance(o, CromoCable)]
     assert len(cables_agregados) == 1
     assert cables_agregados[0].extremo_a_n_id == 5001  # sin alias, sin cambios
     assert cables_agregados[0].extremo_b_n_id == 9001  # remapeado
+
+
+# ── Detección dirigida de "ID dual" en la ingesta automática ────────────────
+
+
+def _cascaron_sin_topologia(n_id: int = 5001) -> dict[str, Any]:
+    """Objeto tal como llega del barrido bulk (`show=SHOW,REL_ATTRIBUTE,TIME`): sin `tp[]` ni
+    `inner[]`, o sea sin cables ni fusiones — el patrón del placeholder "ID dual" real."""
+    return {
+        "n_id": n_id,
+        "id": n_id,
+        "vmax": 1,
+        "class": 68,
+        "name": "BOT interna Hotel Nuevo fondo Posadas 1557",
+    }
+
+
+def _cable_embebido(n_id: int, botella_n_id: int, otro_extremo: int) -> dict[str, Any]:
+    return {
+        "type": 2,
+        "nfrom": 0,
+        "id_to": botella_n_id,
+        "nto": 1,
+        "class": 51,
+        "n_id": n_id,
+        "vmax": 1,
+        "name": "Cable del objeto vigente",
+        "tp": [
+            {"type": 1, "nfrom": 0, "id_to": botella_n_id, "nto": 0, "class": 68},
+            {"type": 1, "nfrom": 1, "id_to": otro_extremo, "nto": 0, "class": 68},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_omite_placeholder_si_hist_matchea_local_existente():
+    """Caso raíz del bug: Cromo devuelve en el barrido un id nuevo y vacío que es otra versión del
+    MISMO sitio físico ya ingerido bajo otro n_id. Antes se creaba un placeholder duplicado por
+    corrida; ahora se omite y queda la traza `ID_DUAL_OMITIDA`."""
+    obj = _cascaron_sin_topologia(5001)
+    ya_local = CromoBotella(n_id=4444, version_id=4444, vmax=2, nombre="BOT interna Hotel Nuevo fondo Posadas 1557")
+    sesion = _SesionFake(
+        {(CromoBotella, 4444): ya_local},
+        # La consulta de la cadena hist[] contra las filas locales vigentes.
+        {"cromo_botellas.n_id IN": [(4444,)]},
+    )
+    contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteTopologiaFake(
+        {5001: {"n_id": 5001, "id": 5001, "class": 68, "hist": [{"id": 4444, "next_id": 5001}, {"id": 5001, "next_id": 0}]}}
+    )
+
+    await ingesta._procesar_botella_completa(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    assert [o for o in sesion.agregados if isinstance(o, CromoBotella)] == []  # no se crea el placeholder
+    assert contadores.creadas == 0
+    assert contadores.leidas == 1
+    eventos = [o for o in sesion.agregados if getattr(o, "accion", None) == "ID_DUAL_OMITIDA"]
+    assert len(eventos) == 1
+    assert eventos[0].n_id == 5001
+    assert "4444" in eventos[0].detalle
+    assert cliente.pedidos == [5001]  # un único fetch extra, sólo para este candidato
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_usa_objeto_vigente_de_la_cadena_en_vez_del_cascaron_vacio():
+    """Si nadie de la cadena existe localmente todavía, se ingiere el objeto VIGENTE completo (con
+    su árbol real), no el cascarón vacío que trajo el barrido."""
+    obj = _cascaron_sin_topologia(5001)
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteTopologiaFake(
+        {
+            5001: {
+                "n_id": 5001,
+                "id": 5001,
+                "class": 68,
+                "vmax": 1,
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+            },
+            6001: {
+                "n_id": 6001,
+                "id": 6001,
+                "class": 68,
+                "vmax": 2,
+                "name": "BOT interna Hotel Nuevo fondo Posadas 1557",
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+                "tp": [_cable_embebido(7001, botella_n_id=6001, otro_extremo=8001)],
+            },
+        }
+    )
+
+    await ingesta._procesar_botella_completa(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    botellas = [o for o in sesion.agregados if isinstance(o, CromoBotella)]
+    assert [b.n_id for b in botellas] == [6001]  # el vigente, no el cascarón 5001
+    assert botellas[0].vmax == 2
+    # El árbol COMPLETO del vigente se procesa, no sólo su fila de botella.
+    cables = [o for o in sesion.agregados if isinstance(o, CromoCable)]
+    assert [c.n_id for c in cables] == [7001]
+    assert {cables[0].extremo_a_n_id, cables[0].extremo_b_n_id} == {6001, 8001}
+    assert cliente.pedidos == [5001, 6001]
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_no_hace_request_extra_si_ya_tiene_cables():
+    """REGRESIÓN DE COSTO: una botella con topología en el snapshot no es candidata — cero fetches
+    extra sobre las ~11k del barrido completo."""
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteTopologiaFake()
+
+    await ingesta._procesar_botella_completa(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert cliente.pedidos == []
+    assert contadores.errores == 0
+    assert contadores.creadas >= 1
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_no_hace_request_extra_si_ya_existe_localmente():
+    """REGRESIÓN DE COSTO: una botella que ya tiene fila local propia tampoco es candidata, aunque
+    llegue vacía en este snapshot."""
+    obj = _cascaron_sin_topologia(5001)
+    existente = CromoBotella(n_id=5001, version_id=5001, vmax=1, nombre="Ya ingerida")
+    sesion = _SesionFake({(CromoBotella, 5001): existente})
+    contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteTopologiaFake()
+
+    await ingesta._procesar_botella_completa(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert cliente.pedidos == []
+    assert contadores.errores == 0
+    assert contadores.sin_cambios == 1
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_ignora_deteccion_id_dual_cuando_hay_alias():
+    """Ruling del diseño: con un alias manual cargado (`app.cromo_botella_alias`), ESE mecanismo ya
+    resuelve el caso — la detección automática nunca corre y no se gasta el fetch extra."""
+    obj = _cascaron_sin_topologia(5001)
+    sesion = _SesionFake({}, {"cromo_botellas.n_id IN": [(4444,)]})
+    contadores = ingesta.ContadoresCorrida()
+    # El cliente TIENE cargado el caso: si la detección corriera, encontraría la cadena.
+    cliente = _ClienteTopologiaFake(
+        {5001: {"n_id": 5001, "id": 5001, "class": 68, "hist": [{"id": 4444, "next_id": 5001}, {"id": 5001, "next_id": 0}]}}
+    )
+    alias_por_origen = {5001: AliasBotella(accion="ignorar", id_cromo_destino=None)}
+
+    await ingesta._procesar_botella_completa(
+        cliente, sesion, corrida_id=1, obj=obj, contadores=contadores, alias_por_origen=alias_por_origen
+    )
+
+    assert cliente.pedidos == []  # la detección automática nunca corrió
+    assert contadores.errores == 0
+    assert [o for o in sesion.agregados if isinstance(o, CromoBotella)] == []
+    acciones = [getattr(o, "accion", None) for o in sesion.agregados]
+    assert "ALIAS_IGNORADA" in acciones  # el camino de alias sigue intacto
+    assert "ID_DUAL_OMITIDA" not in acciones
 
 
 # ── Fases con cliente/páginas fake ──────────────────────────────────────────
@@ -704,7 +908,8 @@ async def test_fase_botellas_pasa_alias_por_origen_a_procesar_botella_completa(m
     alias_por_origen = {10178728: AliasBotella(accion="ignorar", id_cromo_destino=None)}
     recibido: dict[str, Any] = {}
 
-    async def _procesar_fake(sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+    async def _procesar_fake(cliente, sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+        recibido["cliente"] = cliente
         recibido["alias_por_origen"] = alias_por_origen
 
     monkeypatch.setattr(ingesta, "_procesar_botella_completa", _procesar_fake)
@@ -721,6 +926,8 @@ async def test_fase_botellas_pasa_alias_por_origen_a_procesar_botella_completa(m
     )
 
     assert recibido["alias_por_origen"] is alias_por_origen
+    # `cliente` enhebrado hasta el procesamiento de cada objeto (detección dirigida de "ID dual").
+    assert recibido["cliente"] is cliente
 
 
 @pytest.mark.asyncio
@@ -1044,3 +1251,66 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_tres_fases(
     assert recibidos["cables"] is alias_falso
     assert recibidos["botellas"] is alias_falso
     assert recibidos["fusiones"] is alias_falso
+
+
+# ── Invalidación de la caché de Botellas duplicadas al cerrar la corrida ────
+
+
+def _monkeypatch_fases_noop(monkeypatch, *, fase_botellas) -> None:
+    async def _fase_conteo_fake(cliente):
+        return {}
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_botellas", fase_botellas)
+    monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
+    monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
+    monkeypatch.setattr(ingesta, "fase_servicios", _noop)
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_encola_recalculo_si_hubo_creadas_o_actualizadas(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+    motivos: list[str] = []
+
+    async def _encolar_spy(motivo: str) -> None:
+        motivos.append(motivo)
+
+    async def _fase_botellas_productiva(cliente, sesion, corrida, contadores, **kwargs):
+        contadores.creadas += 1
+
+    monkeypatch.setattr(ingesta, "encolar_recalculo_duplicados_botellas", _encolar_spy)
+    _monkeypatch_fases_noop(monkeypatch, fase_botellas=_fase_botellas_productiva)
+
+    await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+    )
+
+    assert len(motivos) == 1
+    assert "corrida_id=42" in motivos[0]
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_no_encola_recalculo_si_todo_sin_cambios(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+    motivos: list[str] = []
+
+    async def _encolar_spy(motivo: str) -> None:
+        motivos.append(motivo)
+
+    async def _fase_botellas_sin_cambios(cliente, sesion, corrida, contadores, **kwargs):
+        contadores.sin_cambios += 1
+
+    monkeypatch.setattr(ingesta, "encolar_recalculo_duplicados_botellas", _encolar_spy)
+    _monkeypatch_fases_noop(monkeypatch, fase_botellas=_fase_botellas_sin_cambios)
+
+    await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+    )
+
+    assert motivos == []

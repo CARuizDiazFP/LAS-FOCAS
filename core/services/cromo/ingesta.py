@@ -10,13 +10,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.services.botella_recompute_queue import encolar_recalculo_duplicados_botellas
 from core.services.cromo import alias_service
+from core.services.cromo import id_dual_resolver
 from core.services.cromo import parser as cromo_parser
 from core.services.cromo.alias_service import AliasBotella
-from core.services.cromo.client import CromoClient
+from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo.config import PSIZE_PERMITIDOS, get_cromo_config
 
 # CromoServicioMatch.servicio_id referencia "app.servicios.id" por nombre de tabla (string FK).
@@ -427,7 +429,71 @@ async def fase_fusiones(
             raise _CorridaCancelada()
 
 
+@dataclass(slots=True)
+class _ResultadoIdDualBotella:
+    """Salida de `_resolver_posible_id_dual`. A lo sumo uno de los dos campos viene poblado:
+
+    - `n_id_existente`: otro id de la cadena hist[] YA tiene fila local vigente — este objeto es un
+      cascarón del mismo sitio físico, no hay que crear nada.
+    - `obj_vigente`: la cadena resuelve a otro objeto que sí tiene topología — hay que ingerir ESE
+      en vez del cascarón.
+
+    Ambos en `None` = no se detectó nada accionable; la ingesta sigue exactamente como antes.
+    """
+
+    n_id_existente: Optional[int] = None
+    obj_vigente: Optional[dict[str, Any]] = None
+
+
+async def _resolver_posible_id_dual(
+    sesion: AsyncSession, cliente: CromoClient, n_id: int
+) -> _ResultadoIdDualBotella:
+    """Sólo se llama para un objeto CANDIDATO (ver `_procesar_botella_completa`): sin fila local
+    propia y sin cables/fusiones en este snapshot — el patrón real observado de un placeholder
+    "ID dual" (Verificador Cromo, caso BOT interna Hotel Nuevo fondo Posadas 1557, 2026-08-22).
+    Costo: UN fetch extra a Cromo (con TOPOLOGIES) por candidato — nunca por las ~11k botellas del
+    barrido completo, sólo por el subconjunto "nueva y vacía".
+
+    SUPUESTO DE DISEÑO NO CONFIRMADO con datos reales de Botellas (sí confirmado para Cables, caso
+    B2-FO-CAR 2026-08-21): que `hist[]` de un objeto Botella trae la cadena completa sin importar
+    qué id de la cadena se consulte. Validar con una sonda contra un caso real antes de confiar en
+    esto en producción — ver docs/decisiones.md. Si el supuesto no se cumpliera, el peor caso es
+    que la detección no dispare y la ingesta vuelva a comportarse como antes (crear el cascarón):
+    `resolver_cadena_objetos` está acotado por `MAX_HOPS_HIST` y nunca "adivina" una identidad.
+    """
+    try:
+        obj_con_topo = await id_dual_resolver.fetch_objeto(cliente, n_id)
+    except CromoClientError:
+        # Tolerante por diseño: si Cromo no responde para este objeto puntual, la corrida sigue el
+        # flujo normal (mismo criterio que el resto de la ingesta, un objeto no aborta la página).
+        return _ResultadoIdDualBotella()
+
+    otros_ids_cadena = id_dual_resolver.ids_de_hist(obj_con_topo) - {n_id}
+    if otros_ids_cadena:
+        # `.first()` y no `scalar_one_or_none()`: una cadena puede tener MÁS de un id con fila local
+        # vigente (justamente el duplicado que esto viene a frenar) y ahí `scalar_one_or_none()`
+        # levantaría `MultipleResultsFound`, contando el objeto como ERROR de la corrida.
+        resultado = await sesion.execute(
+            select(CromoBotella.n_id).where(
+                CromoBotella.n_id.in_(otros_ids_cadena), CromoBotella.vigente.is_(True)
+            )
+        )
+        n_id_existente = resultado.scalars().first()
+        if n_id_existente is not None:
+            return _ResultadoIdDualBotella(n_id_existente=n_id_existente)
+
+    obj_vigente, _ids_cadena = await id_dual_resolver.resolver_cadena_objetos(
+        cliente, n_id, obj_con_topo, esta_vigente=lambda o: bool(o.get("tp"))
+    )
+    # Sólo cuando la cadena llevó a OTRO objeto: si el propio `n_id` resulta ser el vigente, no hay
+    # nada que corregir y la ingesta sigue con el árbol del barrido bulk, como siempre.
+    if obj_vigente is not obj_con_topo and bool(obj_vigente.get("tp")):
+        return _ResultadoIdDualBotella(obj_vigente=obj_vigente)
+    return _ResultadoIdDualBotella()
+
+
 async def _procesar_botella_completa(
+    cliente: CromoClient,
     sesion: AsyncSession,
     corrida_id: int,
     obj: dict[str, Any],
@@ -463,6 +529,39 @@ async def _procesar_botella_completa(
                         sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, "ALIAS_IGNORADA"
                     )
             else:
+                # Detección dirigida de "ID dual" (ver `_resolver_posible_id_dual`). Deliberadamente
+                # NO corre cuando hay alias manual: ese mecanismo ya resuelve el caso más arriba, sin
+                # gastar un fetch extra. El chequeo barato (en memoria) va primero para no agregar ni
+                # un `sesion.get()` de más a las botellas normales del barrido.
+                if not arbol.cables and not arbol.fusiones and (await sesion.get(CromoBotella, arbol.botella.n_id)) is None:
+                    resultado_id_dual = await _resolver_posible_id_dual(sesion, cliente, arbol.botella.n_id)
+                    if resultado_id_dual.n_id_existente is not None:
+                        # Cascarón del mismo sitio físico ya conocido: no hay nada legítimo que
+                        # colgarle (no trae cables ni fusiones), así que se corta acá — el `return`
+                        # cierra el savepoint dejando sólo el evento de auditoría.
+                        contadores.leidas += 1
+                        await registrar_evento(
+                            sesion,
+                            corrida_id,
+                            arbol.botella.n_id,
+                            arbol.botella.clase,
+                            "ID_DUAL_OMITIDA",
+                            f"ya existe localmente n_id={resultado_id_dual.n_id_existente}",
+                        )
+                        return
+                    if resultado_id_dual.obj_vigente is not None:
+                        # Se reemplaza el árbol COMPLETO, no sólo `arbol.botella`: los loops de
+                        # fusiones/cables/tubos/pelos de más abajo deben procesar el mundo real del
+                        # objeto vigente, no el vacío del cascarón. Sin anclar la identidad a ningún
+                        # n_id "solicitado" (a diferencia de `botella_creacion_service.py`, que sí
+                        # tiene un admin mirando un n_id puntual): acá simplemente se procede como si
+                        # Cromo hubiera devuelto el objeto vigente en este mismo barrido.
+                        # Límite conocido (no cubierto por el diseño de esta tarea): el alias ya se
+                        # evaluó sobre el n_id del cascarón, no se re-evalúa sobre el del vigente —
+                        # si alguien aliaseó justo el n_id VIGENTE de la cadena y no el cascarón,
+                        # esta rama le crearía fila igual. Sin caso real observado hasta hoy.
+                        arbol = cromo_parser.parse_arbol_botella(resultado_id_dual.obj_vigente)
+
                 accion_botella = await upsert_versionado(sesion, CromoBotella, arbol.botella, BOTELLA_CAMPOS)
                 contadores.leidas += 1
                 contadores.contar(accion_botella)
@@ -528,7 +627,9 @@ async def fase_botellas(
         numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
-            await _procesar_botella_completa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
+            await _procesar_botella_completa(
+                cliente, sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+            )
         sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "BOTELLAS", numero_pagina, pagina, contadores)
         await sesion.commit()
@@ -887,6 +988,13 @@ async def continuar_corrida(
         ),
     )
     await sesion.commit()
+
+    # Una corrida productiva pudo crear/actualizar Botellas: la caché de grupos duplicados quedó
+    # vieja. Best-effort por diseño (`encolar_recalculo_duplicados_botellas` atrapa sus propias
+    # excepciones y nunca lanza), y siempre DESPUÉS del commit que confirma la mutación.
+    if contadores.creadas or contadores.actualizadas:
+        await encolar_recalculo_duplicados_botellas(motivo=f"ingesta corrida_id={corrida.id}")
+
     logger.info(
         "action=cromo_ingesta evento=corrida_finalizada corrida_id=%s estado=%s leidas=%d creadas=%d actualizadas=%d sin_cambios=%d errores=%d refs_colgadas=%d",
         corrida.id,
