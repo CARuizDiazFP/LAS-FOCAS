@@ -481,6 +481,14 @@ class IngresoSinMatch(Base):
     cámara nueva). No crea ninguna entidad de infraestructura — es sólo información para revisión
     manual del caso y para mejorar el regex de búsqueda/normalización de nombres. El ingreso del
     técnico NUNCA se bloquea por esto: registrar el caso es de sólo lectura respecto del flujo real.
+
+    `thread_ts`/`resuelto_via_empalme` (desde 2026-08-23, Tarea 2 del refactor de ingreso) sostienen
+    el mecanismo de "hilo esperando ID de empalme": el aviso de "no match" invita al técnico a
+    responder en el mismo hilo con el ID de empalme más cercano si lo conoce.
+    `modules/slack_baneo_notifier/listener.py` guarda `thread_ts` al crear el caso y, si detecta una
+    respuesta de seguimiento numérica en ese hilo, resuelve la Botella dueña de esa fusión
+    (`core/services/cromo/empalme_resolucion.py`) y marca `resuelto_via_empalme=True` para no
+    reprocesar el mismo hilo dos veces — tanto si la resolución tuvo éxito como si no.
     """
 
     __tablename__ = "ingresos_sin_match"
@@ -491,6 +499,8 @@ class IngresoSinMatch(Base):
     origen = Column(String(32), nullable=False)  # "slack" | "tracking"
     contexto = Column(Text, nullable=True)  # canal Slack, nombre de archivo de tracking, etc.
     revisado = Column(Boolean, nullable=False, default=False)
+    thread_ts = Column(String(32), nullable=True)  # ts del hilo Slack — habilita el seguimiento por empalme
+    resuelto_via_empalme = Column(Boolean, nullable=False, default=False)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

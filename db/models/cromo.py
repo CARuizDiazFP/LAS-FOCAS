@@ -15,6 +15,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     SmallInteger,
@@ -134,7 +135,22 @@ class CromoBotella(Base):
     """
 
     __tablename__ = "cromo_botellas"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        # Índice btree explícito (no `index=True`) — nombre distinto a propósito. Hallazgo real al
+        # verificar contra `lasfocasdev-postgres` (2026-08-23, migración 20260823_01): el nombre que
+        # generaría `index=True` por convención (`ix_cromo_botellas_nombre`) YA existe desde la
+        # Etapa 2 (`20260805_01_cromo_ingesta.py`) como un índice GIN sobre
+        # `to_tsvector('spanish', nombre)` para full-text search — nunca usado hoy por ningún query
+        # del repo (`grep to_tsvector` no encuentra consumidores), pero no se toca/renombra acá
+        # (fuera de alcance de esta tarea). Este índice nuevo es un btree simple sobre `nombre`
+        # (mismo tipo que ya tiene `CromoCable.nombre`), para la cascada ILIKE/tokens de
+        # `core/services/cromo/camara_botella_busqueda.py` (Tarea 1) — esa cascada hacía table scan
+        # porque ese GIN de texto completo no acelera `ILIKE '%patron%'`. El docstring de
+        # `camara_botella_busqueda.py` ("CromoBotella.nombre no tiene índice") es impreciso: sí tenía
+        # uno, sólo que no del tipo que esa cascada podía aprovechar.
+        Index("ix_cromo_botellas_nombre_btree", "nombre"),
+        {"schema": "app"},
+    )
 
     n_id = Column(BigInteger, primary_key=True)
     version_id = Column(BigInteger, nullable=False)  # 'id' de la versión vigente en Cromo

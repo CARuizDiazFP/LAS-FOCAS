@@ -29,7 +29,9 @@ import threading
 from typing import Any, Optional
 
 from core.services.camara_estado_service import obtener_ultimo_motivo_baneo_manual
+from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
 from core.services.cromo.detalle import pelos_de_tubo_sync
+from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
 from core.services.cromo.verificador import servicios_por_tubo_sync
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
@@ -46,7 +48,7 @@ from modules.slack_baneo_notifier.cable_info import (
     extraer_comando_info_cable,
     resolver_tubo_por_numero,
 )
-from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
+from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
 
 logger = logging.getLogger("slack_baneo_worker.listener")
 
@@ -61,6 +63,13 @@ _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
 # Se aplica sobre el nombre extraído —no el texto completo— para evitar falsos
 # positivos con el label del Workflow "*Nombre: Nodo/Camara/botella*".
 _RE_NODO = re.compile(r"\bnodos?\b", re.IGNORECASE)
+
+# Detecta una respuesta de seguimiento con el ID de empalme más cercano, en el hilo de un caso
+# `IngresoSinMatch` pendiente (ver el aviso agregado en `_construir_respuesta_camara` cuando no hay
+# match). Dígitos puros, opcionalmente precedidos de "empalme" o "#". Mínimo 3 dígitos a propósito:
+# evita falsos positivos con respuestas cortas tipo "sí"/"ok"/números de piso — un `fusion_n_id`
+# real de Cromo tiene muchos más dígitos (ver ejemplos en `core/services/cromo/empalmes.py`).
+_RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IGNORECASE)
 
 
 class IngresoListener:
@@ -128,27 +137,38 @@ class IngresoListener:
         session: Any,
         *,
         channel: str = "",
+        thread_ts: str | None = None,
     ) -> str:
         """Busca una cámara por nombre y construye el texto de respuesta.
 
         Aplica el filtro de ruido operativo antes de buscar y antes de registrar,
         descartando sufijos como '- CUADRILLA DE HIDROCONS' o '/ Móvil 4'.
 
-        Si no la encuentra, NUNCA bloquea el ingreso ni crea una `Camara` nueva (2026-08-11 — Cromo
-        es la fuente de verdad del inventario; un caso sin match es un problema de escritura/regex,
-        no una cámara faltante de alta). Registra el caso en `IngresoSinMatch` para revisión manual
-        posterior y mejora del regex, y responde dejando explícito que el técnico puede continuar
-        igual — nunca lee como un rechazo. Si la encuentra, evalúa el estado de acceso siguiendo
-        esta jerarquía:
+        Desde la Tarea 2 del refactor de ingreso (2026-08-23), la búsqueda usa
+        ``buscar_camara_o_botella_cromo()`` (no ``buscar_camara()`` directo): además de
+        ``app.camaras``, cubre botellas que sólo existen en el inventario de Cromo (ver
+        `core/services/cromo/camara_botella_busqueda.py`). Puede lanzar ``AmbiguousSearchError``,
+        que no se captura acá — la maneja el caller (`_handle_message`).
 
-        1. Incidente de red activo (``IncidenteBaneo.activo``) → 🚨 ATENCIÓN.
-        2. Estado ``BANEADA`` sin incidente activo (baneo manual desde el panel)
-           → :no_entry: con el motivo extraído de ``camaras_estado_auditoria``.
-        3. Cualquier otro estado → ✅ podés proceder.
+        Si no encuentra nada en ninguna fuente, NUNCA bloquea el ingreso ni crea una `Camara` nueva
+        (2026-08-11 — Cromo es la fuente de verdad del inventario; un caso sin match es un problema
+        de escritura/regex, no una cámara faltante de alta). Registra el caso en `IngresoSinMatch`
+        (junto con `thread_ts`, para poder detectar más tarde una respuesta de seguimiento con el ID
+        de empalme más cercano — ver `_procesar_seguimiento_empalme`) para revisión manual posterior
+        y mejora del regex, y responde dejando explícito que el técnico puede continuar igual —
+        nunca lee como un rechazo. Si encuentra una cámara (propia o resuelta desde una
+        `CromoBotella`), evalúa el estado de acceso vía `_evaluar_estado_acceso_camara`.
         """
         nombre_buscado = limpiar_ruido_operativo(nombre_buscado)
-        camara, nombre_norm = buscar_camara(nombre_buscado, session)
-        logger.info("Resultado búsqueda — cámara: %s (normalizado: '%s')", camara, nombre_norm)
+        resultado = buscar_camara_o_botella_cromo(nombre_buscado, session)
+        camara = resultado.camara
+        nombre_norm = resultado.nombre_norm
+        logger.info(
+            "Resultado búsqueda — cámara: %s (normalizado: '%s', fuente: %s)",
+            camara,
+            nombre_norm,
+            resultado.fuente,
+        )
 
         if camara is None:
             from db.models.infra import IngresoSinMatch
@@ -157,6 +177,7 @@ class IngresoListener:
                 texto_original=nombre_buscado,
                 origen="slack",
                 contexto=channel or None,
+                thread_ts=thread_ts,
             )
             session.add(caso)
             session.commit()
@@ -168,9 +189,26 @@ class IngresoListener:
             return (
                 "⚠️ No pude confirmar automáticamente la cámara *{}* contra el inventario — "
                 "quedó registrada para revisión manual (puede ser un error de tipeo o una "
-                "diferencia de formato). *Podés continuar con el ingreso con normalidad.*"
+                "diferencia de formato). *Podés continuar con el ingreso con normalidad.* "
+                "Si conocés el ID de empalme más cercano, respondé en este mismo hilo sólo "
+                "con el número."
             ).format(nombre_buscado)
 
+        return self._evaluar_estado_acceso_camara(camara, session)
+
+    def _evaluar_estado_acceso_camara(self, camara: Any, session: Any) -> str:
+        """Evalúa el estado de acceso de una `Camara` ya resuelta y arma el texto de respuesta.
+
+        Factorizado de `_construir_respuesta_camara` (Tarea 2, 2026-08-23) para poder reusar la
+        misma jerarquía de bloqueo desde `_procesar_seguimiento_empalme`, que resuelve la cámara
+        por otro camino (fusión de empalme → botella dueña → `camara_id`) pero debe aplicar
+        exactamente el mismo criterio de acceso. Jerarquía:
+
+        1. Incidente de red activo (``IncidenteBaneo.activo``) → 🚨 ATENCIÓN.
+        2. Estado ``BANEADA`` sin incidente activo (baneo manual desde el panel)
+           → :no_entry: con el motivo extraído de ``camaras_estado_auditoria``.
+        3. Cualquier otro estado → ✅ podés proceder.
+        """
         incidentes = _obtener_incidentes_activos_camara(camara, session)
         if incidentes:
             inc = incidentes[0]
@@ -205,6 +243,81 @@ class IngresoListener:
             f"Sin incidentes activos.\n_puede continuar con el proceso de aprobación._"
         )
 
+    def _procesar_seguimiento_empalme(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+    ) -> bool:
+        """Detecta y procesa una respuesta de seguimiento con un ID de empalme, en el hilo de un
+        caso `IngresoSinMatch` pendiente (invitado por `_construir_respuesta_camara` cuando no
+        matcheó ninguna cámara).
+
+        Devuelve `True` cuando el mensaje fue tratado como intento de seguimiento (el caller debe
+        cortar ahí, no seguir al flujo normal) y `False` cuando no aplica: el texto no matchea el
+        patrón numérico, o matchea pero no hay un caso `IngresoSinMatch` pendiente para este hilo
+        (puede ser cualquier otro mensaje numérico del canal sin relación — no se trata como un
+        intento de empalme fallido).
+        """
+        match = _RE_SEGUIMIENTO_EMPALME.match(texto)
+        if not match:
+            return False
+
+        from db.models.infra import IngresoSinMatch
+
+        caso = (
+            session.query(IngresoSinMatch)
+            .filter(
+                IngresoSinMatch.thread_ts == thread_ts_evento,
+                IngresoSinMatch.resuelto_via_empalme == False,  # noqa: E712
+            )
+            .order_by(IngresoSinMatch.id.desc())
+            .first()
+        )
+        if caso is None:
+            return False
+
+        fusion_n_id = int(match.group(1))
+        logger.info(
+            "Seguimiento de empalme detectado en hilo %s: fusion_n_id=%s (caso IngresoSinMatch id=%s)",
+            thread_ts_evento,
+            fusion_n_id,
+            caso.id,
+        )
+
+        botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
+        camara = None
+        if botella is not None and botella.camara_id is not None:
+            from db.models.infra import Camara
+
+            camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
+
+        if camara is not None:
+            respuesta = self._evaluar_estado_acceso_camara(camara, session)
+        else:
+            logger.info(
+                "Empalme #%s no resolvió una botella con cámara asociada (caso id=%s)",
+                fusion_n_id,
+                caso.id,
+            )
+            respuesta = (
+                f"⚠️ No pude ubicar una botella asociada al ID de empalme *{fusion_n_id}*. "
+                "*Podés continuar con el ingreso con normalidad.*"
+            )
+
+        caso.resuelto_via_empalme = True
+        session.commit()
+
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=respuesta,
+            mrkdwn=True,
+        )
+        return True
+
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
         # Ignorar ediciones para no procesar dos veces el mismo ingreso
@@ -215,7 +328,9 @@ class IngresoListener:
         # mensajes de cualquier bot externo (incluidos Workflows).
 
         texto = event.get("text", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        event_thread_ts = event.get("thread_ts")
+        event_ts = event.get("ts")
+        thread_ts = event_thread_ts or event_ts
         channel = event.get("channel", "")
 
         session = SessionLocal()
@@ -250,6 +365,14 @@ class IngresoListener:
                 event.get("bot_id", "—"),
             )
 
+            # Respuesta de seguimiento con ID de empalme: sólo aplica si el evento es una
+            # respuesta REAL dentro de un hilo (thread_ts presente y distinto del ts propio del
+            # mensaje raíz) — evita interpretar el primer mensaje de un hilo nuevo como
+            # seguimiento. Se evalúa ANTES de extraer_nombre_camara y, si aplica, corta acá.
+            if event_thread_ts and event_thread_ts != event_ts:
+                if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
+                    return
+
             nombre_raw = extraer_nombre_camara(texto)
             logger.info("Nombre extraído por regex: '%s'", nombre_raw)
             if not nombre_raw:
@@ -279,7 +402,7 @@ class IngresoListener:
                 nombres_a_buscar = [nombre_raw]
 
             respuestas = [
-                self._construir_respuesta_camara(nombre, session, channel=channel)
+                self._construir_respuesta_camara(nombre, session, channel=channel, thread_ts=thread_ts)
                 for nombre in nombres_a_buscar
             ]
 
@@ -295,17 +418,28 @@ class IngresoListener:
             )
 
         except AmbiguousSearchError as exc:
+            # Los candidatos ya vienen fusionados (Camara + CromoBotella) y acotados a 3 desde la
+            # Tarea 1 (`AmbiguousSearchError.__init__`) — se listan como viñetas de texto plano.
+            candidatos_texto = ""
+            if exc.candidatos:
+                vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+                candidatos_texto = f"\nCandidatos:\n{vinetas}"
+
             if exc.cantidad == 0:
                 aviso = (
                     f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
                     "para identificar una cámara. Por favor, especificá la dirección "
                     "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
+                    f"{candidatos_texto}\n"
+                    "*Podés continuar con el ingreso con normalidad.*"
                 )
             else:
                 aviso = (
                     f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
                     f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
                     "la dirección o el número exacto."
+                    f"{candidatos_texto}\n"
+                    "*Podés continuar con el ingreso con normalidad.*"
                 )
             logger.info(
                 "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s",

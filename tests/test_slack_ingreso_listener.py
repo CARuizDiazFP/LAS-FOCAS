@@ -7,6 +7,12 @@ Tests para:
  - camara_search.extraer_nombre_camara()
  - camara_search.buscar_camara()
  - listener.IngresoListener._handle_message()  (casos ok, baneada, no encontrada, ignorar bot)
+ - listener.IngresoListener._construir_respuesta_camara() usa buscar_camara_o_botella_cromo()
+   (Tarea 2, 2026-08-23) en vez de buscar_camara() directo — los tests que ejercitan
+   _handle_message/_construir_respuesta_camara mockean el punto de uso
+   (modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo, ver _resultado_camara()
+   abajo); los que ejercitan camara_search.buscar_camara() en forma aislada no cambian.
+ - listener.IngresoListener._procesar_seguimiento_empalme()  (hilo esperando ID de empalme)
 """
 
 from __future__ import annotations
@@ -17,6 +23,20 @@ from typing import Any
 from unittest.mock import MagicMock, patch, call
 
 os.environ.setdefault("TESTING", "true")
+
+from core.services.cromo.camara_botella_busqueda import ResultadoBusquedaExtendida
+
+
+def _resultado_camara(camara: Any, nombre_norm: str = "") -> ResultadoBusquedaExtendida:
+    """Wrapper de test: arma un `ResultadoBusquedaExtendida` con `fuente='camara'` si hay match, o
+    sin match (`fuente=None`, `camara=None`) si no — evita repetir los 4 campos del dataclass en
+    cada mock de `buscar_camara_o_botella_cromo` (Tarea 2, reemplaza `buscar_camara` directo en
+    `_construir_respuesta_camara`). No cubre el caso `fuente="cromo_botella"` porque ningún test de
+    este archivo necesita distinguirlo — sólo le importa a `_construir_respuesta_camara` si
+    `resultado.camara` es `None` o no."""
+    return ResultadoBusquedaExtendida(
+        camara=camara, nombre_norm=nombre_norm, fuente="camara" if camara is not None else None, botella=None
+    )
 
 
 # ─── Tests de extracción de nombre ─────────────────────────────────────────────
@@ -254,8 +274,8 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
                 return_value="Bot. estacion Alem linea B CF",
             ),
             patch(
-                "modules.slack_baneo_notifier.listener.buscar_camara",
-                return_value=(None, "bot estacion alem linea b cf"),
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(None, "bot estacion alem linea b cf"),
             ),
             patch(
                 "modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
@@ -277,7 +297,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cám Inexistente 9999"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(None, "cam inexistente 9999")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cam inexistente 9999")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             mock_session_cls.return_value = MagicMock()
@@ -286,6 +306,8 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         client_mock.chat_postMessage.assert_called_once()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Podés continuar con el ingreso", texto_respuesta)
+        # Invitación al seguimiento por ID de empalme (Tarea 2, 2026-08-23).
+        self.assertIn("ID de empalme", texto_respuesta)
         self.assertNotIn("bajo revisión", texto_respuesta)
 
     def test_responde_camara_libre(self) -> None:
@@ -300,7 +322,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Libertad 1234"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "libertad 1234")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "libertad 1234")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             listener._handle_message(event, client_mock)
@@ -326,7 +348,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Central"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "baneada central")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "baneada central")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[incidente_mock]),
         ):
             listener._handle_message(event, client_mock)
@@ -392,7 +414,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, ["Wf0ABC123"], True)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cam Test"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(None, "cam test")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cam test")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
@@ -427,7 +449,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], True)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cam Test"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(None, "cam test")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cam test")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
@@ -593,7 +615,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Norte"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                   side_effect=AmbiguousSearchError("Norte", 0, [])),
         ):
             listener._handle_message(self._make_event(text="Norte"), client_mock)
@@ -616,7 +638,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Vicente Lopez"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                   side_effect=AmbiguousSearchError(
                       "Vicente Lopez", 8,
                       ["Cra A Vicente Lopez", "Cra B Vicente Lopez"]
@@ -633,6 +655,57 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         self.assertIn("Vicente Lopez", texto)
         self.assertIn("8", texto)
 
+    def test_listener_responde_candidatos_como_vinetas_y_puede_continuar(self) -> None:
+        """Tarea 2 (2026-08-23): la rama de múltiples candidatos debe listar `exc.candidatos` como
+        viñetas de texto plano y agregar la frase 'Podés continuar con el ingreso con normalidad'
+        (antes sólo la rama de "no match" lo decía explícitamente)."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Vicente Lopez"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  side_effect=AmbiguousSearchError(
+                      "Vicente Lopez", 2,
+                      ["Cra A Vicente Lopez", "Cra B Vicente Lopez"]
+                  )),
+        ):
+            listener._handle_message(
+                self._make_event(text="Cámara: Vicente Lopez"),
+                client_mock,
+            )
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("• Cra A Vicente Lopez", texto)
+        self.assertIn("• Cra B Vicente Lopez", texto)
+        self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+
+    def test_listener_nombre_generico_tambien_dice_puede_continuar(self) -> None:
+        """La rama cantidad==0 (nombre demasiado genérico) también debe agregar la frase 'Podés
+        continuar' (Tarea 2, 2026-08-23) — antes sólo lo decía la rama de "no match" completo."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Norte"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  side_effect=AmbiguousSearchError("Norte", 0, [])),
+        ):
+            listener._handle_message(self._make_event(text="Norte"), client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+
     def test_listener_no_autoregistra_en_ambiguedad(self) -> None:
         """Con AmbiguousSearchError, el listener NO escribe en DB (no auto-registro)."""
         from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
@@ -647,7 +720,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
                   return_value=session_mock),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Vicente Lopez"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara",
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                   side_effect=AmbiguousSearchError("Vicente Lopez", 5, [])),
         ):
             listener._handle_message(
@@ -674,8 +747,8 @@ class TestFiltroAmbiguedad(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Cra Mitre 300 Botella 1 y 2"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara",
-                  return_value=(cam, "cra mitre 300")) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  return_value=_resultado_camara(cam, "cra mitre 300")) as mock_buscar,
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
                   return_value=[]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
@@ -768,7 +841,7 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="CRA Inexistente XYZ 9999"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(None, "cra inexistente xyz 9999")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cra inexistente xyz 9999")),
         ):
             # El listener usa session = SessionLocal() directamente (no context manager)
             session_mock = MagicMock()
@@ -781,6 +854,10 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
         self.assertEqual(registrado.origen, "slack")
         self.assertEqual(registrado.texto_original, "CRA Inexistente XYZ 9999")
         self.assertEqual(registrado.contexto, "C123")
+        # thread_ts (Tarea 2, 2026-08-23) — acá el evento no trae "thread_ts" propio, por lo que
+        # cae al "ts" del mensaje raíz (mismo criterio que ya usaba _handle_message para
+        # chat_postMessage).
+        self.assertEqual(registrado.thread_ts, "1234567890.000001")
         session_mock.commit.assert_called_once()
 
         # El técnico nunca ve un rechazo — puede continuar con el ingreso igual.
@@ -1073,7 +1150,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Manual"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "baneada manual")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "baneada manual")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual", return_value="Fibra cortada en nodo norte"),
         ):
@@ -1103,7 +1180,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Sin Audit"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "baneada sin audit")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "baneada sin audit")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual", return_value=None),
         ):
@@ -1134,7 +1211,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Con Incidente"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "con incidente")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "con incidente")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[incidente_mock]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual") as mock_motivo,
         ):
@@ -1163,7 +1240,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Libre Norte"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara", return_value=(camara_mock, "libre norte")),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "libre norte")),
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual") as mock_motivo,
         ):
@@ -1197,7 +1274,7 @@ class TestExclusionNodo(unittest.TestCase):
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Nodo Vte Lopez"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara") as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
         ):
             listener._handle_message(self._make_event(text="Nodo Vte Lopez"), client_mock)
 
@@ -1214,7 +1291,7 @@ class TestExclusionNodo(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Nodo Vte Lopez - cuadrilla de empalmes"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara") as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
         ):
             listener._handle_message(
                 self._make_event(text="Buenas tardes Nodo Vte Lopez - cuadrilla de empalmes"),
@@ -1234,7 +1311,7 @@ class TestExclusionNodo(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="nodos zona sur"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara") as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
         ):
             listener._handle_message(
                 self._make_event(text="Ingreso a nodos zona sur"),
@@ -1259,8 +1336,8 @@ class TestExclusionNodo(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Cam Mitre 440"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara",
-                  return_value=(camara_mock, "cam mitre 440")) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  return_value=_resultado_camara(camara_mock, "cam mitre 440")) as mock_buscar,
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
                   return_value=[]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
@@ -1292,8 +1369,8 @@ class TestExclusionNodo(unittest.TestCase):
             # extraer_nombre_camara extrae el VALOR (no la etiqueta del Workflow)
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                   return_value="Bot. estacion Alem linea B CF"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara",
-                  return_value=(camara_mock, "bot estacion alem linea b cf")) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  return_value=_resultado_camara(camara_mock, "bot estacion alem linea b cf")) as mock_buscar,
             patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
                   return_value=[]),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
@@ -1336,10 +1413,10 @@ class TestHandleMessageMultiBot(unittest.TestCase):
         client_mock = MagicMock()
         config_mock = ("C_TEST", True, [], False)
 
-        # buscar_camara: primera llamada → cam1, segunda → cam2
+        # buscar_camara_o_botella_cromo: primera llamada → cam1, segunda → cam2
         buscar_side = [
-            (cam1, "cra bartolome mitre 301"),
-            (cam2, "bot 2 cra bartolome mitre 301"),
+            _resultado_camara(cam1, "cra bartolome mitre 301"),
+            _resultado_camara(cam2, "bot 2 cra bartolome mitre 301"),
         ]
 
         with patch(
@@ -1347,7 +1424,7 @@ class TestHandleMessageMultiBot(unittest.TestCase):
             return_value=config_mock,
         ):
             with patch(
-                "modules.slack_baneo_notifier.listener.buscar_camara",
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 side_effect=buscar_side,
             ):
                 with patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_sess:
@@ -1379,8 +1456,8 @@ class TestHandleMessageMultiBot(unittest.TestCase):
             return_value=config_mock,
         ):
             with patch(
-                "modules.slack_baneo_notifier.listener.buscar_camara",
-                return_value=(cam, "cra mitre 440"),
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(cam, "cra mitre 440"),
             ) as mock_buscar:
                 with patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_sess:
                     mock_sess.return_value.__enter__ = MagicMock(return_value=MagicMock())
@@ -1391,6 +1468,266 @@ class TestHandleMessageMultiBot(unittest.TestCase):
                     )
 
         self.assertEqual(mock_buscar.call_count, 1)
+
+
+# ─── Tests del regex de seguimiento de empalme ─────────────────────────────────
+
+
+class TestRegexSeguimientoEmpalme(unittest.TestCase):
+    """Prueba directa de `_RE_SEGUIMIENTO_EMPALME` (Tarea 2, 2026-08-23) — el patrón que detecta
+    una respuesta de seguimiento con el ID de empalme en el hilo de un caso `IngresoSinMatch`
+    pendiente."""
+
+    def setUp(self) -> None:
+        from modules.slack_baneo_notifier.listener import _RE_SEGUIMIENTO_EMPALME
+        self.regex = _RE_SEGUIMIENTO_EMPALME
+
+    def test_matchea_digitos_puros(self) -> None:
+        m = self.regex.match("1234567")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "1234567")
+
+    def test_matchea_con_prefijo_empalme(self) -> None:
+        m = self.regex.match("empalme 1234567")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "1234567")
+
+    def test_matchea_con_numeral(self) -> None:
+        m = self.regex.match("#1234567")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "1234567")
+
+    def test_matchea_con_espacios_alrededor(self) -> None:
+        m = self.regex.match("   1234567   ")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "1234567")
+
+    def test_no_matchea_menos_de_3_digitos(self) -> None:
+        """Mínimo 3 dígitos a propósito — evita falsos positivos con números de piso cortos."""
+        self.assertIsNone(self.regex.match("12"))
+        self.assertIsNone(self.regex.match("7"))
+
+    def test_no_matchea_texto_no_numerico(self) -> None:
+        self.assertIsNone(self.regex.match("sí"))
+        self.assertIsNone(self.regex.match("ok"))
+        self.assertIsNone(self.regex.match("dale"))
+
+    def test_no_matchea_numero_dentro_de_una_oracion(self) -> None:
+        """El regex ancla ^...$ (vía `.match` sobre todo el string) — un número que forma parte de
+        una oración más larga no debe interpretarse como ID de empalme."""
+        self.assertIsNone(self.regex.match("Cámara: Mitre 1234"))
+        self.assertIsNone(self.regex.match("el empalme es 1234 seguro"))
+
+
+# ─── Tests del mecanismo de "hilo esperando ID de empalme" ─────────────────────
+
+
+class TestSeguimientoEmpalme(unittest.TestCase):
+    """Prueba `_procesar_seguimiento_empalme` / la integración en `_handle_message` (Tarea 2,
+    2026-08-23): un técnico responde en el hilo de un caso `IngresoSinMatch` pendiente con el ID de
+    empalme más cercano."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event_reply(
+        self, text: str, thread_ts: str = "1111.000001", ts: str = "2222.000002", channel: str = "C123"
+    ) -> dict:
+        """Evento de una respuesta REAL dentro de un hilo: thread_ts presente y distinto de ts."""
+        return {"text": text, "channel": channel, "ts": ts, "thread_ts": thread_ts}
+
+    def _query_side_effect_con_caso(self, caso_mock: Any, camara_mock: Any = None) -> Any:
+        from db.models.infra import Camara, IngresoSinMatch
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso_mock
+            elif model is Camara:
+                q.filter.return_value.one_or_none.return_value = camara_mock
+            return q
+
+        return _side_effect
+
+    def test_seguimiento_resuelve_botella_y_marca_caso(self) -> None:
+        """Fila pendiente + fusión que resuelve una Botella con Cámara asociada → aplica el mismo
+        chequeo de acceso de siempre sobre esa Cámara, responde en el hilo, y marca el caso
+        `resuelto_via_empalme=True` (commit) para no reprocesar el mismo hilo."""
+        from db.models.infra import CamaraEstado
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        caso_mock = MagicMock()
+        caso_mock.id = 5
+        caso_mock.resuelto_via_empalme = False
+
+        camara_mock = MagicMock()
+        camara_mock.nombre = "Cam Resuelta Por Empalme"
+        camara_mock.estado = CamaraEstado.LIBRE
+
+        botella_mock = MagicMock()
+        botella_mock.camara_id = 42
+
+        session_mock.query.side_effect = self._query_side_effect_con_caso(caso_mock, camara_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync",
+                return_value=botella_mock,
+            ) as mock_resolver,
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara") as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply("1234567"), client_mock)
+            mock_extraer.assert_not_called()  # cortó antes de llegar al flujo normal
+
+        mock_resolver.assert_called_once_with(session_mock, 1234567)
+        self.assertTrue(caso_mock.resuelto_via_empalme)
+        session_mock.commit.assert_called_once()
+
+        client_mock.chat_postMessage.assert_called_once()
+        kwargs = client_mock.chat_postMessage.call_args.kwargs
+        self.assertEqual(kwargs["thread_ts"], "1111.000001")
+        self.assertIn("✅", kwargs["text"])
+        self.assertIn("Cam Resuelta Por Empalme", kwargs["text"])
+
+    def test_seguimiento_no_resuelve_botella_no_bloquea_y_marca_caso(self) -> None:
+        """Si `resolver_botella_por_fusion_sync` no resuelve nada (empate, fusión inexistente),
+        se avisa sin bloquear el ingreso — y el caso igual se marca resuelto para no reprocesar."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        caso_mock = MagicMock()
+        caso_mock.id = 9
+        caso_mock.resuelto_via_empalme = False
+        session_mock.query.side_effect = self._query_side_effect_con_caso(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync",
+                return_value=None,
+            ) as mock_resolver,
+        ):
+            listener._handle_message(self._make_event_reply("999999"), client_mock)
+
+        mock_resolver.assert_called_once_with(session_mock, 999999)
+        self.assertTrue(caso_mock.resuelto_via_empalme)
+        session_mock.commit.assert_called_once()
+
+        kwargs = client_mock.chat_postMessage.call_args.kwargs
+        self.assertIn("Podés continuar con el ingreso con normalidad", kwargs["text"])
+        self.assertNotIn("no_entry", kwargs["text"])
+        self.assertNotIn("ATENCIÓN", kwargs["text"])
+
+    def test_seguimiento_botella_sin_camara_id_no_bloquea(self) -> None:
+        """Botella resuelta pero sin `camara_id` (backfill pendiente) → mismo tratamiento que "no
+        resuelve nada": avisa sin bloquear, marca el caso resuelto."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        caso_mock = MagicMock()
+        caso_mock.id = 11
+        caso_mock.resuelto_via_empalme = False
+        session_mock.query.side_effect = self._query_side_effect_con_caso(caso_mock)
+
+        botella_mock = MagicMock()
+        botella_mock.camara_id = None
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync",
+                return_value=botella_mock,
+            ),
+        ):
+            listener._handle_message(self._make_event_reply("555555"), client_mock)
+
+        self.assertTrue(caso_mock.resuelto_via_empalme)
+        kwargs = client_mock.chat_postMessage.call_args.kwargs
+        self.assertIn("Podés continuar con el ingreso con normalidad", kwargs["text"])
+
+    def test_seguimiento_sin_fila_pendiente_sigue_flujo_normal(self) -> None:
+        """Texto numérico válido, pero ningún `IngresoSinMatch` pendiente para este hilo → se
+        ignora como intento de empalme y sigue el flujo normal (no corta antes de
+        extraer_nombre_camara)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        session_mock.query.side_effect = self._query_side_effect_con_caso(None)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync"
+            ) as mock_resolver,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply("1234567"), client_mock)
+
+        mock_extraer.assert_called_once()
+        mock_resolver.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+        session_mock.commit.assert_not_called()
+
+    def test_seguimiento_texto_no_numerico_se_ignora(self) -> None:
+        """Texto que no matchea el regex de seguimiento: ni siquiera se consulta si hay un caso
+        pendiente — sigue el flujo normal sin más (puede ser cualquier otro mensaje del canal)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync"
+            ) as mock_resolver,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply("sí, dale"), client_mock)
+
+        session_mock.query.assert_not_called()
+        mock_resolver.assert_not_called()
+        mock_extraer.assert_called_once()
+
+    def test_mensaje_raiz_del_hilo_no_se_trata_como_seguimiento(self) -> None:
+        """thread_ts == ts (mensaje raíz de un hilo nuevo, no una respuesta) → nunca se evalúa como
+        seguimiento, aunque el texto sea puramente numérico."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        evento_raiz = {"text": "1234567", "channel": "C123", "ts": "3333.000003"}  # sin thread_ts
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync"
+            ) as mock_resolver,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(evento_raiz, client_mock)
+
+        session_mock.query.assert_not_called()
+        mock_resolver.assert_not_called()
+        mock_extraer.assert_called_once()
 
 
 if __name__ == "__main__":
