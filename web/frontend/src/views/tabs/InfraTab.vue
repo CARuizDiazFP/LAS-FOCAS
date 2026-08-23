@@ -1284,6 +1284,13 @@ interface AnalyzeResult {
   error?: string | null; upgrade_info?: UpgradeInfo | null; strand_info?: StrandInfo | null;
   punta_a_sitio?: string | null; punta_b_sitio?: string | null;
 }
+// Respuesta de POST /api/infra/trackings/resolve. `ubicaciones_sin_match` es nuevo (Tarea 3 del
+// refactor "Adjuntar tracking", 2026-08-23): ubicaciones que no matchearon contra Camara/CromoBotella
+// y quedaron registradas en IngresoSinMatch para revisión manual.
+interface ResolveResponse {
+  success: boolean; message?: string; error?: string; detail?: string;
+  ubicaciones_sin_match?: number;
+}
 
 const trackingFileInputEl = ref<HTMLInputElement | null>(null);
 const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);
@@ -1401,13 +1408,20 @@ async function resolveTracking(action: string, extras: Record<string, unknown> =
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
-    if (!(data as Record<string, boolean>).success) {
-      throw new Error((data as Record<string, string>).error ?? 'Error al resolver el tracking');
+    const data = (await res.json()) as ResolveResponse;
+    if (!res.ok) throw new Error(data.detail ?? `Error ${res.status}`);
+    if (!data.success) {
+      throw new Error(data.error ?? 'Error al resolver el tracking');
     }
     closeUploadModal();
-    showToast('success', 'Tracking procesado', (data as Record<string, string>).message ?? '');
+    showToast('success', 'Tracking procesado', data.message ?? '');
+    if (data.ubicaciones_sin_match && data.ubicaciones_sin_match > 0) {
+      showToast(
+        'warning',
+        'Ubicaciones sin match',
+        `${data.ubicaciones_sin_match} ubicación(es) sin cámara/botella asociada — revisar en Ingresos sin match`,
+      );
+    }
     if (hasSearched.value) await searchCamaras();
   } catch (e: unknown) {
     showToast('error', 'Error al procesar tracking', e instanceof Error ? e.message : String(e));

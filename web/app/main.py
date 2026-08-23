@@ -6982,7 +6982,11 @@ async def upload_tracking_web(
 
     try:
         from core.parsers.tracking_parser import parse_tracking
-        from db.models.infra import Camara, Empalme, IngresoSinMatch, Servicio
+        from core.services.infra_service import (
+            _get_or_create_empalme,
+            _resolve_camara_o_registrar_sin_match,
+        )
+        from db.models.infra import Servicio
         from db.session import SessionLocal
 
         # Leer contenido
@@ -7038,51 +7042,29 @@ async def upload_tracking_web(
 
             servicio.raw_tracking_data = result.to_dict()
 
-            # Procesar empalmes
+            # Procesar empalmes — la búsqueda de cámara/botella y el registro de "sin match" están
+            # unificados en `core.services.infra_service` (Tarea 3 del refactor "Adjuntar
+            # tracking", 2026-08-23): antes esta ruta tenía su propia búsqueda O(n) duplicada de
+            # `api/app/routes/infra.py` e `InfraService`.
             for empalme_id, ubicacion in topologia:
-                # Buscar cámara
-                nombre_norm = " ".join(ubicacion.strip().lower().split())
-                camara = session.query(Camara).filter(Camara.nombre == ubicacion).first()
-
-                if not camara:
-                    # Buscar normalizado
-                    all_cams = session.query(Camara).all()
-                    for c in all_cams:
-                        if c.nombre and " ".join(c.nombre.strip().lower().split()) == nombre_norm:
-                            camara = c
-                            break
-
-                if camara:
+                # Cromo Red es la fuente de verdad del inventario: nunca se crea una Camara nueva.
+                # Sin match, se registra un IngresoSinMatch (dentro de la función) y el empalme
+                # queda sin camara_id — el procesamiento nunca se bloquea por esto.
+                camara = _resolve_camara_o_registrar_sin_match(
+                    session, ubicacion, filename=file.filename, servicio_id=result.servicio_id
+                )
+                if camara is not None:
                     camaras_existentes += 1
                 else:
-                    # Ya no se auto-crea una Camara DETECTADA/TRACKING para una ubicación sin match
-                    # (2026-08-11 — Cromo es la fuente de verdad; una ubicación sin match es un
-                    # problema de escritura/regex, no una cámara faltante de alta). Se registra el
-                    # caso para revisión manual y el empalme queda sin `camara_id` — nunca se bloquea
-                    # el procesamiento del tracking por esto.
-                    session.add(IngresoSinMatch(texto_original=ubicacion.strip(), origen="tracking", contexto=file.filename))
                     ubicaciones_sin_match += 1
 
-                # Registrar empalme
+                # Registrar empalme — `_get_or_create_empalme` nunca pisa con `None` un
+                # `camara_id` previo válido de una corrida anterior cuando esta corrida no matchea.
                 tracking_id_completo = f"{result.servicio_id}_{empalme_id}"
-                empalme = session.query(Empalme).filter(
-                    Empalme.tracking_empalme_id == tracking_id_completo
-                ).first()
-
-                camara_id = camara.id if camara else None
-                if empalme:
-                    if empalme.camara_id != camara_id:
-                        empalme.camara_id = camara_id
-                    if servicio not in empalme.servicios:
-                        empalme.servicios.append(servicio)
-                else:
-                    empalme = Empalme(
-                        tracking_empalme_id=tracking_id_completo,
-                        camara_id=camara_id,
-                    )
-                    session.add(empalme)
-                    session.flush()
+                empalme, empalme_nuevo = _get_or_create_empalme(session, tracking_id_completo, camara)
+                if servicio not in empalme.servicios:
                     empalme.servicios.append(servicio)
+                if empalme_nuevo:
                     empalmes_registrados += 1
 
             session.commit()

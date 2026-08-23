@@ -21,15 +21,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from core.parsers.tracking_parser import TrackingParseResult, parse_tracking, PuntaTerminal
 from db.models.infra import (
     Camara,
-    CamaraEstado,
-    CamaraOrigenDatos,
     Empalme,
+    IngresoSinMatch,
     PuntoTerminal,
     PuntoTerminalTipo,
     RutaServicio,
@@ -199,10 +198,18 @@ class ResolveResult:
     servicio_db_id: Optional[int] = None
     ruta_id: Optional[int] = None
     ruta_nombre: Optional[str] = None
+    # Desde 2026-08-11, Cromo Red es la fuente de verdad del inventario de Camara/CromoBotella:
+    # "Adjuntar tracking" ya no crea Camara nuevas (ver `_resolve_camara_o_registrar_sin_match`),
+    # así que este contador queda siempre en 0. Se mantiene en el dataclass (no se elimina) porque
+    # es parte de una API pública documentada (`ResolveResult.to_dict()` -> `TrackingResolveResponse`)
+    # y otros consumidores externos pueden estar leyéndolo.
     camaras_nuevas: int = 0
     camaras_existentes: int = 0
     empalmes_creados: int = 0
     empalmes_asociados: int = 0
+    # Ubicaciones del tracking que no matchearon contra Camara/CromoBotella — quedaron registradas
+    # en `IngresoSinMatch` (origen="tracking") y su Empalme correspondiente quedó con camara_id=None.
+    ubicaciones_sin_match: int = 0
     message: str = ""
     error: Optional[str] = None
 
@@ -218,6 +225,7 @@ class ResolveResult:
             "camaras_existentes": self.camaras_existentes,
             "empalmes_creados": self.empalmes_creados,
             "empalmes_asociados": self.empalmes_asociados,
+            "ubicaciones_sin_match": self.ubicaciones_sin_match,
             "message": self.message,
             "error": self.error,
         }
@@ -241,111 +249,91 @@ def compute_tracking_hash(raw_content: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _get_or_create_camara(
+def _resolve_camara_o_registrar_sin_match(
     session: Session,
     nombre: str,
     *,
-    crear_si_no_existe: bool = True,
+    filename: str,
     servicio_id: Optional[str] = None,
-) -> Tuple[Optional[Camara], bool]:
-    """Busca una cámara por nombre o la crea si no existe.
-    
-    Si el servicio tiene un baneo activo, la cámara nueva nacerá BANEADA.
-    
+) -> Optional[Camara]:
+    """Busca una `Camara` (o `CromoBotella` con cámara padre) para `nombre` usando la búsqueda
+    extendida de la Tarea 1 (`buscar_camara_o_botella_cromo`). **Nunca crea una `Camara` nueva** —
+    desde 2026-08-11 Cromo Red es la fuente de verdad del inventario real de cámaras/botellas; si
+    una ubicación de tracking no matchea es un problema de escritura/regex, no una cámara faltante
+    por dar de alta.
+
+    Si no hay match — incluido el caso en que `buscar_camara_o_botella_cromo` deje propagar
+    `AmbiguousSearchError` (nombre insuficientemente específico o múltiples candidatas sin
+    reducirse a una sola) — se trata acá como "sin match" sin desambiguar interactivamente (a
+    diferencia del listener de Slack de ingreso de técnicos, que sí lo hace): se registra un
+    `IngresoSinMatch` (`origen="tracking"`) para revisión manual y se devuelve `None`. El
+    procesamiento del tracking NUNCA se bloquea por esto — ver `_get_or_create_empalme`, que deja
+    `camara_id=None` en vez de fallar.
+
     Args:
-        session: Sesión de SQLAlchemy
-        nombre: Nombre de la cámara
-        crear_si_no_existe: Si crear la cámara si no existe
-        servicio_id: ID del servicio (para verificar baneo activo)
-    
+        session:     Sesión de SQLAlchemy activa.
+        nombre:      Nombre/ubicación crudo de la línea "Empalme N: Ubicación" del tracking.
+        filename:    Nombre del archivo de tracking (contexto del `IngresoSinMatch`).
+        servicio_id: ID de servicio del tracking (contexto del `IngresoSinMatch`).
+
     Returns:
-        Tuple[Camara|None, bool]: (cámara, es_nueva)
+        La `Camara` resuelta (propia, o la cámara padre de la `CromoBotella` matcheada), o `None`
+        si no hubo match en ninguna fuente.
     """
-    # Normalizar nombre para búsqueda
-    nombre_norm = " ".join(nombre.strip().lower().split())
-    
-    # Buscar por coincidencia exacta
-    camara = session.query(Camara).filter(Camara.nombre == nombre).first()
-    if camara:
-        return camara, False
-    
-    # Buscar normalizado
-    all_cams = session.query(Camara).all()
-    for c in all_cams:
-        if c.nombre and " ".join(c.nombre.strip().lower().split()) == nombre_norm:
-            return c, False
-    
-    if not crear_si_no_existe:
-        return None, False
-    
-    # Determinar estado inicial de la cámara
-    estado_inicial = CamaraEstado.DETECTADA
-    
-    # Si el servicio tiene baneo activo, la cámara nace BANEADA
-    if servicio_id:
-        from db.models.infra import IncidenteBaneo
-        baneo_activo = session.query(IncidenteBaneo).filter(
-            IncidenteBaneo.servicio_protegido_id == servicio_id,
-            IncidenteBaneo.activo == True,
-        ).first()
-        
-        if baneo_activo:
-            estado_inicial = CamaraEstado.BANEADA
-            logger.info(
-                "action=create_camara_baneada nombre=%s servicio=%s baneo_id=%d",
-                nombre,
-                servicio_id,
-                baneo_activo.id,
-            )
-    
-    # Crear nueva cámara
-    camara = Camara(
-        nombre=nombre.strip(),
-        estado=estado_inicial,
-        origen_datos=CamaraOrigenDatos.TRACKING,
-        last_update=datetime.now(timezone.utc),
+    # Import diferido: evita cargar el paquete `core.services.cromo` (que a su vez importa
+    # CromoClient/httpx) en cada arranque que sólo necesita `infra_service` — mismo criterio que
+    # ya usaba esta función para `camara_hierarchy_service`/`IncidenteBaneo`.
+    from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+    from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+    try:
+        resultado = buscar_camara_o_botella_cromo(nombre, session)
+        camara = resultado.camara
+    except AmbiguousSearchError:
+        camara = None
+
+    if camara is not None:
+        return camara
+
+    session.add(
+        IngresoSinMatch(
+            texto_original=nombre.strip(),
+            origen="tracking",
+            contexto=f"{filename} (servicio {servicio_id})",
+        )
     )
-    session.add(camara)
-    session.flush()
-
-    # Jerarquía Cámara/Botella: si el nombre matchea el sufijo "Bot N", resolver (o crear) la cámara
-    # padre y vincularla — ver `core/services/camara_hierarchy_service.py`.
-    from core.services.camara_hierarchy_service import resolver_o_crear_padre
-
-    padre = resolver_o_crear_padre(session, nombre, usuario="sistema:tracking")
-    if padre is not None:
-        camara.camara_padre_id = padre.id
-        # Si el grupo ya está baneado, la botella nueva no debe nacer en un estado más laxo.
-        if padre.estado == CamaraEstado.BANEADA and camara.estado != CamaraEstado.BANEADA:
-            camara.estado = CamaraEstado.BANEADA
-        session.flush()
-
-    return camara, True
+    return None
 
 
 def _get_or_create_empalme(
     session: Session,
     tracking_empalme_id: str,
-    camara: Camara,
+    camara: Optional[Camara],
 ) -> Tuple[Empalme, bool]:
     """Obtiene o crea un empalme.
-    
+
+    `camara` puede ser `None` (ubicación sin match — ver `_resolve_camara_o_registrar_sin_match`).
+    Un reproceso sin match de un `Empalme` ya existente **no pisa** su `camara_id` previo: sólo se
+    actualiza `camara_id` cuando esta corrida sí resolvió una cámara. Sin esto, reprocesar el mismo
+    tracking un día en que la búsqueda falla (por una `Camara` renombrada/eliminada, o un
+    `AmbiguousSearchError` transitorio) borraría una ubicación válida ya confirmada en una corrida
+    anterior.
+
     Returns:
         Tuple[Empalme, bool]: (empalme, es_nuevo)
     """
     empalme = session.query(Empalme).filter(
         Empalme.tracking_empalme_id == tracking_empalme_id
     ).first()
-    
+
     if empalme:
-        # Actualizar cámara si cambió
-        if empalme.camara_id != camara.id:
+        if camara is not None and empalme.camara_id != camara.id:
             empalme.camara_id = camara.id
         return empalme, False
-    
+
     empalme = Empalme(
         tracking_empalme_id=tracking_empalme_id,
-        camara_id=camara.id,
+        camara_id=camara.id if camara is not None else None,
     )
     session.add(empalme)
     session.flush()
@@ -372,6 +360,38 @@ class InfraService:
             session: Sesión activa de SQLAlchemy (el caller maneja el ciclo de vida)
         """
         self.session = session
+
+    def _find_servicio_by_identificador(self, numero: str) -> Optional[Servicio]:
+        """Resuelve un `Servicio` existente por `servicio_id`, `numero_primer_servicio` o
+        `alias_ids` — mismo criterio de match que `core/services/cromo/ingesta.py::
+        _SQL_BUSCAR_SERVICIO` (`servicio_id = :numero OR numero_primer_servicio = :numero OR
+        :numero = ANY(alias_ids)`), acá vía ORM en vez de `text()` crudo porque el resto de este
+        archivo ya consulta `Servicio` por ORM (`Servicio.alias_ids.contains([...])` ya se usaba
+        en `analyze_tracking`). A diferencia de `_resolver_o_crear_servicio` (pensado para la
+        ingesta de Cromo), **sólo busca — nunca crea** un placeholder.
+
+        Usarlo en `CREATE_NEW`/`BRANCH` evita duplicar un `Servicio` que ya existe bajo un ID
+        alternativo (alias o `numero_primer_servicio`) cuando el archivo de tracking trae ese
+        alias como `servicio_id` principal — un gap real que antes sólo comparaba `servicio_id`
+        exacto, aunque `analyze_tracking` ya lo hubiera resuelto por alias.
+
+        Args:
+            numero: Identificador a buscar (típicamente `parsed.servicio_id`).
+
+        Returns:
+            El `Servicio` encontrado o `None`.
+        """
+        return (
+            self.session.query(Servicio)
+            .filter(
+                or_(
+                    Servicio.servicio_id == numero,
+                    Servicio.numero_primer_servicio == numero,
+                    Servicio.alias_ids.contains([numero]),
+                )
+            )
+            .first()
+        )
 
     # -------------------------------------------------------------------------
     # FASE 1: ANÁLISIS
@@ -764,8 +784,13 @@ class InfraService:
                 }
             
             old_service_id = servicio.servicio_id
-            
-            # Verificar que el nuevo ID no exista ya
+
+            # Verificar que el nuevo ID no exista ya. Deliberadamente NO usa
+            # `_find_servicio_by_identificador` (Tarea 3, 2026-08-23): es un guard de colisión
+            # ("este servicio_id todavía debe estar libre"), semánticamente distinto de "encontrar
+            # el Servicio para reusarlo por cualquiera de sus identificadores" — usar el matching
+            # por alias acá sería MÁS restrictivo y podría bloquear un upgrade legítimo por una
+            # coincidencia incidental de alias/numero_primer_servicio en otro Servicio.
             existing_new = self.session.query(Servicio).filter(
                 Servicio.servicio_id == new_service_id
             ).first()
@@ -972,11 +997,9 @@ class InfraService:
         reutiliza el servicio existente y crea una nueva ruta principal.
         """
         
-        # Verificar si existe
-        existing = self.session.query(Servicio).filter(
-            Servicio.servicio_id == parsed.servicio_id
-        ).first()
-        
+        # Verificar si existe (por servicio_id exacto, alias, o numero_primer_servicio)
+        existing = self._find_servicio_by_identificador(parsed.servicio_id)
+
         if existing and len(existing.rutas) > 0:
             # Ya tiene rutas, no se puede usar CREATE_NEW
             return ResolveResult(
@@ -1021,24 +1044,25 @@ class InfraService:
         camaras_nuevas = 0
         camaras_existentes = 0
         empalmes_creados = 0
+        ubicaciones_sin_match = 0
         empalmes_asociados: set[int] = set()  # Para evitar duplicados en la misma ruta
-        
+
         for orden, (empalme_id, ubicacion) in enumerate(topologia, start=1):
-            # Obtener o crear cámara (pasa servicio_id para verificar baneo)
-            camara, es_nueva = _get_or_create_camara(
-                self.session, ubicacion, servicio_id=parsed.servicio_id
+            # Resolver cámara/botella (Cromo es la fuente de verdad — nunca se crea una Camara)
+            camara = _resolve_camara_o_registrar_sin_match(
+                self.session, ubicacion, filename=filename, servicio_id=parsed.servicio_id
             )
-            if es_nueva:
-                camaras_nuevas += 1
+            if camara is None:
+                ubicaciones_sin_match += 1
             else:
                 camaras_existentes += 1
-            
+
             # Obtener o crear empalme
             tracking_id = f"{parsed.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
-            
+
             # Asociar empalme a la ruta con orden (evitar duplicados)
             if empalme.id not in empalmes_asociados:
                 stmt = ruta_empalme_association.insert().values(
@@ -1048,7 +1072,7 @@ class InfraService:
                 )
                 self.session.execute(stmt)
                 empalmes_asociados.add(empalme.id)
-            
+
             # También mantener relación legacy servicio<->empalme
             if empalme not in servicio.empalmes:
                 servicio.empalmes.append(empalme)
@@ -1067,16 +1091,16 @@ class InfraService:
             ruta.cantidad_pelos = parsed.cantidad_pelos
         
         self.session.commit()
-        
+
         logger.info(
-            "action=create_new servicio_id=%s ruta_id=%d camaras_nuevas=%d empalmes=%d alias=%s",
+            "action=create_new servicio_id=%s ruta_id=%d ubicaciones_sin_match=%d empalmes=%d alias=%s",
             parsed.servicio_id,
             ruta.id,
-            camaras_nuevas,
+            ubicaciones_sin_match,
             empalmes_creados,
             parsed.alias_id,
         )
-        
+
         return ResolveResult(
             success=True,
             action=ResolveAction.CREATE_NEW,
@@ -1088,6 +1112,7 @@ class InfraService:
             camaras_existentes=camaras_existentes,
             empalmes_creados=empalmes_creados,
             empalmes_asociados=len(topologia),
+            ubicaciones_sin_match=ubicaciones_sin_match,
             message=f"Servicio {parsed.servicio_id} creado con ruta 'Principal' ({len(topologia)} empalmes)",
         )
 
@@ -1128,17 +1153,18 @@ class InfraService:
         camaras_existentes = 0
         empalmes_creados = 0
         empalmes_agregados = 0
-        
+        ubicaciones_sin_match = 0
+
         for empalme_id, ubicacion in topologia:
-            # Obtener o crear cámara (pasa servicio_id para verificar baneo)
-            camara, es_nueva = _get_or_create_camara(
-                self.session, ubicacion, servicio_id=parsed.servicio_id
+            # Resolver cámara/botella (Cromo es la fuente de verdad — nunca se crea una Camara)
+            camara = _resolve_camara_o_registrar_sin_match(
+                self.session, ubicacion, filename=filename, servicio_id=parsed.servicio_id
             )
-            if es_nueva:
-                camaras_nuevas += 1
+            if camara is None:
+                ubicaciones_sin_match += 1
             else:
                 camaras_existentes += 1
-            
+
             # Obtener o crear empalme
             tracking_id = f"{parsed.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
@@ -1186,6 +1212,7 @@ class InfraService:
             camaras_existentes=camaras_existentes,
             empalmes_creados=empalmes_creados,
             empalmes_asociados=empalmes_agregados,
+            ubicaciones_sin_match=ubicaciones_sin_match,
             message=f"Agregados {empalmes_agregados} empalmes a la ruta '{ruta.nombre}'",
         )
 
@@ -1228,22 +1255,25 @@ class InfraService:
         camaras_nuevas = 0
         camaras_existentes = 0
         empalmes_creados = 0
+        ubicaciones_sin_match = 0
         empalmes_asociados: set[int] = set()  # Para evitar duplicados en la misma ruta
-        
+
         for orden, (empalme_id, ubicacion) in enumerate(topologia, start=1):
-            # Obtener o crear cámara
-            camara, es_nueva = _get_or_create_camara(self.session, ubicacion)
-            if es_nueva:
-                camaras_nuevas += 1
+            # Resolver cámara/botella (Cromo es la fuente de verdad — nunca se crea una Camara)
+            camara = _resolve_camara_o_registrar_sin_match(
+                self.session, ubicacion, filename=filename, servicio_id=parsed.servicio_id
+            )
+            if camara is None:
+                ubicaciones_sin_match += 1
             else:
                 camaras_existentes += 1
-            
+
             # Obtener o crear empalme
             tracking_id = f"{parsed.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
-            
+
             # Asociar a la ruta (evitar duplicados)
             if empalme.id not in empalmes_asociados:
                 stmt = ruta_empalme_association.insert().values(
@@ -1253,27 +1283,27 @@ class InfraService:
                 )
                 self.session.execute(stmt)
                 empalmes_asociados.add(empalme.id)
-            
+
             # Mantener relación legacy
             if empalme not in servicio.empalmes:
                 servicio.empalmes.append(empalme)
-        
+
         # Actualizar metadata
         ruta.hash_contenido = content_hash
         ruta.nombre_archivo_origen = filename
         ruta.contenido_original = json.dumps(parsed.to_dict(), ensure_ascii=False)
         ruta.raw_file_content = raw_content  # Preservar archivo original
         ruta.updated_at = datetime.now(timezone.utc)
-        
+
         self.session.commit()
-        
+
         logger.info(
             "action=replace servicio_id=%s ruta_id=%d empalmes=%d",
             parsed.servicio_id,
             ruta.id,
             len(topologia),
         )
-        
+
         return ResolveResult(
             success=True,
             action=ResolveAction.REPLACE,
@@ -1285,6 +1315,7 @@ class InfraService:
             camaras_existentes=camaras_existentes,
             empalmes_creados=empalmes_creados,
             empalmes_asociados=len(topologia),
+            ubicaciones_sin_match=ubicaciones_sin_match,
             message=f"Ruta '{ruta.nombre}' actualizada con {len(topologia)} empalmes",
         )
 
@@ -1299,12 +1330,10 @@ class InfraService:
         new_ruta_tipo: RutaTipo,
     ) -> ResolveResult:
         """BRANCH: Crea una nueva ruta bajo el mismo servicio."""
-        
-        # Buscar servicio
-        servicio = self.session.query(Servicio).filter(
-            Servicio.servicio_id == parsed.servicio_id
-        ).first()
-        
+
+        # Buscar servicio (por servicio_id exacto, alias, o numero_primer_servicio)
+        servicio = self._find_servicio_by_identificador(parsed.servicio_id)
+
         if not servicio:
             return ResolveResult(
                 success=False,
@@ -1346,24 +1375,25 @@ class InfraService:
         camaras_nuevas = 0
         camaras_existentes = 0
         empalmes_creados = 0
+        ubicaciones_sin_match = 0
         empalmes_asociados: set[int] = set()  # Para evitar duplicados en la misma ruta
-        
+
         for orden, (empalme_id, ubicacion) in enumerate(topologia, start=1):
-            # Obtener o crear cámara (pasa servicio_id para verificar baneo)
-            camara, es_nueva = _get_or_create_camara(
-                self.session, ubicacion, servicio_id=parsed.servicio_id
+            # Resolver cámara/botella (Cromo es la fuente de verdad — nunca se crea una Camara)
+            camara = _resolve_camara_o_registrar_sin_match(
+                self.session, ubicacion, filename=filename, servicio_id=parsed.servicio_id
             )
-            if es_nueva:
-                camaras_nuevas += 1
+            if camara is None:
+                ubicaciones_sin_match += 1
             else:
                 camaras_existentes += 1
-            
+
             # Obtener o crear empalme
             tracking_id = f"{parsed.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
-            
+
             # Asociar a la ruta (evitar duplicados)
             if empalme.id not in empalmes_asociados:
                 stmt = ruta_empalme_association.insert().values(
@@ -1373,13 +1403,13 @@ class InfraService:
                 )
                 self.session.execute(stmt)
                 empalmes_asociados.add(empalme.id)
-            
+
             # Mantener relación legacy
             if empalme not in servicio.empalmes:
                 servicio.empalmes.append(empalme)
-        
+
         self.session.commit()
-        
+
         logger.info(
             "action=branch servicio_id=%s ruta_id=%d nombre=%s tipo=%s empalmes=%d",
             parsed.servicio_id,
@@ -1388,7 +1418,7 @@ class InfraService:
             ruta.tipo.value,
             len(empalmes_asociados),
         )
-        
+
         return ResolveResult(
             success=True,
             action=ResolveAction.BRANCH,
@@ -1400,6 +1430,7 @@ class InfraService:
             camaras_existentes=camaras_existentes,
             empalmes_creados=empalmes_creados,
             empalmes_asociados=len(empalmes_asociados),
+            ubicaciones_sin_match=ubicaciones_sin_match,
             message=f"Nueva ruta '{ruta.nombre}' ({ruta.tipo.value}) creada con {len(empalmes_asociados)} empalmes",
         )
 
@@ -1438,11 +1469,12 @@ class InfraService:
                 error=f"Servicio viejo '{old_service_id}' no encontrado",
             )
         
-        # Verificar que el nuevo ID no exista
+        # Verificar que el nuevo ID no exista. Mismo criterio que `execute_upgrade`: guard de
+        # colisión, no búsqueda por alias — no se reemplaza por `_find_servicio_by_identificador`.
         existing_new = self.session.query(Servicio).filter(
             Servicio.servicio_id == parsed.servicio_id
         ).first()
-        
+
         if existing_new and existing_new.id != old_servicio.id:
             return ResolveResult(
                 success=False,
@@ -1499,17 +1531,19 @@ class InfraService:
         camaras_nuevas = 0
         camaras_existentes = 0
         empalmes_creados = 0
+        ubicaciones_sin_match = 0
         empalmes_asociados: set[int] = set()
-        
+
         for orden, (empalme_id, ubicacion) in enumerate(topologia, start=1):
-            camara, es_nueva = _get_or_create_camara(
-                self.session, ubicacion, servicio_id=parsed.servicio_id
+            # Resolver cámara/botella (Cromo es la fuente de verdad — nunca se crea una Camara)
+            camara = _resolve_camara_o_registrar_sin_match(
+                self.session, ubicacion, filename=filename, servicio_id=parsed.servicio_id
             )
-            if es_nueva:
-                camaras_nuevas += 1
+            if camara is None:
+                ubicaciones_sin_match += 1
             else:
                 camaras_existentes += 1
-            
+
             tracking_id = f"{parsed.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             
@@ -1563,6 +1597,7 @@ class InfraService:
             camaras_existentes=camaras_existentes,
             empalmes_creados=empalmes_creados,
             empalmes_asociados=len(empalmes_asociados),
+            ubicaciones_sin_match=ubicaciones_sin_match,
             message=f"Upgrade confirmado: {old_service_id} → {parsed.servicio_id}. Aliases: {current_aliases}",
         )
 
@@ -1628,11 +1663,15 @@ class InfraService:
         self.session.flush()
         
         # Procesar empalmes (asociarlos a la nueva ruta)
+        ubicaciones_sin_match = 0
         empalmes_asociados: set[int] = set()
         for orden, (empalme_id, ubicacion) in enumerate(topologia, start=1):
-            camara, _ = _get_or_create_camara(
-                self.session, ubicacion, servicio_id=parsed.servicio_id
+            # Resolver cámara/botella (Cromo es la fuente de verdad — nunca se crea una Camara)
+            camara = _resolve_camara_o_registrar_sin_match(
+                self.session, ubicacion, filename=filename, servicio_id=parsed.servicio_id
             )
+            if camara is None:
+                ubicaciones_sin_match += 1
             tracking_id = f"{parsed.servicio_id}_{empalme_id}"
             empalme, _ = _get_or_create_empalme(self.session, tracking_id, camara)
             
@@ -1673,6 +1712,7 @@ class InfraService:
             servicio_db_id=servicio.id,
             ruta_id=nueva_ruta.id,
             ruta_nombre=nuevo_nombre,
+            ubicaciones_sin_match=ubicaciones_sin_match,
             message=f"Pelo {nuevo_pelo_num} agregado como '{nuevo_nombre}'",
         )
 

@@ -29,6 +29,8 @@ from core.services.infra_service import (
     ResolveResult,
     StrandInfo,
     UpgradeInfo,
+    _get_or_create_empalme,
+    _resolve_camara_o_registrar_sin_match,
     analyze_tracking_file,
     resolve_tracking_file,
 )
@@ -71,6 +73,12 @@ class TrackingUploadResponse(BaseModel):
     camaras_nuevas: int
     camaras_existentes: int
     empalmes_registrados: int
+    # Desde la Tarea 3 del refactor "Adjuntar tracking" (2026-08-23): `camaras_nuevas` queda
+    # siempre en 0 (Cromo Red es la fuente de verdad, este endpoint ya no crea `Camara`) — se
+    # mantiene el campo por compatibilidad con el contrato público documentado. Las ubicaciones que
+    # no matchearon contra Camara/CromoBotella se cuentan acá y quedan registradas en
+    # `IngresoSinMatch` (origen="tracking") para revisión manual.
+    ubicaciones_sin_match: int = 0
     mensaje: Optional[str] = None
 
 
@@ -801,68 +809,6 @@ async def trigger_infra_sync(payload: InfraSyncRequest | None = None) -> InfraSy
     )
 
 
-def _normalizar_nombre_camara(nombre: str) -> str:
-    """Normaliza el nombre de una cámara para comparación."""
-
-    return " ".join(nombre.strip().lower().split())
-
-
-def _buscar_camara_por_nombre(session, nombre: str) -> Optional[Camara]:
-    """Busca una cámara por nombre exacto o normalizado.
-
-    Args:
-        session: Sesión de SQLAlchemy.
-        nombre: Nombre/dirección de la cámara a buscar.
-
-    Returns:
-        Cámara encontrada o None.
-    """
-
-    nombre_normalizado = _normalizar_nombre_camara(nombre)
-
-    # Buscar coincidencia exacta primero
-    camara = session.query(Camara).filter(Camara.nombre == nombre).first()
-    if camara:
-        return camara
-
-    # Buscar por nombre normalizado (case-insensitive, espacios normalizados)
-    camaras = session.query(Camara).all()
-    for c in camaras:
-        if c.nombre and _normalizar_nombre_camara(c.nombre) == nombre_normalizado:
-            return c
-
-    return None
-
-
-def _crear_camara_desde_tracking(session, nombre: str) -> Camara:
-    """Crea una nueva cámara detectada desde un tracking.
-
-    Args:
-        session: Sesión de SQLAlchemy.
-        nombre: Nombre/dirección de la cámara.
-
-    Returns:
-        Nueva cámara creada.
-    """
-
-    camara = Camara(
-        nombre=nombre.strip(),
-        estado=CamaraEstado.DETECTADA,
-        origen_datos=CamaraOrigenDatos.TRACKING,
-        last_update=datetime.now(timezone.utc),
-    )
-    session.add(camara)
-    session.flush()  # Para obtener el ID asignado
-
-    logger.info(
-        "action=crear_camara_tracking nombre=%s id=%d estado=%s",
-        nombre,
-        camara.id,
-        camara.estado.value,
-    )
-    return camara
-
-
 def _obtener_o_crear_servicio(session, servicio_id: str, nombre_archivo: str) -> tuple[Servicio, bool]:
     """Obtiene un servicio existente o crea uno nuevo.
 
@@ -902,55 +848,39 @@ def _registrar_empalme(
     session,
     servicio: Servicio,
     empalme_id: str,
-    camara: Camara,
+    camara: Optional[Camara],
 ) -> tuple[Empalme, bool]:
     """Registra un empalme y lo asocia al servicio.
+
+    Delega la resolución de `camara_id` en `_get_or_create_empalme` (mismo helper que usa
+    `InfraService`, Tarea 3 del refactor "Adjuntar tracking"): `camara` puede ser `None` (ubicación
+    sin match — ver `_resolve_camara_o_registrar_sin_match`) y un reproceso sin match no pisa un
+    `camara_id` previo válido de una corrida anterior.
 
     Args:
         session: Sesión de SQLAlchemy.
         servicio: Servicio al que pertenece el empalme.
         empalme_id: ID del empalme en el tracking.
-        camara: Cámara donde se ubica el empalme.
+        camara: Cámara donde se ubica el empalme, o `None` si no matcheó.
 
     Returns:
         Tupla (empalme, es_nuevo).
     """
 
-    # Buscar empalme existente por tracking_empalme_id + servicio
     tracking_id_completo = f"{servicio.servicio_id}_{empalme_id}"
+    empalme, es_nuevo = _get_or_create_empalme(session, tracking_id_completo, camara)
 
-    empalme = (
-        session.query(Empalme)
-        .filter(Empalme.tracking_empalme_id == tracking_id_completo)
-        .first()
-    )
+    if servicio not in empalme.servicios:
+        empalme.servicios.append(servicio)
 
-    if empalme:
-        # Actualizar cámara si cambió
-        if empalme.camara_id != camara.id:
-            empalme.camara_id = camara.id
-        # Asegurar asociación con servicio
-        if servicio not in empalme.servicios:
-            empalme.servicios.append(servicio)
-        return empalme, False
-
-    empalme = Empalme(
-        tracking_empalme_id=tracking_id_completo,
-        camara_id=camara.id,
-    )
-    session.add(empalme)
-    session.flush()
-
-    # Asociar al servicio
-    empalme.servicios.append(servicio)
-
-    logger.debug(
-        "action=registrar_empalme tracking_id=%s camara_id=%d servicio_id=%s",
-        tracking_id_completo,
-        camara.id,
-        servicio.servicio_id,
-    )
-    return empalme, True
+    if es_nuevo:
+        logger.debug(
+            "action=registrar_empalme tracking_id=%s camara_id=%s servicio_id=%s",
+            tracking_id_completo,
+            empalme.camara_id,
+            servicio.servicio_id,
+        )
+    return empalme, es_nuevo
 
 
 @router.post("/api/infra/upload_tracking", response_model=TrackingUploadResponse)
@@ -961,8 +891,11 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
     1. Parsea el archivo para extraer el ID del servicio y la topología (empalmes/ubicaciones).
     2. Crea o actualiza el servicio en la base de datos.
     3. Para cada empalme/ubicación:
-       - Busca la cámara por nombre (coincidencia exacta o normalizada).
-       - Si no existe, crea una nueva cámara con estado DETECTADA.
+       - Busca la cámara/botella contra el inventario real (Camara y CromoBotella — Cromo Red es
+         la fuente de verdad desde 2026-08-11).
+       - Si no matchea, **no crea una cámara nueva**: registra un `IngresoSinMatch`
+         (`origen="tracking"`) para revisión manual y deja el empalme sin `camara_id`. El
+         procesamiento nunca se bloquea por esto.
        - Registra el paso del servicio por esa cámara.
 
     Args:
@@ -1020,8 +953,8 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
         _filename = file.filename
 
         def _persist() -> tuple[int, int, int]:
-            camaras_nuevas = 0
             camaras_existentes = 0
+            ubicaciones_sin_match = 0
             empalmes_registrados = 0
 
             with SessionLocal() as session:
@@ -1030,12 +963,17 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
                     servicio.raw_tracking_data = result.to_dict()
 
                     for empalme_id, ubicacion in _topologia:
-                        camara = _buscar_camara_por_nombre(session, ubicacion)
-                        if camara:
+                        # Cromo Red es la fuente de verdad del inventario: nunca se crea una
+                        # Camara nueva. Sin match, se registra un IngresoSinMatch (dentro de
+                        # `_resolve_camara_o_registrar_sin_match`) y el empalme queda sin
+                        # camara_id — el procesamiento del tracking nunca se bloquea por esto.
+                        camara = _resolve_camara_o_registrar_sin_match(
+                            session, ubicacion, filename=_filename, servicio_id=_servicio_id
+                        )
+                        if camara is not None:
                             camaras_existentes += 1
                         else:
-                            camara = _crear_camara_desde_tracking(session, ubicacion)
-                            camaras_nuevas += 1
+                            ubicaciones_sin_match += 1
 
                         _, empalme_nuevo = _registrar_empalme(session, servicio, empalme_id, camara)
                         if empalme_nuevo:
@@ -1043,14 +981,14 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
 
                     session.commit()
                     logger.info(
-                        "action=upload_tracking_complete servicio_id=%s camaras_nuevas=%d "
-                        "camaras_existentes=%d empalmes=%d",
+                        "action=upload_tracking_complete servicio_id=%s camaras_existentes=%d "
+                        "ubicaciones_sin_match=%d empalmes=%d",
                         _servicio_id,
-                        camaras_nuevas,
                         camaras_existentes,
+                        ubicaciones_sin_match,
                         empalmes_registrados,
                     )
-                    return camaras_nuevas, camaras_existentes, empalmes_registrados
+                    return camaras_existentes, ubicaciones_sin_match, empalmes_registrados
 
                 except Exception as exc:
                     session.rollback()
@@ -1059,15 +997,16 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
                     )
                     raise
 
-        camaras_nuevas, camaras_existentes, empalmes_registrados = await asyncio.to_thread(_persist)
+        camaras_existentes, ubicaciones_sin_match, empalmes_registrados = await asyncio.to_thread(_persist)
 
         return TrackingUploadResponse(
             status="ok",
             servicios_procesados=1,
             servicio_id=result.servicio_id,
-            camaras_nuevas=camaras_nuevas,
+            camaras_nuevas=0,
             camaras_existentes=camaras_existentes,
             empalmes_registrados=empalmes_registrados,
+            ubicaciones_sin_match=ubicaciones_sin_match,
             mensaje=f"Tracking del servicio {result.servicio_id} procesado correctamente",
         )
 
@@ -1164,7 +1103,7 @@ class TrackingResolveRequest(BaseModel):
 
 class TrackingResolveResponse(BaseModel):
     """Respuesta de la resolución de un tracking."""
-    
+
     success: bool
     action: str
     servicio_id: Optional[str] = None
@@ -1175,6 +1114,10 @@ class TrackingResolveResponse(BaseModel):
     camaras_existentes: int = 0
     empalmes_creados: int = 0
     empalmes_asociados: int = 0
+    # Campo nuevo (Tarea 3, 2026-08-23) — opcional/backward-compatible: ubicaciones del tracking
+    # que no matchearon contra Camara/CromoBotella y quedaron registradas en `IngresoSinMatch`
+    # (origen="tracking") para revisión manual. Ver `ResolveResult.ubicaciones_sin_match`.
+    ubicaciones_sin_match: int = 0
     message: str = ""
     error: Optional[str] = None
 
@@ -1393,6 +1336,7 @@ async def resolve_tracking_endpoint(
             camaras_existentes=result.camaras_existentes,
             empalmes_creados=result.empalmes_creados,
             empalmes_asociados=result.empalmes_asociados,
+            ubicaciones_sin_match=result.ubicaciones_sin_match,
             message=result.message,
         )
 

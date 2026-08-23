@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core.services.cromo.camara_botella_busqueda import ResultadoBusquedaExtendida
 from core.services.infra_service import (
     AnalysisResult,
     AnalysisStatus,
@@ -25,6 +26,8 @@ from core.services.infra_service import (
     ResolveAction,
     ResolveResult,
     RutaInfo,
+    _get_or_create_empalme,
+    _resolve_camara_o_registrar_sin_match,
     compute_tracking_hash,
 )
 from db.models.infra import (
@@ -32,10 +35,12 @@ from db.models.infra import (
     CamaraEstado,
     CamaraOrigenDatos,
     Empalme,
+    IngresoSinMatch,
     RutaServicio,
     RutaTipo,
     Servicio,
 )
+from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
 
 
 # =============================================================================
@@ -295,6 +300,322 @@ class TestInfraServiceResolve:
         
         assert result.success is False
         assert "target_ruta_id" in result.error.lower() or "ruta" in result.error.lower()
+
+
+# =============================================================================
+# TESTS: TAREA 3 — "Adjuntar tracking" nunca crea Camara, registra IngresoSinMatch
+# =============================================================================
+
+class TestResolveCamaraORegistrarSinMatch:
+    """Tests para `_resolve_camara_o_registrar_sin_match` — reemplaza `_get_or_create_camara`.
+
+    Cromo Red es la fuente de verdad del inventario (2026-08-11): esta función NUNCA debe
+    instanciar una `Camara` nueva, matchee o no matchee.
+    """
+
+    @patch("core.services.cromo.camara_botella_busqueda.buscar_camara_o_botella_cromo")
+    def test_devuelve_camara_si_hay_match(self, mock_buscar, mock_session):
+        camara_mock = MagicMock(spec=Camara)
+        camara_mock.id = 10
+        mock_buscar.return_value = ResultadoBusquedaExtendida(
+            camara=camara_mock, nombre_norm="camara norte 123", fuente="camara", botella=None
+        )
+
+        resultado = _resolve_camara_o_registrar_sin_match(
+            mock_session, "Camara Norte 123", filename="FO 111995 C2.txt", servicio_id="111995"
+        )
+
+        assert resultado is camara_mock
+        assert mock_session.add.call_count == 0  # ningún IngresoSinMatch, ninguna Camara
+
+    @patch("core.services.cromo.camara_botella_busqueda.buscar_camara_o_botella_cromo")
+    def test_sin_match_registra_ingreso_sin_match_y_nunca_crea_camara(self, mock_buscar, mock_session):
+        mock_buscar.return_value = ResultadoBusquedaExtendida(
+            camara=None, nombre_norm="ubicacion rara", fuente=None, botella=None
+        )
+
+        resultado = _resolve_camara_o_registrar_sin_match(
+            mock_session, "Ubicacion Rara ", filename="FO 111995 C2.txt", servicio_id="111995"
+        )
+
+        assert resultado is None
+        add_args = [call.args[0] for call in mock_session.add.call_args_list]
+        assert len(add_args) == 1
+        ingreso = add_args[0]
+        assert isinstance(ingreso, IngresoSinMatch)
+        assert ingreso.origen == "tracking"
+        assert ingreso.texto_original == "Ubicacion Rara"  # strip() aplicado
+        assert "FO 111995 C2.txt" in ingreso.contexto
+        assert "111995" in ingreso.contexto
+        # Nunca se instancia una Camara nueva, ni siquiera en el flujo sin match
+        assert not any(isinstance(obj, Camara) for obj in add_args)
+
+    @patch("core.services.cromo.camara_botella_busqueda.buscar_camara_o_botella_cromo")
+    def test_ambiguous_search_error_se_trata_como_sin_match(self, mock_buscar, mock_session):
+        """`AmbiguousSearchError` no se propaga: acá no hay desambiguación interactiva (a
+        diferencia del listener de Slack) — se trata como "sin match" sin romper el tracking."""
+        mock_buscar.side_effect = AmbiguousSearchError(
+            "Camara Norte", 2, ["Camara Norte 1", "Camara Norte 2"]
+        )
+
+        resultado = _resolve_camara_o_registrar_sin_match(
+            mock_session, "Camara Norte", filename="FO 111995 C2.txt", servicio_id="111995"
+        )
+
+        assert resultado is None
+        add_args = [call.args[0] for call in mock_session.add.call_args_list]
+        assert len(add_args) == 1
+        assert isinstance(add_args[0], IngresoSinMatch)
+        assert not any(isinstance(obj, Camara) for obj in add_args)
+
+
+class TestGetOrCreateEmpalmeSinMatch:
+    """Tests para `_get_or_create_empalme` con `camara: Optional[Camara]` (Tarea 3)."""
+
+    def test_crea_empalme_nuevo_sin_camara(self, mock_session):
+        mock_session.query.return_value.filter.return_value.first.return_value = None
+
+        empalme, es_nuevo = _get_or_create_empalme(mock_session, "111995_1", None)
+
+        assert es_nuevo is True
+        assert empalme.camara_id is None
+
+    def test_crea_empalme_nuevo_con_camara(self, mock_session):
+        mock_session.query.return_value.filter.return_value.first.return_value = None
+        camara = MagicMock(spec=Camara)
+        camara.id = 55
+
+        empalme, es_nuevo = _get_or_create_empalme(mock_session, "111995_1", camara)
+
+        assert es_nuevo is True
+        assert empalme.camara_id == 55
+
+    def test_reproceso_sin_match_no_pisa_camara_id_existente(self, mock_session):
+        """Regresión clave (self-review Tarea 3): un reproceso donde la búsqueda no matchea NO
+        debe nulear el `camara_id` de un `Empalme` ya confirmado en una corrida anterior."""
+        empalme_existente = MagicMock(spec=Empalme)
+        empalme_existente.camara_id = 99
+        mock_session.query.return_value.filter.return_value.first.return_value = empalme_existente
+
+        empalme, es_nuevo = _get_or_create_empalme(mock_session, "111995_1", None)
+
+        assert es_nuevo is False
+        assert empalme is empalme_existente
+        assert empalme.camara_id == 99  # NO se pisó con None
+
+    def test_reproceso_con_match_actualiza_camara_id(self, mock_session):
+        """Cuando SÍ hay una cámara resuelta, el camara_id de un Empalme existente se actualiza
+        normalmente (esto no debe romperse por el fix del caso anterior)."""
+        empalme_existente = MagicMock(spec=Empalme)
+        empalme_existente.camara_id = 1
+        mock_session.query.return_value.filter.return_value.first.return_value = empalme_existente
+        camara_nueva = MagicMock(spec=Camara)
+        camara_nueva.id = 2
+
+        empalme, es_nuevo = _get_or_create_empalme(mock_session, "111995_1", camara_nueva)
+
+        assert es_nuevo is False
+        assert empalme.camara_id == 2
+
+
+class TestUbicacionesSinMatchPorAccion:
+    """`ResolveResult.ubicaciones_sin_match` debe contarse en las 6 acciones que resuelven
+    cámaras — no sólo en algunas (self-review Tarea 3). `camaras_nuevas` debe quedar siempre en 0
+    (el campo se mantiene por compatibilidad de API, pero esta función nunca crea Camara)."""
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    def test_create_new(self, mock_resolve, mock_session):
+        mock_resolve.return_value = None
+        mock_session.query.return_value.filter.return_value.first.return_value = None  # servicio nuevo
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.CREATE_NEW, SAMPLE_TRACKING_CONTENT, "FO 111995 C2.txt"
+        )
+
+        assert result.success is True
+        assert result.ubicaciones_sin_match == 3
+        assert result.camaras_nuevas == 0
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    def test_merge_append(self, mock_resolve, mock_session, mock_servicio):
+        mock_resolve.return_value = None
+        ruta = MagicMock()
+        ruta.id = 1
+        ruta.nombre = "Principal"
+        ruta.servicio = mock_servicio
+        ruta.empalmes = []
+        mock_session.query.return_value.get.return_value = ruta
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.MERGE_APPEND,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            target_ruta_id=1,
+        )
+
+        assert result.success is True
+        assert result.ubicaciones_sin_match == 3
+        assert result.camaras_nuevas == 0
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    def test_replace(self, mock_resolve, mock_session, mock_servicio):
+        mock_resolve.return_value = None
+        ruta = MagicMock()
+        ruta.id = 1
+        ruta.nombre = "Principal"
+        ruta.servicio = mock_servicio
+        ruta.empalmes = []
+        mock_session.query.return_value.get.return_value = ruta
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.REPLACE,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            target_ruta_id=1,
+        )
+
+        assert result.success is True
+        assert result.ubicaciones_sin_match == 3
+        assert result.camaras_nuevas == 0
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_branch(self, mock_find, mock_resolve, mock_session):
+        mock_resolve.return_value = None
+        servicio = MagicMock(spec=Servicio)
+        servicio.id = 1
+        servicio.servicio_id = "111995"
+        servicio.rutas = []
+        servicio.empalmes = []
+        mock_find.return_value = servicio
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.BRANCH,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            new_ruta_name="Ruta Alternativa",
+        )
+
+        assert result.success is True
+        assert result.ubicaciones_sin_match == 3
+        assert result.camaras_nuevas == 0
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    def test_confirm_upgrade(self, mock_resolve, mock_session):
+        mock_resolve.return_value = None
+        old_servicio = MagicMock(spec=Servicio)
+        old_servicio.id = 1
+        old_servicio.servicio_id = "999999"
+        old_servicio.alias_ids = []
+        old_servicio.empalmes = []
+        mock_session.query.return_value.filter.return_value.first.return_value = old_servicio
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.CONFIRM_UPGRADE,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            old_service_id="999999",
+        )
+
+        assert result.success is True
+        assert result.ubicaciones_sin_match == 3
+        assert result.camaras_nuevas == 0
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    def test_add_strand(self, mock_resolve, mock_session, mock_servicio):
+        mock_resolve.return_value = None
+        ruta_base = MagicMock()
+        ruta_base.id = 1
+        ruta_base.nombre = "Principal"
+        ruta_base.tipo = RutaTipo.PRINCIPAL
+        ruta_base.servicio = mock_servicio
+        mock_session.query.return_value.get.return_value = ruta_base
+        mock_session.query.return_value.filter.return_value.count.return_value = 0
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.ADD_STRAND,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            target_ruta_id=1,
+        )
+
+        assert result.success is True
+        assert result.ubicaciones_sin_match == 3
+
+
+class TestServicioAliasReuse:
+    """`_find_servicio_by_identificador` (mismo criterio que
+    `core/services/cromo/ingesta.py::_SQL_BUSCAR_SERVICIO`: servicio_id, numero_primer_servicio o
+    alias_ids) debe estar wireado en CREATE_NEW y BRANCH — antes sólo comparaban `servicio_id`
+    exacto, lo que podía duplicar un Servicio que ya existe bajo un ID alternativo."""
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_create_new_reusa_servicio_encontrado_por_alias(self, mock_find, mock_resolve, mock_session):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        mock_find.return_value = servicio_existente
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.CREATE_NEW, SAMPLE_TRACKING_CONTENT, "FO 111995 C2.txt"
+        )
+
+        mock_find.assert_called_once_with("111995")
+        assert result.success is True
+        # Reusó el servicio existente (id=42): si hubiera creado uno nuevo, servicio_db_id
+        # quedaría en None porque `session.flush()` está mockeado y no asigna PK.
+        assert result.servicio_db_id == 42
+
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_branch_encuentra_servicio_por_alias(self, mock_find, mock_resolve, mock_session):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.servicio_id = "O1C1"
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        mock_find.return_value = servicio_existente
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.BRANCH,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            new_ruta_name="Ruta Alternativa",
+        )
+
+        mock_find.assert_called_once_with("111995")
+        assert result.success is True
+        assert result.servicio_db_id == 42
+
+
+class TestResolveResultUbicacionesSinMatch:
+    """Tests de forma para el nuevo campo del dataclass (backward-compatible)."""
+
+    def test_default_es_cero(self):
+        result = ResolveResult(success=True, action=ResolveAction.CREATE_NEW)
+        assert result.ubicaciones_sin_match == 0
+
+    def test_to_dict_incluye_el_campo(self):
+        result = ResolveResult(
+            success=True, action=ResolveAction.CREATE_NEW, ubicaciones_sin_match=5
+        )
+        data = result.to_dict()
+        assert data["ubicaciones_sin_match"] == 5
+        # camaras_nuevas se mantiene (API pública documentada, otros consumidores pueden leerlo)
+        assert "camaras_nuevas" in data
+        assert data["camaras_nuevas"] == 0
 
 
 # =============================================================================
