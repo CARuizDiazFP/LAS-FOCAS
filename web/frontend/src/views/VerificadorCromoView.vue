@@ -231,11 +231,24 @@
         </tbody>
       </table>
 
-      <!-- Futuro (Empalmes): tarjeta con la tabla de fusiones internas de esta botella
-           (`app.cromo_fusiones` con `botella_n_id` propio) — misma estructura minimalista que la
-           tabla de Cables de arriba. El backend todavía no expone este dato (ver comentario en
-           `ResultadoBotella`, core/services/cromo/verificador.py, y en `CromoVerificacionBotella`,
-           src/api/cromo.ts). -->
+      <!-- Empalmes (fusiones internas de la botella) tienen su propia vista dedicada, con tabla
+           filtrable por Cable Origen y Splitters agrupados — ver `EmpalmesBotellaCromoView.vue` y
+           `core/services/cromo/empalmes.py`. Esta tarjeta sólo redirige, no trae datos acá. -->
+    </article>
+
+    <article v-if="tipo === 'botella' && resultado" class="card verificador-cromo__card">
+      <header class="verificador-cromo__resultado-header">
+        <h2>Empalmes</h2>
+      </header>
+      <button
+        class="empalmes-card__link"
+        type="button"
+        tabindex="0"
+        @click="irAEmpalmes"
+      >
+        <i class="ph ph-git-merge" aria-hidden="true"></i>
+        Ver tabla de empalmes de esta Botella
+      </button>
     </article>
 
     <article v-if="tipo === 'botella' && resultado" class="card verificador-cromo__card">
@@ -638,6 +651,16 @@ onMounted(() => {
 function irACable(cable: { n_id: number }): void {
   void router.push(`/infra/cromo/cables/ID${cable.n_id}`);
 }
+
+// Navega a la tabla dedicada de empalmes (fusiones internas) de esta Botella — misma navegación por
+// query params que "Ver info en Cromo"/navegación cruzada, no una tarjeta con datos acá.
+function irAEmpalmes(): void {
+  if (!resultado.value) return;
+  void router.push({
+    path: '/infra/cromo/verificador/empalmes',
+    query: { tipo: 'botella', n_id: String(resultado.value.nId) },
+  });
+}
 </script>
 
 <style scoped>
@@ -873,6 +896,23 @@ function irACable(cable: { n_id: number }): void {
 .tabla-cables__fila:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
+}
+
+.empalmes-card__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.empalmes-card__link:hover {
+  border-color: var(--color-accent);
 }
 
 .verificador-cromo__nombre-editar {

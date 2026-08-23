@@ -142,8 +142,8 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     cantidad de servicios de cada cable que tiene la botella como extremo) con una query propia
     (`_SQL_CABLES_DE_BOTELLA`, subselect correlacionado para el conteo — mismo patrón que
     `inventario.py`) — alimenta la tarjeta "Cables asociados" del detalle de Botella en el
-    Verificador. `ResultadoBotella` deja un campo comentado para `empalmes` (fusiones internas de la
-    botella, `app.cromo_fusiones`), todavía sin query ni consumidor.
+    Verificador. Los empalmes (fusiones internas de la botella) tienen su propio módulo dedicado,
+    `empalmes.py` (ver más abajo), en vez de ser un campo más de `ResultadoBotella`.
   - `inventario.py`: búsqueda paginada de cables (Etapa 8b, filtros extendidos en Etapa 9) — distinto
     del verificador ("listame cables", no "qué servicios pasan por este cable puntual"). `ILIKE`
     parcial sobre nombre/jerarquía/propietario/botella (extremos ya desnormalizados), exacto sobre
@@ -154,6 +154,27 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     (cable, tubos del cable, todos los pelos del cable con su match ya resuelto por LEFT JOIN),
     agrupadas en Python por `tubo_n_id` — nunca N+1. Mismo criterio de referencia colgada tolerante
     que `verificador.py`, extendido a nivel tubo.
+  - `empalmes.py`: resuelve los empalmes (fusiones — "fusión" y "empalme" son sinónimos en este
+    dominio) internos de una Botella a partir de `app.cromo_fusiones`/`cromo_pelos`/`cromo_cables`/
+    `cromo_tubos` ya ingeridos — nunca contra la API de Cromo. Dos hallazgos de diagnóstico real
+    (`lasfocasdev-postgres`, sólo 5 filas de `cromo_fusiones` en todo el ambiente) que contradicen el
+    diseño documentado más arriba: (1) `cromo_fusiones.botella_n_id` nunca viene poblado en la
+    práctica — el barrido directo por clase 132 no trae `parent` — así que la pertenencia de una
+    fusión a una botella se infiere por join indirecto: alguno de sus dos pelos pertenece a un cable
+    que tiene esa botella como `extremo_a_n_id`/`extremo_b_n_id` (mismo patrón de
+    `_SQL_CABLES_DE_BOTELLA` de `verificador.py`), validado end-to-end contra la botella real 9345594
+    (Cra Alberdi 290) y su única fusión ingerida (17-1). (2) "Splitter" no es una clase Cromo propia
+    (el catálogo `app.cromo_clases` sólo tiene BOTELLA/CABLE/TUBO/PELO/FUSION) — se detecta
+    estructuralmente: un mismo pelo (`n_id`) que se repite como origen en 2+ filas de
+    `cromo_fusiones` de la misma botella es la firma física de un Splitter (fan-out), con un
+    fallback secundario por regex `^[Ss]\d+-\d+$` sobre `nombre_par` para patas sueltas/colgadas que
+    no se pueden agrupar (únicos 2 ejemplos reales: "S7-1", "S4-1"). Expone
+    `empalmes_de_botella(sesion, botella_n_id) -> ResultadoEmpalmesBotella` (cables de origen +
+    lista de empalmes, cada uno con `es_splitter`/`splitter_destinos`/`splitter_ratio`), consumido
+    por `GET /api/infra/cromo/botellas/{n_id}/empalmes` en `web/app/main.py` y por la vista dedicada
+    `EmpalmesBotellaCromoView.vue` (`/infra/cromo/verificador/empalmes?n_id=...`, tabla filtrable por
+    Cable Origen). Tests en `tests/test_cromo_empalmes.py` (sin DB real, mismo patrón de sesión falsa
+    que `tests/test_cromo_verificador.py`).
   - `live_lookup_service.py` (2026-08-19): visor en vivo de un elemento Cromo por `n_id` — un único
     `GET /db/objects/{id}` (`CromoClient.get_objeto`) contra Cromo, **nunca** contra las tablas ya
     ingeridas y **nunca** persiste nada. Distinto de todo lo demás en este paquete: es la única
@@ -200,8 +221,9 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
   `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/test_cromo_inventario.py`,
   `tests/test_web_cromo_inventario.py`, `tests/test_cromo_detalle.py`, `tests/test_web_cromo_detalle.py`,
+  `tests/test_cromo_empalmes.py`,
   `tests/fixtures/cromo/`: cobertura de parser, cliente, servicio de ingesta, verificador, worker,
-  inventario, detalle jerárquico y endpoints web, sin red ni DB real.
+  inventario, detalle jerárquico, empalmes y endpoints web, sin red ni DB real.
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos, inventario y config del scheduler). Documentación de cada tabla en `docs/db.md`.
 - `db/alembic/versions/20260805_01_cromo_ingesta.py`, `20260806_01_cromo_ingesta_config.py`,
@@ -238,7 +260,9 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   CromoCableDeBotella[]` desde 2026-08-18) + funciones del scheduler del worker
   (`obtenerConfigSchedulerCromo`, `guardarConfigSchedulerCromo`, `obtenerSaludWorkerCromo`,
   `dispararSchedulerCromo`) + `buscarInventarioCables` (Etapa 8b, filtros `nId`/`botella`/`servicio`
-  agregados en Etapa 9) + `obtenerDetalleCable` (Etapa 9, detalle jerárquico).
+  agregados en Etapa 9) + `obtenerDetalleCable` (Etapa 9, detalle jerárquico) +
+  `obtenerEmpalmesDeBotella` (empalmes/fusiones internas de una botella, consumida por
+  `EmpalmesBotellaCromoView.vue`).
 - `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — card de
   scheduler automático (habilitar/deshabilitar, intervalo, hora de inicio, clases/psize/max_páginas
   del ciclo periódico, estado del worker, "Ejecutar ahora"), dispara corridas manuales y consume el
@@ -262,8 +286,10 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   este Verificador con `tipo=cable`, porque esa tarjeta sólo expone servicios, no tubos/pelos (primer
   intento, corregido el mismo día: hacía `router.push({ query: { tipo: 'cable', n_id } })` para
   quedarse en la misma vista; se descartó porque el detalle real de un cable — tubos/buffers/pelos —
-  sólo existe en `CableDetalleCromoView.vue`, no en esta tarjeta de servicios). Queda un bloque
-  comentado en la plantilla marcando dónde iría a futuro la tarjeta de Empalmes.
+  sólo existe en `CableDetalleCromoView.vue`, no en esta tarjeta de servicios). Cuando
+  `tipo === 'botella'` también agrega una tarjeta "Empalmes" (sólo un link, sin tabla propia acá) que
+  navega con `router.push` a la vista dedicada `EmpalmesBotellaCromoView.vue`
+  (`/infra/cromo/verificador/empalmes?tipo=botella&n_id=<n_id>`).
 - `web/frontend/src/views/InventarioCablesCromoView.vue` (Etapa 8b): inventario navegable en
   `/infra/cromo/cables` — buscador (nombre/jerarquía/propietario/vigente, + Id de cable/Botella/
   Servicio desde la Etapa 9) + paginación. Cada fila es clickeable (Etapa 9) y navega a la vista de
@@ -279,6 +305,16 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   (hero + back-link, no modal): un cable con 24 tubos no cabe cómodo en un `<dialog>`, y el pedido
   explícito fue que el detalle sea una vista propia, navegable con URL directa
   (`/infra/cromo/cables/ID<n_id>`), no un panel superpuesto.
+- `web/frontend/src/views/EmpalmesBotellaCromoView.vue`: vista dedicada en
+  `/infra/cromo/verificador/empalmes?tipo=botella&n_id=<n_id>` — tabla de empalmes (fusiones) internos
+  de una Botella, filtrable por un `<select>` "Cable Origen" (por defecto el primer cable con datos),
+  con orden/buffer/color de pelo mostrados como código literal de Cromo (sin mapeo a hex, ej. "AZ",
+  "NR", "AZ-R" tal cual vienen en `cromo_pelos.color`/`cromo_tubos.nombre_color`) y las filas de tipo
+  Splitter agrupadas en una sola fila por pelo de origen ("Splitter 1-N", con el detalle de cada pata
+  en `splitter_destinos`). Mismo patrón de página dedicada (hero + back-link) que
+  `CableDetalleCromoView.vue`. Consume `obtenerEmpalmesDeBotella` (`src/api/cromo.ts`) contra
+  `GET /api/infra/cromo/botellas/{n_id}/empalmes`. Punto de entrada: la tarjeta "Empalmes" del
+  detalle de Botella en `VerificadorCromoView.vue` (sólo redirige, no trae datos ahí).
 - Los nombres de extremo (`extremo_a`/`extremo_b`) que muestran `InventarioCablesCromoView.vue`,
   `CableDetalleCromoView.vue` y `VerificadorCromoView.vue` se resuelven en `core/services/cromo/
   {inventario,detalle,verificador}.py` vía `LEFT JOIN` a `cromo_botellas` (Etapa 9c) — no desde las

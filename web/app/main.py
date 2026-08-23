@@ -5112,8 +5112,62 @@ async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int)
                 {"n_id": c.n_id, "nombre": c.nombre, "cantidad_servicios": c.cantidad_servicios}
                 for c in resultado.cables
             ],
-            # Futuro: "empalmes": [...] — fusiones internas de la botella (`app.cromo_fusiones`),
-            # todavía no expuestas (ver comentario en `ResultadoBotella`, verificador.py).
+        }
+    )
+
+
+def _serializar_pelo_empalme(pelo: Any) -> Optional[dict[str, Any]]:
+    if pelo is None:
+        return None
+    return {
+        "n_id": pelo.n_id,
+        "cable_n_id": pelo.cable_n_id,
+        "cable_nombre": pelo.cable_nombre,
+        "tubo_n_id": pelo.tubo_n_id,
+        "tubo_color": pelo.tubo_color,
+        "numero_pelo": pelo.numero_pelo,
+        "orden": pelo.orden,
+        "color": pelo.color,
+    }
+
+
+@app.get("/api/infra/cromo/botellas/{botella_n_id}/empalmes")
+async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
+    """Empalmes (fusiones) internos de una Botella, aplanados y con Splitters agrupados en una sola
+    fila por pelo de origen — para la tabla dinámica de `/infra/cromo/verificador?...&n_id=.../empalmes`.
+    Sólo lectura sobre `app.cromo_fusiones` ya ingerido, cualquier usuario autenticado (mismo
+    criterio que el resto de `/api/infra/cromo/*`)."""
+    from core.services.cromo.empalmes import empalmes_de_botella
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await empalmes_de_botella(sesion, botella_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "botella_n_id": resultado.botella_n_id,
+            "nombre": resultado.nombre,
+            "cables": [
+                {"n_id": c.n_id, "nombre": c.nombre, "cantidad_empalmes": c.cantidad_empalmes}
+                for c in resultado.cables
+            ],
+            "empalmes": [
+                {
+                    "fusion_n_id": e.fusion_n_id,
+                    "nombre_par": e.nombre_par,
+                    "es_splitter": e.es_splitter,
+                    "pelo_origen": _serializar_pelo_empalme(e.pelo_origen),
+                    "pelo_destino": _serializar_pelo_empalme(e.pelo_destino),
+                    "splitter_destinos": [_serializar_pelo_empalme(p) for p in e.splitter_destinos],
+                    "splitter_ratio": e.splitter_ratio,
+                }
+                for e in resultado.empalmes
+            ],
         }
     )
 

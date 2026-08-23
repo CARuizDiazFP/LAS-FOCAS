@@ -223,9 +223,8 @@ export interface CromoVerificacionBotella {
   localidad: string | null;
   servicios: CromoServicioEncontrado[];
   cables: CromoCableDeBotella[];
-  // Futuro: `empalmes?: CromoEmpalmeDeBotella[]` — fusiones internas de la botella
-  // (`app.cromo_fusiones`), para una tarjeta "Empalmes" análoga a `cables`. Aún no expuesto por el
-  // backend (ver comentario en `ResultadoBotella`, core/services/cromo/verificador.py).
+  // Empalmes (fusiones internas) tienen su propio endpoint/vista dedicada — ver
+  // `CromoEmpalmesBotella`/`obtenerEmpalmesDeBotella` más abajo, no una tarjeta de este resultado.
 }
 
 export async function verificarServiciosPorCable(cableNId: number): Promise<CromoVerificacionCable> {
@@ -342,6 +341,51 @@ export interface CromoDetalleCable {
 export async function obtenerDetalleCable(nId: number): Promise<CromoDetalleCable> {
   return requestJson(`/api/infra/cromo/cables/${nId}/detalle`);
 }
+
+// ── Empalmes (fusiones) internos de una Botella ──────────────────────────────
+// Vista dedicada `/infra/cromo/verificador/empalmes?n_id=...` (distinta de la tarjeta "Cables
+// asociados" del Verificador) — ver `core/services/cromo/empalmes.py` para la lógica de armado y
+// agrupación de Splitters (no es una clase Cromo propia, se detecta por un mismo pelo repetido en
+// 2+ fusiones de la misma botella).
+
+export interface CromoPeloEmpalme {
+  n_id: number;
+  cable_n_id: number | null;
+  cable_nombre: string | null;
+  tubo_n_id: number | null;
+  tubo_color: string | null;
+  numero_pelo: string | null;
+  orden: number | null;
+  color: string | null;
+}
+
+export interface CromoEmpalmeDeBotella {
+  fusion_n_id: number;
+  nombre_par: string | null;
+  es_splitter: boolean;
+  pelo_origen: CromoPeloEmpalme | null;
+  pelo_destino: CromoPeloEmpalme | null;
+  splitter_destinos: CromoPeloEmpalme[];
+  splitter_ratio: number | null;
+}
+
+export interface CromoCableDeEmpalmes {
+  n_id: number;
+  nombre: string | null;
+  cantidad_empalmes: number;
+}
+
+export interface CromoEmpalmesBotella {
+  botella_n_id: number;
+  nombre: string | null;
+  cables: CromoCableDeEmpalmes[];
+  empalmes: CromoEmpalmeDeBotella[];
+}
+
+export async function obtenerEmpalmesDeBotella(botellaNId: number): Promise<CromoEmpalmesBotella> {
+  return requestJson(`/api/infra/cromo/botellas/${botellaNId}/empalmes`);
+}
+
 
 // ── Visor en vivo de un elemento Cromo ───────────────────────────────────────
 // GET directo contra Cromo (nunca contra las tablas ya ingeridas) — para auditar inconsistencias sin

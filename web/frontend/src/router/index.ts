@@ -14,6 +14,7 @@ const ServiciosView = () => import('../views/ServiciosView.vue');
 const ServicioDetalleView = () => import('../views/ServicioDetalleView.vue');
 const CamaraDetailView = () => import('../views/CamaraDetailView.vue');
 const VerificadorCromoView = () => import('../views/VerificadorCromoView.vue');
+const EmpalmesBotellaCromoView = () => import('../views/EmpalmesBotellaCromoView.vue');
 const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
@@ -159,6 +160,11 @@ const routes: RouteRecordRaw[] = [
       },
       { path: 'infra/Camaras/:id(\\d+)', name: 'camara-detail', component: CamaraDetailView },
       { path: 'infra/cromo/verificador', name: 'infra-cromo-verificador', component: VerificadorCromoView },
+      {
+        path: 'infra/cromo/verificador/empalmes',
+        name: 'infra-cromo-verificador-empalmes',
+        component: EmpalmesBotellaCromoView,
+      },
       { path: 'infra/cromo/cables', name: 'infra-cromo-cables', component: InventarioCablesCromoView },
       {
         path: 'infra/cromo/cables/ID:nId(\\d+)',

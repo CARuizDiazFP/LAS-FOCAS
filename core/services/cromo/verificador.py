@@ -71,9 +71,10 @@ class ResultadoBotella:
     localidad: Optional[str]
     servicios: list[ServicioEncontrado]
     cables: list[CableDeBotella] = field(default_factory=list)
-    # Futuro: `empalmes: list[EmpalmeDeBotella]` — fusiones internas de la botella
-    # (`app.cromo_fusiones` con `botella_n_id` propio), para una tarjeta "Empalmes" análoga a
-    # `cables` en el Verificador. Todavía no expuesto: sin query ni consumidor en el frontend.
+    # Empalmes (fusiones internas de la botella) ya expuestos, pero por un módulo/endpoint propio
+    # (`core/services/cromo/empalmes.py`, `GET /api/infra/cromo/botellas/{n_id}/empalmes`) — no acá,
+    # porque tienen su propia vista dedicada (`/infra/cromo/verificador?...&n_id=.../empalmes`) en
+    # vez de una tarjeta más del detalle de Botella.
 
 
 # Columnas de `app.servicios` + `cromo_pelos`/`cromo_servicio_match` comunes a las tres consultas,
