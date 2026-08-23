@@ -253,6 +253,8 @@ y `web/app/main.py::upload_tracking_web` (carga de tracking).
 | `origen` | String(32) | `"slack"` \| `"tracking"`. |
 | `contexto` | Text, nullable | Canal de Slack o nombre de archivo de tracking, según `origen`. |
 | `revisado` | Boolean | `false` por defecto — flag de triage admin. |
+| `thread_ts` | String(32), nullable | ts del hilo de Slack donde se registró el caso (sólo `origen="slack"`) — habilita el seguimiento por ID de empalme. |
+| `resuelto_via_empalme` | Boolean | `false` por defecto — se marca `true` cuando el técnico responde en el mismo hilo con un ID de empalme y `core/services/cromo/empalme_resolucion.py` resuelve la Botella dueña, tanto si la resolución tuvo éxito como si no (evita reprocesar el mismo hilo dos veces). |
 | `created_at` | DateTime(tz), index | — |
 
 ---
@@ -324,7 +326,7 @@ por incidentes activos o ingresos abiertos.
 ### Servicios de sincronización
 
 - **Google Sheets** (`/sync/camaras`): `core/services/infra_sync.py` sincroniza desde la hoja "Camaras" configurada vía `INFRA_SHEET_ID`/`INFRA_SHEET_NAME`, actualizando `fontine_id`, coordenadas y estado.
-- **Tracking** (`/api/infra/upload_tracking`): procesa archivos TXT de tracking, crea servicios, detecta cámaras nuevas y registra empalmes.
+- **Tracking** (`/api/infra/upload_tracking`): procesa archivos TXT de tracking, crea servicios y registra empalmes. Desde 2026-08-23 **nunca crea una `Camara` nueva** — resuelve la ubicación con la búsqueda extendida Camara+CromoBotella (`core/services/cromo/camara_botella_busqueda.py`) y, si no matchea, registra un `IngresoSinMatch` (`origen="tracking"`) dejando `Empalme.camara_id=NULL`; ver `docs/infra.md`, sección "Ingresos sin match".
 
 ## Configuración de Servicios Automatizados
 

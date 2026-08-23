@@ -175,6 +175,24 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     `EmpalmesBotellaCromoView.vue` (`/infra/cromo/verificador/empalmes?n_id=...`, tabla filtrable por
     Cable Origen). Tests en `tests/test_cromo_empalmes.py` (sin DB real, mismo patrón de sesión falsa
     que `tests/test_cromo_verificador.py`).
+  - `camara_botella_busqueda.py` (2026-08-23): cierra el gap de la búsqueda por nombre libre
+    "Camara-only" — `buscar_camara_o_botella_cromo()` reusa sin modificar la cascada canónica de
+    `buscar_camara()` (`modules/slack_baneo_notifier/camara_search.py`) y, sólo si ésta no matchea
+    nada en `app.camaras`, corre una cascada equivalente (ILIKE con nombre normalizado → AND-ILIKE
+    por tokens, mismos filtros de números requeridos y de bots secundarios reusados, no
+    reimplementados) contra `app.cromo_botellas` — el inventario real de Cromo tiene botellas que
+    nunca tuvieron fila propia en `Camara` (ej. "Bot 2 Cra Mitre 440"), y hasta esta tarea esa
+    búsqueda las ignoraba por completo. Un match único de `CromoBotella` con `camara_id` poblado
+    resuelve la `Camara` padre vía `CromoBotella.camara`; con `camara_id is None` (backfill de
+    cámara padre pendiente) se trata como sin match. Ante ambigüedad de `Camara` (`buscar_camara()`
+    lanza `AmbiguousSearchError`) fusiona los candidatos de ambas fuentes, deduplicados por nombre
+    normalizado, y relanza la misma excepción con la lista combinada. Consumido por el listener de
+    Slack de ingreso de técnicos (`modules/slack_baneo_notifier/listener.py`) y por el flujo
+    "adjuntar tracking" del portal Infra (`core/services/infra_service.py::_get_or_create_camara`,
+    que desde esta misma tarea ya no crea una `Camara` nueva al no matchear, sino que registra un
+    `IngresoSinMatch`). Riesgo conocido sin acción tomada: `CromoBotella.nombre` no tiene índice (a
+    diferencia de `CromoCable.nombre`), así que la cascada hace table scan sobre `app.cromo_botellas`
+    en cada llamada sin match directo en `Camara`.
   - `live_lookup_service.py` (2026-08-19): visor en vivo de un elemento Cromo por `n_id` — un único
     `GET /db/objects/{id}` (`CromoClient.get_objeto`) contra Cromo, **nunca** contra las tablas ya
     ingeridas y **nunca** persiste nada. Distinto de todo lo demás en este paquete: es la única

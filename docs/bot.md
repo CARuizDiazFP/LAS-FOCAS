@@ -236,7 +236,10 @@ El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Sl
 
 ### Jerarquía de validación de acceso
 
-Antes de responder al técnico, `_construir_respuesta_camara()` evalúa **en orden**:
+Una vez resuelta la `Camara` (propia, o vía botella Cromo), `_evaluar_estado_acceso_camara()`
+evalúa **en orden** (factorizada de `_construir_respuesta_camara()` en la Tarea 2 del refactor de
+ingreso, 2026-08-23, para poder reusarse también desde `_procesar_seguimiento_empalme` cuando la
+cámara se resuelve por el camino del ID de empalme):
 
 1. **Incidente de red activo** (`IncidenteBaneo.activo == True`) → 🚨 `*ATENCIÓN*` con número de incidente y ticket.
 2. **Baneo manual sin incidente** (`camara.estado == BANEADA` y lista de incidentes vacía) → `:no_entry:` con el motivo extraído del último registro de `app.camaras_estado_auditoria` (`estado_nuevo = BANEADA`, ordenado por `created_at DESC`).  Si no hay registro de auditoría, se informa _"sin motivo registrado"_.
@@ -295,7 +298,7 @@ Los técnicos a veces mencionan dos botellas de la misma cámara en un mismo for
 | 1 | base sin prefijo (Botella 1 = cámara principal) |
 | ≥2 | `"Bot N " + base` (Botella 2 = cámara secundaria) |
 
-El listener procesa ambas búsquedas y envía una respuesta combinada en el mismo hilo, separada por un divisor visual. Si alguna no se encuentra, se auto-registra como `PENDIENTE_REVISION` de forma independiente.
+El listener procesa ambas búsquedas y envía una respuesta combinada en el mismo hilo, separada por un divisor visual. Si alguna no se encuentra, se registra como `IngresoSinMatch` de forma independiente (ver sección "Auto-registro de cámaras desconocidas" más abajo — el registro en `app.camaras` con `PENDIENTE_REVISION` está retirado desde 2026-08-11).
 
 #### Abreviaturas expandidas
 
@@ -335,17 +338,32 @@ Antes de consultar la DB y antes de auto-registrar, el listener aplica `limpiar_
 
 **El corte es condicional**: si el token después del separador NO es una stopword conocida, el string se preserva íntegro. Ejemplo: `"Poste Lavalle - Campana"` → `"Poste Lavalle - Campana"` (Campana es una localidad, no ruido).
 
-### Auto-registro de cámaras desconocidas
+### Ingresos sin match (reemplaza el auto-registro `PENDIENTE_REVISION`, 2026-08-11)
 
-Cuando `buscar_camara()` retorna `None`, el listener **auto-registra** la cámara en la DB con:
-- `estado = PENDIENTE_REVISION`
-- `origen_datos = MANUAL`
-- `last_update = now()`
+> **Retirado.** Hasta 2026-08-11 esta sección describía que, cuando `buscar_camara()` retornaba
+> `None`, el listener auto-registraba una `Camara` nueva con `estado = PENDIENTE_REVISION`. Ese
+> flujo está retirado — Cromo Red es la fuente de verdad del inventario, y un caso sin match es un
+> problema de escritura/regex, no una cámara faltante de alta. El bloque "Aprobar / Convertir en
+> Alias / Definir Nombre Canón / Eliminar" más abajo sigue vigente **sólo** como panel de gestión de
+> las ~34 filas legado que ya estaban en `PENDIENTE_REVISION` a esa fecha — no recibe filas nuevas.
 
-Y responde al técnico:
-> ✅ Cámara no registrada previamente, se registra automáticamente bajo revisión. Sin incidentes activos. Podés proceder.
+Desde la Tarea 2 del refactor de ingreso (2026-08-23), la búsqueda usa
+`buscar_camara_o_botella_cromo()` (`core/services/cromo/camara_botella_busqueda.py`, ver
+`docs/modulo_ingesta_cromo.md`), que extiende `buscar_camara()` a también cubrir botellas que sólo
+existen en el inventario de Cromo (`app.cromo_botellas`). Si ninguna de las dos fuentes matchea, el
+listener (`_construir_respuesta_camara` en `modules/slack_baneo_notifier/listener.py`) registra el
+caso en `IngresoSinMatch` (`origen="slack"`, con el `thread_ts` del mensaje) y responde dejando
+explícito que **el ingreso nunca se bloquea por esto**, invitando al técnico a responder en el mismo
+hilo con el ID de empalme más cercano si lo conoce. Si responde con un número en ese hilo,
+`_procesar_seguimiento_empalme` resuelve la Botella dueña de esa fusión
+(`core/services/cromo/empalme_resolucion.py::resolver_botella_por_fusion_sync`) y, si tiene cámara
+padre, evalúa su estado de acceso (misma jerarquía de `_evaluar_estado_acceso_camara` — incidente de
+red > baneo manual > OK) igual que si hubiera matcheado desde el principio; marca
+`resuelto_via_empalme=True` para no reprocesar el mismo hilo dos veces, tenga éxito o no. Ver
+`docs/db.md` (tabla `ingresos_sin_match`) y `docs/infra.md` (sección "Ingresos sin match").
 
-El administrador luego revisa las cámaras pendientes desde el panel `/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión** y puede:
+**Panel legado** (`/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión**, sólo
+las filas ya existentes al 2026-08-11):
 - **Aprobar** → cambia el estado a `LIBRE` (mantiene el nombre tal como lo escribió el técnico)
 - **Convertir en Alias** → crea un registro en `app.camara_alias` vinculado a una cámara existente y elimina el registro pendiente
 - **Definir Nombre Canón** → permite editar el nombre al formato oficial y lo promueve a `LIBRE`; el nombre original del técnico queda guardado automáticamente como un alias en `app.camara_alias` para que futuras búsquedas del mismo término sigan resolviendo esta cámara
