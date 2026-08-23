@@ -528,8 +528,9 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         self.assertIn(ctx.exception.nombre_raw, "Vicente Lopez")
         self.assertEqual(len(ctx.exception.candidatos), 3)
 
-    def test_multiples_candidatos_limitados_a_5(self) -> None:
-        """candidatos en AmbiguousSearchError se limita a 5 nombres."""
+    def test_multiples_candidatos_limitados_a_3(self) -> None:
+        """candidatos en AmbiguousSearchError se limita a 3 nombres (cap de producto 2026-08-23,
+        antes era 5 — ver core/services/cromo/camara_botella_busqueda.py)."""
         from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara
 
         cams = [self._make_camara(i, f"Cra Test Zona {i}") for i in range(1, 8)]
@@ -543,7 +544,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         ):
             buscar_camara("Test Zona", session=MagicMock())
 
-        self.assertLessEqual(len(ctx.exception.candidatos), 5)
+        self.assertLessEqual(len(ctx.exception.candidatos), 3)
 
     def test_un_candidato_no_raises(self) -> None:
         """Con exactamente 1 candidato después de los filtros, no se lanza la excepción."""

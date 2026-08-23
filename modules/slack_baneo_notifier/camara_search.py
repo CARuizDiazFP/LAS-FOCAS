@@ -20,6 +20,22 @@ from sqlalchemy.orm import Session
 if TYPE_CHECKING:
     from db.models.infra import Camara
 
+# Exportado explícitamente para reuso desde `core/services/cromo/camara_botella_busqueda.py`
+# (búsqueda extendida Camara + CromoBotella): esa cascada equivalente contra `CromoBotella.nombre`
+# reusa este mismo pipeline de normalización sin duplicarlo. `_limpiar_puntuacion` se agrega además
+# de los 4 helpers pedidos porque es el primer paso del pipeline (limpiar puntuación → expandir
+# abreviaturas → normalizar → sinónimos) — omitirlo produciría una normalización distinta a la que
+# usa `buscar_camara()` internamente para el mismo input.
+__all__ = [
+    "_expandir_abreviaturas",
+    "_aplicar_sinonimos",
+    "_normalizar",
+    "_filtrar_por_numeros",
+    "_limpiar_puntuacion",
+    "buscar_camara",
+    "AmbiguousSearchError",
+]
+
 # ── Tabla de abreviaturas comunes usadas por técnicos ────────────────────
 # NOTA: "Cra" NO está en esta tabla.  Los nombres de cámara almacenados en DB
 # conservan "Cra" de forma literal (ej: "Bot 2 Cra Poste …"); expandirlo a
@@ -238,13 +254,14 @@ class AmbiguousSearchError(Exception):
     Attributes:
         nombre_raw:  Nombre original ingresado por el técnico.
         cantidad:    Número de candidatos encontrados (0 si el nombre es insuficiente).
-        candidatos:  Lista de nombres de cámaras candidatas (hasta 5).
+        candidatos:  Lista de nombres de cámaras candidatas (hasta 3 — decisión de producto
+                     2026-08-23: máximo 3 sugerencias en cualquier mensaje que use esta excepción).
     """
 
     def __init__(self, nombre_raw: str, cantidad: int, candidatos: list[str]) -> None:
         self.nombre_raw = nombre_raw
         self.cantidad = cantidad
-        self.candidatos = candidatos[:5]
+        self.candidatos = candidatos[:3]
         super().__init__(
             f"Búsqueda ambigua: '{nombre_raw}' devuelve {cantidad} candidatos"
         )
@@ -384,7 +401,7 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
     # Si algún intento devolvió múltiples candidatos sin que ninguno llegara a 1,
     # el nombre es ambiguo → no auto-registrar.
     if _ambiguos:
-        nombres_candidatos = [c.nombre for c in _ambiguos[:5]]
+        nombres_candidatos = [c.nombre for c in _ambiguos[:3]]
         raise AmbiguousSearchError(nombre_raw, len(_ambiguos), nombres_candidatos)
 
     return None, nombre_norm
