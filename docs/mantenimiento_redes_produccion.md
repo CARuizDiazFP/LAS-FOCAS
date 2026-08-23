@@ -1,27 +1,32 @@
 # Nombre de archivo: mantenimiento_redes_produccion.md
 # Ubicación de archivo: docs/mantenimiento_redes_produccion.md
-# Descripción: Procedimiento para aplicar en ventana de mantenimiento el cambio de subred Docker de producción (/16 → /24) y los demás pre-requisitos de prod preparados en código
+# Descripción: Cambio de subred Docker de producción (/16 → /24, ya aplicado) y el pre-requisito de prod aún pendiente (`redis_password_v1`)
 
-> **Antes de cualquier `docker compose -f deploy/compose.yml up` en producción**, revisar las DOS
-> secciones de este documento: el cambio de subred `/16`→`/24` (abajo) y el
-> [secret `redis_password_v1`](#pre-requisito-obligatorio-secret-redis_password_v1-2026-08-21) — este
-> último **bloquea la creación del contenedor `web`** si falta, no degrada: falla duro.
+> **Antes de cualquier `docker compose -f deploy/compose.yml up` en producción**, revisar el
+> [secret `redis_password_v1`](#pre-requisito-obligatorio-secret-redis_password_v1-2026-08-21) —
+> **bloquea la creación del contenedor `web`** si falta, no degrada: falla duro. El cambio de
+> subred de abajo **ya está aplicado**, no requiere acción.
 
 # Cambio de subred Docker en producción (/16 → /24)
 
 ## Estado
 
-- **Preparado en código, pendiente de aplicar.** El cambio descrito acá ya está en `deploy/compose.yml` (rama `dev`, no desplegado) pero **no tiene efecto sobre los contenedores en ejecución** hasta que se corra `docker compose down` + `up` sobre ese archivo. Ver [docs/decisiones.md](decisiones.md), entrada 2026-08-05.
-- Fecha de redacción: 2026-08-05.
+- **Aplicado.** Confirmado 2026-08-22 vía auditoría de seguridad contra el sistema real:
+  `docker network inspect lasfocas_lasfocas_net` muestra `Subnet: 172.20.0.0/24`, con la red y
+  `lasfocas-postgres` creados el 2026-08-11 — la ventana de mantenimiento ya se ejecutó. El
+  procedimiento de abajo queda como referencia histórica de cómo se aplicó (y como guía de
+  rollback si hiciera falta revertir), **no como un paso pendiente**: no volver a correr
+  `down`/`up` por este motivo. Ver [docs/decisiones.md](decisiones.md), entrada 2026-08-05.
+- Fecha de redacción original: 2026-08-05. Fecha de verificación de estado aplicado: 2026-08-22.
 - Alcance: stack `lasfocas` (producción), archivo `deploy/compose.yml`, red `lasfocas_net`.
 
 ## Por qué
 
 Igual que se detectó y corrigió en el entorno dev (ver entrada 2026-08-05 en `docs/decisiones.md`), ninguna red Docker de este repo declaraba `ipam.config.subnet` explícito. Docker asigna por default bloques `/16` de su pool interno, y la red de producción quedó en **`172.20.0.0/16`**. Un bloque `/16` completo agrega una ruta conectada en el kernel del host que tiene prioridad sobre cualquier ruta hacia un destino real de la intranet que caiga dentro de ese mismo `/16` — si algún día existe un host de intranet en `172.20.x.x`, quedaría inalcanzable desde la VM exactamente como pasó con `172.19.217.20` en dev. Achicar a `/24` reduce el bloque secuestrado de 65 536 direcciones a 256, minimizando drásticamente la superficie de colisión.
 
-## Estado actual vs. estado deseado
+## Estado actual vs. estado deseado (histórico — ambas columnas ya coinciden)
 
-| | Actual (en ejecución) | Deseado (en `deploy/compose.yml`, código) |
+| | Antes del cambio | Actual desde 2026-08-11 (verificado 2026-08-22) |
 |---|---|---|
 | Subred `lasfocas_net` | `172.20.0.0/16` (asignada por default de Docker) | `172.20.0.0/24` (explícita vía `ipam.config`) |
 | Gateway | `172.20.0.1` | `172.20.0.1` (sin cambio) |
@@ -29,6 +34,10 @@ Igual que se detectó y corrigió en el entorno dev (ver entrada 2026-08-05 en `
 | Contenedores en la red | `lasfocas-postgres`, `lasfocas-api`, `lasfocas-web`, `lasfocas-nlp_intent-1`, `lasfocas-office`, `lasfocas-slack-baneo-worker` | Sin cambios |
 
 **Auditoría de IPs estáticas:** se revisó `deploy/compose.yml` completo — ningún servicio usa `ipv4_address`. Todas las IPs las asigna Docker dinámicamente al arrancar cada contenedor, así que no hay ninguna IP fuera de rango que reasignar. Si en el futuro se agrega una IP estática a algún servicio, debe quedar entre `172.20.0.2` y `172.20.0.254` (`.1` es el gateway).
+
+> **Las secciones siguientes (pre-requisitos, procedimiento, verificación, downtime) describen la
+> ventana ya ejecutada el 2026-08-11.** Se conservan como registro y como guía de **rollback** si
+> alguna vez hiciera falta revertir a `/16` — no son un TODO.
 
 ## Pre-requisitos antes de la ventana
 

@@ -115,10 +115,18 @@ bash scripts/firewall_hardening.sh
   modo no-Swarm — `docker info` reporta `Swarm.LocalNodeState: inactive` —, así que no aplica
   `docker secret create`/`external: true`; Compose monta el archivo directamente en `/run/secrets/<nombre>`
   sin necesidad de Swarm).
-- Los 9 secretos (`db_password_v1`, `api_key_v1`, `web_secret_key_v1`, `telegram_bot_token_v1`,
+- Los 10 secretos (`db_password_v1`, `api_key_v1`, `web_secret_key_v1`, `telegram_bot_token_v1`,
   `openai_api_key_v1`, `smtp_password_v1`, `slack_bot_token_v1`, `slack_app_token_v1`,
-  `pgadmin_password_v1`) usan archivos **sin prefijo** en `.secrets/*.txt` (el prefijo `Dev_` queda
-  reservado exclusivamente para el stack dev, ver `deploy/docker-compose.dev.yml`).
+  `pgadmin_password_v1`, `redis_password_v1`) usan archivos **sin prefijo** en `.secrets/*.txt` (el
+  prefijo `Dev_` queda reservado exclusivamente para el stack dev, ver
+  `deploy/docker-compose.dev.yml`).
+- `redis_password_v1` (agregado 2026-08-21 junto con `botellas_recalculo_worker`, ver
+  `docs/infra.md` y `docs/mantenimiento_redes_produccion.md`) es **pre-requisito bloqueante** en
+  prod: si `.secrets/redis_password_v1.txt` no existe en el host antes del despliegue, Compose no
+  degrada — falla directamente la creación del contenedor `web`, que también depende de este
+  secret para su conexión Redis dedicada de pub/sub. `deploy/compose.yml` lo inyecta vía
+  `redis-server --requirepass "$(cat /run/secrets/redis_password_v1)"` (no como
+  `REQUIREPASS`/env var en texto plano) y el healthcheck de `redis` reutiliza el mismo archivo.
 - Los servicios propios consumen `/run/secrets/<nombre>` con el helper compartido `get_secret()`
   (`core/config.py`) y mantienen fallback a `.env` solo durante la transición. `pgadmin_password_v1` es la
   excepción: lo consume directamente la imagen `dpage/pgadmin4` vía `PGADMIN_DEFAULT_PASSWORD_FILE` (no
@@ -150,6 +158,41 @@ bash scripts/firewall_hardening.sh
 - Superficies prioritarias: `.env`, `deploy/compose.yml`, Dockerfiles, `Keys/`, scripts operativos, autenticación/sesiones y endpoints expuestos.
 - Resultado esperado: hallazgos ordenados por severidad con parche o mitigación mínima, sin exponer secretos completos.
 - Referencias operativas: `.github/agents/security.agent.md`, `.github/prompts/revisar-seguridad.prompt.md` y `.github/skills/security-scan/`.
+
+## Auditoría de seguridad 2026-08-22 — hallazgos pendientes de remediación
+
+Auditoría integral (secretos, dependencias, SAST, hardening de contenedores/red) ejecutada con la
+skill `revisar-seguridad`. Reporte completo con vector de ataque y mitigación detallada entregado
+al usuario; se resume acá lo accionable para no perderlo de vista en la próxima sesión de trabajo.
+
+- **High** — `web/app/main.py` (`SessionMiddleware`): si falta el secreto `web_secret_key_v1` y la
+  env var `WEB_SECRET_KEY`, la app arranca con el literal `"cambiar_por_clave_web_segura"` (publicado
+  en `README.md`/`deploy/env.sample`) en vez de fallar. Con esa clave conocida se puede forjar una
+  cookie de sesión firmada con rol admin. Pendiente: fallar el arranque si el valor resuelto es
+  vacío o igual al placeholder (mismo patrón fail-closed que ya usa `api/app/security.py`).
+- **High** — Redis corre como **root** dentro del contenedor (`deploy/compose.yml` y
+  `docker-compose.dev.yml`): el `command: ["sh", "-c", "redis-server --requirepass ..."]` rompe la
+  detección del entrypoint oficial de `redis:7.4-alpine` que hace `gosu redis` sólo cuando `$1` es
+  literalmente `redis-server`. Confirmado en vivo en dev (`docker top`). Pendiente: setear
+  `user: "999:999"` explícito (o mover el `requirepass` a un `redis.conf` montado) + `cap_drop:
+  [ALL]` + `no-new-privileges:true`.
+- **High** — Dependencias desactualizadas con CVEs alcanzables por red en los 4 servicios FastAPI:
+  `starlette` (0.37.2–0.38.6 → mín. 0.40.0), `python-multipart` (0.0.9 → 0.0.31, usado en endpoints
+  de upload reales de `api`/`web`/`office_service`), y `aiohttp` (3.10.11, transitiva de `aiogram`
+  en `bot_telegram`, mitigado hoy porque el bot usa polling y no expone servidor).
+- **Medium-High** — CSRF ausente en ~12 endpoints mutantes de `web/app/main.py` que sí deberían
+  llevarlo por el patrón ya establecido en el resto del archivo (baneos, merges/alta de Cámaras,
+  borrado de empalmes, upload de trackings). Pendiente: aplicar el chequeo de forma uniforme vía
+  dependencia compartida en vez de por endpoint.
+- **Medium** — Allowlist de Telegram (`bot_telegram/filters/allowlist.py`) falla **abierta** (admite
+  a cualquiera) si `TELEGRAM_ALLOWED_IDS` queda vacío/sin setear, en vez de bloquear a todos.
+- **Medium** — Path traversal vía `document.file_name` sin sanitizar en
+  `bot_telegram/flows/{repetitividad,sla}.py:97` (bug duplicado en ambos archivos) — falta el mismo
+  `Path(...).name` que ya se usa correctamente en `/api/chat/uploads`.
+- **Medium** — `api` publica su puerto en `0.0.0.0` (`8001`/`8011`) sin acotar a una interfaz, a
+  diferencia de `web` (que sí está deliberadamente restringido a `127.0.0.1`/IP LAN).
+- Detalle completo, hallazgos Low/informativos y falsos positivos descartados: ver el reporte
+  entregado en la conversación del 2026-08-22 (no versionado como archivo aparte).
 
 ## Próximos pasos
 
