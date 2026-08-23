@@ -4,7 +4,7 @@
 ---
 name: "skill-skill-generator"
 description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas anti-legacy"
-source: ".github/skills/skill-generator/SKILL.md"
+source: ".agentes-comunes/skills/skill-generator/SKILL.md"
 triggers:
   - "skill-generator"
   - "habilidad"

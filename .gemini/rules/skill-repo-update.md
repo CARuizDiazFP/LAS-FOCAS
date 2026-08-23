@@ -4,7 +4,7 @@
 ---
 name: "skill-repo-update"
 description: "Usar solo cuando el pedido mencione el nombre legacy repo-update; redirige al workflow vigente repo-updater"
-source: ".github/skills/repo-update/SKILL.md"
+source: ".agentes-comunes/skills/repo-update/SKILL.md"
 triggers:
   - "repo-update"
   - "habilidad"

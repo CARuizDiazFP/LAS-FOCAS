@@ -4,7 +4,7 @@
 ---
 name: "skill-pytest-focas"
 description: "Usar cuando haya que ejecutar pytest, escribir tests, preparar fixtures o revisar cobertura en LAS-FOCAS"
-source: ".github/skills/pytest-focas/SKILL.md"
+source: ".agentes-comunes/skills/pytest-focas/SKILL.md"
 triggers:
   - "pytest-focas"
   - "habilidad"

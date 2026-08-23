@@ -4,7 +4,7 @@
 ---
 name: "skill-docker-rebuild"
 description: "Usar cuando haya que reconstruir servicios Docker, refrescar imágenes o verificar un rebuild selectivo de LAS-FOCAS"
-source: ".github/skills/docker-rebuild/SKILL.md"
+source: ".agentes-comunes/skills/docker-rebuild/SKILL.md"
 triggers:
   - "docker-rebuild"
   - "habilidad"

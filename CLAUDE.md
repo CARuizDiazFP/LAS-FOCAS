@@ -57,16 +57,20 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 
 ## Skills Disponibles
 
-Definidas en `.github/skills/` (fuente de verdad) y en `.codex-skills/skills/` (formato OpenAI Codex).
+Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejadas en `.github/skills/` y `.codex-skills/skills/` (formato OpenAI Codex).
 
 > **Para que sean invocables por el `Skill` tool de Claude Code hace falta además un mirror en
-> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.github/skills/`. Descubierto
+> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.agentes-comunes/skills/`. Descubierto
 > 2026-08-14: `Skill(skill="docker-rebuild")` falló con "Unknown skill" pese a estar catalogada acá,
 > porque `.claude/skills/` no existía. `docker-rebuild` y `nocturne-token-compliance` tienen mirror
 > hoy (esta última se creó ya con las 4 copias desde el arranque); el resto de la tabla de abajo
 > **todavía no es invocable vía `/nombre-skill` o el tool `Skill` en este entorno** — hay que
-> copiarla a `.claude/skills/` (mismo contenido que `.github/skills/`) antes de poder usarla así. Hasta
+> copiarla a `.claude/skills/` (mismo contenido que `.agentes-comunes/skills/`) antes de poder usarla así. Hasta
 > entonces, seguir sus procedimientos manualmente vía Bash. Ver `docs/cierres/2026-08-14.md`.
+
+> El flujo recursivo (SDD/superpowers) se mantiene habilitado para trabajos largos; optimizar evitando re-reviews en cascada cuando el delta no introduce hallazgos nuevos.
+
+> Política operativa formal de corte de rondas: `docs/politica_recursion_sdd.md`.
 
 | Skill | Propósito | Guardrail crítico |
 |---|---|---|
@@ -106,4 +110,4 @@ Definidas en `.github/skills/` (fuente de verdad) y en `.codex-skills/skills/` (
 | Gemini CLI | Rules flat | `.gemini/rules/` |
 | OpenAI Codex | Skills (formato Codex) | `.codex-skills/skills/` |
 
-**Fuente de verdad para sincronización:** `.github/` → replicar cambios a `.gemini/`, `.codex-skills/`, `.claude/commands/` y `.claude/skills/` (esta última, agregada 2026-08-14, es la que hace que una skill sea invocable por el tool `Skill` en Claude Code — antes no estaba en esta lista y ninguna skill tenía mirror ahí).
+**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts) → replicar cambios a `.github/skills/`, `.gemini/`, `.codex-skills/`, `.claude/commands/` y `.claude/skills/` (esta última, agregada 2026-08-14, es la que hace que una skill sea invocable por el tool `Skill` en Claude Code).

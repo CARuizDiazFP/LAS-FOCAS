@@ -3,7 +3,7 @@ name: "las-focas-libreoffice-convert"
 description: "Usar cuando haya que convertir documentos con office_service o depurar flujos DOCX a PDF con LibreOffice headless"
 metadata:
   short-description: "Usar cuando haya que convertir documentos con office_service o depurar flujos DOCX a PDF con LibreOffice headless"
-  source: ".github/skills/libreoffice-convert/SKILL.md"
+  source: ".agentes-comunes/skills/libreoffice-convert/SKILL.md"
   triggers:
     - "libreoffice-convert"
     - "habilidad"
@@ -55,7 +55,7 @@ metadata:
 
 # Skill portable: libreoffice-convert
 
-> Fuente original: `.github/skills/libreoffice-convert/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/libreoffice-convert/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Conversión con LibreOffice
 

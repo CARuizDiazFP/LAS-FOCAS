@@ -4,7 +4,7 @@
 ---
 name: "skill-dependency-audit"
 description: "Usar cuando haya que revisar requirements, package.json, pip-audit, npm audit y versiones expuestas a vulnerabilidades conocidas"
-source: ".github/skills/dependency-audit/SKILL.md"
+source: ".agentes-comunes/skills/dependency-audit/SKILL.md"
 triggers:
   - "dependency-audit"
   - "habilidad"

@@ -6,6 +6,8 @@ Ejecuta un diagnóstico de espacio en disco y, si corresponde, una limpieza segu
 
 Si el usuario no define umbrales, usar como referencia: disco 85%, logs 500 MB, volúmenes 2 GB.
 
+Seleccionar perfil operativo (`rapido`, `estandar`, `profundo`) según `docs/maintenance_profiles.md`.
+
 ## Objetivo
 
 - medir uso real de disco, Docker, logs y temporales
@@ -81,3 +83,5 @@ Resumir espacio liberado, riesgo residual y acciones no ejecutadas.
 ## Skills de referencia
 
 Ver detalle en: `disk-analysis`, `docker-cleanup`, `logs-cleanup`, `temp-cleanup` en `.github/skills/`.
+
+Perfiles de ejecución: `docs/maintenance_profiles.md`.

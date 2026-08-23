@@ -41,6 +41,7 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
 - Secretos enmascarados; nunca completos.
 - Distinción clara entre hallazgo confirmado, sospecha y recomendación.
 - Cobertura declarada: qué rutas, manifiestos o servicios sí quedaron revisados.
+- Formato alineado al contrato `docs/seguridad_contrato_salida.md`.
 
 ## Guardrails
 

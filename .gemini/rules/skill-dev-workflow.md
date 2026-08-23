@@ -4,7 +4,7 @@
 ---
 name: "skill-dev-workflow"
 description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama activa, stack correcto y restricciones del entorno dev."
-source: ".github/skills/dev-workflow/SKILL.md"
+source: ".agentes-comunes/skills/dev-workflow/SKILL.md"
 triggers:
   - "dev-workflow"
   - "habilidad"

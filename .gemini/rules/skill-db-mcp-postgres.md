@@ -4,7 +4,7 @@
 ---
 name: "skill-db-mcp-postgres"
 description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app"
-source: ".github/skills/db-mcp-postgres/SKILL.md"
+source: ".agentes-comunes/skills/db-mcp-postgres/SKILL.md"
 triggers:
   - "db-mcp-postgres"
   - "mcp"

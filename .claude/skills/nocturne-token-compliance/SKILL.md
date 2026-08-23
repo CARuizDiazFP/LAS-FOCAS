@@ -1,6 +1,6 @@
 # Nombre de archivo: SKILL.md
 # Ubicación de archivo: .claude/skills/nocturne-token-compliance/SKILL.md
-# Descripción: Habilidad para auditar y corregir espaciado/color hardcodeado en el frontend Vue 3 contra el tema Nocturne (mirror de .github/skills/nocturne-token-compliance/SKILL.md — fuente de verdad)
+# Descripción: Habilidad para auditar y corregir espaciado/color hardcodeado en el frontend Vue 3 contra el tema Nocturne (mirror de .agentes-comunes/skills/nocturne-token-compliance/SKILL.md — fuente de verdad)
 
 ---
 name: nocturne-token-compliance

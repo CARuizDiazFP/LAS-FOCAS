@@ -4,13 +4,17 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-08-11
+Fecha de última actualización: 2026-08-23
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
 ## 🤖 Sistema Multi-Agente (Nuevo en 2026-03-03)
 
 El proyecto ahora utiliza un ecosistema de agentes especializados para asistir en el desarrollo. La estructura anterior (CODEX monolítico) ha sido modernizada:
+
+Actualización 2026-08-23: las skills se centralizan en `.agentes-comunes/skills/` como fuente agnóstica, manteniendo mirrors por plataforma (`.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/`, `.claude/skills/`). El flujo recursivo SDD/superpowers se mantiene, pero con foco en iteraciones acotadas para evitar loops de validación redundantes.
+
+Auditoría técnica de duplicidades, complementariedad y plan de consolidación: `docs/agentes-auditoria-consolidacion-2026-08-23.md`.
 
 ### Estructura de Archivos
 

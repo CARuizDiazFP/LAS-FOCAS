@@ -3,7 +3,7 @@ name: "las-focas-secret-detection"
 description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuraciones sensibles en APIs y SPAs"
 metadata:
   short-description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuracio..."
-  source: ".github/skills/secret-detection/SKILL.md"
+  source: ".agentes-comunes/skills/secret-detection/SKILL.md"
   triggers:
     - "secret-detection"
     - "habilidad"
@@ -39,7 +39,7 @@ metadata:
 
 # Skill portable: secret-detection
 
-> Fuente original: `.github/skills/secret-detection/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/secret-detection/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Secret Detection
 

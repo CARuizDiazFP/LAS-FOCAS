@@ -4,7 +4,7 @@
 ---
 name: "skill-secrets-rollout"
 description: "Usar cuando haya que migrar variables sensibles a Docker Secrets, agregar un secret nuevo a un servicio de Compose, o rotar un secret ya en uso (dev o prod) en LAS-FOCAS"
-source: ".github/skills/secrets-rollout/SKILL.md"
+source: ".agentes-comunes/skills/secrets-rollout/SKILL.md"
 triggers:
   - "secrets-rollout"
   - "habilidad"

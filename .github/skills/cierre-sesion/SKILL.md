@@ -33,6 +33,7 @@ Usar esta skill sólo cuando el usuario declara explícitamente el fin de la ses
 8. Evaluar mejoras agénticas en dos carriles — prevención (obstáculos reales de esta sesión) y aceleración (pasos repetibles observados que agilizarían implementaciones similares futuras). Por cada candidata: evidencia, frecuencia esperada, beneficio, costo de mantenimiento y opción recomendada, prefiriendo ampliar una skill existente.
 9. Determinar la fecha actual (`YYYY-MM-DD`) y crear o anexar `docs/cierres/YYYY-MM-DD.md` sin perder cierres previos del mismo día.
 10. Mostrar el reporte completo al usuario y confirmar la ruta del archivo guardado.
+11. Si hubo flujo recursivo SDD/superpowers, registrar métricas de ciclo y alertas según `docs/sdd_metricas_ciclo.md`.
 
 ## Referencias
 

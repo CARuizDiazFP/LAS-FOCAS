@@ -3,7 +3,7 @@ name: "las-focas-repo-updater"
 description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a dev (rama de trabajo habitual)"
 metadata:
   short-description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a dev (rama de..."
-  source: ".github/skills/repo-updater/SKILL.md"
+  source: ".agentes-comunes/skills/repo-updater/SKILL.md"
   triggers:
     - "repo-updater"
     - "habilidad"
@@ -38,7 +38,7 @@ metadata:
 
 # Skill portable: repo-updater
 
-> Fuente original: `.github/skills/repo-updater/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/repo-updater/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Actualizador de Repositorio
 

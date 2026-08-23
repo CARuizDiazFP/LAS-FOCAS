@@ -4,7 +4,7 @@
 ---
 name: "skill-nocturne-token-compliance"
 description: "Usar antes de dar por cerrada cualquier tarea de UI/CSS en el SPA: audita colores hardcodeados fuera de tokens.css (vista + todo su árbol de imports) y define cómo verificar el resultado real cuando no hay navegador disponible en la sesión"
-source: ".github/skills/nocturne-token-compliance/SKILL.md"
+source: ".agentes-comunes/skills/nocturne-token-compliance/SKILL.md"
 triggers:
   - "nocturne-token-compliance"
   - "habilidad"

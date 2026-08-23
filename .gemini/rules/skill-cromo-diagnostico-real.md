@@ -4,7 +4,7 @@
 ---
 name: "skill-cromo-diagnostico-real"
 description: "Usar antes de escribir o confiar en código de parseo/ingesta de Cromo Red: valida contra la API o la DB real en vez de asumir que el diseño documentado describe el comportamiento actual"
-source: ".github/skills/cromo-diagnostico-real/SKILL.md"
+source: ".agentes-comunes/skills/cromo-diagnostico-real/SKILL.md"
 triggers:
   - "cromo-diagnostico-real"
   - "cromo"

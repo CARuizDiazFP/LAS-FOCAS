@@ -3,7 +3,7 @@ name: "las-focas-docker-cleanup"
 description: "Usar cuando haya que limpiar imágenes, contenedores o build cache de Docker sin tocar volúmenes persistentes"
 metadata:
   short-description: "Usar cuando haya que limpiar imágenes, contenedores o build cache de Docker sin tocar volúmenes persistentes"
-  source: ".github/skills/docker-cleanup/SKILL.md"
+  source: ".agentes-comunes/skills/docker-cleanup/SKILL.md"
   triggers:
     - "docker-cleanup"
     - "habilidad"
@@ -177,7 +177,7 @@ metadata:
 
 # Skill portable: docker-cleanup
 
-> Fuente original: `.github/skills/docker-cleanup/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/docker-cleanup/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Limpieza Docker
 

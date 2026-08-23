@@ -4,7 +4,7 @@
 ---
 name: "skill-cromo-inventario"
 description: "Usar para consultar, explotar o construir features sobre los datos de infraestructura FO ya ingeridos desde Cromo Red (app.cromo_*) — no para tocar la ingesta en sí"
-source: ".github/skills/cromo-inventario/SKILL.md"
+source: ".agentes-comunes/skills/cromo-inventario/SKILL.md"
 triggers:
   - "cromo-inventario"
   - "cromo"

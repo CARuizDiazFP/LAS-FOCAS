@@ -4,7 +4,7 @@
 ---
 name: "skill-alembic-migrations"
 description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
-source: ".github/skills/alembic-migrations/SKILL.md"
+source: ".agentes-comunes/skills/alembic-migrations/SKILL.md"
 triggers:
   - "alembic-migrations"
   - "habilidad"

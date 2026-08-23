@@ -14,6 +14,8 @@ Este skill proporciona comandos y procedimientos para diagnosticar el uso de dis
 
 ## 📊 Umbrales de Alerta
 
+Perfiles operativos recomendados: `docs/maintenance_profiles.md`.
+
 | Recurso | 🟢 Normal | 🟡 Advertencia | 🔴 Crítico |
 |---------|-----------|----------------|------------|
 | Disco general | <70% | 70-85% | >85% |

@@ -4,7 +4,7 @@
 ---
 name: "skill-disk-analysis"
 description: "Usar cuando haya que diagnosticar uso de disco, espacio consumido por Docker, logs, volúmenes o artefactos del proyecto"
-source: ".github/skills/disk-analysis/SKILL.md"
+source: ".agentes-comunes/skills/disk-analysis/SKILL.md"
 triggers:
   - "disk-analysis"
   - "habilidad"

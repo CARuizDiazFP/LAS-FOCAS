@@ -4,7 +4,7 @@
 ---
 name: "skill-baneo-qa-real"
 description: "Usar antes de ejecutar create_ban/lift_ban o cualquier prueba de cascada de estado de Camara contra datos reales (lasfocasdev-*) — resuelve el blast radius real y cómo revertir con precisión si algo sale mal"
-source: ".github/skills/baneo-qa-real/SKILL.md"
+source: ".agentes-comunes/skills/baneo-qa-real/SKILL.md"
 triggers:
   - "baneo-qa-real"
   - "baneo"

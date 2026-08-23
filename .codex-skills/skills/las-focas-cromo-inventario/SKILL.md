@@ -3,7 +3,7 @@ name: "las-focas-cromo-inventario"
 description: "Usar para consultar, explotar o construir features sobre los datos de infraestructura FO ya ingeridos desde Cromo Red (app.cromo_*) — no para tocar la ingesta en sí"
 metadata:
   short-description: "Usar para consultar, explotar o construir features sobre los datos de infraestructura FO ya ingeridos desde Cromo..."
-  source: ".github/skills/cromo-inventario/SKILL.md"
+  source: ".agentes-comunes/skills/cromo-inventario/SKILL.md"
   triggers:
     - "cromo-inventario"
     - "cromo"
@@ -30,7 +30,7 @@ metadata:
 
 # Skill portable: cromo-inventario
 
-> Fuente original: `.github/skills/cromo-inventario/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/cromo-inventario/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Skill: Inventario Cromo Red (datos ya ingeridos)
 

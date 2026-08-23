@@ -3,7 +3,7 @@ name: "las-focas-db-mcp-postgres"
 description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app con enfoque async"
 metadata:
   short-description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar..."
-  source: ".github/skills/db-mcp-postgres/SKILL.md"
+  source: ".agentes-comunes/skills/db-mcp-postgres/SKILL.md"
   triggers:
     - "db-mcp-postgres"
     - "mcp"
@@ -33,7 +33,7 @@ metadata:
 
 # Skill portable: db-mcp-postgres
 
-> Fuente original: `.github/skills/db-mcp-postgres/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/db-mcp-postgres/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Skill: MCP PostgreSQL para LAS-FOCAS
 

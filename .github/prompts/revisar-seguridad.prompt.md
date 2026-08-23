@@ -109,3 +109,4 @@ rg -n 'chmod 777|sudo|chown.*root' scripts deploy .
 3. Proponer parche o mitigación por cada hallazgo importante o crítico.
 4. Resumir estado general y cobertura de la revisión.
 5. Si aplica, proponer actualización de `docs/Seguridad.md`.
+6. Respetar el formato del contrato unificado en `docs/seguridad_contrato_salida.md`.

@@ -3,7 +3,7 @@ name: "las-focas-alembic-migrations"
 description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
 metadata:
   short-description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
-  source: ".github/skills/alembic-migrations/SKILL.md"
+  source: ".agentes-comunes/skills/alembic-migrations/SKILL.md"
   triggers:
     - "alembic-migrations"
     - "habilidad"
@@ -29,7 +29,7 @@ metadata:
 
 # Skill portable: alembic-migrations
 
-> Fuente original: `.github/skills/alembic-migrations/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/alembic-migrations/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Migraciones Alembic
 

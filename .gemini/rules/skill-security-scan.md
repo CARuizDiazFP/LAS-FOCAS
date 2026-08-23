@@ -4,7 +4,7 @@
 ---
 name: "skill-security-scan"
 description: "Usar cuando haya que ejecutar una revisión integral de seguridad, correlacionar secretos, dependencias, SAST y proponer mitigaciones"
-source: ".github/skills/security-scan/SKILL.md"
+source: ".agentes-comunes/skills/security-scan/SKILL.md"
 triggers:
   - "security-scan"
   - "habilidad"

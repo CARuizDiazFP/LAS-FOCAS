@@ -3,7 +3,7 @@ name: "las-focas-pytest-focas"
 description: "Usar cuando haya que ejecutar pytest, escribir tests, preparar fixtures o revisar cobertura en LAS-FOCAS"
 metadata:
   short-description: "Usar cuando haya que ejecutar pytest, escribir tests, preparar fixtures o revisar cobertura en LAS-FOCAS"
-  source: ".github/skills/pytest-focas/SKILL.md"
+  source: ".agentes-comunes/skills/pytest-focas/SKILL.md"
   triggers:
     - "pytest-focas"
     - "habilidad"
@@ -46,7 +46,7 @@ metadata:
 
 # Skill portable: pytest-focas
 
-> Fuente original: `.github/skills/pytest-focas/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/pytest-focas/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Pytest FOCAS
 

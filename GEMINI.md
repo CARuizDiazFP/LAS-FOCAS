@@ -6,7 +6,7 @@
 
 Este archivo complementa `AGENTS.md`. Usar `AGENTS.md` como instrucciones base del proyecto y cargar las reglas de `.gemini/rules/` cuando la tarea coincida con sus `triggers` o `globs`.
 
-Las fuentes originales viven en `.github/skills/`, `.github/agents/` y `.github/prompts/`; no deben eliminarse ni editarse desde las copias generadas.
+Las fuentes originales viven en `.agentes-comunes/skills/` (skills) y `.github/agents/` + `.github/prompts/` (agentes/prompts); no deben eliminarse ni editarse desde las copias generadas.
 
 > Nota Codex: `.codex/` está montado como solo lectura en esta sesión. Las skills Codex se generaron en `.codex-skills/skills/` con el mismo formato esperado para copiarlas a `.codex/skills/` cuando el entorno lo permita.
 
@@ -16,6 +16,8 @@ Las fuentes originales viven en `.github/skills/`, `.github/agents/` y `.github/
 - Agentes: perfiles de especialidad por subsistema.
 - Prompts: contratos de ejecución para tareas repetibles.
 - Assets: `.gemini/rules/assets/frontend-specs/` contiene especificaciones JSON asociadas al frontend.
+- El flujo recursivo SDD/superpowers se conserva para tareas complejas; priorizar iteraciones cortas y cerrar ciclos cuando no hay hallazgos nuevos.
+- Política formal de recursión y corte: `docs/politica_recursion_sdd.md`.
 
 ## Skills Migradas
 

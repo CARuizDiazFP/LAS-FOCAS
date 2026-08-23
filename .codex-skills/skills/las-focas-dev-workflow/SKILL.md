@@ -3,7 +3,7 @@ name: "las-focas-dev-workflow"
 description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama activa, stack correcto y restricciones del entorno dev."
 metadata:
   short-description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida..."
-  source: ".github/skills/dev-workflow/SKILL.md"
+  source: ".agentes-comunes/skills/dev-workflow/SKILL.md"
   triggers:
     - "dev-workflow"
     - "habilidad"
@@ -53,7 +53,7 @@ metadata:
 
 # Skill portable: dev-workflow
 
-> Fuente original: `.github/skills/dev-workflow/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/dev-workflow/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Dev Workflow — Protocolo de Trabajo en Entorno Dev
 

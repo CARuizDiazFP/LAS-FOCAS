@@ -4,7 +4,7 @@
 ---
 name: "skill-repo-updater"
 description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a dev (rama de trabajo habitual)"
-source: ".github/skills/repo-updater/SKILL.md"
+source: ".agentes-comunes/skills/repo-updater/SKILL.md"
 triggers:
   - "repo-updater"
   - "habilidad"

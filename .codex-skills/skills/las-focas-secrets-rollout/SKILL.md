@@ -3,7 +3,7 @@ name: "las-focas-secrets-rollout"
 description: "Usar cuando haya que migrar variables sensibles a Docker Secrets, agregar un secret nuevo a un servicio de Compose, o rotar un secret ya en uso (dev o prod) en LAS-FOCAS"
 metadata:
   short-description: "Usar cuando haya que migrar variables sensibles a Docker Secrets, agregar un secret nuevo a un servicio de Compose, o rotar un secret ya en uso (dev o prod) en LAS-FOCAS"
-  source: ".github/skills/secrets-rollout/SKILL.md"
+  source: ".agentes-comunes/skills/secrets-rollout/SKILL.md"
   triggers:
     - "secrets-rollout"
     - "habilidad"
@@ -36,7 +36,7 @@ metadata:
 # Ubicación de archivo: .codex-skills/skills/las-focas-secrets-rollout/SKILL.md
 # Descripción: Skill portable Codex migrada desde .github/skills/secrets-rollout/SKILL.md
 
-> Fuente original: `.github/skills/secrets-rollout/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/secrets-rollout/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Secrets Rollout
 

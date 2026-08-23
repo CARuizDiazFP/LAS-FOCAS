@@ -3,7 +3,7 @@ name: "las-focas-docker-rebuild"
 description: "Usar cuando haya que reconstruir servicios Docker, refrescar imágenes o verificar un rebuild selectivo de LAS-FOCAS"
 metadata:
   short-description: "Usar cuando haya que reconstruir servicios Docker, refrescar imágenes o verificar un rebuild selectivo de LAS-FOCAS"
-  source: ".github/skills/docker-rebuild/SKILL.md"
+  source: ".agentes-comunes/skills/docker-rebuild/SKILL.md"
   triggers:
     - "docker-rebuild"
     - "habilidad"
@@ -98,7 +98,7 @@ metadata:
 
 # Skill portable: docker-rebuild
 
-> Fuente original: `.github/skills/docker-rebuild/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/docker-rebuild/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Docker Rebuild
 

@@ -3,7 +3,7 @@ name: "las-focas-cromo-diagnostico-real"
 description: "Usar antes de escribir o confiar en código de parseo/ingesta de Cromo Red: valida contra la API o la DB real en vez de asumir que el diseño documentado describe el comportamiento actual"
 metadata:
   short-description: "Usar antes de escribir o confiar en código de parseo/ingesta de Cromo Red: valida contra la API o la DB real..."
-  source: ".github/skills/cromo-diagnostico-real/SKILL.md"
+  source: ".agentes-comunes/skills/cromo-diagnostico-real/SKILL.md"
   triggers:
     - "cromo-diagnostico-real"
     - "cromo"
@@ -29,7 +29,7 @@ metadata:
 
 # Skill portable: cromo-diagnostico-real
 
-> Fuente original: `.github/skills/cromo-diagnostico-real/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/cromo-diagnostico-real/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Skill: Diagnóstico real contra Cromo Red
 

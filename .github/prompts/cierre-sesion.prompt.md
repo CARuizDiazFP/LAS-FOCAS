@@ -40,6 +40,7 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
    - Si existe, conservarlo y anexar una sección nueva con encabezado `## Sesión HH:MM — <resumen corto>`.
    - Si no existe, crearlo con el encabezado obligatorio de 3 líneas y la estructura de la sección "Formato del reporte".
 10. Presentar el reporte completo al usuario en el chat y confirmar la ruta del archivo guardado.
+11. Si hubo flujo recursivo SDD/superpowers, registrar métricas según `docs/sdd_metricas_ciclo.md` y alertar cuando se superen umbrales.
 
 # Formato del reporte
 

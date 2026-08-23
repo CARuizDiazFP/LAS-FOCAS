@@ -1,6 +1,6 @@
 # Nombre de archivo: SKILL.md
 # Ubicación de archivo: .claude/skills/cierre-sesion/SKILL.md
-# Descripción: Habilidad para retrospectiva técnica de cierre de sesión (mirror de .github/skills/cierre-sesion/SKILL.md — fuente de verdad)
+# Descripción: Habilidad para retrospectiva técnica de cierre de sesión (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
 
 ---
 name: cierre-sesion

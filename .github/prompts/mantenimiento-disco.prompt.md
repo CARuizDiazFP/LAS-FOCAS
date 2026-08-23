@@ -29,6 +29,8 @@ Ejecuta un diagnóstico de espacio en disco y, si corresponde, una limpieza segu
 
 ## Flujo de trabajo
 
+Antes de ejecutar, elegir perfil `rapido`, `estandar` o `profundo` según `docs/maintenance_profiles.md`.
+
 ### 1. Diagnóstico
 
 Recolectar estado actual con comandos de diagnóstico y resumirlo por categorías.
@@ -105,6 +107,7 @@ docker system df
 - `docker-cleanup`
 - `logs-cleanup`
 - `temp-cleanup`
+- `docs/maintenance_profiles.md`
 
 ## Salida esperada
 

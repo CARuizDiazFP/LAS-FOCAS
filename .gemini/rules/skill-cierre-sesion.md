@@ -4,7 +4,7 @@
 ---
 name: "skill-cierre-sesion"
 description: "Usar al finalizar una sesión de trabajo, sólo con declaración explícita de cierre, para generar una retrospectiva técnica: tareas verificadas, errores/bloqueos, soluciones aplicadas y mejoras agénticas de prevención y aceleración"
-source: ".github/skills/cierre-sesion/SKILL.md"
+source: ".agentes-comunes/skills/cierre-sesion/SKILL.md"
 triggers:
   - "cierre-sesion"
   - "cierre"

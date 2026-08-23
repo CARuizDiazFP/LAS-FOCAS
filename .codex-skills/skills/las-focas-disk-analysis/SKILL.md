@@ -3,7 +3,7 @@ name: "las-focas-disk-analysis"
 description: "Usar cuando haya que diagnosticar uso de disco, espacio consumido por Docker, logs, volúmenes o artefactos del proyecto"
 metadata:
   short-description: "Usar cuando haya que diagnosticar uso de disco, espacio consumido por Docker, logs, volúmenes o artefactos del proyecto"
-  source: ".github/skills/disk-analysis/SKILL.md"
+  source: ".agentes-comunes/skills/disk-analysis/SKILL.md"
   triggers:
     - "disk-analysis"
     - "habilidad"
@@ -160,7 +160,7 @@ metadata:
 
 # Skill portable: disk-analysis
 
-> Fuente original: `.github/skills/disk-analysis/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/disk-analysis/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Análisis de Disco
 
