@@ -184,6 +184,40 @@ _SQL_TIENE_CABLES_BATCH = text(
     """
 )
 
+# Camino inverso de `_SQL_SERVICIOS_POR_BOTELLA` (servicio → botellas Cromo → camara_id, en vez de
+# botella → servicios) — usado por `ProtectionService.get_camaras_for_servicio`
+# (`core/services/protection_service.py`, Etapa Refactor baneos 2026-08-23) para resolver qué cámaras
+# banear cuando la infraestructura de un servicio sólo se conoce por la ingesta de Cromo Red (sin
+# trackings legacy cargados) — antes de esto, esos servicios devolvían `[]` y no se podían banear.
+# Filtra `b.camara_id IS NOT NULL` porque una `CromoBotella` puede no tener todavía resuelto su
+# vínculo a la jerarquía Cámara/Botella (`core/services/cromo/camara_padre_service.py`).
+_SQL_CAMARA_IDS_POR_SERVICIO = text(
+    """
+    SELECT DISTINCT b.camara_id
+    FROM app.cromo_servicio_match m
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id
+    JOIN app.cromo_cables c ON c.n_id = p.cable_n_id
+    JOIN app.cromo_botellas b ON b.n_id = c.extremo_a_n_id OR b.n_id = c.extremo_b_n_id
+    WHERE m.servicio_id = :servicio_id AND b.camara_id IS NOT NULL
+    """
+)
+
+# Inversa de `_SQL_CAMARA_IDS_POR_SERVICIO` (cámaras → servicios) — usada por
+# `ProtectionService._camara_tiene_otro_baneo_activo` para cerrar el mismo gap: detectar que otro
+# incidente activo protege un servicio cuya infraestructura sólo se conoce por Cromo (sin empalme/ruta
+# legacy que conecte ese servicio al grupo de cámaras evaluado).
+_SQL_SERVICIO_IDS_POR_CAMARAS = text(
+    """
+    SELECT DISTINCT s.servicio_id
+    FROM app.cromo_botellas b
+    JOIN app.cromo_cables c ON c.extremo_a_n_id = b.n_id OR c.extremo_b_n_id = b.n_id
+    JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id
+    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.servicios s ON s.id = m.servicio_id
+    WHERE b.camara_id = ANY(:camara_ids ::integer[])
+    """
+)
+
 
 def _fila_a_servicio(fila: tuple) -> ServicioEncontrado:
     (
@@ -322,6 +356,35 @@ def tiene_cables_asociados_batch_sync(session: Session, n_ids: list[int]) -> set
     return {f[0] for f in filas}
 
 
+def camara_ids_por_servicio_sync(session: Session, servicio_id: int) -> set[int]:
+    """Cámaras (`Camara.id`, vía `CromoBotella.camara_id`) que son extremo de algún cable por el que
+    pasa `servicio_id` (el PK integer de `app.servicios`, NO el `servicio_id` string) — join inverso
+    de `_SQL_SERVICIOS_POR_BOTELLA`.
+
+    Alimenta `ProtectionService.get_camaras_for_servicio`: cierra el gap real de servicios cuya
+    infraestructura sólo se conoce por Cromo Red, que antes de esto devolvían `[]` (no baneables) por
+    depender únicamente del camino legacy `Servicio→RutaServicio→Empalme.camara_id→Camara`.
+    """
+    filas = session.execute(_SQL_CAMARA_IDS_POR_SERVICIO, {"servicio_id": servicio_id}).all()
+    return {f[0] for f in filas}
+
+
+def servicio_ids_por_camaras_sync(session: Session, camara_ids: list[int]) -> set[str]:
+    """Inversa de `camara_ids_por_servicio_sync`: servicios (`servicio_id` string, de
+    `app.servicios.servicio_id`) que tocan alguna `CromoBotella` cuyo `camara_id` esté en
+    `camara_ids` (PKs de `app.camaras`).
+
+    Alimenta `ProtectionService._camara_tiene_otro_baneo_activo`, por el mismo motivo: detectar que
+    otro incidente activo protege un servicio cuyo único vínculo al grupo de cámaras evaluado es vía
+    Cromo, no vía empalme/ruta legacy — sin esto, `lift_ban` podía restaurar de más una cámara que en
+    realidad seguía protegida.
+    """
+    if not camara_ids:
+        return set()
+    filas = session.execute(_SQL_SERVICIO_IDS_POR_CAMARAS, {"camara_ids": camara_ids}).all()
+    return {f[0] for f in filas}
+
+
 __all__ = [
     "ObjetoNoEncontrado",
     "ServicioEncontrado",
@@ -334,4 +397,6 @@ __all__ = [
     "servicios_por_tubo_sync",
     "servicios_por_botella",
     "tiene_cables_asociados_batch_sync",
+    "camara_ids_por_servicio_sync",
+    "servicio_ids_por_camaras_sync",
 ]

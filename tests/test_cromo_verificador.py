@@ -265,3 +265,57 @@ def test_tiene_cables_asociados_batch_sync_arma_set_con_ambos_extremos():
 
     assert resultado == {111, 222}
     assert 333 not in resultado
+
+
+# ── camara_ids_por_servicio_sync — Refactor baneos: servicio → botellas Cromo → camara_id ──────
+
+
+def test_camara_ids_por_servicio_sync_sin_matches():
+    sesion = _SesionSyncFake()
+    resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
+
+    assert resultado == set()
+
+
+def test_camara_ids_por_servicio_sync_un_camara_id():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_servicio_match m": [(42,)]})
+    resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
+
+    assert resultado == {42}
+
+
+def test_camara_ids_por_servicio_sync_multiples_camara_ids():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_servicio_match m": [(42,), (43,), (42,)]})
+    resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
+
+    assert resultado == {42, 43}
+
+
+def test_camara_ids_por_servicio_sync_filtra_null_en_sql():
+    """No se puede ejecutar Postgres real acá (sesión fake), pero se fija en el texto de la consulta
+    que el filtro `IS NOT NULL` sigue presente — es lo que garantiza que una CromoBotella sin
+    `camara_id` resuelto todavía (vínculo a jerarquía Cámara/Botella pendiente) nunca llegue a Python
+    como candidata a banear."""
+    assert "camara_id IS NOT NULL" in str(verificador._SQL_CAMARA_IDS_POR_SERVICIO)
+
+
+# ── servicio_ids_por_camaras_sync — inversa, para _camara_tiene_otro_baneo_activo ───────────────
+
+
+def test_servicio_ids_por_camaras_sync_lista_vacia_no_consulta():
+    sesion = _SesionSyncFake()
+    assert verificador.servicio_ids_por_camaras_sync(sesion, []) == set()
+
+
+def test_servicio_ids_por_camaras_sync_un_servicio_id():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_botellas b": [("52547",)]})
+    resultado = verificador.servicio_ids_por_camaras_sync(sesion, [1])
+
+    assert resultado == {"52547"}
+
+
+def test_servicio_ids_por_camaras_sync_multiples_servicio_ids():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_botellas b": [("52547",), ("88888",)]})
+    resultado = verificador.servicio_ids_por_camaras_sync(sesion, [1, 2, 3])
+
+    assert resultado == {"52547", "88888"}

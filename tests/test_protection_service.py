@@ -114,6 +114,8 @@ def test_camara_tiene_otro_baneo_activo_considera_el_grupo_completo() -> None:
     session = MagicMock()
     # 1ra .first(): resuelve la Camara por id (bot1); 2da .first(): resuelve el IncidenteBaneo.
     session.query.return_value.filter.return_value.first.side_effect = [bot1, otro_incidente]
+    # Camino Cromo: sin aporte en este caso (el hallazgo viene por legacy, vía empalme de bot2).
+    session.execute.return_value.all.return_value = []
 
     service = ProtectionService(session)
     resultado = service._camara_tiene_otro_baneo_activo(bot1.id, excluir_incidente_id=1)
@@ -126,11 +128,37 @@ def test_camara_tiene_otro_baneo_activo_sin_servicios_en_el_grupo_devuelve_none(
 
     session = MagicMock()
     session.query.return_value.filter.return_value.first.return_value = bot1
+    session.execute.return_value.all.return_value = []  # Cromo tampoco aporta nada
 
     service = ProtectionService(session)
     resultado = service._camara_tiene_otro_baneo_activo(bot1.id, excluir_incidente_id=1)
 
     assert resultado is None
+
+
+def test_camara_tiene_otro_baneo_activo_detecta_via_cromo_cuando_legacy_no_ve_nada() -> None:
+    """Hueco cerrado por el Refactor de baneos (2026-08-23): antes de este fix, si el ÚNICO vínculo
+    entre el grupo y el otro incidente activo era vía infraestructura Cromo (sin ningún empalme/ruta
+    legacy que lo conectara), `_camara_tiene_otro_baneo_activo` no lo veía — `servicios_ids` se
+    calculaba sólo desde `miembro.empalmes`, y acá ningún miembro del grupo tiene empalmes. Este test
+    habría fallado (resultado None) antes del fix y pasa después, porque ahora también une
+    `servicio_ids_por_camaras_sync`."""
+    padre, bot1, bot2 = _grupo()  # ningún miembro tiene empalmes legacy
+
+    otro_incidente = IncidenteBaneo(
+        id=777, servicio_protegido_id="CROMO-ONLY", servicio_afectado_id="x", activo=True
+    )
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.side_effect = [bot1, otro_incidente]
+    # El camino Cromo (session.execute, dentro de servicio_ids_por_camaras_sync) SÍ ve el servicio
+    # protegido por el otro incidente, aunque no haya ningún empalme legacy que lo conecte al grupo.
+    session.execute.return_value.all.return_value = [("CROMO-ONLY",)]
+
+    service = ProtectionService(session)
+    resultado = service._camara_tiene_otro_baneo_activo(bot1.id, excluir_incidente_id=1)
+
+    assert resultado is otro_incidente
 
 
 def test_determinar_estado_restauracion_mantiene_baneo_independiente_anterior_al_incidente() -> None:
@@ -212,3 +240,123 @@ def test_determinar_estado_restauracion_sin_historial_usa_logica_por_defecto() -
     resultado = service._determinar_estado_restauracion(camara, incidente)
 
     assert resultado == CamaraEstado.LIBRE
+
+
+# ── get_camaras_for_servicio — cobertura directa (Refactor baneos, 2026-08-23) ──────────────────
+#
+# Hasta este fix, todos los tests de este archivo mockeaban `get_camaras_for_servicio` entero vía
+# `patch.object` (ver arriba) — el método en sí no tenía cobertura directa. Estos tests lo ejercitan
+# de verdad, mockeando sólo `session.query`/`session.execute`, para cubrir la resolución mixta
+# legacy+Cromo que agrega esta tarea.
+
+
+def test_get_camaras_for_servicio_solo_legacy() -> None:
+    """Camino legacy resuelve una cámara; Cromo no aporta ninguna nueva (camara_ids_por_servicio_sync,
+    vía session.execute, no devuelve filas) — el resultado final es sólo la cámara legacy."""
+    camara_legacy = Camara(id=1, nombre="Cra Legacy", estado=CamaraEstado.LIBRE)
+    empalme = Empalme(id=10, camara_id=1)
+    empalme.camara = camara_legacy
+    ruta = RutaServicio(id=100, servicio_id=10, activa=True)
+    ruta.empalmes = [empalme]
+
+    servicio = Servicio(id=10, servicio_id="52547")
+    servicio.rutas = [ruta]
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = servicio
+    session.execute.return_value.all.return_value = []  # Cromo: sin camara_ids nuevos
+
+    service = ProtectionService(session)
+    resultado = service.get_camaras_for_servicio("52547")
+
+    assert [c.id for c in resultado] == [1]
+
+
+def test_get_camaras_for_servicio_solo_cromo() -> None:
+    """El servicio no tiene rutas/empalmes legacy, pero Cromo (session.execute) resuelve un camara_id
+    nuevo — antes de esta tarea, este caso devolvía `[]` (servicio no baneable)."""
+    servicio = Servicio(id=20, servicio_id="88888")
+    servicio.rutas = []
+
+    camara_cromo = Camara(id=5, nombre="Cra Cromo", estado=CamaraEstado.LIBRE)
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = servicio
+    session.execute.return_value.all.return_value = [(5,)]
+    session.query.return_value.filter.return_value.all.return_value = [camara_cromo]
+
+    service = ProtectionService(session)
+    resultado = service.get_camaras_for_servicio("88888")
+
+    assert [c.id for c in resultado] == [5]
+
+
+def test_get_camaras_for_servicio_solapamiento_no_duplica() -> None:
+    """La misma cámara resuelta por legacy Y por Cromo (mismo Camara.id) no debe aparecer dos veces
+    — ni volver a consultarse por `Camara.id.in_(...)`, porque ya está en camaras_set."""
+    camara_compartida = Camara(id=7, nombre="Cra Compartida", estado=CamaraEstado.LIBRE)
+    empalme = Empalme(id=11, camara_id=7)
+    empalme.camara = camara_compartida
+    ruta = RutaServicio(id=101, servicio_id=30, activa=True)
+    ruta.empalmes = [empalme]
+
+    servicio = Servicio(id=30, servicio_id="12345")
+    servicio.rutas = [ruta]
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = servicio
+    session.execute.return_value.all.return_value = [(7,)]  # mismo id que ya resolvió legacy
+
+    service = ProtectionService(session)
+    resultado = service.get_camaras_for_servicio("12345")
+
+    assert [c.id for c in resultado] == [7]
+    # camara_ids_faltantes queda vacío (7 - {7} == set()) — nunca se llega a pedir Camara.id.in_(...)
+    session.query.return_value.filter.return_value.all.assert_not_called()
+
+
+def test_get_camaras_for_servicio_ruta_id_explicito_ignora_cromo() -> None:
+    """Cuando se pasa ruta_id explícito, el camino Cromo se ignora completamente (concepto de ruta
+    puntual que Cromo no modela) — camara_ids_por_servicio_sync ni siquiera debería ejecutarse."""
+    camara_legacy = Camara(id=2, nombre="Cra Ruta", estado=CamaraEstado.LIBRE)
+    empalme = Empalme(id=12, camara_id=2)
+    empalme.camara = camara_legacy
+    ruta = RutaServicio(id=102, servicio_id=40, activa=True)
+    ruta.empalmes = [empalme]
+
+    servicio = Servicio(id=40, servicio_id="99999")
+
+    session = MagicMock()
+    # 1ra .first(): resuelve el Servicio; 2da .first(): resuelve la RutaServicio.
+    session.query.return_value.filter.return_value.first.side_effect = [servicio, ruta]
+
+    service = ProtectionService(session)
+    resultado = service.get_camaras_for_servicio("99999", ruta_id=102)
+
+    assert [c.id for c in resultado] == [2]
+    session.execute.assert_not_called()
+
+
+def test_get_camaras_for_servicio_cromo_excluye_camara_id_null() -> None:
+    """`CromoBotella.camara_id IS NULL` queda excluida: el SQL de `camara_ids_por_servicio_sync`
+    filtra `IS NOT NULL` (verificado directamente sobre el texto de la consulta en
+    test_cromo_verificador.py) — acá se confirma que, si Cromo sólo aporta un camara_id resuelto
+    (nunca None, porque el filtro ya actuó en la DB), el flujo de `get_camaras_for_servicio` no
+    intenta resolver ninguna cámara "fantasma" con id None."""
+    servicio = Servicio(id=50, servicio_id="55555")
+    servicio.rutas = []
+
+    camara_cromo = Camara(id=8, nombre="Cra Cromo Resuelta", estado=CamaraEstado.LIBRE)
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = servicio
+    # El filtro `IS NOT NULL` de la SQL real garantiza que esta fila nunca incluye None — la fake
+    # session sólo puede simular el resultado YA filtrado, no el filtro en sí.
+    session.execute.return_value.all.return_value = [(8,)]
+    session.query.return_value.filter.return_value.all.return_value = [camara_cromo]
+
+    service = ProtectionService(session)
+    resultado = service.get_camaras_for_servicio("55555")
+
+    assert [c.id for c in resultado] == [8]
+    assert None not in [c.id for c in resultado]
