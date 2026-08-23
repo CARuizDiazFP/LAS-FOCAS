@@ -25,12 +25,16 @@ if TYPE_CHECKING:
 # reusa este mismo pipeline de normalización sin duplicarlo. `_limpiar_puntuacion` se agrega además
 # de los 4 helpers pedidos porque es el primer paso del pipeline (limpiar puntuación → expandir
 # abreviaturas → normalizar → sinónimos) — omitirlo produciría una normalización distinta a la que
-# usa `buscar_camara()` internamente para el mismo input.
+# usa `buscar_camara()` internamente para el mismo input. `_filtrar_bots_secundarios` (agregado en
+# la revisión del 2026-08-23) sólo toca `.nombre` vía regex — nada específico de `Camara` — así que
+# también se reusa contra candidatas `CromoBotella` para evitar que "Cra Mitre 440" (sin mención de
+# "bot"/"botella") empareje incorrectamente "Bot 2 Cra Mitre 440".
 __all__ = [
     "_expandir_abreviaturas",
     "_aplicar_sinonimos",
     "_normalizar",
     "_filtrar_por_numeros",
+    "_filtrar_bots_secundarios",
     "_limpiar_puntuacion",
     "buscar_camara",
     "AmbiguousSearchError",

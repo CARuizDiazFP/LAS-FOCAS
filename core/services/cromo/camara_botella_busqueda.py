@@ -32,6 +32,7 @@ from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
     _aplicar_sinonimos,
     _expandir_abreviaturas,
+    _filtrar_bots_secundarios,
     _filtrar_por_numeros,
     _limpiar_puntuacion,
     _normalizar,
@@ -97,36 +98,60 @@ def _buscar_botella_tokens_lista(tokens: list[str], session: Session) -> list["C
     return session.query(CromoBotella).filter(and_(*condiciones)).all()
 
 
+# Mismo patrón que el `tiene_bot` inline de `buscar_camara()` (camara_search.py): se evalúa sobre
+# el nombre_raw ORIGINAL, antes de normalizar/sinonimizar (donde "botella" ya habría mutado a
+# "bot"). No se exporta desde camara_search.py porque ahí tampoco es una constante nombrada — es
+# una expresión inline dentro de buscar_camara() — así que este regex se duplica deliberadamente
+# aquí como la contraparte mínima, igual que ya se recalculan `numeros_requeridos` de forma
+# independiente en este módulo en vez de recibirlos por parámetro.
+_RE_TIENE_BOT = re.compile(r"\bbot(ella)?\b", re.IGNORECASE)
+
+
 def _cascada_botella(nombre_raw: str, session: Session) -> list["CromoBotella"]:
     """Cascada equivalente a los Intentos 1-2 de `buscar_camara()`, pero contra
     `CromoBotella.nombre`: ILIKE con el nombre normalizado completo, y si no reduce a 1 candidato,
     AND-ILIKE por tokens significativos (≥3 chars). En ambos pasos se filtra por números requeridos
-    con `_filtrar_por_numeros` (reusado, no reimplementado).
+    con `_filtrar_por_numeros` y por bots secundarios con `_filtrar_bots_secundarios` (reusados, no
+    reimplementados) — si el input no menciona "bot"/"botella" explícitamente, se excluyen
+    candidatas tipo "Bot 2 Cra Mitre 440" para evitar que "Cra Mitre 440" empareje una botella
+    secundaria cuando el técnico se refiere a la cámara principal.
+
+    Guardia de input degenerado (mismo criterio que la heurística pre-búsqueda de `buscar_camara()`,
+    ver camara_search.py:330-332): si hay menos de 2 tokens significativos (≥3 chars) y ningún
+    número, se retorna `[]` sin consultar la DB — evita un table scan `ILIKE '%%'` que matchearía
+    cada fila de `cromo_botellas`. Alcanzable en la práctica desde el camino de `buscar_camara()`
+    ambiguo por input insuficiente (`AmbiguousSearchError(cantidad=0)`): ese camino re-ejecuta esta
+    cascada contra `CromoBotella` con el mismo `nombre_raw` degenerado.
 
     Fuera de alcance deliberado (no pedido por la tarea): join de alias (no existe tabla de alias
-    para CromoBotella) y filtro de bots secundarios (`_filtrar_bots_secundarios` es específico de la
-    jerarquía Cámara/Botella de `db.models.infra`, dominio distinto de este módulo).
+    para CromoBotella).
 
     Returns:
-        Lista vacía (sin match), lista de 1 elemento (match único), o lista de 2+ elementos
-        (ambiguo — el grupo más acotado encontrado en la cascada).
+        Lista vacía (sin match, o input degenerado), lista de 1 elemento (match único), o lista de
+        2+ elementos (ambiguo — el grupo más acotado encontrado en la cascada).
     """
     nombre_norm = _normalizar_pipeline(nombre_raw)
     numeros_requeridos: set[str] = set(re.findall(r"\d+", nombre_norm))
+    tiene_bot: bool = bool(_RE_TIENE_BOT.search(nombre_raw))
+
+    tokens_sig = [t for t in nombre_norm.split() if len(t) >= 3]
+    if len(tokens_sig) < 2 and not numeros_requeridos:
+        return []
+
+    def _filtrada(candidatos: list["CromoBotella"]) -> list["CromoBotella"]:
+        candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
+        return _filtrar_bots_secundarios(candidatos, tiene_bot)
 
     # ── Intento 1: ILIKE con el nombre normalizado completo ──────────────
-    candidatos = _filtrar_por_numeros(_buscar_botella_ilike_lista(nombre_norm, session), numeros_requeridos)
+    candidatos = _filtrada(_buscar_botella_ilike_lista(nombre_norm, session))
     if len(candidatos) == 1:
         return candidatos
 
     mejor_ambiguo: list["CromoBotella"] = candidatos if len(candidatos) > 1 else []
 
     # ── Intento 2: todos los tokens (≥3 chars) presentes ─────────────────
-    tokens = [t for t in nombre_norm.split() if len(t) >= 3]
-    if len(tokens) >= 2:
-        candidatos_tokens = _filtrar_por_numeros(
-            _buscar_botella_tokens_lista(tokens, session), numeros_requeridos
-        )
+    if len(tokens_sig) >= 2:
+        candidatos_tokens = _filtrada(_buscar_botella_tokens_lista(tokens_sig, session))
         if len(candidatos_tokens) == 1:
             return candidatos_tokens
         if candidatos_tokens and (not mejor_ambiguo or len(candidatos_tokens) < len(mejor_ambiguo)):
@@ -192,7 +217,13 @@ def buscar_camara_o_botella_cromo(nombre_raw: str, session: Session) -> Resultad
         candidatos_botella = _cascada_botella(nombre_raw, session)
         nombres_botella = [b.nombre for b in candidatos_botella]
         fusionados = _fusionar_nombres_dedup(exc.candidatos, nombres_botella)
-        raise AmbiguousSearchError(nombre_raw, len(fusionados), fusionados) from exc
+        # exc.candidatos ya viene recortado a 3 por AmbiguousSearchError.__init__ — NO es el conteo
+        # real de ambigüedad de Camara. exc.cantidad sí lo es (ver buscar_camara():
+        # `raise AmbiguousSearchError(nombre_raw, len(_ambiguos), nombres_candidatos)`, cantidad se
+        # pasa sin recortar). cantidad nunca debe reportar menos de lo que Camara sola ya encontró
+        # — ese número llega tal cual a un mensaje de Slack (modules/slack_baneo_notifier/listener.py).
+        cantidad = max(exc.cantidad, len(fusionados))
+        raise AmbiguousSearchError(nombre_raw, cantidad, fusionados) from exc
 
     if camara is not None:
         return ResultadoBusquedaExtendida(
