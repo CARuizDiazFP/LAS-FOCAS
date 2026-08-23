@@ -776,11 +776,18 @@ mejora del regex de búsqueda, sin crear ninguna entidad de infraestructura.
 - **Endpoints nuevos**: `GET /api/admin/infra/ingresos-sin-match` (filtro opcional `revisado`),
   `POST /api/admin/infra/ingresos-sin-match/{id}/marcar-revisado`. **Frontend**: nueva sección
   acordeón "Ingresos sin match" en `AdminBaneos.vue`, mismo patrón visual que "Cámaras Pendientes".
-- **Fuera de alcance, encontrado pero no corregido**: `core/services/infra_service.py::_get_or_create_camara`
-  (líneas ~260-310, usado por el flujo "Tracking V2"/`TrackingResolutionService`) tiene el mismo
-  patrón de auto-creación `DETECTADA`/`TRACKING` — no fue parte del alcance confirmado para este pase
-  (que cubrió específicamente el bot de Slack y `upload_tracking_web`), queda como hallazgo para una
-  iteración futura.
+- **Cerrado (Tarea 3 del refactor de baneos, 2026-08-23, commit `2c17296`)**: cuando se escribió esta
+  sección (2026-08-11), `core/services/infra_service.py` tenía una función separada (entonces con el
+  mismo patrón de auto-creación `DETECTADA`/`TRACKING`) usada por las acciones del flujo
+  "analyze→modal→resolve" de `InfraService` (`_action_create_new`/`_action_merge_append`/
+  `_action_replace`/`_action_branch`/`_action_confirm_upgrade`/`_action_add_strand`) — quedaba
+  explícitamente fuera de alcance de este pase. Eso ya no es así: esa función es hoy
+  `_resolve_camara_o_registrar_sin_match`, reescrita para usar `buscar_camara_o_botella_cromo`
+  (búsqueda extendida Camara+CromoBotella, ver `docs/modulo_ingesta_cromo.md`) y registrar
+  `IngresoSinMatch` (`origen="tracking"`) igual que el resto de los flujos de esta sección — **nunca
+  crea una `Camara` nueva**. Unifica así las 3 superficies que antes podían auto-crear una cámara al
+  no matchear: el bot de Slack, `upload_tracking_web`, y las acciones de `InfraService` recién
+  listadas.
 
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.

@@ -188,11 +188,16 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     lanza `AmbiguousSearchError`) fusiona los candidatos de ambas fuentes, deduplicados por nombre
     normalizado, y relanza la misma excepción con la lista combinada. Consumido por el listener de
     Slack de ingreso de técnicos (`modules/slack_baneo_notifier/listener.py`) y por el flujo
-    "adjuntar tracking" del portal Infra (`core/services/infra_service.py::_get_or_create_camara`,
+    "adjuntar tracking" del portal Infra (`core/services/infra_service.py::_resolve_camara_o_registrar_sin_match`,
     que desde esta misma tarea ya no crea una `Camara` nueva al no matchear, sino que registra un
-    `IngresoSinMatch`). Riesgo conocido sin acción tomada: `CromoBotella.nombre` no tiene índice (a
-    diferencia de `CromoCable.nombre`), así que la cascada hace table scan sobre `app.cromo_botellas`
-    en cada llamada sin match directo en `Camara`.
+    `IngresoSinMatch`). `CromoBotella.nombre` tiene, desde la Tarea 2 (migración
+    `20260823_01_ingreso_seguimiento_empalme.py`), un índice btree explícito
+    (`ix_cromo_botellas_nombre_btree`, mismo tipo que ya tenía `CromoCable.nombre`) agregado
+    específicamente para esta cascada — el docstring original de este módulo (Tarea 1) decía que
+    `CromoBotella.nombre` "no tiene índice", lo cual era impreciso incluso entonces: ya existía un
+    índice GIN sobre `to_tsvector('spanish', nombre)` (Etapa 2, full-text search, sin consumidores
+    reales en el repo), sólo que ese tipo de índice no acelera el patrón `ILIKE '%patron%'` que usa
+    esta cascada. Ver el comentario en `db/models/cromo.py::CromoBotella.__table_args__`.
   - `live_lookup_service.py` (2026-08-19): visor en vivo de un elemento Cromo por `n_id` — un único
     `GET /db/objects/{id}` (`CromoClient.get_objeto`) contra Cromo, **nunca** contra las tablas ya
     ingeridas y **nunca** persiste nada. Distinto de todo lo demás en este paquete: es la única
