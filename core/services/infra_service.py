@@ -1001,20 +1001,26 @@ class InfraService:
         existing = self._find_servicio_by_identificador(parsed.servicio_id)
 
         if existing and len(existing.rutas) > 0:
-            # Ya tiene rutas, no se puede usar CREATE_NEW
+            # Ya tiene rutas, no se puede usar CREATE_NEW. `existing.servicio_id` (no
+            # `parsed.servicio_id`): `_find_servicio_by_identificador` puede haber encontrado este
+            # Servicio por alias/numero_primer_servicio, en cuyo caso el ID canónico de la fila
+            # (existing.servicio_id) puede diferir del número que traía el archivo de tracking.
             return ResolveResult(
                 success=False,
                 action=ResolveAction.CREATE_NEW,
-                servicio_id=parsed.servicio_id,
+                servicio_id=existing.servicio_id,
                 error="El servicio ya existe con rutas",
-                message=f"Usá BRANCH o REPLACE para agregar rutas al servicio {parsed.servicio_id}",
+                message=f"Usá BRANCH o REPLACE para agregar rutas al servicio {existing.servicio_id}",
             )
-        
+
         # Usar servicio existente o crear nuevo
         if existing:
             servicio = existing
+            # servicio.servicio_id (canónico) además de parsed.servicio_id (el número que traía
+            # el archivo, puede ser un alias) — ver nota arriba sobre por qué pueden diferir.
             logger.info(
-                "action=create_new note=reutilizando_servicio servicio_id=%s db_id=%d",
+                "action=create_new note=reutilizando_servicio servicio_id=%s tracking_numero=%s db_id=%d",
+                servicio.servicio_id,
                 parsed.servicio_id,
                 servicio.id,
             )
@@ -1057,8 +1063,12 @@ class InfraService:
             else:
                 camaras_existentes += 1
 
-            # Obtener o crear empalme
-            tracking_id = f"{parsed.servicio_id}_{empalme_id}"
+            # Obtener o crear empalme. Clave por `servicio.servicio_id` (canónico), NO
+            # `parsed.servicio_id`: si `existing` se encontró por alias/numero_primer_servicio,
+            # usar el número del archivo acá dejaría huérfanos los empalmes ya registrados bajo el
+            # ID canónico en una corrida anterior — `_get_or_create_empalme` los duplicaría en vez
+            # de reusarlos.
+            tracking_id = f"{servicio.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
@@ -1094,7 +1104,7 @@ class InfraService:
 
         logger.info(
             "action=create_new servicio_id=%s ruta_id=%d ubicaciones_sin_match=%d empalmes=%d alias=%s",
-            parsed.servicio_id,
+            servicio.servicio_id,
             ruta.id,
             ubicaciones_sin_match,
             empalmes_creados,
@@ -1104,7 +1114,11 @@ class InfraService:
         return ResolveResult(
             success=True,
             action=ResolveAction.CREATE_NEW,
-            servicio_id=parsed.servicio_id,
+            # servicio.servicio_id (canónico), no parsed.servicio_id: si se reusó un Servicio
+            # existente encontrado por alias/numero_primer_servicio, este campo (que fluye a
+            # TrackingResolveResponse.servicio_id) debe reflejar el ID real de la fila, no el
+            # número que traía el archivo de tracking.
+            servicio_id=servicio.servicio_id,
             servicio_db_id=servicio.id,
             ruta_id=ruta.id,
             ruta_nombre=ruta.nombre,
@@ -1113,7 +1127,7 @@ class InfraService:
             empalmes_creados=empalmes_creados,
             empalmes_asociados=len(topologia),
             ubicaciones_sin_match=ubicaciones_sin_match,
-            message=f"Servicio {parsed.servicio_id} creado con ruta 'Principal' ({len(topologia)} empalmes)",
+            message=f"Servicio {servicio.servicio_id} creado con ruta 'Principal' ({len(topologia)} empalmes)",
         )
 
     def _action_merge_append(
@@ -1388,8 +1402,12 @@ class InfraService:
             else:
                 camaras_existentes += 1
 
-            # Obtener o crear empalme
-            tracking_id = f"{parsed.servicio_id}_{empalme_id}"
+            # Obtener o crear empalme. Clave por `servicio.servicio_id` (canónico), NO
+            # `parsed.servicio_id`: si el Servicio se encontró por alias/numero_primer_servicio,
+            # usar el número del archivo acá dejaría huérfanos los empalmes ya registrados bajo el
+            # ID canónico en una corrida anterior — `_get_or_create_empalme` los duplicaría en vez
+            # de reusarlos.
+            tracking_id = f"{servicio.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
@@ -1412,7 +1430,7 @@ class InfraService:
 
         logger.info(
             "action=branch servicio_id=%s ruta_id=%d nombre=%s tipo=%s empalmes=%d",
-            parsed.servicio_id,
+            servicio.servicio_id,
             ruta.id,
             ruta.nombre,
             ruta.tipo.value,

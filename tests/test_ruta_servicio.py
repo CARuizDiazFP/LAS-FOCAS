@@ -561,6 +561,12 @@ class TestServicioAliasReuse:
         mock_resolve.return_value = None
         servicio_existente = MagicMock(spec=Servicio)
         servicio_existente.id = 42
+        # ID canónico de la fila, DISTINTO del número que trae el archivo ("111995" — un alias
+        # viejo). Bug real encontrado en revisión: antes del fix, el ResolveResult devuelto
+        # (y por lo tanto `TrackingResolveResponse.servicio_id`) mostraba "111995" en vez de
+        # "O1C1", porque `_action_create_new` seguía usando `parsed.servicio_id` en el retorno
+        # aunque `existing` se hubiera encontrado por alias.
+        servicio_existente.servicio_id = "O1C1"
         servicio_existente.rutas = []
         servicio_existente.empalmes = []
         mock_find.return_value = servicio_existente
@@ -575,6 +581,9 @@ class TestServicioAliasReuse:
         # Reusó el servicio existente (id=42): si hubiera creado uno nuevo, servicio_db_id
         # quedaría en None porque `session.flush()` está mockeado y no asigna PK.
         assert result.servicio_db_id == 42
+        # Regresión: debe reportar el servicio_id CANÓNICO de la fila encontrada, no el número
+        # ("111995") que traía el archivo de tracking.
+        assert result.servicio_id == "O1C1"
 
     @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
     @patch.object(InfraService, "_find_servicio_by_identificador")
@@ -598,6 +607,85 @@ class TestServicioAliasReuse:
         mock_find.assert_called_once_with("111995")
         assert result.success is True
         assert result.servicio_db_id == 42
+        assert result.servicio_id == "O1C1"
+
+
+class TestEmpalmeKeyedPorServicioCanonico:
+    """Importante #2 (revisión post-implementación, 2026-08-23): el `tracking_id` de un Empalme
+    debe construirse con el `servicio_id` CANÓNICO del Servicio resuelto (`servicio.servicio_id`),
+    no con `parsed.servicio_id` (el número que traía el archivo, que puede ser un
+    alias/numero_primer_servicio no canónico) — de lo contrario, al reprocesar un tracking que
+    referencia un alias viejo, `_get_or_create_empalme` buscaría bajo una clave distinta a la
+    usada en la corrida original y crearía filas de Empalme duplicadas en vez de reusarlas.
+
+    Se mockea `_get_or_create_empalme` e inspecciona el `tracking_id` (2do arg posicional) con el
+    que se lo invoca en cada iteración — es el punto exacto donde el bug real vivía."""
+
+    @patch("core.services.infra_service._get_or_create_empalme")
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_create_new_usa_servicio_id_canonico_para_tracking_id(
+        self, mock_find, mock_resolve, mock_get_empalme, mock_session
+    ):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.servicio_id = "O1C1"  # canónico, distinto del archivo ("111995")
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        mock_find.return_value = servicio_existente
+
+        empalme_mock = MagicMock(spec=Empalme)
+        empalme_mock.id = 1
+        mock_get_empalme.return_value = (empalme_mock, False)  # simula reuso, nunca "es_nuevo"
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.CREATE_NEW, SAMPLE_TRACKING_CONTENT, "FO 111995 C2.txt"
+        )
+
+        assert result.success is True
+        assert result.servicio_id == "O1C1"
+
+        tracking_ids_usados = [call.args[1] for call in mock_get_empalme.call_args_list]
+        # Los 3 empalmes de SAMPLE_TRACKING_CONTENT deben quedar keyeados bajo el ID canónico.
+        assert tracking_ids_usados == ["O1C1_1", "O1C1_2", "O1C1_3"]
+        # Antes del fix, esto habría sido ["111995_1", "111995_2", "111995_3"] — el alias del
+        # archivo, que dejaría huérfanos los empalmes ya registrados bajo "O1C1_N".
+        assert not any(tid.startswith("111995_") for tid in tracking_ids_usados)
+
+    @patch("core.services.infra_service._get_or_create_empalme")
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_branch_usa_servicio_id_canonico_para_tracking_id(
+        self, mock_find, mock_resolve, mock_get_empalme, mock_session
+    ):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.servicio_id = "O1C1"
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        mock_find.return_value = servicio_existente
+
+        empalme_mock = MagicMock(spec=Empalme)
+        empalme_mock.id = 1
+        mock_get_empalme.return_value = (empalme_mock, False)
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.BRANCH,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            new_ruta_name="Ruta Alternativa",
+        )
+
+        assert result.success is True
+        assert result.servicio_id == "O1C1"
+
+        tracking_ids_usados = [call.args[1] for call in mock_get_empalme.call_args_list]
+        assert tracking_ids_usados == ["O1C1_1", "O1C1_2", "O1C1_3"]
+        assert not any(tid.startswith("111995_") for tid in tracking_ids_usados)
 
 
 class TestResolveResultUbicacionesSinMatch:
