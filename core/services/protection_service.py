@@ -123,11 +123,29 @@ class ProtectionService:
         ruta_id: Optional[int] = None,
     ) -> List[Camara]:
         """Obtiene las cámaras asociadas a un servicio (opcionalmente filtrado por ruta).
-        
+
+        Resuelve por DOS caminos independientes cuando no se pasa `ruta_id` (bloque `else`):
+        - Legacy: `Servicio→RutaServicio→Empalme.camara_id→Camara` (trackings cargados a mano).
+        - Cromo (Etapa Refactor baneos, 2026-08-23): `Servicio→CromoServicioMatch→CromoPelo→
+          CromoCable→CromoBotella.camara_id→Camara`, vía `camara_ids_por_servicio_sync`
+          (`core/services/cromo/verificador.py`, mismo estilo `text()` para no acoplar este archivo a
+          las tablas `cromo_*` vía ORM) — cierra el gap real de servicios cuya infraestructura sólo se
+          conoce por la ingesta de Cromo Red, que antes devolvían `[]` (no baneables) por depender
+          únicamente del camino legacy.
+
+        El camino Cromo SÓLO corre en el bloque `else` (sin `ruta_id`). Cuando se pasa `ruta_id`
+        explícito (bloque `if ruta_id:`), es un filtro de precisión sobre una `RutaServicio` puntual —
+        concepto que Cromo no modela (no tiene noción de "ruta") — así que ese camino se ignora
+        completamente ahí.
+
+        Dedup por `Camara.id` (mismo `camaras_set` para ambos caminos): si el mismo `camara_id`
+        aparece por legacy Y por Cromo, sólo se consulta/agrega una vez — el objeto ya resuelto por
+        legacy gana, no se vuelve a pedir a la DB.
+
         Args:
             servicio_id: ID del servicio (texto, ej: "52547")
-            ruta_id: ID de ruta específica (opcional)
-            
+            ruta_id: ID de ruta específica (opcional) — si se pasa, ignora el camino Cromo
+
         Returns:
             Lista de cámaras únicas asociadas al servicio/ruta
         """
@@ -135,30 +153,43 @@ class ProtectionService:
         servicio = self.session.query(Servicio).filter(
             Servicio.servicio_id == servicio_id
         ).first()
-        
+
         if not servicio:
             return []
-        
+
         camaras_set: dict[int, Camara] = {}
-        
+
         if ruta_id:
             # Filtrar por ruta específica
             ruta = self.session.query(RutaServicio).filter(
                 RutaServicio.id == ruta_id,
                 RutaServicio.servicio_id == servicio.id,
             ).first()
-            
+
             if ruta:
                 for empalme in ruta.empalmes:
                     if empalme.camara and empalme.camara.id not in camaras_set:
                         camaras_set[empalme.camara.id] = empalme.camara
         else:
-            # Todas las rutas activas del servicio
+            # Todas las rutas activas del servicio (camino legacy)
             for ruta in servicio.rutas_activas:
                 for empalme in ruta.empalmes:
                     if empalme.camara and empalme.camara.id not in camaras_set:
                         camaras_set[empalme.camara.id] = empalme.camara
-        
+
+            # Camino Cromo: resuelve camara_id que el legacy no vio (servicio sin trackings cargados,
+            # o con trackings parciales que no cubren toda su infraestructura real).
+            from core.services.cromo.verificador import camara_ids_por_servicio_sync
+
+            camara_ids_cromo = camara_ids_por_servicio_sync(self.session, servicio.id)
+            camara_ids_faltantes = camara_ids_cromo - camaras_set.keys()
+            if camara_ids_faltantes:
+                camaras_cromo = self.session.query(Camara).filter(
+                    Camara.id.in_(camara_ids_faltantes)
+                ).all()
+                for camara in camaras_cromo:
+                    camaras_set[camara.id] = camara
+
         return list(camaras_set.values())
 
     def get_incidentes_activos(self) -> List[IncidenteBaneo]:
@@ -515,6 +546,11 @@ class ProtectionService:
         sólo se mirara `camara_id`, este chequeo no vería el otro incidente y `lift_ban` podría
         restaurar de más una cámara que en realidad sigue protegida por otro baneo vía su hermana.
 
+        Etapa Refactor baneos (2026-08-23): el cálculo de `servicios_ids` también une el camino Cromo
+        (`servicio_ids_por_camaras_sync`) — mismo gap que `get_camaras_for_servicio`: si el otro
+        incidente activo protege un servicio cuya infraestructura sólo se conoce por Cromo Red (sin
+        empalme/ruta legacy que lo conecte a este grupo), el camino legacy en solitario no lo detecta.
+
         Args:
             camara_id: ID de la cámara/botella a verificar
             excluir_incidente_id: ID del incidente a excluir de la búsqueda
@@ -523,18 +559,26 @@ class ProtectionService:
             El primer incidente activo que afecta al grupo, o None
         """
         from core.services.camara_estado_service import miembros_del_grupo
+        from core.services.cromo.verificador import servicio_ids_por_camaras_sync
 
         camara = self.session.query(Camara).filter(Camara.id == camara_id).first()
         if not camara:
             return None
 
-        # Servicios que pasan por CUALQUIER empalme del grupo (cámara padre + todas las botellas)
-        servicios_ids = set()
-        for miembro in miembros_del_grupo(camara):
+        miembros = miembros_del_grupo(camara)
+
+        # Servicios que pasan por CUALQUIER empalme del grupo (cámara padre + todas las botellas) —
+        # camino legacy
+        servicios_ids: set[str] = set()
+        for miembro in miembros:
             for empalme in miembro.empalmes:
                 for ruta in empalme.rutas:
                     if ruta.servicio and ruta.servicio.servicio_id:
                         servicios_ids.add(ruta.servicio.servicio_id)
+
+        # Camino Cromo: une servicios que tocan el grupo sólo vía infraestructura Cromo (sin empalme
+        # legacy) — cierra el mismo hueco que `get_camaras_for_servicio`.
+        servicios_ids |= servicio_ids_por_camaras_sync(self.session, [m.id for m in miembros])
 
         if not servicios_ids:
             return None

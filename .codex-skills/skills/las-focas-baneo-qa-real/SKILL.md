@@ -54,8 +54,11 @@ blast radius real.
 
 ### 1. Resolver el blast radius COMPLETO antes de mutar nada
 
+`get_camaras_for_servicio` (Refactor baneos, 2026-08-23) resuelve por DOS caminos independientes
+(legacy y Cromo) — el blast radius real es la UNIÓN de ambas queries, no sólo la primera.
+
 ```sql
--- Todas las cámaras que tocará create_ban/lift_ban para este servicio (no sólo el grupo objetivo)
+-- 1a. Camino legacy: cámaras vía Servicio→RutaServicio→Empalme.camara_id→Camara
 SELECT DISTINCT c.id, c.nombre, c.estado, c.camara_padre_id
 FROM app.servicios s
 JOIN app.rutas_servicio rs ON rs.servicio_id = s.id
@@ -65,8 +68,24 @@ JOIN app.camaras c ON c.id = e.camara_id
 WHERE s.servicio_id = '<servicio_a_usar>';
 ```
 
-Si el resultado incluye cámaras fuera del grupo que querés probar, elegí otro servicio más acotado o
-documentá explícitamente que la prueba va a tocar más de un grupo.
+```sql
+-- 1b. Camino Cromo: cámaras vía Servicio→CromoServicioMatch→CromoPelo→CromoCable→
+-- CromoBotella.camara_id→Camara (mismo join que camara_ids_por_servicio_sync,
+-- core/services/cromo/verificador.py) — un servicio cuya infraestructura sólo se conoce por Cromo
+-- Red no aparece en 1a, pero create_ban/lift_ban SÍ lo banean desde este fix.
+SELECT DISTINCT c.id, c.nombre, c.estado, c.camara_padre_id
+FROM app.servicios s
+JOIN app.cromo_servicio_match m ON m.servicio_id = s.id
+JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id
+JOIN app.cromo_cables ca ON ca.n_id = p.cable_n_id
+JOIN app.cromo_botellas b ON b.n_id = ca.extremo_a_n_id OR b.n_id = ca.extremo_b_n_id
+JOIN app.camaras c ON c.id = b.camara_id
+WHERE s.servicio_id = '<servicio_a_usar>' AND b.camara_id IS NOT NULL;
+```
+
+El blast radius completo es la UNIÓN de los `id` de ambas queries. Si el resultado incluye cámaras
+fuera del grupo que querés probar, elegí otro servicio más acotado o documentá explícitamente que la
+prueba va a tocar más de un grupo.
 
 ### 2. Registrar el estado ANTES de cada cámara del blast radius
 
@@ -117,7 +136,11 @@ volver a su propio estado real al desbanear.
 ## Documentación relacionada
 
 - `docs/infra.md` — sección "Jerarquía Cámara → Botellas".
-- `core/services/protection_service.py` — `create_ban`/`lift_ban`, `_determinar_estado_restauracion`.
+- `core/services/protection_service.py` — `create_ban`/`lift_ban`, `get_camaras_for_servicio` (camino
+  legacy + Cromo, Refactor baneos 2026-08-23), `_camara_tiene_otro_baneo_activo`,
+  `_determinar_estado_restauracion`.
+- `core/services/cromo/verificador.py` — `camara_ids_por_servicio_sync`/`servicio_ids_por_camaras_sync`,
+  el join Cromo que alimenta el paso 1b de arriba.
 - `core/services/camara_estado_service.py` — `aplicar_estado_a_grupo`, `obtener_ultima_transicion_a_baneada`.
 - `tests/test_protection_service.py` — tests de regresión (mocks; no reemplazan la verificación real).
 - `las-focas-db-mcp-postgres` — sección "Jerarquía Cámara→Botella y auditoría de estado".
