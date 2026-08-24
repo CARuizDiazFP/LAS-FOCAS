@@ -322,7 +322,11 @@ def override_camara_estado_manual(
     if contexto_actual is None:
         return ActualizacionEstadoResultado(success=False, error="No se pudo obtener el contexto de la cámara")
 
-    if all(m.estado == nuevo_estado for m in miembros_del_grupo(camara)):
+    raiz = camara.camara_padre or camara
+    legado_en_destino = all(m.estado == nuevo_estado for m in miembros_del_grupo(camara))
+    cromo_estado_esperado = MAPEO_ESTADO_CROMO[nuevo_estado]
+    cromo_en_destino = all(cb.estado == cromo_estado_esperado for cb in raiz.cromo_botellas)
+    if legado_en_destino and cromo_en_destino:
         return ActualizacionEstadoResultado(
             success=True,
             camara_id=camara.id,

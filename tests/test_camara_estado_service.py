@@ -11,7 +11,6 @@ from core.services.camara_estado_service import (
     miembros_del_grupo,
     override_camara_estado_manual,
     CamaraEstadoContexto,
-    IncidenteActivoResumen,
 )
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
@@ -197,6 +196,93 @@ def test_override_camara_estado_manual_grupo_mixto_fila_puntual_en_destino() -> 
     assert bot2.estado == CamaraEstado.BANEADA
     # Verificar que padre también fue actualizado por la cascada
     assert padre.estado == CamaraEstado.BANEADA
+
+
+def test_override_camara_estado_manual_cromo_botella_desincronizada_no_corta() -> None:
+    """Hallazgo de la revisión final del plan: el short-circuit sólo miraba `miembros_del_grupo`
+    (legado). Si TODO el legado del grupo ya está en `nuevo_estado` pero una `CromoBotella` vinculada
+    a la raíz sigue en otro estado, la función debía cortar en `changed=False` sin sincronizarla —
+    exactamente el invariante que la cascada existe para garantizar. Con el fix, debe seguir de
+    largo (`changed=True`) e invocar `aplicar_estado_a_grupo`."""
+    padre, bot1, bot2 = _grupo(
+        estado_padre=CamaraEstado.BANEADA,
+        estado_bot1=CamaraEstado.BANEADA,
+        estado_bot2=CamaraEstado.BANEADA,
+    )
+    cromo_desincronizada = CromoBotella(n_id=100, estado=CamaraEstado.LIBRE)
+    padre.cromo_botellas = [cromo_desincronizada]
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.side_effect = lambda: padre
+
+    contexto_mock = CamaraEstadoContexto(
+        camara_id=padre.id,
+        estado_actual=CamaraEstado.BANEADA,
+        estado_sugerido=CamaraEstado.BANEADA,
+        tiene_baneo_activo=False,
+        tiene_ingreso_activo=False,
+        inconsistente=False,
+        incidentes_activos=[],
+        ticket_baneo=None,
+    )
+
+    with (
+        patch("core.services.camara_estado_service.get_camara_estado_contexto", return_value=contexto_mock),
+        patch("core.services.camara_estado_service.aplicar_estado_a_grupo", return_value=[]) as mock_aplicar,
+    ):
+        resultado = override_camara_estado_manual(
+            session,
+            camara_id=1,  # padre.id
+            nuevo_estado=CamaraEstado.BANEADA,
+            usuario="test",
+            motivo="prueba",
+        )
+
+    assert resultado.changed == True
+    assert resultado.success == True
+    mock_aplicar.assert_called_once()
+
+
+def test_override_camara_estado_manual_legado_y_cromo_en_destino_no_cambia() -> None:
+    """Caso contrario al anterior: legado Y CromoBotella ya en el estado esperado por
+    `MAPEO_ESTADO_CROMO` → sigue cortando en `changed=False`, cero llamadas a `aplicar_estado_a_grupo`."""
+    padre, bot1, bot2 = _grupo(
+        estado_padre=CamaraEstado.BANEADA,
+        estado_bot1=CamaraEstado.BANEADA,
+        estado_bot2=CamaraEstado.BANEADA,
+    )
+    cromo_sincronizada = CromoBotella(n_id=101, estado=CamaraEstado.BANEADA)
+    padre.cromo_botellas = [cromo_sincronizada]
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.side_effect = lambda: padre
+
+    contexto_mock = CamaraEstadoContexto(
+        camara_id=padre.id,
+        estado_actual=CamaraEstado.BANEADA,
+        estado_sugerido=CamaraEstado.BANEADA,
+        tiene_baneo_activo=False,
+        tiene_ingreso_activo=False,
+        inconsistente=False,
+        incidentes_activos=[],
+        ticket_baneo=None,
+    )
+
+    with (
+        patch("core.services.camara_estado_service.get_camara_estado_contexto", return_value=contexto_mock),
+        patch("core.services.camara_estado_service.aplicar_estado_a_grupo") as mock_aplicar,
+    ):
+        resultado = override_camara_estado_manual(
+            session,
+            camara_id=1,  # padre.id
+            nuevo_estado=CamaraEstado.BANEADA,
+            usuario="test",
+            motivo="prueba",
+        )
+
+    assert resultado.changed == False
+    assert resultado.success == True
+    mock_aplicar.assert_not_called()
 
 
 def test_override_camara_estado_manual_grupo_entero_en_destino_no_cambia() -> None:
