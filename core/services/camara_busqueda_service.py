@@ -29,6 +29,9 @@ class CamaraLigera:
     estado: str
     botellas_count: int
     cables_count: int
+    es_botella: bool = False
+    camara_padre_id: Optional[int] = None
+    camara_padre_nombre: Optional[str] = None
 
 
 def buscar_camaras_ligero(
@@ -37,16 +40,25 @@ def buscar_camaras_ligero(
     *,
     limit: int = 10,
     excluir_id: Optional[int] = None,
+    solo_raiz: bool = True,
 ) -> list[CamaraLigera]:
-    """Busca Cámaras raíz por nombre (`ILIKE` parcial). `q` vacío/`None` devuelve las primeras
+    """Busca Cámaras por nombre (`ILIKE` parcial). `q` vacío/`None` devuelve las primeras
     `limit` por nombre. `excluir_id` omite una Cámara puntual (ej. la que ya se está viendo en el
     picker, para no ofrecerla como su propia unificación/asociación).
+
+    `solo_raiz=True` (default, preserva el comportamiento histórico) filtra sólo Cámaras raíz
+    (`camara_padre_id IS NULL`). `solo_raiz=False` no aplica ese filtro estructural — el `ILIKE`
+    corre sobre todas las filas de `Camara` (raíces y Botellas legado), pensado para el picker de
+    asociación manual (Tarea 5) donde el admin necesita poder elegir también una Botella hija
+    puntual y ver a qué grupo (padre + hermanas) se va a aplicar el baneo.
 
     `cables_count` (como `botellas_count`) acepta el mismo costo por-candidata ya asumido acá (lista
     acotada a `limit<=50`, no la lista completa de cámaras raíz que sí evita `smart-search`).
     `botellas_count` suma botellas propias (self-FK legado) + Botellas Cromo propias — sin la segunda
     parte, las Cámaras `INFERIDO_CROMO` (la mayoría del dataset real) siempre daban 0."""
-    query = session.query(Camara).filter(Camara.camara_padre_id.is_(None))
+    query = session.query(Camara)
+    if solo_raiz:
+        query = query.filter(Camara.camara_padre_id.is_(None))
     if q and q.strip():
         query = query.filter(Camara.nombre.ilike(f"%{q.strip()}%"))
     if excluir_id is not None:
@@ -61,6 +73,9 @@ def buscar_camaras_ligero(
             estado=c.estado.value if c.estado else "LIBRE",
             botellas_count=len(c.botellas) + len(c.cromo_botellas),
             cables_count=len(c.cables),
+            es_botella=c.es_botella,
+            camara_padre_id=c.camara_padre_id if c.es_botella else None,
+            camara_padre_nombre=(c.camara_padre.nombre if c.camara_padre else None) if c.es_botella else None,
         )
         for c in candidatas
     ]

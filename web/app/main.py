@@ -2242,11 +2242,17 @@ async def camaras_buscar_ligero_web(
     q: Optional[str] = None,
     limit: int = 10,
     excluir_id: Optional[int] = None,
+    solo_raiz: bool = True,
 ) -> JSONResponse:
     """Búsqueda liviana de Cámaras raíz por nombre — para selectores/autocomplete (picker de
     "Unificar Cámara", picker de "Asociar a Cámara existente" de Botellas huérfanas). Deliberadamente
     no reusa `smart-search` (N+1 de rutas/servicios/cables por cámara, pensado para el dashboard, no
     para un selector liviano). Sólo lectura, cualquier usuario autenticado.
+
+    `solo_raiz=False` (picker de asociación manual de la ingesta de Excel, Tarea 5) incluye también
+    Botellas legado en los resultados, con `es_botella`/`camara_padre_id`/`camara_padre_nombre`
+    poblados — así el admin ve a qué grupo (padre + hermanas) se va a aplicar el baneo antes de
+    confirmar. Default `True` preserva el comportamiento histórico (sólo Cámaras raíz).
 
     Registrada ANTES de `GET /api/infra/camaras/{camara_id}` a propósito (hallazgo real durante la
     verificación): FastAPI/Starlette matchea rutas en orden de registro, y `/camaras/buscar` tiene la
@@ -2259,7 +2265,9 @@ async def camaras_buscar_ligero_web(
     _require_auth(request)
     try:
         with SessionLocal() as session:
-            candidatas = buscar_camaras_ligero(session, q, limit=limit, excluir_id=excluir_id)
+            candidatas = buscar_camaras_ligero(
+                session, q, limit=limit, excluir_id=excluir_id, solo_raiz=solo_raiz
+            )
             return JSONResponse({
                 "camaras": [
                     {
@@ -2269,6 +2277,9 @@ async def camaras_buscar_ligero_web(
                         "estado": c.estado,
                         "botellas_count": c.botellas_count,
                         "cables_count": c.cables_count,
+                        "es_botella": c.es_botella,
+                        "camara_padre_id": c.camara_padre_id,
+                        "camara_padre_nombre": c.camara_padre_nombre,
                     }
                     for c in candidatas
                 ]
