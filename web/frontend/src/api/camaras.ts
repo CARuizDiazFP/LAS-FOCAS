@@ -94,11 +94,17 @@ export function estadoCamaraToken(estado: string | null | undefined): EstadoCama
   return 'idle';
 }
 
+export interface NombreSinMatch {
+  caso_id: number;
+  nombre: string;
+}
+
 export interface IngestCamarasResponse {
   status: string;
-  creadas: number;
-  preexistentes: number;
-  baneadas: number;
+  total_leidos: number;
+  grupos_baneados: number;
+  grupos_ya_baneados: number;
+  sin_match: NombreSinMatch[];
   errores: string[];
 }
 
@@ -175,6 +181,40 @@ export async function eliminarCamara(camaraId: number): Promise<EliminarCamaraRe
   return requestJson<EliminarCamaraResponse>('/api/infra/camaras/eliminar', {
     method: 'POST',
     json: { camara_id: camaraId },
+    csrf: true,
+  });
+}
+
+// ── Asociación manual de nombres sin match (ingesta Excel) a una Cámara/Botella existente ──
+
+export interface ConflictoAsociacionSinMatch {
+  caso_id: number;
+  nombre: string;
+  camara_actual_id: number;
+  camara_actual_nombre: string;
+}
+
+export interface AsociarSinMatchResponse {
+  ok: boolean;
+  camara_id: number;
+  camara_nombre: string;
+  estado_final: string;
+  baneo_aplicado: boolean;
+  alias_creados: number;
+  alias_preexistentes: number;
+  casos_marcados: number;
+  conflictos: ConflictoAsociacionSinMatch[];
+  error: string | null;
+}
+
+export async function asociarSinMatchCamaras(
+  casoIds: number[],
+  camaraId: number,
+  motivo?: string,
+): Promise<AsociarSinMatchResponse> {
+  return requestJson<AsociarSinMatchResponse>('/api/admin/ingesta/camaras/asociar', {
+    method: 'POST',
+    json: { caso_ids: casoIds, camara_id: camaraId, motivo: motivo ?? null },
     csrf: true,
   });
 }

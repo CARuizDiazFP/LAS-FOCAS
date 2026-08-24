@@ -45,16 +45,20 @@
 
       <dl v-if="summary" class="summary-grid">
         <div>
-          <dt>Creadas</dt>
-          <dd>{{ summary.creadas }}</dd>
+          <dt>Leídos</dt>
+          <dd>{{ summary.total_leidos }}</dd>
         </div>
         <div>
-          <dt>Preexistentes</dt>
-          <dd>{{ summary.preexistentes }}</dd>
+          <dt>Grupos baneados</dt>
+          <dd class="dd--warn">{{ summary.grupos_baneados }}</dd>
         </div>
         <div>
-          <dt>Baneadas</dt>
-          <dd class="dd--warn">{{ summary.baneadas }}</dd>
+          <dt>Ya baneados</dt>
+          <dd>{{ summary.grupos_ya_baneados }}</dd>
+        </div>
+        <div v-if="summary.sin_match.length > 0">
+          <dt>Sin match</dt>
+          <dd class="dd--err">{{ summary.sin_match.length }}</dd>
         </div>
         <div v-if="summary.errores.length > 0">
           <dt>Errores</dt>
@@ -69,6 +73,74 @@
         </ul>
       </details>
     </article>
+
+    <article v-if="sinMatchPendientes.length > 0" class="card">
+      <header class="ingesta-card__header">
+        <h2>Revisor Manual</h2>
+        <span class="ingesta-card__chip ingesta-card__chip--warn">{{ sinMatchPendientes.length }} pendientes</span>
+      </header>
+      <p class="revisor-hint">
+        Nombres del Excel que no matchearon contra el inventario. Asocialos a una Cámara/Botella existente
+        (crea un alias para que futuros Excel con el mismo texto matcheen solos) o descartalos de esta vista.
+      </p>
+
+      <p v-if="revisorFeedback" :class="['msg', revisorFeedbackType === 'ok' ? 'ok' : 'err', 'visible']">
+        {{ revisorFeedback }}
+      </p>
+
+      <table class="revisor-tabla">
+        <thead>
+          <tr>
+            <th class="revisor-tabla__check">
+              <input
+                type="checkbox"
+                :checked="todosSeleccionados"
+                aria-label="Seleccionar todos"
+                @change="toggleTodos"
+              />
+            </th>
+            <th>Nombre original</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="caso in sinMatchPendientes" :key="caso.id">
+            <td class="revisor-tabla__check">
+              <input
+                type="checkbox"
+                :checked="seleccionados.has(caso.id)"
+                @change="toggleSeleccion(caso.id)"
+              />
+            </td>
+            <td>{{ caso.texto_original }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div v-if="seleccionados.size > 0" class="revisor-acciones">
+        <span class="revisor-acciones__count">{{ seleccionados.size }} seleccionado(s)</span>
+        <button class="btn subtle" type="button" @click="abrirDescartarMasivo">Descartar seleccionados</button>
+        <button class="btn primary" type="button" @click="abrirAsociarSinMatch">Asociar seleccionados…</button>
+      </div>
+    </article>
+
+    <ModalConfirmarAccionMasiva
+      :open="modalDescartarOpen"
+      titulo="Descartar de la vista"
+      :mensaje="mensajeDescartarMasivo"
+      :confirmando="descartando"
+      :error="descartarError"
+      :resultado="descartarResultado"
+      @close="cerrarDescartarMasivo"
+      @confirm="confirmarDescartarMasivo"
+    />
+
+    <ModalAsociarSinMatch
+      :open="modalAsociarOpen"
+      :casos="casosParaAsociar"
+      :motivo-sugerido="motivoBaneo"
+      @close="modalAsociarOpen = false"
+      @asociada="onAsociada"
+    />
 
     <!-- Modal de motivo de baneo -->
     <dialog ref="dialogEl" class="motivo-modal" @click.self="cancelarModal">
@@ -110,10 +182,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
-import { ingestCamarasFile, type IngestCamarasResponse } from '../../api/camaras';
+import ModalConfirmarAccionMasiva from '../../components/infra/ModalConfirmarAccionMasiva.vue';
+import ModalAsociarSinMatch from '../components/ModalAsociarSinMatch.vue';
+import { ingestCamarasFile, type AsociarSinMatchResponse, type IngestCamarasResponse } from '../../api/camaras';
+import { getIngresosSinMatch, marcarRevisadoMasivo, type IngresoSinMatch } from '../api/admin';
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const dialogEl = ref<HTMLDialogElement | null>(null);
@@ -129,6 +204,106 @@ const statusText = ref('Listo para cargar');
 const feedback = ref('');
 const feedbackType = ref<'ok' | 'err'>('ok');
 const summary = ref<IngestCamarasResponse | null>(null);
+
+// ─── Revisor Manual: nombres del Excel que no matchearon contra el inventario ───
+const sinMatchPendientes = ref<IngresoSinMatch[]>([]);
+const seleccionados = ref<Set<number>>(new Set());
+const revisorFeedback = ref('');
+const revisorFeedbackType = ref<'ok' | 'err'>('ok');
+
+const todosSeleccionados = computed(
+  () => sinMatchPendientes.value.length > 0 && seleccionados.value.size === sinMatchPendientes.value.length,
+);
+
+function toggleSeleccion(id: number): void {
+  const next = new Set(seleccionados.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  seleccionados.value = next;
+}
+
+function toggleTodos(): void {
+  seleccionados.value = todosSeleccionados.value
+    ? new Set()
+    : new Set(sinMatchPendientes.value.map((caso) => caso.id));
+}
+
+async function cargarSinMatchPendientes(): Promise<void> {
+  sinMatchPendientes.value = await getIngresosSinMatch(false, 'excel_camaras');
+  const idsVigentes = new Set(sinMatchPendientes.value.map((caso) => caso.id));
+  seleccionados.value = new Set([...seleccionados.value].filter((id) => idsVigentes.has(id)));
+}
+
+onMounted(() => {
+  void cargarSinMatchPendientes();
+});
+
+// ─── Descarte masivo — no borra nada real, sólo marca revisado=true ────────
+const modalDescartarOpen = ref(false);
+const descartando = ref(false);
+const descartarError = ref('');
+const descartarResultado = ref<string | null>(null);
+
+const mensajeDescartarMasivo = computed(
+  () =>
+    `Se van a marcar ${seleccionados.value.size} nombre(s) como revisados y desaparecen de esta lista. ` +
+    'La fila queda en la base para poder mejorar el regex de matching a futuro — no se borra ningún dato real.',
+);
+
+function abrirDescartarMasivo(): void {
+  descartarError.value = '';
+  descartarResultado.value = null;
+  modalDescartarOpen.value = true;
+}
+
+function cerrarDescartarMasivo(): void {
+  modalDescartarOpen.value = false;
+}
+
+async function confirmarDescartarMasivo(): Promise<void> {
+  descartando.value = true;
+  descartarError.value = '';
+  try {
+    await marcarRevisadoMasivo([...seleccionados.value]);
+    seleccionados.value = new Set();
+    modalDescartarOpen.value = false;
+    await cargarSinMatchPendientes();
+  } catch (err: unknown) {
+    descartarError.value = err instanceof Error ? err.message : 'No se pudo descartar la selección';
+  } finally {
+    descartando.value = false;
+  }
+}
+
+// ─── Asociación manual a una Cámara/Botella existente ──────────────────────
+const modalAsociarOpen = ref(false);
+
+const casosParaAsociar = computed(() =>
+  sinMatchPendientes.value
+    .filter((caso) => seleccionados.value.has(caso.id))
+    .map((caso) => ({ caso_id: caso.id, nombre: caso.texto_original })),
+);
+
+function abrirAsociarSinMatch(): void {
+  modalAsociarOpen.value = true;
+}
+
+async function onAsociada(resultado: AsociarSinMatchResponse): Promise<void> {
+  modalAsociarOpen.value = false;
+  seleccionados.value = new Set();
+  if (resultado.conflictos.length > 0) {
+    const nombres = resultado.conflictos.map((c) => c.nombre).join(', ');
+    revisorFeedbackType.value = 'err';
+    revisorFeedback.value = `${resultado.conflictos.length} nombre(s) no se asociaron porque ya tienen un alias hacia otra Cámara: ${nombres}. Siguen pendientes.`;
+  } else if (resultado.error) {
+    revisorFeedbackType.value = 'err';
+    revisorFeedback.value = `Asociación aplicada con una advertencia: ${resultado.error}`;
+  } else {
+    revisorFeedbackType.value = 'ok';
+    revisorFeedback.value = `Asociado a "${resultado.camara_nombre}" (${resultado.alias_creados} alias nuevo(s), ${resultado.casos_marcados} caso(s) marcado(s)).`;
+  }
+  await cargarSinMatchPendientes();
+}
 
 function onSelectFile(event: Event): void {
   const target = event.target as HTMLInputElement;
@@ -181,7 +356,8 @@ async function confirmarBaneo(): Promise<void> {
     progress.value = 100;
     statusText.value = 'Ingesta completada';
     feedbackType.value = 'ok';
-    feedback.value = `Proceso finalizado: ${result.creadas} cámaras creadas, ${result.preexistentes} preexistentes, ${result.baneadas} baneadas.`;
+    feedback.value = `Proceso finalizado: ${result.grupos_baneados} grupo(s) baneado(s), ${result.grupos_ya_baneados} ya baneado(s), ${result.sin_match.length} sin match.`;
+    await cargarSinMatchPendientes();
   } catch (err: unknown) {
     feedbackType.value = 'err';
     feedback.value = err instanceof Error ? err.message : 'No se pudo completar la ingesta';
@@ -471,5 +647,47 @@ async function confirmarBaneo(): Promise<void> {
 .btn.subtle:hover:not(:disabled) {
   background: var(--color-neutral-800);
   color: var(--text);
+}
+
+/* ─── Revisor Manual ────────────────────────────────────────────────────── */
+.revisor-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.revisor-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.revisor-tabla th,
+.revisor-tabla td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-divider);
+  text-align: left;
+}
+
+.revisor-tabla th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.revisor-tabla__check {
+  width: 32px;
+}
+
+.revisor-acciones {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.revisor-acciones__count {
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 </style>

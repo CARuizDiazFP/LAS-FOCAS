@@ -184,19 +184,30 @@ export async function eliminarCamaraPendiente(id: number): Promise<void> {
 export interface IngresoSinMatch {
   id: number;
   texto_original: string;
-  origen: 'slack' | 'tracking';
+  origen: 'slack' | 'tracking' | 'excel_camaras';
   contexto: string | null;
   revisado: boolean;
   created_at: string | null;
 }
 
-export async function getIngresosSinMatch(revisado?: boolean): Promise<IngresoSinMatch[]> {
-  const query = revisado === undefined ? '' : `?revisado=${revisado}`;
-  return requestJson<IngresoSinMatch[]>(`/api/admin/infra/ingresos-sin-match${query}`);
+export async function getIngresosSinMatch(revisado?: boolean, origen?: string): Promise<IngresoSinMatch[]> {
+  const params = new URLSearchParams();
+  if (revisado !== undefined) params.set('revisado', String(revisado));
+  if (origen) params.set('origen', origen);
+  const qs = params.toString();
+  return requestJson<IngresoSinMatch[]>(`/api/admin/infra/ingresos-sin-match${qs ? `?${qs}` : ''}`);
 }
 
 export async function marcarRevisadoIngresoSinMatch(id: number): Promise<void> {
   await request(`/api/admin/infra/ingresos-sin-match/${id}/marcar-revisado`, {
     method: 'POST',
+  });
+}
+
+export async function marcarRevisadoMasivo(ids: number[]): Promise<{ ok: boolean; actualizados: number }> {
+  return requestJson('/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo', {
+    method: 'POST',
+    json: { ids },
+    csrf: true,
   });
 }
