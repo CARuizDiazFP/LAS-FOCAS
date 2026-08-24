@@ -211,3 +211,68 @@ export async function marcarRevisadoMasivo(ids: number[]): Promise<{ ok: boolean
     csrf: true,
   });
 }
+
+// ── Grupos baneados (Cámara padre + Botellas) — listado admin y liberación masiva ──────────
+// Tipos y endpoints verificados contra `core/services/baneos_grupos_service.py` y los 2 endpoints
+// reales en `web/app/main.py` (`GET /api/admin/baneos/grupos`, `POST /api/admin/baneos/grupos/liberar`).
+
+export interface BotellaBaneadaResumen {
+  origen: 'legado' | 'cromo';
+  id: number;
+  nombre: string;
+  estado: string;
+}
+
+export interface GrupoBaneado {
+  camara_id: number;
+  nombre: string;
+  direccion: string | null;
+  fontine_id: string | null;
+  estado: string;
+  botellas: BotellaBaneadaResumen[];
+  botellas_count: number;
+  motivo: string | null;
+  usuario: string | null;
+  fecha: string | null;
+  tiene_baneo_activo: boolean;
+  ticket_baneo: string | null;
+  incidentes_activos_ids: number[];
+  estado_mixto: boolean;
+  puede_liberar: boolean;
+}
+
+export interface GruposBaneadosResponse {
+  total: number;
+  grupos: GrupoBaneado[];
+}
+
+export async function getGruposBaneados(params: { q?: string; limit?: number; offset?: number }): Promise<GruposBaneadosResponse> {
+  const query = new URLSearchParams();
+  if (params.q) query.set('q', params.q);
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  if (params.offset !== undefined) query.set('offset', String(params.offset));
+  const qs = query.toString();
+  return requestJson<GruposBaneadosResponse>(`/api/admin/baneos/grupos${qs ? `?${qs}` : ''}`);
+}
+
+export interface ResultadoLiberarGrupo {
+  camara_id: number;
+  liberado: boolean;
+  estado_final: string | null;
+  razon_omision: string | null;
+}
+
+export interface LiberarGruposMasivoResponse {
+  total_solicitados: number;
+  liberados: number;
+  omitidos: number;
+  detalle: ResultadoLiberarGrupo[];
+}
+
+export async function liberarGruposMasivo(camaraIds: number[], motivo: string, forzar = false): Promise<LiberarGruposMasivoResponse> {
+  return requestJson<LiberarGruposMasivoResponse>('/api/admin/baneos/grupos/liberar', {
+    method: 'POST',
+    json: { camara_ids: camaraIds, motivo, forzar },
+    csrf: true,
+  });
+}
