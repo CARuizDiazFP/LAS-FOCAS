@@ -48,7 +48,7 @@ Cámaras/Botellas ya existentes, nunca crea una `Camara` nueva ni pasa por `reso
 (ver sub-sección "Ingesta Excel de cámaras baneadas" más abajo).
 
 **Normalización extendida en la resolución de padre (2026-08-14)**: `resolver_o_crear_padre_desde_base`
-(núcleo compartido por los 6 caminos legado de arriba y por `resolver_o_crear_padre_cromo`) usa ahora
+(núcleo compartido por los 5 caminos legado de arriba y por `resolver_o_crear_padre_cromo`) usa ahora
 `normalizar_para_agrupar_extendido()` (abreviaturas + sinónimos, misma tabla que la detección de
 duplicados de la sección "Dashboard Viewer" más abajo) para decidir si ya existe una Cámara padre —
 antes usaba `normalizar_para_agrupar` (básica), que seguía generando duplicados nuevos con nombres que
