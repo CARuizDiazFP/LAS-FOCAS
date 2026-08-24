@@ -173,10 +173,15 @@ const gruposSeleccionadosPagina = computed(() => grupos.value.filter((g) => sele
 const mensajeLiberar = computed(() => {
   const totalSel = seleccionados.value.size;
   const base = `Se van a liberar ${totalSel} grupo${totalSel !== 1 ? 's' : ''} baneado${totalSel !== 1 ? 's' : ''}.`;
-  if (forzar.value) return base;
-  const bloqueados = gruposSeleccionadosPagina.value.filter((g) => g.tiene_baneo_activo).length;
-  if (bloqueados === 0) return base;
-  return `${base} ${bloqueados} de los seleccionados tiene${bloqueados !== 1 ? 'n' : ''} un incidente activo del Protocolo de Protección y se omitirá${bloqueados !== 1 ? 'n' : ''} (activá "Forzar" para incluirlos).`;
+  const bloqueados = gruposSeleccionadosPagina.value.filter((g) => g.tiene_baneo_activo);
+  if (bloqueados.length === 0) return base;
+  if (forzar.value) {
+    const nombres = bloqueados
+      .map((g) => `${g.nombre}${g.ticket_baneo ? ` (ticket ${g.ticket_baneo})` : ''}`)
+      .join(', ');
+    return `${base} ⚠️ Vas a FORZAR la liberación de ${bloqueados.length} grupo${bloqueados.length !== 1 ? 's' : ''} con un incidente activo del Protocolo de Protección: ${nombres}.`;
+  }
+  return `${base} ${bloqueados.length} de los seleccionados tiene${bloqueados.length !== 1 ? 'n' : ''} un incidente activo del Protocolo de Protección y se omitirá${bloqueados.length !== 1 ? 'n' : ''} (activá "Forzar" para incluirlos).`;
 });
 
 async function cargar(): Promise<void> {
