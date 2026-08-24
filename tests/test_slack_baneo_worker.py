@@ -9,12 +9,15 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch, PropertyMock
 
+import pandas as pd
+
+from core.services.baneos_grupos_service import BotellaBaneadaResumen, GrupoBaneado, ResultadoGruposBaneados
 from db.models.infra import Camara, CamaraEstado
 from db.models.servicios import ConfigServicios
 
 
 class TestGenerarExcelBaneadas(unittest.TestCase):
-    """Tests para la generación del Excel de cámaras baneadas."""
+    """Tests para la generación del Excel de cámaras baneadas (agrupado por Cámara padre)."""
 
     def _make_camara(self, id_: int, nombre: str, fontine_id: str | None = None) -> MagicMock:
         cam = MagicMock(spec=Camara)
@@ -28,15 +31,46 @@ class TestGenerarExcelBaneadas(unittest.TestCase):
         cam.last_update = datetime(2026, 4, 17, 12, 0, tzinfo=timezone.utc)
         return cam
 
-    def test_genera_excel_con_camaras(self) -> None:
+    def _make_grupo(
+        self,
+        camara_id: int,
+        nombre: str,
+        *,
+        botellas: list[BotellaBaneadaResumen] | None = None,
+    ) -> GrupoBaneado:
+        botellas = botellas or []
+        return GrupoBaneado(
+            camara_id=camara_id,
+            nombre=nombre,
+            direccion=f"Calle {nombre}",
+            fontine_id=f"F-{camara_id:03d}",
+            estado=CamaraEstado.BANEADA.value,
+            botellas=botellas,
+            botellas_count=len(botellas),
+            motivo="Corte de fibra",
+            usuario="operador",
+            fecha="2026-04-17T12:00:00+00:00",
+            tiene_baneo_activo=False,
+            ticket_baneo=None,
+            incidentes_activos_ids=[],
+            estado_mixto=False,
+            puede_liberar=True,
+        )
+
+    @patch("modules.slack_baneo_notifier.notifier.listar_grupos_baneados")
+    def test_genera_excel_con_camaras(self, mock_listar: MagicMock) -> None:
         from modules.slack_baneo_notifier.notifier import generar_excel_baneadas
+
+        grupos = [self._make_grupo(1, "Cam A"), self._make_grupo(2, "Cam B")]
+        mock_listar.return_value = ResultadoGruposBaneados(total=2, grupos=grupos)
 
         mock_session = MagicMock()
         camaras = [self._make_camara(1, "Cam A", "F-001"), self._make_camara(2, "Cam B")]
-        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = camaras
+        mock_session.query.return_value.filter.return_value.all.return_value = camaras
 
         cantidad, buf, nombre = generar_excel_baneadas(mock_session)
 
+        mock_listar.assert_called_once_with(mock_session, limit=None, incluir_contexto=False)
         self.assertEqual(cantidad, 2)
         self.assertIsNotNone(buf)
         self.assertIsInstance(buf, io.BytesIO)
@@ -45,14 +79,43 @@ class TestGenerarExcelBaneadas(unittest.TestCase):
         # Verificar que el Excel tiene contenido
         self.assertGreater(buf.tell() or len(buf.getvalue()), 0)
 
-    def test_devuelve_none_sin_camaras(self) -> None:
+    @patch("modules.slack_baneo_notifier.notifier.listar_grupos_baneados")
+    def test_agrupa_botellas_por_camara_padre(self, mock_listar: MagicMock) -> None:
         from modules.slack_baneo_notifier.notifier import generar_excel_baneadas
 
+        botellas_grupo1 = [
+            BotellaBaneadaResumen(origen="legado", id=10, nombre="Botella 1", estado="BANEADA"),
+            BotellaBaneadaResumen(origen="cromo", id=20, nombre="Botella 2", estado="BANEADA"),
+        ]
+        grupos = [
+            self._make_grupo(1, "Cam A", botellas=botellas_grupo1),
+            self._make_grupo(2, "Cam B", botellas=[]),
+        ]
+        mock_listar.return_value = ResultadoGruposBaneados(total=2, grupos=grupos)
+
         mock_session = MagicMock()
-        mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
+        camaras = [self._make_camara(1, "Cam A", "F-001"), self._make_camara(2, "Cam B")]
+        mock_session.query.return_value.filter.return_value.all.return_value = camaras
 
         cantidad, buf, nombre = generar_excel_baneadas(mock_session)
 
+        self.assertEqual(cantidad, 2)
+        self.assertIsNotNone(buf)
+        buf.seek(0)
+        df = pd.read_excel(buf, sheet_name="Cámaras Baneadas")
+        self.assertEqual(len(df), 2)
+        self.assertListEqual(list(df["Botellas baneadas"]), [2, 0])
+
+    @patch("modules.slack_baneo_notifier.notifier.listar_grupos_baneados")
+    def test_devuelve_none_sin_camaras(self, mock_listar: MagicMock) -> None:
+        from modules.slack_baneo_notifier.notifier import generar_excel_baneadas
+
+        mock_listar.return_value = ResultadoGruposBaneados(total=0, grupos=[])
+        mock_session = MagicMock()
+
+        cantidad, buf, nombre = generar_excel_baneadas(mock_session)
+
+        mock_listar.assert_called_once_with(mock_session, limit=None, incluir_contexto=False)
         self.assertEqual(cantidad, 0)
         self.assertIsNone(buf)
         self.assertTrue(nombre.endswith(".xlsx"))
