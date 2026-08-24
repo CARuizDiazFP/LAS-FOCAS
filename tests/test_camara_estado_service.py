@@ -203,7 +203,13 @@ def test_override_camara_estado_manual_cromo_botella_desincronizada_no_corta() -
     (legado). Si TODO el legado del grupo ya está en `nuevo_estado` pero una `CromoBotella` vinculada
     a la raíz sigue en otro estado, la función debía cortar en `changed=False` sin sincronizarla —
     exactamente el invariante que la cascada existe para garantizar. Con el fix, debe seguir de
-    largo (`changed=True`) e invocar `aplicar_estado_a_grupo`."""
+    largo e invocar `aplicar_estado_a_grupo` (no cortar en el gate).
+
+    Regresión encontrada en la re-review de ese mismo fix: `aplicar_estado_a_grupo` sólo sincroniza
+    `CromoBotella` de miembros legado que efectivamente cambiaron — con el legado ya en destino, no
+    hay ningún miembro que modificar y devuelve `auditorias=[]` (mockeado acá para simular
+    exactamente ese caso). La función NO debe reportar `changed=True` cuando no hubo auditorías
+    reales — sería un falso positivo (grupo "recién baneado" que ya estaba baneado)."""
     padre, bot1, bot2 = _grupo(
         estado_padre=CamaraEstado.BANEADA,
         estado_bot1=CamaraEstado.BANEADA,
@@ -238,7 +244,10 @@ def test_override_camara_estado_manual_cromo_botella_desincronizada_no_corta() -
             motivo="prueba",
         )
 
-    assert resultado.changed == True
+    # El gate no cortó (mock_aplicar fue invocado), pero como no produjo auditorías reales,
+    # changed debe ser False — NO True. Éste es el fix de esta tarea: antes, cruzar el gate
+    # bastaba para reportar changed=True sin importar si aplicar_estado_a_grupo hizo algo.
+    assert resultado.changed == False
     assert resultado.success == True
     mock_aplicar.assert_called_once()
 

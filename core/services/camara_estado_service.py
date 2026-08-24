@@ -354,10 +354,14 @@ def override_camara_estado_manual(
         len(contexto_actual.incidentes_activos),
     )
 
+    # changed refleja si aplicar_estado_a_grupo() produjo auditorías reales, no si el gate de arriba
+    # se cruzó — evita reportar "cambió" cuando el grupo ya estaba en destino y sólo entramos acá por
+    # una CromoBotella vinculada desincronizada (aplicar_estado_a_grupo no la corrige en ese caso —
+    # limitación conocida, documentada aparte).
     return ActualizacionEstadoResultado(
         success=True,
         camara_id=camara.id,
-        changed=True,
+        changed=bool(auditorias),
         audit_id=audit_id_directo,
         contexto=get_camara_estado_contexto(session, camara.id),
     )
