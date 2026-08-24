@@ -17,9 +17,9 @@ from core.services.cromo import ingesta
 from core.services.cromo import parser as cromo_parser
 from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo import id_dual_resolver
-from core.services.cromo.modelos import Cable, Pelo, Tubo
+from core.services.cromo.modelos import Cable, Fusion, Pelo, Tubo
 from core.services.cromo.verificador import ObjetoNoEncontrado
-from db.models.cromo import CromoBotella, CromoCable, CromoPelo, CromoTubo
+from db.models.cromo import CromoBotella, CromoCable, CromoFusion, CromoPelo, CromoTubo
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,8 @@ class ResultadoDeteccionCables:
     botella_n_id: int
     ids_cadena: list[int]
     cables: list[CableDetectado]
+    fusiones: list[Fusion] = field(default_factory=list, repr=False)
+    fusiones_pendientes: list[Fusion] = field(default_factory=list, repr=False)
 
     @property
     def cables_pendientes(self) -> list[CableDetectado]:
@@ -80,6 +82,22 @@ def _anclar_extremo_a_botella(cable: Cable, botella_n_id: int, ids_cadena: set[i
         cable.extremo_a_n_id = botella_n_id
     if cable.extremo_b_n_id in ids_cadena and cable.extremo_b_n_id != botella_n_id:
         cable.extremo_b_n_id = botella_n_id
+
+
+def _fusion_requiere_repoblacion(fila_local: Optional[CromoFusion], fusion: Fusion) -> bool:
+    if fila_local is None:
+        return True
+    return any(
+        (
+            fila_local.botella_n_id != fusion.botella_n_id,
+            fila_local.nombre_par != fusion.nombre_par,
+            fila_local.tipo != fusion.tipo,
+            fila_local.pelo_a_n_id != fusion.pelo_a_n_id,
+            fila_local.pelo_b_n_id != fusion.pelo_b_n_id,
+            fila_local.latitud != fusion.latitud,
+            fila_local.longitud != fusion.longitud,
+        )
+    )
 
 
 async def detectar_cables_faltantes(
@@ -152,7 +170,55 @@ async def detectar_cables_faltantes(
             )
         )
 
-    return ResultadoDeteccionCables(botella_n_id=botella_n_id, ids_cadena=sorted(ids_cadena), cables=cables)
+    fusiones: list[Fusion] = []
+    fusiones_pendientes: list[Fusion] = []
+    # Hallazgo real (AV Colonia 211 ENTERRADA): en escenarios "ID dual", el objeto inicial de la
+    # cadena (`n_id` estable) puede traer `inner[]` con fusiones mientras el objeto vigente (`next_id`)
+    # trae `tp[]` de cables pero pierde ese `inner[]`. Para no dejar afuera esos empalmes, tomamos
+    # fusiones de ambos snapshots cuando el objeto puntual no trae topologías de cable propias.
+    # Esto mantiene el contrato histórico de repoblar-cables: no parseamos fusiones de snapshots que
+    # ya vienen como topología de cable completa.
+    snapshots_fusion = []
+    if not (obj_inicial.get("tp") or []):
+        snapshots_fusion.append(obj_inicial)
+    if obj_vigente is not obj_inicial and not (obj_vigente.get("tp") or []):
+        snapshots_fusion.append(obj_vigente)
+
+    fusiones_vistas: set[int] = set()
+    for snapshot in snapshots_fusion:
+        for item in snapshot.get("inner") or []:
+            if item.get("class") != ingesta.CLASE_FUSION:
+                continue
+            try:
+                fusion = cromo_parser.parse_fusion(item)
+            except Exception as exc:  # noqa: BLE001 - tolerancia deliberada por objeto
+                logger.warning(
+                    "action=cromo_repoblar_cables evento=fusion_inner_invalida botella_n_id=%s fusion_n_id=%s error=%s",
+                    botella_n_id,
+                    item.get("n_id") or item.get("id"),
+                    exc,
+                )
+                continue
+
+            if fusion.n_id in fusiones_vistas:
+                continue
+            fusiones_vistas.add(fusion.n_id)
+
+            # Al venir embebida en la botella consultada, anclamos explícitamente la fusión al n_id
+            # local estable para que quede resoluble por el verificador de empalmes.
+            fusion.botella_n_id = botella_n_id
+            fusiones.append(fusion)
+            fila_fusion = await sesion.get(CromoFusion, fusion.n_id)
+            if _fusion_requiere_repoblacion(fila_fusion, fusion):
+                fusiones_pendientes.append(fusion)
+
+    return ResultadoDeteccionCables(
+        botella_n_id=botella_n_id,
+        ids_cadena=sorted(ids_cadena),
+        cables=cables,
+        fusiones=fusiones,
+        fusiones_pendientes=fusiones_pendientes,
+    )
 
 
 async def repoblar_cables(
@@ -174,7 +240,8 @@ async def repoblar_cables(
     """
     deteccion = await detectar_cables_faltantes(cliente, sesion, botella_n_id)
     pendientes = deteccion.cables_pendientes
-    if not pendientes:
+    fusiones_pendientes = deteccion.fusiones_pendientes
+    if not pendientes and not fusiones_pendientes:
         return ResultadoRepoblarCables(
             corrida_id=None, botella_n_id=botella_n_id, creados=0, actualizados=0, sin_cambios=0, errores=0, detalle=[]
         )
@@ -222,8 +289,44 @@ async def repoblar_cables(
         elif accion == "SIN_CAMBIOS":
             sin_cambios += 1
 
+    for fusion in fusiones_pendientes:
+        fila_fusion = await sesion.get(CromoFusion, fusion.n_id)
+        accion = "CREADA" if fila_fusion is None else "ACTUALIZADA"
+        try:
+            async with sesion.begin_nested():
+                await ingesta.upsert_simple(
+                    sesion,
+                    CromoFusion,
+                    fusion,
+                    ["botella_n_id", "nombre_par", "tipo", "pelo_a_n_id", "pelo_b_n_id", "latitud", "longitud"],
+                )
+                await ingesta.registrar_evento(sesion, corrida.id, fusion.n_id, ingesta.CLASE_FUSION, accion)
+        except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: una fusión no aborta el lote
+            errores += 1
+            logger.error(
+                "action=cromo_repoblar_cables evento=error_fusion botella_n_id=%s fusion_n_id=%s error=%s",
+                botella_n_id,
+                fusion.n_id,
+                exc,
+            )
+            await ingesta.registrar_evento(sesion, corrida.id, fusion.n_id, ingesta.CLASE_FUSION, "ERROR", str(exc))
+            detalle.append(ItemRepoblado(n_id=fusion.n_id, accion="ERROR", detalle=str(exc)))
+            continue
+
+        detalle.append(ItemRepoblado(n_id=fusion.n_id, accion=accion))
+        if accion == "CREADA":
+            creados += 1
+        elif accion == "ACTUALIZADA":
+            actualizados += 1
+        elif accion == "SIN_CAMBIOS":
+            sin_cambios += 1
+
     contadores = ingesta.ContadoresCorrida(
-        leidas=len(pendientes), creadas=creados, actualizadas=actualizados, sin_cambios=sin_cambios, errores=errores
+        leidas=len(pendientes) + len(fusiones_pendientes),
+        creadas=creados,
+        actualizadas=actualizados,
+        sin_cambios=sin_cambios,
+        errores=errores,
     )
     corrida.estado = "OK" if errores == 0 else "OK_CON_ERRORES"
     corrida.finalizada_at = datetime.now(timezone.utc)

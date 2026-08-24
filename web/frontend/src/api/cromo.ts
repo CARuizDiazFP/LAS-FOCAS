@@ -357,6 +357,8 @@ export interface CromoPeloEmpalme {
   numero_pelo: string | null;
   orden: number | null;
   color: string | null;
+  servicio_raw: string | null;
+  servicio_numero: string | null;
 }
 
 export interface CromoEmpalmeDeBotella {

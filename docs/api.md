@@ -292,10 +292,11 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
   2. Parsea el contenido buscando líneas `Empalme <ID>: <Dirección/Ubicación>`.
   3. Crea o actualiza el servicio en `app.servicios`.
   4. Para cada empalme/ubicación:
-     - Busca la cámara por nombre (coincidencia exacta o normalizada case-insensitive).
-     - **Si no existe:** crea una nueva cámara con `estado=DETECTADA` y `origen_datos=TRACKING`.
+     - Resuelve una cámara o botella real con la búsqueda extendida `Camara + CromoBotella`.
+     - Si no hay match, registra un `IngresoSinMatch` y deja el empalme sin `camara_id` en lugar de crear una cámara nueva.
      - Registra el empalme y la asociación servicio-empalme.
   5. Guarda el tracking crudo en `raw_tracking_data` del servicio.
+  6. Devuelve `ubicaciones_sin_match` junto con el total de empalmes procesados para mostrar qué ubicaciones quedaron pendientes de revisión.
 
 - **Enriquecimiento progresivo:** las cámaras detectadas automáticamente pueden enriquecerse posteriormente con coordenadas y estado real mediante el endpoint `/sync/camaras` o edición manual.
 
@@ -308,9 +309,10 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
     "status": "ok",
     "servicios_procesados": 1,
     "servicio_id": "111995",
-    "camaras_nuevas": 3,
+    "camaras_nuevas": 0,
     "camaras_existentes": 5,
     "empalmes_registrados": 8,
+    "ubicaciones_sin_match": 2,
     "mensaje": "Tracking del servicio 111995 procesado correctamente"
   }
   ```

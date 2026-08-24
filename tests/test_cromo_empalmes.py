@@ -45,9 +45,11 @@ def _fila_fusion(
     pelo_a: Optional[tuple],
     pelo_b: Optional[tuple],
 ) -> tuple:
-    """Arma una fila cruda como la devuelve `_SQL_EMPALMES_DE_BOTELLA`: (n_id, nombre_par, *pelo_a[8], *pelo_b[8]).
-    `pelo_a`/`pelo_b` son (n_id, cable_n_id, cable_nombre, tubo_n_id, tubo_color, numero_pelo, orden, color) o None."""
-    vacio = (None,) * 8
+    """Arma una fila cruda como la devuelve `_SQL_EMPALMES_DE_BOTELLA`: (n_id, nombre_par, *pelo_a[10], *pelo_b[10]).
+    `pelo_a`/`pelo_b` son
+    (n_id, cable_n_id, cable_nombre, tubo_n_id, tubo_color, numero_pelo, orden, color, servicio_raw, servicio_numero) o None.
+    """
+    vacio = (None,) * 10
     return (fusion_n_id, nombre_par, *(pelo_a or vacio), *(pelo_b or vacio))
 
 
@@ -63,8 +65,8 @@ async def test_empalmes_de_botella_fusion_simple():
     fila = _fila_fusion(
         9345925,
         "17-1",
-        (9345620, 9345595, "F-ALB-SLL-A-A", 500, "AZ-R", "17", 4, "GR"),
-        (9344768, 9344766, "F-JBA-290", 600, "AZ", "1", 0, "AZ"),
+        (9345620, 9345595, "F-ALB-SLL-A-A", 500, "AZ-R", "17", 4, "GR", "FO 12345", "12345"),
+        (9344768, 9344766, "F-JBA-290", 600, "AZ", "1", 0, "AZ", "FO 99999", "99999"),
     )
     sesion = _SesionFake(
         respuestas={
@@ -83,11 +85,12 @@ async def test_empalmes_de_botella_fusion_simple():
     assert empalme.pelo_origen.cable_nombre == "F-ALB-SLL-A-A"
     assert empalme.pelo_destino.n_id == 9344768
     assert empalme.pelo_destino.cable_nombre == "F-JBA-290"
+    assert empalme.pelo_origen.servicio_raw == "FO 12345"
+    assert empalme.pelo_destino.servicio_numero == "99999"
     assert empalme.splitter_ratio is None
-    # El cable origen (9345595) queda disponible para el selector "Cable Origen".
-    assert len(resultado.cables) == 1
-    assert resultado.cables[0].n_id == 9345595
-    assert resultado.cables[0].cantidad_empalmes == 1
+    # El selector de cable ahora incluye ambos extremos de cada fusión simple (A/B).
+    assert {c.n_id for c in resultado.cables} == {9345595, 9344766}
+    assert all(c.cantidad_empalmes == 1 for c in resultado.cables)
 
 
 @pytest.mark.asyncio
@@ -96,9 +99,9 @@ async def test_empalmes_de_botella_splitter_agrupado_por_pelo_repetido():
     botella se agrupa en una sola fila con `es_splitter=True` y `splitter_ratio=3` ("Splitter 1-3")."""
     origen = (100, 10, "Cable Entrada", 200, "AZ", "1", 0, "AZ")
     filas = [
-        _fila_fusion(1, "1-1", origen, (201, 20, "Cable Salida 1", 300, "NR", "1", 0, "NR")),
-        _fila_fusion(2, "1-2", origen, (202, 20, "Cable Salida 1", 300, "NR", "2", 1, "VR")),
-        _fila_fusion(3, "1-3", (203, 20, "Cable Salida 1", 300, "NR", "3", 2, "AM"), origen),
+        _fila_fusion(1, "1-1", (*origen, None, None), (201, 20, "Cable Salida 1", 300, "NR", "1", 0, "NR", None, None)),
+        _fila_fusion(2, "1-2", (*origen, None, None), (202, 20, "Cable Salida 1", 300, "NR", "2", 1, "VR", None, None)),
+        _fila_fusion(3, "1-3", (203, 20, "Cable Salida 1", 300, "NR", "3", 2, "AM", None, None), (*origen, None, None)),
     ]
     sesion = _SesionFake(
         respuestas={

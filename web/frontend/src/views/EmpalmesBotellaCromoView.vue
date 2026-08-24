@@ -56,13 +56,15 @@
                 <th>Tipo</th>
                 <th>Buffer origen</th>
                 <th>Pelo origen</th>
+                <th>Servicio / descripción origen</th>
                 <th>Cable destino</th>
                 <th>Buffer destino</th>
                 <th>Pelo destino</th>
+                <th>Servicio / descripción destino</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="e in empalmesFiltrados" :key="e.fusion_n_id">
+              <tr v-for="e in empalmesFiltrados" :key="`${e.fusion_n_id}-${e.vista_orientada_por}`">
                 <td>{{ e.fusion_n_id }}</td>
                 <td>
                   <span v-if="e.es_splitter" class="empalmes-botella-chip empalmes-botella-chip--splitter">
@@ -72,14 +74,15 @@
                 </td>
                 <td>{{ e.pelo_origen?.tubo_color || '—' }}</td>
                 <td>{{ etiquetaPelo(e.pelo_origen) }}</td>
+                <td>{{ etiquetaServicio(e.pelo_origen) }}</td>
                 <template v-if="e.es_splitter">
-                  <td colspan="3">
+                  <td colspan="4">
                     <span v-if="e.splitter_destinos.length === 0" class="hint">
                       Sin patas resueltas (referencia colgada del componente Splitter en Cromo).
                     </span>
                     <span v-else class="empalmes-botella-splitter-destinos">
                       <span v-for="d in e.splitter_destinos" :key="d.n_id" class="empalmes-botella-splitter-pata">
-                        {{ etiquetaPelo(d) }} · {{ d.cable_nombre || d.cable_n_id }}
+                        {{ etiquetaPelo(d) }} · {{ d.cable_nombre || d.cable_n_id }} · {{ etiquetaServicio(d) }}
                       </span>
                     </span>
                   </td>
@@ -88,6 +91,7 @@
                   <td>{{ e.pelo_destino?.cable_nombre || '—' }}</td>
                   <td>{{ e.pelo_destino?.tubo_color || '—' }}</td>
                   <td>{{ etiquetaPelo(e.pelo_destino) }}</td>
+                  <td>{{ etiquetaServicio(e.pelo_destino) }}</td>
                 </template>
               </tr>
             </tbody>
@@ -110,6 +114,8 @@ import {
   type CromoPeloEmpalme,
 } from '../api/cromo';
 
+type FilaEmpalmeVista = CromoEmpalmeDeBotella & { vista_orientada_por: number | null };
+
 const route = useRoute();
 
 const cargando = ref(true);
@@ -125,10 +131,41 @@ const botellaNId = computed(() => {
 
 // Filtra por el Cable Origen seleccionado — si ningún cable de la botella quedó identificado como
 // origen de un empalme resuelto, se muestran todos sin filtrar (mejor que una tabla vacía).
-const empalmesFiltrados = computed<CromoEmpalmeDeBotella[]>(() => {
+const empalmesFiltrados = computed<FilaEmpalmeVista[]>(() => {
   const todos = resultado.value?.empalmes ?? [];
-  if (cableSeleccionadoId.value == null) return todos;
-  return todos.filter((e) => e.pelo_origen?.cable_n_id === cableSeleccionadoId.value);
+  const cableElegido = cableSeleccionadoId.value;
+  if (cableElegido == null) {
+    return todos.map((e) => ({ ...e, vista_orientada_por: null })) as FilaEmpalmeVista[];
+  }
+
+  const filas: FilaEmpalmeVista[] = [];
+  for (const e of todos) {
+    // Splitter: se mantiene orientación original (entrada -> patas), pero igual aparece si el
+    // cable elegido participa en cualquier extremo.
+    if (e.es_splitter) {
+      const participa =
+        e.pelo_origen?.cable_n_id === cableElegido ||
+        e.splitter_destinos.some((d) => d.cable_n_id === cableElegido);
+      if (participa) filas.push({ ...e, vista_orientada_por: cableElegido });
+      continue;
+    }
+
+    // Fusión simple: si el cable elegido está del lado B, invertimos A<->B para que en la tabla
+    // ese cable quede como "origen" real de la vista.
+    if (e.pelo_origen?.cable_n_id === cableElegido) {
+      filas.push({ ...e, vista_orientada_por: cableElegido });
+      continue;
+    }
+    if (e.pelo_destino?.cable_n_id === cableElegido) {
+      filas.push({
+        ...e,
+        pelo_origen: e.pelo_destino,
+        pelo_destino: e.pelo_origen,
+        vista_orientada_por: cableElegido,
+      });
+    }
+  }
+  return filas;
 });
 
 function etiquetaPelo(pelo: CromoPeloEmpalme | null): string {
@@ -141,6 +178,11 @@ function etiquetaPelo(pelo: CromoPeloEmpalme | null): string {
 
 function etiquetaSplitter(empalme: CromoEmpalmeDeBotella): string {
   return empalme.splitter_ratio != null ? `Splitter 1-${empalme.splitter_ratio}` : 'Splitter';
+}
+
+function etiquetaServicio(pelo: CromoPeloEmpalme | null): string {
+  if (!pelo) return '—';
+  return pelo.servicio_raw || pelo.servicio_numero || '—';
 }
 
 async function cargar(): Promise<void> {

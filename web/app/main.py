@@ -5128,6 +5128,8 @@ def _serializar_pelo_empalme(pelo: Any) -> Optional[dict[str, Any]]:
         "numero_pelo": pelo.numero_pelo,
         "orden": pelo.orden,
         "color": pelo.color,
+        "servicio_raw": pelo.servicio_raw,
+        "servicio_numero": pelo.servicio_numero,
     }
 
 
@@ -7329,6 +7331,7 @@ async def resolve_tracking_web(
                 "camaras_existentes": result.camaras_existentes,
                 "empalmes_creados": result.empalmes_creados,
                 "empalmes_asociados": result.empalmes_asociados,
+                "ubicaciones_sin_match": result.ubicaciones_sin_match,
                 "message": result.message,
                 "error": result.error,
             })

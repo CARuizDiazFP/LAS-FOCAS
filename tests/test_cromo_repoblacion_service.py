@@ -14,7 +14,7 @@ from core.services.cromo import repoblacion_service as repo
 from core.services.cromo import id_dual_resolver
 from core.services.cromo.client import CromoClientError
 from core.services.cromo.verificador import ObjetoNoEncontrado
-from db.models.cromo import CromoBotella, CromoCable
+from db.models.cromo import CromoBotella, CromoCable, CromoFusion
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
 
@@ -26,6 +26,27 @@ def _cargar(nombre: str) -> dict[str, Any]:
 BOTELLA_VIEJA = _cargar("botella_b2_fo_car_id_viejo.json")  # n_id=9057909 (por 'id'), tp vacío
 BOTELLA_VIGENTE = _cargar("botella_b2_fo_car_next_id.json")  # n_id=9057909, id=9057952, tp con 6 cables
 CABLES_DIRECTOS = _cargar("cables_b2_fo_car_directo.json")  # {n_id_str: objeto completo} x 6
+BOTELLA_SOLO_FUSIONES = {
+    "id": 10209387,
+    "n_id": 10209387,
+    "class": 68,
+    "hist": [{"id": 10209387, "next_id": 0}],
+    "tp": [],
+    "inner": [
+        {
+            "id": 10209566,
+            "n_id": 10209566,
+            "class": 132,
+            "parent": 10209387,
+            "name": "17-1",
+            "tp": [
+                {"class": 130, "id_to": 10209501},
+                {"class": 130, "id_to": 10209502},
+            ],
+            "at": [],
+        }
+    ],
+}
 
 
 class _NestedCM:
@@ -347,3 +368,18 @@ async def test_repoblar_cables_doble_click_segunda_vez_sin_cambios():
     segundo = await repo.repoblar_cables(cliente, sesion, botella_n_id=9057909, usuario="tester")
     assert segundo.corrida_id is None  # ya no quedan pendientes: no crea una segunda corrida
     assert segundo.creados == segundo.actualizados == segundo.errores == 0
+
+
+@pytest.mark.asyncio
+async def test_repoblar_cables_persiste_fusiones_embebidas_aun_sin_tp_de_cables():
+    cliente = _ClienteFake({10209387: BOTELLA_SOLO_FUSIONES})
+    sesion = _SesionFake({(CromoBotella, 10209387): _botella_local(10209387)})
+
+    resultado = await repo.repoblar_cables(cliente, sesion, botella_n_id=10209387, usuario="tester")
+
+    assert resultado.corrida_id is not None
+    assert resultado.creados == 1
+    fusiones_creadas = [o for o in sesion.agregados if isinstance(o, CromoFusion)]
+    assert len(fusiones_creadas) == 1
+    assert fusiones_creadas[0].n_id == 10209566
+    assert fusiones_creadas[0].botella_n_id == 10209387

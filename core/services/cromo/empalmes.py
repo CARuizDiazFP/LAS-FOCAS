@@ -54,6 +54,8 @@ class PeloEmpalme:
     numero_pelo: Optional[str]
     orden: Optional[int]
     color: Optional[str]
+    servicio_raw: Optional[str]
+    servicio_numero: Optional[str]
 
 
 @dataclass(slots=True)
@@ -116,8 +118,8 @@ _SQL_EMPALMES_DE_BOTELLA = text(
     )
     SELECT
         f.n_id, f.nombre_par,
-        pa.n_id, pa.cable_n_id, ca.nombre, pa.tubo_n_id, ta.nombre_color, pa.numero_pelo, pa.orden, pa.color,
-        pb.n_id, pb.cable_n_id, cb.nombre, pb.tubo_n_id, tb.nombre_color, pb.numero_pelo, pb.orden, pb.color
+        pa.n_id, pa.cable_n_id, ca.nombre, pa.tubo_n_id, ta.nombre_color, pa.numero_pelo, pa.orden, pa.color, pa.servicio_raw, pa.servicio_numero,
+        pb.n_id, pb.cable_n_id, cb.nombre, pb.tubo_n_id, tb.nombre_color, pb.numero_pelo, pb.orden, pb.color, pb.servicio_raw, pb.servicio_numero
     FROM app.cromo_fusiones f
     LEFT JOIN app.cromo_pelos pa ON pa.n_id = f.pelo_a_n_id
     LEFT JOIN app.cromo_cables ca ON ca.n_id = pa.cable_n_id
@@ -146,6 +148,8 @@ def _pelo_desde_fila(fila: tuple) -> Optional[PeloEmpalme]:
         numero_pelo=fila[5],
         orden=fila[6],
         color=fila[7],
+        servicio_raw=fila[8],
+        servicio_numero=fila[9],
     )
 
 
@@ -214,21 +218,36 @@ def _agrupar_splitters(legs: list[_Leg]) -> list[EmpalmeDeBotella]:
 
 
 def _cables_origen(empalmes: list[EmpalmeDeBotella]) -> list[CableDeEmpalmes]:
-    """Cables candidatos para el selector "Cable Origen" — sólo los que aparecen como
-    `pelo_origen.cable_n_id` de al menos un empalme (splitter u ordinario), con el conteo de filas
-    que le corresponden. El frontend usa el primero de esta lista como default ("el primero OK")."""
+    """Cables candidatos para el selector "Cable Origen".
+
+    Incluye todos los cables que aparecen en cualquier extremo de un empalme (origen, destino o
+    patas de splitter) para cubrir casos reales donde la orientación A/B de la fusión en Cromo no
+    coincide con el "origen" visual que necesita elegir el operador en la UI.
+    """
     por_cable: dict[int, CableDeEmpalmes] = {}
-    for empalme in empalmes:
-        origen = empalme.pelo_origen
-        if origen is None or origen.cable_n_id is None:
-            continue
-        existente = por_cable.get(origen.cable_n_id)
+
+    def _sumar(pelo: Optional[PeloEmpalme]) -> None:
+        if pelo is None or pelo.cable_n_id is None:
+            return
+        existente = por_cable.get(pelo.cable_n_id)
         if existente is None:
-            por_cable[origen.cable_n_id] = CableDeEmpalmes(
-                n_id=origen.cable_n_id, nombre=origen.cable_nombre, cantidad_empalmes=1
+            por_cable[pelo.cable_n_id] = CableDeEmpalmes(
+                n_id=pelo.cable_n_id, nombre=pelo.cable_nombre, cantidad_empalmes=1
             )
         else:
             existente.cantidad_empalmes += 1
+
+    for empalme in empalmes:
+        cables_vistos_en_fila: set[int] = set()
+
+        for pelo in [empalme.pelo_origen, empalme.pelo_destino, *empalme.splitter_destinos]:
+            if pelo is None or pelo.cable_n_id is None:
+                continue
+            if pelo.cable_n_id in cables_vistos_en_fila:
+                continue
+            cables_vistos_en_fila.add(pelo.cable_n_id)
+            _sumar(pelo)
+
     return sorted(por_cable.values(), key=lambda c: (c.nombre or "", c.n_id))
 
 
@@ -251,8 +270,8 @@ async def empalmes_de_botella(sesion: AsyncSession, botella_n_id: int) -> Result
         _Leg(
             fusion_n_id=fila[0],
             nombre_par=fila[1],
-            pelo_a=_pelo_desde_fila(fila[2:10]),
-            pelo_b=_pelo_desde_fila(fila[10:18]),
+            pelo_a=_pelo_desde_fila(fila[2:12]),
+            pelo_b=_pelo_desde_fila(fila[12:22]),
         )
         for fila in filas
     ]

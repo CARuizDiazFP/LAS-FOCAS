@@ -1179,12 +1179,16 @@ class InfraService:
             else:
                 camaras_existentes += 1
 
-            # Obtener o crear empalme
-            tracking_id = f"{parsed.servicio_id}_{empalme_id}"
+            # Obtener o crear empalme. Clave por `servicio.servicio_id` (canónico), NO
+            # `parsed.servicio_id`: si el Servicio se encontró por alias/numero_primer_servicio,
+            # usar el número del archivo acá dejaría huérfanos los empalmes ya registrados bajo el
+            # ID canónico en una corrida anterior — `_get_or_create_empalme` los duplicaría en vez
+            # de reusarlos.
+            tracking_id = f"{servicio.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
-            
+
             # Solo agregar si no existe en la ruta
             if empalme.id not in empalmes_existentes_ids:
                 max_orden += 1
@@ -1282,8 +1286,12 @@ class InfraService:
             else:
                 camaras_existentes += 1
 
-            # Obtener o crear empalme
-            tracking_id = f"{parsed.servicio_id}_{empalme_id}"
+            # Obtener o crear empalme. Clave por `servicio.servicio_id` (canónico), NO
+            # `parsed.servicio_id`: si el Servicio se encontró por alias/numero_primer_servicio,
+            # usar el número del archivo acá dejaría huérfanos los empalmes ya registrados bajo el
+            # ID canónico en una corrida anterior — `_get_or_create_empalme` los duplicaría en vez
+            # de reusarlos.
+            tracking_id = f"{servicio.servicio_id}_{empalme_id}"
             empalme, es_nuevo = _get_or_create_empalme(self.session, tracking_id, camara)
             if es_nuevo:
                 empalmes_creados += 1
@@ -1690,9 +1698,9 @@ class InfraService:
             )
             if camara is None:
                 ubicaciones_sin_match += 1
-            tracking_id = f"{parsed.servicio_id}_{empalme_id}"
+            tracking_id = f"{servicio.servicio_id}_{empalme_id}"
             empalme, _ = _get_or_create_empalme(self.session, tracking_id, camara)
-            
+
             if empalme.id not in empalmes_asociados:
                 stmt = ruta_empalme_association.insert().values(
                     ruta_id=nueva_ruta.id,

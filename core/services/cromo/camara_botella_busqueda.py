@@ -13,10 +13,12 @@ futuras del mismo plan): el listener de Slack de ingreso de técnicos
 (`modules/slack_baneo_notifier/listener.py`) y el flujo "adjuntar tracking" del portal Infra
 (`core/services/infra_service.py`).
 
-Riesgo conocido, sin acción en esta tarea: `CromoBotella.nombre` no tiene índice (a diferencia de
-`CromoCable.nombre`, que sí lo tiene) — la cascada ILIKE/tokens de este módulo hace table scan sobre
-`app.cromo_botellas` en cada llamada. Agregar el índice queda para la migración Alembic de la Tarea 2
-de este mismo plan (no se toca `db/models/cromo.py` acá).
+Riesgo conocido, sin acción en esta tarea: la cascada ILIKE/tokens de este módulo hace table scan
+sobre `app.cromo_botellas` en cada llamada porque el patrón real (`ILIKE '%patron%'` sobre
+`unaccent(lower(nombre))`) no se beneficia del índice btree simple sobre `nombre` ni del GIN de
+full-text ya existente. La corrección real de rendimiento exige decidir un índice funcional o una
+extensión como `pg_trgm` y queda fuera del alcance de este fix mecánico; no se toca
+`db/models/cromo.py` acá.
 """
 
 from __future__ import annotations

@@ -345,6 +345,30 @@ class IngresoListener:
                 logger.debug("Mensaje de canal %s ignorado (esperado: %s)", channel, canal_id)
                 return
 
+            logger.info(
+                "Mensaje de ingreso recibido — canal=%s ts=%s bot_id=%s",
+                channel,
+                event.get("ts"),
+                event.get("bot_id", "—"),
+            )
+
+            # Respuesta de seguimiento con ID de empalme: sólo aplica si el evento es una
+            # respuesta REAL dentro de un hilo (thread_ts presente y distinto del ts propio del
+            # mensaje raíz) — evita interpretar el primer mensaje de un hilo nuevo como
+            # seguimiento. Se evalúa ANTES del filtro `solo_workflows` a propósito (2026-08-23,
+            # fix post-revisión de rama completa): la respuesta manual de un técnico en el hilo NO
+            # trae `workflow_id` (no la generó el Workflow de Slack, la escribió una persona), así
+            # que con la config real de dev (`solo_workflows=True` + `workflow_ids` puntuales) el
+            # filtro de abajo la descartaría ANTES de llegar acá — dejando inalcanzable el mecanismo
+            # de seguimiento que el propio mensaje de "sin match" invita a usar. El propio guard de
+            # `_procesar_seguimiento_empalme` (regex numérico + fila `IngresoSinMatch` pendiente para
+            # este `thread_ts` exacto) ya es suficientemente estricto para no necesitar el filtro de
+            # Workflow como red adicional — cualquier mensaje que no matchee las 3 condiciones sigue
+            # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica.
+            if event_thread_ts and event_thread_ts != event_ts:
+                if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
+                    return
+
             # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
             if solo_workflows:
                 event_workflow_id = event.get("workflow_id") or ""
@@ -356,21 +380,6 @@ class IngresoListener:
                         "workflow_id '%s' no está en la lista permitida — ignorado",
                         event_workflow_id,
                     )
-                    return
-
-            logger.info(
-                "Mensaje de ingreso recibido — canal=%s ts=%s bot_id=%s",
-                channel,
-                event.get("ts"),
-                event.get("bot_id", "—"),
-            )
-
-            # Respuesta de seguimiento con ID de empalme: sólo aplica si el evento es una
-            # respuesta REAL dentro de un hilo (thread_ts presente y distinto del ts propio del
-            # mensaje raíz) — evita interpretar el primer mensaje de un hilo nuevo como
-            # seguimiento. Se evalúa ANTES de extraer_nombre_camara y, si aplica, corta acá.
-            if event_thread_ts and event_thread_ts != event_ts:
-                if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
                     return
 
             nombre_raw = extraer_nombre_camara(texto)

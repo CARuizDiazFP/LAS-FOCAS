@@ -687,6 +687,121 @@ class TestEmpalmeKeyedPorServicioCanonico:
         assert tracking_ids_usados == ["O1C1_1", "O1C1_2", "O1C1_3"]
         assert not any(tid.startswith("111995_") for tid in tracking_ids_usados)
 
+    @patch("core.services.infra_service._get_or_create_empalme")
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_merge_append_usa_servicio_id_canonico_para_tracking_id(
+        self, mock_find, mock_resolve, mock_get_empalme, mock_session
+    ):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.servicio_id = "O1C1"
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        servicio_existente.alias_ids = []
+        mock_find.return_value = servicio_existente
+
+        ruta = MagicMock(spec=RutaServicio)
+        ruta.id = 7
+        ruta.nombre = "Principal"
+        ruta.empalmes = []
+        ruta.servicio = servicio_existente
+        mock_session.query.return_value.get.return_value = ruta
+
+        empalme_mock = MagicMock(spec=Empalme)
+        empalme_mock.id = 1
+        mock_get_empalme.return_value = (empalme_mock, False)
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.MERGE_APPEND,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            target_ruta_id=7,
+        )
+
+        assert result.success is True
+        tracking_ids_usados = [call.args[1] for call in mock_get_empalme.call_args_list]
+        assert tracking_ids_usados == ["O1C1_1", "O1C1_2", "O1C1_3"]
+        assert not any(tid.startswith("111995_") for tid in tracking_ids_usados)
+
+    @patch("core.services.infra_service._get_or_create_empalme")
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_replace_usa_servicio_id_canonico_para_tracking_id(
+        self, mock_find, mock_resolve, mock_get_empalme, mock_session
+    ):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.servicio_id = "O1C1"
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        servicio_existente.alias_ids = []
+        mock_find.return_value = servicio_existente
+
+        ruta = MagicMock(spec=RutaServicio)
+        ruta.id = 9
+        ruta.nombre = "Principal"
+        ruta.servicio = servicio_existente
+        mock_session.query.return_value.get.return_value = ruta
+
+        empalme_mock = MagicMock(spec=Empalme)
+        empalme_mock.id = 1
+        mock_get_empalme.return_value = (empalme_mock, False)
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.REPLACE,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            target_ruta_id=9,
+        )
+
+        assert result.success is True
+        tracking_ids_usados = [call.args[1] for call in mock_get_empalme.call_args_list]
+        assert tracking_ids_usados == ["O1C1_1", "O1C1_2", "O1C1_3"]
+        assert not any(tid.startswith("111995_") for tid in tracking_ids_usados)
+
+    @patch("core.services.infra_service._get_or_create_empalme")
+    @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
+    @patch.object(InfraService, "_find_servicio_by_identificador")
+    def test_add_strand_usa_servicio_id_canonico_para_tracking_id(
+        self, mock_find, mock_resolve, mock_get_empalme, mock_session
+    ):
+        mock_resolve.return_value = None
+        servicio_existente = MagicMock(spec=Servicio)
+        servicio_existente.id = 42
+        servicio_existente.servicio_id = "O1C1"
+        servicio_existente.rutas = []
+        servicio_existente.empalmes = []
+        servicio_existente.alias_ids = []
+        mock_find.return_value = servicio_existente
+
+        ruta = MagicMock(spec=RutaServicio)
+        ruta.id = 11
+        ruta.nombre = "Principal"
+        ruta.servicio = servicio_existente
+        mock_session.query.return_value.get.return_value = ruta
+
+        empalme_mock = MagicMock(spec=Empalme)
+        empalme_mock.id = 1
+        mock_get_empalme.return_value = (empalme_mock, False)
+
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.ADD_STRAND,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            target_ruta_id=11,
+        )
+
+        assert result.success is True
+        tracking_ids_usados = [call.args[1] for call in mock_get_empalme.call_args_list]
+        assert tracking_ids_usados == ["O1C1_1", "O1C1_2", "O1C1_3"]
+        assert not any(tid.startswith("111995_") for tid in tracking_ids_usados)
+
 
 class TestResolveResultUbicacionesSinMatch:
     """Tests de forma para el nuevo campo del dataclass (backward-compatible)."""
