@@ -4,9 +4,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from core.services.camara_estado_service import aplicar_estado_a_grupo, miembros_del_grupo
+from core.services.camara_estado_service import (
+    aplicar_estado_a_grupo,
+    miembros_del_grupo,
+    override_camara_estado_manual,
+    CamaraEstadoContexto,
+    IncidenteActivoResumen,
+)
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
@@ -146,3 +152,90 @@ def test_aplicar_estado_a_grupo_contexto_solo_en_el_objetivo_directo() -> None:
     assert auditoria_directa.estado_sugerido == CamaraEstado.BANEADA
     assert auditoria_directa.incidentes_activos == [11, 12]
     assert all(a.estado_sugerido is None and a.incidentes_activos is None for a in otras)
+
+
+def test_override_camara_estado_manual_grupo_mixto_fila_puntual_en_destino() -> None:
+    """Test de regresión: override sobre grupo mixto donde la fila puntual ya está en el estado
+    destino pero una hermana no. Debe resultar en changed=True y cascada correcta.
+
+    Caso de bug real: alguien intenta banear una fila que ya está BANEADA (por ejemplo, un alias
+    del Excel que ya fue baneado en una corrida anterior). Sin el fix, la función retornaba
+    changed=False sin sincronizar hermanas — violando el invariante de cascada."""
+    padre, bot1, bot2 = _grupo(
+        estado_padre=CamaraEstado.LIBRE,
+        estado_bot1=CamaraEstado.BANEADA,  # bot1 ya está en destino
+        estado_bot2=CamaraEstado.LIBRE,    # bot2 NO está en destino
+    )
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.side_effect = lambda: bot1
+
+    # Crear un contexto válido para el override
+    contexto_mock = CamaraEstadoContexto(
+        camara_id=bot1.id,
+        estado_actual=CamaraEstado.BANEADA,
+        estado_sugerido=CamaraEstado.BANEADA,
+        tiene_baneo_activo=False,
+        tiene_ingreso_activo=False,
+        inconsistente=False,
+        incidentes_activos=[],
+        ticket_baneo=None,
+    )
+
+    with patch("core.services.camara_estado_service.get_camara_estado_contexto", return_value=contexto_mock):
+        resultado = override_camara_estado_manual(
+            session,
+            camara_id=2,  # bot1.id
+            nuevo_estado=CamaraEstado.BANEADA,
+            usuario="test",
+            motivo="prueba",
+        )
+
+    # Verificar que changed=True (no False como pasaría con el bug)
+    assert resultado.changed == True
+    assert resultado.success == True
+    # Verificar que la cascada se ejecutó: bot2 debe estar BANEADA ahora
+    assert bot2.estado == CamaraEstado.BANEADA
+    # Verificar que padre también fue actualizado por la cascada
+    assert padre.estado == CamaraEstado.BANEADA
+
+
+def test_override_camara_estado_manual_grupo_entero_en_destino_no_cambia() -> None:
+    """Test de regresión: override sobre grupo donde TODOS los miembros ya están en el estado
+    destino. Debe resultar en changed=False y NO generar auditoría nueva.
+
+    Verifica que el fix no causa cambios innecesarios cuando el grupo está sincronizado."""
+    padre, bot1, bot2 = _grupo(
+        estado_padre=CamaraEstado.BANEADA,
+        estado_bot1=CamaraEstado.BANEADA,
+        estado_bot2=CamaraEstado.BANEADA,
+    )
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.side_effect = lambda: bot1
+
+    contexto_mock = CamaraEstadoContexto(
+        camara_id=bot1.id,
+        estado_actual=CamaraEstado.BANEADA,
+        estado_sugerido=CamaraEstado.BANEADA,
+        tiene_baneo_activo=False,
+        tiene_ingreso_activo=False,
+        inconsistente=False,
+        incidentes_activos=[],
+        ticket_baneo=None,
+    )
+
+    with patch("core.services.camara_estado_service.get_camara_estado_contexto", return_value=contexto_mock):
+        resultado = override_camara_estado_manual(
+            session,
+            camara_id=2,  # bot1.id
+            nuevo_estado=CamaraEstado.BANEADA,
+            usuario="test",
+            motivo="prueba",
+        )
+
+    # Verificar que changed=False (grupo ya estaba sincronizado)
+    assert resultado.changed == False
+    assert resultado.success == True
+    # Estados deben permanecer sin cambios
+    assert padre.estado == CamaraEstado.BANEADA
+    assert bot1.estado == CamaraEstado.BANEADA
+    assert bot2.estado == CamaraEstado.BANEADA

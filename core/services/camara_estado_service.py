@@ -322,7 +322,7 @@ def override_camara_estado_manual(
     if contexto_actual is None:
         return ActualizacionEstadoResultado(success=False, error="No se pudo obtener el contexto de la cámara")
 
-    if camara.estado == nuevo_estado:
+    if all(m.estado == nuevo_estado for m in miembros_del_grupo(camara)):
         return ActualizacionEstadoResultado(
             success=True,
             camara_id=camara.id,
