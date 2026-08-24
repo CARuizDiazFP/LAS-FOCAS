@@ -71,10 +71,10 @@ async def ingest_camaras(
 ) -> JSONResponse:
     """Ingesta masiva de cámaras desde Excel y baneo administrativo.
 
-    Lee la segunda columna (índice 1) del archivo sin cabeceras, da de alta
-    las cámaras que no existen en la base de datos y aplica estado BANEADA
-    a todas las cámaras leídas mediante override manual.
-    """
+    Lee la segunda columna (índice 1) del archivo sin cabeceras y aplica estado BANEADA a las
+    cámaras/botellas existentes que matcheen (vía búsqueda extendida Camara+CromoBotella). Nunca
+    crea una Camara nueva — los alias sin match quedan registrados para revisión manual (ver
+    `POST /api/admin/ingesta/camaras/asociar` en `web/app/main.py`)."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Falta nombre de archivo")
     name = file.filename.lower()
@@ -119,13 +119,16 @@ async def ingest_camaras(
     if not aliases:
         raise HTTPException(status_code=422, detail="No se encontraron aliases válidos en la columna B")
 
-    resultado = await asyncio.to_thread(procesar_ingesta_camaras, aliases, motivo_baneo, usuario)
+    resultado = await asyncio.to_thread(
+        procesar_ingesta_camaras, aliases, motivo_baneo, usuario, archivo_origen=file.filename,
+    )
 
     return JSONResponse({
         "status": "ok",
-        "creadas": resultado.creadas,
-        "preexistentes": resultado.preexistentes,
-        "baneadas": resultado.baneadas,
+        "total_leidos": resultado.total_leidos,
+        "grupos_baneados": resultado.grupos_baneados,
+        "grupos_ya_baneados": resultado.grupos_ya_baneados,
+        "sin_match": [{"caso_id": s.caso_id, "nombre": s.nombre} for s in resultado.sin_match],
         "errores": resultado.errores,
     })
 

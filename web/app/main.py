@@ -3903,11 +3903,14 @@ async def update_camara_estado_web(
 
 
 @app.get("/api/admin/infra/ingresos-sin-match")
-async def admin_ingresos_sin_match(request: Request, revisado: Optional[bool] = None) -> JSONResponse:
+async def admin_ingresos_sin_match(
+    request: Request, revisado: Optional[bool] = None, origen: Optional[str] = None,
+) -> JSONResponse:
     """Lista casos de ingreso (bot de Slack o carga de tracking) cuya cámara no matcheó contra el
     inventario (2026-08-11) — reemplaza el auto-registro `PENDIENTE_REVISION`. Es información de
     sólo lectura para revisión manual y mejora del regex, no crea ninguna Cámara. `revisado` filtra
-    por el flag (default: todos, sin filtrar)."""
+    por el flag (default: todos, sin filtrar). `origen` filtra por uno o más valores separados por
+    coma (ej. `?origen=excel_camaras` o `?origen=slack,tracking`; default: todos, sin filtrar)."""
     _require_admin(request)
     try:
         from db.models.infra import IngresoSinMatch
@@ -3917,6 +3920,10 @@ async def admin_ingresos_sin_match(request: Request, revisado: Optional[bool] = 
             query = session.query(IngresoSinMatch)
             if revisado is not None:
                 query = query.filter(IngresoSinMatch.revisado == revisado)
+            if origen:
+                origenes = [o.strip() for o in origen.split(",") if o.strip()]
+                if origenes:
+                    query = query.filter(IngresoSinMatch.origen.in_(origenes))
             casos = query.order_by(IngresoSinMatch.created_at.desc()).limit(200).all()
             return JSONResponse([
                 {
@@ -3957,6 +3964,46 @@ async def admin_marcar_revisado_ingreso_sin_match(request: Request, caso_id: int
     except Exception as exc:
         logger.exception("action=admin_marcar_revisado_ingreso_sin_match error=%s", exc)
         return JSONResponse({"error": "Error al marcar el caso como revisado"}, status_code=500)
+
+
+class MarcarRevisadoMasivoRequestModel(BaseModel):
+    """Payload para marcar en lote varios `IngresoSinMatch` como revisados."""
+
+    ids: list[int]
+    csrf_token: str | None = None
+
+
+@app.post("/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo")
+async def admin_marcar_revisado_masivo_web(request: Request, body: MarcarRevisadoMasivoRequestModel) -> JSONResponse:
+    """Marca en lote varios casos de ingreso sin match como revisados — es el 'Borrado' del visor de
+    ingesta: sólo descarta de la vista, no muta ningún dato de infraestructura, la fila queda en la
+    base para poder ajustar a futuro el regex/normalización de búsqueda."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.ids:
+        return JSONResponse({"error": "No se especificaron casos"}, status_code=400)
+
+    try:
+        from db.models.infra import IngresoSinMatch
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            actualizados = (
+                session.query(IngresoSinMatch)
+                .filter(IngresoSinMatch.id.in_(body.ids))
+                .update({IngresoSinMatch.revisado: True}, synchronize_session=False)
+            )
+            session.commit()
+            return JSONResponse({"ok": True, "actualizados": actualizados})
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=admin_marcar_revisado_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo marcar los casos como revisados"}, status_code=500)
 
 
 @app.get("/api/admin/infra/camaras/pendientes")
@@ -4601,6 +4648,70 @@ async def camaras_ingest_web(
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=camaras_ingest_proxy_error user=%s error=%s", username, exc)
         return JSONResponse({"error": f"Error en ingesta de cámaras: {exc!s}"}, status_code=500)
+
+
+class AsociarSinMatchCamarasRequestModel(BaseModel):
+    """Payload para resolver a mano uno o más `IngresoSinMatch` de ingesta de cámaras."""
+
+    caso_ids: list[int]
+    camara_id: int
+    motivo: str | None = None
+    csrf_token: str | None = None
+
+
+@app.post("/api/admin/ingesta/camaras/asociar")
+async def ingesta_camaras_asociar_web(request: Request, body: AsociarSinMatchCamarasRequestModel) -> JSONResponse:
+    """Resuelve a mano uno o más nombres del Excel de ingesta que no matchearon (`IngresoSinMatch`,
+    origen='excel_camaras') hacia una Cámara/Botella existente: crea un alias por cada uno (para que
+    futuros Excel con el mismo texto matcheen solos) y banea el grupo destino una sola vez."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.caso_ids:
+        return JSONResponse({"error": "No se especificaron casos a asociar"}, status_code=400)
+
+    motivo = (body.motivo or "").strip() or "Baneo por ingesta Excel (asociación manual)"
+
+    try:
+        from core.services.camara_ingest_service import asociar_nombres_a_camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = asociar_nombres_a_camara(
+                session, caso_ids=body.caso_ids, camara_id=body.camara_id, motivo=motivo, usuario=username,
+            )
+            if not resultado.ok:
+                session.rollback()
+                return JSONResponse({"error": resultado.error}, status_code=404)
+            session.commit()
+            return JSONResponse({
+                "ok": resultado.ok,
+                "camara_id": resultado.camara_id,
+                "camara_nombre": resultado.camara_nombre,
+                "estado_final": resultado.estado_final,
+                "baneo_aplicado": resultado.baneo_aplicado,
+                "alias_creados": resultado.alias_creados,
+                "alias_preexistentes": resultado.alias_preexistentes,
+                "casos_marcados": resultado.casos_marcados,
+                "conflictos": [
+                    {
+                        "caso_id": c.caso_id,
+                        "nombre": c.nombre,
+                        "camara_actual_id": c.camara_actual_id,
+                        "camara_actual_nombre": c.camara_actual_nombre,
+                    }
+                    for c in resultado.conflictos
+                ],
+                "error": resultado.error,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=ingesta_camaras_asociar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo completar la asociación"}, status_code=500)
 
 
 # ── Endpoints admin: ingesta de inventario FO desde Cromo Red (Etapa 4) ──────
