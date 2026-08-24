@@ -3035,6 +3035,97 @@ async def lift_ban_web(
 
 
 # -----------------------------------------------------------------------------
+# ENDPOINTS DE GRUPOS BANEADOS (Cámara padre + Botellas) — listado admin y liberación masiva.
+# Distinto del Protocolo de Protección arriba (`/api/infra/ban/*`, `IncidenteBaneo`): este listado
+# agrupa por Cámara padre TODO baneo activo (incidente o no — override manual/import Excel también
+# entran) y su única acción es "liberar" (= cambiar estado a LIBRE/estado_sugerido), nunca borrar
+# filas — ver `core/services/baneos_grupos_service.py`.
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/admin/baneos/grupos")
+async def baneos_grupos_listar_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> JSONResponse:
+    """Lista grupos baneados (Cámara padre raíz + sus Botellas legado/Cromo), paginado. `limit`
+    siempre viene de query param acá (int) — el `limit=None` sin paginar de
+    `listar_grupos_baneados` sólo lo usa internamente el reporte Excel de la Tarea 8, nunca este
+    endpoint web."""
+    _require_admin(request)
+
+    try:
+        from core.services.baneos_grupos_service import listar_grupos_baneados
+        from db.session import SessionLocal
+
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        with SessionLocal() as session:
+            resultado = listar_grupos_baneados(session, q=q, limit=limit, offset=offset)
+            return JSONResponse({"status": "ok", "limit": limit, "offset": offset, **resultado.to_dict()})
+    except Exception as exc:
+        logger.exception("action=baneos_grupos_listar_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo obtener el listado de grupos baneados"}, status_code=500)
+
+
+class BaneosLiberarMasivoRequestModel(BaseModel):
+    """Payload para liberar (desbanear) varios grupos de una — NO es un borrado físico."""
+
+    camara_ids: list[int]
+    motivo: str
+    forzar: bool = False
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/admin/baneos/grupos/liberar")
+async def baneos_grupos_liberar_web(request: Request, body: BaneosLiberarMasivoRequestModel) -> JSONResponse:
+    """Libera (desbanea) varios grupos de una — la única acción masiva nueva de este dominio.
+    Guard de incidente activo por grupo (`core.services.baneos_grupos_service.liberar_grupos_masivo`):
+    sin `forzar`, un grupo con un `IncidenteBaneo` activo detrás se omite en vez de desbanearse."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=baneos_grupos_liberar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.camara_ids:
+        return JSONResponse({"error": "No se especificaron grupos a liberar"}, status_code=400)
+    motivo = body.motivo.strip()
+    if not motivo:
+        return JSONResponse({"error": "El motivo es obligatorio"}, status_code=400)
+
+    try:
+        from core.services.baneos_grupos_service import liberar_grupos_masivo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = liberar_grupos_masivo(
+                session,
+                body.camara_ids,
+                usuario=username,
+                motivo=motivo,
+                forzar=body.forzar,
+            )
+            session.commit()
+            logger.info(
+                "action=baneos_grupos_liberar user=%s solicitados=%d liberados=%d omitidos=%d forzar=%s",
+                username,
+                resultado.total_solicitados,
+                resultado.liberados,
+                resultado.omitidos,
+                body.forzar,
+            )
+            return JSONResponse({"ok": True, **resultado.to_dict()})
+    except Exception as exc:
+        logger.exception("action=baneos_grupos_liberar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudieron liberar los grupos"}, status_code=500)
+
+
+# -----------------------------------------------------------------------------
 # ENDPOINTS DE NOTIFICACIÓN POR EMAIL
 # -----------------------------------------------------------------------------
 
