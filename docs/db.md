@@ -243,14 +243,17 @@ Ejecuta la acción elegida por el usuario:
 
 Reemplaza el auto-registro `PENDIENTE_REVISION` en ingresos sin match (ver `docs/infra.md`, sección
 homónima) — no crea ninguna `Camara`, es sólo información de sólo lectura para revisión manual y
-mejora del regex de búsqueda. Poblada por `modules/slack_baneo_notifier/listener.py` (bot de Slack)
-y `web/app/main.py::upload_tracking_web` (carga de tracking).
+mejora del regex de búsqueda. Poblada por `modules/slack_baneo_notifier/listener.py` (bot de Slack),
+`web/app/main.py::upload_tracking_web` (carga de tracking) y, desde 2026-08-24,
+`core/services/camara_ingest_service.py` (ingesta Excel de cámaras baneadas, `origen="excel_camaras"`)
+— el único de los 3 orígenes con una acción de resolución real además del triage (asociación manual,
+ver tabla `camara_alias` más abajo).
 
 | Columna | Tipo | Descripción |
 |---|---|---|
 | `id` (PK) | Integer | — |
 | `texto_original` | String(512) | Nombre buscado que no matcheó, ya limpio de ruido operativo. |
-| `origen` | String(32) | `"slack"` \| `"tracking"`. |
+| `origen` | String(32) | `"slack"` \| `"tracking"` \| `"excel_camaras"`. |
 | `contexto` | Text, nullable | Canal de Slack o nombre de archivo de tracking, según `origen`. |
 | `revisado` | Boolean | `false` por defecto — flag de triage admin. |
 | `thread_ts` | String(32), nullable | ts del hilo de Slack donde se registró el caso (sólo `origen="slack"`) — habilita el seguimiento por ID de empalme. |
@@ -692,6 +695,14 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 
 **Uso:** el listener de ingresos y `camara_search.py` utilizan esta tabla para empatar
 cámaras escritas con nomenclatura alternativa. Un administrador puede registrar aliases
-desde el panel `/admin/Servicios/Baneos` → sección *Cámaras Pendientes de Revisión* mediante dos flujos:
+desde el panel `/admin/Servicios/Baneos` → pestaña Revisión → sección *Cámaras Pendientes de Revisión* mediante dos flujos:
 - **Convertir en Alias** — vincula el nombre del técnico como alias de una cámara ya existente.
 - **Definir Nombre Canón** — crea la cámara con su nombre oficial (`LIBRE`) y guarda automáticamente el nombre original del técnico como alias de la nueva cámara.
+
+Tercer escritor (2026-08-24): `core/services/camara_ingest_service.py::asociar_nombres_a_camara` —
+la asociación manual del Revisor Manual de la ingesta Excel de cámaras (`/admin/ingesta/camaras`),
+que crea un alias por cada nombre sin match resuelto a mano hacia una Cámara/Botella existente. Esta
+tabla **no tiene unique constraint** en `alias_nombre` (sólo `index=True`, ver `db/models/infra.py`) —
+la idempotencia de la asociación manual es puramente aplicativa (check-then-insert dentro de la misma
+transacción: si ya existe un alias con ese texto se lo reusa como no-op en vez de duplicarlo), no
+garantizada por la base.

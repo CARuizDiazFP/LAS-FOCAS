@@ -39,10 +39,13 @@ botella. `core/services/camara_hierarchy_service.py::extraer_base()` remueve só
 nombre (preservando el resto, ej. el sufijo "CF" final) para obtener el nombre base con el que agrupar.
 
 **Alta en vivo**: `core/services/camara_hierarchy_service.py::resolver_o_crear_padre()` se invoca desde
-los 6 caminos de alta/promoción de `Camara` (tracking `.txt`, import Excel, sync Google Sheets, alta
-Slack, y los dos endpoints admin `admin_dar_de_alta_camara`/`admin_aprobar_camara` en `web/app/main.py`)
-— si el nombre nuevo matchea `RE_BOT_SUFIJO`, reusa la Cámara padre `INFERIDO` existente para esa base
-o crea una nueva, y vincula la fila nueva como Botella.
+los 5 caminos de alta/promoción de `Camara` (tracking `.txt`, sync Google Sheets, alta Slack, y los dos
+endpoints admin `admin_dar_de_alta_camara`/`admin_aprobar_camara` en `web/app/main.py`) — si el nombre
+nuevo matchea `RE_BOT_SUFIJO`, reusa la Cámara padre `INFERIDO` existente para esa base o crea una
+nueva, y vincula la fila nueva como Botella. La ingesta Excel de cámaras baneadas
+(`core/services/camara_ingest_service.py`) dejó de ser un camino de alta — hoy sólo banea
+Cámaras/Botellas ya existentes, nunca crea una `Camara` nueva ni pasa por `resolver_o_crear_padre()`
+(ver sub-sección "Ingesta Excel de cámaras baneadas" más abajo).
 
 **Normalización extendida en la resolución de padre (2026-08-14)**: `resolver_o_crear_padre_desde_base`
 (núcleo compartido por los 6 caminos legado de arriba y por `resolver_o_crear_padre_cromo`) usa ahora
@@ -97,6 +100,40 @@ camino de escritura real hoy (0 filas, 0 endpoints), por lo que no hay nada que 
 unificando legado (self-FK de esta sección, lista vacía si `camara_id` es en sí una Botella) y Cromo
 (`CromoBotella.camara_id`, desde 2026-08-11, ver sección "Cámara padre para Botellas Cromo" más abajo).
 Consumido por `ModalBotellas.vue` desde una 4ª tarjeta "Botellas" en `CamaraDetailView.vue`.
+
+### Ingesta Excel de cámaras baneadas: deja de crear, matcher extendido, revisión manual (2026-08-24)
+
+`/admin/ingesta/camaras` (`POST /api/admin/ingesta/camaras` → proxy a `POST /ingest/camaras`) creaba
+antes una `Camara` nueva (`origen_datos=SHEET`) cuando un alias del Excel no matcheaba contra el
+inventario — legacy de cuando ese inventario no estaba completo. Hoy Cromo Red es la fuente de verdad
+del inventario de Cámaras/Botellas: un alias sin match es un problema de escritura/regex a corregir,
+no una cámara faltante que haya que dar de alta.
+
+- **Matcher nuevo**: `core/services/camara_ingest_service.py` resuelve ahora cada alias con
+  `buscar_camara_o_botella_cromo` (`core/services/cromo/camara_botella_busqueda.py`) — la misma
+  búsqueda extendida Camara+CromoBotella que ya usa `_resolve_camara_o_registrar_sin_match` de
+  `infra_service.py` (ver sección "Ingresos sin match" más abajo) — en vez del match exacto por
+  alias/nombre que usaba antes. Un nombre ambiguo (`AmbiguousSearchError`) se trata igual que "sin
+  match": nunca se banea a ciegas entre candidatas.
+- **Sin match → `IngresoSinMatch`**: se registra en `app.ingresos_sin_match` con
+  `origen="excel_camaras"` (tercer valor de esa columna, junto a `"slack"`/`"tracking"`) — mismo
+  mecanismo existente, no una tabla nueva.
+- **Asociación manual**: `POST /api/admin/ingesta/camaras/asociar`
+  (`core/services/camara_ingest_service.py::asociar_nombres_a_camara`) crea un `CamaraAlias` por cada
+  nombre resuelto a mano hacia una Cámara/Botella existente y banea el grupo destino una sola vez — el
+  efecto es que el mismo texto del Excel matchea automáticamente en la próxima corrida (el buzón se
+  vacía con el uso). "Descartar" en el visor
+  (`POST /api/admin/infra/ingresos-sin-match/marcar-revisado-masivo`) sólo oculta de la vista — la fila
+  queda en la base para poder ajustar el regex/normalización de búsqueda a futuro.
+- **Typeahead**: `GET /api/infra/camaras/buscar` ganó el parámetro `solo_raiz` (default `true`,
+  preserva el comportamiento histórico) — `solo_raiz=false` incluye también Botellas hijas en los
+  resultados, con `es_botella`/`camara_padre_id`/`camara_padre_nombre` en la respuesta, para el picker
+  de asociación manual del Revisor Manual (`AdminIngestaCamaras.vue`).
+- **Bug de cascada corregido** (afecta a toda la jerarquía, no sólo a esta ingesta):
+  `override_camara_estado_manual` (`core/services/camara_estado_service.py`) comparaba antes el
+  estado de la fila puntual en vez del grupo completo — si esa fila ya estaba en el estado destino
+  pero el grupo había quedado mixto (ej. tras un `lift_ban` parcial), la cascada no corría y las
+  hermanas quedaban desincronizadas. Corregido para comparar `miembros_del_grupo(camara)` completo.
 
 ### Submódulo Botellas (listado unificado, 2026-08-10; Cámara padre + estado para Cromo desde 2026-08-11)
 
@@ -770,6 +807,13 @@ mejora del regex de búsqueda, sin crear ninguna entidad de infraestructura.
   puede ser un error de formato/tipeo y que **puede continuar con el ingreso igual** — nunca lee como
   un rechazo. El tracking simplemente deja `Empalme.camara_id = NULL` para esa ubicación (columna ya
   nullable) en vez de crear una Cámara `DETECTADA`/`TRACKING`.
+  **Tercer origen (2026-08-24)**: la ingesta Excel de cámaras baneadas
+  (`core/services/camara_ingest_service.py`, `origen="excel_camaras"` — ver sección "Ingesta Excel de
+  cámaras baneadas" más arriba) registra acá los alias que no matchearon contra el inventario. A
+  diferencia de los otros 2 orígenes (que sólo admiten triage, "marcar revisado"), `excel_camaras` es
+  el único de los 3 que hoy tiene además una acción de resolución real: la asociación manual
+  (`POST /api/admin/ingesta/camaras/asociar`) que crea un `CamaraAlias` y banea la Cámara/Botella
+  destino.
 - **No se toca** el panel admin "Cámaras Pendientes de Revisión" (`GET/POST /api/admin/infra/camaras/pendientes*`)
   — sigue disponible para gestionar las 34 filas legado ya existentes al 2026-08-11, simplemente deja
   de recibir filas nuevas.
@@ -832,6 +876,18 @@ Sistema para proteger cámaras durante afectaciones de servicio, impidiendo trab
 - **Badge indicador**: muestra cantidad de baneos activos en el header
 - **Indicador de cámaras**: total de cámaras restringidas en el header
 - **Modal de baneos activos**: click en el badge abre el modal con todos los baneos
+
+#### Dos dominios de baneo conviviendo (2026-08-24)
+
+Hoy convive el **Protocolo de Protección** de arriba (`/api/infra/ban/*`, orientado a
+`IncidenteBaneo`/`servicio_protegido_id`, wizard guiado desde el header) con el **panel de baneos
+agrupados** nuevo (`/admin/Servicios/Baneos`, pestaña "Baneos Activos") — este último lista Cámaras
+padre baneadas por CUALQUIER camino (Protocolo, ingesta Excel de cámaras, override manual) agrupadas
+con sus Botellas hijas, y permite **liberar (desbanear) varios grupos de una** vía
+`POST /api/admin/baneos/grupos/liberar`. "Liberar" respeta un guard: un grupo con un `IncidenteBaneo`
+activo detrás se omite salvo que se pase `forzar=true` explícito — evita que el panel anule
+silenciosamente una protección que el Protocolo todavía necesita. No hay ningún borrado físico de
+Cámaras/Botellas en este flujo — "liberar" es únicamente un cambio de estado.
 
 ### Notificaciones de baneo (Dar Aviso)
 
@@ -925,7 +981,7 @@ Listado unificado de Botellas Cromo + legado (ver sección "Submódulo Botellas"
 Cambia el estado de un lote de Botellas de origen mixto (admin, CSRF). Body: `{items: [{origen: "cromo"|"legado", id}], estado, motivo?, csrf_token}` — `estado` uno de `LIBRE/OCUPADA/BANEADA/NO_OPERATIVA`. Legado cascada por grupo completo (`aplicar_estado_a_grupo`, dedupeado por raíz); Cromo actualiza `CromoBotella.estado` directo (foto propia, sin cascada). Respuesta: `{ok, estado_nuevo, legado_actualizadas, cromo_actualizadas, no_encontrados: [{origen, id}]}`. Ver sección "Fallback de nombre exacto + bug real de idempotencia corregido (2026-08-12)" más arriba y `core/services/botellas_estado_masivo_service.py`.
 
 ### GET /api/infra/camaras/buscar
-Búsqueda liviana de Cámaras raíz por nombre (`ILIKE`), para selectores/autocomplete (unificación, asociación de huérfanas) — no para el dashboard. Query params: `q`, `limit` (default 10, clamp 1-50), `excluir_id`. Respuesta: `{camaras: [{id, nombre, direccion, estado, botellas_count, cables_count}]}` (`botellas_count` suma botellas legado + Cromo desde 2026-08-14). Registrada antes de `GET /api/infra/camaras/{camara_id}` en el código — ver nota de routing en "Cámaras duplicadas" más arriba.
+Búsqueda liviana de Cámaras por nombre (`ILIKE`), para selectores/autocomplete (unificación, asociación de huérfanas, asociación manual de la ingesta Excel) — no para el dashboard. Query params: `q`, `limit` (default 10, clamp 1-50), `excluir_id`, `solo_raiz` (default `true`, preserva el comportamiento histórico de sólo Cámaras raíz; `false` incluye también Botellas legado — ver sección "Ingesta Excel de cámaras baneadas" más arriba). Respuesta: `{camaras: [{id, nombre, direccion, estado, botellas_count, cables_count, es_botella, camara_padre_id, camara_padre_nombre}]}` (`botellas_count` suma botellas legado + Cromo desde 2026-08-14; los 3 últimos campos sólo se pueblan — no-`null`/no-`false` — cuando `solo_raiz=false` y la fila es una Botella). Registrada antes de `GET /api/infra/camaras/{camara_id}` en el código — ver nota de routing en "Cámaras duplicadas" más arriba.
 
 ### POST /api/infra/camaras/merge
 Fusiona dos Cámaras raíz duplicadas (admin, CSRF). Body: `{camara_principal_id, camara_secundaria_id, guardar_alias, csrf_token}`. La secundaria se elimina físicamente tras heredar todo lo heredable — ver sección "Cámaras duplicadas — Unificación manual" más arriba.
@@ -991,10 +1047,25 @@ Chequeo liviano de una Botella Cromo puntual — `{n_id, nombre, huerfana: bool}
 Asocia una o más Botellas Cromo huérfanas a una Cámara existente o nueva. Body: `{n_ids, camara_id?, nombre_nueva_camara?, csrf_token}` — exactamente uno de `camara_id`/`nombre_nueva_camara`. Ver sección "Botellas Cromo huérfanas — resolución manual" más arriba.
 
 ### GET /api/admin/infra/ingresos-sin-match
-Lista casos de ingreso (Slack o tracking) sin match contra el inventario — reemplaza el auto-registro `PENDIENTE_REVISION` (ver sección homónima más arriba). Query param opcional `revisado` (bool).
+Lista casos de ingreso (Slack, tracking o ingesta Excel de cámaras) sin match contra el inventario — reemplaza el auto-registro `PENDIENTE_REVISION` (ver sección homónima más arriba). Query params opcionales: `revisado` (bool), `origen` (coma-separado, ej. `?origen=excel_camaras` o `?origen=slack,tracking`; default sin filtrar).
 
 ### POST /api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado
 Marca un caso como revisado — no muta ningún dato de infraestructura, sólo el flag de triage.
+
+### POST /api/admin/infra/ingresos-sin-match/marcar-revisado-masivo
+Marca en lote varios casos como revisados — el "Descartar" del Revisor Manual de la ingesta Excel de cámaras. Sólo oculta de la vista, no muta ningún dato de infraestructura. Ver sección "Ingesta Excel de cámaras baneadas" más arriba y `docs/api.md`.
+
+### POST /ingest/camaras
+Endpoint interno (servicio `api`) de la ingesta masiva de cámaras desde Excel — nunca crea una `Camara` nueva. Ver sección "Ingesta Excel de cámaras baneadas" más arriba y `docs/api.md` para el contrato completo.
+
+### POST /api/admin/ingesta/camaras/asociar
+Resuelve a mano uno o más `IngresoSinMatch` de la ingesta Excel de cámaras hacia una Cámara/Botella existente (crea `CamaraAlias` + banea). Ver sección "Ingesta Excel de cámaras baneadas" más arriba y `docs/api.md`.
+
+### GET /api/admin/baneos/grupos
+Lista Cámaras padre baneadas (por cualquier camino) agrupadas con sus Botellas hijas, para el panel `/admin/Servicios/Baneos` → pestaña "Baneos Activos". Ver sección "Dos dominios de baneo conviviendo" más arriba y `docs/api.md`.
+
+### POST /api/admin/baneos/grupos/liberar
+Libera (desbanea) varios grupos de una — la única acción masiva de este panel, sin ningún borrado físico. Guard de `IncidenteBaneo` activo salvo `forzar=true`. Ver sección "Dos dominios de baneo conviviendo" más arriba y `docs/api.md`.
 
 ### GET /api/infra/ban/active
 Lista todos los incidentes de baneo activos con conteo de cámaras.
@@ -1058,6 +1129,29 @@ Genera archivo EML para descargar y abrir en Outlook.
 - `web/frontend/src/api/botellas.ts` - Cliente frontend del listado unificado
 
 ## Historial de cambios
+
+### 2026-08-24 - La ingesta Excel de cámaras deja de crear, panel de baneos agrupados con desbaneo masivo
+
+- **Agregado**: la ingesta Excel de cámaras baneadas dejó de ser un camino de alta de `Camara` — ahora
+  resuelve cada alias contra el inventario real (`buscar_camara_o_botella_cromo`, matcher extendido
+  Camara+CromoBotella) y sólo banea lo que ya existe; un alias sin match se registra en
+  `app.ingresos_sin_match` (`origen="excel_camaras"`, tercer valor de esa columna) para revisión
+  manual, nunca crea una `Camara` nueva.
+- **Agregado**: asociación manual (`POST /api/admin/ingesta/camaras/asociar`) que crea un `CamaraAlias`
+  y banea el grupo destino — el "Revisor Manual" de `AdminIngestaCamaras.vue` permite seleccionar
+  varios nombres sin match, descartarlos (`POST /api/admin/infra/ingresos-sin-match/marcar-revisado-masivo`)
+  o asociarlos por typeahead (`GET /api/infra/camaras/buscar?solo_raiz=false`, que ahora también
+  devuelve Botellas con `es_botella`/`camara_padre_id`/`camara_padre_nombre`).
+- **Agregado**: panel de baneos agrupados (`/admin/Servicios/Baneos` → pestaña "Baneos Activos",
+  `GET/POST /api/admin/baneos/grupos*`) que lista Cámaras padre baneadas con sus Botellas hijas y
+  permite liberar (desbanear) varios grupos de una — con guard de `IncidenteBaneo` activo salvo
+  `forzar=true`. Convive con el Protocolo de Protección existente, sin reemplazarlo. `AdminBaneos.vue`
+  pasó a ser un contenedor de 3 tabs (Baneos Activos / Configuración / Revisión).
+- **Corregido**: bug de cascada en `override_camara_estado_manual` — comparaba el estado de la fila
+  puntual en vez del grupo completo, dejando hermanas desincronizadas cuando el grupo quedaba mixto
+  (ej. tras un `lift_ban` parcial). Afecta a toda la jerarquía Cámara/Botella, no sólo a la ingesta.
+- **Sin borrado físico**: "liberar" (panel de baneos) y el resto de este cambio son únicamente cambios
+  de estado — ningún endpoint de eliminación de Cámaras/Botellas se agregó en este pase.
 
 ### 2026-08-12 - Fallback de nombre exacto, fix de idempotencia real, cambio de estado masivo, propagación de estado a CromoBotella
 

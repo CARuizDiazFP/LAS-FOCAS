@@ -429,3 +429,53 @@
   2. Los 6 placeholders (9936396-9936401) no se consolidaron ni eliminaron — no son huérfanos de 9936402/9936406, así que el runbook original del plan (consolidarlos contra 9936406) no aplica. Requieren revisión manual aparte para decidir su destino real (¿pertenecen a otra Cámara/Botella? ¿son basura para "Eliminar Botella"?).
   3. El Verificador (`VerificadorCromoView.vue`) todavía no consume el `n_id`/`n_id_solicitado` que el endpoint de creación ya expone tras una redirección de identidad — sigue mostrando el n_id que el admin tipeó, no el real. Follow-up de UX, no implementado.
 - **Impacto:** `core/services/cromo/id_dual_resolver.py` (nuevo), `core/services/cromo/botella_creacion_service.py` (nuevo), `core/services/cromo/repoblacion_service.py` (imports actualizados, sin cambio de comportamiento), `core/services/cromo/ingesta.py` (`BOTELLA_CAMPOS` público, detección dirigida en `_procesar_botella_completa`, invalidación de caché en `continuar_corrida`), `core/services/botella_duplicados_service.py` (`sugerir_consolidacion_placeholders`), `web/app/main.py` (endpoint `PATCH .../nombre` y `GET .../viewer/duplicados`), `deploy/docker/cromo_worker.Dockerfile`, `docs/infra.md`, `docs/modulo_ingesta_cromo.md`. `pytest -q` completo: 891 passed, 5 skipped, 0 failed. Verificado real: `docker build`+`docker run` del `cromo_worker` reconstruido confirma el import ya no rompe. **Sin verificación end-to-end contra Cromo/DB real de los flujos nuevos** (crear Botella desde vivo, consolidar) — la validación real que sí se hizo fue la sonda de diagnóstico de la revisión final, no un smoke test de los endpoints nuevos; corresponde antes de dar el plan por cerrado del todo.
+
+## 2026-08-24 — La ingesta Excel de cámaras deja de crear; panel de baneos agrupados con desbaneo masivo
+
+- **Contexto:** la ingesta masiva de cámaras críticas desde Excel (`/admin/ingesta/camaras`) creaba
+  una `Camara` nueva (`origen_datos=SHEET`) cada vez que un alias no matcheaba por nombre/alias
+  exacto — legacy de cuando el inventario de Cámaras no estaba completo. Con Cromo Red como fuente de
+  verdad del inventario, el ticket pidió que la ingesta deje de crear y en su lugar resuelva contra el
+  inventario real, con una vía de revisión/asociación manual para lo que no matchee; además, un panel
+  para ver y liberar (desbanear) en lote los grupos ya baneados por cualquier camino, agrupados por
+  Cámara padre.
+- **Decisión 1 — reusar `app.ingresos_sin_match` en vez de una tabla nueva** para la trazabilidad de
+  los alias del Excel que no matchean (`origen="excel_camaras"`, tercer valor de esa columna junto a
+  `"slack"`/`"tracking"`): sigue el precedente ya establecido por
+  `_resolve_camara_o_registrar_sin_match` (`core/services/infra_service.py`, commit `2c17296`) para
+  el mismo problema en la carga de tracking, en vez de reabrir la discusión sobre si este origen
+  merecía una tabla dedicada. Es además el único de los 3 orígenes con una acción de resolución real
+  (asociación manual que crea `CamaraAlias` + banea), no sólo triage.
+- **Decisión 2 — "Liberar" agrupado usa `estado_sugerido` + guard de incidente activo, no un `PUT`
+  uniforme existente** (`actualizar_estado_masivo`, ya usado por el cambio de estado masivo de
+  Botellas): `liberar_grupos_masivo` (`core/services/baneos_grupos_service.py`) resuelve cada
+  `camara_id` a su grupo raíz, consulta `get_camara_estado_contexto` y omite (sin llamar nunca a
+  `override_camara_estado_manual`) cualquier grupo con un `IncidenteBaneo` activo detrás, salvo que se
+  pase `forzar=true` explícito — evita que el panel anule silenciosamente un baneo que el Protocolo de
+  Protección todavía respalda. Con `forzar=true` sobre un grupo con incidente activo el destino es
+  siempre `LIBRE` (nunca `estado_sugerido`, que devolvería `BANEADA` de nuevo mientras el incidente
+  siga activo — un no-op disfrazado de "forzado").
+- **Decisión 3 — "Borrar" del pedido original del usuario = desbaneo masivo, no borrado físico:**
+  aclarado explícitamente por el usuario durante la planificación. No se agregó ningún endpoint de
+  eliminación de Cámaras/Botellas en este plan — la única acción masiva nueva es
+  `POST /api/admin/baneos/grupos/liberar` (cambio de estado).
+- **Bug real encontrado y corregido antes de construir el resto del plan:** `override_camara_estado_manual`
+  (`core/services/camara_estado_service.py`) comparaba el estado de la fila puntual (`camara.estado ==
+  nuevo_estado`) en vez del grupo completo — si esa fila ya estaba en el estado destino pero el grupo
+  había quedado mixto (ej. tras un `lift_ban` parcial), la cascada hacía short-circuit y las hermanas
+  quedaban desincronizadas. Corregido para comparar `all(m.estado == nuevo_estado for m in
+  miembros_del_grupo(camara))` — resuelto antes que el resto del plan porque tanto la ingesta Excel
+  como el panel de liberación dependen de que la cascada sea correcta sobre grupos mixtos.
+- **Impacto:** `core/services/camara_ingest_service.py` (reescrito: matcher extendido vía
+  `buscar_camara_o_botella_cromo`, sin creación, `asociar_nombres_a_camara`), `core/services/baneos_grupos_service.py`
+  (nuevo: `listar_grupos_baneados`/`liberar_grupos_masivo`), `core/services/camara_busqueda_service.py`
+  (`solo_raiz`), `core/services/camara_estado_service.py` (fix de cascada), `api/app/routes/ingest.py`
+  (nueva forma de respuesta de `POST /ingest/camaras`), `web/app/main.py` (endpoints
+  `POST /api/admin/ingesta/camaras/asociar`, `POST /api/admin/infra/ingresos-sin-match/marcar-revisado-masivo`,
+  `GET/POST /api/admin/baneos/grupos*`), `modules/slack_baneo_notifier/notifier.py` (reporte Excel de
+  Slack agrupado por Cámara padre), frontend: `AdminIngestaCamaras.vue` (Revisor Manual),
+  `ModalAsociarSinMatch.vue` (nuevo), `AdminBaneos.vue` dividido en 3 tabs
+  (`BaneosActivosPanel.vue`/`BaneosConfigPanel.vue`/`BaneosRevisionPanel.vue`, nuevos),
+  `admin/api/admin.ts`, `api/camaras.ts`. `git diff --stat` sobre todo el rango del plan: 21 archivos,
+  +4113/-943 líneas. `LLM_PROVIDER=heuristic pytest -q` completo al cierre: **1012 passed, 5 skipped,
+  0 failed**.

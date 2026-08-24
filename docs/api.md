@@ -1300,6 +1300,231 @@ Obtiene el detalle de un incidente específico con las cámaras afectadas.
 
 ---
 
+## Ingesta Excel de Cámaras y Panel de Baneos Agrupados
+
+Endpoints agregados/extendidos en el refactor de baneos de 2026-08-24. Cubren la ingesta masiva de
+cámaras críticas desde Excel (**nunca crea una `Camara` nueva** — Cromo Red es la fuente de verdad
+del inventario; un alias sin match es un problema de escritura/regex, no una cámara faltante) y el
+panel administrativo que agrupa y libera baneos por Cámara padre. Contexto de negocio completo en
+`docs/infra.md`, secciones "Ingesta Excel de cámaras baneadas" y "Dos dominios de baneo conviviendo".
+
+### POST `/ingest/camaras`
+
+Endpoint interno del servicio `api` (requiere API key, ver "Autenticación de API core" más arriba).
+Lee la columna B (índice 1, sin cabecera) de un Excel `.xlsx`/`.xlsm` y banea las Cámaras/Botellas
+existentes que matcheen (búsqueda extendida Camara+CromoBotella). **Nunca crea una `Camara` nueva.**
+
+- **Body (multipart/form-data):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `file` | archivo | Sí | Excel `.xlsx`/`.xlsm`, alias en columna B, sin cabecera. |
+  | `motivo_baneo` | string | Sí | Motivo del baneo masivo — no puede quedar vacío tras `.strip()`. |
+  | `usuario` | string | Sí | Usuario admin que ejecuta la operación (lo agrega el proxy `POST /api/admin/ingesta/camaras` de `web/app/main.py` a partir de la sesión). |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "total_leidos": 40,
+    "grupos_baneados": 35,
+    "grupos_ya_baneados": 3,
+    "sin_match": [{"caso_id": 12, "nombre": "Cra 14 de Julio 240 Bot 9"}],
+    "errores": []
+  }
+  ```
+
+- **Notas:**
+  - `grupos_baneados`/`grupos_ya_baneados` cuentan por grupo (raíz Cámara padre + Botellas), no por
+    fila del Excel — dos alias que resuelven al mismo grupo sólo cuentan una vez.
+  - Un nombre ambiguo (`AmbiguousSearchError`, 2+ candidatas) se trata igual que sin match: nunca se
+    banea a ciegas entre candidatas.
+  - Cada `sin_match` queda registrado en `app.ingresos_sin_match` (`origen="excel_camaras"`) para
+    resolución manual — ver `POST /api/admin/ingesta/camaras/asociar` abajo.
+  - Errores: `400` (falta nombre de archivo, archivo vacío, `motivo_baneo`/`usuario` vacíos), `415`
+    (formato no soportado), `422` (columna B sin ningún alias válido).
+
+### POST `/api/admin/ingesta/camaras/asociar`
+
+Resuelve a mano uno o más `IngresoSinMatch` (`origen="excel_camaras"`) hacia una Cámara/Botella
+existente: crea un `CamaraAlias` por cada texto que no lo tenga ya (para que el mismo texto matchee
+solo en la próxima corrida de `POST /ingest/camaras`) y banea el grupo destino una sola vez. Admin,
+CSRF.
+
+- **Body (JSON):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `caso_ids` | int[] | Sí | Ids de `IngresoSinMatch` a resolver. |
+  | `camara_id` | int | Sí | Id de la Cámara/Botella destino. |
+  | `motivo` | string | No | Motivo del baneo. Vacío/omitido usa el default `"Baneo por ingesta Excel (asociación manual)"`. |
+  | `csrf_token` | string | Sí (salvo `TESTING=true`) | Token CSRF de la sesión. |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "ok": true,
+    "camara_id": 501,
+    "camara_nombre": "Cra 14 de Julio 240 CF",
+    "estado_final": "BANEADA",
+    "baneo_aplicado": true,
+    "alias_creados": 2,
+    "alias_preexistentes": 0,
+    "casos_marcados": 2,
+    "conflictos": [
+      {"caso_id": 8, "nombre": "Cra 14 de Julio 240 Bot 9", "camara_actual_id": 900, "camara_actual_nombre": "Otra Cámara"}
+    ],
+    "error": null
+  }
+  ```
+
+- **Notas:**
+  - `conflictos`: un `caso_id` cuyo texto ya está aliasado a OTRA cámara — no se reasigna
+    automáticamente, queda sin marcar revisado para que el admin decida.
+  - `ok=true` puede venir con `error` no nulo si el baneo final falló pero los alias/casos ya se
+    aplicaron — no distinguir por `error is None`, distinguir por el status code (200 siempre que
+    `camara_id` exista) y leer `error` para el detalle.
+  - `404` con `{"error": "Cámara no encontrada"}` sólo si `camara_id` no existe.
+  - `403` CSRF inválido; `400` si `caso_ids` viene vacío.
+
+### GET `/api/admin/infra/ingresos-sin-match`
+
+Lista casos de ingreso (Slack, tracking o ingesta Excel de cámaras) sin match contra el inventario —
+sólo lectura para triage, no crea ninguna `Camara`. Admin.
+
+- **Query params:**
+
+  | Parámetro | Tipo | Descripción |
+  |---|---|---|
+  | `revisado` | bool, opcional | Filtra por el flag de triage (default: todos). |
+  | `origen` | string, opcional | Uno o más valores separados por coma (ej. `?origen=excel_camaras` o `?origen=slack,tracking`; default: todos). |
+
+- **Respuesta 200:** array (no envuelto en `{status: ...}`) de hasta 200 casos, orden `created_at desc`:
+
+  ```json
+  [
+    {
+      "id": 12,
+      "texto_original": "Cra 14 de Julio 240 Bot 9",
+      "origen": "excel_camaras",
+      "contexto": "cámaras_criticas.xlsx | motivo: Corte preventivo",
+      "revisado": false,
+      "created_at": "2026-08-24T10:00:00+00:00"
+    }
+  ]
+  ```
+
+### POST `/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo`
+
+Marca en lote varios `IngresoSinMatch` como revisados — el "Descartar" del Revisor Manual de la
+ingesta Excel: sólo oculta de la vista, no muta ningún dato de infraestructura; la fila queda en la
+base para ajustar a futuro el regex/normalización de búsqueda. Admin, CSRF.
+
+- **Body (JSON):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `ids` | int[] | Sí | Ids de `IngresoSinMatch` a marcar. |
+  | `csrf_token` | string | Sí (salvo `TESTING=true`) | Token CSRF de la sesión. |
+
+- **Respuesta 200:**
+
+  ```json
+  { "ok": true, "actualizados": 3 }
+  ```
+
+- **Notas:** `403` CSRF inválido; `400` si `ids` viene vacío.
+
+### GET `/api/admin/baneos/grupos`
+
+Lista Cámaras padre raíz baneadas (`camara_padre_id IS NULL`, `estado=BANEADA`) con sus Botellas
+hijas (legado + Cromo), paginado, para el panel `/admin/Servicios/Baneos` → pestaña "Baneos Activos".
+Admin.
+
+- **Query params:** `q` (string, opcional, `ILIKE` sobre nombre), `limit` (int, default 25, clamp
+  1-100), `offset` (int, default 0).
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "limit": 25,
+    "offset": 0,
+    "total": 1,
+    "grupos": [
+      {
+        "camara_id": 501,
+        "nombre": "Cra 14 de Julio 240 CF",
+        "direccion": "Cra 14 de Julio 240",
+        "fontine_id": "F-501",
+        "estado": "BANEADA",
+        "botellas": [
+          {"origen": "legado", "id": 502, "nombre": "Cra 14 de Julio 240 Bot 2 CF", "estado": "BANEADA"},
+          {"origen": "cromo", "id": 9936402, "nombre": "Cra 14 de Julio 240 Bot 3 CF", "estado": "BANEADA"}
+        ],
+        "botellas_count": 2,
+        "motivo": "Corte preventivo",
+        "usuario": "operador1",
+        "fecha": "2026-08-20T09:00:00+00:00",
+        "tiene_baneo_activo": false,
+        "ticket_baneo": null,
+        "incidentes_activos_ids": [],
+        "estado_mixto": false,
+        "puede_liberar": true
+      }
+    ]
+  }
+  ```
+
+- **Notas:** `tiene_baneo_activo`/`ticket_baneo`/`incidentes_activos_ids` describen si hay un
+  `IncidenteBaneo` del Protocolo de Protección detrás del baneo (`puede_liberar = not tiene_baneo_activo`).
+  `estado_mixto` es un concepto distinto: alguna Botella hija en un estado distinto al de su raíz
+  (posible legado de datos previos al fix de cascada, o de un `lift_ban` parcial) — no implica nada
+  sobre el Protocolo de Protección.
+
+### POST `/api/admin/baneos/grupos/liberar`
+
+Libera (desbanea) varios grupos de una — la única acción masiva de este panel; **no hay ningún
+borrado físico** de Cámaras/Botellas. Admin, CSRF.
+
+- **Body (JSON):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `camara_ids` | int[] | Sí | Ids de Cámara o Botella — cada uno se resuelve a su grupo (raíz). |
+  | `motivo` | string | Sí | Motivo de la liberación — no puede quedar vacío tras `.strip()`. |
+  | `forzar` | bool | No (default `false`) | Ver guard abajo. |
+  | `csrf_token` | string | Sí (salvo `TESTING=true`) | Token CSRF de la sesión. |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "ok": true,
+    "total_solicitados": 2,
+    "liberados": 1,
+    "omitidos": 1,
+    "detalle": [
+      {"camara_id": 501, "liberado": true, "estado_final": "LIBRE", "razon_omision": null},
+      {"camara_id": 900, "liberado": false, "estado_final": null, "razon_omision": "bloqueado_por_incidente"}
+    ]
+  }
+  ```
+
+- **Guard de incidente activo:** sin `forzar`, un grupo con un `IncidenteBaneo` activo detrás se omite
+  (`razon_omision="bloqueado_por_incidente"`) — `override_camara_estado_manual` NUNCA se llama para ese
+  grupo, para no levantar un baneo que el Protocolo de Protección todavía necesita. Con `forzar=true`
+  sobre un grupo con incidente activo, el destino es siempre `LIBRE`; sin incidente activo, el destino
+  es `estado_sugerido` (puede ser `OCUPADA` si hay un ingreso activo, no `LIBRE` hardcodeado).
+- **Notas:** dos ids del mismo grupo en `camara_ids` se deduplican silenciosamente (una sola fila en
+  `detalle`, `total_solicitados` puede ser mayor que `len(detalle)`). `403` CSRF inválido; `400` si
+  `camara_ids` o `motivo` vienen vacíos.
+
+---
+
 ## Exportación de Cámaras
 
 ### GET `/api/infra/export/cameras`

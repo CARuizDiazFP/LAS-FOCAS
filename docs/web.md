@@ -57,7 +57,7 @@ web/
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
 - La administración incorpora `/admin/ingesta` como **hub de navegación** con dos sub-módulos:
   - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
-  - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo.
+  - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo. Desde el refactor de baneos (2026-08-24) suma un "Revisor Manual": los alias que no matchearon contra el inventario se listan con selección múltiple, para descartarlos (marcar revisado en lote) o asociarlos a mano a una Cámara/Botella existente vía typeahead — la ingesta ya no crea `Camara` nuevas por su cuenta. Detalle completo en `docs/infra.md`, sección "Ingesta Excel de cámaras baneadas".
 
 > **CRITICAL — Arquitectura del router admin**: Existe el archivo `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts`, pero ambos son **código huérfano**. El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y usa `src/router/index.ts` como router unificado. Las rutas `/admin/*` son **children anidadas** de `{ path: '/admin', component: AppShell }` dentro de ese router. Toda ruta admin nueva debe agregarse en `src/router/index.ts`, no en `src/admin/router/index.ts`.
 
@@ -371,6 +371,12 @@ admin/
 | `/admin/usuarios` | AppShell + AdminUsuarios | Sí | Sí |
 | `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
 | `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
+
+> **Nota (2026-08-24):** `AdminBaneos.vue` es hoy un contenedor de 3 tabs — Baneos Activos
+> (`BaneosActivosPanel.vue`, listado agrupado por Cámara padre + liberación/desbaneo masivo),
+> Configuración (`BaneosConfigPanel.vue`, worker de notificaciones Slack) y Revisión
+> (`BaneosRevisionPanel.vue`, Cámaras Pendientes de Revisión + Ingresos sin match) — ya no es la vista
+> monolítica que era antes. Misma ruta, mismo componente raíz.
 
 El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`. Si la ruta es `/login` y ya hay sesión autenticada, redirige a `/` (evita ver el formulario estando logueado).
 Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida para preservar marcadores antiguos sin reintroducir tabs en el Home.
