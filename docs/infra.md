@@ -135,6 +135,20 @@ no una cámara faltante que haya que dar de alta.
   pero el grupo había quedado mixto (ej. tras un `lift_ban` parcial), la cascada no corría y las
   hermanas quedaban desincronizadas. Corregido para comparar `miembros_del_grupo(camara)` completo.
 
+**Reporte Excel de Slack agrupado**: `modules/slack_baneo_notifier/notifier.py::generar_excel_baneadas`
+ahora agrupa por Cámara padre (una fila por grupo, no por Botella individual) usando el mismo
+`listar_grupos_baneados` que alimenta el panel — evita que el reporte y el panel puedan divergir.
+Columnas nuevas: `ID | Fontine ID | Cámara | Dirección | Botellas baneadas | Botellas | Latitud |
+Longitud | Último Update` (antes: `ID | Fontine ID | Nombre | Dirección | Latitud | Longitud |
+Último Update`, una fila por cada `Camara` con `estado=BANEADA` sin distinguir padre/hijas).
+
+**Limitación conocida**: tanto el reporte como el panel de "Baneos Activos" listan raíces con
+`estado=BANEADA` — una Botella baneada cuya Cámara padre NO está baneada (dato legacy, anterior a
+este refactor — no debería poder ocurrir hacia adelante gracias a la cascada, pero puede existir en
+filas ya escritas antes) queda invisible en ambas superficies. No se corrige en este plan (cambiar
+la semántica de agrupación es una decisión de alcance separada); si aparecen casos así en
+producción, es un candidato a ticket propio.
+
 ### Submódulo Botellas (listado unificado, 2026-08-10; Cámara padre + estado para Cromo desde 2026-08-11)
 
 Vista independiente en el sidebar (`Infraestructura FO → Botellas`, ruta `/infra/Botellas`) que lista
