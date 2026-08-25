@@ -398,6 +398,14 @@ class Servicio(Base):
     # categorizar todavía" (default de altas nuevas), 0 = placeholder sintetizado por Cromo (ver
     # origen_datos), 1-5 asignados manualmente por un admin.
     categoria = Column(Integer, nullable=False, server_default=text("6"))
+    # True si tipo_servicio está en TIPOS_SERVICIO_VERIFICABLES (ver
+    # core/services/servicios_consolidacion_service.py), recalculado en cada ingesta salvo que
+    # es_verificable_override no sea NULL.
+    es_verificable = Column(Boolean, nullable=False, server_default=text("false"))
+    # Corrección manual de admin — cuando no es NULL, la ingesta de Excel respeta este valor y no
+    # recalcula es_verificable. Sin tabla de auditoría dedicada, mismo criterio ya usado para
+    # `categoria` (ver core/services/servicios_categoria_service.py).
+    es_verificable_override = Column(Boolean, nullable=True)
     origen_datos = Column(
         SQLEnum(ServicioOrigenDatos, name="servicio_origen_datos", create_type=False, schema="app"),
         nullable=False,
