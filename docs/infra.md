@@ -606,9 +606,25 @@ por normalización).
     ingesta nunca los toca retroactivamente) y marca el origen `vigente=False` — mismo flag que ya
     filtran `botella_duplicados_service`/`orfanas_service`/`botellas_unificadas_service`. Nuevos
     campos de respuesta: `cables_existentes_recableados`, `fusiones_existentes_recableadas`.
+  - **`force_camera_association` (2026-08-24)**: bypasea el guard de "misma Cámara padre" descrito
+    arriba — pero SÓLO ese, el que vive dentro de `apropiar_legado_a_cromo` y sólo se dispara cuando
+    el body incluye `ids_legado`. **Hallazgo al auditar el código para este ticket, confirmado con el
+    usuario y dejado deliberadamente sin resolver**: la consolidación Cromo↔Cromo pura
+    (`ids_origen_cromo` sin ningún `id_legado`) nunca tuvo ningún guard de "misma Cámara padre", ni en
+    este servicio ni en `ModalConsolidarBotellas.vue` — se puede fusionar cualquier n_id Cromo hacia
+    cualquier destino sin ninguna advertencia. `force_camera_association` no toca ese camino. Cuando
+    sí bypasea el guard (mismatch legado↔Cromo forzado), los datos reales del legado se migran igual
+    que siempre a `legado.camara_padre_id` (nunca al `camara_id` previo de la Cromo — ver los puntos
+    3-5 de `apropiar_legado_a_cromo` en la sección de abajo); para que el resultado sea coherente, la
+    `CromoBotella` superviviente adopta esa misma Cámara padre
+    (`ResultadoApropiacionBotella.camara_forzada`, propagado como
+    `ResultadoConsolidacion.legados_con_camara_forzada` — nunca silencioso, mismo criterio que
+    `alias_repuntados`).
 - **Frontend**: `ModalConsolidarBotellas.vue` — botón "Consolidar" en cada tarjeta de grupo no
   `resoluble` (pre-completa destino/orígenes/legado desde el grupo), más botón de toolbar "Consolidar
-  manualmente" (mismo modal, sin grupo — orígenes y destino 100% libres).
+  manualmente" (mismo modal, sin grupo — orígenes y destino 100% libres). Checkbox "Forzar asociación
+  a la Cámara" junto a la selección de Botellas legado (2026-08-24) — envía
+  `force_camera_association` en el payload.
 - **Export de inconsistencias**: `GET /api/admin/infra/botellas/inconsistencias/exportar` (admin) —
   Excel (`pandas.ExcelWriter(engine="openpyxl")`, mismo patrón ya usado para el export de Cámaras) con
   columnas `ID Cromo | Nombre | Cámara Padre | Motivo`: huérfanas (`orfanas_service.buscar_huerfanas`)
@@ -633,14 +649,15 @@ admin abierto cuando el recálculo termina — sin tocar la función de detecci�
   /api/infra/botellas/apropiar-masivo` (la necesita como insumo propio para decidir qué grupos son
   `resoluble`, no sólo para responder). Hit → se salta el cómputo completo. Miss (frío o Redis caído)
   → cómputo síncrono de siempre, sin cambios, más un `SET` oportunista del resultado.
-- **7 endpoints mutadores invalidan la caché y encolan un recálculo** — cambian datos que afectan la
+- **8 endpoints mutadores invalidan la caché y encolan un recálculo** — cambian datos que afectan la
   agrupación (`vigente`, `camara_id`/`camara_padre_id`, `nombre`) pero ninguno recalculaba
   server-side antes de esto: `POST /api/infra/botellas/apropiar` (individual), `POST
   /api/infra/botellas/apropiar-masivo` (sólo si `grupos_apropiados > 0`), `POST
   /api/infra/botellas/consolidar`, `POST /api/infra/botellas/eliminar`, `POST
+  /api/infra/botellas/eliminar-grupo` (2026-08-24, ver sección de eliminación más abajo), `POST
   /api/infra/botellas/{n_id}/repoblar-cables` (sólo si `resultado.corrida_id is not None` — hay un
   camino "nada pendiente" que no debe encolar nada), `POST
-  /api/infra/botellas/{n_id}/separar-padre` y `PATCH /api/infra/botellas/{n_id}/nombre`. Los 7 llaman a
+  /api/infra/botellas/{n_id}/separar-padre` y `PATCH /api/infra/botellas/{n_id}/nombre`. Los 8 llaman a
   `core.services.botella_recompute_queue.encolar_recalculo_duplicados_botellas(motivo)`, que borra la
   clave de caché (`DELETE`) y encola un job (`RPUSH admin:recompute:jobs {"kind":
   "botellas_duplicados", "motivo": ...}`) — siempre después de confirmar la mutación.
@@ -773,6 +790,36 @@ bloquea, se aborta la operación completa antes de tocar la sesión.
   éxito se redirige a `/infra` (la vista deja de tener sentido — el elemento que mostraba ya no
   existe); en `VerificadorCromoView.vue` se limpia el resultado local y se muestra un mensaje de éxito
   transitorio.
+
+#### "Borrar y Excluir Cromo" — borrado forzado de grupo (2026-08-24)
+
+El botón "Borrar y Excluir Cromo" del visor de duplicados (`/admin/servicios/viewer/Botellas`) cubre
+el caso real que la política de arriba deja sin salida a propósito: un grupo completo de
+`CromoBotella` conflictivas (residuo de un cambio de nombre en la ingesta) que SÍ tienen
+`CromoCable`/`CromoFusion` reales — datos incorrectos, no datos que valga la pena preservar. Es
+**deliberadamente el único camino de este módulo que ignora "bloquear, nunca forzar"**:
+`eliminar_botella`/`eliminar_camara` no cambiaron, siguen bloqueando siempre para cualquier otro
+llamador — no ganaron ningún flag de bypass.
+
+- **`core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo(ids_cromo,
+  usuario)`** (nueva, función separada) — de-dup de `ids_cromo`; borrado físico completo
+  (`.delete(synchronize_session=False)`, bulk) de todos los `CromoCable`/`CromoFusion` cuyo extremo o
+  `botella_n_id` esté en la lista, **sin excluir** los que tengan el otro extremo en una botella que
+  se conserva (confirmado con el usuario: es limpieza de datos incorrectos, no una operación
+  quirúrgica); registra cada n_id encontrado en `app.cromo_botella_alias`
+  (`accion='ignorar'`, reusa `_registrar_alias_ignorar`) y lo borra. IDs pedidos que no existen se
+  reportan en `no_encontradas` sin abortar el resto. No intenta limpiar la Cámara padre si queda
+  vacía — no fue pedido, y mezclarlo con un borrado sin bloqueos daría una garantía distinta a la de
+  `eliminar_botella`.
+- **`POST /api/infra/botellas/eliminar-grupo`** (admin, CSRF) — body `{ids_cromo, csrf_token}`, 200
+  con `{ok, botellas_eliminadas, cables_eliminados, fusiones_eliminadas, aliases_registrados,
+  no_encontradas}`. Es el 8vo endpoint mutador que encola un recálculo de duplicados (ver sección de
+  caché Redis más arriba).
+- **Frontend**: `AdminBotellasViewer.vue` — botón "Borrar y Excluir Cromo" en el header de cada
+  tarjeta de grupo (visible si el grupo tiene algún miembro Cromo, sin restringirlo a `!resoluble`),
+  actúa sobre **todos** los miembros Cromo del grupo mostrado (no hay selección por subconjunto).
+  Confirmación inline (mismo estilo que la eliminación individual) listando los n_id afectados antes
+  de confirmar.
 
 ### Botellas Cromo huérfanas — resolución manual (2026-08-11; automatizado casi al 100% desde 2026-08-12)
 

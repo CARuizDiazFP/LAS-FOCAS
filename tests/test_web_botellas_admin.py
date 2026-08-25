@@ -438,6 +438,47 @@ def test_consolidar_exitoso_encola_recalculo_duplicados(monkeypatch):
     assert "consolidar" in llamadas[0]
 
 
+def test_consolidar_pasa_force_camera_association_al_servicio(monkeypatch):
+    """Wiring: el campo `force_camera_association` del body llega tal cual a
+    `consolidar_grupo_botellas` — la lógica de qué hace con él ya está cubierta en
+    test_cromo_consolidacion_service.py."""
+    from web.app import main as web_main
+    from core.services.cromo.consolidacion_service import ResultadoConsolidacion
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    kwargs_recibidos: dict = {}
+
+    def _fake_consolidar(session, **kwargs):
+        kwargs_recibidos.update(kwargs)
+        return ResultadoConsolidacion(id_destino_cromo=999)
+
+    monkeypatch.setattr(
+        "core.services.cromo.consolidacion_service.consolidar_grupo_botellas", _fake_consolidar
+    )
+
+    async def _fake_encolar(motivo: str) -> None:
+        return None
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/consolidar",
+        json={
+            "id_destino_cromo": 999,
+            "ids_legado": [1],
+            "force_camera_association": True,
+            "csrf_token": "cualquiera",
+        },
+    )
+    assert res.status_code == 200
+    assert kwargs_recibidos["force_camera_association"] is True
+
+
 def test_consolidar_fallido_no_encola_recalculo_duplicados(monkeypatch):
     """Si `consolidar_grupo_botellas` lanza su excepción de validación (400), la sesión hace
     rollback y el endpoint NUNCA debe encolar un recálculo — no hubo mutación confirmada."""
@@ -675,6 +716,113 @@ def test_eliminar_botella_fallido_no_encola_recalculo_duplicados(monkeypatch):
     res = client.post(
         "/api/infra/botellas/eliminar",
         json={"origen": "cromo", "id": 100, "csrf_token": "cualquiera"},
+    )
+    assert res.status_code == 400
+    assert llamadas == []
+
+
+# ── POST /api/infra/botellas/eliminar-grupo ──────────────────────────────────
+
+
+def test_eliminar_grupo_cromo_requiere_autenticacion():
+    client = TestClient(app)
+    res = client.post("/api/infra/botellas/eliminar-grupo", json={"ids_cromo": [100]})
+    assert res.status_code == 401
+
+
+def test_eliminar_grupo_cromo_rechaza_csrf_invalido(monkeypatch):
+    from web.app import main as web_main
+
+    monkeypatch.setenv("TESTING", "false")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.post(
+        "/api/infra/botellas/eliminar-grupo",
+        json={"ids_cromo": [100], "csrf_token": "invalido"},
+    )
+    assert res.status_code == 403
+
+
+def test_eliminar_grupo_cromo_exitoso_encola_recalculo_duplicados(monkeypatch):
+    """Camino feliz: `eliminar_y_excluir_grupo_cromo` (mockeado) devuelve un resultado válido, se
+    confirma la transacción y el endpoint encola exactamente un job de recálculo (es el 8vo
+    endpoint mutador que lo hace, ver docs/decisiones.md 2026-08-24) con motivo no vacío antes de
+    responder 200."""
+    from web.app import main as web_main
+    from core.services.camara_botella_delete_service import ResultadoEliminacionGrupoCromo
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    resultado = ResultadoEliminacionGrupoCromo(
+        ids_solicitados=[100, 200],
+        botellas_eliminadas=[100, 200],
+        cables_eliminados=3,
+        fusiones_eliminadas=1,
+        aliases_registrados=2,
+        no_encontradas=[],
+    )
+    monkeypatch.setattr(
+        "core.services.camara_botella_delete_service.eliminar_y_excluir_grupo_cromo",
+        lambda session, **kwargs: resultado,
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/eliminar-grupo",
+        json={"ids_cromo": [100, 200], "csrf_token": "cualquiera"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["botellas_eliminadas"] == [100, 200]
+    assert body["cables_eliminados"] == 3
+    assert body["fusiones_eliminadas"] == 1
+    assert len(llamadas) == 1
+    assert llamadas[0], "el motivo no debe quedar vacío"
+    assert "eliminar-grupo" in llamadas[0]
+
+
+def test_eliminar_grupo_cromo_fallido_no_encola_recalculo_duplicados(monkeypatch):
+    """Si `eliminar_y_excluir_grupo_cromo` lanza `EliminacionBloqueadaError` (lista vacía → 400), la
+    sesión hace rollback y el endpoint NUNCA debe encolar un recálculo."""
+    from web.app import main as web_main
+    from core.services.camara_botella_delete_service import EliminacionBloqueadaError
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
+
+    def _fake_eliminar_grupo(session, **kwargs):
+        raise EliminacionBloqueadaError("No se indicó ninguna Botella Cromo para eliminar.")
+
+    monkeypatch.setattr(
+        "core.services.camara_botella_delete_service.eliminar_y_excluir_grupo_cromo", _fake_eliminar_grupo
+    )
+
+    llamadas: list[str] = []
+
+    async def _fake_encolar(motivo: str) -> None:
+        llamadas.append(motivo)
+
+    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+    res = client.post(
+        "/api/infra/botellas/eliminar-grupo",
+        json={"ids_cromo": [], "csrf_token": "cualquiera"},
     )
     assert res.status_code == 400
     assert llamadas == []

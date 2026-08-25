@@ -12,6 +12,7 @@ from core.services.camara_botella_delete_service import (
     EliminacionBloqueadaError,
     eliminar_botella,
     eliminar_camara,
+    eliminar_y_excluir_grupo_cromo,
 )
 from db.models.cromo import CromoBotella, CromoBotellaAlias, CromoCable, CromoFusion
 from db.models.infra import Cable, Camara, Empalme, Ingreso
@@ -31,6 +32,10 @@ def _session_vacia() -> tuple[MagicMock, dict]:
     model_mocks: dict[object, MagicMock] = {}
     for modelo in (Cable, Empalme, Ingreso, CromoCable, CromoFusion, CromoBotellaAlias):
         _mock_para(model_mocks, modelo).filter.return_value.first.return_value = None
+    # Default para eliminar_y_excluir_grupo_cromo (bulk delete) — 0 filas afectadas salvo que el
+    # test lo sobreescriba.
+    _mock_para(model_mocks, CromoCable).filter.return_value.delete.return_value = 0
+    _mock_para(model_mocks, CromoFusion).filter.return_value.delete.return_value = 0
     # eliminar_camara SIEMPRE consulta ambas listas de hijos — default "sin hijos" salvo que el
     # test lo sobreescriba explícitamente.
     _mock_para(model_mocks, Camara).filter.return_value.all.return_value = []
@@ -328,3 +333,81 @@ def test_eliminar_camara_bloqueada_por_datos_propios_de_la_raiz_sin_hijos():
     assert excinfo.value.bloqueos[0].origen == "camara"
     assert excinfo.value.bloqueos[0].id == 1
     session.delete.assert_not_called()
+
+
+# ── eliminar_y_excluir_grupo_cromo ────────────────────────────────────────────
+# Camino deliberadamente forzado (botón de grupo del visor de duplicados): a diferencia de
+# eliminar_botella, NUNCA bloquea por cables/fusiones reales asociados.
+
+
+def test_eliminar_grupo_cromo_falla_si_lista_vacia():
+    session, _ = _session_vacia()
+    with pytest.raises(EliminacionBloqueadaError, match="No se indicó ninguna"):
+        eliminar_y_excluir_grupo_cromo(session, ids_cromo=[], usuario="admin")
+
+
+def test_eliminar_grupo_cromo_borra_pese_a_tener_cables_y_fusiones_reales():
+    session, model_mocks = _session_vacia()
+    botella_100 = CromoBotella(n_id=100, camara_id=None)
+    botella_200 = CromoBotella(n_id=200, camara_id=None)
+    _mock_para(model_mocks, CromoBotella).filter.return_value.all.return_value = [botella_100, botella_200]
+    _mock_para(model_mocks, CromoCable).filter.return_value.delete.return_value = 3
+    _mock_para(model_mocks, CromoFusion).filter.return_value.delete.return_value = 2
+
+    resultado = eliminar_y_excluir_grupo_cromo(session, ids_cromo=[100, 200], usuario="admin")
+
+    assert resultado.cables_eliminados == 3
+    assert resultado.fusiones_eliminadas == 2
+    assert resultado.botellas_eliminadas == [100, 200]
+    assert resultado.aliases_registrados == 2
+    session.delete.assert_any_call(botella_100)
+    session.delete.assert_any_call(botella_200)
+
+
+def test_eliminar_grupo_cromo_borra_cables_completos_sin_excluir_por_el_otro_extremo():
+    """Confirmado con el usuario: si un CromoCable tiene un extremo en una botella eliminada y el
+    otro en una que se conserva, el cable se borra igual (limpieza física completa, no quirúrgica).
+    A nivel de mock: UN solo `.delete()` masivo sobre el filtro OR de ambos extremos, sin ninguna
+    exclusión por-fila (el caso real de convivencia con una botella conservada se verifica contra
+    datos reales, no con mocks — ver sección de Verificación del plan)."""
+    session, model_mocks = _session_vacia()
+    _mock_para(model_mocks, CromoCable).filter.return_value.delete.return_value = 1
+
+    eliminar_y_excluir_grupo_cromo(session, ids_cromo=[100], usuario="admin")
+
+    model_mocks[CromoCable].filter.return_value.delete.assert_called_once_with(synchronize_session=False)
+
+
+def test_eliminar_grupo_cromo_registra_alias_ignorar_para_cada_n_id():
+    session, model_mocks = _session_vacia()
+    botella = CromoBotella(n_id=100, camara_id=None)
+    _mock_para(model_mocks, CromoBotella).filter.return_value.all.return_value = [botella]
+
+    eliminar_y_excluir_grupo_cromo(session, ids_cromo=[100], usuario="admin")
+
+    alias_creado = next(c.args[0] for c in session.add.call_args_list if isinstance(c.args[0], CromoBotellaAlias))
+    assert alias_creado.id_cromo_origen == 100
+    assert alias_creado.accion == "ignorar"
+    assert alias_creado.id_cromo_destino is None
+
+
+def test_eliminar_grupo_cromo_reporta_ids_no_encontrados_sin_abortar():
+    session, model_mocks = _session_vacia()
+    botella = CromoBotella(n_id=100, camara_id=None)
+    _mock_para(model_mocks, CromoBotella).filter.return_value.all.return_value = [botella]
+
+    resultado = eliminar_y_excluir_grupo_cromo(session, ids_cromo=[100, 999], usuario="admin")
+
+    assert resultado.botellas_eliminadas == [100]
+    assert resultado.no_encontradas == [999]
+
+
+def test_eliminar_grupo_cromo_dedup_ids_repetidos():
+    session, model_mocks = _session_vacia()
+    botella = CromoBotella(n_id=100, camara_id=None)
+    _mock_para(model_mocks, CromoBotella).filter.return_value.all.return_value = [botella]
+
+    resultado = eliminar_y_excluir_grupo_cromo(session, ids_cromo=[100, 100], usuario="admin")
+
+    assert resultado.ids_solicitados == [100]
+    session.delete.assert_called_once_with(botella)

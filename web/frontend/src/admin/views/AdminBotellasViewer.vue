@@ -197,7 +197,33 @@
             >
               Consolidar
             </button>
+            <button
+              v-if="miembrosCromo(grupo).length > 0"
+              class="btn subtle botellas-viewer__btn-danger"
+              type="button"
+              @click="abrirEliminarGrupo(grupo)"
+            >
+              Borrar y Excluir Cromo
+            </button>
           </header>
+
+          <div v-if="grupoEliminarConfirmarKey === grupoKey(grupo)" class="botellas-viewer__eliminar-grupo-confirm">
+            <p>
+              ⚠️ ¿Eliminar físicamente {{ miembrosCromo(grupo).length }} Botella(s) Cromo de este grupo
+              (n_id: {{ miembrosCromo(grupo).map((m) => m.id).join(', ') }}), junto con sus cables y
+              fusiones asociados, y excluirlas de futuras ingestas? Esta acción no se puede deshacer.
+            </p>
+            <p v-if="errorEliminarGrupo" class="botellas-viewer__eliminar-grupo-error">{{ errorEliminarGrupo }}</p>
+            <div class="botellas-viewer__eliminar-grupo-actions">
+              <button class="btn danger" type="button" :disabled="eliminandoGrupo" @click="confirmarEliminarGrupo(grupo)">
+                {{ eliminandoGrupo ? 'Eliminando...' : 'Sí, eliminar y excluir' }}
+              </button>
+              <button class="btn subtle" type="button" :disabled="eliminandoGrupo" @click="cerrarEliminarGrupo">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
           <div class="botellas-viewer__grupo-miembros">
             <div v-for="miembro in grupo.miembros" :key="`${miembro.origen}:${miembro.id}`" class="botellas-viewer__miembro-row">
               <span :class="['botellas-viewer__origen-badge', `is-${miembro.origen}`]">{{ miembro.origen === 'legado' ? 'Legado' : 'Cromo' }}</span>
@@ -264,6 +290,7 @@ import ModalApropiarBotella from '../../components/infra/ModalApropiarBotella.vu
 import ModalConsolidarBotellas from '../../components/infra/ModalConsolidarBotellas.vue';
 import {
   apropiarMasivoBotellas,
+  eliminarGrupoCromo,
   estadoBotellaToken,
   exportarBotellasInconsistenciasUrl,
   getBotellasDuplicados,
@@ -309,6 +336,10 @@ const resultadoMasiva = ref<string | null>(null);
 
 const modalConsolidarOpen = ref(false);
 const grupoParaConsolidar = ref<GrupoBotellasDuplicadas | null>(null);
+
+const grupoEliminarConfirmarKey = ref<string | null>(null);
+const eliminandoGrupo = ref(false);
+const errorEliminarGrupo = ref('');
 
 const vista = ref<'grid' | 'list'>(
   (localStorage.getItem(VISTA_STORAGE_KEY) as 'grid' | 'list' | null) === 'list' ? 'list' : 'grid',
@@ -471,6 +502,40 @@ function abrirConsolidarManual(): void {
 
 async function handleConsolidado(): Promise<void> {
   await reloadFromZero();
+}
+
+function grupoKey(grupo: GrupoBotellasDuplicadas): string {
+  return `${grupo.camara_padre_id}:${grupo.clave_normalizada}`;
+}
+
+function miembrosCromo(grupo: GrupoBotellasDuplicadas): BotellaDuplicadaItem[] {
+  return grupo.miembros.filter((m) => m.origen === 'cromo');
+}
+
+function abrirEliminarGrupo(grupo: GrupoBotellasDuplicadas): void {
+  grupoEliminarConfirmarKey.value = grupoKey(grupo);
+  errorEliminarGrupo.value = '';
+}
+
+function cerrarEliminarGrupo(): void {
+  grupoEliminarConfirmarKey.value = null;
+  errorEliminarGrupo.value = '';
+}
+
+async function confirmarEliminarGrupo(grupo: GrupoBotellasDuplicadas): Promise<void> {
+  const ids = miembrosCromo(grupo).map((m) => m.id);
+  if (ids.length === 0) return;
+  eliminandoGrupo.value = true;
+  errorEliminarGrupo.value = '';
+  try {
+    await eliminarGrupoCromo(ids);
+    grupoEliminarConfirmarKey.value = null;
+    await reloadDuplicados();
+  } catch (err: unknown) {
+    errorEliminarGrupo.value = err instanceof Error ? err.message : 'No se pudo eliminar el grupo.';
+  } finally {
+    eliminandoGrupo.value = false;
+  }
 }
 
 onMounted(async () => {
@@ -834,6 +899,33 @@ onBeforeUnmount(() => {
 .botellas-viewer__grupo-badge.is-manual {
   background: color-mix(in srgb, var(--color-neutral-500) 20%, transparent);
   color: var(--color-neutral-100);
+}
+
+.botellas-viewer__btn-danger {
+  border-color: color-mix(in srgb, var(--color-state-error) 45%, transparent);
+  color: var(--color-state-error);
+}
+
+.botellas-viewer__eliminar-grupo-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-state-error) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-state-error) 35%, transparent);
+  color: var(--color-state-error);
+  font-size: 13px;
+}
+
+.botellas-viewer__eliminar-grupo-confirm p {
+  margin: 0;
+}
+
+.botellas-viewer__eliminar-grupo-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .botellas-viewer__grupo-miembros {

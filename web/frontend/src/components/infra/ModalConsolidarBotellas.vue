@@ -84,6 +84,11 @@
           <input type="checkbox" :value="l.id" v-model="idsLegadoSeleccionados" />
           <span>{{ l.nombre || `Botella ${l.id}` }} (legado, ID {{ l.id }})</span>
         </label>
+        <label class="consolidar-candidato">
+          <input type="checkbox" v-model="forzarCamara" />
+          <span>Forzar asociación a la Cámara — sólo aplica a estas Botellas legado: ignora el
+          rechazo si la Botella Cromo destino no comparte su misma Cámara padre.</span>
+        </label>
       </section>
 
       <section class="consolidar-section">
@@ -168,6 +173,7 @@ const destinoListaId = ref<number | null>(null);
 const destinoManualTexto = ref('');
 const nombreDestino = ref('');
 const idsLegadoSeleccionados = ref<number[]>([]);
+const forzarCamara = ref(false);
 const origenesExtra = ref<number[]>([]);
 const nuevoOrigenTexto = ref('');
 const operatividadManual = ref<boolean | null>(null);
@@ -244,6 +250,7 @@ function resetState(): void {
   }
   destinoManualTexto.value = '';
   idsLegadoSeleccionados.value = candidatosLegado.value.map((l) => l.id);
+  forzarCamara.value = false;
 }
 
 function handleClose(): void {
@@ -262,6 +269,7 @@ async function handleConsolidar(): Promise<void> {
       idDestinoCromo: destinoId.value,
       idsLegado: idsLegadoSeleccionados.value,
       nombreDestino: nombreDestino.value.trim() || null,
+      forceCameraAssociation: forzarCamara.value,
     });
     origenesConsolidadosCount.value = origenes.length;
     resultado.value = data;

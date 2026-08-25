@@ -5871,13 +5871,17 @@ async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMa
 class BotellaConsolidarRequestModel(BaseModel):
     """Payload para consolidar un grupo LIBRE de n_ids Cromo (no restringido a un grupo detectado
     automáticamente) hacia un único n_id destino, más opcionalmente una o más Botellas legado y un
-    nombre corregido para el destino."""
+    nombre corregido para el destino. `force_camera_association=True` bypasea el guard de "misma
+    Cámara padre" de `apropiar_legado_a_cromo` para los `ids_legado` incluidos — no afecta la
+    consolidación Cromo↔Cromo (`ids_origen_cromo`), que no tiene ese guard (ver docs/decisiones.md
+    2026-08-24)."""
 
     ids_origen_cromo: list[int] = Field(default_factory=list)
     id_destino_cromo: int
     ids_legado: list[int] = Field(default_factory=list)
     nombre_destino: str | None = None
     motivo: str | None = None
+    force_camera_association: bool = False
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
@@ -5913,6 +5917,7 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
                     nombre_destino=body.nombre_destino,
                     motivo=body.motivo,
                     usuario=username,
+                    force_camera_association=body.force_camera_association,
                 )
             except (ConsolidacionBotellaError, ApropiacionBotellaError) as exc:
                 session.rollback()
@@ -5949,6 +5954,7 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
                 "camara_aliases_migrados": resultado.camara_aliases_migrados,
                 "nombre_anterior": resultado.nombre_anterior,
                 "nombre_nuevo": resultado.nombre_nuevo,
+                "legados_con_camara_forzada": resultado.legados_con_camara_forzada,
             })
     except HTTPException:
         raise
@@ -6093,6 +6099,77 @@ async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestMo
     except Exception as exc:
         logger.exception("action=botellas_eliminar_error user=%s error=%s", username, exc)
         return JSONResponse({"error": "No se pudo eliminar la Botella"}, status_code=500)
+
+
+class BotellaEliminarGrupoRequestModel(BaseModel):
+    """Payload para "Borrar y Excluir Cromo": borrado físico FORZADO de un grupo de `CromoBotella`
+    conflictivas (botón de grupo del visor de duplicados). A diferencia de
+    `BotellaEliminarRequestModel`, ignora deliberadamente la política "bloquear, nunca forzar" —
+    ver `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
+
+    ids_cromo: list[int] = Field(default_factory=list)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/eliminar-grupo")
+async def botellas_eliminar_grupo_web(
+    request: Request, body: BotellaEliminarGrupoRequestModel
+) -> JSONResponse:
+    """Elimina físicamente un grupo de Botellas Cromo conflictivas (residuo de cambios de nombre en
+    la ingesta) junto con sus `CromoCable`/`CromoFusion` asociados, SIN bloquear por datos reales —
+    a diferencia de `/api/infra/botellas/eliminar`. Registra cada n_id en `app.cromo_botella_alias`
+    (`accion='ignorar'`) para que la ingesta no las resucite. Ver
+    `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_eliminar_grupo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_botella_delete_service import (
+            EliminacionBloqueadaError,
+            eliminar_y_excluir_grupo_cromo,
+        )
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = eliminar_y_excluir_grupo_cromo(
+                    session, ids_cromo=body.ids_cromo, usuario=username
+                )
+            except EliminacionBloqueadaError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_eliminar_grupo user=%s botellas=%s cables=%d fusiones=%d "
+                "aliases=%d no_encontradas=%s",
+                username,
+                resultado.botellas_eliminadas,
+                resultado.cables_eliminados,
+                resultado.fusiones_eliminadas,
+                resultado.aliases_registrados,
+                resultado.no_encontradas,
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
+            )
+            return JSONResponse({
+                "ok": True,
+                "botellas_eliminadas": resultado.botellas_eliminadas,
+                "cables_eliminados": resultado.cables_eliminados,
+                "fusiones_eliminadas": resultado.fusiones_eliminadas,
+                "aliases_registrados": resultado.aliases_registrados,
+                "no_encontradas": resultado.no_encontradas,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_eliminar_grupo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo eliminar el grupo de Botellas"}, status_code=500)
 
 
 class CamaraEliminarRequestModel(BaseModel):

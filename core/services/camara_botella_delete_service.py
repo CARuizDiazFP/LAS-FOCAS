@@ -26,7 +26,7 @@ auditoría nueva."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from sqlalchemy import or_
@@ -67,6 +67,16 @@ class ResultadoEliminacionCamara:
     botellas_legado_eliminadas: int = 0
     botellas_cromo_eliminadas: int = 0
     aliases_registrados: int = 0
+
+
+@dataclass(slots=True)
+class ResultadoEliminacionGrupoCromo:
+    ids_solicitados: list[int]
+    botellas_eliminadas: list[int] = field(default_factory=list)
+    cables_eliminados: int = 0
+    fusiones_eliminadas: int = 0
+    aliases_registrados: int = 0
+    no_encontradas: list[int] = field(default_factory=list)
 
 
 def _bloqueo_camara(
@@ -234,11 +244,62 @@ def eliminar_camara(session: Session, *, camara_id: int, usuario: str) -> Result
     )
 
 
+def eliminar_y_excluir_grupo_cromo(
+    session: Session, *, ids_cromo: list[int], usuario: str
+) -> ResultadoEliminacionGrupoCromo:
+    """Borrado físico FORZADO de un grupo de `CromoBotella` conflictivas — exclusivo para el botón
+    "Borrar y Excluir Cromo" del visor de duplicados. A diferencia de `eliminar_botella`/
+    `eliminar_camara`, NUNCA bloquea por Cables/Fusiones reales asociados: es deliberadamente el
+    único camino de este módulo que ignora la política "bloquear, nunca forzar" del 2026-08-20 —
+    ambas funciones individuales quedan intactas, sin flag de bypass.
+
+    Borra también los `CromoCable`/`CromoFusion` asociados (sin FK dura, la limpieza es explícita) y
+    registra cada n_id en `cromo_botella_alias` (`accion='ignorar'`, vía `_registrar_alias_ignorar`)
+    para que la ingesta no las resucite. No intenta limpiar la Cámara padre si quedó vacía — no fue
+    pedido, y mezclarlo con un borrado sin bloqueos daría una garantía distinta a la de
+    `eliminar_botella`."""
+    ids_unicos = list(dict.fromkeys(ids_cromo))
+    if not ids_unicos:
+        raise EliminacionBloqueadaError("No se indicó ninguna Botella Cromo para eliminar.")
+
+    encontradas = session.query(CromoBotella).filter(CromoBotella.n_id.in_(ids_unicos)).all()
+    ids_existentes = {b.n_id for b in encontradas}
+    no_encontradas = [n_id for n_id in ids_unicos if n_id not in ids_existentes]
+
+    cables_eliminados = (
+        session.query(CromoCable)
+        .filter(or_(CromoCable.extremo_a_n_id.in_(ids_unicos), CromoCable.extremo_b_n_id.in_(ids_unicos)))
+        .delete(synchronize_session=False)
+    )
+    fusiones_eliminadas = (
+        session.query(CromoFusion)
+        .filter(CromoFusion.botella_n_id.in_(ids_unicos))
+        .delete(synchronize_session=False)
+    )
+
+    for botella in encontradas:
+        _registrar_alias_ignorar(session, botella.n_id, usuario)
+        session.delete(botella)
+
+    session.flush()
+
+    return ResultadoEliminacionGrupoCromo(
+        ids_solicitados=ids_unicos,
+        botellas_eliminadas=[b.n_id for b in encontradas],
+        cables_eliminados=cables_eliminados,
+        fusiones_eliminadas=fusiones_eliminadas,
+        aliases_registrados=len(encontradas),
+        no_encontradas=no_encontradas,
+    )
+
+
 __all__ = [
     "BloqueoDetalle",
     "EliminacionBloqueadaError",
     "ResultadoEliminacionBotella",
     "ResultadoEliminacionCamara",
+    "ResultadoEliminacionGrupoCromo",
     "eliminar_botella",
     "eliminar_camara",
+    "eliminar_y_excluir_grupo_cromo",
 ]

@@ -139,11 +139,36 @@ def test_consolidar_migra_legado_y_agrega_sus_contadores(mock_apropiar):
         session, ids_origen_cromo=[], id_destino_cromo=999, ids_legado=[1], usuario="admin"
     )
 
-    mock_apropiar.assert_called_once_with(session, legado_id=1, cromo_n_id=999, usuario="admin")
+    mock_apropiar.assert_called_once_with(
+        session, legado_id=1, cromo_n_id=999, usuario="admin", forzar_camara=False
+    )
     assert resultado.legados_migrados == [1]
     assert resultado.cables_migrados == 2
     assert resultado.empalmes_migrados == 1
     assert resultado.camara_aliases_migrados == 3
+    assert resultado.legados_con_camara_forzada == []
+
+
+@patch("core.services.cromo.consolidacion_service.apropiar_legado_a_cromo")
+def test_consolidar_pasa_force_camera_association_a_apropiar_legado(mock_apropiar):
+    destino = CromoBotella(n_id=999, nombre="Golden")
+    mock_apropiar.return_value = ResultadoApropiacionBotella(
+        legado_id=1, legado_nombre="Bot 2", cromo_n_id=999, cromo_nombre="Golden",
+        camara_padre_id=10, camara_padre_nombre="Padre", botellas_legado_migradas=0,
+        cromo_reasignadas=0, cables_migrados=0, empalmes_migrados=0, ingresos_migrados=0,
+        aliases_migrados=0, estado_final="LIBRE", camara_forzada=True,
+    )
+    session = _build_session(destino=destino)
+
+    resultado = consolidar_grupo_botellas(
+        session, ids_origen_cromo=[], id_destino_cromo=999, ids_legado=[1],
+        usuario="admin", force_camera_association=True,
+    )
+
+    mock_apropiar.assert_called_once_with(
+        session, legado_id=1, cromo_n_id=999, usuario="admin", forzar_camara=True
+    )
+    assert resultado.legados_con_camara_forzada == [1]
 
 
 @patch("core.services.cromo.consolidacion_service.apropiar_legado_a_cromo")

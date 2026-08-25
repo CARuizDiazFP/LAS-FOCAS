@@ -136,8 +136,9 @@ export interface BotellasDuplicadosResponse {
 
 export interface BotellasDuplicadosParams {
   /** `true` saltea la caché Redis del backend y fuerza el recálculo síncrono. Sólo para el botón
-   * "Actualizar" — es la escotilla manual para cuando algo cambió por fuera de los 7 mutadores que
-   * invalidan la caché (ingesta Cromo, baneos/estados, merge/eliminar Cámaras, backfill). */
+   * "Actualizar" — es la escotilla manual para cuando algo cambió por fuera de los 8 mutadores que
+   * invalidan la caché (ingesta Cromo, baneos/estados, merge/eliminar Cámaras, backfill,
+   * eliminar-grupo). */
   refrescar?: boolean;
 }
 
@@ -216,6 +217,9 @@ export interface ConsolidarBotellasPayload {
   idsLegado?: number[];
   nombreDestino?: string | null;
   motivo?: string | null;
+  /** Bypasea el guard de "misma Cámara padre" de `apropiar_legado_a_cromo` para las
+   * `idsLegado` incluidas — no afecta `idsOrigenCromo` (Cromo↔Cromo no tiene ese guard). */
+  forceCameraAssociation?: boolean;
 }
 
 export interface AliasRepuntadoItem {
@@ -240,6 +244,7 @@ export interface ConsolidarBotellasResponse {
   camara_aliases_migrados: number;
   nombre_anterior: string | null;
   nombre_nuevo: string | null;
+  legados_con_camara_forzada: number[];
 }
 
 /** Consolida un grupo libre de n_ids Cromo hacia un único destino — ver `POST
@@ -255,6 +260,7 @@ export async function consolidarBotellasCromo(
       ids_legado: payload.idsLegado ?? [],
       nombre_destino: payload.nombreDestino ?? null,
       motivo: payload.motivo ?? null,
+      force_camera_association: payload.forceCameraAssociation ?? false,
     },
     csrf: true,
   });
@@ -299,6 +305,28 @@ export async function eliminarBotella(origen: BotellaOrigen, id: number): Promis
   return requestJson<EliminarBotellaResponse>('/api/infra/botellas/eliminar', {
     method: 'POST',
     json: { origen, id },
+    csrf: true,
+  });
+}
+
+// ── "Borrar y Excluir Cromo" — borrado forzado de un grupo completo ─────────
+// A diferencia de eliminarBotella, NUNCA bloquea por Cables/Fusiones reales asociados — es el
+// camino deliberado para el botón de grupo del visor de duplicados. Ver POST
+// /api/infra/botellas/eliminar-grupo.
+
+export interface EliminarGrupoCromoResponse {
+  ok: boolean;
+  botellas_eliminadas: number[];
+  cables_eliminados: number;
+  fusiones_eliminadas: number;
+  aliases_registrados: number;
+  no_encontradas: number[];
+}
+
+export async function eliminarGrupoCromo(idsCromo: number[]): Promise<EliminarGrupoCromoResponse> {
+  return requestJson<EliminarGrupoCromoResponse>('/api/infra/botellas/eliminar-grupo', {
+    method: 'POST',
+    json: { ids_cromo: idsCromo },
     csrf: true,
   });
 }

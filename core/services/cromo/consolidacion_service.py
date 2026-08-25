@@ -60,6 +60,9 @@ class ResultadoConsolidacion:
     camara_aliases_migrados: int = 0
     nombre_anterior: Optional[str] = None
     nombre_nuevo: Optional[str] = None
+    # legado_id de cada Botella legado apropiada donde `force_camera_association` tuvo que bypasear
+    # el guard de "misma Cámara padre" — nunca silencioso, mismo criterio que `alias_repuntados`.
+    legados_con_camara_forzada: list[int] = field(default_factory=list)
 
 
 def consolidar_grupo_botellas(
@@ -71,6 +74,7 @@ def consolidar_grupo_botellas(
     nombre_destino: Optional[str] = None,
     motivo: Optional[str] = None,
     usuario: str,
+    force_camera_association: bool = False,
 ) -> ResultadoConsolidacion:
     ids_legado = ids_legado or []
     # De-dup preservando orden — un checkbox repetido o un id tipeado dos veces no debe intentar
@@ -181,19 +185,26 @@ def consolidar_grupo_botellas(
     session.flush()
 
     legados_migrados: list[int] = []
+    legados_con_camara_forzada: list[int] = []
     cables_migrados = 0
     empalmes_migrados = 0
     ingresos_migrados = 0
     camara_aliases_migrados = 0
     for legado_id in ids_legado:
         resultado_legado = apropiar_legado_a_cromo(
-            session, legado_id=legado_id, cromo_n_id=id_destino_cromo, usuario=usuario
+            session,
+            legado_id=legado_id,
+            cromo_n_id=id_destino_cromo,
+            usuario=usuario,
+            forzar_camara=force_camera_association,
         )
         legados_migrados.append(legado_id)
         cables_migrados += resultado_legado.cables_migrados
         empalmes_migrados += resultado_legado.empalmes_migrados
         ingresos_migrados += resultado_legado.ingresos_migrados
         camara_aliases_migrados += resultado_legado.aliases_migrados
+        if resultado_legado.camara_forzada:
+            legados_con_camara_forzada.append(legado_id)
 
     nombre_anterior = destino.nombre
     nombre_nuevo = None
@@ -218,6 +229,7 @@ def consolidar_grupo_botellas(
         camara_aliases_migrados=camara_aliases_migrados,
         nombre_anterior=nombre_anterior,
         nombre_nuevo=nombre_nuevo,
+        legados_con_camara_forzada=legados_con_camara_forzada,
     )
 
 

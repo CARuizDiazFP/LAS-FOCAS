@@ -262,3 +262,48 @@ def test_apropiar_migra_alias_existentes_de_la_legado_sin_duplicar(mock_grupo, m
     assert alias_unico.camara_id == 10
     assert resultado.aliases_migrados == 1
     session.delete.assert_any_call(alias_duplicado)
+
+
+# ── forzar_camara ──────────────────────────────────────────────────────────
+
+
+@patch("core.services.botella_merge_service.aplicar_estado_a_grupo")
+@patch("core.services.botella_merge_service.miembros_del_grupo")
+def test_apropiar_forzar_camara_permite_padre_distinto_y_reasigna_camara_id_del_cromo(mock_grupo, mock_aplicar) -> None:
+    """`forzar_camara=True` bypasea el guard de "misma Cámara padre" — pero los datos reales del
+    legado siempre se migran a su propio padre (`legado.camara_padre_id`), nunca al `camara_id`
+    previo de la Cromo. Para que el resultado sea coherente ("setear el id_camara correcto"), la
+    Cromo superviviente debe adoptar esa misma Cámara padre."""
+    legado = Camara(id=1, nombre="Bot 2", camara_padre_id=10, estado=CamaraEstado.LIBRE)
+    cromo = CromoBotella(n_id=100, nombre="Botella 2", camara_id=99, estado=CamaraEstado.LIBRE)
+    padre = Camara(id=10, nombre="Cra Rivadavia 100 CF", estado=CamaraEstado.LIBRE)
+    legado.aliases = []
+    mock_grupo.return_value = [padre]
+
+    session = _build_session(legado, cromo, padre)
+    resultado = apropiar_legado_a_cromo(
+        session, legado_id=1, cromo_n_id=100, usuario="admin", forzar_camara=True
+    )
+
+    assert resultado.camara_forzada is True
+    assert cromo.camara_id == 10
+    session.delete.assert_any_call(legado)
+
+
+@patch("core.services.botella_merge_service.aplicar_estado_a_grupo")
+@patch("core.services.botella_merge_service.miembros_del_grupo")
+def test_apropiar_forzar_camara_sin_mismatch_no_marca_camara_forzada(mock_grupo, mock_aplicar) -> None:
+    """Si el padre ya coincidía, `forzar_camara=True` no debe reportar un forzado que no ocurrió."""
+    legado = Camara(id=1, nombre="Bot 2", camara_padre_id=10, estado=CamaraEstado.LIBRE)
+    cromo = CromoBotella(n_id=100, nombre="Botella 2", camara_id=10, estado=CamaraEstado.LIBRE)
+    padre = Camara(id=10, nombre="Cra Rivadavia 100 CF", estado=CamaraEstado.LIBRE)
+    legado.aliases = []
+    mock_grupo.return_value = [padre]
+
+    session = _build_session(legado, cromo, padre)
+    resultado = apropiar_legado_a_cromo(
+        session, legado_id=1, cromo_n_id=100, usuario="admin", forzar_camara=True
+    )
+
+    assert resultado.camara_forzada is False
+    assert cromo.camara_id == 10

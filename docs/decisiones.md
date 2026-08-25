@@ -480,6 +480,65 @@
   +4113/-943 líneas. `LLM_PROVIDER=heuristic pytest -q` completo al cierre: **1012 passed, 5 skipped,
   0 failed**.
 
+## 2026-08-24 (cont.) — "Borrar y Excluir Cromo" (grupo) + "Forzar asociación a la Cámara" (consolidación)
+
+- **Contexto:** el visor de Botellas duplicadas dejaba dos casos sin salida: un grupo de
+  `CromoBotella` conflictivas (residuo de un cambio de nombre en la ingesta) que SÍ tienen
+  `CromoCable`/`CromoFusion` reales no se podía borrar (`eliminar_botella` las bloquea, correctamente,
+  por diseño); y consolidar un grupo mixto legado+Cromo se rechazaba sin excepción cuando la Cromo
+  destino no compartía Cámara padre con el legado (`apropiar_legado_a_cromo`, guard deliberado del
+  2026-08-19). El ticket pidió una vía deliberada para ambos casos, confirmada explícitamente por el
+  usuario para 4 puntos antes de diseñar:
+  1. El checkbox de forzado en consolidación sólo bypasea el guard YA EXISTENTE (legado↔Cromo); no se
+     toca el camino Cromo↔Cromo puro.
+  2. "Borrar y Excluir Cromo" actúa sobre TODOS los miembros Cromo del grupo mostrado, sin selección
+     por subconjunto.
+  3. El borrado en cascada es físico completo (`DELETE` real de `CromoCable`/`CromoFusion`), incluso
+     si el otro extremo de un cable pertenece a una botella que se conserva.
+  4. Se implementa como una función nueva y separada — `eliminar_botella`/`eliminar_camara` no
+     cambian, siguen bloqueando siempre; "bloquear, nunca forzar" (2026-08-20) sigue vigente para
+     todo el resto del sistema.
+- **Hallazgo real al auditar el código para este ticket (no pedido, dejado documentado y sin
+  resolver por decisión explícita)**: la consolidación Cromo↔Cromo pura
+  (`consolidar_grupo_botellas` con `ids_origen_cromo` y sin `ids_legado`) **nunca tuvo ningún guard de
+  "misma Cámara padre"**, ni en el servicio ni en `ModalConsolidarBotellas.vue` — se puede fusionar
+  cualquier n_id Cromo hacia cualquier destino sin ninguna advertencia. El único guard real vive
+  dentro de `apropiar_legado_a_cromo` y sólo se dispara si el payload incluye `ids_legado`. Confirmado
+  con el usuario (decisión 1 arriba): se documenta como gap conocido, no se cierra en este ticket.
+- **`apropiar_legado_a_cromo` (`core/services/botella_merge_service.py`)**: nuevo parámetro
+  `forzar_camara`. Los datos reales del legado (Cable/Empalme/Ingreso/hijas/alias) SIEMPRE se migran a
+  `legado.camara_padre_id`, nunca al `camara_id` previo de la Cromo — así que forzar el bypass, por sí
+  solo, no dejaba el resultado coherente. Fix: cuando `forzar_camara=True` y había mismatch, la
+  `CromoBotella` superviviente adopta `legado.camara_padre_id` tras la migración
+  (`ResultadoApropiacionBotella.camara_forzada`, nunca silencioso — mismo criterio que
+  `alias_repuntados` de `consolidacion_service.py`). `consolidar_grupo_botellas` gana
+  `force_camera_association`, pasado tal cual a `apropiar_legado_a_cromo` sólo para el loop de
+  `ids_legado`; agrega `legados_con_camara_forzada` al resultado. `BotellaConsolidarRequestModel`
+  (`web/app/main.py`) gana el campo homónimo.
+- **`core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`** (nueva): sin
+  ningún chequeo de bloqueo — borra `CromoCable`/`CromoFusion` asociados (bulk `.delete()`, sin FK
+  dura así que la limpieza es explícita), registra cada n_id en `cromo_botella_alias`
+  (`accion='ignorar'`, reusa `_registrar_alias_ignorar`) y borra la `CromoBotella`. No toca la Cámara
+  padre aunque quede vacía — no fue pedido. Nuevo endpoint `POST /api/infra/botellas/eliminar-grupo`
+  (admin, CSRF) — es el **8vo** endpoint mutador (no 7) que encola un recálculo de duplicados vía
+  `encolar_recalculo_duplicados_botellas` (ver entrada 2026-08-21 (cont.)).
+- **Frontend**: `AdminBotellasViewer.vue` — botón "Borrar y Excluir Cromo" por tarjeta de grupo +
+  confirmación inline (mismo estilo que la eliminación individual, no modal).
+  `ModalConsolidarBotellas.vue` — checkbox "Forzar asociación a la Cámara" junto a la selección de
+  Botellas legado.
+- **Verificado real**: `pytest -q` completo, 1034 passed / 5 skipped (0 regresiones); `vue-tsc
+  --noEmit` — 4 errores, los mismos preexistentes de `InfraTab.vue` (ajenos, no tocado); `npm run
+  build` sin errores; `lasfocasdev-web` reconstruido y reiniciado, ambos endpoints responden 401 sin
+  sesión.
+- **No hecho, fuera de alcance de esta sesión**: sin ejercitar el flujo end-to-end contra
+  `lasfocasdev-postgres` real (mismo límite que casi todas las sesiones previas de este módulo —
+  consolidación 2026-08-19, eliminación 2026-08-20, separación 2026-08-21 — sin credenciales de un
+  usuario admin real a mano). Crear un usuario QA temporal en `app.web_users` para esta sesión quedó
+  bloqueado por el clasificador de permisos de Claude Code (mutación sobre el sistema de auth); el
+  usuario confirmó cerrar sin esa verificación. El comportamiento nuevo queda cubierto por 56 tests
+  unitarios con mocks (incluyendo el caso explícito "cable con un extremo en botella conservada se
+  borra igual" a nivel de estructura de la query, no de efecto real en Postgres).
+
 ## 2026-08-25 — Ampliación de la tabla de pelos (Cromo) + fix del bug "Info cable X BN" con cables duplicados
 
 - **Contexto:** Pedido de ampliar la tabla de detalle de cables (Inventario Cromo) con columnas de

@@ -65,6 +65,7 @@ class ResultadoApropiacionBotella:
     ingresos_migrados: int
     aliases_migrados: int
     estado_final: str
+    camara_forzada: bool = False
 
 
 def apropiar_legado_a_cromo(
@@ -73,6 +74,7 @@ def apropiar_legado_a_cromo(
     legado_id: int,
     cromo_n_id: int,
     usuario: str,
+    forzar_camara: bool = False,
 ) -> ResultadoApropiacionBotella:
     legado = session.query(Camara).filter(Camara.id == legado_id).first()
     if legado is None:
@@ -84,7 +86,8 @@ def apropiar_legado_a_cromo(
     if cromo is None:
         raise ApropiacionBotellaError("Botella Cromo no encontrada")
 
-    if cromo.camara_id != legado.camara_padre_id:
+    camara_forzada = cromo.camara_id != legado.camara_padre_id
+    if camara_forzada and not forzar_camara:
         raise ApropiacionBotellaError(
             "La Botella Cromo no pertenece a la misma Cámara padre que la Botella legado"
         )
@@ -152,6 +155,12 @@ def apropiar_legado_a_cromo(
         aliases_padre_existentes.add(clave)
         aliases_migrados += 1
 
+    # Forzado (mismatch bypaseado más arriba): los datos reales del legado se migran siempre al
+    # padre PROPIO del legado (nunca al camara_id previo de la Cromo, ver puntos 3-5) — para que el
+    # resultado sea coherente, la Cromo superviviente adopta esa misma Cámara.
+    if camara_forzada:
+        cromo.camara_id = padre.id
+
     session.flush()
 
     # 7. Estado final: más restrictivo entre el grupo del padre y el estado de la legado, que está a
@@ -178,6 +187,7 @@ def apropiar_legado_a_cromo(
             motivo=(
                 f"Botella legado '{nombre_legado}' (ID {legado.id}) apropiada por Botella Cromo "
                 f"'{cromo.nombre}' (n_id {cromo.n_id}); datos reasignados a esta Cámara"
+                + (" (asociación de Cámara forzada por el admin)" if camara_forzada else "")
             ),
             estado_anterior=estado_padre_original,
             estado_nuevo=estado_final,
@@ -202,6 +212,7 @@ def apropiar_legado_a_cromo(
         ingresos_migrados=ingresos_migrados,
         aliases_migrados=aliases_migrados,
         estado_final=estado_final.value if isinstance(estado_final, CamaraEstado) else str(estado_final),
+        camara_forzada=camara_forzada,
     )
 
 
