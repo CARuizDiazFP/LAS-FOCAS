@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import pytest
@@ -30,6 +31,21 @@ class _SesionFake:
         self._respuestas = respuestas or {}
 
     async def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
+        texto = str(stmt)
+        for clave, filas in self._respuestas.items():
+            if clave in texto:
+                return _ResultadoFilas(filas)
+        return _ResultadoFilas([])
+
+
+class _SesionSyncFake:
+    """Igual que `_SesionFake`, pero `execute` es sync — `pelos_de_tubo_sync` usa `Session`
+    (sqlalchemy.orm), no `AsyncSession` (corre dentro de un callback síncrono de Slack Bolt)."""
+
+    def __init__(self, respuestas: Optional[dict[str, list[tuple]]] = None) -> None:
+        self._respuestas = respuestas or {}
+
+    def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
         texto = str(stmt)
         for clave, filas in self._respuestas.items():
             if clave in texto:
@@ -65,11 +81,15 @@ _FILA_TUBO = (129001, 1, "AZUL", True)  # n_id, orden, nombre_color, vigente
 _FILA_PELO_SIN_SERVICIO = (
     9001, 129001, "1", 1, "AZUL", "LIBRE", None, None, True,  # pelo
     None, None, None, None, None, None, None, None, None, None,  # servicio (todo None)
+    None, None, None,  # verificable, status, fecha_hora_status
 )
+
+_FECHA_STATUS = datetime(2026, 8, 20, 10, 30, tzinfo=timezone.utc)
 
 _FILA_PELO_CON_SERVICIO = (
     9002, 129001, "2", 2, "AZUL", "CLIENTE", "FO 1234 - CLIENTE", "1234", True,  # pelo
     501, "SRV-001", "SRV-001", "Cliente Uno", "Cliente Uno SA", "ACTIVO", 1, "CORPORATIVO", "1234", "REGEX_EXACTO",
+    True, "OPERATIVO", _FECHA_STATUS,  # verificable, status, fecha_hora_status
 )
 
 
@@ -101,6 +121,42 @@ async def test_obtener_detalle_cable_con_tubos_y_pelos_sin_servicio():
     assert tubo.tiene_fila_propia is True
     assert len(tubo.pelos) == 1
     assert tubo.pelos[0].servicios == []
+
+
+@pytest.mark.asyncio
+async def test_obtener_detalle_cable_expone_verificacion_del_pelo():
+    """`verificable`/`status`/`fecha_hora_status` (migración 20260825_01) no tienen poblador
+    automático todavía — sólo se verifica que el servicio los exponga tal cual vienen de la fila."""
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_cables": [_FILA_CABLE],
+            "FROM app.cromo_tubos": [_FILA_TUBO],
+            "FROM app.cromo_pelos p": [_FILA_PELO_CON_SERVICIO],
+        }
+    )
+    resultado = await detalle.obtener_detalle_cable(sesion, 51)
+
+    pelo = resultado.tubos[0].pelos[0]
+    assert pelo.verificable is True
+    assert pelo.status == "OPERATIVO"
+    assert pelo.fecha_hora_status == _FECHA_STATUS
+
+
+@pytest.mark.asyncio
+async def test_obtener_detalle_cable_verificacion_del_pelo_sin_valor_es_none():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_cables": [_FILA_CABLE],
+            "FROM app.cromo_tubos": [_FILA_TUBO],
+            "FROM app.cromo_pelos p": [_FILA_PELO_SIN_SERVICIO],
+        }
+    )
+    resultado = await detalle.obtener_detalle_cable(sesion, 51)
+
+    pelo = resultado.tubos[0].pelos[0]
+    assert pelo.verificable is None
+    assert pelo.status is None
+    assert pelo.fecha_hora_status is None
 
 
 @pytest.mark.asyncio
@@ -173,3 +229,14 @@ async def test_obtener_detalle_cable_sin_tubos_ni_pelos():
 
     assert resultado.n_id == 51
     assert resultado.tubos == []
+
+
+def test_pelos_de_tubo_sync_expone_verificacion_del_pelo():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_pelos p": [_FILA_PELO_CON_SERVICIO]})
+    pelos = detalle.pelos_de_tubo_sync(sesion, 129001)
+
+    assert len(pelos) == 1
+    assert pelos[0].verificable is True
+    assert pelos[0].status == "OPERATIVO"
+    assert pelos[0].fecha_hora_status == _FECHA_STATUS
+    assert len(pelos[0].servicios) == 1

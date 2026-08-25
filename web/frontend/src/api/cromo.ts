@@ -309,6 +309,16 @@ export interface CromoPeloDetalle {
   servicio_numero: string | null;
   vigente: boolean;
   servicios: CromoServicioEncontrado[];
+  /** Prefijo de tipo de servicio extraído de `servicio_raw` por un regex de sólo-display
+   * (independiente del que gobierna `tipo_asociacion`/el matching en ingesta) — "-" si no matchea. */
+  tipo_servicio: string;
+  /** Recicla el match ya resuelto en `servicios[0]` (mismo criterio de "Servicio" previo, renombrado a
+   * "Línea") — navegable a `/servicios/ID/{linea}`. `null` si no hay match. */
+  linea: string | null;
+  cliente: string | null;
+  verificable: boolean | null;
+  status: string | null;
+  fecha_hora_status: string | null;
 }
 
 export interface CromoTuboDetalle {

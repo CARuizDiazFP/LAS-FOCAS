@@ -36,7 +36,7 @@ from core.services.cromo.verificador import servicios_por_tubo_sync
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
 from modules.slack_baneo_notifier.cable_info import (
-    buscar_cable_por_nombre,
+    buscar_cable_por_n_id_o_nombre,
     construir_respuesta_ambiguo,
     construir_respuesta_buffer_no_encontrado,
     construir_respuesta_info_buffer,
@@ -472,9 +472,11 @@ class IngresoListener:
     def _resolver_cable_o_responder(
         self, session: Any, nombre_cable: str, client: Any, channel: str, thread_ts: str
     ) -> Optional[CromoCable]:
-        """Busca el cable por nombre; si no hay exactamente un match, ya responde el aviso
-        correspondiente (no encontrado / ambiguo) y devuelve `None` para que el caller corte."""
-        cables = buscar_cable_por_nombre(session, nombre_cable)
+        """Busca el cable por n_id (si `nombre_cable` es puramente numérico — el técnico
+        reintentando con el n_id que el propio bot sugirió en un caso ambiguo) o por nombre; si no
+        hay exactamente un match, ya responde el aviso correspondiente (no encontrado / ambiguo) y
+        devuelve `None` para que el caller corte."""
+        cables = buscar_cable_por_n_id_o_nombre(session, nombre_cable)
         if not cables:
             client.chat_postMessage(
                 channel=channel, thread_ts=thread_ts, text=construir_respuesta_no_encontrado(nombre_cable), mrkdwn=True

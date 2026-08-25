@@ -6527,6 +6527,13 @@ def _serializar_extremo_cable(n_id: Any, clase: Any, legacy: Any, nombre: Any) -
 
 
 def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
+    from core.services.cromo.parser import extraer_tipo_servicio_display
+
+    # "Línea"/"Cliente" reciclan el match ya resuelto por `obtener_detalle_cable`/`pelos_de_tubo_sync`
+    # (`cromo_servicio_match` → `app.servicios`, sin JOIN nuevo) — el primero de `pelo.servicios` si
+    # existe alguno (ver PeloDetalle.servicios). "-"/None si no hay match, ningún JOIN nuevo por
+    # `Servicio.numero_linea`.
+    primer_match = pelo.servicios[0] if pelo.servicios else None
     return {
         "n_id": pelo.n_id,
         "numero_pelo": pelo.numero_pelo,
@@ -6537,6 +6544,12 @@ def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
         "servicio_numero": pelo.servicio_numero,
         "vigente": pelo.vigente,
         "servicios": [_serializar_servicio_encontrado(s) for s in pelo.servicios],
+        "tipo_servicio": extraer_tipo_servicio_display(pelo.servicio_raw),
+        "linea": primer_match.servicio_id_externo if primer_match else None,
+        "cliente": (primer_match.nombre_cliente or primer_match.cliente) if primer_match else None,
+        "verificable": pelo.verificable,
+        "status": pelo.status,
+        "fecha_hora_status": pelo.fecha_hora_status.isoformat() if pelo.fecha_hora_status else None,
     }
 
 

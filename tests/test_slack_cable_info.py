@@ -13,6 +13,7 @@ os.environ.setdefault("TESTING", "true")
 
 from core.services.cromo.verificador import ResultadoTubo, ServicioEncontrado
 from modules.slack_baneo_notifier.cable_info import (
+    buscar_cable_por_n_id_o_nombre,
     buscar_cable_por_nombre,
     construir_respuesta_ambiguo,
     construir_respuesta_buffer_no_encontrado,
@@ -105,6 +106,47 @@ class TestBuscarCableYRespuestas(unittest.TestCase):
         self.assertIn("Cra Alicia Moreau de Justo 1210 CF", respuesta)
 
 
+class TestBuscarCablePorNIdONombre(unittest.TestCase):
+    """Bug real 2026-08-25: `buscar_cable_por_nombre` sólo matchea por `nombre` — cuando el bot pide
+    "especificá por n_id" (`construir_respuesta_ambiguo`) y el usuario retoma el comando con el n_id
+    sugerido, la búsqueda por nombre no encuentra nada (ningún cable se llama literalmente "10260935")
+    y responde "no encontré el cable", aunque exista. Verificado con datos reales de
+    `lasfocasdev-postgres`: "F-LEM-11-A" tiene 2 cables vigentes (n_id 10260935 y 9498169)."""
+
+    def test_texto_numerico_busca_por_n_id_no_por_nombre(self) -> None:
+        session = MagicMock()
+        cable_fake = SimpleNamespace(n_id=10260935, nombre="F-LEM-11-A")
+        session.query.return_value.filter.return_value.first.return_value = cable_fake
+
+        resultado = buscar_cable_por_n_id_o_nombre(session, "10260935")
+
+        self.assertEqual(resultado, [cable_fake])
+        session.query.return_value.filter.return_value.all.assert_not_called()
+
+    def test_texto_numerico_sin_match_devuelve_lista_vacia(self) -> None:
+        session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = None
+
+        self.assertEqual(buscar_cable_por_n_id_o_nombre(session, "999999999"), [])
+
+    def test_texto_no_numerico_cae_a_busqueda_por_nombre(self) -> None:
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = ["cable_fake"]
+
+        resultado = buscar_cable_por_n_id_o_nombre(session, "F-LEM-11-A")
+
+        self.assertEqual(resultado, ["cable_fake"])
+
+    def test_texto_numerico_con_espacios_se_recorta(self) -> None:
+        session = MagicMock()
+        cable_fake = SimpleNamespace(n_id=9498169, nombre="F-LEM-11-A")
+        session.query.return_value.filter.return_value.first.return_value = cable_fake
+
+        resultado = buscar_cable_por_n_id_o_nombre(session, "  9498169  ")
+
+        self.assertEqual(resultado, [cable_fake])
+
+
 class TestHandleAppMention(unittest.TestCase):
     def _make_listener(self):
         from modules.slack_baneo_notifier.listener import IngresoListener
@@ -135,7 +177,7 @@ class TestHandleAppMention(unittest.TestCase):
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch(
-                "modules.slack_baneo_notifier.listener.buscar_cable_por_nombre",
+                "modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre",
                 return_value=[cable_fake],
             ),
         ):
@@ -153,7 +195,7 @@ class TestHandleAppMention(unittest.TestCase):
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_nombre", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[]),
         ):
             listener._handle_app_mention(event, client_mock)
 
@@ -169,7 +211,7 @@ class TestHandleAppMention(unittest.TestCase):
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_nombre", return_value=cables_fake),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=cables_fake),
         ):
             listener._handle_app_mention(event, client_mock)
 
@@ -279,6 +321,9 @@ class TestRespuestasBuffer(unittest.TestCase):
         self.assertIn("ACTIVO", texto)
 
     def test_respuesta_info_buffer_distingue_libre_indeterminado_y_match(self) -> None:
+        """Formato nuevo (ticket 2026-08-25): pelos con servicio muestran
+        Tipo — Línea — Cliente — Descripción (Estado); libres/sin match muestran sólo
+        "Libre — Descripción" (o "Libre" a secas si no hay descripción cruda)."""
         cable = SimpleNamespace(nombre="F-VFL-IND")
         tubo = SimpleNamespace(orden=0, nombre_color="AZ")
         servicio = ServicioEncontrado(
@@ -286,18 +331,22 @@ class TestRespuestasBuffer(unittest.TestCase):
             nombre_cliente="Cliente Real", cliente=None, estado_servicio="ACTIVO", categoria=1,
             tipo_servicio="FO", pelo_n_id=1, servicio_numero_match="2001", metodo="EXACTO",
         )
-        pelo_matcheado = SimpleNamespace(n_id=1, numero_pelo="1", servicio_raw="FO 2001", servicios=[servicio])
-        pelo_libre = SimpleNamespace(n_id=2, numero_pelo="2", servicio_raw=None, servicios=[])
+        pelo_matcheado = SimpleNamespace(
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio]
+        )
+        pelo_libre = SimpleNamespace(n_id=2, numero_pelo="2", color="AZ", servicio_raw=None, servicios=[])
         pelo_indeterminado = SimpleNamespace(
-            n_id=3, numero_pelo="3", servicio_raw="algo sin parsear", servicios=[]
+            n_id=3, numero_pelo="3", color="AZ", servicio_raw="algo sin parsear", servicios=[]
         )
 
         texto = construir_respuesta_info_buffer(cable, tubo, [pelo_matcheado, pelo_libre, pelo_indeterminado])
 
-        self.assertIn("2001", texto)
-        self.assertIn("Cliente Real", texto)
-        self.assertIn("Pelo 2: Libre", texto)
-        self.assertIn('No se identifica cliente/cable — "algo sin parsear"', texto)
+        self.assertIn(
+            "Pelo 1 (AZ): FO — 2001 — Cliente Real — FO 2001 - Cliente Real (ACTIVO)", texto
+        )
+        self.assertIn("Pelo 2 (AZ): Libre", texto)
+        self.assertNotIn("Pelo 2 (AZ): Libre —", texto)  # sin descripción, sin guión colgando
+        self.assertIn("Pelo 3 (AZ): Libre — algo sin parsear", texto)
 
     def test_respuesta_info_buffer_sin_pelos(self) -> None:
         cable = SimpleNamespace(nombre="F-VFL-IND")
@@ -326,7 +375,7 @@ class TestHandleCableBuffer(unittest.TestCase):
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
             patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero", return_value=tubo_fake),
             patch("modules.slack_baneo_notifier.listener.servicios_por_tubo_sync", return_value=resultado_fake),
         ):
@@ -343,11 +392,11 @@ class TestHandleCableBuffer(unittest.TestCase):
         event = self._make_event("Info cable F-VFL-IND B1")
         cable_fake = SimpleNamespace(n_id=99, nombre="F-VFL-IND")
         tubo_fake = SimpleNamespace(n_id=1, orden=0, nombre_color="AZ")
-        pelo_fake = SimpleNamespace(n_id=1, numero_pelo="1", servicio_raw=None, servicios=[])
+        pelo_fake = SimpleNamespace(n_id=1, numero_pelo="1", color="AZ", servicio_raw=None, servicios=[])
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
             patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero", return_value=tubo_fake),
             patch("modules.slack_baneo_notifier.listener.pelos_de_tubo_sync", return_value=[pelo_fake]),
         ):
@@ -366,7 +415,7 @@ class TestHandleCableBuffer(unittest.TestCase):
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
             patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero", return_value=None),
             patch("modules.slack_baneo_notifier.listener.contar_buffers_cable", return_value=6),
         ):
@@ -383,7 +432,7 @@ class TestHandleCableBuffer(unittest.TestCase):
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_nombre", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[]),
             patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero") as mock_resolver,
         ):
             listener._handle_app_mention(event, client_mock)

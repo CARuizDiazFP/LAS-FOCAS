@@ -275,6 +275,12 @@ class CromoPelo(Base):
     )
     vigente = Column(Boolean, nullable=False, server_default=true())
     ultima_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    # Verificación manual de campo — sin poblador automático todavía (deuda técnica declarada, ver
+    # migración 20260825_01_cromo_pelo_verificacion.py). No vienen del payload de Cromo, por eso NO
+    # están en PELO_CAMPOS (ingesta.py) — una re-ingesta no debe pisarlos.
+    verificable = Column(Boolean, nullable=True)
+    status = Column(Text, nullable=True)
+    fecha_hora_status = Column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<CromoPelo n_id={self.n_id} tubo_n_id={self.tubo_n_id} tipo_asociacion='{self.tipo_asociacion}'>"

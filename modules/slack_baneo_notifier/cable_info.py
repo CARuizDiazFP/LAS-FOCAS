@@ -11,9 +11,11 @@
 
 El "código de cable" que el técnico escribe (ej. real "F-VFL-IND") es directamente
 `cromo_cables.nombre` — verificado 2026-08-13 contra `lasfocasdev-postgres` (no un código externo en
-otro sistema, no `id_legacy`). `nombre` es prácticamente único (1 solo par duplicado real,
-"F-ALV-2335", sobre ~32.782 cables) — se resuelve con match exacto case-insensitive; ante 0 o 2+
-resultados se responde pidiendo precisión en vez de adivinar.
+otro sistema, no `id_legacy`). `nombre` es casi siempre único, pero NO es una lista cerrada de un solo
+caso: hay al menos 2 pares duplicados reales conocidos ("F-ALV-2335", visto 2026-08-13; "F-LEM-11-A",
+visto 2026-08-25) sobre ~32.782 cables — se resuelve con match exacto case-insensitive; ante 0 o 2+
+resultados se responde pidiendo precisión en vez de adivinar (`buscar_cable_por_n_id_o_nombre`
+también acepta el n_id sugerido en esa respuesta, ver más abajo).
 
 El "B<N>" de buffer (confirmado con el usuario 2026-08-13, no inferido): el técnico cuenta los
 buffers desde 1 ("B1" es el primer buffer físico) — mapea a `cromo_tubos.orden = N - 1` (la columna
@@ -37,6 +39,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core.services.cromo.detalle import PeloDetalle, pelos_de_tubo_sync
+from core.services.cromo.parser import extraer_tipo_servicio_display
 from core.services.cromo.verificador import ResultadoTubo, servicios_por_tubo_sync
 from db.models.cromo import CromoBotella, CromoCable, CromoTubo
 
@@ -72,6 +75,27 @@ def buscar_cable_por_nombre(session: Session, nombre: str) -> list[CromoCable]:
         .filter(CromoCable.vigente.is_(True), func.lower(CromoCable.nombre) == nombre.lower())
         .all()
     )
+
+
+def buscar_cable_por_n_id_o_nombre(session: Session, texto: str) -> list[CromoCable]:
+    """Resuelve un cable por n_id si `texto` es puramente numérico; si no, cae a
+    `buscar_cable_por_nombre`. Bug real (2026-08-25): `construir_respuesta_ambiguo` le pide al
+    técnico "especificá por n_id", pero `buscar_cable_por_nombre` sólo busca por `nombre` — un
+    reintento con el n_id sugerido (ej. "info cable 10260935 B6") no matcheaba ningún cable (ninguno
+    se llama literalmente "10260935") y el bot respondía "no encontré el cable" aunque sí existe.
+    Verificado contra `lasfocasdev-postgres`: "F-LEM-11-A" tiene 2 cables vigentes reales (n_id
+    10260935 y 9498169). Único punto de cambio: `listener._resolver_cable_o_responder` llama a esta
+    función en vez de `buscar_cable_por_nombre` directamente, así que arregla los 3 comandos que la
+    comparten ("Info cable", "Verificar cable X BN", "Info cable X BN")."""
+    texto_limpio = texto.strip()
+    if texto_limpio.isdigit():
+        cable = (
+            session.query(CromoCable)
+            .filter(CromoCable.vigente.is_(True), CromoCable.n_id == int(texto_limpio))
+            .first()
+        )
+        return [cable] if cable else []
+    return buscar_cable_por_nombre(session, texto)
 
 
 def _resolver_nombre_extremo(session: Session, n_id: Optional[int], nombre_crudo: Optional[str]) -> Optional[str]:
@@ -177,14 +201,24 @@ def construir_respuesta_verificar_buffer(cable: CromoCable, tubo: CromoTubo, res
 
 
 def _describir_pelo(pelo: PeloDetalle) -> str:
+    """Formato (ticket 2026-08-25):
+    - Con servicio: "Pelo N (Color): Tipo — Línea — Cliente — Descripción (Estado)".
+    - Libre/sin match: "Pelo N (Color): Libre — Descripción" (sin el segundo tramo si no hay
+      `servicio_raw` — antes esta rama distinguía "Libre" de "No se identifica cliente/cable", el
+      ticket la unifica en una sola forma)."""
     etiqueta = pelo.numero_pelo or f"n_id {pelo.n_id}"
+    color = pelo.color or "—"
     if pelo.servicios:
         s = pelo.servicios[0]
         cliente = s.nombre_cliente or s.cliente or "—"
-        return f"• Pelo {etiqueta}: {s.servicio_id_externo} — {cliente} ({s.estado_servicio or '—'})"
-    if not pelo.servicio_raw:
-        return f"• Pelo {etiqueta}: Libre"
-    return f'• Pelo {etiqueta}: No se identifica cliente/cable — "{pelo.servicio_raw}"'
+        tipo = extraer_tipo_servicio_display(pelo.servicio_raw)
+        return (
+            f"• Pelo {etiqueta} ({color}): {tipo} — {s.servicio_id_externo} — {cliente} — "
+            f"{pelo.servicio_raw or '—'} ({s.estado_servicio or '—'})"
+        )
+    if pelo.servicio_raw:
+        return f"• Pelo {etiqueta} ({color}): Libre — {pelo.servicio_raw}"
+    return f"• Pelo {etiqueta} ({color}): Libre"
 
 
 def construir_respuesta_info_buffer(cable: CromoCable, tubo: CromoTubo, pelos: list[PeloDetalle]) -> str:
@@ -202,6 +236,7 @@ def construir_respuesta_info_buffer(cable: CromoCable, tubo: CromoTubo, pelos: l
 
 
 __all__ = [
+    "buscar_cable_por_n_id_o_nombre",
     "buscar_cable_por_nombre",
     "construir_respuesta_ambiguo",
     "construir_respuesta_buffer_no_encontrado",

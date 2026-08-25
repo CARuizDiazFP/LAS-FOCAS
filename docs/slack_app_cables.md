@@ -43,9 +43,10 @@ nombre real de la Botella en cada extremo.
 usuario: `Info cable F-VFL-IND`): el "código de cable" que el técnico escribe **es directamente
 `cromo_cables.nombre`** — no un código externo en otro sistema, no `cromo_cables.id_legacy` (ese
 campo es sólo un número interno de Cromo, sin relación con el formato `"F-XXX-YYY"`). Verificado
-contra `lasfocasdev-postgres`: `nombre` es prácticamente único (1 solo par duplicado real en todo el
-dataset, `"F-ALV-2335"`, sobre ~32.782 cables vigentes) — un match exacto case-insensitive resuelve
-el `n_id` en la enorme mayoría de los casos.
+contra `lasfocasdev-postgres`: `nombre` es prácticamente único, pero **no** es un caso único cerrado —
+hay al menos 2 pares duplicados reales conocidos (`"F-ALV-2335"`, visto 2026-08-13; `"F-LEM-11-A"`,
+visto 2026-08-25) sobre ~32.782 cables vigentes — un match exacto case-insensitive resuelve el `n_id`
+en la enorme mayoría de los casos.
 
 `cromo_cables.extremo_a_nombre`/`extremo_b_nombre` (los campos crudos) no son confiables — confirmado
 de nuevo con este ejemplo real: `extremo_b_nombre` venía **vacío** (`at.37` nunca llega desde Cromo,
@@ -66,7 +67,16 @@ cada extremo se resuelve por separado, vía `cromo_botellas.nombre` a partir de 
 **Casos manejados**:
 - 1 match → responde la info completa (arriba).
 - 0 matches → `":warning: No encontré ningún cable vigente con el código *<nombre>*."`
-- 2+ matches (el único caso real conocido, `"F-ALV-2335"`) → pide precisar por `n_id`, no adivina.
+- 2+ matches (ej. `"F-ALV-2335"`, `"F-LEM-11-A"`) → pide precisar por `n_id`, no adivina.
+
+**Fix real 2026-08-25 — reintento por n_id no resolvía nada**: el bot pedía "especificá por n_id"
+pero `buscar_cable_por_nombre` sólo buscaba por `nombre` — un técnico que reintentaba el comando con
+el n_id sugerido (ej. `Info cable 10260935 B6`) obtenía "no encontré el cable", aunque sí existe
+(ningún cable se llama literalmente "10260935"). Reproducido y verificado real contra
+`lasfocasdev-postgres` con el caso `"F-LEM-11-A"` (n_id 10260935 y 9498169, ambos con buffer B6).
+`buscar_cable_por_n_id_o_nombre` (`cable_info.py`) resuelve por `n_id` si el texto recibido es
+puramente numérico, si no cae a `buscar_cable_por_nombre` — único punto de cambio en
+`listener._resolver_cable_o_responder`, arregla los 3 comandos que comparten ese resolver.
 
 ## `@bot Verificar cable <nombre> B<N>` — implementado
 
@@ -99,31 +109,32 @@ servicios matcheados (`"Sin servicios matcheados en este buffer."`); número de 
 ## `@bot Info cable <nombre> B<N>` — implementado
 
 Listado completo de los pelos de ese buffer (matcheados o no) — a diferencia de "Verificar cable",
-muestra TODOS los pelos, y para los que no están libres pero tampoco se identificó cliente/cable,
-detalla la descripción cruda (`servicio_raw`).
+muestra TODOS los pelos.
 
-**Ejemplo real** (mismo cable/buffer, 12 pelos — nótese que la mayoría de los pelos con texto crudo
-NO matchean contra un servicio real, hallazgo ya documentado en la Etapa 9 de
-`docs/modulo_ingesta_cromo.md`):
+**Formato actualizado 2026-08-25** (antes distinguía "con servicio" / "libre" / "sin identificar";
+el ticket lo unifica en dos formas):
+- Con servicio matcheado: `Pelo N (Color): Tipo — Línea — Cliente — Descripción (Estado)`.
+- Libre o sin match (con o sin descripción cruda): `Pelo N (Color): Libre — Descripción` (sin el
+  segundo tramo si no hay descripción).
+
+`Tipo` sale de `extraer_tipo_servicio_display` (`core/services/cromo/parser.py`) — un regex NUEVO e
+independiente del que gobierna la ingesta (`_REGEX_SERVICIO`/`parsear_servicio`), sólo para mostrar el
+prefijo (FO/FO-DWDM/DWDM/INT/ISIS/RPV/EWS/TLS/ATI/VID/TDM/ATD/TRUNK — lista extensible). `Línea`/
+`Cliente` reciclan el match ya resuelto por `pelos_de_tubo_sync` (mismo `cromo_servicio_match` →
+`app.servicios` de siempre, ningún JOIN nuevo).
+
+**Ejemplo real** (F-LEM-11-A n_id 10260935, Buffer B6, 12 pelos):
 ```
-📋 Cable *F-VFL-IND* / Buffer *B1* (AZ) — 12 pelo(s)
-• Pelo 1: No se identifica cliente/cable — "TLS 23856 - Trunk Florida 470 - Chile 460"
-• Pelo 2: 106595 — BANCO MACRO SA (Activo)
-• Pelo 3: No se identifica cliente/cable — "PFLO1 S2 L4"
+📋 Cable *F-LEM-11-A* / Buffer *B6* (BL) — 12 pelo(s)
+• Pelo 61 (AZ): Libre
+• Pelo 62 (NR): Libre — DWDM 91719 - Prisma Medios de Pago SA (x LU)
+• Pelo 66 (BL): Libre — FO 75588 - Donado 840 - Nodo Triangulo (C58)
 ...
-• Pelo 11: 61942 — Banco Comafi SA (Activo)
-• Pelo 12: 61942 — Banco Comafi SA (Activo)
 ```
 
 **Reutiliza**: `core/services/cromo/detalle.py::pelos_de_tubo_sync` (mismo patrón de
 `obtener_detalle_cable`, acotado a un tubo — nunca N+1, una sola query con `LEFT JOIN` a
-`cromo_servicio_match`/`servicios`). Distingue 3 casos por pelo (`_describir_pelo`):
-1. Con servicio matcheado → nombre de servicio + cliente + estado.
-2. Sin `servicio_raw` → genuinamente libre (`"Pelo N: Libre"`).
-3. Con `servicio_raw` pero sin match → `"No se identifica cliente/cable — \"<crudo>\""` (pedido
-   explícito de la spec original). Hereda el gap de clasificación ya documentado (Etapa 9): texto
-   crudo tipo "libre"/"cortado" que debería ser estado `LIBRE` pero quedó `INDETERMINADO` en la
-   ingesta — fuera de alcance de este comando, es un fix de `parser.py`/`ingesta.py`.
+`cromo_servicio_match`/`servicios`).
 
 ## Parser de comandos
 

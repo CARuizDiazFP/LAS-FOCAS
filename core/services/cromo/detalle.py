@@ -10,6 +10,7 @@ Sólo lectura sobre las tablas `app.cromo_*` ya pobladas por la ingesta."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -31,6 +32,11 @@ class PeloDetalle:
     servicio_raw: Optional[str]
     servicio_numero: Optional[str]
     vigente: bool
+    # Verificación manual de campo (migración 20260825_01) — sin poblador automático todavía, ver
+    # docstring de esa migración. `None` en toda fila hasta que exista un proceso que los setee.
+    verificable: Optional[bool] = None
+    status: Optional[str] = None
+    fecha_hora_status: Optional[datetime] = None
     # Normalmente 0 o 1 — `cromo_servicio_match` no tiene restricción de unicidad por pelo (sólo por
     # (pelo_n_id, servicio_numero)), así que en teoría un pelo podría matchear más de un número.
     servicios: list[ServicioEncontrado] = field(default_factory=list)
@@ -109,7 +115,8 @@ _SQL_PELOS_DE_CABLE = text(
         p.n_id, p.tubo_n_id, p.numero_pelo, p.orden, p.color, p.tipo_asociacion,
         p.servicio_raw, p.servicio_numero, p.vigente,
         s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
-        s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo
+        s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo,
+        p.verificable, p.status, p.fecha_hora_status
     FROM app.cromo_pelos p
     LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
@@ -128,7 +135,8 @@ _SQL_PELOS_DE_TUBO = text(
         p.n_id, p.tubo_n_id, p.numero_pelo, p.orden, p.color, p.tipo_asociacion,
         p.servicio_raw, p.servicio_numero, p.vigente,
         s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
-        s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo
+        s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo,
+        p.verificable, p.status, p.fecha_hora_status
     FROM app.cromo_pelos p
     LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
@@ -205,6 +213,9 @@ async def obtener_detalle_cable(sesion: AsyncSession, n_id: int) -> DetalleCable
                 servicio_raw=fila[6],
                 servicio_numero=fila[7],
                 vigente=fila[8],
+                verificable=fila[19],
+                status=fila[20],
+                fecha_hora_status=fila[21],
             )
             pelos_index[pelo_n_id] = pelo
             pelos_por_tubo.setdefault(pelo.tubo_n_id, []).append(pelo)
@@ -291,6 +302,9 @@ def pelos_de_tubo_sync(session: Session, tubo_n_id: int) -> list[PeloDetalle]:
                 servicio_raw=fila[6],
                 servicio_numero=fila[7],
                 vigente=fila[8],
+                verificable=fila[19],
+                status=fila[20],
+                fecha_hora_status=fila[21],
             )
             pelos_index[pelo_n_id] = pelo
             pelos.append(pelo)

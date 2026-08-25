@@ -13,6 +13,7 @@ from core.services.cromo.parser import (
     ClaseExcluidaError,
     _resolver_geo,
     atributo,
+    extraer_tipo_servicio_display,
     extraer_tubos_y_pelos,
     parse_arbol_botella,
     parse_botella,
@@ -241,6 +242,55 @@ def test_pelo_con_at61_infono_no_matchea_por_falta_de_word_boundary():
     pelo = parse_pelo(obj)
     assert pelo.servicio_numero is None
     assert pelo.tipo_asociacion == "INDETERMINADO"
+
+
+# ── extraer_tipo_servicio_display() ──────────────────────────────────────────
+# Regex NUEVO e independiente de `_REGEX_SERVICIO`/`parsear_servicio` — sólo para la columna
+# "Servicio" de la tabla de detalle de cable y el bot de Slack. Lista de prefijos más amplia a
+# propósito (incluye ISIS/ATI, excluidos del regex de ingesta por 0 matches reales en la muestra de
+# Etapa 9c) porque acá el peor caso es un texto mal etiquetado en una columna de UI, no una
+# clasificación de datos real ni un `Servicio` placeholder creado de más.
+
+
+@pytest.mark.parametrize(
+    "servicio_raw,tipo_esperado",
+    [
+        ("FO 114830 - EDGE - CIRION - Pelo 1 de 2", "FO"),
+        ("FO-DWDM 55512 - Trunk backbone", "FO-DWDM"),
+        ("DWDM 91719 - Prisma Medios de Pago SA (x LU)", "DWDM"),
+        ("INT 45678 - Cliente X", "INT"),
+        ("ISIS 30021 - Cliente Y", "ISIS"),
+        ("RPV 60207 / RPV 60209 - Macacha Güemes 515", "RPV"),
+        ("EWS 12345 - Cliente Z", "EWS"),
+        ("TLS 79932 - Cecilia Grierson 355 Piso 25", "TLS"),
+        ("ATI 999 - Cliente W", "ATI"),
+        ("tls 79932 minúscula", "TLS"),
+        # VID/TDM/ATD/TRUNK: ya probados y seguros en `_REGEX_SERVICIO` (matchean de verdad contra
+        # `app.servicios` en ingesta, a diferencia de ISI/ATI) — verificado real contra
+        # `lasfocasdev-postgres` 2026-08-25: sin ellos, un pelo con "VID 93727 ..." mostraba Línea Y
+        # Cliente ya resueltos (vía el match de ingesta) pero "Servicio" en "-", inconsistencia visual
+        # sin motivo — agregarlos no reabre el riesgo de falso positivo de ISI/ATI, es distinto.
+        ("VID 525 - Cliente W", "VID"),
+        ("TDM 555 - Cliente Z", "TDM"),
+        ("ATD 321 - Cliente Y", "ATD"),
+        ("TRUNK 512 - SIDERCA - TENARIS CAMPANA", "TRUNK"),
+    ],
+)
+def test_extraer_tipo_servicio_display_reconoce_prefijo(servicio_raw, tipo_esperado):
+    assert extraer_tipo_servicio_display(servicio_raw) == tipo_esperado
+
+
+def test_extraer_tipo_servicio_display_prioriza_compuesto_fo_dwdm_sobre_fo_suelto():
+    assert extraer_tipo_servicio_display("FO-DWDM 55512 - Trunk backbone") == "FO-DWDM"
+
+
+def test_extraer_tipo_servicio_display_sin_match_devuelve_guion():
+    assert extraer_tipo_servicio_display("OS 2749 - texto libre sin relación a un servicio") == "-"
+
+
+def test_extraer_tipo_servicio_display_vacio_devuelve_guion():
+    assert extraer_tipo_servicio_display(None) == "-"
+    assert extraer_tipo_servicio_display("") == "-"
 
 
 # ── botella.inner[] → sólo fusiones ──────────────────────────────────────────

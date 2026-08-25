@@ -80,6 +80,44 @@ _REGEX_SERVICIO = re.compile(
     r"\b(?:FO|TLS|DWDM|INT|EWS|RPV|TDM|ATD|VID|TRUNK)\s*[:\-]?\s*(\d+)", re.IGNORECASE
 )
 
+# Regex NUEVO e independiente de `_REGEX_SERVICIO`/`parsear_servicio` de arriba — sólo para la
+# columna "Servicio" (tipo extraído) de la tabla de detalle de cable (web) y del bot de Slack
+# `slack_baneo_notifier`. Extrae ÚNICAMENTE el prefijo, no el número (ese sigue viniendo de
+# `parsear_servicio`/`cromo_servicio_match`, ver `core/services/cromo/detalle.py`).
+#
+# Lista de prefijos deliberadamente más amplia que `_REGEX_SERVICIO`: incluye "ISIS"/"ATI", que el
+# regex de ingesta excluye a propósito (0 matches reales en la muestra de Etapa 9c, alto riesgo de
+# falso positivo — ver comentario arriba). Acá el peor caso posible es un texto mal etiquetado en una
+# columna de UI/un mensaje de Slack, no una clasificación de datos real ni un `Servicio` placeholder
+# creado de más en la base — por eso puede permitirse un criterio más laxo sin volver a abrir esa
+# decisión de ingesta.
+#
+# Extensible a propósito (pedido explícito del ticket): agregar un prefijo nuevo es una línea acá.
+# "FO-DWDM" va primero en la tupla para que el compuesto matchee antes que "FO"/"DWDM" sueltos.
+#
+# Además de la lista pedida por el ticket, incluye "VID"/"TDM"/"ATD"/"TRUNK" — ya probados y seguros
+# en `_REGEX_SERVICIO` (matchean de verdad contra `app.servicios` en ingesta real, a diferencia de
+# "ISI"/"ATI"). Hallazgo real verificando contra `lasfocasdev-postgres` (cable n_id 6612400, pelo con
+# "VID 93727..."): sin ellos, un pelo con Línea y Cliente ya resueltos (vía el match de ingesta)
+# mostraba "Servicio" en "-" — inconsistencia visual sin motivo. Agregarlos no reabre la decisión de
+# riesgo de ISI/ATI, es un caso distinto (ya validado en producción).
+PREFIJOS_TIPO_SERVICIO_DISPLAY = (
+    "FO-DWDM", "FO", "DWDM", "INT", "ISIS", "RPV", "EWS", "TLS", "ATI", "VID", "TDM", "ATD", "TRUNK",
+)
+_REGEX_TIPO_SERVICIO_DISPLAY = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in PREFIJOS_TIPO_SERVICIO_DISPLAY) + r")\b", re.IGNORECASE
+)
+
+
+def extraer_tipo_servicio_display(servicio_raw: Optional[str]) -> str:
+    """Extrae sólo el prefijo de tipo de servicio de `servicio_raw` para mostrar en la tabla de
+    detalle de cable y en el bot de Slack. `"-"` si no hay texto o el regex no matchea (deuda técnica
+    declarada por el ticket — no se descarta el pelo, sólo queda sin clasificar en la UI)."""
+    if not servicio_raw:
+        return "-"
+    coincidencia = _REGEX_TIPO_SERVICIO_DISPLAY.search(servicio_raw)
+    return coincidencia.group(1).upper() if coincidencia else "-"
+
 
 class ClaseExcluidaError(ValueError):
     """Se intentó parsear un objeto de una clase explícitamente excluida (p.ej. 120)."""
@@ -495,4 +533,6 @@ __all__ = [
     "parse_fusion",
     "parse_arbol_botella",
     "extraer_tubos_y_pelos",
+    "extraer_tipo_servicio_display",
+    "PREFIJOS_TIPO_SERVICIO_DISPLAY",
 ]

@@ -79,6 +79,11 @@
                   <th>Tipo</th>
                   <th>Descripción</th>
                   <th>Servicio</th>
+                  <th>Línea</th>
+                  <th>Cliente</th>
+                  <th>Verificable</th>
+                  <th>Status</th>
+                  <th>Fecha y Hora Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -87,18 +92,26 @@
                   <td>{{ pelo.color || '—' }}</td>
                   <td>{{ pelo.tipo_asociacion }}</td>
                   <td>{{ pelo.servicio_raw || '—' }}</td>
+                  <td>{{ pelo.tipo_servicio }}</td>
                   <td>
-                    <template v-if="pelo.servicios.length === 0">—</template>
                     <button
-                      v-for="s in pelo.servicios"
-                      :key="`${s.servicio_id}-${s.pelo_n_id}`"
+                      v-if="pelo.linea"
                       class="cable-detalle-modal__servicio-link"
                       type="button"
-                      @click="irAServicio(s)"
+                      @click="irAServicioPorId(pelo.linea)"
                     >
-                      {{ s.servicio_id_externo }}
+                      {{ pelo.linea }}
                     </button>
+                    <template v-else>—</template>
                   </td>
+                  <td>{{ pelo.cliente || '—' }}</td>
+                  <td>{{ pelo.verificable === null ? '—' : pelo.verificable ? 'Sí' : 'No' }}</td>
+                  <td>
+                    <span :class="['estado-pelo-chip', `estado-pelo-chip--${estadoPeloClase(pelo.status)}`]">
+                      {{ pelo.status || 'No Verificable' }}
+                    </span>
+                  </td>
+                  <td>{{ formatearFechaStatus(pelo.fecha_hora_status) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -115,7 +128,7 @@ import { useRoute, useRouter } from 'vue-router';
 
 import AccordionItem from '../components/infra/AccordionItem.vue';
 import { ApiError } from '../api/client';
-import { obtenerDetalleCable, type CromoDetalleCable, type CromoServicioEncontrado } from '../api/cromo';
+import { obtenerDetalleCable, type CromoDetalleCable } from '../api/cromo';
 
 const route = useRoute();
 const router = useRouter();
@@ -157,8 +170,24 @@ function toggleTubo(nId: number, next: boolean): void {
   tuboExpandidoId.value = next ? nId : null;
 }
 
-function irAServicio(servicio: CromoServicioEncontrado): void {
-  void router.push(`/servicios/ID/${encodeURIComponent(servicio.servicio_id_externo)}`);
+function irAServicioPorId(servicioIdExterno: string): void {
+  void router.push(`/servicios/ID/${encodeURIComponent(servicioIdExterno)}`);
+}
+
+/** "Operativo" → verde, "Caído" → rojo, cualquier otro valor (incluido null/"No Verificable") →
+ * gris — mismo patrón de badge que `VerificadorCromoView.vue` (`color-mix()` sobre tokens.css). */
+function estadoPeloClase(status: string | null): 'ok' | 'error' | 'idle' {
+  const normalizado = (status || '').trim().toLowerCase();
+  if (normalizado === 'operativo') return 'ok';
+  if (normalizado === 'caído' || normalizado === 'caido') return 'error';
+  return 'idle';
+}
+
+function formatearFechaStatus(fechaIso: string | null): string {
+  if (!fechaIso) return '—';
+  const fecha = new Date(fechaIso);
+  if (Number.isNaN(fecha.getTime())) return '—';
+  return fecha.toLocaleString('es-AR');
 }
 
 function irABotella(nId: number | null): void {
@@ -369,6 +398,30 @@ onMounted(() => void cargar());
 
 .cable-detalle-modal__servicio-link:hover {
   background: var(--color-brand-primary-soft);
+}
+
+.estado-pelo-chip {
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+
+.estado-pelo-chip--ok {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.estado-pelo-chip--error {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
+}
+
+.estado-pelo-chip--idle {
+  background: color-mix(in srgb, var(--color-state-idle) 16%, transparent);
+  color: var(--muted);
 }
 
 @media (max-width: 720px) {

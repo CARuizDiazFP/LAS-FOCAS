@@ -87,6 +87,21 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    del sidebar se movió del grupo "Tool Kit" al nuevo grupo expandible "Infraestructura FO" (pedido
    explícito, distinto del Verificador, que se queda en "Tool Kit"). Detalle en `docs/PR/2026-08-10.md`.
 
+**Nota (2026-08-25, fuera de las etapas de ingesta — panel de detalle de cable y bot de Slack)**: la
+tabla de Pelos del detalle jerárquico (`CableDetalleCromoView.vue`, Etapa 9) y el comando de Slack
+"Info cable X BN" (`modules/slack_baneo_notifier/cable_info.py`) ganaron 3 columnas nuevas de
+verificación manual (`verificable`/`status`/`fecha_hora_status` en `app.cromo_pelos`, migración
+`20260825_01`, sin poblador automático todavía — deuda técnica declarada) y una columna "Servicio"
+(tipo extraído por `extraer_tipo_servicio_display`, `core/services/cromo/parser.py`) — un regex NUEVO
+e independiente del que gobierna la ingesta (`_REGEX_SERVICIO`/`parsear_servicio`), sólo para mostrar
+el prefijo de tipo de servicio en la UI/Slack, sin afectar `tipo_asociacion` ni la creación de
+`Servicio` placeholder. La columna "Línea" recicla el match ya resuelto por
+`obtener_detalle_cable`/`pelos_de_tubo_sync` (mismo `cromo_servicio_match` → `app.servicios` de
+siempre, ningún JOIN nuevo). Mismo día, fix real en el bot: `buscar_cable_por_n_id_o_nombre`
+(`cable_info.py`) acepta el `n_id` que el propio bot sugiere ante un cable ambiguo — antes, un
+reintento con ese n_id no matcheaba nada (buscaba por `nombre`, no por `n_id`) y respondía "no
+encontrado". Ver `docs/decisiones.md` (2026-08-25) y `docs/slack_app_cables.md`.
+
 Cada etapa se habilita una vez cerrada la anterior; las decisiones de una etapa pueden ajustar el diseño
 de las siguientes si el sondeo contra la API real revela algo distinto de lo asumido.
 

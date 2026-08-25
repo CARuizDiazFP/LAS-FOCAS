@@ -479,3 +479,61 @@
   `admin/api/admin.ts`, `api/camaras.ts`. `git diff --stat` sobre todo el rango del plan: 21 archivos,
   +4113/-943 líneas. `LLM_PROVIDER=heuristic pytest -q` completo al cierre: **1012 passed, 5 skipped,
   0 failed**.
+
+## 2026-08-25 — Ampliación de la tabla de pelos (Cromo) + fix del bug "Info cable X BN" con cables duplicados
+
+- **Contexto:** Pedido de ampliar la tabla de detalle de cables (Inventario Cromo) con columnas de
+  verificación (`Verificable`/`Status`/`Fecha y Hora Status`, nuevas) y una columna "Servicio" (tipo
+  extraído por regex), más un bug reportado en el bot de Slack `slack_baneo_notifier`: "info cable
+  F-LEM-11-A B6" fallaba pidiendo `n_id` o respondiendo "no encontrado", supuestamente por los cambios
+  recientes de baneos/consolidación de Cámaras y Botellas.
+- **Hallazgo real — el bug NO es una regresión de baneos:** verificado contra `lasfocasdev-postgres`,
+  `F-LEM-11-A` tiene 2 cables `vigente=true` reales (n_id `10260935` y `9498169`), ambos con un
+  buffer en `orden=5` (B6) — un segundo par duplicado real, además de `F-ALV-2335` (2026-08-13).
+  Ningún commit de `botella_merge_service.py`/`camara_botella_delete_service.py`/
+  `consolidacion_service.py` toca `CromoCable.nombre` ni `.vigente` (ningún código del repo escribe
+  `CromoCable.vigente`, sólo se lee). La causa real: `buscar_cable_por_nombre` sólo busca por
+  `nombre` — cuando el bot pedía "especificá por n_id" y el técnico reintentaba con el n_id sugerido
+  (ej. `info cable 10260935 B6`), la búsqueda no matcheaba nada (ningún cable se llama literalmente
+  "10260935") y respondía "no encontrado" — explica los dos síntomas reportados con una sola causa.
+- **Decisión 1 (fix):** `buscar_cable_por_n_id_o_nombre` (`cable_info.py`) resuelve por `n_id` si el
+  texto es puramente numérico, si no cae a `buscar_cable_por_nombre` — único punto de cambio en
+  `listener._resolver_cable_o_responder`, arregla los 3 comandos que comparten ese resolver.
+  Verificado real contra `lasfocasdev-postgres` reproduciendo el caso exacto: ambiguo por nombre →
+  reintento por cada uno de los 2 n_ids → resuelve correctamente.
+- **Decisión 2 (regex de "Servicio" nuevo, no el de ingesta):** el regex de ingesta (`_REGEX_SERVICIO`
+  en `core/services/cromo/parser.py`) excluye a propósito "ISI"/"ATI" (0 matches reales, alto riesgo
+  de falso positivo, hallazgo de Etapa 9c) — el ticket pedía incluir "ISIS"/"ATI" en la nueva columna.
+  Confirmado con el usuario: se crea `extraer_tipo_servicio_display`, un regex NUEVO e independiente
+  (`PREFIJOS_TIPO_SERVICIO_DISPLAY`, extensible), sólo para la columna "Servicio" del detalle de cable
+  y del bot de Slack — no toca `_REGEX_SERVICIO`/`parsear_servicio`, que siguen gobernando
+  `tipo_asociacion` y la creación de `Servicio` placeholder en la ingesta real. También incluye
+  "VID"/"TDM"/"ATD"/"TRUNK" (ya seguros en `_REGEX_SERVICIO`, hallazgo real al verificar contra datos:
+  sin ellos, un pelo con Línea/Cliente ya matcheados mostraba "Servicio" en "-" — inconsistencia
+  visual sin motivo, no reabre el riesgo de ISI/ATI).
+- **Decisión 3 ("Línea" recicla "Servicio", no un JOIN nuevo):** el usuario confirmó que la columna
+  "Línea" es el pill clickeable que hoy vive bajo "Servicio" (matcheado vía `cromo_servicio_match` →
+  `app.servicios`, ya resuelto sin N+1 por `obtener_detalle_cable`/`pelos_de_tubo_sync`), sólo
+  renombrado — sin JOIN nuevo contra `Servicio.numero_linea`. "Cliente" sale del mismo match
+  (`nombre_cliente || cliente`).
+- **Decisión 4 (`verificable`/`status`/`fecha_hora_status`, sólo esquema):** sin ningún proceso
+  existente (admin/worker/integración externa) que los calcule — confirmado con el usuario: sólo
+  migración (`20260825_01_cromo_pelo_verificacion.py`, 3 columnas nullable en `app.cromo_pelos`) +
+  plumbing de lectura/escritura pasiva. Deliberadamente fuera de `PELO_CAMPOS` (`ingesta.py`): no
+  vienen del payload de Cromo, una re-ingesta los pisaría a `NULL`. Poblarlos queda como deuda técnica
+  declarada.
+- **Impacto:** `db/models/cromo.py::CromoPelo` (3 columnas nuevas); `core/services/cromo/parser.py`
+  (`extraer_tipo_servicio_display`); `core/services/cromo/detalle.py` (`PeloDetalle` expone los 3
+  campos nuevos); `web/app/main.py::_serializar_pelo_detalle` (agrega `tipo_servicio`/`linea`/
+  `cliente`/`verificable`/`status`/`fecha_hora_status`); `web/frontend/src/api/cromo.ts` y
+  `CableDetalleCromoView.vue` (10 columnas, badge de Status con el mismo patrón `color-mix()` de
+  `VerificadorCromoView.vue`); `modules/slack_baneo_notifier/cable_info.py`/`listener.py` (fix de
+  resolución + nuevo formato de "Info cable X BN"). 20 tests nuevos (parser, detalle, endpoint, Slack)
+  + 1055 tests totales pasando, 0 regresiones. Verificado real contra `lasfocasdev-postgres`/
+  `lasfocasdev-web`/`lasfocasdev-slack-baneo-worker` reconstruidos: endpoint y bot probados con datos
+  reales (cable n_id 6612400 con servicios matcheados; F-LEM-11-A n_id 10260935/9498169 para el bug).
+  Migración aplicada, downgrade/upgrade verificado reversible.
+- **No hecho, fuera de alcance:** sin poblador de `verificable`/`status`/`fecha_hora_status` (deuda
+  técnica declarada por el ticket); sin verificación visual en navegador real de la tabla del frontend
+  (no hay tool de browser en este entorno — se verificó el flujo de datos completo contra la DB real y
+  el `vue-tsc --noEmit` no reporta errores nuevos, mismos 4 preexistentes de `InfraTab.vue`).
