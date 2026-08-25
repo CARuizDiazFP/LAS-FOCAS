@@ -4,7 +4,7 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-08-23
+Fecha de última actualización: 2026-08-25
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
@@ -15,6 +15,14 @@ El proyecto ahora utiliza un ecosistema de agentes especializados para asistir e
 Actualización 2026-08-23: las skills se centralizan en `.agentes-comunes/skills/` como fuente agnóstica, manteniendo mirrors por plataforma (`.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/`, `.claude/skills/`). El flujo recursivo SDD/superpowers se mantiene, pero con foco en iteraciones acotadas para evitar loops de validación redundantes.
 
 Auditoría técnica de duplicidades, complementariedad y plan de consolidación: `docs/agentes-auditoria-consolidacion-2026-08-23.md`.
+
+Actualización 2026-08-25: la skill `repo-updater` (7 archivos: fuente `.agentes-comunes/skills/
+repo-updater/SKILL.md` + 6 mirrors) ganó dos reglas duras, confirmadas explícitamente por el usuario:
+(1) siempre commitear en el worktree real de `dev`, nunca en uno de prod ni en uno aislado creado
+para una investigación/tarea puntual; (2) si el working tree mezcla trabajo de la sesión actual con
+trabajo previo sin commitear de otro origen, preguntar cómo separar antes de `git add .` — con la
+técnica de separación por hunk (`git diff` + `git apply --cached --check`/`--cached`) documentada
+paso a paso. Ver `docs/decisiones.md` (2026-08-25) y `docs/cierres/2026-08-25.md`.
 
 ### Estructura de Archivos
 

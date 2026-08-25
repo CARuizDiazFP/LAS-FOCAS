@@ -4,12 +4,20 @@
 
 # Bot de Slack — Verificación de Cables y Servicios
 
-> **Estado (2026-08-13): los 3 comandos IMPLEMENTADOS y desplegados en dev.** `@Registrador de
-> Ingresos a Camara` **es** `modules/slack_baneo_notifier/` — hay dos instancias de esta misma app
-> (prod: contenedor `lasfocas-slack-baneo-worker`; dev: `lasfocasdev-slack-baneo-worker`, credenciales
-> propias en `.secrets/Dev_slack_bot_token_v1.txt`/`Dev_slack_app_token_v1.txt`), no dos Slack Apps
-> de dominios distintos. No hay ni hubo una app separada `@sandy02` en este repositorio con handler
-> propio — esa referencia de una versión anterior de este documento era una hipótesis incorrecta.
+> **Estado (2026-08-13, corregido 2026-08-25): los 3 comandos IMPLEMENTADOS y desplegados en dev.**
+> **Corrección real (2026-08-25, confirmada por el usuario + verificado con `auth.test` de Slack):**
+> son **dos Slack Apps genuinamente distintas**, no una misma app con dos instancias — la nota previa
+> de este documento (y la memoria de sesión asociada) estaba equivocada al descartar `@sandy02` como
+> "hipótesis incorrecta". `@sandy02` (App ID `A08V22C3S3B`) **es la app real de dev** — su bot user es
+> `registrador_de_ingres` (nombre visible en Slack: "Registrador de Ingresos a Camara", `bot_id`
+> `B0B345MCXF1`, corre en el contenedor `lasfocasdev-slack-baneo-worker`, credenciales en
+> `.secrets/Dev_slack_bot_token_v1.txt`/`Dev_slack_app_token_v1.txt`). La app de **prod** es una app
+> Slack distinta, bot user `lasfocas_cambot` (nombre visible: "Verificador de caminos Criticos
+> (Bot)", `bot_id` `B0A9JA3S5V3`, contenedor `lasfocas-slack-baneo-worker`,
+> `.secrets/slack_bot_token_v1.txt`/`slack_app_token_v1.txt`). Ambas corren en el mismo workspace de
+> Slack ("Metrotel") pero son apps/identidades de bot completamente separadas — nunca se cruzan sus
+> tokens ni sus conexiones Socket Mode. Verificado también (2026-08-25) que el proceso de dev conecta
+> exclusivamente a `postgres:5432/focas_dev` (su propio Postgres), nunca a los datos de prod.
 
 ## Dónde vive
 
@@ -149,7 +157,7 @@ Una mención que no matchea ninguno de los dos se ignora silenciosamente (no hay
 "comando no reconocido" — evita interferir con otras menciones al mismo bot que no sean estos
 comandos).
 
-## Identidad del bot y despliegue (hallazgo operativo, 2026-08-13)
+## Identidad del bot y despliegue (hallazgo operativo, 2026-08-13 — app de dev, `@sandy02`)
 
 Al probar "Info cable" por primera vez en el canal real, el bot no respondió — la causa real, en dos
 capas:

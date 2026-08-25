@@ -596,3 +596,41 @@
   técnica declarada por el ticket); sin verificación visual en navegador real de la tabla del frontend
   (no hay tool de browser en este entorno — se verificó el flujo de datos completo contra la DB real y
   el `vue-tsc --noEmit` no reporta errores nuevos, mismos 4 preexistentes de `InfraTab.vue`).
+
+## 2026-08-25 (cont.) — Corrección real: prod y dev son 2 Slack Apps distintas, no 1 con 2 instancias; regla dura nueva en `repo-updater`
+
+- **Contexto:** al revisar en vivo el fix de "Info cable X BN" contra Slack real, el usuario compartió
+  una captura donde el bot respondía "no encontré" para un cable ("F-VDP-JUR") que sí existe en la
+  base de dev. La primera hipótesis de esta sesión (heredada sin reverificar de
+  `docs/slack_app_cables.md`/memoria de 2026-08-13) fue que prod y dev comparten una misma Slack App
+  con dos conexiones Socket Mode, y que Slack pudo haber enrutado el evento a la instancia de prod
+  (cuya base de Cromo carece de ese cable, confirmado con 0 filas). **El usuario corrigió esto de
+  inmediato, dos veces**: son dos Slack Apps genuinamente distintas.
+- **Decisión (corrección de hecho, no de diseño):** `@sandy02` (App ID `A08V22C3S3B`) es la app real
+  de **dev** — bot user `registrador_de_ingres`, real name en Slack "Registrador de Ingresos a
+  Camara", `bot_id` `B0B345MCXF1`. Prod es otra app — bot user `lasfocas_cambot`, real name
+  "Verificador de caminos Criticos (Bot)", `bot_id` `B0A9JA3S5V3`. Verificado con `auth.test` de Slack
+  contra ambos tokens reales (`bot_id`/`user_id` distintos) y `slack_read_user_profile` (vía el
+  conector de claude.ai, los bot tokens de este proyecto no tienen scope `users:read`) — el real_name
+  de dev coincide carácter por carácter con la captura del usuario, confirmando que fue el bot de DEV
+  el que respondió, no prod. Se verificó además, por separado, que `lasfocasdev-slack-baneo-worker`
+  conecta exclusivamente a `postgres:5432/focas_dev` (nunca a los datos de prod) — descarta la
+  hipótesis de una mala configuración de conexión. **La causa real de por qué el bot de dev no
+  encontró un cable que sí existe en su propia base queda sin resolver** (el log crudo del evento se
+  perdió al recrear el contenedor después) — ver pendientes en `docs/cierres/2026-08-25.md`.
+- **Impacto:** corregidos `docs/slack_app_cables.md` (el bloque que descartaba `@sandy02` como
+  "hipótesis incorrecta" estaba mal) y la memoria de sesión `project_slack_info_cable_implementado.md`
+  (Hallazgo 1). Nueva memoria de feedback documentando que este mismo error se cometió dos veces
+  (2026-08-13 y 2026-08-25), ambas ignorando una afirmación explícita del usuario en el momento.
+- **Decisión 2 (regla dura nueva en `repo-updater`):** el usuario confirmó explícitamente, en el mismo
+  intercambio: *"la skill repo updater siempre debe hacer commit en el worktree dev nunca en prod u
+  otro creado para ese fin... porque para los prompts e investigaciones se usa la rama dev"*. Se
+  amplió la skill (fuente `.agentes-comunes/skills/repo-updater/SKILL.md` + 6 mirrors:
+  `.github/skills/`, `.codex-skills/skills/`, `.gemini/rules/` ×2, `.claude/commands/`,
+  `.github/prompts/`) con: (1) paso obligatorio de confirmar `git rev-parse --abbrev-ref HEAD == dev`
+  y worktree real antes de tocar nada; (2) detección de working tree mixto (trabajo de la sesión
+  actual + trabajo previo sin commitear de otro origen) con la técnica de separación por hunk
+  (`git diff` + `git apply --cached --check`/`--cached`) ya usada horas antes en esta misma sesión
+  para separar el push de la tabla de Pelos del de "Borrar grupo Cromo".
+- **Impacto:** sin cambios de código de aplicación — sólo documentación y los 7 archivos de la skill/
+  prompt `repo-updater`. Ver `docs/cierres/2026-08-25.md` (addendum) y `docs/Mate_y_Ruta.md`.
