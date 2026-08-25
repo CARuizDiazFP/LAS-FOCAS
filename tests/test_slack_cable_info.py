@@ -51,6 +51,19 @@ class TestExtraerComandoInfoCable(unittest.TestCase):
     def test_texto_vacio_no_matchea(self) -> None:
         self.assertIsNone(extraer_comando_info_cable(""))
 
+    def test_quita_negrita_slack_del_nombre(self) -> None:
+        """Bug real 2026-08-25, reproducido con el payload crudo real de Slack (canal
+        #baneo-de-camaras-prueba, mensaje 1787653453.531689): el usuario escribe el código en
+        *negrita* (uso normal de Slack) — `*F-VDP-JUR*` llega literal en `event["text"]`, sin que
+        Slack lo "renderice" antes. Sin este fix, `nombre` queda "*F-VDP-JUR*" (asteriscos incluidos)
+        y el lookup exacto contra `cromo_cables.nombre` nunca matchea nada, aunque el cable exista."""
+        self.assertEqual(extraer_comando_info_cable("info cable *F-VDP-JUR*"), "F-VDP-JUR")
+
+    def test_quita_otros_caracteres_de_formato_slack(self) -> None:
+        self.assertEqual(extraer_comando_info_cable("info cable _F-VDP-JUR_"), "F-VDP-JUR")
+        self.assertEqual(extraer_comando_info_cable("info cable `F-VDP-JUR`"), "F-VDP-JUR")
+        self.assertEqual(extraer_comando_info_cable("info cable ~F-VDP-JUR~"), "F-VDP-JUR")
+
 
 class TestBuscarCableYRespuestas(unittest.TestCase):
     def test_buscar_cable_usa_match_exacto_case_insensitive(self) -> None:
@@ -248,6 +261,16 @@ class TestExtraerComandoCableBuffer(unittest.TestCase):
     def test_no_matchea_sin_sufijo_buffer(self) -> None:
         """"Info cable X" sin B<N> no es un comando de buffer — lo maneja extraer_comando_info_cable."""
         self.assertIsNone(extraer_comando_cable_buffer("Info cable F-VFL-IND"))
+
+    def test_quita_negrita_slack_del_nombre_y_buffer(self) -> None:
+        """Bug real 2026-08-25, reproducido con el payload crudo real de Slack (mensaje
+        1787657001.749649): `*F-VDP-JUR b1*` — el `*` final rompe el ancla `$` del regex de buffer
+        (nunca matcheaba, caía a `extraer_comando_info_cable`, que se comía "b1*" y el "*" inicial
+        como si fueran parte del nombre)."""
+        self.assertEqual(
+            extraer_comando_cable_buffer("info cable *F-VDP-JUR b1*"),
+            ("info", "F-VDP-JUR", 1),
+        )
 
     def test_no_matchea_bn_literal_sin_numero(self) -> None:
         """El "BN" genérico de la spec original no es un comando parseable — hace falta el número real."""

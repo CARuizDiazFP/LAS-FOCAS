@@ -634,3 +634,28 @@
   para separar el push de la tabla de Pelos del de "Borrar grupo Cromo".
 - **Impacto:** sin cambios de código de aplicación — sólo documentación y los 7 archivos de la skill/
   prompt `repo-updater`. Ver `docs/cierres/2026-08-25.md` (addendum) y `docs/Mate_y_Ruta.md`.
+
+## 2026-08-25 (cont. 2) — Bug real: negrita de Slack en el código rompía "Info cable"/"Info cable X BN"
+
+- **Contexto:** el usuario retesteó en vivo y compartió una segunda captura ("info cable F-VDP-JUR
+  b1" → "no encontré ... F-VDP-JUR b1", con el código glueado al sufijo de buffer en la respuesta).
+  Se leyó el payload crudo real vía el conector de Slack de claude.ai (`slack_read_thread` sobre el
+  canal `#baneo-de-camaras-prueba`, mensajes `1787653453.531689` y `1787657001.749649`): el texto
+  real que Slack entrega al bot es `info cable *F-VDP-JUR*` / `info cable *F-VDP-JUR b1*` — el
+  técnico resalta el código en **negrita** (uso normal de Slack) y esos asteriscos llegan literales
+  en `event["text"]`, Slack no los renderiza antes de mandarlos.
+- **Decisión (root cause, no de diseño):** `extraer_comando_info_cable` capturaba el `*`/`*` como
+  parte del `nombre` buscado (nunca podía matchear contra `cromo_cables.nombre`), y con sufijo de
+  buffer el `*` final rompía directamente el ancla `$` de `extraer_comando_cable_buffer`, cayendo al
+  parser goloso de "Info cable" (que se comía "B1*" completo). Esto explica retroactivamente **ambas**
+  capturas de esta sesión — no tiene relación con la identidad de bots prod/dev (2026-08-25 (cont.))
+  ni con los datos de Cromo, investigados antes en la misma sesión sobre la hipótesis equivocada.
+- **Fix:** `_quitar_formato_slack` (`modules/slack_baneo_notifier/cable_info.py`) quita `*`/`_`/
+  `` ` ``/`~` del texto normalizado antes de correr cualquiera de los dos regex de comando — ningún
+  código de cable real usa esos 4 caracteres, así que no hay riesgo de falso negativo.
+- **Impacto:** 3 tests nuevos (TDD, RED confirmado reproduciendo el payload crudo real antes de
+  implementar), 1062 tests totales, 0 regresiones. Verificado real contra `lasfocasdev-postgres`
+  dentro de `lasfocasdev-slack-baneo-worker` reconstruido, con el string exacto que Slack mandó
+  (`F-VDP-JUR`, n_id 6613666) — antes fallaba, ahora resuelve. `docs/slack_app_cables.md` actualizado.
+- **No hecho:** prod (`lasfocas-slack-baneo-worker`) corre el mismo código, así que tiene el mismo
+  bug — no se tocó (directriz vigente de no tocar prod sin aviso explícito puntual).

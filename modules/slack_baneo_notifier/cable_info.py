@@ -53,11 +53,25 @@ _RE_INFO_CABLE = re.compile(r"(?i)\binfo\s+cable\s+(.+)$")
 # del cable no se coma el sufijo "B<N>"/"Buffer <N>" del final. Tolera "B1", "B 1", "Buffer 1".
 _RE_CABLE_BUFFER = re.compile(r"(?i)^(verificar|info)\s+cable\s+(.+?)\s+(?:b|buffer)\s*(\d+)$")
 
+# Slack no renderiza mrkdwn antes de mandarnos el evento — negrita/cursiva/código/tachado
+# (*texto*, _texto_, `texto`, ~texto~) llegan con los caracteres literales en `event["text"]`. Bug
+# real 2026-08-25 (reproducido con el payload crudo real del canal #baneo-de-camaras-prueba): un
+# técnico que resalta el código en negrita (uso normal de Slack, ej. "info cable *F-VDP-JUR*") hacía
+# que el match exacto contra `cromo_cables.nombre` fallara siempre (buscaba "*F-VDP-JUR*" literal) y
+# además rompía `_RE_CABLE_BUFFER` (el "*" final no encaja en el ancla `$`, caía a este regex goloso
+# y se comía "B1*"/"*" como si fueran parte del nombre). Se quitan globalmente antes de matchear
+# cualquiera de los dos regex — ningún código de cable real usa estos 4 caracteres.
+_RE_FORMATO_SLACK = re.compile(r"[*_`~]")
+
+
+def _quitar_formato_slack(texto: str) -> str:
+    return _RE_FORMATO_SLACK.sub("", texto)
+
 
 def extraer_comando_info_cable(texto: str) -> Optional[str]:
     """Extrae el nombre de cable de un texto tipo "Info cable F-VFL-IND". Devuelve `None` si el
     texto no matchea el comando (no es un error — puede ser una mención sin relación a este comando)."""
-    texto_normalizado = re.sub(r"\s+", " ", texto).strip()
+    texto_normalizado = _quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
     match = _RE_INFO_CABLE.search(texto_normalizado)
     if not match:
         return None
@@ -147,7 +161,7 @@ def extraer_comando_cable_buffer(texto: str) -> Optional[tuple[str, str, int]]:
     """Extrae (verbo, nombre_cable, numero_buffer) de "Verificar cable F-VFL-IND B1" o
     "Info cable F-VFL-IND B1". `verbo` normalizado a minúsculas ("verificar"|"info"). Devuelve
     `None` si el texto no matchea (no es un error — puede ser una mención sin relación)."""
-    texto_normalizado = re.sub(r"\s+", " ", texto).strip()
+    texto_normalizado = _quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
     match = _RE_CABLE_BUFFER.match(texto_normalizado)
     if not match:
         return None

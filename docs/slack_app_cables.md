@@ -140,6 +140,28 @@ prefijo (FO/FO-DWDM/DWDM/INT/ISIS/RPV/EWS/TLS/ATI/VID/TDM/ATD/TRUNK — lista ex
 ...
 ```
 
+## Bug real 2026-08-25 — negrita/formato mrkdwn de Slack en el código rompía el parser
+
+Reproducido con el payload crudo real del canal `#baneo-de-camaras-prueba` (mensajes
+`1787653453.531689`/`1787657001.749649`): un técnico que escribe el código del cable en **negrita**
+(uso normal de Slack, ej. `info cable *F-VDP-JUR*`) manda el texto con los asteriscos literales en
+`event["text"]` — Slack no lo "renderiza" antes de entregarlo al bot. Sin fix, esto rompía los 3
+comandos:
+- `extraer_comando_info_cable` capturaba `"*F-VDP-JUR*"` (asteriscos incluidos) como `nombre`, y el
+  match exacto contra `cromo_cables.nombre` nunca podía matchear — el bot respondía "no encontré"
+  aunque el cable existiera, era único y estuviera vigente. La respuesta mostraba el código con
+  **doble** asterisco (`**F-VDP-JUR**`) — uno de la plantilla de respuesta, otro que ya venía pegado
+  al `nombre` buscado; esa doble negrita en la respuesta es la pista visual del bug.
+- Con sufijo de buffer (`*F-VDP-JUR b1*`), el `*` final ni siquiera dejaba matchear
+  `extraer_comando_cable_buffer` (rompe el ancla `$` del regex) — caía al parser goloso de "Info
+  cable", que se comía `"b1*"` y el `"*"` inicial como si fueran parte del nombre.
+
+**Fix**: `_quitar_formato_slack` (`cable_info.py`) quita `*`/`_`/`` ` ``/`~` del texto normalizado
+ANTES de correr cualquiera de los dos regex — ningún código de cable real usa esos 4 caracteres.
+Verificado real contra `lasfocasdev-postgres` con el payload exacto de Slack (n_id 6613666,
+`F-VDP-JUR`, antes fallaba, ahora resuelve). No relacionado con la identidad de bots prod/dev ni con
+los datos de Cromo — root cause completamente distinto de lo investigado antes en la misma sesión.
+
 **Reutiliza**: `core/services/cromo/detalle.py::pelos_de_tubo_sync` (mismo patrón de
 `obtener_detalle_cable`, acotado a un tubo — nunca N+1, una sola query con `LEFT JOIN` a
 `cromo_servicio_match`/`servicios`).
