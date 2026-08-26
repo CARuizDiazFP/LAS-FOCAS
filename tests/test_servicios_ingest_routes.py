@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 
 import pandas as pd
 import pytest
@@ -16,6 +17,17 @@ from api.app.main import app
 from db.session import SessionLocal
 
 API_HEADERS = {"Authorization": "Bearer test-api-key"}
+
+# Este archivo es de integración: necesita un Postgres real alcanzable con el esquema `app.*`
+# (fixtures que hacen INSERT/DELETE directo y un upsert real contra el CHECK de categoria). El
+# workflow `.github/workflows/ci.yml` corre `pytest -q tests` sin `services: postgres`, así que ahí
+# estos tests fallarían por conexión, no por regresión. GitHub Actions define `CI=true` en sus
+# runners; localmente hay que apuntar POSTGRES_HOST/PORT al Postgres de dev (el host `postgres` del
+# compose no resuelve desde la máquina, ver la skill docker-rebuild).
+pytestmark = pytest.mark.skipif(
+    os.getenv("CI") == "true",
+    reason="requiere Postgres real alcanzable; el workflow de CI no tiene ese servicio configurado",
+)
 
 
 def _excel_bytes(df: pd.DataFrame) -> bytes:
