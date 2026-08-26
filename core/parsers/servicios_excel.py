@@ -57,6 +57,14 @@ MAPPER: Dict[str, str] = {
     "provincia": "provincia",
     "direccion 2": "direccion_2",
     "direcci\u00f3n 2": "direccion_2",
+    "direccion servicio": "direccion",
+    "domicilio servicio": "direccion",
+    "direccion 2 servicio": "direccion_2",
+    "localidad servicio": "localidad",
+    "provincia servicio": "provincia",
+    "nivel cliente": "categoria",
+    "linea upgrade de": "linea_upgrade_de",
+    "linea upgrade a": "linea_upgrade_a",
     "estado servicio": "estado_servicio",
     "estado del servicio": "estado_servicio",
     "estado": "estado_servicio",
@@ -73,6 +81,9 @@ RELEVANT_COLS = [
     "provincia",
     "direccion_2",
     "estado_servicio",
+    "categoria",
+    "linea_upgrade_de",
+    "linea_upgrade_a",
 ]
 
 MIN_REQUIRED = ["numero_primer_servicio"]
@@ -119,6 +130,9 @@ def parse_servicios_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestServiciosS
     for col in RELEVANT_COLS:
         df[col] = df[col].astype(str).str.strip()
         df.loc[df[col].isin(["", "nan", "None", "<NA>", "<na>"]), col] = pd.NA
+
+    for col in ("linea_upgrade_de", "linea_upgrade_a"):
+        df.loc[df[col] == "-", col] = pd.NA
 
     df["numero_primer_servicio"] = df["numero_primer_servicio"].astype("string")
     df["estado_servicio"] = df["estado_servicio"].fillna("DESCONOCIDO").astype("string")

@@ -50,3 +50,42 @@ def test_parse_servicios_df_descarta_filas_sin_id_y_estado_default() -> None:
     assert len(parsed) == 1
     assert parsed.iloc[0]["numero_primer_servicio"] == "2001"
     assert parsed.iloc[0]["estado_servicio"] == "DESCONOCIDO"
+
+
+def test_parse_servicios_df_mapea_encabezados_reales_con_sufijo_servicio() -> None:
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["393"],
+            "Dirección Servicio": ["GODOY CRUZ 2320"],
+            "Dirección 2 Servicio": ["SUIPACHA 128 P.3 - D.F"],
+            "Localidad Servicio": ["CABA"],
+            "Provincia Servicio": ["CABA"],
+        }
+    )
+
+    parsed, summary = parse_servicios_df(df)
+
+    assert summary.rows_ok == 1
+    assert parsed.iloc[0]["direccion"] == "GODOY CRUZ 2320"
+    assert parsed.iloc[0]["direccion_2"] == "SUIPACHA 128 P.3 - D.F"
+    assert parsed.iloc[0]["localidad"] == "CABA"
+    assert parsed.iloc[0]["provincia"] == "CABA"
+
+
+def test_parse_servicios_df_mapea_columnas_de_cadena_de_upgrades() -> None:
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["393", "4397"],
+            "Nivel Cliente": ["4", "4"],
+            "Línea Upgrade (De)": ["105636", "-"],
+            "Línea Upgrade (A)": ["-", "-"],
+        }
+    )
+
+    parsed, summary = parse_servicios_df(df)
+
+    assert summary.rows_ok == 2
+    assert parsed.iloc[0]["categoria"] == "4"
+    assert parsed.iloc[0]["linea_upgrade_de"] == "105636"
+    assert pd.isna(parsed.iloc[1]["linea_upgrade_de"])
+    assert pd.isna(parsed.iloc[0]["linea_upgrade_a"])
