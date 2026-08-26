@@ -157,3 +157,22 @@ def test_consolidar_identidad_filtra_alias_no_canonica_que_coincide_con_id_final
     assert resultado.numero_linea == "93"
     # "093" representa el mismo entero que id_final="93", así que debe filtrarse
     assert resultado.alias_ids == []  # No duplicado, se filtra por valor numérico
+
+
+def test_consolidar_identidad_preserva_alias_no_numerico_distinto_de_servicio_id_tracking() -> None:
+    """Fix round 3: alias_ids_actual con otro valor no numérico debe preservarse (no colisión None==None)"""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="45789",
+        numero_linea_excel="111743",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual="O1C1",      # no numérico, se preserva como servicio_id_final
+        numero_linea_actual=None,
+        alias_ids_actual=["O2C2"],      # otro alias no numérico DISTINTO, debe sobrevivir
+    )
+    assert resultado.servicio_id == "O1C1"  # preservado
+    assert resultado.numero_linea == "111743"  # máximo numérico
+    # "O2C2" es distinto de id_final y de servicio_id_final, debe estar en alias
+    # "45789" (numero_primer_servicio) también es candidato legítimo
+    assert "O2C2" in resultado.alias_ids  # No se pierden aliases legítimos no numéricos
+    assert resultado.alias_ids == ["O2C2", "45789"]  # Ordenado correctamente

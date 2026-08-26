@@ -87,9 +87,15 @@ def consolidar_identidad_servicio(
     id_final_entero = _a_entero(id_final)
     servicio_id_final_entero = _a_entero(servicio_id_final)
 
+    def _no_coincide_con_id(valor: str) -> bool:
+        entero = _a_entero(valor)
+        if entero is not None:
+            return entero not in (id_final_entero, servicio_id_final_entero)
+        return valor not in (id_final, servicio_id_final)
+
     alias_existentes = [
         valor for valor in (alias_ids_actual or [])
-        if valor and valor != "-" and _a_entero(valor) not in (id_final_entero, servicio_id_final_entero)
+        if valor and valor != "-" and _no_coincide_con_id(valor)
     ]
 
     alias_nuevos = sorted(
@@ -97,7 +103,7 @@ def consolidar_identidad_servicio(
             valor
             for valor in candidatos_str
             if valor not in alias_existentes
-            and _a_entero(valor) not in (id_final_entero, servicio_id_final_entero)
+            and _no_coincide_con_id(valor)
         ),
         key=lambda valor: (_a_entero(valor) is None, _a_entero(valor) or 0, valor),
     )
