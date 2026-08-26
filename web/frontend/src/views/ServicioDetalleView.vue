@@ -14,7 +14,7 @@
     <header class="servicio-detalle__header">
       <div class="servicio-detalle__identity">
         <span class="servicio-detalle__kicker">Servicio · ID origen {{ servicio?.numero_primer_servicio || '---' }}</span>
-        <h1>{{ servicio?.nombre_cliente || 'Cliente sin dato' }}</h1>
+        <h1 :class="{ 'is-baja': estadoToken === 'error' }">{{ servicio?.nombre_cliente || 'Cliente sin dato' }}</h1>
         <p class="servicio-detalle__domicilio">{{ domicilio }}</p>
       </div>
 
@@ -38,8 +38,20 @@
             </option>
           </select>
           <span v-else-if="servicio" class="servicio-detalle__chip is-outline">{{ categoriaLabel(servicio.categoria) }}</span>
+          <select
+            v-if="isAdmin && servicio"
+            class="servicio-detalle__verificable-select"
+            :value="String(servicio.es_verificable)"
+            :disabled="guardandoVerificable"
+            @change="onCambiarVerificable(($event.target as HTMLSelectElement).value === 'true')"
+          >
+            <option value="true">Verificable</option>
+            <option value="false">No verificable</option>
+          </select>
+          <span v-else-if="servicio && !servicio.es_verificable" class="servicio-detalle__chip is-warning">No verificable</span>
         </div>
         <p v-if="errorCategoria" class="servicio-detalle__categoria-error">{{ errorCategoria }}</p>
+        <p v-if="errorVerificable" class="servicio-detalle__categoria-error">{{ errorVerificable }}</p>
 
         <div class="servicio-detalle__actions">
           <button class="btn subtle" type="button" disabled title="Próximamente">
@@ -195,6 +207,7 @@ import {
   estadoServicioToken,
   getServicioDetail,
   updateServicioCategoria,
+  updateServicioVerificable,
   type ServicioItem,
 } from '../api/servicios';
 import { useSession } from '../composables/useSession';
@@ -209,6 +222,8 @@ const loading = ref(false);
 const error = ref('');
 const guardandoCategoria = ref(false);
 const errorCategoria = ref('');
+const guardandoVerificable = ref(false);
+const errorVerificable = ref('');
 
 interface InfraRutaItem {
   id: number;
@@ -265,7 +280,14 @@ const idParam = computed(() => String(route.params.idServicio ?? '').trim());
 const historicoIds = computed(() => {
   if (!servicio.value) return [] as string[];
 
-  const ids = [servicio.value.numero_primer_servicio, servicio.value.numero_linea]
+  const alias = [...(servicio.value.alias_ids ?? [])].sort((a, b) => {
+    const numA = Number(a);
+    const numB = Number(b);
+    if (Number.isFinite(numA) && Number.isFinite(numB)) return numA - numB;
+    return a.localeCompare(b);
+  });
+
+  const ids = [servicio.value.numero_primer_servicio, ...alias, servicio.value.numero_linea]
     .map((value) => (value ?? '').trim())
     .filter((value, index, arr) => value.length > 0 && arr.indexOf(value) === index);
 
@@ -344,6 +366,21 @@ async function onCambiarCategoria(categoria: number): Promise<void> {
     if (servicio.value) servicio.value.categoria = anterior;
   } finally {
     guardandoCategoria.value = false;
+  }
+}
+
+async function onCambiarVerificable(esVerificable: boolean): Promise<void> {
+  if (!servicio.value || guardandoVerificable.value) return;
+  const anterior = servicio.value.es_verificable;
+  guardandoVerificable.value = true;
+  errorVerificable.value = '';
+  try {
+    servicio.value = await updateServicioVerificable(servicio.value.id, esVerificable);
+  } catch (err: unknown) {
+    errorVerificable.value = err instanceof Error ? err.message : 'No se pudo cambiar la verificabilidad';
+    if (servicio.value) servicio.value.es_verificable = anterior;
+  } finally {
+    guardandoVerificable.value = false;
   }
 }
 
@@ -498,6 +535,25 @@ watch(
   font-size: 34px;
   line-height: 1.1;
   text-wrap: pretty;
+}
+
+.servicio-detalle__header h1.is-baja {
+  color: var(--color-state-error);
+}
+
+.servicio-detalle__verificable-select {
+  padding: 3px 8px;
+  font-size: 10.5px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
+}
+
+.servicio-detalle__chip.is-warning {
+  background: transparent;
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
 }
 
 .servicio-detalle__domicilio {
