@@ -183,6 +183,19 @@ def test_ingest_fusiona_placeholder_cromo_puro_que_ocupa_el_servicio_id_final(cl
         ).scalar_one()
         assert match_servicio_id == familia.id
 
+        # `app.servicio_empalme_association` es la tercera tabla que referencia app.servicios sin
+        # ON DELETE CASCADE, y la fusión la limpia con un DELETE (no reasigna: PK compuesta + tabla
+        # DEPRECATED, ver el comentario en el endpoint). Este placeholder no tenía filas ahí — el caso
+        # común, 0 de 9054 en dev —, así que lo que cubre esta aserción es que el DELETE extra no
+        # rompe nada cuando no hay nada que borrar, y que no quedó ninguna fila colgada.
+        assert (
+            session.execute(
+                text("SELECT COUNT(*) FROM app.servicio_empalme_association WHERE servicio_id = :id"),
+                {"id": placeholder_id},
+            ).scalar_one()
+            == 0
+        )
+
 
 def test_ingest_no_fusiona_colision_con_servicio_real_y_degrada_a_alias(client: TestClient) -> None:
     """REPRO B: el `id_final` de la familia está tomado por una fila que NO es placeholder puro.
