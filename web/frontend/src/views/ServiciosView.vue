@@ -151,6 +151,7 @@
               <span class="servicios-view__preview-tag is-accent">{{ selectedItem.estado_servicio || 'Sin estado' }}</span>
               <span class="servicios-view__preview-tag">{{ (selectedItem.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
               <span v-if="selectedItem.sla_prometido" class="servicios-view__preview-tag is-outline">SLA {{ selectedItem.sla_prometido }}</span>
+              <span v-if="!selectedItem.es_verificable" class="servicios-view__preview-tag is-warn">No verificable</span>
             </div>
 
             <div class="servicios-view__hairline"></div>
@@ -797,6 +798,12 @@ onBeforeUnmount(() => {
   background: transparent;
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
+}
+
+.servicios-view__preview-tag.is-warn {
+  background: transparent;
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
 }
 
 .servicios-view__hairline {

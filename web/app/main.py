@@ -7221,6 +7221,51 @@ async def servicio_categoria_web(request: Request, id: int, body: ServicioCatego
         return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
 
 
+class ServicioVerificableUpdateRequestModel(BaseModel):
+    es_verificable: bool
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/{id}/verificable")
+async def servicio_verificable_web(request: Request, id: int, body: ServicioVerificableUpdateRequestModel) -> JSONResponse:
+    """Fija el override de verificabilidad de un Servicio individual — sólo admin. Proxya al
+    endpoint interno, mismo patrón que `servicio_categoria_web`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_verificable result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/{id}/verificable",
+                json={"es_verificable": body.es_verificable},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error actualizando verificabilidad"}
+
+        logger.info(
+            "action=servicio_verificable user=%s id=%s es_verificable=%s status=%s",
+            username,
+            id,
+            body.es_verificable,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_verificable_error user=%s id=%s error=%s", username, id, exc)
+        return JSONResponse({"error": f"Error actualizando verificabilidad: {exc!s}"}, status_code=500)
+
+
 class ServiciosCategoriaMasivaRequestModel(BaseModel):
     servicio_ids: list[int]
     categoria: int

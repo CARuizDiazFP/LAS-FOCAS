@@ -93,3 +93,93 @@ class TestPatchVerificable:
         response = client.patch("/servicios/1/verificable", json={"es_verificable": True})
 
         assert response.status_code in (401, 403)
+
+
+class TestProxyWebVerificable:
+    """El `<select>` de verificable de la SPA pega a `/api/servicios/{id}/verificable` en el
+    backend web (`web/app/main.py`), que es una lista explícita de rutas proxy — si la ruta no
+    está declarada ahí, el frontend recibe 404/405 aunque el endpoint interno exista."""
+
+    @staticmethod
+    def _fake_async_client(capturado: list) -> type:
+        class _Resp:
+            status_code = 200
+
+            @staticmethod
+            def json() -> dict:
+                return {"id": 1, "es_verificable": True, "es_verificable_override": True}
+
+        class _AsyncClient:
+            def __init__(self, timeout: float | None = None) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def patch(self, url: str, json: dict | None = None, headers: dict | None = None):
+                capturado.append((url, json))
+                return _Resp()
+
+        return _AsyncClient
+
+    def test_proxya_al_endpoint_interno(self, monkeypatch) -> None:
+        from core.password import hash_password
+        from web.app import main as web_main
+        from web.app.main import app as web_app
+
+        class _Cur:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, sql: str, params=None) -> None:
+                return None
+
+            def fetchone(self):
+                return (hash_password("admin"), "admin")
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def cursor(self):
+                return _Cur()
+
+            def commit(self) -> None:
+                return None
+
+        monkeypatch.setattr(web_main.psycopg, "connect", lambda dsn: _Conn())
+        capturado: list = []
+        monkeypatch.setattr(web_main.httpx, "AsyncClient", self._fake_async_client(capturado))
+
+        web_client = TestClient(web_app)
+        csrf = web_client.post("/api/auth/login", json={"username": "admin", "password": "admin"}).json()["csrf"]
+
+        response = web_client.patch(
+            "/api/servicios/7/verificable",
+            json={"es_verificable": True, "csrf_token": csrf},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["es_verificable"] is True
+        assert len(capturado) == 1
+        url, payload = capturado[0]
+        assert url.endswith("/servicios/7/verificable")
+        assert payload == {"es_verificable": True}
+
+    def test_sin_sesion_no_es_404(self, monkeypatch) -> None:
+        """Guard de regresión: sin la ruta declarada el web devolvía 405/404 en vez del 401 de auth."""
+        from web.app.main import app as web_app
+
+        web_client = TestClient(web_app)
+        response = web_client.patch("/api/servicios/7/verificable", json={"es_verificable": True})
+
+        assert response.status_code == 401
