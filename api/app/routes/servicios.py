@@ -257,10 +257,11 @@ async def ingest_servicios(
     # revienta con `duplicate key value violates unique constraint "ix_servicios_servicio_id"` y se
     # pierde el chunk completo de 500 filas (176 casos reales medidos en dev: 161 contra un
     # placeholder INFERIDO_CROMO y 15 contra filas MANUAL).
-    # Sólo se fusiona un placeholder INFERIDO_CROMO sin tocar (numero_primer_servicio == servicio_id,
-    # nunca divergido) — cualquier otra colisión (MANUAL/INGEST_EXCEL, o un placeholder ya tocado) se
-    # degrada sin pisar servicio_id, agregando igual el id a alias_ids, con un warning explícito:
-    # fusionar dos registros reales sin confirmación humana está fuera de alcance a propósito.
+    # Sólo se fusiona un placeholder INFERIDO_CROMO que de verdad nunca fue tocado — cualquier otra
+    # colisión (MANUAL/INGEST_EXCEL, un placeholder divergido, uno con tracking físico encima, o una
+    # fila que pertenece a otra familia de ESTE mismo archivo) se degrada sin pisar servicio_id,
+    # agregando igual el id a alias_ids, con un warning explícito: fusionar dos registros reales sin
+    # confirmación humana está fuera de alcance a propósito.
     candidatos_servicio_id = {row["servicio_id"] for row in rows_by_id.values()}
     colisiones_stmt = select(
         Servicio.id,
@@ -270,20 +271,55 @@ async def ingest_servicios(
     ).where(Servicio.servicio_id.in_(candidatos_servicio_id))
     colision_por_servicio_id: dict[str, Any] = {}
     for fila in (await db.execute(colisiones_stmt)).all():
-        if fila.numero_primer_servicio in rows_by_id:
-            continue  # es la propia fila de esta misma familia, no una colisión real
         colision_por_servicio_id[fila.servicio_id] = fila
+
+    # Placeholders candidatos a fusión: sólo los que NUNCA fueron tocados por tracking físico (sin
+    # filas en rutas_servicio ni en la tabla deprecada servicio_empalme_association) — el flag
+    # origen_datos=INFERIDO_CROMO por sí solo NO lo garantiza, porque
+    # core/services/infra_service.py::create_new reusa un Servicio ya existente (`if existing:
+    # servicio = existing`, puede ser un placeholder Cromo), le cuelga una RutaServicio y le hace
+    # `servicio.empalmes.append(...)`, todo SIN cambiarle origen_datos. Un hard delete no puede
+    # apoyarse en una medición puntual ("hoy son 0 en dev"), tiene que chequear el hecho.
+    ids_placeholder_candidatos = [
+        fila.id
+        for fila in colision_por_servicio_id.values()
+        if fila.origen_datos == ServicioOrigenDatos.INFERIDO_CROMO
+        and fila.numero_primer_servicio == fila.servicio_id
+    ]
+    ids_con_rutas_o_empalmes: set[int] = set()
+    if ids_placeholder_candidatos:
+        tocados_stmt = text(
+            """
+            SELECT DISTINCT servicio_id FROM (
+                SELECT servicio_id FROM app.rutas_servicio WHERE servicio_id = ANY(:ids)
+                UNION
+                SELECT servicio_id FROM app.servicio_empalme_association WHERE servicio_id = ANY(:ids)
+            ) t
+            """
+        )
+        ids_con_rutas_o_empalmes = {
+            fila[0]
+            for fila in (await db.execute(tocados_stmt, {"ids": ids_placeholder_candidatos})).all()
+        }
 
     fusiones_pendientes: dict[str, int] = {}  # numero_primer_servicio -> id del placeholder a fusionar
     id_final_pendiente_por_numero: dict[str, str] = {}  # numero_primer_servicio -> servicio_id final real
     for numero, row in rows_by_id.items():
         colision = colision_por_servicio_id.get(row["servicio_id"])
-        if colision is None:
-            continue
+        if colision is None or colision.numero_primer_servicio == numero:
+            continue  # sin colisión real, o es la propia fila de esta misma familia
+
+        # Si la fila en colisión es de OTRA familia de este mismo archivo, fusionarla sería borrar una
+        # fila que el upsert de más abajo está por escribir. Se degrada (no se fusiona) aunque cumpla
+        # el resto del predicado de "placeholder puro".
+        colisiona_con_otra_familia_del_batch = colision.numero_primer_servicio in rows_by_id
         es_placeholder_puro = (
-            colision.origen_datos == ServicioOrigenDatos.INFERIDO_CROMO
+            not colisiona_con_otra_familia_del_batch
+            and colision.origen_datos == ServicioOrigenDatos.INFERIDO_CROMO
             and colision.numero_primer_servicio == colision.servicio_id
+            and colision.id not in ids_con_rutas_o_empalmes
         )
+
         existente = existentes_por_id.get(numero)
         valor_seguro = existente.servicio_id if existente else numero
         if es_placeholder_puro:
@@ -293,15 +329,23 @@ async def ingest_servicios(
         else:
             logger.warning(
                 "action=servicios_ingest evento=servicio_id_colision_no_fusionable "
-                "numero_primer_servicio=%s servicio_id_deseado=%s colision_con_id=%s colision_origen=%s",
+                "numero_primer_servicio=%s servicio_id_deseado=%s colision_con_id=%s colision_origen=%s "
+                "colision_del_mismo_batch=%s",
                 numero,
                 row["servicio_id"],
                 colision.id,
                 colision.origen_datos.value if hasattr(colision.origen_datos, "value") else str(colision.origen_datos),
+                colisiona_con_otra_familia_del_batch,
             )
             id_final_no_fusionable = row["servicio_id"]
             row["servicio_id"] = valor_seguro
-            if id_final_no_fusionable not in row["alias_ids"]:
+            # `consolidar_identidad_servicio` había excluido `id_final` de los alias y dejado
+            # `valor_seguro` adentro, asumiendo que el servicio_id final iba a ser `id_final`. Al
+            # degradar se invierte: `valor_seguro` pasa a ser el servicio_id (no tiene sentido que
+            # además figure como su propio alias) y `id_final` baja a alias.
+            if valor_seguro in row["alias_ids"]:
+                row["alias_ids"].remove(valor_seguro)
+            if id_final_no_fusionable != valor_seguro and id_final_no_fusionable not in row["alias_ids"]:
                 row["alias_ids"].append(id_final_no_fusionable)
 
     rows = list(rows_by_id.values())
@@ -378,6 +422,13 @@ async def ingest_servicios(
         for numero, placeholder_id in fusiones_pendientes.items():
             familia_id = id_por_numero.get(numero)
             if familia_id is None or familia_id == placeholder_id:
+                logger.warning(
+                    "action=servicios_ingest evento=fusion_no_aplicada numero_primer_servicio=%s "
+                    "placeholder_id=%s familia_id=%s",
+                    numero,
+                    placeholder_id,
+                    familia_id,
+                )
                 continue
             await db.execute(
                 text("UPDATE app.cromo_servicio_match SET servicio_id = :familia_id WHERE servicio_id = :placeholder_id"),

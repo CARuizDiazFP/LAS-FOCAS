@@ -38,7 +38,10 @@ def client():
         yield test_client
 
 
-_NUMEROS_DE_TEST = ("900001", "900002", "900003", "900004", "900090", "900091")
+_NUMEROS_DE_TEST = (
+    "900001", "900002", "900003", "900004", "900005",
+    "900090", "900091", "900092",
+)
 
 # n_id de pelo sintético para el árbol mínimo de Cromo del test de fusión. Fuera del rango real de
 # Cromo (verificado: no existe en app.cromo_pelos de dev) para no pisar datos reales.
@@ -57,8 +60,9 @@ def _limpiar_servicios_de_test():
             {"pelo": _PELO_N_ID_FUSION},
         )
         session.execute(text("DELETE FROM app.cromo_pelos WHERE n_id = :pelo"), {"pelo": _PELO_N_ID_FUSION})
-        # No se limpia `app.rutas_servicio`: ningún test de este archivo crea rutas (sólo el módulo
-        # de tracking físico las crea) y su FK a `app.servicios` ya es `ON DELETE CASCADE`.
+        # `app.rutas_servicio` no necesita DELETE explícito: su FK a `app.servicios` es
+        # `ON DELETE CASCADE`, así que la ruta que crea
+        # `test_ingest_no_fusiona_placeholder_con_tracking_fisico_encima` se va con su Servicio.
         session.execute(
             text("DELETE FROM app.servicios WHERE numero_primer_servicio = ANY(:numeros ::varchar[])"),
             {"numeros": list(_NUMEROS_DE_TEST)},
@@ -92,6 +96,25 @@ def test_ingest_calcula_servicio_id_como_el_id_mas_alto_de_la_cadena(client: Tes
     assert set(body["alias_ids"]) == {"900001", "900010"}
     assert body["categoria"] == 4
     assert body["es_verificable"] is True
+
+
+def _crear_placeholder_puro(numero: str) -> int:
+    """Inserta un placeholder Cromo PURO (`servicio_id == numero_primer_servicio`, origen
+    `INFERIDO_CROMO`, sin rutas ni empalmes) igual que
+    `core/services/cromo/ingesta.py::_SQL_CREAR_PLACEHOLDER_SERVICIO`, y devuelve su `id`."""
+    with SessionLocal() as session:
+        placeholder_id = int(
+            session.execute(
+                text(
+                    "INSERT INTO app.servicios "
+                    "(servicio_id, numero_primer_servicio, categoria, origen_datos, estado_servicio) "
+                    "VALUES (:numero, :numero, 0, 'INFERIDO_CROMO', 'DESCONOCIDO') RETURNING id"
+                ),
+                {"numero": numero},
+            ).scalar_one()
+        )
+        session.commit()
+    return placeholder_id
 
 
 def _crear_placeholder_cromo_con_match(numero: str) -> int:
@@ -250,6 +273,107 @@ def test_ingest_no_fusiona_colision_con_servicio_real_y_degrada_a_alias(client: 
         assert familia.servicio_id == "900004"
         # ...pero el id_final sí quedó como alias, para que el matching de Cromo lo resuelva.
         assert "900091" in list(familia.alias_ids or [])
+
+
+def test_ingest_no_fusiona_placeholder_que_es_otra_familia_del_mismo_archivo(client: TestClient) -> None:
+    """El placeholder que ocupa el `id_final` de una familia es, a su vez, OTRA familia de ESTE mismo
+    archivo.
+
+    Fusionarlo sería borrar una fila que el upsert de esta misma corrida está por escribir. El
+    predicado de "placeholder puro" tiene que degradar en este caso aunque el resto de las
+    condiciones (INFERIDO_CROMO, no divergido, sin tracking) se cumplan.
+
+    Antes del guard `colisiona_con_otra_familia_del_batch`, la fila del placeholder se descartaba de
+    la detección de colisiones por venir en el batch, y las DOS familias terminaban reclamando
+    `servicio_id='900090'` en el mismo INSERT -> `UniqueViolationError` y 500.
+    """
+    _crear_placeholder_puro("900090")
+
+    # Fila 1: la familia del propio placeholder. Fila 2: otra familia cuyo id_final es 900090.
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900090", "900003"],
+            "Número Línea": ["900090", "900090"],
+            "Tipo Servicio": ["INT", "INT"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    with SessionLocal() as session:
+        # La familia del placeholder sigue existiendo y conserva su servicio_id: NO fue fusionada.
+        propia = session.execute(
+            text("SELECT servicio_id FROM app.servicios WHERE numero_primer_servicio = '900090'")
+        ).one()
+        assert propia.servicio_id == "900090"
+
+        # La otra familia degradó: no pisó el servicio_id ajeno, pero se lo quedó como alias.
+        otra = session.execute(
+            text("SELECT servicio_id, alias_ids FROM app.servicios WHERE numero_primer_servicio = '900003'")
+        ).one()
+        assert otra.servicio_id == "900003"
+        assert "900090" in list(otra.alias_ids or [])
+
+
+def test_ingest_no_fusiona_placeholder_con_tracking_fisico_encima(client: TestClient) -> None:
+    """Un placeholder que ya tiene tracking físico encima NO es fusionable, aunque siga marcado
+    `INFERIDO_CROMO` y sin divergir.
+
+    `core/services/infra_service.py::create_new` reusa un Servicio existente (`if existing: servicio
+    = existing` — puede ser un placeholder Cromo), le cuelga una `RutaServicio` y le hace
+    `servicio.empalmes.append(...)`, todo SIN cambiarle `origen_datos`. Por eso el guard chequea el
+    HECHO (¿tiene filas en rutas_servicio / servicio_empalme_association?) y no sólo el flag: un hard
+    delete no puede apoyarse en que hoy sean 0 casos en dev.
+    """
+    placeholder_id = _crear_placeholder_puro("900092")
+    with SessionLocal() as session:
+        # Sólo `servicio_id` es obligatorio: nombre/tipo/activa tienen server_default.
+        session.execute(
+            text("INSERT INTO app.rutas_servicio (servicio_id) VALUES (:id)"), {"id": placeholder_id}
+        )
+        session.commit()
+
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900005"],
+            "Número Línea": ["900092"],
+            "Tipo Servicio": ["INT"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    with SessionLocal() as session:
+        # El placeholder NO fue borrado y conserva su servicio_id.
+        placeholder = session.execute(
+            text("SELECT servicio_id FROM app.servicios WHERE id = :id"), {"id": placeholder_id}
+        ).one()
+        assert placeholder.servicio_id == "900092"
+
+        # Su ruta sigue apuntándolo (no se reasignó a la familia real).
+        assert (
+            session.execute(
+                text("SELECT COUNT(*) FROM app.rutas_servicio WHERE servicio_id = :id"),
+                {"id": placeholder_id},
+            ).scalar_one()
+            == 1
+        )
+
+        familia = session.execute(
+            text("SELECT servicio_id, alias_ids FROM app.servicios WHERE numero_primer_servicio = '900005'")
+        ).one()
+        assert familia.servicio_id == "900005"
+        assert "900092" in list(familia.alias_ids or [])
 
 
 def test_ingest_no_pisa_servicio_id_no_numerico_de_tracking(client: TestClient) -> None:
