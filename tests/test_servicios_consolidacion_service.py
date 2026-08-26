@@ -8,6 +8,23 @@ from core.services.servicios_consolidacion_service import (
 )
 
 
+def _formas_duplicadas_del_mismo_entero(alias_ids: list[str]) -> list[int]:
+    """Enteros que aparecen representados por más de un string dentro de `alias_ids`.
+
+    Invariante del resultado (ronda 4): para cada entero distinto representado en `alias_ids` debe
+    haber UNA SOLA forma de string. Devuelve la lista de enteros que violan el invariante (vacía si
+    el resultado está bien). No usa helpers privados del módulo para no acoplarse a su interna.
+    """
+    vistos: dict[int, set[str]] = {}
+    for valor in alias_ids:
+        try:
+            entero = int(valor.strip())
+        except (ValueError, AttributeError):
+            continue
+        vistos.setdefault(entero, set()).add(valor)
+    return [entero for entero, formas in vistos.items() if len(formas) > 1]
+
+
 def test_es_verificable_por_tipo_acepta_los_tipos_del_negocio() -> None:
     for tipo in ("INT", "RPV", "ISI", "ISIS", "TLS", "EWS"):
         assert es_verificable_por_tipo(tipo) is True
@@ -176,3 +193,60 @@ def test_consolidar_identidad_preserva_alias_no_numerico_distinto_de_servicio_id
     # "45789" (numero_primer_servicio) también es candidato legítimo
     assert "O2C2" in resultado.alias_ids  # No se pierden aliases legítimos no numéricos
     assert resultado.alias_ids == ["O2C2", "45789"]  # Ordenado correctamente
+
+
+def test_consolidar_identidad_dedupe_dos_formas_del_mismo_entero_en_alias_actual() -> None:
+    """Ronda 4 / Repro A: dos formas del mismo entero ya presentes en alias_ids_actual.
+
+    "093" y "93" son el mismo ID de línea; sólo la forma canónica debe sobrevivir en alias_ids.
+    """
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="200",
+        numero_linea_excel="300",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=["093", "93"],
+    )
+    assert resultado.numero_linea == "300"
+    assert resultado.alias_ids == ["93", "200"]
+    assert _formas_duplicadas_del_mismo_entero(resultado.alias_ids) == []
+
+
+def test_consolidar_identidad_dedupe_alias_actual_no_canonica_contra_candidato_nuevo() -> None:
+    """Ronda 4 / Repro B: forma no canónica en alias_ids_actual + candidato nuevo del mismo entero.
+
+    alias_ids_actual=["093"] y linea_upgrade_de="93" son el mismo ID: una sola forma en alias_ids.
+    """
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="200",
+        numero_linea_excel="300",
+        linea_upgrade_de="93",
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=["093"],
+    )
+    assert resultado.numero_linea == "300"
+    assert resultado.alias_ids == ["93", "200"]
+    assert _formas_duplicadas_del_mismo_entero(resultado.alias_ids) == []
+
+
+def test_consolidar_identidad_dedupe_dos_columnas_del_excel_con_el_mismo_entero() -> None:
+    """Ronda 4 / caso 3 (auto-revisión): el choque no viene de alias_ids_actual sino de dos columnas
+    del Excel con formato distinto para el mismo ID ("0300" en Número Primer Servicio y "300" en
+    Línea Upgrade (De)). Debe quedar una sola forma canónica en alias_ids.
+    """
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="0300",
+        numero_linea_excel="500",
+        linea_upgrade_de="300",
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=None,
+    )
+    assert resultado.numero_linea == "500"
+    assert resultado.alias_ids == ["300"]
+    assert _formas_duplicadas_del_mismo_entero(resultado.alias_ids) == []
