@@ -23,10 +23,11 @@
       <span :class="['servicio-card__dot', `is-${estadoToken}`]" :title="servicio.estado_servicio" aria-hidden="true"></span>
       <span class="servicio-card__type">{{ tipoLabel }}</span>
       <span class="servicio-card__categoria">{{ categoriaLabel(servicio.categoria) }}</span>
+      <span v-if="!servicio.es_verificable" class="servicio-card__badge-no-verificable">No verificable</span>
       <i class="ph ph-arrow-up-right servicio-card__arrow" aria-hidden="true"></i>
     </div>
 
-    <h3 class="servicio-card__name">{{ servicio.nombre_cliente || 'Cliente sin dato' }}</h3>
+    <h3 :class="['servicio-card__name', { 'is-baja': estadoToken === 'error' }]">{{ servicio.nombre_cliente || 'Cliente sin dato' }}</h3>
 
     <div class="servicio-card__hairline"></div>
 
@@ -163,6 +164,18 @@ function goToDetail(): void {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.servicio-card__name.is-baja {
+  color: var(--color-state-error);
+}
+
+.servicio-card__badge-no-verificable {
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 9.5px;
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
 }
 
 .servicio-card__hairline {

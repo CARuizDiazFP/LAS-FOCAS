@@ -132,7 +132,7 @@
                 @change="toggleSeleccion(item.id)"
               />
               <span :class="['servicios-view__list-dot', `is-${estadoServicioToken(item.estado_servicio)}`]" aria-hidden="true"></span>
-              <span class="servicios-view__list-cliente">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
+              <span :class="['servicios-view__list-cliente', { 'is-baja': estadoServicioToken(item.estado_servicio) === 'error' }]">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
               <span class="servicios-view__list-categoria">{{ categoriaLabel(item.categoria) }}</span>
               <span class="servicios-view__list-historico">{{ historicoLabel(item) }}</span>
               <span class="servicios-view__list-tipo">{{ (item.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
@@ -143,7 +143,7 @@
           <aside v-if="selectedItem" class="servicios-view__preview">
             <div>
               <span class="servicios-view__preview-kicker">Vista previa</span>
-              <h2 class="servicios-view__preview-title">{{ selectedItem.nombre_cliente || 'Cliente sin dato' }}</h2>
+              <h2 :class="['servicios-view__preview-title', { 'is-baja': estadoServicioToken(selectedItem.estado_servicio) === 'error' }]">{{ selectedItem.nombre_cliente || 'Cliente sin dato' }}</h2>
               <p class="servicios-view__preview-domicilio">{{ previewDomicilio(selectedItem) }}</p>
             </div>
 
@@ -709,6 +709,11 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.servicios-view__list-cliente.is-baja,
+.servicios-view__preview-title.is-baja {
+  color: var(--color-state-error);
 }
 
 .servicios-view__list-historico {
