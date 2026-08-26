@@ -22,6 +22,10 @@ from core.services.servicios_categoria_service import (
     actualizar_categoria_masiva,
     validar_categoria,
 )
+from core.services.servicios_consolidacion_service import (
+    consolidar_identidad_servicio,
+    es_verificable_por_tipo,
+)
 from db.models.infra import Servicio, ServicioOrigenDatos
 from db.session import SessionLocal, get_async_db
 
@@ -161,7 +165,6 @@ async def ingest_servicios(
         if not numero_primer_servicio:
             continue
         rows_by_id[numero_primer_servicio] = {
-            "servicio_id": numero_primer_servicio,
             "numero_primer_servicio": numero_primer_servicio,
             "nombre_cliente": _normalize_value(row.get("nombre_cliente")),
             "numero_linea": _normalize_value(row.get("numero_linea")),
@@ -172,12 +175,82 @@ async def ingest_servicios(
             "provincia": _normalize_value(row.get("provincia")),
             "direccion_2": _normalize_value(row.get("direccion_2")),
             "estado_servicio": _normalize_value(row.get("estado_servicio")) or "DESCONOCIDO",
+            "categoria": _normalize_value(row.get("categoria")),
+            "linea_upgrade_de": _normalize_value(row.get("linea_upgrade_de")),
+            "linea_upgrade_a": _normalize_value(row.get("linea_upgrade_a")),
             # 2026-08-14: re-etiqueta también un placeholder Cromo (origen_datos=INFERIDO_CROMO)
             # preexistente cuando el ingest real lo enriquece por el mismo numero_primer_servicio —
             # sin esto quedaría marcado INFERIDO_CROMO para siempre pese a tener datos reales, ver
             # docs/decisiones.md.
             "origen_datos": ServicioOrigenDatos.INGEST_EXCEL.value,
         }
+
+    # Consolidación de identidad (Task 3/4): calcula el servicio_id/numero_linea/alias_ids finales
+    # de cada fila contra lo que ya existe en la DB para ese numero_primer_servicio — reemplaza el
+    # upsert ciego anterior, que pisaba servicio_id = numero_primer_servicio en cada corrida (bug
+    # real que motiva este plan, ver docs del plan de trazabilidad de IDs).
+    numeros = list(rows_by_id.keys())
+    existentes_por_id: dict[str, Any] = {}
+    if numeros:
+        existentes_stmt = select(
+            Servicio.numero_primer_servicio,
+            Servicio.servicio_id,
+            Servicio.numero_linea,
+            Servicio.alias_ids,
+            Servicio.categoria,
+            Servicio.es_verificable_override,
+        ).where(Servicio.numero_primer_servicio.in_(numeros))
+        for fila in (await db.execute(existentes_stmt)).all():
+            existentes_por_id[fila.numero_primer_servicio] = fila
+
+    ids_reclamados: dict[str, str] = {}
+    for numero, row in rows_by_id.items():
+        existente = existentes_por_id.get(numero)
+        linea_upgrade_de = row.pop("linea_upgrade_de", None)
+        linea_upgrade_a = row.pop("linea_upgrade_a", None)
+
+        identidad = consolidar_identidad_servicio(
+            numero_primer_servicio=numero,
+            numero_linea_excel=row.get("numero_linea"),
+            linea_upgrade_de=linea_upgrade_de,
+            linea_upgrade_a=linea_upgrade_a,
+            servicio_id_actual=existente.servicio_id if existente else None,
+            numero_linea_actual=existente.numero_linea if existente else None,
+            alias_ids_actual=list(existente.alias_ids) if existente and existente.alias_ids else None,
+        )
+        row["servicio_id"] = identidad.servicio_id
+        row["numero_linea"] = identidad.numero_linea
+        row["alias_ids"] = identidad.alias_ids
+
+        categoria_excel = row.get("categoria")
+        row["categoria"] = (
+            int(categoria_excel)
+            if categoria_excel is not None and str(categoria_excel).isdigit()
+            else (existente.categoria if existente else 6)
+        )
+
+        override_actual = existente.es_verificable_override if existente else None
+        row["es_verificable"] = (
+            override_actual
+            if override_actual is not None
+            else es_verificable_por_tipo(row.get("tipo_servicio"))
+        )
+
+        # Detección de fragmentación: si dos numero_primer_servicio distintos de ESTE mismo archivo
+        # reclaman el mismo id (servicio_id/numero_linea/alias) es una señal de datos inconsistentes
+        # en el Excel de origen — se deja loggeado para revisión manual, no bloquea la ingesta.
+        for candidato in (row["servicio_id"], row["numero_linea"], *row["alias_ids"]):
+            dueño_previo = ids_reclamados.get(candidato)
+            if dueño_previo and dueño_previo != numero:
+                logger.warning(
+                    "action=servicios_ingest evento=fragmentacion_detectada id=%s "
+                    "numero_primer_servicio_a=%s numero_primer_servicio_b=%s",
+                    candidato,
+                    dueño_previo,
+                    numero,
+                )
+            else:
+                ids_reclamados[candidato] = numero
 
     rows = list(rows_by_id.values())
 
@@ -200,6 +273,9 @@ async def ingest_servicios(
             "direccion_2": excluded.direccion_2,
             "estado_servicio": excluded.estado_servicio,
             "origen_datos": excluded.origen_datos,
+            "categoria": excluded.categoria,
+            "es_verificable": excluded.es_verificable,
+            "alias_ids": excluded.alias_ids,
         }
 
         changed_where = or_(
@@ -214,6 +290,9 @@ async def ingest_servicios(
             Servicio.estado_servicio.is_distinct_from(excluded.estado_servicio),
             Servicio.servicio_id.is_distinct_from(excluded.servicio_id),
             Servicio.origen_datos.is_distinct_from(excluded.origen_datos),
+            Servicio.categoria.is_distinct_from(excluded.categoria),
+            Servicio.es_verificable.is_distinct_from(excluded.es_verificable),
+            Servicio.alias_ids.is_distinct_from(excluded.alias_ids),
         )
 
         stmt = stmt.on_conflict_do_update(
