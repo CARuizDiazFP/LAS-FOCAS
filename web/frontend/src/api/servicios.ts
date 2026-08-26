@@ -26,6 +26,9 @@ export interface ServicioItem {
   direccion_2: string | null;
   estado_servicio: string;
   categoria: number;
+  es_verificable: boolean;
+  es_verificable_override: boolean | null;
+  alias_ids: string[];
   origen_datos: string;
   reclamos: Array<Record<string, unknown>> | null;
 }
@@ -148,6 +151,16 @@ export async function updateServicioCategoria(id: number, categoria: number): Pr
   return requestJson<ServicioItem>(`/api/servicios/${id}/categoria`, {
     method: 'PATCH',
     json: { categoria },
+    csrf: true,
+  });
+}
+
+/** Cambia la verificabilidad de un Servicio (corrección manual) — sólo admin. Devuelve el item
+ * actualizado. Ver `PATCH /api/servicios/{id}/verificable`. */
+export async function updateServicioVerificable(id: number, esVerificable: boolean): Promise<ServicioItem> {
+  return requestJson<ServicioItem>(`/api/servicios/${id}/verificable`, {
+    method: 'PATCH',
+    json: { es_verificable: esVerificable },
     csrf: true,
   });
 }
