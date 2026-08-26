@@ -84,13 +84,13 @@ def consolidar_identidad_servicio(
     servicio_id_es_numerico_o_vacio = servicio_id_actual is None or _a_entero(servicio_id_actual) is not None
     servicio_id_final = id_final if servicio_id_es_numerico_o_vacio else servicio_id_actual
 
-    alias_existentes = [
-        valor for valor in (alias_ids_actual or [])
-        if valor and valor != "-" and valor not in (id_final, servicio_id_final)
-    ]
-
     id_final_entero = _a_entero(id_final)
     servicio_id_final_entero = _a_entero(servicio_id_final)
+
+    alias_existentes = [
+        valor for valor in (alias_ids_actual or [])
+        if valor and valor != "-" and _a_entero(valor) not in (id_final_entero, servicio_id_final_entero)
+    ]
 
     alias_nuevos = sorted(
         (

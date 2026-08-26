@@ -141,3 +141,19 @@ def test_consolidar_identidad_canonicaliza_forma_numerica() -> None:
     # Ambas formas están en candidatos, pero como representan el mismo número,
     # solo una debe quedar (la canónica), la otra no debe aparecer en alias
     assert resultado.alias_ids == []  # Sin duplicados
+
+
+def test_consolidar_identidad_filtra_alias_no_canonica_que_coincide_con_id_final() -> None:
+    """Fix round 2: alias_ids_actual con forma no canónica del mismo entero que id_final debe filtrarse"""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="93",
+        numero_linea_excel="93",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=["093"],  # Forma no canónica de 93, debe filtrarse
+    )
+    assert resultado.numero_linea == "93"
+    # "093" representa el mismo entero que id_final="93", así que debe filtrarse
+    assert resultado.alias_ids == []  # No duplicado, se filtra por valor numérico
