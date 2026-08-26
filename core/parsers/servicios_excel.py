@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Tuple
+import logging
 import re
 import unicodedata
 
@@ -15,6 +16,9 @@ try:
     from unidecode import unidecode as _unidecode
 except Exception:  # noqa: BLE001
     _unidecode = None
+
+
+logger = logging.getLogger(__name__)
 
 
 MAPPER: Dict[str, str] = {
@@ -114,12 +118,31 @@ NORMALIZED_MAPPER: Dict[str, str] = {_clean_key(k): v for k, v in MAPPER.items()
 def parse_servicios_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestServiciosSummary]:
     """Normaliza encabezados del archivo de servicios y valida filas mínimas."""
 
+    # Dedupe por columna DESTINO: dos encabezados distintos pueden mapear al mismo destino
+    # ("Dirección" y "Dirección Servicio" → "direccion"). Sin esto `rename` produce dos columnas
+    # homónimas, y más abajo `df[col]` devuelve un DataFrame en vez de una Series → AttributeError
+    # en `.astype(str).str.strip()`, fuera del único try/except de la ruta de ingesta (que sólo
+    # envuelve la lectura del archivo). Gana el PRIMER encabezado que reclama cada destino, en el
+    # orden de `df.columns`; los descartados quedan loggeados.
     rename: Dict[str, str] = {}
+    destinos_usados: Dict[str, str] = {}
+    descartados: list[tuple[str, str]] = []
     for col in df.columns:
         key = _clean_key(col)
-        if key in NORMALIZED_MAPPER:
-            rename[col] = NORMALIZED_MAPPER[key]
+        if key not in NORMALIZED_MAPPER:
+            continue
+        destino = NORMALIZED_MAPPER[key]
+        if destino in destinos_usados:
+            descartados.append((col, destinos_usados[destino]))
+            continue
+        rename[col] = destino
+        destinos_usados[destino] = col
     df = df.rename(columns=rename)
+    if descartados:
+        logger.warning(
+            "action=parse_servicios_df evento=encabezados_duplicados_descartados detalle=%s",
+            descartados,
+        )
 
     for col in RELEVANT_COLS:
         if col not in df.columns:
