@@ -252,6 +252,58 @@ async def ingest_servicios(
             else:
                 ids_reclamados[candidato] = numero
 
+    # Fusión de placeholders Cromo puros que ya ocupan el servicio_id que esta familia necesita.
+    # `app.servicios.servicio_id` tiene índice UNIQUE, así que sin este paso el upsert de más abajo
+    # revienta con `duplicate key value violates unique constraint "ix_servicios_servicio_id"` y se
+    # pierde el chunk completo de 500 filas (176 casos reales medidos en dev: 161 contra un
+    # placeholder INFERIDO_CROMO y 15 contra filas MANUAL).
+    # Sólo se fusiona un placeholder INFERIDO_CROMO sin tocar (numero_primer_servicio == servicio_id,
+    # nunca divergido) — cualquier otra colisión (MANUAL/INGEST_EXCEL, o un placeholder ya tocado) se
+    # degrada sin pisar servicio_id, agregando igual el id a alias_ids, con un warning explícito:
+    # fusionar dos registros reales sin confirmación humana está fuera de alcance a propósito.
+    candidatos_servicio_id = {row["servicio_id"] for row in rows_by_id.values()}
+    colisiones_stmt = select(
+        Servicio.id,
+        Servicio.servicio_id,
+        Servicio.numero_primer_servicio,
+        Servicio.origen_datos,
+    ).where(Servicio.servicio_id.in_(candidatos_servicio_id))
+    colision_por_servicio_id: dict[str, Any] = {}
+    for fila in (await db.execute(colisiones_stmt)).all():
+        if fila.numero_primer_servicio in rows_by_id:
+            continue  # es la propia fila de esta misma familia, no una colisión real
+        colision_por_servicio_id[fila.servicio_id] = fila
+
+    fusiones_pendientes: dict[str, int] = {}  # numero_primer_servicio -> id del placeholder a fusionar
+    id_final_pendiente_por_numero: dict[str, str] = {}  # numero_primer_servicio -> servicio_id final real
+    for numero, row in rows_by_id.items():
+        colision = colision_por_servicio_id.get(row["servicio_id"])
+        if colision is None:
+            continue
+        es_placeholder_puro = (
+            colision.origen_datos == ServicioOrigenDatos.INFERIDO_CROMO
+            and colision.numero_primer_servicio == colision.servicio_id
+        )
+        existente = existentes_por_id.get(numero)
+        valor_seguro = existente.servicio_id if existente else numero
+        if es_placeholder_puro:
+            id_final_pendiente_por_numero[numero] = row["servicio_id"]
+            fusiones_pendientes[numero] = colision.id
+            row["servicio_id"] = valor_seguro
+        else:
+            logger.warning(
+                "action=servicios_ingest evento=servicio_id_colision_no_fusionable "
+                "numero_primer_servicio=%s servicio_id_deseado=%s colision_con_id=%s colision_origen=%s",
+                numero,
+                row["servicio_id"],
+                colision.id,
+                colision.origen_datos.value if hasattr(colision.origen_datos, "value") else str(colision.origen_datos),
+            )
+            id_final_no_fusionable = row["servicio_id"]
+            row["servicio_id"] = valor_seguro
+            if id_final_no_fusionable not in row["alias_ids"]:
+                row["alias_ids"].append(id_final_no_fusionable)
+
     rows = list(rows_by_id.values())
 
     inserted = 0
@@ -305,6 +357,52 @@ async def ingest_servicios(
         flags = result.all()
         inserted += sum(1 for (flag,) in flags if bool(flag))
         updated += sum(1 for (flag,) in flags if not bool(flag))
+
+    # Segunda fase de la fusión: recién acá existe con certeza la fila de la familia real (el upsert
+    # de arriba la insertó o actualizó), así que ya se le puede reasignar lo que apuntaba al
+    # placeholder y liberar el servicio_id.
+    #
+    # El ORDEN es obligatorio, no cosmético: `app.cromo_servicio_match.servicio_id` referencia
+    # `app.servicios.id` SIN `ON DELETE CASCADE` (verificado real con `\d app.cromo_servicio_match`),
+    # así que si se borrara el placeholder antes de reasignar, el DELETE fallaría por violación de FK
+    # y se caería la ingesta entera. `app.rutas_servicio.servicio_id` sí es `ON DELETE CASCADE`: se
+    # reasigna igual porque dejar que la cascada BORRE rutas de un servicio real sería pérdida de
+    # datos (en la práctica un placeholder puro nunca tiene rutas — sólo el módulo de tracking
+    # físico las crea —, verificado 0 de 9054 en dev, pero reasignar es lo correcto igual).
+    if fusiones_pendientes:
+        ids_stmt = select(Servicio.id, Servicio.numero_primer_servicio).where(
+            Servicio.numero_primer_servicio.in_(list(fusiones_pendientes.keys()))
+        )
+        id_por_numero = {fila.numero_primer_servicio: fila.id for fila in (await db.execute(ids_stmt)).all()}
+
+        for numero, placeholder_id in fusiones_pendientes.items():
+            familia_id = id_por_numero.get(numero)
+            if familia_id is None or familia_id == placeholder_id:
+                continue
+            await db.execute(
+                text("UPDATE app.cromo_servicio_match SET servicio_id = :familia_id WHERE servicio_id = :placeholder_id"),
+                {"familia_id": familia_id, "placeholder_id": placeholder_id},
+            )
+            await db.execute(
+                text("UPDATE app.rutas_servicio SET servicio_id = :familia_id WHERE servicio_id = :placeholder_id"),
+                {"familia_id": familia_id, "placeholder_id": placeholder_id},
+            )
+            await db.execute(
+                text("DELETE FROM app.servicios WHERE id = :placeholder_id"),
+                {"placeholder_id": placeholder_id},
+            )
+            await db.execute(
+                text("UPDATE app.servicios SET servicio_id = :id_final WHERE id = :familia_id"),
+                {"id_final": id_final_pendiente_por_numero[numero], "familia_id": familia_id},
+            )
+            logger.warning(
+                "action=servicios_ingest evento=placeholder_fusionado numero_primer_servicio=%s "
+                "placeholder_id=%s servicio_id_liberado=%s familia_id=%s",
+                numero,
+                placeholder_id,
+                id_final_pendiente_por_numero[numero],
+                familia_id,
+            )
 
     await db.commit()
 

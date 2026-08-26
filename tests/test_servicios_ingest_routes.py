@@ -38,11 +38,31 @@ def client():
         yield test_client
 
 
+_NUMEROS_DE_TEST = ("900001", "900002", "900003", "900004", "900090", "900091")
+
+# n_id de pelo sintético para el árbol mínimo de Cromo del test de fusión. Fuera del rango real de
+# Cromo (verificado: no existe en app.cromo_pelos de dev) para no pisar datos reales.
+_PELO_N_ID_FUSION = 990000901
+
+
 @pytest.fixture(autouse=True)
 def _limpiar_servicios_de_test():
     yield
     with SessionLocal() as session:
-        session.execute(text("DELETE FROM app.servicios WHERE numero_primer_servicio IN ('900001', '900002')"))
+        # Orden obligatorio: `app.cromo_servicio_match.servicio_id` referencia `app.servicios.id`
+        # SIN `ON DELETE CASCADE` (verificado real con `\d app.cromo_servicio_match` contra
+        # lasfocasdev-postgres), así que el match se borra antes que el Servicio.
+        session.execute(
+            text("DELETE FROM app.cromo_servicio_match WHERE pelo_n_id = :pelo"),
+            {"pelo": _PELO_N_ID_FUSION},
+        )
+        session.execute(text("DELETE FROM app.cromo_pelos WHERE n_id = :pelo"), {"pelo": _PELO_N_ID_FUSION})
+        # No se limpia `app.rutas_servicio`: ningún test de este archivo crea rutas (sólo el módulo
+        # de tracking físico las crea) y su FK a `app.servicios` ya es `ON DELETE CASCADE`.
+        session.execute(
+            text("DELETE FROM app.servicios WHERE numero_primer_servicio = ANY(:numeros ::varchar[])"),
+            {"numeros": list(_NUMEROS_DE_TEST)},
+        )
         session.commit()
 
 
@@ -72,6 +92,151 @@ def test_ingest_calcula_servicio_id_como_el_id_mas_alto_de_la_cadena(client: Tes
     assert set(body["alias_ids"]) == {"900001", "900010"}
     assert body["categoria"] == 4
     assert body["es_verificable"] is True
+
+
+def _crear_placeholder_cromo_con_match(numero: str) -> int:
+    """Crea un placeholder Cromo PURO (`servicio_id == numero_primer_servicio`, origen
+    `INFERIDO_CROMO`) más el árbol MÍNIMO de Cromo necesario para colgarle una fila de
+    `app.cromo_servicio_match`, y devuelve el `id` del placeholder.
+
+    El árbol mínimo es una sola fila de `app.cromo_pelos`: `tubo_n_id`/`cable_n_id` son `NOT NULL`
+    pero NO tienen FK dura (verificado real con `\\d app.cromo_pelos` — sólo hay índices, ver también
+    el docstring de `CromoPelo` en db/models/cromo.py: "parent, sin FK dura"), así que no hace falta
+    materializar cromo_tubos/cromo_cables/cromo_botellas para que el INSERT sea válido.
+    """
+    with SessionLocal() as session:
+        placeholder_id = int(
+            session.execute(
+                text(
+                    "INSERT INTO app.servicios "
+                    "(servicio_id, numero_primer_servicio, categoria, origen_datos, estado_servicio) "
+                    "VALUES (:numero, :numero, 0, 'INFERIDO_CROMO', 'DESCONOCIDO') RETURNING id"
+                ),
+                {"numero": numero},
+            ).scalar_one()
+        )
+        session.execute(
+            text(
+                "INSERT INTO app.cromo_pelos (n_id, tubo_n_id, cable_n_id, servicio_numero) "
+                "VALUES (:pelo, :pelo, :pelo, :numero)"
+            ),
+            {"pelo": _PELO_N_ID_FUSION, "numero": numero},
+        )
+        session.execute(
+            text(
+                "INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, servicio_id, metodo) "
+                "VALUES (:pelo, :numero, :servicio_id, 'REGEX_EXACTO')"
+            ),
+            {"pelo": _PELO_N_ID_FUSION, "numero": numero, "servicio_id": placeholder_id},
+        )
+        session.commit()
+    return placeholder_id
+
+
+def test_ingest_fusiona_placeholder_cromo_puro_que_ocupa_el_servicio_id_final(client: TestClient) -> None:
+    """REPRO A: el `id_final` de la familia ya está tomado por un placeholder Cromo puro.
+
+    Antes del fix, el upsert reventaba con `duplicate key value violates unique constraint
+    "ix_servicios_servicio_id"` y se perdía el chunk completo. Ahora el placeholder se fusiona:
+    sus referencias se reasignan a la familia real y la fila placeholder se elimina, liberando el
+    `servicio_id` para que la familia lo tome.
+    """
+    placeholder_id = _crear_placeholder_cromo_con_match("900090")
+
+    # numero_primer_servicio=900003 + numero_linea=900090 -> id_final = max(900003, 900090) = 900090,
+    # que es exactamente el servicio_id que ya ocupa el placeholder.
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900003"],
+            "Número Línea": ["900090"],
+            "Tipo Servicio": ["INT"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    with SessionLocal() as session:
+        # El placeholder ya no existe.
+        assert (
+            session.execute(
+                text("SELECT COUNT(*) FROM app.servicios WHERE id = :id"), {"id": placeholder_id}
+            ).scalar_one()
+            == 0
+        )
+
+        familia = session.execute(
+            text("SELECT id, servicio_id FROM app.servicios WHERE numero_primer_servicio = '900003'")
+        ).one()
+        # La familia real se quedó con el servicio_id que liberó el placeholder.
+        assert familia.servicio_id == "900090"
+
+        # La fila de cromo_servicio_match sobrevivió y ahora apunta a la familia real (no quedó
+        # colgada ni fue borrada: su FK a app.servicios NO tiene ON DELETE CASCADE).
+        match_servicio_id = session.execute(
+            text("SELECT servicio_id FROM app.cromo_servicio_match WHERE pelo_n_id = :pelo"),
+            {"pelo": _PELO_N_ID_FUSION},
+        ).scalar_one()
+        assert match_servicio_id == familia.id
+
+
+def test_ingest_no_fusiona_colision_con_servicio_real_y_degrada_a_alias(client: TestClient) -> None:
+    """REPRO B: el `id_final` de la familia está tomado por una fila que NO es placeholder puro.
+
+    Fusionar dos registros reales sin confirmación humana está explícitamente fuera de alcance, así
+    que la familia NO pisa `servicio_id` (se queda con su valor seguro) pero el `id_final` calculado
+    se agrega igual a `alias_ids` para que el matching de Cromo lo pueda resolver.
+    """
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.servicios (servicio_id, numero_primer_servicio, estado_servicio, origen_datos) "
+                "VALUES ('900091', '900091', 'DESCONOCIDO', 'MANUAL')"
+            )
+        )
+        session.commit()
+
+    # id_final = max(900004, 900091) = 900091, ya ocupado por la fila MANUAL de arriba.
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900004"],
+            "Número Línea": ["900091"],
+            "Tipo Servicio": ["INT"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    with SessionLocal() as session:
+        # La fila MANUAL quedó intacta.
+        manual = session.execute(
+            text(
+                "SELECT servicio_id, origen_datos::text AS origen FROM app.servicios "
+                "WHERE numero_primer_servicio = '900091'"
+            )
+        ).one()
+        assert manual.servicio_id == "900091"
+        assert manual.origen == "MANUAL"
+
+        familia = session.execute(
+            text(
+                "SELECT servicio_id, alias_ids FROM app.servicios WHERE numero_primer_servicio = '900004'"
+            )
+        ).one()
+        # No pisó el servicio_id ajeno...
+        assert familia.servicio_id != "900091"
+        assert familia.servicio_id == "900004"
+        # ...pero el id_final sí quedó como alias, para que el matching de Cromo lo resuelva.
+        assert "900091" in list(familia.alias_ids or [])
 
 
 def test_ingest_no_pisa_servicio_id_no_numerico_de_tracking(client: TestClient) -> None:
