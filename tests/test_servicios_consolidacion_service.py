@@ -3,6 +3,7 @@
 # Descripción: Tests del cálculo de verificabilidad y de ID final/alias para la cadena de upgrades de Servicio
 
 from core.services.servicios_consolidacion_service import (
+    consolidar_identidad_servicio,
     es_verificable_por_tipo,
 )
 
@@ -17,3 +18,77 @@ def test_es_verificable_por_tipo_rechaza_otros_tipos_y_normaliza_mayusculas() ->
     assert es_verificable_por_tipo("ATI") is False
     assert es_verificable_por_tipo(None) is False
     assert es_verificable_por_tipo("") is False
+
+
+def test_consolidar_identidad_alta_nueva_sin_upgrade() -> None:
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="393",
+        numero_linea_excel="393",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=None,
+    )
+    assert resultado.servicio_id == "393"
+    assert resultado.numero_linea == "393"
+    assert resultado.alias_ids == []
+
+
+def test_consolidar_identidad_toma_el_id_mas_alto_como_final() -> None:
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="393",
+        numero_linea_excel="116916",
+        linea_upgrade_de="105636",
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=None,
+    )
+    assert resultado.servicio_id == "116916"
+    assert resultado.numero_linea == "116916"
+    assert resultado.alias_ids == ["393", "105636"]
+
+
+def test_consolidar_identidad_acumula_alias_previos_y_avanza_al_nuevo_maximo() -> None:
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="4397",
+        numero_linea_excel="130000",
+        linea_upgrade_de="108368",
+        linea_upgrade_a=None,
+        servicio_id_actual="108368",
+        numero_linea_actual="108368",
+        alias_ids_actual=["4397"],
+    )
+    assert resultado.servicio_id == "130000"
+    assert resultado.numero_linea == "130000"
+    assert resultado.alias_ids == ["4397", "108368"]
+
+
+def test_consolidar_identidad_no_pisa_servicio_id_no_numerico_de_tracking() -> None:
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="45789",
+        numero_linea_excel="111743",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual="O1C1",
+        numero_linea_actual="45789",
+        alias_ids_actual=[],
+    )
+    assert resultado.servicio_id == "O1C1"
+    assert resultado.numero_linea == "111743"
+    assert resultado.alias_ids == ["45789"]
+
+
+def test_consolidar_identidad_ignora_guion_como_valor_vacio() -> None:
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="99761",
+        numero_linea_excel="106608",
+        linea_upgrade_de="-",
+        linea_upgrade_a="118984",
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=None,
+    )
+    assert resultado.servicio_id == "118984"
+    assert "-" not in resultado.alias_ids

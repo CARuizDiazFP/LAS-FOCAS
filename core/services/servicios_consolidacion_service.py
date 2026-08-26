@@ -26,3 +26,76 @@ def es_verificable_por_tipo(tipo_servicio: str | None) -> bool:
     if not tipo_servicio:
         return False
     return tipo_servicio.strip().upper() in TIPOS_SERVICIO_VERIFICABLES
+
+
+def _a_entero(valor: str | None) -> int | None:
+    if valor is None:
+        return None
+    texto = valor.strip()
+    if not texto:
+        return None
+    try:
+        return int(texto)
+    except ValueError:
+        return None
+
+
+@dataclass(slots=True)
+class IdentidadConsolidada:
+    servicio_id: str
+    numero_linea: str
+    alias_ids: list[str]
+
+
+def consolidar_identidad_servicio(
+    *,
+    numero_primer_servicio: str,
+    numero_linea_excel: str | None,
+    linea_upgrade_de: str | None,
+    linea_upgrade_a: str | None,
+    servicio_id_actual: str | None,
+    numero_linea_actual: str | None,
+    alias_ids_actual: list[str] | None,
+) -> IdentidadConsolidada:
+    candidatos_str = {
+        valor
+        for valor in (
+            numero_primer_servicio,
+            numero_linea_excel,
+            linea_upgrade_de,
+            linea_upgrade_a,
+            numero_linea_actual,
+            servicio_id_actual,
+            *(alias_ids_actual or []),
+        )
+        if valor and valor != "-"
+    }
+
+    candidatos_numericos = [
+        (valor, entero) for valor in candidatos_str if (entero := _a_entero(valor)) is not None
+    ]
+
+    id_final = (
+        max(candidatos_numericos, key=lambda par: par[1])[0]
+        if candidatos_numericos
+        else numero_primer_servicio
+    )
+
+    servicio_id_es_numerico_o_vacio = servicio_id_actual is None or _a_entero(servicio_id_actual) is not None
+    servicio_id_final = id_final if servicio_id_es_numerico_o_vacio else servicio_id_actual
+
+    alias_existentes = list(alias_ids_actual or [])
+    alias_nuevos = sorted(
+        (
+            valor
+            for valor in candidatos_str
+            if valor not in (id_final, servicio_id_final) and valor not in alias_existentes
+        ),
+        key=lambda valor: (_a_entero(valor) is None, _a_entero(valor) or 0, valor),
+    )
+
+    return IdentidadConsolidada(
+        servicio_id=servicio_id_final,
+        numero_linea=id_final,
+        alias_ids=[*alias_existentes, *alias_nuevos],
+    )
