@@ -92,3 +92,52 @@ def test_consolidar_identidad_ignora_guion_como_valor_vacio() -> None:
     )
     assert resultado.servicio_id == "118984"
     assert "-" not in resultado.alias_ids
+
+
+def test_consolidar_identidad_no_duplica_alias_existentes_que_coinciden_con_id_final() -> None:
+    """Hallazgo 1: alias_existentes debe filtrarse para no duplicar id_final en alias_ids"""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="500",
+        numero_linea_excel="500",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=["500"],  # Este "500" fue previo, ahora es id_final
+    )
+    assert resultado.numero_linea == "500"
+    assert resultado.alias_ids == []  # No debe duplicarse, se filtra
+
+
+def test_consolidar_identidad_filtra_guion_de_alias_existentes() -> None:
+    """Hallazgo 1: alias_existentes debe filtrar "-" como se hace en candidatos_str"""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="600",
+        numero_linea_excel="700",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=["600", "-", "700"],  # Contiene "-" que debe ser filtrado
+    )
+    assert resultado.numero_linea == "700"
+    assert "-" not in resultado.alias_ids
+    assert resultado.alias_ids == ["600"]  # Solo "600", no el "-"
+
+
+def test_consolidar_identidad_canonicaliza_forma_numerica() -> None:
+    """Hallazgo 2: Dos representaciones del mismo entero ("093" vs "93") se canonicalizan"""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="093",
+        numero_linea_excel="93",  # Mismo valor, distinta representación
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=None,
+    )
+    # El id_final debe ser la forma canónica sin ceros a la izquierda
+    assert resultado.numero_linea == "93"
+    # Ambas formas están en candidatos, pero como representan el mismo número,
+    # solo una debe quedar (la canónica), la otra no debe aparecer en alias
+    assert resultado.alias_ids == []  # Sin duplicados
