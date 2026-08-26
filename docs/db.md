@@ -110,8 +110,9 @@ filas legado — no removibles sin recrear el tipo**:
 | Columna               | Tipo           | Descripción |
 |-----------------------|----------------|-------------|
 | `id`                  | Integer (PK)   | ID autoincremental. |
-| `servicio_id`         | String(64), unique | ID del servicio (ej: "111995"). |
-| `numero_primer_servicio` | String(64), unique, index | ID lógico padre usado por ingesta SLA. |
+| `servicio_id`         | String(64), unique | ID de línea vigente ("final") de la familia (ej: "111995"). Desde 2026-08-26 lo calcula `core/services/servicios_consolidacion_service.py::consolidar_identidad_servicio` en cada ingesta SLA (el numérico más alto conocido de la familia) — antes se pisaba siempre con `numero_primer_servicio`, ignorando cualquier upgrade real. Si el módulo de tracking físico (`execute_upgrade`) ya lo dejó en un ID no numérico (ej. "O1C1"), la ingesta SLA no lo toca. |
+| `alias_ids`           | `ARRAY(String(64))`, nullable | Historial de IDs superados de la familia (upgrades SLA vía `numero_linea`/`Línea Upgrade De-A`, y los que deja el módulo de tracking al hacer `execute_upgrade`). Consultado por el matching Cromo↔Servicio (`servicio_id = :n OR numero_primer_servicio = :n OR :n = ANY(alias_ids)`) — por eso un ID histórico de un pelo sigue resolviendo a la familia correcta. Cada entrada es una forma canónica (`str(int(...))` para numéricos, sin ceros a la izquierda ni espacios); nunca se agrega manualmente. |
+| `numero_primer_servicio` | String(64), unique, index | ID lógico padre usado por ingesta SLA — ancla estable de la familia, nunca cambia una vez creada. |
 | `nombre_cliente`      | String(255)    | Nombre del cliente en origen SLA. |
 | `numero_linea`        | String(128), index | Línea asociada al servicio. |
 | `tipo_servicio`       | String(128), index | Tipo comercial/técnico del servicio. |
@@ -122,10 +123,35 @@ filas legado — no removibles sin recrear el tipo**:
 | `direccion_2`         | String(255)    | Dirección complementaria. |
 | `estado_servicio`     | String(128), index | Estado actual informado en ingesta SLA. |
 | `cliente`             | String(255)    | Nombre del cliente (opcional). |
-| `categoria`           | Integer, `NOT NULL DEFAULT 6`, `CHECK BETWEEN 0 AND 6` | Prioridad de reporting C0 (máxima) a C6 (sin clasificar/default). Editable sólo por admin vía `PATCH /servicios/{id}/categoria` y `PATCH /servicios/bulk-categoria`. Desde 2026-08-14 (antes existía sin CHECK/default, 100% NULL). |
+| `categoria`           | Integer, `NOT NULL DEFAULT 6`, `CHECK BETWEEN 0 AND 6` | **Nivel Cliente del Excel SLA** ("C0" a "C6", columna "Nivel Cliente"), repurpuesto desde 2026-08-26 — antes era una prioridad de reporting manual sin relación con el Excel. Se alimenta en cada `POST /servicios/ingest` (validado contra el mismo rango 0-6 antes del upsert; un valor fuera de rango degrada al valor previo y queda loggeado, no tumba la ingesta) y sigue siendo editable a mano vía `PATCH /servicios/{id}/categoria`/`PATCH /servicios/bulk-categoria` — una edición manual queda pisada por la próxima ingesta real, comportamiento aceptado explícitamente (no tiene mecanismo de override como `es_verificable_override`). Los valores legacy (0 = placeholder Cromo, 6 = sin categorizar) se dejan como están hasta que llegue un Excel real para esa fila — sin backfill retroactivo. El filtro default del listado (`ServiciosView.vue`) es "sin filtro" (antes `categoria=6`), para no ocultar filas tras la primera ingesta real. |
+| `es_verificable`      | Boolean, `NOT NULL DEFAULT false` | `True` si `tipo_servicio` ∈ {INT, RPV, ISI, ISIS, TLS, EWS} (`core/services/servicios_consolidacion_service.py::TIPOS_SERVICIO_VERIFICABLES`). Recalculado en cada ingesta SLA salvo que `es_verificable_override` no sea NULL. Desde 2026-08-26 (migración `20260825_02`, backfill inicial por `tipo_servicio` sobre las filas existentes). |
+| `es_verificable_override` | Boolean, nullable | Corrección manual de admin vía `PATCH /servicios/{id}/verificable` (mismo patrón sin auditoría que `categoria`) — cuando no es NULL, la ingesta respeta este valor y no recalcula `es_verificable`. No tiene forma de volver a NULL ("automático") desde la UI todavía — un servicio corregido una vez queda fijo. |
 | `origen_datos`        | enum `app.servicio_origen_datos` (`MANUAL`\|`TRACKING`\|`INGEST_EXCEL`\|`INFERIDO_CROMO`), `NOT NULL DEFAULT 'MANUAL'` | Distingue un `Servicio` real de un placeholder sintetizado por el matching Cromo↔Servicio (`INFERIDO_CROMO`, `categoria=0`). Mismo patrón que `CamaraOrigenDatos`. Desde 2026-08-14. |
 | `nombre_archivo_origen`| String(255)   | Nombre del archivo de tracking original. |
 | `raw_tracking_data`   | JSON           | Datos crudos del tracking parseado. |
+
+**Consolidación de la cadena de upgrades e IDs finales (2026-08-26)**: cada `POST /servicios/ingest`
+calcula, por `numero_primer_servicio`, el ID numérico más alto conocido entre `numero_linea`, los
+punteros "Línea Upgrade (De)"/"(A)" del Excel, y el estado ya persistido (`servicio_id`/`alias_ids`
+actuales) — `core/services/servicios_consolidacion_service.py::consolidar_identidad_servicio`
+(función pura, sin acceso a DB, con fuzz-testing de 363k casos verificando que dos formas del mismo
+entero nunca coexisten en el resultado). El ganador se escribe en `servicio_id` (el mismo campo que
+ya leen el bot de Slack "Validador de Cables" y `CableDetalleCromoView.vue`, sin cambios en esos
+módulos) y todo lo superado queda en `alias_ids`.
+
+**Fusión de placeholders Cromo al liberar un `servicio_id` ya ocupado** (2026-08-26): como
+`servicio_id` es `UNIQUE`, el ID final calculado puede coincidir con el de OTRA fila ya existente —
+típicamente un placeholder `INFERIDO_CROMO` (ver abajo). Cuando esa fila es un placeholder puro
+(nunca tocado por tracking físico: sin filas en `rutas_servicio` ni en `servicio_empalme_association`
+colgadas), `ingest_servicios` reasigna sus referencias (`cromo_servicio_match.servicio_id`,
+`rutas_servicio.servicio_id`; `servicio_empalme_association` se borra, no se reasigna, por su PK
+compuesta `(servicio_id, empalme_id)`) y lo elimina, liberando el ID para la familia real — mismo
+patrón que el merge de Cámaras (`docs/decisiones.md`, entrada 2026-08-14). Si la fila en colisión NO
+es un placeholder puro (origen `MANUAL`/`INGEST_EXCEL`, o un placeholder ya usado por tracking) NO se
+fusiona automáticamente — la familia no pisa su `servicio_id`, pero el ID igual queda en `alias_ids`,
+y se loggea `evento=servicio_id_colision_no_fusionable`. Verificado real contra dev con la ingesta
+completa de `Servicios C4.xlsx` (1230 filas): 176 fusiones, 0 colisiones no fusionables, 0
+`cromo_servicio_match` huérfanos.
 
 **Placeholders de `origen_datos=INFERIDO_CROMO`** (2026-08-14): `core/services/cromo/ingesta.py::fase_servicios`
 crea un `Servicio` placeholder (`categoria=0`) cuando un pelo Cromo referencia un `servicio_numero` sin
@@ -681,6 +707,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260819_01` | `20260819_01_cromo_botella_alias.py` | Tabla `app.cromo_botella_alias` — escudo manual de aliasing para botellas duplicadas/basura (ver sección "Tabla `cromo_botella_alias`" arriba) |
 | `20260821_01` | `20260821_01_cromo_botella_nombre_editado_manual.py` | Columna `cromo_botellas.nombre_editado_manual BOOLEAN NOT NULL DEFAULT false` — protege un nombre corregido a mano (Verificador Cromo) de que una corrida futura lo pise (ver sección "Repoblación de cables con historial 'ID dual'" arriba) |
 | `20260822_01` | `20260822_01_cromo_botella_separada_manualmente.py` | Columnas de auditoría `cromo_botellas.separada_manualmente/separada_motivo/separada_por/separada_at` — separación manual de Botella agrupada erróneamente por nombre bajo una Cámara padre compartida |
+| `20260825_02` | `20260825_02_servicios_verificable.py` | Columnas `servicios.es_verificable BOOLEAN NOT NULL` (backfill por `tipo_servicio` sobre las filas existentes) y `servicios.es_verificable_override BOOLEAN` nullable — trazabilidad de IDs y verificabilidad de Servicios SLA (ver sección "Tabla `servicios`" arriba y `docs/decisiones.md`) |
 
 ---
 

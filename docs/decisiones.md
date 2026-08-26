@@ -659,3 +659,59 @@
   (`F-VDP-JUR`, n_id 6613666) — antes fallaba, ahora resuelve. `docs/slack_app_cables.md` actualizado.
 - **No hecho:** prod (`lasfocas-slack-baneo-worker`) corre el mismo código, así que tiene el mismo
   bug — no se tocó (directriz vigente de no tocar prod sin aviso explícito puntual).
+
+## 2026-08-26 — Trazabilidad de IDs de Servicios SLA: ID final por cadena de upgrades, fusión de placeholders Cromo, repurpose de `categoria`
+
+- **Contexto:** la ingesta de Excel de Servicios SLA (`POST /servicios/ingest`) pisaba
+  `servicio_id = numero_primer_servicio` en cada corrida, ignorando cualquier upgrade real de línea
+  — el bot de Slack "Validador de Cables" y `CableDetalleCromoView.vue` (que leen `servicio_id`)
+  nunca mostraban el ID vigente. Ejecutado vía `superpowers:subagent-driven-development` (10 tareas
+  + 2 rondas de fix de la revisión final del branch completo), plan en
+  `docs/superpowers/plans/2026-08-25-servicios-trazabilidad-ids.md`.
+- **Decisión 1 (regla de negocio, confirmada por el usuario):** el ID numérico más alto conocido de
+  una familia (`Número Primer Servicio` + `Número Línea` + punteros "Línea Upgrade De/A" del Excel +
+  lo ya persistido en `servicio_id`/`alias_ids`) es siempre el ID de línea vigente — no hace falta
+  perseguir los punteros de upgrade en cadena, sólo tomar el máximo. Implementado en
+  `core/services/servicios_consolidacion_service.py::consolidar_identidad_servicio`, función pura
+  sin acceso a DB. Costó 4 rondas de fix encontrar la forma correcta de deduplicar dos strings que
+  representan el mismo entero ("093" vs "93") sin perder ninguno como alias — la solución final
+  canonicaliza cada ID una sola vez al entrar (`_forma_canonica`), verificada con fuzz-testing de
+  363k casos (0 violaciones) contra ~58% de violaciones en la versión previa a esa ronda.
+- **Decisión 2 (repurpose de `categoria`, elegido explícitamente por el usuario sobre la alternativa
+  recomendada de un campo nuevo):** `servicios.categoria` (antes: prioridad de reporting manual, sin
+  relación con el Excel) pasa a significar "Nivel Cliente" del Excel SLA. Verificado antes de decidir
+  que no rompía trabajo real: 0 filas con un valor manual 1-5 en dev (sólo 0/6, los dos sentinels).
+  Sin migración de esquema (mismo `Integer 0-6`, mismo `CHECK`) — sólo cambia la fuente de datos. Los
+  valores legacy (0/6) se dejan como están, sin backfill retroactivo (elección explícita del
+  usuario), se sobreescriben naturalmente en la próxima ingesta real de esa fila.
+- **Decisión 3 (fusión de placeholders Cromo, elegido explícitamente por el usuario sobre la opción
+  mínima recomendada de sólo degradar sin fusionar):** como `servicios.servicio_id` es `UNIQUE`, el
+  ID final calculado puede coincidir con el de una fila ya existente — medido en dev: 176 casos
+  reales (161 contra un placeholder `INFERIDO_CROMO`, 15 contra filas `MANUAL`). Se fusiona
+  automáticamente SÓLO cuando la fila en colisión es un placeholder Cromo puro (nunca tocado por
+  tracking físico — verificado con un guard explícito contra `rutas_servicio`/
+  `servicio_empalme_association`, no sólo contra el flag `origen_datos`, porque
+  `infra_service.py::create_new` puede reusar un placeholder para tracking sin cambiarle ese flag).
+  Cualquier otra colisión (`MANUAL`/`INGEST_EXCEL`, o intra-archivo contra otra familia del mismo
+  Excel) degrada sin fusionar — fusionar dos registros reales sin confirmación humana sigue fuera de
+  alcance a propósito, mismo criterio que el merge de Cámaras (entrada 2026-08-14) pero sin
+  extenderlo a este caso. La revisión final encontró y corrigió 2 bugs reales del propio diseño antes
+  de cerrarlo (un skip demasiado amplio que dejaba vivo el 500 original contra colisiones
+  intra-archivo, y el guard de "placeholder puro" incompleto que exponía datos reales de tracking a
+  un hard delete).
+- **Hallazgo operativo (no de código):** la primera verificación end-to-end real (ingerir
+  `docs/Doc Privada/Servicios C4.xlsx` contra `lasfocasdev-api`) dio 500 — no por un bug, sino porque
+  el contenedor corría una imagen de horas antes de que se aplicara ningún fix del día. Los tests de
+  integración (`TestClient(app)` in-process contra el código del host) nunca lo hubieran detectado.
+  Reconstruir `api`/`web` (`docker-rebuild`) resolvió la ingesta real: 1230/1230 filas, 176 fusiones
+  de placeholder, 0 huérfanos en `cromo_servicio_match`.
+- **Impacto:** endpoint nuevo `PATCH /servicios/{id}/verificable` (+ su proxy en
+  `web/app/main.py`, faltante en la implementación original — encontrado por la revisión final, no
+  por ningún test), columnas nuevas `servicios.es_verificable`/`es_verificable_override` (migración
+  `20260825_02`), script `scripts/cromo_backfill_reconciliar_servicio_final.py`, fix de un bug
+  preexistente del parser (encabezados reales del Excel con sufijo "Servicio" quedaban sin mapear).
+  1092 tests, 5 skipped (los de integración de ingesta se saltan en CI por falta de Postgres real,
+  sin tocar `ci.yml`). Ver `docs/db.md` (tabla `servicios`) para el detalle de columnas.
+- **No hecho:** verificación visual en navegador de los cambios de Vue (Tasks 9/10, nombre en rojo
+  para servicios de baja, badge "No verificable") — sin navegador disponible en el entorno de
+  sub-agentes de esta sesión; verificado en su lugar por revisión de código + datos reales de DB.
