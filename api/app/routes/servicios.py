@@ -44,6 +44,9 @@ class ServicioItemResponse(BaseModel):
     estado_servicio: str
     categoria: int
     origen_datos: str
+    es_verificable: bool
+    es_verificable_override: bool | None = None
+    alias_ids: list[str] = []
     reclamos: list[dict[str, Any]] | None = None
 
 
@@ -109,6 +112,9 @@ def _to_servicio_item(svc: Servicio) -> ServicioItemResponse | None:
         estado_servicio=svc.estado_servicio,
         categoria=svc.categoria,
         origen_datos=svc.origen_datos.value if hasattr(svc.origen_datos, "value") else str(svc.origen_datos),
+        es_verificable=svc.es_verificable,
+        es_verificable_override=svc.es_verificable_override,
+        alias_ids=list(svc.alias_ids or []),
         reclamos=None,
     )
 
@@ -397,6 +403,31 @@ async def actualizar_categoria_servicio(
         raise HTTPException(status_code=404, detail="Servicio no encontrado")
 
     svc.categoria = body.categoria
+    await db.commit()
+    await db.refresh(svc)
+
+    item = _to_servicio_item(svc)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+    return item
+
+
+class ServicioVerificableUpdateRequest(BaseModel):
+    es_verificable: bool
+
+
+@router.patch("/{id}/verificable", response_model=ServicioItemResponse)
+async def actualizar_verificable_servicio(
+    id: int,
+    body: ServicioVerificableUpdateRequest,
+    db: AsyncSession = Depends(get_async_db),
+) -> ServicioItemResponse:
+    svc = await db.get(Servicio, id)
+    if svc is None:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+
+    svc.es_verificable_override = body.es_verificable
+    svc.es_verificable = body.es_verificable
     await db.commit()
     await db.refresh(svc)
 
