@@ -86,7 +86,7 @@
       </div>
 
       <div class="servicios-view__toolbar-row servicios-view__chips-row">
-        <span class="servicios-view__chips-label">Categoría</span>
+        <span class="servicios-view__chips-label">Nivel Cliente</span>
 
         <button
           v-for="chip in categoriaChips"
@@ -252,8 +252,11 @@ const offset = ref(0);
 const hasMore = ref(true);
 const sentinel = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
-// Default C6 (sin clasificar) — prioriza la cola de triage al entrar a la vista.
-const filtros = ref({ tipo: '', estado: '', categoria: '6' });
+// Sin filtro de Nivel Cliente por default: el campo dejó de ser "sin clasificar vs clasificado"
+// (donde C6 era una cola de triage útil) y pasó a traer el Nivel Cliente real del Excel, así que
+// filtrar por C6 al entrar dejaba el listado casi vacío después de cada ingesta — mismo bug que ya
+// pasó en /infra con la paginación por default. Ojo: `clearFiltros` reconstruye este mismo estado.
+const filtros = ref({ tipo: '', estado: '', categoria: '' });
 const selectedIdOrigen = ref('');
 const seleccionadas = ref<Set<number>>(new Set());
 const categoriaMasivaSeleccionada = ref(6);

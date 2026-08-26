@@ -362,7 +362,7 @@ async function onCambiarCategoria(categoria: number): Promise<void> {
   try {
     servicio.value = await updateServicioCategoria(servicio.value.id, categoria);
   } catch (err: unknown) {
-    errorCategoria.value = err instanceof Error ? err.message : 'No se pudo cambiar la categoría';
+    errorCategoria.value = err instanceof Error ? err.message : 'No se pudo cambiar el Nivel Cliente';
     if (servicio.value) servicio.value.categoria = anterior;
   } finally {
     guardandoCategoria.value = false;

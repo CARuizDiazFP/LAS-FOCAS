@@ -7,12 +7,12 @@
   <dialog ref="dialogEl" class="categoria-modal" @click.self="handleClose">
     <div class="modal-content">
       <div class="categoria-title-row">
-        <strong>Cambiar categoría</strong>
+        <strong>Cambiar Nivel Cliente</strong>
         <button class="close-btn" type="button" @click="handleClose">×</button>
       </div>
 
       <p class="categoria-texto">
-        Se cambiará la categoría a <strong>{{ categoriaLabel(categoria) }}</strong> para
+        Se cambiará el Nivel Cliente a <strong>{{ categoriaLabel(categoria) }}</strong> para
         <strong>{{ servicioIds.length }}</strong> servicio{{ servicioIds.length !== 1 ? 's' : '' }} seleccionado{{ servicioIds.length !== 1 ? 's' : '' }}.
       </p>
 
@@ -66,7 +66,7 @@ async function handleConfirmar(): Promise<void> {
     emit('aplicada', { actualizados: respuesta.actualizados, noEncontrados: respuesta.no_encontrados });
     handleClose();
   } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo cambiar la categoría.';
+    error.value = err instanceof Error ? err.message : 'No se pudo cambiar el Nivel Cliente.';
   } finally {
     aplicando.value = false;
   }
