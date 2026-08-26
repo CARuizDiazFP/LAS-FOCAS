@@ -218,6 +218,37 @@ docker cp scripts lasfocasdev-api:/app/scripts
 
 Después de eso, los `docker cp` de archivos individuales dentro de `scripts/` vuelven a funcionar hasta la próxima recreación del contenedor.
 
+## Antes de una verificación E2E real de cierre: reconstruir, no asumir que el contenedor está al día
+
+Un `curl`/prueba real de cierre contra un contenedor ya corriendo puede fallar (o peor, "funcionar"
+mostrando comportamiento viejo) aunque todos los tests hayan pasado en verde — los tests de
+integración de este repo (`TestClient(app)` in-process, o `pytest` corrido directo desde el host)
+ejercitan el código del *checkout*, nunca la imagen realmente deployada en el contenedor. Si nadie
+reconstruyó desde el último cambio relevante, el contenedor sigue corriendo código viejo sin ningún
+error ni warning que lo delate.
+
+**Síntoma real** (2026-08-26): al cerrar un ciclo largo de `subagent-driven-development` (trazabilidad
+de IDs de Servicios SLA), un `curl` real de verificación end-to-end contra `POST /servicios/ingest`
+en `lasfocasdev-api` dio `IntegrityError: duplicate key ... servicio_id=X` — parecía un bug nuevo no
+cubierto por ninguna revisión previa. Diagnóstico: `docker inspect lasfocasdev-api --format
+'{{.Created}}'` mostraba la imagen construida ~4 horas antes de que se aplicara cualquiera de los
+fixes del día (`git log --date=iso-strict` de los commits). Los ~20 tests/revisiones de ese ciclo
+nunca podían haberlo detectado, porque ninguno corre contra la imagen deployada.
+
+**Regla**: antes de cualquier verificación E2E real de cierre (un `curl`/request real contra un
+endpoint, no un test), reconstruir primero los contenedores que ese código toca:
+
+```bash
+docker inspect <contenedor> --format '{{.Created}}'   # cuándo se construyó la imagen actual
+git log --date=iso-strict -1 <archivo_relevante>       # cuándo se commiteó el último cambio real
+# si el commit es posterior a la imagen, reconstruir antes de confiar en cualquier resultado:
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build <servicio>
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servicio>
+```
+
+No alcanza con que el servicio esté `healthy` — un healthcheck sólo confirma que el proceso responde,
+no que corra el código más reciente.
+
 ## Script de Inicio Rápido
 
 ```bash
