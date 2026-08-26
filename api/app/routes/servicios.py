@@ -222,12 +222,24 @@ async def ingest_servicios(
         row["numero_linea"] = identidad.numero_linea
         row["alias_ids"] = identidad.alias_ids
 
+        # `isdigit()` sola no alcanza: "7"/"10" son dígitos pero violan el CHECK
+        # `ck_servicios_categoria_valida` (0-6) y el IntegrityError sin manejar tumbaba el archivo
+        # completo con un 500. Un valor fuera de rango degrada a fallback y queda loggeado.
         categoria_excel = row.get("categoria")
-        row["categoria"] = (
-            int(categoria_excel)
-            if categoria_excel is not None and str(categoria_excel).isdigit()
-            else (existente.categoria if existente else 6)
-        )
+        categoria_fallback = existente.categoria if existente else 6
+        if categoria_excel is not None and str(categoria_excel).isdigit():
+            try:
+                validar_categoria(int(categoria_excel))
+                row["categoria"] = int(categoria_excel)
+            except CategoriaInvalidaError:
+                logger.warning(
+                    "action=servicios_ingest evento=categoria_invalida numero_primer_servicio=%s valor=%s",
+                    numero,
+                    categoria_excel,
+                )
+                row["categoria"] = categoria_fallback
+        else:
+            row["categoria"] = categoria_fallback
 
         override_actual = existente.es_verificable_override if existente else None
         row["es_verificable"] = (

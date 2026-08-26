@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import logging
 
 import pandas as pd
 import pytest
@@ -96,6 +97,39 @@ def test_ingest_calcula_servicio_id_como_el_id_mas_alto_de_la_cadena(client: Tes
     assert set(body["alias_ids"]) == {"900001", "900010"}
     assert body["categoria"] == 4
     assert body["es_verificable"] is True
+
+
+def test_ingest_degrada_categoria_fuera_de_rango_en_vez_de_reventar(client: TestClient, caplog) -> None:
+    """"Nivel Cliente" con un dígito fuera de 0-6 pasaba `isdigit()` y violaba el CHECK
+    `ck_servicios_categoria_valida` de la DB -> IntegrityError sin manejar y 500 que se llevaba el
+    archivo completo. Ahora degrada al fallback (6 en un alta nueva) y deja el warning."""
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900005"],
+            "Tipo Servicio": ["INT"],
+            "Nivel Cliente": ["9"],
+            "Estado Servicio": ["Activo"],
+        }
+    )
+
+    with caplog.at_level(logging.WARNING, logger="api.app.routes.servicios"):
+        response = client.post(
+            "/servicios/ingest",
+            files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            headers=API_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["inserted"] == 1
+
+    detail = client.get("/servicios/detail", params={"id": "900005"}, headers=API_HEADERS)
+    assert detail.json()["servicio"]["categoria"] == 6
+
+    assert any(
+        "evento=categoria_invalida" in registro.getMessage()
+        and "numero_primer_servicio=900005" in registro.getMessage()
+        for registro in caplog.records
+    ), caplog.text
 
 
 def _crear_placeholder_puro(numero: str) -> int:
