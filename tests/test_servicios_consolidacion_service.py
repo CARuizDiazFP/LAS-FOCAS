@@ -94,7 +94,9 @@ def test_consolidar_identidad_no_pisa_servicio_id_no_numerico_de_tracking() -> N
     )
     assert resultado.servicio_id == "O1C1"
     assert resultado.numero_linea == "111743"
-    assert resultado.alias_ids == ["45789"]
+    # `servicio_id` queda en manos del tracking físico, pero el número de línea vigente ("111743")
+    # sí entra como alias: es el ID por el que Cromo va a buscar esta familia.
+    assert resultado.alias_ids == ["45789", "111743"]
 
 
 def test_consolidar_identidad_ignora_guion_como_valor_vacio() -> None:
@@ -192,7 +194,9 @@ def test_consolidar_identidad_preserva_alias_no_numerico_distinto_de_servicio_id
     # "O2C2" es distinto de id_final y de servicio_id_final, debe estar en alias
     # "45789" (numero_primer_servicio) también es candidato legítimo
     assert "O2C2" in resultado.alias_ids  # No se pierden aliases legítimos no numéricos
-    assert resultado.alias_ids == ["O2C2", "45789"]  # Ordenado correctamente
+    # "111743" (id_final) también entra: con `servicio_id` en manos del tracking físico, el número de
+    # línea vigente sólo queda alcanzable para Cromo a través de alias_ids.
+    assert resultado.alias_ids == ["O2C2", "45789", "111743"]  # Ordenado correctamente
 
 
 def test_consolidar_identidad_dedupe_dos_formas_del_mismo_entero_en_alias_actual() -> None:

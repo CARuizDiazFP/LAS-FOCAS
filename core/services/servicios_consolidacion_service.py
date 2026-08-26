@@ -116,9 +116,13 @@ def consolidar_identidad_servicio(
     servicio_id_es_numerico_o_vacio = servicio_id_actual is None or _a_entero(servicio_id_actual) is not None
     servicio_id_final = id_final if servicio_id_es_numerico_o_vacio else _forma_canonica(servicio_id_actual)
 
-    # Ambos ya son canónicos, así que un simple `in` alcanza para excluirlos de los alias: compara
-    # por valor entero cuando son numéricos y por string exacto cuando no lo son.
-    ids_vigentes = (id_final, servicio_id_final)
+    # Sólo `servicio_id_final` se excluye de los alias, y alcanza con él en los dos casos: cuando no
+    # hay divergencia vale `id_final` (excluir uno excluye al otro), y cuando el tracking físico dejó
+    # un `servicio_id` no numérico, `id_final` —el número de línea vigente real— tiene que entrar
+    # como alias para que el matching de Cromo lo resuelva, como promete el docstring del módulo.
+    # Ya es canónico, así que un simple `in` alcanza: compara por valor entero cuando es numérico y
+    # por string exacto cuando no lo es.
+    ids_vigentes = (servicio_id_final,)
 
     # `alias_existentes` conserva el orden histórico de `alias_ids_actual`. Desempate cuando dos
     # entradas representan el mismo entero ("093" y "93"): gana siempre la forma canónica, con lo
