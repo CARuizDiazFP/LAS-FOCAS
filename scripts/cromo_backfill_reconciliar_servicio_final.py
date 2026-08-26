@@ -81,8 +81,8 @@ def _resolver_contra_servicios_actuales(session, numeros: list[str]) -> dict[str
     return resueltos
 
 
-def _actualizar_matches_cambiados(session, cambios: dict[str, int]) -> int:
-    items = list(cambios.items())
+def _actualizar_matches_cambiados(session, mapeo_resuelto: dict[str, int]) -> int:
+    items = list(mapeo_resuelto.items())
     total_actualizado = 0
     for chunk in _chunked(items):
         placeholders_sql = ", ".join(f"(:numero_{j} ::text, :id_{j} ::integer)" for j in range(len(chunk)))
@@ -112,32 +112,23 @@ def main(dry_run: bool) -> None:
     try:
         filas = session.execute(_SQL_TODOS_LOS_NUMEROS).all()
         numeros = [servicio_numero for servicio_numero, _ in filas]
-        guardado_por_numero = {servicio_numero: guardado for servicio_numero, guardado in filas}
         logger.info("action=backfill_reconciliar_servicio_final numeros_distintos=%d", len(numeros))
 
         resueltos = _resolver_contra_servicios_actuales(session, numeros)
-
-        cambios = {
-            numero: nuevo_id
-            for numero, nuevo_id in resueltos.items()
-            if guardado_por_numero.get(numero) != nuevo_id
-        }
         logger.info(
-            "action=backfill_reconciliar_servicio_final resueltos=%d cambios_detectados=%d",
+            "action=backfill_reconciliar_servicio_final numeros_candidatos_resueltos=%d",
             len(resueltos),
-            len(cambios),
         )
 
-        filas_actualizadas = _actualizar_matches_cambiados(session, cambios)
+        filas_actualizadas = _actualizar_matches_cambiados(session, resueltos)
         logger.info("action=backfill_reconciliar_servicio_final filas_match_actualizadas=%d", filas_actualizadas)
 
         elapsed = time.perf_counter() - inicio
         logger.info(
-            "action=backfill_reconciliar_servicio_final modo=%s numeros_distintos=%d cambios=%d "
+            "action=backfill_reconciliar_servicio_final modo=%s numeros_distintos=%d "
             "filas_match_actualizadas=%d elapsed_seg=%.1f",
             "dry_run" if dry_run else "aplicado",
             len(numeros),
-            len(cambios),
             filas_actualizadas,
             elapsed,
         )
