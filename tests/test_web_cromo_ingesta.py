@@ -230,6 +230,19 @@ def test_iniciar_rechaza_psize_invalido(monkeypatch):
     assert res.status_code == 400
 
 
+def test_iniciar_rechaza_modo_invalido(monkeypatch):
+    """Task 3: `modo` es un string libre en el payload (no un enum de Pydantic) — el handler debe
+    validarlo a mano contra `_MODOS_INGESTA_VALIDOS`, mismo criterio que ya usa para `psize`."""
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    client = TestClient(app)
+    csrf = _login(client, "admin", "admin")
+
+    res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": "TODO_MENOS_ODF"})
+    assert res.status_code == 400
+
+
 def test_iniciar_503_si_cromo_no_configurado(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import config as cromo_config
@@ -257,7 +270,7 @@ def test_iniciar_happy_path_delega_al_worker_y_devuelve_corrida_id(monkeypatch):
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
-    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases):
+    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
         return _FakeCorrida(id=99, usuario=usuario)
 
     monkeypatch.setattr(cromo_ingesta, "iniciar_corrida", _iniciar_corrida_fake)
@@ -275,6 +288,62 @@ def test_iniciar_happy_path_delega_al_worker_y_devuelve_corrida_id(monkeypatch):
     assert llamadas == [(web_main._CROMO_WORKER_RUN_URL, {"corrida_id": 99, "usuario": "admin"})]
 
 
+def test_iniciar_propaga_modo_solo_odf_como_params_extra(monkeypatch):
+    """Task 3: `modo="SOLO_ODF"` en el body debe llegar a `iniciar_corrida` como `params_extra`
+    — el mecanismo genérico ya existente (mismo que usa `repoblacion_service.py`), no uno nuevo."""
+    from web.app import main as web_main
+    from core.services.cromo import config as cromo_config
+    from core.services.cromo import ingesta as cromo_ingesta
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
+
+    recibido: dict[str, Any] = {}
+
+    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
+        recibido["params_extra"] = params_extra
+        return _FakeCorrida(id=100, usuario=usuario)
+
+    monkeypatch.setattr(cromo_ingesta, "iniciar_corrida", _iniciar_corrida_fake)
+    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=[]))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "admin")
+
+    res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": "SOLO_ODF"})
+
+    assert res.status_code == 202
+    assert recibido["params_extra"] == {"modo": "SOLO_ODF"}
+
+
+def test_iniciar_modo_completa_explicito_no_agrega_params_extra(monkeypatch):
+    """`modo="COMPLETA"` explícito es equivalente al default: no debe generar `params_extra` de
+    más — mismo criterio "aditivo" que documenta `iniciar_corrida`."""
+    from web.app import main as web_main
+    from core.services.cromo import config as cromo_config
+    from core.services.cromo import ingesta as cromo_ingesta
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
+
+    recibido: dict[str, Any] = {}
+
+    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
+        recibido["params_extra"] = params_extra
+        return _FakeCorrida(id=101, usuario=usuario)
+
+    monkeypatch.setattr(cromo_ingesta, "iniciar_corrida", _iniciar_corrida_fake)
+    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=[]))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "admin")
+
+    res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": "COMPLETA"})
+
+    assert res.status_code == 202
+    assert recibido["params_extra"] is None
+
+
 def test_iniciar_503_y_marca_fallida_si_worker_no_responde(monkeypatch):
     """Si el worker está caído, la corrida (ya EN_CURSO) no debe quedar huérfana: se marca FALLIDA."""
     from web.app import main as web_main
@@ -284,7 +353,7 @@ def test_iniciar_503_y_marca_fallida_si_worker_no_responde(monkeypatch):
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
-    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases):
+    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
         return _FakeCorrida(id=77, usuario=usuario)
 
     monkeypatch.setattr(cromo_ingesta, "iniciar_corrida", _iniciar_corrida_fake)

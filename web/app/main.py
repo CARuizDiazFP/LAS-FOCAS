@@ -4821,12 +4821,19 @@ async def ingesta_camaras_asociar_web(request: Request, body: AsociarSinMatchCam
 
 
 class CromoIngestaIniciarRequest(BaseModel):
-    """Payload para disparar una corrida de ingesta Cromo."""
+    """Payload para disparar una corrida de ingesta Cromo.
+
+    `modo` (Task 3): `None` (default) o `"COMPLETA"` corren la secuencia de siempre + ODFs;
+    `"SOLO_ODF"` corre únicamente la fase de ODFs. Validado explícitamente en el handler contra
+    `_MODOS_INGESTA_VALIDOS` porque acá no hay un enum de Pydantic (mismo criterio simple que el
+    resto de este payload, p.ej. `psize` contra `PSIZE_PERMITIDOS`).
+    """
 
     csrf_token: str
     clases: List[int] | None = None
     psize: int | None = None
     max_paginas: int | None = None
+    modo: Optional[str] = None
 
 
 class CromoIngestaCancelarRequest(BaseModel):
@@ -4846,6 +4853,11 @@ class CromoSchedulerConfigRequest(BaseModel):
     max_paginas: Optional[int] = None
     clases: List[int]
 
+
+# Task 3 (submódulo ODFs): valores aceptados de `CromoIngestaIniciarRequest.modo`. `None` (el
+# request no lo mandó) es válido y equivale a "COMPLETA" — sólo se rechaza un string que no sea
+# ninguno de estos dos.
+_MODOS_INGESTA_VALIDOS = ("COMPLETA", "SOLO_ODF")
 
 # Etapa 7: la ingesta corre en su propio worker Docker (modules/cromo_worker/), no en este proceso.
 _CROMO_WORKER_BASE_URL = os.getenv("CROMO_WORKER_BASE_URL", "http://cromo_worker:8096")
@@ -4899,6 +4911,11 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
             {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
         )
 
+    if body.modo is not None and body.modo not in _MODOS_INGESTA_VALIDOS:
+        return JSONResponse(
+            {"error": f"modo inválido. Valores permitidos: {sorted(_MODOS_INGESTA_VALIDOS)}"}, status_code=400
+        )
+
     try:
         cromo_config = get_cromo_config()
     except CromoConfigError as exc:
@@ -4906,10 +4923,19 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
 
     psize_final = body.psize if body.psize is not None else cromo_config.psize_default
     clases_final = tuple(body.clases) if body.clases else CLASES_BOTELLA
+    # Igual mecanismo genérico y aditivo que usa `repoblacion_service.py` (ver `iniciar_corrida`):
+    # sólo se agrega a `params` cuando el caller pidió explícitamente algo distinto del default, así
+    # una corrida COMPLETA sin `modo` en el body sigue reproduciendo el `params` de siempre.
+    params_extra = {"modo": body.modo} if body.modo not in (None, "COMPLETA") else None
 
     async with AsyncSessionLocal() as sesion:
         corrida = await iniciar_corrida(
-            sesion, usuario=username, psize=psize_final, max_paginas=body.max_paginas, clases=clases_final
+            sesion,
+            usuario=username,
+            psize=psize_final,
+            max_paginas=body.max_paginas,
+            clases=clases_final,
+            params_extra=params_extra,
         )
         corrida_id = corrida.id
 

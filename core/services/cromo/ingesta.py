@@ -32,6 +32,7 @@ from db.models.cromo import (
     CromoFusion,
     CromoIngestaCorrida,
     CromoIngestaEvento,
+    CromoOdf,
     CromoPelo,
     CromoServicioMatch,
     CromoTubo,
@@ -46,9 +47,10 @@ class _CorridaCancelada(Exception):
 
 CLASE_CABLE = 51
 CLASE_FUSION = 132
+CLASE_ODF = 69
 CLASES_BOTELLA: tuple[int, ...] = (68, 121, 122, 123, 125)
 # Clases con colección propia contable vía stats[].count (fase de conteo).
-CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION)
+CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
 
 BOTELLA_CAMPOS = (
     "version_id",
@@ -108,6 +110,28 @@ PELO_CAMPOS = (
     "tipo_asociacion",
 )
 _FUSION_CAMPOS = ("botella_n_id", "nombre_par", "tipo", "pelo_a_n_id", "pelo_b_n_id", "latitud", "longitud")
+ODF_CAMPOS = (
+    "version_id",
+    "vmax",
+    "clase",
+    "nombre",
+    "propietario",
+    "tipo_elemento",
+    "codigo_modelo",
+    "id_legacy",
+    "notas",
+    "calle",
+    "altura",
+    "localidad",
+    "provincia",
+    "ubicacion_fisica",
+    "tendido",
+    "latitud",
+    "longitud",
+    "pts_raw",
+    "cables_asociados",
+    "payload_raw",
+)
 
 
 @dataclass(slots=True)
@@ -424,6 +448,69 @@ async def fase_fusiones(
             await _procesar_fusion_directa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
         sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "FUSIONES", numero_pagina, pagina, contadores)
+        await sesion.commit()
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
+
+
+async def _procesar_odf_directo(
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """Procesa un ODF del barrido directo (filter=69, Task 3). Un savepoint propio: si falla, no
+    aborta la página — mismo patrón de tolerancia que `_procesar_cable_directo`.
+
+    `alias_por_origen` se acepta sólo por simetría de firma con las otras fases directas
+    (`continuar_corrida` carga un único `alias_por_origen` y se lo pasa por igual a las cuatro);
+    no se usa acá porque ODF no tiene ningún campo que el mecanismo de alias de botella pueda
+    redirigir (`cables_asociados` son n_ids de CABLE, no de botella).
+    """
+    try:
+        async with sesion.begin_nested():
+            odf = cromo_parser.parse_odf(obj)
+            accion = await upsert_versionado(sesion, CromoOdf, odf, ODF_CAMPOS)
+            contadores.leidas += 1
+            contadores.contar(accion)
+            await registrar_evento(sesion, corrida_id, odf.n_id, CLASE_ODF, accion)
+    except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
+        contadores.errores += 1
+        n_id = obj.get("n_id") or obj.get("id")
+        logger.error("action=cromo_ingesta evento=error_odf n_id=%s error=%s", n_id, exc)
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+
+
+async def fase_odfs(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · ODFS (Task 3): barrido directo de clase 69, igual patrón que `fase_cables`/
+    `fase_fusiones` — ODF no vive dentro del árbol de Botella, tiene su propia colección.
+
+    A diferencia de `fase_cables` (que sólo pide `["SHOW", "TIME"]`), acá se pide
+    `REL_ATTRIBUTE` desde el arranque: es lo que expone `tp[]` con los cables asociados, que
+    `cromo_parser.parse_odf` necesita para poblar `cables_asociados` (ver parser.py).
+    """
+    await _registrar_inicio_fase(sesion, corrida.id, "ODFS", "Barrido directo de ODFs (filter=69)")
+    numero_pagina = 0
+    async for pagina in cliente.iterar_coleccion(
+        str(CLASE_ODF), psize=psize, show=["SHOW", "REL_ATTRIBUTE", "TIME"], max_paginas=max_paginas
+    ):
+        numero_pagina += 1
+        objetos = pagina.get("response") or pagina.get("data") or []
+        for obj in objetos:
+            await _procesar_odf_directo(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
+        sincronizar_contadores(corrida, contadores)
+        await _registrar_pagina(sesion, corrida.id, "ODFS", numero_pagina, pagina, contadores)
         await sesion.commit()
         if await _fue_cancelada_externamente(sesion, corrida.id):
             raise _CorridaCancelada()
@@ -897,12 +984,18 @@ async def ejecutar_ingesta(
     psize: Optional[int] = None,
     max_paginas: Optional[int] = None,
     clases: Optional[Iterable[int]] = None,
+    modo: str = "COMPLETA",
 ) -> CromoIngestaCorrida:
-    """Crea la corrida y corre las 5 fases de punta a punta, en la misma sesión/tarea.
+    """Crea la corrida y corre las fases de punta a punta, en la misma sesión/tarea.
 
     Conveniencia para scripts/tests/uso síncrono. El endpoint web (Etapa 4) necesita el `corrida_id`
     de inmediato para responder, así que llama `iniciar_corrida()` y `continuar_corrida()` por separado
     (esta función es sólo azúcar sintáctica sobre esas dos).
+
+    `modo` (Task 3): "COMPLETA" (default) corre la secuencia de siempre + ODFs; "SOLO_ODF" corre
+    únicamente la fase de ODFs. Se persiste en `corrida.params` vía `params_extra` — mismo mecanismo
+    genérico y aditivo que ya usa `repoblacion_service.py` — sólo cuando difiere del default, para
+    que una corrida COMPLETA sin `modo` explícito siga reproduciendo el `params` de siempre.
     """
     psize_final = psize if psize is not None else get_cromo_config().psize_default
     if psize_final not in PSIZE_PERMITIDOS:
@@ -910,10 +1003,15 @@ async def ejecutar_ingesta(
     clases_final = tuple(clases) if clases is not None else CLASES_BOTELLA
 
     corrida = await iniciar_corrida(
-        sesion, usuario=usuario, psize=psize_final, max_paginas=max_paginas, clases=clases_final
+        sesion,
+        usuario=usuario,
+        psize=psize_final,
+        max_paginas=max_paginas,
+        clases=clases_final,
+        params_extra={"modo": modo} if modo != "COMPLETA" else None,
     )
     return await continuar_corrida(
-        cliente, sesion, corrida.id, psize=psize_final, max_paginas=max_paginas, clases=clases_final
+        cliente, sesion, corrida.id, psize=psize_final, max_paginas=max_paginas, clases=clases_final, modo=modo
     )
 
 
@@ -925,13 +1023,22 @@ async def continuar_corrida(
     psize: int,
     max_paginas: Optional[int],
     clases: Iterable[int],
+    modo: str = "COMPLETA",
 ) -> CromoIngestaCorrida:
-    """Corre las 6 fases sobre una corrida ya creada (`iniciar_corrida()`), en su propia sesión.
+    """Corre las fases sobre una corrida ya creada (`iniciar_corrida()`), en su propia sesión.
 
     Pensado para lanzarse en una tarea de background separada del request que la disparó — por eso
     recibe `corrida_id`, no el objeto ORM (que pertenece a la sesión donde se creó, no a esta).
     Cierra la corrida como OK, OK_CON_ERRORES, CANCELADA o FALLIDA. Nunca lanza: una falla inesperada
     se registra como FALLIDA en la propia corrida en vez de propagar la excepción al llamador.
+
+    `modo` (Task 3): `"SOLO_ODF"` corre ÚNICAMENTE `fase_odfs` — nada de Cable/Botella/Fusión ni
+    reconciliación/servicios (esas dos dependen de datos de cable/pelo que este modo no toca). En
+    cualquier otro valor, incluido el default `"COMPLETA"`, corre la secuencia de siempre
+    (Cable → Botella → Fusión) y agrega `fase_odfs` incondicionalmente justo después de Fusión,
+    antes de reconciliación/servicios — toda corrida completa incluye ODFs desde este cambio, sin
+    que nadie tenga que pedirlo. ODF no se agrega a `_RECONCILIACIONES`: la forma de esa relación
+    cruzada queda fuera de alcance de este task.
     """
     clases_final = tuple(clases)
     contadores = ContadoresCorrida()
@@ -941,14 +1048,26 @@ async def continuar_corrida(
 
     try:
         totales = await fase_conteo(cliente)
-        corrida.total_objetivo = sum(totales.get(c, 0) for c in (*clases_final, CLASE_CABLE, CLASE_FUSION))
+        if modo == "SOLO_ODF":
+            corrida.total_objetivo = totales.get(CLASE_ODF, 0)
+        else:
+            corrida.total_objetivo = sum(
+                totales.get(c, 0) for c in (*clases_final, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
+            )
         await registrar_evento(
             sesion,
             corrida.id,
             None,
             None,
             "INICIO",
-            json.dumps({"corrida_id": corrida.id, "total_objetivo": corrida.total_objetivo, "clases": list(clases_final)}),
+            json.dumps(
+                {
+                    "corrida_id": corrida.id,
+                    "total_objetivo": corrida.total_objetivo,
+                    "clases": list(clases_final),
+                    "modo": modo,
+                }
+            ),
         )
         await sesion.commit()
 
@@ -958,24 +1077,32 @@ async def continuar_corrida(
         # corrida ya está en curso recién aplica en la corrida siguiente.
         alias_por_origen = await alias_service.cargar_alias_vigentes(sesion)
 
-        await fase_cables(
-            cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
-        )
-        await fase_botellas(
-            cliente,
-            sesion,
-            corrida,
-            contadores,
-            psize=psize,
-            max_paginas=max_paginas,
-            clases=clases_final,
-            alias_por_origen=alias_por_origen,
-        )
-        await fase_fusiones(
-            cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
-        )
-        await fase_reconciliacion(sesion, corrida, contadores)
-        await fase_servicios(sesion, corrida, contadores)
+        if modo == "SOLO_ODF":
+            await fase_odfs(
+                cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
+            )
+        else:
+            await fase_cables(
+                cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
+            )
+            await fase_botellas(
+                cliente,
+                sesion,
+                corrida,
+                contadores,
+                psize=psize,
+                max_paginas=max_paginas,
+                clases=clases_final,
+                alias_por_origen=alias_por_origen,
+            )
+            await fase_fusiones(
+                cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
+            )
+            await fase_odfs(
+                cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
+            )
+            await fase_reconciliacion(sesion, corrida, contadores)
+            await fase_servicios(sesion, corrida, contadores)
 
         estado_final = "OK" if contadores.errores == 0 else "OK_CON_ERRORES"
     except _CorridaCancelada:
@@ -1039,9 +1166,11 @@ __all__ = [
     "BOTELLA_CAMPOS",
     "CABLE_CAMPOS",
     "CLASE_CABLE",
+    "CLASE_ODF",
     "CLASES_BOTELLA",
     "CLASES_CONTEO",
     "ContadoresCorrida",
+    "ODF_CAMPOS",
     "PELO_CAMPOS",
     "TUBO_CAMPOS",
     "continuar_corrida",
@@ -1049,6 +1178,7 @@ __all__ = [
     "fase_botellas",
     "fase_cables",
     "fase_conteo",
+    "fase_odfs",
     "fase_reconciliacion",
     "fase_servicios",
     "iniciar_corrida",

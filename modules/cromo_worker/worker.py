@@ -194,6 +194,11 @@ async def _continuar_en_bg(corrida_id: int) -> None:
                     psize=params.get("psize"),
                     max_paginas=params.get("max_paginas"),
                     clases=params.get("clases") or [],
+                    # Task 3: `modo` sólo viene poblado cuando `web` lo persistió explícitamente al
+                    # crear la corrida ("Ejecutar ahora" con SOLO_ODF). Las corridas programadas por
+                    # `_crear_corrida_desde_config` (scheduler) nunca lo setean, así que siempre caen
+                    # acá en el default "COMPLETA" — incluyen ODFs, sin cambio de comportamiento.
+                    modo=params.get("modo", "COMPLETA"),
                 )
     except Exception as exc:  # noqa: BLE001 - tarea de background: no hay nadie a quien propagar
         error = str(exc)

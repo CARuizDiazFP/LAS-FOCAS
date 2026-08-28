@@ -14,7 +14,7 @@ import pytest
 from core.services.cromo import ingesta
 from core.services.cromo.alias_service import AliasBotella
 from core.services.cromo.client import CromoClientError
-from db.models.cromo import CromoBotella, CromoCable, CromoFusion, CromoIngestaCorrida
+from db.models.cromo import CromoBotella, CromoCable, CromoFusion, CromoIngestaCorrida, CromoIngestaEvento, CromoOdf
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
 
@@ -305,6 +305,7 @@ async def test_ejecutar_ingesta_cierra_ok_sin_errores(monkeypatch):
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 
@@ -331,6 +332,7 @@ async def test_ejecutar_ingesta_marca_ok_con_errores_si_hubo_errores(monkeypatch
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _fase_botellas_con_error)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 
@@ -362,6 +364,30 @@ async def test_ejecutar_ingesta_rechaza_psize_invalido():
     sesion = _SesionFakeCorrida()
     with pytest.raises(ValueError, match="psize"):
         await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=7)
+
+
+@pytest.mark.asyncio
+async def test_ejecutar_ingesta_propaga_modo_a_continuar_corrida(monkeypatch):
+    """Task 3, requisito 8: `modo` debe llegar intacto hasta `continuar_corrida` (bare name resuelto
+    vía el namespace del módulo en el momento de la llamada, igual que ya vale para las fases)."""
+    sesion = _SesionFakeCorrida()
+    recibido: dict[str, Any] = {}
+
+    async def _continuar_corrida_fake(cliente, sesion, corrida_id, *, psize, max_paginas, clases, modo="COMPLETA"):
+        recibido["modo"] = modo
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        corrida.estado = "OK"
+        corrida.finalizada_at = "2026-01-01"
+        return corrida
+
+    monkeypatch.setattr(ingesta, "continuar_corrida", _continuar_corrida_fake)
+
+    corrida = await ingesta.ejecutar_ingesta(
+        cliente=object(), sesion=sesion, usuario="tester", psize=5, modo="SOLO_ODF"
+    )
+
+    assert recibido["modo"] == "SOLO_ODF"
+    assert corrida.params.get("modo") == "SOLO_ODF"
 
 
 # ── Procesamiento de un objeto (savepoint real, tolerancia a errores) ──────
@@ -973,6 +999,147 @@ async def test_fase_fusiones_procesa_pagina_y_suma_leidas():
     assert "ERROR" not in acciones
 
 
+# ── ODFs (Task 3, submódulo ODFs, clase 69) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_procesar_odf_directo_crea_y_registra_evento():
+    obj = {
+        "id": 900010,
+        "n_id": 800010,
+        "class": 69,
+        "vmax": 1,
+        "at": [{"id": 34, "value": "ODF Calle Falsa 123"}, {"id": 47, "value": "Metrotel"}],
+        "tp": [{"class": 51, "n_id": 6613848, "id_to": 9739619}],
+    }
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_odf_directo(sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.leidas == 1
+    assert contadores.creadas == 1
+    assert contadores.errores == 0
+    odfs_agregados = [o for o in sesion.agregados if isinstance(o, CromoOdf)]
+    assert len(odfs_agregados) == 1
+    assert odfs_agregados[0].n_id == 800010
+    assert odfs_agregados[0].nombre == "ODF Calle Falsa 123"
+    assert odfs_agregados[0].cables_asociados == [6613848]
+    eventos = [o for o in sesion.agregados if isinstance(o, CromoIngestaEvento)]
+    assert len(eventos) == 1
+    assert eventos[0].accion == "CREADA"
+    assert eventos[0].n_id == 800010
+    assert eventos[0].clase == ingesta.CLASE_ODF
+
+
+@pytest.mark.asyncio
+async def test_procesar_odf_directo_objeto_malformado_no_rompe_registra_error():
+    obj = {"class": 69, "id": 1, "n_id": 1}  # sin vmax coherente: fuerza un camino de error real
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    sesion._existentes[(CromoOdf, 1)] = object()  # sin atributo .vmax -> AttributeError real al comparar
+
+    await ingesta._procesar_odf_directo(sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 1
+    assert contadores.creadas == 0
+    eventos_error = [o for o in sesion.agregados if getattr(o, "accion", None) == "ERROR"]
+    assert len(eventos_error) == 1
+    assert eventos_error[0].n_id == 1
+
+
+@pytest.mark.asyncio
+async def test_fase_odfs_procesa_pagina_y_registra_creada_actualizada_sin_cambios():
+    """Contrato central del brief: `fase_odfs` crea/actualiza filas `CromoOdf` a partir de una
+    respuesta paginada fake, y registra correctamente los eventos CREADA/ACTUALIZADA/SIN_CAMBIOS —
+    mismo objeto (n_id=800100) a través de tres páginas con `vmax` creciente y luego repetido."""
+
+    def _odf_obj(vmax: int) -> dict[str, Any]:
+        return {
+            "id": 900100 + vmax,
+            "n_id": 800100,
+            "class": 69,
+            "vmax": vmax,
+            "at": [{"id": 34, "value": "ODF Calle 9 Nro 593 PILAR"}],
+        }
+
+    cliente = _ClientePaginado(
+        [
+            {"response": [_odf_obj(1)]},  # CREADA
+            {"response": [_odf_obj(2)]},  # ACTUALIZADA (vmax cambió)
+            {"response": [_odf_obj(2)]},  # SIN_CAMBIOS (mismo vmax)
+        ]
+    )
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    await ingesta.fase_odfs(cliente, sesion, corrida, contadores, psize=5, max_paginas=None)
+
+    assert contadores.leidas == 3
+    assert contadores.creadas == 1
+    assert contadores.actualizadas == 1
+    assert contadores.sin_cambios == 1
+    assert contadores.errores == 0
+    odfs_agregados = [o for o in sesion.agregados if isinstance(o, CromoOdf)]
+    assert len(odfs_agregados) == 1  # misma fila, actualizada in-place — no una segunda inserción
+    assert odfs_agregados[0].vmax == 2
+    eventos_del_odf = [
+        o.accion for o in sesion.agregados if isinstance(o, CromoIngestaEvento) and o.n_id == 800100
+    ]
+    assert eventos_del_odf == ["CREADA", "ACTUALIZADA", "SIN_CAMBIOS"]
+    assert corrida.creadas == 1
+    assert corrida.actualizadas == 1
+    assert corrida.sin_cambios == 1
+
+
+@pytest.mark.asyncio
+async def test_fase_odfs_pide_rel_attribute_desde_el_arranque(monkeypatch):
+    """A diferencia de `fase_cables` (`["SHOW", "TIME"]`), `fase_odfs` debe pedir `REL_ATTRIBUTE`
+    desde la primera página — es lo que expone `tp[]` con los cables asociados (ver parser.py)."""
+    recibido: dict[str, Any] = {}
+
+    class _ClienteCaptura:
+        async def iterar_coleccion(self, filtro, *, psize=None, show=None, max_paginas=None):
+            recibido["filtro"] = filtro
+            recibido["show"] = show
+            return
+            yield  # pragma: no cover - hace de este método un generador async vacío
+
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    await ingesta.fase_odfs(_ClienteCaptura(), sesion, corrida, contadores, psize=5, max_paginas=None)
+
+    assert recibido["filtro"] == str(ingesta.CLASE_ODF) == "69"
+    assert recibido["show"] == ["SHOW", "REL_ATTRIBUTE", "TIME"]
+
+
+@pytest.mark.asyncio
+async def test_fase_odfs_pasa_alias_por_origen_a_procesar_odf_directo(monkeypatch):
+    """Mismo contrato de firma que `fase_cables`/`fase_fusiones`: `alias_por_origen` se enhebra
+    hasta `_procesar_odf_directo`, aunque este último no lo use para nada (ver su docstring)."""
+    obj = {"id": 900200, "n_id": 800200, "class": 69, "vmax": 1, "at": []}
+    cliente = _ClientePaginado([{"response": [obj]}])
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+    alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
+    recibido: dict[str, Any] = {}
+
+    async def _procesar_fake(sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+        recibido["alias_por_origen"] = alias_por_origen
+
+    monkeypatch.setattr(ingesta, "_procesar_odf_directo", _procesar_fake)
+
+    await ingesta.fase_odfs(
+        cliente, sesion, corrida, contadores, psize=5, max_paginas=None, alias_por_origen=alias_por_origen
+    )
+
+    assert recibido["alias_por_origen"] is alias_por_origen
+
+
 @pytest.mark.asyncio
 async def test_fase_cables_pasa_alias_por_origen_a_procesar_cable_directo(monkeypatch):
     cable_obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
@@ -1276,6 +1443,134 @@ async def test_continuar_corrida_falla_clara_si_no_existe():
         )
 
 
+# ── Contrato de `modo` (Task 3): SOLO_ODF vs COMPLETA ────────────────────────
+
+
+def _spies_de_fases(monkeypatch, llamadas: list[str]) -> None:
+    """Instala un spy por cada fase (registra su nombre en `llamadas` sin hacer nada más),
+    incluida `fase_odfs` — el punto central que este task agrega a la orquestación. `__nombre` se
+    fija por default-arg (no por closure) para no pisar todas las funciones con el último `nombre`
+    de la iteración."""
+    for nombre in ("fase_cables", "fase_botellas", "fase_fusiones", "fase_odfs", "fase_reconciliacion", "fase_servicios"):
+
+        async def _fn(*args, __nombre=nombre, **kwargs):
+            llamadas.append(__nombre)
+
+        monkeypatch.setattr(ingesta, nombre, _fn)
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_modo_solo_odf_llama_unicamente_fase_odfs(monkeypatch):
+    """Contrato central del brief (el más fácil de romper en silencio): `modo="SOLO_ODF"` debe
+    saltear POR COMPLETO Cable/Botella/Fusión/reconciliación/servicios — no sólo "la mayoría"."""
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+    llamadas: list[str] = []
+
+    async def _fase_conteo_fake(cliente):
+        return {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    _spies_de_fases(monkeypatch, llamadas)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(),
+        sesion=sesion,
+        corrida_id=42,
+        psize=5,
+        max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA,
+        modo="SOLO_ODF",
+    )
+
+    assert corrida.estado == "OK"
+    # Assert explícito, no implícito: NINGUNA otra fase corrió, sólo fase_odfs.
+    assert "fase_cables" not in llamadas
+    assert "fase_botellas" not in llamadas
+    assert "fase_fusiones" not in llamadas
+    assert "fase_reconciliacion" not in llamadas
+    assert "fase_servicios" not in llamadas
+    assert llamadas == ["fase_odfs"]
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_modo_completa_incluye_fase_odfs_ademas_de_las_existentes(monkeypatch):
+    """Guardarraíl de regresión: el default `modo="COMPLETA"` debe seguir corriendo la secuencia de
+    siempre Y agregar `fase_odfs` incondicionalmente, justo después de Fusión y antes de
+    reconciliación/servicios — un refactor futuro no puede sacarla del camino por defecto sin que
+    este test lo note."""
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+    llamadas: list[str] = []
+
+    async def _fase_conteo_fake(cliente):
+        return {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    _spies_de_fases(monkeypatch, llamadas)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+    )  # modo default = "COMPLETA"
+
+    assert corrida.estado == "OK"
+    assert llamadas == ["fase_cables", "fase_botellas", "fase_fusiones", "fase_odfs", "fase_reconciliacion", "fase_servicios"]
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_modo_solo_odf_total_objetivo_solo_suma_clase_odf(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+
+    async def _fase_conteo_fake(cliente):
+        return {68: 100, ingesta.CLASE_CABLE: 50, ingesta.CLASE_FUSION: 10, ingesta.CLASE_ODF: 7}
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(),
+        sesion=sesion,
+        corrida_id=42,
+        psize=5,
+        max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA,
+        modo="SOLO_ODF",
+    )
+
+    assert corrida.total_objetivo == 7
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_modo_completa_total_objetivo_incluye_clase_odf(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+
+    async def _fase_conteo_fake(cliente):
+        return {68: 100, ingesta.CLASE_CABLE: 50, ingesta.CLASE_FUSION: 10, ingesta.CLASE_ODF: 7}
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_botellas", _noop)
+    monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
+    monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
+    monkeypatch.setattr(ingesta, "fase_servicios", _noop)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None, clases=ingesta.CLASES_BOTELLA
+    )
+
+    # clases_final=CLASES_BOTELLA (sólo la clase 68 tiene stats en el fake) + CABLE + FUSION + ODF.
+    assert corrida.total_objetivo == 100 + 50 + 10 + 7
+
+
 @pytest.mark.asyncio
 async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
     sesion = _SesionFakeCorrida()
@@ -1292,6 +1587,7 @@ async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 
@@ -1304,7 +1600,9 @@ async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_tres_fases(monkeypatch):
+async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_cuatro_fases(monkeypatch):
+    """Task 3: `fase_odfs` se sumó al mismo grupo de fases directas que ya recibían
+    `alias_por_origen` (cables/botellas/fusiones) — verifica que la ampliación no la dejó afuera."""
     sesion = _SesionFakeCorrida()
     corrida_existente = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
     sesion._existentes[(CromoIngestaCorrida, 42)] = corrida_existente
@@ -1328,6 +1626,9 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_tres_fases(
     async def _fase_fusiones_fake(*args, **kwargs):
         recibidos["fusiones"] = kwargs.get("alias_por_origen")
 
+    async def _fase_odfs_fake(*args, **kwargs):
+        recibidos["odfs"] = kwargs.get("alias_por_origen")
+
     async def _noop(*args, **kwargs):
         return None
 
@@ -1336,6 +1637,7 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_tres_fases(
     monkeypatch.setattr(ingesta, "fase_cables", _fase_cables_fake)
     monkeypatch.setattr(ingesta, "fase_botellas", _fase_botellas_fake)
     monkeypatch.setattr(ingesta, "fase_fusiones", _fase_fusiones_fake)
+    monkeypatch.setattr(ingesta, "fase_odfs", _fase_odfs_fake)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 
@@ -1348,6 +1650,7 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_tres_fases(
     assert recibidos["cables"] is alias_falso
     assert recibidos["botellas"] is alias_falso
     assert recibidos["fusiones"] is alias_falso
+    assert recibidos["odfs"] is alias_falso
 
 
 # ── Invalidación de la caché de Botellas duplicadas al cerrar la corrida ────
@@ -1364,6 +1667,7 @@ def _monkeypatch_fases_noop(monkeypatch, *, fase_botellas) -> None:
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
     monkeypatch.setattr(ingesta, "fase_botellas", fase_botellas)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
 

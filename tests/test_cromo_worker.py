@@ -287,6 +287,69 @@ async def test_job_programado_dispara_si_habilitado(monkeypatch):
     assert continuado["id"] == 55
 
 
+# ── _continuar_en_bg lee `modo` de corrida.params (Task 3) ──────────────────
+
+
+class _CromoClienteFakeCM:
+    """Reemplaza `CromoClient` — `_continuar_en_bg` sólo lo usa como `async with ... as cliente`,
+    nunca pega la red en este test porque `continuar_corrida` también está mockeada."""
+
+    def __init__(self, config=None) -> None:
+        self.config = config
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_propaga_modo_solo_odf_desde_params(monkeypatch):
+    """El mecanismo real: `corrida.params["modo"]` (persistido por `web` al crear la corrida vía
+    `params_extra`) debe llegar intacto a `continuar_corrida`."""
+    corrida = _CorridaFake(id=55, params={"psize": 5, "max_paginas": None, "clases": [68], "modo": "SOLO_ODF"})
+    sesion = _SesionFake(corridas={55: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+
+    recibido: dict[str, Any] = {}
+
+    async def _continuar_corrida_fake(cliente, sesion_arg, corrida_id, *, psize, max_paginas, clases, modo="COMPLETA"):
+        recibido["modo"] = modo
+        recibido["corrida_id"] = corrida_id
+
+    monkeypatch.setattr(worker, "continuar_corrida", _continuar_corrida_fake)
+
+    await worker._continuar_en_bg(55)
+
+    assert recibido == {"modo": "SOLO_ODF", "corrida_id": 55}
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_default_modo_completa_si_no_esta_en_params(monkeypatch):
+    """Contrato explícito del brief: una corrida programada (scheduler) nunca setea `modo` en
+    `params` — `_continuar_en_bg` debe caer en el default `"COMPLETA"`, sin cambio de
+    comportamiento respecto de antes de este task."""
+    corrida = _CorridaFake(id=56, params={"psize": 5, "max_paginas": None, "clases": [68]})
+    sesion = _SesionFake(corridas={56: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+
+    recibido: dict[str, Any] = {}
+
+    async def _continuar_corrida_fake(cliente, sesion_arg, corrida_id, *, psize, max_paginas, clases, modo="COMPLETA"):
+        recibido["modo"] = modo
+
+    monkeypatch.setattr(worker, "continuar_corrida", _continuar_corrida_fake)
+
+    await worker._continuar_en_bg(56)
+
+    assert recibido["modo"] == "COMPLETA"
+
+
 # ── Endpoints HTTP (FastAPI TestClient) ──────────────────────────────────────
 
 
