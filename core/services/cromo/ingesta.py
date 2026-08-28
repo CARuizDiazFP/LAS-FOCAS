@@ -326,7 +326,7 @@ async def iniciar_corrida(
 
 async def fase_conteo(cliente: CromoClient) -> dict[int, int]:
     """FASE 1 · CONTEO: requests baratos (psize=1&show=BASIC) para el `total_objetivo`, uno por clase
-    en `CLASES_CONTEO` (botellas + cables + fusiones)."""
+    en `CLASES_CONTEO` (botellas + cables + fusiones + ODFs)."""
     totales: dict[int, int] = {}
     for clase in CLASES_CONTEO:
         respuesta = await cliente.get_coleccion(str(clase), psize=1, show=["BASIC"])

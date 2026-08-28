@@ -184,6 +184,27 @@ async def test_buscar_odfs_orden_por_direccion_en_sql():
 
 
 @pytest.mark.asyncio
+async def test_buscar_odfs_filtro_servicio_no_correlacionado():
+    """Regresión de la revisión de rama completa: el filtro `servicio` estaba escrito como un
+    `EXISTS` correlacionado a `o.cables_asociados` que re-ejecutaba el join
+    `cromo_pelos ⋈ cromo_servicio_match ⋈ servicios` una vez por fila de ODF candidata (dos veces
+    por request, COUNT + SELECT paginado) — el mismo antipatrón que el comentario de
+    `inventario.py::_FILTROS_SQL` advierte evitar para `buscar_cables`, y con un volumen real de
+    ODFs (7.955, clase 69) que no lo justifica como excepción. La corrección mantiene el `EXISTS`
+    (necesario porque `cables_asociados` es un array JSONB, no una columna escalar como `c.n_id` en
+    `inventario.py`) pero el join costoso vive en un subquery aparte que no referencia a `o`, así
+    que Postgres puede resolverlo una sola vez por statement en vez de por fila candidata."""
+    texto = str(odf_inventario._SQL_BUSCAR)
+    # El JOIN a `cromo_servicio_match`/`servicios` no debe aparecer dentro de un WHERE que
+    # referencie directamente a `o.cables_asociados` en la misma subquery (el antipatrón viejo).
+    assert "p.cable_n_id IN (\n                  SELECT (jsonb_array_elements_text" not in texto
+    assert "SELECT p.cable_n_id" in texto
+    assert "FROM app.cromo_pelos p" in texto
+    assert "jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)) AS cable_id_texto" in texto
+    assert "cable_id_texto::bigint IN (" in texto
+
+
+@pytest.mark.asyncio
 async def test_buscar_odfs_guardia_cast_explicito_en_filtros():
     """Guardrail obligatorio del brief: cada filtro opcional debe usar `CAST(:param AS <tipo>)`
     explícito — sin esto, todos los filtros en NULL a la vez revienta con `AmbiguousParameterError`

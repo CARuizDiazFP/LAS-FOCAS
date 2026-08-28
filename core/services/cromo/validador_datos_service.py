@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from core.services.cromo import parser as cromo_parser
 from core.services.cromo.client import CromoClient, CromoClientError
-from core.services.cromo.modelos import Cable, Fusion, Pelo, Tubo
+from core.services.cromo.modelos import Cable, Fusion, Odf, Pelo, Tubo
 from core.services.cromo.parser import ClaseExcluidaError, ClaseNoSoportadaError, ErrorParseo
 from core.services.cromo.verificador import ObjetoNoEncontrado
 
@@ -115,6 +115,13 @@ async def validar_elemento_cromo(cliente: CromoClient, n_id: int) -> ResultadoVa
         elif isinstance(dominio, Pelo):
             nombre = dominio.numero_pelo
             pelos = [dominio]
+        elif isinstance(dominio, Odf):
+            nombre = dominio.nombre
+            notas = dominio.notas
+            codigo_modelo = dominio.codigo_modelo
+            id_legacy = dominio.id_legacy
+            latitud = dominio.latitud
+            longitud = dominio.longitud
 
     return ResultadoValidacionCromo(
         n_id=n_id,

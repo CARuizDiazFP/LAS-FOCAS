@@ -211,6 +211,44 @@ async def test_pelo_directo_expone_servicio_crudo_sin_matchear():
     assert resultado.pelos[0].servicio_numero == "12345"  # parseado por parser.py, no matcheado contra DB
 
 
+# ── ODF consultado directo (class 69) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_odf_directo_expone_sus_propios_campos_no_blanks():
+    """Regresión de la revisión de rama completa: registrar la clase 69 en `parser._DISPATCH`
+    (otra tarea de este mismo plan) hizo que `parse_objeto` devolviera un `Odf` en vez de lanzar
+    `ClaseNoSoportadaError` — pero este validador no tenía ninguna rama `isinstance` para `Odf`,
+    así que `tipo_objeto` quedaba en el string crudo `"Odf"` y todo lo demás (`nombre`, `notas`,
+    `codigo_modelo`, `id_legacy`, `latitud`, `longitud`) quedaba en `None` sin ningún error en
+    `errores_parseo`. Este test prueba que ahora se puebla desde los campos propios del `Odf`."""
+    obj = {
+        "id": 900004,
+        "n_id": 800004,
+        "class": 69,
+        "ll": [-58.4173, -34.6037],
+        "at": [
+            {"id": 34, "value": "ODF Calle 9 Nro 593 PILAR"},
+            {"id": 41, "value": "MOD-1"},
+            {"id": 91, "value": "LEGACY-1"},
+            {"id": 35, "value": "una nota"},
+            {"id": 68, "value": "PILAR"},
+        ],
+    }
+    cliente = _ClienteFake(respuesta=obj)
+
+    resultado = await validar_elemento_cromo(cliente, 800004)
+
+    assert resultado.tipo_objeto == "Odf"
+    assert resultado.nombre == "ODF Calle 9 Nro 593 PILAR"
+    assert resultado.notas == "una nota"
+    assert resultado.codigo_modelo == "MOD-1"
+    assert resultado.id_legacy == "LEGACY-1"
+    assert resultado.latitud == pytest.approx(-34.6037)
+    assert resultado.longitud == pytest.approx(-58.4173)
+    assert resultado.errores_parseo == []
+
+
 # ── Clases problemáticas — nunca rompe, siempre informa ──────────────────────
 
 

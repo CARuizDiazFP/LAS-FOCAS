@@ -49,11 +49,16 @@ class ResultadoBusquedaOdfs:
 # → `cromo_servicio_match` → `app.servicios`, mismo destino final que el filtro homónimo de
 # `inventario.py` pero sin una columna de FK normalizada de la que partir (a diferencia de
 # `cromo_pelos.cable_n_id`, acá no hay un `cromo_odf_cable` — decisión explícita del plan, ver brief
-# de la Tarea 4). El EXISTS queda correlacionado a `o.cables_asociados` porque no hay forma de
-# evitarlo con una columna JSONB por fila; a diferencia del `IN` no correlacionado de
-# `inventario.py` (justificado ahí por 30.000+ cables candidatos), acá el volumen de ODFs es órdenes
-# de magnitud menor (decenas/centenas, clase 69 de Cromo) — no vale la pena la complejidad de
-# separar el subquery en uno no correlacionado sólo por rendimiento.
+# de la Tarea 4). El volumen real de ODFs (clase 69 de Cromo) es 7.955 objetos — ni "decenas/centenas"
+# ni "órdenes de magnitud" menor que los ~30.000 cables, apenas ~4x menos — así que el mismo criterio
+# de `inventario.py::buscar_cables` (evitar el EXISTS correlacionado) aplica igual acá. La columna
+# JSONB por fila tampoco impide un subquery no correlacionado: el join costoso
+# `cromo_pelos ⋈ cromo_servicio_match ⋈ servicios` se resuelve en un `SELECT p.cable_n_id ...` que NO
+# referencia a `o`, así que Postgres lo computa una sola vez por statement (hashed subplan); el EXISTS
+# que sí queda correlacionado a `o.cables_asociados` sólo hace un lookup barato de membership sobre el
+# array JSONB ya expandido de esa fila, no re-ejecuta el join. Mismo patrón, adaptado de `c.n_id IN
+# (subquery)` a un `EXISTS` porque acá el lado ODF es un array (potencialmente varios cables por fila),
+# no una columna escalar.
 _FILTROS_SQL = """
     WHERE (CAST(:q AS text) IS NULL OR o.nombre ILIKE CAST(:q AS text))
       AND (CAST(:n_id AS bigint) IS NULL OR o.n_id = CAST(:n_id AS bigint))
@@ -63,13 +68,15 @@ _FILTROS_SQL = """
         CAST(:servicio AS text) IS NULL
         OR EXISTS (
             SELECT 1
-            FROM app.cromo_pelos p
-            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
-            JOIN app.servicios s ON s.id = m.servicio_id
-            WHERE (s.servicio_id ILIKE CAST(:servicio AS text) OR s.numero_primer_servicio ILIKE CAST(:servicio AS text))
-              AND p.cable_n_id IN (
-                  SELECT (jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)))::bigint
-              )
+            FROM jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)) AS cable_id_texto
+            WHERE cable_id_texto::bigint IN (
+                SELECT p.cable_n_id
+                FROM app.cromo_pelos p
+                JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+                JOIN app.servicios s ON s.id = m.servicio_id
+                WHERE s.servicio_id ILIKE CAST(:servicio AS text)
+                   OR s.numero_primer_servicio ILIKE CAST(:servicio AS text)
+            )
         )
       )
 """
