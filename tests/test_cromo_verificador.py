@@ -319,3 +319,64 @@ def test_servicio_ids_por_camaras_sync_multiples_servicio_ids():
     resultado = verificador.servicio_ids_por_camaras_sync(sesion, [1, 2, 3])
 
     assert resultado == {"52547", "88888"}
+
+
+# ── servicios_por_odf (Tarea 4, plan ODFs) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_no_encontrado():
+    """A diferencia de cable/tubo/botella, un ODF no tiene tolerancia a "referencia colgada": sólo
+    existe si tiene fila propia en `cromo_odfs`, nada más lo referencia como parent."""
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_por_odf(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_sin_matches():
+    sesion = _SesionFake(respuestas={"SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+        (901, "ODF Calle 9 Nro 593 PILAR", "ODF", "PILAR")
+    ]})
+
+    resultado = await verificador.servicios_por_odf(sesion, 901)
+
+    assert resultado.odf_n_id == 901
+    assert resultado.nombre == "ODF Calle 9 Nro 593 PILAR"
+    assert resultado.tipo_elemento == "ODF"
+    assert resultado.localidad == "PILAR"
+    assert resultado.servicios == []
+    assert resultado.cables == []
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_con_servicios_y_cables():
+    sesion = _SesionFake(
+        respuestas={
+            "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+                (901, "ODF Calle 9 Nro 593 PILAR", "ODF", "PILAR")
+            ],
+            "WHERE p.cable_n_id IN (": [_FILA_SERVICIO],
+            "FROM app.cromo_cables c\n    WHERE c.n_id IN (": [(111, "Cable A", 1)],
+        }
+    )
+
+    resultado = await verificador.servicios_por_odf(sesion, 901)
+
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].servicio_id_externo == "SRV-001"
+    assert resultado.cables == [verificador.CableDeBotella(n_id=111, nombre="Cable A", cantidad_servicios=1)]
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_sin_cables_asociados_devuelve_vacio_sin_error():
+    """Estado degradado esperado (no un error) mientras el volumen real de `cables_asociados`
+    poblado sea bajo — ver brief de la Tarea 4."""
+    sesion = _SesionFake(respuestas={"SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+        (902, "ODF sin cables", "SIN_CLASIFICAR", None)
+    ]})
+
+    resultado = await verificador.servicios_por_odf(sesion, 902)
+
+    assert resultado.servicios == []
+    assert resultado.cables == []

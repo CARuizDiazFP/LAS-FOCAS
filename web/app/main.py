@@ -5474,6 +5474,134 @@ async def cromo_inventario_cables_web(
     )
 
 
+@app.get("/api/infra/cromo/odfs")
+async def cromo_inventario_odfs_web(
+    request: Request,
+    q: Optional[str] = None,
+    n_id: Optional[int] = None,
+    vigente: Optional[bool] = None,
+    tipo_elemento: Optional[str] = None,
+    servicio: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Inventario navegable de ODFs ya ingeridos (Tarea 4 del plan ODFs) — búsqueda + paginación.
+    Sólo lectura, cualquier usuario autenticado (mismo criterio que el inventario de cables)."""
+    from core.services.cromo.odf_inventario import buscar_odfs
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_odfs(
+            sesion,
+            q=q,
+            n_id=n_id,
+            vigente=vigente,
+            tipo_elemento=tipo_elemento,
+            servicio=servicio,
+            limit=limit,
+            offset=offset,
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "odfs": [
+                {
+                    "n_id": o.n_id,
+                    "nombre": o.nombre,
+                    "tipo_elemento": o.tipo_elemento,
+                    "localidad": o.localidad,
+                    "calle": o.calle,
+                    "altura": o.altura,
+                    "propietario": o.propietario,
+                    "vigente": o.vigente,
+                    "cantidad_cables_asociados": o.cantidad_cables_asociados,
+                    "cantidad_servicios": o.cantidad_servicios,
+                }
+                for o in resultado.odfs
+            ],
+        }
+    )
+
+
+def _serializar_detalle_odf(detalle: Any) -> dict[str, Any]:
+    return {
+        "n_id": detalle.n_id,
+        "nombre": detalle.nombre,
+        "tipo_elemento": detalle.tipo_elemento,
+        "propietario": detalle.propietario,
+        "codigo_modelo": detalle.codigo_modelo,
+        "id_legacy": detalle.id_legacy,
+        "notas": detalle.notas,
+        "calle": detalle.calle,
+        "altura": detalle.altura,
+        "localidad": detalle.localidad,
+        "provincia": detalle.provincia,
+        "ubicacion_fisica": detalle.ubicacion_fisica,
+        "tendido": detalle.tendido,
+        "latitud": detalle.latitud,
+        "longitud": detalle.longitud,
+        "vigente": detalle.vigente,
+        "cables_asociados": list(detalle.cables_asociados),
+        "odfs_en_la_misma_direccion": list(detalle.odfs_en_la_misma_direccion),
+    }
+
+
+@app.get("/api/infra/cromo/odfs/{n_id}/detalle")
+async def cromo_odf_detalle_web(request: Request, n_id: int) -> JSONResponse:
+    """Detalle de un ODF: metadata, cables asociados resueltos (n_id + nombre) y otros ODFs que
+    comparten domicilio físico (Tarea 4 del plan ODFs). Sólo lectura, cualquier usuario autenticado
+    (mismo criterio que el detalle de cable)."""
+    from core.services.cromo.odf_detalle import obtener_detalle_odf
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            detalle = await obtener_detalle_odf(sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(_serializar_detalle_odf(detalle))
+
+
+@app.get("/api/infra/cromo/odfs/{odf_n_id}/servicios")
+async def cromo_verificador_por_odf_web(request: Request, odf_n_id: int) -> JSONResponse:
+    """Servicios que pasan por los cables asociados a este ODF, más el listado de esos cables (id,
+    nombre, cantidad de servicios) — mismo formato de tarjeta "Cables asociados" que el verificador
+    de Botella (Tarea 4 del plan ODFs). Sólo lectura, cualquier usuario autenticado."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_odf
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_odf(sesion, odf_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "odf_n_id": resultado.odf_n_id,
+            "nombre": resultado.nombre,
+            "tipo_elemento": resultado.tipo_elemento,
+            "localidad": resultado.localidad,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+            "cables": [
+                {"n_id": c.n_id, "nombre": c.nombre, "cantidad_servicios": c.cantidad_servicios}
+                for c in resultado.cables
+            ],
+        }
+    )
+
+
 @app.get("/api/infra/botellas/buscar")
 async def botellas_unificadas_buscar_web(
     request: Request,

@@ -77,6 +77,22 @@ class ResultadoBotella:
     # vez de una tarjeta más del detalle de Botella.
 
 
+@dataclass(slots=True)
+class ResultadoOdf:
+    """Servicios y cables asociados a un ODF (Tarea 4 del plan ODFs) — mismo espíritu que
+    `ResultadoBotella`, pero atravesando `cromo_odfs.cables_asociados` (JSONB de n_ids de cable) en
+    vez de `extremo_a_n_id`/`extremo_b_n_id`. Reusa `ServicioEncontrado`/`CableDeBotella` tal cual:
+    ambas ya tienen la forma exacta que necesita esta vista ("servicio matcheado" y "cable + cantidad
+    de servicios", respectivamente)."""
+
+    odf_n_id: int
+    nombre: Optional[str]
+    tipo_elemento: str
+    localidad: Optional[str]
+    servicios: list[ServicioEncontrado]
+    cables: list[CableDeBotella] = field(default_factory=list)
+
+
 # Columnas de `app.servicios` + `cromo_pelos`/`cromo_servicio_match` comunes a las tres consultas,
 # en el mismo orden que espera `_fila_a_servicio` — evita repetir el SELECT completo tres veces.
 _COLUMNAS_SERVICIO = """
@@ -170,6 +186,53 @@ _SQL_SERVICIOS_POR_BOTELLA = text(
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE c.extremo_a_n_id = :botella_n_id OR c.extremo_b_n_id = :botella_n_id
     ORDER BY s.id
+    """
+)
+
+_SQL_ODF_POR_N_ID = text(
+    "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs WHERE n_id = :n_id"
+)
+
+# `cables_asociados` es JSONB (lista de n_ids de cable, sin FK dura — ver docstring de `CromoOdf`),
+# no una columna que se pueda usar directo en un JOIN: se unnest con `jsonb_array_elements_text` en
+# un subquery correlacionado al propio ODF. A diferencia de `_SQL_SERVICIOS_POR_BOTELLA`
+# (extremo_a_n_id/extremo_b_n_id son columnas normales de `cromo_cables`), acá no hay una columna de
+# `cromo_cables`/`cromo_pelos` que apunte "hacia" el ODF — el vínculo vive únicamente en el JSONB del
+# ODF, atravesado en sentido ODF → cables_asociados → cable_n_id.
+_SQL_SERVICIOS_POR_ODF = text(
+    f"""
+    SELECT DISTINCT {_COLUMNAS_SERVICIO}
+    FROM app.cromo_pelos p
+    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.servicios s ON s.id = m.servicio_id
+    WHERE p.cable_n_id IN (
+        SELECT (jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)))::bigint
+        FROM app.cromo_odfs o
+        WHERE o.n_id = :odf_n_id
+    )
+    ORDER BY s.id
+    """
+)
+
+# Mismo subselect correlacionado para `cantidad_servicios` que `_SQL_CABLES_DE_BOTELLA` — acá corre
+# sólo sobre los cables que este ODF referencia en `cables_asociados` (siempre pocos), no sobre todo
+# `cromo_cables`.
+_SQL_CABLES_DE_ODF = text(
+    """
+    SELECT c.n_id, c.nombre,
+        (
+            SELECT count(DISTINCT m.servicio_id)
+            FROM app.cromo_pelos p
+            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            WHERE p.cable_n_id = c.n_id AND m.servicio_id IS NOT NULL
+        ) AS cantidad_servicios
+    FROM app.cromo_cables c
+    WHERE c.n_id IN (
+        SELECT (jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)))::bigint
+        FROM app.cromo_odfs o
+        WHERE o.n_id = :odf_n_id
+    )
+    ORDER BY c.nombre NULLS LAST, c.n_id
     """
 )
 
@@ -345,6 +408,35 @@ async def servicios_por_botella(sesion: AsyncSession, botella_n_id: int) -> Resu
     )
 
 
+async def servicios_por_odf(sesion: AsyncSession, odf_n_id: int) -> ResultadoOdf:
+    """Servicios que pasan por los cables que este ODF referencia en `cables_asociados`, más el
+    listado de esos cables (id, nombre, cantidad de servicios) — mismo formato de tarjeta "Cables
+    asociados" que ya expone `servicios_por_botella`.
+
+    A diferencia de `servicios_por_cable/tubo/botella`, no hay tolerancia a "referencia colgada": un
+    ODF sólo existe si tiene fila propia en `cromo_odfs` (nada más lo referencia como parent). Si no
+    hay fila, levanta `ObjetoNoEncontrado`.
+
+    Es un estado degradado esperado, no un error, que `servicios`/`cables` vuelvan vacíos mientras el
+    volumen real de `cables_asociados` poblado sea bajo (ver brief de la Tarea 4).
+    """
+    odf = (await sesion.execute(_SQL_ODF_POR_N_ID, {"n_id": odf_n_id})).first()
+    if odf is None:
+        raise ObjetoNoEncontrado(f"No existe un ODF con n_id={odf_n_id} en el inventario ingerido.")
+
+    filas_servicios = (await sesion.execute(_SQL_SERVICIOS_POR_ODF, {"odf_n_id": odf_n_id})).all()
+    filas_cables = (await sesion.execute(_SQL_CABLES_DE_ODF, {"odf_n_id": odf_n_id})).all()
+
+    return ResultadoOdf(
+        odf_n_id=odf_n_id,
+        nombre=odf[1],
+        tipo_elemento=odf[2],
+        localidad=odf[3],
+        servicios=[_fila_a_servicio(f) for f in filas_servicios],
+        cables=[CableDeBotella(n_id=f[0], nombre=f[1], cantidad_servicios=f[2]) for f in filas_cables],
+    )
+
+
 def tiene_cables_asociados_batch_sync(session: Session, n_ids: list[int]) -> set[int]:
     """Gemela síncrona BATCHEADA de `_SQL_EXISTE_BOTELLA_POR_CABLES` — una sola query para N n_ids en
     vez de una por objeto (mismo espíritu que `servicios_por_tubo_sync`, adaptado a lote). Sólo tiene
@@ -392,10 +484,12 @@ __all__ = [
     "ResultadoTubo",
     "CableDeBotella",
     "ResultadoBotella",
+    "ResultadoOdf",
     "servicios_por_cable",
     "servicios_por_tubo",
     "servicios_por_tubo_sync",
     "servicios_por_botella",
+    "servicios_por_odf",
     "tiene_cables_asociados_batch_sync",
     "camara_ids_por_servicio_sync",
     "servicio_ids_por_camaras_sync",

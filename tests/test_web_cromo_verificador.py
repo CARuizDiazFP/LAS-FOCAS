@@ -261,6 +261,85 @@ def test_por_botella_happy_path(monkeypatch):
     assert payload["cables"] == [{"n_id": 51, "nombre": "Cable Troncal 1", "cantidad_servicios": 3}]
 
 
+# ── GET /api/infra/cromo/odfs/{n_id}/servicios (Tarea 4, plan ODFs) ──────────
+
+
+def test_por_odf_requiere_autenticacion():
+    client = TestClient(app)
+    res = client.get("/api/infra/cromo/odfs/901/servicios")
+    assert res.status_code == 401
+
+
+def test_por_odf_404_si_no_existe(monkeypatch):
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+
+    client = TestClient(app)
+    _login(client, "user", "userpass")
+
+    res = client.get("/api/infra/cromo/odfs/999/servicios")
+    assert res.status_code == 404
+
+
+def test_por_odf_no_requiere_admin_happy_path(monkeypatch):
+    """Consulta de sólo lectura, mismo criterio que cable/tubo/botella — alcanza con estar
+    autenticado."""
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    sesion = _SesionFake(
+        respuestas={
+            "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+                (901, "ODF Calle 9 Nro 593 PILAR", "ODF", "PILAR")
+            ],
+            "WHERE p.cable_n_id IN (": [_FILA_SERVICIO],
+            "FROM app.cromo_cables c\n    WHERE c.n_id IN (": [(111, "Cable A", 1)],
+        }
+    )
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+
+    client = TestClient(app)
+    _login(client, "user", "userpass")
+
+    res = client.get("/api/infra/cromo/odfs/901/servicios")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["odf_n_id"] == 901
+    assert payload["nombre"] == "ODF Calle 9 Nro 593 PILAR"
+    assert payload["tipo_elemento"] == "ODF"
+    assert payload["localidad"] == "PILAR"
+    assert len(payload["servicios"]) == 1
+    assert payload["servicios"][0]["servicio_id_externo"] == "SRV-001"
+    assert payload["cables"] == [{"n_id": 111, "nombre": "Cable A", "cantidad_servicios": 1}]
+
+
+def test_por_odf_sin_cables_asociados_devuelve_vacio_sin_error(monkeypatch):
+    """Estado degradado esperado (no un error) mientras el volumen real de `cables_asociados`
+    poblado sea bajo — ver brief de la Tarea 4."""
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    sesion = _SesionFake(
+        respuestas={
+            "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+                (902, "ODF sin cables", "SIN_CLASIFICAR", None)
+            ],
+        }
+    )
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+
+    client = TestClient(app)
+    _login(client, "user", "userpass")
+
+    res = client.get("/api/infra/cromo/odfs/902/servicios")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["servicios"] == []
+    assert payload["cables"] == []
+
+
 # ── GET /api/infra/cromo/elementos/{n_id}/vivo ───────────────────────────────
 
 
