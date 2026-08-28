@@ -1408,6 +1408,25 @@ async def test_fase_cables_se_detiene_si_fue_cancelada_externamente():
 
 
 @pytest.mark.asyncio
+async def test_fase_odfs_se_detiene_si_fue_cancelada_externamente():
+    """Mismo contrato de cancelación cooperativa que `fase_cables` (Task 6, cierre de cobertura):
+    `fase_odfs` también debe frenar entre páginas si la corrida fue cancelada externamente, sin
+    cortar la página en curso a mitad de camino."""
+    odf_obj = {"id": 900300, "n_id": 800300, "class": 69, "vmax": 1, "at": []}
+    # 3 páginas disponibles, pero la corrida "ya fue cancelada" desde la primera consulta de estado.
+    cliente = _ClientePaginado([{"response": [odf_obj]}, {"response": [odf_obj]}, {"response": [odf_obj]}])
+    sesion = _SesionFake(respuestas_execute={"SELECT estado FROM app.cromo_ingesta_corridas": [("CANCELADA",)]})
+    contadores = ingesta.ContadoresCorrida()
+    corrida = CromoIngestaCorrida(id=1)
+
+    with pytest.raises(ingesta._CorridaCancelada):
+        await ingesta.fase_odfs(cliente, sesion, corrida, contadores, psize=5, max_paginas=None)
+
+    # Se procesó la página en curso antes de detenerse (cierra la página, no la corta a mitad).
+    assert contadores.leidas == 1
+
+
+@pytest.mark.asyncio
 async def test_ejecutar_ingesta_marca_cancelada_sin_tratarla_como_falla(monkeypatch):
     sesion = _SesionFakeCorrida()
 
