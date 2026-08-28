@@ -795,10 +795,18 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   reimplementar desde cero un clasificador que ya existe y funciona en `tracking_parser.py`.
   Construir todo sobre tracking — descartada porque no hay inventario global de ODFs ahí, sólo datos
   por servicio, y el ticket sí pedía un submódulo de inventario tipo Cables/Botellas.
-- **Pendiente real, no de código:** `SOLO_ODF` es hoy sólo alcanzable vía el request manual de
-  ingesta (no hay selector en `AdminIngestaCromo.vue`) — decisión de alcance de producto, no
-  resuelta acá. `fase_odfs` nunca corrió una ingesta real completa; sólo el diagnóstico de sólo
-  lectura leyó 30 objetos — `app.cromo_odfs` está vacía en dev.
+- **Decisión de producto (confirmada 2026-08-28, mismo día):** sí exponer `SOLO_ODF` en la UI.
+  Selector "Alcance de la corrida" agregado a `AdminIngestaCromo.vue`, deshabilita la grilla de
+  clases de botella (irrelevante en ese modo). Ver `docs/modulo_ingesta_cromo.md` para el detalle.
+- **Verificación real end-to-end pedida explícitamente por el usuario antes de dar la feature por
+  cerrada** (checklist: se guarda en infra, se relacionan cables, se asocian servicios, se
+  visualizan clasificadas en Detalle de Servicio) — corrida real `SOLO_ODF` (`psize=20,
+  max_paginas=1`) dentro de `lasfocasdev-cromo-worker`: 20 objetos reales creados, 0 errores.
+  Verificado contra los 3 endpoints reales (no sólo la tabla): `servicios_por_odf` resolvió
+  servicios reales (ej. YPF SOCIEDAD ANONIMA vía 2 cables), `cables_asociados` con nombres reales
+  de cable, geo real reproyectada en el detalle. Las "ODFs asociadas" de Detalle de Servicio
+  (servicio 91719, sistema de tracking, no depende de esta ingesta) siguen clasificando
+  correctamente. `app.cromo_odfs` ya NO está vacía en dev — 20 filas reales.
 - **Impacto:** ver `docs/modulo_ingesta_cromo.md` (submódulo ODFs) para el detalle técnico completo.
   Ejecutado con `superpowers:subagent-driven-development` (9 tareas + 1 diagnóstico + 1 ronda de fix
   en la revisión final de rama completa, 11 commits propios). 1195 tests pasando, 4 fallos

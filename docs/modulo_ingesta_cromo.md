@@ -142,9 +142,10 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     servicios. `continuar_corrida(modo=...)`: `"COMPLETA"` (default) corre todas las fases,
     incluyendo ODFs sin que nadie lo pida; `"SOLO_ODF"` corre únicamente `fase_odfs`, saltando
     cables/botellas/fusiones/reconciliación/servicios — es el modo exclusivo que pidió el ticket
-    original. Hoy sólo alcanzable vía el request manual de `/api/admin/ingesta/cromo/iniciar`
-    (`modo` en el body); no hay selector en `AdminIngestaCromo.vue` (pendiente, ver
-    `docs/decisiones.md` 2026-08-28). Transacción por página (un
+    original. Selector "Alcance de la corrida" en `AdminIngestaCromo.vue` desde 2026-08-28 (decisión
+    explícita del usuario), que además inhabilita/ignora la grilla de clases de botella cuando se
+    elige "Sólo ODFs". Primera corrida real verificada el mismo día (ver más abajo, submódulo
+    ODFs). Transacción por página (un
     commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
     cancelación cooperativa entre páginas. Desde 2026-08-19, las fases de cables/botellas/fusiones
     consultan `alias_service` antes de cada upsert: un `n_id` aliaseado nunca crea/actualiza su
@@ -285,11 +286,21 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     (`/infra/cromo/odfs/ID:nId`), entrada "ODFs" en el grupo "Infraestructura FO" de `AppShell.vue`.
     Diagnóstico real corrido con `scripts/cromo_sonda.py::_sondear_clase_69` (ampliada 2026-08-28 a
     `psize=30, show=["SHOW","REL_ATTRIBUTE","TIME"]`, antes sólo `psize=1, show=["SHOW"]` — nunca
-    había revelado `tp[]` ni una muestra suficiente). **Pendiente real:** la fase `fase_odfs` nunca
-    corrió una ingesta real completa contra Cromo — sólo el diagnóstico de sólo lectura leyó 30
-    objetos. `app.cromo_odfs` está vacía en dev al cierre de esta tarea. Antes de programar una
-    corrida `COMPLETA` desatendida, correr un `SOLO_ODF` acotado (`max_paginas` chico) y verificar
-    unas filas reales.
+    había revelado `tp[]` ni una muestra suficiente). Selector "Sólo ODFs" agregado a
+    `AdminIngestaCromo.vue` (2026-08-28, decisión explícita del usuario) — inhabilita la grilla de
+    clases de botella cuando se elige, ya que `fase_odfs` la ignora. **Primera corrida real
+    verificada (2026-08-28, `SOLO_ODF`, `psize=20, max_paginas=1`, corrida dentro de
+    `lasfocasdev-cromo-worker`):** 20 objetos reales creados, 0 errores. 17/20 con
+    `cables_asociados` poblado (2-3 cables el resto de los casos), 3/20 sin ningún `tp[]` — mismo
+    ~10% de variación que ya vio el diagnóstico de la Tarea 0, no es un bug. Verificado con datos
+    reales, contra los 3 endpoints, no sólo contra la tabla: `GET .../odfs/6645097/servicios`
+    resolvió servicios reales (YPF SOCIEDAD ANONIMA, 4 servicios vía 2 cables), `.../detalle`
+    resolvió geo real (lat/lon reproyectada) y cables asociados con nombre real. **Hallazgo
+    operativo real, no un bug:** varios objetos de clase 69 del barrido directo no traen `n_id`
+    propio (sólo `id`) — cae en el fallback ya existente y compartido por todos los tipos de objeto
+    (`parser._resolver_n_id`, usa `id` como `n_id` y loguea un warning), el mismo mecanismo que ya
+    usan Cable/Botella/Tubo/Pelo/Fusión — no es nuevo ni específico de ODF, y no impidió ningún
+    alta (0 errores). `app.cromo_odfs` ya NO está vacía en dev.
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
