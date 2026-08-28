@@ -120,13 +120,23 @@
       </header>
 
       <form @submit.prevent="onDisparar">
+        <label>Alcance de la corrida</label>
+        <select v-model="modo" :disabled="disparando || corridaActiva">
+          <option value="COMPLETA">Completa (cables + botellas + fusiones + ODFs)</option>
+          <option value="SOLO_ODF">Sólo ODFs (clase 69, salta el resto)</option>
+        </select>
+        <p class="hint">
+          "Sólo ODFs" ignora la selección de clases de abajo y corre únicamente la fase de ODFs —
+          útil para una sincronización acotada sin tocar cables/botellas/fusiones.
+        </p>
+
         <label>Clases de botella a incluir</label>
         <div class="clases-grid">
-          <label v-for="c in CROMO_CATALOGO_BOTELLAS" :key="c.clase" class="clase-check">
+          <label v-for="c in CROMO_CATALOGO_BOTELLAS" :key="c.clase" class="clase-check" :class="{ 'clase-check--inactiva': modo === 'SOLO_ODF' }">
             <input
               type="checkbox"
               :checked="clasesSeleccionadas.has(c.clase)"
-              :disabled="disparando || corridaActiva"
+              :disabled="disparando || corridaActiva || modo === 'SOLO_ODF'"
               @change="toggleClase(c.clase)"
             />
             <span>{{ c.clase }}<template v-if="c.etiqueta"> · {{ c.etiqueta }}</template></span>
@@ -158,7 +168,7 @@
         />
         <p class="hint">Poner 1 para modo prueba: trae una sola página por fase y corta.</p>
 
-        <button class="btn primary" type="submit" :disabled="disparando || corridaActiva || clasesSeleccionadas.size === 0">
+        <button class="btn primary" type="submit" :disabled="disparando || corridaActiva || !puedeDisparar">
           {{ disparando ? 'Iniciando…' : 'Iniciar corrida' }}
         </button>
       </form>
@@ -308,6 +318,7 @@ import {
   streamUrlIngestaCromo,
   type CromoCorrida,
   type CromoDetalle,
+  type CromoModoIngesta,
   type CromoPsize,
 } from '../../api/cromo';
 
@@ -316,6 +327,9 @@ const clasesSeleccionadas = ref<Set<number>>(
 );
 const psize = ref<CromoPsize>(5);
 const maxPaginasInput = ref('');
+const modo = ref<CromoModoIngesta>('COMPLETA');
+
+const puedeDisparar = computed(() => modo.value === 'SOLO_ODF' || clasesSeleccionadas.value.size > 0);
 
 const disparando = ref(false);
 const cancelando = ref(false);
@@ -460,7 +474,8 @@ async function onDisparar(): Promise<void> {
     const { corrida_id } = await iniciarIngestaCromo({
       psize: psize.value,
       maxPaginas,
-      clases: Array.from(clasesSeleccionadas.value),
+      clases: modo.value === 'SOLO_ODF' ? [] : Array.from(clasesSeleccionadas.value),
+      modo: modo.value,
     });
     corridaActual.value = {
       id: corrida_id,
@@ -715,7 +730,8 @@ onUnmounted(() => {
   color: var(--muted);
 }
 
-.clase-check--excluida {
+.clase-check--excluida,
+.clase-check--inactiva {
   opacity: 0.55;
   cursor: not-allowed;
 }

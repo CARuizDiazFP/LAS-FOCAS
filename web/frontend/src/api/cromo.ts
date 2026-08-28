@@ -73,10 +73,17 @@ export const CROMO_CLASE_EXCLUIDA = {
   motivo: 'Parcela catastral, no es planta de FO — nunca se ingiere.',
 };
 
+/** Modo de corrida (2026-08-28, submódulo ODFs): `'COMPLETA'` corre la secuencia de siempre +
+ * ODFs incondicional; `'SOLO_ODF'` corre únicamente la fase de ODFs, ignorando `clases`. Validado
+ * en el backend contra `_MODOS_INGESTA_VALIDOS` — mismo criterio simple que el resto del payload. */
+export const CROMO_MODOS_INGESTA = ['COMPLETA', 'SOLO_ODF'] as const;
+export type CromoModoIngesta = (typeof CROMO_MODOS_INGESTA)[number];
+
 export async function iniciarIngestaCromo(opciones: {
   psize: CromoPsize;
   maxPaginas: number | null;
   clases: number[];
+  modo?: CromoModoIngesta;
 }): Promise<{ corrida_id: number }> {
   return requestJson('/api/admin/ingesta/cromo', {
     method: 'POST',
@@ -84,6 +91,7 @@ export async function iniciarIngestaCromo(opciones: {
       psize: opciones.psize,
       max_paginas: opciones.maxPaginas,
       clases: opciones.clases,
+      modo: opciones.modo ?? 'COMPLETA',
     },
     csrf: true,
   });
