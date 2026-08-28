@@ -520,3 +520,103 @@ export interface CromoCablesDetectadosResultado {
 export async function detectarCablesCromo(botellaNId: number): Promise<CromoCablesDetectadosResultado> {
   return requestJson(`/api/infra/cromo/botellas/${botellaNId}/cables-detectados`);
 }
+
+// ── Inventario de ODFs (Tarea 5, plan ODFs) ──────────────────────────────────
+// Mismo criterio que el inventario de cables: "listame/buscame ODFs" (con paginación), no "qué
+// servicios pasan por este ODF puntual" (eso es `verificarServiciosPorOdf` más abajo).
+
+export interface CromoOdfInventario {
+  n_id: number;
+  nombre: string | null;
+  tipo_elemento: string;
+  localidad: string | null;
+  calle: string | null;
+  altura: string | null;
+  propietario: string | null;
+  vigente: boolean;
+  cantidad_cables_asociados: number;
+  cantidad_servicios: number;
+}
+
+export interface CromoInventarioOdfsResultado {
+  total: number;
+  limit: number;
+  offset: number;
+  odfs: CromoOdfInventario[];
+}
+
+export async function buscarInventarioOdfs(opciones: {
+  q?: string;
+  nId?: number;
+  vigente?: boolean;
+  tipoElemento?: string;
+  servicio?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<CromoInventarioOdfsResultado> {
+  const params = new URLSearchParams();
+  if (opciones.q) params.set('q', opciones.q);
+  if (opciones.nId !== undefined) params.set('n_id', String(opciones.nId));
+  if (opciones.vigente !== undefined) params.set('vigente', String(opciones.vigente));
+  if (opciones.tipoElemento) params.set('tipo_elemento', opciones.tipoElemento);
+  if (opciones.servicio) params.set('servicio', opciones.servicio);
+  params.set('limit', String(opciones.limit ?? 50));
+  params.set('offset', String(opciones.offset ?? 0));
+  return requestJson(`/api/infra/cromo/odfs?${params.toString()}`);
+}
+
+// ── Detalle jerárquico de un ODF (Tarea 5, plan ODFs) ────────────────────────
+// Distinto del inventario (listar/buscar): esto es "mostrame este ODF puntual" — dirección
+// completa, cables que lo tienen asociado y otros ODFs en la misma dirección física.
+
+export interface CromoOdfCableAsociado {
+  n_id: number;
+  nombre: string | null;
+}
+
+export interface CromoOdfVecinoDireccion {
+  n_id: number;
+  nombre: string | null;
+}
+
+export interface CromoDetalleOdf {
+  n_id: number;
+  nombre: string | null;
+  tipo_elemento: string;
+  propietario: string | null;
+  codigo_modelo: string | null;
+  id_legacy: string | null;
+  notas: string | null;
+  calle: string | null;
+  altura: string | null;
+  localidad: string | null;
+  provincia: string | null;
+  ubicacion_fisica: string | null;
+  tendido: string | null;
+  latitud: number | null;
+  longitud: number | null;
+  vigente: boolean;
+  cables_asociados: CromoOdfCableAsociado[];
+  odfs_en_la_misma_direccion: CromoOdfVecinoDireccion[];
+}
+
+export async function obtenerDetalleOdf(nId: number): Promise<CromoDetalleOdf> {
+  return requestJson(`/api/infra/cromo/odfs/${nId}/detalle`);
+}
+
+// ── Verificador de servicios por ODF (Tarea 5, plan ODFs) ────────────────────
+// Mismo patrón que `verificarServiciosPorBotella` — servicios que pasan por los cables asociados a
+// este ODF puntual.
+
+export interface CromoVerificacionOdf {
+  odf_n_id: number;
+  nombre: string | null;
+  tipo_elemento: string;
+  localidad: string | null;
+  servicios: CromoServicioEncontrado[];
+  cables: CromoCableDeBotella[];
+}
+
+export async function verificarServiciosPorOdf(odfNId: number): Promise<CromoVerificacionOdf> {
+  return requestJson(`/api/infra/cromo/odfs/${odfNId}/servicios`);
+}

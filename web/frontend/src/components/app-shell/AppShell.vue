@@ -125,6 +125,7 @@ type SidebarViewId =
   | 'verificadorCromo'
   | 'validarDatosCromo'
   | 'inventarioCablesCromo'
+  | 'inventarioOdfsCromo'
   | 'inventarioBotellas'
   | 'none';
 
@@ -184,6 +185,7 @@ const sidebarModules: SidebarModule[] = [
       { id: 'infraFoDashboard', label: 'Dashboard', to: { path: '/infra' } },
       { id: 'inventarioCablesCromo', label: 'Cables', to: { path: '/infra/cromo/cables' } },
       { id: 'inventarioBotellas', label: 'Botellas', to: { path: '/infra/Botellas' } },
+      { id: 'inventarioOdfsCromo', label: 'ODFs', to: { path: '/infra/cromo/odfs' } },
     ],
   },
   {
@@ -221,6 +223,7 @@ const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
   infraFoDashboard: 'infraFo',
   inventarioCablesCromo: 'infraFo',
   inventarioBotellas: 'infraFo',
+  inventarioOdfsCromo: 'infraFo',
   repetitividad: 'reportes',
   sla: 'reportes',
   historial: 'reportes',
@@ -277,6 +280,9 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
   }
   if (currentRoute.path === '/infra/cromo/cables' || currentRoute.path.startsWith('/infra/cromo/cables/ID')) {
     return 'inventarioCablesCromo';
+  }
+  if (currentRoute.path === '/infra/cromo/odfs' || currentRoute.path.startsWith('/infra/cromo/odfs/ID')) {
+    return 'inventarioOdfsCromo';
   }
 
   return 'none';

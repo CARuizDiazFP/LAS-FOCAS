@@ -18,6 +18,8 @@ const EmpalmesBotellaCromoView = () => import('../views/EmpalmesBotellaCromoView
 const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
+const InventarioOdfsCromoView = () => import('../views/InventarioOdfsCromoView.vue');
+const OdfDetalleCromoView = () => import('../views/OdfDetalleCromoView.vue');
 const BotellasInventarioView = () => import('../views/BotellasInventarioView.vue');
 const BotellaDetalleUnificadaView = () => import('../views/BotellaDetalleUnificadaView.vue');
 const RepetitividadTab = () => import('../views/tabs/RepetitividadTab.vue');
@@ -170,6 +172,12 @@ const routes: RouteRecordRaw[] = [
         path: 'infra/cromo/cables/ID:nId(\\d+)',
         name: 'infra-cromo-cable-detalle',
         component: CableDetalleCromoView,
+      },
+      { path: 'infra/cromo/odfs', name: 'infra-cromo-odfs', component: InventarioOdfsCromoView },
+      {
+        path: 'infra/cromo/odfs/ID:nId(\\d+)',
+        name: 'infra-cromo-odf-detalle',
+        component: OdfDetalleCromoView,
       },
       { path: 'infra/Botellas', name: 'infra-botellas', component: BotellasInventarioView },
       {
