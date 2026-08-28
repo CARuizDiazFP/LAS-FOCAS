@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional, Union
+from typing import Any, Callable, Iterable, Mapping, Optional, Union
 
 from pyproj import Transformer
 
@@ -158,7 +158,7 @@ class ArbolBotella:
     errores: list[ErrorParseo]
 
 
-ObjetoDominio = Union[Botella, Cable, Tubo, Pelo, Fusion]
+ObjetoDominio = Union[Botella, Cable, Tubo, Pelo, Fusion, Odf]
 
 
 def atributo(obj: Mapping[str, Any], attr_id: int) -> Optional[str]:
@@ -474,7 +474,7 @@ def parse_odf(obj: Mapping[str, Any]) -> Odf:
     )
 
 
-_DISPATCH = {
+_DISPATCH: dict[int, Callable[[Mapping[str, Any]], ObjetoDominio]] = {
     68: parse_botella,
     121: parse_botella,
     122: parse_botella,
