@@ -55,22 +55,63 @@ class SeccionSonda:
 
 
 async def _sondear_clase_69(cliente: CromoClient) -> SeccionSonda:
-    seccion = SeccionSonda("1. Identificación de la clase 69")
-    respuesta = await cliente.get_coleccion("69", psize=1, show=["SHOW"])
+    """Sonda ampliada de clase 69 (ODF) para la Tarea 0 del submódulo ODFs.
+
+    La sonda original (psize=1, show=["SHOW"]) sólo confirmó que la clase existe;
+    nunca reveló relaciones (`tp`/`inner`) ni una muestra suficiente para validar
+    el clasificador ODF/EMPALME por nombre (ver docs/superpowers/specs — plan ODFs).
+    Usa el mismo `show` que `fase_botellas` en ingesta.py para poder ver `tp[]`.
+    """
+    seccion = SeccionSonda("1. Identificación de la clase 69 (ODF) — sonda ampliada")
+    respuesta = await cliente.get_coleccion("69", psize=30, show=["SHOW", "REL_ATTRIBUTE", "TIME"])
     datos = respuesta.get("data") or respuesta.get("response") or []
     if not datos:
         seccion.agregar("La colección de clase 69 devolvió cero objetos.")
         return seccion
 
-    obj = datos[0]
-    seccion.agregar(f"- `type`: {obj.get('type')}")
-    seccion.agregar(f"- `code`: {obj.get('code')}")
-    seccion.agregar(f"- `name`: {obj.get('name')}")
+    seccion.agregar(f"- objetos devueltos: {len(datos)}")
+
+    con_id = sum(1 for o in datos if o.get("id") is not None)
+    con_vmax = sum(1 for o in datos if o.get("vmax") is not None)
+    seccion.agregar(f"- objetos con `id`: {con_id}/{len(datos)}")
+    seccion.agregar(f"- objetos con `vmax`: {con_vmax}/{len(datos)}")
+
+    con_tp = [o for o in datos if o.get("tp")]
+    con_inner = [o for o in datos if o.get("inner")]
+    seccion.agregar(f"- objetos con `tp[]`: {len(con_tp)}/{len(datos)}")
+    seccion.agregar(f"- objetos con `inner[]`: {len(con_inner)}/{len(datos)}")
+    if con_tp:
+        seccion.agregar(f"- ejemplo de `tp[]` (primer objeto que lo trae): `{con_tp[0].get('tp')}`")
+    if con_inner:
+        seccion.agregar(f"- ejemplo de `inner[]` (primer objeto que lo trae): `{con_inner[0].get('inner')}`")
+
     seccion.agregar("")
-    seccion.agregar("| at.id | value |")
-    seccion.agregar("|---:|---|")
-    for item in obj.get("at") or []:
-        seccion.agregar(f"| {item.get('id')} | {item.get('value')} |")
+    seccion.agregar("| at.id | name | frecuencia | valores de muestra |")
+    seccion.agregar("|---:|---|---:|---|")
+    frecuencia: Counter[int] = Counter()
+    nombres: dict[int, str] = {}
+    muestras: dict[int, list[str]] = {}
+    for obj in datos:
+        for item in obj.get("at") or []:
+            attr_id = item.get("id")
+            frecuencia[attr_id] += 1
+            if item.get("name"):
+                nombres[attr_id] = item["name"]
+            valores = muestras.setdefault(attr_id, [])
+            valor = str(item.get("value"))
+            if valor not in valores and len(valores) < 5:
+                valores.append(valor)
+    for attr_id in sorted(frecuencia):
+        seccion.agregar(
+            f"| {attr_id} | {nombres.get(attr_id, '')} | {frecuencia[attr_id]} | {', '.join(muestras[attr_id])} |"
+        )
+
+    seccion.agregar("")
+    seccion.agregar("### Nombres de muestra (para validar clasificador ODF/EMPALME/SIN_CLASIFICAR)")
+    for obj in datos:
+        nombre = obj.get("name") or ""
+        seccion.agregar(f"- `{nombre}`")
+
     return seccion
 
 
