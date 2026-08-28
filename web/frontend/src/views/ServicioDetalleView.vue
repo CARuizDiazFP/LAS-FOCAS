@@ -155,6 +155,10 @@
             </p>
           </template>
 
+          <p v-if="odfsLoading" class="servicio-detalle__kv"><span>ODFs asociadas</span><span>Cargando...</span></p>
+          <p v-else-if="odfsError" class="servicio-detalle__kv is-error"><span>ODFs asociadas</span><span>{{ odfsError }}</span></p>
+          <p v-else class="servicio-detalle__kv"><span>ODFs asociadas</span><span>{{ totalOdfs }}</span></p>
+
           <div class="servicio-detalle__panel-actions">
             <RouterLink class="servicio-detalle__panel-link" to="/infra">Ir a Infra FO</RouterLink>
             <RouterLink class="servicio-detalle__panel-link" to="/infra">Ver tracking</RouterLink>
@@ -193,6 +197,72 @@
           </div>
         </article>
       </section>
+
+      <section class="servicio-detalle__odfs" aria-label="ODFs asociadas">
+        <header class="servicio-detalle__odfs-header">
+          <h2>ODFs asociadas</h2>
+          <div class="servicio-detalle__odfs-header-right">
+            <label class="servicio-detalle__odfs-toggle">
+              <input v-model="showAllEmpalmes" type="checkbox" />
+              Mostrar todos los empalmes (incl. no-ODF)
+            </label>
+            <span class="servicio-detalle__chip">{{ totalOdfs }} ODF(s)</span>
+          </div>
+        </header>
+
+        <p v-if="odfsLoading" class="servicio-detalle__loading">Cargando ODFs asociadas...</p>
+        <p v-else-if="odfsError" class="servicio-detalle__error">{{ odfsError }}</p>
+        <p v-else-if="odfsFlat.length === 0" class="servicio-detalle__kv-text">
+          Sin ODFs detectadas en el tracking de este servicio.
+        </p>
+
+        <template v-else>
+          <div v-for="grupo in odfsPorRuta" :key="grupo.ruta_id" class="servicio-detalle__odfs-grupo">
+            <h3 class="servicio-detalle__odfs-subtitulo">{{ grupo.ruta_nombre }} ({{ grupo.ruta_tipo }})</h3>
+            <p v-if="grupo.terminal_a && grupo.terminal_b" class="servicio-detalle__odfs-puntas">
+              Puntas ODF: {{ grupo.terminal_a.odf_id }}:{{ grupo.terminal_a.conector }} →
+              {{ grupo.terminal_b.odf_id }}:{{ grupo.terminal_b.conector }}
+            </p>
+
+            <table class="tabla-odfs">
+              <thead>
+                <tr>
+                  <th>Empalme ID</th>
+                  <th>Descripción</th>
+                  <th>Tipo</th>
+                  <th>Cámara</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="fila in grupo.filas" :key="fila.empalme_id">
+                  <td>{{ fila.empalme_id }}</td>
+                  <td>{{ fila.descripcion }}</td>
+                  <td>
+                    <span :class="['servicio-detalle__chip', { 'is-outline': fila.es_transito }]">
+                      {{ fila.es_transito ? 'ODF' : 'Empalme' }}
+                    </span>
+                  </td>
+                  <td>
+                    <span v-if="fila.camara_nombre">{{ fila.camara_nombre }}</span>
+                    <span v-else class="servicio-detalle__odfs-muted">Sin match</span>
+                  </td>
+                  <td>
+                    <span v-if="fila.camara_estado" class="servicio-detalle__odfs-estado">
+                      <span
+                        :class="['servicio-detalle__odfs-dot', `is-${estadoCamaraToken(fila.camara_estado)}`]"
+                        aria-hidden="true"
+                      ></span>
+                      {{ fila.camara_estado }}
+                    </span>
+                    <span v-else class="servicio-detalle__odfs-muted">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </section>
     </template>
   </section>
 </template>
@@ -201,6 +271,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { estadoCamaraToken } from '../api/camaras';
 import {
   CATEGORIAS_SERVICIO,
   categoriaLabel,
@@ -249,6 +320,45 @@ interface InfraTrackingResponse {
   punta_b?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null;
 }
 
+// ODFs asociadas (fuente: archivo de tracking de la ruta, no Cromo — ver Task 7/8 del plan
+// "snappy-petting-music"). `empalme_id` siempre viene como string (regex del parser); `camara_*`
+// son null cuando no hay match en app.empalmes; `ruta_tipo` nunca llega null desde el backend
+// (default "PRINCIPAL" ya resuelto server-side).
+interface InfraOdfTerminal {
+  odf_id: string;
+  conector: string;
+}
+
+interface InfraOdfEmpalme {
+  empalme_id: string;
+  descripcion: string;
+  es_transito: boolean;
+  camara_id: number | null;
+  camara_nombre: string | null;
+  camara_estado: string | null;
+}
+
+interface InfraOdfRuta {
+  ruta_id: number;
+  ruta_nombre: string;
+  ruta_tipo: string;
+  activa: boolean;
+  sin_tracking: boolean;
+  terminal_a: InfraOdfTerminal | null;
+  terminal_b: InfraOdfTerminal | null;
+  transitos_count: number;
+  empalmes_count: number;
+  empalmes: InfraOdfEmpalme[];
+}
+
+interface InfraOdfsResponse {
+  status: string;
+  servicio_id: string;
+  total_odfs: number;
+  total_empalmes: number;
+  rutas: InfraOdfRuta[];
+}
+
 interface ReportHistoryItem {
   id: number;
   status: string;
@@ -269,6 +379,14 @@ const foTrackingResumen = ref<{
   puntaA: string | null;
   puntaB: string | null;
 } | null>(null);
+
+const odfsLoading = ref(false);
+const odfsError = ref('');
+const odfsRutas = ref<InfraOdfRuta[]>([]);
+const totalOdfs = ref(0);
+// Por defecto sólo se ven los empalmes que son ODF (es_transito === true); tildar el checkbox
+// revela también los empalmes simples (cámaras de paso, etc.) del tracking.
+const showAllEmpalmes = ref(false);
 
 const reportesLoading = ref(false);
 const reportesError = ref('');
@@ -306,6 +424,52 @@ const rutaPrincipal = computed(() => {
   return principal ?? rutas[0];
 });
 
+// Fila individual aplanada de un empalme, etiquetada con los datos de su ruta padre — filtra a
+// sólo es_transito === true salvo que showAllEmpalmes esté activo. terminal_a/terminal_b viven
+// aparte, a nivel de ruta (ver odfsPorRuta) — nunca se cruzan contra una fila puntual acá.
+interface OdfFlatRow extends InfraOdfEmpalme {
+  ruta_id: number;
+  ruta_nombre: string;
+  ruta_tipo: string;
+}
+
+const odfsFlat = computed<OdfFlatRow[]>(() =>
+  odfsRutas.value.flatMap((ruta) =>
+    ruta.empalmes
+      .filter((empalme) => empalme.es_transito || showAllEmpalmes.value)
+      .map((empalme) => ({
+        ...empalme,
+        ruta_id: ruta.ruta_id,
+        ruta_nombre: ruta.ruta_nombre,
+        ruta_tipo: ruta.ruta_tipo,
+      })),
+  ),
+);
+
+// Reagrupa odfsFlat por ruta para el render (subtítulo + leyenda de puntas + tabla por ruta),
+// omitiendo rutas sin ninguna fila visible bajo el filtro actual.
+interface OdfGrupoRuta {
+  ruta_id: number;
+  ruta_nombre: string;
+  ruta_tipo: string;
+  terminal_a: InfraOdfTerminal | null;
+  terminal_b: InfraOdfTerminal | null;
+  filas: OdfFlatRow[];
+}
+
+const odfsPorRuta = computed<OdfGrupoRuta[]>(() =>
+  odfsRutas.value
+    .map((ruta) => ({
+      ruta_id: ruta.ruta_id,
+      ruta_nombre: ruta.ruta_nombre,
+      ruta_tipo: ruta.ruta_tipo,
+      terminal_a: ruta.terminal_a,
+      terminal_b: ruta.terminal_b,
+      filas: odfsFlat.value.filter((fila) => fila.ruta_id === ruta.ruta_id),
+    }))
+    .filter((grupo) => grupo.filas.length > 0),
+);
+
 const resumenSla = computed(() => formatReporteSummary(reporteSla.value));
 const resumenRepetitividad = computed(() => formatReporteSummary(reporteRepetitividad.value));
 
@@ -340,6 +504,7 @@ async function loadDetalle(): Promise<void> {
     await Promise.all([
       loadFoResumen(response.id_origen),
       loadReportesResumen(),
+      loadOdfsAsociadas(response.id_origen),
     ]);
 
     const idOrigen = response.id_origen.trim();
@@ -447,6 +612,29 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
     foError.value = err instanceof Error ? err.message : 'No se pudo cargar el resumen FO';
   } finally {
     foLoading.value = false;
+  }
+}
+
+async function loadOdfsAsociadas(idOrigen: string): Promise<void> {
+  const clean = idOrigen.trim();
+  if (!clean) return;
+
+  odfsLoading.value = true;
+  odfsError.value = '';
+  odfsRutas.value = [];
+  totalOdfs.value = 0;
+
+  try {
+    const response = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/odfs`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonOrError<InfraOdfsResponse>(response);
+    odfsRutas.value = data.rutas ?? [];
+    totalOdfs.value = data.total_odfs ?? 0;
+  } catch (err: unknown) {
+    odfsError.value = err instanceof Error ? err.message : 'No se pudo cargar ODFs asociadas';
+  } finally {
+    odfsLoading.value = false;
   }
 }
 
@@ -830,6 +1018,109 @@ watch(
 .servicio-detalle__panel-link:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.servicio-detalle__odfs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 26px 26px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.servicio-detalle__odfs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.servicio-detalle__odfs-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.servicio-detalle__odfs-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.servicio-detalle__odfs-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  cursor: pointer;
+}
+
+.servicio-detalle__odfs-grupo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.servicio-detalle__odfs-grupo + .servicio-detalle__odfs-grupo {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.servicio-detalle__odfs-subtitulo {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.servicio-detalle__odfs-puntas {
+  margin: 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.servicio-detalle__odfs-muted {
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+
+.servicio-detalle__odfs-estado {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.servicio-detalle__odfs-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-state-idle);
+}
+.servicio-detalle__odfs-dot.is-ok { background: var(--color-state-ok); }
+.servicio-detalle__odfs-dot.is-warn { background: var(--color-state-warn); }
+.servicio-detalle__odfs-dot.is-error { background: var(--color-state-error); }
+.servicio-detalle__odfs-dot.is-idle { background: var(--color-state-idle); }
+
+.tabla-odfs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.tabla-odfs th,
+.tabla-odfs td {
+  text-align: left;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.tabla-odfs th {
+  font-weight: 500;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
 @media (max-width: 960px) {
