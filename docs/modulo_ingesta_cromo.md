@@ -137,8 +137,14 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     memoria (una sola query por corrida) la tabla `app.cromo_botella_alias` y resuelve, para un
     `n_id` de botella marcado a mano, si debe fusionarse dentro de otro n_id "golden" o anularse
     directamente. Ver `docs/db.md` (tabla `cromo_botella_alias`) y `docs/decisiones.md` (2026-08-19).
-  - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas,
-    reconciliación de referencias colgadas y matching de servicios. Transacción por página (un
+  - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas, fusiones,
+    ODFs (clase 69, 2026-08-28, ver más abajo), reconciliación de referencias colgadas y matching de
+    servicios. `continuar_corrida(modo=...)`: `"COMPLETA"` (default) corre todas las fases,
+    incluyendo ODFs sin que nadie lo pida; `"SOLO_ODF"` corre únicamente `fase_odfs`, saltando
+    cables/botellas/fusiones/reconciliación/servicios — es el modo exclusivo que pidió el ticket
+    original. Hoy sólo alcanzable vía el request manual de `/api/admin/ingesta/cromo/iniciar`
+    (`modo` en el body); no hay selector en `AdminIngestaCromo.vue` (pendiente, ver
+    `docs/decisiones.md` 2026-08-28). Transacción por página (un
     commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
     cancelación cooperativa entre páginas. Desde 2026-08-19, las fases de cables/botellas/fusiones
     consultan `alias_service` antes de cada upsert: un `n_id` aliaseado nunca crea/actualiza su
@@ -236,7 +242,54 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     Endpoint `GET /api/infra/cromo/validar/{n_id}` en `web/app/main.py` (sin sesión de DB en
     absoluto), vista dedicada `ValidarDatosCromoView.vue` en `/toolkit/validar-datos-cromo` (Tool
     Kit) — herramienta separada de "Verificador Cromo", confirmado explícitamente con el usuario. Ver
-    `docs/decisiones.md` (entrada 2026-08-19, tercera del día).
+    `docs/decisiones.md` (entrada 2026-08-19, tercera del día). **Regresión real encontrada y
+    corregida (2026-08-28):** al registrar clase 69 (ODF) en el dispatcher del parser, esta
+    herramienta dejó de reconocer el tipo `Odf` — antes levantaba `ClaseNoSoportadaError` (mensaje
+    claro), después mostraba una card en blanco sin ningún dato ni error, porque ninguna rama
+    `isinstance` matcheaba. Detectado recién en la revisión final de rama completa (ningún task
+    scope individual tocaba este archivo). Fix: rama `elif isinstance(dominio, Odf)` que expone
+    `nombre`/`notas`/`codigo_modelo`/`id_legacy`/`latitud`/`longitud`, mismo patrón que
+    Botella/Cable. Lección: registrar una clase nueva en el dispatcher del parser tiene blast radius
+    en cualquier consumidor de `parse_objeto`, no sólo en la ingesta — revisar `live_lookup_service.py`
+    y `validador_datos_service.py` (los dos otros consumidores directos) al agregar una clase.
+
+  - **Submódulo ODFs (clase 69, 2026-08-28):** ODF = Objeto Distribuidor de Fibra. Catalogado en
+    `app.cromo_clases` desde el arranque (`ingerible=true, homologada=true, count_cromo=7955` al
+    2026-08-05) pero nunca ingerido hasta esta fecha — no estaba en `_CLASES_BOTELLA` ni en el
+    dispatcher. El ticket original que pidió este submódulo asumía, incorrectamente, que la
+    distinción "ODF vs Empalme" (patrones `O-`/`Patch` vs `F-`/`Empalme`) y el agrupamiento de varios
+    ODF por sitio físico (`O-1238223-1/-2/-#`) eran comportamiento de Cromo — un diagnóstico real
+    (30 objetos de clase 69, corrido dentro de `lasfocasdev-cromo-worker` contra Cromo real, ver
+    `docs/decisiones.md` 2026-08-28) confirmó que ese vocabulario es en realidad de
+    `core/parsers/tracking_parser.py` (archivos de trazado de ruta subidos a mano por servicio, un
+    sistema completamente distinto — ver más abajo "ODFs asociadas en Detalle de Servicio"). Los
+    nombres reales de clase 69 son texto libre tipo `"ODF Calle 9 Nro 593 PILAR"` (26/30) o
+    direcciones sin ninguna palabra clave (4/30, ej. `"Arias 3751 P12"`) — cero matchean los patrones
+    del ticket. Por eso: (1) `tipo_elemento` (ODF/EMPALME/SIN_CLASIFICAR, calculado por
+    `parser.clasificar_tipo_elemento_odf`) casi siempre resuelve a `ODF` o `SIN_CLASIFICAR` en la
+    práctica — `EMPALME` se mantiene por robustez, no se espera verlo en datos reales de clase 69; (2)
+    no existe columna de sitio — el agrupamiento de ODFs en la misma dirección física se resuelve en
+    la capa de consulta por `(calle, altura, localidad)`, columnas que la clase ya trae. Un objeto de
+    clase 69 trae `tp[]` (referencias a cables) en 29/30 casos, nunca `inner[]`; el cable referenciado
+    en `tp[]` debe leerse por su propio campo `n_id`, **nunca** `id_to` (mismo "ID dual" ya documentado
+    para extremos de cable — `id_to` es un id de versión, no el n_id estable). Modelo `CromoOdf`
+    (tabla `cromo_odfs`, nueva, no reusa `cromo_botellas`), parser `parse_odf`/`Odf` en
+    `parser.py`/`modelos.py`, fase directa `fase_odfs` en `ingesta.py` (mismo patrón que
+    `fase_cables`/`fase_fusiones`, `show=["SHOW","REL_ATTRIBUTE","TIME"]` desde el arranque para
+    exponer `tp[]`), endpoints de sólo lectura en `core/services/cromo/odf_inventario.py` (búsqueda
+    paginada, filtro `servicio` vía subquery no correlacionada sobre `cables_asociados` — mismo
+    patrón que el filtro `servicio` de `inventario.py`, corregido en la revisión final tras un primer
+    intento con `EXISTS` correlacionado) y `odf_detalle.py` (detalle + "ODFs en la misma dirección"),
+    más `ResultadoOdf`/`servicios_por_odf` en `verificador.py`. Frontend: `InventarioOdfsCromoView.vue`
+    (`/infra/cromo/odfs`, filtros Nodo/Cliente únicamente) y `OdfDetalleCromoView.vue`
+    (`/infra/cromo/odfs/ID:nId`), entrada "ODFs" en el grupo "Infraestructura FO" de `AppShell.vue`.
+    Diagnóstico real corrido con `scripts/cromo_sonda.py::_sondear_clase_69` (ampliada 2026-08-28 a
+    `psize=30, show=["SHOW","REL_ATTRIBUTE","TIME"]`, antes sólo `psize=1, show=["SHOW"]` — nunca
+    había revelado `tp[]` ni una muestra suficiente). **Pendiente real:** la fase `fase_odfs` nunca
+    corrió una ingesta real completa contra Cromo — sólo el diagnóstico de sólo lectura leyó 30
+    objetos. `app.cromo_odfs` está vacía en dev al cierre de esta tarea. Antes de programar una
+    corrida `COMPLETA` desatendida, correr un `SOLO_ODF` acotado (`max_paginas` chico) y verificar
+    unas filas reales.
 - `scripts/cromo_sonda.py`: script de descubrimiento de sólo lectura, para relevar aspectos de la API
   externa que no se pueden resolver leyendo documentación (identificar clases desconocidas, medir
   tamaños de respuesta, etc.). No se ejecuta como parte del flujo normal de la aplicación.
@@ -259,15 +312,20 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `tests/test_web_cromo_ingesta.py`, `tests/test_cromo_verificador.py`,
   `tests/test_web_cromo_verificador.py`, `tests/test_cromo_worker.py`, `tests/test_cromo_inventario.py`,
   `tests/test_web_cromo_inventario.py`, `tests/test_cromo_detalle.py`, `tests/test_web_cromo_detalle.py`,
-  `tests/test_cromo_empalmes.py`,
+  `tests/test_cromo_empalmes.py`, `tests/test_cromo_odf_inventario.py`,
+  `tests/test_cromo_odf_inventario_real_db.py`, `tests/test_cromo_odf_detalle.py`,
+  `tests/test_web_cromo_odf_inventario.py`, `tests/test_web_cromo_odf_detalle.py` (2026-08-28),
   `tests/fixtures/cromo/`: cobertura de parser, cliente, servicio de ingesta, verificador, worker,
-  inventario, detalle jerárquico, empalmes y endpoints web, sin red ni DB real.
+  inventario, detalle jerárquico, empalmes, ODFs y endpoints web, sin red ni DB real salvo el
+  archivo `_real_db` (contra `lasfocasdev-postgres`, saltado en CI).
 - `db/models/cromo.py`: modelos SQLAlchemy de las tablas `app.cromo_*` (catálogo, auditoría de
   corridas/eventos, inventario y config del scheduler). Documentación de cada tabla en `docs/db.md`.
 - `db/alembic/versions/20260805_01_cromo_ingesta.py`, `20260806_01_cromo_ingesta_config.py`,
-  `20260807_01_cromo_fusiones_botella_nullable.py`: migraciones que crean esas tablas, siembran el
-  catálogo de clases, la config inicial del scheduler, y relajan `cromo_fusiones.botella_n_id` a
-  nullable (Etapa 8a — las fusiones del barrido directo no traen `parent`).
+  `20260807_01_cromo_fusiones_botella_nullable.py`, `20260828_01_cromo_odfs.py`: migraciones que
+  crean esas tablas, siembran el catálogo de clases, la config inicial del scheduler, relajan
+  `cromo_fusiones.botella_n_id` a nullable (Etapa 8a — las fusiones del barrido directo no traen
+  `parent`), y agregan `cromo_odfs` (2026-08-28, `tipo_elemento` con CHECK en vez de enum nativo,
+  mismo criterio que `cromo_botella_alias.accion`).
 - `modules/cromo_worker/`: worker dedicado (Etapa 7) — `worker.py` (FastAPI + `AsyncIOScheduler` en
   el mismo loop de asyncio, sin threads; rutas `/health`, `/reload`, `/run`), `config.py` (constantes),
   `requirements.txt` (sólo `apscheduler`, no está en `common-requirements.txt`). Importa
@@ -291,7 +349,10 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   inventario (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`n_id`/
   `botella`/`servicio`/`limit`/`offset`, los 3 últimos agregados en la Etapa 9) y del detalle
   jerárquico (`GET /api/infra/cromo/cables/{n_id}/detalle`, Etapa 9), todos con `_require_auth` en vez
-  de `_require_admin` — son consulta, no administración.
+  de `_require_admin` — son consulta, no administración. Desde 2026-08-28, también
+  `GET /api/infra/cromo/odfs` (mismos filtros que cables, sin `jerarquia`/`propietario` en la UI),
+  `GET /api/infra/cromo/odfs/{n_id}/detalle` y `GET /api/infra/cromo/odfs/{odf_n_id}/servicios`,
+  mismo patrón `_require_auth`.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
   del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`, con `CromoVerificacionBotella.cables:
@@ -300,7 +361,8 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `dispararSchedulerCromo`) + `buscarInventarioCables` (Etapa 8b, filtros `nId`/`botella`/`servicio`
   agregados en Etapa 9) + `obtenerDetalleCable` (Etapa 9, detalle jerárquico) +
   `obtenerEmpalmesDeBotella` (empalmes/fusiones internas de una botella, consumida por
-  `EmpalmesBotellaCromoView.vue`).
+  `EmpalmesBotellaCromoView.vue`) + `buscarInventarioOdfs`/`obtenerDetalleOdf`/
+  `verificarServiciosPorOdf` (2026-08-28).
 - `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — card de
   scheduler automático (habilitar/deshabilitar, intervalo, hora de inicio, clases/psize/max_páginas
   del ciclo periódico, estado del worker, "Ejecutar ahora"), dispara corridas manuales y consume el
@@ -353,6 +415,20 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `CableDetalleCromoView.vue`. Consume `obtenerEmpalmesDeBotella` (`src/api/cromo.ts`) contra
   `GET /api/infra/cromo/botellas/{n_id}/empalmes`. Punto de entrada: la tarjeta "Empalmes" del
   detalle de Botella en `VerificadorCromoView.vue` (sólo redirige, no trae datos ahí).
+- `web/frontend/src/views/InventarioOdfsCromoView.vue` (2026-08-28): inventario navegable en
+  `/infra/cromo/odfs`, mismo patrón que `InventarioCablesCromoView.vue` pero con **sólo** dos
+  filtros visibles (Nodo → `q`, Cliente/Servicio asociado → `servicio`), aunque el backend soporta
+  más. Columnas: Nombre, Dirección, Tipo (chip ODF/Empalme/Sin clasificar), Propietario, Cables
+  asociados, Vigente, Servicios. Filas de la misma dirección física quedan adyacentes porque el
+  backend ya ordena por `(localidad, calle, altura)` — sin badge de "sitio" explícito, no existe un
+  ID de sitio real (ver más arriba). Entrada de navegación "ODFs" en `AppShell.vue`, grupo
+  "Infraestructura FO", junto a Cables/Botellas (4 puntos de la sidebar tocados: unión de tipo,
+  array de items, mapa reverso, `resolveCurrentView()` — el `meta` de router no se usa para nav en
+  este proyecto).
+- `web/frontend/src/views/OdfDetalleCromoView.vue` (2026-08-28): detalle en
+  `/infra/cromo/odfs/ID:nId`, mismo patrón de página dedicada que `CableDetalleCromoView.vue` — card
+  de metadata, card "Cables asociados" (links a `CableDetalleCromoView.vue`), card "ODFs en la misma
+  dirección" (mismo `calle`+`altura`+`localidad`, links entre sí), tabla "Servicios asociados".
 - Los nombres de extremo (`extremo_a`/`extremo_b`) que muestran `InventarioCablesCromoView.vue`,
   `CableDetalleCromoView.vue` y `VerificadorCromoView.vue` se resuelven en `core/services/cromo/
   {inventario,detalle,verificador}.py` vía `LEFT JOIN` a `cromo_botellas` (Etapa 9c) — no desde las

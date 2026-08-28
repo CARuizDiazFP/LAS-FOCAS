@@ -48,6 +48,7 @@ cromo_cables          — clase 51, jerarquía de red (Acceso/Troncal/Subtroncal
           └─ cromo_servicio_match — matching pelo↔número de servicio (hoy sólo REGEX_EXACTO)
 cromo_botellas         — clases 68/121/122/123/125, empalmes/derivaciones; geo real
 cromo_fusiones         — clase 132, fetch propio (NO viene embebido en botella.inner[] a escala real)
+cromo_odfs             — clase 69, ODFs; tabla propia (no reusa cromo_botellas), 2026-08-28
 cromo_ingesta_corridas — historial de corridas (estado, params, eventos SSE)
 cromo_ingesta_config   — fila única, config del scheduler automático (Etapa 7)
 ```
@@ -95,6 +96,9 @@ abajo) como plantilla, no reinventar el estilo:
   por request (COUNT + SELECT) sobre las filas candidatas *antes* de `LIMIT/OFFSET` — un `EXISTS`
   correlacionado obliga a Postgres a re-ejecutar el join una vez por fila candidata; un `IN` no
   correlacionado permite resolverlo como "hashed subplan" (el join corre una sola vez por statement).
+  Segundo ejemplo real: `odf_inventario.py`'s filtro `servicio` (2026-08-28) se corrigió de `EXISTS`
+  correlacionado a `IN` no correlacionado sobre `jsonb_array_elements_text(cables_asociados)` — una
+  columna JSONB por fila no es excusa para correlacionar.
   Ejemplo real en el repo: filtro `servicio` de `inventario.py::_FILTROS_SQL` (Etapa 9). No es el
   mismo caso que un subselect correlacionado sobre las filas *ya paginadas* (ej. `cantidad_servicios`
   en el `SELECT` de `inventario.py`) — ese sí es correcto tal cual está, corre sobre ≤200 filas.

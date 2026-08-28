@@ -766,3 +766,41 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   desde `lift_ban`), `tests/test_protection_service.py` (5 tests nuevos: reconciliación directa +
   integración con `lift_ban`). Sin cambios de esquema. 20/20 tests de `test_protection_service.py`
   passing; suite completa corrida sin regresiones.
+
+## 2026-08-28 — Submódulo ODFs: el ticket mezclaba dos sistemas distintos
+
+- **Contexto:** El ticket original pedía un submódulo `/infra/odfs` sobre "Cromo Clase 69", un
+  listado de ODFs en Detalle de Servicio reutilizando "la lógica actual de pelos/servicios", y una
+  ingesta exclusiva de ODFs con clasificación ODF/Empalme por patrones de string
+  (`O-`/`Patch` vs `F-`/`Empalme`) y agrupamiento por sitio (`O-1238223-1/-2/-#`).
+- **Hallazgo real (brainstorming + diagnóstico contra Cromo real, no asumido):** clase 69 = ODF es
+  real y distinta en `app.cromo_clases` (`ingerible=true, homologada=true, count_cromo=7955` al
+  2026-08-05) pero nunca se había ingerido. Un diagnóstico de sólo lectura (30 objetos reales,
+  corrido dentro de `lasfocasdev-cromo-worker`) mostró que los nombres reales son texto libre
+  (`"ODF Calle 9 Nro 593 PILAR"`, 26/30) sin ningún patrón `O-`/`Patch`/`F-`/`Empalme` ni ningún ID
+  de sitio — ese vocabulario resultó pertenecer a `core/parsers/tracking_parser.py` (archivos de
+  trazado de ruta subidos a mano por servicio), un sistema completamente distinto sin ninguna clave
+  compartida con Cromo. También se descartó que existiera una función de mapeo "número de pelo →
+  color" — nunca existió, Cables/Botellas ya muestran el string crudo `nombre_color` tal cual.
+- **Decisión:** combinar ambos sistemas, cada uno para lo suyo, sin mezclarlos: el submódulo
+  `/infra/odfs` (inventario global, análogo a Cables/Botellas) se construye sobre Cromo clase 69,
+  con `tipo_elemento` (ODF/EMPALME/SIN_CLASIFICAR) mantenido por robustez aunque `EMPALME` no se
+  espera en datos reales, y agrupamiento por dirección (`calle`+`altura`+`localidad`) en vez de por
+  ID de sitio. El listado de ODFs en Detalle de Servicio reutiliza el clasificador YA EXISTENTE de
+  `tracking_parser.py` (`ODF_IDENTIFIER_REGEX`, `TRANSITO_KEYWORDS`, `get_transitos()`) sin tocar
+  Cromo — es ahí donde realmente viven los patrones `O-`/`Patch`/`F-`/`Empalme` del ticket. La
+  ingesta exclusiva (`modo="SOLO_ODF"`) aplica sólo a la parte Cromo.
+- **Alternativas:** construir todo sobre Cromo (el ticket lo pedía así) — descartada porque los
+  patrones de clasificación del ticket no matchean ningún dato real de Cromo, y hubiera significado
+  reimplementar desde cero un clasificador que ya existe y funciona en `tracking_parser.py`.
+  Construir todo sobre tracking — descartada porque no hay inventario global de ODFs ahí, sólo datos
+  por servicio, y el ticket sí pedía un submódulo de inventario tipo Cables/Botellas.
+- **Pendiente real, no de código:** `SOLO_ODF` es hoy sólo alcanzable vía el request manual de
+  ingesta (no hay selector en `AdminIngestaCromo.vue`) — decisión de alcance de producto, no
+  resuelta acá. `fase_odfs` nunca corrió una ingesta real completa; sólo el diagnóstico de sólo
+  lectura leyó 30 objetos — `app.cromo_odfs` está vacía en dev.
+- **Impacto:** ver `docs/modulo_ingesta_cromo.md` (submódulo ODFs) para el detalle técnico completo.
+  Ejecutado con `superpowers:subagent-driven-development` (9 tareas + 1 diagnóstico + 1 ronda de fix
+  en la revisión final de rama completa, 11 commits propios). 1195 tests pasando, 4 fallos
+  preexistentes no relacionados (falta el build de Vite en el entorno de test local, no en el
+  contenedor real).

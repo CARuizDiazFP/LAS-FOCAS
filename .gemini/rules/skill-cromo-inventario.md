@@ -45,6 +45,7 @@ cromo_cables          — clase 51, jerarquía de red (Acceso/Troncal/Subtroncal
           └─ cromo_servicio_match — matching pelo↔número de servicio (hoy sólo REGEX_EXACTO)
 cromo_botellas         — clases 68/121/122/123/125, empalmes/derivaciones; geo real
 cromo_fusiones         — clase 132, fetch propio (NO viene embebido en botella.inner[] a escala real)
+cromo_odfs             — clase 69, ODFs; tabla propia (no reusa cromo_botellas), 2026-08-28
 cromo_ingesta_corridas — historial de corridas (estado, params, eventos SSE)
 cromo_ingesta_config   — fila única, config del scheduler automático (Etapa 7)
 ```

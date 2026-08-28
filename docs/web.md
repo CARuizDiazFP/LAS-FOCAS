@@ -166,6 +166,13 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET/POST /api/infra/camaras/{id}/estado` → estado de cámara (admin).
 - `GET /api/infra/servicios/{svcId}/rutas` → rutas de un servicio.
 - `GET /api/infra/rutas/{rutaId}/tracking` → tracking de una ruta.
+- `GET /api/infra/servicios/{svcId}/odfs` (2026-08-28) → ODFs/empalmes asociados al servicio, vía
+  `core/parsers/tracking_parser.py` sobre `raw_file_content` de cada ruta — **no** usa Cromo Red (ver
+  submódulo `/infra/odfs` en `docs/modulo_ingesta_cromo.md`, sistema completamente distinto). Nunca
+  confía en la columna `Empalme.es_transito` de la DB (sólo confiable en un camino de resolución de
+  varios) — siempre re-deriva `es_transito` en vivo parseando el archivo. Enriquecimiento de cámara
+  en batch (`Empalme.tracking_empalme_id.in_(...)`, una sola query). Devuelve `terminal_a`/
+  `terminal_b` sólo como metadata de ruta, nunca cruzados contra filas de empalme puntuales.
 - `GET /api/infra/tracking/{rutaId}/download` → descarga de tracking.
 - `POST /api/infra/trackings/analyze` → analiza archivo `.txt` (multipart). Devuelve `AnalyzeResult` con `status`: `NEW`, `IDENTICAL`, `CONFLICT`, `POTENTIAL_UPGRADE`, `NEW_STRAND`, `ERROR`.
 - `POST /api/infra/trackings/resolve` → ejecuta la acción seleccionada. JSON body: `{action, content, filename, target_ruta_id?, new_ruta_name?, new_ruta_tipo?, old_service_id?}`.
@@ -181,6 +188,10 @@ En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras inte
 
 - **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
 - **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
+- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — sección
+  aparte, agrupada por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran
+  los que son tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de
+  color.
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
 
