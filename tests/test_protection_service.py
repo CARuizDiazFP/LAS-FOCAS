@@ -358,3 +358,138 @@ def test_get_camaras_for_servicio_cromo_excluye_camara_id_null() -> None:
 
     assert [c.id for c in resultado] == [8]
     assert None not in [c.id for c in resultado]
+
+
+# ── _reconciliar_hermanos_cerrados — hallazgo real, 2026-08-28 ─────────────────────────────────
+#
+# Dos incidentes (#41/#42) que protegían el MISMO servicio por rutas redundantes (Principal/Backup)
+# se cerraron con 4 segundos de diferencia. El que cerró primero (#42) dejó sus 60 cámaras
+# `mantenida_otro_baneo` porque #41 todavía estaba activo en ese instante — correcto en el momento,
+# pero `lift_ban` de #41 sólo reevaluó las cámaras de SU PROPIA ruta, nunca las de #42 (ya cerrado).
+# 74 cámaras/botellas reales quedaron BANEADA sin ningún incidente activo detrás (ver
+# `docs/decisiones.md`, entrada 2026-08-28). Estos tests cubren el fix: `lift_ban` ahora reintenta la
+# restauración de cualquier incidente hermano ya cerrado del mismo servicio.
+
+
+def test_reconciliar_hermanos_cerrados_libera_camara_bloqueada_por_hermano_ya_cerrado() -> None:
+    """Un hermano ya CERRADO había dejado una cámara pendiente porque, al momento de SU cierre, el
+    incidente que estamos cerrando ahora todavía estaba activo. Al cerrar este último, la
+    reconciliación debe terminar de liberarla."""
+    camara = Camara(id=9, nombre="Cra Test CF", estado=CamaraEstado.BANEADA)
+    hermano = IncidenteBaneo(
+        id=42,
+        servicio_protegido_id="112922",
+        ruta_protegida_id=75,
+        activo=False,
+        fecha_inicio=datetime(2026, 8, 19, 11, 9, 0, tzinfo=timezone.utc),
+    )
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = [hermano]
+
+    service = ProtectionService(session)
+    with (
+        patch.object(ProtectionService, "get_camaras_for_servicio", return_value=[camara]),
+        patch.object(ProtectionService, "_camara_tiene_otro_baneo_activo", return_value=None),
+        patch.object(ProtectionService, "_determinar_estado_restauracion", return_value=CamaraEstado.LIBRE),
+    ):
+        resultado = service._reconciliar_hermanos_cerrados("112922", incidente_excluido_id=41)
+
+    assert camara.estado == CamaraEstado.LIBRE
+    assert len(resultado) == 1
+    assert resultado[0]["id"] == 9
+    assert resultado[0]["accion"] == "restaurada_hermano"
+    assert resultado[0]["incidente_hermano_id"] == 42
+
+
+def test_reconciliar_hermanos_cerrados_no_toca_baneo_independiente() -> None:
+    """Si `_determinar_estado_restauracion` dice que se mantiene BANEADA (motivo independiente,
+    anterior al hermano), la reconciliación no debe tocarla."""
+    camara = Camara(id=9, nombre="Cra Test CF", estado=CamaraEstado.BANEADA)
+    hermano = IncidenteBaneo(id=42, servicio_protegido_id="112922", ruta_protegida_id=75, activo=False)
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = [hermano]
+
+    service = ProtectionService(session)
+    with (
+        patch.object(ProtectionService, "get_camaras_for_servicio", return_value=[camara]),
+        patch.object(ProtectionService, "_camara_tiene_otro_baneo_activo", return_value=None),
+        patch.object(ProtectionService, "_determinar_estado_restauracion", return_value=CamaraEstado.BANEADA),
+    ):
+        resultado = service._reconciliar_hermanos_cerrados("112922", incidente_excluido_id=41)
+
+    assert camara.estado == CamaraEstado.BANEADA
+    assert resultado == []
+
+
+def test_reconciliar_hermanos_cerrados_no_toca_si_otro_incidente_sigue_activo() -> None:
+    """Si TODAVÍA hay un tercer incidente activo protegiendo el grupo, no se libera — y ni siquiera
+    se llega a calcular el estado de restauración."""
+    camara = Camara(id=9, nombre="Cra Test CF", estado=CamaraEstado.BANEADA)
+    hermano = IncidenteBaneo(id=42, servicio_protegido_id="112922", ruta_protegida_id=75, activo=False)
+    otro_activo = IncidenteBaneo(id=99, servicio_protegido_id="112922", activo=True)
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = [hermano]
+
+    service = ProtectionService(session)
+    with (
+        patch.object(ProtectionService, "get_camaras_for_servicio", return_value=[camara]),
+        patch.object(ProtectionService, "_camara_tiene_otro_baneo_activo", return_value=otro_activo),
+        patch.object(ProtectionService, "_determinar_estado_restauracion") as mock_determinar,
+    ):
+        resultado = service._reconciliar_hermanos_cerrados("112922", incidente_excluido_id=41)
+
+    mock_determinar.assert_not_called()
+    assert camara.estado == CamaraEstado.BANEADA
+    assert resultado == []
+
+
+def test_reconciliar_hermanos_cerrados_sin_hermanos_no_hace_nada() -> None:
+    """Sin incidentes hermanos cerrados para el mismo servicio, no se resuelve ninguna cámara —
+    `get_camaras_for_servicio` ni siquiera debería invocarse."""
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = []
+
+    service = ProtectionService(session)
+    with patch.object(ProtectionService, "get_camaras_for_servicio") as mock_get:
+        resultado = service._reconciliar_hermanos_cerrados("112922", incidente_excluido_id=41)
+
+    mock_get.assert_not_called()
+    assert resultado == []
+
+
+def test_lift_ban_incluye_restauraciones_de_hermanos_cerrados() -> None:
+    """`lift_ban` debe invocar la reconciliación de hermanos y sumar sus resultados al conteo final
+    — sin esto, el fix de `_reconciliar_hermanos_cerrados` quedaría escrito pero nunca ejecutado."""
+    incidente = IncidenteBaneo(
+        id=41,
+        servicio_protegido_id="112922",
+        ruta_protegida_id=78,
+        activo=True,
+        fecha_inicio=datetime(2026, 8, 19, 11, 0, 0, tzinfo=timezone.utc),
+    )
+    session = MagicMock()
+    service = ProtectionService(session)
+
+    restaurada_hermano = {
+        "id": 100,
+        "nombre": "Cra Hermano",
+        "estado_anterior": "BANEADA",
+        "estado_nuevo": "LIBRE",
+        "accion": "restaurada_hermano",
+        "incidente_hermano_id": 42,
+    }
+
+    with (
+        patch.object(ProtectionService, "get_incidente_by_id", return_value=incidente),
+        patch.object(ProtectionService, "get_camaras_for_servicio", return_value=[]),
+        patch.object(
+            ProtectionService, "_reconciliar_hermanos_cerrados", return_value=[restaurada_hermano]
+        ) as mock_reconciliar,
+    ):
+        resultado = service.lift_ban(41, usuario_ejecutor="admin2")
+
+    mock_reconciliar.assert_called_once_with("112922", 41, usuario_ejecutor="admin2")
+    assert resultado.success is True
+    assert resultado.camaras_restauradas == 1
+    assert restaurada_hermano in resultado.camaras_afectadas
+    assert incidente.activo is False

@@ -178,3 +178,54 @@
 - **Decisión:** Se agregó `ipam.config` a la red `lasfocas_net` en `deploy/compose.yml` con subred `172.20.0.0/24` (gateway `172.20.0.1`, sin cambio respecto al gateway actual). **No se ejecutó ningún comando `docker compose`/`docker network` sobre el host** — se verificó en modo solo-lectura (`docker network inspect`, `docker ps`) que la red actual sigue en `172.20.0.0/16` con los 6 contenedores sanos, y que ninguno usa `ipv4_address` (no hay IPs estáticas que reasignar). El cambio en el archivo no tiene ningún efecto sobre el runtime hasta que se corra `docker compose down` + `up` en la ventana de mantenimiento, porque Docker no permite cambiar la subred de una red existente sin recrearla. Procedimiento completo, con comandos exactos de baja, limpieza de red vieja, alta y verificación post-despliegue, en [docs/mantenimiento_redes_produccion.md](mantenimiento_redes_produccion.md).
 - **Alternativas:** mismas que la entrada dev anterior (pool `/24` a nivel de daemon, o base de subred distinta) — se descartan por las mismas razones; se prioriza consistencia con el cambio ya aplicado en dev (misma base `172.20.0.0`, solo se achica la máscara).
 - **Impacto:** Ninguno sobre el runtime actual (criterio de aceptación de esta tarea). El diff en `deploy/compose.yml` debe llegar a `main` vía PR revisado antes de la ventana de mantenimiento — ver `docs/mantenimiento_redes_produccion.md` para pre-requisitos, comandos y rollback.
+
+## 2026-08-28 — Bug real de producción: incidentes hermanos (rutas redundantes del mismo servicio)
+dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales quedaron huérfanas
+
+- **Contexto:** el usuario pidió analizar si había botellas/cámaras en prod que no se hubieran
+  desbaneado al cerrar el incidente del 19/08. Investigación contra `lasfocas-postgres` real (sólo
+  lectura) encontró dos incidentes (`#41`/`#42`, ticket `MKT-1299557`, servicio protegido `112922`)
+  que protegían el mismo servicio por dos rutas redundantes (Principal ruta 75, Backup ruta 78),
+  abiertos el 19/08 y cerrados el mismo día 28/08 con 4 segundos de diferencia por `admin2`. Logs
+  reales de `lasfocas-web` confirmaron la causa exacta: `lift_ban(42)` restauró 0 de 60 cámaras
+  (`mantenidas=60`, bloqueadas por el hermano `#41` que todavía estaba activo en ese instante —
+  comportamiento correcto de `_camara_tiene_otro_baneo_activo`); `lift_ban(41)`, 4 segundos después,
+  sólo reevaluó las cámaras de SU PROPIA ruta (78) y dejó 18 más mantenidas. Ningún camino del código
+  vuelve a mirar las cámaras de un incidente ya cerrado — 74 cámaras/botellas reales quedaron
+  `BANEADA` sin ningún `IncidenteBaneo` activo detrás.
+- **Hallazgo adicional (no de código, de despliegue):** las imágenes `lasfocas-api`/`lasfocas-web`
+  están construidas del 2026-08-11 (17 días de atraso respecto de `dev`) — anteriores al retiro de
+  `DETECTADA`/`PENDIENTE_REVISION` (2026-08-11 en dev) y a la vinculación Cromo↔Cámara
+  (`app.cromo_botellas` en prod no tiene columna `camara_id`, migrada sólo en dev). Por eso parte de
+  la restauración real volvió a `DETECTADA` en vez de `LIBRE` — prod corre una versión más vieja de
+  `_determinar_estado_restauracion` que sí preserva ese estado. No se tocó el despliegue de prod en
+  esta sesión — sigue la directiva "sólo dev hasta aviso" (ver `docs/decisiones.md` 2026-07-29); esto
+  queda documentado como deuda de despliegue, no resuelto acá.
+- **Remediación puntual en prod (autorizada explícitamente por el usuario):** en vez de un
+  `UPDATE` directo, se ejecutó un script de uso único (no versionado) DENTRO de `lasfocas-web` que
+  reconstruyó la restauración pendiente reusando el código REAL ya desplegado en ese contenedor
+  (`ProtectionService._determinar_estado_restauracion`/`_camara_tiene_otro_baneo_activo` +
+  `aplicar_estado_a_grupo`), para no perder auditoría ni desincronizar el grupo Cámara/Botella —
+  mismo criterio que exige `.agentes-comunes/skills/baneo-qa-real/SKILL.md`. Resultado verificado
+  contra la DB real: 172→98 cámaras `BANEADA` en prod (-74), 2 cámaras correctamente mantenidas
+  `BANEADA` por tener un baneo independiente anterior a estos incidentes.
+- **Decisión — fix de causa raíz en `dev`:** `ProtectionService.lift_ban` ahora, al cerrar CUALQUIER
+  incidente, llama a `_reconciliar_hermanos_cerrados(servicio_protegido_id, incidente_id)` (nuevo)
+  — busca incidentes YA CERRADOS del mismo `servicio_protegido_id` y reintenta su restauración con la
+  misma lógica real (`get_camaras_for_servicio` + `_camara_tiene_otro_baneo_activo` +
+  `_determinar_estado_restauracion`). Así, sea cual sea el orden en que cierren dos incidentes
+  hermanos, el último en cerrar termina de liberar también lo que el primero no pudo — sin necesidad
+  de tocar el esquema (no hay FK de `CamaraEstadoAuditoria` a `IncidenteBaneo`, se evitó agregarla
+  para mantener el fix acotado) ni de parsear texto de `motivo` (frágil, ya que `create_ban` acepta
+  un `motivo` custom que reemplaza la plantilla `"Baneo por incidente #N..."`).
+- **Alternativas:** (1) reconciliación global periódica sobre TODAS las `Camara` en `BANEADA` —
+  descartada por mayor blast radius y por requerir parsear `motivo` para saber qué incidente banueó
+  cada una (frágil); la solución elegida acota el barrido a incidentes cerrados del MISMO servicio,
+  que es exactamente el conjunto que puede haber quedado bloqueado por este incidente en particular.
+  (2) Agregar `incidente_id` FK a `CamaraEstadoAuditoria` — más robusto a largo plazo pero fuera de
+  alcance de este fix puntual (requiere migración Alembic + backfill); queda como mejora futura si
+  se necesita reconciliación más general.
+- **Impacto:** `core/services/protection_service.py` (`_reconciliar_hermanos_cerrados` nuevo, llamado
+  desde `lift_ban`), `tests/test_protection_service.py` (5 tests nuevos: reconciliación directa +
+  integración con `lift_ban`). Sin cambios de esquema. 20/20 tests de `test_protection_service.py`
+  passing; suite completa corrida sin regresiones.

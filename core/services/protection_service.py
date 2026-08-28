@@ -503,12 +503,24 @@ class ProtectionService:
                         "estado_nuevo": nuevo_estado.value,
                         "accion": "restaurada",
                     })
-            
+
+            # Reconciliación de incidentes hermanos (hallazgo real, 2026-08-28): cámaras que un
+            # hermano ya cerrado no pudo liberar porque ESTE incidente todavía estaba activo en ese
+            # momento — ver docstring de `_reconciliar_hermanos_cerrados`.
+            camaras_afectadas_hermanos = self._reconciliar_hermanos_cerrados(
+                incidente.servicio_protegido_id,
+                incidente_id,
+                usuario_ejecutor=usuario_ejecutor,
+            )
+            camaras_restauradas += len(camaras_afectadas_hermanos)
+            camaras_afectadas.extend(camaras_afectadas_hermanos)
+
             logger.info(
-                "action=lift_ban incidente_id=%d restauradas=%d mantenidas=%d",
+                "action=lift_ban incidente_id=%d restauradas=%d mantenidas=%d restauradas_hermanos=%d",
                 incidente_id,
                 camaras_restauradas,
                 camaras_mantenidas,
+                len(camaras_afectadas_hermanos),
             )
             
             return LiftResult(
@@ -532,6 +544,87 @@ class ProtectionService:
     # -------------------------------------------------------------------------
     # MÉTODOS AUXILIARES INTERNOS
     # -------------------------------------------------------------------------
+
+    def _reconciliar_hermanos_cerrados(
+        self,
+        servicio_protegido_id: str,
+        incidente_excluido_id: int,
+        *,
+        usuario_ejecutor: Optional[str] = None,
+    ) -> List[dict]:
+        """Tras cerrar un incidente, reintenta la restauración de cualquier incidente HERMANO —
+        mismo `servicio_protegido_id`, ya cerrado — cuyas cámaras hayan quedado `BANEADA` porque, en
+        el momento de SU PROPIO cierre, otro incidente hermano (éste u otro) todavía estaba activo y
+        bloqueó `_camara_tiene_otro_baneo_activo`.
+
+        Hallazgo real, 2026-08-28: dos incidentes que protegían el mismo servicio por rutas
+        redundantes (Principal/Backup) se cerraron con 4 segundos de diferencia. El que cerró primero
+        dejó todas sus cámaras `mantenida_otro_baneo` (correctamente — el hermano todavía estaba
+        activo en ese instante). El hermano cerró segundos después, pero `lift_ban` sólo reevalúa las
+        cámaras de SU PROPIA ruta — nunca vuelve a mirar las del incidente que ya se dio por cerrado.
+        Resultado real: 74 cámaras/botellas quedaron `BANEADA` para siempre, sin ningún incidente
+        activo detrás (ver `docs/decisiones.md`, entrada 2026-08-28).
+
+        Corre incondicionalmente al final de `lift_ban` — el costo es acotado (sólo mira incidentes ya
+        CERRADOS del mismo servicio, nunca un escaneo global de `Camara`), y así, sea cual sea el
+        orden en que cierren dos incidentes hermanos, el último en cerrar termina de liberar también
+        lo que el primero no pudo.
+
+        Returns:
+            Lista de dicts `camaras_afectadas` (mismo formato que `lift_ban`) de las cámaras que esta
+            reconciliación efectivamente restauró — vacía si no había nada pendiente.
+        """
+        from core.services.camara_estado_service import miembros_del_grupo
+
+        hermanos_cerrados = self.session.query(IncidenteBaneo).filter(
+            IncidenteBaneo.servicio_protegido_id == servicio_protegido_id,
+            IncidenteBaneo.id != incidente_excluido_id,
+            IncidenteBaneo.activo == False,  # noqa: E712
+        ).all()
+
+        camaras_afectadas: List[dict] = []
+        procesadas: set[int] = set()
+
+        for hermano in hermanos_cerrados:
+            camaras = self.get_camaras_for_servicio(hermano.servicio_protegido_id, hermano.ruta_protegida_id)
+            for camara in camaras:
+                for miembro in miembros_del_grupo(camara):
+                    if miembro.id in procesadas or miembro.estado != CamaraEstado.BANEADA:
+                        continue
+                    procesadas.add(miembro.id)
+
+                    if self._camara_tiene_otro_baneo_activo(miembro.id, hermano.id):
+                        continue  # todavía hay OTRO incidente activo protegiéndola
+
+                    nuevo_estado = self._determinar_estado_restauracion(miembro, hermano)
+                    if nuevo_estado == CamaraEstado.BANEADA:
+                        continue  # baneo independiente real (anterior al hermano) — no tocar
+
+                    self.session.add(
+                        CamaraEstadoAuditoria(
+                            camara_id=miembro.id,
+                            usuario=usuario_ejecutor or "sistema",
+                            motivo=(
+                                f"Restauración diferida: el incidente hermano #{hermano.id} había "
+                                f"quedado pendiente al cerrarse (bloqueado por el incidente activo "
+                                f"#{incidente_excluido_id} en ese momento)"
+                            ),
+                            estado_anterior=miembro.estado,
+                            estado_nuevo=nuevo_estado,
+                        )
+                    )
+                    miembro.estado = nuevo_estado
+                    miembro.last_update = datetime.now(timezone.utc)
+                    camaras_afectadas.append({
+                        "id": miembro.id,
+                        "nombre": miembro.nombre,
+                        "estado_anterior": "BANEADA",
+                        "estado_nuevo": nuevo_estado.value,
+                        "accion": "restaurada_hermano",
+                        "incidente_hermano_id": hermano.id,
+                    })
+
+        return camaras_afectadas
 
     def _camara_tiene_otro_baneo_activo(
         self,
