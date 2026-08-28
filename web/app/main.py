@@ -2483,29 +2483,44 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
         return JSONResponse({"error": "No se pudieron obtener los registros de la cámara"}, status_code=500)
 
 
+def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
+    """Resuelve un `Servicio` por identificador flexible: `servicio_id`,
+    `numero_primer_servicio` o `numero_linea`. Lookup compartido por
+    `get_servicio_rutas_web` y `get_servicio_odfs` (ambos reciben el mismo tipo
+    de identificador desde el frontend)."""
+
+    from db.models.infra import Servicio
+    from sqlalchemy import or_
+
+    return (
+        session.query(Servicio)
+        .filter(
+            or_(
+                Servicio.servicio_id == servicio_id,
+                Servicio.numero_primer_servicio == servicio_id,
+                Servicio.numero_linea == servicio_id,
+            )
+        )
+        .first()
+    )
+
+
 @app.get("/api/infra/servicios/{servicio_id}/rutas")
 async def get_servicio_rutas_web(
     request: Request,
     servicio_id: str,
 ) -> JSONResponse:
     """Obtiene las rutas de un servicio para el wizard de baneo."""
-    
+
     username, _ = _require_auth(request)
-    
+
     try:
         from db.models.infra import Servicio, RutaServicio
         from db.session import SessionLocal
-        from sqlalchemy import or_
-        
+
         with SessionLocal() as session:
-            servicio = session.query(Servicio).filter(
-                or_(
-                    Servicio.servicio_id == servicio_id,
-                    Servicio.numero_primer_servicio == servicio_id,
-                    Servicio.numero_linea == servicio_id,
-                )
-            ).first()
-            
+            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+
             if not servicio:
                 return JSONResponse(
                     {"error": f"Servicio {servicio_id} no encontrado"},
@@ -2549,6 +2564,169 @@ async def get_servicio_rutas_web(
         )
 
 
+@app.get("/api/infra/servicios/{servicio_id}/odfs")
+async def get_servicio_odfs(
+    request: Request,
+    servicio_id: str,
+) -> JSONResponse:
+    """Obtiene las ODFs/empalmes de tracking de todas las rutas de un servicio, para
+    la vista de Detalle de Servicio.
+
+    Este sistema es independiente del submódulo Cromo Red (`/infra/odfs`): las ODFs
+    acá salen del archivo de tracking de ruta subido manualmente para el servicio
+    (`RutaServicio.raw_file_content`), no de la ingesta automática de Cromo.
+
+    `es_transito` (si un empalme es un punto de distribución tipo ODF) se deriva
+    SIEMPRE en vivo parseando `raw_file_content` con `parse_tracking(...)` —
+    la columna persistida `Empalme.es_transito` no es confiable: sólo se setea
+    consistentemente en un camino de resolución de empalmes
+    (`_action_confirm_upgrade` en `core/services/infra_service.py`); el resto de
+    caminos que crean/reutilizan un `Empalme` (`_get_or_create_empalme`) la dejan
+    en `False` por default aunque el empalme sea realmente un tránsito. En cambio
+    `Empalme.camara_id` sí se setea consistentemente en todos los caminos, por eso
+    es seguro usarla para enriquecer cada empalme con nombre/estado de cámara.
+    """
+
+    username, _ = _require_auth(request)
+
+    try:
+        from core.parsers.tracking_parser import parse_tracking
+        from db.models.infra import Empalme
+        from db.session import SessionLocal
+        from sqlalchemy.orm import joinedload
+
+        with SessionLocal() as session:
+            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+
+            if not servicio:
+                return JSONResponse(
+                    {"error": f"Servicio {servicio_id} no encontrado"},
+                    status_code=404,
+                )
+
+            rutas_info: list[dict[str, Any]] = []
+            tracking_ids: set[str] = set()
+
+            for ruta in servicio.rutas:
+                ruta_tipo = ruta.tipo.value if ruta.tipo else "PRINCIPAL"
+
+                if not ruta.raw_file_content:
+                    rutas_info.append(
+                        {
+                            "ruta_id": ruta.id,
+                            "ruta_nombre": ruta.nombre,
+                            "ruta_tipo": ruta_tipo,
+                            "activa": bool(ruta.activa),
+                            "sin_tracking": True,
+                            "terminal_a": None,
+                            "terminal_b": None,
+                            "transitos_count": 0,
+                            "empalmes_count": 0,
+                            "empalmes": [],
+                        }
+                    )
+                    continue
+
+                parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
+                empalmes_parseados = parsed.get_empalmes()
+
+                for entry in empalmes_parseados:
+                    if entry.empalme_id:
+                        tracking_ids.add(f"{servicio.servicio_id}_{entry.empalme_id}")
+
+                rutas_info.append(
+                    {
+                        "ruta_id": ruta.id,
+                        "ruta_nombre": ruta.nombre,
+                        "ruta_tipo": ruta_tipo,
+                        "activa": bool(ruta.activa),
+                        "sin_tracking": False,
+                        "terminal_a": (
+                            {"odf_id": parsed.terminal_a[0], "conector": parsed.terminal_a[1]}
+                            if parsed.terminal_a
+                            else None
+                        ),
+                        "terminal_b": (
+                            {"odf_id": parsed.terminal_b[0], "conector": parsed.terminal_b[1]}
+                            if parsed.terminal_b
+                            else None
+                        ),
+                        "transitos_count": parsed.transitos_count,
+                        "empalmes_count": parsed.empalmes_count,
+                        # Placeholder temporal con las entries parseadas en crudo — se
+                        # reemplaza por su forma serializable abajo, una vez resuelto el
+                        # enriquecimiento de cámara en batch (evita re-parsear el archivo).
+                        "empalmes": empalmes_parseados,
+                    }
+                )
+
+            # Enriquecimiento de cámara en UNA sola query batched (no N+1): se junta acá
+            # el universo completo de tracking_empalme_id candidatos de todas las rutas.
+            empalmes_db_por_tracking_id: dict[str, Any] = {}
+            if tracking_ids:
+                empalmes_db = (
+                    session.query(Empalme)
+                    .options(joinedload(Empalme.camara))
+                    .filter(Empalme.tracking_empalme_id.in_(tracking_ids))
+                    .all()
+                )
+                empalmes_db_por_tracking_id = {e.tracking_empalme_id: e for e in empalmes_db}
+
+            total_odfs = 0
+            total_empalmes = 0
+            for ruta_info in rutas_info:
+                total_odfs += ruta_info["transitos_count"]
+                total_empalmes += ruta_info["empalmes_count"]
+
+                if ruta_info["sin_tracking"]:
+                    continue
+
+                empalmes_serializados = []
+                for entry in ruta_info["empalmes"]:
+                    tracking_id = (
+                        f"{servicio.servicio_id}_{entry.empalme_id}" if entry.empalme_id else None
+                    )
+                    empalme_db = empalmes_db_por_tracking_id.get(tracking_id) if tracking_id else None
+                    camara = empalme_db.camara if empalme_db else None
+                    empalmes_serializados.append(
+                        {
+                            "empalme_id": entry.empalme_id,
+                            "descripcion": entry.empalme_descripcion,
+                            "es_transito": entry.es_transito,
+                            "camara_id": camara.id if camara else None,
+                            "camara_nombre": camara.nombre if camara else None,
+                            "camara_estado": camara.estado.value if camara and camara.estado else None,
+                        }
+                    )
+                ruta_info["empalmes"] = empalmes_serializados
+
+            logger.info(
+                "action=get_servicio_odfs user=%s servicio_id=%s rutas=%d total_odfs=%d total_empalmes=%d",
+                username,
+                servicio_id,
+                len(rutas_info),
+                total_odfs,
+                total_empalmes,
+            )
+
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "servicio_id": servicio.servicio_id,
+                    "total_odfs": total_odfs,
+                    "total_empalmes": total_empalmes,
+                    "rutas": rutas_info,
+                }
+            )
+
+    except Exception as exc:
+        logger.exception("action=get_servicio_odfs_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo ODFs: {exc!s}"},
+            status_code=500,
+        )
+
+
 @app.get("/api/infra/rutas/{ruta_id}/tracking")
 async def get_ruta_tracking(
     request: Request,
@@ -2573,12 +2751,17 @@ async def get_ruta_tracking(
             tracking_entries = []
             punta_a_info = None
             punta_b_info = None
-            
+            # Sólo se calcula cuando se parsea raw_file_content (parse_tracking ya lo
+            # trae); en los fallbacks (contenido_original / empalmes de la base) queda
+            # en None por no tener esa info disponible sin reparsear el texto original.
+            transitos_count = None
+
             # Primero intentar parsear raw_file_content (el TXT original)
             if ruta.raw_file_content:
                 from core.parsers.tracking_parser import parse_tracking
                 parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
-                
+                transitos_count = parsed.transitos_count
+
                 # Extraer puntas A y B del parsing
                 if parsed.punta_a:
                     punta_a_info = {
@@ -2695,8 +2878,9 @@ async def get_ruta_tracking(
                 "tracking": tracking_entries,
                 "punta_a": punta_a_info,
                 "punta_b": punta_b_info,
+                "transitos_count": transitos_count,
             })
-    
+
     except Exception as exc:
         logger.exception("action=get_ruta_tracking_error ruta_id=%d error=%s", ruta_id, exc)
         return JSONResponse(
