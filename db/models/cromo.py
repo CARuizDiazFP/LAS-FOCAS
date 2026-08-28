@@ -115,7 +115,7 @@ class CromoIngestaEvento(Base):
 
 
 class CromoBotella(Base):
-    """Botella/empalme/ODF ingerido desde Cromo. `n_id` es la PK de linaje (estable entre versiones).
+    """Botella/empalme ingerido desde Cromo. `n_id` es la PK de linaje (estable entre versiones).
 
     `camara_id`/`estado` (desde 2026-08-11) los pone `core/services/cromo/camara_padre_service.py`
     vía `scripts/cromo_backfill_camara_padre.py` — deliberadamente excluidos de `BOTELLA_CAMPOS`
@@ -195,6 +195,61 @@ class CromoBotella(Base):
 
     def __repr__(self) -> str:
         return f"<CromoBotella n_id={self.n_id} nombre='{self.nombre}'>"
+
+
+class CromoOdf(Base):
+    """ODF (Objeto Distribuidor de Fibra) ingerido desde Cromo, clase 69. `n_id` es la PK de linaje
+    (estable entre versiones), mismo patrón que `CromoBotella`.
+
+    A diferencia de `CromoBotella`, no lleva `camara_id`/`estado` (no pedidos para ODF en esta
+    iteración) ni ninguna columna de "sitio": el agrupamiento de ODFs que comparten domicilio físico
+    se resuelve por dirección (`calle`+`altura`+`localidad`) en la capa de consulta, no en el
+    esquema — el nombre real de un ODF es texto libre (ej. `"ODF Calle 9 Nro 593 PILAR"`), sin
+    ningún ID de sitio embebido pese a lo que asumía el ticket original.
+
+    `tipo_elemento` es una clasificación heurística por nombre (ver parser de la Tarea 2), no un
+    dato que traiga Cromo — arranca en `'SIN_CLASIFICAR'` hasta que ese parser la puebla.
+    `cables_asociados` es un mirror crudo de n_ids de cables (tp[] de Cromo), poblado por el
+    parser/ingesta de las Tareas 2/3 — este modelo sólo declara la columna.
+    """
+
+    __tablename__ = "cromo_odfs"
+    __table_args__ = (
+        # Índice btree explícito nombrado, mismo criterio que `ix_cromo_botellas_nombre_btree`
+        # (ver docstring de CromoBotella): soporta la cascada ILIKE/tokens de búsqueda sin depender
+        # de `index=True` implícito.
+        Index("ix_cromo_odfs_nombre_btree", "nombre"),
+        {"schema": "app"},
+    )
+
+    n_id = Column(BigInteger, primary_key=True)
+    version_id = Column(BigInteger, nullable=False)  # 'id' de la versión vigente en Cromo
+    vmax = Column(Integer, nullable=False)  # detector de cambios
+    clase = Column(SmallInteger, ForeignKey("app.cromo_clases.clase"), nullable=False)
+    nombre = Column(Text, nullable=True)
+    codigo_modelo = Column(Text, nullable=True)
+    id_legacy = Column(Text, nullable=True)
+    notas = Column(Text, nullable=True)
+    calle = Column(Text, nullable=True)
+    altura = Column(Text, nullable=True)
+    localidad = Column(Text, nullable=True)
+    provincia = Column(Text, nullable=True)
+    ubicacion_fisica = Column(Text, nullable=True)
+    tendido = Column(Text, nullable=True)
+    latitud = Column(Float, nullable=True)
+    longitud = Column(Float, nullable=True)
+    pts_raw = Column(JSONB(astext_type=Text()), nullable=True)
+    payload_raw = Column(JSONB(astext_type=Text()), nullable=False)
+    vigente = Column(Boolean, nullable=False, server_default=true())
+    primera_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    ultima_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    ultima_modificacion = Column(DateTime(timezone=True), nullable=True)
+    propietario = Column(Text, nullable=True)  # at.47 en Cromo, ej. "Metrotel"
+    tipo_elemento = Column(Text, nullable=False, server_default="SIN_CLASIFICAR")  # CHECK en la migración
+    cables_asociados = Column(JSONB(astext_type=Text()), nullable=True)  # n_ids de cables (tp[]), lo llena el parser
+
+    def __repr__(self) -> str:
+        return f"<CromoOdf n_id={self.n_id} nombre='{self.nombre}'>"
 
 
 class CromoCable(Base):
