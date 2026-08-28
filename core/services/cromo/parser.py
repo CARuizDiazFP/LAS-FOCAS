@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping, Optional, Union
 
 from pyproj import Transformer
 
-from core.services.cromo.modelos import Botella, Cable, Fusion, Pelo, Tubo
+from core.services.cromo.modelos import Botella, Cable, Fusion, Odf, Pelo, Tubo
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ _CLASE_CABLE = 51
 _CLASE_TUBO = 129
 _CLASE_PELO = 130
 _CLASE_FUSION = 132
+_CLASE_ODF = 69
 
 # Etiquetas de los `at[].id` ya conocidos por este parser — dispersos como números mágicos en
 # `parse_botella`/`parse_cable`/`parse_fusion` de más abajo, centralizados acá para que un consumidor
@@ -55,6 +56,7 @@ ATRIBUTOS_CONOCIDOS: dict[int, str] = {
     35: "Notas",
     37: "Extremo B",
     41: "Código de modelo",
+    47: "Propietario",
     61: "Servicio (crudo)",
     67: "Calle",
     68: "Localidad",
@@ -283,6 +285,33 @@ def es_numero_servicio_plausible(numero: str) -> bool:
     return len(numero) in LONGITUD_SERVICIO_PLAUSIBLE
 
 
+# Clasificador de nombre para ODF (class 69). Diagnóstico real (30 objetos clase 69 de Cromo,
+# Tarea 0 del plan): 26/30 nombres empiezan con "ODF " seguido de una dirección libre (ej. "ODF
+# Calle 9 Nro 593 PILAR"); 4/30 son direcciones libres sin ninguna palabra clave. Cero matchean
+# "O-"/"Patch"/"F-"/"Empalme" en la muestra real — esos patrones pertenecen a otro sistema (parser
+# de tracking de rutas, formato "O-1238223-1/-2/-#" que el ticket original asumía de Cromo). Se
+# mantienen acá sólo por robustez ante datos futuros, no porque se hayan observado en clase 69.
+_REGEX_ODF = re.compile(r"\bODF\b", re.IGNORECASE)
+_REGEX_EMPALME = re.compile(r"(?:^F-|\bEmpalme\b)", re.IGNORECASE)
+
+
+def clasificar_tipo_elemento_odf(nombre: Optional[str]) -> str:
+    """Clasifica un nombre de objeto clase 69 como ODF, EMPALME o SIN_CLASIFICAR.
+
+    Basado en muestra real de Cromo (30 objetos): "ODF <dirección>" es el patrón
+    dominante; "F-"/"Empalme" no se observaron en clase 69 pero se mantienen por
+    robustez ante datos futuros. Nunca lanza excepción ni devuelve None — todo lo
+    que no matchea cae en SIN_CLASIFICAR, para no perder ni mal-etiquetar en silencio.
+    """
+    if not nombre:
+        return "SIN_CLASIFICAR"
+    if _REGEX_ODF.search(nombre):
+        return "ODF"
+    if _REGEX_EMPALME.search(nombre):
+        return "EMPALME"
+    return "SIN_CLASIFICAR"
+
+
 def parse_botella(obj: Mapping[str, Any]) -> Botella:
     """Parsea botella/empalme (class 68·121·122·123·124·125). Rechaza la clase 120 explícitamente."""
     clase = obj.get("class")
@@ -402,6 +431,49 @@ def parse_fusion(obj: Mapping[str, Any]) -> Fusion:
     )
 
 
+def parse_odf(obj: Mapping[str, Any]) -> Odf:
+    """Parsea ODF/distribuidor de fibra (class 69). No vive dentro del árbol de Botella — tiene su
+    propia fase de ingesta directa (Task 3, no es parte de este parser). Atributos compartidos con
+    Botella se leen con el mismo `at.id` (ver `parse_botella`)."""
+    n_id = _resolver_n_id(obj)
+    latitud, longitud = _resolver_geo(obj)
+    nombre = atributo(obj, 34) or obj.get("name")
+
+    # `None` sólo si `tp` no vino en absoluto; `[]` si vino pero ningún item era un cable (class
+    # 51). Usa `n_id` del item embebido, nunca `id_to` — `id_to` es un id de versión, no el n_id
+    # estable del cable (mismo problema de "ID dual" ya conocido en otras partes del ingestor).
+    if "tp" in obj:
+        cables_asociados = [
+            item.get("n_id") for item in (obj.get("tp") or []) if item.get("class") == _CLASE_CABLE
+        ]
+    else:
+        cables_asociados = None
+
+    return Odf(
+        n_id=n_id,
+        version_id=obj.get("id"),
+        vmax=obj.get("vmax"),
+        clase=obj.get("class"),
+        nombre=nombre,
+        codigo_modelo=atributo(obj, 41) or obj.get("code"),
+        id_legacy=atributo(obj, 91),
+        notas=atributo(obj, 35),
+        calle=atributo(obj, 67),
+        altura=atributo(obj, 16),
+        localidad=atributo(obj, 68),
+        provincia=atributo(obj, 69),
+        ubicacion_fisica=atributo(obj, 118),
+        tendido=atributo(obj, 20),
+        latitud=latitud,
+        longitud=longitud,
+        pts_raw=obj.get("pts"),
+        propietario=atributo(obj, 47),
+        tipo_elemento=clasificar_tipo_elemento_odf(nombre),
+        cables_asociados=cables_asociados,
+        payload_raw=dict(obj),
+    )
+
+
 _DISPATCH = {
     68: parse_botella,
     121: parse_botella,
@@ -413,6 +485,7 @@ _DISPATCH = {
     _CLASE_TUBO: parse_tubo,
     _CLASE_PELO: parse_pelo,
     _CLASE_FUSION: parse_fusion,
+    _CLASE_ODF: parse_odf,
 }
 
 
@@ -531,6 +604,8 @@ __all__ = [
     "parse_pelo",
     "parsear_servicio",
     "parse_fusion",
+    "parse_odf",
+    "clasificar_tipo_elemento_odf",
     "parse_arbol_botella",
     "extraer_tubos_y_pelos",
     "extraer_tipo_servicio_display",

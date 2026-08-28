@@ -63,6 +63,36 @@ class Cable:
 
 
 @dataclass(slots=True)
+class Odf:
+    """ODF / distribuidor de fibra óptica (class 69). No cuelga del árbol de Botella — tiene su
+    propia fase de ingesta directa. `cables_asociados` son los `n_id` (nunca `id_to`) de los
+    cables referenciados en `tp[]`; `None` si el objeto no trajo `tp[]` en absoluto, `[]` si lo
+    trajo pero ninguno de sus items era un cable."""
+
+    n_id: int
+    version_id: Optional[int]
+    vmax: Optional[int]
+    clase: Optional[int]
+    nombre: Optional[str]
+    codigo_modelo: Optional[str]
+    id_legacy: Optional[str]
+    notas: Optional[str]
+    calle: Optional[str]
+    altura: Optional[str]
+    localidad: Optional[str]
+    provincia: Optional[str]
+    ubicacion_fisica: Optional[str]
+    tendido: Optional[str]
+    latitud: Optional[float]
+    longitud: Optional[float]
+    pts_raw: Optional[list[Any]]
+    propietario: Optional[str]
+    tipo_elemento: str
+    cables_asociados: Optional[list[int]]
+    payload_raw: dict[str, Any] = field(repr=False)
+
+
+@dataclass(slots=True)
 class Tubo:
     """Tubo/buffer (class 129). `cable_n_id` es el `parent`, resuelto contra `n_id`, sin FK dura."""
 
@@ -101,4 +131,4 @@ class Fusion:
     longitud: Optional[float]
 
 
-__all__ = ["Botella", "Cable", "Tubo", "Pelo", "Fusion"]
+__all__ = ["Botella", "Cable", "Odf", "Tubo", "Pelo", "Fusion"]

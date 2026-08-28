@@ -11,14 +11,17 @@ import pytest
 
 from core.services.cromo.parser import (
     ClaseExcluidaError,
+    ClaseNoSoportadaError,
     _resolver_geo,
     atributo,
+    clasificar_tipo_elemento_odf,
     extraer_tipo_servicio_display,
     extraer_tubos_y_pelos,
     parse_arbol_botella,
     parse_botella,
     parse_cable,
     parse_objeto,
+    parse_odf,
     parse_pagina,
     parse_pelo,
     resolver_lat_lon,
@@ -368,3 +371,159 @@ def test_clase_132_no_asume_siempre_fusion():
 
     fusion = parse_fusion(obj)
     assert fusion.tipo == "OTRO_TIPO"
+
+
+# ── clasificar_tipo_elemento_odf() (class 69 = ODF) ──────────────────────────
+# Diagnóstico real (30 objetos clase 69 de Cromo, ver Tarea 0 del plan): 26/30 nombres empiezan
+# con "ODF " seguido de una dirección libre; 4/30 son direcciones libres sin ninguna palabra
+# clave. Cero matchean "O-"/"Patch"/"F-"/"Empalme" en la muestra real de Cromo — esos patrones
+# pertenecen a `O-1238223-1/-2/-#` etc., que el ticket original asumía de Cromo pero resultó ser
+# de OTRO sistema (parser de tracking de rutas, ver task-1-brief.md / task-7-brief.md de este
+# plan). Por eso "O-1238223-1" y "Patch algo" NO matchean acá — se prueban explícitamente como
+# SIN_CLASIFICAR, no como "ODF": el objetivo de este test es la consistencia interna del
+# clasificador con sus propias reglas documentadas (`_REGEX_ODF`/`_REGEX_EMPALME`), no que
+# reconozca patrones de un sistema distinto (ver también task-6-brief.md, punto 4).
+
+
+@pytest.mark.parametrize(
+    "nombre,tipo_esperado",
+    [
+        ("ODF Calle 9 Nro 593 PILAR", "ODF"),  # muestra real dominante (26/30)
+        ("ODF Saenz Valiente 2420 San Isidro", "ODF"),
+        ("odf calle falsa 123", "ODF"),  # case-insensitive
+        ("F-4521", "EMPALME"),
+        ("Empalme 123: algo", "EMPALME"),
+        ("empalme minúscula", "EMPALME"),  # case-insensitive
+        ("Arias 3751 P12", "SIN_CLASIFICAR"),  # dirección libre sin palabra clave, muestra real (4/30)
+        ("O-1238223-1", "SIN_CLASIFICAR"),  # patrón del ticket original, de otro sistema, no de Cromo
+        ("Patch algo", "SIN_CLASIFICAR"),  # ídem
+    ],
+)
+def test_clasificar_tipo_elemento_odf(nombre, tipo_esperado):
+    assert clasificar_tipo_elemento_odf(nombre) == tipo_esperado
+
+
+def test_clasificar_tipo_elemento_odf_none_o_vacio_no_lanza_excepcion():
+    assert clasificar_tipo_elemento_odf(None) == "SIN_CLASIFICAR"
+    assert clasificar_tipo_elemento_odf("") == "SIN_CLASIFICAR"
+
+
+# ── parse_odf() (class 69) ────────────────────────────────────────────────────
+# Hallazgo real (Tarea 0): el item de `tp[]` de un cable referenciado trae tanto `n_id` (el
+# identificador ESTABLE del cable) como `id_to` (un id de versión, distinto y que NO debe
+# usarse — mismo problema de "ID dual" ya conocido en otras partes de este ingestor).
+
+
+def test_parse_odf_cables_asociados_usa_n_id_no_id_to():
+    obj = {
+        "id": 900001,
+        "n_id": 800001,
+        "class": 69,
+        "vmax": 3,
+        "at": [
+            {"id": 34, "value": "ODF Calle 9 Nro 593 PILAR"},
+            {"id": 47, "value": "Metrotel"},
+        ],
+        "tp": [
+            {
+                "type": 0,
+                "nfrom": 0,
+                "id_to": 9739619,
+                "nto": 0,
+                "class": 51,
+                "n_id": 6613848,
+                "name": "F-CLL9-543",
+                "at": [],
+                "tp": [],
+                "inner": [],
+            }
+        ],
+    }
+    odf = parse_odf(obj)
+    assert odf.cables_asociados == [6613848]
+    assert 9739619 not in odf.cables_asociados
+
+
+def test_parse_odf_ignora_items_de_tp_que_no_son_cable():
+    obj = {
+        "id": 900002,
+        "n_id": 800002,
+        "class": 69,
+        "at": [{"id": 34, "value": "ODF Otra Direccion 456"}],
+        "tp": [{"class": 999, "n_id": 111111, "id_to": 222222}],
+    }
+    odf = parse_odf(obj)
+    assert odf.cables_asociados == []
+
+
+def test_parse_odf_sin_tp_en_absoluto_deja_cables_asociados_en_none():
+    obj = {"id": 900003, "n_id": 800003, "class": 69, "at": [{"id": 34, "value": "ODF Sin tp"}]}
+    odf = parse_odf(obj)
+    assert odf.cables_asociados is None
+
+
+def test_parse_odf_lee_atributos_compartidos_con_botella():
+    obj = {
+        "id": 900004,
+        "n_id": 800004,
+        "class": 69,
+        "vmax": 7,
+        "at": [
+            {"id": 34, "value": "ODF Calle 9 Nro 593 PILAR"},
+            {"id": 41, "value": "MOD-1"},
+            {"id": 91, "value": "LEGACY-1"},
+            {"id": 35, "value": "una nota"},
+            {"id": 67, "value": "Calle 9"},
+            {"id": 16, "value": "593"},
+            {"id": 68, "value": "PILAR"},
+            {"id": 69, "value": "Buenos Aires"},
+            {"id": 118, "value": "http://ejemplo/foto.jpg"},
+            {"id": 20, "value": "Subterraneo"},
+            {"id": 47, "value": "Metrotel"},
+        ],
+    }
+    odf = parse_odf(obj)
+    assert odf.n_id == 800004
+    assert odf.version_id == 900004
+    assert odf.vmax == 7
+    assert odf.clase == 69
+    assert odf.nombre == "ODF Calle 9 Nro 593 PILAR"
+    assert odf.codigo_modelo == "MOD-1"
+    assert odf.id_legacy == "LEGACY-1"
+    assert odf.notas == "una nota"
+    assert odf.calle == "Calle 9"
+    assert odf.altura == "593"
+    assert odf.localidad == "PILAR"
+    assert odf.provincia == "Buenos Aires"
+    assert odf.ubicacion_fisica == "http://ejemplo/foto.jpg"
+    assert odf.tendido == "Subterraneo"
+    assert odf.propietario == "Metrotel"
+    assert odf.tipo_elemento == "ODF"
+
+
+def test_parse_odf_payload_raw_es_siempre_dict_del_objeto_completo():
+    obj = {"id": 900005, "n_id": 800005, "class": 69, "at": [], "algo_extra": "valor"}
+    odf = parse_odf(obj)
+    assert odf.payload_raw == obj
+    assert odf.payload_raw is not obj  # copia, no la misma referencia
+
+
+def test_clase_69_despachada_por_parse_objeto_ya_no_lanza_clase_no_soportada():
+    """Contrato central de este task: antes de registrar `_CLASE_ODF` en `_DISPATCH`, esto
+    lanzaba `ClaseNoSoportadaError` (clase 69 sin parser asociado). Se prueba a través de la
+    función general de despacho (`parse_objeto`), no llamando a `parse_odf` directamente, para
+    verificar el registro real en la tabla de despacho."""
+    obj = {"id": 1, "n_id": 1, "class": 69, "at": [{"id": 34, "value": "ODF Direccion X"}]}
+    resultado = parse_objeto(obj)
+    assert resultado.tipo_elemento == "ODF"
+    assert resultado.n_id == 1
+
+
+def test_clase_69_sigue_siendo_no_soportada_solo_si_no_estuviera_registrada():
+    """Sanity check inverso: una clase realmente sin parser (9998, elegida para no chocar con la
+    clase 9999 ya usada en otro test de este archivo) sigue lanzando `ClaseNoSoportadaError` —
+    confirma que el test anterior prueba el registro real de 69, no un despacho que acepta
+    cualquier clase."""
+    obj = {"id": 1, "n_id": 1, "class": 9998, "at": []}
+    with pytest.raises(ClaseNoSoportadaError):
+        parse_objeto(obj)
