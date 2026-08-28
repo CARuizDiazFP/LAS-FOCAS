@@ -166,7 +166,12 @@ async def test_obtener_detalle_odf_sin_calle_no_agrupa_vecinos():
 
     llamada_vecinos = next(p for texto, p in sesion.llamadas if "FROM app.cromo_odfs\n    WHERE" in texto)
     assert llamada_vecinos["calle"] is None
-    # La guardia real vive en SQL (`CAST(:calle AS text) IS NOT NULL`), no en Python — se confirma
-    # contra un driver real en tests/test_cromo_odf_inventario_real_db.py. Acá sólo se confirma que
-    # el parámetro `calle=None` efectivamente viaja tal cual, sin normalizarse a otra cosa.
+    # La guardia real vive en SQL (`CAST(:calle AS text) IS NOT NULL`), no en Python — la sesión fake
+    # de este archivo no ejecuta SQL de verdad, así que no puede confirmar que la guardia funciona
+    # (de hecho, la respuesta fake de "Otro ODF" arriba se devolvería igual esté o no la guardia
+    # presente). La cobertura contra un driver real vive en
+    # tests/test_cromo_odf_inventario_real_db.py::test_obtener_detalle_odf_calle_null_no_agrupa_falsamente_contra_driver_real,
+    # que inserta dos ODFs con `calle IS NULL` de verdad y assertea sobre
+    # `odfs_en_la_misma_direccion` contra Postgres real. Acá sólo se confirma que el parámetro
+    # `calle=None` efectivamente viaja tal cual, sin normalizarse a otra cosa.
     assert detalle.calle is None

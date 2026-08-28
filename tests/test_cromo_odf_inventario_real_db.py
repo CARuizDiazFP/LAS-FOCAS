@@ -199,6 +199,66 @@ async def test_obtener_detalle_odf_resuelve_cable_asociado_real(odf_con_servicio
     assert detalle.cables_asociados == [{"n_id": _CABLE_N_ID, "nombre": None}]
 
 
+# n_ids sintéticos distintos de `_ODF_N_ID`/`_CABLE_N_ID`/`_PELO_N_ID` de arriba, mismo rango fuera
+# de lo que Cromo real puede asignar.
+_ODF_SIN_CALLE_A_N_ID = 999_900_010
+_ODF_SIN_CALLE_B_N_ID = 999_900_011
+
+
+@pytest.fixture
+def odfs_sin_calle():
+    """Dos ODFs sintéticos que comparten `calle IS NULL` / `altura IS NULL` / `localidad IS NULL`
+    a la vez — el escenario exacto que `_SQL_VECINOS_DIRECCION` (core/services/cromo/odf_detalle.py)
+    debe rechazar vía `CAST(:calle AS text) IS NOT NULL`. Sin esa guardia (o si `calle` pasara a
+    compararse con el mismo operador NULL-safe que ya usan `altura`/`localidad`, `IS NOT DISTINCT
+    FROM`), estos dos ODFs se agruparían falsamente como "misma dirección" sólo por compartir
+    ausencia de dirección. Limpieza en el `finally`, nunca deja basura si el test falla a mitad de
+    camino."""
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.cromo_odfs "
+                "(n_id, version_id, vmax, clase, nombre, calle, altura, localidad, propietario, "
+                " tipo_elemento, cables_asociados, payload_raw) "
+                "VALUES (:n_id, 1, 1, 69, :nombre, NULL, NULL, NULL, 'Metrotel', "
+                " 'ODF', '[]'::jsonb, '{}'::jsonb)"
+            ),
+            [
+                {"n_id": _ODF_SIN_CALLE_A_N_ID, "nombre": "ODF Sin Calle A"},
+                {"n_id": _ODF_SIN_CALLE_B_N_ID, "nombre": "ODF Sin Calle B"},
+            ],
+        )
+        session.commit()
+
+    try:
+        yield {"a": _ODF_SIN_CALLE_A_N_ID, "b": _ODF_SIN_CALLE_B_N_ID}
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text("DELETE FROM app.cromo_odfs WHERE n_id = ANY(:ids)"),
+                {"ids": [_ODF_SIN_CALLE_A_N_ID, _ODF_SIN_CALLE_B_N_ID]},
+            )
+            session.commit()
+
+
+@pytest.mark.asyncio
+async def test_obtener_detalle_odf_calle_null_no_agrupa_falsamente_contra_driver_real(odfs_sin_calle):
+    """Cierra el gap que dejaba la Tarea 4 original: un comentario en `test_cromo_odf_detalle.py`
+    afirmaba que la guardia `CAST(:calle AS text) IS NOT NULL` de `_SQL_VECINOS_DIRECCION` estaba
+    "confirmada contra un driver real" acá, pero ningún test de este archivo insertaba un ODF con
+    `calle IS NULL` ni aserteaba sobre `odfs_en_la_misma_direccion` — la afirmación era falsa. Este
+    test inserta DOS ODFs sintéticos con `calle`/`altura`/`localidad` en NULL a la vez y confirma que
+    `obtener_detalle_odf` sobre uno de ellos NO agrupa al otro en `odfs_en_la_misma_direccion`,
+    contra asyncpg real (no un mock)."""
+    from core.services.cromo.odf_detalle import obtener_detalle_odf
+
+    async with AsyncSessionLocal() as sesion:
+        detalle = await obtener_detalle_odf(sesion, odfs_sin_calle["a"])
+
+    assert detalle.calle is None
+    assert detalle.odfs_en_la_misma_direccion == []
+
+
 # ── servicios_por_odf — contra driver real ───────────────────────────────────
 
 
