@@ -249,6 +249,39 @@ docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servi
 No alcanza con que el servicio esté `healthy` — un healthcheck sólo confirma que el proceso responde,
 no que corra el código más reciente.
 
+**Segunda instancia real (2026-08-28), que amplía la regla**: no alcanza con reconstruir "los
+contenedores que ya se sabe que el ciclo tocó" — hay que chequear **cualquier contenedor nuevo** en
+el que se vaya a `docker exec`/curl por primera vez en la sesión, aunque nunca antes haya dado
+problemas. Al cerrar un plan de `subagent-driven-development` (submódulo ODFs), la primera ingesta
+real dentro de `lasfocasdev-cromo-worker` falló con `TypeError: ejecutar_ingesta() got an unexpected
+keyword argument 'modo'` — ese contenedor nunca se había reconstruido durante todo el ciclo (las
+tareas previas verificaron contra DB real vía `pytest` desde el host, nunca vía `docker exec` dentro
+del worker), así que corría una imagen de antes de que el parámetro `modo` existiera en el código.
+Regla ampliada: antes de `docker exec` dentro de CUALQUIER contenedor para una acción real (no un
+test), sin importar si "nunca dio problemas antes", chequear su fecha de build contra el último
+commit relevante — el mismo comando de arriba, aplicado a ese contenedor puntual.
+
+### Verificación real vía `TestClient` dentro de un contenedor: usar el context manager, no llamadas sueltas
+
+Cuando no hay credenciales de admin disponibles para un `curl` autenticado real, el patrón de este
+proyecto es entrar al contenedor ya reconstruido y usar `starlette.testclient.TestClient` contra la
+app real, pegando al Postgres real (ver ejemplos en los reportes de las Tareas 5/7/8/9 del submódulo
+ODFs). Si se hacen varias llamadas (`login` + varios `GET`) como sentencias sueltas del mismo script
+(sin `with`), el motor async de SQLAlchemy puede terminar con
+`RuntimeError: ... Future ... attached to a different loop` porque cada invocación de `TestClient`
+sin contexto puede levantar su propio loop de `anyio`, mientras el pool de conexiones async queda
+atado al loop de la primera. **Usar siempre `with TestClient(app) as client:`** (login y todos los
+`GET`/`POST` posteriores dentro del mismo bloque `with`) — mantiene un único loop estable para toda
+la sesión de verificación:
+
+```python
+import unittest.mock as mock
+with mock.patch.object(app_module, "verify_password", return_value=True):  # sólo si no hay credenciales reales
+    with TestClient(app_module.app) as client:
+        client.post("/api/auth/login", json={"username": "<usuario_real_existente>", "password": "x"})
+        r = client.get("/api/algun/endpoint/real")
+```
+
 ## Script de Inicio Rápido
 
 ```bash

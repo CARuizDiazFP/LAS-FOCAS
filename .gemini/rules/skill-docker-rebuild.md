@@ -338,6 +338,23 @@ docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servi
 No alcanza con que el servicio esté `healthy` — un healthcheck sólo confirma que el proceso responde,
 no que corra el código más reciente.
 
+**Segunda instancia real (2026-08-28), que amplía la regla**: no alcanza con reconstruir "los
+contenedores que ya se sabe que el ciclo tocó" — hay que chequear **cualquier contenedor nuevo** en
+el que se vaya a `docker exec`/curl por primera vez en la sesión, aunque nunca antes haya dado
+problemas. Al cerrar un plan de `subagent-driven-development` (submódulo ODFs), la primera ingesta
+real dentro de `lasfocasdev-cromo-worker` falló con `TypeError: ejecutar_ingesta() got an unexpected
+keyword argument 'modo'` — ese contenedor nunca se había reconstruido durante todo el ciclo. Regla
+ampliada: antes de `docker exec` dentro de CUALQUIER contenedor para una acción real, sin importar
+si "nunca dio problemas antes", chequear su fecha de build contra el último commit relevante.
+
+### Verificación real vía `TestClient` dentro de un contenedor: usar el context manager
+
+Cuando no hay credenciales de admin para un `curl` autenticado real, entrar al contenedor y usar
+`starlette.testclient.TestClient` contra la app real. Si se hacen varias llamadas sueltas (sin
+`with`), puede aparecer `RuntimeError: ... Future ... attached to a different loop`. Usar siempre
+`with TestClient(app) as client:` (login y todos los `GET`/`POST` posteriores dentro del mismo
+bloque) — mantiene un único loop estable.
+
 ## Script de Inicio Rápido
 
 ```bash
