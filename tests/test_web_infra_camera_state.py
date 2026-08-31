@@ -444,3 +444,91 @@ def test_get_camara_registros_web_devuelve_auditoria_y_baneos(monkeypatch):
     assert payload["ingresos"][0]["tecnico_id"] == "tecnico.lopez"
     assert payload["ingresos"][0]["fecha_fin"] is None
     assert "placeholders" not in payload
+
+
+class _ServicioIngresosSession(_FakeSession):
+    """Sesión fake para `GET /api/infra/servicios/{servicio_id}/ingresos`: sólo necesita resolver
+    `session.query(Servicio)` (usado por `_find_servicio_por_identificador_web`) y
+    `session.query(Ingreso)` — la resolución de cámaras del servicio se mockea aparte, a nivel de
+    `ProtectionService.get_camaras_for_servicio` (no reimplementa esa lógica acá)."""
+
+    def __init__(self, servicio: Any, ingresos: list[Any]):
+        super().__init__()
+        self._servicio = servicio
+        self._ingresos = ingresos
+
+    def query(self, *entities):
+        entity = entities[0]
+        entity_name = getattr(entity, "__name__", "")
+        if entity_name == "Servicio":
+            return _FakeQuery(one=self._servicio)
+        if entity_name == "Ingreso":
+            return _FakeQuery(many=self._ingresos)
+        return _FakeQuery()
+
+
+def _build_servicio() -> Any:
+    return SimpleNamespace(servicio_id="2001", numero_primer_servicio="2001", numero_linea=None)
+
+
+def _build_servicio_camaras() -> list[Any]:
+    return [SimpleNamespace(id=7, nombre="Cámara Canon Norte")]
+
+
+def _build_servicio_ingresos() -> list[Any]:
+    return [
+        SimpleNamespace(
+            id=5,
+            camara_id=7,
+            fecha_inicio=datetime(2026, 5, 10, 8, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="tecnico.lopez",
+            cromo_botella_id=None,
+        )
+    ]
+
+
+def test_get_servicio_ingresos_web_devuelve_datos_reales(monkeypatch):
+    from core.services.protection_service import ProtectionService
+    from db import session as db_session
+
+    client = TestClient(app)
+    _login(client, monkeypatch, role="user", password="userpass")
+
+    fake_session = _ServicioIngresosSession(_build_servicio(), _build_servicio_ingresos())
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
+    monkeypatch.setattr(
+        ProtectionService,
+        "get_camaras_for_servicio",
+        lambda self, servicio_id: _build_servicio_camaras(),
+    )
+
+    response = client.get("/api/infra/servicios/2001/ingresos")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["servicio_id"] == "2001"
+    assert payload["total"] == 1
+    item = payload["ingresos"][0]
+    assert item["id"] == 5
+    assert item["tecnico_id"] == "tecnico.lopez"
+    assert item["fecha_fin"] is None
+    assert item["cromo_botella_id"] is None
+    assert item["camara_id"] == 7
+    assert item["camara_nombre"] == "Cámara Canon Norte"
+
+
+def test_get_servicio_ingresos_web_404_si_servicio_no_existe(monkeypatch):
+    from db import session as db_session
+
+    client = TestClient(app)
+    _login(client, monkeypatch, role="user", password="userpass")
+
+    fake_session = _ServicioIngresosSession(None, [])
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
+
+    response = client.get("/api/infra/servicios/NOPE-9999/ingresos")
+
+    assert response.status_code == 404
+    assert "no encontrado" in response.json()["error"]
