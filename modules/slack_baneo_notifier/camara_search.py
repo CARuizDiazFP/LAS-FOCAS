@@ -37,7 +37,6 @@ __all__ = [
     "_filtrar_bots_secundarios",
     "_limpiar_puntuacion",
     "buscar_camara",
-    "extraer_nombre_camara",
     "extraer_tipo_movimiento",
     "extraer_slack_user_id_autorizacion",
     "AmbiguousSearchError",
