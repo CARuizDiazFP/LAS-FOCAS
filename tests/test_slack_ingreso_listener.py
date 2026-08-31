@@ -569,6 +569,282 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         client_mock.chat_postMessage.assert_called_once()
 
 
+# ─── Tests de registro de movimiento Ingreso/Egreso (Tarea 4) ─────────────────
+
+
+class TestRegistrarMovimientoIngreso(unittest.TestCase):
+    """Prueba el wiring de la Tarea 4: `_construir_respuesta_camara` (vía `_handle_message`) debe
+    invocar `registrar_movimiento_ingreso` (Tarea 3) como efecto secundario cuando hay match Y el
+    texto completo del evento trae el campo 'Ingreso o Egreso' parseable — mockeado a nivel del
+    import real en `modules.slack_baneo_notifier.listener` (el punto de uso, no la definición en
+    `core/services/ingreso_service.py`). La respuesta de Slack no debe cambiar nunca por esto."""
+
+    TEXTO_CON_INGRESO = (
+        "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+        "*Ingreso o Egreso*\nIngreso\n"
+        "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+    )
+    TEXTO_CON_EGRESO = (
+        "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+        "*Ingreso o Egreso*\nEgreso\n"
+        "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+    )
+    TEXTO_SIN_MOVIMIENTO = (
+        "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+    )
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event(self, text: str, channel: str = "C123", ts: str = "1234567890.000001") -> dict:
+        return {"text": text, "channel": channel, "ts": ts}
+
+    def _make_camara(self, id_: int = 42, nombre: str = "Cam Libertad 1234") -> MagicMock:
+        cam = MagicMock()
+        cam.id = id_
+        cam.nombre = nombre
+        return cam
+
+    def test_registra_movimiento_cuando_hay_match_camara_directa_y_texto_trae_ingreso(self) -> None:
+        """fuente='camara' (match directo, sin pasar por CromoBotella) + campo 'Ingreso o Egreso'
+        presente → registrar_movimiento_ingreso se llama con botella=None."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
+
+        mock_registrar.assert_called_once_with(
+            session_mock,
+            camara=camara_mock,
+            botella=None,
+            tipo_movimiento="Ingreso",
+            slack_user_id="U0AUB6CRE4A",
+        )
+        # La respuesta de Slack de siempre no debe verse afectada por el registro.
+        client_mock.chat_postMessage.assert_called_once()
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("Sin incidentes activos", texto_respuesta)
+
+    def test_registra_movimiento_con_botella_cromo_y_egreso(self) -> None:
+        """fuente='cromo_botella' (match resuelto vía CromoBotella) → registrar_movimiento_ingreso
+        recibe la `botella` real, no None. Cubre también tipo_movimiento='Egreso'."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara(id_=7, nombre="Cam Resuelta Desde Botella")
+        botella_mock = MagicMock()
+        botella_mock.n_id = 999
+
+        resultado = ResultadoBusquedaExtendida(
+            camara=camara_mock,
+            nombre_norm="ruta 8 km 34 malvinas argentinas",
+            fuente="cromo_botella",
+            botella=botella_mock,
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=resultado,
+            ),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_EGRESO), client_mock)
+
+        mock_registrar.assert_called_once_with(
+            session_mock,
+            camara=camara_mock,
+            botella=botella_mock,
+            tipo_movimiento="Egreso",
+            slack_user_id="U0AUB6CRE4A",
+        )
+        client_mock.chat_postMessage.assert_called_once()
+
+    def test_no_registra_movimiento_cuando_texto_no_trae_campo(self) -> None:
+        """Hay match de cámara, pero el texto no trae 'Ingreso o Egreso' → no se escribe nada."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            listener._handle_message(self._make_event(text=self.TEXTO_SIN_MOVIMIENTO), client_mock)
+
+        mock_registrar.assert_not_called()
+        client_mock.chat_postMessage.assert_called_once()
+
+    def test_no_registra_movimiento_cuando_no_hay_match(self) -> None:
+        """Rama sin match (camara is None) → nunca se llega a registrar_movimiento_ingreso, incluso
+        si el texto trae 'Ingreso o Egreso'. `IngresoSinMatch` sigue registrándose igual que antes
+        (comportamiento no tocado por esta tarea)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(None, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
+
+        mock_registrar.assert_not_called()
+        # IngresoSinMatch sigue registrándose igual que antes de esta tarea.
+        session_mock.add.assert_called_once()
+        session_mock.commit.assert_called_once()
+        client_mock.chat_postMessage.assert_called_once()
+
+    def test_no_registra_movimiento_cuando_ambiguo(self) -> None:
+        """AmbiguousSearchError se lanza antes de que exista un `resultado.camara` — el helper
+        nunca se alcanza, sin cambios respecto al manejo previo de la excepción."""
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                side_effect=AmbiguousSearchError("Ruta 8", 3, []),
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
+
+        mock_registrar.assert_not_called()
+        client_mock.chat_postMessage.assert_called_once()
+
+    def test_excepcion_en_registrar_movimiento_no_rompe_respuesta_slack(self) -> None:
+        """Si registrar_movimiento_ingreso lanza cualquier excepción, se loguea y se ignora — la
+        respuesta de Slack se envía igual (el bot en vivo nunca debe dejar de responder por un
+        error de escritura en DB)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch(
+                "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso",
+                side_effect=RuntimeError("DB caída"),
+            ),
+        ):
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("Sin incidentes activos", texto_respuesta)
+
+    def test_multibot_registra_movimiento_independiente_por_botella(self) -> None:
+        """Multi-botella: cada búsqueda independiente del loop de `nombres_a_buscar` en
+        `_handle_message` debe invocar su propio `registrar_movimiento_ingreso` (brief Tarea 4:
+        'Multi-botella sale gratis' — el loop no se toca, cada llamada a
+        `_construir_respuesta_camara` resuelve y escribe su propia fila)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        cam1 = self._make_camara(id_=1, nombre="Cra Mitre 300")
+        cam2 = self._make_camara(id_=2, nombre="Bot 2 Cra Mitre 300")
+
+        texto = (
+            "Cámara: Cra Mitre 300 Botella 1 y 2\n"
+            "*Ingreso o Egreso*\nEgreso\n"
+            "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Cra Mitre 300 Botella 1 y 2",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                side_effect=[
+                    _resultado_camara(cam1, "cra mitre 300"),
+                    _resultado_camara(cam2, "bot 2 cra mitre 300"),
+                ],
+            ) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(self._make_event(text=texto), client_mock)
+
+        self.assertEqual(mock_buscar.call_count, 2)
+        self.assertEqual(mock_registrar.call_count, 2)
+        self.assertEqual(mock_registrar.call_args_list[0].kwargs["camara"], cam1)
+        self.assertEqual(mock_registrar.call_args_list[1].kwargs["camara"], cam2)
+        for c in mock_registrar.call_args_list:
+            self.assertEqual(c.kwargs["tipo_movimiento"], "Egreso")
+            self.assertEqual(c.kwargs["slack_user_id"], "U0AUB6CRE4A")
+        client_mock.chat_postMessage.assert_called_once()
+
+
 class TestObtenerIncidentesActivosCamara(unittest.TestCase):
     """Tests para _obtener_incidentes_activos_camara con estados LIBRE, DETECTADA y BANEADA."""
 

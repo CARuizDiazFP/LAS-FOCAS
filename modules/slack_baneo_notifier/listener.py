@@ -33,6 +33,7 @@ from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_
 from core.services.cromo.detalle import pelos_de_tubo_sync
 from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
 from core.services.cromo.verificador import servicios_por_tubo_sync
+from core.services.ingreso_service import registrar_movimiento_ingreso
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
 from modules.slack_baneo_notifier.cable_info import (
@@ -48,7 +49,14 @@ from modules.slack_baneo_notifier.cable_info import (
     extraer_comando_info_cable,
     resolver_tubo_por_numero,
 )
-from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
+from modules.slack_baneo_notifier.camara_search import (
+    AmbiguousSearchError,
+    detectar_multi_bot,
+    extraer_nombre_camara,
+    extraer_slack_user_id_autorizacion,
+    extraer_tipo_movimiento,
+    limpiar_ruido_operativo,
+)
 
 logger = logging.getLogger("slack_baneo_worker.listener")
 
@@ -138,6 +146,7 @@ class IngresoListener:
         *,
         channel: str = "",
         thread_ts: str | None = None,
+        texto_mensaje: str = "",
     ) -> str:
         """Busca una cámara por nombre y construye el texto de respuesta.
 
@@ -157,7 +166,14 @@ class IngresoListener:
         de empalme más cercano — ver `_procesar_seguimiento_empalme`) para revisión manual posterior
         y mejora del regex, y responde dejando explícito que el técnico puede continuar igual —
         nunca lee como un rechazo. Si encuentra una cámara (propia o resuelta desde una
-        `CromoBotella`), evalúa el estado de acceso vía `_evaluar_estado_acceso_camara`.
+        `CromoBotella`), evalúa el estado de acceso vía `_evaluar_estado_acceso_camara` y, como
+        efecto secundario que nunca condiciona esa respuesta, registra el movimiento de Ingreso/
+        Egreso si el mensaje completo del evento (`texto_mensaje` — no `nombre_buscado`, que ya
+        viene recortado al nombre de cámara) lo trae (Tarea 4, 2026-08-31).
+
+        ``texto_mensaje`` es el texto completo del evento de Slack (no recortado como
+        `nombre_buscado`) — los campos "Ingreso o Egreso" y "Persona que solicito La Autorizacion"
+        del Workflow viven fuera del campo de nombre de cámara.
         """
         nombre_buscado = limpiar_ruido_operativo(nombre_buscado)
         resultado = buscar_camara_o_botella_cromo(nombre_buscado, session)
@@ -194,7 +210,29 @@ class IngresoListener:
                 "con el número."
             ).format(nombre_buscado)
 
+        self._registrar_movimiento_si_corresponde(resultado, texto_mensaje, session)
         return self._evaluar_estado_acceso_camara(camara, session)
+
+    def _registrar_movimiento_si_corresponde(
+        self, resultado: Any, texto_mensaje: str, session: Any
+    ) -> None:
+        """Escribe Ingreso/Egreso en DB si el mensaje trae el campo 'Ingreso o Egreso' parseable.
+        Nunca lanza — cualquier excepción se loguea y se ignora, la respuesta de Slack no debe
+        bloquearse porque falle la escritura en DB."""
+        tipo = extraer_tipo_movimiento(texto_mensaje)
+        if tipo is None:
+            return
+        slack_user_id = extraer_slack_user_id_autorizacion(texto_mensaje)
+        try:
+            registrar_movimiento_ingreso(
+                session,
+                camara=resultado.camara,
+                botella=resultado.botella,
+                tipo_movimiento=tipo,
+                slack_user_id=slack_user_id,
+            )
+        except Exception as exc:
+            logger.warning("No se pudo registrar movimiento de ingreso: %s", exc, exc_info=True)
 
     def _evaluar_estado_acceso_camara(self, camara: Any, session: Any) -> str:
         """Evalúa el estado de acceso de una `Camara` ya resuelta y arma el texto de respuesta.
@@ -411,7 +449,9 @@ class IngresoListener:
                 nombres_a_buscar = [nombre_raw]
 
             respuestas = [
-                self._construir_respuesta_camara(nombre, session, channel=channel, thread_ts=thread_ts)
+                self._construir_respuesta_camara(
+                    nombre, session, channel=channel, thread_ts=thread_ts, texto_mensaje=texto
+                )
                 for nombre in nombres_a_buscar
             ]
 
