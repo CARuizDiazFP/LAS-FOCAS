@@ -110,6 +110,116 @@ class TestExtraerNombreCamara(unittest.TestCase):
         self.assertEqual(result, "Bartolomé Mitre 301 CF")
 
 
+# ─── Tests de extracción de tipo de movimiento ────────────────────────────────
+
+
+class TestExtraerTipoMovimiento(unittest.TestCase):
+    """Prueba camara_search.extraer_tipo_movimiento()."""
+
+    def setUp(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import extraer_tipo_movimiento
+        self.extraer = extraer_tipo_movimiento
+
+    def test_ingreso_presente(self) -> None:
+        """Extrae 'Ingreso' cuando el campo está presente."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+            "*Ingreso o Egreso*\nIngreso\n"
+            "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Ingreso")
+
+    def test_egreso_presente(self) -> None:
+        """Extrae 'Egreso' cuando el campo está presente."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+            "*Ingreso o Egreso*\nEgreso\n"
+            "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Egreso")
+
+    def test_campo_ausente_retorna_none(self) -> None:
+        """Retorna None cuando el campo 'Ingreso o Egreso' no está presente."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+            "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertIsNone(result)
+
+    def test_ejemplo_real_completo(self) -> None:
+        """Usa el texto de ejemplo real del plan como fixture."""
+        texto = (
+            "*Cual es el numero de Ticket MKT? o Numero de Linea*\n122833\n"
+            "*Es Camara Critica?*\nNo\n"
+            "*Nombre: Nodo/Camara/botella*\n"
+            "Ruta 8 Km 34 MALVINAS ARGENTINAS - FRAGATA HEROINA 4803 - DEL VISO - Buenos Aires\n"
+            "*Ingreso o Egreso*\nIngreso\n"
+            "*Hubo intervencion sobre la/las Fibras?*\nSI\n"
+            "Persona que solicito La Autorizacion\n"
+            "<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Ingreso")
+
+
+# ─── Tests de extracción de Slack user ID de autorización ────────────────────
+
+
+class TestExtraerSlackUserIdAutorizacion(unittest.TestCase):
+    """Prueba camara_search.extraer_slack_user_id_autorizacion()."""
+
+    def setUp(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import extraer_slack_user_id_autorizacion
+        self.extraer = extraer_slack_user_id_autorizacion
+
+    def test_mencion_con_nombre_mostrado(self) -> None:
+        """Extrae user ID de mención con nombre mostrado <@U.../Nombre>."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34\n"
+            "Persona que solicito La Autorizacion\n"
+            "<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "U0AUB6CRE4A")
+
+    def test_mencion_sin_nombre_mostrado(self) -> None:
+        """Extrae user ID de mención sin nombre mostrado <@U...>."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34\n"
+            "Persona que solicito La Autorizacion\n"
+            "<@U1234567890>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "U1234567890")
+
+    def test_campo_ausente_retorna_none(self) -> None:
+        """Retorna None cuando el campo de autorización no está presente."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34\n"
+            "*Ingreso o Egreso*\nIngreso\n"
+        )
+        result = self.extraer(texto)
+        self.assertIsNone(result)
+
+    def test_ejemplo_real_completo(self) -> None:
+        """Usa el texto de ejemplo real del plan como fixture."""
+        texto = (
+            "*Cual es el numero de Ticket MKT? o Numero de Linea*\n122833\n"
+            "*Es Camara Critica?*\nNo\n"
+            "*Nombre: Nodo/Camara/botella*\n"
+            "Ruta 8 Km 34 MALVINAS ARGENTINAS - FRAGATA HEROINA 4803 - DEL VISO - Buenos Aires\n"
+            "*Ingreso o Egreso*\nIngreso\n"
+            "*Hubo intervencion sobre la/las Fibras?*\nSI\n"
+            "Persona que solicito La Autorizacion\n"
+            "<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "U0AUB6CRE4A")
+
+
 # ─── Tests de búsqueda de cámara ───────────────────────────────────────────────
 
 

@@ -37,6 +37,9 @@ __all__ = [
     "_filtrar_bots_secundarios",
     "_limpiar_puntuacion",
     "buscar_camara",
+    "extraer_nombre_camara",
+    "extraer_tipo_movimiento",
+    "extraer_slack_user_id_autorizacion",
     "AmbiguousSearchError",
 ]
 
@@ -75,6 +78,13 @@ _RE_NOMBRE_WORKFLOW = re.compile(
 )
 # Regex fallback: campo libre "Cámara: [valor]" o "Cámara, [valor]"
 _RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*[,:]\s*(.+?)(?:\n|$)")
+
+# Regex para extraer tipo de movimiento (Ingreso/Egreso)
+_RE_TIPO_MOVIMIENTO_WORKFLOW = re.compile(r"(?i)\*?Ingreso o Egreso\*?\n\s*(Ingreso|Egreso)\b")
+# Regex para extraer Slack user ID de la mención de persona que solicitó autorización
+_RE_PERSONA_AUTORIZACION_WORKFLOW = re.compile(
+    r"(?i)Persona que solicito La Autorizacion\s*\n\s*<@(U[A-Z0-9]+)"
+)
 
 # Detecta menciones del tipo "Botella 1 y 2", "Bot 1 y 2", "botellas 2 y 3", etc.
 # Captura los dos números para expandirlos en búsquedas independientes.
@@ -242,6 +252,28 @@ def extraer_nombre_camara(mensaje: str) -> str:
         return match.group(1).strip()
     # Fallback: usar solo la primera línea del mensaje
     return mensaje.split("\n")[0].strip()
+
+
+def extraer_tipo_movimiento(mensaje: str) -> str | None:
+    """Extrae el tipo de movimiento (Ingreso o Egreso) del mensaje del Workflow.
+
+    Retorna exactamente ``"Ingreso"`` o ``"Egreso"`` si el campo está presente, ``None`` si no.
+    """
+    match = _RE_TIPO_MOVIMIENTO_WORKFLOW.search(mensaje)
+    if match:
+        return match.group(1)
+    return None
+
+
+def extraer_slack_user_id_autorizacion(mensaje: str) -> str | None:
+    """Extrae el Slack user ID de la mención de persona que solicitó la autorización.
+
+    Retorna el ID del usuario (ej. ``U0AUB6CRE4A``) sin el nombre mostrado, ``None`` si no existe.
+    """
+    match = _RE_PERSONA_AUTORIZACION_WORKFLOW.search(mensaje)
+    if match:
+        return match.group(1)
+    return None
 
 
 class AmbiguousSearchError(Exception):
