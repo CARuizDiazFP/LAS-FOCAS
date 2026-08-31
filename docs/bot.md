@@ -222,6 +222,24 @@ El listener captura `AmbiguousSearchError` y envía un aviso contextualizado:
 
 El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Slack) o en la URL del Workflow dentro de la configuración de Slack Workflows. Ejemplo: `Wf0B0KJF68BS`.
 
+### Registro de movimiento Ingreso/Egreso (desde 2026-08-31)
+
+Además de responder en el hilo, cuando el mensaje matchea una `Camara`/`CromoBotella` real el listener persiste el movimiento en `app.ingresos` — antes de esta fecha esa tabla nunca tuvo un camino de escritura real (ver `docs/infra.md`).
+
+El Workflow de Slack ya envía dos campos que hasta esta fecha no se parseaban, extraídos en `modules/slack_baneo_notifier/camara_search.py`:
+
+| Función | Campo del Workflow | Devuelve |
+|---|---|---|
+| `extraer_tipo_movimiento()` | `*Ingreso o Egreso*` (valor en la línea siguiente) | `"Ingreso"`, `"Egreso"` o `None` si el campo no está presente |
+| `extraer_slack_user_id_autorizacion()` | `Persona que solicito La Autorizacion` (mención `<@USER_ID\|Nombre>` o `<@USER_ID>` en la línea siguiente) | el Slack user id crudo (ej. `U0AUB6CRE4A`) o `None` |
+
+Si `extraer_tipo_movimiento()` devuelve `None` (mensaje viejo o formulario sin ese campo), no se escribe nada — el listener sigue respondiendo exactamente igual que antes de esta fecha. Si devuelve un valor, `IngresoListener._registrar_movimiento_si_corresponde()` llama a `registrar_movimiento_ingreso()` (`core/services/ingreso_service.py`):
+
+- **"Ingreso"**: siempre crea una fila nueva (`fecha_inicio=ahora`, `fecha_fin=NULL`).
+- **"Egreso"**: cierra (`fecha_fin=ahora`) el `Ingreso` abierto más reciente que matchee `tecnico_id` + `camara_id` + `cromo_botella_id` (comparación NULL-safe — un Egreso sin persona identificada nunca cierra el ingreso de un técnico real). Si no hay ninguno abierto, crea una fila huérfana con `fecha_inicio=NULL`.
+
+Este registro **nunca bloquea ni condiciona la respuesta de Slack**: se ejecuta como efecto secundario final, después de calcular el texto de respuesta, y cualquier excepción se loguea (`logger.warning`) y se ignora (incluye un `session.rollback()` explícito para no dejar la sesión compartida del resto de `_handle_message` en estado inválido ante un fallo de escritura).
+
 ### Estados de cámara
 
 | Estado | Comportamiento |

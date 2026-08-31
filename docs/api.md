@@ -802,7 +802,7 @@ Obtiene los alias conocidos de una cámara.
 
 ### GET `/api/infra/camaras/{camara_id}/registros`
 
-Obtiene registros operativos parciales de una cámara para la vista dedicada.
+Obtiene registros operativos de una cámara para la vista dedicada: auditoría manual de estado, baneos relacionados e ingresos/egresos reales.
 
 - **Autenticación:** requiere sesión activa.
 - **Respuesta 200:**
@@ -855,14 +855,58 @@ Obtiene registros operativos parciales de una cámara para la vista dedicada.
         "fecha_fin": null
       }
     ],
-    "placeholders": {
-      "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
-      "egresos": "Pendiente de integrar registros de egresos en una próxima iteración."
-    }
+    "ingresos": [
+      {
+        "id": 1,
+        "fecha_inicio": "2026-08-31T17:07:24.172940+00:00",
+        "fecha_fin": "2026-08-31T17:07:40.073927+00:00",
+        "tecnico_id": "U0AUB6CRE4A",
+        "cromo_botella_id": null
+      }
+    ]
   }
   ```
 
-- **Notas:** en esta iteración los registros de ingresos y egresos no se exponen todavía; el endpoint devuelve placeholders explícitos para que la UI pueda maquetar esa expansión futura.
+- **Notas:** `ingresos` (desde 2026-08-31) refleja movimientos reales de `app.ingresos` — se escriben
+  automáticamente desde el `IngresoListener` de Slack (`registrar_movimiento_ingreso()`, ver
+  `docs/infra.md` sección "Escritura de `Ingreso` sobre el grupo"), no hay alta manual. Incluye
+  ingresos de la cámara consultada **y** de todas sus botellas hermanas del mismo grupo
+  (`miembros_del_grupo`), ordenados por `fecha_inicio` descendente (nulls al final), límite 50. Una
+  fila con `fecha_fin: null` es un ingreso todavía abierto; `fecha_inicio: null` (posible sólo en un
+  Egreso sin Ingreso previo registrado) indica que se detectó la salida pero no la entrada.
+  `cromo_botella_id` viene poblado sólo cuando el movimiento fue sobre una botella Cromo específica
+  dentro del grupo, `null` cuando fue sobre la cámara padre. Reemplaza el bloque `placeholders`
+  (`ingresos`/`egresos` fijos) que existía antes de esa fecha.
+
+### GET `/api/infra/servicios/{servicio_id}/ingresos`
+
+Obtiene los registros de ingreso/egreso de técnico (Slack) a las cámaras que atraviesa un servicio, para la vista de Detalle de Servicio (nuevo, 2026-08-31).
+
+- **Autenticación:** requiere sesión activa.
+- **Parámetro de ruta:** `servicio_id` — acepta `servicio_id`, `numero_primer_servicio` o `numero_linea` (mismo lookup flexible que `GET /api/infra/servicios/{servicio_id}/odfs`, vía `_find_servicio_por_identificador_web`).
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "servicio_id": "2001",
+    "total": 1,
+    "ingresos": [
+      {
+        "id": 1,
+        "fecha_inicio": "2026-08-31T17:07:24.172940+00:00",
+        "fecha_fin": "2026-08-31T17:07:40.073927+00:00",
+        "tecnico_id": "U0AUB6CRE4A",
+        "cromo_botella_id": null,
+        "camara_id": 2724,
+        "camara_nombre": "Cra Ruta 8 Km 34 MALVINAS ARGENTINAS"
+      }
+    ]
+  }
+  ```
+
+- **Respuesta 404** (`{"error": "Servicio {servicio_id} no encontrado"}`) si el identificador no matchea ningún `Servicio`.
+- **Notas:** las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio()` (`core/services/protection_service.py`), que ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada. `total` es la cantidad de filas devueltas (post-`limit(100)`, no un total real contra todo lo que matchea — no asumir que sigue creciendo más allá de 100). Cada item lleva los mismos campos que `_serialize_camara_ingreso` (ver `GET /api/infra/camaras/{camara_id}/registros` arriba) más `camara_id`/`camara_nombre` de la cámara concreta a la que corresponde ese movimiento dentro del servicio. Consumido por `ServicioDetalleView.vue` (sección "Ingresos").
 
 ### GET `/api/infra/rutas/{ruta_id}/tracking`
 

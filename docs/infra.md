@@ -92,9 +92,17 @@ Nota (2026-08-14): la normalización extendida de arriba reduce la creación de 
 este tipo hacia adelante, pero no fusiona retroactivamente los ya existentes (como el caso id=1638) —
 eso sigue siendo responsabilidad del flujo manual de la sección "Dashboard Viewer de Cámaras" más abajo.
 
-**Escritura de `Ingreso` sobre el grupo**: fuera de alcance — la tabla `app.ingresos` no tiene ningún
-camino de escritura real hoy (0 filas, 0 endpoints), por lo que no hay nada que propagar todavía. Ver
-"Registros" más abajo, pestaña Ingresos placeholder.
+**Escritura de `Ingreso` sobre el grupo** (2026-08-31): ya existe camino de escritura real —
+`IngresoListener._registrar_movimiento_si_corresponde` (`modules/slack_baneo_notifier/listener.py`)
+llama a `registrar_movimiento_ingreso()` (`core/services/ingreso_service.py`) cada vez que un mensaje
+de Slack trae el campo `*Ingreso o Egreso*` del Workflow y matchea una `Camara`/`CromoBotella` real.
+Un "Ingreso" siempre crea fila nueva (`fecha_fin=NULL`); un "Egreso" cierra el `Ingreso` abierto más
+reciente que matchee `tecnico_id`+`camara_id`+`cromo_botella_id` (NULL-safe) o, si no hay ninguno,
+crea una fila huérfana con `fecha_inicio=NULL`. `Ingreso.camara_id` es siempre la cámara padre del
+grupo; `Ingreso.cromo_botella_id` (columna nueva, migración `20260831_02`) guarda la botella Cromo
+específica cuando aplica — por eso estas filas sí propagan correctamente sobre el grupo completo
+(cámara + botellas hermanas), consistente con `tiene_ingreso_activo` de `camara_estado_service.py`.
+Ver "Registros" más abajo, pestaña Ingresos ya poblada desde backend real (ya no placeholder).
 
 **Endpoint**: `GET /api/infra/camaras/{camara_id}/botellas` — devuelve las Botellas de una Cámara,
 unificando legado (self-FK de esta sección, lista vacía si `camara_id` es en sí una Botella) y Cromo
@@ -908,9 +916,11 @@ La vista dedicada realiza carga paralela contra endpoints same-origin del servic
 - `GET /api/infra/camaras/{id}/registros`
 - `GET/POST /api/infra/camaras/{id}/estado` para edición admin con CSRF
 
-En esta iteración, **Registros** muestra solo la lógica operativa ya existente:
+**Registros** muestra:
 
-- pestaña **Ingresos** estructurada sobre un arreglo reactivo vacío, lista para futura hidratación desde backend
+- pestaña **Ingresos** (desde 2026-08-31) poblada con los movimientos reales de `app.ingresos` del
+  grupo cámara+botellas hermanas (`_serialize_camara_ingreso` en `web/app/main.py`, consumido por
+  `ModalRegistros.vue` vía prop `ingresos`) — ver "Escritura de `Ingreso` sobre el grupo" más arriba
 - pestaña **Baneos** con historial ordenado por fecha de inicio descendente y accordions retraídos por defecto
 - auditoría manual de cambios de estado (`app.camaras_estado_auditoria`) como trazabilidad complementaria dentro de la pestaña de baneos
 
@@ -1030,7 +1040,7 @@ Descarga el TXT actual de una ruta. La vista dedicada lo usa desde la tarjeta **
 Obtiene los alias conocidos de una cámara desde `app.camara_alias`.
 
 ### GET /api/infra/camaras/{camara_id}/registros
-Obtiene registros operativos parciales: auditoría manual de estado, baneos relacionados y placeholders de ingresos/egresos.
+Obtiene registros operativos de la cámara: auditoría manual de estado, baneos relacionados e ingresos/egresos reales (`app.ingresos`, grupo cámara+botellas hermanas — ver detalle en `docs/api.md`).
 
 ### GET /api/infra/camaras/{camara_id}/botellas
 Obtiene las Botellas de una Cámara, unificando ambos orígenes: legado (self-FK, jerarquía Cámara/Botella de esta sección) + Cromo (`CromoBotella.camara_id`, vigentes). Cada ítem lleva `origen: "legado"|"cromo"`. Nunca aplica el filtro de "No operativa" — es un drill-down sobre un grupo ya identificado. Lista de legado vacía si `camara_id` es en sí una Botella legado.
