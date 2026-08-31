@@ -104,6 +104,14 @@ específica cuando aplica — por eso estas filas sí propagan correctamente sob
 (cámara + botellas hermanas), consistente con `tiene_ingreso_activo` de `camara_estado_service.py`.
 Ver "Registros" más abajo, pestaña Ingresos ya poblada desde backend real (ya no placeholder).
 
+Consecuencia para el flujo admin de borrado: `_bloqueo_camara()` en
+`core/services/camara_botella_delete_service.py` bloquea eliminar una `Camara` que tenga CUALQUIER fila
+`Ingreso` asociada (abierta o ya cerrada, sin distinción) — y por ser `eliminar_camara` todo-o-nada,
+ese único bloqueo aborta el borrado de todo el grupo (cámara + botellas hermanas), no sólo de la fila
+con el Ingreso. Antes de esta rama `app.ingresos` estaba siempre vacía, así que este gate nunca se
+disparaba en la práctica; ahora que hay escritura real, cualquier cámara/botella donde un técnico haya
+reportado un ingreso queda permanentemente indeletable vía "eliminar grupo" del panel admin.
+
 **Endpoint**: `GET /api/infra/camaras/{camara_id}/botellas` — devuelve las Botellas de una Cámara,
 unificando legado (self-FK de esta sección, lista vacía si `camara_id` es en sí una Botella) y Cromo
 (`CromoBotella.camara_id`, desde 2026-08-11, ver sección "Cámara padre para Botellas Cromo" más abajo).

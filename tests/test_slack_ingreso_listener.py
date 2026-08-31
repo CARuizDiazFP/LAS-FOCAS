@@ -164,6 +164,32 @@ class TestExtraerTipoMovimiento(unittest.TestCase):
         result = self.extraer(texto)
         self.assertEqual(result, "Ingreso")
 
+    def test_insensible_a_mayusculas_minusculas_normaliza_ingreso(self) -> None:
+        """Regresión: el regex es (?i) pero group(1) preserva el casing original de la fuente.
+
+        Si el Workflow de Slack llega a mandar 'ingreso' en minúsculas, el valor
+        crudo capturado no debe propagarse tal cual — debe normalizarse a
+        'Ingreso' exacto, porque `registrar_movimiento_ingreso` hace un chequeo
+        de string exacto y trata cualquier otra cosa como Egreso.
+        """
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+            "*Ingreso o Egreso*\ningreso\n"
+            "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Ingreso")
+
+    def test_insensible_a_mayusculas_minusculas_normaliza_egreso(self) -> None:
+        """Misma regresión que arriba, pero con 'EGRESO' en mayúsculas y para Egreso."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\nRuta 8 Km 34 MALVINAS ARGENTINAS\n"
+            "*Ingreso o Egreso*\nEGRESO\n"
+            "Persona que solicito La Autorizacion\n<@U0AUB6CRE4A|Rider Fernández>\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(result, "Egreso")
+
 
 # ─── Tests de extracción de Slack user ID de autorización ────────────────────
 

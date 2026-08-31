@@ -260,7 +260,13 @@ def extraer_tipo_movimiento(mensaje: str) -> str | None:
     """
     match = _RE_TIPO_MOVIMIENTO_WORKFLOW.search(mensaje)
     if match:
-        return match.group(1)
+        # El regex es (?i): group(1) preserva el casing tal como llegó en la fuente
+        # (ej. "ingreso", "INGRESO"), NO el casing literal del patrón. Normalizar acá
+        # es obligatorio porque `registrar_movimiento_ingreso` hace un chequeo de
+        # string exacto contra "Ingreso" y trata cualquier otro valor como Egreso —
+        # sin este .capitalize(), un "ingreso" en minúsculas del Workflow de Slack
+        # se registraría silenciosamente como Egreso.
+        return match.group(1).capitalize()
     return None
 
 
