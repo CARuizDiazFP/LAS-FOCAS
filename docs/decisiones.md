@@ -960,3 +960,16 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   `test_cromo_odf_conectores_ingesta_real_db.py`. Ejecutado con `superpowers:brainstorming`
   (arquitectónico, aprobado por secciones) seguido de implementación directa (sin
   subagent-driven-development, alcance ya bien acotado tras el brainstorming).
+- **Backfill retroactivo** (`scripts/cromo_backfill_conectores_odf.py`, mismo día, a pedido del
+  usuario): las ~7.955 ODFs ingeridas el 2026-08-28 (antes de que este submódulo existiera) no
+  tienen conectores hasta que se las reprocesa — mismo camino que `_procesar_odf_directo`
+  (`cliente.get_inner()` por ODF, sin re-tocar la fila propia de `cromo_odfs`), dry-run por
+  defecto, `--apply` explícito para persistir, `--solo-faltantes` para reanudar tras un corte.
+  Validado real contra Cromo (dry-run + `--apply` + `--solo-faltantes`, 10 ODFs reales de dev,
+  0 errores, hasta 288 conectores en una sola ODF). Estimación real de tiempo total para las
+  ~7.955: **varias horas** (una llamada de red por ODF, ~0,5-5 s cada una en la medición real) —
+  se recomienda correrlo detached (`docker exec -d`) y monitorear el log
+  (`Logs/dev/cromo_backfill_conectores_odf.log`, visible desde el host por el volumen ya montado
+  de `cromo_worker`), no en una sesión de terminal que pueda cortarse. Los dos helpers de
+  `_resolver_servicio_conectores`/`_mayor_menor_servicio_numero` de `ingesta.py` se hicieron
+  públicos (sin `_` inicial) al pasar a ser reusados por este script además de la ingesta.

@@ -1155,12 +1155,12 @@ async def test_procesar_odf_directo_sin_inner_no_llama_get_inner_ni_guarda_conec
 
 
 def test_mayor_menor_servicio_numero_compara_numericamente():
-    assert ingesta._mayor_menor_servicio_numero("41140", "61943") == ("61943", "41140")
-    assert ingesta._mayor_menor_servicio_numero("61943", "41140") == ("61943", "41140")
+    assert ingesta.mayor_menor_servicio_numero("41140", "61943") == ("61943", "41140")
+    assert ingesta.mayor_menor_servicio_numero("61943", "41140") == ("61943", "41140")
 
 
 def test_mayor_menor_servicio_numero_no_numerico_cae_a_string():
-    assert ingesta._mayor_menor_servicio_numero("O1C1", "A1B2") == ("O1C1", "A1B2")
+    assert ingesta.mayor_menor_servicio_numero("O1C1", "A1B2") == ("O1C1", "A1B2")
 
 
 @pytest.mark.asyncio
@@ -1171,7 +1171,7 @@ async def test_resolver_servicio_conectores_ambos_presentes_y_distintos():
     )
     sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943")]})
 
-    await ingesta._resolver_servicio_conectores(sesion, [conector])
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto == "61943"
     assert conector.servicio_id_historico == "41140"
@@ -1185,7 +1185,7 @@ async def test_resolver_servicio_conectores_ambos_presentes_y_coinciden_sin_hist
     )
     sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777260, "38105")]})
 
-    await ingesta._resolver_servicio_conectores(sesion, [conector])
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto == "38105"
     assert conector.servicio_id_historico is None
@@ -1199,7 +1199,7 @@ async def test_resolver_servicio_conectores_solo_atributo_sin_pelo():
     )
     sesion = _SesionFake()
 
-    await ingesta._resolver_servicio_conectores(sesion, [conector])
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto == "12345"
     assert conector.servicio_id_historico is None
@@ -1213,7 +1213,7 @@ async def test_resolver_servicio_conectores_libre_sin_ninguna_senal():
     )
     sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777270, None)]})
 
-    await ingesta._resolver_servicio_conectores(sesion, [conector])
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto is None
     assert conector.servicio_id_historico is None

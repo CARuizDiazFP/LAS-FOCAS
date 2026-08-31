@@ -484,6 +484,10 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     Endpoint `GET /api/infra/cromo/odfs/{n_id}/conectores`, vista dedicada
     `ConectoresOdfCromoView.vue` (`/infra/cromo/verificador/conectores?n_id=...`, mismo patrón que
     Empalmes de Botella), lanzada desde una card nueva en `OdfDetalleCromoView.vue`.
+  - **Backfill retroactivo**: `scripts/cromo_backfill_conectores_odf.py` reprocesa las ODFs ya
+    ingeridas antes de que este submódulo existiera (mismo camino que `_procesar_odf_directo`,
+    `get_inner()` por ODF). Dry-run por defecto, `--apply` para persistir, `--solo-faltantes` para
+    reanudar. Estimación real: varias horas para las ~7.955 ODFs (una llamada de red por objeto).
 
 ## Principios de diseño
 

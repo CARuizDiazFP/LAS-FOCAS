@@ -1,13 +1,13 @@
 # Nombre de archivo: test_cromo_odf_conectores_ingesta_real_db.py
 # Ubicación de archivo: tests/test_cromo_odf_conectores_ingesta_real_db.py
-# Descripción: Prueba de integración contra Postgres real — _resolver_servicio_conectores necesita el driver real para el `= ANY(:pelo_n_ids)` sobre bigint[]
+# Descripción: Prueba de integración contra Postgres real — resolver_servicio_conectores necesita el driver real para el `= ANY(:pelo_n_ids)` sobre bigint[]
 
 """Este archivo es de integración: necesita un Postgres real con el esquema `app.*` poblado
 (`cromo_pelos`, `cromo_odf_conectores`). Mismo motivo y mismo guard que
 `test_cromo_odf_inventario_real_db.py`: el workflow de CI corre `pytest -q tests` sin un servicio
 Postgres, así que acá fallaría por conexión, no por regresión.
 
-El caso central que justifica este archivo: `_resolver_servicio_conectores` arma
+El caso central que justifica este archivo: `resolver_servicio_conectores` arma
 `WHERE n_id = ANY(:pelo_n_ids)` sobre una columna `bigint` real — un mock nunca ejercita el binding
 real de un array de Python contra `bigint[]` vía asyncpg, ni el JOIN contra filas de `cromo_pelos`
 ya ingeridas por otra fase."""
@@ -43,7 +43,7 @@ _PELO_N_ID = 999_900_033
 def pelo_con_servicio_numero():
     """Un pelo real (mínimo: cable/tubo sin fila propia, mismo criterio "sin FK dura" del resto de
     Cromo) con `servicio_numero` ya parseado por regex, para que
-    `_resolver_servicio_conectores` lo encuentre vía JOIN real."""
+    `resolver_servicio_conectores` lo encuentre vía JOIN real."""
     with SessionLocal() as session:
         session.execute(
             text(
@@ -64,7 +64,7 @@ def pelo_con_servicio_numero():
 
 @pytest.mark.asyncio
 async def test_resolver_servicio_conectores_join_real_contra_cromo_pelos(pelo_con_servicio_numero):
-    from core.services.cromo.ingesta import _resolver_servicio_conectores
+    from core.services.cromo.ingesta import resolver_servicio_conectores
     from core.services.cromo.modelos import ConectorOdf
 
     conector = ConectorOdf(
@@ -79,7 +79,7 @@ async def test_resolver_servicio_conectores_join_real_contra_cromo_pelos(pelo_co
     )
 
     async with AsyncSessionLocal() as sesion:
-        await _resolver_servicio_conectores(sesion, [conector])
+        await resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto == "61943"
     assert conector.servicio_id_historico == "41140"
@@ -87,7 +87,7 @@ async def test_resolver_servicio_conectores_join_real_contra_cromo_pelos(pelo_co
 
 @pytest.mark.asyncio
 async def test_resolver_servicio_conectores_pelo_inexistente_no_revienta():
-    from core.services.cromo.ingesta import _resolver_servicio_conectores
+    from core.services.cromo.ingesta import resolver_servicio_conectores
     from core.services.cromo.modelos import ConectorOdf
 
     conector = ConectorOdf(
@@ -102,7 +102,7 @@ async def test_resolver_servicio_conectores_pelo_inexistente_no_revienta():
     )
 
     async with AsyncSessionLocal() as sesion:
-        await _resolver_servicio_conectores(sesion, [conector])
+        await resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto == "12345"
     assert conector.servicio_id_historico is None

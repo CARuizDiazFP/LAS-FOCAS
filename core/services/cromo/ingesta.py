@@ -472,7 +472,7 @@ _SQL_SERVICIO_NUMERO_PELOS = text(
 )
 
 
-def _mayor_menor_servicio_numero(a: str, b: str) -> tuple[str, str]:
+def mayor_menor_servicio_numero(a: str, b: str) -> tuple[str, str]:
     """(mayor, menor) entre dos identificadores de servicio — numéricamente si ambos son enteros
     puros, si no por comparación de string. Mismo criterio "MAX-based ID final" que ya usa
     `servicios_consolidacion_service._forma_canonica` para Servicios SLA, reimplementado acá
@@ -483,7 +483,7 @@ def _mayor_menor_servicio_numero(a: str, b: str) -> tuple[str, str]:
         return (a, b) if a >= b else (b, a)
 
 
-async def _resolver_servicio_conectores(sesion: AsyncSession, conectores: list[ConectorOdf]) -> None:
+async def resolver_servicio_conectores(sesion: AsyncSession, conectores: list[ConectorOdf]) -> None:
     """Completa `servicio_resuelto`/`servicio_id_historico` de cada conector, comparando el
     atributo directo de Cromo (id=62, ya en `servicio_numero_atributo`) contra
     `cromo_pelos.servicio_numero` (regex ya parseado sobre la descripción del pelo) del pelo
@@ -509,7 +509,7 @@ async def _resolver_servicio_conectores(sesion: AsyncSession, conectores: list[C
         if len(candidatos) == 1:
             conector.servicio_resuelto = candidatos[0]
             continue
-        mayor, menor = _mayor_menor_servicio_numero(numero_atributo, numero_regex)
+        mayor, menor = mayor_menor_servicio_numero(numero_atributo, numero_regex)
         conector.servicio_resuelto = mayor
         if mayor != menor:
             conector.servicio_id_historico = menor
@@ -563,7 +563,7 @@ async def _procesar_odf_directo(
                     conectores = cromo_parser.parse_odf_conectores(obj)
 
             if conectores:
-                await _resolver_servicio_conectores(sesion, conectores)
+                await resolver_servicio_conectores(sesion, conectores)
                 for conector in conectores:
                     await upsert_simple(sesion, CromoOdfConector, conector, CONECTOR_ODF_CAMPOS)
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página

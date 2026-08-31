@@ -6,7 +6,7 @@
 ingerido — distinto de `verificador.servicios_por_odf` (que atraviesa `cables_asociados` +
 regex sobre pelos sin pasar por la jerarquía de patcheras/conectores).
 
-`servicio_resuelto` ya viene calculado por la ingesta (`ingesta.py::_resolver_servicio_conectores`,
+`servicio_resuelto` ya viene calculado por la ingesta (`ingesta.py::resolver_servicio_conectores`,
 MAX entre el atributo directo de Cromo y el regex del pelo). Para Cliente/Estado, esta consulta NO
 reusa directamente `cromo_servicio_match` del pelo: cuando el atributo le "gana" al regex (el pelo
 matchea a un número MENOR que el resuelto), el match del pelo apuntaría a un servicio distinto del
