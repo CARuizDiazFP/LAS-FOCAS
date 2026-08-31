@@ -44,7 +44,7 @@
             class="cable-detalle-modal__extremo"
             type="button"
             :disabled="detalle.extremo_a.n_id == null"
-            @click="irABotella(detalle.extremo_a.n_id)"
+            @click="irAExtremo(detalle.extremo_a.n_id, detalle.extremo_a.clase)"
           >
             <span class="cable-detalle-modal__extremo-label">Extremo A</span>
             <strong>{{ detalle.extremo_a.nombre || '—' }}</strong>
@@ -53,7 +53,7 @@
             class="cable-detalle-modal__extremo"
             type="button"
             :disabled="detalle.extremo_b.n_id == null"
-            @click="irABotella(detalle.extremo_b.n_id)"
+            @click="irAExtremo(detalle.extremo_b.n_id, detalle.extremo_b.clase)"
           >
             <span class="cable-detalle-modal__extremo-label">Extremo B</span>
             <strong>{{ detalle.extremo_b.nombre || '—' }}</strong>
@@ -190,8 +190,16 @@ function formatearFechaStatus(fechaIso: string | null): string {
   return fecha.toLocaleString('es-AR');
 }
 
-function irABotella(nId: number | null): void {
+// Clase 69 = ODF en la taxonomía de Cromo (`core/services/cromo/ingesta.py::CLASE_ODF`) — el único
+// otro tipo de extremo posible además de Botella, submódulo ODFs (2026-08-28).
+const CLASE_ODF = 69;
+
+function irAExtremo(nId: number | null, clase: number | null): void {
   if (nId == null) return;
+  if (clase === CLASE_ODF) {
+    void router.push({ name: 'infra-cromo-odf-detalle', params: { nId: String(nId) } });
+    return;
+  }
   void router.push({ path: '/infra/cromo/verificador', query: { tipo: 'botella', n_id: String(nId) } });
 }
 

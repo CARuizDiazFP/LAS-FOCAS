@@ -835,10 +835,28 @@ _SQL_PELOS_SIN_MATCH = text(
     """
 )
 
+# Bug real (2026-08-31, ticket duplicidad Buscador/ODFs): sin la exclusión de abajo, cuando DOS filas
+# de `app.servicios` matchean `:numero` a la vez (una por `servicio_id`/`numero_primer_servicio`
+# literal, otra porque `:numero` quedó en su `alias_ids` tras una renumeración SLA), este `LIMIT 1`
+# sin `ORDER BY` devolvía consistentemente la fila "superada" (la que tiene el número como identidad
+# propia vieja) en vez de la fila vigente que lo absorbió como alias — verificado real contra
+# `lasfocasdev-postgres`: 642 pares en conflicto, ~11.000 pelos de `cromo_servicio_match` ya
+# matcheados contra la fila perdedora de cada par (caso concreto: servicio "41140→61943" de Banco
+# Comafi SA, fila vigente id=557 con `alias_ids={61943}`, vs. una fila `MANUAL` huérfana anterior
+# id=49 con `servicio_id='61943'` literal — todo pelo con `servicio_numero='61943'` matcheaba contra
+# la 49, sin cliente/estado real). La fila cuyo propio `servicio_id`/`numero_primer_servicio` ya fue
+# absorbido como alias de OTRA fila queda excluida acá — la absorción por `alias_ids` es la señal
+# autoritativa de que esa identidad "se mudó" a la fila vigente (mismo criterio que
+# `consolidar_identidad_servicio`), así que nunca debe ganarle a la fila que la absorbió.
 _SQL_BUSCAR_SERVICIO = text(
     """
-    SELECT id FROM app.servicios
-    WHERE servicio_id = :numero OR numero_primer_servicio = :numero OR :numero = ANY(alias_ids)
+    SELECT s.id FROM app.servicios s
+    WHERE (s.servicio_id = :numero OR s.numero_primer_servicio = :numero OR :numero = ANY(s.alias_ids))
+      AND NOT EXISTS (
+          SELECT 1 FROM app.servicios vigente
+          WHERE vigente.id <> s.id
+            AND (s.servicio_id = ANY(vigente.alias_ids) OR s.numero_primer_servicio = ANY(vigente.alias_ids))
+      )
     LIMIT 1
     """
 )

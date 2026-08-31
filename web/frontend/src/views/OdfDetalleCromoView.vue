@@ -101,7 +101,11 @@
             </thead>
             <tbody>
               <tr v-for="s in servicios" :key="`${s.servicio_id}-${s.pelo_n_id}`">
-                <td>{{ s.servicio_id_externo }}</td>
+                <td>
+                  <button class="odf-detalle-servicio-link" type="button" @click="irAServicioPorId(s.servicio_id_externo)">
+                    {{ s.servicio_id_externo }}
+                  </button>
+                </td>
                 <td>{{ s.nombre_cliente || s.cliente || '—' }}</td>
                 <td>{{ s.estado_servicio || '—' }}</td>
                 <td>{{ s.tipo_servicio || '—' }}</td>
@@ -118,7 +122,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { ApiError } from '../api/client';
 import {
@@ -129,6 +133,7 @@ import {
 } from '../api/cromo';
 
 const route = useRoute();
+const router = useRouter();
 
 const cargando = ref(true);
 const error = ref('');
@@ -166,6 +171,12 @@ function tipoElementoLabel(tipo: string): string {
   if (tipo === 'ODF') return 'ODF';
   if (tipo === 'EMPALME') return 'Empalme';
   return 'Sin clasificar';
+}
+
+// Mismo patrón que CableDetalleCromoView.vue::irAServicioPorId — navega al Detalle de Servicio por
+// el ID externo (`servicio_id_externo`, ya resuelto por `verificarServiciosPorOdf`).
+function irAServicioPorId(servicioIdExterno: string): void {
+  void router.push(`/servicios/ID/${encodeURIComponent(servicioIdExterno)}`);
 }
 
 async function cargarServicios(nId: number): Promise<void> {
@@ -387,6 +398,21 @@ onMounted(() => void cargar());
   font-weight: 500;
   color: color-mix(in srgb, var(--color-text) 60%, transparent);
   font-size: 12px;
+}
+
+.odf-detalle-servicio-link {
+  display: inline-block;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-brand-primary-tint);
+  color: var(--color-accent-200);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.odf-detalle-servicio-link:hover {
+  background: var(--color-brand-primary-soft);
 }
 
 .tipo-elemento-chip {

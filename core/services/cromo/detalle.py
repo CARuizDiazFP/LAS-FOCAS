@@ -80,18 +80,25 @@ class DetalleCable:
 # extremo_a_nombre/extremo_b_nombre vía JOIN a cromo_botellas, no las columnas crudas de cromo_cables
 # (at.34/at.37 del payload Cromo) — hallazgo real (Etapa 9c): at.37 nunca existe, Cromo manda ambos
 # nombres concatenados en at.34 únicamente. Ver el comentario extenso en inventario.py.
+#
+# Un extremo puede terminar en una ODF (`app.cromo_odfs`, clase 69) en vez de una Botella — tabla
+# separada desde el submódulo ODFs (2026-08-28), posterior a este JOIN. Bug real con datos de dev:
+# miles de cables con un extremo en una ODF quedaban en blanco/"—" sin este segundo JOIN, ver
+# inventario.py para el conteo exacto.
 _SQL_CABLE_DETALLE = text(
     """
     SELECT c.n_id, c.nombre, c.capacidad, c.capacidad_pelos, c.jerarquia, c.propietario, c.tendido,
            c.distancia_geo, c.distancia_real, c.id_legacy, c.notas,
            c.extremo_a_n_id, c.extremo_a_clase, c.extremo_a_legacy,
-           COALESCE(ba.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
+           COALESCE(ba.nombre, oa.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
            c.extremo_b_n_id, c.extremo_b_clase, c.extremo_b_legacy,
-           COALESCE(bb.nombre, c.extremo_b_nombre) AS extremo_b_nombre,
+           COALESCE(bb.nombre, ob.nombre, c.extremo_b_nombre) AS extremo_b_nombre,
            c.vigente
     FROM app.cromo_cables c
     LEFT JOIN app.cromo_botellas ba ON ba.n_id = c.extremo_a_n_id
     LEFT JOIN app.cromo_botellas bb ON bb.n_id = c.extremo_b_n_id
+    LEFT JOIN app.cromo_odfs oa ON oa.n_id = c.extremo_a_n_id
+    LEFT JOIN app.cromo_odfs ob ON ob.n_id = c.extremo_b_n_id
     WHERE c.n_id = :n_id
     """
 )

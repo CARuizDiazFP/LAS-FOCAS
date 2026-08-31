@@ -103,14 +103,20 @@ _COLUMNAS_SERVICIO = """
 # extremo_a_nombre/extremo_b_nombre vía JOIN a cromo_botellas, no las columnas crudas de cromo_cables
 # (at.34/at.37 del payload Cromo) — hallazgo real (Etapa 9c): at.37 nunca existe, Cromo manda ambos
 # nombres concatenados en at.34 únicamente. Ver el mismo comentario, más extenso, en inventario.py.
+#
+# Un extremo puede terminar en una ODF (`app.cromo_odfs`, clase 69) en vez de una Botella — tabla
+# separada desde el submódulo ODFs (2026-08-28), posterior a este JOIN. Ver inventario.py para el
+# conteo real de cables afectados.
 _SQL_CABLE_POR_N_ID = text(
     """
     SELECT c.n_id, c.nombre, c.capacidad,
-           COALESCE(ba.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
-           COALESCE(bb.nombre, c.extremo_b_nombre) AS extremo_b_nombre
+           COALESCE(ba.nombre, oa.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
+           COALESCE(bb.nombre, ob.nombre, c.extremo_b_nombre) AS extremo_b_nombre
     FROM app.cromo_cables c
     LEFT JOIN app.cromo_botellas ba ON ba.n_id = c.extremo_a_n_id
     LEFT JOIN app.cromo_botellas bb ON bb.n_id = c.extremo_b_n_id
+    LEFT JOIN app.cromo_odfs oa ON oa.n_id = c.extremo_a_n_id
+    LEFT JOIN app.cromo_odfs ob ON ob.n_id = c.extremo_b_n_id
     WHERE c.n_id = :n_id
     """
 )

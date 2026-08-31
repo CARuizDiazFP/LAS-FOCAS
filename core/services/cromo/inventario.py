@@ -57,6 +57,12 @@ class ResultadoBusquedaCables:
 # `extremo_b_n_id` sí da el nombre real y ya separado de cada botella (14.049 cables recuperables sólo
 # para extremo B). `COALESCE` cae al valor crudo de `cromo_cables` únicamente si la botella todavía no
 # bajó (referencia colgada, mismo criterio tolerante que `verificador.py`).
+#
+# Un extremo puede terminar en una ODF (`app.cromo_odfs`, clase 69) en vez de una Botella — tabla
+# separada desde el submódulo ODFs (2026-08-28), que no existía cuando se escribió el JOIN de arriba.
+# Bug real encontrado con datos de dev: 3.447 cables con extremo A y 3.695 con extremo B resuelven a
+# una ODF, no a una Botella — sin este segundo JOIN, `ba`/`bb` da NULL, el nombre crudo también suele
+# venir vacío (Cromo no lo manda para ODFs), y el extremo se muestra en blanco/"—" en el frontend.
 _FILTROS_SQL = """
     WHERE (CAST(:q AS text) IS NULL OR c.nombre ILIKE CAST(:q AS text))
       AND (CAST(:jerarquia AS text) IS NULL OR c.jerarquia ILIKE CAST(:jerarquia AS text))
@@ -84,6 +90,8 @@ _FILTROS_SQL = """
 _JOIN_EXTREMOS_SQL = """
     LEFT JOIN app.cromo_botellas ba ON ba.n_id = c.extremo_a_n_id
     LEFT JOIN app.cromo_botellas bb ON bb.n_id = c.extremo_b_n_id
+    LEFT JOIN app.cromo_odfs oa ON oa.n_id = c.extremo_a_n_id
+    LEFT JOIN app.cromo_odfs ob ON ob.n_id = c.extremo_b_n_id
 """
 
 _SQL_CONTAR = text(f"SELECT count(*) FROM app.cromo_cables c {_JOIN_EXTREMOS_SQL} {_FILTROS_SQL}")
@@ -92,8 +100,8 @@ _SQL_BUSCAR = text(
     f"""
     SELECT
         c.n_id, c.nombre, c.capacidad, c.capacidad_pelos, c.jerarquia, c.propietario,
-        COALESCE(ba.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
-        COALESCE(bb.nombre, c.extremo_b_nombre) AS extremo_b_nombre,
+        COALESCE(ba.nombre, oa.nombre, c.extremo_a_nombre) AS extremo_a_nombre,
+        COALESCE(bb.nombre, ob.nombre, c.extremo_b_nombre) AS extremo_b_nombre,
         c.vigente,
         (
             SELECT count(DISTINCT m.servicio_id)

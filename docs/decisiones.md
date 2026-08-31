@@ -812,3 +812,71 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   en la revisión final de rama completa, 11 commits propios). 1195 tests pasando, 4 fallos
   preexistentes no relacionados (falta el build de Vite en el entorno de test local, no en el
   contenedor real).
+
+## 2026-08-31 — Duplicidad de identidad de Servicios: causa raíz compartida por 3 bugs distintos
+
+- **Contexto:** Ticket con 4 síntomas reportados a la vez: (1) el servicio "61943" aparece dos veces
+  en el Buscador (tarjeta "FO" y tarjeta "SERVICIO"); (2) una ODF concreta del tracking de un
+  servicio (empalme 6642085) no aparecía en la sección "ODFs asociadas" de su Detalle de Servicio;
+  (3) el visor de Cables Cromo muestra "—" en el Extremo B cuando el cable termina en una ODF en vez
+  de una Botella; (4) el visor de ODFs Cromo detecta por regex el servicio "61943" en un Pelo pero
+  muestra Estado "DESCONOCIDO" y sin link navegable.
+- **Investigación (3 agentes en paralelo, systematic-debugging):** (3) es un bug de código aislado —
+  ver más abajo. (1), (2) y (4) resultaron ser el MISMO bug de datos visto desde tres ángulos
+  distintos: `app.servicios` tenía dos filas reales para el mismo servicio "41140→61943" (Banco
+  Comafi SA) — id=49 (`origen_datos=MANUAL`, creada por una subida de tracking físico anterior,
+  dueña del tracking real con la ODF del ticket) e id=557 (`origen_datos=INGEST_EXCEL`, roster SLA,
+  dueña del cliente/estado real, con "61943" sólo en `alias_ids` tras la renumeración) — nunca
+  fusionadas. El buscador las mostraba como dos tarjetas (sin deduplicar); el matcher de ingesta de
+  Cromo (`_SQL_BUSCAR_SERVICIO`, sin `ORDER BY`) resolvía siempre contra la 49 (sin cliente/estado
+  real, de ahí "DESCONOCIDO"); el Detalle de Servicio resolvía al revés, contra la 557 (sin tracking
+  propio, de ahí "sin ODFs detectadas"). Verificado real contra `lasfocasdev-postgres`: **642 pares
+  del mismo patrón** en dev (una fila cuyo `servicio_id`/`numero_primer_servicio` ya figura en el
+  `alias_ids` de otra), ~11.000 pelos de `cromo_servicio_match` ya matcheados contra la fila
+  perdedora de algún par, al menos 15 filas perdedoras con `rutas_servicio` propias como la 49. El
+  código ya tenía una decisión previa deliberada de no fusionar automáticamente dos registros reales
+  sin confirmación humana (`api/app/routes/servicios.py::ingest_servicios`, comentario "fusionar dos
+  registros reales sin confirmación humana está fuera de alcance a propósito") — se presentó el
+  hallazgo al usuario antes de tocar nada (ver `feedback_confrontar_conflicto_antes_de_revertir_decision_previa`).
+- **Decisión (confirmada por el usuario, opción "Fusión completa + fix de ingesta"):**
+  1. Fusión manual del par 49/557: reasignación de FKs (`rutas_servicio` CASCADE,
+     `cromo_servicio_match`/`servicio_empalme_association` sin cascada, auditadas contra
+     `information_schema` — mismo trío que ya reasigna la fusión de placeholders de
+     `ingest_servicios`), fusión de `alias_ids`, retiro de la fila 49, `servicio_id` final "61943" en
+     la 557 (mismo criterio MAX-based ID final de `consolidar_identidad_servicio`). Verificado en
+     vivo contra los 3 endpoints reales tras reconstruir `lasfocasdev-web`: buscador con 1 resultado,
+     `servicios_por_odf` con Cliente/Estado reales, `get_servicio_odfs` encuentra el empalme 6642085.
+  2. Fix hacia adelante en `core/services/cromo/ingesta.py::_SQL_BUSCAR_SERVICIO`: agregada exclusión
+     `NOT EXISTS` — una fila cuyo `servicio_id`/`numero_primer_servicio` ya fue absorbido como alias
+     de otra fila nunca gana el match, sin importar el orden físico de los datos. Test de regresión
+     real-DB en `tests/test_cromo_ingesta_ambiguedad_servicio_real_db.py` (TDD, falla sin el fix).
+  3. Los otros 641 pares (637 seguros 1-a-1 + 4 en 2 pares mutuos que necesitan revisión humana, ver
+     abajo) **no se tocaron** — queda `scripts/servicios_fusionar_identidades_duplicadas.py`
+     (dry-run por defecto, `--apply` explícito) escrito y auditado para una corrida posterior, sujeta
+     a aprobación separada del usuario.
+  4. Bug (3), aislado: `core/services/cromo/{inventario,detalle,verificador}.py` resolvían
+     `extremo_a`/`extremo_b` de cable con `LEFT JOIN` sólo a `cromo_botellas`, nunca a `cromo_odfs`
+     (tabla separada, más nueva) — corregido con un segundo `LEFT JOIN`. Frontend
+     (`CableDetalleCromoView.vue`) también enrutaba siempre a Botella al hacer click en un extremo;
+     ahora usa `clase === 69` para enrutar a la ODF. `OdfDetalleCromoView.vue` no linkeaba el número
+     de servicio de "Servicios asociados"; agregado el mismo patrón botón→`/servicios/ID/{id}` que ya
+     usa `CableDetalleCromoView.vue`. Test de regresión real-DB en
+     `tests/test_cromo_cable_extremo_odf_real_db.py` (TDD, falla sin el fix).
+- **Hallazgo colateral, un par MUTUO real (ids 30338/30339 y 30356/30357 en dev):** dos filas
+  `INGEST_EXCEL` (no un placeholder) se referencian una a la otra en `alias_ids` — dato cruzado real,
+  no una renumeración simple. `scripts/servicios_fusionar_identidades_duplicadas.py` detecta y
+  excluye explícitamente estos pares mutuos de la fusión automática (no confía en el
+  try/except de la corrida para "resolverlos" silenciosamente a medias).
+- **Alternativas:** mitigar sólo en lectura (combinar resultados de ambas filas al mostrar, sin
+  tocar la DB) — descartada como solución principal porque no arregla la ingesta futura y deja el
+  dato sucio creciendo; el usuario eligió la fusión real. Fusionar los 642 pares de una sola pasada
+  — descartado por el volumen y por los pares mutuos/ambiguos reales encontrados en la propia
+  muestra; se acotó a lo verificado a mano y se dejó el resto auditado para aprobación separada.
+- **Impacto:** `core/services/cromo/{inventario,detalle,verificador,ingesta}.py`,
+  `web/frontend/src/views/{CableDetalleCromoView,OdfDetalleCromoView}.vue`,
+  `scripts/servicios_fusionar_identidades_duplicadas.py` (nuevo, no ejecutado con `--apply`),
+  2 tests real-DB nuevos, 1 remediación de datos aplicada en dev (par 49/557). Suite completa:
+  1218 passed, 2 fallos preexistentes no relacionados (`test_cromo_odf_inventario_real_db.py`,
+  `buscar_odfs` con filtro `servicio` — "cannot extract elements from a scalar", confirmado
+  preexistente vía `git stash` antes/después de este trabajo, no investigado más por estar fuera de
+  alcance).

@@ -444,7 +444,14 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `CableDetalleCromoView.vue` y `VerificadorCromoView.vue` se resuelven en `core/services/cromo/
   {inventario,detalle,verificador}.py` vía `LEFT JOIN` a `cromo_botellas` (Etapa 9c) — no desde las
   columnas crudas `cromo_cables.extremo_a_nombre`/`extremo_b_nombre` (Cromo nunca manda un atributo
-  separado para el extremo B, ver §13.10 de la doc privada).
+  separado para el extremo B, ver §13.10 de la doc privada). **Bug real corregido (2026-08-31):** un
+  extremo también puede terminar en una ODF (`cromo_odfs`, clase 69, tabla separada desde este mismo
+  submódulo) — el `LEFT JOIN` de arriba, escrito antes de que existiera `cromo_odfs`, nunca la
+  contemplaba, así que 3.447 cables (extremo A) / 3.695 (extremo B) en dev quedaban con el nombre en
+  blanco. Los 3 archivos ahora agregan un segundo `LEFT JOIN` a `cromo_odfs` con el mismo criterio de
+  `COALESCE` (botella → ODF → nombre crudo). `CableDetalleCromoView.vue` también enruta el click del
+  extremo a `/infra/cromo/odfs/ID{n_id}` cuando `clase === 69`, en vez de asumir siempre Botella. Test
+  de regresión real-DB en `tests/test_cromo_cable_extremo_odf_real_db.py`.
 
 ## Principios de diseño
 
