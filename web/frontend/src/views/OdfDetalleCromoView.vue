@@ -77,6 +77,15 @@
 
         <article class="card odf-detalle-card">
           <header class="odf-detalle-card__header">
+            <h2>Conectores</h2>
+          </header>
+          <button class="odf-detalle-conectores-link" type="button" @click="irAConectores">
+            Ver tabla de conectores de esta ODF
+          </button>
+        </article>
+
+        <article class="card odf-detalle-card">
+          <header class="odf-detalle-card__header">
             <h2>Servicios asociados</h2>
             <span class="odf-detalle-chip">{{ servicios.length }} servicio(s)</span>
           </header>
@@ -177,6 +186,15 @@ function tipoElementoLabel(tipo: string): string {
 // el ID externo (`servicio_id_externo`, ya resuelto por `verificarServiciosPorOdf`).
 function irAServicioPorId(servicioIdExterno: string): void {
   void router.push(`/servicios/ID/${encodeURIComponent(servicioIdExterno)}`);
+}
+
+// Mismo patrón que VerificadorCromoView.vue::irAEmpalmes — navega a la tabla dedicada de
+// conectores/posiciones de patchera de esta ODF, no una tarjeta con datos acá.
+function irAConectores(): void {
+  void router.push({
+    path: '/infra/cromo/verificador/conectores',
+    query: { n_id: String(getOdfNId()) },
+  });
 }
 
 async function cargarServicios(nId: number): Promise<void> {
@@ -398,6 +416,23 @@ onMounted(() => void cargar());
   font-weight: 500;
   color: color-mix(in srgb, var(--color-text) 60%, transparent);
   font-size: 12px;
+}
+
+.odf-detalle-conectores-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.odf-detalle-conectores-link:hover {
+  border-color: var(--color-accent);
 }
 
 .odf-detalle-servicio-link {

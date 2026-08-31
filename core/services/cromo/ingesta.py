@@ -20,6 +20,7 @@ from core.services.cromo import parser as cromo_parser
 from core.services.cromo.alias_service import AliasBotella
 from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo.config import PSIZE_PERMITIDOS, get_cromo_config
+from core.services.cromo.modelos import ConectorOdf
 
 # CromoServicioMatch.servicio_id referencia "app.servicios.id" por nombre de tabla (string FK).
 # SQLAlchemy sólo puede resolverla si el modelo Servicio (db/models/infra.py) ya se registró en
@@ -33,6 +34,7 @@ from db.models.cromo import (
     CromoIngestaCorrida,
     CromoIngestaEvento,
     CromoOdf,
+    CromoOdfConector,
     CromoPelo,
     CromoServicioMatch,
     CromoTubo,
@@ -130,6 +132,18 @@ ODF_CAMPOS = (
     "longitud",
     "pts_raw",
     "cables_asociados",
+    "payload_raw",
+)
+CONECTOR_ODF_CAMPOS = (
+    "odf_n_id",
+    "bandeja_n_id",
+    "bandeja_nombre",
+    "bandeja_modelo",
+    "numero_conector",
+    "pelo_n_id",
+    "servicio_numero_atributo",
+    "servicio_resuelto",
+    "servicio_id_historico",
     "payload_raw",
 )
 
@@ -453,7 +467,56 @@ async def fase_fusiones(
             raise _CorridaCancelada()
 
 
+_SQL_SERVICIO_NUMERO_PELOS = text(
+    "SELECT n_id, servicio_numero FROM app.cromo_pelos WHERE n_id = ANY(:pelo_n_ids)"
+)
+
+
+def _mayor_menor_servicio_numero(a: str, b: str) -> tuple[str, str]:
+    """(mayor, menor) entre dos identificadores de servicio — numéricamente si ambos son enteros
+    puros, si no por comparación de string. Mismo criterio "MAX-based ID final" que ya usa
+    `servicios_consolidacion_service._forma_canonica` para Servicios SLA, reimplementado acá
+    puntual (dominio distinto, Cromo) en vez de importar esa función privada de otro módulo."""
+    try:
+        return (a, b) if int(a) >= int(b) else (b, a)
+    except ValueError:
+        return (a, b) if a >= b else (b, a)
+
+
+async def _resolver_servicio_conectores(sesion: AsyncSession, conectores: list[ConectorOdf]) -> None:
+    """Completa `servicio_resuelto`/`servicio_id_historico` de cada conector, comparando el
+    atributo directo de Cromo (id=62, ya en `servicio_numero_atributo`) contra
+    `cromo_pelos.servicio_numero` (regex ya parseado sobre la descripción del pelo) del pelo
+    conectado. Bug real de Cromo (2026-08-31, ticket): ambas señales pueden no coincidir — ej. un
+    conector con atributo id=62="41140" mientras el pelo ya matchea por regex a "61943" (el número
+    vigente real tras una renumeración SLA posterior al alta del atributo en Cromo). El mayor
+    de los dos gana como `servicio_resuelto`; el menor queda como `servicio_id_historico" sólo si
+    difieren. Una sola query batched para todos los conectores de la ODF (no una por conector)."""
+    pelo_n_ids = [c.pelo_n_id for c in conectores if c.pelo_n_id is not None]
+    servicio_numero_por_pelo: dict[int, Optional[str]] = {}
+    if pelo_n_ids:
+        filas = (await sesion.execute(_SQL_SERVICIO_NUMERO_PELOS, {"pelo_n_ids": pelo_n_ids})).all()
+        servicio_numero_por_pelo = {n_id: numero for n_id, numero in filas}
+
+    for conector in conectores:
+        numero_regex = (
+            servicio_numero_por_pelo.get(conector.pelo_n_id) if conector.pelo_n_id is not None else None
+        )
+        numero_atributo = conector.servicio_numero_atributo
+        candidatos = [n for n in (numero_atributo, numero_regex) if n]
+        if not candidatos:
+            continue
+        if len(candidatos) == 1:
+            conector.servicio_resuelto = candidatos[0]
+            continue
+        mayor, menor = _mayor_menor_servicio_numero(numero_atributo, numero_regex)
+        conector.servicio_resuelto = mayor
+        if mayor != menor:
+            conector.servicio_id_historico = menor
+
+
 async def _procesar_odf_directo(
+    cliente: CromoClient,
     sesion: AsyncSession,
     corrida_id: int,
     obj: dict[str, Any],
@@ -468,6 +531,16 @@ async def _procesar_odf_directo(
     (`continuar_corrida` carga un único `alias_por_origen` y se lo pasa por igual a las cuatro);
     no se usa acá porque ODF no tiene ningún campo que el mecanismo de alias de botella pueda
     redirigir (`cables_asociados` son n_ids de CABLE, no de botella).
+
+    Desde 2026-08-31 (ticket duplicidad Buscador/ODFs) también parsea y guarda los conectores de
+    patchera de la ODF, submódulo `cromo_odf_conectores`. Diagnóstico real: `inner[]` embebido en
+    el barrido de colección (`show=ALL`) sólo trae la forma liviana (bandeja/conector/`pelo_n_id`,
+    SIN el atributo id=62 de servicio directo) — ese atributo únicamente viaja en la respuesta de
+    `GET /db/objects/{id}/inner` (`cliente.get_inner`), una llamada POR OBJETO. Se hace ese segundo
+    llamado sólo si el barrido liviano ya mostró que la ODF tiene `inner` (evita el costo para las
+    que no tienen patchera en absoluto). Un fallo puntual de red en `get_inner` NO debe perder el
+    ODF ya parseado — se degrada a conectores sin atributo directo (sólo regex del pelo) en vez de
+    abortar todo el savepoint.
     """
     try:
         async with sesion.begin_nested():
@@ -476,6 +549,23 @@ async def _procesar_odf_directo(
             contadores.leidas += 1
             contadores.contar(accion)
             await registrar_evento(sesion, corrida_id, odf.n_id, CLASE_ODF, accion)
+
+            conectores: list[ConectorOdf] = []
+            if obj.get("inner"):
+                try:
+                    inner_completo = await cliente.get_inner(odf.n_id)
+                    obj_con_inner_completo = {**obj, "inner": inner_completo.get("response") or []}
+                    conectores = cromo_parser.parse_odf_conectores(obj_con_inner_completo)
+                except CromoClientError as exc:
+                    logger.warning(
+                        "action=cromo_ingesta evento=error_get_inner_odf n_id=%s error=%s", odf.n_id, exc
+                    )
+                    conectores = cromo_parser.parse_odf_conectores(obj)
+
+            if conectores:
+                await _resolver_servicio_conectores(sesion, conectores)
+                for conector in conectores:
+                    await upsert_simple(sesion, CromoOdfConector, conector, CONECTOR_ODF_CAMPOS)
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
         contadores.errores += 1
         n_id = obj.get("n_id") or obj.get("id")
@@ -496,19 +586,28 @@ async def fase_odfs(
     """FASE · ODFS (Task 3): barrido directo de clase 69, igual patrón que `fase_cables`/
     `fase_fusiones` — ODF no vive dentro del árbol de Botella, tiene su propia colección.
 
-    A diferencia de `fase_cables` (que sólo pide `["SHOW", "TIME"]`), acá se pide
-    `REL_ATTRIBUTE` desde el arranque: es lo que expone `tp[]` con los cables asociados, que
-    `cromo_parser.parse_odf` necesita para poblar `cables_asociados` (ver parser.py).
+    A diferencia de `fase_cables` (que sólo pide `["SHOW", "TIME"]`), acá se pide `show=["ALL"]`
+    desde el arranque — es lo único que expone tanto `tp[]` (cables asociados, ya usado por
+    `cromo_parser.parse_odf`) como `inner[]` (bandeja/conector/`pelo_n_id` de patchera, class
+    135/136, sumado 2026-08-31 — ver `cromo_parser.parse_odf_conectores`). Diagnóstico real
+    confirmó que `REL_ATTRIBUTE`/`INNER`/`CONTAINER` sueltos NO traen `inner[]`; sólo `ALL` lo
+    trae, con el costo de payload extra por objeto (`ll`, `extra`, `fo`, `srcs`, `is_meshed`) que
+    hoy no se usa activamente pero queda preservado en `payload_raw` para uso futuro (ej. geo vía
+    `ll`).
+
+    Ese `inner[]` embebido acá es la forma LIVIANA (sin el atributo id=62 de servicio directo) —
+    `_procesar_odf_directo` pide el detalle completo por objeto vía `cliente.get_inner()` cuando
+    hace falta (ver su docstring).
     """
     await _registrar_inicio_fase(sesion, corrida.id, "ODFS", "Barrido directo de ODFs (filter=69)")
     numero_pagina = 0
     async for pagina in cliente.iterar_coleccion(
-        str(CLASE_ODF), psize=psize, show=["SHOW", "REL_ATTRIBUTE", "TIME"], max_paginas=max_paginas
+        str(CLASE_ODF), psize=psize, show=["ALL"], max_paginas=max_paginas
     ):
         numero_pagina += 1
         objetos = pagina.get("response") or pagina.get("data") or []
         for obj in objetos:
-            await _procesar_odf_directo(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
+            await _procesar_odf_directo(cliente, sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
         sincronizar_contadores(corrida, contadores)
         await _registrar_pagina(sesion, corrida.id, "ODFS", numero_pagina, pagina, contadores)
         await sesion.commit()

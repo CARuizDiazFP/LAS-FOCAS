@@ -22,6 +22,7 @@ from core.services.cromo.parser import (
     parse_cable,
     parse_objeto,
     parse_odf,
+    parse_odf_conectores,
     parse_pagina,
     parse_pelo,
     resolver_lat_lon,
@@ -527,3 +528,158 @@ def test_clase_69_sigue_siendo_no_soportada_solo_si_no_estuviera_registrada():
     obj = {"id": 1, "n_id": 1, "class": 9998, "at": []}
     with pytest.raises(ClaseNoSoportadaError):
         parse_objeto(obj)
+
+
+# ── parse_odf_conectores() ───────────────────────────────────────────────────
+# `inner[]` sólo viaja si el barrido pide `show=ALL` — fixtures acá reproducen la forma real
+# confirmada contra Cromo (diagnóstico real, ticket 2026-08-31): clase 135 = Patchera/bandeja
+# (ej. "O-1238223-1", atributo id=89 = modelo), clase 136 = Posición Patchera/conector (atributo
+# id=81 = número, id=62 = servicio crudo sólo si está en uso, `parent` = n_id de su bandeja,
+# `tp[].id_to` = n_id del pelo conectado — acá `id_to` SÍ es el n_id estable, a diferencia del
+# "ID dual" de extremos de cable).
+
+_BANDEJA_1 = {
+    "id": 8539330,
+    "n_id": 8539330,
+    "class": 135,
+    "name": "O-1238223-1",
+    "at": [{"id": 89, "value": "SC-APCx24"}],
+}
+
+
+def test_parse_odf_conectores_sin_inner_devuelve_lista_vacia():
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": []}
+    assert parse_odf_conectores(obj) == []
+
+
+def test_parse_odf_conectores_resuelve_bandeja_por_parent():
+    conector = {
+        "id": 8539345,
+        "n_id": 8539345,
+        "class": 136,
+        "name": "15",
+        "parent": 8539330,
+        "at": [{"id": 81, "value": "15", "name": "nombre"}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, conector]}
+
+    conectores = parse_odf_conectores(obj)
+
+    assert len(conectores) == 1
+    c = conectores[0]
+    assert c.n_id == 8539345
+    assert c.odf_n_id == 800010
+    assert c.bandeja_n_id == 8539330
+    assert c.bandeja_nombre == "O-1238223-1"
+    assert c.bandeja_modelo == "SC-APCx24"
+    assert c.numero_conector == "15"
+
+
+def test_parse_odf_conectores_lee_pelo_n_id_de_tp_id_to():
+    con_tp = {
+        "id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330,
+        "at": [], "tp": [{"type": 0, "id_to": 6777271, "class": 130}],
+    }
+    sin_tp = {"id": 8539346, "n_id": 8539346, "class": 136, "name": "16", "parent": 8539330, "at": []}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, con_tp, sin_tp]}
+
+    conectores = {c.n_id: c for c in parse_odf_conectores(obj)}
+
+    assert conectores[8539345].pelo_n_id == 6777271
+    assert conectores[8539346].pelo_n_id is None
+
+
+def test_parse_odf_conectores_lee_atributo_servicio_id_62_solo_si_esta_en_uso():
+    en_uso = {
+        "id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330,
+        "at": [{"id": 81, "value": "15", "name": "nombre"}, {"id": 62, "value": "41140"}],
+    }
+    libre = {
+        "id": 8539344, "n_id": 8539344, "class": 136, "name": "14", "parent": 8539330,
+        "at": [{"id": 81, "value": "14", "name": "nombre"}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, en_uso, libre]}
+
+    conectores = {c.n_id: c for c in parse_odf_conectores(obj)}
+
+    assert conectores[8539345].servicio_numero_atributo == "41140"
+    assert conectores[8539344].servicio_numero_atributo is None
+    # Sin resolución todavía — parser puro, sin I/O: eso lo completa ingesta.py contra cromo_pelos.
+    assert conectores[8539345].servicio_resuelto is None
+    assert conectores[8539345].servicio_id_historico is None
+
+
+def test_parse_odf_conectores_bandeja_huerfana_no_revienta():
+    """Un conector cuyo `parent` no matchea ninguna bandeja presente en este mismo `inner[]` (dato
+    parcial/inconsistente de Cromo) no debe romper el parseo — sólo queda sin nombre/modelo de
+    bandeja, con el `bandeja_n_id` crudo preservado para auditoría."""
+    huerfano = {
+        "id": 8539399, "n_id": 8539399, "class": 136, "name": "99", "parent": 999999, "at": [],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [huerfano]}
+
+    conectores = parse_odf_conectores(obj)
+
+    assert len(conectores) == 1
+    assert conectores[0].bandeja_n_id == 999999
+    assert conectores[0].bandeja_nombre is None
+    assert conectores[0].bandeja_modelo is None
+
+
+def test_parse_odf_conectores_ignora_items_de_clase_desconocida():
+    otro = {"id": 1, "n_id": 1, "class": 999, "name": "no es conector ni bandeja"}
+    conector = {"id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330, "at": []}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [otro, _BANDEJA_1, conector]}
+
+    conectores = parse_odf_conectores(obj)
+
+    assert len(conectores) == 1
+    assert conectores[0].n_id == 8539345
+
+
+def test_parse_odf_conectores_forma_completa_de_get_inner_sin_campo_parent():
+    """Forma real de `cliente.get_inner()` (2026-08-31): ni bandeja ni conector traen `n_id` (sólo
+    `id`), y el conector no trae un campo `parent` propio — el padre viaja como atributo id=71
+    (string). Fixture calcada de la respuesta real para la ODF del ticket (n_id 6642085)."""
+    bandeja_completa = {
+        "id": 8539330, "class": 135, "name": "O-1238223-1",
+        "at": [
+            {"id": 70, "value": "6642085"},
+            {"id": 71, "value": "6642085"},
+            {"id": 79, "value": "O-1238223-1", "name": "nombre"},
+            {"id": 89, "value": "SC-APCx24", "internal": "sys"},
+        ],
+    }
+    conector_completo = {
+        "id": 8539345, "class": 136, "name": "15",
+        "tp": [{"type": 0, "id_to": 6777271, "class": 130}],
+        "at": [
+            {"id": 70, "value": "6642085"},
+            {"id": 71, "value": "8539330"},
+            {"id": 81, "value": "15", "name": "nombre"},
+            {"id": 62, "value": "41140"},
+        ],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [bandeja_completa, conector_completo]}
+
+    conectores = parse_odf_conectores(obj)
+
+    assert len(conectores) == 1
+    c = conectores[0]
+    assert c.n_id == 8539345
+    assert c.bandeja_n_id == 8539330
+    assert c.bandeja_nombre == "O-1238223-1"
+    assert c.bandeja_modelo == "SC-APCx24"
+    assert c.numero_conector == "15"
+    assert c.pelo_n_id == 6777271
+    assert c.servicio_numero_atributo == "41140"
+
+
+def test_parse_odf_conectores_payload_raw_es_copia_del_item_propio():
+    conector = {"id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330, "at": []}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, conector]}
+
+    resultado = parse_odf_conectores(obj)[0]
+
+    assert resultado.payload_raw == conector
+    assert resultado.payload_raw is not conector

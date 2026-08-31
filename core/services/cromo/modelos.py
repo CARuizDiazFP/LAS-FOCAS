@@ -118,6 +118,30 @@ class Pelo:
 
 
 @dataclass(slots=True)
+class ConectorOdf:
+    """Conector/posición de patchera de una ODF (class 136, "Posición Patchera"). Viaja embebido
+    en `inner[]` del propio objeto ODF (class 69, requiere `show=ALL`), nunca en un barrido propio.
+
+    `pelo_n_id` es el mismo `n_id` de `app.cromo_pelos` (confirmado real: acá `tp[].id_to` SÍ es
+    directamente el n_id estable, a diferencia del "ID dual" de extremos de cable).
+    `servicio_numero_atributo` es el atributo id=62 de Cromo (crudo, sólo si el conector está en
+    uso); `servicio_resuelto`/`servicio_id_historico` los completa `ingesta.py` después de
+    parsear (necesitan consultar `cromo_pelos.servicio_numero`, esto es un parser puro sin I/O)."""
+
+    n_id: int
+    odf_n_id: Optional[int]
+    bandeja_n_id: Optional[int]
+    bandeja_nombre: Optional[str]
+    bandeja_modelo: Optional[str]
+    numero_conector: Optional[str]
+    pelo_n_id: Optional[int]
+    servicio_numero_atributo: Optional[str]
+    servicio_resuelto: Optional[str] = None
+    servicio_id_historico: Optional[str] = None
+    payload_raw: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass(slots=True)
 class Fusion:
     """Fusión (class 132). Cuelga de `botella.inner[]`; `parent` apunta al `n_id` de la botella."""
 
@@ -131,4 +155,4 @@ class Fusion:
     longitud: Optional[float]
 
 
-__all__ = ["Botella", "Cable", "Odf", "Tubo", "Pelo", "Fusion"]
+__all__ = ["Botella", "Cable", "Odf", "ConectorOdf", "Tubo", "Pelo", "Fusion"]

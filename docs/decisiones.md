@@ -912,3 +912,51 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   (1 test nuevo, 6/6 passing), datos de dev remediados (637 pares fusionados). Pendiente: revisión
   manual de los 2 pares mutuos por el usuario/equipo de datos, no automatizable con el criterio
   actual del script.
+
+## 2026-08-31 (submódulo nuevo) — Conectores de ODF: mismo espíritu que Empalmes de Botella
+
+- **Contexto:** al revisar el visor de escritorio de Cromo Red para la ODF del ticket (n_id
+  6642085), el usuario notó que una ODF tiene una jerarquía interna de bandejas/patcheras
+  ("O-1238223-1"/"-2") y posiciones de conector, análoga a los empalmes internos de una Botella —
+  pero terminando en una posición de conector propia, no en un pelo de otro cable. Pidió indagar si
+  esa relación ya estaba en el `payload_raw` ya ingerido.
+- **Diagnóstico real (sólo lectura, `cliente.get_inner()`/`get_coleccion()` contra Cromo real):**
+  la relación NO estaba ingerida — `fase_odfs` nunca pidió `inner[]`. Confirmado que existe, vía
+  clases Cromo nuevas no catalogadas (135 "Patchera", 136 "Posición Patchera"). Dos hallazgos reales
+  que cambiaron el diseño sobre la marcha:
+  1. `show=["ALL"]` en el barrido de colección SÍ trae `inner[]`, pero en forma LIVIANA (sin el
+     atributo id=62 de servicio directo) — ese atributo sólo viaja en `GET /db/objects/{id}/inner`,
+     una llamada por objeto. Se agregó ese segundo llamado dentro de `_procesar_odf_directo`, sólo
+     cuando el barrido liviano ya mostró que la ODF tiene `inner` (confirmado con el usuario,
+     opción "agregar el llamado ahora" pese al costo de ~7.955 llamadas extra en una corrida
+     completa, antes que lanzar con el atributo siempre en NULL).
+  2. La respuesta de `get_inner()` tiene una forma distinta a la liviana: sin campo `parent` propio
+     (el padre viaja como atributo id=71, string) y sin `n_id` (sólo `id`) ni en bandejas ni en
+     conectores — encontrado recién al verificar en vivo contra la ODF real del ticket, después de
+     que los tests unitarios (con fixtures fabricadas a mano) pasaran en falso. `parse_odf_conectores`
+     soporta ambas formas.
+- **Decisión de diseño (brainstorming arquitectónico con el usuario, aprobado por secciones):**
+  tabla nueva `app.cromo_odf_conectores` (bandeja denormalizada, sin tabla propia — nunca se navega
+  "a" una bandeja sola). `pelo_n_id` referencia directo a `app.cromo_pelos.n_id` ya ingerido (sin
+  "ID dual" acá, confirmado real). Cuando el atributo directo de Cromo y el regex del pelo
+  coexisten y difieren, se guardan AMBOS: el mayor como `servicio_resuelto` (vigente), el menor como
+  `servicio_id_historico` (posible ID viejo) — mismo criterio MAX-based ID final de Servicios SLA,
+  decisión explícita del usuario. Cliente/Estado se resuelven contra `app.servicios` con el mismo
+  criterio anti-ambigüedad de `_SQL_BUSCAR_SERVICIO` (2026-08-31, entrada anterior) aplicado a
+  `servicio_resuelto` — no vía el match ya resuelto del pelo, que puede apuntar a un servicio
+  distinto cuando el atributo directo le gana al regex. Vista dedicada
+  `/infra/cromo/verificador/conectores` (mismo patrón que Empalmes de Botella), no una card inline
+  en el detalle de ODF.
+- **Verificado en vivo contra la ODF real del ticket** (tras reconstruir `lasfocasdev-web`/
+  `lasfocasdev-cromo-worker`): 48 conectores, 2 bandejas, conectores 15/16 con
+  `servicio_resuelto=61943`/`servicio_id_historico=41140`/Cliente "Banco Comafi SA"/Estado
+  "Activo" — exactamente el caso que motivó el ticket original.
+- **Impacto:** migración `20260831_01_cromo_odf_conectores.py`, `db/models/cromo.py`
+  (`CromoOdfConector`), `core/services/cromo/{modelos,parser,ingesta}.py`,
+  `core/services/cromo/odf_conectores.py` (nuevo), `web/app/main.py` (endpoint nuevo),
+  `web/frontend/src/{api/cromo.ts,router/index.ts,views/ConectoresOdfCromoView.vue (nuevo),
+  views/OdfDetalleCromoView.vue}`. Tests nuevos en `test_cromo_parser.py`, `test_cromo_ingesta.py`,
+  `test_cromo_odf_conectores.py`, `test_cromo_odf_conectores_real_db.py`,
+  `test_cromo_odf_conectores_ingesta_real_db.py`. Ejecutado con `superpowers:brainstorming`
+  (arquitectónico, aprobado por secciones) seguido de implementación directa (sin
+  subagent-driven-development, alcance ya bien acotado tras el brainstorming).

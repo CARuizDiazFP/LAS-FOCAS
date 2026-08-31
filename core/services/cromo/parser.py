@@ -11,7 +11,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Union
 
 from pyproj import Transformer
 
-from core.services.cromo.modelos import Botella, Cable, Fusion, Odf, Pelo, Tubo
+from core.services.cromo.modelos import Botella, Cable, ConectorOdf, Fusion, Odf, Pelo, Tubo
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,8 @@ _CLASE_TUBO = 129
 _CLASE_PELO = 130
 _CLASE_FUSION = 132
 _CLASE_ODF = 69
+_CLASE_PATCHERA = 135
+_CLASE_POSICION_PATCHERA = 136
 
 # Etiquetas de los `at[].id` ya conocidos por este parser — dispersos como números mágicos en
 # `parse_botella`/`parse_cable`/`parse_fusion` de más abajo, centralizados acá para que un consumidor
@@ -472,6 +474,69 @@ def parse_odf(obj: Mapping[str, Any]) -> Odf:
         cables_asociados=cables_asociados,
         payload_raw=dict(obj),
     )
+
+
+def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
+    """Parsea las Posiciones Patchera (class 136) embebidas en `inner[]` de una ODF (class 69) —
+    Cromo Clase 69, submódulo ODFs. La bandeja/Patchera padre (class 135) también viaja en el
+    mismo `inner[]`, sin jerarquía anidada.
+
+    Hallazgo real 2026-08-31, dos formas de `inner[]` según el endpoint de origen — nunca ambas a
+    la vez en el mismo item:
+    - Forma LIVIANA (embebida en `GET /db/objects/{id}` sin pedir el detalle aparte): el padre
+      viaja en un campo propio `parent` (n_id de la bandeja), con pocos atributos (nunca incluye
+      el atributo id=62 de servicio directo).
+    - Forma COMPLETA (`GET /db/objects/{id}/inner`, `cliente.get_inner()` — la que de verdad usa
+      `ingesta.py` para conectores, ver su docstring): NO tiene campo `parent` en absoluto; el
+      padre viaja como atributo `id=71` (string, hay que convertir a `int`). Es la única forma que
+      trae el atributo `id=62`.
+
+    Ni bandejas ni conectores traen `n_id` en la forma completa (sólo `id`, confirmado real) — se
+    usa `id` directo sin pasar por `_resolver_n_id` (que loguea warning por cada uno: acá es la
+    forma esperada del dato, no una anomalía).
+
+    Parser puro: no resuelve `servicio_resuelto`/`servicio_id_historico` (necesitan consultar
+    `app.cromo_pelos` ya ingerido, eso lo hace `ingesta.py` después de llamar acá). `[]` si el
+    objeto no trajo `inner` en absoluto."""
+    inner = obj.get("inner")
+    if not inner:
+        return []
+
+    odf_n_id = _resolver_n_id(obj)
+    bandejas = {
+        item.get("n_id") or item.get("id"): item
+        for item in inner
+        if item.get("class") == _CLASE_PATCHERA
+    }
+
+    conectores: list[ConectorOdf] = []
+    for item in inner:
+        if item.get("class") != _CLASE_POSICION_PATCHERA:
+            continue
+
+        bandeja_n_id = item.get("parent")
+        if bandeja_n_id is None:
+            valor_padre = atributo(item, 71)
+            bandeja_n_id = int(valor_padre) if valor_padre and valor_padre.isdigit() else None
+        bandeja = bandejas.get(bandeja_n_id)
+
+        tp = item.get("tp") or []
+        pelo_n_id = tp[0].get("id_to") if tp else None
+
+        conectores.append(
+            ConectorOdf(
+                n_id=item.get("n_id") or item.get("id"),
+                odf_n_id=odf_n_id,
+                bandeja_n_id=bandeja_n_id,
+                bandeja_nombre=(atributo(bandeja, 79) or bandeja.get("name")) if bandeja else None,
+                bandeja_modelo=atributo(bandeja, 89) if bandeja else None,
+                numero_conector=atributo(item, 81) or item.get("name"),
+                pelo_n_id=pelo_n_id,
+                servicio_numero_atributo=atributo(item, 62),
+                payload_raw=dict(item),
+            )
+        )
+    return conectores
 
 
 _DISPATCH: dict[int, Callable[[Mapping[str, Any]], ObjetoDominio]] = {

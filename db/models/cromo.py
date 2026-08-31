@@ -364,6 +364,43 @@ class CromoFusion(Base):
         return f"<CromoFusion n_id={self.n_id} botella_n_id={self.botella_n_id}>"
 
 
+class CromoOdfConector(Base):
+    """Conector/posición de patchera de una ODF (clase 136 de Cromo, "Posición Patchera"). No
+    cuelga del árbol de Cable/Botella — viaja embebido en `inner[]` del propio objeto ODF (clase
+    69, requiere `show=ALL` para que Cromo lo incluya). La "Patchera"/bandeja padre (clase 135,
+    ej. "O-1238223-1") se denormaliza acá (`bandeja_*`) en vez de tener tabla propia — nunca se
+    navega "a" una bandeja sola, sólo agrupa visualmente sus conectores.
+
+    `pelo_n_id` es el mismo `n_id` que ya existe en `app.cromo_pelos` (confirmado real: a
+    diferencia del "ID dual" de extremos de cable, acá `tp[].id_to` del conector SÍ es
+    directamente el `n_id` estable del pelo). `servicio_numero_atributo` es el atributo id=62 de
+    Cromo (vínculo directo servicio↔conector, sin regex) — puede no coincidir con
+    `cromo_pelos.servicio_numero` (regex sobre la descripción del pelo) por inconsistencias
+    propias de Cromo; `servicio_resuelto`/`servicio_id_historico` combinan ambos con el mismo
+    criterio MAX-based ID final ya usado en Servicios SLA, calculado en la ingesta."""
+
+    __tablename__ = "cromo_odf_conectores"
+    __table_args__ = {"schema": "app"}
+
+    n_id = Column(BigInteger, primary_key=True)
+    odf_n_id = Column(BigInteger, nullable=False, index=True)  # parent (raíz), sin FK dura
+    bandeja_n_id = Column(BigInteger, nullable=True)  # parent inmediato (Patchera, clase 135)
+    bandeja_nombre = Column(Text, nullable=True)  # ej. "O-1238223-1"
+    bandeja_modelo = Column(Text, nullable=True)  # at.89, ej. "SC-APCx24"
+    numero_conector = Column(Text, nullable=True)  # at.81 / name, ej. "15"
+    pelo_n_id = Column(BigInteger, nullable=True, index=True)  # tp[].id_to (clase 130), sin FK dura
+    servicio_numero_atributo = Column(Text, nullable=True)  # at.62 crudo, sólo si está en uso
+    servicio_resuelto = Column(Text, nullable=True)  # MAX(atributo, regex del pelo)
+    servicio_id_historico = Column(Text, nullable=True)  # MIN(...), sólo si difieren
+    payload_raw = Column(JSONB(astext_type=Text()), nullable=False)
+    vigente = Column(Boolean, nullable=False, server_default=true())
+    primera_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    ultima_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+
+    def __repr__(self) -> str:
+        return f"<CromoOdfConector n_id={self.n_id} odf_n_id={self.odf_n_id} numero_conector='{self.numero_conector}'>"
+
+
 class CromoBotellaAlias(Base):
     """Aliasing manual de un n_id de Cromo "junk/duplicado" — fusionado a un golden record o
     ignorado directamente. `id_cromo_origen`/`id_cromo_destino` son referencias blandas (mismo

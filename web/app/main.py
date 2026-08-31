@@ -5798,6 +5798,46 @@ async def cromo_verificador_por_odf_web(request: Request, odf_n_id: int) -> JSON
     )
 
 
+@app.get("/api/infra/cromo/odfs/{odf_n_id}/conectores")
+async def cromo_conectores_de_odf_web(request: Request, odf_n_id: int) -> JSONResponse:
+    """Conectores/posiciones de patchera de esta ODF, con Cliente/Estado ya resueltos (atributo
+    directo de Cromo + regex del pelo, combinados por MAX-based ID final — ver
+    `core/services/cromo/odf_conectores.py`). Sólo lectura, cualquier usuario autenticado."""
+    from core.services.cromo.odf_conectores import ObjetoNoEncontrado, conectores_de_odf
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await conectores_de_odf(sesion, odf_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "odf_n_id": resultado.odf_n_id,
+            "odf_nombre": resultado.odf_nombre,
+            "conectores": [
+                {
+                    "n_id": c.n_id,
+                    "bandeja_n_id": c.bandeja_n_id,
+                    "bandeja_nombre": c.bandeja_nombre,
+                    "numero_conector": c.numero_conector,
+                    "pelo_n_id": c.pelo_n_id,
+                    "pelo_numero": c.pelo_numero,
+                    "servicio_resuelto": c.servicio_resuelto,
+                    "servicio_id_historico": c.servicio_id_historico,
+                    "servicio_id_externo": c.servicio_id_externo,
+                    "nombre_cliente": c.nombre_cliente,
+                    "cliente": c.cliente,
+                    "estado_servicio": c.estado_servicio,
+                }
+                for c in resultado.conectores
+            ],
+        }
+    )
+
+
 @app.get("/api/infra/botellas/buscar")
 async def botellas_unificadas_buscar_web(
     request: Request,

@@ -15,6 +15,7 @@ const ServicioDetalleView = () => import('../views/ServicioDetalleView.vue');
 const CamaraDetailView = () => import('../views/CamaraDetailView.vue');
 const VerificadorCromoView = () => import('../views/VerificadorCromoView.vue');
 const EmpalmesBotellaCromoView = () => import('../views/EmpalmesBotellaCromoView.vue');
+const ConectoresOdfCromoView = () => import('../views/ConectoresOdfCromoView.vue');
 const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
@@ -178,6 +179,11 @@ const routes: RouteRecordRaw[] = [
         path: 'infra/cromo/odfs/ID:nId(\\d+)',
         name: 'infra-cromo-odf-detalle',
         component: OdfDetalleCromoView,
+      },
+      {
+        path: 'infra/cromo/verificador/conectores',
+        name: 'infra-cromo-verificador-conectores',
+        component: ConectoresOdfCromoView,
       },
       { path: 'infra/Botellas', name: 'infra-botellas', component: BotellasInventarioView },
       {

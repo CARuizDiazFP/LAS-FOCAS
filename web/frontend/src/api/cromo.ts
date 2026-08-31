@@ -406,6 +406,37 @@ export async function obtenerEmpalmesDeBotella(botellaNId: number): Promise<Crom
   return requestJson(`/api/infra/cromo/botellas/${botellaNId}/empalmes`);
 }
 
+// ── Conectores (posiciones de patchera) de una ODF ───────────────────────────
+// Vista dedicada `/infra/cromo/verificador/conectores?n_id=...` (mismo criterio que Empalmes de
+// Botella) — ver `core/services/cromo/odf_conectores.py`. `servicio_resuelto` combina el atributo
+// directo de Cromo con el regex del pelo (MAX-based ID final); `servicio_id_historico` sólo viene
+// poblado cuando ambas señales difieren.
+
+export interface CromoConectorOdf {
+  n_id: number;
+  bandeja_n_id: number | null;
+  bandeja_nombre: string | null;
+  numero_conector: string | null;
+  pelo_n_id: number | null;
+  pelo_numero: string | null;
+  servicio_resuelto: string | null;
+  servicio_id_historico: string | null;
+  servicio_id_externo: string | null;
+  nombre_cliente: string | null;
+  cliente: string | null;
+  estado_servicio: string | null;
+}
+
+export interface CromoConectoresOdf {
+  odf_n_id: number;
+  odf_nombre: string | null;
+  conectores: CromoConectorOdf[];
+}
+
+export async function obtenerConectoresDeOdf(odfNId: number): Promise<CromoConectoresOdf> {
+  return requestJson(`/api/infra/cromo/odfs/${odfNId}/conectores`);
+}
+
 
 // ── Visor en vivo de un elemento Cromo ───────────────────────────────────────
 // GET directo contra Cromo (nunca contra las tablas ya ingeridas) — para auditar inconsistencias sin

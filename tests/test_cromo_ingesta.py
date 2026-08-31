@@ -14,7 +14,16 @@ import pytest
 from core.services.cromo import ingesta
 from core.services.cromo.alias_service import AliasBotella
 from core.services.cromo.client import CromoClientError
-from db.models.cromo import CromoBotella, CromoCable, CromoFusion, CromoIngestaCorrida, CromoIngestaEvento, CromoOdf
+from core.services.cromo.modelos import ConectorOdf
+from db.models.cromo import (
+    CromoBotella,
+    CromoCable,
+    CromoFusion,
+    CromoIngestaCorrida,
+    CromoIngestaEvento,
+    CromoOdf,
+    CromoOdfConector,
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
 
@@ -1002,6 +1011,22 @@ async def test_fase_fusiones_procesa_pagina_y_suma_leidas():
 # ── ODFs (Task 3, submódulo ODFs, clase 69) ──────────────────────────────────
 
 
+class _ClienteGetInnerFake:
+    """Fake de `CromoClient.get_inner` — diagnóstico real (2026-08-31): el `inner[]` embebido en
+    el barrido de colección (`show=ALL`) es la forma LIVIANA, sin el atributo id=62 de servicio
+    directo; ese atributo sólo viaja en la respuesta de `GET /db/objects/{id}/inner`, una llamada
+    por objeto que `_procesar_odf_directo` hace aparte."""
+
+    def __init__(self, respuesta: Optional[dict] = None, excepcion: Optional[Exception] = None) -> None:
+        self._respuesta = respuesta if respuesta is not None else {"response": []}
+        self._excepcion = excepcion
+
+    async def get_inner(self, n_id: int) -> dict:
+        if self._excepcion is not None:
+            raise self._excepcion
+        return self._respuesta
+
+
 @pytest.mark.asyncio
 async def test_procesar_odf_directo_crea_y_registra_evento():
     obj = {
@@ -1014,8 +1039,9 @@ async def test_procesar_odf_directo_crea_y_registra_evento():
     }
     sesion = _SesionFake()
     contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteGetInnerFake()
 
-    await ingesta._procesar_odf_directo(sesion, corrida_id=1, obj=obj, contadores=contadores)
+    await ingesta._procesar_odf_directo(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
 
     assert contadores.leidas == 1
     assert contadores.creadas == 1
@@ -1033,13 +1059,176 @@ async def test_procesar_odf_directo_crea_y_registra_evento():
 
 
 @pytest.mark.asyncio
+async def test_procesar_odf_directo_guarda_conectores_via_get_inner_completo():
+    """El `inner[]` embebido en el barrido de colección es la forma LIVIANA (sin atributo id=62) —
+    sólo sirve para detectar "esta ODF tiene patchera" y disparar `cliente.get_inner()`, cuya
+    respuesta completa (con id=62) es la que efectivamente se parsea y guarda."""
+    obj = {
+        "id": 900010,
+        "n_id": 800010,
+        "class": 69,
+        "vmax": 1,
+        "at": [{"id": 34, "value": "ODF Calle Falsa 123"}],
+        # Liviano a propósito: sin atributo id=62 ni bandeja_modelo, sólo para que "inner" sea truthy.
+        "inner": [
+            {"id": 8539330, "n_id": 8539330, "class": 135, "name": "O-1238223-1"},
+            {"id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330},
+        ],
+    }
+    inner_completo = {
+        "response": [
+            {"id": 8539330, "n_id": 8539330, "class": 135, "name": "O-1238223-1", "at": [{"id": 89, "value": "SC-APCx24"}]},
+            {
+                "id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330,
+                "at": [{"id": 62, "value": "41140"}],
+                "tp": [{"id_to": 6777271, "class": 130}],
+            },
+        ]
+    }
+    cliente = _ClienteGetInnerFake(respuesta=inner_completo)
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943")]})
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_odf_directo(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    conectores = [o for o in sesion.agregados if isinstance(o, CromoOdfConector)]
+    assert len(conectores) == 1
+    c = conectores[0]
+    assert c.n_id == 8539345
+    assert c.odf_n_id == 800010
+    assert c.bandeja_nombre == "O-1238223-1"
+    assert c.bandeja_modelo == "SC-APCx24"
+    assert c.numero_conector == "15"
+    assert c.pelo_n_id == 6777271
+    assert c.servicio_numero_atributo == "41140"
+    # El regex del pelo ("61943") es mayor que el atributo ("41140") -> gana como resuelto.
+    assert c.servicio_resuelto == "61943"
+    assert c.servicio_id_historico == "41140"
+
+
+@pytest.mark.asyncio
+async def test_procesar_odf_directo_get_inner_falla_no_pierde_el_odf():
+    """Un fallo de red en `get_inner` (segunda llamada, sólo enriquece conectores) no debe hacer
+    perder el ODF ya parseado en la primera parte del savepoint — se degrada a conectores sin
+    atributo directo en vez de abortar todo."""
+    obj = {
+        "id": 900012, "n_id": 800012, "class": 69, "vmax": 1,
+        "at": [{"id": 34, "value": "ODF Con Falla De Red"}],
+        "inner": [{"id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330}],
+    }
+    cliente = _ClienteGetInnerFake(excepcion=CromoClientError("timeout"))
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_odf_directo(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    odfs_agregados = [o for o in sesion.agregados if isinstance(o, CromoOdf)]
+    assert len(odfs_agregados) == 1
+    assert odfs_agregados[0].n_id == 800012
+    # El conector se guarda igual, sin atributo directo (degradado a sólo la forma liviana).
+    conectores = [o for o in sesion.agregados if isinstance(o, CromoOdfConector)]
+    assert len(conectores) == 1
+    assert conectores[0].servicio_numero_atributo is None
+
+
+@pytest.mark.asyncio
+async def test_procesar_odf_directo_sin_inner_no_llama_get_inner_ni_guarda_conectores():
+    obj = {"id": 900011, "n_id": 800011, "class": 69, "vmax": 1, "at": [{"id": 34, "value": "ODF Sin Inner"}]}
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    llamadas: list[int] = []
+
+    class _ClienteEspia(_ClienteGetInnerFake):
+        async def get_inner(self, n_id: int) -> dict:
+            llamadas.append(n_id)
+            return await super().get_inner(n_id)
+
+    await ingesta._procesar_odf_directo(_ClienteEspia(), sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert llamadas == []
+    assert [o for o in sesion.agregados if isinstance(o, CromoOdfConector)] == []
+
+
+# ── Resolución de servicio de conectores (atributo vs. regex del pelo) ───────
+
+
+def test_mayor_menor_servicio_numero_compara_numericamente():
+    assert ingesta._mayor_menor_servicio_numero("41140", "61943") == ("61943", "41140")
+    assert ingesta._mayor_menor_servicio_numero("61943", "41140") == ("61943", "41140")
+
+
+def test_mayor_menor_servicio_numero_no_numerico_cae_a_string():
+    assert ingesta._mayor_menor_servicio_numero("O1C1", "A1B2") == ("O1C1", "A1B2")
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_ambos_presentes_y_distintos():
+    conector = ConectorOdf(
+        n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="15", pelo_n_id=6777271, servicio_numero_atributo="41140",
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943")]})
+
+    await ingesta._resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.servicio_resuelto == "61943"
+    assert conector.servicio_id_historico == "41140"
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_ambos_presentes_y_coinciden_sin_historico():
+    conector = ConectorOdf(
+        n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="5", pelo_n_id=6777260, servicio_numero_atributo="38105",
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777260, "38105")]})
+
+    await ingesta._resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.servicio_resuelto == "38105"
+    assert conector.servicio_id_historico is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_solo_atributo_sin_pelo():
+    conector = ConectorOdf(
+        n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="20", pelo_n_id=None, servicio_numero_atributo="12345",
+    )
+    sesion = _SesionFake()
+
+    await ingesta._resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.servicio_resuelto == "12345"
+    assert conector.servicio_id_historico is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_libre_sin_ninguna_senal():
+    conector = ConectorOdf(
+        n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="14", pelo_n_id=6777270, servicio_numero_atributo=None,
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777270, None)]})
+
+    await ingesta._resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.servicio_resuelto is None
+    assert conector.servicio_id_historico is None
+
+
+@pytest.mark.asyncio
 async def test_procesar_odf_directo_objeto_malformado_no_rompe_registra_error():
     obj = {"class": 69, "id": 1, "n_id": 1}  # sin vmax coherente: fuerza un camino de error real
     sesion = _SesionFake()
     contadores = ingesta.ContadoresCorrida()
     sesion._existentes[(CromoOdf, 1)] = object()  # sin atributo .vmax -> AttributeError real al comparar
 
-    await ingesta._procesar_odf_directo(sesion, corrida_id=1, obj=obj, contadores=contadores)
+    await ingesta._procesar_odf_directo(
+        _ClienteGetInnerFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
 
     assert contadores.errores == 1
     assert contadores.creadas == 0
@@ -1094,9 +1283,11 @@ async def test_fase_odfs_procesa_pagina_y_registra_creada_actualizada_sin_cambio
 
 
 @pytest.mark.asyncio
-async def test_fase_odfs_pide_rel_attribute_desde_el_arranque(monkeypatch):
-    """A diferencia de `fase_cables` (`["SHOW", "TIME"]`), `fase_odfs` debe pedir `REL_ATTRIBUTE`
-    desde la primera página — es lo que expone `tp[]` con los cables asociados (ver parser.py)."""
+async def test_fase_odfs_pide_show_all_desde_el_arranque(monkeypatch):
+    """A diferencia de `fase_cables` (`["SHOW", "TIME"]`), `fase_odfs` debe pedir `show=["ALL"]`
+    desde la primera página — es lo único que expone tanto `tp[]` (cables asociados) como
+    `inner[]` (conectores de patchera, class 135/136, sumado 2026-08-31); `REL_ATTRIBUTE` solo no
+    trae `inner[]` (confirmado real contra Cromo, ver docstring de `fase_odfs`)."""
     recibido: dict[str, Any] = {}
 
     class _ClienteCaptura:
@@ -1113,7 +1304,7 @@ async def test_fase_odfs_pide_rel_attribute_desde_el_arranque(monkeypatch):
     await ingesta.fase_odfs(_ClienteCaptura(), sesion, corrida, contadores, psize=5, max_paginas=None)
 
     assert recibido["filtro"] == str(ingesta.CLASE_ODF) == "69"
-    assert recibido["show"] == ["SHOW", "REL_ATTRIBUTE", "TIME"]
+    assert recibido["show"] == ["ALL"]
 
 
 @pytest.mark.asyncio
@@ -1128,7 +1319,7 @@ async def test_fase_odfs_pasa_alias_por_origen_a_procesar_odf_directo(monkeypatc
     alias_por_origen = {10178728: AliasBotella(accion="fusionar", id_cromo_destino=999999)}
     recibido: dict[str, Any] = {}
 
-    async def _procesar_fake(sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
+    async def _procesar_fake(cliente, sesion, corrida_id, obj, contadores, *, alias_por_origen=None):
         recibido["alias_por_origen"] = alias_por_origen
 
     monkeypatch.setattr(ingesta, "_procesar_odf_directo", _procesar_fake)

@@ -452,6 +452,38 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `COALESCE` (botella → ODF → nombre crudo). `CableDetalleCromoView.vue` también enruta el click del
   extremo a `/infra/cromo/odfs/ID{n_id}` cuando `clase === 69`, en vez de asumir siempre Botella. Test
   de regresión real-DB en `tests/test_cromo_cable_extremo_odf_real_db.py`.
+- **Submódulo Conectores de ODF (2026-08-31, `cromo_odf_conectores`)**: así como una Botella tiene
+  empalmes que conectan un pelo con OTRO cable, una ODF tiene conectores/posiciones de patchera
+  (Cromo clases 135 "Patchera"/bandeja y 136 "Posición Patchera") donde un pelo TERMINA, sin cruzar
+  a otro cable. Diagnóstico real (`cliente.get_inner(n_id)` contra la ODF del ticket, n_id
+  6642085): 2 bandejas ("O-1238223-1"/"O-1238223-2", modelo "SC-APCx24" en atributo id=89), 48
+  conectores en total, cada uno con `tp[].id_to` apuntando al mismo `n_id` que ya existe en
+  `app.cromo_pelos` (sin "ID dual" acá) y, sólo si está en uso, un atributo id=62 con el número de
+  servicio DIRECTO — sin necesidad de regex, pero con inconsistencias reales propias de Cromo: en
+  el caso del ticket, el atributo id=62 traía "41140" (el ID viejo) mientras el pelo ya matcheaba
+  por regex a "61943" (el vigente tras la renumeración SLA). Se combinan ambas señales tomando el
+  mayor como `servicio_resuelto` y el menor como `servicio_id_historico`, mismo criterio MAX-based
+  ID final ya usado en Servicios SLA.
+  - **Hallazgo real importante sobre el `inner[]`**: el `inner[]` embebido en el barrido de
+    colección (incluso con `show=ALL`) es una forma LIVIANA — sólo trae bandeja/conector/
+    `pelo_n_id`, NUNCA el atributo id=62. Ese atributo sólo viaja en la respuesta de
+    `GET /db/objects/{id}/inner` (`cliente.get_inner()`), una llamada POR OBJETO. `fase_odfs` hace
+    ese segundo llamado dentro de `_procesar_odf_directo` sólo cuando el barrido liviano ya mostró
+    que la ODF tiene `inner` (evita el costo para las que no tienen patchera). Un fallo de red en
+    ese segundo llamado no pierde el ODF ya parseado — se degrada a conectores sin atributo directo.
+  - **Segundo hallazgo real sobre la forma de `inner[]`**: la respuesta de `get_inner()` NO trae un
+    campo `parent` propio en cada item (a diferencia de la forma liviana) — el padre viaja como
+    atributo `id=71` (string). Tampoco trae `n_id` (sólo `id`) ni para bandejas ni para conectores.
+    `parse_odf_conectores` soporta ambas formas.
+  - Tabla nueva `app.cromo_odf_conectores` (migración `20260831_01`), parser
+    `core/services/cromo/parser.py::parse_odf_conectores`, resolución en
+    `core/services/cromo/ingesta.py::_resolver_servicio_conectores`, servicio de lectura
+    `core/services/cromo/odf_conectores.py::conectores_de_odf` (Cliente/Estado resueltos contra
+    `app.servicios` con el mismo criterio anti-ambigüedad de `_SQL_BUSCAR_SERVICIO`, no vía el
+    match del pelo — pueden apuntar a servicios distintos si el atributo le "gana" al regex).
+    Endpoint `GET /api/infra/cromo/odfs/{n_id}/conectores`, vista dedicada
+    `ConectoresOdfCromoView.vue` (`/infra/cromo/verificador/conectores?n_id=...`, mismo patrón que
+    Empalmes de Botella), lanzada desde una card nueva en `OdfDetalleCromoView.vue`.
 
 ## Principios de diseño
 
