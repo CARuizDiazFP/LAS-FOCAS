@@ -973,3 +973,52 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   de `cromo_worker`), no en una sesión de terminal que pueda cortarse. Los dos helpers de
   `_resolver_servicio_conectores`/`_mayor_menor_servicio_numero` de `ingesta.py` se hicieron
   públicos (sin `_` inicial) al pasar a ser reusados por este script además de la ingesta.
+
+## 2026-08-31 (histórico de IDs + estado Baja/Activo) — Alias físico filtrado del histórico de IDs; catch-up histórico de Excel ya no degrada un servicio Activo
+
+- **Contexto:** el usuario reportó, sobre `ServicioDetalleView.vue`, que (1) el bloque "Histórico de
+  IDs" mostraba un alias raro tipo "C2" intercalado entre dos IDs numéricos, y (2) muchos servicios
+  figuran "Baja" cuando en realidad están de alta. Investigado con `superpowers:systematic-debugging`.
+- **Bug 1 (confirmado, fixeado)**: `Servicio.alias_ids` mezcla dos dominios sin distinguirlos — IDs
+  numéricos históricos de línea (los que arma `consolidar_identidad_servicio` en la ingesta SLA, ver
+  entrada 2026-08-26) y alias físicos de tracking FO tipo "C2"/"O1C1" que
+  `core/services/infra_service.py::execute_upgrade`/`_action_confirm_upgrade` agregan al mismo array
+  al confirmar un upgrade de pelo/hilo (extraídos del nombre del archivo de tracking subido). El
+  computed `historicoIds` de `ServicioDetalleView.vue` (Tarea 9 del plan de trazabilidad de IDs,
+  commit `41e7e71`) concatenaba todo `alias_ids` sin filtrar. Fix: filtrar a sólo valores `/^\d+$/`
+  antes de armar la cadena — un alias físico no es un ID de línea. Fix de presentación puro (no toca
+  DB), corrige retroactivamente todos los servicios con este patrón apenas se reconstruye
+  `lasfocasdev-web`.
+- **Bug 2 (investigado a fondo, SIN causa de código encontrada, NO fixeado retroactivamente sobre los
+  datos ya persistidos)**: `estado_servicio` es pass-through puro del último Excel SLA ingerido — sin
+  transformación/normalización/mapeo erróneo en todo el pipeline (verificado exhaustivo, back y
+  front). Encontrada una correlación real (65% de los "Baja" en dev tienen historial de upgrade de
+  línea vs 29.4% de los "Activo"), pero no prueba por sí sola un bug de código — también es
+  consistente con "los servicios más viejos churnean más" como patrón de negocio normal. Sólo 5 filas
+  en dev tienen una contradicción directa y verificable entre subsistemas (SLA dice Baja, pero el
+  módulo de tracking de Infra registró actividad física reciente) — el servicio del ejemplo original
+  del usuario es una de esas 5, pero no explica el patrón masivo. `app.servicios` no tiene columnas de
+  fecha para evaluar antigüedad del dato, y sólo hay un Excel real en el repo (todo "Activo", sin ese
+  servicio) — no hay forma de re-derivar retroactivamente cuáles de los ~4.534 "Baja" actuales son
+  incorrectos sin una fuente de verdad externa.
+- **Regla de negocio nueva, confirmada por el usuario (hacia adelante, no retroactiva)**: un Excel que
+  se ingiere y no aporta el ID de línea más alto ya conocido para esa familia (ej. un archivo
+  histórico subido más adelante para completar el encadenado de IDs) no puede degradar un servicio ya
+  "Activo" — sólo completa/relaciona el ID en `alias_ids`. Si el Excel sí aporta un ID más alto que el
+  conocido, es la fuente más vigente y su estado se respeta tal cual (incluida una "Baja" legítima).
+  Implementado en `core/services/servicios_consolidacion_service.py`: `IdentidadConsolidada` gana el
+  campo `avanza_por_excel: bool`, y una función pura nueva `resolver_estado_servicio(estado_actual,
+  estado_excel, avanza_identidad)`. Wireado en `api/app/routes/servicios.py::ingest_servicios`
+  (`existentes_stmt` ahora también trae `estado_servicio`). Ver `docs/db.md`, tabla `servicios`.
+- **Verificación:** TDD real — tests unitarios en `tests/test_servicios_consolidacion_service.py`
+  (RED confirmado con `ImportError` antes de implementar), 2 tests de integración nuevos en
+  `tests/test_servicios_ingest_routes.py` contra Postgres real, RED confirmado con `git stash` del
+  wiring del endpoint. Suite completa: 1281 passed, sólo 2 fallos preexistentes no relacionados
+  (`test_cromo_odf_inventario_real_db.py`, confirmado con el mismo `git stash`). E2E real contra
+  `lasfocasdev-api`/`-web` reconstruidos: servicio Activo con ID conocido mayor, ingesta de un Excel
+  con sólo un ID menor y "Baja" → quedó "Activo", el ID menor se completó en `alias_ids`. Datos de
+  prueba limpiados de dev al terminar.
+- **Pendiente real, no resuelto:** los ~4.534 servicios ya marcados "Baja" en dev siguen así — la
+  regla nueva sólo protege ingestas futuras. Si en algún momento se dispone de un Excel SLA actual
+  para re-ingestar, esa corrida quedaría protegida por esta regla y corregiría cualquier "Baja"
+  desactualizado de las familias que ese archivo cubra.

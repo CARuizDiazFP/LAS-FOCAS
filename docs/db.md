@@ -121,7 +121,7 @@ filas legado — no removibles sin recrear el tipo**:
 | `localidad`           | String(128)    | Localidad del servicio. |
 | `provincia`           | String(128)    | Provincia del servicio. |
 | `direccion_2`         | String(255)    | Dirección complementaria. |
-| `estado_servicio`     | String(128), index | Estado actual informado en ingesta SLA. |
+| `estado_servicio`     | String(128), index | Estado informado en la última ingesta SLA que lo tocó — pass-through directo del Excel, salvo la protección contra catch-up histórico descripta abajo (2026-08-31). |
 | `cliente`             | String(255)    | Nombre del cliente (opcional). |
 | `categoria`           | Integer, `NOT NULL DEFAULT 6`, `CHECK BETWEEN 0 AND 6` | **Nivel Cliente del Excel SLA** ("C0" a "C6", columna "Nivel Cliente"), repurpuesto desde 2026-08-26 — antes era una prioridad de reporting manual sin relación con el Excel. Se alimenta en cada `POST /servicios/ingest` (validado contra el mismo rango 0-6 antes del upsert; un valor fuera de rango degrada al valor previo y queda loggeado, no tumba la ingesta) y sigue siendo editable a mano vía `PATCH /servicios/{id}/categoria`/`PATCH /servicios/bulk-categoria` — una edición manual queda pisada por la próxima ingesta real, comportamiento aceptado explícitamente (no tiene mecanismo de override como `es_verificable_override`). Los valores legacy (0 = placeholder Cromo, 6 = sin categorizar) se dejan como están hasta que llegue un Excel real para esa fila — sin backfill retroactivo. El filtro default del listado (`ServiciosView.vue`) es "sin filtro" (antes `categoria=6`), para no ocultar filas tras la primera ingesta real. |
 | `es_verificable`      | Boolean, `NOT NULL DEFAULT false` | `True` si `tipo_servicio` ∈ {INT, RPV, ISI, ISIS, TLS, EWS} (`core/services/servicios_consolidacion_service.py::TIPOS_SERVICIO_VERIFICABLES`). Recalculado en cada ingesta SLA salvo que `es_verificable_override` no sea NULL. Desde 2026-08-26 (migración `20260825_02`, backfill inicial por `tipo_servicio` sobre las filas existentes). |
@@ -138,6 +138,18 @@ actuales) — `core/services/servicios_consolidacion_service.py::consolidar_iden
 entero nunca coexisten en el resultado). El ganador se escribe en `servicio_id` (el mismo campo que
 ya leen el bot de Slack "Validador de Cables" y `CableDetalleCromoView.vue`, sin cambios en esos
 módulos) y todo lo superado queda en `alias_ids`.
+
+**`estado_servicio` no se degrada por un catch-up histórico de Excel** (2026-08-31): `consolidar_identidad_servicio`
+también devuelve `avanza_por_excel` (bool) — si ESTE Excel aporta el ID de línea más alto conocido de
+la familia, o si ese máximo ya estaba en la DB antes de esta ingesta (típicamente un archivo viejo
+subido después para completar el histórico de IDs). `resolver_estado_servicio` (mismo módulo) usa ese
+flag: cuando `avanza_por_excel=False` y el `estado_servicio` ya persistido es `"Activo"`, el Excel NO
+puede degradarlo a otro valor — sólo el ID entra a `alias_ids` como de costumbre. Cuando el Excel sí
+avanza la identidad, es la fuente más vigente conocida y su `estado_servicio` se respeta tal cual
+(incluida una "Baja" legítima). Regla de negocio confirmada por el usuario tras reportar servicios
+"Baja" que en realidad estaban activos; investigación completa (sin causa de código para el dato ya
+persistido, sólo esta protección hacia adelante) en `docs/decisiones.md`, entrada 2026-08-31 (histórico
+de IDs + estado Baja/Activo).
 
 **Fusión de placeholders Cromo al liberar un `servicio_id` ya ocupado** (2026-08-26): como
 `servicio_id` es `UNIQUE`, el ID final calculado puede coincidir con el de OTRA fila ya existente —
