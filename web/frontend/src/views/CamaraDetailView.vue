@@ -86,7 +86,7 @@
           <button class="camara-detail-card" type="button" @click="registrosModalOpen = true">
             <span class="camara-detail-card__eyebrow">Registros</span>
             <strong>{{ registrosCount }}</strong>
-            <p>Alterna entre ingresos y baneos. Los baneos arrancan retraídos y los ingresos quedan listos para hidratar cuando exista backend dedicado.</p>
+            <p>Alterna entre ingresos y baneos. Los baneos arrancan retraídos.</p>
           </button>
 
           <button class="camara-detail-card" type="button" @click="serviciosModalOpen = true">
@@ -142,7 +142,7 @@
       :contexto="registros.contexto"
       :baneos="registros.baneos"
       :auditoria="registros.auditoria"
-      :placeholders="registros.placeholders"
+      :ingresos="registros.ingresos"
       @close="registrosModalOpen = false"
     />
 
@@ -244,11 +244,19 @@ interface RegistrosAuditoria {
   created_at: string | null;
 }
 
+interface RegistrosIngreso {
+  id: number;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
+}
+
 interface RegistrosPayload {
   contexto: RegistrosContexto | null;
   baneos: RegistrosBaneo[];
   auditoria: RegistrosAuditoria[];
-  placeholders: { ingresos: string; egresos: string };
+  ingresos: RegistrosIngreso[];
 }
 
 const route = useRoute();
@@ -263,10 +271,7 @@ const registros = ref<RegistrosPayload>({
   contexto: null,
   baneos: [],
   auditoria: [],
-  placeholders: {
-    ingresos: 'Pendiente de integrar registros de ingresos en una próxima iteración.',
-    egresos: 'Pendiente de integrar registros de egresos en una próxima iteración.',
-  },
+  ingresos: [],
 });
 
 const loading = ref(true);
@@ -283,7 +288,9 @@ const eliminarErrorMsg = ref('');
 const eliminarBloqueos = ref<BloqueoEliminacion[]>([]);
 
 const serviciosCount = computed(() => new Set((camara.value?.rutas ?? []).map((ruta) => ruta.servicio_id)).size);
-const registrosCount = computed(() => registros.value.baneos.length + registros.value.auditoria.length);
+const registrosCount = computed(
+  () => registros.value.baneos.length + registros.value.auditoria.length + registros.value.ingresos.length,
+);
 
 function statusClass(status: string): string {
   const normalized = (status || 'LIBRE').toLowerCase();
@@ -334,7 +341,7 @@ async function loadCamaraDetail(): Promise<void> {
       contexto: registrosData.contexto ?? null,
       baneos: registrosData.baneos ?? [],
       auditoria: registrosData.auditoria ?? [],
-      placeholders: registrosData.placeholders ?? registros.value.placeholders,
+      ingresos: registrosData.ingresos ?? [],
     };
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);

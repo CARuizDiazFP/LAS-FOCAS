@@ -172,9 +172,18 @@
             <small>Trazabilidad</small>
           </header>
           <div class="servicio-detalle__hairline"></div>
-          <p class="servicio-detalle__kv-text">
-            Contenedor preparado para registrar ingresos a cámaras por las que tributa el servicio, con trazabilidad operativa.
+
+          <p v-if="ingresosLoading" class="servicio-detalle__kv"><span>Ingresos</span><span>Cargando...</span></p>
+          <p v-else-if="ingresosError" class="servicio-detalle__kv is-error"><span>Ingresos</span><span>{{ ingresosError }}</span></p>
+          <p v-else-if="ingresos.length === 0" class="servicio-detalle__kv-text">
+            Sin ingresos registrados para este servicio.
           </p>
+          <template v-else>
+            <p v-for="ingreso in ingresos" :key="ingreso.id" class="servicio-detalle__kv">
+              <span>{{ ingreso.camara_nombre || `Cámara ${ingreso.camara_id}` }}</span>
+              <span>{{ formatRangoIngreso(ingreso) }} · {{ ingreso.tecnico_id || 'Técnico sin identificar' }}</span>
+            </p>
+          </template>
 
           <div class="servicio-detalle__panel-actions">
             <button class="servicio-detalle__panel-link" type="button" disabled title="Próximamente">Registrar ingreso</button>
@@ -359,6 +368,25 @@ interface InfraOdfsResponse {
   rutas: InfraOdfRuta[];
 }
 
+// Ingresos técnicos (Slack) a las cámaras que atraviesa el servicio. `tecnico_id` es un id crudo
+// de usuario de Slack (p. ej. "U0AUB6CRE4A"), no un nombre resuelto — se muestra tal cual.
+interface InfraServicioIngreso {
+  id: number;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
+  camara_id: number;
+  camara_nombre: string | null;
+}
+
+interface InfraServicioIngresosResponse {
+  status: string;
+  servicio_id: string;
+  total: number;
+  ingresos: InfraServicioIngreso[];
+}
+
 interface ReportHistoryItem {
   id: number;
   status: string;
@@ -387,6 +415,10 @@ const totalOdfs = ref(0);
 // Por defecto sólo se ven los empalmes que son ODF (es_transito === true); tildar el checkbox
 // revela también los empalmes simples (cámaras de paso, etc.) del tracking.
 const showAllEmpalmes = ref(false);
+
+const ingresosLoading = ref(false);
+const ingresosError = ref('');
+const ingresos = ref<InfraServicioIngreso[]>([]);
 
 const reportesLoading = ref(false);
 const reportesError = ref('');
@@ -505,6 +537,7 @@ async function loadDetalle(): Promise<void> {
       loadFoResumen(response.id_origen),
       loadReportesResumen(),
       loadOdfsAsociadas(response.id_origen),
+      loadIngresosAsociados(response.id_origen),
     ]);
 
     const idOrigen = response.id_origen.trim();
@@ -567,6 +600,17 @@ function formatReporteSummary(item: ReportHistoryItem | null): string {
     ? new Date(item.started_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })
     : 'sin fecha';
   return `${estado} · ${fecha}`;
+}
+
+function formatFechaIngreso(value: string | null): string {
+  if (!value) return 'Sin fecha';
+  return new Date(value).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function formatRangoIngreso(item: InfraServicioIngreso): string {
+  const inicio = formatFechaIngreso(item.fecha_inicio);
+  const fin = item.fecha_fin ? formatFechaIngreso(item.fecha_fin) : 'en curso';
+  return `${inicio} → ${fin}`;
 }
 
 async function parseJsonOrError<T>(response: Response): Promise<T> {
@@ -635,6 +679,27 @@ async function loadOdfsAsociadas(idOrigen: string): Promise<void> {
     odfsError.value = err instanceof Error ? err.message : 'No se pudo cargar ODFs asociadas';
   } finally {
     odfsLoading.value = false;
+  }
+}
+
+async function loadIngresosAsociados(idOrigen: string): Promise<void> {
+  const clean = idOrigen.trim();
+  if (!clean) return;
+
+  ingresosLoading.value = true;
+  ingresosError.value = '';
+  ingresos.value = [];
+
+  try {
+    const response = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/ingresos`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonOrError<InfraServicioIngresosResponse>(response);
+    ingresos.value = data.ingresos ?? [];
+  } catch (err: unknown) {
+    ingresosError.value = err instanceof Error ? err.message : 'No se pudo cargar ingresos asociados';
+  } finally {
+    ingresosLoading.value = false;
   }
 }
 

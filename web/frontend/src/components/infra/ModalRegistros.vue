@@ -39,7 +39,7 @@
           @click="activeTab = 'ingresos'"
         >
           Ingresos
-          <span class="infra-registros-tab__hint">Próximamente</span>
+          <span class="infra-registros-tab__hint">{{ sortedIngresos.length }} registro{{ sortedIngresos.length !== 1 ? 's' : '' }}</span>
         </button>
         <button
           :class="['infra-registros-tab', { active: activeTab === 'baneos' }]"
@@ -55,17 +55,13 @@
       <section v-if="activeTab === 'ingresos'" class="infra-registros-section">
         <div class="infra-tab-intro">
           <div>
-            <p class="infra-tab-intro__eyebrow">Vista estructural</p>
-            <h4>Ingresos listos para hidratar</h4>
+            <p class="infra-tab-intro__eyebrow">Historial técnico</p>
+            <h4>Ingresos ordenados del más reciente al más antiguo</h4>
           </div>
-          <span class="infra-future-chip">Backend pendiente</span>
+          <span class="infra-history-chip">{{ sortedIngresos.length }} registro{{ sortedIngresos.length !== 1 ? 's' : '' }}</span>
         </div>
 
-        <div v-if="sortedIngresos.length === 0" class="infra-detail-empty">
-          <strong>Sin ingresos disponibles todavía.</strong>
-          <p>{{ placeholders.ingresos }}</p>
-          <p>{{ placeholders.egresos }}</p>
-        </div>
+        <div v-if="sortedIngresos.length === 0" class="infra-detail-empty">Sin ingresos registrados para esta cámara.</div>
 
         <div v-else class="infra-baneos-list">
           <AccordionItem
@@ -76,9 +72,13 @@
             @update:model-value="toggleIngreso(ingreso.id, $event)"
           >
             <dl class="infra-baneo-detail-grid">
-              <div class="infra-baneo-detail-row full-width">
-                <dt>Técnico solicitante</dt>
-                <dd>{{ ingreso.tecnico_solicitante || 'Pendiente de hidratar desde backend.' }}</dd>
+              <div class="infra-baneo-detail-row">
+                <dt>Técnico</dt>
+                <dd>{{ ingreso.tecnico_id || 'Sin técnico identificado' }}</dd>
+              </div>
+              <div class="infra-baneo-detail-row">
+                <dt>Botella asociada</dt>
+                <dd>{{ ingreso.cromo_botella_id ?? 'Sin botella asociada' }}</dd>
               </div>
             </dl>
           </AccordionItem>
@@ -191,9 +191,10 @@ interface AuditoriaItem {
 
 interface IngresoItem {
   id: number;
-  fecha_ingreso: string | null;
-  fecha_egreso: string | null;
-  tecnico_solicitante: string | null;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
 }
 
 const props = defineProps<{
@@ -203,7 +204,7 @@ const props = defineProps<{
   contexto: ContextoRegistros | null;
   baneos: BaneoItem[];
   auditoria: AuditoriaItem[];
-  placeholders: { ingresos: string; egresos: string };
+  ingresos: IngresoItem[];
 }>();
 
 const emit = defineEmits<{ close: [] }>();
@@ -211,14 +212,13 @@ const dialogEl = ref<HTMLDialogElement | null>(null);
 const activeTab = ref<'ingresos' | 'baneos'>('baneos');
 const expandedBaneoId = ref<number | null>(null);
 const expandedIngresoId = ref<number | null>(null);
-const ingresos = ref<IngresoItem[]>([]);
 
 const sortedBaneos = computed(() => {
   return [...props.baneos].sort((left, right) => getTimestamp(right.fecha_inicio) - getTimestamp(left.fecha_inicio));
 });
 
 const sortedIngresos = computed(() => {
-  return [...ingresos.value].sort((left, right) => getTimestamp(right.fecha_ingreso) - getTimestamp(left.fecha_ingreso));
+  return [...props.ingresos].sort((left, right) => getTimestamp(right.fecha_inicio) - getTimestamp(left.fecha_inicio));
 });
 
 const auditoriaOrdenada = computed(() => {
@@ -260,8 +260,8 @@ function buildBaneoRangeTitle(item: BaneoItem): string {
 }
 
 function buildIngresoRangeTitle(item: IngresoItem): string {
-  const ingreso = formatFechaCompacta(item.fecha_ingreso);
-  const egreso = item.fecha_egreso ? formatFechaCompacta(item.fecha_egreso) : 'Pendiente';
+  const ingreso = formatFechaCompacta(item.fecha_inicio);
+  const egreso = item.fecha_fin ? formatFechaCompacta(item.fecha_fin) : 'En curso';
   return `Ingreso - ${ingreso} * Egreso - ${egreso}`;
 }
 
@@ -436,8 +436,7 @@ watch(
 }
 
 .infra-registros-tab__hint,
-.infra-history-chip,
-.infra-future-chip {
+.infra-history-chip {
   border-radius: 999px;
   padding: 5px 10px;
   font-size: 0.72rem;
@@ -452,11 +451,6 @@ watch(
 .infra-history-chip {
   background: var(--color-brand-primary-soft);
   color: var(--color-accent-200);
-}
-
-.infra-future-chip {
-  background: color-mix(in srgb, var(--warning) 14%, transparent);
-  color: var(--warning);
 }
 
 .infra-registros-badges {
@@ -592,16 +586,6 @@ watch(
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
-}
-
-.infra-detail-empty strong {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--color-text);
-}
-
-.infra-detail-empty p + p {
-  margin-top: 10px;
 }
 
 @media (max-width: 720px) {
