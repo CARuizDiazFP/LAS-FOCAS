@@ -2105,6 +2105,16 @@ def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
     }
 
 
+def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
+        "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
+        "tecnico_id": item.tecnico_id,
+        "cromo_botella_id": item.cromo_botella_id,
+    }
+
+
 @app.get("/api/infra/camaras")
 async def search_camaras_web(
     request: Request,
@@ -2428,9 +2438,10 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
     _require_auth(request)
 
     try:
-        from core.services.camara_estado_service import get_camara_estado_contexto
-        from db.models.infra import Camara, CamaraEstadoAuditoria, IncidenteBaneo
+        from core.services.camara_estado_service import get_camara_estado_contexto, miembros_del_grupo
+        from db.models.infra import Camara, CamaraEstadoAuditoria, IncidenteBaneo, Ingreso
         from db.session import SessionLocal
+        from sqlalchemy import nullslast
 
         with SessionLocal() as session:
             camara = session.query(Camara).filter(Camara.id == camara_id).first()
@@ -2464,6 +2475,18 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
                     if incidente.ruta_protegida_id is None or incidente.ruta_protegida_id in rutas_ids
                 ][:20]
 
+            # Mismo grupo (cámara + botellas hermanas) que usa `tiene_ingreso_activo` en
+            # `camara_estado_service`, para que los ingresos mostrados acá sean consistentes con
+            # el estado sugerido de la cámara.
+            ids_grupo = [miembro.id for miembro in miembros_del_grupo(camara)]
+            ingresos_db = (
+                session.query(Ingreso)
+                .filter(Ingreso.camara_id.in_(ids_grupo))
+                .order_by(nullslast(Ingreso.fecha_inicio.desc()))
+                .limit(50)
+                .all()
+            )
+
             contexto = get_camara_estado_contexto(session, camara_id)
             return JSONResponse(
                 {
@@ -2472,10 +2495,7 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
                     "contexto": contexto.to_dict() if contexto else None,
                     "auditoria": [_serialize_camara_auditoria(item) for item in auditoria],
                     "baneos": [_serialize_camara_baneo(item) for item in baneos],
-                    "placeholders": {
-                        "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
-                        "egresos": "Pendiente de integrar registros de egresos en una próxima iteración.",
-                    },
+                    "ingresos": [_serialize_camara_ingreso(item) for item in ingresos_db],
                 }
             )
     except Exception as exc:
@@ -2735,6 +2755,82 @@ async def get_servicio_odfs(
         logger.exception("action=get_servicio_odfs_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
         return JSONResponse(
             {"error": f"Error obteniendo ODFs: {exc!s}"},
+            status_code=500,
+        )
+
+
+@app.get("/api/infra/servicios/{servicio_id}/ingresos")
+async def get_servicio_ingresos_web(
+    request: Request,
+    servicio_id: str,
+) -> JSONResponse:
+    """Obtiene los registros de ingreso de técnico (Slack) a las cámaras que atraviesa un
+    servicio, para la vista de Detalle de Servicio.
+
+    Las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio`
+    (ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada) para
+    no reimplementar esa resolución acá.
+    """
+
+    username, _ = _require_auth(request)
+
+    try:
+        from core.services.protection_service import ProtectionService
+        from db.models.infra import Ingreso
+        from db.session import SessionLocal
+        from sqlalchemy import nullslast
+
+        with SessionLocal() as session:
+            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+
+            if not servicio:
+                return JSONResponse(
+                    {"error": f"Servicio {servicio_id} no encontrado"},
+                    status_code=404,
+                )
+
+            camaras = ProtectionService(session).get_camaras_for_servicio(servicio.servicio_id)
+            camaras_por_id = {camara.id: camara for camara in camaras}
+            camara_ids = list(camaras_por_id.keys())
+
+            ingresos_db: list[Any] = []
+            if camara_ids:
+                ingresos_db = (
+                    session.query(Ingreso)
+                    .filter(Ingreso.camara_id.in_(camara_ids))
+                    .order_by(nullslast(Ingreso.fecha_inicio.desc()))
+                    .limit(100)
+                    .all()
+                )
+
+            ingresos_info = []
+            for item in ingresos_db:
+                serializado = _serialize_camara_ingreso(item)
+                camara = camaras_por_id.get(item.camara_id)
+                serializado["camara_id"] = item.camara_id
+                serializado["camara_nombre"] = camara.nombre if camara else None
+                ingresos_info.append(serializado)
+
+            logger.info(
+                "action=get_servicio_ingresos user=%s servicio_id=%s total=%d",
+                username,
+                servicio_id,
+                len(ingresos_info),
+            )
+
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "servicio_id": servicio.servicio_id,
+                    "total": len(ingresos_info),
+                    "ingresos": ingresos_info,
+                }
+            )
+
+    except Exception as exc:
+        logger.exception("action=get_servicio_ingresos_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo ingresos: {exc!s}"},
             status_code=500,
         )
 

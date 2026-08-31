@@ -118,12 +118,20 @@ class _FakeQuery:
 
 
 class _InfraDetailSession(_FakeSession):
-    def __init__(self, camara: Any, aliases: list[Any], auditoria: list[Any], baneos: list[Any]):
+    def __init__(
+        self,
+        camara: Any,
+        aliases: list[Any],
+        auditoria: list[Any],
+        baneos: list[Any],
+        ingresos: Optional[list[Any]] = None,
+    ):
         super().__init__()
         self._camara = camara
         self._aliases = aliases
         self._auditoria = auditoria
         self._baneos = baneos
+        self._ingresos = ingresos or []
 
     def query(self, *entities):
         entity_count = len(entities)
@@ -140,6 +148,8 @@ class _InfraDetailSession(_FakeSession):
             return _FakeQuery(many=self._auditoria)
         if entity_name == "IncidenteBaneo":
             return _FakeQuery(many=self._baneos)
+        if entity_name == "Ingreso":
+            return _FakeQuery(many=self._ingresos)
         return _FakeQuery()
 
 
@@ -190,7 +200,7 @@ def _build_fake_camara() -> Any:
         punta_b=SimpleNamespace(sitio="POP B"),
     )
     empalme = SimpleNamespace(rutas=[ruta], servicios=[])
-    return SimpleNamespace(
+    camara = SimpleNamespace(
         id=7,
         nombre="Cámara Canon Norte",
         direccion="Av. Siempre Viva 742",
@@ -200,7 +210,10 @@ def _build_fake_camara() -> Any:
         latitud=-34.6,
         longitud=-58.4,
         empalmes=[empalme],
+        camara_padre=None,
+        botellas=[],
     )
+    return camara
 
 
 def _build_aliases() -> list[Any]:
@@ -240,6 +253,18 @@ def _build_baneos() -> list[Any]:
             activo=True,
             fecha_inicio=datetime(2026, 4, 20, 10, 0, tzinfo=timezone.utc),
             fecha_fin=None,
+        )
+    ]
+
+
+def _build_ingresos() -> list[Any]:
+    return [
+        SimpleNamespace(
+            id=5,
+            fecha_inicio=datetime(2026, 5, 10, 8, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="tecnico.lopez",
+            cromo_botella_id=None,
         )
     ]
 
@@ -403,7 +428,9 @@ def test_get_camara_registros_web_devuelve_auditoria_y_baneos(monkeypatch):
     client = TestClient(app)
     _login(client, monkeypatch, role="user", password="userpass")
 
-    fake_session = _InfraDetailSession(_build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos())
+    fake_session = _InfraDetailSession(
+        _build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos(), _build_ingresos()
+    )
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
     monkeypatch.setattr(camara_estado_service, "get_camara_estado_contexto", lambda session, camara_id: _build_contexto())
 
@@ -414,4 +441,6 @@ def test_get_camara_registros_web_devuelve_auditoria_y_baneos(monkeypatch):
     assert payload["camara_id"] == 7
     assert payload["auditoria"][0]["motivo"] == "Corrección manual validada"
     assert payload["baneos"][0]["ticket_asociado"] == "INC-11"
-    assert "ingresos" in payload["placeholders"]
+    assert payload["ingresos"][0]["tecnico_id"] == "tecnico.lopez"
+    assert payload["ingresos"][0]["fecha_fin"] is None
+    assert "placeholders" not in payload
