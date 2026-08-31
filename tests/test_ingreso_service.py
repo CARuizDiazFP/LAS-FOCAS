@@ -114,6 +114,9 @@ def test_egreso_con_ingreso_abierto_matching_cierra_esa_fila_sin_crear_una_nueva
     _assert_filtro_null_safe(filtros, "tecnico_id", "U123")
     _assert_filtro_null_safe(filtros, "camara_id", 10)
     _assert_filtro_null_safe(filtros, "cromo_botella_id", 555)
+    # "ABIERTO" — sin este filtro, un Ingreso ya cerrado (fecha_fin no nula) sería candidato a
+    # "cerrarse" de nuevo, pisando su fecha_fin real con la de este movimiento.
+    _assert_filtro_null_safe(filtros, "fecha_fin", None)
     session.query.return_value.filter.return_value.order_by.assert_called_once()
 
 
@@ -139,6 +142,9 @@ def test_egreso_sin_ingreso_abierto_matching_crea_fila_nueva_con_fecha_inicio_no
     session.add.assert_called_once_with(resultado)
     session.commit.assert_called_once()
 
+    filtros = session.query.return_value.filter.call_args[0]
+    _assert_filtro_null_safe(filtros, "fecha_fin", None)
+
 
 # --- (d) Egreso sin slack_user_id no debe cerrar el ingreso de un técnico real ----------------------
 
@@ -157,3 +163,4 @@ def test_egreso_sin_slack_user_id_filtra_por_tecnico_id_is_null() -> None:
 
     filtros = session.query.return_value.filter.call_args[0]
     _assert_filtro_null_safe(filtros, "tecnico_id", None)
+    _assert_filtro_null_safe(filtros, "fecha_fin", None)
