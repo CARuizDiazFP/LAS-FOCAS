@@ -530,7 +530,16 @@ async function confirmarEliminarGrupo(grupo: GrupoBotellasDuplicadas): Promise<v
   try {
     await eliminarGrupoCromo(ids);
     grupoEliminarConfirmarKey.value = null;
-    await reloadDuplicados();
+    // No hacemos `await reloadDuplicados()` acá: el backend ya invalidó la caché Redis del
+    // recálculo de duplicados (`encolar_recalculo_duplicados_botellas`), así que esa llamada
+    // pegaría contra un cache-miss garantizado y forzaría el cómputo síncrono de ~100s
+    // (`detectar_grupos_duplicados_botellas`) dentro del propio click. Igual que "Consolidar",
+    // dejamos que el worker en background recalcule y el listener WS de más arriba
+    // (`botellas_duplicados_recalculado`) refresque `grupos.value` cuando la caché ya esté tibia.
+    // Mientras tanto, sacamos el grupo de la vista de forma optimista.
+    const key = grupoKey(grupo);
+    grupos.value = grupos.value.filter((g) => grupoKey(g) !== key);
+    await reloadFromZero();
   } catch (err: unknown) {
     errorEliminarGrupo.value = err instanceof Error ? err.message : 'No se pudo eliminar el grupo.';
   } finally {
