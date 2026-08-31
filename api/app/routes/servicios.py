@@ -25,6 +25,7 @@ from core.services.servicios_categoria_service import (
 from core.services.servicios_consolidacion_service import (
     consolidar_identidad_servicio,
     es_verificable_por_tipo,
+    resolver_estado_servicio,
 )
 from db.models.infra import Servicio, ServicioOrigenDatos
 from db.session import SessionLocal, get_async_db
@@ -199,6 +200,7 @@ async def ingest_servicios(
             Servicio.alias_ids,
             Servicio.categoria,
             Servicio.es_verificable_override,
+            Servicio.estado_servicio,
         ).where(Servicio.numero_primer_servicio.in_(numeros))
         for fila in (await db.execute(existentes_stmt)).all():
             existentes_por_id[fila.numero_primer_servicio] = fila
@@ -221,6 +223,16 @@ async def ingest_servicios(
         row["servicio_id"] = identidad.servicio_id
         row["numero_linea"] = identidad.numero_linea
         row["alias_ids"] = identidad.alias_ids
+
+        # Un Excel que no aporta el ID de línea más alto conocido (`avanza_por_excel=False`, ej.
+        # un archivo viejo subido después para completar el histórico de IDs) no puede degradar un
+        # servicio ya "Activo" — sólo completa/relaciona el ID vía `alias_ids` arriba. Ver
+        # docs/decisiones.md.
+        row["estado_servicio"] = resolver_estado_servicio(
+            estado_actual=existente.estado_servicio if existente else None,
+            estado_excel=row["estado_servicio"],
+            avanza_identidad=identidad.avanza_por_excel,
+        )
 
         # `isdigit()` sola no alcanza: "7"/"10" son dígitos pero violan el CHECK
         # `ck_servicios_categoria_valida` (0-6) y el IntegrityError sin manejar tumbaba el archivo

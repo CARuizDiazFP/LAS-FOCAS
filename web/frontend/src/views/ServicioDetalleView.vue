@@ -430,12 +430,15 @@ const idParam = computed(() => String(route.params.idServicio ?? '').trim());
 const historicoIds = computed(() => {
   if (!servicio.value) return [] as string[];
 
-  const alias = [...(servicio.value.alias_ids ?? [])].sort((a, b) => {
-    const numA = Number(a);
-    const numB = Number(b);
-    if (Number.isFinite(numA) && Number.isFinite(numB)) return numA - numB;
-    return a.localeCompare(b);
-  });
+  // `alias_ids` mezcla dos dominios distintos: IDs numéricos históricos de línea (los que
+  // arma `consolidar_identidad_servicio` en la ingesta SLA) y alias físicos de tracking FO
+  // tipo "O1C1"/"C2" (los que agrega `execute_upgrade`/`_action_confirm_upgrade` en el módulo
+  // de infraestructura, ver comentario de columna en `db/models/infra.py`). Sólo los primeros
+  // pertenecen a esta cadena de "Histórico de IDs" — un alias físico no es un ID de línea.
+  const alias = (servicio.value.alias_ids ?? [])
+    .map((value) => (value ?? '').trim())
+    .filter((value) => /^\d+$/.test(value))
+    .sort((a, b) => Number(a) - Number(b));
 
   const ids = [servicio.value.numero_primer_servicio, ...alias, servicio.value.numero_linea]
     .map((value) => (value ?? '').trim())

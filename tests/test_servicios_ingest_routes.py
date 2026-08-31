@@ -52,7 +52,7 @@ def client():
 
 
 _NUMEROS_DE_TEST = (
-    "900001", "900002", "900003", "900004", "900005",
+    "900001", "900002", "900003", "900004", "900005", "900006", "900007",
     "900090", "900091", "900092",
 )
 
@@ -451,3 +451,76 @@ def test_ingest_no_pisa_servicio_id_no_numerico_de_tracking(client: TestClient) 
     body = detail.json()["servicio"]
     assert body["numero_linea"] == "900070"
     assert "TRK-900002" not in body["alias_ids"]  # servicio_id de tracking no se toca
+
+
+def test_ingest_preserva_activo_si_el_excel_no_trae_el_id_mas_alto_conocido(client: TestClient) -> None:
+    """Regla de negocio confirmada con el usuario: un Excel histórico (ej. subido después para
+    completar el encadenado de IDs) que no aporta un ID de línea más alto que el ya conocido en la
+    DB no puede degradar un servicio ya "Activo" a "Baja" — sólo completa el ID en `alias_ids`."""
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.servicios "
+                "(servicio_id, numero_primer_servicio, numero_linea, estado_servicio, origen_datos) "
+                "VALUES ('900050', '900006', '900050', 'Activo', 'INGEST_EXCEL')"
+            )
+        )
+        session.commit()
+
+    # id_final = max(900006, 900050 ya conocido) = 900050: este Excel no avanza la identidad.
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900006"],
+            "Tipo Servicio": ["INT"],
+            "Estado Servicio": ["Baja"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get("/servicios/detail", params={"id": "900006"}, headers=API_HEADERS)
+    body = detail.json()["servicio"]
+    assert body["estado_servicio"] == "Activo"
+    assert body["numero_linea"] == "900050"
+    assert "900006" in body["alias_ids"]  # el ID histórico se completó igual
+
+
+def test_ingest_respeta_baja_del_excel_si_trae_un_id_mas_alto_que_el_conocido(client: TestClient) -> None:
+    """Si el Excel sí avanza la identidad (trae el ID de línea más alto conocido hasta ahora), es
+    la fuente más vigente y su "Baja" se respeta tal cual — no hay nada que proteger."""
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.servicios "
+                "(servicio_id, numero_primer_servicio, numero_linea, estado_servicio, origen_datos) "
+                "VALUES ('900007', '900007', '900007', 'Activo', 'INGEST_EXCEL')"
+            )
+        )
+        session.commit()
+
+    # id_final = max(900007, 900080 del Excel) = 900080: este Excel SÍ avanza la identidad.
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900007"],
+            "Número Línea": ["900080"],
+            "Tipo Servicio": ["INT"],
+            "Estado Servicio": ["Baja"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get("/servicios/detail", params={"id": "900007"}, headers=API_HEADERS)
+    body = detail.json()["servicio"]
+    assert body["estado_servicio"] == "Baja"
+    assert body["numero_linea"] == "900080"

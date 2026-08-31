@@ -51,6 +51,10 @@ def _es_valor_util(valor: str | None) -> bool:
     return bool(valor) and valor != "-"
 
 
+def _es_activo(valor: str | None) -> bool:
+    return bool(valor) and valor.strip().lower() == "activo"
+
+
 def _forma_canonica(valor: str) -> str:
     """Representación ÚNICA de un ID, para que "mismo ID" sea exactamente "mismo string".
 
@@ -72,6 +76,7 @@ class IdentidadConsolidada:
     servicio_id: str
     numero_linea: str
     alias_ids: list[str]
+    avanza_por_excel: bool
 
 
 def consolidar_identidad_servicio(
@@ -113,6 +118,20 @@ def consolidar_identidad_servicio(
         else _forma_canonica(numero_primer_servicio)
     )
 
+    # ¿Esta ingesta trae ella misma el ID más alto conocido, o el máximo ya estaba en la DB antes
+    # de este Excel? Distingue una ingesta vigente (el Excel aporta el ID más nuevo) de un
+    # catch-up histórico (un Excel viejo, subido después, que sólo repite un ID ya superado) —
+    # usado por `resolver_estado_servicio` para no dejar que un catch-up histórico degrade un
+    # servicio que la DB ya sabe que está más adelante en su cadena de upgrades.
+    enteros_del_excel = [
+        entero
+        for valor in (numero_primer_servicio, numero_linea_excel, linea_upgrade_de, linea_upgrade_a)
+        if _es_valor_util(valor) and (entero := _a_entero(valor)) is not None
+    ]
+    avanza_por_excel = bool(enteros_del_excel) and (
+        not enteros_candidatos or max(enteros_del_excel) >= max(enteros_candidatos)
+    )
+
     servicio_id_es_numerico_o_vacio = servicio_id_actual is None or _a_entero(servicio_id_actual) is not None
     servicio_id_final = id_final if servicio_id_es_numerico_o_vacio else _forma_canonica(servicio_id_actual)
 
@@ -149,4 +168,21 @@ def consolidar_identidad_servicio(
         servicio_id=servicio_id_final,
         numero_linea=id_final,
         alias_ids=[*alias_existentes, *alias_nuevos],
+        avanza_por_excel=avanza_por_excel,
     )
+
+
+def resolver_estado_servicio(*, estado_actual: str | None, estado_excel: str, avanza_identidad: bool) -> str:
+    """Resuelve el `estado_servicio` final a persistir en una ingesta SLA.
+
+    Regla de negocio confirmada con el usuario: un Excel que NO aporta el ID de línea más alto
+    conocido (`avanza_identidad=False` — ej. un Excel viejo subido después para completar el
+    histórico de IDs) no puede degradar un servicio ya "Activo" a otro estado; sólo se usa para
+    completar/relacionar el ID en `alias_ids` vía `consolidar_identidad_servicio`. Un Excel que sí
+    avanza la identidad es la fuente más vigente conocida y su `estado_servicio` se respeta
+    siempre, sea cual sea.
+    """
+    if not avanza_identidad and _es_activo(estado_actual) and not _es_activo(estado_excel):
+        assert estado_actual is not None  # `_es_activo` ya descarta None
+        return estado_actual
+    return estado_excel

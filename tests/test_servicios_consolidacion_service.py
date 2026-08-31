@@ -5,6 +5,7 @@
 from core.services.servicios_consolidacion_service import (
     consolidar_identidad_servicio,
     es_verificable_por_tipo,
+    resolver_estado_servicio,
 )
 
 
@@ -254,3 +255,87 @@ def test_consolidar_identidad_dedupe_dos_columnas_del_excel_con_el_mismo_entero(
     assert resultado.numero_linea == "500"
     assert resultado.alias_ids == ["300"]
     assert _formas_duplicadas_del_mismo_entero(resultado.alias_ids) == []
+
+
+def test_consolidar_identidad_avanza_por_excel_true_cuando_el_id_final_lo_aporta_el_excel() -> None:
+    """El Excel trae el ID más alto conocido: es una ingesta vigente, no un catch-up histórico."""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="38929",
+        numero_linea_excel="112922",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual="53597",
+        numero_linea_actual="53597",
+        alias_ids_actual=[],
+    )
+    assert resultado.numero_linea == "112922"
+    assert resultado.avanza_por_excel is True
+
+
+def test_consolidar_identidad_avanza_por_excel_false_cuando_el_id_final_ya_estaba_en_la_db() -> None:
+    """El Excel sólo repite un ID viejo (ej. un archivo histórico subido para completar el
+    encadenado); lo ya conocido en la DB es mayor, así que esta fila no es la más vigente."""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="38929",
+        numero_linea_excel="38929",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual="112922",
+        numero_linea_actual="112922",
+        alias_ids_actual=[],
+    )
+    assert resultado.numero_linea == "112922"
+    assert resultado.avanza_por_excel is False
+
+
+def test_consolidar_identidad_avanza_por_excel_true_sin_datos_existentes() -> None:
+    """Alta nueva, sin fila previa en la DB: no hay nada más vigente que atrasar."""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="393",
+        numero_linea_excel="393",
+        linea_upgrade_de=None,
+        linea_upgrade_a=None,
+        servicio_id_actual=None,
+        numero_linea_actual=None,
+        alias_ids_actual=None,
+    )
+    assert resultado.avanza_por_excel is True
+
+
+def test_resolver_estado_servicio_preserva_activo_si_el_excel_no_avanza_la_identidad() -> None:
+    """Regla de negocio confirmada con el usuario: un Excel histórico (no trae el ID más alto)
+    no puede degradar un servicio ya Activo a Baja/otro estado."""
+    assert (
+        resolver_estado_servicio(estado_actual="Activo", estado_excel="Baja", avanza_identidad=False)
+        == "Activo"
+    )
+
+
+def test_resolver_estado_servicio_respeta_baja_del_excel_cuando_si_avanza_la_identidad() -> None:
+    """Si el Excel sí trae el ID más vigente, es la fuente autoritativa y se respeta tal cual."""
+    assert (
+        resolver_estado_servicio(estado_actual="Activo", estado_excel="Baja", avanza_identidad=True)
+        == "Baja"
+    )
+
+
+def test_resolver_estado_servicio_no_protege_estados_distintos_de_activo() -> None:
+    """La protección es específica de "Activo" — otros estados actuales siguen el pass-through normal."""
+    assert (
+        resolver_estado_servicio(estado_actual="Baja", estado_excel="DESCONOCIDO", avanza_identidad=False)
+        == "DESCONOCIDO"
+    )
+
+
+def test_resolver_estado_servicio_reconoce_activo_sin_distinguir_mayusculas() -> None:
+    assert (
+        resolver_estado_servicio(estado_actual="ACTIVO", estado_excel="Baja", avanza_identidad=False)
+        == "ACTIVO"
+    )
+
+
+def test_resolver_estado_servicio_sin_fila_previa_usa_directo_el_valor_del_excel() -> None:
+    assert (
+        resolver_estado_servicio(estado_actual=None, estado_excel="Baja", avanza_identidad=True)
+        == "Baja"
+    )
