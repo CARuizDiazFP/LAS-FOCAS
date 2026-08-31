@@ -78,5 +78,8 @@ Legacy/
 # Workspace de subagent-driven-development (ledgers, briefs, reportes por plan)
 .superpowers/
 
+# Worktrees aislados de Claude Code (uno por feature en desarrollo)
+.claude/worktrees/
+
 # Documentación privada de la empresa (no debe subirse al repo)
 docs/Doc Privada/
