@@ -1,5 +1,5 @@
 # Nombre de archivo: SKILL.md
-# Ubicación de archivo: .github/skills/docker-rebuild/SKILL.md
+# Ubicación de archivo: .agentes-comunes/skills/docker-rebuild/SKILL.md
 # Descripción: Habilidad para reconstruir contenedores Docker de LAS-FOCAS
 
 ---
@@ -318,3 +318,24 @@ python scripts/mi_script.py --dry-run
 ```
 
 `.env`/`.env.dev` NO sirven para esto: `POSTGRES_PASSWORD` ahí es un placeholder que nunca se usa en runtime real (los contenedores arrancan con `POSTGRES_PASSWORD_FILE`, ver `docs/decisiones.md`), y sourcearlos con `source .env.dev` puede romper el shell si algún valor trae paréntesis o dos puntos sin comillas (ej. `SMTP_FROM_NAME`). El puerto real de Postgres dev (`5433`) y el nombre de la base (`focas_dev`, no `lasfocas`) están declarados en `deploy/docker-compose.dev.yml`/`.env.dev` — confirmar ahí si cambian.
+
+## Curl real de verificación E2E contra `lasfocasdev-api`: usar la API key de DEV, no la de prod
+
+El mismo patrón `Dev_`-prefix de arriba aplica a `api_key_v1`, no sólo a la DB: `lasfocasdev-api`
+monta el Docker Secret `api_key_v1` con contenido real en `.secrets/Dev_api_key_v1.txt` — **distinto**
+de `.secrets/api_key_v1.txt` (ese es el de prod, para `lasfocas-api`). Un curl real con
+`Authorization: Bearer $(cat .secrets/api_key_v1.txt)` contra `http://localhost:8011/...` da `403
+Credenciales inválidas` **silencioso** (no delata que el secreto es el equivocado, parece una API key
+simplemente inválida). Confirmar siempre el secreto real montado antes de asumir cuál archivo host le
+corresponde:
+
+```bash
+docker exec lasfocasdev-api cat /run/secrets/api_key_v1
+# comparar contra:
+cat .secrets/Dev_api_key_v1.txt
+```
+
+```bash
+curl -s http://localhost:8011/servicios/detail?id=123 \
+  -H "Authorization: Bearer $(cat .secrets/Dev_api_key_v1.txt)"
+```
