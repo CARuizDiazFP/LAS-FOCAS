@@ -146,7 +146,7 @@ class IngresoListener:
         *,
         channel: str = "",
         thread_ts: str | None = None,
-        texto_mensaje: str = "",
+        texto_mensaje: str,
     ) -> str:
         """Busca una cámara por nombre y construye el texto de respuesta.
 
@@ -166,10 +166,13 @@ class IngresoListener:
         de empalme más cercano — ver `_procesar_seguimiento_empalme`) para revisión manual posterior
         y mejora del regex, y responde dejando explícito que el técnico puede continuar igual —
         nunca lee como un rechazo. Si encuentra una cámara (propia o resuelta desde una
-        `CromoBotella`), evalúa el estado de acceso vía `_evaluar_estado_acceso_camara` y, como
-        efecto secundario que nunca condiciona esa respuesta, registra el movimiento de Ingreso/
+        `CromoBotella`), evalúa el estado de acceso vía `_evaluar_estado_acceso_camara` — ANTES de
+        intentar ningún registro, para que la respuesta ya calculada quede inmune tanto a un fallo
+        de escritura como al `expire_on_commit` de un commit exitoso — y luego, como efecto
+        secundario final que nunca condiciona esa respuesta, registra el movimiento de Ingreso/
         Egreso si el mensaje completo del evento (`texto_mensaje` — no `nombre_buscado`, que ya
-        viene recortado al nombre de cámara) lo trae (Tarea 4, 2026-08-31).
+        viene recortado al nombre de cámara) lo trae (Tarea 4, 2026-08-31; orden revisado el mismo
+        día — ver `_registrar_movimiento_si_corresponde`).
 
         ``texto_mensaje`` es el texto completo del evento de Slack (no recortado como
         `nombre_buscado`) — los campos "Ingreso o Egreso" y "Persona que solicito La Autorizacion"
@@ -210,15 +213,34 @@ class IngresoListener:
                 "con el número."
             ).format(nombre_buscado)
 
+        # Se computa la respuesta ANTES de intentar el registro de Ingreso/Egreso a propósito
+        # (revisión post-Tarea 4, 2026-08-31): `registrar_movimiento_ingreso` comitea sobre esta
+        # misma `session` compartida por todo `_handle_message`, y `SessionLocal` usa
+        # `expire_on_commit=True` por defecto — un commit exitoso ahí dejaría todos los atributos de
+        # `camara` "expirados" (recargados con I/O extra en el próximo acceso) justo antes de que
+        # `_evaluar_estado_acceso_camara` los lea. Calculando la respuesta primero, el registro queda
+        # como efecto secundario puramente final que nunca puede alterar (ni por I/O extra ni por
+        # dejar la sesión en un estado inválido) el texto ya decidido.
+        respuesta = self._evaluar_estado_acceso_camara(camara, session)
         self._registrar_movimiento_si_corresponde(resultado, texto_mensaje, session)
-        return self._evaluar_estado_acceso_camara(camara, session)
+        return respuesta
 
     def _registrar_movimiento_si_corresponde(
         self, resultado: Any, texto_mensaje: str, session: Any
     ) -> None:
         """Escribe Ingreso/Egreso en DB si el mensaje trae el campo 'Ingreso o Egreso' parseable.
         Nunca lanza — cualquier excepción se loguea y se ignora, la respuesta de Slack no debe
-        bloquearse porque falle la escritura en DB."""
+        bloquearse porque falle la escritura en DB.
+
+        Si `registrar_movimiento_ingreso` falla después de que su `commit()` ya arrancó la
+        transacción (o por cualquier otro error de DB), SQLAlchemy deja la `session` — compartida
+        por el resto de `_handle_message`, incluida una eventual llamada a
+        `_construir_respuesta_camara` para el próximo nombre en un caso multi-botella — en estado
+        "inactivo": cualquier operación posterior sobre ella relanza `PendingRollbackError` hasta
+        que se haga un `rollback()` explícito. Sin este `rollback()`, un solo fallo de escritura
+        podía dejar sin respuesta a TODO el mensaje de Slack (no sólo a la fila que falló) — viola
+        la garantía del plan de nunca bloquear/romper la respuesta por un fallo de DB (revisión
+        post-Tarea 4, 2026-08-31)."""
         tipo = extraer_tipo_movimiento(texto_mensaje)
         if tipo is None:
             return
@@ -232,6 +254,10 @@ class IngresoListener:
                 slack_user_id=slack_user_id,
             )
         except Exception as exc:
+            try:
+                session.rollback()
+            except Exception:
+                pass
             logger.warning("No se pudo registrar movimiento de ingreso: %s", exc, exc_info=True)
 
     def _evaluar_estado_acceso_camara(self, camara: Any, session: Any) -> str:

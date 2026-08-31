@@ -767,17 +767,43 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         mock_registrar.assert_not_called()
         client_mock.chat_postMessage.assert_called_once()
 
+    def test_no_registra_movimiento_cuando_es_nodo(self) -> None:
+        """Mensajes de Nodo se excluyen ANTES de cualquier búsqueda (ver `TestExclusionNodo`) — el
+        helper nunca se alcanza, ni siquiera se llega a instanciar `resultado`."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Nodo Pilar",
+            ),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
+
+        mock_buscar.assert_not_called()
+        mock_registrar.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+
     def test_excepcion_en_registrar_movimiento_no_rompe_respuesta_slack(self) -> None:
         """Si registrar_movimiento_ingreso lanza cualquier excepción, se loguea y se ignora — la
         respuesta de Slack se envía igual (el bot en vivo nunca debe dejar de responder por un
-        error de escritura en DB)."""
+        error de escritura en DB). Además (revisión post-Tarea 4, 2026-08-31) verifica que el
+        `except` hace `session.rollback()` — sin él, el `commit()` fallido de
+        `registrar_movimiento_ingreso` deja la sesión compartida en estado inválido
+        (`PendingRollbackError` en cualquier uso posterior), lo que podía silenciar la respuesta de
+        Slack por completo en vez de sólo perder el registro del movimiento."""
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = self._make_camara()
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
-            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch(
                 "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
                 return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
@@ -792,11 +818,15 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
                 side_effect=RuntimeError("DB caída"),
             ),
         ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
             listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
 
         client_mock.chat_postMessage.assert_called_once()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Sin incidentes activos", texto_respuesta)
+        # La sesión compartida debe quedar utilizable después del fallo: rollback explícito.
+        session_mock.rollback.assert_called_once()
 
     def test_multibot_registra_movimiento_independiente_por_botella(self) -> None:
         """Multi-botella: cada búsqueda independiente del loop de `nombres_a_buscar` en
