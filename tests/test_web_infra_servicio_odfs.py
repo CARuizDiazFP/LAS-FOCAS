@@ -320,6 +320,61 @@ def test_get_servicio_odfs_multiples_rutas_suman_totales(monkeypatch):
     assert ruta_2_payload["empalmes"][0]["camara_id"] is None
 
 
+def test_get_servicio_odfs_no_duplica_odf_compartida_entre_rutas(monkeypatch):
+    """Bug real (2026-08-31, ticket duplicidad Buscador/ODFs): dos rutas del mismo servicio
+    ("Principal" y "Principal - Pelo 2", dos pelos del MISMO cable físico) suelen atravesar los
+    MISMOS empalmes — antes de este fix, `total_odfs`/`total_empalmes` sumaban por-ruta y mostraban
+    "4 ODF(s)" para sólo 2 ODFs físicas repetidas en ambas rutas (detectado por el usuario en
+    pantalla). `empalme_id` es la identidad estable entre rutas del mismo servicio; los totales deben
+    contar distintos, no ocurrencias."""
+
+    client = TestClient(app)
+    _login(client, monkeypatch)
+
+    raw_pelo_1 = "\n".join(
+        [
+            "O-1234166-1: 18",
+            "Empalme 6641368: Nodo Rack 30",
+            "F-CABLE-A: enlace 5.2 dB",
+            "Empalme 6642085: ODF Rack Netizen",
+            "O-1238223-1: 15",
+        ]
+    )
+    raw_pelo_2 = "\n".join(
+        [
+            "O-1234166-1: 2",
+            "Empalme 6641368: Nodo Rack 30",
+            "F-CABLE-A: enlace 5.2 dB",
+            "Empalme 6642085: ODF Rack Netizen",
+            "O-1238223-1: 16",
+        ]
+    )
+    ruta_1 = _build_ruta(ruta_id=1, nombre="Principal", raw_file_content=raw_pelo_1)
+    ruta_2 = _build_ruta(
+        ruta_id=2,
+        nombre="Principal - Pelo 2 (C2)",
+        raw_file_content=raw_pelo_2,
+        nombre_archivo_origen="FO SRV-5 C2.txt",
+    )
+    servicio = _build_servicio("SRV-5", [ruta_1, ruta_2])
+
+    fake_session = _ServicioOdfsSession(servicio=servicio, empalmes_db=[])
+    _patch_session(monkeypatch, fake_session)
+
+    response = client.get("/api/infra/servicios/SRV-5/odfs")
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    # 2 empalmes físicos distintos (6641368, 6642085), ambos de tránsito (ODF) — repetidos en las 2
+    # rutas porque es el mismo cable físico, no 4 entidades distintas.
+    assert payload["total_odfs"] == 2
+    assert payload["total_empalmes"] == 2
+    assert len(payload["rutas"]) == 2
+    for ruta_payload in payload["rutas"]:
+        assert {e["empalme_id"] for e in ruta_payload["empalmes"]} == {"6641368", "6642085"}
+
+
 def test_get_servicio_odfs_resuelve_por_numero_linea(monkeypatch):
     """El helper _find_servicio_por_identificador_web se reusa acá igual que en
     get_servicio_rutas_web: cualquier identificador flexible debería resolver, y como

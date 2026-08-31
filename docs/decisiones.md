@@ -880,3 +880,35 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   `buscar_odfs` con filtro `servicio` — "cannot extract elements from a scalar", confirmado
   preexistente vía `git stash` antes/después de este trabajo, no investigado más por estar fuera de
   alcance).
+
+## 2026-08-31 (seguimiento) — Tercer bug real en el mismo ticket + corrida del script retroactivo
+
+- **Contexto:** Al revisar en pantalla el resultado del fix de arriba, el usuario detectó un tercer
+  bug real en "ODFs asociadas" del Detalle de Servicio: para el servicio 41140/61943 se mostraban
+  "4 ODF(s)" cuando en realidad son 2 ODFs físicas (empalmes 6641368 y 6642085) — el servicio tiene 2
+  pelos ("Principal" y "Principal - Pelo 2 (C2)", mismo cable físico, cada uno con su propio archivo
+  de tracking y sus propios conectores en cada ODF), y ambos atraviesan las mismas 2 ODFs.
+- **Causa raíz:** `get_servicio_odfs` (`web/app/main.py`) calculaba `total_odfs`/`total_empalmes`
+  sumando `transitos_count`/`empalmes_count` POR RUTA, sin deduplicar por `empalme_id` entre rutas
+  del mismo servicio — cuando dos pelos comparten el mismo tramo físico (caso común, no la
+  excepción), cada empalme compartido se contaba una vez por cada ruta que lo atraviesa.
+- **Decisión:** contar `empalme_id` distintos entre TODAS las rutas del servicio (no ocurrencias),
+  mismo criterio de identidad ya usado para el enriquecimiento de cámara
+  (`tracking_id = f"{servicio.servicio_id}_{entry.empalme_id}"`). La cantidad de rutas/pelos por
+  servicio sigue siendo variable (2 en este caso, puede ser otra cantidad en otro servicio) — el fix
+  no asume un número fijo. Test de regresión en
+  `tests/test_web_infra_servicio_odfs.py::test_get_servicio_odfs_no_duplica_odf_compartida_entre_rutas`
+  (TDD, falla sin el fix). Verificado en vivo tras reconstruir `lasfocasdev-web`: `total_odfs` pasó de
+  4 a 2 para el servicio del ticket.
+- **Corrida del script retroactivo** (`scripts/servicios_fusionar_identidades_duplicadas.py --apply`,
+  autorizada explícitamente por el usuario): fusionados los 637 pares seguros restantes —
+  10.818 filas de `cromo_servicio_match`, 28 de `rutas_servicio` y 1.015 de
+  `servicio_empalme_association` reasignadas, 637 filas huérfanas retiradas. Verificado post-corrida:
+  0 valores duplicados de `servicio_id` en `app.servicios`, y los únicos 4 pares que siguen en
+  conflicto son exactamente los 2 pares MUTUOS reales detectados en el dry-run (ids 30338/30339 y
+  30356/30357) — quedan sin tocar, requieren revisión humana (no son una renumeración simple, ver
+  entrada anterior).
+- **Impacto:** `web/app/main.py` (`get_servicio_odfs`), `tests/test_web_infra_servicio_odfs.py`
+  (1 test nuevo, 6/6 passing), datos de dev remediados (637 pares fusionados). Pendiente: revisión
+  manual de los 2 pares mutuos por el usuario/equipo de datos, no automatizable con el criterio
+  actual del script.

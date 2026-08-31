@@ -2672,17 +2672,26 @@ async def get_servicio_odfs(
                 )
                 empalmes_db_por_tracking_id = {e.tracking_empalme_id: e for e in empalmes_db}
 
-            total_odfs = 0
-            total_empalmes = 0
+            # Bug real (2026-08-31, ticket duplicidad Buscador/ODFs): `transitos_count`/
+            # `empalmes_count` son por-ruta, así que sumarlos entre rutas sobrecuenta cuando dos
+            # rutas del mismo servicio (ej. "Principal" y "Principal - Pelo 2", dos pelos del MISMO
+            # cable físico) atraviesan el mismo empalme — el usuario lo detectó en pantalla: "4
+            # ODF(s)" cuando en realidad eran 2 ODFs físicas repetidas en ambas rutas. `empalme_id`
+            # es la identidad estable de un empalme para este servicio (mismo criterio que
+            # `tracking_id = f"{servicio.servicio_id}_{entry.empalme_id}"` de más arriba), así que
+            # los totales ahora cuentan `empalme_id` DISTINTOS entre todas las rutas, no ocurrencias.
+            odfs_distintas: set[str] = set()
+            empalmes_distintos: set[str] = set()
             for ruta_info in rutas_info:
-                total_odfs += ruta_info["transitos_count"]
-                total_empalmes += ruta_info["empalmes_count"]
-
                 if ruta_info["sin_tracking"]:
                     continue
 
                 empalmes_serializados = []
                 for entry in ruta_info["empalmes"]:
+                    if entry.empalme_id:
+                        empalmes_distintos.add(entry.empalme_id)
+                        if entry.es_transito:
+                            odfs_distintas.add(entry.empalme_id)
                     tracking_id = (
                         f"{servicio.servicio_id}_{entry.empalme_id}" if entry.empalme_id else None
                     )
@@ -2699,6 +2708,9 @@ async def get_servicio_odfs(
                         }
                     )
                 ruta_info["empalmes"] = empalmes_serializados
+
+            total_odfs = len(odfs_distintas)
+            total_empalmes = len(empalmes_distintos)
 
             logger.info(
                 "action=get_servicio_odfs user=%s servicio_id=%s rutas=%d total_odfs=%d total_empalmes=%d",
