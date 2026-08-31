@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, List, Optional
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -471,6 +472,12 @@ class Ingreso(Base):
 
     id = Column(Integer, primary_key=True)
     camara_id = Column(Integer, ForeignKey("app.camaras.id"), nullable=False, index=True)
+    cromo_botella_id = Column(
+        BigInteger(),
+        ForeignKey("app.cromo_botellas.n_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     tecnico_id = Column(String(128), nullable=True)
     fecha_inicio = Column(DateTime(timezone=True), nullable=True)
     fecha_fin = Column(DateTime(timezone=True), nullable=True)
