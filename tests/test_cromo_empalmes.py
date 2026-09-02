@@ -121,6 +121,94 @@ async def test_empalmes_de_botella_splitter_agrupado_por_pelo_repetido():
 
 
 @pytest.mark.asyncio
+async def test_empalmes_de_botella_fusion_duplicada_no_se_clasifica_como_splitter():
+    """Caso real (botella_n_id=9450157, 2026-08-24): la MISMA fusión física (idéntico par de pelos)
+    quedó ingerida 3 veces bajo 3 `fusion.n_id` distintos (bug de duplicación de ingesta, análogo al
+    "ID dual" ya resuelto para Cables en `repoblacion_service.py` pero no aplicado a Fusiones). Sin
+    deduplicar por par de pelos antes de contar, se agrupaba como "Splitter 1-3" — una fusión 1 a 1
+    real nunca debe mostrarse como Splitter."""
+    origen = (9443224, 10, "Cable A", 200, "AZ", "1", 0, "AZ")
+    destino = (9447426, 20, "Cable B", 300, "NR", "1", 0, "NR")
+    filas = [
+        _fila_fusion(9730259, "1-1", (*origen, None, None), (*destino, None, None)),
+        _fila_fusion(9730270, "1-1", (*origen, None, None), (*destino, None, None)),
+        _fila_fusion(9730279, "1-1", (*origen, None, None), (*destino, None, None)),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(9450157, "Botella Duplicada")],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 9450157)
+
+    assert len(resultado.empalmes) == 1
+    empalme = resultado.empalmes[0]
+    assert empalme.es_splitter is False
+    assert empalme.fusion_n_id == 9730259
+    assert empalme.pelo_origen.n_id == 9443224
+    assert empalme.pelo_destino.n_id == 9447426
+
+
+@pytest.mark.asyncio
+async def test_empalmes_de_botella_splitter_con_pata_colgada_nunca_es_splitter_1_1():
+    """Caso real (botella_n_id=6632435, pelo 7056127, 2026-08-24): el pelo de entrada tiene 2 patas
+    reales — una resuelta ("8-6") y una colgada ("S4-6", el componente Splitter no se modela como
+    pelo en Cromo) — pero `splitter_ratio` sólo contaba patas con destino RESUELTO (`len(destinos)`),
+    mostrando el imposible físico "Splitter 1-1". El ratio debe reflejar la cantidad de patas reales
+    (2) aunque sólo una tenga destino resuelto."""
+    origen = (7056127, 10, "Cable Entrada", 200, "AZ", "1", 0, "AZ")
+    salida_resuelta = (6797262, 20, "Cable Salida", 300, "NR", "6", 0, "NR")
+    filas = [
+        _fila_fusion(9615388, "8-6", (*salida_resuelta, None, None), (*origen, None, None)),
+        _fila_fusion(8958083, "S4-6", (*origen, None, None), None),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(6632435, "Botella Colgada")],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 6632435)
+
+    assert len(resultado.empalmes) == 1
+    grupo = resultado.empalmes[0]
+    assert grupo.es_splitter is True
+    assert grupo.splitter_ratio == 2
+    assert {d.n_id for d in grupo.splitter_destinos} == {6797262}
+
+
+@pytest.mark.asyncio
+async def test_empalmes_de_botella_dos_origenes_candidatos_comparten_pata_resuelta():
+    """Caso real (botella_n_id=6632435, pelos 7056127 y 6797262, 2026-09-02): un puente 1-1 real
+    ("8-6") conecta 2 pelos que CADA UNO tiene además su propia pata colgada aislada ("S4-6" y
+    "8-E1"). Cada pelo individualmente cuenta >=2 apariciones y se agrupa como origen de Splitter,
+    pero sólo uno de los 2 puede quedarse con la única pata resuelta (9615388) — el otro queda con
+    una sola pata (la colgada) y mostraba el imposible físico "Splitter 1-1". Un grupo con una sola
+    pata real no es un Splitter."""
+    origen_a = (7056127, 10, "Cable A", 200, "AZ", "1", 0, "AZ")
+    origen_b = (6797262, 20, "Cable B", 300, "NR", "6", 0, "NR")
+    filas = [
+        _fila_fusion(8958083, "S4-6", (*origen_a, None, None), None),
+        _fila_fusion(9155417, "8-E1", (*origen_b, None, None), None),
+        _fila_fusion(9615388, "8-6", (*origen_b, None, None), (*origen_a, None, None)),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(6632435, "Botella Colgada")],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 6632435)
+
+    ratios_invalidos = [e.splitter_ratio for e in resultado.empalmes if e.es_splitter and e.splitter_ratio == 1]
+    assert ratios_invalidos == []
+
+
+@pytest.mark.asyncio
 async def test_empalmes_de_botella_splitter_pata_aislada_referencia_colgada():
     """Caso real observado (n_id 9997965, nombre_par "S7-1"): el otro extremo del par no resuelve a
     ningún pelo (el componente Splitter no se modela como pelo) y no hay otra fila para agrupar —

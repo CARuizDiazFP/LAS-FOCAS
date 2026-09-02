@@ -1022,3 +1022,56 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   regla nueva sólo protege ingestas futuras. Si en algún momento se dispone de un Excel SLA actual
   para re-ingestar, esa corrida quedaría protegida por esta regla y corregiría cualquier "Baja"
   desactualizado de las familias que ese archivo cubra.
+
+## 2026-09-02 — Empalmes de Botella Cromo: falsos Splitters, no "ID dual" (premisa del ticket incorrecta, 3 causas raíz reales distintas)
+
+- **Contexto:** ticket reportó, con captura del Verificador Cromo (`/infra/cromo/verificador/empalmes?n_id=6639055`),
+  que Botellas con "ID dual" duplican registros de destino y clasifican fusiones 1 a 1 reales como
+  "Splitter 1-2", y que además fusiones normales se etiquetan como el imposible físico "Splitter
+  1-1". Hipótesis propuesta por el ticket: un `JOIN`/producto cartesiano en `empalmes.py`/
+  `id_dual_resolver.py` causado por el fenómeno "ID dual" (hist[]/next_id) ya conocido para Cables.
+- **Premisa del ticket NO confirmada — investigado con `superpowers:systematic-debugging` contra
+  `lasfocasdev-postgres` real antes de tocar código (mismo criterio que la entrada "2026-08-22 (cont.
+  3)" de arriba, donde otra hipótesis de "ID dual" tampoco resultó ser la causa real):**
+  `id_dual_resolver.py` no interviene en absoluto en `empalmes.py` — ese resolver sólo se usa hoy
+  para Cables en vivo contra la API de Cromo (`repoblacion_service.py`); `empalmes.py` lee
+  exclusivamente tablas ya ingeridas (`cromo_fusiones`/`cromo_pelos`/`cromo_cables`), nunca llama a
+  Cromo. La botella del ticket (n_id=6639055) no tiene ningún par "ID dual" real asociado. Los falsos
+  "Splitter" tienen 3 causas raíz reales y distintas, ninguna relacionada con id_dual_resolver:
+  1. **Fuga entre botellas adyacentes:** el `WHERE` de `_SQL_EMPALMES_DE_BOTELLA` OR'aba sin guarda el
+     filtro directo (`f.botella_n_id = :botella_n_id`) con un fallback indirecto por cable extremo. Un
+     cable "de paso" que es extremo de 2 botellas distintas (real: "F-822-ARSA", extremo A en botella
+     6634842 y extremo B en 6639055) filtraba fusiones de la botella ADYACENTE. El fallback existía
+     porque un sondeo de 2026-08-22 (sólo 5 filas de `cromo_fusiones` en todo el ambiente en ese
+     momento) había concluido que `botella_n_id` "nunca viene poblado en la práctica" — verificado
+     ahora que esa premisa quedó obsoleta: 530.206 de 530.208 filas (99.9996%) lo tienen poblado.
+     Fix: `botella_n_id` pasa a ser el filtro autoritativo; el fallback queda gateado por
+     `f.botella_n_id IS NULL`.
+  2. **Fusiones duplicadas en la ingesta:** la misma fusión física (idéntico par de pelos) ingerida
+     más de una vez bajo `fusion.n_id` distintos (real: botella_n_id=9450157, 12 pares de pelos cada
+     uno bajo 3 `n_id` de fusión). Fix: `_deduplicar_legs` colapsa por par de pelos antes de contar
+     apariciones.
+  3. **`splitter_ratio` subestimado:** sólo contaba patas con destino RESUELTO, no patas reales —
+     una pata colgada real (componente Splitter que Cromo no modela como pelo, ej. "S4-6") quedaba
+     fuera del conteo, produciendo el imposible físico "Splitter 1-1" (real: botella_n_id=6632435,
+     pelo 7056127). Fix: el ratio cuenta patas reales (`ramas`); un grupo que termina con una sola
+     pata real (caso adicional real encontrado en la misma botella: 2 pelos compitiendo por la única
+     pata resuelta de un puente compartido) se disuelve y cae al mismo tratamiento que una pata
+     aislada, nunca a ratio 1.
+- **Frontend sin cambios:** el paso 5 propuesto por el ticket (revisar rowspans en
+  `EmpalmesBotellaCromoView.vue`) no aplicaba — el componente actual no usa rowspans, agrupa cada
+  Splitter en una única fila con sus patas apiladas en una celda `colspan`. El contrato de la API
+  (`es_splitter`/`splitter_destinos`/`splitter_ratio`) no cambió de forma, sólo los valores.
+- **Verificación:** TDD real (4 tests nuevos en `tests/test_cromo_empalmes.py`, RED confirmado antes
+  de cada fix, 8/8 passed). Verificado además en vivo contra `lasfocasdev-postgres`/`lasfocasdev-web`
+  reconstruido: las 3 botellas reales de diagnóstico (6639055, 9450157, 6632435) dan el resultado
+  esperado, y una muestra de 300 botellas reales (269 Splitters detectados) no tiene ningún ratio
+  inválido remanente. Plan de consulta corregido (`EXPLAIN ANALYZE`) usa `ix_cromo_fusiones_botella`
+  y ejecuta en ~3ms — performance igual o mejor que antes del fix.
+- **Impacto:** `core/services/cromo/empalmes.py` (SQL + `_deduplicar_legs` nuevo + `_agrupar_splitters`),
+  `tests/test_cromo_empalmes.py`, `docs/modulo_ingesta_cromo.md`, `docs/decisiones.md`. Sin cambios en
+  `web/app/main.py` ni en el frontend — el contrato de la API no cambió de forma.
+- **Pendiente real, no resuelto:** no se auditó si el mismo patrón de fuga entre botellas adyacentes
+  (cable de paso, extremo de 2 botellas) afecta a otras consultas de `verificador.py`/`detalle.py`
+  que también usan `_SQL_CABLES_DE_BOTELLA` — fuera del alcance de este ticket, que era específico a
+  `empalmes.py`.

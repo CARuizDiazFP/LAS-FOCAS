@@ -7,24 +7,36 @@ sin llamar nunca a Cromo. Distinto de `verificador.servicios_por_botella` (qué 
 los cables que tienen esta botella como extremo): acá el foco es la topología interna de fusiones
 pelo↔pelo dentro de la botella.
 
-Hallazgo real (sondeo 2026-08-22 contra `lasfocasdev-postgres`, ver `docs/modulo_ingesta_cromo.md`):
+Hallazgo real actualizado (2026-09-02, sesión de fix de duplicación/mal etiquetado — reemplaza el
+sondeo 2026-08-22 citado antes acá, que ya no refleja el dataset real, ver `docs/modulo_ingesta_cromo.md`):
 
-- `app.cromo_fusiones` NUNCA tiene `botella_n_id` poblado en la práctica: el único camino que lo
-  completaría (fusiones embebidas en `botella.inner[]`) no ocurre en el dataset real (Etapa 8), y el
-  barrido directo de clase 132 no trae `parent`. Por eso acá se resuelve la pertenencia de una fusión
-  a una botella de forma indirecta: una fusión "pertenece" a la botella si al menos uno de sus dos
-  pelos está en un cable que tiene esa botella como extremo A o B (mismo join que ya usa
-  `verificador._SQL_CABLES_DE_BOTELLA`) — más el join directo por `botella_n_id` por si algún día ese
-  camino aparece con datos reales (lectura sin costo, no rompe nada si sigue vacío).
+- `app.cromo_fusiones.botella_n_id` SÍ está poblado hoy en el 99.9996% de las filas (530.206 de
+  530.208, verificado contra `lasfocasdev-postgres`) — la premisa "nunca poblado" del sondeo de 2026-08-22
+  (sólo 5 filas en todo el ambiente en ese momento) quedó obsoleta con la ingesta real posterior. Por
+  eso `botella_n_id` es ahora el filtro AUTORITATIVO: una fusión pertenece a la botella que dice su
+  propio `botella_n_id`. El join indirecto por cable extremo (mismo patrón que
+  `verificador._SQL_CABLES_DE_BOTELLA`) queda sólo como fallback para las pocas filas sin
+  `botella_n_id` — usarlo sin esa guarda produce fugas entre botellas: un cable "de paso" (ej.
+  "F-822-ARSA", extremo A en una botella y extremo B en la botella adyacente) hace que fusiones de la
+  OTRA botella aparezcan acá, inflando falsos "Splitter" (bug real encontrado y corregido esta
+  sesión, botella_n_id=6639055 vs 6634842).
+- Las fusiones también pueden estar DUPLICADAS: la misma fusión física (idéntico par de pelos)
+  ingerida más de una vez bajo `fusion.n_id` distintos (hallazgo real, botella_n_id=9450157: 12 pares
+  de pelos, cada uno bajo 3 `n_id` de fusión). Por eso `_agrupar_splitters` deduplica por par de
+  pelos (`_deduplicar_legs`) antes de contar — sin esto, una fusión 1 a 1 duplicada 3 veces se
+  clasificaba como "Splitter 1-3".
 - Los "Splitter" no son una clase Cromo propia homologada en `app.cromo_clases` (sólo hay BOTELLA/
   CABLE/TUBO/PELO/FUSION) — no hay un ID de clase que detectar. La única señal real observada en
-  `nombre_par` (at.84) para fusiones de splitter es un prefijo "S" (ej. "S7-1", "S4-1", contra sólo 2
-  filas reales en toda la base dev), con un solo pelo resuelto (el otro lado del par es el propio
-  componente splitter, que Cromo no modela como pelo). Señal estructural más robusta, agnóstica del
-  prefijo: un mismo pelo (`n_id`) que aparece en 2 o más filas de `cromo_fusiones` de la misma botella
-  es el pelo de entrada de un Splitter (fan-out 1 a N) — se agrupa en una sola fila con
-  `es_splitter=True` y `splitter_ratio=N`. El prefijo "S" se usa sólo como señal secundaria para el
-  caso (visto en datos reales) de una pata aislada con referencia colgada, sin par para agrupar.
+  `nombre_par` (at.84) para fusiones de splitter es un prefijo "S" (ej. "S7-1", "S4-1"), con un solo
+  pelo resuelto (el otro lado del par es el propio componente splitter, que Cromo no modela como
+  pelo). Señal estructural más robusta, agnóstica del prefijo: un mismo pelo (`n_id`) que aparece en
+  2 o más filas (ya deduplicadas) de `cromo_fusiones` de la misma botella es el pelo de entrada de un
+  Splitter (fan-out 1 a N) — se agrupa en una sola fila con `es_splitter=True` y `splitter_ratio=N`.
+  `splitter_ratio` cuenta PATAS reales (fusiones agrupadas), no sólo las que resuelven a un pelo
+  destino — una pata colgada (ej. "S4-6" sin el otro lado) es una salida real igual que una resuelta;
+  contar sólo destinos resueltos producía el imposible físico "Splitter 1-1" (bug real encontrado y
+  corregido esta sesión, botella_n_id=6632435, pelo 7056127). El prefijo "S" se usa sólo como señal
+  secundaria para el caso de una pata aislada con referencia colgada, sin par para agrupar.
 """
 
 from __future__ import annotations
@@ -107,9 +119,13 @@ _SQL_EXISTE_BOTELLA_POR_CABLES = text(
     "SELECT 1 FROM app.cromo_cables WHERE extremo_a_n_id = :botella_n_id OR extremo_b_n_id = :botella_n_id LIMIT 1"
 )
 
-# Fusiones que pertenecen a esta botella: por `botella_n_id` directo (nunca poblado hoy, ver
-# docstring del módulo) o porque alguno de sus 2 pelos está en un cable que tiene la botella como
-# extremo A o B (mismo `cables_botella` que usa `verificador._SQL_CABLES_DE_BOTELLA`).
+# Fusiones que pertenecen a esta botella: por `botella_n_id` directo (AUTORITATIVO, poblado en el
+# 99.9996% de las filas — ver docstring del módulo) o, sólo para las filas SIN `botella_n_id`, porque
+# alguno de sus 2 pelos está en un cable que tiene la botella como extremo A o B (mismo
+# `cables_botella` que usa `verificador._SQL_CABLES_DE_BOTELLA`). El fallback está deliberadamente
+# gateado por `f.botella_n_id IS NULL`: sin esa guarda, un cable "de paso" que es extremo de DOS
+# botellas distintas (ej. "F-822-ARSA") filtra fusiones de la botella ADYACENTE hacia acá, inflando
+# falsos Splitters (bug real corregido, ver docstring del módulo).
 _SQL_EMPALMES_DE_BOTELLA = text(
     """
     WITH cables_botella AS (
@@ -128,8 +144,13 @@ _SQL_EMPALMES_DE_BOTELLA = text(
     LEFT JOIN app.cromo_cables cb ON cb.n_id = pb.cable_n_id
     LEFT JOIN app.cromo_tubos tb ON tb.n_id = pb.tubo_n_id
     WHERE f.botella_n_id = :botella_n_id
-       OR pa.cable_n_id IN (SELECT n_id FROM cables_botella)
-       OR pb.cable_n_id IN (SELECT n_id FROM cables_botella)
+       OR (
+            f.botella_n_id IS NULL
+            AND (
+                pa.cable_n_id IN (SELECT n_id FROM cables_botella)
+                OR pb.cable_n_id IN (SELECT n_id FROM cables_botella)
+            )
+          )
     ORDER BY f.n_id
     """
 )
@@ -153,9 +174,30 @@ def _pelo_desde_fila(fila: tuple) -> Optional[PeloEmpalme]:
     )
 
 
+def _deduplicar_legs(legs: list[_Leg]) -> list[_Leg]:
+    """Colapsa fusiones que son ingestas duplicadas del mismo empalme físico: mismo par de pelos
+    (ambos extremos resueltos) bajo `fusion.n_id` distintos — hallazgo real (botella_n_id=9450157,
+    2026-08-24): 12 pares de pelos, cada uno ingerido 3 veces bajo 3 `n_id` de fusión distintos.
+    Conserva la primera fusión (menor `n_id`, ya llega ordenado así desde SQL). No colapsa patas con
+    un extremo sin resolver — ahí la falta de contraparte no alcanza para probar que es la misma
+    fusión física (puede ser una pata real distinta de un Splitter, ver `_agrupar_splitters`)."""
+    vistas: set[frozenset[int]] = set()
+    resultado: list[_Leg] = []
+    for leg in legs:
+        if leg.pelo_a is not None and leg.pelo_b is not None:
+            clave = frozenset((leg.pelo_a.n_id, leg.pelo_b.n_id))
+            if clave in vistas:
+                continue
+            vistas.add(clave)
+        resultado.append(leg)
+    return resultado
+
+
 def _agrupar_splitters(legs: list[_Leg]) -> list[EmpalmeDeBotella]:
-    """Agrupa las patas de Splitter (mismo pelo de origen repetido en 2+ fusiones) en una sola fila
-    por pelo de origen. Ver docstring del módulo para la justificación de la heurística."""
+    """Agrupa las patas de Splitter (mismo pelo de origen repetido en 2+ fusiones, ya deduplicadas)
+    en una sola fila por pelo de origen. Ver docstring del módulo para la justificación de la
+    heurística."""
+    legs = _deduplicar_legs(legs)
     conteo_pelos: dict[int, int] = {}
     for leg in legs:
         for pelo in (leg.pelo_a, leg.pelo_b):
@@ -177,12 +219,27 @@ def _agrupar_splitters(legs: list[_Leg]) -> list[EmpalmeDeBotella]:
 
         if origen is None:
             continue
-        grupo = grupos.setdefault(origen.n_id, {"origen": origen, "destinos": [], "fusion_n_id": leg.fusion_n_id})
+        grupo = grupos.setdefault(
+            origen.n_id,
+            {"origen": origen, "destinos": [], "fusion_n_id": leg.fusion_n_id, "ramas": 0, "fusiones": []},
+        )
+        # `ramas` cuenta patas reales (fusiones deduplicadas), no sólo las que resuelven a un pelo
+        # destino — una pata colgada (destino=None, ej. "S4-6") es igual de real que una resuelta,
+        # sólo que Cromo no modela el componente Splitter como pelo del otro lado.
+        grupo["ramas"] += 1
+        grupo["fusiones"].append(leg.fusion_n_id)
         if destino is not None:
             grupo["destinos"].append(destino)
-        consumidas.add(leg.fusion_n_id)
 
     for grupo in grupos.values():
+        # Caso real (botella_n_id=6632435, 2026-09-02): dos pelos que cada uno cuenta >=2 apariciones
+        # pueden "competir" por la misma pata resuelta (un puente 1-1 real entre ambos) — sólo uno de
+        # los dos se la queda (ver el `if/elif` de arriba). El perdedor queda con una única pata
+        # colgada: eso no es un Splitter (ratio 1 es físicamente imposible), es una pata aislada —
+        # se libera para que la trate el fallback de abajo (mismo criterio que "S7-1").
+        if grupo["ramas"] < 2:
+            continue
+        consumidas.update(grupo["fusiones"])
         filas.append(
             EmpalmeDeBotella(
                 fusion_n_id=grupo["fusion_n_id"],
@@ -191,7 +248,7 @@ def _agrupar_splitters(legs: list[_Leg]) -> list[EmpalmeDeBotella]:
                 pelo_origen=grupo["origen"],
                 pelo_destino=None,
                 splitter_destinos=grupo["destinos"],
-                splitter_ratio=len(grupo["destinos"]),
+                splitter_ratio=grupo["ramas"],
             )
         )
 

@@ -178,25 +178,40 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     que `verificador.py`, extendido a nivel tubo.
   - `empalmes.py`: resuelve los empalmes (fusiones — "fusión" y "empalme" son sinónimos en este
     dominio) internos de una Botella a partir de `app.cromo_fusiones`/`cromo_pelos`/`cromo_cables`/
-    `cromo_tubos` ya ingeridos — nunca contra la API de Cromo. Dos hallazgos de diagnóstico real
-    (`lasfocasdev-postgres`, sólo 5 filas de `cromo_fusiones` en todo el ambiente) que contradicen el
-    diseño documentado más arriba: (1) `cromo_fusiones.botella_n_id` nunca viene poblado en la
-    práctica — el barrido directo por clase 132 no trae `parent` — así que la pertenencia de una
-    fusión a una botella se infiere por join indirecto: alguno de sus dos pelos pertenece a un cable
-    que tiene esa botella como `extremo_a_n_id`/`extremo_b_n_id` (mismo patrón de
-    `_SQL_CABLES_DE_BOTELLA` de `verificador.py`), validado end-to-end contra la botella real 9345594
-    (Cra Alberdi 290) y su única fusión ingerida (17-1). (2) "Splitter" no es una clase Cromo propia
-    (el catálogo `app.cromo_clases` sólo tiene BOTELLA/CABLE/TUBO/PELO/FUSION) — se detecta
-    estructuralmente: un mismo pelo (`n_id`) que se repite como origen en 2+ filas de
-    `cromo_fusiones` de la misma botella es la firma física de un Splitter (fan-out), con un
-    fallback secundario por regex `^[Ss]\d+-\d+$` sobre `nombre_par` para patas sueltas/colgadas que
-    no se pueden agrupar (únicos 2 ejemplos reales: "S7-1", "S4-1"). Expone
-    `empalmes_de_botella(sesion, botella_n_id) -> ResultadoEmpalmesBotella` (cables de origen +
-    lista de empalmes, cada uno con `es_splitter`/`splitter_destinos`/`splitter_ratio`), consumido
-    por `GET /api/infra/cromo/botellas/{n_id}/empalmes` en `web/app/main.py` y por la vista dedicada
+    `cromo_tubos` ya ingeridos — nunca contra la API de Cromo. Hallazgo de diagnóstico real
+    ACTUALIZADO 2026-09-02 (reemplaza el sondeo 2026-08-22 citado antes acá, hecho contra sólo 5
+    filas de `cromo_fusiones` en todo el ambiente — dataset temprano, ya no representativo):
+    `cromo_fusiones.botella_n_id` SÍ está poblado en el 99.9996% de las filas (530.206 de 530.208,
+    verificado contra `lasfocasdev-postgres`) y es hoy el filtro AUTORITATIVO de pertenencia; el join
+    indirecto por cable extremo (mismo patrón de `_SQL_CABLES_DE_BOTELLA` de `verificador.py`) quedó
+    como fallback sólo para las filas sin `botella_n_id`, gateado explícitamente por
+    `f.botella_n_id IS NULL` — sin esa guarda, un cable "de paso" (extremo de 2 botellas distintas)
+    filtraba fusiones de la botella ADYACENTE, inflando falsos Splitters (bug real corregido esta
+    sesión, botella_n_id=6639055 vs 6634842, cable "F-822-ARSA"). "Splitter" no es una clase Cromo
+    propia (el catálogo `app.cromo_clases` sólo tiene BOTELLA/CABLE/TUBO/PELO/FUSION) — se detecta
+    estructuralmente: un mismo pelo (`n_id`) que se repite como origen en 2+ filas (ya deduplicadas
+    por `_deduplicar_legs`, ver abajo) de `cromo_fusiones` de la misma botella es la firma física de
+    un Splitter (fan-out), con un fallback secundario por regex `^[Ss]\d+-\d+$` sobre `nombre_par`
+    para patas sueltas/colgadas que no se pueden agrupar (ej. "S7-1", "S4-1"). Dos bugs reales
+    adicionales corregidos esta sesión: (1) la misma fusión física puede estar ingerida más de una
+    vez bajo `fusion.n_id` distintos (botella_n_id=9450157: 12 pares de pelos, cada uno bajo 3 `n_id`
+    de fusión) — `_deduplicar_legs` colapsa por par de pelos antes de contar, si no una fusión 1 a 1
+    duplicada 3 veces se clasificaba como "Splitter 1-3"; (2) `splitter_ratio` sólo contaba patas con
+    destino RESUELTO, mostrando el imposible físico "Splitter 1-1" cuando una pata real no resolvía
+    (componente Splitter que Cromo no modela como pelo) — ahora cuenta patas reales (`ramas`), y un
+    grupo que termina con una sola pata real (ej. porque otro pelo "le ganó" la única pata resuelta
+    de un puente compartido, botella_n_id=6632435) se disuelve y cae al mismo tratamiento que una
+    pata aislada, nunca a ratio 1. Expone `empalmes_de_botella(sesion, botella_n_id) ->
+    ResultadoEmpalmesBotella` (cables de origen + lista de empalmes, cada uno con
+    `es_splitter`/`splitter_destinos`/`splitter_ratio`), consumido por
+    `GET /api/infra/cromo/botellas/{n_id}/empalmes` en `web/app/main.py` y por la vista dedicada
     `EmpalmesBotellaCromoView.vue` (`/infra/cromo/verificador/empalmes?n_id=...`, tabla filtrable por
-    Cable Origen). Tests en `tests/test_cromo_empalmes.py` (sin DB real, mismo patrón de sesión falsa
-    que `tests/test_cromo_verificador.py`).
+    Cable Origen — SIN rowspans: cada Splitter es una única fila con sus patas apiladas en una sola
+    celda `colspan`, así que la corrección de clasificación no requirió tocar el componente Vue).
+    Tests en `tests/test_cromo_empalmes.py` (sin DB real, mismo patrón de sesión falsa que
+    `tests/test_cromo_verificador.py`); los 3 bugs de esta sesión se verificaron además en vivo
+    contra `lasfocasdev-postgres`/`lasfocasdev-web` reconstruido (botellas reales 6639055, 9450157,
+    6632435) y con una muestra de 300 botellas reales sin ratios inválidos remanentes.
   - `camara_botella_busqueda.py` (2026-08-23): cierra el gap de la búsqueda por nombre libre
     "Camara-only" — `buscar_camara_o_botella_cromo()` reusa sin modificar la cascada canónica de
     `buscar_camara()` (`modules/slack_baneo_notifier/camara_search.py`) y, sólo si ésta no matchea
