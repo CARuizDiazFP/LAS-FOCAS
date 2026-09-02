@@ -575,9 +575,14 @@ contenido de `api_prov_pass_v1` en un log compartido — sólo confirmar que el 
 
 - [ ] **Step 9: Commit**
 
+`.env.dev` y todo `.secrets/` están gitignored en este repo (`.gitignore:6-8`, `.env.*` y
+`.secrets/`) — igual que cada otro secreto/env del proyecto, nunca se commitean. Sólo se
+commitean los archivos versionados; `.env.dev` y los dos secrets renombrados quedan aplicados
+localmente (ya verificados contra el contenedor real en el Step 8), sin entrar al `git add`:
+
 ```bash
 git add core/services/prov/__init__.py core/services/prov/config.py tests/test_prov_config.py \
-  .env.dev deploy/docker-compose.dev.yml .secrets/Dev_api_prov_user_v1.txt .secrets/Dev_api_prov_pass_v1.txt
+  deploy/docker-compose.dev.yml
 git commit -m "feat(prov): configuración validada del cliente PROV + secrets de dev"
 ```
 
