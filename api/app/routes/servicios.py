@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -15,8 +16,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from core.parsers.servicios_excel import parse_servicios_df
+from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
+from core.services.prov.ingesta import ingerir_contexto_prov
 from core.services.servicios_categoria_service import (
     CategoriaInvalidaError,
     actualizar_categoria_masiva,
@@ -27,7 +31,7 @@ from core.services.servicios_consolidacion_service import (
     es_verificable_por_tipo_y_estado,
     resolver_estado_servicio,
 )
-from db.models.infra import Servicio, ServicioOrigenDatos
+from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
 from db.session import SessionLocal, get_async_db
 
 
@@ -55,6 +59,25 @@ class ServicioItemResponse(BaseModel):
     reclamos: list[dict[str, Any]] | None = None
 
 
+class ServicioHistorialIdItemResponse(BaseModel):
+    numero_id: str
+    orden: int
+    fecha_instalacion: date | None = None
+    fecha_baja: date | None = None
+    estado_comercial: str | None = None
+    motivo_baja: str | None = None
+    es_vigente: bool
+
+
+class ServicioEquipoUltimaMillaItemResponse(BaseModel):
+    extremo: int
+    nodo: str | None = None
+    equipo: str | None = None
+    puerto: str | None = None
+    direccion: str | None = None
+    provincia: str | None = None
+
+
 class SearchServiciosResponse(BaseModel):
     status: str = "ok"
     total: int
@@ -68,6 +91,8 @@ class ServicioDetailResponse(BaseModel):
     id_consultado: str
     id_origen: str
     servicio: ServicioItemResponse
+    historial_ids: list[ServicioHistorialIdItemResponse] = []
+    equipos_ultima_milla: list[ServicioEquipoUltimaMillaItemResponse] = []
 
 
 class IngestServiciosResponse(BaseModel):
@@ -122,6 +147,55 @@ def _to_servicio_item(svc: Servicio) -> ServicioItemResponse | None:
         alias_ids=list(svc.alias_ids or []),
         reclamos=None,
     )
+
+
+def _historial_a_response(historial: list[ServicioHistorialId]) -> list[ServicioHistorialIdItemResponse]:
+    return [
+        ServicioHistorialIdItemResponse(
+            numero_id=item.numero_id,
+            orden=item.orden,
+            fecha_instalacion=item.fecha_instalacion,
+            fecha_baja=item.fecha_baja,
+            estado_comercial=item.estado_comercial,
+            motivo_baja=item.motivo_baja,
+            es_vigente=item.es_vigente,
+        )
+        for item in sorted(historial, key=lambda item: item.orden)
+    ]
+
+
+def _equipos_a_response(equipos: list[ServicioEquipoUltimaMilla]) -> list[ServicioEquipoUltimaMillaItemResponse]:
+    return [
+        ServicioEquipoUltimaMillaItemResponse(
+            extremo=item.extremo,
+            nodo=item.nodo,
+            equipo=item.equipo,
+            puerto=item.puerto,
+            direccion=item.direccion,
+            provincia=item.provincia,
+        )
+        for item in sorted(equipos, key=lambda item: item.extremo)
+    ]
+
+
+async def _buscar_servicio_por_id(db: AsyncSession, id_consultado: str) -> Servicio:
+    stmt = (
+        select(Servicio)
+        .options(selectinload(Servicio.historial_ids), selectinload(Servicio.equipos_ultima_milla))
+        .where(
+            or_(
+                Servicio.numero_primer_servicio == id_consultado,
+                Servicio.numero_linea == id_consultado,
+                Servicio.servicio_id == id_consultado,
+            )
+        )
+        .order_by(Servicio.id.desc())
+        .limit(1)
+    )
+    svc = (await db.execute(stmt)).scalars().first()
+    if svc is None:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    return svc
 
 
 @router.post("/ingest", response_model=IngestServiciosResponse)
@@ -585,22 +659,7 @@ async def detail_servicio(
     if not id_consultado:
         raise HTTPException(status_code=400, detail="ID requerido")
 
-    stmt = (
-        select(Servicio)
-        .where(
-            or_(
-                Servicio.numero_primer_servicio == id_consultado,
-                Servicio.numero_linea == id_consultado,
-                Servicio.servicio_id == id_consultado,
-            )
-        )
-        .order_by(Servicio.id.desc())
-        .limit(1)
-    )
-
-    svc = (await db.execute(stmt)).scalars().first()
-    if svc is None:
-        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    svc = await _buscar_servicio_por_id(db, id_consultado)
 
     item = _to_servicio_item(svc)
     if item is None:
@@ -610,6 +669,46 @@ async def detail_servicio(
         id_consultado=id_consultado,
         id_origen=item.numero_primer_servicio,
         servicio=item,
+        historial_ids=_historial_a_response(svc.historial_ids),
+        equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
+    )
+
+
+@router.post("/prov/refrescar", response_model=ServicioDetailResponse)
+async def refrescar_servicio_desde_prov(
+    id: str = Query(..., description="ID de consulta (origen o línea actual)"),
+    db: AsyncSession = Depends(get_async_db),
+) -> ServicioDetailResponse:
+    id_consultado = id.strip()
+    if not id_consultado:
+        raise HTTPException(status_code=400, detail="ID requerido")
+
+    svc = await _buscar_servicio_por_id(db, id_consultado)
+
+    cliente = get_prov_client()
+    try:
+        contexto = await cliente.obtener_contexto_servicio(svc.numero_primer_servicio or svc.servicio_id)
+    except ProvServicioNoEncontradoError as exc:
+        logger.warning("action=servicios_prov_refrescar evento=no_encontrado id=%s", id_consultado)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProvClientError as exc:
+        logger.error("action=servicios_prov_refrescar evento=error_cliente id=%s error=%s", id_consultado, exc)
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar PROV: {exc}") from exc
+
+    await ingerir_contexto_prov(db, svc, contexto)
+    await db.commit()
+    await db.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla"])
+
+    item = _to_servicio_item(svc)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+
+    return ServicioDetailResponse(
+        id_consultado=id_consultado,
+        id_origen=item.numero_primer_servicio,
+        servicio=item,
+        historial_ids=_historial_a_response(svc.historial_ids),
+        equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
     )
 
 
