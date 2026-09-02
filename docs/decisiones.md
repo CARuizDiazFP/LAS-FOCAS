@@ -1075,3 +1075,77 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   (cable de paso, extremo de 2 botellas) afecta a otras consultas de `verificador.py`/`detalle.py`
   que también usan `_SQL_CABLES_DE_BOTELLA` — fuera del alcance de este ticket, que era específico a
   `empalmes.py`.
+
+## 2026-09-02 (cont.) — Integración con la API PROV: coexistencia con Excel, tabla de historial nueva pese a la decisión previa de reusar `alias_ids`, y sin rate limiter distribuido
+
+- **Contexto:** Servicios SLA sólo se enriquecía manualmente vía `POST /servicios/ingest` (Excel).
+  Existe una API interna, PROV (`API_Contexto_Servicio`), que devuelve el detalle completo de un
+  servicio por número: cliente, dirección, equipos de última milla y la cadena completa de upgrades
+  de ID con fecha/estado/motivo. Ejecutado vía `superpowers:subagent-driven-development` (12 tareas,
+  la 12ª insertada a mitad de ejecución tras un gap real encontrado en la 10ª — ver más abajo). Diseño
+  en `docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md`, plan en
+  `docs/superpowers/plans/2026-09-02-servicios-prov-integracion.md`.
+- **Decisión 1 (coexistencia, no reemplazo):** `POST /servicios/ingest` (Excel) queda intacto, sin
+  ningún cambio de comportamiento — la integración PROV es un flujo nuevo y paralelo
+  (`POST /servicios/prov/refrescar` on-demand + `scripts/servicios_backfill_prov.py` masivo), ambos
+  reusando **sin modificar** `consolidar_identidad_servicio`/`resolver_estado_servicio`/
+  `es_verificable_por_tipo_y_estado` de `core/services/servicios_consolidacion_service.py` — esas
+  funciones ya eran agnósticas de la fuente. Retirar el flujo Excel queda explícitamente fuera de
+  alcance; no hay fecha ni condición fijada para hacerlo.
+- **Decisión 2 (tabla nueva `ServicioHistorialId`, no reusar `alias_ids`):** el plan
+  `docs/superpowers/plans/2026-08-25-servicios-trazabilidad-ids.md` había decidido explícitamente
+  ("Global Constraints", 2026-08-25) **no** crear tabla ni migración nueva para el histórico de IDs de
+  un Servicio, reusando `alias_ids` (`ARRAY(String(64))`) — decisión que se sostuvo en la
+  implementación resultante (`docs/decisiones.md`, entrada 2026-08-26). Esa decisión seguía vigente
+  para lo que resuelve el Excel: `alias_ids` es y sigue siendo la fuente que consulta
+  `consolidar_identidad_servicio` y el matching Cromo↔Servicio, sin cambios. Pero PROV trae algo que
+  el Excel nunca trajo: por cada eslabón de la cadena de upgrades, `cadena_upgrade[*]` incluye
+  `fecha_instalacion`, `fecha_baja`, `estado_comercial` y `motivo_baja` — un `ARRAY(String)` plano no
+  puede guardar 4 campos estructurados por entrada. La distinción no es "PROV sí necesita una tabla y
+  el Excel no": es que el dato de origen cambió de forma (una lista plana de IDs vs. una cadena de
+  eventos con fecha/estado/motivo), y el modelo de datos tiene que seguir esa forma. Se creó
+  `app.servicios_historial_id` (`ServicioHistorialId`, ver `docs/db.md`) sin tocar `alias_ids` — ambas
+  coexisten con roles distintos: `alias_ids` sigue siendo la fuente de matching/identidad,
+  `servicios_historial_id` es la vista enriquecida para el Timeline del frontend
+  (`ServiceTimeline.vue`). Misma tabla de traducción para `ServicioEquipoUltimaMilla` (última milla),
+  que no tenía ningún equivalente previo en el esquema.
+- **Decisión 3 (rate limiting in-process, no distribuido):** el cliente PROV
+  (`core/services/prov/`) nunca supera 5 req/s, forzado por un `AsyncTokenBucketLimiter` propio (no
+  hay nada reutilizable en el repo para esto — se buscó `Semaphore`/`rate_limit`/`throttle` sin
+  resultados de código de negocio). Se decidió explícitamente **no** construir un limiter distribuido
+  (Redis) entre el proceso de la API (`uvicorn` sin `--workers`, un único worker — confirmado en
+  `api/Dockerfile:32`) y el proceso aparte del backfill (`scripts/servicios_backfill_prov.py`):
+  sobre-ingeniería para el volumen esperado. **Riesgo operativo aceptado, no resuelto con
+  infraestructura:** si el backfill masivo corriera a la vez que uso interactivo intensivo del botón
+  "Actualizar desde PROV", el máximo combinado teórico sube a ~10 req/s — se documenta como
+  recomendación (no como gate técnico) no correr el backfill en horario de uso intensivo.
+- **Gap real encontrado durante la ejecución (Task 11, insertada a mitad del plan):** las Tasks 1-10
+  nunca tocaron `web/app/main.py` porque ninguna exploración previa relevó que el contenedor `web`
+  expone su propio FastAPI que proxya **a mano, ruta por ruta**, cada endpoint de `/api/servicios/*`
+  que consume el frontend — no existe un proxy genérico `/api/{path:path}`. El endpoint nuevo del
+  Task 6 (`POST /servicios/prov/refrescar` en `api/app/routes/servicios.py`) nunca tuvo su
+  contraparte proxy en `web/app/main.py`, así que el botón "Actualizar desde PROV" no funcionaba en
+  un navegador real pese a que backend y frontend, cada uno por separado, estaban correctos —
+  confirmado con curl real contra `lasfocasdev-web` durante la revisión del Task 10. Al diseñar el
+  proxy se encontró un segundo bug real en la misma cadena: `refrescarServicioDesdeProv`
+  (`web/frontend/src/api/servicios.ts`) pasaba `csrf: true` sin un `json`, y `request()`
+  (`web/frontend/src/api/client.ts`) sólo inyecta `csrf_token` en el body cuando `json` es un objeto
+  truthy — sin `json: {}`, el POST salía sin body y el proxy nuevo lo hubiera rechazado con "CSRF
+  inválido". Ambos se corrigieron en la Task 11 (commit `7147b61`), verificado con curl real
+  post-rebuild (401 "No autenticado" sin cookie de sesión, no 404/405, confirmando que la ruta quedó
+  bien cableada). **Nota para futuras integraciones:** cualquier endpoint nuevo bajo
+  `api/app/routes/servicios.py` (u otro router expuesto al frontend) necesita su proxy explícito en
+  `web/app/main.py` — agregarlo no es automático ni implícito en el registro del router del backend.
+- **No hecho / pendiente:** secrets y bloque de compose de producción para PROV (sólo dev tiene
+  `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` y el bloque `secrets:` de
+  `deploy/docker-compose.dev.yml`) — sin ventana de despliegue en el alcance de esta integración,
+  proyecto en modo "solo dev" salvo aviso puntual. Ingesta de Reclamos/Ingresos/Mantenimientos al
+  Timeline: el tipo `TimelineEvent` y `ServiceTimeline.vue` ya admiten esos `tipo`s, pero no se
+  implementó ninguna fuente de datos para ellos todavía.
+- **Impacto:** paquete nuevo `core/services/prov/` (`config.py`, `rate_limiter.py`, `client.py`,
+  `ingesta.py`), migración `20260902_01` (tablas + enum `INGEST_PROV`), endpoint
+  `POST /servicios/prov/refrescar` + extensión de `GET /servicios/detail`, su proxy en
+  `web/app/main.py`, script `scripts/servicios_backfill_prov.py`, frontend
+  (`web/frontend/src/types/timeline.ts`, `components/servicios/ServiceTimeline.vue`, integración en
+  `ServicioDetalleView.vue`). Ver `docs/PR/2026-09-02.md` para comandos ejecutados y detalle de
+  impacto/riesgos.

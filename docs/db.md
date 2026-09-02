@@ -175,6 +175,71 @@ sin resolver (números de 1-3 u 8-10 dígitos, basura de parseo). Un ingest real
 (`POST /servicios/ingest`) reetiqueta el placeholder a `origen_datos=INGEST_EXCEL` cuando lo enriquece
 por el mismo `numero_primer_servicio` (nunca toca `categoria`, que es admin-only).
 
+**Integración con la API PROV — `origen_datos=INGEST_PROV` y dos tablas nuevas** (2026-09-02):
+`app.servicio_origen_datos` gana un nuevo valor de enum, `INGEST_PROV`, para distinguir un
+`Servicio` enriquecido/actualizado por la integración con la API interna PROV
+(`https://prov.metrotel.com.ar/api/v1/ADMEQ/API_Contexto_Servicio`) — vía `POST
+/servicios/prov/refrescar` (on-demand) o `scripts/servicios_backfill_prov.py` (masivo) — de uno
+tocado por Excel (`INGEST_EXCEL`) o tracking físico. Se agrega vía `ALTER TYPE ... ADD VALUE`
+dentro de `op.get_context().autocommit_block()` (migración `20260902_01`), mismo mecanismo que ya
+usó este repo para `INFERIDO_CROMO` (`db/alembic/versions/20260811_01_cromo_botella_camara_padre.py`);
+no se puede revertir un `ADD VALUE` en PostgreSQL 11+, así que el `downgrade()` de la migración deja
+`INGEST_PROV` en el enum aunque borre las dos tablas. `core/services/prov/ingesta.py::ingerir_contexto_prov`
+sólo pisa `origen_datos` a `INGEST_PROV` si el `Servicio` no tenía ya un origen más autoritativo
+(mismo criterio de "no degradar" que `resolver_estado_servicio` aplica a `estado_servicio`).
+
+Dos tablas hijas de `Servicio`, mismo espíritu que `rutas_servicio`: **se reescriben completas
+(delete + reinsert) en cada ingesta/refresh**, porque PROV siempre devuelve la cadena de upgrades y
+los equipos de última milla completos y vigentes — nunca un delta parcial que se pueda mergear fila
+a fila.
+
+### Tabla `servicios_historial_id`
+
+| Columna             | Tipo                 | Descripción |
+|---------------------|----------------------|-------------|
+| `id`                | Integer (PK)         | ID autoincremental. |
+| `servicio_id`       | FK → `servicios.id`, `ondelete=CASCADE`, index | Servicio dueño de este eslabón. Borrar el `Servicio` borra en cascada todo su historial. |
+| `numero_id`         | String(64)           | Un ID de la cadena de upgrades (`cadena_upgrade[*].nro_servicio` de PROV). |
+| `orden`             | Integer              | Posición en la cadena: `0` = ID vigente, crece hacia atrás (más viejo). |
+| `fecha_instalacion` | Date, nullable       | `cadena_upgrade[*].fecha_instalacion`. |
+| `fecha_baja`        | Date, nullable       | `cadena_upgrade[*].fecha_baja` (`null` en el eslabón vigente). |
+| `estado_comercial`  | String(128), nullable| Valor crudo de PROV para este eslabón (`INSTALADO`/`DADO BAJA`) — sin traducir; la traducción a `Servicio.estado_servicio` sólo se aplica al eslabón vigente. |
+| `motivo_baja`       | String(255), nullable| `cadena_upgrade[*].motivo_baja` (ej. `"UPGRADE"`). |
+| `es_vigente`        | Boolean, `NOT NULL DEFAULT false` | `true` sólo en el eslabón con `orden=0`. |
+| `created_at`        | DateTime(tz)         | Fecha de la última ingesta/refresh que reescribió la fila. |
+
+No reemplaza `Servicio.alias_ids` (que sigue siendo la fuente que consulta
+`consolidar_identidad_servicio` y el matching Cromo↔Servicio): esta tabla existe porque `alias_ids`
+es un `ARRAY(String)` plano que no puede guardar fecha/motivo/estado por ID — ver la entrada
+2026-09-02 de `docs/decisiones.md` sobre por qué esto no reutiliza el diseño de `alias_ids` del
+2026-08-25. Si PROV no trae `cadena_upgrade` (servicio sin upgrades), la ingesta escribe una única
+fila sintética con `numero_id=nro_servicio_original`, `orden=0`, `es_vigente=true` y
+`estado_comercial`/`fecha_instalacion` tomados del nivel superior del payload (`creacion`).
+
+### Tabla `servicios_equipos_ultima_milla`
+
+| Columna       | Tipo                 | Descripción |
+|---------------|----------------------|-------------|
+| `id`          | Integer (PK)         | ID autoincremental. |
+| `servicio_id` | FK → `servicios.id`, `ondelete=CASCADE`, index | Servicio dueño de este extremo. |
+| `extremo`     | Integer              | `1` o `2` — la mayoría de los servicios tiene un solo extremo; los que traen `Nodo2`/`Equipo2`/`Port2` en el payload de PROV tienen dos. La cardinalidad la decide el payload, no una regla fija por `tipo_servicio`. |
+| `nodo`        | String(255), nullable| `Nodo{N}` de PROV. |
+| `equipo`      | String(255), nullable| `Equipo{N}` de PROV. |
+| `puerto`      | String(128), nullable| `Port{N}` de PROV. |
+| `direccion`   | String(255), nullable| `Direccion{N}` de PROV (por extremo; distinto de `Servicio.direccion`, que guarda el extremo 1 a nivel del propio `Servicio`). |
+| `provincia`   | String(128), nullable| `Provincia{N}` de PROV. |
+| `created_at`  | DateTime(tz)         | Fecha de la última ingesta/refresh que reescribió la fila. |
+
+Relaciones nuevas en `Servicio`: `historial_ids` (ordenada por `orden`, `cascade="all,
+delete-orphan"`) y `equipos_ultima_milla` (mismo cascade). Ambas tablas se leen (sin llamar a PROV)
+desde `GET /servicios/detail`, que extiende su `response_model` con `historial_ids`/
+`equipos_ultima_milla` — decisión explícita para no acoplar la vista de detalle al rate-limit de
+PROV. Se escriben desde `core/services/prov/ingesta.py::ingerir_contexto_prov`, invocado tanto por
+`POST /servicios/prov/refrescar` (on-demand, un servicio) como por
+`scripts/servicios_backfill_prov.py` (masivo, respetando el rate limit de 5 req/s). Ver
+`docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md` para los payloads reales
+de PROV que fijaron este mapeo.
+
 ### Tabla `servicio_empalme_association` (Legacy)
 
 Tabla intermedia N-a-N entre `servicios` y `empalmes`. Mantenida por retrocompatibilidad.
