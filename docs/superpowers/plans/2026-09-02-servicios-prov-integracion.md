@@ -951,8 +951,12 @@ class ProvClient:
         self._cliente = cliente_http or httpx.AsyncClient(
             base_url=self._config.base_url,
             timeout=httpx.Timeout(self._config.timeout),
-            auth=httpx.BasicAuth(self._config.user, self._config.password),
         )
+        # Basic Auth se aplica por-request (no en la construcción del AsyncClient): si
+        # `cliente_http` viene inyectado (como en los tests, para mockear el transport),
+        # aplicarlo sólo en la rama de auto-construcción lo dejaría sin auth — bug real
+        # encontrado en la implementación de este Task, ver `_get`.
+        self._auth = httpx.BasicAuth(self._config.user, self._config.password)
         self._limiter = limiter or AsyncRateLimiter(self._config.rate_limit_per_second)
         logger.info("action=prov_client_init evento=inicializado base_url=%s", self._config.base_url)
 
@@ -991,7 +995,7 @@ class ProvClient:
             intento += 1
             await self._limiter.esperar_turno()
             try:
-                respuesta = await self._cliente.get(_RUTA_CONTEXTO_SERVICIO, params=params)
+                respuesta = await self._cliente.get(_RUTA_CONTEXTO_SERVICIO, params=params, auth=self._auth)
             except httpx.TransportError as exc:
                 if intento > _REINTENTOS_MAX:
                     logger.error(
