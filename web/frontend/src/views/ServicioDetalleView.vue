@@ -69,12 +69,25 @@
     <hr class="noc-rule" />
 
     <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
-      <span class="servicio-detalle__historico-label">Histórico de IDs</span>
-      <div class="servicio-detalle__historico-track">
-        <template v-for="(id, index) in historicoIds" :key="`${id}-${index}`">
-          <span :class="['servicio-detalle__nodo', { 'is-current': index === historicoIds.length - 1 }]">{{ id }}</span>
-          <i v-if="index < historicoIds.length - 1" class="ph ph-arrow-right" aria-hidden="true"></i>
-        </template>
+      <div class="servicio-detalle__historico-header">
+        <span class="servicio-detalle__historico-label">Histórico de IDs</span>
+        <button class="btn subtle" type="button" :disabled="refrescandoProv" @click="onRefrescarDesdeProv">
+          <i :class="['ph', refrescandoProv ? 'ph-spinner' : 'ph-arrow-clockwise']" aria-hidden="true"></i>
+          {{ refrescandoProv ? 'Actualizando…' : 'Actualizar desde PROV' }}
+        </button>
+      </div>
+      <p v-if="errorRefrescoProv" class="servicio-detalle__categoria-error">{{ errorRefrescoProv }}</p>
+      <ServiceTimeline :events="timelineEvents" />
+    </section>
+
+    <section v-if="equiposUltimaMilla.length > 0" class="servicio-detalle__equipos" aria-label="Equipos de última milla">
+      <span class="servicio-detalle__historico-label">Equipos de última milla</span>
+      <div class="servicio-detalle__equipos-grid">
+        <div v-for="equipo in equiposUltimaMilla" :key="equipo.extremo" class="servicio-detalle__equipo-card">
+          <span class="servicio-detalle__equipo-extremo">Extremo {{ equipo.extremo }}</span>
+          <span>{{ equipo.nodo || 'Nodo sin dato' }}</span>
+          <span>{{ equipo.equipo || 'Equipo sin dato' }} · Puerto {{ equipo.puerto || '—' }}</span>
+        </div>
       </div>
     </section>
 
@@ -286,11 +299,17 @@ import {
   categoriaLabel,
   estadoServicioToken,
   getServicioDetail,
+  historialIdsToTimelineEvents,
+  refrescarServicioDesdeProv,
   updateServicioCategoria,
   updateServicioVerificable,
+  type ServicioEquipoUltimaMillaItem,
+  type ServicioHistorialIdItem,
   type ServicioItem,
 } from '../api/servicios';
+import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
 import { useSession } from '../composables/useSession';
+import type { TimelineEvent } from '../types/timeline';
 
 const route = useRoute();
 const router = useRouter();
@@ -298,6 +317,10 @@ const { state } = useSession();
 const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
 
 const servicio = ref<ServicioItem | null>(null);
+const historialIds = ref<ServicioHistorialIdItem[]>([]);
+const equiposUltimaMilla = ref<ServicioEquipoUltimaMillaItem[]>([]);
+const refrescandoProv = ref(false);
+const errorRefrescoProv = ref('');
 const loading = ref(false);
 const error = ref('');
 const guardandoCategoria = ref(false);
@@ -447,6 +470,22 @@ const historicoIds = computed(() => {
   return ids.length > 0 ? ids : [idParam.value];
 });
 
+const timelineEvents = computed<TimelineEvent[]>(() => {
+  if (historialIds.value.length > 0) {
+    return historialIdsToTimelineEvents(historialIds.value);
+  }
+  // Fallback para servicios que todavía no pasaron por un refresco/backfill de PROV: reusa la
+  // misma cadena simple de `alias_ids` que mostraba el track horizontal anterior, sin
+  // fecha/estado/motivo (esos datos sólo existen una vez que PROV enriqueció el servicio).
+  return historicoIds.value.map((id, index) => ({
+    id,
+    fecha: null,
+    tipo: 'upgrade_id' as const,
+    titulo: `ID ${id}`,
+    descripcion: index === historicoIds.value.length - 1 ? 'Vigente' : undefined,
+  }));
+});
+
 const reclamosCount = computed(() => servicio.value?.reclamos?.length ?? 0);
 const estadoToken = computed(() => estadoServicioToken(servicio.value?.estado_servicio));
 
@@ -535,6 +574,8 @@ async function loadDetalle(): Promise<void> {
   try {
     const response = await getServicioDetail(id);
     servicio.value = response.servicio;
+    historialIds.value = response.historial_ids;
+    equiposUltimaMilla.value = response.equipos_ultima_milla;
 
     await Promise.all([
       loadFoResumen(response.id_origen),
@@ -549,6 +590,8 @@ async function loadDetalle(): Promise<void> {
     }
   } catch (err: unknown) {
     servicio.value = null;
+    historialIds.value = [];
+    equiposUltimaMilla.value = [];
     error.value = err instanceof Error ? err.message : 'No se pudo cargar el detalle del servicio';
   } finally {
     loading.value = false;
@@ -582,6 +625,22 @@ async function onCambiarVerificable(esVerificable: boolean): Promise<void> {
     if (servicio.value) servicio.value.es_verificable = anterior;
   } finally {
     guardandoVerificable.value = false;
+  }
+}
+
+async function onRefrescarDesdeProv(): Promise<void> {
+  if (!servicio.value || refrescandoProv.value) return;
+  refrescandoProv.value = true;
+  errorRefrescoProv.value = '';
+  try {
+    const response = await refrescarServicioDesdeProv(idParam.value);
+    servicio.value = response.servicio;
+    historialIds.value = response.historial_ids;
+    equiposUltimaMilla.value = response.equipos_ultima_milla;
+  } catch (err: unknown) {
+    errorRefrescoProv.value = err instanceof Error ? err.message : 'No se pudo actualizar desde PROV';
+  } finally {
+    refrescandoProv.value = false;
   }
 }
 
@@ -932,6 +991,42 @@ watch(
   background: transparent;
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
+}
+
+.servicio-detalle__historico-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.servicio-detalle__equipos {
+  margin-top: 16px;
+}
+
+.servicio-detalle__equipos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.servicio-detalle__equipo-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  font-size: 0.85rem;
+}
+
+.servicio-detalle__equipo-extremo {
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
 }
 
 .servicio-detalle__error {
