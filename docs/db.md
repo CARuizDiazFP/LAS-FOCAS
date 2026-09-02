@@ -181,12 +181,19 @@ por el mismo `numero_primer_servicio` (nunca toca `categoria`, que es admin-only
 (`https://prov.metrotel.com.ar/api/v1/ADMEQ/API_Contexto_Servicio`) — vía `POST
 /servicios/prov/refrescar` (on-demand) o `scripts/servicios_backfill_prov.py` (masivo) — de uno
 tocado por Excel (`INGEST_EXCEL`) o tracking físico. Se agrega vía `ALTER TYPE ... ADD VALUE`
-dentro de `op.get_context().autocommit_block()` (migración `20260902_01`), mismo mecanismo que ya
-usó este repo para `INFERIDO_CROMO` (`db/alembic/versions/20260811_01_cromo_botella_camara_padre.py`);
-no se puede revertir un `ADD VALUE` en PostgreSQL 11+, así que el `downgrade()` de la migración deja
-`INGEST_PROV` en el enum aunque borre las dos tablas. `core/services/prov/ingesta.py::ingerir_contexto_prov`
-sólo pisa `origen_datos` a `INGEST_PROV` si el `Servicio` no tenía ya un origen más autoritativo
-(mismo criterio de "no degradar" que `resolver_estado_servicio` aplica a `estado_servicio`).
+dentro de `op.get_context().autocommit_block()` (migración `20260902_01`) — misma técnica (no el
+mismo enum) que `db/alembic/versions/20260811_01_cromo_botella_camara_padre.py` usó por primera vez
+en este repo para agregar valores a un enum ya existente (`app.camara_estado`/`app.camara_origen_datos`,
+un enum distinto de `app.servicio_origen_datos`); el valor `INFERIDO_CROMO` de `app.servicio_origen_datos`
+en sí se creó de una vez vía `CREATE TYPE` (`20260814_02_servicios_origen_datos.py`) y nunca antes se
+había extendido este enum con `ADD VALUE`. No se puede revertir un `ADD VALUE` en PostgreSQL 11+, así
+que el `downgrade()` de la migración deja `INGEST_PROV` en el enum aunque borre las dos tablas.
+`core/services/prov/ingesta.py::ingerir_contexto_prov` pisa `origen_datos` a `INGEST_PROV`
+**incondicionalmente** en cada ingesta/refresh exitoso — no existe ninguna jerarquía de "orígenes más
+autoritativos" implementada hoy en el repo (ni acá, ni en el endpoint, ni en el backfill). Mismo
+criterio que ya usa `POST /servicios/ingest` (Excel), que también re-etiqueta `origen_datos`
+incondicionalmente en cada upsert (`api/app/routes/servicios.py::ingest_servicios`,
+`set_map["origen_datos"] = excluded.origen_datos`).
 
 Dos tablas hijas de `Servicio`, mismo espíritu que `rutas_servicio`: **se reescriben completas
 (delete + reinsert) en cada ingesta/refresh**, porque PROV siempre devuelve la cadena de upgrades y

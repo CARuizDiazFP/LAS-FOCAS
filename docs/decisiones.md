@@ -1110,9 +1110,13 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   (`ServiceTimeline.vue`). Misma tabla de traducción para `ServicioEquipoUltimaMilla` (última milla),
   que no tenía ningún equivalente previo en el esquema.
 - **Decisión 3 (rate limiting in-process, no distribuido):** el cliente PROV
-  (`core/services/prov/`) nunca supera 5 req/s, forzado por un `AsyncTokenBucketLimiter` propio (no
-  hay nada reutilizable en el repo para esto — se buscó `Semaphore`/`rate_limit`/`throttle` sin
-  resultados de código de negocio). Se decidió explícitamente **no** construir un limiter distribuido
+  (`core/services/prov/`) nunca supera 5 req/s, forzado por un `AsyncRateLimiter` propio de pacing
+  uniforme (cada turno se espacia `1/rate_per_second` segundos del anterior, sin permitir ráfagas —
+  no es un token bucket con capacidad, que sí las permitiría). Se buscó `Semaphore`/`rate_limit`/
+  `throttle` reutilizable para este cliente async sin encontrar nada equivalente (el único throttle
+  ya existente en el repo, `_login_rate_limit_key` en `web/app/main.py`, es un contador sync por
+  IP/usuario para intentos de login — forma distinta, no aplicable a pacing de un cliente HTTP
+  async). Se decidió explícitamente **no** construir un limiter distribuido
   (Redis) entre el proceso de la API (`uvicorn` sin `--workers`, un único worker — confirmado en
   `api/Dockerfile:32`) y el proceso aparte del backfill (`scripts/servicios_backfill_prov.py`):
   sobre-ingeniería para el volumen esperado. **Riesgo operativo aceptado, no resuelto con
