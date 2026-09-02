@@ -53,6 +53,7 @@ def client():
 
 _NUMEROS_DE_TEST = (
     "900001", "900002", "900003", "900004", "900005", "900006", "900007",
+    "900008", "900009",
     "900090", "900091", "900092",
 )
 
@@ -524,3 +525,63 @@ def test_ingest_respeta_baja_del_excel_si_trae_un_id_mas_alto_que_el_conocido(cl
     body = detail.json()["servicio"]
     assert body["estado_servicio"] == "Baja"
     assert body["numero_linea"] == "900080"
+
+
+def test_ingest_marca_no_verificable_cuando_el_estado_resuelto_es_baja(client: TestClient) -> None:
+    """Un servicio en Baja no es verificable aunque su tipo sí lo sea normalmente (INT) — no tiene
+    sentido correr verificación física de tracking sobre un servicio dado de baja."""
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900008"],
+            "Tipo Servicio": ["INT"],
+            "Estado Servicio": ["Baja"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get("/servicios/detail", params={"id": "900008"}, headers=API_HEADERS)
+    body = detail.json()["servicio"]
+    assert body["estado_servicio"] == "Baja"
+    assert body["es_verificable"] is False
+
+
+def test_ingest_respeta_override_manual_de_verificable_aunque_el_servicio_quede_en_baja(client: TestClient) -> None:
+    """El override manual del admin (`es_verificable_override`) sigue ganando siempre, igual que ya
+    pasa con la regla por `tipo_servicio` — Baja no lo pisa."""
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.servicios "
+                "(servicio_id, numero_primer_servicio, numero_linea, estado_servicio, tipo_servicio, "
+                "es_verificable, es_verificable_override, origen_datos) "
+                "VALUES ('900009', '900009', '900009', 'Activo', 'INT', true, true, 'INGEST_EXCEL')"
+            )
+        )
+        session.commit()
+
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["900009"],
+            "Tipo Servicio": ["INT"],
+            "Estado Servicio": ["Baja"],
+        }
+    )
+
+    response = client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+
+    detail = client.get("/servicios/detail", params={"id": "900009"}, headers=API_HEADERS)
+    body = detail.json()["servicio"]
+    assert body["estado_servicio"] == "Baja"
+    assert body["es_verificable"] is True
+    assert body["es_verificable_override"] is True

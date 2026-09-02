@@ -34,6 +34,16 @@ def es_verificable_por_tipo(tipo_servicio: str | None) -> bool:
     return tipo_servicio.strip().upper() in TIPOS_SERVICIO_VERIFICABLES
 
 
+def es_verificable_por_tipo_y_estado(tipo_servicio: str | None, estado_servicio: str | None) -> bool:
+    """Un servicio en Baja nunca es verificable, sin importar el tipo: no tiene sentido correr
+    verificación física de tracking sobre un servicio dado de baja. Fuera de Baja, se mantiene la
+    regla existente por `tipo_servicio`."""
+    esta_de_baja = bool(estado_servicio) and estado_servicio.strip().lower() == "baja"
+    if esta_de_baja:
+        return False
+    return es_verificable_por_tipo(tipo_servicio)
+
+
 def _a_entero(valor: str | None) -> int | None:
     if valor is None:
         return None
@@ -123,9 +133,16 @@ def consolidar_identidad_servicio(
     # catch-up histórico (un Excel viejo, subido después, que sólo repite un ID ya superado) —
     # usado por `resolver_estado_servicio` para no dejar que un catch-up histórico degrade un
     # servicio que la DB ya sabe que está más adelante en su cadena de upgrades.
+    #
+    # `linea_upgrade_a` queda afuera adrede: es un puntero hacia ADELANTE ("esta línea ya
+    # upgradeó a X"), no una aserción de que esta fila representa vigente el ID X — el `Estado
+    # Servicio` de la fila describe a `numero_linea_excel` (la línea vieja, ya retirada), no a su
+    # sucesora. Incluirlo acá dejaba que un Excel viejo con "Baja" en una línea retirada pisara un
+    # "Activo" ya vigente en la DB, sólo porque su propio puntero de upgrade coincidía con el ID
+    # más alto conocido (repro real: servicio 38929, ver tests).
     enteros_del_excel = [
         entero
-        for valor in (numero_primer_servicio, numero_linea_excel, linea_upgrade_de, linea_upgrade_a)
+        for valor in (numero_primer_servicio, numero_linea_excel, linea_upgrade_de)
         if _es_valor_util(valor) and (entero := _a_entero(valor)) is not None
     ]
     avanza_por_excel = bool(enteros_del_excel) and (

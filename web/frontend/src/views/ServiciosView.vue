@@ -208,6 +208,13 @@
         Cargando más servicios...
       </div>
 
+      <div v-else-if="hasMore && items.length > 0" class="servicios-view__load-more">
+        <button class="btn subtle" type="button" @click="loadNextPage">
+          Cargar más resultados
+          <i class="ph ph-arrow-down" aria-hidden="true"></i>
+        </button>
+      </div>
+
       <div ref="sentinel" class="servicios-view__sentinel" aria-hidden="true"></div>
     </div>
 
@@ -256,7 +263,11 @@ const scrollEl = ref<HTMLElement | null>(null);
 // (donde C6 era una cola de triage útil) y pasó a traer el Nivel Cliente real del Excel, así que
 // filtrar por C6 al entrar dejaba el listado casi vacío después de cada ingesta — mismo bug que ya
 // pasó en /infra con la paginación por default. Ojo: `clearFiltros` reconstruye este mismo estado.
-const filtros = ref({ tipo: '', estado: '', categoria: '' });
+//
+// `estado: 'activo'` sí tiene default (a diferencia de Nivel Cliente arriba): a diferencia de C6,
+// "Activo" es la mayoría real de los servicios, así que no vacía el listado — y esconder "Baja" por
+// default es un pedido explícito del usuario para no ensuciar la vista con servicios dados de baja.
+const filtros = ref({ tipo: '', estado: 'activo', categoria: '' });
 const selectedIdOrigen = ref('');
 const seleccionadas = ref<Set<number>>(new Set());
 const categoriaMasivaSeleccionada = ref(6);
@@ -271,6 +282,10 @@ const tipoChips = [
   { label: 'Tipo: todos', value: '' },
   { label: 'TLS', value: 'TLS' },
   { label: 'VID', value: 'VID' },
+  { label: 'INT', value: 'INT' },
+  { label: 'RPV', value: 'RPV' },
+  { label: 'FO', value: 'FO' },
+  { label: 'EWS', value: 'EWS' },
 ];
 
 const estadoChips = [
@@ -361,7 +376,7 @@ function setCategoria(value: string): void {
 
 function clearFiltros(): void {
   query.value = '';
-  filtros.value = { tipo: '', estado: '', categoria: '' };
+  filtros.value = { tipo: '', estado: 'activo', categoria: '' };
   void reloadFromZero();
 }
 
@@ -923,6 +938,12 @@ onBeforeUnmount(() => {
 .servicios-view__spin {
   font-size: 14px;
   animation: spin 1s linear infinite;
+}
+
+.servicios-view__load-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0;
 }
 
 .servicios-view__sentinel {

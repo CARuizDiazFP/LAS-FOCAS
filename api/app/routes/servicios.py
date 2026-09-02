@@ -24,7 +24,7 @@ from core.services.servicios_categoria_service import (
 )
 from core.services.servicios_consolidacion_service import (
     consolidar_identidad_servicio,
-    es_verificable_por_tipo,
+    es_verificable_por_tipo_y_estado,
     resolver_estado_servicio,
 )
 from db.models.infra import Servicio, ServicioOrigenDatos
@@ -257,7 +257,7 @@ async def ingest_servicios(
         row["es_verificable"] = (
             override_actual
             if override_actual is not None
-            else es_verificable_por_tipo(row.get("tipo_servicio"))
+            else es_verificable_por_tipo_y_estado(row.get("tipo_servicio"), row["estado_servicio"])
         )
 
         # Detección de fragmentación: si dos numero_primer_servicio distintos de ESTE mismo archivo

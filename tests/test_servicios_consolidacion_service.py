@@ -5,6 +5,7 @@
 from core.services.servicios_consolidacion_service import (
     consolidar_identidad_servicio,
     es_verificable_por_tipo,
+    es_verificable_por_tipo_y_estado,
     resolver_estado_servicio,
 )
 
@@ -36,6 +37,20 @@ def test_es_verificable_por_tipo_rechaza_otros_tipos_y_normaliza_mayusculas() ->
     assert es_verificable_por_tipo("ATI") is False
     assert es_verificable_por_tipo(None) is False
     assert es_verificable_por_tipo("") is False
+
+
+def test_es_verificable_por_tipo_y_estado_es_false_en_baja_aunque_el_tipo_sea_verificable() -> None:
+    """Un servicio en Baja nunca es verificable, sin importar el tipo — no tiene sentido correr
+    verificación física de tracking sobre un servicio dado de baja."""
+    assert es_verificable_por_tipo_y_estado("INT", "Baja") is False
+    assert es_verificable_por_tipo_y_estado("INT", "baja") is False
+
+
+def test_es_verificable_por_tipo_y_estado_delega_en_tipo_cuando_no_esta_en_baja() -> None:
+    assert es_verificable_por_tipo_y_estado("INT", "Activo") is True
+    assert es_verificable_por_tipo_y_estado("ATI", "Activo") is False
+    assert es_verificable_por_tipo_y_estado("INT", "DESCONOCIDO") is True
+    assert es_verificable_por_tipo_y_estado("INT", None) is True
 
 
 def test_consolidar_identidad_alta_nueva_sin_upgrade() -> None:
@@ -300,6 +315,27 @@ def test_consolidar_identidad_avanza_por_excel_true_sin_datos_existentes() -> No
         alias_ids_actual=None,
     )
     assert resultado.avanza_por_excel is True
+
+
+def test_consolidar_identidad_avanza_por_excel_false_cuando_solo_linea_upgrade_a_alcanza_el_maximo() -> None:
+    """Repro real (servicio 38929, BANCO SANTANDER): un Excel histórico puede reportar en "Línea
+    Upgrade (A)" un ID que YA se conoce como vigente (acá 112922, ya Activo en la DB) sin que ese ID
+    sea el que esta fila representa como su propio estado — su `Número Línea` (53597) sigue siendo
+    menor. `Línea Upgrade (A)` es un puntero hacia adelante, no una aserción de que este Excel trae
+    vigente ese ID; sólo `Número Línea`/`Número Primer Servicio`/`Línea Upgrade (De)` reflejan lo que
+    esta fila afirma sobre sí misma. Antes del fix, `avanza_por_excel` daba `True` acá porque
+    `Línea Upgrade (A)` entraba al cómputo, permitiendo que un "Baja" de una fila vieja pisara un
+    "Activo" ya vigente."""
+    resultado = consolidar_identidad_servicio(
+        numero_primer_servicio="38929",
+        numero_linea_excel="53597",
+        linea_upgrade_de="38929",
+        linea_upgrade_a="112922",
+        servicio_id_actual="112922",
+        numero_linea_actual="112922",
+        alias_ids_actual=["38929", "53597"],
+    )
+    assert resultado.avanza_por_excel is False
 
 
 def test_resolver_estado_servicio_preserva_activo_si_el_excel_no_avanza_la_identidad() -> None:
