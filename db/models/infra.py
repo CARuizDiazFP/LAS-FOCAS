@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Enum as SQLEnum,
     Float,
@@ -66,6 +67,7 @@ class ServicioOrigenDatos(str, Enum):
     TRACKING = "TRACKING"
     INGEST_EXCEL = "INGEST_EXCEL"
     INFERIDO_CROMO = "INFERIDO_CROMO"  # Placeholder sintetizado por el matching Cromo (nombre, no dato real)
+    INGEST_PROV = "INGEST_PROV"  # Servicio enriquecido/actualizado por la integración con la API PROV
 
 
 class RutaTipo(str, Enum):
@@ -430,6 +432,20 @@ class Servicio(Base):
         back_populates="servicios",
     )
 
+    historial_ids = relationship(
+        "ServicioHistorialId",
+        back_populates="servicio",
+        cascade="all, delete-orphan",
+        order_by="ServicioHistorialId.orden",
+    )
+
+    equipos_ultima_milla = relationship(
+        "ServicioEquipoUltimaMilla",
+        back_populates="servicio",
+        cascade="all, delete-orphan",
+        order_by="ServicioEquipoUltimaMilla.extremo",
+    )
+
     def __repr__(self) -> str:
         return f"<Servicio id={self.id} servicio_id='{self.servicio_id}'>"
 
@@ -453,7 +469,7 @@ class Servicio(Base):
     @property
     def todos_los_empalmes(self) -> List["Empalme"]:
         """Retorna todos los empalmes de todas las rutas activas (sin duplicados).
-        
+
         Útil para retrocompatibilidad con código que usaba servicio.empalmes directamente.
         """
         empalmes_set = {}
@@ -462,6 +478,62 @@ class Servicio(Base):
                 if empalme.id not in empalmes_set:
                     empalmes_set[empalme.id] = empalme
         return list(empalmes_set.values())
+
+
+class ServicioHistorialId(Base):
+    """Un eslabón de la cadena de upgrades de ID de un Servicio, según PROV (`cadena_upgrade`).
+
+    Se reescribe completo (delete + reinsert) en cada ingesta/refresh desde PROV — PROV siempre
+    devuelve la cadena completa y vigente, nunca un delta. No reemplaza `Servicio.alias_ids` (que
+    sigue siendo la fuente para `consolidar_identidad_servicio`): esta tabla existe porque
+    `alias_ids` es un array plano de strings que no puede guardar fecha/motivo/estado por ID (ver
+    docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md).
+    """
+
+    __tablename__ = "servicios_historial_id"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True)
+    numero_id = Column(String(64), nullable=False)
+    orden = Column(Integer, nullable=False)  # 0 = vigente, crece hacia atrás en la cadena
+    fecha_instalacion = Column(Date, nullable=True)
+    fecha_baja = Column(Date, nullable=True)
+    estado_comercial = Column(String(128), nullable=True)
+    motivo_baja = Column(String(255), nullable=True)
+    es_vigente = Column(Boolean, nullable=False, server_default=text("false"))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    servicio = relationship("Servicio", back_populates="historial_ids")
+
+    def __repr__(self) -> str:
+        return f"<ServicioHistorialId id={self.id} servicio_id={self.servicio_id} numero_id='{self.numero_id}'>"
+
+
+class ServicioEquipoUltimaMilla(Base):
+    """Equipo/puerto de última milla de un extremo de un Servicio, según PROV (`Nodo{N}`/
+    `Equipo{N}`/`Port{N}`). Cardinalidad 1 o 2 según el payload de PROV (no una regla fija por
+    `tipo_servicio`): la mayoría de los servicios tiene un solo extremo; los que traen `Nodo2`/
+    `Equipo2`/`Port2` tienen dos. Se reescribe completo (delete + reinsert) en cada ingesta/refresh.
+    """
+
+    __tablename__ = "servicios_equipos_ultima_milla"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True)
+    extremo = Column(Integer, nullable=False)  # 1 o 2
+    nodo = Column(String(255), nullable=True)
+    equipo = Column(String(255), nullable=True)
+    puerto = Column(String(128), nullable=True)
+    direccion = Column(String(255), nullable=True)
+    provincia = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    servicio = relationship("Servicio", back_populates="equipos_ultima_milla")
+
+    def __repr__(self) -> str:
+        return f"<ServicioEquipoUltimaMilla id={self.id} servicio_id={self.servicio_id} extremo={self.extremo}>"
 
 
 class Ingreso(Base):
