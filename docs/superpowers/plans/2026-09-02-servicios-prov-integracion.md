@@ -2535,7 +2535,165 @@ git commit -m "feat(servicios): integra ServiceTimeline y el refresco desde PROV
 
 ---
 
-### Task 11: Documentación
+### Task 11: Proxy `POST /api/servicios/prov/refrescar` en `web/app/main.py` + fix de CSRF en el cliente frontend
+
+**Contexto de por qué esta tarea existe:** el plan original (Tasks 1-10) nunca tocó `web/app/main.py`
+porque ninguna exploración previa relevó que el contenedor `web` expone su propio FastAPI
+(`web/app/main.py`, **no** `api/app/main.py`) que proxya a mano, endpoint por endpoint, cada ruta de
+`/api/servicios/*` que consume el frontend (`servicios_search_web`, `servicios_detail_web`,
+`servicio_categoria_web`, `servicio_verificable_web` — no hay un proxy genérico `/api/{path:path}`).
+El endpoint nuevo del Task 6 (`POST /servicios/prov/refrescar` en `api/app/routes/servicios.py`)
+nunca tuvo su contraparte proxy en `web/app/main.py`, así que el botón "Actualizar desde PROV" del
+Task 10 no funciona en un navegador real pese a que el backend y el frontend, cada uno por separado,
+están correctos — hallazgo real confirmado con curl real contra `lasfocasdev-web` durante la revisión
+del Task 10 (ver ledger de esta ejecución SDD). Además, al diseñar el proxy se encontró un segundo bug
+real: `refrescarServicioDesdeProv` (`web/frontend/src/api/servicios.ts`, Task 8) pasa `csrf: true` sin
+un objeto `json`, y `request()` (`web/frontend/src/api/client.ts`) sólo inyecta el `csrf_token` en el
+body cuando hay un `json` truthy — sin este fix, el POST sale sin body y el proxy nuevo (que exige
+`csrf_token` como cualquier otro endpoint mutante de este archivo) lo rechazaría con "CSRF inválido".
+
+**Files:**
+- Modify: `web/app/main.py`
+- Modify: `web/frontend/src/api/servicios.ts`
+
+**Interfaces:**
+- Consumes: `POST /servicios/prov/refrescar?id=...` (Task 6, ya en `api/app/routes/servicios.py`),
+  `INTERNAL_API_BASE_URL`, `_internal_api_auth_headers()`, `_require_auth(request)` (ya existentes en
+  `web/app/main.py`, mismo patrón que `servicios_detail_web`/`servicio_categoria_web`).
+- Produces: `POST /api/servicios/prov/refrescar?id=...` (proxy) — consumido por el frontend ya
+  construido en el Task 10 (`ServicioDetalleView.vue::onRefrescarDesdeProv`), sin cambios de firma
+  de ese lado más que el fix de `refrescarServicioDesdeProv` de abajo.
+
+- [ ] **Step 1: Agregar el modelo de request y la ruta proxy en `web/app/main.py`**
+
+Inmediatamente después de la clase `ServicioVerificableUpdateRequestModel` y su ruta
+`servicio_verificable_web` (buscar `@app.patch("/api/servicios/{id}/verificable")` y su función,
+agregar después de que termine esa función), agregar:
+
+```python
+class ServicioProvRefrescarRequestModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/servicios/prov/refrescar")
+async def servicio_prov_refrescar_web(
+    request: Request,
+    id: str,
+    body: ServicioProvRefrescarRequestModel,
+) -> JSONResponse:
+    """Dispara el refresco on-demand de un Servicio contra PROV. Proxya al endpoint interno, mismo
+    patrón que `servicios_detail_web`/`servicio_categoria_web` — visible a cualquier usuario
+    autenticado (no sólo admin), igual que el botón en `ServicioDetalleView.vue` (Task 10), que no
+    está condicionado a `isAdmin`."""
+    username, _ = _require_auth(request)
+    id_consultado = (id or "").strip()
+    if not id_consultado:
+        return JSONResponse({"error": "ID requerido"}, status_code=400)
+
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_prov_refrescar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/servicios/prov/refrescar",
+                params={"id": id_consultado},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error refrescando servicio desde PROV"}
+
+        logger.info(
+            "action=servicio_prov_refrescar user=%s id=%s status=%s",
+            username,
+            id_consultado,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_prov_refrescar_error user=%s id=%s error=%s", username, id_consultado, exc)
+        return JSONResponse({"error": f"Error refrescando servicio desde PROV: {exc!s}"}, status_code=500)
+```
+
+- [ ] **Step 2: Fix del CSRF en `refrescarServicioDesdeProv`**
+
+En `web/frontend/src/api/servicios.ts`, reemplazar:
+
+```typescript
+export async function refrescarServicioDesdeProv(id: string): Promise<ServicioDetailResponse> {
+  const query = new URLSearchParams({ id: id.trim() }).toString();
+  return requestJson<ServicioDetailResponse>(`/api/servicios/prov/refrescar?${query}`, {
+    method: 'POST',
+    csrf: true,
+  });
+}
+```
+
+por:
+
+```typescript
+export async function refrescarServicioDesdeProv(id: string): Promise<ServicioDetailResponse> {
+  const query = new URLSearchParams({ id: id.trim() }).toString();
+  return requestJson<ServicioDetailResponse>(`/api/servicios/prov/refrescar?${query}`, {
+    method: 'POST',
+    json: {},
+    csrf: true,
+  });
+}
+```
+
+(`request()` en `client.ts` sólo llama a `withCsrfJson(json)` — que agrega `csrf_token` — cuando
+`json` es un objeto truthy; sin `json: {}` el POST sale sin body y sin `csrf_token`.)
+
+- [ ] **Step 3: Verificar que compila y que la ruta queda registrada**
+
+```bash
+cd web/frontend && npm run build && cd ../..
+python3 -c "
+import sys
+sys.path.insert(0, '.')
+from web.app.main import app
+rutas = [r.path for r in app.routes if getattr(r, 'path', None) == '/api/servicios/prov/refrescar']
+assert rutas, 'ruta no registrada'
+print('OK: ruta registrada', rutas)
+"
+```
+
+- [ ] **Step 4: Reconstruir `web` y verificar con curl real**
+
+```bash
+cd deploy
+docker compose -f docker-compose.dev.yml --env-file ../.env.dev up -d --build web
+cd ..
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "http://localhost:<puerto-dev-web>/api/servicios/prov/refrescar?id=<numero_real>"
+```
+
+Sin cookie de sesión, esperar `401`/`403` (autenticación requerida) — **no** `404`/`405`, que es lo
+que devolvía antes de este fix (confirma que la ruta ahora existe y el gate de auth es lo que
+intercepta, no un "not found"). Si el proyecto tiene un flujo de login por curl ya documentado
+(revisar `docs/`/skills de testing web), usarlo para confirmar el camino feliz con sesión real; si
+no existe ese flujo, este chequeo de "401/403 en vez de 404/405" alcanza como evidencia de que el
+proxy quedó bien cableado — dejarlo explícito en el reporte.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add web/app/main.py web/frontend/src/api/servicios.ts
+git commit -m "fix(servicios): agrega el proxy de /api/servicios/prov/refrescar en web + fix de CSRF en el cliente"
+```
+
+---
+
+### Task 12: Documentación
 
 **Files:**
 - Modify: `docs/db.md`
