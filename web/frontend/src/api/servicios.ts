@@ -3,6 +3,7 @@
 // Descripción: Cliente frontend para ingesta y búsqueda paginada del módulo servicios
 
 import { ApiError, getCsrfToken, requestJson } from './client';
+import type { TimelineEvent } from '../types/timeline';
 
 export interface IngestServiciosResponse {
   status: string;
@@ -33,6 +34,25 @@ export interface ServicioItem {
   reclamos: Array<Record<string, unknown>> | null;
 }
 
+export interface ServicioHistorialIdItem {
+  numero_id: string;
+  orden: number;
+  fecha_instalacion: string | null;
+  fecha_baja: string | null;
+  estado_comercial: string | null;
+  motivo_baja: string | null;
+  es_vigente: boolean;
+}
+
+export interface ServicioEquipoUltimaMillaItem {
+  extremo: number;
+  nodo: string | null;
+  equipo: string | null;
+  puerto: string | null;
+  direccion: string | null;
+  provincia: string | null;
+}
+
 export interface SearchServiciosResponse {
   status: string;
   total: number;
@@ -46,6 +66,8 @@ export interface ServicioDetailResponse {
   id_consultado: string;
   id_origen: string;
   servicio: ServicioItem;
+  historial_ids: ServicioHistorialIdItem[];
+  equipos_ultima_milla: ServicioEquipoUltimaMillaItem[];
 }
 
 export interface SearchServiciosParams {
@@ -96,6 +118,35 @@ export async function getServicioDetail(id: string): Promise<ServicioDetailRespo
   const clean = id.trim();
   const query = new URLSearchParams({ id: clean }).toString();
   return requestJson<ServicioDetailResponse>(`/api/servicios/detail?${query}`);
+}
+
+/** Dispara un refresco on-demand del servicio contra PROV y persiste el resultado. Ver
+ * `POST /api/servicios/prov/refrescar`. */
+export async function refrescarServicioDesdeProv(id: string): Promise<ServicioDetailResponse> {
+  const query = new URLSearchParams({ id: id.trim() }).toString();
+  return requestJson<ServicioDetailResponse>(`/api/servicios/prov/refrescar?${query}`, {
+    method: 'POST',
+    csrf: true,
+  });
+}
+
+/** Convierte el historial de IDs (PROV) al tipo genérico que consume `ServiceTimeline.vue`. */
+export function historialIdsToTimelineEvents(historial: ServicioHistorialIdItem[]): TimelineEvent[] {
+  return historial
+    .slice()
+    .sort((a, b) => a.orden - b.orden)
+    .map((item) => ({
+      id: `${item.numero_id}-${item.orden}`,
+      fecha: item.fecha_instalacion,
+      tipo: 'upgrade_id' as const,
+      titulo: `ID ${item.numero_id}`,
+      estado: item.estado_comercial ?? undefined,
+      descripcion: item.motivo_baja || (item.es_vigente ? 'Vigente' : undefined),
+      metadata: {
+        fecha_baja: item.fecha_baja,
+        es_vigente: item.es_vigente ? 'true' : 'false',
+      },
+    }));
 }
 
 export function ingestServiciosFile(
