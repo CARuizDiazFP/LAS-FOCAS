@@ -126,6 +126,7 @@ export async function refrescarServicioDesdeProv(id: string): Promise<ServicioDe
   const query = new URLSearchParams({ id: id.trim() }).toString();
   return requestJson<ServicioDetailResponse>(`/api/servicios/prov/refrescar?${query}`, {
     method: 'POST',
+    json: {},
     csrf: true,
   });
 }

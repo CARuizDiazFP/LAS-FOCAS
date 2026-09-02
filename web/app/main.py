@@ -7752,6 +7752,59 @@ async def servicio_verificable_web(request: Request, id: int, body: ServicioVeri
         return JSONResponse({"error": f"Error actualizando verificabilidad: {exc!s}"}, status_code=500)
 
 
+class ServicioProvRefrescarRequestModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/servicios/prov/refrescar")
+async def servicio_prov_refrescar_web(
+    request: Request,
+    id: str,
+    body: ServicioProvRefrescarRequestModel,
+) -> JSONResponse:
+    """Dispara el refresco on-demand de un Servicio contra PROV. Proxya al endpoint interno, mismo
+    patrón que `servicios_detail_web`/`servicio_categoria_web` — visible a cualquier usuario
+    autenticado (no sólo admin), igual que el botón en `ServicioDetalleView.vue` (Task 10), que no
+    está condicionado a `isAdmin`."""
+    username, _ = _require_auth(request)
+    id_consultado = (id or "").strip()
+    if not id_consultado:
+        return JSONResponse({"error": "ID requerido"}, status_code=400)
+
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_prov_refrescar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/servicios/prov/refrescar",
+                params={"id": id_consultado},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error refrescando servicio desde PROV"}
+
+        logger.info(
+            "action=servicio_prov_refrescar user=%s id=%s status=%s",
+            username,
+            id_consultado,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_prov_refrescar_error user=%s id=%s error=%s", username, id_consultado, exc)
+        return JSONResponse({"error": f"Error refrescando servicio desde PROV: {exc!s}"}, status_code=500)
+
+
 class ServiciosCategoriaMasivaRequestModel(BaseModel):
     servicio_ids: list[int]
     categoria: int
