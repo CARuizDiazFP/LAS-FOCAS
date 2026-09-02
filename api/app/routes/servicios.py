@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
+from core.services.prov.config import ProvConfigError
 from core.services.prov.ingesta import ingerir_contexto_prov
 from core.services.servicios_categoria_service import (
     CategoriaInvalidaError,
@@ -685,9 +686,16 @@ async def refrescar_servicio_desde_prov(
 
     svc = await _buscar_servicio_por_id(db, id_consultado)
 
-    cliente = get_prov_client()
     try:
+        # `get_prov_client()` construye la config al primer uso y levanta `ProvConfigError` si
+        # faltan `PROV_BASE_URL`/los secrets — el estado esperado hoy en producción, que todavía no
+        # tiene los secrets de PROV desplegados (ver docs/decisiones.md). Se responde 503 (servicio
+        # no disponible en este entorno) en vez de dejarlo escapar como un 500 sin explicación.
+        cliente = get_prov_client()
         contexto = await cliente.obtener_contexto_servicio(svc.numero_primer_servicio or svc.servicio_id)
+    except ProvConfigError as exc:
+        logger.warning("action=servicios_prov_refrescar evento=prov_no_configurado id=%s error=%s", id_consultado, exc)
+        raise HTTPException(status_code=503, detail="PROV no está configurado en este entorno") from exc
     except ProvServicioNoEncontradoError as exc:
         logger.warning("action=servicios_prov_refrescar evento=no_encontrado id=%s", id_consultado)
         raise HTTPException(status_code=404, detail=str(exc)) from exc

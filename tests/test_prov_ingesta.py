@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
-from core.services.prov.ingesta import parsear_contexto_prov
+import pytest
+
+from core.services.prov.ingesta import _traducir_estado_comercial, parsear_contexto_prov
 
 _CONTEXTO_SIN_UPGRADES = {
     "id_servicio": "RPV",
@@ -94,6 +97,43 @@ def test_parsea_cadena_de_upgrades_completa_en_orden() -> None:
 def test_parsea_un_solo_extremo_cuando_no_hay_nodo2() -> None:
     parseado = parsear_contexto_prov(_CONTEXTO_CON_UPGRADES)
     assert len(parseado.equipos) == 1
+
+
+def test_el_eslabon_sintetico_no_se_marca_vigente_si_el_servicio_esta_dado_de_baja() -> None:
+    """Sin `cadena_upgrade` el eslabón se sintetiza, y su `es_vigente` tiene que seguir al
+    `estado_comercial`: marcarlo siempre True producía un chip "DADO BAJA" junto a la palabra
+    "Vigente" en el detalle del servicio."""
+    contexto = dict(_CONTEXTO_SIN_UPGRADES, estado_comercial="DADO BAJA")
+    parseado = parsear_contexto_prov(contexto)
+
+    assert len(parseado.historial) == 1
+    assert parseado.historial[0].estado_comercial == "DADO BAJA"
+    assert parseado.historial[0].es_vigente is False
+
+
+def test_el_eslabon_sintetico_no_se_marca_vigente_con_un_estado_desconocido() -> None:
+    contexto = dict(_CONTEXTO_SIN_UPGRADES, estado_comercial="EN CONSTRUCCION")
+    parseado = parsear_contexto_prov(contexto)
+
+    assert parseado.historial[0].es_vigente is False
+
+
+def test_un_estado_comercial_no_mapeado_se_pasa_tal_cual_pero_deja_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="core.services.prov.ingesta"):
+        assert _traducir_estado_comercial(" en construccion ") == "en construccion"
+
+    assert "estado_comercial_no_mapeado" in caplog.text
+    assert "en construccion" in caplog.text
+
+
+def test_un_estado_comercial_conocido_no_deja_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="core.services.prov.ingesta"):
+        assert _traducir_estado_comercial("INSTALADO") == "Activo"
+        assert _traducir_estado_comercial("dado baja") == "Baja"
+
+    assert "estado_comercial_no_mapeado" not in caplog.text
 
 
 def test_parsea_dos_extremos_cuando_el_payload_trae_nodo2() -> None:

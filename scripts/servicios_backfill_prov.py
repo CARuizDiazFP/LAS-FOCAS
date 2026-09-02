@@ -10,11 +10,27 @@ de upgrades), reusando `ingerir_contexto_prov` — la misma función que usa el 
 A diferencia de otros scripts de backfill del repo (síncronos, `SessionLocal`), este es async de
 punta a punta porque el cliente PROV lo es — usa `AsyncSessionLocal` (`db/session.py`).
 
-Uso:
+Uso (desde el host, fuera de los contenedores — no hay `/run/secrets/` acá, así que las
+credenciales de PROV van por variable de entorno, y la DB de dev se alcanza por el puerto
+publicado 5433):
+
     source .venv/bin/activate
+    export POSTGRES_HOST=127.0.0.1
+    export POSTGRES_PORT=5433
+    export POSTGRES_USER=FOCALBOT
+    export POSTGRES_DB=focas_dev
+    export POSTGRES_PASSWORD=$(cat .secrets/Dev_db_password_v1.txt)
+    export PROV_BASE_URL=https://prov.metrotel.com.ar/api/v1/ADMEQ
+    export PROV_USER=$(cat .secrets/Dev_api_prov_user_v1.txt)
+    export PROV_PASSWORD=$(cat .secrets/Dev_api_prov_pass_v1.txt)
+
     python scripts/servicios_backfill_prov.py                                   # sólo reporta (dry-run)
     python scripts/servicios_backfill_prov.py --apply                            # aplica el cambio
     python scripts/servicios_backfill_prov.py --solo-ids 122214,15872 --apply    # subconjunto acotado
+
+Corriéndolo DENTRO del contenedor `api` (`docker exec lasfocasdev-api python
+scripts/servicios_backfill_prov.py ...`) no hace falta ninguno de esos exports: ahí
+`PROV_BASE_URL` viene de `.env.dev` y las credenciales de `/run/secrets/api_prov_*_v1`.
 """
 
 from __future__ import annotations
@@ -60,6 +76,7 @@ async def main(apply: bool, solo_ids: list[str] | None) -> None:
     exitosos = 0
     no_encontrados = 0
     errores = 0
+    errores_ingesta = 0
 
     async with ProvClient() as cliente:
         for servicio_id in ids_candidatos:
@@ -87,21 +104,37 @@ async def main(apply: bool, solo_ids: list[str] | None) -> None:
                     )
                     continue
 
-                await ingerir_contexto_prov(session, servicio, contexto)
-                if apply:
-                    await session.commit()
-                else:
+                # Catch-all deliberadamente ancho: una corrida masiva desatendida (miles de filas)
+                # no puede abortar entera por una sola fila anómala — un `IntegrityError` de
+                # cualquier origen, un dato inesperado en el payload, etc. Se descarta esa fila
+                # (rollback) y se sigue; el resumen final reporta cuántas cayeron acá.
+                try:
+                    await ingerir_contexto_prov(session, servicio, contexto)
+                    if apply:
+                        await session.commit()
+                    else:
+                        await session.rollback()
+                except Exception:
+                    errores_ingesta += 1
                     await session.rollback()
+                    logger.exception(
+                        "action=backfill_prov evento=error_ingesta numero=%s servicio_pk=%s",
+                        numero_consulta,
+                        servicio_id,
+                    )
+                    continue
                 exitosos += 1
 
     elapsed = time.perf_counter() - inicio
     logger.info(
-        "action=backfill_prov modo=%s candidatas=%d exitosos=%d no_encontrados=%d errores=%d elapsed_seg=%.1f",
+        "action=backfill_prov modo=%s candidatas=%d exitosos=%d no_encontrados=%d errores=%d "
+        "errores_ingesta=%d elapsed_seg=%.1f",
         "aplicado" if apply else "dry_run",
         len(ids_candidatos),
         exitosos,
         no_encontrados,
         errores,
+        errores_ingesta,
         elapsed,
     )
 

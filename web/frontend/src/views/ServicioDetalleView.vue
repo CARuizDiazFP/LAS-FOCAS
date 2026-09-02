@@ -68,33 +68,37 @@
 
     <hr class="noc-rule" />
 
-    <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
-      <div class="servicio-detalle__historico-header">
-        <span class="servicio-detalle__historico-label">Histórico de IDs</span>
-        <button class="btn subtle" type="button" :disabled="refrescandoProv" @click="onRefrescarDesdeProv">
-          <i :class="['ph', refrescandoProv ? 'ph-spinner' : 'ph-arrow-clockwise']" aria-hidden="true"></i>
-          {{ refrescandoProv ? 'Actualizando…' : 'Actualizar desde PROV' }}
-        </button>
-      </div>
-      <p v-if="errorRefrescoProv" class="servicio-detalle__categoria-error">{{ errorRefrescoProv }}</p>
-      <ServiceTimeline :events="timelineEvents" />
-    </section>
-
-    <section v-if="equiposUltimaMilla.length > 0" class="servicio-detalle__equipos" aria-label="Equipos de última milla">
-      <span class="servicio-detalle__historico-label">Equipos de última milla</span>
-      <div class="servicio-detalle__equipos-grid">
-        <div v-for="equipo in equiposUltimaMilla" :key="equipo.extremo" class="servicio-detalle__equipo-card">
-          <span class="servicio-detalle__equipo-extremo">Extremo {{ equipo.extremo }}</span>
-          <span>{{ equipo.nodo || 'Nodo sin dato' }}</span>
-          <span>{{ equipo.equipo || 'Equipo sin dato' }} · Puerto {{ equipo.puerto || '—' }}</span>
-        </div>
-      </div>
-    </section>
-
     <p v-if="error" class="servicio-detalle__error">{{ error }}</p>
     <p v-if="loading" class="servicio-detalle__loading">Cargando detalle del servicio...</p>
 
     <template v-if="servicio">
+      <!-- Dentro del gate `v-if="servicio"` (igual que el resto de los paneles): afuera, el
+           Timeline mostraba "Sin eventos para mostrar" mientras cargaba o cuando el detalle
+           fallaba, y el botón "Actualizar desde PROV" quedaba clickeable sin servicio cargado
+           (`onRefrescarDesdeProv` devuelve temprano si `servicio` es null → click muerto). -->
+      <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
+        <div class="servicio-detalle__historico-header">
+          <span class="servicio-detalle__historico-label">Histórico de IDs</span>
+          <button class="btn subtle" type="button" :disabled="refrescandoProv" @click="onRefrescarDesdeProv">
+            <i :class="['ph', refrescandoProv ? 'ph-spinner' : 'ph-arrow-clockwise']" aria-hidden="true"></i>
+            {{ refrescandoProv ? 'Actualizando…' : 'Actualizar desde PROV' }}
+          </button>
+        </div>
+        <p v-if="errorRefrescoProv" class="servicio-detalle__categoria-error">{{ errorRefrescoProv }}</p>
+        <ServiceTimeline :events="timelineEvents" />
+      </section>
+
+      <section v-if="equiposUltimaMilla.length > 0" class="servicio-detalle__equipos" aria-label="Equipos de última milla">
+        <span class="servicio-detalle__historico-label">Equipos de última milla</span>
+        <div class="servicio-detalle__equipos-grid">
+          <div v-for="equipo in equiposUltimaMilla" :key="equipo.extremo" class="servicio-detalle__equipo-card">
+            <span class="servicio-detalle__equipo-extremo">Extremo {{ equipo.extremo }}</span>
+            <span>{{ equipo.nodo || 'Nodo sin dato' }}</span>
+            <span>{{ equipo.equipo || 'Equipo sin dato' }} · Puerto {{ equipo.puerto || '—' }}</span>
+          </div>
+        </div>
+      </section>
+
       <section class="servicio-detalle__metrics" aria-label="Métricas del servicio">
         <div class="servicio-detalle__metric">
           <span class="servicio-detalle__metric-label">Reclamos 12m</span>
@@ -952,9 +956,14 @@ watch(
   font-size: 12.5px;
 }
 
+/* Columna, no fila: los hijos son el header (label + botón), el error de refresco y el
+   `<ServiceTimeline>` vertical — apilados. En fila, el Timeline quedaba comprimido al costado del
+   header. El track horizontal de IDs que justificaba `align-items: center` ya no existe (lo
+   reemplazó el Timeline). */
 .servicio-detalle__historico {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 11px;
   padding: 16px 26px;
 }
@@ -966,33 +975,6 @@ watch(
   color: var(--color-neutral-500);
 }
 
-.servicio-detalle__historico-track {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.servicio-detalle__historico-track i {
-  font-size: 13px;
-  color: var(--color-neutral-600);
-}
-
-.servicio-detalle__nodo {
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  padding: 4px 11px;
-  border-radius: 4px;
-  background: var(--color-surface);
-  color: color-mix(in srgb, var(--color-text) 68%, transparent);
-}
-
-.servicio-detalle__nodo.is-current {
-  background: transparent;
-  border: 1px solid var(--color-accent);
-  color: var(--color-accent);
-}
-
 .servicio-detalle__historico-header {
   display: flex;
   align-items: center;
@@ -1001,8 +983,10 @@ watch(
   flex-wrap: wrap;
 }
 
+/* Mismo padding horizontal (26px) que el resto de las secciones de la vista: sin él, esta sección
+   quedaba pegada al borde izquierdo, desalineada de la cabecera y del histórico. */
 .servicio-detalle__equipos {
-  margin-top: 16px;
+  padding: 0 26px 16px;
 }
 
 .servicio-detalle__equipos-grid {

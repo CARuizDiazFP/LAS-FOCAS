@@ -39,7 +39,30 @@ function estadoClase(estado: string): string {
   return 'is-idle';
 }
 
+const FECHA_SOLO_DIA = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 function formatearFecha(fecha: string): string {
+  // `fecha_instalacion`/`fecha_baja` llegan como fecha pura ("2019-11-01": campo `date` de
+  // Pydantic, sin hora ni offset). `new Date("2019-11-01")` la interpreta como medianoche UTC y,
+  // formateada en Argentina (UTC-3), muestra el día ANTERIOR ("31/10/2019"). Por eso la fecha
+  // pura se parsea a mano y se construye con el constructor de 3 argumentos, que es hora LOCAL
+  // (nunca UTC) — así el día formateado es el mismo en cualquier zona horaria.
+  const soloDia = FECHA_SOLO_DIA.exec(fecha.trim());
+  if (soloDia) {
+    const [, anio, mes, dia] = soloDia;
+    const local = new Date(Number(anio), Number(mes) - 1, Number(dia));
+    const esFechaReal =
+      !Number.isNaN(local.getTime()) &&
+      local.getFullYear() === Number(anio) &&
+      local.getMonth() === Number(mes) - 1 &&
+      local.getDate() === Number(dia);
+    // Una fecha imposible ("2019-13-45") cae al fallback de siempre: se devuelve el string crudo.
+    if (esFechaReal) {
+      return local.toLocaleDateString('es-AR', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    }
+    return fecha;
+  }
+
   const parsed = new Date(fecha);
   if (Number.isNaN(parsed.getTime())) return fecha;
   return parsed.toLocaleDateString('es-AR', { year: 'numeric', month: '2-digit', day: '2-digit' });

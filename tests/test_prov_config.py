@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
+import core.services.prov.config as prov_config
 from core.services.prov.config import ProvConfigError, get_prov_config
 
 
@@ -14,6 +17,22 @@ def _limpiar_cache_config():
     get_prov_config.cache_clear()
     yield
     get_prov_config.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _secretos_solo_desde_entorno(monkeypatch: pytest.MonkeyPatch):
+    """`core.config.get_secret` lee `/run/secrets/<nombre>` ANTES de caer a la variable de entorno,
+    y esos archivos SÍ están montados en el contenedor `lasfocasdev-api` (`api_prov_user_v1` /
+    `api_prov_pass_v1`): ahí un `monkeypatch.setenv("PROV_USER", ...)` quedaría silenciosamente
+    tapado por el secret real y estos tests medirían otra cosa. Se reemplaza `get_secret` en el
+    módulo bajo test por una versión que sólo mira el entorno, para que el resultado sea el mismo
+    en el host, en CI y dentro del contenedor.
+    """
+
+    def _get_secret_desde_entorno(secret_name: str, env_var: str | None = None, default: str = "") -> str:
+        return os.getenv(env_var or secret_name, default)
+
+    monkeypatch.setattr(prov_config, "get_secret", _get_secret_desde_entorno)
 
 
 def test_get_prov_config_lee_variables_de_entorno(monkeypatch: pytest.MonkeyPatch) -> None:

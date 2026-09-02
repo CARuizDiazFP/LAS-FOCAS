@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.servicios_consolidacion_service import (
@@ -17,6 +18,8 @@ from core.services.servicios_consolidacion_service import (
     resolver_estado_servicio,
 )
 from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
+
+logger = logging.getLogger(__name__)
 
 _TRADUCCION_ESTADO_COMERCIAL = {
     "INSTALADO": "Activo",
@@ -29,12 +32,30 @@ def _traducir_estado_comercial(estado_comercial: str | None) -> str:
 
     Sólo se conocen dos valores reales (ver los payloads verificados en
     docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md); un valor nuevo no
-    mapeado se pasa tal cual, en vez de perderlo silenciosamente, para poder detectarlo en datos
-    reales y ampliar el diccionario.
+    mapeado se pasa tal cual, en vez de perderlo silenciosamente, y se loguea con un warning para
+    poder detectarlo en datos reales y ampliar el diccionario (sin el log, "pasarlo tal cual" era
+    indetectable salvo mirando la columna en la DB).
     """
     if not estado_comercial:
         return "DESCONOCIDO"
-    return _TRADUCCION_ESTADO_COMERCIAL.get(estado_comercial.strip().upper(), estado_comercial.strip())
+    clave = estado_comercial.strip().upper()
+    if clave in _TRADUCCION_ESTADO_COMERCIAL:
+        return _TRADUCCION_ESTADO_COMERCIAL[clave]
+    logger.warning("action=prov_ingesta evento=estado_comercial_no_mapeado valor=%s", estado_comercial.strip())
+    return estado_comercial.strip()
+
+
+def _es_estado_comercial_vigente(estado_comercial: str | None) -> bool:
+    """¿Este `estado_comercial` de PROV describe un servicio todavía vigente?
+
+    Se lee del mismo diccionario de traducción (única fuente de verdad del vocabulario), sin pasar
+    por `_traducir_estado_comercial` para no duplicar su warning de valor no mapeado. Un valor
+    ausente o desconocido NO se asume vigente: marcar `es_vigente=True` a ciegas era exactamente lo
+    que producía la contradicción "chip DADO BAJA junto a la palabra Vigente" en el detalle.
+    """
+    if not estado_comercial:
+        return False
+    return _TRADUCCION_ESTADO_COMERCIAL.get(estado_comercial.strip().upper()) == "Activo"
 
 
 def _a_fecha(valor: str | None) -> date | None:
@@ -108,7 +129,7 @@ def parsear_contexto_prov(contexto_raw: dict[str, Any]) -> ContextoProvParseado:
                 fecha_baja=None,
                 estado_comercial=contexto_raw.get("estado_comercial"),
                 motivo_baja=None,
-                es_vigente=True,
+                es_vigente=_es_estado_comercial_vigente(contexto_raw.get("estado_comercial")),
             )
         ]
 
@@ -169,9 +190,50 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
         estado_excel=estado_prov,
         avanza_identidad=identidad.avanza_por_excel,
     )
-    servicio.servicio_id = identidad.servicio_id
+
+    # `app.servicios.servicio_id` tiene índice UNIQUE (`ix_servicios_servicio_id`): si otra fila ya
+    # ocupa el ID vigente que esta consolidación calculó, pisarlo revienta el commit con
+    # `duplicate key value` (176 colisiones reales medidas en dev por la ingesta Excel, ~14% de las
+    # filas — ver la sección "Fusión de placeholders Cromo puros" en
+    # `api/app/routes/servicios.py`). Se degrada igual que ahí: se conserva el `servicio_id` actual,
+    # el ID rechazado baja a `alias_ids` (para que el matching de Cromo lo resuelva de todas formas)
+    # y se loguea. Fusionar dos registros reales sin confirmación humana está fuera de alcance a
+    # propósito; la fusión de placeholders Cromo puros del camino Excel es específica de un batch
+    # (dos filas del MISMO archivo) y no aplica a este refresco fila-por-fila.
+    servicio_id_final = identidad.servicio_id
+    alias_ids_final = list(identidad.alias_ids)
+    if servicio_id_final != servicio.servicio_id:  # una asignación no-op nunca puede colisionar
+        condiciones = [Servicio.servicio_id == servicio_id_final]
+        if servicio.id is not None:
+            # `Servicio.id != None` en SQL da NULL (no True), así que excluirse a sí misma sólo
+            # tiene sentido para una fila ya persistida; una fila nueva sin PK no puede ser su
+            # propia colisión.
+            condiciones.append(Servicio.id != servicio.id)
+        id_en_colision = (
+            (await session.execute(select(Servicio.id).where(*condiciones).limit(1))).scalars().first()
+        )
+        if id_en_colision is not None:
+            logger.warning(
+                "action=prov_ingesta evento=servicio_id_colision_no_fusionable servicio_id_deseado=%s "
+                "servicio_id_actual=%s colision_con_id=%s",
+                identidad.servicio_id,
+                servicio.servicio_id,
+                id_en_colision,
+            )
+            servicio_id_final = servicio.servicio_id
+            # `consolidar_identidad_servicio` excluyó de los alias al ID que iba a ser el
+            # `servicio_id` (el rechazado). Al degradar se invierte: el valor que se conserva no
+            # tiene sentido como su propio alias, y el rechazado sí entra como alias.
+            if servicio_id_final in alias_ids_final:
+                alias_ids_final.remove(servicio_id_final)
+            if identidad.servicio_id != servicio_id_final and identidad.servicio_id not in alias_ids_final:
+                alias_ids_final.append(identidad.servicio_id)
+
+    servicio.servicio_id = servicio_id_final
+    # `numero_linea` no tiene constraint UNIQUE: siempre refleja el ID vigente que calculó la
+    # consolidación, incluso cuando `servicio_id` no pudo avanzar (mismo criterio que el Excel).
     servicio.numero_linea = identidad.numero_linea
-    servicio.alias_ids = identidad.alias_ids
+    servicio.alias_ids = alias_ids_final
     if not servicio.numero_primer_servicio:
         servicio.numero_primer_servicio = parseado.nro_servicio_original
 
