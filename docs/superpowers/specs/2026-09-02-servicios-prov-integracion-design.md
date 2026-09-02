@@ -146,8 +146,10 @@ Paquete nuevo, mismo patrón que `core/services/cromo/` (`config.py` + `client.p
   transporte/HTTP) y `ProvServicioNoEncontradoError` (cuando `Resultado:` es un string, no un
   dict — se propaga el mensaje literal de PROV). Método principal:
   `async def obtener_contexto_servicio(nro_servicio: str) -> dict`.
-- `rate_limiter.py`: `AsyncTokenBucketLimiter(rate_per_second: float)` — bucket de tokens
-  protegido con `asyncio.Lock`, usado como `async with limiter:` alrededor de cada request. No
+- `rate_limiter.py`: `AsyncRateLimiter(rate_per_second: float)` — el nombre de clase que finalmente
+  se implementó; la idea original de este diseño era un bucket de tokens, pero se shippeó pacing
+  uniforme (cada turno se espacia `1/rate_per_second` del anterior, sin ráfagas), protegido con
+  `asyncio.Lock`, usado como `await limiter.esperar_turno()` antes de cada request. No
   existe nada reutilizable hoy en el repo para esto (se buscó `Semaphore`/`rate_limit`/`throttle`
   sin resultados de código de negocio).
 
@@ -255,7 +257,7 @@ de un `--apply` masivo). Respeta el rate limiter de 5 req/s durante todo el reco
   `test_servicios_consolidacion_service.py`.
 - Tests de `ProvClient` con `httpx` mockeado (`respx` o `unittest.mock`), incluyendo el caso "200
   sin contexto" → `ProvServicioNoEncontradoError`.
-- Test de `AsyncTokenBucketLimiter` midiendo tiempo real transcurrido (no mockear `sleep`), para
+- Test de `AsyncRateLimiter` midiendo tiempo real transcurrido (no mockear `sleep`), para
   probar que 6 llamadas seguidas tardan ≥ 1s reales.
 - Test de integración del nuevo endpoint contra Postgres real, mismo patrón que
   `test_servicios_ingest_routes.py` (mock del `ProvClient`, no llamadas reales a PROV en CI).

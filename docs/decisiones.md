@@ -1081,8 +1081,9 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Contexto:** Servicios SLA sólo se enriquecía manualmente vía `POST /servicios/ingest` (Excel).
   Existe una API interna, PROV (`API_Contexto_Servicio`), que devuelve el detalle completo de un
   servicio por número: cliente, dirección, equipos de última milla y la cadena completa de upgrades
-  de ID con fecha/estado/motivo. Ejecutado vía `superpowers:subagent-driven-development` (12 tareas,
-  la 12ª insertada a mitad de ejecución tras un gap real encontrado en la 10ª — ver más abajo). Diseño
+  de ID con fecha/estado/motivo. Ejecutado vía `superpowers:subagent-driven-development` (12 tareas:
+  originalmente 11, y la nueva se insertó como 11ª a mitad de ejecución tras un gap real encontrado
+  en la revisión de la 10ª —empujando la Task 11 original a Task 12—, ver más abajo). Diseño
   en `docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md`, plan en
   `docs/superpowers/plans/2026-09-02-servicios-prov-integracion.md`.
 - **Decisión 1 (coexistencia, no reemplazo):** `POST /servicios/ingest` (Excel) queda intacto, sin
@@ -1140,10 +1141,64 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   bien cableada). **Nota para futuras integraciones:** cualquier endpoint nuevo bajo
   `api/app/routes/servicios.py` (u otro router expuesto al frontend) necesita su proxy explícito en
   `web/app/main.py` — agregarlo no es automático ni implícito en el registro del router del backend.
+- **Decisión 4 (el refresco es `_require_auth`, no `_require_admin`):** el proxy
+  `POST /api/servicios/prov/refrescar` (`web/app/main.py::servicio_prov_refrescar_web`) queda
+  abierto a **cualquier usuario autenticado**, a diferencia de sus vecinos
+  `servicio_categoria_web`/`servicio_verificable_web`, que sí son `_require_admin`. La diferencia es
+  qué puede hacer el caller: esos dos dejan a un admin **fijar un valor arbitrario** (Nivel Cliente,
+  verificabilidad), mientras que "Actualizar desde PROV" sólo dispara una resincronización **desde
+  la fuente de verdad externa** — el caller no elige ningún valor, PROV los dicta. Se hereda de cómo
+  se construyó el botón en `ServicioDetalleView.vue` (nunca estuvo condicionado a `isAdmin`) y se
+  registra acá como **decisión deliberada, no un descuido**. Si en el futuro el refresco pudiera
+  pisar correcciones manuales de un admin (hoy respeta `es_verificable_override`), habría que
+  revisar este criterio.
+- **Decisión 5 (el ID vigente lo decide `consolidar_identidad_servicio`, no PROV):** el diseño
+  (`docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md`, tabla de mapeos) dice
+  que `nro_servicio` de PROV es "siempre el vigente" y lo mapea directo a `Servicio.servicio_id`.
+  Lo que se implementó es más conservador y es el comportamiento intencional: el `nro_servicio` de
+  PROV entra como un candidato más a `consolidar_identidad_servicio` (reusada **sin modificar**, por
+  la restricción global de este plan de no tocar `core/services/servicios_consolidacion_service.py`),
+  que elige el **máximo numérico de TODOS los IDs conocidos** — los de PROV más los alias/IDs
+  numéricos que la fila ya tenga en la DB. En la enorme mayoría de los casos reales coinciden (el
+  vigente de PROV ES el número más alto conocido); si la DB ya tuviera un alias numérico MÁS alto
+  que lo que reporta PROV, gana el de la DB y la respuesta de PROV no se fuerza. Reusar la lógica ya
+  probada (y su regla "el ID más alto es el vigente", confirmada con el usuario en 2026-08-26) es
+  preferible a introducir una segunda regla de identidad sólo para PROV; la tabla del diseño era
+  simplemente demasiado absoluta.
+- **Decisión 6 (colisión de `servicio_id`: degradar, nunca fusionar dos filas reales):** encontrada
+  en la revisión final de rama. `app.servicios.servicio_id` tiene índice UNIQUE, así que si el ID
+  vigente que calcula la consolidación ya lo ocupa otra fila, escribirlo revienta el commit
+  (`duplicate key value violates unique constraint "ix_servicios_servicio_id"`, reproducido en un
+  test de integración real). `ingerir_contexto_prov` chequea antes de asignar y, si hay colisión,
+  aplica **el mismo criterio que ya usa la ingesta Excel** (`api/app/routes/servicios.py`, sección
+  "Fusión de placeholders Cromo puros"): conserva su `servicio_id`, avanza igual `numero_linea` (que
+  no tiene UNIQUE), baja el ID rechazado a `alias_ids` y loguea
+  `evento=servicio_id_colision_no_fusionable`. **No** se portó la fusión de placeholders Cromo puros
+  del camino Excel: esa resuelve dos filas del MISMO batch de un Excel y no aplica a un refresco
+  fila-por-fila. Fusionar dos registros reales sin confirmación humana sigue estando fuera de alcance
+  a propósito, igual que en el camino Excel.
+- **Limitaciones conocidas y aceptadas (no resueltas en esta pasada, documentadas para no
+  perderlas):**
+  1. **La llamada a PROV ocurre con la sesión/transacción de DB ya abierta.**
+     `refrescar_servicio_desde_prov` corre `_buscar_servicio_por_id` con el `AsyncSession`
+     inyectado, después llama a PROV (con reintentos y backoff exponencial: hasta ~127s en el peor
+     caso sumando todos los intentos) y sólo entonces escribe y commitea en esa misma sesión. Una
+     llamada lenta o con reintentos mantiene tomada una conexión del pool todo ese tiempo.
+     Arreglarlo bien implica reestructurar el endpoint para no sostener una sesión de escritura
+     abierta a través de la llamada de red — más riesgoso de hacer correctamente en una única ronda
+     de fixes que de diferir. (Nota relacionada: el proxy de `web/app/main.py` usa `httpx` con
+     timeout de 30s, así que en la práctica el cliente del navegador corta antes que el peor caso
+     del backend.)
+  2. **El `ProvClient` singleton nunca cierra su `httpx.AsyncClient`.** `get_prov_client()` está
+     cacheado con `lru_cache` y nadie llama a `cerrar()` — ningún app FastAPI de este repo usa hoy
+     hooks de `lifespan` para este tipo de limpieza, así que se acepta: el cliente vive lo que vive
+     el proceso `uvicorn` y el SO libera los sockets al terminar.
 - **No hecho / pendiente:** secrets y bloque de compose de producción para PROV (sólo dev tiene
   `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` y el bloque `secrets:` de
   `deploy/docker-compose.dev.yml`) — sin ventana de despliegue en el alcance de esta integración,
-  proyecto en modo "solo dev" salvo aviso puntual. Ingesta de Reclamos/Ingresos/Mantenimientos al
+  proyecto en modo "solo dev" salvo aviso puntual. Mientras ese estado siga, el endpoint responde
+  `503 "PROV no está configurado en este entorno"` en prod (captura de `ProvConfigError`, agregada en
+  la revisión final) en vez de un 500 sin manejar. Ingesta de Reclamos/Ingresos/Mantenimientos al
   Timeline: el tipo `TimelineEvent` y `ServiceTimeline.vue` ya admiten esos `tipo`s, pero no se
   implementó ninguna fuente de datos para ellos todavía.
 - **Impacto:** paquete nuevo `core/services/prov/` (`config.py`, `rate_limiter.py`, `client.py`,
