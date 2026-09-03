@@ -44,14 +44,14 @@ commands:
 
 ---
 name: Repo Updater
-description: "Sincroniza cambios con dev: audita diff, valida docs/PR y docs temáticas, genera commit técnico y hace push"
+description: "Sincroniza cambios con la rama efímera activa: audita diff, valida docs/PR y docs temáticas, genera commit técnico y hace push"
 argument-hint: "Describe alcance o rama esperada, por ejemplo: validar cambios de api y docs antes de subir a dev"
 agent: "agent"
 ---
 
 # Rol
 
-Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directamente la CLI de `git` del sistema para validar trazabilidad, completar documentación faltante y sincronizar el estado local con la rama `dev` (rama de trabajo habitual).
+Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directamente la CLI de `git` del sistema para validar trazabilidad, completar documentación faltante y sincronizar el estado local con la rama efímera activa.
 
 # Contexto
 
@@ -59,7 +59,7 @@ Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directament
 - La fecha del PR diario debe identificarse dinámicamente con la fecha actual del sistema en formato `YYYY-MM-DD`.
 - Los commits deben ser técnicos, concisos y coherentes con el diff real.
 - Si el cambio toca `.github/`, la documentación relacionada mínima es `docs/Mate_y_Ruta.md` además del PR diario.
-- La rama objetivo por defecto es `dev` y el push debe hacerse al remoto `origin`. Los merges a `main` solo se realizan mediante Pull Request revisado.
+- La rama objetivo es la rama efímera activa creada por `dev-workflow` — nunca `dev`/`main` directo; la integración a `dev` es responsabilidad de `cierre-sesion`. Los merges a `main` solo se realizan mediante Pull Request revisado.
 - El commit siempre se hace en el worktree real de `dev` — nunca en un worktree de prod ni en uno
   creado para una investigación o tarea aislada (regla dura, ver Reglas adicionales #5).
 
@@ -70,9 +70,9 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
 # Pasos
 
 1. Confirmar el worktree/rama de destino ANTES de tocar nada: `git rev-parse --abbrev-ref HEAD` debe
-   ser `dev`, y `git rev-parse --show-toplevel` debe ser el checkout real de trabajo, no un worktree
+   ser una rama efímera activa, nunca `dev`/`main`, y `git rev-parse --show-toplevel` debe ser el checkout real de trabajo, no un worktree
    aislado (de investigación, de un agente con aislamiento propio, o de prod). Regla dura, ver Reglas
-   adicionales #5 — si no es `dev`, detenerse y avisar en vez de commitear ahí.
+   adicionales #5 — si estás en `dev`/`main`, detenerse y avisar en vez de commitear ahí.
 2. Inspeccionar el estado real del repositorio con CLI de `git`:
    ```bash
    git fetch origin dev
@@ -108,9 +108,9 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
    ```bash
    git add .   # o los archivos/hunks que correspondan a este commit, nunca a ciegas si hay mezcla
    git commit -m "<mensaje_tecnico>"
-   git push origin dev
+   git push -u origin HEAD
    ```
-10. Si `git push` falla por divergencia, no hacer `push --force`. Explicar el bloqueo y, solo si es seguro y consistente con el estado local, preparar la resolución con `git pull --rebase origin dev` antes de reintentar.
+10. Si `git push` falla por divergencia, no hacer `push --force`. Explicar el bloqueo y, solo si es seguro y consistente con el estado local, preparar la resolución con `git pull --rebase origin <rama-efímera-activa>` antes de reintentar.
 11. Entregar un cierre corto con:
    - archivos de documentación creados o actualizados
    - mensaje(s) de commit usado(s)
@@ -119,14 +119,14 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
 
 # Criterios de Aceptación
 
-- [ ] Se confirmó que el commit se hizo en el worktree/rama `dev` (nunca prod ni un worktree aislado).
+- [ ] Se confirmó que el commit se hizo en el worktree real, sobre una rama efímera (nunca prod ni un worktree aislado, nunca `dev`/`main` directo).
 - [ ] Se inspeccionó el estado del repo con `git status` y `git diff`.
 - [ ] Si el estado mezclaba orígenes distintos, se preguntó cómo separar antes de commitear.
 - [ ] Se identificó el PR diario correspondiente a la fecha actual.
 - [ ] El diff quedó contrastado contra `docs/PR/` y contra la documentación relevante en `docs/`.
 - [ ] Si faltaba documentación, se creó o actualizó antes del commit.
 - [ ] El commit generado es técnico, conciso y describe el diff real.
-- [ ] Se ejecutó `git add .`, `git commit` y `git push origin dev`, o se dejó explicitado el bloqueo real.
+- [ ] Se ejecutó `git add .`, `git commit` y `git push -u origin HEAD` sobre la rama efímera activa, o se dejó explicitado el bloqueo real.
 
 # Reglas adicionales
 
@@ -135,8 +135,9 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
 3. No usar comandos destructivos como `git reset --hard` o `git push --force` sin pedido explícito.
 4. Mantener todo el contenido en español técnico y concreto.
 5. **Regla dura (confirmada explícitamente por el usuario, 2026-08-25)**: siempre commitear en el
-   worktree de `dev`, nunca en uno de prod ni en uno creado para una investigación o tarea aislada —
-   los prompts e investigaciones de este proyecto usan siempre la rama `dev`.
+   worktree real de trabajo del proyecto, nunca en uno de prod ni en uno creado para una investigación
+   o tarea aislada — los prompts e investigaciones de este proyecto usan siempre ese worktree, sobre
+   una rama efímera (ver `dev-workflow`).
 6. Si el working tree mezcla trabajo de la tarea actual con trabajo previo sin commitear de otro
    origen, preguntar cómo separar en vez de `git add .` por default. Para un archivo compartido con
    hunks de ambos orígenes: extraer con `git diff -- <archivo>` los hunks propios (por número de

@@ -1,12 +1,12 @@
 # Nombre de archivo: repo-updater.md
 # Ubicación de archivo: .claude/commands/repo-updater.md
-# Descripción: Comando Claude Code para auditar trazabilidad, documentar cambios y hacer push a dev
+# Descripción: Comando Claude Code para auditar trazabilidad, documentar cambios y hacer push a la rama efímera activa
 
 Actuar como actualizador autónomo del repositorio LAS-FOCAS. Argumento opcional del usuario: $ARGUMENTS
 
 # Rol
 
-Validar trazabilidad entre el diff real, el PR diario vigente y la documentación temática. Completar documentación faltante y sincronizar el estado local con la rama `dev`.
+Validar trazabilidad entre el diff real, el PR diario vigente y la documentación temática. Completar documentación faltante y sincronizar el estado local con la rama efímera activa.
 
 # Contexto
 
@@ -14,16 +14,18 @@ Validar trazabilidad entre el diff real, el PR diario vigente y la documentació
 - La fecha del PR diario debe identificarse dinámicamente con la fecha actual del sistema en formato `YYYY-MM-DD`.
 - Los commits deben ser técnicos, concisos y coherentes con el diff real.
 - Si el cambio toca `.github/` o `.claude/`, la documentación mínima es `docs/Mate_y_Ruta.md` además del PR diario.
-- La rama objetivo por defecto es `dev`. Push a `main` prohibido; solo vía PR revisado.
+- La rama objetivo es la rama efímera activa (`feat/`, `fix/`, `docs/`, `chore/`, `refactor/` o `test/`, creada por `dev-workflow`) — nunca `dev` ni `main` directo. La integración a `dev` es responsabilidad exclusiva de `cierre-sesion`.
 - El commit siempre se hace en el worktree real de `dev` — nunca en un worktree de prod ni en uno
   creado para una investigación o tarea aislada (regla dura, ver Reglas #5).
 
 # Pasos
 
 1. Confirmar el worktree/rama de destino ANTES de tocar nada: `git rev-parse --abbrev-ref HEAD` debe
-   ser `dev`, y `git rev-parse --show-toplevel` debe ser el checkout real de trabajo, no un worktree
-   aislado (de investigación, de un agente en `isolation: "worktree"`, o de prod). Regla dura, ver
-   Reglas #5 — si no es `dev`, detenerse y avisar en vez de commitear ahí.
+   ser una rama efímera activa (nunca `dev`, nunca `main` — ver `dev-workflow`), y
+   `git rev-parse --show-toplevel` debe ser el checkout real de trabajo, no un worktree aislado (de
+   investigación, de un agente en `isolation: "worktree"`, o de prod). Regla dura, ver Reglas #5 — si
+   estás en `dev`/`main`, detenerse y avisar en vez de commitear ahí; usar `dev-workflow` para crear
+   la rama efímera primero.
 2. Inspeccionar el estado real del repositorio:
    ```bash
    git fetch origin dev
@@ -56,20 +58,20 @@ Validar trazabilidad entre el diff real, el PR diario vigente y la documentació
    ```bash
    git add .   # o los archivos/hunks que correspondan a este commit, nunca a ciegas si hay mezcla
    git commit -m "<mensaje_tecnico>"
-   git push origin dev
+   git push -u origin HEAD   # NUNCA: hacer push directo a dev ni a main
    ```
-10. Si `git push` falla por divergencia, no hacer `push --force`. Explicar el bloqueo y, si es seguro, preparar resolución con `git pull --rebase origin dev`.
-11. Entregar un cierre corto: archivos actualizados, mensaje(s) de commit, resultado del push y riesgos o pendientes.
+10. Si `git push` falla por divergencia, no hacer `push --force`. Explicar el bloqueo y, si es seguro, preparar resolución con `git pull --rebase origin <rama-efímera-activa>`.
+11. Entregar un cierre corto: archivos actualizados, mensaje(s) de commit, resultado del push y riesgos o pendientes. Recordar que la integración a `dev` ocurre en `cierre-sesion`, no acá.
 
 # Criterios de Aceptación
 
-- [ ] Confirmado que el commit se hizo en el worktree/rama `dev` (nunca prod ni un worktree aislado)
+- [ ] Confirmado que el commit se hizo en el worktree real de trabajo, sobre una rama efímera (nunca prod ni un worktree aislado, nunca `dev`/`main` directo)
 - [ ] Estado del repo inspeccionado con `git status` y `git diff`
 - [ ] Si el working tree mezclaba orígenes distintos, se preguntó al usuario cómo separar antes de commitear
 - [ ] PR diario correspondiente a la fecha actual identificado y actualizado
 - [ ] Diff contrastado contra `docs/PR/` y documentación temática
 - [ ] Commit(s) técnico(s) y conciso(s) que describe(n) el diff real
-- [ ] `git push origin dev` ejecutado o bloqueo real documentado
+- [ ] `git push -u origin HEAD` ejecutado sobre la rama efímera activa, o bloqueo real documentado
 
 # Reglas
 
@@ -78,9 +80,9 @@ Validar trazabilidad entre el diff real, el PR diario vigente y la documentació
 3. No usar `git reset --hard` ni `git push --force` sin pedido explícito.
 4. Mantener todo el contenido en español técnico.
 5. **Regla dura (confirmada explícitamente por el usuario, 2026-08-25)**: siempre commitear en el
-   worktree de `dev`, nunca en uno de prod ni en uno creado para una investigación o tarea aislada
-   (`superpowers:using-git-worktrees`, `isolation: "worktree"`, `EnterWorktree`) — los prompts e
-   investigaciones de este proyecto usan siempre la rama `dev`.
+   worktree real de trabajo del proyecto, nunca en uno de prod ni en uno creado para una investigación
+   o tarea aislada (`superpowers:using-git-worktrees`, `isolation: "worktree"`, `EnterWorktree`) — los
+   prompts e investigaciones de este proyecto usan siempre ese worktree, sobre una rama efímera.
 6. Si el working tree mezcla trabajo de la sesión actual con trabajo previo sin commitear de otro
    origen, preguntar cómo separar en vez de `git add .` por default. Para un archivo compartido con
    hunks de ambos orígenes: extraer con `git diff -- <archivo>` los hunks propios (por número de
@@ -88,3 +90,5 @@ Validar trazabilidad entre el diff real, el PR diario vigente y la documentació
    `git apply --cached --check <patch>`, aplicar con `git apply --cached <patch>` (no toca el working
    tree), `git add` el resto de archivos 100% propios y commitear — el diff restante contra el nuevo
    `HEAD` queda listo para el otro commit sin trabajo manual adicional.
+7. Nunca hacer push directo a `dev` ni a `main` desde este comando — la
+   integración a `dev` es responsabilidad exclusiva de `cierre-sesion`.
