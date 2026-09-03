@@ -174,3 +174,4 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
 7. Ninguna propuesta 🔴 se implementa sin respuesta explícita del usuario — el flujo se detiene en el Paso 12.
 8. El auto-merge es autónomo (incluida resolución de conflictos) salvo instrucción explícita previa de diferir esa rama en la misma sesión.
 9. Mantener todo el contenido en español técnico y conciso; si no hay incidentes, mantener el reporte breve, pero igual identificar patrones exitosos reutilizables.
+10. Si hubo flujo recursivo SDD/superpowers, registrar métricas de ciclo y alertas según `docs/sdd_metricas_ciclo.md`.

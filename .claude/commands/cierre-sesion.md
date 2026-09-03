@@ -135,3 +135,4 @@ Producir la retrospectiva técnica completa (guardada en `docs/cierres/`), imple
 7. Ninguna propuesta 🔴 se implementa sin respuesta explícita del usuario — el flujo se detiene en el Paso 12.
 8. El auto-merge es autónomo (incluida resolución de conflictos) salvo instrucción explícita previa de diferir esa rama en la misma sesión.
 9. Mantener todo el contenido en español técnico.
+10. Si hubo flujo recursivo SDD/superpowers, registrar métricas de ciclo y alertas según `docs/sdd_metricas_ciclo.md`.
