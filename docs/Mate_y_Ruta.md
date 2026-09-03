@@ -4,7 +4,7 @@
 
 # Mate y Ruta — Plan de trabajo e implementaciones
 
-Fecha de última actualización: 2026-08-25
+Fecha de última actualización: 2026-09-03
 
 Este documento centraliza el estado actual del proyecto LAS-FOCAS, el plan de implementación de nuevas funciones, y los checklists de tareas pendientes y realizadas. Es un documento vivo: debe mantenerse al día en cada hito o cambio de alcance.
 
@@ -23,6 +23,22 @@ para una investigación/tarea puntual; (2) si el working tree mezcla trabajo de 
 trabajo previo sin commitear de otro origen, preguntar cómo separar antes de `git add .` — con la
 técnica de separación por hunk (`git diff` + `git apply --cached --check`/`--cached`) documentada
 paso a paso. Ver `docs/decisiones.md` (2026-08-25) y `docs/cierres/2026-08-25.md`.
+
+Actualización 2026-09-03: **Feature Branching Efímero obligatorio**. `dev-workflow` deja de tratar
+`dev` como rama de trabajo: cada tarea arranca creando una rama efímera
+(`feat|fix|docs|chore|refactor|test/<slug>`) desde `origin/dev`, y `repo-updater` pushea a esa rama en
+vez de a `dev` (los merges a `main` siguen siendo sólo vía Pull Request revisado). La integración a
+`dev` pasa a ser responsabilidad exclusiva de `cierre-sesion`, que gana dos pasos nuevos: (1) una
+**compuerta de riesgo** que clasifica cada propuesta de evolución agéntica 🟢/🟡/🔴 (misma taxonomía
+que `docker-cleanup`) — las 🟢/🟡 se implementan en el mismo cierre, una 🔴 detiene el flujo y exige
+respuesta explícita del usuario; y (2) un **flujo de auto-merge autónomo** (incluida la resolución de
+conflictos) que integra la rama efímera a `dev`, la borra local y remotamente, y sólo se ejecuta tras
+confirmar con `git branch --show-current` que la rama activa matchea el patrón de rama efímera —
+guardrail duro para no borrar ni mutar `dev`/`main` si la sesión nunca creó una. La salida al chat
+queda reducida a un checklist de 5 líneas (el reporte completo vive en `docs/cierres/`). 23 archivos
+de gobernanza actualizados en los 5 entornos (`.agentes-comunes/`, `.github/`, `.claude/`, `.gemini/`,
+`.codex-skills/`) más `AGENTS.md`, `CLAUDE.md` y `docs/entorno_dev.md`. Ver
+`docs/PR/2026-09-03.md` y `docs/superpowers/plans/2026-09-03-rama-efimera-cierre-sesion.md`.
 
 ### Estructura de Archivos
 
@@ -278,6 +294,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - [x] **Auditoría de seguridad + fix de los 2 hallazgos Critical**: `web` dejó de montar `/var/run/docker.sock` (reemplazado por `tecnativa/docker-socket-proxy` en red dedicada) y de correr como root (`api`/`web`/`bot`/`repetitividad_worker` migrados a usuario compartido no-root `focas`); pgAdmin pasó de credenciales `admin`/`admin` hardcodeadas y publicado en `0.0.0.0` a Docker Secret real + bind `127.0.0.1`. Dos incidentes reales de producción durante el rollout (drift de red `/16` vs `/24`, colisión de UID entre `base.Dockerfile` y los workers) resueltos y documentados como guardrails nuevos en las skills `docker-rebuild`/`secrets-rollout` (`.github/`, `.gemini/rules/`, `.codex-skills/skills/`). Detalle en `docs/decisiones.md` y `docs/PR/2026-08-11.md` (2026-08-11).
 - [x] **Skill `cierre-sesion`**: formalización del prompt manual `.github/prompts/Cierre.md` (usado ad-hoc desde 2026-08-11) como tríada completa `.github/prompts/cierre-sesion.prompt.md` + `.github/skills/cierre-sesion/SKILL.md` + `/cierre-sesion` en `.claude/commands/`, replicada a `.codex-skills/skills/las-focas-cierre-sesion/` y `.gemini/rules/`. Genera retrospectiva técnica (tareas, errores, soluciones, propuestas de mejora agéntica) persistida en `docs/cierres/YYYY-MM-DD.md` (2026-08-13).
 - [x] **Skill `cierre-sesion` — evolución a dos carriles**: agrega gate de activación explícito (declaración inequívoca de cierre; nombrar la skill o pedir estado ya no dispara la retrospectiva), clasificación de tareas contra evidencia (completada/parcial/bloqueada/no verificada), y separa las mejoras propuestas en carril de **prevención** (obstáculos reales de la sesión) y carril de **aceleración** (pasos repetibles observados que agilizan implementaciones futuras similares, aunque la sesión no haya tenido fricción), cada una con evidencia/frecuencia/beneficio/costo/opción recomendada. De paso cierra el mirror faltante `.claude/skills/cierre-sesion/SKILL.md` (el mismo gap que esta skill documentaba para `docker-rebuild`/`nocturne-token-compliance`), verificado con `Skill(skill="cierre-sesion")` resolviendo a `SKILL.md` en vez de al comando (2026-08-19).
+- [x] **Rama efímera obligatoria + auto-merge en `cierre-sesion`**: `dev-workflow` exige crear una rama efímera (`feat|fix|docs|chore|refactor|test/<slug>`) por tarea y `repo-updater` pushea ahí, nunca a `dev`/`main` directo; `cierre-sesion` agrega compuerta de riesgo 🟢/🟡/🔴 sobre las propuestas de evolución agéntica (🔴 detiene y pregunta), flujo de auto-merge autónomo de la rama efímera a `dev` con guardrail de precondición sobre `git branch --show-current` (nunca se ejecuta si la rama activa no matchea el patrón efímero, para no borrar `dev`/`main`), y salida al chat reducida a un checklist de 5 líneas. 23 archivos de gobernanza en los 5 entornos + `AGENTS.md`/`CLAUDE.md`/`docs/entorno_dev.md`. Detalle en `docs/PR/2026-09-03.md` (2026-09-03).
 
 ### Pendiente (prioridad)
 - [x] ~~Ajustes menores de formato en el informe SLA para coincidencia 100% con el formato legacy de Sandy~~ → Corregido 2026-01-13 (columna U).

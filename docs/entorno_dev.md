@@ -65,6 +65,12 @@ git checkout -b dev
 git push -u origin dev
 ```
 
+> Esto es el setup inicial del repositorio en sí (crear la rama compartida `dev` si todavía no
+> existe), **no** el flujo de trabajo por tarea: nunca se commitea directo en `dev`. La rama de
+> trabajo de cada tarea es una rama efímera (`feat|fix|docs|chore|refactor|test/<slug>`) que crea
+> `dev-workflow` desde `origin/dev`, y que `cierre-sesion` integra de vuelta a `dev` al cerrar la
+> sesión.
+
 ### 2. Configurar variables de entorno dev y secretos
 
 ```bash
