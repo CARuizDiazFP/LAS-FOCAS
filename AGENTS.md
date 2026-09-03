@@ -30,7 +30,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ```
 
 - Idioma obligatorio: español en código, commits, PRs y documentación.
-- Rama de trabajo habitual: `dev`. Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
+- Rama de trabajo: ramas efímeras `<tipo>/<slug>` creadas desde `origin/dev` (obligatorio — prohibido commitear directo en `dev`). La integración a `dev` es automática al cierre de sesión (`cierre-sesion`). Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
 - Compose de desarrollo: `deploy/docker-compose.dev.yml`. No usar `deploy/compose.yml` en entorno local ni de agentes.
 - Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
 - Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.

@@ -17,14 +17,14 @@
 ```
 main  ──────────────────────────────────────►  producción (172.18.208.162:8080)
   └─ dev  ──────────────────────────────────►  desarrollo  (localhost:8090)
-       └─ feature/xxx  ──────────────────────►  (opcional, para features largas)
+       └─ <tipo>/<slug> (obligatoria)  ─────►  rama efímera por tarea/sesión
 ```
 
 | Rama | Propósito | Stack |
 |------|-----------|-------|
 | `main` | Refleja exactamente lo que corre en producción. **Protegida.** | `lasfocas` (`compose.yml`) |
-| `dev` | Rama de trabajo habitual. Recibe todos los commits nuevos. | `lasfocasdev` (`docker-compose.dev.yml`) |
-| `feature/xxx` | Opcional, para features largas. Mergear a `dev`, nunca directo a `main`. | `lasfocasdev` |
+| `dev` | Rama de integración. Recibe únicamente merges automáticos de ramas efímeras vía `cierre-sesion`, nunca commits directos de agentes. | `lasfocasdev` (`docker-compose.dev.yml`) |
+| `<tipo>/<slug>` | **Obligatoria** para todo cambio (`feat/`, `fix/`, `docs/`, `chore/`, `refactor/`, `test/`). Creada automáticamente por `dev-workflow` desde `origin/dev`; integrada a `dev` automáticamente por `cierre-sesion` al cerrar la sesión. Nunca commit directo en `dev`/`main`. | `lasfocasdev` |
 
 ---
 
@@ -151,18 +151,21 @@ docker compose -f deploy/docker-compose.dev.yml logs -f slack_baneo_worker
 
 ---
 
-## Flujo de commits en rama dev
+## Flujo de commits en rama efímera
 
 ```bash
-# 1. Asegurarse de estar en dev
-git checkout dev
+# 1. dev-workflow crea o reutiliza la rama efímera desde origin/dev
+#    (formato <tipo>/<slug>, p. ej. feat/mi-cambio)
 
 # 2. Hacer los cambios...
 
-# 3. Staging y commit
+# 3. Staging y commit sobre la rama efímera
 git add .
 git commit -m "feat(módulo): descripción técnica del cambio"
-git push origin dev
+git push -u origin HEAD
+
+# 4. dev sólo recibe el merge final, ejecutado automáticamente por cierre-sesion
+#    al cerrar la sesión. Nunca commitear ni pushear directo a dev/main.
 ```
 
 ### Convención de commits
@@ -212,11 +215,11 @@ git push origin dev
 
 Ver `.github/skills/dev-workflow/SKILL.md` para el protocolo completo. Reglas mínimas:
 
-1. Verificar que la rama activa sea `dev` antes de modificar código: `git branch --show-current`.
+1. Trabajar siempre sobre una rama efímera `<tipo>/<slug>` creada desde `origin/dev` — nunca commitear directo en `dev` ni en `main`. `dev-workflow` crea o reutiliza esa rama automáticamente al inicio de la sesión/tarea.
 2. No modificar `deploy/compose.yml`, `.env` ni ningún archivo de producción sin aprobación explícita.
 3. Usar siempre `docker compose -f deploy/docker-compose.dev.yml` para operaciones Docker en dev.
-4. Hacer push siempre a `origin/dev`, nunca directo a `origin/main`.
-5. Los merges a `main` se hacen solo mediante PR revisado.
+4. Hacer push siempre a la rama efímera activa (`git push -u origin HEAD`), nunca directo a `origin/dev` ni `origin/main`.
+5. La integración a `dev` es automática al cierre de sesión (`cierre-sesion`), que mergea la rama efímera. Los merges de `dev` a `main` se hacen solo mediante PR revisado.
 
 ---
 
