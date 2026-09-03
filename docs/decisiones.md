@@ -1183,22 +1183,21 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   `order_by(id.desc()).limit(1)`) resolvería una búsqueda de ese valor eligiendo arbitrariamente la
   fila de `id` más alto. Mismo costo que ya tiene el camino Excel (no es una regresión de esta
   integración), sólo quedaba sin explicitar acá.
-- **Limitaciones conocidas y aceptadas (no resueltas en esta pasada, documentadas para no
-  perderlas):**
-  1. **La llamada a PROV ocurre con la sesión/transacción de DB ya abierta.**
-     `refrescar_servicio_desde_prov` corre `_buscar_servicio_por_id` con el `AsyncSession`
-     inyectado, después llama a PROV (con reintentos y backoff exponencial: hasta ~127s en el peor
-     caso sumando todos los intentos) y sólo entonces escribe y commitea en esa misma sesión. Una
-     llamada lenta o con reintentos mantiene tomada una conexión del pool todo ese tiempo.
-     Arreglarlo bien implica reestructurar el endpoint para no sostener una sesión de escritura
-     abierta a través de la llamada de red — más riesgoso de hacer correctamente en una única ronda
-     de fixes que de diferir. (Nota relacionada: el proxy de `web/app/main.py` usa `httpx` con
-     timeout de 30s, así que en la práctica el cliente del navegador corta antes que el peor caso
-     del backend.)
-  2. **El `ProvClient` singleton nunca cierra su `httpx.AsyncClient`.** `get_prov_client()` está
-     cacheado con `lru_cache` y nadie llama a `cerrar()` — ningún app FastAPI de este repo usa hoy
-     hooks de `lifespan` para este tipo de limpieza, así que se acepta: el cliente vive lo que vive
-     el proceso `uvicorn` y el SO libera los sockets al terminar.
+- **Limitaciones conocidas — resueltas en una pasada de seguimiento (ver spec/plan de esta
+  sesión):**
+  1. **La llamada a PROV ya no ocurre con una sesión/transacción de DB abierta.**
+     `refrescar_servicio_desde_prov` dejó de usar `Depends(get_async_db)`: abre una sesión corta
+     (`AsyncSessionLocal`) sólo para el lookup inicial, la cierra antes de llamar a PROV, y abre una
+     segunda sesión recién para escribir/commitear. Además, esta llamada puntual acota sus
+     reintentos a `_PROV_REFRESCAR_MAX_REINTENTOS=1` (peor caso ~61s en vez de ~127s) vía el nuevo
+     kwarg `max_reintentos` de `ProvClient.obtener_contexto_servicio`/`_get` (el backfill sigue sin
+     pasarlo, usa el default `_REINTENTOS_MAX=3`). El proxy de `web/app/main.py` subió su timeout de
+     30s a 70s en esta ruta específica, con margen sobre el nuevo peor caso.
+  2. **El `ProvClient` singleton ahora cierra su `httpx.AsyncClient` al apagar la API.** Se agregó
+     `cerrar_prov_client()` (sólo actúa si el singleton llegó a instanciarse, para no reventar con
+     `ProvConfigError` en un entorno sin PROV configurado) conectado vía un `lifespan` de
+     `api/app/main.py` — el repo ya tenía precedente de `lifespan` en otros servicios
+     (`office_service/app/main.py`, workers de Cromo/Botellas), sólo faltaba en `api/app/main.py`.
 - **No hecho / pendiente:** secrets y bloque de compose de producción para PROV (sólo dev tiene
   `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` y el bloque `secrets:` de
   `deploy/docker-compose.dev.yml`) — sin ventana de despliegue en el alcance de esta integración,
