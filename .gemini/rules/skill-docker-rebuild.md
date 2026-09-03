@@ -245,6 +245,14 @@ docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ps
 
 **No tocar `deploy/compose.yml` ni contenedores `lasfocas-*` (producción) sin instrucción explícita y puntual del usuario en ese momento** — ver `docs/decisiones.md`, directiva post-migración Nocturne (2026-07-29). Todo trabajo nuevo por default va a dev.
 
+## Rebuild desde un worktree: `env_file`/`secrets` relativos rotos
+
+`deploy/docker-compose.dev.yml` referencia `env_file: [../.env.dev]` y `secrets: file: ../.secrets/...` **relativos al propio archivo compose**, no a lo que apunta el flag `--env-file` (ese flag sólo resuelve interpolación `${VAR}` dentro del yml, nada más). Un worktree de trabajo (`git worktree add`, ej. para `subagent-driven-development`) no tiene `.env.dev`/`.secrets/` propios — son gitignored, sólo existen en el checkout principal. `docker compose build` funciona igual desde el worktree (no los necesita), pero `docker compose up -d` falla con `env file .../worktree/.env.dev not found`.
+
+**Fix**: antes de un `up -d` desde un worktree (no el checkout principal), crear symlinks temporales dentro del worktree apuntando al checkout principal (`ln -s /ruta/checkout/.env.dev .env.dev`, `ln -s /ruta/checkout/.secrets .secrets`) — ambos ya cubiertos por `.gitignore` (`.env.*`, `.secrets/`), confirmar con `git check-ignore` antes de dejarlos. Eliminarlos al terminar el rebuild, no dejarlos residuales en el worktree.
+
+**Efecto colateral a esperar**: un `up -d <servicio1> <servicio2>` puntual puede recrear además `postgres` (u otro contenedor no pedido) por drift de config preexistente en la cadena de `depends_on` — no implica pérdida de datos (el volumen nombrado no se toca salvo `down -v`), pero conviene confirmar conteos reales de filas antes/después si el servicio recreado es la base de datos.
+
 ## Redes Docker (IPAM)
 
 Ambas redes (`lasfocas_net` en prod, `lasfocas_dev_net` en dev) declaran subred **`/24` explícita** en `ipam.config` (`172.20.0.0/24` prod, `172.19.0.0/24` dev) — no se deja en manos del pool `/16` por default de Docker, que puede "secuestrar" rutas del host hacia destinos reales de la intranet dentro del mismo `/16`. Detalle completo, causa raíz y procedimiento de aplicación en ventana de mantenimiento para prod: `docs/mantenimiento_redes_produccion.md` y `docs/decisiones.md` (entradas 2026-08-05). Si se agrega una red nueva a este repo, declarar siempre `ipam.config.subnet` explícito — nunca dejar el default de Docker.
