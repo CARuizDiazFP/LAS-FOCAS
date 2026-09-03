@@ -159,6 +159,22 @@ def parsear_contexto_prov(contexto_raw: dict[str, Any]) -> ContextoProvParseado:
     )
 
 
+def _campos_direccion_desde_equipos(
+    equipos: list[EquipoUltimaMilla],
+) -> tuple[str | None, str | None, str | None]:
+    """Deriva `(direccion, provincia, direccion_2)` del extremo 1 (principal) y extremo 2
+    (secundario) de la lista de equipos — nunca asume que el primer elemento de la lista ES el
+    extremo 1: el parser omite un extremo sin ningún dato, así que si sólo viene el extremo 2,
+    `equipos[0]` sería ese extremo 2 (bug real: sus datos terminaban pisando los campos
+    principales del servicio en vez de quedar sólo en `direccion_2`)."""
+    equipo_1 = next((equipo for equipo in equipos if equipo.extremo == 1), None)
+    equipo_2 = next((equipo for equipo in equipos if equipo.extremo == 2), None)
+    direccion = equipo_1.direccion if equipo_1 else None
+    provincia = equipo_1.provincia if equipo_1 else None
+    direccion_2 = equipo_2.direccion if equipo_2 else None
+    return direccion, provincia, direccion_2
+
+
 async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, contexto_raw: dict[str, Any]) -> None:
     """Aplica un contexto de PROV ya obtenido a un `Servicio` existente, en memoria — el caller hace
     `session.commit()`. Reusa la consolidación de identidad y la regla de estado ya validadas para
@@ -243,13 +259,13 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
     if parseado.tipo_servicio:
         servicio.tipo_servicio = parseado.tipo_servicio
     if parseado.equipos:
-        primero = parseado.equipos[0]
-        if primero.direccion:
-            servicio.direccion = primero.direccion
-        if primero.provincia:
-            servicio.provincia = primero.provincia
-        if len(parseado.equipos) > 1 and parseado.equipos[1].direccion:
-            servicio.direccion_2 = parseado.equipos[1].direccion
+        direccion, provincia, direccion_2 = _campos_direccion_desde_equipos(parseado.equipos)
+        if direccion:
+            servicio.direccion = direccion
+        if provincia:
+            servicio.provincia = provincia
+        if direccion_2:
+            servicio.direccion_2 = direccion_2
 
     if servicio.es_verificable_override is not None:
         servicio.es_verificable = servicio.es_verificable_override

@@ -9,7 +9,12 @@ from datetime import date
 
 import pytest
 
-from core.services.prov.ingesta import _traducir_estado_comercial, parsear_contexto_prov
+from core.services.prov.ingesta import (
+    EquipoUltimaMilla,
+    _campos_direccion_desde_equipos,
+    _traducir_estado_comercial,
+    parsear_contexto_prov,
+)
 
 _CONTEXTO_SIN_UPGRADES = {
     "id_servicio": "RPV",
@@ -144,3 +149,31 @@ def test_parsea_dos_extremos_cuando_el_payload_trae_nodo2() -> None:
     assert parseado.equipos[1].extremo == 2
     assert parseado.equipos[1].nodo == "NODO-B"
     assert parseado.equipos[1].direccion == "OTRA CALLE 456"
+
+
+def test_campos_direccion_toma_el_extremo_1_para_los_campos_principales() -> None:
+    equipos = [
+        EquipoUltimaMilla(extremo=1, nodo="N1", equipo="E1", puerto="P1", direccion="CALLE 1", provincia="Buenos Aires"),
+        EquipoUltimaMilla(extremo=2, nodo="N2", equipo="E2", puerto="P2", direccion="CALLE 2", provincia="Córdoba"),
+    ]
+    direccion, provincia, direccion_2 = _campos_direccion_desde_equipos(equipos)
+    assert direccion == "CALLE 1"
+    assert provincia == "Buenos Aires"
+    assert direccion_2 == "CALLE 2"
+
+
+def test_campos_direccion_no_confunde_el_extremo_2_con_el_principal_si_falta_el_1() -> None:
+    """Bug real: si PROV sólo trae datos del extremo 2 (Nodo1 vacío), el código viejo tomaba
+    `equipos[0]` a ciegas — que en ese caso ES el extremo 2 — y lo asignaba a los campos
+    principales (direccion/provincia) en vez de dejarlos sin tocar."""
+    equipos = [
+        EquipoUltimaMilla(extremo=2, nodo="N2", equipo="E2", puerto="P2", direccion="CALLE 2", provincia="Córdoba"),
+    ]
+    direccion, provincia, direccion_2 = _campos_direccion_desde_equipos(equipos)
+    assert direccion is None
+    assert provincia is None
+    assert direccion_2 == "CALLE 2"
+
+
+def test_campos_direccion_con_lista_vacia_devuelve_todo_none() -> None:
+    assert _campos_direccion_desde_equipos([]) == (None, None, None)
