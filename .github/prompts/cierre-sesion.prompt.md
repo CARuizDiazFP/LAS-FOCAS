@@ -4,14 +4,14 @@
 
 ---
 name: Cierre de Sesión
-description: "Analiza la conversación activa y genera una retrospectiva técnica: tareas verificadas contra evidencia, errores/bloqueos, soluciones aplicadas y mejoras agénticas de prevención y aceleración"
+description: "Analiza la conversación activa y genera una retrospectiva técnica (tareas verificadas contra evidencia, errores/bloqueos, soluciones aplicadas y mejoras agénticas de prevención y aceleración), clasifica cada propuesta de evolución agéntica con una compuerta de riesgo (🔴 detiene el flujo) e integra automáticamente la rama efímera de la sesión a dev"
 argument-hint: "Opcional: alcance o fecha, por ejemplo: cierre de la sesión de hoy sobre ingesta Cromo"
 agent: "agent"
 ---
 
 # Rol
 
-Actuar como Analista de Calidad y Gestor de Conocimiento Agéntico del proyecto LAS-FOCAS. Cerrar la sesión activa extrayendo conocimiento técnico real para retroalimentar el ecosistema de agentes, tanto para evitar errores/dificultades futuras como para acelerar futuras implementaciones similares.
+Actuar como Analista de Calidad y Gestor de Conocimiento Agéntico del proyecto LAS-FOCAS. Cerrar la sesión activa: extraer conocimiento técnico real para retroalimentar el ecosistema de agentes (prevención y aceleración), evaluar evolución agéntica del entorno con compuerta de riesgo, y — como paso final — integrar automáticamente la rama efímera de la sesión a `dev`.
 
 # Contexto
 
@@ -20,7 +20,7 @@ Actuar como Analista de Calidad y Gestor de Conocimiento Agéntico del proyecto 
 - Delimitar la sesión analizada: separar cambios propios de esta conversación, cambios preexistentes del worktree (frecuente en este repo: suele haber ramas con trabajo en curso de otras sesiones) y acciones externas. No atribuir resultados sin evidencia de que ocurrieron en esta conversación.
 - El reporte se persiste en `docs/cierres/YYYY-MM-DD.md`. Si ya existe un cierre para la fecha (otra sesión el mismo día), se agrega como sección nueva con marca de tiempo, sin duplicar ni sobrescribir cierres previos.
 - Propuestas de **prevención**: basadas únicamente en obstáculos/errores/retrabajo reales de esta sesión. Propuestas de **aceleración**: basadas en pasos repetibles ya observados en esta sesión que agilizarían implementaciones similares futuras, no en herramientas hipotéticas sin caso de uso — aunque esta sesión no haya tenido fricción.
-- Cada propuesta de evolución agéntica se clasifica 🟢 Bajo / 🟡 Medio / 🔴 Muy alto (tabla en Pasos #11, mismo patrón que `docker-cleanup/SKILL.md`). 🟢/🟡 se implementan en este mismo cierre; 🔴 detiene el flujo y exige respuesta explícita del usuario antes de continuar.
+- Cada propuesta de evolución agéntica se clasifica 🟢 Bajo / 🟡 Medio / 🔴 Muy alto (tabla en Pasos #10, mismo patrón que `docker-cleanup/SKILL.md`). 🟢/🟡 se implementan en este mismo cierre; 🔴 detiene el flujo y exige respuesta explícita del usuario antes de continuar.
 - El auto-merge final (Pasos #14-15) es autónomo, incluida la resolución de conflictos, salvo que el usuario haya indicado explícitamente en esta misma sesión que la rama debe diferirse (ej. ventana de mantenimiento).
 - Si además corresponde persistir un hallazgo en el sistema de memoria automática del agente (tipo `feedback` o `project`), señalarlo explícitamente en el reporte sin duplicar ahí el contenido completo.
 
@@ -37,10 +37,9 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
 5. Documentar errores, bloqueos o problemas post-implementación realmente enfrentados (no hipotéticos): síntoma, causa raíz confirmada o hipótesis explícita, impacto.
 6. Detallar, con precisión técnica reutilizable, la solución aplicada a cada error/bloqueo: archivo/componente afectado, decisión técnica, validación ejecutada, condición que indicaría una regresión futura (o marcar explícitamente como sin resolver).
 7. Revisar vigencia: corregir documentación desactualizada cuando la evidencia actual la contradiga. Corregir lógica fuera de la tarea principal sólo si el desajuste está verificado y el cambio es seguro y autorizado; si no, registrarlo como pendiente concreto sin afirmar que quedó resuelto.
-8. Evaluar mejoras agénticas en dos carriles — **prevención** (obstáculos reales de esta sesión) y **aceleración** (pasos repetibles observados que agilizarían implementaciones similares futuras). Para cada candidata: evidencia, frecuencia esperada, beneficio, costo de mantenimiento y opción recomendada (ampliar skill existente, crear skill, agregar recurso determinístico, mejorar prompt/contexto, usar herramienta existente, o delegar a agente independiente sólo con frontera clara de contexto/permisos/paralelismo). Preferir ampliar una skill existente. No crear ni modificar otras skills automáticamente salvo lo que resulte de la compuerta de riesgo (Pasos #11-13) o solicitud expresa del usuario.
+8. Evaluar mejoras agénticas en dos carriles — **prevención** (obstáculos reales de esta sesión) y **aceleración** (pasos repetibles observados que agilizarían implementaciones similares futuras). Para cada candidata: evidencia, frecuencia esperada, beneficio, costo de mantenimiento y opción recomendada (ampliar skill existente, crear skill, agregar recurso determinístico, mejorar prompt/contexto, usar herramienta existente, o delegar a agente independiente sólo con frontera clara de contexto/permisos/paralelismo). Preferir ampliar una skill existente. No crear ni modificar otras skills automáticamente salvo lo que resulte de la compuerta de riesgo (Pasos #10-12) o solicitud expresa del usuario.
 9. Determinar la fecha actual (`YYYY-MM-DD`) y localizar `docs/cierres/YYYY-MM-DD.md` (crear o anexar según corresponda).
-10. Escribir el reporte completo en `docs/cierres/YYYY-MM-DD.md` con la sección "Formato del reporte" de abajo (no se muestra completo en el chat — ver Paso 15).
-11. Clasificar cada propuesta de evolución agéntica del paso 8:
+10. Clasificar cada propuesta de evolución agéntica del paso 8:
 
     | Riesgo | Criterio | Acción |
     |---|---|---|
@@ -48,8 +47,9 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
     | 🟡 Medio | Ídem, pero con superficie de cambio mayor o que toca un flujo ya en uso activo | Se implementa en este mismo cierre |
     | 🔴 Muy alto | Toca permisos sobre `main`/producción, debilita un guardrail existente, o introduce un mecanismo de push/merge automático nuevo | Se detiene el flujo |
 
-12. **Compuerta de Riesgo**: si hay al menos una propuesta 🔴, presentar su estado, preguntar si se avanza y **detener el flujo completo** (no continuar a los Pasos 13-15) hasta recibir respuesta explícita.
-13. Implementar las propuestas 🟢/🟡 aprobadas. Si crean/editan un skill, seguir `superpowers:writing-skills`. Registrar en el reporte del Paso 10 qué archivos de gobernanza se tocaron y por qué.
+11. **Compuerta de Riesgo**: si hay al menos una propuesta 🔴, presentar su estado, preguntar si se avanza y **detener el flujo completo** (no continuar a los Pasos 12-15) hasta recibir respuesta explícita.
+12. Implementar las propuestas 🟢/🟡 aprobadas. Si crean/editan un skill, seguir `superpowers:writing-skills`. Registrar en el reporte del Paso 13 qué archivos de gobernanza se tocaron y por qué.
+13. Escribir el reporte completo en `docs/cierres/YYYY-MM-DD.md` con la sección "Formato del reporte" de abajo (no se muestra completo en el chat — ver Paso 15).
 14. **Flujo de Auto-Merge**. Antes de cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea `^(feat|fix|docs|chore|refactor|test)/` — si es `dev`, `main`, o no matchea el patrón, **DETENERSE inmediatamente** sin ejecutar ningún comando de este flujo (ni merge, ni push, ni borrado de rama), reportarlo en el checklist final y no continuar. Recién con la rama efímera confirmada:
     ```bash
     git checkout <rama-efímera-actual>
@@ -65,7 +65,7 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
     git branch -d <rama-efímera-actual>
     git push origin --delete <rama-efímera-actual>
     ```
-    Excepción: si el usuario indicó explícitamente en esta sesión que la rama debe diferirse, no forzar — dejarla activa y documentarlo.
+    Excepción: si el usuario indicó explícitamente en esta sesión que la rama debe diferirse, no forzar — dejarla activa y documentarlo. Para una rama deliberadamente diferida, `superpowers:finishing-a-development-branch` es la herramienta correcta para integrarla cuando corresponda.
 15. Mostrar **exclusivamente** este checklist en el chat:
     - Análisis retrospectivo completado
     - Evolución agéntica implementada/propuesta
@@ -108,6 +108,9 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
 
 *(o "Sin propuestas en este carril" con la razón, si no aplica — no dejar la sección implícita)*
 
+### Archivos de gobernanza tocados (Paso 12)
+- [archivo]: [qué cambió y por qué]
+
 ### Notas de actualización de documentación
 - [archivo]: [inconsistencia encontrada y corregida] *(si aplica)*
 
@@ -139,7 +142,7 @@ Producir un reporte Markdown estructurado que documente, contrastado contra evid
 4. No crear ni modificar otras skills automáticamente salvo solicitud expresa del usuario o alcance ya autorizado en la conversación.
 5. No sobrescribir cierres de sesión previos del mismo día; anexar.
 6. No incluir secretos, tokens ni credenciales en el reporte.
-7. Ninguna propuesta 🔴 se implementa sin respuesta explícita del usuario — el flujo se detiene en el Paso 12.
+7. Ninguna propuesta 🔴 se implementa sin respuesta explícita del usuario — el flujo se detiene en el Paso 11.
 8. El auto-merge es autónomo (incluida resolución de conflictos) salvo instrucción explícita previa de diferir esa rama en la misma sesión.
 9. Mantener todo el contenido en español técnico y conciso; si no hay incidentes, mantener el reporte breve, pero igual identificar patrones exitosos reutilizables.
 10. Si hubo flujo recursivo SDD/superpowers, registrar métricas de ciclo y alertas según `docs/sdd_metricas_ciclo.md`.
