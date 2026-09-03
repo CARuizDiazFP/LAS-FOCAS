@@ -45,7 +45,7 @@ Producir la retrospectiva técnica completa (guardada en `docs/cierres/`), imple
 
 12. **Compuerta de Riesgo**: si hay al menos una propuesta 🔴, presentar su estado, preguntar si se avanza y **detener el flujo completo** (no continuar a los Pasos 13-15) hasta recibir respuesta explícita.
 13. Implementar las propuestas 🟢/🟡 aprobadas. Si crean/editan un skill, seguir `superpowers:writing-skills`. Registrar en el reporte del Paso 10 qué archivos de gobernanza se tocaron y por qué.
-14. **Flujo de Auto-Merge**:
+14. **Flujo de Auto-Merge**. Antes de cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea `^(feat|fix|docs|chore|refactor|test)/` — si es `dev`, `main`, o no matchea el patrón, **DETENERSE inmediatamente** sin ejecutar ningún comando de este flujo (ni merge, ni push, ni borrado de rama), reportarlo en el checklist final y no continuar. Recién con la rama efímera confirmada:
     ```bash
     git checkout <rama-efímera-actual>
     git fetch origin
@@ -136,3 +136,4 @@ Producir la retrospectiva técnica completa (guardada en `docs/cierres/`), imple
 8. El auto-merge es autónomo (incluida resolución de conflictos) salvo instrucción explícita previa de diferir esa rama en la misma sesión.
 9. Mantener todo el contenido en español técnico.
 10. Si hubo flujo recursivo SDD/superpowers, registrar métricas de ciclo y alertas según `docs/sdd_metricas_ciclo.md`.
+11. El flujo de auto-merge nunca se ejecuta si la rama activa no matchea el patrón de rama efímera (`feat|fix|docs|chore|refactor|test`/...) — evita borrar o mutar `dev`/`main` por error si no se creó una rama efímera.

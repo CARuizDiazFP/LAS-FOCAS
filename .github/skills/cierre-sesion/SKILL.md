@@ -72,7 +72,12 @@ reservado para cuando se declare explícitamente.
 13. Crear o anexar `docs/cierres/YYYY-MM-DD.md` sin perder cierres previos del mismo día, con el
     reporte completo (tareas, errores/soluciones, evolución agéntica implementada/propuesta y su
     clasificación de riesgo, archivos de gobernanza tocados) y confirmar la ruta del archivo guardado.
-14. **Flujo de Auto-Merge** — integrar la rama efímera activa de esta sesión a `dev`:
+14. **Flujo de Auto-Merge** — integrar la rama efímera activa de esta sesión a `dev`. Antes de
+    cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea
+    `^(feat|fix|docs|chore|refactor|test)/` — si es `dev`, `main`, o no matchea el patrón,
+    **DETENERSE inmediatamente** sin ejecutar ningún comando de este flujo (ni merge, ni push,
+    ni borrado de rama), reportarlo en el checklist final, y no continuar. Recién con la rama
+    efímera confirmada:
     ```bash
     git checkout <rama-efímera-actual>
     git fetch origin
@@ -140,6 +145,9 @@ reservado para cuando se declare explícitamente.
     el criterio de resolución aplicado.
 11. Si hubo flujo recursivo SDD/superpowers durante la sesión, registrar métricas de ciclo y alertas
     según `docs/sdd_metricas_ciclo.md`.
+12. El flujo de auto-merge nunca se ejecuta si la rama activa no matchea el patrón de rama efímera
+    (`feat|fix|docs|chore|refactor|test`/...) — evita borrar o mutar `dev`/`main` por error si no
+    se creó una rama efímera.
 
 ## Resultado esperado
 
