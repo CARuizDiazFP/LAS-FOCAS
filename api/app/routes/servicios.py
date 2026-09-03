@@ -33,7 +33,7 @@ from core.services.servicios_consolidacion_service import (
     resolver_estado_servicio,
 )
 from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
-from db.session import SessionLocal, get_async_db
+from db.session import AsyncSessionLocal, SessionLocal, get_async_db
 
 
 router = APIRouter(prefix="/servicios", tags=["servicios"])
@@ -675,16 +675,34 @@ async def detail_servicio(
     )
 
 
+# 2 intentos totales (1 reintento) en vez de los 4 del default (`_REINTENTOS_MAX=3`): esta es una
+# llamada interactiva disparada por un click de usuario, no el backfill masivo — ~127s de peor caso
+# es demasiado para alguien esperando frente al navegador. Peor caso con este límite: ~61s (2 ×
+# timeout 30s del cliente + 1s de backoff). Ver docs/decisiones.md.
+_PROV_REFRESCAR_MAX_REINTENTOS = 1
+
+
 @router.post("/prov/refrescar", response_model=ServicioDetailResponse)
 async def refrescar_servicio_desde_prov(
     id: str = Query(..., description="ID de consulta (origen o línea actual)"),
-    db: AsyncSession = Depends(get_async_db),
 ) -> ServicioDetailResponse:
+    """No usa `Depends(get_async_db)`: a diferencia del resto de este router, esta ruta hace una
+    llamada de red de duración variable (hasta ~61s con `_PROV_REFRESCAR_MAX_REINTENTOS`) a mitad
+    del handler. Abre dos sesiones cortas -antes y después de la llamada a PROV- para no retener
+    una conexión del pool ociosa mientras se espera la respuesta (limitación conocida encontrada
+    en la revisión final de esta integración, ver docs/decisiones.md).
+
+    Edge case aceptado: si la fila se borra entre la primera y la segunda sesión, esta ruta
+    responde 404 pese a que la consulta a PROV fue exitosa — carrera ya latente hoy (nadie bloquea
+    la fila), no algo nuevo que este cambio deba resolver.
+    """
     id_consultado = id.strip()
     if not id_consultado:
         raise HTTPException(status_code=400, detail="ID requerido")
 
-    svc = await _buscar_servicio_por_id(db, id_consultado)
+    async with AsyncSessionLocal() as db_lookup:
+        svc = await _buscar_servicio_por_id(db_lookup, id_consultado)
+        numero_prov = svc.numero_primer_servicio or svc.servicio_id
 
     try:
         # `get_prov_client()` construye la config al primer uso y levanta `ProvConfigError` si
@@ -692,7 +710,9 @@ async def refrescar_servicio_desde_prov(
         # tiene los secrets de PROV desplegados (ver docs/decisiones.md). Se responde 503 (servicio
         # no disponible en este entorno) en vez de dejarlo escapar como un 500 sin explicación.
         cliente = get_prov_client()
-        contexto = await cliente.obtener_contexto_servicio(svc.numero_primer_servicio or svc.servicio_id)
+        contexto = await cliente.obtener_contexto_servicio(
+            numero_prov, max_reintentos=_PROV_REFRESCAR_MAX_REINTENTOS
+        )
     except ProvConfigError as exc:
         logger.warning("action=servicios_prov_refrescar evento=prov_no_configurado id=%s error=%s", id_consultado, exc)
         raise HTTPException(status_code=503, detail="PROV no está configurado en este entorno") from exc
@@ -703,21 +723,23 @@ async def refrescar_servicio_desde_prov(
         logger.error("action=servicios_prov_refrescar evento=error_cliente id=%s error=%s", id_consultado, exc)
         raise HTTPException(status_code=502, detail=f"No se pudo consultar PROV: {exc}") from exc
 
-    await ingerir_contexto_prov(db, svc, contexto)
-    await db.commit()
-    await db.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla"])
+    async with AsyncSessionLocal() as db_write:
+        svc = await _buscar_servicio_por_id(db_write, id_consultado)
+        await ingerir_contexto_prov(db_write, svc, contexto)
+        await db_write.commit()
+        await db_write.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla"])
 
-    item = _to_servicio_item(svc)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+        item = _to_servicio_item(svc)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Servicio sin ID origen")
 
-    return ServicioDetailResponse(
-        id_consultado=id_consultado,
-        id_origen=item.numero_primer_servicio,
-        servicio=item,
-        historial_ids=_historial_a_response(svc.historial_ids),
-        equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
-    )
+        return ServicioDetailResponse(
+            id_consultado=id_consultado,
+            id_origen=item.numero_primer_servicio,
+            servicio=item,
+            historial_ids=_historial_a_response(svc.historial_ids),
+            equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
+        )
 
 
 class ServicioCategoriaUpdateRequest(BaseModel):

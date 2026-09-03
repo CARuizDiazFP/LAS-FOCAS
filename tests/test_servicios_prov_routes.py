@@ -89,7 +89,7 @@ class _ClientePROVFalso:
         self._contexto = contexto
         self._error = error
 
-    async def obtener_contexto_servicio(self, nro_servicio: str) -> dict:
+    async def obtener_contexto_servicio(self, nro_servicio: str, *, max_reintentos: int | None = None) -> dict:
         if self._error:
             raise self._error
         return self._contexto

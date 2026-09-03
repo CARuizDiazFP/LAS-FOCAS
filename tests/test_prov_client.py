@@ -132,6 +132,41 @@ async def test_error_4xx_no_reintenta_y_levanta_prov_client_error():
 
 
 @pytest.mark.asyncio
+async def test_max_reintentos_acota_los_intentos_para_una_llamada_puntual(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("core.services.prov.client.asyncio.sleep", _sin_espera)
+    llamadas = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        llamadas["n"] += 1
+        return httpx.Response(503, text="caído")
+
+    cliente = _cliente_con_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(ProvClientError):
+        await cliente.obtener_contexto_servicio("1", max_reintentos=1)
+
+    # 1 intento inicial + 1 reintento = 2 llamadas totales, no los 4 del default (_REINTENTOS_MAX=3).
+    assert llamadas["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_max_reintentos_none_usa_el_default_del_cliente(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("core.services.prov.client.asyncio.sleep", _sin_espera)
+    llamadas = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        llamadas["n"] += 1
+        return httpx.Response(503, text="caído")
+
+    cliente = _cliente_con_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(ProvClientError):
+        await cliente.obtener_contexto_servicio("1")
+
+    assert llamadas["n"] == 4  # default: _REINTENTOS_MAX=3 reintentos + intento inicial
+
+
+@pytest.mark.asyncio
 async def test_cerrar_prov_client_es_no_op_si_el_singleton_nunca_se_instancio():
     get_prov_client.cache_clear()
     # No debe intentar construir un ProvClient real (que levantaría ProvConfigError sin secrets

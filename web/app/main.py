@@ -7778,7 +7778,11 @@ async def servicio_prov_refrescar_web(
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # 70s, no los 30s del resto de los proxies de este archivo: el backend acota sus
+        # reintentos a PROV a `_PROV_REFRESCAR_MAX_REINTENTOS=1` (~61s de peor caso, ver
+        # api/app/routes/servicios.py) — este timeout necesita margen sobre ese peor caso, no
+        # sobre el default de 30s que usan las demás rutas (que no llaman a una API externa).
+        async with httpx.AsyncClient(timeout=70.0) as client:
             response = await client.post(
                 f"{INTERNAL_API_BASE_URL}/servicios/prov/refrescar",
                 params={"id": id_consultado},

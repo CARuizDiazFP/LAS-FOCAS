@@ -80,21 +80,29 @@ class ProvClient:
     ) -> None:
         await self.cerrar()
 
-    async def obtener_contexto_servicio(self, nro_servicio: str) -> dict[str, Any]:
+    async def obtener_contexto_servicio(
+        self, nro_servicio: str, *, max_reintentos: int | None = None
+    ) -> dict[str, Any]:
         """`GET /API_Contexto_Servicio?nro_servicio=...`.
 
         Lanza `ProvServicioNoEncontradoError` si PROV responde 200 con el payload de "sin
         contexto" (``Resultado:`` es un string en vez de un objeto). Devuelve el dict de
         ``Resultado:`` en el caso de éxito.
+
+        `max_reintentos` acota el presupuesto de reintentos SOLO para esta llamada (default
+        `None` = usar `_REINTENTOS_MAX`) — pensado para llamadas interactivas (un click de
+        usuario) donde el peor caso del default (~127s) es demasiado, sin instanciar un
+        `ProvClient` nuevo que perdería el `AsyncRateLimiter` compartido del proceso.
         """
-        cuerpo = await self._get({"nro_servicio": nro_servicio})
+        cuerpo = await self._get({"nro_servicio": nro_servicio}, max_reintentos=max_reintentos)
         resultado = cuerpo.get("Resultado:")
         if isinstance(resultado, dict):
             return resultado
         mensaje = resultado if isinstance(resultado, str) else "respuesta de PROV sin campo 'Resultado:' reconocible"
         raise ProvServicioNoEncontradoError(nro_servicio, mensaje)
 
-    async def _get(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _get(self, params: dict[str, Any], *, max_reintentos: int | None = None) -> dict[str, Any]:
+        limite = _REINTENTOS_MAX if max_reintentos is None else max_reintentos
         intento = 0
         while True:
             intento += 1
@@ -102,7 +110,7 @@ class ProvClient:
             try:
                 respuesta = await self._cliente.get(_RUTA_CONTEXTO_SERVICIO, params=params, auth=self._auth)
             except httpx.TransportError as exc:
-                if intento > _REINTENTOS_MAX:
+                if intento > limite:
                     logger.error(
                         "action=prov_get params=%s intento=%d resultado=agotado error=%s", params, intento, exc
                     )
@@ -116,7 +124,7 @@ class ProvClient:
                 continue
 
             if respuesta.status_code >= 500:
-                if intento > _REINTENTOS_MAX:
+                if intento > limite:
                     logger.error(
                         "action=prov_get params=%s intento=%d resultado=agotado status=%d",
                         params, intento, respuesta.status_code,
