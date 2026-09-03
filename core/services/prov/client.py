@@ -156,4 +156,23 @@ def get_prov_client() -> ProvClient:
     return ProvClient()
 
 
-__all__ = ["ProvClient", "ProvClientError", "ProvServicioNoEncontradoError", "get_prov_client"]
+async def cerrar_prov_client() -> None:
+    """Cierra el `ProvClient` singleton — pensado para un hook de `lifespan` de FastAPI al
+    apagar la app. Sólo actúa si el singleton llegó a instanciarse (`cache_info().currsize`):
+    llamar a `get_prov_client()` a ciegas construiría un cliente nuevo sólo para cerrarlo, y en un
+    entorno donde PROV nunca se configuró (prod hoy, ver `docs/decisiones.md`) haría que el propio
+    shutdown reviente con `ProvConfigError`.
+    """
+    if get_prov_client.cache_info().currsize > 0:
+        cliente = get_prov_client()
+        await cliente.cerrar()
+        get_prov_client.cache_clear()
+
+
+__all__ = [
+    "ProvClient",
+    "ProvClientError",
+    "ProvServicioNoEncontradoError",
+    "get_prov_client",
+    "cerrar_prov_client",
+]

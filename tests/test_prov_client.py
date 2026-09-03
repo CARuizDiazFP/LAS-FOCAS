@@ -7,7 +7,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from core.services.prov.client import ProvClient, ProvClientError, ProvServicioNoEncontradoError
+from core.services.prov.client import (
+    ProvClient,
+    ProvClientError,
+    ProvServicioNoEncontradoError,
+    cerrar_prov_client,
+    get_prov_client,
+)
 from core.services.prov.config import ProvConfig
 
 BASE_URL = "http://prov.invalido.test/api/v1/ADMEQ"
@@ -123,3 +129,32 @@ async def test_error_4xx_no_reintenta_y_levanta_prov_client_error():
 
     assert llamadas["n"] == 1
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cerrar_prov_client_es_no_op_si_el_singleton_nunca_se_instancio():
+    get_prov_client.cache_clear()
+    # No debe intentar construir un ProvClient real (que levantaría ProvConfigError sin secrets
+    # configurados en este entorno de test) — el cache vacío alcanza para saber que no hay nada
+    # que cerrar.
+    await cerrar_prov_client()
+    assert get_prov_client.cache_info().currsize == 0
+
+
+@pytest.mark.asyncio
+async def test_cerrar_prov_client_cierra_y_limpia_el_cache_si_esta_poblado(monkeypatch: pytest.MonkeyPatch):
+    get_prov_client.cache_clear()
+    cerrado = {"n": 0}
+
+    class _ProvClientFake:
+        async def cerrar(self) -> None:
+            cerrado["n"] += 1
+
+    monkeypatch.setattr("core.services.prov.client.ProvClient", _ProvClientFake)
+    get_prov_client()  # instancia el singleton con la clase fake, sin tocar config real
+    assert get_prov_client.cache_info().currsize == 1
+
+    await cerrar_prov_client()
+
+    assert cerrado["n"] == 1
+    assert get_prov_client.cache_info().currsize == 0
