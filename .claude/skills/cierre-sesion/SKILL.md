@@ -114,8 +114,11 @@ reservado para cuando se declare explícitamente.
 - [Comando Claude Code](../../commands/cierre-sesion.md)
 - Este flujo reemplaza a `superpowers:finishing-a-development-branch` específicamente para el cierre
   de sesión: el trigger de cierre ya constituye la decisión de integración explícita del usuario, por
-  lo que no se invoca ese skill acá. Fuera de este flujo (rama deliberadamente diferida),
-  `finishing-a-development-branch` sigue siendo la herramienta correcta.
+  lo que no se invoca ese skill acá (evita volver a preguntar algo ya resuelto). Fuera de este flujo
+  (rama deliberadamente diferida), `finishing-a-development-branch` sigue siendo la herramienta
+  correcta. `superpowers:using-git-worktrees` es independiente (aislamiento de directorio, no ramas) y
+  no se ve afectado por este flujo.
+- `docker-cleanup/SKILL.md` — origen de la tabla de riesgo 🟢/🟡/🔴 reutilizada en el paso 10.
 
 ## Guardrails
 
@@ -130,7 +133,9 @@ reservado para cuando se declare explícitamente.
 4. No sobrescribir cierres de sesión previos del mismo día; anexar como sección nueva.
 5. No incluir secretos, tokens ni credenciales en el reporte.
 6. El paso 14 (auto-merge) es un paso final propio de este skill, no una redefinición de
-   `repo-updater`.
+   `repo-updater`: los commits/push intermedios de la sesión sobre la rama efímera siguen siendo
+   responsabilidad de `dev-workflow`/`repo-updater` durante el trabajo; este skill sólo integra el
+   resultado final a `dev` al cerrar.
 7. Sin declaración explícita de cierre del usuario, no elaborar ni persistir la retrospectiva ni
    ejecutar el auto-merge.
 8. Ninguna propuesta de evolución agéntica clasificada 🔴 se implementa sin respuesta explícita del

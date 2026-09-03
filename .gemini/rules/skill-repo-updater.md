@@ -22,7 +22,7 @@ triggers:
   - "dev"
   - "rama"
   - "trabajo"
-  - "habitual"
+  - "efimera"
 globs:
   - "docs/**"
   - "AGENTS.md"
