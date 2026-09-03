@@ -1,6 +1,6 @@
 ---
 name: "las-focas-dev-workflow"
-description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama activa, stack correcto y restricciones del entorno dev."
+description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama efímera activa, stack correcto y restricciones del entorno dev."
 metadata:
   short-description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida..."
   source: ".agentes-comunes/skills/dev-workflow/SKILL.md"
@@ -12,6 +12,8 @@ metadata:
     - "protocolo"
     - "trabajo"
     - "entorno"
+    - "rama"
+    - "efimera"
     - "siempre"
     - "antes"
     - "ejecutar"
@@ -29,8 +31,9 @@ metadata:
     - |
       git branch --show-current
     - |
-      git checkout dev
-      # Si dev no existe:
+      git fetch origin
+      git checkout -b <tipo>/<slug-kebab-case> origin/dev
+      # Si dev no existe en el remoto:
       git checkout -b dev
       git push -u origin dev
     - |
@@ -40,11 +43,11 @@ metadata:
       echo "IMPORTANTE: Completar SLACK_BOT_TOKEN y SLACK_APP_TOKEN en .env.dev antes de continuar."
     - |
       # Siempre verificar rama antes de commitear
-      git branch --show-current  # debe decir: dev
+      git branch --show-current  # debe ser <tipo>/<slug>, nunca dev ni main
 
       git add .
       git commit -m "<tipo>(módulo): descripción técnica"
-      git push origin dev         # NUNCA: git push origin main
+      git push -u origin HEAD     # NUNCA: git push origin dev ni git push origin main directamente
 ---
 
 # Nombre de archivo: SKILL.md
@@ -57,7 +60,9 @@ metadata:
 
 # Habilidad: Dev Workflow — Protocolo de Trabajo en Entorno Dev
 
-Protocolo de validación y operación para garantizar que todos los cambios se realicen sobre el entorno de desarrollo aislado (`dev`), nunca sobre producción.
+Protocolo de validación y operación para garantizar que todos los cambios se realicen sobre una rama
+efímera derivada del entorno de desarrollo aislado (`dev`), nunca directo sobre `dev` ni sobre
+producción.
 
 ## Cuándo usar
 
@@ -78,12 +83,14 @@ Invocar esta skill **siempre** que el agente vaya a:
 git branch --show-current
 ```
 
-- Si devuelve `dev`: continuar.
-- Si devuelve `main` o cualquier otra rama: **detener y cambiar a `dev`** antes de hacer cualquier cambio:
+- Si es una rama efímera vigente (`feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`, `test/*`): continuar.
+- Si devuelve `dev` o `main`: **está prohibido commitear ahí**. Crear una rama efímera antes de
+  cualquier cambio:
 
 ```bash
-git checkout dev
-# Si dev no existe:
+git fetch origin
+git checkout -b <tipo>/<slug-kebab-case> origin/dev
+# Si dev no existe en el remoto:
 git checkout -b dev
 git push -u origin dev
 ```
@@ -118,12 +125,15 @@ echo "IMPORTANTE: Completar SLACK_BOT_TOKEN y SLACK_APP_TOKEN en .env.dev antes 
 
 ```bash
 # Siempre verificar rama antes de commitear
-git branch --show-current  # debe decir: dev
+git branch --show-current  # debe ser <tipo>/<slug>, nunca dev ni main
 
 git add .
 git commit -m "<tipo>(módulo): descripción técnica"
-git push origin dev         # NUNCA: git push origin main
+git push -u origin HEAD     # NUNCA: git push origin dev ni git push origin main directamente
 ```
+
+La integración a `dev` ocurre exclusivamente vía `cierre-sesion` (auto-merge) o, para ramas
+deliberadamente diferidas, vía `superpowers:finishing-a-development-branch`.
 
 ### 5. Restricciones sobre archivos de producción
 
@@ -137,25 +147,28 @@ Si el cambio requiere tocar producción, documentarlo en `docs/decisiones.md` y 
 
 ## Guardrails
 
-1. **No hacer push a `origin/main`** sin PR revisado que venga de `dev`.
-2. **No usar `--force`** ni comandos destructivos sin pedido explícito del usuario.
-3. **No commitear** archivos `.env`, `.env.dev`, `Keys/`, `*.pem`, `*.key` ni binarios generados.
-4. Si detectás que estás en `main`: crear una rama `dev` local, cherry-pick de los cambios y borrar el estado local de `main` antes de proceder.
-5. La operación `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
+1. **No commitear ni pushear** estando parado en `dev` o `main`. Todo trabajo ocurre en una rama efímera creada desde `origin/dev`. Regla universal, sin excepciones.
+2. **No hacer push a `origin/main`** sin PR revisado que venga de `dev`.
+3. **No usar `--force`** ni comandos destructivos sin pedido explícito del usuario.
+4. **No commitear** archivos `.env`, `.env.dev`, `Keys/`, `*.pem`, `*.key` ni binarios generados.
+5. Si detectás que estás en `main`: crear la rama efímera desde `origin/dev` antes de proceder, no cherry-pickear a ciegas.
+6. La operación `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
+7. Una rama efímera es un `git checkout -b`, no un worktree nuevo — para aislamiento de directorio usar `superpowers:using-git-worktrees` (mecanismo independiente y combinable).
 
 ## Relación con otras skills
 
 | Skill | Cuándo invocar |
 |-------|---------------|
-| `repo-updater` | Para auditar y commitear cambios — ya apunta a `dev` por defecto |
+| `repo-updater` | Para auditar y commitear cambios — pushea a la rama efímera activa |
 | `pytest-focas` | Para correr tests — siempre en entorno dev |
 | `alembic-migrations` | Para migraciones — ejecutar en contenedor `lasfocasdev-api` |
 | `docker-rebuild` | Para rebuild selectivo — usar con compose dev |
+| `cierre-sesion` | Único punto que integra la rama efímera a `dev` |
 
 ## Resultado esperado
 
-- Rama activa confirmada como `dev`
+- Rama efímera activa confirmada (nunca `dev`/`main` al commitear)
 - `.env.dev` presente
 - Stack correcto identificado (`lasfocasdev`)
 - Ningún cambio accidental en archivos de producción
-- Push apuntando a `origin/dev`
+- Push apuntando a `origin/<rama-efímera>`

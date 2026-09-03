@@ -1,6 +1,6 @@
 # Nombre de archivo: SKILL.md
-# Ubicación de archivo: .github/skills/dev-workflow/SKILL.md
-# Descripción: Skill para garantizar que los agentes operen siempre sobre ramas efímeras derivadas de dev y el stack lasfocasdev, nunca sobre producción — mirror de .agentes-comunes/skills/dev-workflow/SKILL.md (fuente de verdad)
+# Ubicación de archivo: .claude/skills/dev-workflow/SKILL.md
+# Descripción: Habilidad para protocolo de rama efímera y entorno dev (mirror de .agentes-comunes/skills/dev-workflow/SKILL.md — fuente de verdad)
 
 ---
 name: dev-workflow
