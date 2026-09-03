@@ -45,7 +45,7 @@ commands:
 ---
 name: Repo Updater
 description: "Sincroniza cambios con la rama efímera activa: audita diff, valida docs/PR y docs temáticas, genera commit técnico y hace push"
-argument-hint: "Describe alcance o rama esperada, por ejemplo: validar cambios de api y docs antes de subir a dev"
+argument-hint: "Describe alcance o rama esperada, por ejemplo: validar cambios de api y docs antes de subir a la rama efímera activa"
 agent: "agent"
 ---
 
@@ -60,7 +60,7 @@ Actuar como actualizador autónomo del repositorio LAS-FOCAS, usando directament
 - Los commits deben ser técnicos, concisos y coherentes con el diff real.
 - Si el cambio toca `.github/`, la documentación relacionada mínima es `docs/Mate_y_Ruta.md` además del PR diario.
 - La rama objetivo es la rama efímera activa creada por `dev-workflow` — nunca `dev`/`main` directo; la integración a `dev` es responsabilidad de `cierre-sesion`. Los merges a `main` solo se realizan mediante Pull Request revisado.
-- El commit siempre se hace en el worktree real de `dev` — nunca en un worktree de prod ni en uno
+- El commit siempre se hace en el worktree real de trabajo del proyecto — nunca en un worktree de prod ni en uno
   creado para una investigación o tarea aislada (regla dura, ver Reglas adicionales #5).
 
 # Objetivo

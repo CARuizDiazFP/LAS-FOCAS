@@ -47,7 +47,7 @@ Usar esta skill cuando el usuario pida:
    de todo `git status` si el paso 3 determinó separar en varios).
 8. Ejecutar `git add` (de los archivos/hunks que correspondan a este commit — nunca `git add .` a
    ciegas si el paso 3 detectó una mezcla), `git commit` y `git push -u origin HEAD` (empuja la rama
-   efímera activa, cualquiera sea su nombre — nunca `git push origin dev` ni `git push origin main`).
+   efímera activa, cualquiera sea su nombre — nunca hacer push directo a `dev` ni a `main`).
 
 ## Cobertura documental mínima
 
@@ -88,7 +88,7 @@ Usar esta skill cuando el usuario pida:
    3. `git apply --cached --check <patch>` para validar ANTES de aplicar de verdad.
    4. `git apply --cached <patch>` — actualiza el índice sin tocar el working tree.
    5. Repetir para cada archivo compartido, `git add` el resto de archivos 100% propios, commitear.
-   6. El diff restante contra el nuevo `HEAD` (para el/los otro(s) commit(s)) sala limpio solo, sin
+   6. El diff restante contra el nuevo `HEAD` (para el/los otro(s) commit(s)) sale limpio solo, sin
       trabajo manual adicional.
 
 ## Resultado esperado

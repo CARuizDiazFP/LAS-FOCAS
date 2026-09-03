@@ -15,7 +15,7 @@ Validar trazabilidad entre el diff real, el PR diario vigente y la documentació
 - Los commits deben ser técnicos, concisos y coherentes con el diff real.
 - Si el cambio toca `.github/` o `.claude/`, la documentación mínima es `docs/Mate_y_Ruta.md` además del PR diario.
 - La rama objetivo es la rama efímera activa (`feat/`, `fix/`, `docs/`, `chore/`, `refactor/` o `test/`, creada por `dev-workflow`) — nunca `dev` ni `main` directo. La integración a `dev` es responsabilidad exclusiva de `cierre-sesion`.
-- El commit siempre se hace en el worktree real de `dev` — nunca en un worktree de prod ni en uno
+- El commit siempre se hace en el worktree real de trabajo del proyecto — nunca en un worktree de prod ni en uno
   creado para una investigación o tarea aislada (regla dura, ver Reglas #5).
 
 # Pasos

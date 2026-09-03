@@ -120,7 +120,7 @@ Usar esta skill cuando el usuario pida:
    3. `git apply --cached --check <patch>` para validar ANTES de aplicar de verdad.
    4. `git apply --cached <patch>` — actualiza el índice sin tocar el working tree.
    5. Repetir para cada archivo compartido, `git add` el resto de archivos 100% propios, commitear.
-   6. El diff restante contra el nuevo `HEAD` (para el/los otro(s) commit(s)) sala limpio solo, sin
+   6. El diff restante contra el nuevo `HEAD` (para el/los otro(s) commit(s)) sale limpio solo, sin
       trabajo manual adicional.
 
 ## Resultado esperado
