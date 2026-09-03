@@ -1,114 +1,73 @@
 # Nombre de archivo: SKILL.md
 # Ubicación de archivo: .agentes-comunes/skills/dev-workflow/SKILL.md
-# Descripción: Skill para garantizar que los agentes operen siempre sobre la rama dev y el stack lasfocasdev
+# Descripción: Skill para garantizar que los agentes operen siempre sobre ramas efímeras derivadas de dev y el stack lasfocasdev, nunca sobre producción
 
 ---
 name: dev-workflow
-description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama activa, stack correcto y restricciones del entorno dev."
+description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama efímera activa, stack correcto y restricciones del entorno dev."
 argument-hint: "Contexto de la tarea, por ejemplo: implementar feature X en el módulo Y"
 ---
 
 # Habilidad: Dev Workflow — Protocolo de Trabajo en Entorno Dev
 
-Protocolo de validación y operación para garantizar que todos los cambios se realicen sobre el entorno de desarrollo aislado (`dev`), nunca sobre producción.
+Protocolo de validación y operación para garantizar que todos los cambios se realicen sobre una rama
+efímera derivada del entorno de desarrollo aislado (`dev`), nunca directo sobre `dev` ni sobre
+producción.
 
 ## Cuándo usar
-
-Invocar esta skill **siempre** que el agente vaya a:
-
-- Modificar código fuente, configuración o documentación
-- Ejecutar commits o push
-- Operar el stack Docker (`up`, `build`, `exec`, `logs`)
-- Actualizar el repositorio (invocar `repo-updater`)
-- Crear o modificar migraciones Alembic
-- Ejecutar tests que requieran la base de datos
+Invocar esta skill **siempre** que el agente vaya a: modificar código/config/docs, ejecutar commits o push, operar Docker (up/build/exec/logs), actualizar el repo (repo-updater), crear/modificar migraciones Alembic, ejecutar tests que requieran DB.
 
 ## Procedimiento de validación (ejecutar en orden)
 
-### 1. Verificar rama activa
-
-```bash
-git branch --show-current
-```
-
-- Si devuelve `dev`: continuar.
-- Si devuelve `main` o cualquier otra rama: **detener y cambiar a `dev`** antes de hacer cualquier cambio:
-
-```bash
-git checkout dev
-# Si dev no existe:
-git checkout -b dev
-git push -u origin dev
-```
-
-### 2. Verificar que `.env.dev` existe
-
-```bash
-test -f .env.dev && echo "OK" || echo "FALTA .env.dev"
-```
-
-Si no existe, crear desde el sample:
-
-```bash
-cp deploy/env.dev.sample .env.dev
-echo "IMPORTANTE: Completar SLACK_BOT_TOKEN y SLACK_APP_TOKEN en .env.dev antes de continuar."
-```
-
-### 3. Comandos Docker correctos en dev
-
-| Operación | Comando correcto en dev |
-|-----------|------------------------|
-| Levantar stack | `./scripts/start_dev.sh` |
-| Levantar sin rebuild | `./scripts/start_dev.sh --no-build` |
-| Detener stack | `docker compose -f deploy/docker-compose.dev.yml down` |
-| Ver logs | `docker compose -f deploy/docker-compose.dev.yml logs -f [servicio]` |
-| Ejecutar comando en contenedor | `docker compose -f deploy/docker-compose.dev.yml exec <svc> <cmd>` |
-| Clonar DB prod → dev | `./scripts/start_dev.sh --clone-db` |
-
-> **NUNCA** usar `docker compose -f deploy/compose.yml` para pruebas o desarrollo. Ese archivo es exclusivo de producción.
-
-### 4. Commits y push
-
-```bash
-# Siempre verificar rama antes de commitear
-git branch --show-current  # debe decir: dev
-
-git add .
-git commit -m "<tipo>(módulo): descripción técnica"
-git push origin dev         # NUNCA: git push origin main
-```
-
-### 5. Restricciones sobre archivos de producción
-
-Los siguientes archivos **no deben modificarse** sin aprobación explícita del Tech Lead:
-
-- `deploy/compose.yml`
-- `.env` (en raíz del proyecto)
-- Cualquier secreto o token de producción
-
-Si el cambio requiere tocar producción, documentarlo en `docs/decisiones.md` y crear un PR formal.
+1. Verificar rama activa (`git branch --show-current`).
+   - Si es una rama efímera vigente (prefijo `feat/`, `fix/`, `docs/`, `chore/`, `refactor/` o
+     `test/`): continuar, es la rama de trabajo de esta tarea.
+   - Si es `dev` o `main`: **está prohibido modificar código o commitear ahí**. Crear una rama
+     efímera nueva desde el estado remoto de `dev` antes de cualquier cambio:
+     ```bash
+     git fetch origin
+     git checkout -b <tipo>/<slug-kebab-case> origin/dev
+     ```
+     `<tipo>` = `feat|fix|docs|chore|refactor|test` según la naturaleza del cambio; `<slug>` describe
+     la tarea en minúsculas y guiones (mismo criterio que ya se usa en `<tipo>(módulo): descripción`
+     para mensajes de commit).
+   - Si `dev` no existe en el remoto: crearla primero (`git checkout -b dev && git push -u origin dev`)
+     y recién ahí crear la rama efímera.
+   - Si ya existe una rama efímera vigente para esta misma tarea, reutilizarla — no crear ramas
+     anidadas dentro de una sesión.
+2. Verificar que `.env.dev` existe; si no, crearlo desde `deploy/env.dev.sample`.
+3. Comandos Docker correctos en dev (tabla `start_dev.sh`, `docker-compose.dev.yml`, etc.). **NUNCA**
+   usar `docker compose -f deploy/compose.yml` para pruebas/desarrollo.
+4. **Commits y push** (siempre sobre la rama efímera activa, nunca sobre `dev`/`main`):
+   ```bash
+   git branch --show-current  # debe ser <tipo>/<slug>, nunca dev ni main
+   git add .
+   git commit -m "<tipo>(módulo): descripción técnica"
+   git push -u origin HEAD     # NUNCA: git push origin dev ni git push origin main directamente
+   ```
+   La integración a `dev` ocurre exclusivamente vía `cierre-sesion` (flujo de auto-merge al cierre) o,
+   para ramas deliberadamente diferidas (ej. ventana de mantenimiento), vía
+   `superpowers:finishing-a-development-branch`.
+5. Restricciones sobre archivos de producción (`deploy/compose.yml`, `.env`, secretos) — requieren aprobación explícita del Tech Lead; si se necesita, documentar en `docs/decisiones.md` y crear PR formal.
 
 ## Guardrails
-
-1. **No hacer push a `origin/main`** sin PR revisado que venga de `dev`.
-2. **No usar `--force`** ni comandos destructivos sin pedido explícito del usuario.
-3. **No commitear** archivos `.env`, `.env.dev`, `Keys/`, `*.pem`, `*.key` ni binarios generados.
-4. Si detectás que estás en `main`: crear una rama `dev` local, cherry-pick de los cambios y borrar el estado local de `main` antes de proceder.
-5. La operación `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
+1. No commitear ni pushear estando parado en `dev` o `main`. Todo trabajo ocurre en una rama efímera
+   creada desde `origin/dev` (paso 1). Esta regla es universal — sin excepciones por tipo de tarea.
+2. No hacer push a `origin/main` sin PR revisado que venga de `dev`.
+3. No usar `--force` ni comandos destructivos sin pedido explícito del usuario.
+4. No commitear `.env`, `.env.dev`, `Keys/`, `*.pem`, `*.key` ni binarios generados.
+5. Si detectás que estás en `main`: no cherry-pickees a ciegas — crear la rama efímera desde
+   `origin/dev` (paso 1) y evaluar si los cambios locales en `main` corresponden a esa tarea.
+6. `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
+7. Una rama efímera es un `git checkout -b` dentro del mismo checkout de trabajo — **no** es un
+   worktree nuevo. Para aislamiento real de directorio (ej. trabajo paralelo de subagentes) usar
+   `superpowers:using-git-worktrees`, que es un mecanismo independiente y combinable (un worktree
+   puede tener a su vez su propia rama efímera adentro).
 
 ## Relación con otras skills
-
-| Skill | Cuándo invocar |
-|-------|---------------|
-| `repo-updater` | Para auditar y commitear cambios — ya apunta a `dev` por defecto |
-| `pytest-focas` | Para correr tests — siempre en entorno dev |
-| `alembic-migrations` | Para migraciones — ejecutar en contenedor `lasfocasdev-api` |
-| `docker-rebuild` | Para rebuild selectivo — usar con compose dev |
+`repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
+`docker-rebuild`, `cierre-sesion` (único punto que integra la rama efímera a `dev`).
 
 ## Resultado esperado
-
-- Rama activa confirmada como `dev`
-- `.env.dev` presente
-- Stack correcto identificado (`lasfocasdev`)
-- Ningún cambio accidental en archivos de producción
-- Push apuntando a `origin/dev`
+Rama efímera confirmada (nunca `dev`/`main` en el momento de commitear), `.env.dev` presente, stack
+`lasfocasdev` correcto, ningún cambio accidental en producción, push a `origin/<rama-efímera>`.
