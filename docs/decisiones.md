@@ -1208,3 +1208,50 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   (`web/frontend/src/types/timeline.ts`, `components/servicios/ServiceTimeline.vue`, integración en
   `ServicioDetalleView.vue`). Ver `docs/PR/2026-09-02.md` para comandos ejecutados y detalle de
   impacto/riesgos.
+
+## 2026-09-03 — Reconciliación de Botellas críticas en prod + descubrimiento de que `main` no es la base real de los contenedores productivos
+
+- **Contexto:** El usuario pidió, contra producción: (a) banear las Botellas listadas en
+  `docs/Doc Privada/Criticas en seguimiento.xlsx` (hoja "Criticas al 02092026", 57 filas) y liberar
+  el resto del inventario, y (b) llevar a prod el fix de baneos-hermanos ya validado en dev
+  (`99a2306`, 2026-08-28).
+- **Hallazgo real que cambió el diseño de (a):** prod está en migración `20260810_01` — anterior a
+  `cromo_botellas.camara_id`/`estado` (2026-08-12). La tabla Cromo en prod no tiene esa columna, así
+  que el matching no puede pasar por Cromo (como hace `procesar_ingesta_camaras` en dev). Los 57
+  `nombre_botella` del Excel matchearon **100% exacto** contra `app.camaras.nombre` (legado) — cubren
+  56 Cámaras raíz distintas (dos filas del Excel comparten el mismo nombre). Como `aplicar_estado_a_grupo`
+  ya está en el código corriendo hoy en `lasfocas-web`, esta parte **no requirió ningún rebuild**.
+- **Decisión — alcance de "liberar el resto" (confirmado explícitamente por el usuario):** forzar a
+  `LIBRE` todo lo que no esté en la lista crítica, sin excepción de estado (`BANEADA`/`DETECTADA`),
+  salvo dos guardrails no negociables: nunca tocar `PENDIENTE_REVISION` (se elimina después desde la
+  UI, pedido explícito) y nunca liberar una Cámara/grupo bajo un incidente activo real
+  (`get_camara_estado_contexto(...).tiene_baneo_activo` — hoy 0 incidentes activos en prod).
+- **Ejecución:** script de uso único (`docker cp` a `lasfocas-web:/tmp/`, `PYTHONPATH=/app`, mismo
+  `SessionLocal`/código real), dry-run revisado con el usuario antes de aplicar, luego `--apply` con
+  commit real vía `aplicar_estado_a_grupo` (nunca `UPDATE` directo, auditoría completa en
+  `CamaraEstadoAuditoria`). Resultado verificado contra la DB real: 3 Cámaras → `BANEADA` (2 `LIBRE`→
+  `BANEADA`, 1 `DETECTADA`→`BANEADA`), 938 → `LIBRE` (44 `BANEADA`→`LIBRE` reales, 894 `DETECTADA`→
+  `LIBRE`), 565 `PENDIENTE_REVISION` intactas, 794 sin cambio. Script borrado del contenedor al
+  terminar.
+- **Hallazgo de proceso, no buscado — `main` no es la base real de prod:** al preparar (b) se
+  encontró que `main` (HEAD `657b239`, 2026-07-29, fecha de la migración Nocturne) **no** es de donde
+  salieron las imágenes `lasfocas-web`/`api`/`slack-baneo-worker` (construidas 2026-08-11). La
+  migración aplicada en prod (`20260810_01`) coincide exacto con el commit de `dev` `dc1a4a4`/`1618b06`
+  (2026-08-10) — nunca mergeado a `main`. Es decir: en algún momento se construyeron las imágenes de
+  prod directo desde un commit de `dev`, sin pasar por `main`. Documentado acá porque cualquier futuro
+  "qué corre en prod" debe partir de comparar contra el commit real (`docker inspect` + versión de
+  migración), no asumir que `main` refleja el estado desplegado.
+- **Preparación de (b), sin aplicar todavía:** rama `fix-baneos-hermanos-prod` creada desde `dc1a4a4`
+  (no desde `main`), con cherry-pick de `041f46d` (2026-08-23, gap Cromo en
+  `get_camaras_for_servicio`/`_camara_tiene_otro_baneo_activo` — necesario porque `99a2306` depende de
+  esas dos funciones) + `99a2306`. 3 conflictos reales resueltos a mano (`core/services/cromo/verificador.py`,
+  su test y este mismo archivo) — en los tres casos el conflicto era contenido de OTRAS features
+  (dashboard de duplicados, tarjeta "Cables asociados") que mutaron esos archivos entre el 08-10 y
+  estos commits; se descartó ese contenido no relacionado y se dejó sólo lo que estos 2 commits
+  aportan. 39/39 tests (`test_protection_service.py` + `test_cromo_verificador.py`) pasando. Rama
+  pusheada a `origin/fix-baneos-hermanos-prod` (no a `main`) — **el usuario decidió posponer el
+  merge/build/restart de prod a una ventana de mantenimiento**, queda pendiente: mergear a `main`,
+  push, rebuild + restart de `lasfocas-web`/`api`/`slack-baneo-worker`.
+- **Impacto:** 941 filas reales de `app.camaras` mutadas en prod (auditadas en
+  `camaras_estado_auditoria`); ningún cambio de código en `dev`/`main` todavía (la rama del fix queda
+  en `origin/fix-baneos-hermanos-prod` a la espera de la ventana de mantenimiento).
