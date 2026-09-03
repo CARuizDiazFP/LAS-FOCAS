@@ -1176,7 +1176,13 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   `evento=servicio_id_colision_no_fusionable`. **No** se portó la fusión de placeholders Cromo puros
   del camino Excel: esa resuelve dos filas del MISMO batch de un Excel y no aplica a un refresco
   fila-por-fila. Fusionar dos registros reales sin confirmación humana sigue estando fuera de alcance
-  a propósito, igual que en el camino Excel.
+  a propósito, igual que en el camino Excel. **Costo operativo no mencionado inicialmente:** tras una
+  degradación, el ID rechazado queda ambiguo para búsquedas futuras — vive como `numero_linea` de la
+  fila degradada Y como `servicio_id` de la fila que ya lo ocupaba. `_buscar_servicio_por_id` (que
+  matchea por `OR` sobre `numero_primer_servicio`/`numero_linea`/`servicio_id` con
+  `order_by(id.desc()).limit(1)`) resolvería una búsqueda de ese valor eligiendo arbitrariamente la
+  fila de `id` más alto. Mismo costo que ya tiene el camino Excel (no es una regresión de esta
+  integración), sólo quedaba sin explicitar acá.
 - **Limitaciones conocidas y aceptadas (no resueltas en esta pasada, documentadas para no
   perderlas):**
   1. **La llamada a PROV ocurre con la sesión/transacción de DB ya abierta.**

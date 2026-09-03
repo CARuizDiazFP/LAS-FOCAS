@@ -205,9 +205,9 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
     if servicio_id_final != servicio.servicio_id:  # una asignación no-op nunca puede colisionar
         condiciones = [Servicio.servicio_id == servicio_id_final]
         if servicio.id is not None:
-            # `Servicio.id != None` en SQL da NULL (no True), así que excluirse a sí misma sólo
-            # tiene sentido para una fila ya persistida; una fila nueva sin PK no puede ser su
-            # propia colisión.
+            # Sólo tiene sentido excluirse a sí misma si ya existe un PK — una fila nueva sin
+            # persistir no puede aparecer como "otra fila" en esta consulta de todas formas, así
+            # que el filtro de auto-exclusión se omite (no hace falta) en vez de agregarse.
             condiciones.append(Servicio.id != servicio.id)
         id_en_colision = (
             (await session.execute(select(Servicio.id).where(*condiciones).limit(1))).scalars().first()

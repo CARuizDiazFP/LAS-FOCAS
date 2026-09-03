@@ -131,11 +131,15 @@ class ProvClient:
                 continue
 
             if respuesta.status_code >= 400:
+                # El cuerpo crudo de PROV (`respuesta.text`) se loguea acá pero no viaja en el
+                # mensaje de la excepción: ese mensaje llega tal cual hasta el usuario final como
+                # `detail` del 502 (`api/app/routes/servicios.py::refrescar_servicio_desde_prov`).
                 logger.error(
-                    "action=prov_get params=%s resultado=error_4xx status=%d", params, respuesta.status_code
+                    "action=prov_get params=%s resultado=error_4xx status=%d cuerpo=%s",
+                    params, respuesta.status_code, respuesta.text,
                 )
                 raise ProvClientError(
-                    f"PROV respondió {respuesta.status_code}: {respuesta.text}",
+                    f"PROV respondió {respuesta.status_code} para la consulta",
                     status_code=respuesta.status_code,
                 )
 

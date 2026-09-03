@@ -27,6 +27,7 @@ publicado 5433):
     python scripts/servicios_backfill_prov.py                                   # sólo reporta (dry-run)
     python scripts/servicios_backfill_prov.py --apply                            # aplica el cambio
     python scripts/servicios_backfill_prov.py --solo-ids 122214,15872 --apply    # subconjunto acotado
+    python scripts/servicios_backfill_prov.py --limit 500 --apply                # corrida en lotes de 500
 
 Corriéndolo DENTRO del contenedor `api` (`docker exec lasfocasdev-api python
 scripts/servicios_backfill_prov.py ...`) no hace falta ninguno de esos exports: ahí
@@ -57,18 +58,20 @@ from db.session import AsyncSessionLocal
 logger = setup_logging("servicios_backfill_prov")
 
 
-async def _obtener_candidatos(solo_ids: list[str] | None) -> list[int]:
+async def _obtener_candidatos(solo_ids: list[str] | None, limit: int | None) -> list[int]:
     async with AsyncSessionLocal() as session:
         stmt = select(Servicio.id).where(Servicio.numero_primer_servicio.isnot(None))
         if solo_ids:
             stmt = stmt.where(Servicio.numero_primer_servicio.in_(solo_ids))
         stmt = stmt.order_by(Servicio.id)
+        if limit is not None:
+            stmt = stmt.limit(limit)
         return [fila[0] for fila in (await session.execute(stmt)).all()]
 
 
-async def main(apply: bool, solo_ids: list[str] | None) -> None:
+async def main(apply: bool, solo_ids: list[str] | None, limit: int | None) -> None:
     inicio = time.perf_counter()
-    ids_candidatos = await _obtener_candidatos(solo_ids)
+    ids_candidatos = await _obtener_candidatos(solo_ids, limit)
     logger.info(
         "action=backfill_prov candidatas=%d modo=%s", len(ids_candidatos), "aplicado" if apply else "dry_run"
     )
@@ -148,6 +151,12 @@ if __name__ == "__main__":
         default=None,
         help="Lista de numero_primer_servicio separados por coma, para correr sobre un subconjunto acotado",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Máxima cantidad de filas a procesar en esta corrida (para correr en lotes manejables)",
+    )
     args = parser.parse_args()
     solo_ids_parsed = [valor.strip() for valor in args.solo_ids.split(",")] if args.solo_ids else None
-    asyncio.run(main(apply=args.apply, solo_ids=solo_ids_parsed))
+    asyncio.run(main(apply=args.apply, solo_ids=solo_ids_parsed, limit=args.limit))
