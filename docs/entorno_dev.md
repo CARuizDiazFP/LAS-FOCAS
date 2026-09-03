@@ -8,7 +8,7 @@
 
 > **Nunca probar directamente en producción.**
 >
-> Todo trabajo de exploración, feature, bug-fix o experimento se realiza sobre la rama `dev` y el stack `lasfocasdev`. Los cambios solo llegan a producción (`main` / stack `lasfocas`) mediante Pull Request revisado.
+> Todo trabajo de exploración, feature, bug-fix o experimento se realiza sobre una rama efímera creada desde `dev` (stack `lasfocasdev`); nunca se commitea directo en `dev`. Los cambios llegan a `dev` vía `cierre-sesion`, y a producción (`main` / stack `lasfocas`) solo mediante Pull Request revisado.
 
 ---
 
