@@ -1874,7 +1874,10 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
     def test_baneo_de_botella_hermana_bloquea_ingreso_a_la_camara_raiz(self) -> None:
         """Bug real que motivó esta tarea: pedir ingreso a la cámara RAÍZ (estado propio LIBRE)
         mientras una Botella hermana está BANEADA debe bloquear igual — antes el listener sólo miraba
-        el `estado` de la fila puntual resuelta, nunca el grupo."""
+        el `estado` de la fila puntual resuelta, nunca el grupo. Caso degenerado (grupo de 1 solo
+        miembro, el propio `camara_mock`) para asegurar que el `next(..., camara)` con fallback no
+        rompe cuando no hay hermanas — el caso MULTI-miembro real está cubierto por
+        `test_baneo_de_botella_hermana_multi_miembro_identifica_a_la_hermana`, abajo."""
         from db.models.infra import CamaraEstado
 
         camara_mock = self._make_camara(13, "Cam Raiz Libre", CamaraEstado.LIBRE)
@@ -1905,6 +1908,59 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
 
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn(":no_entry:", texto)
+
+    def test_baneo_de_botella_hermana_multi_miembro_identifica_a_la_hermana(self) -> None:
+        """Cobertura real del bug (revisión post-Tarea 5, 2026-09-04): grupo de 2+ miembros donde el
+        miembro BANEADO no es la cámara raíz consultada, sino una Botella hermana con id/nombre
+        propios en `camara.botellas`. `_evaluar_estado_acceso_camara` debe identificar a la HERMANA
+        (no caer al fallback `camara` del `next(..., camara)`) — tanto en el texto de respuesta
+        (`detalle_miembro`, "del mismo grupo") como en el `id` pasado a
+        `obtener_ultimo_motivo_baneo_manual`. El test anterior (grupo de 1 solo miembro,
+        `camara.botellas=[]` vía `_make_camara`) no puede distinguir esto: el `next()` sólo tiene el
+        fallback `camara` para elegir, así que `miembro_baneado is camara` siempre, incluso si el
+        código tuviera el bug de nunca resolver la hermana real."""
+        from db.models.infra import CamaraEstado
+
+        camara_mock = self._make_camara(13, "Cam Raiz Libre", CamaraEstado.LIBRE)
+        botella_hermana_mock = self._make_camara(99, "Bot 2 Cam Raiz Libre", CamaraEstado.BANEADA)
+        camara_mock.botellas = [botella_hermana_mock]
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        event = self._make_event(text="Cámara: Raiz Libre")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Raiz Libre"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "raiz libre"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                # tiene_baneo_activo=True aunque la propia fila (`estado_actual`) siga LIBRE — lo
+                # aporta la Botella hermana `botella_hermana_mock`, ya contemplado por Task 3. El
+                # contexto en sí es opaco a QUIÉN del grupo está baneado — eso lo resuelve
+                # `_evaluar_estado_acceso_camara` iterando `miembros_del_grupo(camara)`.
+                return_value=self._contexto(13),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                return_value="Botella hermana baneada",
+            ) as mock_motivo,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":no_entry:", texto)
+        self.assertIn("Cam Raiz Libre", texto)
+        # El miembro efectivamente baneado es la Botella hermana (id=99, nombre propio) — no la
+        # cámara raíz consultada (id=13) ni el fallback genérico del `next(..., camara)`.
+        self.assertIn("Bot 2 Cam Raiz Libre", texto)
+        self.assertIn("del mismo grupo", texto)
+        mock_motivo.assert_called_once_with(session_mock, 99)
 
     def test_libre_no_afectado(self) -> None:
         """Grupo LIBRE (sin baneo) → ✅ OK — la nueva rama no interfiere. (regresión)"""
