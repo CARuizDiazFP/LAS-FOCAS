@@ -30,6 +30,7 @@ from db.models.infra import (
     Empalme,
     IncidenteBaneo,
     Ingreso,
+    IngresoTipo,
     RutaServicio,
     Servicio,
     ruta_empalme_association,
@@ -703,7 +704,9 @@ class ProtectionService:
         vigente (LIBRE/OCUPADA/BANEADA/NO_OPERATIVA).
 
         Lógica por defecto (sin historial aplicable):
-        - Si tiene ingreso activo (sin fecha_fin) → OCUPADA
+        - Si tiene ingreso activo (`tipo=INGRESO`, sin fecha_fin) → OCUPADA — filtra `tipo=INGRESO`
+          explícitamente para no confundir un `INTENTO_BLOQUEADO` (mismo `fecha_fin IS NULL` por
+          diseño, nunca se cierra con un Egreso) con un ingreso real en curso.
         - En otro caso → LIBRE
 
         Args:
@@ -725,9 +728,14 @@ class ProtectionService:
             ):
                 return CamaraEstado.BANEADA
 
-        # Verificar si hay un ingreso activo
+        # Verificar si hay un ingreso activo — filtra explícitamente tipo=INGRESO (mismo fix que
+        # `camara_estado_service.get_camara_estado_contexto` e `ingreso_service.py`, 2026-09-04): sin
+        # este filtro, un INTENTO_BLOQUEADO (mismo fecha_fin IS NULL por diseño, nunca se cierra con
+        # un Egreso) hacía que `lift_ban` restaurara la cámara a OCUPADA en vez de LIBRE de forma
+        # permanente.
         ingreso_activo = self.session.query(Ingreso).filter(
             Ingreso.camara_id == camara.id,
+            Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin == None,  # noqa: E711
         ).first()
 

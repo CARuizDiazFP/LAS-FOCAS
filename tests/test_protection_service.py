@@ -15,6 +15,8 @@ from db.models.infra import (
     CamaraOrigenDatos,
     Empalme,
     IncidenteBaneo,
+    Ingreso,
+    IngresoTipo,
     RutaServicio,
     Servicio,
 )
@@ -240,6 +242,48 @@ def test_determinar_estado_restauracion_sin_historial_usa_logica_por_defecto() -
     resultado = service._determinar_estado_restauracion(camara, incidente)
 
     assert resultado == CamaraEstado.LIBRE
+
+
+def test_determinar_estado_restauracion_filtra_tipo_ingreso_no_cuenta_intento_bloqueado() -> None:
+    """Bug real (revisión final 2026-09-04, hallazgo I1): la query de "ingreso activo" debe filtrar
+    `Ingreso.tipo == IngresoTipo.INGRESO` explícitamente — sin este filtro, un `INTENTO_BLOQUEADO`
+    (mismo `fecha_fin IS NULL` por diseño, nunca se cierra con un Egreso) hacía que `lift_ban`
+    restaurara la cámara a OCUPADA de forma permanente en vez de LIBRE. Mismo fix que ya tenían
+    `camara_estado_service.get_camara_estado_contexto` e `ingreso_service.py`."""
+    camara = Camara(id=9, nombre="Cra Test CF", estado=CamaraEstado.BANEADA)
+    incidente = IncidenteBaneo(id=1, fecha_inicio=datetime(2026, 8, 10, 13, 0, 0, tzinfo=timezone.utc))
+
+    filtros_ingreso: list = []
+
+    def _query_side_effect(model, *_a):
+        query_mock = MagicMock()
+        if model is CamaraEstadoAuditoria:
+            query_mock.filter.return_value.order_by.return_value.first.return_value = None
+        elif model is Ingreso:
+            def _filter(*args, **kwargs):
+                filtros_ingreso.extend(args)
+                inner = MagicMock()
+                # Simula que, con el filtro tipo=INGRESO aplicado, la fila INTENTO_BLOQUEADO
+                # existente NO matchea — no hay ningún ingreso REAL activo.
+                inner.first.return_value = None
+                return inner
+            query_mock.filter.side_effect = _filter
+        return query_mock
+
+    session = MagicMock()
+    session.query.side_effect = _query_side_effect
+
+    service = ProtectionService(session)
+    resultado = service._determinar_estado_restauracion(camara, incidente)
+
+    assert resultado == CamaraEstado.LIBRE
+    tipo_filtrado = any(
+        getattr(getattr(expr, "left", None), "key", None) == "tipo"
+        and getattr(expr, "right", None) is not None
+        and expr.right.value == IngresoTipo.INGRESO
+        for expr in filtros_ingreso
+    )
+    assert tipo_filtrado, "Se esperaba un filtro Ingreso.tipo == IngresoTipo.INGRESO"
 
 
 # ── get_camaras_for_servicio — cobertura directa (Refactor baneos, 2026-08-23) ──────────────────
