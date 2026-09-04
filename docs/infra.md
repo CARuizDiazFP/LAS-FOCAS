@@ -104,6 +104,21 @@ específica cuando aplica — por eso estas filas sí propagan correctamente sob
 (cámara + botellas hermanas), consistente con `tiene_ingreso_activo` de `camara_estado_service.py`.
 Ver "Registros" más abajo, pestaña Ingresos ya poblada desde backend real (ya no placeholder).
 
+**Actualización 2026-09-04:** `tiene_baneo_activo` (`get_camara_estado_contexto`) tenía un bug real —
+sólo miraba `IncidenteBaneo` activo, nunca `Camara.estado == BANEADA` de ningún miembro del grupo. Un
+baneo manual (override admin/import Excel, sin incidente de protección asociado) quedaba invisible
+tanto para el badge "Contexto operativo" (`ModalRegistros.vue`) como para el chequeo de acceso del
+listener de Slack de ingreso. Corregido: `tiene_baneo_activo` ahora también es `True` cuando cualquier
+miembro de `miembros_del_grupo(camara)` tiene `estado == BANEADA`, incidente o no. `tiene_ingreso_activo`
+ahora filtra explícitamente `Ingreso.tipo == 'INGRESO'` (columna nueva, migración `20260904_01`) para no
+contar un `INTENTO_BLOQUEADO` (mismo `fecha_fin IS NULL`) como si alguien estuviera realmente adentro.
+
+`GET /api/infra/camaras/{id}/registros` expone además `botella_label` por cada `Ingreso` — resuelve
+"Botella 1" (convención ya usada por `camara_search.detectar_multi_bot`: la Cámara raíz misma, sin fila
+propia en `CromoBotella`) cuando no se especificó botella, el nombre de la `CromoBotella` cuando sí hay
+`cromo_botella_id`, o el nombre de la Botella legado (self-FK) cuando la fila de `Ingreso.camara_id`
+apunta directo a una Botella sin `CromoBotella` asociada.
+
 Consecuencia para el flujo admin de borrado: `_bloqueo_camara()` en
 `core/services/camara_botella_delete_service.py` bloquea eliminar una `Camara` que tenga CUALQUIER fila
 `Ingreso` asociada (abierta o ya cerrada, sin distinción) — y por ser `eliminar_camara` todo-o-nada,

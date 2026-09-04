@@ -240,6 +240,29 @@ Si `extraer_tipo_movimiento()` devuelve `None` (mensaje viejo o formulario sin e
 
 Este registro **nunca bloquea ni condiciona la respuesta de Slack**: se ejecuta como efecto secundario final, después de calcular el texto de respuesta, y cualquier excepción se loguea (`logger.warning`) y se ignora (incluye un `session.rollback()` explícito para no dejar la sesión compartida del resto de `_handle_message` en estado inválido ante un fallo de escritura).
 
+**Actualización 2026-09-04 (Tarea de fix baneo/Slack):**
+
+- **Nombre real del técnico**: antes de persistir, el listener resuelve `slack_user_id` al nombre
+  visible del técnico vía `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`
+  (llama `client.users_info` — el mismo `WebClient` que Bolt ya inyecta en el handler, sin token
+  nuevo). Requiere el scope `users:read` en la Slack App (verificar en el panel de Slack). Si la
+  llamada falla (scope faltante, usuario borrado, timeout), cae al ID crudo — el registro nunca se
+  bloquea por esto. `Ingreso.tecnico_id` ahora almacena ese nombre resuelto, no ya el ID crudo.
+- **Chequeo de acceso grupo-consciente**: `_evaluar_estado_acceso_camara` dejó de mirar sólo el
+  `estado`/incidentes de la fila puntual resuelta — ahora reusa
+  `core/services/camara_estado_service.get_camara_estado_contexto()`, que evalúa incidentes Y baneo
+  manual sobre TODO el grupo (cámara padre + botellas hermanas). Bug real corregido: pedir ingreso a
+  la cámara raíz mientras una Botella hermana estaba BANEADA respondía "OK".
+- **Intento bloqueado**: si el chequeo de acceso determina que el grupo está bloqueado (incidente
+  activo o baneo manual) y el movimiento es "Ingreso", el listener llama
+  `core/services/ingreso_service.py::registrar_intento_bloqueado` en vez de
+  `registrar_movimiento_ingreso` — la fila queda con `tipo=INTENTO_BLOQUEADO`, `fecha_fin=NULL`
+  (nunca hubo egreso porque nunca hubo ingreso real). Un "Egreso" nunca se bloquea, incluso sobre un
+  grupo BANEADO. `Ingreso.tipo` (INGRESO/EGRESO/INTENTO_BLOQUEADO, migración `20260904_01`) es lo que
+  distingue esto de un Ingreso real "en curso" con el mismo `fecha_fin IS NULL` — tanto
+  `tiene_ingreso_activo` (`camara_estado_service.py`) como el cierre de Egreso NULL-safe
+  (`ingreso_service.py`) filtran explícitamente `tipo == INGRESO`.
+
 ### Estados de cámara
 
 | Estado | Comportamiento |
