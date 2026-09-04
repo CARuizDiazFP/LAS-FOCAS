@@ -74,7 +74,7 @@
           <td style="font-size:0.85rem;color:var(--muted)">{{ grupo.fecha ? new Date(grupo.fecha).toLocaleString('es-AR') : '—' }}</td>
           <td>
             <span
-              v-if="grupo.tiene_baneo_activo"
+              v-if="grupo.tiene_incidente_activo"
               class="activos-badge activos-badge--incidente"
               :title="`Necesita &quot;forzar&quot; o cerrarse desde el Protocolo de Protección (ticket ${grupo.ticket_baneo ?? 'sin ticket'})`"
             >
@@ -173,7 +173,7 @@ const gruposSeleccionadosPagina = computed(() => grupos.value.filter((g) => sele
 const mensajeLiberar = computed(() => {
   const totalSel = seleccionados.value.size;
   const base = `Se van a liberar ${totalSel} grupo${totalSel !== 1 ? 's' : ''} baneado${totalSel !== 1 ? 's' : ''}.`;
-  const bloqueados = gruposSeleccionadosPagina.value.filter((g) => g.tiene_baneo_activo);
+  const bloqueados = gruposSeleccionadosPagina.value.filter((g) => g.tiene_incidente_activo);
   if (bloqueados.length === 0) return base;
   if (forzar.value) {
     const nombres = bloqueados

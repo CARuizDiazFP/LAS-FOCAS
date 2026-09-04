@@ -51,6 +51,7 @@ class TestGenerarExcelBaneadas(unittest.TestCase):
             usuario="operador",
             fecha="2026-04-17T12:00:00+00:00",
             tiene_baneo_activo=False,
+            tiene_incidente_activo=False,
             ticket_baneo=None,
             incidentes_activos_ids=[],
             estado_mixto=False,

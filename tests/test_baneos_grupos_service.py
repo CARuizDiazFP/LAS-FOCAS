@@ -147,8 +147,27 @@ def test_listar_grupos_baneados_incluir_contexto_false_no_llama_get_contexto() -
     mock_contexto.assert_not_called()
     grupo = resultado.grupos[0]
     assert grupo.tiene_baneo_activo is False
+    assert grupo.tiene_incidente_activo is False
     assert grupo.ticket_baneo is None
     assert grupo.incidentes_activos_ids == []
+    assert grupo.puede_liberar is True
+
+
+def test_listar_grupos_baneados_incluir_contexto_true_puede_liberar_usa_tiene_incidente_activo() -> None:
+    """`puede_liberar` en el listado también debe mirar el signal ESTRECHO: un grupo con
+    `tiene_baneo_activo=True` (amplio, informativo) pero `tiene_incidente_activo=False` (baneo sólo
+    manual) debe listarse con `puede_liberar=True` — no bastaba con `not tiene_baneo_activo`."""
+    raiz = Camara(id=1, nombre="Cra Uno CF", estado=CamaraEstado.BANEADA)
+    session = _sesion_listado([raiz])
+
+    contexto = _contexto(tiene_incidente_activo=False, tiene_baneo_activo=True)
+
+    with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto):
+        resultado = listar_grupos_baneados(session, incluir_contexto=True)
+
+    grupo = resultado.grupos[0]
+    assert grupo.tiene_baneo_activo is True
+    assert grupo.tiene_incidente_activo is False
     assert grupo.puede_liberar is True
 
 
@@ -188,13 +207,30 @@ def _camara(id_: int, camara_padre_id: int | None = None) -> Camara:
     return Camara(id=id_, nombre=f"Cra {id_} CF", camara_padre_id=camara_padre_id, estado=CamaraEstado.BANEADA)
 
 
-def _contexto(*, tiene_baneo_activo: bool, estado_sugerido: CamaraEstado) -> CamaraEstadoContexto:
+def _contexto(
+    *,
+    tiene_incidente_activo: bool,
+    tiene_ingreso_activo: bool = False,
+    tiene_baneo_activo: bool | None = None,
+) -> CamaraEstadoContexto:
+    """`tiene_baneo_activo` (signal AMPLIO) por defecto espeja `tiene_incidente_activo` — suficiente
+    para estos tests, que sólo ejercitan el guard/destino de `liberar_grupos_masivo`, ambos migrados
+    al signal ESTRECHO (`tiene_incidente_activo`) en el fix de revisión final (2026-09-04). Pasar
+    `tiene_baneo_activo` explícito sólo hace falta para simular un baneo MANUAL sin incidente."""
+    if tiene_baneo_activo is None:
+        tiene_baneo_activo = tiene_incidente_activo
+    estado_sugerido = (
+        CamaraEstado.BANEADA
+        if tiene_baneo_activo
+        else (CamaraEstado.OCUPADA if tiene_ingreso_activo else CamaraEstado.LIBRE)
+    )
     return CamaraEstadoContexto(
         camara_id=1,
         estado_actual=CamaraEstado.BANEADA,
         estado_sugerido=estado_sugerido,
         tiene_baneo_activo=tiene_baneo_activo,
-        tiene_ingreso_activo=False,
+        tiene_incidente_activo=tiene_incidente_activo,
+        tiene_ingreso_activo=tiene_ingreso_activo,
         inconsistente=False,
         incidentes_activos=[],
         ticket_baneo=None,
@@ -206,7 +242,7 @@ def test_liberar_grupos_masivo_incidente_activo_sin_forzar_se_omite() -> None:
     session = MagicMock()
     session.query.return_value.filter.return_value.first.return_value = camara
 
-    contexto = _contexto(tiene_baneo_activo=True, estado_sugerido=CamaraEstado.BANEADA)
+    contexto = _contexto(tiene_incidente_activo=True)
 
     with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto), patch(
         "core.services.baneos_grupos_service.override_camara_estado_manual"
@@ -224,7 +260,7 @@ def test_liberar_grupos_masivo_incidente_activo_con_forzar_libera_a_libre() -> N
     session = MagicMock()
     session.query.return_value.filter.return_value.first.return_value = camara
 
-    contexto = _contexto(tiene_baneo_activo=True, estado_sugerido=CamaraEstado.BANEADA)
+    contexto = _contexto(tiene_incidente_activo=True)
 
     with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto), patch(
         "core.services.baneos_grupos_service.override_camara_estado_manual"
@@ -240,14 +276,14 @@ def test_liberar_grupos_masivo_incidente_activo_con_forzar_libera_a_libre() -> N
     assert resultado.detalle[0].estado_final == "LIBRE"
 
 
-def test_liberar_grupos_masivo_sin_incidente_usa_estado_sugerido() -> None:
-    """Un grupo sin incidente activo pero con un ingreso activo debe liberarse a `OCUPADA`
-    (estado_sugerido), no a `LIBRE` hardcodeado."""
+def test_liberar_grupos_masivo_sin_incidente_pero_con_ingreso_activo_libera_a_ocupada() -> None:
+    """Un grupo sin incidente activo pero con un ingreso activo debe liberarse a `OCUPADA` (calculado
+    directamente de `tiene_ingreso_activo`), no a `LIBRE` hardcodeado ni vía `estado_sugerido`."""
     camara = _camara(1)
     session = MagicMock()
     session.query.return_value.filter.return_value.first.return_value = camara
 
-    contexto = _contexto(tiene_baneo_activo=False, estado_sugerido=CamaraEstado.OCUPADA)
+    contexto = _contexto(tiene_incidente_activo=False, tiene_ingreso_activo=True)
 
     with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto), patch(
         "core.services.baneos_grupos_service.override_camara_estado_manual"
@@ -260,6 +296,31 @@ def test_liberar_grupos_masivo_sin_incidente_usa_estado_sugerido() -> None:
     assert resultado.detalle[0].estado_final == "OCUPADA"
 
 
+def test_liberar_grupos_masivo_baneo_manual_sin_incidente_no_se_bloquea_y_libera_a_libre() -> None:
+    """Hallazgo real (revisión final 2026-09-04): un grupo baneado SÓLO manualmente (sin
+    `IncidenteBaneo`) tiene `tiene_baneo_activo=True` (signal amplio) pero `tiene_incidente_activo=
+    False` — el guard de `forzar` y el destino de liberación deben mirar el signal ESTRECHO, así que
+    este grupo debe liberarse SIN necesitar `forzar=True`, a diferencia de un baneo por incidente."""
+    camara = _camara(1)
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = camara
+
+    contexto = _contexto(tiene_incidente_activo=False, tiene_ingreso_activo=False, tiene_baneo_activo=True)
+    assert contexto.tiene_baneo_activo is True  # el grupo SIGUE baneado (manual), sólo no por incidente
+
+    with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto), patch(
+        "core.services.baneos_grupos_service.override_camara_estado_manual"
+    ) as mock_override:
+        mock_override.return_value = ActualizacionEstadoResultado(success=True, camara_id=1, changed=True)
+        resultado = liberar_grupos_masivo(session, [1], usuario="admin", motivo="test", forzar=False)
+
+    mock_override.assert_called_once()
+    args, _kwargs = mock_override.call_args
+    assert args[2] == CamaraEstado.LIBRE
+    assert resultado.liberados == 1
+    assert resultado.detalle[0].razon_omision is None
+
+
 def test_liberar_grupos_masivo_dedup_por_raiz() -> None:
     """Dos ids del mismo grupo (la raíz y una de sus botellas) en la misma llamada — se libera una
     sola vez."""
@@ -269,7 +330,7 @@ def test_liberar_grupos_masivo_dedup_por_raiz() -> None:
     session = MagicMock()
     session.query.return_value.filter.return_value.first.side_effect = [padre, botella]
 
-    contexto = _contexto(tiene_baneo_activo=False, estado_sugerido=CamaraEstado.LIBRE)
+    contexto = _contexto(tiene_incidente_activo=False)
 
     with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto), patch(
         "core.services.baneos_grupos_service.override_camara_estado_manual"
@@ -282,3 +343,52 @@ def test_liberar_grupos_masivo_dedup_por_raiz() -> None:
     assert resultado.total_solicitados == 2
     assert resultado.liberados == 1
     assert len(resultado.detalle) == 1
+
+
+# ── liberar_grupos_masivo con get_camara_estado_contexto REAL (no mockeado) ─────────────────────
+# Hallazgo del reviewer final (2026-09-04): todos los tests de arriba arman un `CamaraEstadoContexto`
+# a mano — nunca ejercitan la función real. Este test sí la deja correr contra una Cámara ORM real
+# (mismo patrón que `tests/test_camara_estado_service.py::TestGetCamaraEstadoContexto`), para
+# confirmar que el guard/destino de liberación se comportan bien de punta a punta sobre un grupo
+# baneado manualmente sin ningún incidente.
+
+
+def _fake_session_liberar_real(camara: Camara) -> MagicMock:
+    session = MagicMock()
+
+    def _query(*entities):
+        entity = entities[0]
+        entity_name = getattr(entity, "__name__", "") or getattr(getattr(entity, "class_", None), "__name__", "")
+        query_mock = MagicMock()
+        if entity_name == "Camara":
+            query_mock.filter.return_value.first.return_value = camara
+        elif entity_name == "Ingreso":
+            query_mock.filter.return_value.first.return_value = None
+        elif entity_name == "IncidenteBaneo":
+            query_mock.filter.return_value.order_by.return_value.all.return_value = []
+        return query_mock
+
+    session.query.side_effect = _query
+    return session
+
+
+def test_liberar_grupos_masivo_real_get_camara_estado_contexto_baneo_manual_no_bloquea() -> None:
+    """Integración real (no mock de `get_camara_estado_contexto`): una Cámara raíz BANEADA
+    manualmente, sin `IncidenteBaneo` ni Botellas hermanas ni ingreso activo, debe poder liberarse
+    SIN `forzar=True` — el guard real (`tiene_incidente_activo`) no debe confundirla con un
+    incidente activo."""
+    camara = Camara(id=1, nombre="Cra Real CF", estado=CamaraEstado.BANEADA)
+    camara.botellas = []
+    camara.empalmes = []
+    session = _fake_session_liberar_real(camara)
+
+    with patch("core.services.baneos_grupos_service.override_camara_estado_manual") as mock_override:
+        mock_override.return_value = ActualizacionEstadoResultado(success=True, camara_id=1, changed=True)
+        resultado = liberar_grupos_masivo(session, [1], usuario="admin", motivo="test", forzar=False)
+
+    mock_override.assert_called_once()
+    args, _kwargs = mock_override.call_args
+    assert args[2] == CamaraEstado.LIBRE
+    assert resultado.liberados == 1
+    assert resultado.omitidos == 0
+    assert resultado.detalle[0].razon_omision is None

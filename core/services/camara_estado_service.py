@@ -55,12 +55,22 @@ class IncidenteActivoResumen:
 
 @dataclass(slots=True)
 class CamaraEstadoContexto:
-    """Contexto operativo del estado de una cámara."""
+    """Contexto operativo del estado de una cámara.
+
+    `tiene_baneo_activo` es el signal AMPLIO (incidente de protección activo O baneo manual —
+    `Camara.estado == BANEADA` — de cualquier miembro del grupo): úsalo para "¿está baneado este
+    grupo, por la razón que sea?" (badge "Contexto operativo", chequeo de acceso de Slack).
+    `tiene_incidente_activo` es el signal ESTRECHO (sólo `IncidenteBaneo` activo, el significado
+    original de `tiene_baneo_activo` antes del fix de 2026-09-04): úsalo para "¿está esto bloqueado
+    específicamente por el Protocolo de Protección?" (p.ej. `baneos_grupos_service.py`, cuyo dominio
+    completo son los incidentes, no los baneos manuales — un baneo manual sin incidente no debería
+    impedir su liberación masiva)."""
 
     camara_id: int
     estado_actual: CamaraEstado
     estado_sugerido: CamaraEstado
     tiene_baneo_activo: bool
+    tiene_incidente_activo: bool
     tiene_ingreso_activo: bool
     inconsistente: bool
     incidentes_activos: list[IncidenteActivoResumen]
@@ -72,6 +82,7 @@ class CamaraEstadoContexto:
             "estado_actual": self.estado_actual.value,
             "estado_sugerido": self.estado_sugerido.value,
             "tiene_baneo_activo": self.tiene_baneo_activo,
+            "tiene_incidente_activo": self.tiene_incidente_activo,
             "tiene_ingreso_activo": self.tiene_ingreso_activo,
             "inconsistente": self.inconsistente,
             "incidentes_activos": [incidente.to_dict() for incidente in self.incidentes_activos],
@@ -195,7 +206,13 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
     # (ModalRegistros.vue) y el listener de Slack de ingreso mostraban "Sin baneo activo"/permitían
     # el ingreso sobre un grupo realmente baneado.
     tiene_baneo_manual = any(miembro.estado == CamaraEstado.BANEADA for miembro in miembros)
-    tiene_baneo_activo = len(incidentes_activos_db) > 0 or tiene_baneo_manual
+    # tiene_incidente_activo preserva el significado ORIGINAL de tiene_baneo_activo (antes de este
+    # fix): true únicamente cuando hay un IncidenteBaneo activo que afecta al grupo — necesario para
+    # consumidores cuyo dominio es específicamente el Protocolo de Protección (ver
+    # `baneos_grupos_service.py`), donde un baneo manual sin incidente NO debe contar como "bloqueado
+    # por incidente".
+    tiene_incidente_activo = len(incidentes_activos_db) > 0
+    tiene_baneo_activo = tiene_incidente_activo or tiene_baneo_manual
     estado_sugerido = _estado_sugerido(tiene_baneo_activo, tiene_ingreso_activo)
     incidentes_activos = [
         IncidenteActivoResumen(
@@ -219,6 +236,7 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
         estado_actual=estado_actual,
         estado_sugerido=estado_sugerido,
         tiene_baneo_activo=tiene_baneo_activo,
+        tiene_incidente_activo=tiene_incidente_activo,
         tiene_ingreso_activo=tiene_ingreso_activo,
         inconsistente=estado_actual != estado_sugerido,
         incidentes_activos=incidentes_activos,

@@ -176,6 +176,7 @@ def test_override_camara_estado_manual_grupo_mixto_fila_puntual_en_destino() -> 
         estado_actual=CamaraEstado.BANEADA,
         estado_sugerido=CamaraEstado.BANEADA,
         tiene_baneo_activo=False,
+        tiene_incidente_activo=False,
         tiene_ingreso_activo=False,
         inconsistente=False,
         incidentes_activos=[],
@@ -228,6 +229,7 @@ def test_override_camara_estado_manual_cromo_botella_desincronizada_no_corta() -
         estado_actual=CamaraEstado.BANEADA,
         estado_sugerido=CamaraEstado.BANEADA,
         tiene_baneo_activo=False,
+        tiene_incidente_activo=False,
         tiene_ingreso_activo=False,
         inconsistente=False,
         incidentes_activos=[],
@@ -273,6 +275,7 @@ def test_override_camara_estado_manual_legado_y_cromo_en_destino_no_cambia() -> 
         estado_actual=CamaraEstado.BANEADA,
         estado_sugerido=CamaraEstado.BANEADA,
         tiene_baneo_activo=False,
+        tiene_incidente_activo=False,
         tiene_ingreso_activo=False,
         inconsistente=False,
         incidentes_activos=[],
@@ -314,6 +317,7 @@ def test_override_camara_estado_manual_grupo_entero_en_destino_no_cambia() -> No
         estado_actual=CamaraEstado.BANEADA,
         estado_sugerido=CamaraEstado.BANEADA,
         tiene_baneo_activo=False,
+        tiene_incidente_activo=False,
         tiene_ingreso_activo=False,
         inconsistente=False,
         incidentes_activos=[],
@@ -352,7 +356,12 @@ class TestGetCamaraEstadoContexto(unittest.TestCase):
         cls = getattr(entity, "class_", None)
         return getattr(cls, "__name__", "") if cls is not None else ""
 
-    def _fake_session(self, camara: Any, capturar_filtros_ingreso: list | None = None) -> Any:
+    def _fake_session(
+        self,
+        camara: Any,
+        capturar_filtros_ingreso: list | None = None,
+        incidentes: list | None = None,
+    ) -> Any:
         session = MagicMock()
 
         def _query(*entities):
@@ -369,7 +378,7 @@ class TestGetCamaraEstadoContexto(unittest.TestCase):
                     return inner
                 query_mock.filter.side_effect = _filter
             elif entity_name == "IncidenteBaneo":
-                query_mock.filter.return_value.order_by.return_value.all.return_value = []
+                query_mock.filter.return_value.order_by.return_value.all.return_value = incidentes or []
             return query_mock
 
         session.query.side_effect = _query
@@ -435,3 +444,53 @@ class TestGetCamaraEstadoContexto(unittest.TestCase):
             for expr in filtros
         )
         self.assertTrue(tipo_filtrado, "Se esperaba un filtro Ingreso.tipo == IngresoTipo.INGRESO")
+
+    def test_baneo_manual_sin_incidente_da_tiene_incidente_activo_false(self) -> None:
+        """`tiene_incidente_activo` (campo nuevo, revisión final 2026-09-04) preserva el significado
+        ORIGINAL de `tiene_baneo_activo` previo a esta tarea: debe ser `False` para un grupo baneado
+        SÓLO manualmente (sin `IncidenteBaneo`), aunque `tiene_baneo_activo` (el signal amplio, que
+        SÍ cuenta el baneo manual) sea `True` — `baneos_grupos_service.py` depende de esta distinción
+        para no bloquear la liberación masiva de un grupo así."""
+        from core.services.camara_estado_service import get_camara_estado_contexto
+
+        padre, bot1, bot2 = _grupo(estado_padre=CamaraEstado.BANEADA)
+        padre.empalmes = []
+        session = self._fake_session(padre)
+
+        contexto = get_camara_estado_contexto(session, padre.id)
+
+        self.assertTrue(contexto.tiene_baneo_activo)
+        self.assertFalse(contexto.tiene_incidente_activo)
+
+    def test_incidente_baneo_activo_da_tiene_incidente_activo_true(self) -> None:
+        """Con un `IncidenteBaneo` activo real afectando al grupo, `tiene_incidente_activo` debe ser
+        `True` (igual que `tiene_baneo_activo`) — contraparte del test anterior."""
+        from types import SimpleNamespace
+
+        from core.services.camara_estado_service import get_camara_estado_contexto
+
+        padre, bot1, bot2 = _grupo()
+        padre.empalmes = []
+        incidente = SimpleNamespace(
+            id=99,
+            ticket_asociado="TCK-1",
+            servicio_protegido_id="SRV1",
+            ruta_protegida_id=None,
+            fecha_inicio=None,
+            motivo="corte de fibra",
+            activo=True,
+        )
+        session = self._fake_session(padre, incidentes=[incidente])
+
+        # `_collect_servicios_y_rutas` normalmente deriva servicios_ids de los empalmes reales del
+        # grupo — acá no hace falta armar esa cadena completa (empalme->ruta->servicio) sólo para
+        # forzar el camino "hay servicios_ids", así que se fuerza directamente el resultado.
+        with patch(
+            "core.services.camara_estado_service._collect_servicios_y_rutas",
+            return_value=({"SRV1"}, set()),
+        ):
+            contexto = get_camara_estado_contexto(session, padre.id)
+
+        self.assertTrue(contexto.tiene_incidente_activo)
+        self.assertTrue(contexto.tiene_baneo_activo)
+        self.assertEqual(len(contexto.incidentes_activos), 1)

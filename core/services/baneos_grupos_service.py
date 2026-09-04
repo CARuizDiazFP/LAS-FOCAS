@@ -8,16 +8,28 @@ administración, y la única acción masiva nueva del ticket: liberar (desbanear
 explícitamente que "Borrar" del pedido original es la misma acción que "Cambiar estado a Libre".
 
 Reusa `get_camara_estado_contexto` (`core/services/camara_estado_service.py`) sólo para lo que
-genuinamente describe: `tiene_baneo_activo`/`incidentes_activos`/`estado_sugerido`/`ticket_baneo`
-— la trazabilidad real de si hay un incidente del Protocolo de Protección detrás del baneo, y a qué
-estado debería volver el grupo si se libera. Deliberadamente NO reusa `contexto.inconsistente` para
-nada de este módulo: ese campo compara `estado_actual` contra `estado_sugerido` (ver
-`camara_estado_service.py`), y es `True` para casi cualquier baneo hecho por
-`override_camara_estado_manual` sin `IncidenteBaneo` detrás — exactamente cómo banea la ingesta Excel
-y la asociación manual (nunca crean `IncidenteBaneo`). Usarlo acá como badge de "grupo inconsistente"
-sería ruido engañoso, no una señal real. `estado_mixto` (este módulo) es un concepto distinto y
-nuevo: una botella hija en un estado distinto al de su raíz — posible legado de datos pre-fix de la
-cascada (`override_camara_estado_manual`) o de un `lift_ban` parcial.
+genuinamente describe: `tiene_incidente_activo`/`incidentes_activos`/`ticket_baneo` — la
+trazabilidad real de si hay un incidente del Protocolo de Protección detrás del baneo. Todo el
+dominio de este módulo es el Protocolo de Protección (incidentes), NUNCA el baneo manual — por eso
+`puede_liberar` y el guard de `forzar` de `liberar_grupos_masivo` usan `tiene_incidente_activo`
+(el signal ESTRECHO), no `tiene_baneo_activo` (el signal AMPLIO — incidente O baneo manual — que
+agregó el fix de 2026-09-04 en `camara_estado_service.py` para el badge "Contexto operativo" y el
+chequeo de acceso de Slack, dominios distintos que sí quieren tratar cualquier baneo por igual). Un
+grupo baneado manualmente sin incidente detrás siempre debería poder liberarse sin necesidad de
+"forzar" nada — no hay ningún incidente real bloqueándolo. `tiene_baneo_activo` (el signal amplio)
+también se expone en `GrupoBaneado` únicamente informativo (para saber si el grupo sigue baneado en
+absoluto), nunca para decidir `puede_liberar`. Deliberadamente NO reusa `contexto.estado_sugerido`
+para el destino de la liberación (ver `liberar_grupos_masivo`): `estado_sugerido` deriva del signal
+AMPLIO de `tiene_baneo_activo`, así que para un grupo con baneo manual (sin incidente) seguiría
+devolviendo `BANEADA` — el destino de una liberación real se calcula acá directamente a partir de
+`tiene_ingreso_activo`. Tampoco reusa `contexto.inconsistente` para nada de este módulo: ese campo
+compara `estado_actual` contra `estado_sugerido` (ver `camara_estado_service.py`), y es `True` para
+casi cualquier baneo hecho por `override_camara_estado_manual` sin `IncidenteBaneo` detrás —
+exactamente cómo banea la ingesta Excel y la asociación manual (nunca crean `IncidenteBaneo`). Usarlo
+acá como badge de "grupo inconsistente" sería ruido engañoso, no una señal real. `estado_mixto` (este
+módulo) es un concepto distinto y nuevo: una botella hija en un estado distinto al de su raíz —
+posible legado de datos pre-fix de la cascada (`override_camara_estado_manual`) o de un `lift_ban`
+parcial.
 
 `liberar_grupos_masivo` recibe una `Session` ya abierta (no gestiona su propia `SessionLocal`) —
 igual que `asociar_nombres_a_camara`: el endpoint que la llama abre/commitea/cierra una sola
@@ -75,11 +87,12 @@ class GrupoBaneado:
     motivo: str | None
     usuario: str | None
     fecha: str | None  # ISO — último CamaraEstadoAuditoria con estado_nuevo=BANEADA para esta raíz
-    tiene_baneo_activo: bool
+    tiene_baneo_activo: bool  # signal AMPLIO (incidente O baneo manual) — sólo informativo acá
+    tiene_incidente_activo: bool  # signal ESTRECHO (sólo IncidenteBaneo) — el que gobierna puede_liberar
     ticket_baneo: str | None
     incidentes_activos_ids: list[int]
     estado_mixto: bool  # alguna botella hija en un estado distinto al de la raíz
-    puede_liberar: bool  # = not tiene_baneo_activo
+    puede_liberar: bool  # = not tiene_incidente_activo
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +107,7 @@ class GrupoBaneado:
             "usuario": self.usuario,
             "fecha": self.fecha,
             "tiene_baneo_activo": self.tiene_baneo_activo,
+            "tiene_incidente_activo": self.tiene_incidente_activo,
             "ticket_baneo": self.ticket_baneo,
             "incidentes_activos_ids": self.incidentes_activos_ids,
             "estado_mixto": self.estado_mixto,
@@ -223,6 +237,7 @@ def listar_grupos_baneados(
         fecha = auditoria.created_at.isoformat() if auditoria and auditoria.created_at else None
 
         tiene_baneo_activo = False
+        tiene_incidente_activo = False
         ticket_baneo: str | None = None
         incidentes_activos_ids: list[int] = []
         puede_liberar = True
@@ -231,9 +246,13 @@ def listar_grupos_baneados(
             contexto = get_camara_estado_contexto(session, raiz.id)
             if contexto is not None:
                 tiene_baneo_activo = contexto.tiene_baneo_activo
+                tiene_incidente_activo = contexto.tiene_incidente_activo
                 ticket_baneo = contexto.ticket_baneo
                 incidentes_activos_ids = [incidente.id for incidente in contexto.incidentes_activos]
-                puede_liberar = not tiene_baneo_activo
+                # puede_liberar mira específicamente el incidente (Protocolo de Protección), no
+                # cualquier baneo — un grupo baneado manualmente sin incidente detrás siempre puede
+                # liberarse sin "forzar" nada.
+                puede_liberar = not tiene_incidente_activo
 
         grupos.append(
             GrupoBaneado(
@@ -248,6 +267,7 @@ def listar_grupos_baneados(
                 usuario=usuario,
                 fecha=fecha,
                 tiene_baneo_activo=tiene_baneo_activo,
+                tiene_incidente_activo=tiene_incidente_activo,
                 ticket_baneo=ticket_baneo,
                 incidentes_activos_ids=incidentes_activos_ids,
                 estado_mixto=estado_mixto,
@@ -274,15 +294,20 @@ def liberar_grupos_masivo(
     más de un id del mismo grupo (dedup silencioso — la Botella/raíz "de más" ni siquiera genera una
     fila en `detalle`, ver `ResultadoAccionGrupos.total_solicitados` vs. `len(detalle)`).
 
-    Guard de incidente activo: si `get_camara_estado_contexto(...).tiene_baneo_activo` es `True` y
-    `forzar=False`, el grupo se omite con `razon_omision="bloqueado_por_incidente"` y
-    `override_camara_estado_manual` NUNCA se llama para ese grupo — evita levantar un baneo que el
-    Protocolo de Protección todavía necesita.
+    Guard de incidente activo: si `get_camara_estado_contexto(...).tiene_incidente_activo` es `True`
+    (signal ESTRECHO — sólo `IncidenteBaneo` activo, no cualquier baneo manual) y `forzar=False`, el
+    grupo se omite con `razon_omision="bloqueado_por_incidente"` y `override_camara_estado_manual`
+    NUNCA se llama para ese grupo — evita levantar un baneo que el Protocolo de Protección todavía
+    necesita. Deliberadamente NO usa `tiene_baneo_activo` (el signal AMPLIO agregado en
+    `camara_estado_service.py` el 2026-09-04, que también es `True` para un baneo manual sin
+    incidente) — este guard es específicamente sobre incidentes, y un grupo baneado sólo
+    manualmente siempre debe poder liberarse sin necesitar `forzar`.
 
-    Con `forzar=True` sobre un grupo con incidente activo, el destino es SIEMPRE `LIBRE` — nunca
-    `estado_sugerido` (que devolvería `BANEADA` de nuevo mientras el incidente siga activo, un
-    no-op disfrazado de "forzado"). Sin incidente activo, el destino es `estado_sugerido` (puede ser
-    `OCUPADA` si hay un ingreso activo, no `LIBRE` hardcodeado).
+    El destino de la liberación se calcula directamente (`OCUPADA` si hay un ingreso activo en el
+    grupo, si no `LIBRE`) — nunca a partir de `contexto.estado_sugerido`, que deriva del signal
+    AMPLIO de `tiene_baneo_activo` y por lo tanto seguiría devolviendo `BANEADA` para un grupo con
+    baneo manual (sin incidente) en el momento de calcular el contexto — usarlo acá sería un no-op
+    disfrazado de liberación.
     """
     detalle: list[ResultadoLiberarGrupo] = []
     raices_procesadas: set[int] = set()
@@ -311,7 +336,7 @@ def liberar_grupos_masivo(
             )
             continue
 
-        if contexto.tiene_baneo_activo and not forzar:
+        if contexto.tiene_incidente_activo and not forzar:
             detalle.append(
                 ResultadoLiberarGrupo(
                     camara_id=raiz_id, liberado=False, estado_final=None, razon_omision="bloqueado_por_incidente"
@@ -319,7 +344,9 @@ def liberar_grupos_masivo(
             )
             continue
 
-        destino = contexto.estado_sugerido if not contexto.tiene_baneo_activo else CamaraEstado.LIBRE
+        # Destino calculado directamente (nunca vía contexto.estado_sugerido — ver docstring de
+        # esta función): OCUPADA si hay un ingreso activo real en el grupo, si no LIBRE.
+        destino = CamaraEstado.OCUPADA if contexto.tiene_ingreso_activo else CamaraEstado.LIBRE
         resultado = override_camara_estado_manual(session, raiz_id, destino, usuario=usuario, motivo=motivo)
         detalle.append(
             ResultadoLiberarGrupo(

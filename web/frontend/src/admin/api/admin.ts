@@ -235,6 +235,11 @@ export interface GrupoBaneado {
   usuario: string | null;
   fecha: string | null;
   tiene_baneo_activo: boolean;
+  // Signal ESTRECHO (sólo IncidenteBaneo activo, no cualquier baneo manual) — es el que gobierna
+  // `puede_liberar` y el guard de "forzar" en el backend (`baneos_grupos_service.py`, fix
+  // 2026-09-04). Usar este campo (no `tiene_baneo_activo`) para el badge/mensaje de "necesita
+  // forzar" — un grupo baneado sólo manualmente (sin incidente) siempre puede liberarse sin forzar.
+  tiene_incidente_activo: boolean;
   ticket_baneo: string | null;
   incidentes_activos_ids: number[];
   estado_mixto: boolean;

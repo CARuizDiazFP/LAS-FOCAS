@@ -113,6 +113,15 @@ miembro de `miembros_del_grupo(camara)` tiene `estado == BANEADA`, incidente o n
 ahora filtra explícitamente `Ingreso.tipo == 'INGRESO'` (columna nueva, migración `20260904_01`) para no
 contar un `INTENTO_BLOQUEADO` (mismo `fecha_fin IS NULL`) como si alguien estuviera realmente adentro.
 
+**Fix de revisión final (mismo día, 2026-09-04):** el fix de arriba (`tiene_baneo_activo` ahora
+también `True` para un baneo manual) rompió silenciosamente a `core/services/baneos_grupos_service.py`
+(panel admin "Baneos Activos" / `POST /api/admin/baneos/grupos/liberar`), escrito contra el
+significado VIEJO de `tiene_baneo_activo` (sólo incidente). Se agregó un campo nuevo,
+`tiene_incidente_activo` (`CamaraEstadoContexto`), que preserva ese significado viejo — `puede_liberar`
+y el guard de `forzar` de `liberar_grupos_masivo` ahora usan `tiene_incidente_activo`, nunca el signal
+amplio `tiene_baneo_activo`. Ver `docs/api.md` (`GET /api/admin/baneos/grupos`) para el detalle
+completo y el porqué.
+
 `GET /api/infra/camaras/{id}/registros` expone además `botella_label` por cada `Ingreso` — resuelve
 "Botella 1" (convención ya usada por `camara_search.detectar_multi_bot`: la Cámara raíz misma, sin fila
 propia en `CromoBotella`) cuando no se especificó botella, el nombre de la `CromoBotella` cuando sí hay
