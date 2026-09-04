@@ -85,6 +85,17 @@ class PuntoTerminalTipo(str, Enum):
     B = "B"  # Destino/Punta B
 
 
+class IngresoTipo(str, Enum):
+    """Tipo de movimiento registrado en `Ingreso` — desde la migración `20260904_01`. Antes, el tipo
+    de movimiento vivía sólo implícito en fecha_inicio/fecha_fin: no había forma de distinguir un
+    intento BLOQUEADO por baneo de un ingreso real "en curso", ambos con `fecha_fin IS NULL` — ver
+    `core/services/ingreso_service.py::registrar_intento_bloqueado`."""
+
+    INGRESO = "INGRESO"
+    EGRESO = "EGRESO"
+    INTENTO_BLOQUEADO = "INTENTO_BLOQUEADO"
+
+
 # =============================================================================
 # TABLAS ASOCIATIVAS (Many-to-Many)
 # =============================================================================
@@ -550,14 +561,24 @@ class Ingreso(Base):
         nullable=True,
         index=True,
     )
+    # Desde 2026-09-04 (Tarea 3 del refactor de baneo/Slack): almacena el NOMBRE resuelto del
+    # técnico (vía `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`),
+    # no ya el Slack user ID crudo — se mantiene el nombre de columna `tecnico_id` para no forzar una
+    # migración de rename + actualizar todos los consumidores, fuera del alcance de ese fix.
     tecnico_id = Column(String(128), nullable=True)
+    tipo = Column(
+        SQLEnum(IngresoTipo, name="ingreso_tipo", create_type=False, schema="app"),
+        nullable=False,
+        default=IngresoTipo.INGRESO,
+    )
     fecha_inicio = Column(DateTime(timezone=True), nullable=True)
     fecha_fin = Column(DateTime(timezone=True), nullable=True)
 
     camara = relationship("Camara", back_populates="ingresos")
+    cromo_botella = relationship("CromoBotella", foreign_keys=[cromo_botella_id])
 
     def __repr__(self) -> str:
-        return f"<Ingreso id={self.id} camara_id={self.camara_id}>"
+        return f"<Ingreso id={self.id} camara_id={self.camara_id} tipo={self.tipo.value if self.tipo else '?'}>"
 
 
 class IngresoSinMatch(Base):
