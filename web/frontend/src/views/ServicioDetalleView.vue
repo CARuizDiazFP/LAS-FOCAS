@@ -197,7 +197,7 @@
           </p>
           <template v-else>
             <p v-for="ingreso in ingresos" :key="ingreso.id" class="servicio-detalle__kv">
-              <span>{{ ingreso.camara_nombre || `Cámara ${ingreso.camara_id}` }}</span>
+              <span>{{ ingreso.camara_nombre || `Cámara ${ingreso.camara_id}` }} · {{ ingreso.botella_label }}</span>
               <span>{{ formatRangoIngreso(ingreso) }} · {{ ingreso.tecnico_id || 'Técnico sin identificar' }}</span>
             </p>
           </template>
@@ -395,14 +395,21 @@ interface InfraOdfsResponse {
   rutas: InfraOdfRuta[];
 }
 
-// Ingresos técnicos (Slack) a las cámaras que atraviesa el servicio. `tecnico_id` es un id crudo
-// de usuario de Slack (p. ej. "U0AUB6CRE4A"), no un nombre resuelto — se muestra tal cual.
+// Ingresos técnicos (Slack) a las cámaras que atraviesa el servicio. `tecnico_id` guarda el nombre
+// resuelto del técnico (vía Slack `users.info`) para filas creadas desde el fix de 2026-09-04 en
+// adelante — filas anteriores a ese deploy pueden todavía tener el id crudo de Slack (p. ej.
+// "U0AUB6CRE4A") si nunca se cerraron con un Egreso posterior. `botella_label`/`tipo` — mismo
+// patrón que `ModalRegistros.vue`/`CamaraDetailView.vue` (Tarea 6 del fix) — distinguen la Botella
+// resuelta y un `INTENTO_BLOQUEADO` (que también tiene `fecha_fin: null`, igual que un ingreso real
+// "en curso") de un ingreso real.
 interface InfraServicioIngreso {
   id: number;
   fecha_inicio: string | null;
   fecha_fin: string | null;
   tecnico_id: string | null;
   cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
   camara_id: number;
   camara_nombre: string | null;
 }
@@ -675,6 +682,9 @@ function formatFechaIngreso(value: string | null): string {
 
 function formatRangoIngreso(item: InfraServicioIngreso): string {
   const inicio = formatFechaIngreso(item.fecha_inicio);
+  if (item.tipo === 'INTENTO_BLOQUEADO') {
+    return `Intento bloqueado - ${inicio}`;
+  }
   const fin = item.fecha_fin ? formatFechaIngreso(item.fecha_fin) : 'en curso';
   return `${inicio} → ${fin}`;
 }

@@ -173,6 +173,7 @@ def _build_contexto() -> CamaraEstadoContexto:
         estado_actual=CamaraEstado.LIBRE,
         estado_sugerido=CamaraEstado.BANEADA,
         tiene_baneo_activo=True,
+        tiene_incidente_activo=True,
         tiene_ingreso_activo=False,
         inconsistente=True,
         incidentes_activos=[
@@ -535,11 +536,17 @@ def test_get_servicio_ingresos_web_404_si_servicio_no_existe(monkeypatch):
 
 
 def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
-    """Task 6: `botella_label` resuelve tres casos distintos:
+    """Task 6 + fix de revisión final (2026-09-04): `botella_label` resuelve estos casos:
     1. Root Cámara (cromo_botella_id=None, camara sin padre): fallback a 'Botella 1'
     2. Legacy Botella (cromo_botella_id=None, camara.camara_padre_id set): nombre propio de la Botella
     3. CromoBotella (cromo_botella_id set, cromo_botella.nombre disponible): nombre de la CromoBotella
-    4. CromoBotella sin nombre (cromo_botella_id set, cromo_botella=None): fallback f"Botella #{id}"
+    4. Sin relación CromoBotella (cromo_botella_id set, cromo_botella=None — la relación en sí no
+       resuelve ningún objeto): fallback f"Botella #{id}"
+    5. CromoBotella SIN nombre (cromo_botella_id set, la relación SÍ resuelve un objeto pero su
+       `.nombre` es None/falsy — columna nullable): mismo fallback f"Botella #{id}" — bug real
+       encontrado en la revisión final: antes de este fix, este caso devolvía `botella_label=None`
+       (sólo se chequeaba "la relación existe", no "el nombre existe"), violando la garantía
+       documentada de "nunca null" y el tipo TypeScript `botella_label: string` (no opcional).
 
     `tipo` refleja el enum value (INGRESO/EGRESO/INTENTO_BLOQUEADO)."""
     from core.services import camara_estado_service
@@ -603,6 +610,18 @@ def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
             cromo_botella=None,  # cromo_botella_id set pero sin objeto relacionado → caso 4
             tipo=IngresoTipo.EGRESO,
         ),
+        SimpleNamespace(
+            id=9,
+            fecha_inicio=datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Técnico Paredes",
+            cromo_botella_id=777,
+            camara=_build_fake_camara(),
+            # Caso 5: la relación SÍ resuelve un objeto, pero su `nombre` es None (columna
+            # nullable) — debe caer al mismo fallback numerado que el caso 4, no a `None`.
+            cromo_botella=SimpleNamespace(nombre=None),
+            tipo=IngresoTipo.INGRESO,
+        ),
     ]
     fake_session = _InfraDetailSession(
         _build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos(), ingresos
@@ -626,3 +645,7 @@ def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
     # Caso 4: cromo_botella_id set pero sin objeto relacionado → fallback f"Botella #{id}"
     assert payload["ingresos"][3]["botella_label"] == "Botella #555"
     assert payload["ingresos"][3]["tipo"] == "EGRESO"
+    # Caso 5: objeto relacionado presente pero su `nombre` es None → mismo fallback numerado,
+    # nunca `botella_label=None` (bug real corregido en la revisión final).
+    assert payload["ingresos"][4]["botella_label"] == "Botella #777"
+    assert payload["ingresos"][4]["tipo"] == "INGRESO"

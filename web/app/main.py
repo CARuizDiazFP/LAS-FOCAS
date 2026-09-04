@@ -2114,7 +2114,12 @@ def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
     `.camara`/`.tipo` poblados, cayendo a los defaults más comunes."""
     if item.cromo_botella_id is not None:
         cromo_botella = getattr(item, "cromo_botella", None)
-        botella_label = cromo_botella.nombre if cromo_botella is not None else f"Botella #{item.cromo_botella_id}"
+        # `CromoBotella.nombre` es nullable: si la relación existe pero su `nombre` es None/vacío,
+        # el `or` cae al fallback numerado — nunca basta con chequear "la relación existe" (bug real,
+        # revisión final 2026-09-04: `cromo_botella.nombre if cromo_botella is not None else ...`
+        # devolvía `botella_label=None` cuando `cromo_botella.nombre IS NULL`, violando la garantía
+        # documentada de "nunca null" y el tipo TypeScript `botella_label: string`).
+        botella_label = (cromo_botella.nombre if cromo_botella is not None else None) or f"Botella #{item.cromo_botella_id}"
     elif getattr(getattr(item, "camara", None), "camara_padre_id", None):
         botella_label = item.camara.nombre
     else:
