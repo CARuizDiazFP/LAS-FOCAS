@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from db.models.cromo import CromoBotella
-from db.models.infra import Camara, CamaraEstado, CamaraEstadoAuditoria, IncidenteBaneo, Ingreso
+from db.models.infra import Camara, CamaraEstado, CamaraEstadoAuditoria, IncidenteBaneo, Ingreso, IngresoTipo
 
 logger = logging.getLogger("infra_camera_state")
 
@@ -174,11 +174,13 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
             incidente for incidente in candidatos if _incidente_afecta_camara(incidente, servicios_ids, rutas_ids)
         ]
 
-    ids_grupo = [miembro.id for miembro in miembros_del_grupo(camara)]
+    miembros = miembros_del_grupo(camara)
+    ids_grupo = [miembro.id for miembro in miembros]
     tiene_ingreso_activo = (
         session.query(Ingreso.id)
         .filter(
             Ingreso.camara_id.in_(ids_grupo),
+            Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin == None,  # noqa: E711
         )
         .first()
@@ -186,7 +188,14 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
     )
 
     estado_actual = camara.estado or CamaraEstado.LIBRE
-    tiene_baneo_activo = len(incidentes_activos_db) > 0
+    # Baneo manual (Camara.estado == BANEADA) de CUALQUIER miembro del grupo cuenta como baneo activo
+    # — hallazgo real (2026-09-04): antes sólo se miraba IncidenteBaneo, así que un baneo manual
+    # (override admin, sin incidente de protección asociado) dejaba tiene_baneo_activo=False aunque
+    # la cámara o una Botella hermana estuviera BANEADA — el badge "Contexto operativo"
+    # (ModalRegistros.vue) y el listener de Slack de ingreso mostraban "Sin baneo activo"/permitían
+    # el ingreso sobre un grupo realmente baneado.
+    tiene_baneo_manual = any(miembro.estado == CamaraEstado.BANEADA for miembro in miembros)
+    tiene_baneo_activo = len(incidentes_activos_db) > 0 or tiene_baneo_manual
     estado_sugerido = _estado_sugerido(tiene_baneo_activo, tiene_ingreso_activo)
     incidentes_activos = [
         IncidenteActivoResumen(

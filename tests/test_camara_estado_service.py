@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import unittest
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from core.services.camara_estado_service import (
@@ -334,3 +336,102 @@ def test_override_camara_estado_manual_grupo_entero_en_destino_no_cambia() -> No
     assert padre.estado == CamaraEstado.BANEADA
     assert bot1.estado == CamaraEstado.BANEADA
     assert bot2.estado == CamaraEstado.BANEADA
+
+
+class TestGetCamaraEstadoContexto(unittest.TestCase):
+    """Cobertura nueva para `get_camara_estado_contexto` (Tarea 3, 2026-09-04) — hasta esta revisión
+    la función no tenía NINGÚN test directo (sólo se la mockeaba desde otros módulos). Hallazgo real
+    de esta tarea: `tiene_baneo_activo` sólo miraba `IncidenteBaneo`, nunca `Camara.estado ==
+    BANEADA` — un baneo manual (override admin, sin incidente de protección asociado) quedaba
+    invisible tanto para el badge web como para el listener de Slack de ingreso."""
+
+    def _entity_name(self, entity: Any) -> str:
+        name = getattr(entity, "__name__", "")
+        if name:
+            return name
+        cls = getattr(entity, "class_", None)
+        return getattr(cls, "__name__", "") if cls is not None else ""
+
+    def _fake_session(self, camara: Any, capturar_filtros_ingreso: list | None = None) -> Any:
+        session = MagicMock()
+
+        def _query(*entities):
+            entity_name = self._entity_name(entities[0])
+            query_mock = MagicMock()
+            if entity_name == "Camara":
+                query_mock.filter.return_value.first.return_value = camara
+            elif entity_name == "Ingreso":
+                def _filter(*args, **kwargs):
+                    if capturar_filtros_ingreso is not None:
+                        capturar_filtros_ingreso.extend(args)
+                    inner = MagicMock()
+                    inner.first.return_value = None
+                    return inner
+                query_mock.filter.side_effect = _filter
+            elif entity_name == "IncidenteBaneo":
+                query_mock.filter.return_value.order_by.return_value.all.return_value = []
+            return query_mock
+
+        session.query.side_effect = _query
+        return session
+
+    def test_baneo_manual_de_una_botella_hermana_marca_tiene_baneo_activo(self) -> None:
+        """Bug real (esta tarea): consultar el contexto de la cámara RAÍZ (estado LIBRE) mientras una
+        Botella hermana está BANEADA manualmente (sin incidente) debía dar tiene_baneo_activo=True —
+        antes daba False porque la función nunca miraba `Camara.estado`, sólo `IncidenteBaneo`."""
+        from core.services.camara_estado_service import get_camara_estado_contexto
+
+        padre, bot1, bot2 = _grupo(
+            estado_padre=CamaraEstado.LIBRE, estado_bot1=CamaraEstado.BANEADA, estado_bot2=CamaraEstado.LIBRE
+        )
+        padre.empalmes = []
+        session = self._fake_session(padre)
+
+        contexto = get_camara_estado_contexto(session, padre.id)
+
+        self.assertTrue(contexto.tiene_baneo_activo)
+        self.assertEqual(contexto.incidentes_activos, [])
+
+    def test_baneo_manual_de_la_camara_misma_marca_tiene_baneo_activo(self) -> None:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+
+        padre, bot1, bot2 = _grupo(estado_padre=CamaraEstado.BANEADA)
+        padre.empalmes = []
+        session = self._fake_session(padre)
+
+        contexto = get_camara_estado_contexto(session, padre.id)
+
+        self.assertTrue(contexto.tiene_baneo_activo)
+
+    def test_sin_baneo_manual_ni_incidente_da_false(self) -> None:
+        from core.services.camara_estado_service import get_camara_estado_contexto
+
+        padre, bot1, bot2 = _grupo()
+        padre.empalmes = []
+        session = self._fake_session(padre)
+
+        contexto = get_camara_estado_contexto(session, padre.id)
+
+        self.assertFalse(contexto.tiene_baneo_activo)
+
+    def test_tiene_ingreso_activo_filtra_por_tipo_ingreso(self) -> None:
+        """La query de `tiene_ingreso_activo` debe filtrar explícitamente `tipo == INGRESO` — sin
+        esto, un `INTENTO_BLOQUEADO` (mismo `fecha_fin IS NULL`) contaría como ingreso activo real."""
+        from core.services.camara_estado_service import get_camara_estado_contexto
+        from db.models.infra import IngresoTipo
+
+        padre, bot1, bot2 = _grupo()
+        padre.empalmes = []
+        filtros: list[Any] = []
+        session = self._fake_session(padre, capturar_filtros_ingreso=filtros)
+
+        contexto = get_camara_estado_contexto(session, padre.id)
+
+        self.assertFalse(contexto.tiene_ingreso_activo)
+        tipo_filtrado = any(
+            getattr(getattr(expr, "left", None), "key", None) == "tipo"
+            and getattr(expr, "right", None) is not None
+            and expr.right.value == IngresoTipo.INGRESO
+            for expr in filtros
+        )
+        self.assertTrue(tipo_filtrado, "Se esperaba un filtro Ingreso.tipo == IngresoTipo.INGRESO")
