@@ -71,6 +71,13 @@
             :title="buildIngresoRangeTitle(ingreso)"
             @update:model-value="toggleIngreso(ingreso.id, $event)"
           >
+            <span
+              v-if="ingreso.tipo === 'INTENTO_BLOQUEADO'"
+              class="infra-state-chip danger"
+              style="margin-bottom: 12px; display: inline-block"
+            >
+              Intento bloqueado por baneo
+            </span>
             <dl class="infra-baneo-detail-grid">
               <div class="infra-baneo-detail-row">
                 <dt>Técnico</dt>
@@ -78,7 +85,7 @@
               </div>
               <div class="infra-baneo-detail-row">
                 <dt>Botella asociada</dt>
-                <dd>{{ ingreso.cromo_botella_id ?? 'Sin botella asociada' }}</dd>
+                <dd>{{ ingreso.botella_label }}</dd>
               </div>
             </dl>
           </AccordionItem>
@@ -195,6 +202,8 @@ interface IngresoItem {
   fecha_fin: string | null;
   tecnico_id: string | null;
   cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
 }
 
 const props = defineProps<{
@@ -260,6 +269,9 @@ function buildBaneoRangeTitle(item: BaneoItem): string {
 }
 
 function buildIngresoRangeTitle(item: IngresoItem): string {
+  if (item.tipo === 'INTENTO_BLOQUEADO') {
+    return `Intento bloqueado - ${formatFechaCompacta(item.fecha_inicio)}`;
+  }
   const ingreso = formatFechaCompacta(item.fecha_inicio);
   const egreso = item.fecha_fin ? formatFechaCompacta(item.fecha_fin) : 'En curso';
   return `Ingreso - ${ingreso} * Egreso - ${egreso}`;

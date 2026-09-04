@@ -250,6 +250,8 @@ interface RegistrosIngreso {
   fecha_fin: string | null;
   tecnico_id: string | null;
   cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
 }
 
 interface RegistrosPayload {
