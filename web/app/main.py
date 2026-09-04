@@ -2106,12 +2106,29 @@ def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
 
 
 def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
+    """`botella_label` (Tarea 6, 2026-09-04) resuelve el nombre legible de la Botella intervenida —
+    reemplaza el fallback "Sin botella asociada" del frontend (`ModalRegistros.vue`), que mostraba el
+    `n_id` crudo o ese texto sin distinguir "no se especificó botella" (= la Cámara raíz, "Botella 1"
+    por convención — ver `camara_search.detectar_multi_bot`) de "se especificó una Botella legado sin
+    CromoBotella asociada". `getattr` defensivo: tolera objetos de test (`SimpleNamespace`) sin
+    `.camara`/`.tipo` poblados, cayendo a los defaults más comunes."""
+    if item.cromo_botella_id is not None:
+        cromo_botella = getattr(item, "cromo_botella", None)
+        botella_label = cromo_botella.nombre if cromo_botella is not None else f"Botella #{item.cromo_botella_id}"
+    elif getattr(getattr(item, "camara", None), "camara_padre_id", None):
+        botella_label = item.camara.nombre
+    else:
+        botella_label = "Botella 1"
+
+    tipo = getattr(item, "tipo", None)
     return {
         "id": item.id,
         "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
         "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
         "tecnico_id": item.tecnico_id,
         "cromo_botella_id": item.cromo_botella_id,
+        "botella_label": botella_label,
+        "tipo": tipo.value if tipo else "INGRESO",
     }
 
 

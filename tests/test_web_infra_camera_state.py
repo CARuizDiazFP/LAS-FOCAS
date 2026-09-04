@@ -532,3 +532,51 @@ def test_get_servicio_ingresos_web_404_si_servicio_no_existe(monkeypatch):
 
     assert response.status_code == 404
     assert "no encontrado" in response.json()["error"]
+
+
+def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
+    """Task 6: `botella_label` cae a 'Botella 1' cuando no hay `cromo_botella_id` ni la propia
+    Cámara es una Botella (caso más común, técnico no especificó botella); usa el nombre de la
+    `CromoBotella` cuando sí está poblado; `tipo` refleja INTENTO_BLOQUEADO cuando corresponde."""
+    from core.services import camara_estado_service
+    from db import session as db_session
+    from db.models.infra import IngresoTipo
+
+    client = TestClient(app)
+    _login(client, monkeypatch, role="user", password="userpass")
+
+    ingresos = [
+        SimpleNamespace(
+            id=5,
+            fecha_inicio=datetime(2026, 5, 10, 8, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="tecnico.lopez",
+            cromo_botella_id=None,
+            camara=_build_fake_camara(),
+            tipo=IngresoTipo.INGRESO,
+        ),
+        SimpleNamespace(
+            id=6,
+            fecha_inicio=datetime(2026, 5, 11, 9, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Rider Fernández",
+            cromo_botella_id=999,
+            camara=_build_fake_camara(),
+            cromo_botella=SimpleNamespace(nombre="Bot 2 Cra Mitre 440"),
+            tipo=IngresoTipo.INTENTO_BLOQUEADO,
+        ),
+    ]
+    fake_session = _InfraDetailSession(
+        _build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos(), ingresos
+    )
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
+    monkeypatch.setattr(camara_estado_service, "get_camara_estado_contexto", lambda session, camara_id: _build_contexto())
+
+    response = client.get("/api/infra/camaras/7/registros")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ingresos"][0]["botella_label"] == "Botella 1"
+    assert payload["ingresos"][0]["tipo"] == "INGRESO"
+    assert payload["ingresos"][1]["botella_label"] == "Bot 2 Cra Mitre 440"
+    assert payload["ingresos"][1]["tipo"] == "INTENTO_BLOQUEADO"
