@@ -535,15 +535,34 @@ def test_get_servicio_ingresos_web_404_si_servicio_no_existe(monkeypatch):
 
 
 def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
-    """Task 6: `botella_label` cae a 'Botella 1' cuando no hay `cromo_botella_id` ni la propia
-    Cámara es una Botella (caso más común, técnico no especificó botella); usa el nombre de la
-    `CromoBotella` cuando sí está poblado; `tipo` refleja INTENTO_BLOQUEADO cuando corresponde."""
+    """Task 6: `botella_label` resuelve tres casos distintos:
+    1. Root Cámara (cromo_botella_id=None, camara sin padre): fallback a 'Botella 1'
+    2. Legacy Botella (cromo_botella_id=None, camara.camara_padre_id set): nombre propio de la Botella
+    3. CromoBotella (cromo_botella_id set, cromo_botella.nombre disponible): nombre de la CromoBotella
+    4. CromoBotella sin nombre (cromo_botella_id set, cromo_botella=None): fallback f"Botella #{id}"
+
+    `tipo` refleja el enum value (INGRESO/EGRESO/INTENTO_BLOQUEADO)."""
     from core.services import camara_estado_service
     from db import session as db_session
     from db.models.infra import IngresoTipo
 
     client = TestClient(app)
     _login(client, monkeypatch, role="user", password="userpass")
+
+    # Legacy Botella para caso 2: Cámara con camara_padre_id set (es hija de otra Cámara)
+    legacy_botella_camara = SimpleNamespace(
+        id=8,
+        nombre="Bot 2 Cra Mitre 440",
+        direccion="Cra Mitre 440",
+        fontine_id="CAM-008",
+        estado=CamaraEstado.LIBRE,
+        origen_datos=CamaraOrigenDatos.TRACKING,
+        latitud=-34.6,
+        longitud=-58.4,
+        empalmes=[],
+        camara_padre_id=7,  # Tiene padre, es una Botella legado
+        botellas=[],
+    )
 
     ingresos = [
         SimpleNamespace(
@@ -552,7 +571,7 @@ def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
             fecha_fin=None,
             tecnico_id="tecnico.lopez",
             cromo_botella_id=None,
-            camara=_build_fake_camara(),
+            camara=_build_fake_camara(),  # Root Cámara (sin camara_padre_id) → caso 1
             tipo=IngresoTipo.INGRESO,
         ),
         SimpleNamespace(
@@ -562,8 +581,27 @@ def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
             tecnico_id="Rider Fernández",
             cromo_botella_id=999,
             camara=_build_fake_camara(),
-            cromo_botella=SimpleNamespace(nombre="Bot 2 Cra Mitre 440"),
+            cromo_botella=SimpleNamespace(nombre="Bot 2 Cra Mitre 440"),  # Caso 3
             tipo=IngresoTipo.INTENTO_BLOQUEADO,
+        ),
+        SimpleNamespace(
+            id=7,
+            fecha_inicio=datetime(2026, 5, 12, 10, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Técnico Silva",
+            cromo_botella_id=None,
+            camara=legacy_botella_camara,  # Legacy Botella con camara_padre_id → caso 2
+            tipo=IngresoTipo.INGRESO,
+        ),
+        SimpleNamespace(
+            id=8,
+            fecha_inicio=datetime(2026, 5, 13, 11, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Técnico García",
+            cromo_botella_id=555,
+            camara=_build_fake_camara(),
+            cromo_botella=None,  # cromo_botella_id set pero sin objeto relacionado → caso 4
+            tipo=IngresoTipo.EGRESO,
         ),
     ]
     fake_session = _InfraDetailSession(
@@ -576,7 +614,15 @@ def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()
+    # Caso 1: Root Cámara sin botella especificada → "Botella 1"
     assert payload["ingresos"][0]["botella_label"] == "Botella 1"
     assert payload["ingresos"][0]["tipo"] == "INGRESO"
+    # Caso 3: CromoBotella con nombre disponible → usa ese nombre
     assert payload["ingresos"][1]["botella_label"] == "Bot 2 Cra Mitre 440"
     assert payload["ingresos"][1]["tipo"] == "INTENTO_BLOQUEADO"
+    # Caso 2: Legacy Botella (camara_padre_id set) → nombre propio de la Botella
+    assert payload["ingresos"][2]["botella_label"] == "Bot 2 Cra Mitre 440"
+    assert payload["ingresos"][2]["tipo"] == "INGRESO"
+    # Caso 4: cromo_botella_id set pero sin objeto relacionado → fallback f"Botella #{id}"
+    assert payload["ingresos"][3]["botella_label"] == "Botella #555"
+    assert payload["ingresos"][3]["tipo"] == "EGRESO"
