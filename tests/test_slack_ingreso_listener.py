@@ -413,10 +413,6 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 return_value=_resultado_camara(None, "bot estacion alem linea b cf"),
             ),
-            patch(
-                "modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
-                return_value=[],
-            ),
         ):
             listener._handle_message(event, client_mock)
 
@@ -434,7 +430,6 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cám Inexistente 9999"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cam inexistente 9999")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             mock_session_cls.return_value = MagicMock()
             listener._handle_message(event, client_mock)
@@ -447,19 +442,27 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         self.assertNotIn("bajo revisión", texto_respuesta)
 
     def test_responde_camara_libre(self) -> None:
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = MagicMock()
         camara_mock.id = 42
         camara_mock.nombre = "Cam Libertad 1234"
         event = self._make_event(text="Cámara: Libertad 1234")
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=42, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Libertad 1234"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "libertad 1234")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
         ):
             listener._handle_message(event, client_mock)
 
@@ -469,6 +472,9 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         self.assertIn("Cam Libertad 1234", texto_respuesta)
 
     def test_responde_camara_baneada(self) -> None:
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = MagicMock()
@@ -479,13 +485,18 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         incidente_mock.ticket_asociado = "TKT-001"
         incidente_mock.servicio_protegido_id = 5
         event = self._make_event(text="Cámara: Baneada Central")
+        contexto_con_incidente = CamaraEstadoContexto(
+            camara_id=7, estado_actual=CamaraEstado.BANEADA, estado_sugerido=CamaraEstado.BANEADA,
+            tiene_baneo_activo=True, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[incidente_mock], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Central"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "baneada central")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[incidente_mock]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_con_incidente),
         ):
             listener._handle_message(event, client_mock)
 
@@ -551,7 +562,6 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cam Test"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cam test")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
@@ -586,7 +596,6 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
             patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cam Test"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(None, "cam test")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
         ):
             mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
             mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
@@ -634,10 +643,20 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
 
     def test_registra_movimiento_cuando_hay_match_camara_directa_y_texto_trae_ingreso(self) -> None:
         """fuente='camara' (match directo, sin pasar por CromoBotella) + campo 'Ingreso o Egreso'
-        presente → registrar_movimiento_ingreso se llama con botella=None."""
+        presente, grupo LIBRE (no bloqueado) → registrar_movimiento_ingreso se llama con botella=None
+        y el nombre YA resuelto por `resolver_nombre_tecnico`."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = self._make_camara()
+        camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -650,31 +669,44 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
             ),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ) as mock_resolver,
             patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
         ):
             session_mock = MagicMock()
             mock_session_cls.return_value = session_mock
             listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
 
+        mock_resolver.assert_called_once_with(client_mock, "U0AUB6CRE4A")
         mock_registrar.assert_called_once_with(
             session_mock,
             camara=camara_mock,
             botella=None,
             tipo_movimiento="Ingreso",
-            slack_user_id="U0AUB6CRE4A",
+            tecnico_nombre="Rider Fernández",
         )
         # La respuesta de Slack de siempre no debe verse afectada por el registro.
         client_mock.chat_postMessage.assert_called_once()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
-        self.assertIn("Sin incidentes activos", texto_respuesta)
+        self.assertIn("✅", texto_respuesta)
 
     def test_registra_movimiento_con_botella_cromo_y_egreso(self) -> None:
         """fuente='cromo_botella' (match resuelto vía CromoBotella) → registrar_movimiento_ingreso
-        recibe la `botella` real, no None. Cubre también tipo_movimiento='Egreso'."""
+        recibe la `botella` real, no None. Cubre también tipo_movimiento='Egreso', grupo LIBRE (no
+        bloqueado) y el nombre YA resuelto por `resolver_nombre_tecnico`."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = self._make_camara(id_=7, nombre="Cam Resuelta Desde Botella")
+        camara_mock.estado = CamaraEstado.LIBRE
         botella_mock = MagicMock()
         botella_mock.n_id = 999
 
@@ -683,6 +715,11 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             nombre_norm="ruta 8 km 34 malvinas argentinas",
             fuente="cromo_botella",
             botella=botella_mock,
+        )
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
         )
 
         with (
@@ -696,7 +733,14 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 return_value=resultado,
             ),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
             patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
         ):
             session_mock = MagicMock()
@@ -708,12 +752,17 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             camara=camara_mock,
             botella=botella_mock,
             tipo_movimiento="Egreso",
-            slack_user_id="U0AUB6CRE4A",
+            tecnico_nombre="Rider Fernández",
         )
         client_mock.chat_postMessage.assert_called_once()
 
     def test_no_registra_movimiento_cuando_texto_no_trae_campo(self) -> None:
-        """Hay match de cámara, pero el texto no trae 'Ingreso o Egreso' → no se escribe nada."""
+        """Hay match de cámara, pero el texto no trae 'Ingreso o Egreso' → no se escribe nada. No
+        necesita mockear `resolver_nombre_tecnico` — la rama de registro corta antes de llegar a
+        resolverlo (`extraer_tipo_movimiento` devuelve `None`). `get_camara_estado_contexto` sí se
+        mockea porque `_evaluar_estado_acceso_camara` corre siempre que hay match de cámara,
+        independientemente del campo 'Ingreso o Egreso' (reemplaza el mock retirado de
+        `_obtener_incidentes_activos_camara`)."""
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = self._make_camara()
@@ -729,7 +778,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
             ),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=None),
             patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
         ):
             listener._handle_message(self._make_event(text=self.TEXTO_SIN_MOVIMIENTO), client_mock)
@@ -823,9 +872,18 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         `registrar_movimiento_ingreso` deja la sesión compartida en estado inválido
         (`PendingRollbackError` en cualquier uso posterior), lo que podía silenciar la respuesta de
         Slack por completo en vez de sólo perder el registro del movimiento."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = self._make_camara()
+        camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -838,7 +896,14 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
             ),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
             patch(
                 "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso",
                 side_effect=RuntimeError("DB caída"),
@@ -850,7 +915,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
 
         client_mock.chat_postMessage.assert_called_once()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
-        self.assertIn("Sin incidentes activos", texto_respuesta)
+        self.assertIn("✅", texto_respuesta)
         # La sesión compartida debe quedar utilizable después del fallo: rollback explícito.
         session_mock.rollback.assert_called_once()
 
@@ -859,10 +924,18 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         `_handle_message` debe invocar su propio `registrar_movimiento_ingreso` (brief Tarea 4:
         'Multi-botella sale gratis' — el loop no se toca, cada llamada a
         `_construir_respuesta_camara` resuelve y escribe su propia fila)."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
         listener = self._make_listener()
         client_mock = MagicMock()
         cam1 = self._make_camara(id_=1, nombre="Cra Mitre 300")
         cam2 = self._make_camara(id_=2, nombre="Bot 2 Cra Mitre 300")
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=1, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         texto = (
             "Cámara: Cra Mitre 300 Botella 1 y 2\n"
@@ -884,7 +957,14 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
                     _resultado_camara(cam2, "bot 2 cra mitre 300"),
                 ],
             ) as mock_buscar,
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
             patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
         ):
             session_mock = MagicMock()
@@ -897,38 +977,114 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         self.assertEqual(mock_registrar.call_args_list[1].kwargs["camara"], cam2)
         for c in mock_registrar.call_args_list:
             self.assertEqual(c.kwargs["tipo_movimiento"], "Egreso")
-            self.assertEqual(c.kwargs["slack_user_id"], "U0AUB6CRE4A")
+            self.assertEqual(c.kwargs["tecnico_nombre"], "Rider Fernández")
         client_mock.chat_postMessage.assert_called_once()
 
+    def test_grupo_baneado_registra_intento_bloqueado_no_ingreso(self) -> None:
+        """Bug real que motivó esta tarea: un Ingreso a un grupo BANEADO debía cancelarse y
+        registrarse como Intento bloqueado, no como un Ingreso 'en curso' — antes se registraba
+        siempre, sin condicionar al resultado de la evaluación de acceso."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
 
-class TestObtenerIncidentesActivosCamara(unittest.TestCase):
-    """Tests para _obtener_incidentes_activos_camara con estados LIBRE, DETECTADA y BANEADA."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+        camara_mock.estado = CamaraEstado.BANEADA
+        contexto_baneado = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.BANEADA, estado_sugerido=CamaraEstado.BANEADA,
+            tiene_baneo_activo=True, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
-    def _make_camara(self, estado: Any) -> Any:
-        camara = MagicMock()
-        camara.id = 42
-        camara.estado = estado
-        return camara
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_baneado,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                return_value="Corte de fibra",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+            patch("modules.slack_baneo_notifier.listener.registrar_intento_bloqueado") as mock_intento,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
 
-    def test_detectada_sin_incidentes_retorna_vacio(self) -> None:
-        """DETECTADA se trata como LIBRE — retorna [] sin consultar incidentes."""
-        from modules.slack_baneo_notifier.listener import _obtener_incidentes_activos_camara
+        mock_intento.assert_called_once_with(
+            session_mock, camara=camara_mock, botella=None, tecnico_nombre="Rider Fernández"
+        )
+        mock_registrar.assert_not_called()
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":no_entry:", texto_respuesta)
 
-        with patch("db.models.infra.CamaraEstado") as mock_estado:
-            mock_estado.BANEADA = "BANEADA"
-            camara = self._make_camara("DETECTADA")
-            result = _obtener_incidentes_activos_camara(camara, MagicMock())
-        self.assertEqual(result, [])
+    def test_egreso_de_grupo_baneado_no_se_bloquea(self) -> None:
+        """Un Egreso nunca se bloquea, incluso si el grupo está BANEADO — sólo Ingreso se convierte
+        en Intento."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
 
-    def test_libre_retorna_vacio(self) -> None:
-        """LIBRE retorna [] sin consultar incidentes."""
-        from modules.slack_baneo_notifier.listener import _obtener_incidentes_activos_camara
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+        camara_mock.estado = CamaraEstado.BANEADA
+        contexto_baneado = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.BANEADA, estado_sugerido=CamaraEstado.BANEADA,
+            tiene_baneo_activo=True, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
-        with patch("db.models.infra.CamaraEstado") as mock_estado:
-            mock_estado.BANEADA = "BANEADA"
-            camara = self._make_camara("LIBRE")
-            result = _obtener_incidentes_activos_camara(camara, MagicMock())
-        self.assertEqual(result, [])
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_baneado,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                return_value="Corte de fibra",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+            patch("modules.slack_baneo_notifier.listener.registrar_intento_bloqueado") as mock_intento,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(self._make_event(text=self.TEXTO_CON_EGRESO), client_mock)
+
+        mock_registrar.assert_called_once_with(
+            session_mock, camara=camara_mock, botella=None, tipo_movimiento="Egreso",
+            tecnico_nombre="Rider Fernández",
+        )
+        mock_intento.assert_not_called()
 
 
 # ─── Tests de filtro de ambigüedad ─────────────────────────────────────────────
@@ -1177,12 +1333,19 @@ class TestFiltroAmbiguedad(unittest.TestCase):
     def test_multibot_no_se_confunde_con_ambiguedad(self) -> None:
         """'Botella 1 y 2' es multi-bot, no ambigüedad — se procesan como dos cámaras."""
         from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
 
         listener = self._make_listener()
         client_mock = MagicMock()
         cam = MagicMock()
+        cam.id = 1
         cam.nombre = "Cra Mitre 300"
         cam.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=1, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -1191,8 +1354,8 @@ class TestFiltroAmbiguedad(unittest.TestCase):
                   return_value="Cra Mitre 300 Botella 1 y 2"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                   return_value=_resultado_camara(cam, "cra mitre 300")) as mock_buscar,
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
-                  return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                  return_value=contexto_libre),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
                   return_value=None),
         ):
@@ -1565,8 +1728,12 @@ class TestLimpiarRuidoOperativo(unittest.TestCase):
 
 
 class TestBaneoManualSinIncidente(unittest.TestCase):
-    """Prueba la jerarquía de validación cuando una cámara está BANEADA manualmente
-    (sin IncidenteBaneo activo)."""
+    """Prueba la jerarquía de validación cuando el GRUPO (cámara + botellas hermanas) tiene un
+    miembro BANEADO manualmente (sin IncidenteBaneo activo) — Tarea 5 (2026-09-04): el chequeo ahora
+    reusa `get_camara_estado_contexto()` en vez de mirar sólo el `estado`/incidentes de la fila
+    puntual resuelta, así que estos tests mockean `get_camara_estado_contexto` (no ya
+    `_obtener_incidentes_activos_camara`, retirada — ver `camara_estado_service.CamaraEstadoContexto`
+    para el shape exacto)."""
 
     def _make_listener(self) -> Any:
         from modules.slack_baneo_notifier.listener import IngresoListener
@@ -1575,26 +1742,56 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
     def _make_event(self, text: str = "Cámara: Cam Test") -> dict:
         return {"text": text, "channel": "C123", "ts": "1234567890.000001"}
 
-    def test_baneada_manual_sin_incidente_bloquea(self) -> None:
-        """Cámara BANEADA sin incidente activo → :no_entry: con motivo de auditoría."""
-        from modules.slack_baneo_notifier.listener import IngresoListener
+    def _make_camara(self, id_: int, nombre: str, estado: Any) -> Any:
+        camara = MagicMock()
+        camara.id = id_
+        camara.nombre = nombre
+        camara.estado = estado
+        camara.camara_padre = None
+        camara.botellas = []
+        return camara
+
+    def _contexto(self, camara_id: int, *, incidentes_activos=None) -> Any:
+        from core.services.camara_estado_service import CamaraEstadoContexto
         from db.models.infra import CamaraEstado
 
+        incidentes_activos = incidentes_activos or []
+        return CamaraEstadoContexto(
+            camara_id=camara_id,
+            estado_actual=CamaraEstado.BANEADA,
+            estado_sugerido=CamaraEstado.BANEADA,
+            tiene_baneo_activo=True,
+            tiene_ingreso_activo=False,
+            inconsistente=False,
+            incidentes_activos=incidentes_activos,
+            ticket_baneo=None,
+        )
+
+    def test_baneada_manual_sin_incidente_bloquea(self) -> None:
+        """Grupo BANEADO sin incidente activo → :no_entry: con motivo de auditoría."""
+        from db.models.infra import CamaraEstado
+
+        camara_mock = self._make_camara(10, "Cam Baneada Manual", CamaraEstado.BANEADA)
         listener = self._make_listener()
         client_mock = MagicMock()
-        camara_mock = MagicMock()
-        camara_mock.id = 10
-        camara_mock.nombre = "Cam Baneada Manual"
-        camara_mock.estado = CamaraEstado.BANEADA
         event = self._make_event(text="Cámara: Baneada Manual")
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Manual"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "baneada manual")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
-            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual", return_value="Fibra cortada en nodo norte"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "baneada manual"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=self._contexto(10),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                return_value="Fibra cortada en nodo norte",
+            ),
         ):
             listener._handle_message(event, client_mock)
 
@@ -1606,25 +1803,31 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
         self.assertNotIn("ATENCIÓN", texto)
 
     def test_baneada_manual_sin_motivo_auditoria(self) -> None:
-        """Cámara BANEADA, obtener_ultimo_motivo retorna None → fallback 'sin motivo registrado'."""
-        from modules.slack_baneo_notifier.listener import IngresoListener
+        """Grupo BANEADO, `obtener_ultimo_motivo_baneo_manual` retorna None → fallback 'sin motivo
+        registrado'."""
         from db.models.infra import CamaraEstado
 
+        camara_mock = self._make_camara(11, "Cam Baneada Sin Audit", CamaraEstado.BANEADA)
         listener = self._make_listener()
         client_mock = MagicMock()
-        camara_mock = MagicMock()
-        camara_mock.id = 11
-        camara_mock.nombre = "Cam Baneada Sin Audit"
-        camara_mock.estado = CamaraEstado.BANEADA
         event = self._make_event(text="Cámara: Baneada Sin Audit")
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Baneada Sin Audit"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "baneada sin audit")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
-            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual", return_value=None),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "baneada sin audit"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=self._contexto(11),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                return_value=None,
+            ),
         ):
             listener._handle_message(event, client_mock)
 
@@ -1633,28 +1836,31 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
         self.assertIn("sin motivo registrado", texto)
 
     def test_jerarquia_incidente_tiene_prioridad(self) -> None:
-        """BANEADA con IncidenteBaneo activo → 🚨 ATENCIÓN (nivel 1 gana sobre manual)."""
-        from modules.slack_baneo_notifier.listener import IngresoListener
+        """Grupo BANEADO con IncidenteBaneo activo → 🚨 ATENCIÓN (nivel 1 gana sobre manual)."""
+        from core.services.camara_estado_service import IncidenteActivoResumen
         from db.models.infra import CamaraEstado
 
+        camara_mock = self._make_camara(12, "Cam Con Incidente", CamaraEstado.BANEADA)
         listener = self._make_listener()
         client_mock = MagicMock()
-        camara_mock = MagicMock()
-        camara_mock.id = 12
-        camara_mock.nombre = "Cam Con Incidente"
-        camara_mock.estado = CamaraEstado.BANEADA
-        incidente_mock = MagicMock()
-        incidente_mock.id = 55
-        incidente_mock.ticket_asociado = "TKT-555"
-        incidente_mock.servicio_protegido_id = "SVC-01"
         event = self._make_event(text="Cámara: Con Incidente")
+        incidente = IncidenteActivoResumen(
+            id=55, ticket_asociado="TKT-555", servicio_protegido_id="SVC-01",
+            ruta_protegida_id=None, fecha_inicio=None, motivo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Con Incidente"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "con incidente")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[incidente_mock]),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "con incidente"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=self._contexto(12, incidentes_activos=[incidente]),
+            ),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual") as mock_motivo,
         ):
             listener._handle_message(event, client_mock)
@@ -1665,33 +1871,75 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
         # La función de auditoría no debe haberse llamado cuando hay incidente activo
         mock_motivo.assert_not_called()
 
-    def test_libre_no_afectado(self) -> None:
-        """Cámara LIBRE → ✅ OK — la nueva rama no interfiere. (regresión)"""
-        from modules.slack_baneo_notifier.listener import IngresoListener
+    def test_baneo_de_botella_hermana_bloquea_ingreso_a_la_camara_raiz(self) -> None:
+        """Bug real que motivó esta tarea: pedir ingreso a la cámara RAÍZ (estado propio LIBRE)
+        mientras una Botella hermana está BANEADA debe bloquear igual — antes el listener sólo miraba
+        el `estado` de la fila puntual resuelta, nunca el grupo."""
         from db.models.infra import CamaraEstado
 
+        camara_mock = self._make_camara(13, "Cam Raiz Libre", CamaraEstado.LIBRE)
         listener = self._make_listener()
         client_mock = MagicMock()
-        camara_mock = MagicMock()
-        camara_mock.id = 13
-        camara_mock.nombre = "Cam Libre Norte"
-        camara_mock.estado = CamaraEstado.LIBRE
-        event = self._make_event(text="Cámara: Libre Norte")
+        event = self._make_event(text="Cámara: Raiz Libre")
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
-            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Libre Norte"),
-            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", return_value=_resultado_camara(camara_mock, "libre norte")),
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
-            patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual") as mock_motivo,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Raiz Libre"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "raiz libre"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                # tiene_baneo_activo=True aunque la propia fila (`estado_actual`) siga LIBRE — lo
+                # aporta una Botella hermana, ya contemplado por Task 3.
+                return_value=self._contexto(13),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
+                return_value="Botella hermana baneada",
+            ),
+        ):
+            listener._handle_message(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn(":no_entry:", texto)
+
+    def test_libre_no_afectado(self) -> None:
+        """Grupo LIBRE (sin baneo) → ✅ OK — la nueva rama no interfiere. (regresión)"""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        camara_mock = self._make_camara(14, "Cam Libre", CamaraEstado.LIBRE)
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        event = self._make_event(text="Cámara: Libre")
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=14, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Libre"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "libre"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
         ):
             listener._handle_message(event, client_mock)
 
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("✅", texto)
-        self.assertIn("puede continuar con el proceso de aprobación", texto)
-        mock_motivo.assert_not_called()
+        self.assertNotIn(":no_entry:", texto)
+        self.assertNotIn("ATENCIÓN", texto)
 
 
 # ─── Tests de exclusión de Nodos ───────────────────────────────────────────────
@@ -1766,12 +2014,19 @@ class TestExclusionNodo(unittest.TestCase):
     def test_camara_no_afectada_por_filtro_nodo(self) -> None:
         """Nombre extraído de cámara normal → sigue procesándose (regresión)."""
         from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
 
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = MagicMock()
+        camara_mock.id = 1
         camara_mock.nombre = "Cam Mitre 440"
         camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=1, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -1780,8 +2035,8 @@ class TestExclusionNodo(unittest.TestCase):
                   return_value="Cam Mitre 440"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                   return_value=_resultado_camara(camara_mock, "cam mitre 440")) as mock_buscar,
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
-                  return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                  return_value=contexto_libre),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
                   return_value=None),
         ):
@@ -1798,12 +2053,19 @@ class TestExclusionNodo(unittest.TestCase):
     def test_workflow_con_label_nodo_camara_no_ignorado(self) -> None:
         """Workflow con ETIQUETA 'Nodo/Camara/botella' y VALOR de cámara → no ignorado."""
         from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
 
         listener = self._make_listener()
         client_mock = MagicMock()
         camara_mock = MagicMock()
+        camara_mock.id = 2
         camara_mock.nombre = "Bot. estacion Alem linea B CF"
         camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=2, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -1813,8 +2075,8 @@ class TestExclusionNodo(unittest.TestCase):
                   return_value="Bot. estacion Alem linea B CF"),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                   return_value=_resultado_camara(camara_mock, "bot estacion alem linea b cf")) as mock_buscar,
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara",
-                  return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                  return_value=contexto_libre),
             patch("modules.slack_baneo_notifier.listener.obtener_ultimo_motivo_baneo_manual",
                   return_value=None),
         ):
@@ -1997,6 +2259,7 @@ class TestSeguimientoEmpalme(unittest.TestCase):
         chequeo de acceso de siempre sobre esa Cámara, responde en el hilo, y marca el caso
         `resuelto_via_empalme=True` (commit) para no reprocesar el mismo hilo."""
         from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
 
         listener = self._make_listener()
         client_mock = MagicMock()
@@ -2007,8 +2270,14 @@ class TestSeguimientoEmpalme(unittest.TestCase):
         caso_mock.resuelto_via_empalme = False
 
         camara_mock = MagicMock()
+        camara_mock.id = 42
         camara_mock.nombre = "Cam Resuelta Por Empalme"
         camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=42, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
 
         botella_mock = MagicMock()
         botella_mock.camara_id = 42
@@ -2022,7 +2291,7 @@ class TestSeguimientoEmpalme(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync",
                 return_value=botella_mock,
             ) as mock_resolver,
-            patch("modules.slack_baneo_notifier.listener._obtener_incidentes_activos_camara", return_value=[]),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara") as mock_extraer,
         ):
             listener._handle_message(self._make_event_reply("1234567"), client_mock)
