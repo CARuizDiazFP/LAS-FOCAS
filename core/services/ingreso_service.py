@@ -22,6 +22,28 @@ def _null_safe(columna, valor):
     return columna.is_(None) if valor is None else columna == valor
 
 
+def _tecnico_id_filtro(tecnico_nombre: str | None, slack_user_id: str | None):
+    """Filtro para `Ingreso.tecnico_id` al buscar el `Ingreso` ABIERTO a cerrar con un Egreso.
+
+    Hallazgo real (revisión final 2026-09-04, I2): una fila escrita ANTES del deploy de la
+    resolución de nombre (Tarea 2/4 de este mismo fix) tiene `tecnico_id` = el ID crudo de Slack
+    (ej. "U03DPFK0Q69"); el Egreso del mismo técnico DESPUÉS del deploy resuelve `tecnico_nombre` a
+    un nombre humano (ej. "rider.fernandez") — nunca matchean, así que esa fila vieja queda abierta
+    para siempre y encima se crea una fila EGRESO huérfana nueva. Este filtro matchea CUALQUIERA de
+    los dos valores (`tecnico_nombre` ya resuelto, `slack_user_id` crudo del mismo evento) cuando
+    ambos están presentes y difieren — así encuentra tanto la fila vieja (id crudo) como una fila
+    nueva (nombre resuelto).
+
+    NULL-safe: si AMBOS son `None` (nunca se pudo identificar al técnico, ni antes ni ahora), exige
+    `tecnico_id IS NULL` — nunca se trata `None` como comodín que matchee cualquier técnico."""
+    valores = {v for v in (tecnico_nombre, slack_user_id) if v is not None}
+    if not valores:
+        return Ingreso.tecnico_id.is_(None)
+    if len(valores) == 1:
+        return Ingreso.tecnico_id == next(iter(valores))
+    return Ingreso.tecnico_id.in_(valores)
+
+
 def registrar_movimiento_ingreso(
     session: Session,
     *,
@@ -29,23 +51,29 @@ def registrar_movimiento_ingreso(
     botella: CromoBotella | None,
     tipo_movimiento: str,  # "Ingreso" | "Egreso" (ya validado por el caller, no se revalida acá)
     tecnico_nombre: str | None,
+    slack_user_id: str | None = None,
 ) -> Ingreso:
     """Persiste un movimiento de Ingreso o Egreso REAL de un técnico a `camara` (Cámara o Botella ya
     resuelta) y comita la transacción antes de retornar. `tecnico_nombre` ya debe venir resuelto por
     el caller (ver `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`) —
-    este servicio no conoce Slack, sólo persiste.
+    este servicio no conoce Slack, sólo persiste. `slack_user_id` (el ID crudo de Slack del mismo
+    evento, opcional) sólo se usa para ENCONTRAR una fila abierta al cerrar un Egreso (ver abajo) —
+    nunca se escribe en `tecnico_id` de una fila nueva, sólo `tecnico_nombre` (el nombre resuelto).
 
     - "Ingreso": SIEMPRE crea una fila nueva (`tipo=INGRESO`), nunca reabre ni reutiliza una fila
       existente.
     - "Egreso": busca el `Ingreso` ABIERTO (`tipo=INGRESO`, `fecha_fin IS NULL`) más reciente cuyo
-      `tecnico_id`, `camara_id` y `cromo_botella_id` coincidan EXACTAMENTE (NULL-safe: `None` exige
-      `IS NULL` del lado de la fila existente, nunca se trata como comodín) y lo cierra. El filtro
-      `tipo=INGRESO` es deliberado: sin él, un `Intento bloqueado` (mismo `fecha_fin IS NULL`, ver
-      `registrar_intento_bloqueado` más abajo) sería candidato a "cerrarse" como si fuera un ingreso
-      real. Si no encuentra ninguna fila así, crea una nueva con `fecha_inicio=None` (deliberado: no
-      hay forma de saber cuándo entró, y setear `fecha_inicio=fecha_fin` registraría una duración
-      falsa de 0 segundos en cualquier reporte futuro, `tipo=EGRESO`) — es preferible una fila
-      huérfana de más que cerrar el ingreso de otro técnico.
+      `camara_id`/`cromo_botella_id` coincidan EXACTAMENTE (NULL-safe: `None` exige `IS NULL` del
+      lado de la fila existente, nunca se trata como comodín) y cuyo `tecnico_id` matchee
+      `tecnico_nombre` O `slack_user_id` (ver `_tecnico_id_filtro` — necesario para poder cerrar una
+      fila escrita ANTES de la resolución de nombre, que todavía tiene el ID crudo de Slack en
+      `tecnico_id`), y lo cierra. El filtro `tipo=INGRESO` es deliberado: sin él, un `Intento
+      bloqueado` (mismo `fecha_fin IS NULL`, ver `registrar_intento_bloqueado` más abajo) sería
+      candidato a "cerrarse" como si fuera un ingreso real. Si no encuentra ninguna fila así, crea
+      una nueva con `fecha_inicio=None` (deliberado: no hay forma de saber cuándo entró, y setear
+      `fecha_inicio=fecha_fin` registraría una duración falsa de 0 segundos en cualquier reporte
+      futuro, `tipo=EGRESO`) — es preferible una fila huérfana de más que cerrar el ingreso de otro
+      técnico.
 
     Para un intento BLOQUEADO por baneo, usar `registrar_intento_bloqueado` — nunca este servicio con
     `tipo_movimiento="Ingreso"`.
@@ -70,7 +98,7 @@ def registrar_movimiento_ingreso(
     ingreso_abierto = (
         session.query(Ingreso)
         .filter(
-            _null_safe(Ingreso.tecnico_id, tecnico_nombre),
+            _tecnico_id_filtro(tecnico_nombre, slack_user_id),
             Ingreso.camara_id == camara.id,
             _null_safe(Ingreso.cromo_botella_id, cromo_botella_id),
             Ingreso.tipo == IngresoTipo.INGRESO,

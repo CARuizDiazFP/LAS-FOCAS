@@ -453,7 +453,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         event = self._make_event(text="Cámara: Libertad 1234")
         contexto_libre = CamaraEstadoContexto(
             camara_id=42, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -487,7 +487,7 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         event = self._make_event(text="Cámara: Baneada Central")
         contexto_con_incidente = CamaraEstadoContexto(
             camara_id=7, estado_actual=CamaraEstado.BANEADA, estado_sugerido=CamaraEstado.BANEADA,
-            tiene_baneo_activo=True, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=True, tiene_incidente_activo=True, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[incidente_mock], ticket_baneo=None,
         )
 
@@ -654,7 +654,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         camara_mock.estado = CamaraEstado.LIBRE
         contexto_libre = CamaraEstadoContexto(
             camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -690,6 +690,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             botella=None,
             tipo_movimiento="Ingreso",
             tecnico_nombre="Rider Fernández",
+            slack_user_id="U0AUB6CRE4A",
         )
         # La respuesta de Slack de siempre no debe verse afectada por el registro.
         client_mock.chat_postMessage.assert_called_once()
@@ -718,7 +719,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         )
         contexto_libre = CamaraEstadoContexto(
             camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -753,6 +754,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             botella=botella_mock,
             tipo_movimiento="Egreso",
             tecnico_nombre="Rider Fernández",
+            slack_user_id="U0AUB6CRE4A",
         )
         client_mock.chat_postMessage.assert_called_once()
 
@@ -881,7 +883,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         camara_mock.estado = CamaraEstado.LIBRE
         contexto_libre = CamaraEstadoContexto(
             camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -933,7 +935,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         cam2 = self._make_camara(id_=2, nombre="Bot 2 Cra Mitre 300")
         contexto_libre = CamaraEstadoContexto(
             camara_id=1, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -993,7 +995,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         camara_mock.estado = CamaraEstado.BANEADA
         contexto_baneado = CamaraEstadoContexto(
             camara_id=camara_mock.id, estado_actual=CamaraEstado.BANEADA, estado_sugerido=CamaraEstado.BANEADA,
-            tiene_baneo_activo=True, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=True, tiene_incidente_activo=True, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -1046,7 +1048,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         camara_mock.estado = CamaraEstado.BANEADA
         contexto_baneado = CamaraEstadoContexto(
             camara_id=camara_mock.id, estado_actual=CamaraEstado.BANEADA, estado_sugerido=CamaraEstado.BANEADA,
-            tiene_baneo_activo=True, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=True, tiene_incidente_activo=True, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -1082,7 +1084,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
 
         mock_registrar.assert_called_once_with(
             session_mock, camara=camara_mock, botella=None, tipo_movimiento="Egreso",
-            tecnico_nombre="Rider Fernández",
+            tecnico_nombre="Rider Fernández", slack_user_id="U0AUB6CRE4A",
         )
         mock_intento.assert_not_called()
 
@@ -1343,7 +1345,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         cam.estado = CamaraEstado.LIBRE
         contexto_libre = CamaraEstadoContexto(
             camara_id=1, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -1761,6 +1763,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
             estado_actual=CamaraEstado.BANEADA,
             estado_sugerido=CamaraEstado.BANEADA,
             tiene_baneo_activo=True,
+            tiene_incidente_activo=True,
             tiene_ingreso_activo=False,
             inconsistente=False,
             incidentes_activos=incidentes_activos,
@@ -1973,7 +1976,7 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
         event = self._make_event(text="Cámara: Libre")
         contexto_libre = CamaraEstadoContexto(
             camara_id=14, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -1996,6 +1999,62 @@ class TestBaneoManualSinIncidente(unittest.TestCase):
         self.assertIn("✅", texto)
         self.assertNotIn(":no_entry:", texto)
         self.assertNotIn("ATENCIÓN", texto)
+
+    def test_get_camara_estado_contexto_lanza_excepcion_fail_open_no_bloquea(self) -> None:
+        """Hallazgo real (I3, revisión final 2026-09-04): la función que reemplazó
+        `_obtener_incidentes_activos_camara` (retirada, tenía su propio `try/except Exception:
+        return []`) perdió ese fail-open — sin guard, un error de `get_camara_estado_contexto` (DB
+        caída, lazy-load) se propagaba hasta el `except Exception` de `_handle_message`, que NO
+        postea ninguna respuesta en Slack (peor que antes, que sí respondía ✅). Debe caer al mismo
+        camino "no bloqueado, OK" que `contexto is None`, y la respuesta de Slack se debe postear
+        igual."""
+        from db.models.infra import CamaraEstado
+
+        camara_mock = self._make_camara(12, "Cam Contexto Roto", CamaraEstado.LIBRE)
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        event = self._make_event(text="Cámara: Contexto Roto")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Contexto Roto"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "contexto roto"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                side_effect=RuntimeError("DB caída"),
+            ),
+        ):
+            listener._handle_message(event, client_mock)
+
+        # La respuesta se postea igual — nunca se propaga la excepción hasta silenciar el mensaje.
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("✅", texto)
+        self.assertNotIn(":no_entry:", texto)
+        self.assertNotIn("ATENCIÓN", texto)
+
+    def test_evaluar_estado_acceso_camara_directo_ante_excepcion_no_bloquea(self) -> None:
+        """Cobertura directa (sin pasar por `_handle_message`) de `_evaluar_estado_acceso_camara`:
+        confirma explícitamente que el resultado tiene `bloqueado=False` cuando
+        `get_camara_estado_contexto` lanza."""
+        from db.models.infra import CamaraEstado
+
+        camara_mock = self._make_camara(13, "Cam Directa Rota", CamaraEstado.LIBRE)
+        listener = self._make_listener()
+        session_mock = MagicMock()
+
+        with patch(
+            "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+            side_effect=RuntimeError("DB caída"),
+        ):
+            resultado = listener._evaluar_estado_acceso_camara(camara_mock, session_mock)
+
+        self.assertFalse(resultado.bloqueado)
+        self.assertIn("✅", resultado.texto)
 
 
 # ─── Tests de exclusión de Nodos ───────────────────────────────────────────────
@@ -2080,7 +2139,7 @@ class TestExclusionNodo(unittest.TestCase):
         camara_mock.estado = CamaraEstado.LIBRE
         contexto_libre = CamaraEstadoContexto(
             camara_id=1, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -2119,7 +2178,7 @@ class TestExclusionNodo(unittest.TestCase):
         camara_mock.estado = CamaraEstado.LIBRE
         contexto_libre = CamaraEstadoContexto(
             camara_id=2, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 
@@ -2331,7 +2390,7 @@ class TestSeguimientoEmpalme(unittest.TestCase):
         camara_mock.estado = CamaraEstado.LIBRE
         contexto_libre = CamaraEstadoContexto(
             camara_id=42, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
-            tiene_baneo_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
             incidentes_activos=[], ticket_baneo=None,
         )
 

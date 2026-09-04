@@ -217,3 +217,146 @@ def test_registrar_intento_bloqueado_sin_botella_deja_cromo_botella_id_en_none()
     assert resultado.cromo_botella_id is None
     assert resultado.tecnico_id is None
     assert resultado.tipo == IngresoTipo.INTENTO_BLOQUEADO
+
+
+# --- (f) slack_user_id: matching ampliado para cerrar filas viejas con id crudo (I2, 2026-09-04) ---
+
+
+def test_egreso_cierra_ingreso_abierto_con_tecnico_id_igual_al_slack_user_id_crudo() -> None:
+    """Bug real (hallazgo I2, revisión final): una fila escrita ANTES del deploy de la resolución de
+    nombre tiene `tecnico_id` = el ID crudo de Slack (nunca hubo `resolver_nombre_tecnico` para
+    escribirla). El Egreso del mismo técnico, DESPUÉS del deploy, resuelve `tecnico_nombre` a un
+    nombre humano — deben matchear igual (vía `slack_user_id`, el id crudo de este mismo evento) o
+    la fila vieja queda abierta para siempre y se crea una fila EGRESO huérfana de más."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    ingreso_abierto_viejo = Ingreso(
+        id=1,
+        camara_id=10,
+        cromo_botella_id=555,
+        tecnico_id="U03DPFK0Q69",  # fila pre-fix: id crudo de Slack, nunca resuelto
+        tipo=IngresoTipo.INGRESO,
+        fecha_inicio=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        fecha_fin=None,
+    )
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = ingreso_abierto_viejo
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="rider.fernandez",
+        slack_user_id="U03DPFK0Q69",
+    )
+
+    assert resultado is ingreso_abierto_viejo
+    assert resultado.fecha_fin is not None
+    session.add.assert_not_called()
+
+    filtros = session.query.return_value.filter.call_args[0]
+    tecnico_filtro = next(
+        expr for expr in filtros if getattr(getattr(expr, "left", None), "key", None) == "tecnico_id"
+    )
+    # Debe ser un IN (matchea CUALQUIERA de los dos valores), no una igualdad simple contra uno solo.
+    assert set(tecnico_filtro.right.value) == {"rider.fernandez", "U03DPFK0Q69"}
+
+
+def test_egreso_sin_slack_user_id_sigue_usando_igualdad_simple_contra_tecnico_nombre() -> None:
+    """Sin `slack_user_id` (default `None`, callers que no lo conocen), el filtro debe seguir siendo
+    una igualdad simple contra `tecnico_nombre` — comportamiento sin cambios."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    registrar_movimiento_ingreso(
+        session, camara=camara, botella=botella, tipo_movimiento="Egreso", tecnico_nombre="Rider Fernández"
+    )
+
+    filtros = session.query.return_value.filter.call_args[0]
+    _assert_filtro_null_safe(filtros, "tecnico_id", "Rider Fernández")
+
+
+def test_egreso_tecnico_nombre_y_slack_user_id_iguales_no_genera_in_redundante() -> None:
+    """Si `tecnico_nombre` y `slack_user_id` terminan siendo el mismo valor (ej.
+    `resolver_nombre_tecnico` cayó al id crudo porque `users.info` falló), el filtro debe seguir
+    siendo una igualdad simple, no un IN de un solo elemento."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="U03DPFK0Q69",
+        slack_user_id="U03DPFK0Q69",
+    )
+
+    filtros = session.query.return_value.filter.call_args[0]
+    _assert_filtro_null_safe(filtros, "tecnico_id", "U03DPFK0Q69")
+
+
+def test_egreso_tecnico_nombre_y_slack_user_id_ambos_none_exige_is_null_no_comodin() -> None:
+    """NULL-safe explícito con `slack_user_id=None` también pasado: ambos `None` debe seguir
+    exigiendo `tecnico_id IS NULL`, nunca tratarse como comodín que matchee cualquier técnico."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre=None,
+        slack_user_id=None,
+    )
+
+    filtros = session.query.return_value.filter.call_args[0]
+    _assert_filtro_null_safe(filtros, "tecnico_id", None)
+
+
+def test_ingreso_con_slack_user_id_escribe_tecnico_id_como_nombre_resuelto_no_id_crudo() -> None:
+    """Aunque se pase `slack_user_id`, una fila NUEVA de Ingreso siempre escribe `tecnico_id` =
+    `tecnico_nombre` (el nombre YA resuelto) — `slack_user_id` sólo sirve para ENCONTRAR una fila a
+    cerrar en el camino de Egreso, nunca se persiste."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Ingreso",
+        tecnico_nombre="rider.fernandez",
+        slack_user_id="U03DPFK0Q69",
+    )
+
+    assert resultado.tecnico_id == "rider.fernandez"
+
+
+def test_egreso_huerfano_nuevo_escribe_tecnico_id_como_nombre_resuelto() -> None:
+    """Misma garantía que el test anterior, para la fila EGRESO huérfana (sin match) que crea el
+    camino de Egreso."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="rider.fernandez",
+        slack_user_id="U03DPFK0Q69",
+    )
+
+    assert resultado.tecnico_id == "rider.fernandez"

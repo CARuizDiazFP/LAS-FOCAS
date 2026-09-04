@@ -257,13 +257,19 @@ class IngresoListener:
         sobre ella relanza `PendingRollbackError` hasta que se haga un `rollback()` explícito. Sin
         este `rollback()`, un solo fallo de escritura podía dejar sin respuesta a TODO el mensaje de
         Slack (no sólo a la fila que falló) — viola la garantía de nunca bloquear/romper la respuesta
-        por un fallo de DB."""
+        por un fallo de DB.
+
+        `resolver_nombre_tecnico` (llamada a la Slack Web API `users.info`) vive DENTRO del mismo
+        `try` que las escrituras de DB (revisión final 2026-09-04, hallazgo I3) — aunque ya tiene su
+        propio catch-all interno (nunca lanza), moverla adentro es defensa en profundidad: mismo
+        criterio del resto de este archivo de "nunca confiar en una sola capa" para la garantía de
+        nunca romper la respuesta de Slack ni dejar la `session` en estado inconsistente."""
         tipo = extraer_tipo_movimiento(texto_mensaje)
         if tipo is None:
             return
         slack_user_id = extraer_slack_user_id_autorizacion(texto_mensaje)
-        tecnico_nombre = resolver_nombre_tecnico(client, slack_user_id)
         try:
+            tecnico_nombre = resolver_nombre_tecnico(client, slack_user_id)
             if bloqueado and tipo == "Ingreso":
                 registrar_intento_bloqueado(
                     session,
@@ -278,6 +284,7 @@ class IngresoListener:
                 botella=resultado.botella,
                 tipo_movimiento=tipo,
                 tecnico_nombre=tecnico_nombre,
+                slack_user_id=slack_user_id,
             )
         except Exception as exc:
             try:
@@ -303,10 +310,28 @@ class IngresoListener:
            → :no_entry: con el motivo extraído de ``camaras_estado_auditoria`` del miembro baneado
            (no siempre `camara` misma — puede ser una Botella hermana).
         3. Cualquier otro estado → ✅ podés proceder.
+
+        Fail-open ante un error de `get_camara_estado_contexto` (revisión final 2026-09-04, hallazgo
+        I3): la función que este método reemplazó (`_obtener_incidentes_activos_camara`, retirada)
+        tenía su propio `try/except Exception: return []` — sin un guard equivalente acá, cualquier
+        excepción (hiccup de DB, lazy-load) se propagaría hasta el `except Exception` de
+        `_handle_message`, que NO postea ninguna respuesta en Slack — peor que el comportamiento
+        previo (que sí respondía ✅ ante un error puntual de este chequeo). Ante un fallo se cae al
+        mismo camino que `contexto is None`: no bloquea, responde ✅.
         """
         from db.models.infra import CamaraEstado
 
-        contexto = get_camara_estado_contexto(session, camara.id)
+        try:
+            contexto = get_camara_estado_contexto(session, camara.id)
+        except Exception as exc:
+            logger.warning(
+                "get_camara_estado_contexto falló para camara_id=%s — fail-open, no se bloquea el ingreso: %s",
+                camara.id,
+                exc,
+                exc_info=True,
+            )
+            contexto = None
+
         if contexto is None:
             logger.warning("get_camara_estado_contexto devolvió None para camara_id=%s ya resuelta", camara.id)
             return _ResultadoAccesoCamara(
@@ -731,6 +756,3 @@ class IngresoListener:
     def is_running(self) -> bool:
         """Retorna True si el listener está activo."""
         return self._running
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
