@@ -341,13 +341,15 @@ Ejecuta la acción elegida por el usuario:
 
 ### Tabla `ingresos`
 
-| Columna       | Tipo           | Descripción |
-|---------------|----------------|-------------|
-| `id`          | Integer (PK)   | ID autoincremental. |
-| `camara_id`   | FK → camaras   | Cámara de ingreso. |
-| `tecnico_id`  | String(128)    | ID del técnico. |
-| `fecha_inicio`| DateTime(tz)   | Fecha/hora de inicio. |
-| `fecha_fin`   | DateTime(tz)   | Fecha/hora de fin. |
+| Columna            | Tipo           | Descripción |
+|--------------------|----------------|-------------|
+| `id`               | Integer (PK)   | ID autoincremental. |
+| `camara_id`        | FK → camaras   | Cámara (o Botella legado) de ingreso. |
+| `cromo_botella_id` | FK → cromo_botellas.n_id (`ON DELETE SET NULL`), nullable | Botella Cromo específica del movimiento (migración `20260831_02`) — `null` cuando fue sobre la cámara padre directamente. |
+| `tecnico_id`       | String(128)    | Nombre/ID del técnico. Hasta el fix de 2026-09-04 guardaba el ID crudo de Slack (ej. `"U03DPFK0Q69"`) tal cual llegaba en el mensaje. **Desde ese fix**, las filas nuevas guardan el NOMBRE RESUELTO del técnico (vía `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`, que llama Slack `users.info`) — el nombre de columna se mantiene sin cambios (evita una migración de rename + actualizar consumidores fuera de alcance de ese fix). Filas escritas ANTES de ese deploy pueden todavía tener el ID crudo si nunca se cerraron con un Egreso posterior a la resolución. El cierre de un Egreso matchea contra AMBOS valores (nombre resuelto y, si se conoce, el `slack_user_id` crudo del mismo evento — ver `core/services/ingreso_service.py::_tecnico_id_filtro`) para poder cerrar tanto filas viejas como nuevas. |
+| `tipo`             | Enum `ingreso_tipo` | `INGRESO` \| `EGRESO` \| `INTENTO_BLOQUEADO` (migración `20260904_01`, default `INGRESO` para todo el histórico previo). Distingue un ingreso/egreso real de un intento bloqueado por baneo del grupo — ambos `INGRESO` "en curso" e `INTENTO_BLOQUEADO` comparten `fecha_fin IS NULL`, así que cualquier query de "ingreso activo" debe filtrar `tipo == 'INGRESO'` explícitamente (ver `camara_estado_service.get_camara_estado_contexto`, `ingreso_service.py` y `protection_service.py::_determinar_estado_restauracion`). |
+| `fecha_inicio`     | DateTime(tz)   | Fecha/hora de inicio. `null` en un Egreso huérfano sin Ingreso previo detectado. |
+| `fecha_fin`        | DateTime(tz)   | Fecha/hora de fin. `null` tanto en un `INGRESO` real "en curso" como en un `INTENTO_BLOQUEADO` (nunca se cierra con un Egreso, por diseño) — no alcanza con mirar sólo esta columna para saber si el movimiento sigue "abierto", hay que mirar `tipo`. |
 
 ### Tabla `ingresos_sin_match` (2026-08-11)
 

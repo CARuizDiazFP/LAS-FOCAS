@@ -756,6 +756,7 @@ Obtiene el resumen operativo base de una cámara para la vista dedicada del pane
         }
       ],
       "tiene_baneo_activo": true,
+      "tiene_incidente_activo": true,
       "tiene_ingreso_activo": false,
       "inconsistente": true,
       "estado_sugerido": "BANEADA",
@@ -775,7 +776,7 @@ Obtiene el resumen operativo base de una cámara para la vista dedicada del pane
   }
   ```
 
-- **Notas:** el `id` numérico de cámara es el identificador canónico usado por la tarjeta principal y por la ruta SPA `/infra/Camaras/:id`.
+- **Notas:** el `id` numérico de cámara es el identificador canónico usado por la tarjeta principal y por la ruta SPA `/infra/Camaras/:id`. `tiene_baneo_activo` es el signal AMPLIO (`True` si hay un `IncidenteBaneo` activo **o** un baneo manual — `Camara.estado == BANEADA` — en cualquier miembro del grupo Cámara/Botellas hermanas) y es el que consume este badge "Contexto operativo". `tiene_incidente_activo` (agregado 2026-09-04) es el signal ESTRECHO — sólo `IncidenteBaneo` activo — usado por el panel de "Baneos Activos" (`GET /api/admin/baneos/grupos` más abajo) para decidir si una liberación masiva necesita `forzar`; no lo usa este endpoint.
 
 ### GET `/api/infra/camaras/{camara_id}/aliases`
 
@@ -816,6 +817,7 @@ Obtiene registros operativos de una cámara para la vista dedicada: auditoría m
       "estado_actual": "LIBRE",
       "estado_sugerido": "BANEADA",
       "tiene_baneo_activo": true,
+      "tiene_incidente_activo": true,
       "tiene_ingreso_activo": false,
       "inconsistente": true,
       "incidentes_activos": [
@@ -860,23 +862,43 @@ Obtiene registros operativos de una cámara para la vista dedicada: auditoría m
         "id": 1,
         "fecha_inicio": "2026-08-31T17:07:24.172940+00:00",
         "fecha_fin": "2026-08-31T17:07:40.073927+00:00",
-        "tecnico_id": "U0AUB6CRE4A",
-        "cromo_botella_id": null
+        "tecnico_id": "rider.fernandez",
+        "cromo_botella_id": null,
+        "botella_label": "Botella 1",
+        "tipo": "INGRESO"
+      },
+      {
+        "id": 2,
+        "fecha_inicio": "2026-09-04T10:15:00+00:00",
+        "fecha_fin": null,
+        "tecnico_id": "rider.fernandez",
+        "cromo_botella_id": 555,
+        "botella_label": "Bot 2 Cra Mitre 440",
+        "tipo": "INTENTO_BLOQUEADO"
       }
     ]
   }
   ```
 
 - **Notas:** `ingresos` (desde 2026-08-31) refleja movimientos reales de `app.ingresos` — se escriben
-  automáticamente desde el `IngresoListener` de Slack (`registrar_movimiento_ingreso()`, ver
-  `docs/infra.md` sección "Escritura de `Ingreso` sobre el grupo"), no hay alta manual. Incluye
-  ingresos de la cámara consultada **y** de todas sus botellas hermanas del mismo grupo
-  (`miembros_del_grupo`), ordenados por `fecha_inicio` descendente (nulls al final), límite 50. Una
-  fila con `fecha_fin: null` es un ingreso todavía abierto; `fecha_inicio: null` (posible sólo en un
-  Egreso sin Ingreso previo registrado) indica que se detectó la salida pero no la entrada.
-  `cromo_botella_id` viene poblado sólo cuando el movimiento fue sobre una botella Cromo específica
-  dentro del grupo, `null` cuando fue sobre la cámara padre. Reemplaza el bloque `placeholders`
-  (`ingresos`/`egresos` fijos) que existía antes de esa fecha.
+  automáticamente desde el `IngresoListener` de Slack (`registrar_movimiento_ingreso()`/
+  `registrar_intento_bloqueado()`, ver `docs/infra.md` sección "Escritura de `Ingreso` sobre el
+  grupo"), no hay alta manual. Incluye ingresos de la cámara consultada **y** de todas sus botellas
+  hermanas del mismo grupo (`miembros_del_grupo`), ordenados por `fecha_inicio` descendente (nulls al
+  final), límite 50. `tecnico_id` guarda el NOMBRE resuelto del técnico (vía Slack `users.info`,
+  desde 2026-09-04) en filas nuevas — filas escritas antes de esa fecha pueden todavía tener el ID
+  crudo de Slack (ver `docs/db.md`, columna `app.ingresos.tecnico_id`). `botella_label` (desde
+  2026-09-04, nunca `null`) es el nombre legible de la Botella intervenida — "Botella 1" por
+  convención cuando no se especificó ninguna (es la Cámara raíz misma), el nombre propio de una
+  Botella legado, el nombre de la `CromoBotella` resuelta, o `"Botella #<id>"` como último fallback.
+  `tipo` (desde 2026-09-04) distingue `INGRESO`/`EGRESO`/`INTENTO_BLOQUEADO` — **importante:** tanto
+  un `INGRESO` real "en curso" como un `INTENTO_BLOQUEADO` (bloqueado por baneo del grupo, nunca
+  llega a ocurrir) tienen `fecha_fin: null` — no asumir que `fecha_fin: null` por sí solo significa
+  "ingreso todavía abierto", hay que mirar `tipo` para distinguirlos. `fecha_inicio: null` (posible
+  sólo en un Egreso sin Ingreso previo registrado, `tipo=EGRESO`) indica que se detectó la salida pero
+  no la entrada. `cromo_botella_id` viene poblado sólo cuando el movimiento fue sobre una botella
+  Cromo específica dentro del grupo, `null` cuando fue sobre la cámara padre o una Botella legado.
+  Reemplaza el bloque `placeholders` (`ingresos`/`egresos` fijos) que existía antes del 2026-08-31.
 
 ### GET `/api/infra/servicios/{servicio_id}/ingresos`
 
@@ -896,8 +918,10 @@ Obtiene los registros de ingreso/egreso de técnico (Slack) a las cámaras que a
         "id": 1,
         "fecha_inicio": "2026-08-31T17:07:24.172940+00:00",
         "fecha_fin": "2026-08-31T17:07:40.073927+00:00",
-        "tecnico_id": "U0AUB6CRE4A",
+        "tecnico_id": "rider.fernandez",
         "cromo_botella_id": null,
+        "botella_label": "Botella 1",
+        "tipo": "INGRESO",
         "camara_id": 2724,
         "camara_nombre": "Cra Ruta 8 Km 34 MALVINAS ARGENTINAS"
       }
@@ -906,7 +930,7 @@ Obtiene los registros de ingreso/egreso de técnico (Slack) a las cámaras que a
   ```
 
 - **Respuesta 404** (`{"error": "Servicio {servicio_id} no encontrado"}`) si el identificador no matchea ningún `Servicio`.
-- **Notas:** las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio()` (`core/services/protection_service.py`), que ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada. `total` es la cantidad de filas devueltas (post-`limit(100)`, no un total real contra todo lo que matchea — no asumir que sigue creciendo más allá de 100). Cada item lleva los mismos campos que `_serialize_camara_ingreso` (ver `GET /api/infra/camaras/{camara_id}/registros` arriba) más `camara_id`/`camara_nombre` de la cámara concreta a la que corresponde ese movimiento dentro del servicio. Consumido por `ServicioDetalleView.vue` (sección "Ingresos").
+- **Notas:** las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio()` (`core/services/protection_service.py`), que ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada. `total` es la cantidad de filas devueltas (post-`limit(100)`, no un total real contra todo lo que matchea — no asumir que sigue creciendo más allá de 100). Cada item lleva los mismos campos que `_serialize_camara_ingreso` (ver `GET /api/infra/camaras/{camara_id}/registros` arriba, incluidos `botella_label`/`tipo` desde 2026-09-04) más `camara_id`/`camara_nombre` de la cámara concreta a la que corresponde ese movimiento dentro del servicio. Consumido por `ServicioDetalleView.vue` (sección "Ingresos").
 
 ### GET `/api/infra/rutas/{ruta_id}/tracking`
 
@@ -1513,7 +1537,8 @@ Admin.
         "motivo": "Corte preventivo",
         "usuario": "operador1",
         "fecha": "2026-08-20T09:00:00+00:00",
-        "tiene_baneo_activo": false,
+        "tiene_baneo_activo": true,
+        "tiene_incidente_activo": false,
         "ticket_baneo": null,
         "incidentes_activos_ids": [],
         "estado_mixto": false,
@@ -1523,11 +1548,19 @@ Admin.
   }
   ```
 
-- **Notas:** `tiene_baneo_activo`/`ticket_baneo`/`incidentes_activos_ids` describen si hay un
-  `IncidenteBaneo` del Protocolo de Protección detrás del baneo (`puede_liberar = not tiene_baneo_activo`).
-  `estado_mixto` es un concepto distinto: alguna Botella hija en un estado distinto al de su raíz
-  (posible legado de datos previos al fix de cascada, o de un `lift_ban` parcial) — no implica nada
-  sobre el Protocolo de Protección.
+- **Notas:** este panel es exclusivamente sobre el Protocolo de Protección (baneo por incidente) —
+  `tiene_incidente_activo`/`ticket_baneo`/`incidentes_activos_ids` describen si hay un
+  `IncidenteBaneo` activo detrás del baneo, y `puede_liberar = not tiene_incidente_activo` (fix
+  2026-09-04: antes usaba el signal amplio `tiene_baneo_activo`, que también agregado ese mismo día
+  para el badge "Contexto operativo" — ver `GET /api/infra/camaras/{camara_id}` arriba — bloqueaba
+  incorrectamente la liberación de CUALQUIER grupo baneado, incluido uno baneado sólo manualmente sin
+  ningún incidente detrás). `tiene_baneo_activo` sigue presente, sólo informativo (True si el grupo
+  está baneado por cualquier motivo, incidente o manual) — no gobierna `puede_liberar`. El ejemplo de
+  arriba muestra justamente ese caso: `tiene_baneo_activo=true` (el grupo está BANEADA) pero
+  `tiene_incidente_activo=false` (sin incidente detrás) → `puede_liberar=true`, se puede liberar sin
+  `forzar`. `estado_mixto` es un concepto distinto: alguna Botella hija en un estado distinto al de su
+  raíz (posible legado de datos previos al fix de cascada, o de un `lift_ban` parcial) — no implica
+  nada sobre el Protocolo de Protección.
 
 ### POST `/api/admin/baneos/grupos/liberar`
 
@@ -1558,11 +1591,16 @@ borrado físico** de Cámaras/Botellas. Admin, CSRF.
   }
   ```
 
-- **Guard de incidente activo:** sin `forzar`, un grupo con un `IncidenteBaneo` activo detrás se omite
-  (`razon_omision="bloqueado_por_incidente"`) — `override_camara_estado_manual` NUNCA se llama para ese
-  grupo, para no levantar un baneo que el Protocolo de Protección todavía necesita. Con `forzar=true`
-  sobre un grupo con incidente activo, el destino es siempre `LIBRE`; sin incidente activo, el destino
-  es `estado_sugerido` (puede ser `OCUPADA` si hay un ingreso activo, no `LIBRE` hardcodeado).
+- **Guard de incidente activo:** sin `forzar`, un grupo con `tiene_incidente_activo=true` (un
+  `IncidenteBaneo` activo detrás — NUNCA un baneo sólo manual, ver nota de `GET
+  /api/admin/baneos/grupos` arriba) se omite (`razon_omision="bloqueado_por_incidente"`) —
+  `override_camara_estado_manual` NUNCA se llama para ese grupo, para no levantar un baneo que el
+  Protocolo de Protección todavía necesita. Un grupo baneado sólo manualmente (sin incidente) nunca
+  necesita `forzar`. El destino de la liberación se calcula directamente: `OCUPADA` si el grupo tiene
+  un ingreso activo real, si no `LIBRE` — tanto con `forzar=true` sobre un incidente activo como sin
+  él, nunca a través de `estado_sugerido` (fix 2026-09-04: `estado_sugerido` deriva del signal amplio
+  `tiene_baneo_activo`, así que para un grupo con baneo manual seguía devolviendo `BANEADA` en el
+  momento de calcular el contexto — usarlo acá era un no-op disfrazado de liberación).
 - **Notas:** dos ids del mismo grupo en `camara_ids` se deduplican silenciosamente (una sola fila en
   `detalle`, `total_solicitados` puede ser mayor que `len(detalle)`). `403` CSRF inválido; `400` si
   `camara_ids` o `motivo` vienen vacíos.
