@@ -63,6 +63,17 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    worktree nuevo. Para aislamiento real de directorio (ej. trabajo paralelo de subagentes) usar
    `superpowers:using-git-worktrees`, que es un mecanismo independiente y combinable (un worktree
    puede tener a su vez su propia rama efímera adentro).
+   **Preferir un worktree desde el arranque (no sólo cuando ya hay un problema) siempre que exista
+   sospecha de sesión concurrente en el mismo checkout** — verificable con `ListAgents` (sesiones
+   Claude Code hermanas en la misma máquina). Hallazgo real (2026-09-04, ver
+   `docs/cierres/2026-09-04.md`): un `checkout -b` normal (sin worktree) deja el `HEAD`/working
+   directory compartido con cualquier otra sesión activa en el mismo checkout; un commit ajeno de esa
+   sesión (`docs(cierres): ...` de otro trabajo, sin relación) aterrizó por accidente en la rama
+   efímera de esta tarea simplemente porque era el `HEAD` activo en ese momento — no hubo pérdida de
+   trabajo (nada se borró ni se forzó), pero exigió coordinación reactiva vía mensaje entre sesiones
+   para deshacer el cruce. Un worktree nuevo desde el inicio de una tarea larga (SDD, migraciones,
+   trabajo con subagentes) evita el problema por completo en vez de tener que detectarlo y repararlo
+   después.
 
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,

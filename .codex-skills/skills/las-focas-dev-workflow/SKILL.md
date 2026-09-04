@@ -153,7 +153,7 @@ Si el cambio requiere tocar producción, documentarlo en `docs/decisiones.md` y 
 4. **No commitear** archivos `.env`, `.env.dev`, `Keys/`, `*.pem`, `*.key` ni binarios generados.
 5. Si detectás que estás en `main`: crear la rama efímera desde `origin/dev` antes de proceder, no cherry-pickear a ciegas.
 6. La operación `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
-7. Una rama efímera es un `git checkout -b`, no un worktree nuevo — para aislamiento de directorio usar `superpowers:using-git-worktrees` (mecanismo independiente y combinable).
+7. Una rama efímera es un `git checkout -b`, no un worktree nuevo — para aislamiento de directorio usar `superpowers:using-git-worktrees` (mecanismo independiente y combinable). Preferir un worktree desde el arranque (no recién cuando ya hay un problema) si hay sospecha de sesión concurrente en el mismo checkout (verificable con `ListAgents`) — un `checkout -b` normal comparte `HEAD`/working directory con cualquier otra sesión activa; hallazgo real 2026-09-04 (ver `docs/cierres/2026-09-04.md`): un commit ajeno de otra sesión aterrizó por accidente en la rama efímera de esta tarea por ese motivo.
 
 ## Relación con otras skills
 
