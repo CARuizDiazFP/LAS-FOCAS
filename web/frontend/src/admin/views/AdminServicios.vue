@@ -4,8 +4,7 @@
   Descripción: Vista /admin/servicios — grid de tarjetas de servicios configurables
 -->
 <template>
-  <h1>Servicios</h1>
-  <p class="section-subtitle">Configuración y estado de los servicios del sistema.</p>
+  <AdminPageHeader kicker="Panel admin" title="Servicios" subtitle="Configuración y estado de los servicios del sistema." />
 
   <div class="service-grid">
     <ServiceCard
@@ -20,10 +19,17 @@
       description="Notificaciones Slack del worker de cámaras baneadas. Configura intervalo, canales y estado."
       icon="🚫"
     />
+    <ServiceCard
+      to="/admin/servicios/viewer"
+      title="Viewer"
+      description="Dashboards de datos operativos para mantenimiento — Cámaras y próximos módulos."
+      icon="📡"
+    />
     <!-- Futuras tarjetas de servicio se agregan aquí -->
   </div>
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ServiceCard from '../components/ServiceCard.vue';
 </script>

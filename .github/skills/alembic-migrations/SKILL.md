@@ -36,3 +36,11 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
 1. Toda migración debe preservar datos salvo advertencia explícita.
 2. Toda migración debe incluir `downgrade()` salvo excepción justificada.
 3. Revisar SQL antes de aplicar cambios delicados en entornos reales.
+4. Si el cambio de esquema modifica el SIGNIFICADO de un campo/función ya existente y ampliamente
+   consumido (no sólo agrega uno nuevo), grep-auditar TODOS los consumidores reales de ese campo/función
+   en el repo — no sólo los que la tarea o el plan ya tocan — antes de dar el cambio por completo.
+   Hallazgo real (2026-09-04, ver `docs/cierres/2026-09-04.md`): ampliar el significado de
+   `tiene_baneo_activo` en `get_camara_estado_contexto()` fue correcto para sus consumidores previstos
+   (badge web, listener de Slack), pero rompió silenciosamente `baneos_grupos_service.py` (panel admin
+   de baneos activos), un consumidor preexistente nunca auditado por el plan de esa tarea — sólo lo
+   detectó una revisión final de rama completa, no las revisiones acotadas por tarea.

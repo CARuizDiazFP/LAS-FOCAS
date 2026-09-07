@@ -3,7 +3,7 @@ name: "las-focas-skill-generator"
 description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas anti-legacy"
 metadata:
   short-description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas..."
-  source: ".github/skills/skill-generator/SKILL.md"
+  source: ".agentes-comunes/skills/skill-generator/SKILL.md"
   triggers:
     - "skill-generator"
     - "habilidad"
@@ -31,7 +31,7 @@ metadata:
 
 # Skill portable: skill-generator
 
-> Fuente original: `.github/skills/skill-generator/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/skill-generator/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Generador de Skills
 

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import re
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -75,9 +74,8 @@ def _login_admin(client: TestClient, monkeypatch) -> None:
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
-    client.post("/login", data={"username": "admin", "password": "admin"})
-    html = client.get("/").text
-    assert re.search(r'window.CSRF_TOKEN = "([\w-]+)";', html)
+    res = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    assert res.json()["ok"] is True
 
 
 def test_create_ban_web_notifica_slack(monkeypatch):

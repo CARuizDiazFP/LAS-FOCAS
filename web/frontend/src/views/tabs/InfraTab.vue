@@ -538,7 +538,7 @@
             />
           </div>
           <button class="btn subtle" @click="addTerm">Agregar término</button>
-          <button class="btn primary" :disabled="loading || (searchTerms.length === 0 && !activeStateFilter)" @click="searchCamaras">
+          <button class="btn primary" :disabled="loading" @click="runSearch">
             <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
             Buscar
           </button>
@@ -562,15 +562,19 @@
             :class="['infra-legend-item', { active: activeStateFilter === item.estado }]"
             @click="toggleStateFilter(item.estado)"
           >
-            <span v-if="item.estado !== 'TRACKING'" :class="['infra-legend-dot', item.dotClass]"></span>
-            <i v-else class="ph ph-map-pin" aria-hidden="true"></i>
+            <span :class="['infra-legend-dot', item.dotClass]"></span>
             {{ item.estado }}
             <span class="infra-legend-count">{{ legendCounts[item.estado] ?? 0 }}</span>
           </button>
 
           <span class="infra-count">
-            <strong>{{ filteredCamaras.length }}</strong> cámaras
+            <strong>{{ camaras.length }}</strong> cámaras
           </span>
+
+          <label class="infra-toggle-no-operativas">
+            <input type="checkbox" v-model="incluirNoOperativas" @change="onToggleIncluirNoOperativas" />
+            Mostrar No operativas
+          </label>
         </div>
 
         <div v-if="statusText" :class="['fop-status', statusVariant]">{{ statusText }}</div>
@@ -581,20 +585,16 @@
         Buscando...
       </div>
       <div v-else-if="!hasSearched" class="infra-state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <p>Agregá términos de búsqueda y presioná "Buscar"</p>
+        <i class="ph ph-circle-notch infra-spin" aria-hidden="true"></i>
+        Cargando cámaras...
       </div>
       <div v-else-if="camaras.length === 0" class="infra-state-box">
         <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <p>Sin resultados para estos términos.</p>
-      </div>
-      <div v-else-if="filteredCamaras.length === 0" class="infra-state-box">
-        <i class="ph ph-map-pin" aria-hidden="true"></i>
-        <p>Sin cámaras en TRACKING con los términos actuales.</p>
+        <p>Sin resultados.</p>
       </div>
       <div v-else class="fop-grid">
         <article
-          v-for="camara in filteredCamaras"
+          v-for="camara in camaras"
           :key="camara.id"
           class="fop-camara-card"
           :data-estado="camara.estado ?? 'LIBRE'"
@@ -603,7 +603,7 @@
           <div class="infra-camara-row">
             <span :class="['infra-camara-dot', estadoDotClass(camara.estado)]" aria-hidden="true"></span>
             <span class="infra-camara-estado-text">{{ camara.estado || 'LIBRE' }}</span>
-            <span v-if="camara.id != null" class="fop-camara-id">ID {{ camara.id }}</span>
+            <span v-if="camara.id != null" class="fop-camara-id">{{ camaraIdLabel(camara) }}</span>
           </div>
 
           <h3 class="fop-camara-nombre">{{ camara.nombre || camara.direccion || 'Sin nombre' }}</h3>
@@ -619,6 +619,14 @@
             >Detalle</RouterLink>
           </div>
         </article>
+      </div>
+
+      <div v-if="!loading && hasSearched && total > PAGE_SIZE" class="infra-pagination">
+        <button class="btn subtle" type="button" :disabled="offset === 0" @click="prevPage">‹ Anterior</button>
+        <span class="infra-pagination-info">
+          Página {{ Math.floor(offset / PAGE_SIZE) + 1 }} de {{ Math.max(1, Math.ceil(total / PAGE_SIZE)) }}
+        </span>
+        <button class="btn subtle" type="button" :disabled="offset + PAGE_SIZE >= total" @click="nextPage">Siguiente ›</button>
       </div>
     </div>
   </article>
@@ -657,6 +665,13 @@ const hasSearched = ref(false);
 const statusText = ref('');
 const statusVariant = ref('muted');
 
+// --- Paginación del lado del servidor (2026-08-13) — antes /infra no cargaba nada hasta que el
+// usuario escribía un término o tocaba un chip de estado; ahora carga sin filtros al montar,
+// paginado en `offset`/`limit`, igual contrato que ya soporta POST /api/infra/smart-search.
+const PAGE_SIZE = 100;
+const offset = ref(0);
+const total = ref(0);
+
 function setStatus(text: string, variant = 'muted') {
   statusText.value = text;
   statusVariant.value = variant;
@@ -680,70 +695,76 @@ function removeTerm(i: number) {
 function clearAll() {
   searchTerms.value = [];
   searchInput.value = '';
-  camaras.value = [];
-  hasSearched.value = false;
   activeStateFilter.value = null;
-  setStatus('');
+  incluirNoOperativas.value = false;
+  void runSearch();
 }
 
 // --- Filtro rápido por estado ---
 const activeStateFilter = ref<string | null>(null);
 
-function toggleStateFilter(estado: string) {
-  activeStateFilter.value = activeStateFilter.value === estado ? null : estado;
-  // Si ya hay resultados, el computed filtra instantáneamente sin nueva llamada.
-  // Si no hay resultados aún (primera interacción), disparar búsqueda "traer todo".
-  if (activeStateFilter.value !== null && !hasSearched.value) {
-    searchCamaras();
-  }
+// --- Toggle "Mostrar No operativas" — ortogonal al chip de estado, oculto por defecto (hay que
+// activarlo para verlas), se combina con cualquier chip activo en vez de competir con ellos.
+const incluirNoOperativas = ref(false);
+
+function onToggleIncluirNoOperativas() {
+  void runSearch();
 }
 
-// El filtro de estado se aplica en el servidor (salvo TRACKING, que depende de la relación rutas).
-// Este computed solo filtra client-side para el caso especial TRACKING.
-const filteredCamaras = computed(() => {
-  if (activeStateFilter.value === 'TRACKING') {
-    return camaras.value.filter(c => ((c.rutas as unknown[]) ?? []).length > 0);
-  }
-  return camaras.value;
-});
+function toggleStateFilter(estado: string) {
+  activeStateFilter.value = activeStateFilter.value === estado ? null : estado;
+  void runSearch();
+}
 
+// DETECTADA y el pseudo-estado "TRACKING" (client-side, basado en camara.rutas.length > 0) fueron
+// retirados del sistema (2026-08-11) — el estado operable de Cámara/Botella se redujo a
+// LIBRE/OCUPADA/BANEADA/NO_OPERATIVA (ver scripts/retirar_estado_detectada.py).
 const legendItems = [
   { estado: 'LIBRE', dotClass: 'libre' },
   { estado: 'OCUPADA', dotClass: 'ocupada' },
   { estado: 'BANEADA', dotClass: 'baneada' },
-  { estado: 'DETECTADA', dotClass: 'detectada' },
-  { estado: 'TRACKING', dotClass: 'tracking' },
+  { estado: 'NO_OPERATIVA', dotClass: 'no_operativa' },
 ];
 
 const legendCounts = computed<Record<string, number>>(() => {
-  const counts: Record<string, number> = { LIBRE: 0, OCUPADA: 0, BANEADA: 0, DETECTADA: 0, TRACKING: 0 };
+  const counts: Record<string, number> = { LIBRE: 0, OCUPADA: 0, BANEADA: 0, NO_OPERATIVA: 0 };
   for (const camara of camaras.value) {
     const estado = String(camara.estado ?? 'LIBRE').toUpperCase();
     if (estado in counts) counts[estado] += 1;
-    if (((camara.rutas as unknown[]) ?? []).length > 0) counts.TRACKING += 1;
   }
   return counts;
 });
 
 function estadoDotClass(estado: unknown): string {
   const value = String(estado ?? 'libre').toLowerCase();
-  return ['libre', 'ocupada', 'baneada', 'detectada'].includes(value) ? value : 'libre';
+  return ['libre', 'ocupada', 'baneada', 'no_operativa'].includes(value) ? value : 'libre';
 }
 
 function camaraMeta(camara: Record<string, unknown>): string {
   const servicios = ((camara.servicios as unknown[]) ?? []).length;
-  return servicios > 0 ? `${servicios} servicio${servicios !== 1 ? 's' : ''}` : 'Sin relevar';
+  const botellas = Number(camara.botellas_count ?? 0);
+  const partes: string[] = [];
+  if (botellas > 0) partes.push(`${botellas} botella${botellas !== 1 ? 's' : ''}`);
+  partes.push(servicios > 0 ? `${servicios} servicio${servicios !== 1 ? 's' : ''}` : 'Sin relevar');
+  return partes.join(' · ');
+}
+
+function camaraIdLabel(camara: Record<string, unknown>): string {
+  // Etapa Cámara/Botella: fallback al ID interno — el ID de Cromo/Fontine aún no está garantizado
+  // para todas las cámaras (hoy 0% poblado en dev, ver docs/infra.md).
+  const fontineId = camara.fontine_id;
+  if (typeof fontineId === 'string' && fontineId.trim()) return fontineId;
+  return `ID ${camara.id}`;
 }
 
 async function searchCamaras() {
-  // Permitir la búsqueda si hay términos de texto O si hay un filtro de estado activo.
-  // Con terms:[] la API devuelve todas las cámaras (ver SmartSearchRequestModel).
-  if (searchTerms.value.length === 0 && !activeStateFilter.value) return;
   loading.value = true;
   hasSearched.value = true;
   const statusMsg = searchTerms.value.length > 0
     ? `Buscando con ${searchTerms.value.length} término(s)...`
-    : `Cargando cámaras ${activeStateFilter.value}...`;
+    : activeStateFilter.value
+      ? `Cargando cámaras ${activeStateFilter.value}...`
+      : 'Cargando cámaras...';
   setStatus(statusMsg, 'loading');
   try {
     const res = await fetch('/api/infra/smart-search', {
@@ -752,12 +773,10 @@ async function searchCamaras() {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         terms: searchTerms.value,
-        limit: activeStateFilter.value === 'TRACKING' ? 500 : 100,
-        offset: 0,
-        // Para TRACKING no enviamos estado al backend (no es un CamaraEstado enum); filtramos client-side.
-        ...(activeStateFilter.value && activeStateFilter.value !== 'TRACKING'
-          ? { estado: activeStateFilter.value }
-          : {}),
+        limit: PAGE_SIZE,
+        offset: offset.value,
+        incluir_no_operativas: incluirNoOperativas.value,
+        ...(activeStateFilter.value ? { estado: activeStateFilter.value } : {}),
       }),
     });
     if (!res.ok) {
@@ -766,23 +785,46 @@ async function searchCamaras() {
     }
     const data = await res.json();
     camaras.value = data.camaras ?? [];
+    total.value = data.total ?? camaras.value.length;
     const count = camaras.value.length;
-    const total = data.total ?? count;
     setStatus(
       count === 0
-        ? 'Sin resultados para estos términos'
-        : total > count
-          ? `Mostrando ${count} de ${total} cámaras`
-          : `${count} cámara${count !== 1 ? 's' : ''} encontrada${count !== 1 ? 's' : ''}`,
+        ? 'Sin resultados'
+        : `Mostrando ${offset.value + 1}–${offset.value + count} de ${total.value} cámaras`,
       count > 0 ? 'success' : 'muted',
     );
   } catch (e: unknown) {
     camaras.value = [];
+    total.value = 0;
     setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`, 'error');
   } finally {
     loading.value = false;
   }
 }
+
+// Cualquier cambio de términos/filtro es una consulta NUEVA — vuelve a la página 1.
+function runSearch(): Promise<void> {
+  offset.value = 0;
+  return searchCamaras();
+}
+
+function goToPage(newOffset: number): void {
+  if (newOffset < 0 || newOffset >= total.value || loading.value) return;
+  offset.value = newOffset;
+  void searchCamaras();
+}
+
+function nextPage(): void {
+  goToPage(offset.value + PAGE_SIZE);
+}
+
+function prevPage(): void {
+  goToPage(offset.value - PAGE_SIZE);
+}
+
+onMounted(() => {
+  void runSearch();
+});
 
 // --- Camera cards ---
 const RUTA_COLORS: Record<string, string> = {
@@ -1242,6 +1284,13 @@ interface AnalyzeResult {
   error?: string | null; upgrade_info?: UpgradeInfo | null; strand_info?: StrandInfo | null;
   punta_a_sitio?: string | null; punta_b_sitio?: string | null;
 }
+// Respuesta de POST /api/infra/trackings/resolve. `ubicaciones_sin_match` es nuevo (Tarea 3 del
+// refactor "Adjuntar tracking", 2026-08-23): ubicaciones que no matchearon contra Camara/CromoBotella
+// y quedaron registradas en IngresoSinMatch para revisión manual.
+interface ResolveResponse {
+  success: boolean; message?: string; error?: string; detail?: string;
+  ubicaciones_sin_match?: number;
+}
 
 const trackingFileInputEl = ref<HTMLInputElement | null>(null);
 const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);
@@ -1359,13 +1408,20 @@ async function resolveTracking(action: string, extras: Record<string, unknown> =
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
-    if (!(data as Record<string, boolean>).success) {
-      throw new Error((data as Record<string, string>).error ?? 'Error al resolver el tracking');
+    const data = (await res.json()) as ResolveResponse;
+    if (!res.ok) throw new Error(data.detail ?? `Error ${res.status}`);
+    if (!data.success) {
+      throw new Error(data.error ?? 'Error al resolver el tracking');
     }
     closeUploadModal();
-    showToast('success', 'Tracking procesado', (data as Record<string, string>).message ?? '');
+    showToast('success', 'Tracking procesado', data.message ?? '');
+    if (data.ubicaciones_sin_match && data.ubicaciones_sin_match > 0) {
+      showToast(
+        'warning',
+        'Ubicaciones sin match',
+        `${data.ubicaciones_sin_match} ubicación(es) sin cámara/botella asociada — revisar en Ingresos sin match`,
+      );
+    }
     if (hasSearched.value) await searchCamaras();
   } catch (e: unknown) {
     showToast('error', 'Error al procesar tracking', e instanceof Error ? e.message : String(e));
@@ -1498,6 +1554,8 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-chips-separator { width: 1px; height: 15px; background: var(--color-divider); }
 .infra-count { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 55%, transparent); white-space: nowrap; }
 .infra-count strong { color: var(--color-text); font-weight: 500; }
+.infra-toggle-no-operativas { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 65%, transparent); cursor: pointer; user-select: none; white-space: nowrap; }
+.infra-toggle-no-operativas input { accent-color: var(--color-accent); }
 .fop-status { font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
 .fop-status.error { color: var(--color-state-error); }
 .fop-status.success { color: var(--color-state-ok); }
@@ -1520,6 +1578,15 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 @media (max-width: 1024px) { .fop-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .fop-grid { grid-template-columns: 1fr; } }
 
+.infra-pagination {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 4px 26px 16px; flex-shrink: 0;
+}
+.infra-pagination-info {
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
 .fop-camara-card {
   display: flex; flex-direction: column; gap: 9px;
   padding: 12px 13px 11px; border-radius: var(--radius-md);
@@ -1532,7 +1599,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-camara-dot.libre { background: var(--color-state-ok); }
 .infra-camara-dot.ocupada { background: var(--color-state-warn); }
 .infra-camara-dot.baneada { background: var(--color-state-error); }
-.infra-camara-dot.detectada { background: var(--color-state-idle); }
+.infra-camara-dot.no_operativa { background: var(--color-state-idle); }
 .infra-camara-estado-text {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
   color: color-mix(in srgb, var(--color-text) 62%, transparent);
@@ -1652,7 +1719,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-legend-dot.libre { background: var(--color-state-ok); }
 .infra-legend-dot.ocupada { background: var(--color-state-warn); }
 .infra-legend-dot.baneada { background: var(--color-state-error); }
-.infra-legend-dot.detectada { background: var(--color-state-idle); }
+.infra-legend-dot.no_operativa { background: var(--color-state-idle); }
 .infra-legend-count { font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 42%, transparent); }
 
 /* Modal genérico compartido */

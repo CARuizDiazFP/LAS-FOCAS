@@ -4,7 +4,7 @@
 ---
 name: "skill-libreoffice-convert"
 description: "Usar cuando haya que convertir documentos con office_service o depurar flujos DOCX a PDF con LibreOffice headless"
-source: ".github/skills/libreoffice-convert/SKILL.md"
+source: ".agentes-comunes/skills/libreoffice-convert/SKILL.md"
 triggers:
   - "libreoffice-convert"
   - "habilidad"

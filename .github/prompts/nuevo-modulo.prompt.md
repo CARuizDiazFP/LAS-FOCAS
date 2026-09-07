@@ -41,16 +41,24 @@ Antes de crear archivos, establecer:
 
 ### 2. Crear estructura estandar del modulo frontend
 
+**Estructura real confirmada (2026-08-10) contra los 3 módulos comparables ya en el repo —
+`ServiciosView.vue`, `InventarioCablesCromoView.vue`, `BotellasInventarioView.vue` — ninguno usa
+subcarpeta por módulo ni sufijo `.api.ts`; la versión anterior de este prompt prescribía una
+estructura que ningún módulo real sigue:**
+
 ```
 web/frontend/src/
-├── views/<Modulo>/<ModuloView>.vue
+├── views/<Modulo>View.vue          # PLANO bajo views/, nunca views/<Modulo>/<Modulo>View.vue
 ├── components/<modulo>/
-│   ├── <Modulo>Filtro.vue
-│   ├── <Modulo>Tabla.vue
-│   └── <Modulo>EstadoVacio.vue
-├── composables/use<Modulo>.ts
-├── api/<modulo>.api.ts
-└── router/ (actualizar rutas existentes o modulo de rutas)
+│   ├── <Modulo>Card.vue            # si hay vista de tarjeta + lista con toggle (ver ServiciosView)
+│   └── ...
+├── composables/use<Modulo>.ts      # SÓLO si el estado se comparte entre 2+ vistas — si el estado
+│                                     # vive únicamente en la vista (caso más común: scroll infinito +
+│                                     # debounce + toggle grid/list), queda inline en el
+│                                     # <script setup> de la vista, sin composable — así están
+│                                     # ServiciosView/InventarioCablesCromoView/BotellasInventarioView
+├── api/<modulo>.ts                  # NUNCA <modulo>.api.ts — cero archivos con ese sufijo en el repo
+└── router/index.ts (agregar la ruta ahí, es único, no hay "modulo de rutas" separado)
 ```
 
 Si el alcance requiere backend, no mezclarlo en la vista: documentar contrato API y coordinar handoff con `api.agent.md`.
@@ -59,7 +67,7 @@ Si el alcance requiere backend, no mezclarlo en la vista: documentar contrato AP
 
 1. Composition API obligatoria (`<script setup lang="ts">`, `ref`, `reactive`, `computed`).
 2. Capa API separada en `src/api/`, sin fetch/axios embebido en template.
-3. Estado y logica de pantalla en composables reutilizables.
+3. Estado y logica de pantalla inline en la vista salvo que se comparta entre 2+ vistas — recién ahí extraer a un composable (ver estructura arriba).
 4. UI con CSS modular y tokens del proyecto.
 5. Respuesta de errores UX clara (loading, empty, error, retry).
 

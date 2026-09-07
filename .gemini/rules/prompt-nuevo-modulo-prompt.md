@@ -66,16 +66,19 @@ Antes de crear archivos, establecer:
 
 ### 2. Crear estructura estandar del modulo frontend
 
+**Estructura real confirmada (2026-08-10) contra los modulos ya existentes** — `ServiciosView.vue`,
+`InventarioCablesCromoView.vue`, `BotellasInventarioView.vue` — ninguno usa subcarpeta por modulo ni
+sufijo `.api.ts`:
+
 ```
 web/frontend/src/
-├── views/<Modulo>/<ModuloView>.vue
+├── views/<Modulo>View.vue          # PLANO bajo views/, nunca views/<Modulo>/<Modulo>View.vue
 ├── components/<modulo>/
-│   ├── <Modulo>Filtro.vue
-│   ├── <Modulo>Tabla.vue
-│   └── <Modulo>EstadoVacio.vue
-├── composables/use<Modulo>.ts
-├── api/<modulo>.api.ts
-└── router/ (actualizar rutas existentes o modulo de rutas)
+│   └── <Modulo>Card.vue            # si hay vista de tarjeta + lista con toggle
+├── composables/use<Modulo>.ts      # SOLO si el estado se comparte entre 2+ vistas — si vive solo en
+│                                     # la vista, queda inline en su <script setup>
+├── api/<modulo>.ts                  # NUNCA <modulo>.api.ts — cero archivos con ese sufijo en el repo
+└── router/index.ts (agregar la ruta ahi, es unico)
 ```
 
 Si el alcance requiere backend, no mezclarlo en la vista: documentar contrato API y coordinar handoff con `api.agent.md`.

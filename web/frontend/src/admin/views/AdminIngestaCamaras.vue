@@ -5,8 +5,11 @@
 -->
 <template>
   <section class="admin-ingesta">
-    <h1>Ingesta de Cámaras</h1>
-    <p class="section-subtitle">Carga masiva de cámaras desde Excel y aplicación de baneo administrativo.</p>
+    <AdminPageHeader
+      kicker="Ingesta · Cámaras"
+      title="Ingesta de Cámaras"
+      subtitle="Carga masiva de cámaras desde Excel y aplicación de baneo administrativo."
+    />
 
     <article class="card ingesta-card">
       <header class="ingesta-card__header">
@@ -42,16 +45,20 @@
 
       <dl v-if="summary" class="summary-grid">
         <div>
-          <dt>Creadas</dt>
-          <dd>{{ summary.creadas }}</dd>
+          <dt>Leídos</dt>
+          <dd>{{ summary.total_leidos }}</dd>
         </div>
         <div>
-          <dt>Preexistentes</dt>
-          <dd>{{ summary.preexistentes }}</dd>
+          <dt>Grupos baneados</dt>
+          <dd class="dd--warn">{{ summary.grupos_baneados }}</dd>
         </div>
         <div>
-          <dt>Baneadas</dt>
-          <dd class="dd--warn">{{ summary.baneadas }}</dd>
+          <dt>Ya baneados</dt>
+          <dd>{{ summary.grupos_ya_baneados }}</dd>
+        </div>
+        <div v-if="summary.sin_match.length > 0">
+          <dt>Sin match</dt>
+          <dd class="dd--err">{{ summary.sin_match.length }}</dd>
         </div>
         <div v-if="summary.errores.length > 0">
           <dt>Errores</dt>
@@ -66,6 +73,74 @@
         </ul>
       </details>
     </article>
+
+    <article v-if="sinMatchPendientes.length > 0" class="card">
+      <header class="ingesta-card__header">
+        <h2>Revisor Manual</h2>
+        <span class="ingesta-card__chip ingesta-card__chip--warn">{{ sinMatchPendientes.length }} pendientes</span>
+      </header>
+      <p class="revisor-hint">
+        Nombres del Excel que no matchearon contra el inventario. Asocialos a una Cámara/Botella existente
+        (crea un alias para que futuros Excel con el mismo texto matcheen solos) o descartalos de esta vista.
+      </p>
+
+      <p v-if="revisorFeedback" :class="['msg', revisorFeedbackType === 'ok' ? 'ok' : 'err', 'visible']">
+        {{ revisorFeedback }}
+      </p>
+
+      <table class="revisor-tabla">
+        <thead>
+          <tr>
+            <th class="revisor-tabla__check">
+              <input
+                type="checkbox"
+                :checked="todosSeleccionados"
+                aria-label="Seleccionar todos"
+                @change="toggleTodos"
+              />
+            </th>
+            <th>Nombre original</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="caso in sinMatchPendientes" :key="caso.id">
+            <td class="revisor-tabla__check">
+              <input
+                type="checkbox"
+                :checked="seleccionados.has(caso.id)"
+                @change="toggleSeleccion(caso.id)"
+              />
+            </td>
+            <td>{{ caso.texto_original }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div v-if="seleccionados.size > 0" class="revisor-acciones">
+        <span class="revisor-acciones__count">{{ seleccionados.size }} seleccionado(s)</span>
+        <button class="btn subtle" type="button" @click="abrirDescartarMasivo">Descartar seleccionados</button>
+        <button class="btn primary" type="button" @click="abrirAsociarSinMatch">Asociar seleccionados…</button>
+      </div>
+    </article>
+
+    <ModalConfirmarAccionMasiva
+      :open="modalDescartarOpen"
+      titulo="Descartar de la vista"
+      :mensaje="mensajeDescartarMasivo"
+      :confirmando="descartando"
+      :error="descartarError"
+      :resultado="descartarResultado"
+      @close="cerrarDescartarMasivo"
+      @confirm="confirmarDescartarMasivo"
+    />
+
+    <ModalAsociarSinMatch
+      :open="modalAsociarOpen"
+      :casos="casosParaAsociar"
+      :motivo-sugerido="motivoBaneo"
+      @close="modalAsociarOpen = false"
+      @asociada="onAsociada"
+    />
 
     <!-- Modal de motivo de baneo -->
     <dialog ref="dialogEl" class="motivo-modal" @click.self="cancelarModal">
@@ -107,9 +182,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
-import { ingestCamarasFile, type IngestCamarasResponse } from '../../api/camaras';
+import AdminPageHeader from '../components/AdminPageHeader.vue';
+import ModalConfirmarAccionMasiva from '../../components/infra/ModalConfirmarAccionMasiva.vue';
+import ModalAsociarSinMatch from '../components/ModalAsociarSinMatch.vue';
+import { ingestCamarasFile, type AsociarSinMatchResponse, type IngestCamarasResponse } from '../../api/camaras';
+import { getIngresosSinMatch, marcarRevisadoMasivo, type IngresoSinMatch } from '../api/admin';
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const dialogEl = ref<HTMLDialogElement | null>(null);
@@ -125,6 +204,106 @@ const statusText = ref('Listo para cargar');
 const feedback = ref('');
 const feedbackType = ref<'ok' | 'err'>('ok');
 const summary = ref<IngestCamarasResponse | null>(null);
+
+// ─── Revisor Manual: nombres del Excel que no matchearon contra el inventario ───
+const sinMatchPendientes = ref<IngresoSinMatch[]>([]);
+const seleccionados = ref<Set<number>>(new Set());
+const revisorFeedback = ref('');
+const revisorFeedbackType = ref<'ok' | 'err'>('ok');
+
+const todosSeleccionados = computed(
+  () => sinMatchPendientes.value.length > 0 && seleccionados.value.size === sinMatchPendientes.value.length,
+);
+
+function toggleSeleccion(id: number): void {
+  const next = new Set(seleccionados.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  seleccionados.value = next;
+}
+
+function toggleTodos(): void {
+  seleccionados.value = todosSeleccionados.value
+    ? new Set()
+    : new Set(sinMatchPendientes.value.map((caso) => caso.id));
+}
+
+async function cargarSinMatchPendientes(): Promise<void> {
+  sinMatchPendientes.value = await getIngresosSinMatch(false, 'excel_camaras');
+  const idsVigentes = new Set(sinMatchPendientes.value.map((caso) => caso.id));
+  seleccionados.value = new Set([...seleccionados.value].filter((id) => idsVigentes.has(id)));
+}
+
+onMounted(() => {
+  void cargarSinMatchPendientes();
+});
+
+// ─── Descarte masivo — no borra nada real, sólo marca revisado=true ────────
+const modalDescartarOpen = ref(false);
+const descartando = ref(false);
+const descartarError = ref('');
+const descartarResultado = ref<string | null>(null);
+
+const mensajeDescartarMasivo = computed(
+  () =>
+    `Se van a marcar ${seleccionados.value.size} nombre(s) como revisados y desaparecen de esta lista. ` +
+    'La fila queda en la base para poder mejorar el regex de matching a futuro — no se borra ningún dato real.',
+);
+
+function abrirDescartarMasivo(): void {
+  descartarError.value = '';
+  descartarResultado.value = null;
+  modalDescartarOpen.value = true;
+}
+
+function cerrarDescartarMasivo(): void {
+  modalDescartarOpen.value = false;
+}
+
+async function confirmarDescartarMasivo(): Promise<void> {
+  descartando.value = true;
+  descartarError.value = '';
+  try {
+    await marcarRevisadoMasivo([...seleccionados.value]);
+    seleccionados.value = new Set();
+    modalDescartarOpen.value = false;
+    await cargarSinMatchPendientes();
+  } catch (err: unknown) {
+    descartarError.value = err instanceof Error ? err.message : 'No se pudo descartar la selección';
+  } finally {
+    descartando.value = false;
+  }
+}
+
+// ─── Asociación manual a una Cámara/Botella existente ──────────────────────
+const modalAsociarOpen = ref(false);
+
+const casosParaAsociar = computed(() =>
+  sinMatchPendientes.value
+    .filter((caso) => seleccionados.value.has(caso.id))
+    .map((caso) => ({ caso_id: caso.id, nombre: caso.texto_original })),
+);
+
+function abrirAsociarSinMatch(): void {
+  modalAsociarOpen.value = true;
+}
+
+async function onAsociada(resultado: AsociarSinMatchResponse): Promise<void> {
+  modalAsociarOpen.value = false;
+  seleccionados.value = new Set();
+  if (resultado.conflictos.length > 0) {
+    const nombres = resultado.conflictos.map((c) => c.nombre).join(', ');
+    revisorFeedbackType.value = 'err';
+    revisorFeedback.value = `${resultado.conflictos.length} nombre(s) no se asociaron porque ya tienen un alias hacia otra Cámara: ${nombres}. Siguen pendientes.`;
+  } else if (resultado.error) {
+    revisorFeedbackType.value = 'err';
+    revisorFeedback.value = `Asociación aplicada con una advertencia: ${resultado.error}`;
+  } else {
+    revisorFeedbackType.value = 'ok';
+    revisorFeedback.value = `Asociado a "${resultado.camara_nombre}" (${resultado.alias_creados} alias nuevo(s), ${resultado.casos_marcados} caso(s) marcado(s)).`;
+  }
+  await cargarSinMatchPendientes();
+}
 
 function onSelectFile(event: Event): void {
   const target = event.target as HTMLInputElement;
@@ -177,7 +356,8 @@ async function confirmarBaneo(): Promise<void> {
     progress.value = 100;
     statusText.value = 'Ingesta completada';
     feedbackType.value = 'ok';
-    feedback.value = `Proceso finalizado: ${result.creadas} cámaras creadas, ${result.preexistentes} preexistentes, ${result.baneadas} baneadas.`;
+    feedback.value = `Proceso finalizado: ${result.grupos_baneados} grupo(s) baneado(s), ${result.grupos_ya_baneados} ya baneado(s), ${result.sin_match.length} sin match.`;
+    await cargarSinMatchPendientes();
   } catch (err: unknown) {
     feedbackType.value = 'err';
     feedback.value = err instanceof Error ? err.message : 'No se pudo completar la ingesta';
@@ -200,7 +380,6 @@ async function confirmarBaneo(): Promise<void> {
 .ingesta-card {
   display: grid;
   gap: var(--space-3);
-  background: linear-gradient(180deg, rgba(16, 22, 31, 0.98), rgba(10, 14, 20, 0.96));
 }
 
 .ingesta-card__header {
@@ -216,23 +395,23 @@ async function confirmarBaneo(): Promise<void> {
 
 .ingesta-card__chip {
   font-size: 0.75rem;
-  color: #dbeafe;
-  background: rgba(37, 99, 235, 0.25);
-  border: 1px solid rgba(37, 99, 235, 0.55);
+  color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
   border-radius: var(--radius-pill);
   padding: 2px 10px;
 }
 
 .ingesta-card__chip--warn {
-  color: #fef3c7;
-  background: rgba(217, 119, 6, 0.25);
-  border-color: rgba(217, 119, 6, 0.55);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 25%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
 }
 
 .ingesta-card__dropzone {
-  border: 1px dashed rgba(251, 191, 36, 0.55);
+  border: 1px dashed color-mix(in srgb, var(--warning) 55%, transparent);
   border-radius: var(--radius-lg);
-  background: rgba(30, 41, 59, 0.45);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
   min-height: 110px;
   display: grid;
   place-content: center;
@@ -243,8 +422,8 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .ingesta-card__dropzone:hover:not(.ingesta-card__dropzone--disabled) {
-  border-color: rgba(251, 191, 36, 0.9);
-  background: rgba(30, 41, 59, 0.65);
+  border-color: color-mix(in srgb, var(--warning) 90%, transparent);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
 }
 
 .ingesta-card__dropzone--disabled {
@@ -268,28 +447,28 @@ async function confirmarBaneo(): Promise<void> {
 .progress-track {
   height: 12px;
   border-radius: 999px;
-  background: #0b1220;
-  border: 1px solid #1f2937;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #2563eb, #38bdf8 60%, #22d3ee);
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.5);
+  background: linear-gradient(90deg, var(--color-accent-700), var(--color-accent) 60%, var(--color-accent-300));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 50%, transparent);
   transition: width 0.2s ease;
 }
 
 .progress-bar--warn {
-  background: linear-gradient(90deg, #d97706, #f59e0b 60%, #fbbf24);
-  box-shadow: 0 0 16px rgba(251, 191, 36, 0.5);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--warning) 70%, black), var(--warning) 60%, color-mix(in srgb, var(--warning) 70%, white));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--warning) 50%, transparent);
 }
 
 .progress-meta {
   display: flex;
   justify-content: space-between;
   font-size: 0.82rem;
-  color: #bfdbfe;
+  color: var(--color-neutral-400);
 }
 
 .summary-grid {
@@ -303,7 +482,7 @@ async function confirmarBaneo(): Promise<void> {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--color-bg);
 }
 
 .summary-grid dt {
@@ -318,11 +497,11 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .dd--warn {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .dd--err {
-  color: #f87171;
+  color: var(--error);
 }
 
 .errores-detalle {
@@ -332,7 +511,7 @@ async function confirmarBaneo(): Promise<void> {
 
 .errores-detalle summary {
   cursor: pointer;
-  color: #f87171;
+  color: var(--error);
   margin-bottom: 8px;
 }
 
@@ -344,31 +523,8 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .errores-list li {
-  color: #fca5a5;
+  color: var(--error);
   word-break: break-word;
-}
-
-.msg {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font-size: 0.88rem;
-  display: none;
-}
-
-.msg.visible {
-  display: block;
-}
-
-.msg.ok {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.35);
-  color: #6ee7b7;
-}
-
-.msg.err {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #fca5a5;
 }
 
 /* ─── Modal ─────────────────────────────────────────────────────────────── */
@@ -385,8 +541,8 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 28px;
   display: grid;
@@ -429,9 +585,9 @@ async function confirmarBaneo(): Promise<void> {
 .badge-baneada {
   font-size: 0.75rem;
   font-weight: 700;
-  color: #fef3c7;
-  background: rgba(217, 119, 6, 0.3);
-  border: 1px solid rgba(217, 119, 6, 0.6);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 60%, transparent);
   border-radius: var(--radius-pill);
   padding: 1px 8px;
 }
@@ -443,12 +599,12 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .required {
-  color: #f87171;
+  color: var(--error);
 }
 
 .modal-textarea {
   width: 100%;
-  background: rgba(15, 23, 42, 0.7);
+  background: var(--color-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
@@ -472,7 +628,7 @@ async function confirmarBaneo(): Promise<void> {
 
 .modal-error {
   font-size: 0.82rem;
-  color: #f87171;
+  color: var(--error);
   margin: -8px 0 0;
 }
 
@@ -483,13 +639,55 @@ async function confirmarBaneo(): Promise<void> {
 }
 
 .btn.subtle {
-  background: rgba(30, 41, 59, 0.5);
+  background: var(--color-neutral-900);
   border: 1px solid var(--border);
   color: var(--muted);
 }
 
 .btn.subtle:hover:not(:disabled) {
-  background: rgba(30, 41, 59, 0.8);
+  background: var(--color-neutral-800);
   color: var(--text);
+}
+
+/* ─── Revisor Manual ────────────────────────────────────────────────────── */
+.revisor-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.revisor-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.revisor-tabla th,
+.revisor-tabla td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-divider);
+  text-align: left;
+}
+
+.revisor-tabla th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.revisor-tabla__check {
+  width: 32px;
+}
+
+.revisor-acciones {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.revisor-acciones__count {
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 </style>

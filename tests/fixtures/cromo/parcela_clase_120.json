@@ -1,0 +1,14 @@
+{
+  "_fuente": "Reconstruido a partir de docs/Doc Privada/ingesta_cromo.md capítulo 2, fila 1: clase 120 = parcela catastral, no botella.",
+  "id": 88888888,
+  "n_id": 88888888,
+  "class": 120,
+  "type": 3,
+  "closed": 1,
+  "is_container": 0,
+  "pts": [1.0, 1.0, 2.0, 1.0, 2.0, 2.0, 1.5, 2.5, 1.0, 2.0, 1.0, 1.0],
+  "at": [
+    {"seq": 1, "id": 116, "value": "CIRC-01"},
+    {"seq": 2, "id": 117, "value": "MZ-02-PARC-15"}
+  ]
+}

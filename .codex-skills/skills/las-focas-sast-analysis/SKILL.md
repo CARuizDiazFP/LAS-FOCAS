@@ -3,7 +3,7 @@ name: "las-focas-sast-analysis"
 description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensible, XSS/CORS o superficie de ataque"
 metadata:
   short-description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensi..."
-  source: ".github/skills/sast-analysis/SKILL.md"
+  source: ".agentes-comunes/skills/sast-analysis/SKILL.md"
   triggers:
     - "sast-analysis"
     - "habilidad"
@@ -39,7 +39,7 @@ metadata:
 
 # Skill portable: sast-analysis
 
-> Fuente original: `.github/skills/sast-analysis/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/sast-analysis/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: SAST Analysis
 

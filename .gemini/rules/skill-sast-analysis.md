@@ -4,7 +4,7 @@
 ---
 name: "skill-sast-analysis"
 description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensible o superficie de ataque"
-source: ".github/skills/sast-analysis/SKILL.md"
+source: ".agentes-comunes/skills/sast-analysis/SKILL.md"
 triggers:
   - "sast-analysis"
   - "habilidad"

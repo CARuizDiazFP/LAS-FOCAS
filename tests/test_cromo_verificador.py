@@ -1,0 +1,382 @@
+# Nombre de archivo: test_cromo_verificador.py
+# Ubicación de archivo: tests/test_cromo_verificador.py
+# Descripción: Pruebas del verificador de servicios Cromo (consultas por cable/tubo/botella) sin DB real
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+import pytest
+
+from core.services.cromo import verificador
+
+
+class _ResultadoFilas:
+    def __init__(self, filas: list[tuple]) -> None:
+        self._filas = filas
+
+    def all(self):
+        return self._filas
+
+    def first(self):
+        return self._filas[0] if self._filas else None
+
+
+class _SesionFake:
+    """Reemplaza sólo `execute`: matchea por substring de la consulta compilada, como en test_cromo_ingesta.py."""
+
+    def __init__(self, respuestas: Optional[dict[str, list[tuple]]] = None) -> None:
+        self._respuestas = respuestas or {}
+
+    async def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
+        texto = str(stmt)
+        for clave, filas in self._respuestas.items():
+            if clave in texto:
+                return _ResultadoFilas(filas)
+        return _ResultadoFilas([])
+
+
+_FILA_SERVICIO = (
+    501,  # s.id
+    "SRV-001",  # s.servicio_id
+    "SRV-001",  # numero_primer_servicio
+    "Cliente Uno",  # nombre_cliente
+    "Cliente Uno SA",  # cliente
+    "ACTIVO",  # estado_servicio
+    1,  # categoria
+    "CORPORATIVO",  # tipo_servicio
+    9001,  # pelo n_id
+    "1234",  # servicio_numero (match)
+    "REGEX_EXACTO",  # metodo
+)
+
+
+# ── servicios_por_cable ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_cable_no_encontrado():
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_por_cable(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_cable_sin_matches():
+    sesion = _SesionFake(
+        respuestas={"FROM app.cromo_cables": [(51, "Cable Troncal 1", "72-BRUG", "Botella A", "Botella B")]}
+    )
+    resultado = await verificador.servicios_por_cable(sesion, 51)
+
+    assert resultado.cable_n_id == 51
+    assert resultado.nombre == "Cable Troncal 1"
+    assert resultado.servicios == []
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_cable_referencia_colgada_con_matches():
+    """El cable no tiene fila propia (todavía no bajó en su página de la Fase 2) pero sus pelos sí
+    tienen servicio matcheado — caso real encontrado al validar contra `lasfocasdev-postgres`: no debe
+    tratarse como "no encontrado", sólo la metadata del cable queda en None."""
+    sesion = _SesionFake(respuestas={"cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO]})
+    resultado = await verificador.servicios_por_cable(sesion, 10191706)
+
+    assert resultado.cable_n_id == 10191706
+    assert resultado.nombre is None
+    assert len(resultado.servicios) == 1
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_cable_con_matches():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_cables": [(51, "Cable Troncal 1", "72-BRUG", "Botella A", "Botella B")],
+            "cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO],
+        }
+    )
+    resultado = await verificador.servicios_por_cable(sesion, 51)
+
+    assert len(resultado.servicios) == 1
+    servicio = resultado.servicios[0]
+    assert servicio.servicio_id == 501
+    assert servicio.servicio_id_externo == "SRV-001"
+    assert servicio.pelo_n_id == 9001
+    assert servicio.metodo == "REGEX_EXACTO"
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_cable_referencia_colgada_sin_matches():
+    """El cable no tiene fila propia ni pelos con servicio, pero sí hay pelos que lo referencian
+    (sin servicio) — existe, pero no tiene ningún servicio matcheado todavía."""
+    sesion = _SesionFake(respuestas={"FROM app.cromo_pelos WHERE cable_n_id": [(1,)]})
+    resultado = await verificador.servicios_por_cable(sesion, 10191706)
+
+    assert resultado.cable_n_id == 10191706
+    assert resultado.nombre is None
+    assert resultado.servicios == []
+
+
+# ── servicios_por_tubo ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_tubo_no_encontrado():
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_por_tubo(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_tubo_con_matches():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_tubos": [(129001, 51, 3, "AZUL")],
+            "cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO],
+        }
+    )
+    resultado = await verificador.servicios_por_tubo(sesion, 129001)
+
+    assert resultado.tubo_n_id == 129001
+    assert resultado.cable_n_id == 51
+    assert resultado.nombre_color == "AZUL"
+    assert len(resultado.servicios) == 1
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_tubo_referencia_colgada_con_matches():
+    """Mismo hallazgo real que en cable: el tubo puede tener servicio matcheado sin fila propia."""
+    sesion = _SesionFake(respuestas={"cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO]})
+    resultado = await verificador.servicios_por_tubo(sesion, 10191747)
+
+    assert resultado.tubo_n_id == 10191747
+    assert resultado.cable_n_id is None
+    assert len(resultado.servicios) == 1
+
+
+# ── servicios_por_botella ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_no_encontrada():
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_por_botella(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_con_matches():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(68001, "ODF Central", 69, "CABA")],
+            "JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id": [_FILA_SERVICIO],
+        }
+    )
+    resultado = await verificador.servicios_por_botella(sesion, 68001)
+
+    assert resultado.botella_n_id == 68001
+    assert resultado.clase == 69
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].nombre_cliente == "Cliente Uno"
+    assert resultado.cables == []  # sin fixture para _SQL_CABLES_DE_BOTELLA en este test
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_referencia_colgada_con_matches():
+    """Mismo hallazgo real: la botella puede tener servicios matcheados vía sus cables aunque su
+    propia fila todavía no haya bajado (bottella extremo de un cable ya ingerido, ella no)."""
+    sesion = _SesionFake(respuestas={"JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id": [_FILA_SERVICIO]})
+    resultado = await verificador.servicios_por_botella(sesion, 68003)
+
+    assert resultado.botella_n_id == 68003
+    assert resultado.clase is None
+    assert len(resultado.servicios) == 1
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_sin_matches():
+    sesion = _SesionFake(respuestas={"FROM app.cromo_botellas": [(68002, None, 68, None)]})
+    resultado = await verificador.servicios_por_botella(sesion, 68002)
+
+    assert resultado.nombre is None
+    assert resultado.servicios == []
+    assert resultado.cables == []
+
+
+# ── servicios_por_botella — cables asociados (tarjeta "Cables asociados") ───
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_cables_asociados():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(68001, "ODF Central", 69, "CABA")],
+            "SELECT c.n_id, c.nombre": [(51, "Cable Troncal 1", 3), (52, None, 0)],
+        }
+    )
+    resultado = await verificador.servicios_por_botella(sesion, 68001)
+
+    assert len(resultado.cables) == 2
+    assert resultado.cables[0].n_id == 51
+    assert resultado.cables[0].nombre == "Cable Troncal 1"
+    assert resultado.cables[0].cantidad_servicios == 3
+    assert resultado.cables[1].nombre is None
+    assert resultado.cables[1].cantidad_servicios == 0
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_botella_sin_cables_asociados():
+    """Botella existente pero sin ningún cable que la tenga como extremo: `cables` queda vacío, no
+    es motivo de "no encontrada" (ese chequeo depende de la fila propia o de los servicios, no de
+    esta lista)."""
+    sesion = _SesionFake(respuestas={"FROM app.cromo_botellas": [(68004, "Botella aislada", 68, None)]})
+    resultado = await verificador.servicios_por_botella(sesion, 68004)
+
+    assert resultado.cables == []
+
+
+# ── tiene_cables_asociados_batch_sync — señal "operativa" para el dashboard de duplicados ──────
+
+
+class _SesionSyncFake:
+    """Igual que `_SesionFake`, pero `execute` es sync — `tiene_cables_asociados_batch_sync` usa
+    `Session` (sqlalchemy.orm), no `AsyncSession`."""
+
+    def __init__(self, respuestas: Optional[dict[str, list[tuple]]] = None) -> None:
+        self._respuestas = respuestas or {}
+
+    def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
+        texto = str(stmt)
+        for clave, filas in self._respuestas.items():
+            if clave in texto:
+                return _ResultadoFilas(filas)
+        return _ResultadoFilas([])
+
+
+def test_tiene_cables_asociados_batch_sync_lista_vacia_no_consulta():
+    sesion = _SesionSyncFake()
+    assert verificador.tiene_cables_asociados_batch_sync(sesion, []) == set()
+
+
+def test_tiene_cables_asociados_batch_sync_arma_set_con_ambos_extremos():
+    sesion = _SesionSyncFake(
+        respuestas={"FROM app.cromo_cables WHERE extremo_a_n_id": [(111,), (222,)]}
+    )
+    resultado = verificador.tiene_cables_asociados_batch_sync(sesion, [111, 222, 333])
+
+    assert resultado == {111, 222}
+    assert 333 not in resultado
+
+
+# ── camara_ids_por_servicio_sync — Refactor baneos: servicio → botellas Cromo → camara_id ──────
+
+
+def test_camara_ids_por_servicio_sync_sin_matches():
+    sesion = _SesionSyncFake()
+    resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
+
+    assert resultado == set()
+
+
+def test_camara_ids_por_servicio_sync_un_camara_id():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_servicio_match m": [(42,)]})
+    resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
+
+    assert resultado == {42}
+
+
+def test_camara_ids_por_servicio_sync_multiples_camara_ids():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_servicio_match m": [(42,), (43,), (42,)]})
+    resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
+
+    assert resultado == {42, 43}
+
+
+def test_camara_ids_por_servicio_sync_filtra_null_en_sql():
+    """No se puede ejecutar Postgres real acá (sesión fake), pero se fija en el texto de la consulta
+    que el filtro `IS NOT NULL` sigue presente — es lo que garantiza que una CromoBotella sin
+    `camara_id` resuelto todavía (vínculo a jerarquía Cámara/Botella pendiente) nunca llegue a Python
+    como candidata a banear."""
+    assert "camara_id IS NOT NULL" in str(verificador._SQL_CAMARA_IDS_POR_SERVICIO)
+
+
+# ── servicio_ids_por_camaras_sync — inversa, para _camara_tiene_otro_baneo_activo ───────────────
+
+
+def test_servicio_ids_por_camaras_sync_lista_vacia_no_consulta():
+    sesion = _SesionSyncFake()
+    assert verificador.servicio_ids_por_camaras_sync(sesion, []) == set()
+
+
+def test_servicio_ids_por_camaras_sync_un_servicio_id():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_botellas b": [("52547",)]})
+    resultado = verificador.servicio_ids_por_camaras_sync(sesion, [1])
+
+    assert resultado == {"52547"}
+
+
+def test_servicio_ids_por_camaras_sync_multiples_servicio_ids():
+    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_botellas b": [("52547",), ("88888",)]})
+    resultado = verificador.servicio_ids_por_camaras_sync(sesion, [1, 2, 3])
+
+    assert resultado == {"52547", "88888"}
+
+
+# ── servicios_por_odf (Tarea 4, plan ODFs) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_no_encontrado():
+    """A diferencia de cable/tubo/botella, un ODF no tiene tolerancia a "referencia colgada": sólo
+    existe si tiene fila propia en `cromo_odfs`, nada más lo referencia como parent."""
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_por_odf(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_sin_matches():
+    sesion = _SesionFake(respuestas={"SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+        (901, "ODF Calle 9 Nro 593 PILAR", "ODF", "PILAR")
+    ]})
+
+    resultado = await verificador.servicios_por_odf(sesion, 901)
+
+    assert resultado.odf_n_id == 901
+    assert resultado.nombre == "ODF Calle 9 Nro 593 PILAR"
+    assert resultado.tipo_elemento == "ODF"
+    assert resultado.localidad == "PILAR"
+    assert resultado.servicios == []
+    assert resultado.cables == []
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_con_servicios_y_cables():
+    sesion = _SesionFake(
+        respuestas={
+            "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+                (901, "ODF Calle 9 Nro 593 PILAR", "ODF", "PILAR")
+            ],
+            "WHERE p.cable_n_id IN (": [_FILA_SERVICIO],
+            "FROM app.cromo_cables c\n    WHERE c.n_id IN (": [(111, "Cable A", 1)],
+        }
+    )
+
+    resultado = await verificador.servicios_por_odf(sesion, 901)
+
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].servicio_id_externo == "SRV-001"
+    assert resultado.cables == [verificador.CableDeBotella(n_id=111, nombre="Cable A", cantidad_servicios=1)]
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_sin_cables_asociados_devuelve_vacio_sin_error():
+    """Estado degradado esperado (no un error) mientras el volumen real de `cables_asociados`
+    poblado sea bajo — ver brief de la Tarea 4."""
+    sesion = _SesionFake(respuestas={"SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
+        (902, "ODF sin cables", "SIN_CLASIFICAR", None)
+    ]})
+
+    resultado = await verificador.servicios_por_odf(sesion, 902)
+
+    assert resultado.servicios == []
+    assert resultado.cables == []

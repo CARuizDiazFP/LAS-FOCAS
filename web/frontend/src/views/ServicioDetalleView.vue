@@ -14,7 +14,7 @@
     <header class="servicio-detalle__header">
       <div class="servicio-detalle__identity">
         <span class="servicio-detalle__kicker">Servicio · ID origen {{ servicio?.numero_primer_servicio || '---' }}</span>
-        <h1>{{ servicio?.nombre_cliente || 'Cliente sin dato' }}</h1>
+        <h1 :class="{ 'is-baja': estadoToken === 'error' }">{{ servicio?.nombre_cliente || 'Cliente sin dato' }}</h1>
         <p class="servicio-detalle__domicilio">{{ domicilio }}</p>
       </div>
 
@@ -25,7 +25,33 @@
           <span class="servicio-detalle__separator" aria-hidden="true"></span>
           <span class="servicio-detalle__chip">{{ (servicio?.tipo_servicio || 'Sin dato').toUpperCase() }}</span>
           <span v-if="servicio?.sla_prometido" class="servicio-detalle__chip is-outline">SLA {{ servicio.sla_prometido }}</span>
+          <span class="servicio-detalle__separator" aria-hidden="true"></span>
+          <select
+            v-if="isAdmin && servicio"
+            class="servicio-detalle__categoria-select"
+            :value="servicio.categoria"
+            :disabled="guardandoCategoria"
+            @change="onCambiarCategoria(Number(($event.target as HTMLSelectElement).value))"
+          >
+            <option v-for="categoria in CATEGORIAS_SERVICIO" :key="categoria" :value="categoria">
+              {{ categoriaLabel(categoria) }}
+            </option>
+          </select>
+          <span v-else-if="servicio" class="servicio-detalle__chip is-outline">{{ categoriaLabel(servicio.categoria) }}</span>
+          <select
+            v-if="isAdmin && servicio"
+            class="servicio-detalle__verificable-select"
+            :value="String(servicio.es_verificable)"
+            :disabled="guardandoVerificable"
+            @change="onCambiarVerificable(($event.target as HTMLSelectElement).value === 'true')"
+          >
+            <option value="true">Verificable</option>
+            <option value="false">No verificable</option>
+          </select>
+          <span v-else-if="servicio && !servicio.es_verificable" class="servicio-detalle__chip is-warning">No verificable</span>
         </div>
+        <p v-if="errorCategoria" class="servicio-detalle__categoria-error">{{ errorCategoria }}</p>
+        <p v-if="errorVerificable" class="servicio-detalle__categoria-error">{{ errorVerificable }}</p>
 
         <div class="servicio-detalle__actions">
           <button class="btn subtle" type="button" disabled title="Próximamente">
@@ -42,20 +68,37 @@
 
     <hr class="noc-rule" />
 
-    <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
-      <span class="servicio-detalle__historico-label">Histórico de IDs</span>
-      <div class="servicio-detalle__historico-track">
-        <template v-for="(id, index) in historicoIds" :key="`${id}-${index}`">
-          <span :class="['servicio-detalle__nodo', { 'is-current': index === historicoIds.length - 1 }]">{{ id }}</span>
-          <i v-if="index < historicoIds.length - 1" class="ph ph-arrow-right" aria-hidden="true"></i>
-        </template>
-      </div>
-    </section>
-
     <p v-if="error" class="servicio-detalle__error">{{ error }}</p>
     <p v-if="loading" class="servicio-detalle__loading">Cargando detalle del servicio...</p>
 
     <template v-if="servicio">
+      <!-- Dentro del gate `v-if="servicio"` (igual que el resto de los paneles): afuera, el
+           Timeline mostraba "Sin eventos para mostrar" mientras cargaba o cuando el detalle
+           fallaba, y el botón "Actualizar desde PROV" quedaba clickeable sin servicio cargado
+           (`onRefrescarDesdeProv` devuelve temprano si `servicio` es null → click muerto). -->
+      <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
+        <div class="servicio-detalle__historico-header">
+          <span class="servicio-detalle__historico-label">Histórico de IDs</span>
+          <button class="btn subtle" type="button" :disabled="refrescandoProv" @click="onRefrescarDesdeProv">
+            <i :class="['ph', refrescandoProv ? 'ph-spinner' : 'ph-arrow-clockwise']" aria-hidden="true"></i>
+            {{ refrescandoProv ? 'Actualizando…' : 'Actualizar desde PROV' }}
+          </button>
+        </div>
+        <p v-if="errorRefrescoProv" class="servicio-detalle__categoria-error">{{ errorRefrescoProv }}</p>
+        <ServiceTimeline :events="timelineEvents" />
+      </section>
+
+      <section v-if="equiposUltimaMilla.length > 0" class="servicio-detalle__equipos" aria-label="Equipos de última milla">
+        <span class="servicio-detalle__historico-label">Equipos de última milla</span>
+        <div class="servicio-detalle__equipos-grid">
+          <div v-for="equipo in equiposUltimaMilla" :key="equipo.extremo" class="servicio-detalle__equipo-card">
+            <span class="servicio-detalle__equipo-extremo">Extremo {{ equipo.extremo }}</span>
+            <span>{{ equipo.nodo || 'Nodo sin dato' }}</span>
+            <span>{{ equipo.equipo || 'Equipo sin dato' }} · Puerto {{ equipo.puerto || '—' }}</span>
+          </div>
+        </div>
+      </section>
+
       <section class="servicio-detalle__metrics" aria-label="Métricas del servicio">
         <div class="servicio-detalle__metric">
           <span class="servicio-detalle__metric-label">Reclamos 12m</span>
@@ -129,6 +172,10 @@
             </p>
           </template>
 
+          <p v-if="odfsLoading" class="servicio-detalle__kv"><span>ODFs asociadas</span><span>Cargando...</span></p>
+          <p v-else-if="odfsError" class="servicio-detalle__kv is-error"><span>ODFs asociadas</span><span>{{ odfsError }}</span></p>
+          <p v-else class="servicio-detalle__kv"><span>ODFs asociadas</span><span>{{ totalOdfs }}</span></p>
+
           <div class="servicio-detalle__panel-actions">
             <RouterLink class="servicio-detalle__panel-link" to="/infra">Ir a Infra FO</RouterLink>
             <RouterLink class="servicio-detalle__panel-link" to="/infra">Ver tracking</RouterLink>
@@ -142,9 +189,18 @@
             <small>Trazabilidad</small>
           </header>
           <div class="servicio-detalle__hairline"></div>
-          <p class="servicio-detalle__kv-text">
-            Contenedor preparado para registrar ingresos a cámaras por las que tributa el servicio, con trazabilidad operativa.
+
+          <p v-if="ingresosLoading" class="servicio-detalle__kv"><span>Ingresos</span><span>Cargando...</span></p>
+          <p v-else-if="ingresosError" class="servicio-detalle__kv is-error"><span>Ingresos</span><span>{{ ingresosError }}</span></p>
+          <p v-else-if="ingresos.length === 0" class="servicio-detalle__kv-text">
+            Sin ingresos registrados para este servicio.
           </p>
+          <template v-else>
+            <p v-for="ingreso in ingresos" :key="ingreso.id" class="servicio-detalle__kv">
+              <span>{{ ingreso.camara_nombre || `Cámara ${ingreso.camara_id}` }} · {{ ingreso.botella_label }}</span>
+              <span>{{ formatRangoIngreso(ingreso) }} · {{ ingreso.tecnico_id || 'Técnico sin identificar' }}</span>
+            </p>
+          </template>
 
           <div class="servicio-detalle__panel-actions">
             <button class="servicio-detalle__panel-link" type="button" disabled title="Próximamente">Registrar ingreso</button>
@@ -167,6 +223,72 @@
           </div>
         </article>
       </section>
+
+      <section class="servicio-detalle__odfs" aria-label="ODFs asociadas">
+        <header class="servicio-detalle__odfs-header">
+          <h2>ODFs asociadas</h2>
+          <div class="servicio-detalle__odfs-header-right">
+            <label class="servicio-detalle__odfs-toggle">
+              <input v-model="showAllEmpalmes" type="checkbox" />
+              Mostrar todos los empalmes (incl. no-ODF)
+            </label>
+            <span class="servicio-detalle__chip">{{ totalOdfs }} ODF(s)</span>
+          </div>
+        </header>
+
+        <p v-if="odfsLoading" class="servicio-detalle__loading">Cargando ODFs asociadas...</p>
+        <p v-else-if="odfsError" class="servicio-detalle__error">{{ odfsError }}</p>
+        <p v-else-if="odfsFlat.length === 0" class="servicio-detalle__kv-text">
+          Sin ODFs detectadas en el tracking de este servicio.
+        </p>
+
+        <template v-else>
+          <div v-for="grupo in odfsPorRuta" :key="grupo.ruta_id" class="servicio-detalle__odfs-grupo">
+            <h3 class="servicio-detalle__odfs-subtitulo">{{ grupo.ruta_nombre }} ({{ grupo.ruta_tipo }})</h3>
+            <p v-if="grupo.terminal_a && grupo.terminal_b" class="servicio-detalle__odfs-puntas">
+              Puntas ODF: {{ grupo.terminal_a.odf_id }}:{{ grupo.terminal_a.conector }} →
+              {{ grupo.terminal_b.odf_id }}:{{ grupo.terminal_b.conector }}
+            </p>
+
+            <table class="tabla-odfs">
+              <thead>
+                <tr>
+                  <th>Empalme ID</th>
+                  <th>Descripción</th>
+                  <th>Tipo</th>
+                  <th>Cámara</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="fila in grupo.filas" :key="fila.empalme_id">
+                  <td>{{ fila.empalme_id }}</td>
+                  <td>{{ fila.descripcion }}</td>
+                  <td>
+                    <span :class="['servicio-detalle__chip', { 'is-outline': fila.es_transito }]">
+                      {{ fila.es_transito ? 'ODF' : 'Empalme' }}
+                    </span>
+                  </td>
+                  <td>
+                    <span v-if="fila.camara_nombre">{{ fila.camara_nombre }}</span>
+                    <span v-else class="servicio-detalle__odfs-muted">Sin match</span>
+                  </td>
+                  <td>
+                    <span v-if="fila.camara_estado" class="servicio-detalle__odfs-estado">
+                      <span
+                        :class="['servicio-detalle__odfs-dot', `is-${estadoCamaraToken(fila.camara_estado)}`]"
+                        aria-hidden="true"
+                      ></span>
+                      {{ fila.camara_estado }}
+                    </span>
+                    <span v-else class="servicio-detalle__odfs-muted">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </section>
     </template>
   </section>
 </template>
@@ -175,14 +297,40 @@
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { estadoServicioToken, getServicioDetail, type ServicioItem } from '../api/servicios';
+import { estadoCamaraToken } from '../api/camaras';
+import {
+  CATEGORIAS_SERVICIO,
+  categoriaLabel,
+  estadoServicioToken,
+  getServicioDetail,
+  historialIdsToTimelineEvents,
+  refrescarServicioDesdeProv,
+  updateServicioCategoria,
+  updateServicioVerificable,
+  type ServicioEquipoUltimaMillaItem,
+  type ServicioHistorialIdItem,
+  type ServicioItem,
+} from '../api/servicios';
+import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
+import { useSession } from '../composables/useSession';
+import type { TimelineEvent } from '../types/timeline';
 
 const route = useRoute();
 const router = useRouter();
+const { state } = useSession();
+const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
 
 const servicio = ref<ServicioItem | null>(null);
+const historialIds = ref<ServicioHistorialIdItem[]>([]);
+const equiposUltimaMilla = ref<ServicioEquipoUltimaMillaItem[]>([]);
+const refrescandoProv = ref(false);
+const errorRefrescoProv = ref('');
 const loading = ref(false);
 const error = ref('');
+const guardandoCategoria = ref(false);
+const errorCategoria = ref('');
+const guardandoVerificable = ref(false);
+const errorVerificable = ref('');
 
 interface InfraRutaItem {
   id: number;
@@ -208,6 +356,71 @@ interface InfraTrackingResponse {
   punta_b?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null;
 }
 
+// ODFs asociadas (fuente: archivo de tracking de la ruta, no Cromo — ver Task 7/8 del plan
+// "snappy-petting-music"). `empalme_id` siempre viene como string (regex del parser); `camara_*`
+// son null cuando no hay match en app.empalmes; `ruta_tipo` nunca llega null desde el backend
+// (default "PRINCIPAL" ya resuelto server-side).
+interface InfraOdfTerminal {
+  odf_id: string;
+  conector: string;
+}
+
+interface InfraOdfEmpalme {
+  empalme_id: string;
+  descripcion: string;
+  es_transito: boolean;
+  camara_id: number | null;
+  camara_nombre: string | null;
+  camara_estado: string | null;
+}
+
+interface InfraOdfRuta {
+  ruta_id: number;
+  ruta_nombre: string;
+  ruta_tipo: string;
+  activa: boolean;
+  sin_tracking: boolean;
+  terminal_a: InfraOdfTerminal | null;
+  terminal_b: InfraOdfTerminal | null;
+  transitos_count: number;
+  empalmes_count: number;
+  empalmes: InfraOdfEmpalme[];
+}
+
+interface InfraOdfsResponse {
+  status: string;
+  servicio_id: string;
+  total_odfs: number;
+  total_empalmes: number;
+  rutas: InfraOdfRuta[];
+}
+
+// Ingresos técnicos (Slack) a las cámaras que atraviesa el servicio. `tecnico_id` guarda el nombre
+// resuelto del técnico (vía Slack `users.info`) para filas creadas desde el fix de 2026-09-04 en
+// adelante — filas anteriores a ese deploy pueden todavía tener el id crudo de Slack (p. ej.
+// "U0AUB6CRE4A") si nunca se cerraron con un Egreso posterior. `botella_label`/`tipo` — mismo
+// patrón que `ModalRegistros.vue`/`CamaraDetailView.vue` (Tarea 6 del fix) — distinguen la Botella
+// resuelta y un `INTENTO_BLOQUEADO` (que también tiene `fecha_fin: null`, igual que un ingreso real
+// "en curso") de un ingreso real.
+interface InfraServicioIngreso {
+  id: number;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
+  camara_id: number;
+  camara_nombre: string | null;
+}
+
+interface InfraServicioIngresosResponse {
+  status: string;
+  servicio_id: string;
+  total: number;
+  ingresos: InfraServicioIngreso[];
+}
+
 interface ReportHistoryItem {
   id: number;
   status: string;
@@ -229,6 +442,18 @@ const foTrackingResumen = ref<{
   puntaB: string | null;
 } | null>(null);
 
+const odfsLoading = ref(false);
+const odfsError = ref('');
+const odfsRutas = ref<InfraOdfRuta[]>([]);
+const totalOdfs = ref(0);
+// Por defecto sólo se ven los empalmes que son ODF (es_transito === true); tildar el checkbox
+// revela también los empalmes simples (cámaras de paso, etc.) del tracking.
+const showAllEmpalmes = ref(false);
+
+const ingresosLoading = ref(false);
+const ingresosError = ref('');
+const ingresos = ref<InfraServicioIngreso[]>([]);
+
 const reportesLoading = ref(false);
 const reportesError = ref('');
 const reporteSla = ref<ReportHistoryItem | null>(null);
@@ -239,11 +464,37 @@ const idParam = computed(() => String(route.params.idServicio ?? '').trim());
 const historicoIds = computed(() => {
   if (!servicio.value) return [] as string[];
 
-  const ids = [servicio.value.numero_primer_servicio, servicio.value.numero_linea]
+  // `alias_ids` mezcla dos dominios distintos: IDs numéricos históricos de línea (los que
+  // arma `consolidar_identidad_servicio` en la ingesta SLA) y alias físicos de tracking FO
+  // tipo "O1C1"/"C2" (los que agrega `execute_upgrade`/`_action_confirm_upgrade` en el módulo
+  // de infraestructura, ver comentario de columna en `db/models/infra.py`). Sólo los primeros
+  // pertenecen a esta cadena de "Histórico de IDs" — un alias físico no es un ID de línea.
+  const alias = (servicio.value.alias_ids ?? [])
+    .map((value) => (value ?? '').trim())
+    .filter((value) => /^\d+$/.test(value))
+    .sort((a, b) => Number(a) - Number(b));
+
+  const ids = [servicio.value.numero_primer_servicio, ...alias, servicio.value.numero_linea]
     .map((value) => (value ?? '').trim())
     .filter((value, index, arr) => value.length > 0 && arr.indexOf(value) === index);
 
   return ids.length > 0 ? ids : [idParam.value];
+});
+
+const timelineEvents = computed<TimelineEvent[]>(() => {
+  if (historialIds.value.length > 0) {
+    return historialIdsToTimelineEvents(historialIds.value);
+  }
+  // Fallback para servicios que todavía no pasaron por un refresco/backfill de PROV: reusa la
+  // misma cadena simple de `alias_ids` que mostraba el track horizontal anterior, sin
+  // fecha/estado/motivo (esos datos sólo existen una vez que PROV enriqueció el servicio).
+  return historicoIds.value.map((id, index) => ({
+    id,
+    fecha: null,
+    tipo: 'upgrade_id' as const,
+    titulo: `ID ${id}`,
+    descripcion: index === historicoIds.value.length - 1 ? 'Vigente' : undefined,
+  }));
 });
 
 const reclamosCount = computed(() => servicio.value?.reclamos?.length ?? 0);
@@ -257,6 +508,52 @@ const rutaPrincipal = computed(() => {
   const principal = rutas.find((ruta) => (ruta.tipo ?? '').toUpperCase() === 'PRINCIPAL');
   return principal ?? rutas[0];
 });
+
+// Fila individual aplanada de un empalme, etiquetada con los datos de su ruta padre — filtra a
+// sólo es_transito === true salvo que showAllEmpalmes esté activo. terminal_a/terminal_b viven
+// aparte, a nivel de ruta (ver odfsPorRuta) — nunca se cruzan contra una fila puntual acá.
+interface OdfFlatRow extends InfraOdfEmpalme {
+  ruta_id: number;
+  ruta_nombre: string;
+  ruta_tipo: string;
+}
+
+const odfsFlat = computed<OdfFlatRow[]>(() =>
+  odfsRutas.value.flatMap((ruta) =>
+    ruta.empalmes
+      .filter((empalme) => empalme.es_transito || showAllEmpalmes.value)
+      .map((empalme) => ({
+        ...empalme,
+        ruta_id: ruta.ruta_id,
+        ruta_nombre: ruta.ruta_nombre,
+        ruta_tipo: ruta.ruta_tipo,
+      })),
+  ),
+);
+
+// Reagrupa odfsFlat por ruta para el render (subtítulo + leyenda de puntas + tabla por ruta),
+// omitiendo rutas sin ninguna fila visible bajo el filtro actual.
+interface OdfGrupoRuta {
+  ruta_id: number;
+  ruta_nombre: string;
+  ruta_tipo: string;
+  terminal_a: InfraOdfTerminal | null;
+  terminal_b: InfraOdfTerminal | null;
+  filas: OdfFlatRow[];
+}
+
+const odfsPorRuta = computed<OdfGrupoRuta[]>(() =>
+  odfsRutas.value
+    .map((ruta) => ({
+      ruta_id: ruta.ruta_id,
+      ruta_nombre: ruta.ruta_nombre,
+      ruta_tipo: ruta.ruta_tipo,
+      terminal_a: ruta.terminal_a,
+      terminal_b: ruta.terminal_b,
+      filas: odfsFlat.value.filter((fila) => fila.ruta_id === ruta.ruta_id),
+    }))
+    .filter((grupo) => grupo.filas.length > 0),
+);
 
 const resumenSla = computed(() => formatReporteSummary(reporteSla.value));
 const resumenRepetitividad = computed(() => formatReporteSummary(reporteRepetitividad.value));
@@ -288,10 +585,14 @@ async function loadDetalle(): Promise<void> {
   try {
     const response = await getServicioDetail(id);
     servicio.value = response.servicio;
+    historialIds.value = response.historial_ids;
+    equiposUltimaMilla.value = response.equipos_ultima_milla;
 
     await Promise.all([
       loadFoResumen(response.id_origen),
       loadReportesResumen(),
+      loadOdfsAsociadas(response.id_origen),
+      loadIngresosAsociados(response.id_origen),
     ]);
 
     const idOrigen = response.id_origen.trim();
@@ -300,9 +601,57 @@ async function loadDetalle(): Promise<void> {
     }
   } catch (err: unknown) {
     servicio.value = null;
+    historialIds.value = [];
+    equiposUltimaMilla.value = [];
     error.value = err instanceof Error ? err.message : 'No se pudo cargar el detalle del servicio';
   } finally {
     loading.value = false;
+  }
+}
+
+async function onCambiarCategoria(categoria: number): Promise<void> {
+  if (!servicio.value || guardandoCategoria.value) return;
+  const anterior = servicio.value.categoria;
+  guardandoCategoria.value = true;
+  errorCategoria.value = '';
+  try {
+    servicio.value = await updateServicioCategoria(servicio.value.id, categoria);
+  } catch (err: unknown) {
+    errorCategoria.value = err instanceof Error ? err.message : 'No se pudo cambiar el Nivel Cliente';
+    if (servicio.value) servicio.value.categoria = anterior;
+  } finally {
+    guardandoCategoria.value = false;
+  }
+}
+
+async function onCambiarVerificable(esVerificable: boolean): Promise<void> {
+  if (!servicio.value || guardandoVerificable.value) return;
+  const anterior = servicio.value.es_verificable;
+  guardandoVerificable.value = true;
+  errorVerificable.value = '';
+  try {
+    servicio.value = await updateServicioVerificable(servicio.value.id, esVerificable);
+  } catch (err: unknown) {
+    errorVerificable.value = err instanceof Error ? err.message : 'No se pudo cambiar la verificabilidad';
+    if (servicio.value) servicio.value.es_verificable = anterior;
+  } finally {
+    guardandoVerificable.value = false;
+  }
+}
+
+async function onRefrescarDesdeProv(): Promise<void> {
+  if (!servicio.value || refrescandoProv.value) return;
+  refrescandoProv.value = true;
+  errorRefrescoProv.value = '';
+  try {
+    const response = await refrescarServicioDesdeProv(idParam.value);
+    servicio.value = response.servicio;
+    historialIds.value = response.historial_ids;
+    equiposUltimaMilla.value = response.equipos_ultima_milla;
+  } catch (err: unknown) {
+    errorRefrescoProv.value = err instanceof Error ? err.message : 'No se pudo actualizar desde PROV';
+  } finally {
+    refrescandoProv.value = false;
   }
 }
 
@@ -324,6 +673,20 @@ function formatReporteSummary(item: ReportHistoryItem | null): string {
     ? new Date(item.started_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })
     : 'sin fecha';
   return `${estado} · ${fecha}`;
+}
+
+function formatFechaIngreso(value: string | null): string {
+  if (!value) return 'Sin fecha';
+  return new Date(value).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function formatRangoIngreso(item: InfraServicioIngreso): string {
+  const inicio = formatFechaIngreso(item.fecha_inicio);
+  if (item.tipo === 'INTENTO_BLOQUEADO') {
+    return `Intento bloqueado - ${inicio}`;
+  }
+  const fin = item.fecha_fin ? formatFechaIngreso(item.fecha_fin) : 'en curso';
+  return `${inicio} → ${fin}`;
 }
 
 async function parseJsonOrError<T>(response: Response): Promise<T> {
@@ -369,6 +732,50 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
     foError.value = err instanceof Error ? err.message : 'No se pudo cargar el resumen FO';
   } finally {
     foLoading.value = false;
+  }
+}
+
+async function loadOdfsAsociadas(idOrigen: string): Promise<void> {
+  const clean = idOrigen.trim();
+  if (!clean) return;
+
+  odfsLoading.value = true;
+  odfsError.value = '';
+  odfsRutas.value = [];
+  totalOdfs.value = 0;
+
+  try {
+    const response = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/odfs`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonOrError<InfraOdfsResponse>(response);
+    odfsRutas.value = data.rutas ?? [];
+    totalOdfs.value = data.total_odfs ?? 0;
+  } catch (err: unknown) {
+    odfsError.value = err instanceof Error ? err.message : 'No se pudo cargar ODFs asociadas';
+  } finally {
+    odfsLoading.value = false;
+  }
+}
+
+async function loadIngresosAsociados(idOrigen: string): Promise<void> {
+  const clean = idOrigen.trim();
+  if (!clean) return;
+
+  ingresosLoading.value = true;
+  ingresosError.value = '';
+  ingresos.value = [];
+
+  try {
+    const response = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/ingresos`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonOrError<InfraServicioIngresosResponse>(response);
+    ingresos.value = data.ingresos ?? [];
+  } catch (err: unknown) {
+    ingresosError.value = err instanceof Error ? err.message : 'No se pudo cargar ingresos asociados';
+  } finally {
+    ingresosLoading.value = false;
   }
 }
 
@@ -459,6 +866,25 @@ watch(
   text-wrap: pretty;
 }
 
+.servicio-detalle__header h1.is-baja {
+  color: var(--color-state-error);
+}
+
+.servicio-detalle__verificable-select {
+  padding: 3px 8px;
+  font-size: 10.5px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
+}
+
+.servicio-detalle__chip.is-warning {
+  background: transparent;
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
+}
+
 .servicio-detalle__domicilio {
   margin: 8px 0 0;
   font-size: 13px;
@@ -514,6 +940,22 @@ watch(
   color: var(--color-accent);
 }
 
+.servicio-detalle__categoria-select {
+  padding: 3px 8px;
+  font-size: 10.5px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+}
+
+.servicio-detalle__categoria-error {
+  margin: -4px 0 0;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--color-state-error);
+}
+
 .servicio-detalle__actions {
   display: flex;
   gap: 7px;
@@ -524,9 +966,14 @@ watch(
   font-size: 12.5px;
 }
 
+/* Columna, no fila: los hijos son el header (label + botón), el error de refresco y el
+   `<ServiceTimeline>` vertical — apilados. En fila, el Timeline quedaba comprimido al costado del
+   header. El track horizontal de IDs que justificaba `align-items: center` ya no existe (lo
+   reemplazó el Timeline). */
 .servicio-detalle__historico {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 11px;
   padding: 16px 26px;
 }
@@ -538,31 +985,42 @@ watch(
   color: var(--color-neutral-500);
 }
 
-.servicio-detalle__historico-track {
+.servicio-detalle__historico-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
-.servicio-detalle__historico-track i {
-  font-size: 13px;
-  color: var(--color-neutral-600);
+/* Mismo padding horizontal (26px) que el resto de las secciones de la vista: sin él, esta sección
+   quedaba pegada al borde izquierdo, desalineada de la cabecera y del histórico. */
+.servicio-detalle__equipos {
+  padding: 0 26px 16px;
 }
 
-.servicio-detalle__nodo {
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  padding: 4px 11px;
-  border-radius: 4px;
-  background: var(--color-surface);
-  color: color-mix(in srgb, var(--color-text) 68%, transparent);
+.servicio-detalle__equipos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
 }
 
-.servicio-detalle__nodo.is-current {
-  background: transparent;
-  border: 1px solid var(--color-accent);
-  color: var(--color-accent);
+.servicio-detalle__equipo-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  font-size: 0.85rem;
+}
+
+.servicio-detalle__equipo-extremo {
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
 }
 
 .servicio-detalle__error {
@@ -717,6 +1175,109 @@ watch(
 .servicio-detalle__panel-link:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.servicio-detalle__odfs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 26px 26px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.servicio-detalle__odfs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.servicio-detalle__odfs-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.servicio-detalle__odfs-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.servicio-detalle__odfs-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  cursor: pointer;
+}
+
+.servicio-detalle__odfs-grupo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.servicio-detalle__odfs-grupo + .servicio-detalle__odfs-grupo {
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.servicio-detalle__odfs-subtitulo {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.servicio-detalle__odfs-puntas {
+  margin: 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.servicio-detalle__odfs-muted {
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+
+.servicio-detalle__odfs-estado {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.servicio-detalle__odfs-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-state-idle);
+}
+.servicio-detalle__odfs-dot.is-ok { background: var(--color-state-ok); }
+.servicio-detalle__odfs-dot.is-warn { background: var(--color-state-warn); }
+.servicio-detalle__odfs-dot.is-error { background: var(--color-state-error); }
+.servicio-detalle__odfs-dot.is-idle { background: var(--color-state-idle); }
+
+.tabla-odfs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.tabla-odfs th,
+.tabla-odfs td {
+  text-align: left;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.tabla-odfs th {
+  font-weight: 500;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
 @media (max-width: 960px) {

@@ -6,18 +6,28 @@
 <template>
   <article
     class="servicio-card"
+    :class="{ 'is-selected': selected }"
     role="button"
     tabindex="0"
     @click="goToDetail"
     @keyup.enter="goToDetail"
   >
     <div class="servicio-card__row">
+      <input
+        type="checkbox"
+        class="servicio-card__checkbox"
+        :checked="selected"
+        @click.stop
+        @change="$emit('toggleSelect', servicio)"
+      />
       <span :class="['servicio-card__dot', `is-${estadoToken}`]" :title="servicio.estado_servicio" aria-hidden="true"></span>
       <span class="servicio-card__type">{{ tipoLabel }}</span>
+      <span class="servicio-card__categoria">{{ categoriaLabel(servicio.categoria) }}</span>
+      <span v-if="!servicio.es_verificable" class="servicio-card__badge-no-verificable">No verificable</span>
       <i class="ph ph-arrow-up-right servicio-card__arrow" aria-hidden="true"></i>
     </div>
 
-    <h3 class="servicio-card__name">{{ servicio.nombre_cliente || 'Cliente sin dato' }}</h3>
+    <h3 :class="['servicio-card__name', { 'is-baja': estadoToken === 'error' }]">{{ servicio.nombre_cliente || 'Cliente sin dato' }}</h3>
 
     <div class="servicio-card__hairline"></div>
 
@@ -30,14 +40,16 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { estadoServicioToken, type ServicioItem } from '../../api/servicios';
+import { categoriaLabel, estadoServicioToken, type ServicioItem } from '../../api/servicios';
 
 const props = defineProps<{
   servicio: ServicioItem;
+  selected?: boolean;
 }>();
 
 const emit = defineEmits<{
   openDetail: [idOrigen: string];
+  toggleSelect: [servicio: ServicioItem];
 }>();
 
 const idOrigen = computed(() => (props.servicio.numero_primer_servicio ?? '').trim());
@@ -87,10 +99,29 @@ function goToDetail(): void {
   box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5);
 }
 
+.servicio-card.is-selected {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
 .servicio-card__row {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.servicio-card__checkbox {
+  flex: none;
+  accent-color: var(--color-accent);
+}
+
+.servicio-card__categoria {
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-200);
 }
 
 .servicio-card__dot {
@@ -133,6 +164,18 @@ function goToDetail(): void {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.servicio-card__name.is-baja {
+  color: var(--color-state-error);
+}
+
+.servicio-card__badge-no-verificable {
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 9.5px;
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
 }
 
 .servicio-card__hairline {

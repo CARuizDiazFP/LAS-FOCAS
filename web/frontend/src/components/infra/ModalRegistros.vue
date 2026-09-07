@@ -39,7 +39,7 @@
           @click="activeTab = 'ingresos'"
         >
           Ingresos
-          <span class="infra-registros-tab__hint">Próximamente</span>
+          <span class="infra-registros-tab__hint">{{ sortedIngresos.length }} registro{{ sortedIngresos.length !== 1 ? 's' : '' }}</span>
         </button>
         <button
           :class="['infra-registros-tab', { active: activeTab === 'baneos' }]"
@@ -55,17 +55,13 @@
       <section v-if="activeTab === 'ingresos'" class="infra-registros-section">
         <div class="infra-tab-intro">
           <div>
-            <p class="infra-tab-intro__eyebrow">Vista estructural</p>
-            <h4>Ingresos listos para hidratar</h4>
+            <p class="infra-tab-intro__eyebrow">Historial técnico</p>
+            <h4>Ingresos ordenados del más reciente al más antiguo</h4>
           </div>
-          <span class="infra-future-chip">Backend pendiente</span>
+          <span class="infra-history-chip">{{ sortedIngresos.length }} registro{{ sortedIngresos.length !== 1 ? 's' : '' }}</span>
         </div>
 
-        <div v-if="sortedIngresos.length === 0" class="infra-detail-empty">
-          <strong>Sin ingresos disponibles todavía.</strong>
-          <p>{{ placeholders.ingresos }}</p>
-          <p>{{ placeholders.egresos }}</p>
-        </div>
+        <div v-if="sortedIngresos.length === 0" class="infra-detail-empty">Sin ingresos registrados para esta cámara.</div>
 
         <div v-else class="infra-baneos-list">
           <AccordionItem
@@ -75,10 +71,21 @@
             :title="buildIngresoRangeTitle(ingreso)"
             @update:model-value="toggleIngreso(ingreso.id, $event)"
           >
+            <span
+              v-if="ingreso.tipo === 'INTENTO_BLOQUEADO'"
+              class="infra-state-chip danger"
+              style="margin-bottom: 12px; display: inline-block"
+            >
+              Intento bloqueado por baneo
+            </span>
             <dl class="infra-baneo-detail-grid">
-              <div class="infra-baneo-detail-row full-width">
-                <dt>Técnico solicitante</dt>
-                <dd>{{ ingreso.tecnico_solicitante || 'Pendiente de hidratar desde backend.' }}</dd>
+              <div class="infra-baneo-detail-row">
+                <dt>Técnico</dt>
+                <dd>{{ ingreso.tecnico_id || 'Sin técnico identificado' }}</dd>
+              </div>
+              <div class="infra-baneo-detail-row">
+                <dt>Botella asociada</dt>
+                <dd>{{ ingreso.botella_label }}</dd>
               </div>
             </dl>
           </AccordionItem>
@@ -191,9 +198,12 @@ interface AuditoriaItem {
 
 interface IngresoItem {
   id: number;
-  fecha_ingreso: string | null;
-  fecha_egreso: string | null;
-  tecnico_solicitante: string | null;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
 }
 
 const props = defineProps<{
@@ -203,7 +213,7 @@ const props = defineProps<{
   contexto: ContextoRegistros | null;
   baneos: BaneoItem[];
   auditoria: AuditoriaItem[];
-  placeholders: { ingresos: string; egresos: string };
+  ingresos: IngresoItem[];
 }>();
 
 const emit = defineEmits<{ close: [] }>();
@@ -211,14 +221,13 @@ const dialogEl = ref<HTMLDialogElement | null>(null);
 const activeTab = ref<'ingresos' | 'baneos'>('baneos');
 const expandedBaneoId = ref<number | null>(null);
 const expandedIngresoId = ref<number | null>(null);
-const ingresos = ref<IngresoItem[]>([]);
 
 const sortedBaneos = computed(() => {
   return [...props.baneos].sort((left, right) => getTimestamp(right.fecha_inicio) - getTimestamp(left.fecha_inicio));
 });
 
 const sortedIngresos = computed(() => {
-  return [...ingresos.value].sort((left, right) => getTimestamp(right.fecha_ingreso) - getTimestamp(left.fecha_ingreso));
+  return [...props.ingresos].sort((left, right) => getTimestamp(right.fecha_inicio) - getTimestamp(left.fecha_inicio));
 });
 
 const auditoriaOrdenada = computed(() => {
@@ -260,8 +269,11 @@ function buildBaneoRangeTitle(item: BaneoItem): string {
 }
 
 function buildIngresoRangeTitle(item: IngresoItem): string {
-  const ingreso = formatFechaCompacta(item.fecha_ingreso);
-  const egreso = item.fecha_egreso ? formatFechaCompacta(item.fecha_egreso) : 'Pendiente';
+  if (item.tipo === 'INTENTO_BLOQUEADO') {
+    return `Intento bloqueado - ${formatFechaCompacta(item.fecha_inicio)}`;
+  }
+  const ingreso = formatFechaCompacta(item.fecha_inicio);
+  const egreso = item.fecha_fin ? formatFechaCompacta(item.fecha_fin) : 'En curso';
   return `Ingreso - ${ingreso} * Egreso - ${egreso}`;
 }
 
@@ -329,12 +341,12 @@ watch(
 }
 
 .infra-detail-modal__content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .infra-detail-modal__header {
@@ -352,7 +364,7 @@ watch(
 
 .infra-detail-modal__eyebrow {
   margin: 0;
-  color: #c4b5fd;
+  color: var(--color-accent);
   font-size: 0.76rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -362,8 +374,8 @@ watch(
   margin-bottom: 18px;
   padding: 18px;
   border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: linear-gradient(160deg, rgba(15, 23, 42, 0.88), rgba(11, 18, 32, 0.94));
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
 }
 
 .infra-registros-overview__header,
@@ -381,13 +393,13 @@ watch(
 .infra-registros-overview__header h4,
 .infra-tab-intro h4 {
   margin: 4px 0 0;
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .infra-registros-overview__eyebrow,
 .infra-tab-intro__eyebrow {
   margin: 0;
-  color: #7dd3fc;
+  color: var(--color-accent);
   font-size: 0.72rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -416,28 +428,27 @@ watch(
   gap: 12px;
   padding: 14px 16px;
   border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(15, 23, 42, 0.56);
-  color: #cbd5e1;
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+  color: var(--color-neutral-300);
   cursor: pointer;
   transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
 }
 
 .infra-registros-tab:hover {
   transform: translateY(-1px);
-  border-color: rgba(96, 165, 250, 0.3);
+  border-color: var(--color-accent);
 }
 
 .infra-registros-tab.active {
-  border-color: rgba(96, 165, 250, 0.42);
-  background: linear-gradient(160deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.9));
-  color: #f8fafc;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.18);
+  border-color: var(--color-accent);
+  background: var(--color-brand-primary-tint);
+  color: var(--color-text);
+  box-shadow: var(--shadow-sm);
 }
 
 .infra-registros-tab__hint,
-.infra-history-chip,
-.infra-future-chip {
+.infra-history-chip {
   border-radius: 999px;
   padding: 5px 10px;
   font-size: 0.72rem;
@@ -445,18 +456,13 @@ watch(
 }
 
 .infra-registros-tab__hint {
-  background: rgba(148, 163, 184, 0.14);
+  background: color-mix(in srgb, var(--color-neutral-400) 14%, transparent);
   color: var(--muted);
 }
 
 .infra-history-chip {
-  background: rgba(96, 165, 250, 0.16);
-  color: #dbeafe;
-}
-
-.infra-future-chip {
-  background: rgba(250, 204, 21, 0.14);
-  color: #fde68a;
+  background: var(--color-brand-primary-soft);
+  color: var(--color-accent-200);
 }
 
 .infra-registros-badges {
@@ -468,9 +474,9 @@ watch(
 .infra-registro-pill {
   border-radius: 999px;
   padding: 6px 12px;
-  background: rgba(76, 29, 149, 0.28);
-  border: 1px solid rgba(196, 181, 253, 0.2);
-  color: #e9d5ff;
+  background: var(--color-brand-primary-soft);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent-100);
   font-size: 0.82rem;
 }
 
@@ -491,8 +497,8 @@ watch(
   gap: 6px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(9, 14, 23, 0.82);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
 }
 
 .infra-baneo-detail-row.full-width {
@@ -500,7 +506,7 @@ watch(
 }
 
 .infra-baneo-detail-row dt {
-  color: #7dd3fc;
+  color: var(--color-accent);
   font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -509,7 +515,7 @@ watch(
 
 .infra-baneo-detail-row dd {
   margin: 0;
-  color: #e2e8f0;
+  color: var(--color-neutral-200);
   line-height: 1.45;
 }
 
@@ -538,8 +544,8 @@ watch(
   align-items: center;
   padding: 14px 16px;
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
 }
 
 .infra-detail-list__item.vertical {
@@ -566,9 +572,9 @@ watch(
 .infra-detail-empty {
   padding: 18px;
   border-radius: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--color-bg);
 }
 
 .infra-state-chip {
@@ -579,29 +585,19 @@ watch(
 }
 
 .infra-state-chip.ok {
-  background: rgba(16, 185, 129, 0.18);
-  color: #bbf7d0;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
 }
 
 .infra-state-chip.danger {
-  background: rgba(239, 68, 68, 0.18);
-  color: #fecaca;
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
 }
 
 .infra-placeholder-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
-}
-
-.infra-detail-empty strong {
-  display: block;
-  margin-bottom: 8px;
-  color: #f8fafc;
-}
-
-.infra-detail-empty p + p {
-  margin-top: 10px;
 }
 
 @media (max-width: 720px) {

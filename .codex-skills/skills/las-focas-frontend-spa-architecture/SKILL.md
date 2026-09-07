@@ -3,7 +3,7 @@ name: "las-focas-frontend-spa-architecture"
 description: "Usar SIEMPRE antes de agregar, modificar o mover rutas, vistas o componentes en el frontend SPA de LAS-FOCAS. Valida el entry point activo, el router unificado y advierte sobre archivos huérfanos conocidos."
 metadata:
   short-description: "Usar SIEMPRE antes de agregar rutas o vistas en el SPA de LAS-FOCAS. Valida entry point, router unificado y archivos huérfanos."
-  source: ".github/skills/frontend-spa-architecture/SKILL.md"
+  source: ".agentes-comunes/skills/frontend-spa-architecture/SKILL.md"
   triggers:
     - "frontend-spa-architecture"
     - "spa"
@@ -47,7 +47,7 @@ metadata:
 
 # Skill portable: frontend-spa-architecture
 
-> Fuente original: `.github/skills/frontend-spa-architecture/SKILL.md`. Copia portable generada para el entorno OpenAI Codex.
+> Fuente original: `.agentes-comunes/skills/frontend-spa-architecture/SKILL.md`. Copia portable generada para el entorno OpenAI Codex.
 
 # Habilidad: Frontend SPA Architecture — Verificación de Arquitectura Antes de Tocar el Router
 

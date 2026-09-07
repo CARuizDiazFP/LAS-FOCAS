@@ -41,7 +41,7 @@ import secrets
 import sys
 
 name = sys.argv[1]
-if name.endswith("_token_v1") or name.endswith("openai_api_key_v1"):
+if name.endswith("_token_v1") or name.endswith("openai_api_key_v1") or name.endswith("cromo_password_v1"):
     print("")
 else:
     print(secrets.token_urlsafe(48))
@@ -51,17 +51,19 @@ PY
 
 write_secret() {
   local file="$1"
+  local mode="${2:-600}"
   local name="${file%.txt}"
   local path="$SECRETS_DIR/$file"
 
   if [ -f "$path" ] && [ "$FORCE" != true ]; then
+    chmod "$mode" "$path"
     echo "OK existe .secrets/$file"
     return
   fi
 
   umask 077
   secret_value "$name" > "$path"
-  chmod 600 "$path"
+  chmod "$mode" "$path"
   echo "OK generado .secrets/$file"
 }
 
@@ -76,5 +78,7 @@ write_secret Dev_openai_api_key_v1.txt
 write_secret Dev_smtp_password_v1.txt
 write_secret Dev_slack_bot_token_v1.txt
 write_secret Dev_slack_app_token_v1.txt
+write_secret Dev_cromo_password_v1.txt
+write_secret Dev_pgadmin_password_v1.txt 640
 
 echo "Bootstrap de secretos locales completado."

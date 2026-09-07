@@ -25,16 +25,19 @@ Antes de crear archivos, establecer:
 
 ### 2. Crear estructura estándar del módulo frontend
 
+**Estructura real confirmada (2026-08-10) contra los módulos ya existentes** — `ServiciosView.vue`,
+`InventarioCablesCromoView.vue`, `BotellasInventarioView.vue` — ninguno usa subcarpeta por módulo ni
+sufijo `.api.ts`:
+
 ```
 web/frontend/src/
-├── views/<Modulo>/<ModuloView>.vue
+├── views/<Modulo>View.vue          # PLANO bajo views/, nunca views/<Modulo>/<Modulo>View.vue
 ├── components/<modulo>/
-│   ├── <Modulo>Filtro.vue
-│   ├── <Modulo>Tabla.vue
-│   └── <Modulo>EstadoVacio.vue
-├── composables/use<Modulo>.ts
-├── api/<modulo>.api.ts
-└── router/ (actualizar rutas existentes o crear módulo de rutas)
+│   └── <Modulo>Card.vue            # si hay vista de tarjeta + lista con toggle (ver ServiciosView)
+├── composables/use<Modulo>.ts      # SÓLO si el estado se comparte entre 2+ vistas — si vive sólo en
+│                                     # la vista (caso más común), queda inline en su <script setup>
+├── api/<modulo>.ts                  # NUNCA <modulo>.api.ts — cero archivos con ese sufijo en el repo
+└── router/index.ts (agregar la ruta ahí, es único)
 ```
 
 Si el alcance requiere backend, documentar contrato API y coordinar con el agente `api`.
@@ -43,7 +46,7 @@ Si el alcance requiere backend, documentar contrato API y coordinar con el agent
 
 1. Composition API obligatoria (`<script setup lang="ts">`, `ref`, `reactive`, `computed`).
 2. Capa API separada en `src/api/`, sin fetch/axios embebido en template.
-3. Estado y lógica de pantalla en composables reutilizables.
+3. Estado y lógica de pantalla inline en la vista salvo que se comparta entre 2+ vistas.
 4. UI con CSS modular y tokens del proyecto.
 5. Respuesta de errores UX clara (loading, empty, error, retry).
 

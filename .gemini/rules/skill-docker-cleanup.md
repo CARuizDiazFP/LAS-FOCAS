@@ -4,7 +4,7 @@
 ---
 name: "skill-docker-cleanup"
 description: "Usar cuando haya que limpiar imágenes, contenedores o build cache de Docker sin tocar volúmenes persistentes"
-source: ".github/skills/docker-cleanup/SKILL.md"
+source: ".agentes-comunes/skills/docker-cleanup/SKILL.md"
 triggers:
   - "docker-cleanup"
   - "habilidad"

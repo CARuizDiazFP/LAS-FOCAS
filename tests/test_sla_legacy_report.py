@@ -113,22 +113,22 @@ def test_generate_report_from_excel_pair_missing_column(tmp_path, servicios_exce
     assert "Faltan columnas en Excel de servicios" in str(excinfo.value)
 
 
-def test_load_reclamos_prefiere_horas_netas_reclamo(reclamos_excel: bytes) -> None:
-    """Verifica que se usa la columna 'Horas Netas Reclamo' (columna U)."""
+def test_load_reclamos_usa_horas_netas_cierre_problema(reclamos_excel: bytes) -> None:
+    """Verifica que se usa la columna 'Horas Netas Cierre Problema Reclamo' (columna P)."""
     dataset = legacy_report_module.load_reclamos_excel(reclamos_excel)
     columna, origen = legacy_report_module._columna_horas_reclamos(dataset)
 
     assert origen == "horas"
     assert dataset.columns["horas"] == columna
     valores = dataset.dataframe[columna].tolist()
-    assert valores[0] == pytest.approx(1.5, rel=1e-3)  # 1.5 horas
-    assert valores[1] == pytest.approx(0.25, rel=1e-3)  # 0:15:00 = 0.25 horas
+    assert valores[0] == pytest.approx(1.25, rel=1e-3)  # 1:15:00 = 1.25 horas
+    assert valores[1] == pytest.approx(25 / 60, rel=1e-3)  # 0:25:00 = 0.4167 horas
 
 
-def test_load_reclamos_sin_horas_netas_reclamo_error(reclamos_excel: bytes) -> None:
-    """Verifica que da error si falta la columna 'Horas Netas Reclamo'."""
+def test_load_reclamos_sin_horas_netas_cierre_problema_error(reclamos_excel: bytes) -> None:
+    """Verifica que da error si falta la columna 'Horas Netas Cierre Problema Reclamo'."""
     df = pd.read_excel(io.BytesIO(reclamos_excel))
-    df.drop(columns=["Horas Netas Reclamo"], inplace=True)
+    df.drop(columns=["Horas Netas Cierre Problema Reclamo"], inplace=True)
 
     with pytest.raises(ValueError) as excinfo:
         legacy_report_module.load_reclamos_excel(_excel_bytes(df))
@@ -152,7 +152,7 @@ def test_load_reclamos_prefiere_numero_linea(reclamos_excel: bytes) -> None:
 
 
 def test_matching_por_numero_linea_suma_horas(servicios_excel: bytes, reclamos_excel: bytes) -> None:
-    """Verifica que suma las horas de 'Horas Netas Reclamo' correctamente."""
+    """Verifica que suma las horas de 'Horas Netas Cierre Problema Reclamo' correctamente."""
     servicios_dataset = legacy_report_module.load_servicios_excel(servicios_excel)
     reclamos_dataset = legacy_report_module.load_reclamos_excel(reclamos_excel)
 
@@ -163,8 +163,8 @@ def test_matching_por_numero_linea_suma_horas(servicios_excel: bytes, reclamos_e
     subset = reclamos_dataset.dataframe[reclamos_dataset.dataframe[recl_linea_col] == service_line]
     assert len(subset) == 2
     total = subset[horas_columna].sum()
-    # 1.5 + 0.25 (0:15:00) = 1.75
-    assert total == pytest.approx(1.75, rel=1e-3)
+    # 1.25 (1:15:00) + 0.4167 (0:25:00) = 1.6667
+    assert total == pytest.approx(1.25 + 25 / 60, rel=1e-3)
 
 
 def test_normaliza_numero_linea_int_vs_str() -> None:
@@ -204,8 +204,8 @@ def test_normaliza_numero_linea_int_vs_str() -> None:
     horas_columna, _ = legacy_report_module._columna_horas_reclamos(reclamos_dataset)
     subset = reclamos_dataset.dataframe[reclamos_dataset.dataframe[recl_line_col] == srv_line]
     assert len(subset) == 1
-    # Ahora usa 'Horas Netas Reclamo' que tiene valor 0.5
-    assert subset[horas_columna].iloc[0] == pytest.approx(0.5, rel=1e-3)
+    # Usa 'Horas Netas Cierre Problema Reclamo' (columna P), que tiene valor 00:45:00 = 0.75
+    assert subset[horas_columna].iloc[0] == pytest.approx(0.75, rel=1e-3)
 
 
 def test_subset_usa_numero_primer_servicio_para_sumar() -> None:
@@ -248,8 +248,8 @@ def test_subset_usa_numero_primer_servicio_para_sumar() -> None:
     assert linea_display == "83241"
     horas_columna, _ = legacy_report_module._columna_horas_reclamos(reclamos_dataset)
     total = subset[horas_columna].sum()
-    # Ahora usa 'Horas Netas Reclamo' que tiene valor 0.5
-    assert total == pytest.approx(0.5, rel=1e-3)
+    # Usa 'Horas Netas Cierre Problema Reclamo' (columna P), que tiene valor 01:00:00 = 1.0
+    assert total == pytest.approx(1.0, rel=1e-3)
 
 
 def test_horas_decimal_soporta_tipos_excel() -> None:

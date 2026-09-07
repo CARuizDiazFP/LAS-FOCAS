@@ -4,7 +4,7 @@
 ---
 name: "skill-logs-cleanup"
 description: "Usar cuando haya que revisar o limpiar logs del proyecto y de contenedores sin perder información necesaria para diagnóstico"
-source: ".github/skills/logs-cleanup/SKILL.md"
+source: ".agentes-comunes/skills/logs-cleanup/SKILL.md"
 triggers:
   - "logs-cleanup"
   - "habilidad"

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import io
-import re
 import sys
 from pathlib import Path
 
@@ -61,6 +60,7 @@ def _reclamos_excel_bytes() -> bytes:
                 "Número Reclamo": "R-001",
                 "Horas Netas Reclamo": "1.5",
                 "Horas Totales Cierre Problema Reclamo": "2.0",
+                "Horas Netas Cierre Problema Reclamo": "1:30:00",
                 "Tipo Solución Reclamo": "Corte Masivo",
                 "Fecha Inicio Reclamo": "2025-10-10 08:00",
             },
@@ -69,6 +69,7 @@ def _reclamos_excel_bytes() -> bytes:
                 "Número Reclamo": "R-002",
                 "Horas Netas Reclamo": "1:00:00",
                 "Horas Totales Cierre Problema Reclamo": "1.5",
+                "Horas Netas Cierre Problema Reclamo": "1:00:00",
                 "Tipo Solución Reclamo": "Fibra Cortada",
                 "Fecha Inicio Reclamo": "2025-10-15 14:30",
             },
@@ -77,6 +78,7 @@ def _reclamos_excel_bytes() -> bytes:
                 "Número Reclamo": "R-003",
                 "Horas Netas Reclamo": "0:45:00",
                 "Horas Totales Cierre Problema Reclamo": "1.0",
+                "Horas Netas Cierre Problema Reclamo": "0:45:00",
                 "Tipo Solución Reclamo": "Configuración",
                 "Fecha Inicio Reclamo": "2025-10-20 09:15",
             },
@@ -88,10 +90,8 @@ def _reclamos_excel_bytes() -> bytes:
 def _login_as_user(client: TestClient, monkeypatch, password: str = "userpass") -> str:
     """Helper para login y obtención del CSRF token."""
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok(password))
-    client.post("/login", data={"username": "user", "password": password})
-    html = client.get("/").text
-    csrf = re.search(r"window.CSRF_TOKEN = \"([\w-]+)\";", html).group(1)
-    return csrf
+    res = client.post("/api/auth/login", json={"username": "user", "password": password})
+    return res.json()["csrf"]
 
 
 def test_sla_flow_success_with_two_excel_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

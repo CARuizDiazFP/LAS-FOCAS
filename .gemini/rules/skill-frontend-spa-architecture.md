@@ -4,7 +4,7 @@
 ---
 name: "skill-frontend-spa-architecture"
 description: "Usar SIEMPRE antes de agregar, modificar o mover rutas, vistas o componentes en el frontend SPA de LAS-FOCAS. Valida el entry point activo, el router unificado y advierte sobre archivos huérfanos conocidos."
-source: ".github/skills/frontend-spa-architecture/SKILL.md"
+source: ".agentes-comunes/skills/frontend-spa-architecture/SKILL.md"
 triggers:
   - "frontend-spa-architecture"
   - "spa"

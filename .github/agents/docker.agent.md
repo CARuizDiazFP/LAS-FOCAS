@@ -36,17 +36,29 @@ Soy el agente especializado en infraestructura Docker del proyecto LAS-FOCAS.
 
 ## Comandos Esenciales
 
+> **`--env-file` siempre explícito**: sin él, Compose no resuelve `${POSTGRES_DB}`/`${POSTGRES_USER}` (busca `.env` en `deploy/`, no en la raíz) y recrea `postgres` con esas variables vacías. Incidente real documentado en `docs/decisiones.md`, entrada 2026-07-29.
+
 ```bash
-# Desde raíz del proyecto:
-docker compose -f deploy/compose.yml up -d
-docker compose -f deploy/compose.yml build <servicio>
-docker compose -f deploy/compose.yml logs -f <servicio>
-docker compose -f deploy/compose.yml ps
-docker compose -f deploy/compose.yml down
+# Producción — desde raíz del proyecto:
+docker compose -f deploy/compose.yml --env-file .env up -d
+docker compose -f deploy/compose.yml --env-file .env build <servicio>
+docker compose -f deploy/compose.yml --env-file .env logs -f <servicio>
+docker compose -f deploy/compose.yml --env-file .env ps
+docker compose -f deploy/compose.yml --env-file .env down --remove-orphans
 
 # Rebuild específico:
-docker compose -f deploy/compose.yml build --no-cache api
+docker compose -f deploy/compose.yml --env-file .env build --no-cache api
+
+# Dev — stack paralelo, propio archivo/env/red (deploy/docker-compose.dev.yml, .env.dev):
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev down --remove-orphans
+
+# Wrappers recomendados (ya arman --env-file correctamente):
+./Start                    # prod
+./scripts/start_dev.sh     # dev
 ```
+
+**No tocar `deploy/compose.yml` ni contenedores `lasfocas-*` (producción) sin instrucción explícita y puntual del usuario en ese momento** — directiva vigente desde el cierre de la migración Nocturne (2026-07-29), ver `docs/decisiones.md`. Trabajo nuevo por default va a `deploy/docker-compose.dev.yml` / stack `lasfocasdev`.
 
 ## Reglas que Sigo
 
@@ -56,6 +68,8 @@ docker compose -f deploy/compose.yml build --no-cache api
 4. **Volúmenes nombrados**: para persistencia (`postgres_data`, `reports_data`, etc.)
 5. **Healthchecks**: incluir cuando sea posible para orquestación robusta
 6. **Límites de recursos**: establecer límites CPU/RAM para servicios no críticos
+7. **`--env-file` explícito**: siempre en comandos `docker compose` manuales sobre `deploy/*.yml`
+8. **Redes con subred `/24` explícita**: declarar siempre `ipam.config.subnet` en cualquier red nueva — nunca dejar el pool `/16` por default de Docker, que puede secuestrar rutas del host hacia destinos reales de la intranet (ver `docs/mantenimiento_redes_produccion.md` y `docs/decisiones.md`, entradas 2026-08-05)
 
 ## Estructura de Dockerfiles
 
@@ -82,3 +96,4 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0"]
 
 - **→ Testing Agent**: cuando necesito verificar que los contenedores pasen tests de integración
 - **→ DB Agent**: para problemas relacionados con PostgreSQL, volúmenes de datos o migraciones Alembic
+- **→ Security Agent**: para reglas de firewall/NAT relacionadas a la red Docker (ej. `scripts/firewall_hardening.sh`) — fuera de mi alcance directo

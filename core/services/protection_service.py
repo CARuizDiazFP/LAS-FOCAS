@@ -26,9 +26,11 @@ from sqlalchemy.orm import Session
 from db.models.infra import (
     Camara,
     CamaraEstado,
+    CamaraEstadoAuditoria,
     Empalme,
     IncidenteBaneo,
     Ingreso,
+    IngresoTipo,
     RutaServicio,
     Servicio,
     ruta_empalme_association,
@@ -122,11 +124,29 @@ class ProtectionService:
         ruta_id: Optional[int] = None,
     ) -> List[Camara]:
         """Obtiene las cámaras asociadas a un servicio (opcionalmente filtrado por ruta).
-        
+
+        Resuelve por DOS caminos independientes cuando no se pasa `ruta_id` (bloque `else`):
+        - Legacy: `Servicio→RutaServicio→Empalme.camara_id→Camara` (trackings cargados a mano).
+        - Cromo (Etapa Refactor baneos, 2026-08-23): `Servicio→CromoServicioMatch→CromoPelo→
+          CromoCable→CromoBotella.camara_id→Camara`, vía `camara_ids_por_servicio_sync`
+          (`core/services/cromo/verificador.py`, mismo estilo `text()` para no acoplar este archivo a
+          las tablas `cromo_*` vía ORM) — cierra el gap real de servicios cuya infraestructura sólo se
+          conoce por la ingesta de Cromo Red, que antes devolvían `[]` (no baneables) por depender
+          únicamente del camino legacy.
+
+        El camino Cromo SÓLO corre en el bloque `else` (sin `ruta_id`). Cuando se pasa `ruta_id`
+        explícito (bloque `if ruta_id:`), es un filtro de precisión sobre una `RutaServicio` puntual —
+        concepto que Cromo no modela (no tiene noción de "ruta") — así que ese camino se ignora
+        completamente ahí.
+
+        Dedup por `Camara.id` (mismo `camaras_set` para ambos caminos): si el mismo `camara_id`
+        aparece por legacy Y por Cromo, sólo se consulta/agrega una vez — el objeto ya resuelto por
+        legacy gana, no se vuelve a pedir a la DB.
+
         Args:
             servicio_id: ID del servicio (texto, ej: "52547")
-            ruta_id: ID de ruta específica (opcional)
-            
+            ruta_id: ID de ruta específica (opcional) — si se pasa, ignora el camino Cromo
+
         Returns:
             Lista de cámaras únicas asociadas al servicio/ruta
         """
@@ -134,30 +154,43 @@ class ProtectionService:
         servicio = self.session.query(Servicio).filter(
             Servicio.servicio_id == servicio_id
         ).first()
-        
+
         if not servicio:
             return []
-        
+
         camaras_set: dict[int, Camara] = {}
-        
+
         if ruta_id:
             # Filtrar por ruta específica
             ruta = self.session.query(RutaServicio).filter(
                 RutaServicio.id == ruta_id,
                 RutaServicio.servicio_id == servicio.id,
             ).first()
-            
+
             if ruta:
                 for empalme in ruta.empalmes:
                     if empalme.camara and empalme.camara.id not in camaras_set:
                         camaras_set[empalme.camara.id] = empalme.camara
         else:
-            # Todas las rutas activas del servicio
+            # Todas las rutas activas del servicio (camino legacy)
             for ruta in servicio.rutas_activas:
                 for empalme in ruta.empalmes:
                     if empalme.camara and empalme.camara.id not in camaras_set:
                         camaras_set[empalme.camara.id] = empalme.camara
-        
+
+            # Camino Cromo: resuelve camara_id que el legacy no vio (servicio sin trackings cargados,
+            # o con trackings parciales que no cubren toda su infraestructura real).
+            from core.services.cromo.verificador import camara_ids_por_servicio_sync
+
+            camara_ids_cromo = camara_ids_por_servicio_sync(self.session, servicio.id)
+            camara_ids_faltantes = camara_ids_cromo - camaras_set.keys()
+            if camara_ids_faltantes:
+                camaras_cromo = self.session.query(Camara).filter(
+                    Camara.id.in_(camara_ids_faltantes)
+                ).all()
+                for camara in camaras_cromo:
+                    camaras_set[camara.id] = camara
+
         return list(camaras_set.values())
 
     def get_incidentes_activos(self) -> List[IncidenteBaneo]:
@@ -270,34 +303,53 @@ class ProtectionService:
                     message=f"Baneo creado (ID: {incidente.id}) pero no se encontraron cámaras asociadas",
                 )
             
-            # Marcar cámaras como BANEADAS
+            # Marcar cámaras como BANEADAS — cascada completa (Etapa Cámara/Botella): banear una
+            # botella banea también a su cámara padre y a todas sus botellas hermanas, no sólo a la
+            # que resolvió el empalme de esta ruta. `aplicar_estado_a_grupo` resuelve el grupo completo
+            # de cada `camara` y es EL ÚNICO lugar que escribe `Camara.estado` — evita el hueco de
+            # seguridad real donde una botella baneada dejaba a su cámara padre mostrándose libre.
+            from core.services.camara_estado_service import aplicar_estado_a_grupo, miembros_del_grupo
+
+            motivo_estado = motivo or f"Baneo por incidente #{incidente.id} (servicio protegido {servicio_protegido_id})"
             camaras_baneadas = 0
             camaras_ya_baneadas = 0
             camaras_afectadas = []
-            
+            procesadas: set[int] = set()
+
             for camara in camaras:
-                if camara.estado == CamaraEstado.BANEADA:
-                    camaras_ya_baneadas += 1
-                    camaras_afectadas.append({
-                        "id": camara.id,
-                        "nombre": camara.nombre,
-                        "estado_anterior": "BANEADA",
-                        "estado_nuevo": "BANEADA",
-                        "accion": "sin_cambio",
-                    })
-                else:
-                    estado_anterior = camara.estado.value if camara.estado else "LIBRE"
-                    camara.estado = CamaraEstado.BANEADA
-                    camara.last_update = datetime.now(timezone.utc)
-                    camaras_baneadas += 1
-                    camaras_afectadas.append({
-                        "id": camara.id,
-                        "nombre": camara.nombre,
-                        "estado_anterior": estado_anterior,
-                        "estado_nuevo": "BANEADA",
-                        "accion": "baneada",
-                    })
-            
+                if camara.id in procesadas:
+                    continue
+                auditorias = aplicar_estado_a_grupo(
+                    self.session,
+                    camara,
+                    CamaraEstado.BANEADA,
+                    usuario=usuario_ejecutor or "sistema",
+                    motivo=motivo_estado,
+                )
+                estados_anteriores = {a.camara_id: a.estado_anterior for a in auditorias}
+                for miembro in miembros_del_grupo(camara):
+                    if miembro.id in procesadas:
+                        continue
+                    procesadas.add(miembro.id)
+                    if miembro.id in estados_anteriores:
+                        camaras_baneadas += 1
+                        camaras_afectadas.append({
+                            "id": miembro.id,
+                            "nombre": miembro.nombre,
+                            "estado_anterior": estados_anteriores[miembro.id].value,
+                            "estado_nuevo": "BANEADA",
+                            "accion": "baneada",
+                        })
+                    else:
+                        camaras_ya_baneadas += 1
+                        camaras_afectadas.append({
+                            "id": miembro.id,
+                            "nombre": miembro.nombre,
+                            "estado_anterior": "BANEADA",
+                            "estado_nuevo": "BANEADA",
+                            "accion": "sin_cambio",
+                        })
+
             logger.info(
                 "action=create_ban incidente_id=%d servicio_protegido=%s camaras_baneadas=%d ya_baneadas=%d",
                 incidente.id,
@@ -373,54 +425,103 @@ class ProtectionService:
                 incidente.servicio_protegido_id,
                 incidente.ruta_protegida_id,
             )
-            
+
+            # Cascada Cámara/Botella (Etapa Infra): iterar el grupo completo de cada cámara resuelta
+            # (padre + botellas hermanas), no sólo la fila que resolvió el empalme — `create_ban`
+            # baneó al grupo entero, así que `lift_ban` tiene que evaluar la restauración de cada
+            # miembro por separado (a diferencia del baneo, la restauración NO es uniforme: cada
+            # miembro puede tener su propio ingreso activo o su propio otro-baneo, y termina en un
+            # estado distinto — LIBRE u OCUPADA — según su situación puntual).
+            from core.services.camara_estado_service import miembros_del_grupo
+
+            motivo_estado = motivo_cierre or f"Restauración por cierre de incidente #{incidente_id}"
             camaras_restauradas = 0
             camaras_mantenidas = 0
             camaras_afectadas = []
-            
+            procesadas: set[int] = set()
+
             for camara in camaras:
-                if camara.estado != CamaraEstado.BANEADA:
-                    # Ya no está baneada, no hacer nada
-                    continue
-                
-                # Verificar si hay otro baneo activo que afecte a esta cámara
-                otro_baneo = self._camara_tiene_otro_baneo_activo(
-                    camara.id,
-                    incidente_id,
-                )
-                
-                if otro_baneo:
-                    # Mantener baneada por otro incidente
-                    camaras_mantenidas += 1
+                for miembro in miembros_del_grupo(camara):
+                    if miembro.id in procesadas:
+                        continue
+                    procesadas.add(miembro.id)
+
+                    if miembro.estado != CamaraEstado.BANEADA:
+                        # Ya no está baneada, no hacer nada
+                        continue
+
+                    # Verificar si hay otro baneo activo que afecte al GRUPO de esta cámara (no sólo
+                    # a `miembro` directamente — ver `_camara_tiene_otro_baneo_activo`)
+                    otro_baneo = self._camara_tiene_otro_baneo_activo(
+                        miembro.id,
+                        incidente_id,
+                    )
+
+                    if otro_baneo:
+                        # Mantener baneada por otro incidente
+                        camaras_mantenidas += 1
+                        camaras_afectadas.append({
+                            "id": miembro.id,
+                            "nombre": miembro.nombre,
+                            "estado_anterior": "BANEADA",
+                            "estado_nuevo": "BANEADA",
+                            "accion": "mantenida_otro_baneo",
+                            "otro_incidente_id": otro_baneo.id,
+                        })
+                        continue
+
+                    # Determinar nuevo estado (por miembro — no uniforme, ver docstring arriba)
+                    nuevo_estado = self._determinar_estado_restauracion(miembro, incidente)
+                    if nuevo_estado == CamaraEstado.BANEADA:
+                        # Baneo independiente anterior a este incidente (sin IncidenteBaneo que lo
+                        # respalde) — no se toca, ver docstring de _determinar_estado_restauracion.
+                        camaras_mantenidas += 1
+                        camaras_afectadas.append({
+                            "id": miembro.id,
+                            "nombre": miembro.nombre,
+                            "estado_anterior": "BANEADA",
+                            "estado_nuevo": "BANEADA",
+                            "accion": "mantenida_baneo_independiente",
+                        })
+                        continue
+
+                    self.session.add(
+                        CamaraEstadoAuditoria(
+                            camara_id=miembro.id,
+                            usuario=usuario_ejecutor or "sistema",
+                            motivo=motivo_estado,
+                            estado_anterior=miembro.estado,
+                            estado_nuevo=nuevo_estado,
+                        )
+                    )
+                    miembro.estado = nuevo_estado
+                    miembro.last_update = datetime.now(timezone.utc)
+                    camaras_restauradas += 1
                     camaras_afectadas.append({
-                        "id": camara.id,
-                        "nombre": camara.nombre,
+                        "id": miembro.id,
+                        "nombre": miembro.nombre,
                         "estado_anterior": "BANEADA",
-                        "estado_nuevo": "BANEADA",
-                        "accion": "mantenida_otro_baneo",
-                        "otro_incidente_id": otro_baneo.id,
+                        "estado_nuevo": nuevo_estado.value,
+                        "accion": "restaurada",
                     })
-                    continue
-                
-                # Determinar nuevo estado
-                nuevo_estado = self._determinar_estado_restauracion(camara)
-                
-                camara.estado = nuevo_estado
-                camara.last_update = datetime.now(timezone.utc)
-                camaras_restauradas += 1
-                camaras_afectadas.append({
-                    "id": camara.id,
-                    "nombre": camara.nombre,
-                    "estado_anterior": "BANEADA",
-                    "estado_nuevo": nuevo_estado.value,
-                    "accion": "restaurada",
-                })
-            
+
+            # Reconciliación de incidentes hermanos (hallazgo real, 2026-08-28): cámaras que un
+            # hermano ya cerrado no pudo liberar porque ESTE incidente todavía estaba activo en ese
+            # momento — ver docstring de `_reconciliar_hermanos_cerrados`.
+            camaras_afectadas_hermanos = self._reconciliar_hermanos_cerrados(
+                incidente.servicio_protegido_id,
+                incidente_id,
+                usuario_ejecutor=usuario_ejecutor,
+            )
+            camaras_restauradas += len(camaras_afectadas_hermanos)
+            camaras_afectadas.extend(camaras_afectadas_hermanos)
+
             logger.info(
-                "action=lift_ban incidente_id=%d restauradas=%d mantenidas=%d",
+                "action=lift_ban incidente_id=%d restauradas=%d mantenidas=%d restauradas_hermanos=%d",
                 incidente_id,
                 camaras_restauradas,
                 camaras_mantenidas,
+                len(camaras_afectadas_hermanos),
             )
             
             return LiftResult(
@@ -445,32 +546,134 @@ class ProtectionService:
     # MÉTODOS AUXILIARES INTERNOS
     # -------------------------------------------------------------------------
 
+    def _reconciliar_hermanos_cerrados(
+        self,
+        servicio_protegido_id: str,
+        incidente_excluido_id: int,
+        *,
+        usuario_ejecutor: Optional[str] = None,
+    ) -> List[dict]:
+        """Tras cerrar un incidente, reintenta la restauración de cualquier incidente HERMANO —
+        mismo `servicio_protegido_id`, ya cerrado — cuyas cámaras hayan quedado `BANEADA` porque, en
+        el momento de SU PROPIO cierre, otro incidente hermano (éste u otro) todavía estaba activo y
+        bloqueó `_camara_tiene_otro_baneo_activo`.
+
+        Hallazgo real, 2026-08-28: dos incidentes que protegían el mismo servicio por rutas
+        redundantes (Principal/Backup) se cerraron con 4 segundos de diferencia. El que cerró primero
+        dejó todas sus cámaras `mantenida_otro_baneo` (correctamente — el hermano todavía estaba
+        activo en ese instante). El hermano cerró segundos después, pero `lift_ban` sólo reevalúa las
+        cámaras de SU PROPIA ruta — nunca vuelve a mirar las del incidente que ya se dio por cerrado.
+        Resultado real: 74 cámaras/botellas quedaron `BANEADA` para siempre, sin ningún incidente
+        activo detrás (ver `docs/decisiones.md`, entrada 2026-08-28).
+
+        Corre incondicionalmente al final de `lift_ban` — el costo es acotado (sólo mira incidentes ya
+        CERRADOS del mismo servicio, nunca un escaneo global de `Camara`), y así, sea cual sea el
+        orden en que cierren dos incidentes hermanos, el último en cerrar termina de liberar también
+        lo que el primero no pudo.
+
+        Returns:
+            Lista de dicts `camaras_afectadas` (mismo formato que `lift_ban`) de las cámaras que esta
+            reconciliación efectivamente restauró — vacía si no había nada pendiente.
+        """
+        from core.services.camara_estado_service import miembros_del_grupo
+
+        hermanos_cerrados = self.session.query(IncidenteBaneo).filter(
+            IncidenteBaneo.servicio_protegido_id == servicio_protegido_id,
+            IncidenteBaneo.id != incidente_excluido_id,
+            IncidenteBaneo.activo == False,  # noqa: E712
+        ).all()
+
+        camaras_afectadas: List[dict] = []
+        procesadas: set[int] = set()
+
+        for hermano in hermanos_cerrados:
+            camaras = self.get_camaras_for_servicio(hermano.servicio_protegido_id, hermano.ruta_protegida_id)
+            for camara in camaras:
+                for miembro in miembros_del_grupo(camara):
+                    if miembro.id in procesadas or miembro.estado != CamaraEstado.BANEADA:
+                        continue
+                    procesadas.add(miembro.id)
+
+                    if self._camara_tiene_otro_baneo_activo(miembro.id, hermano.id):
+                        continue  # todavía hay OTRO incidente activo protegiéndola
+
+                    nuevo_estado = self._determinar_estado_restauracion(miembro, hermano)
+                    if nuevo_estado == CamaraEstado.BANEADA:
+                        continue  # baneo independiente real (anterior al hermano) — no tocar
+
+                    self.session.add(
+                        CamaraEstadoAuditoria(
+                            camara_id=miembro.id,
+                            usuario=usuario_ejecutor or "sistema",
+                            motivo=(
+                                f"Restauración diferida: el incidente hermano #{hermano.id} había "
+                                f"quedado pendiente al cerrarse (bloqueado por el incidente activo "
+                                f"#{incidente_excluido_id} en ese momento)"
+                            ),
+                            estado_anterior=miembro.estado,
+                            estado_nuevo=nuevo_estado,
+                        )
+                    )
+                    miembro.estado = nuevo_estado
+                    miembro.last_update = datetime.now(timezone.utc)
+                    camaras_afectadas.append({
+                        "id": miembro.id,
+                        "nombre": miembro.nombre,
+                        "estado_anterior": "BANEADA",
+                        "estado_nuevo": nuevo_estado.value,
+                        "accion": "restaurada_hermano",
+                        "incidente_hermano_id": hermano.id,
+                    })
+
+        return camaras_afectadas
+
     def _camara_tiene_otro_baneo_activo(
         self,
         camara_id: int,
         excluir_incidente_id: int,
     ) -> Optional[IncidenteBaneo]:
-        """Verifica si una cámara está afectada por otro baneo activo.
-        
+        """Verifica si el GRUPO de una cámara (ella + su cámara padre + botellas hermanas) está
+        afectado por otro baneo activo.
+
+        Etapa Cámara/Botella: mira los empalmes de TODO el grupo, no sólo los de `camara_id`
+        directamente — si los empalmes reales viven en una botella hermana (o en la cámara padre) y
+        sólo se mirara `camara_id`, este chequeo no vería el otro incidente y `lift_ban` podría
+        restaurar de más una cámara que en realidad sigue protegida por otro baneo vía su hermana.
+
+        Etapa Refactor baneos (2026-08-23): el cálculo de `servicios_ids` también une el camino Cromo
+        (`servicio_ids_por_camaras_sync`) — mismo gap que `get_camaras_for_servicio`: si el otro
+        incidente activo protege un servicio cuya infraestructura sólo se conoce por Cromo Red (sin
+        empalme/ruta legacy que lo conecte a este grupo), el camino legacy en solitario no lo detecta.
+
         Args:
-            camara_id: ID de la cámara a verificar
+            camara_id: ID de la cámara/botella a verificar
             excluir_incidente_id: ID del incidente a excluir de la búsqueda
-            
+
         Returns:
-            El primer incidente activo que afecta la cámara, o None
+            El primer incidente activo que afecta al grupo, o None
         """
-        # Obtener la cámara y sus empalmes
+        from core.services.camara_estado_service import miembros_del_grupo
+        from core.services.cromo.verificador import servicio_ids_por_camaras_sync
+
         camara = self.session.query(Camara).filter(Camara.id == camara_id).first()
         if not camara:
             return None
-        
-        # Obtener servicios que pasan por esta cámara
-        servicios_ids = set()
-        for empalme in camara.empalmes:
-            for ruta in empalme.rutas:
-                if ruta.servicio and ruta.servicio.servicio_id:
-                    servicios_ids.add(ruta.servicio.servicio_id)
-        
+
+        miembros = miembros_del_grupo(camara)
+
+        # Servicios que pasan por CUALQUIER empalme del grupo (cámara padre + todas las botellas) —
+        # camino legacy
+        servicios_ids: set[str] = set()
+        for miembro in miembros:
+            for empalme in miembro.empalmes:
+                for ruta in empalme.rutas:
+                    if ruta.servicio and ruta.servicio.servicio_id:
+                        servicios_ids.add(ruta.servicio.servicio_id)
+
+        # Camino Cromo: une servicios que tocan el grupo sólo vía infraestructura Cromo (sin empalme
+        # legacy) — cierra el mismo hueco que `get_camaras_for_servicio`.
+        servicios_ids |= servicio_ids_por_camaras_sync(self.session, [m.id for m in miembros])
+
         if not servicios_ids:
             return None
         
@@ -483,28 +686,62 @@ class ProtectionService:
         
         return otro_incidente
 
-    def _determinar_estado_restauracion(self, camara: Camara) -> CamaraEstado:
+    def _determinar_estado_restauracion(self, camara: Camara, incidente: IncidenteBaneo) -> CamaraEstado:
         """Determina el estado al que debe volver una cámara al desbanear.
-        
-        Lógica:
-        - Si tiene ingreso activo (sin fecha_fin) → OCUPADA
+
+        Antes de aplicar la lógica LIBRE/OCUPADA por defecto, consulta la auditoría para dos casos que
+        esa lógica no puede ver (hallazgo real de QA, 2026-08-10 — ver
+        `camara_estado_service.obtener_ultima_transicion_a_baneada`):
+
+        - Si la última transición a BANEADA de esta cámara es ANTERIOR al inicio de este incidente,
+          significa que quedó baneada por otro motivo independiente de este incidente (override manual,
+          herencia del backfill de jerarquía Cámara/Botella, etc. — sin `IncidenteBaneo` que lo
+          respalde, por lo que `_camara_tiene_otro_baneo_activo` no lo detecta) → se mantiene BANEADA,
+          no se toca.
+        `DETECTADA` fue retirado del sistema (2026-08-11, ver `scripts/retirar_estado_detectada.py`)
+        — una transición previa que tuviera `estado_anterior == DETECTADA` ya no se preserva, cae al
+        mismo cálculo LIBRE/OCUPADA por defecto que cualquier otro estado fuera del vocabulario
+        vigente (LIBRE/OCUPADA/BANEADA/NO_OPERATIVA).
+
+        Lógica por defecto (sin historial aplicable):
+        - Si tiene ingreso activo (`tipo=INGRESO`, sin fecha_fin) → OCUPADA — filtra `tipo=INGRESO`
+          explícitamente para no confundir un `INTENTO_BLOQUEADO` (mismo `fecha_fin IS NULL` por
+          diseño, nunca se cierra con un Egreso) con un ingreso real en curso.
         - En otro caso → LIBRE
-        
+
         Args:
             camara: Cámara a evaluar
-            
+            incidente: Incidente que se está levantando (para comparar contra su fecha_inicio)
+
         Returns:
-            Estado de restauración (LIBRE u OCUPADA)
+            Estado de restauración (BANEADA si se mantiene por un motivo independiente, LIBRE u
+            OCUPADA)
         """
-        # Verificar si hay un ingreso activo
+        from core.services.camara_estado_service import obtener_ultima_transicion_a_baneada
+
+        ultima_transicion = obtener_ultima_transicion_a_baneada(self.session, camara.id)
+        if ultima_transicion is not None:
+            if (
+                ultima_transicion.created_at is not None
+                and incidente.fecha_inicio is not None
+                and ultima_transicion.created_at < incidente.fecha_inicio
+            ):
+                return CamaraEstado.BANEADA
+
+        # Verificar si hay un ingreso activo — filtra explícitamente tipo=INGRESO (mismo fix que
+        # `camara_estado_service.get_camara_estado_contexto` e `ingreso_service.py`, 2026-09-04): sin
+        # este filtro, un INTENTO_BLOQUEADO (mismo fecha_fin IS NULL por diseño, nunca se cierra con
+        # un Egreso) hacía que `lift_ban` restaurara la cámara a OCUPADA en vez de LIBRE de forma
+        # permanente.
         ingreso_activo = self.session.query(Ingreso).filter(
             Ingreso.camara_id == camara.id,
+            Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin == None,  # noqa: E711
         ).first()
-        
+
         if ingreso_activo:
             return CamaraEstado.OCUPADA
-        
+
         return CamaraEstado.LIBRE
 
 

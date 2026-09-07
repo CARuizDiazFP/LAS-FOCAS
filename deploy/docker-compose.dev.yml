@@ -32,12 +32,30 @@ services:
     networks:
       - lasfocas_dev_net
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: lasfocasdev-redis
+    restart: unless-stopped
+    command: ["sh", "-c", "redis-server --requirepass \"$$(cat /run/secrets/redis_password_v1)\""]
+    secrets:
+      - redis_password_v1
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password_v1)\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - lasfocas_dev_net
+
   api:
     build:
       context: ..
       dockerfile: api/Dockerfile
     container_name: lasfocasdev-api
     restart: unless-stopped
+    user: "1001:1001"
     env_file:
       - ../.env.dev
     environment:
@@ -48,6 +66,8 @@ services:
       - smtp_password_v1
       - slack_bot_token_v1
       - slack_app_token_v1
+      - api_prov_user_v1
+      - api_prov_pass_v1
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,11 +81,50 @@ services:
     networks:
       - lasfocas_dev_net
 
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: lasfocasdev-docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # Mismo alcance mínimo que en prod: containers.get/start/reload sobre un único
+      # contenedor (slack_baneo_worker dev). Ver deploy/compose.yml para el detalle.
+      CONTAINERS: 1
+      ALLOW_START: 1
+      POST: 0
+      AUTH: 0
+      SECRETS: 0
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      EXEC: 0
+      BUILD: 0
+      SWARM: 0
+      SYSTEM: 0
+      INFO: 0
+      SERVICES: 0
+      NODES: 0
+      TASKS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    expose:
+      - "2375"
+    networks:
+      - docker_proxy_dev_net
+
   web:
     build:
       context: ..
       dockerfile: web/Dockerfile
     container_name: lasfocasdev-web
+    user: "1001:1001"
     env_file:
       - ../.env.dev
     environment:
@@ -78,6 +137,12 @@ services:
       TEMPLATES_DIR: /app/Templates
       WEB_CHAT_ALLOWED_ORIGINS: ${WEB_CHAT_ALLOWED_ORIGINS:-}
       OFFICE_SERVICE_BASE: http://office:8090
+      # Resto de la config de Cromo Red (CROMO_BASE_URL, CROMO_USER, etc.) llega vía
+      # env_file (../.env.dev) igual que POSTGRES_*; sólo la contraseña va por secreto.
+      # Gestión del worker de baneos vía proxy acotado, sin montar el socket directamente.
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     secrets:
       - api_key_v1
       - db_password_v1
@@ -85,10 +150,14 @@ services:
       - smtp_password_v1
       - slack_bot_token_v1
       - slack_app_token_v1
+      - cromo_password_v1
+      - redis_password_v1
     depends_on:
       - api
       - nlp_intent
       - postgres
+      - docker-socket-proxy
+      - redis
     ports:
       # Bind solo a loopback: más seguro en servidor compartido.
       # Para acceso remoto: ssh -L 8090:localhost:8090 usuario@servidor
@@ -98,10 +167,10 @@ services:
       - ../Templates:/app/Templates:ro  # Templates compartidos (solo lectura)
       - reports_dev_data:/app/data/reports
       - uploads_dev_data:/app/data/uploads
-      # NOTA: el panel admin usa este socket para gestionar contenedores por nombre.
+      # NOTA: el panel admin gestiona contenedores por nombre a través de docker-socket-proxy.
       # En dev, el worker se llama lasfocasdev-slack-baneo-worker; el toggle admin
-      # buscará lasfocas-slack-baneo-worker (prod). Limitación documentada en docs/infra.md.
-      - /var/run/docker.sock:/var/run/docker.sock
+      # buscará lasfocas-slack-baneo-worker (prod). Limitación documentada en docs/infra.md,
+      # preexistente y sin relación con el cambio de socket/usuario no-root.
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -109,6 +178,7 @@ services:
       retries: 12
     networks:
       - lasfocas_dev_net
+      - docker_proxy_dev_net
 
   nlp_intent:
     build:
@@ -133,6 +203,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/bot.Dockerfile
+    user: "1001:1001"
     env_file:
       - ../.env.dev
     secrets:
@@ -173,6 +244,7 @@ services:
       context: ..
       dockerfile: deploy/docker/repetitividad_worker.Dockerfile
     profiles: ["reports-worker"]
+    user: "1001:1001"
     env_file:
       - ../.env.dev
     environment:
@@ -215,6 +287,87 @@ services:
     networks:
       - lasfocas_dev_net
 
+  cromo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/cromo_worker.Dockerfile
+    container_name: lasfocasdev-cromo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      # Al cerrar una corrida productiva, `continuar_corrida` encola el recálculo de Botellas
+      # duplicadas (`core/services/botella_recompute_queue.py`). Redis corre con --requirepass, así
+      # que sin estas tres piezas (host/puerto + el secret) el enqueue falla con NOAUTH y el
+      # best-effort se lo traga como warning: la caché de duplicados quedaría vieja en silencio.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - cromo_password_v1
+      - redis_password_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8096"
+    volumes:
+      - ../Logs/dev:/app/Logs  # Mismo subdir dev que el servicio web
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_dev_net
+
+  botellas_recalculo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/botellas_recalculo_worker.Dockerfile
+    container_name: lasfocasdev-botellas-recalculo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - redis_password_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8097"
+    volumes:
+      - ../Logs/dev:/app/Logs
+    healthcheck:
+      # No alcanza con que /health responda 200: el loop de BLPOP puede estar muerto y el endpoint
+      # seguir contestando (devuelve status=loop_muerto en ese caso). `grep -qv` sobre la respuesta
+      # de una sola línea da 1 (unhealthy) tanto si dice loop_muerto como si curl falla y no
+      # imprime nada, y 0 sólo con un loop realmente vivo.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8097/health | grep -qv loop_muerto"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_dev_net
+
   # (Opcional) pgAdmin dev. Levantar con: docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d
   pgadmin:
     image: dpage/pgadmin4:8
@@ -222,10 +375,19 @@ services:
     profiles: ["pgadmin"]
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@local
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password_v1
+    secrets:
+      - pgadmin_password_v1
+    # pgAdmin corre como uid 5050 (no root, no coincide con el dueño del secreto en el
+    # host). Compose sin Swarm monta los secretos como bind mount preservando los
+    # permisos del host tal cual (ignora uid/gid/mode de la sintaxis larga), así que
+    # necesita leer el archivo por grupo: el secreto queda en 640 + group support-focal-01,
+    # y acá se agrega ese grupo como suplementario al contenedor.
+    group_add:
+      - "1001"
     ports:
-      - "5051:80"  # Puerto alternativo: no colisiona con prod (5050)
+      - "127.0.0.1:5051:80"  # Puerto alternativo: no colisiona con prod (5050)
     depends_on:
       - postgres
     networks:
@@ -240,6 +402,19 @@ volumes:
 networks:
   lasfocas_dev_net:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.19.0.0/24
+          gateway: 172.19.0.1
+  docker_proxy_dev_net:
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.22.0.0/24
+          gateway: 172.22.0.1
 
 secrets:
   api_key_v1:
@@ -258,3 +433,13 @@ secrets:
     file: ../.secrets/Dev_slack_bot_token_v1.txt
   slack_app_token_v1:
     file: ../.secrets/Dev_slack_app_token_v1.txt
+  cromo_password_v1:
+    file: ../.secrets/Dev_cromo_password_v1.txt
+  api_prov_user_v1:
+    file: ../.secrets/Dev_api_prov_user_v1.txt
+  api_prov_pass_v1:
+    file: ../.secrets/Dev_api_prov_pass_v1.txt
+  pgadmin_password_v1:
+    file: ../.secrets/Dev_pgadmin_password_v1.txt
+  redis_password_v1:
+    file: ../.secrets/Dev_redis_password_v1.txt

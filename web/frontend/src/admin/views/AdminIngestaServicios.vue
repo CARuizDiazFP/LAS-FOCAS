@@ -108,7 +108,6 @@ async function onSelectFile(event: Event): Promise<void> {
 .ingesta-card {
   display: grid;
   gap: var(--space-3);
-  background: linear-gradient(180deg, rgba(16, 22, 31, 0.98), rgba(10, 14, 20, 0.96));
 }
 
 .ingesta-card__header {
@@ -124,17 +123,17 @@ async function onSelectFile(event: Event): Promise<void> {
 
 .ingesta-card__chip {
   font-size: 0.75rem;
-  color: #dbeafe;
-  background: rgba(37, 99, 235, 0.25);
-  border: 1px solid rgba(37, 99, 235, 0.55);
+  color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
   border-radius: var(--radius-pill);
   padding: 2px 10px;
 }
 
 .ingesta-card__dropzone {
-  border: 1px dashed rgba(96, 165, 250, 0.6);
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
   border-radius: var(--radius-lg);
-  background: rgba(30, 41, 59, 0.45);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
   min-height: 110px;
   display: grid;
   place-content: center;
@@ -159,15 +158,15 @@ async function onSelectFile(event: Event): Promise<void> {
 .progress-track {
   height: 12px;
   border-radius: 999px;
-  background: #0b1220;
-  border: 1px solid #1f2937;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #2563eb, #38bdf8 60%, #22d3ee);
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.5);
+  background: linear-gradient(90deg, var(--color-accent-700), var(--color-accent) 60%, var(--color-accent-300));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 50%, transparent);
   transition: width 0.2s ease;
 }
 
@@ -175,7 +174,7 @@ async function onSelectFile(event: Event): Promise<void> {
   display: flex;
   justify-content: space-between;
   font-size: 0.82rem;
-  color: #bfdbfe;
+  color: var(--color-neutral-400);
 }
 
 .summary-grid {
@@ -189,7 +188,7 @@ async function onSelectFile(event: Event): Promise<void> {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--color-bg);
 }
 
 .summary-grid dt {
@@ -201,28 +200,5 @@ async function onSelectFile(event: Event): Promise<void> {
   font-size: 1.4rem;
   font-weight: 700;
   margin: 0;
-}
-
-.msg {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font-size: 0.88rem;
-  display: none;
-}
-
-.msg.visible {
-  display: block;
-}
-
-.msg.ok {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.35);
-  color: #6ee7b7;
-}
-
-.msg.err {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #fca5a5;
 }
 </style>

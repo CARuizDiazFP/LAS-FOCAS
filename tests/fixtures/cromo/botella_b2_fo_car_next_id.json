@@ -1,0 +1,264 @@
+{
+  "nocom": 0,
+  "id": 9057952,
+  "n_id": 9057909,
+  "type": 1,
+  "class": 68,
+  "net": 2,
+  "vfrom": 27999,
+  "vmax": 168149,
+  "from": 1662496722,
+  "hist": [
+    {
+      "id": 9057909,
+      "next_id": 9057952,
+      "from": 1662496113,
+      "vfrom": 27995,
+      "to": 1662496722,
+      "vto": 27999
+    },
+    {
+      "id": 9057952,
+      "next_id": 0,
+      "from": 1662496722,
+      "vfrom": 27999,
+      "to": 0,
+      "vto": 0
+    }
+  ],
+  "is_meshed": 1,
+  "is_geo": 1,
+  "is_container": 1,
+  "name": "B2-FO-CAR",
+  "code": "GPJ-08V7",
+  "col": 0,
+  "stp": 21,
+  "opp": 2587348,
+  "srcs": -1,
+  "sc": 1,
+  "an": 0.0,
+  "inner": [
+    {
+      "id": 9204249,
+      "n_id": 9204249,
+      "class": 132,
+      "name": "S6-6",
+      "stp": 21,
+      "stn": 15,
+      "str": 15,
+      "at": [
+        {
+          "id": 84,
+          "value": "S6-6",
+          "name": "nombre"
+        },
+        {
+          "id": 85,
+          "value": "FUSION",
+          "name": "fo.tipo"
+        }
+      ],
+      "parent": 9057909,
+      "pts": [
+        5597042.433574,
+        6204151.615439
+      ],
+      "sc": 1,
+      "an": 0,
+      "col": 0,
+      "gs": [],
+      "tp": [
+        {
+          "type": 0,
+          "nfrom": -1,
+          "id_to": 9203969,
+          "nto": -1,
+          "class": 134
+        },
+        {
+          "type": 0,
+          "nfrom": -1,
+          "id_to": 9134948,
+          "nto": -1,
+          "class": 130
+        }
+      ],
+      "srcs": -1
+    },
+    {
+      "id": 9203912,
+      "n_id": 9203912,
+      "class": 134,
+      "name": "",
+      "stp": 21,
+      "stn": 15,
+      "str": 15,
+      "at": [
+        {
+          "id": 80,
+          "value": "S3",
+          "name": "fo.nombre_ent_sal"
+        },
+        {
+          "id": 82,
+          "value": "SALIDA",
+          "name": "fo.entrada_salida"
+        }
+      ],
+      "parent": 9203909,
+      "pts": [
+        5597042.433574,
+        6204151.615439
+      ],
+      "sc": 1,
+      "an": 0,
+      "col": 0,
+      "gs": [],
+      "tp": [
+        {
+          "type": 0,
+          "nfrom": -1,
+          "id_to": 9204062,
+          "nto": -1,
+          "class": 132
+        }
+      ],
+      "srcs": -1
+    }
+  ],
+  "pts": [
+    5597042.433574,
+    6204151.615439
+  ],
+  "ll": [
+    -58.94584404,
+    -34.30335349
+  ],
+  "op": [
+    {
+      "id": 2587348,
+      "type": 10,
+      "status": 21,
+      "date": 1662496113,
+      "vfrom": 27995,
+      "to": 0
+    }
+  ],
+  "tp": [
+    {
+      "type": 0,
+      "nfrom": 0,
+      "id_to": 9203453,
+      "nto": 1,
+      "class": 51,
+      "name": "FO-TR-CAR"
+    },
+    {
+      "type": 0,
+      "nfrom": 0,
+      "id_to": 9216553,
+      "nto": 0,
+      "class": 51,
+      "name": "FO-TR-CAR-1"
+    },
+    {
+      "type": 0,
+      "nfrom": 1,
+      "id_to": 9204260,
+      "nto": 0,
+      "class": 51,
+      "name": "FO-CAR-C4"
+    },
+    {
+      "type": 0,
+      "nfrom": 2,
+      "id_to": 9205381,
+      "nto": 0,
+      "class": 51,
+      "name": "FO-CAR-C5"
+    },
+    {
+      "type": 0,
+      "nfrom": 3,
+      "id_to": 9206644,
+      "nto": 1,
+      "class": 51,
+      "name": "FO-CAR-C7"
+    },
+    {
+      "type": 0,
+      "nfrom": 4,
+      "id_to": 9203500,
+      "nto": 1,
+      "class": 51,
+      "name": "FO-CAR-C8"
+    }
+  ],
+  "at": [
+    {
+      "seq": 0,
+      "id": 20,
+      "value": "Subterraneo",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 1,
+      "id": 41,
+      "value": "GPJ-08V7",
+      "name": "fo.tipo",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 2,
+      "id": 45,
+      "value": "SI",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 3,
+      "id": 34,
+      "value": "B2-FO-CAR",
+      "name": "nombre",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 4,
+      "id": 67,
+      "value": "SAN MARTIN",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 5,
+      "id": 16,
+      "value": "5500",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 6,
+      "id": 68,
+      "value": "Campana",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 7,
+      "id": 69,
+      "value": "Buenos Aires",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 8,
+      "id": 118,
+      "value": "https://maps.app.goo.gl/rvucLTREzXsRWZDDA",
+      "from": 1726254880,
+      "vfrom": 168149
+    }
+  ]
+}

@@ -3,6 +3,8 @@
 # Descripción: Aplicación FastAPI principal (incluye rutas de health)
 
 import os
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,10 +14,18 @@ from api.app.routes.ingest import router as ingest_router, alias_router as inges
 from api.app.routes.infra import router as infra_router
 from api.app.routes.servicios import router as servicios_router
 from api.app.security import require_api_key
+from core.services.prov.client import cerrar_prov_client
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="LAS-FOCAS API", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # Cierra el ProvClient singleton (si llegó a instanciarse) — ver
+        # core/services/prov/client.py::cerrar_prov_client y docs/decisiones.md.
+        await cerrar_prov_client()
+
+    app = FastAPI(title="LAS-FOCAS API", version="0.1.0", lifespan=lifespan)
 
     # CORS: permitir llamadas desde el frontend (8080) y cualquier origen configurado
     default_origins = [

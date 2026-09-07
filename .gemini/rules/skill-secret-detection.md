@@ -4,7 +4,7 @@
 ---
 name: "skill-secret-detection"
 description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuraciones sensibles"
-source: ".github/skills/secret-detection/SKILL.md"
+source: ".agentes-comunes/skills/secret-detection/SKILL.md"
 triggers:
   - "secret-detection"
   - "habilidad"

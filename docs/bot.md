@@ -222,6 +222,47 @@ El listener captura `AmbiguousSearchError` y envía un aviso contextualizado:
 
 El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Slack) o en la URL del Workflow dentro de la configuración de Slack Workflows. Ejemplo: `Wf0B0KJF68BS`.
 
+### Registro de movimiento Ingreso/Egreso (desde 2026-08-31)
+
+Además de responder en el hilo, cuando el mensaje matchea una `Camara`/`CromoBotella` real el listener persiste el movimiento en `app.ingresos` — antes de esta fecha esa tabla nunca tuvo un camino de escritura real (ver `docs/infra.md`).
+
+El Workflow de Slack ya envía dos campos que hasta esta fecha no se parseaban, extraídos en `modules/slack_baneo_notifier/camara_search.py`:
+
+| Función | Campo del Workflow | Devuelve |
+|---|---|---|
+| `extraer_tipo_movimiento()` | `*Ingreso o Egreso*` (valor en la línea siguiente) | `"Ingreso"`, `"Egreso"` o `None` si el campo no está presente |
+| `extraer_slack_user_id_autorizacion()` | `Persona que solicito La Autorizacion` (mención `<@USER_ID\|Nombre>` o `<@USER_ID>` en la línea siguiente) | el Slack user id crudo (ej. `U0AUB6CRE4A`) o `None` |
+
+Si `extraer_tipo_movimiento()` devuelve `None` (mensaje viejo o formulario sin ese campo), no se escribe nada — el listener sigue respondiendo exactamente igual que antes de esta fecha. Si devuelve un valor, `IngresoListener._registrar_movimiento_si_corresponde()` llama a `registrar_movimiento_ingreso()` (`core/services/ingreso_service.py`):
+
+- **"Ingreso"**: siempre crea una fila nueva (`fecha_inicio=ahora`, `fecha_fin=NULL`).
+- **"Egreso"**: cierra (`fecha_fin=ahora`) el `Ingreso` abierto más reciente que matchee `tecnico_id` + `camara_id` + `cromo_botella_id` (comparación NULL-safe — un Egreso sin persona identificada nunca cierra el ingreso de un técnico real). Si no hay ninguno abierto, crea una fila huérfana con `fecha_inicio=NULL`.
+
+Este registro **nunca bloquea ni condiciona la respuesta de Slack**: se ejecuta como efecto secundario final, después de calcular el texto de respuesta, y cualquier excepción se loguea (`logger.warning`) y se ignora (incluye un `session.rollback()` explícito para no dejar la sesión compartida del resto de `_handle_message` en estado inválido ante un fallo de escritura).
+
+**Actualización 2026-09-04 (Tarea de fix baneo/Slack):**
+
+- **Nombre real del técnico**: antes de persistir, el listener resuelve `slack_user_id` al nombre
+  visible del técnico vía `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`
+  (llama `client.users_info` — el mismo `WebClient` que Bolt ya inyecta en el handler, sin token
+  nuevo). Requiere el scope `users:read` en la Slack App (verificar en el panel de Slack). Si la
+  llamada falla (scope faltante, usuario borrado, timeout), cae al ID crudo — el registro nunca se
+  bloquea por esto. `Ingreso.tecnico_id` ahora almacena ese nombre resuelto, no ya el ID crudo.
+- **Chequeo de acceso grupo-consciente**: `_evaluar_estado_acceso_camara` dejó de mirar sólo el
+  `estado`/incidentes de la fila puntual resuelta — ahora reusa
+  `core/services/camara_estado_service.get_camara_estado_contexto()`, que evalúa incidentes Y baneo
+  manual sobre TODO el grupo (cámara padre + botellas hermanas). Bug real corregido: pedir ingreso a
+  la cámara raíz mientras una Botella hermana estaba BANEADA respondía "OK".
+- **Intento bloqueado**: si el chequeo de acceso determina que el grupo está bloqueado (incidente
+  activo o baneo manual) y el movimiento es "Ingreso", el listener llama
+  `core/services/ingreso_service.py::registrar_intento_bloqueado` en vez de
+  `registrar_movimiento_ingreso` — la fila queda con `tipo=INTENTO_BLOQUEADO`, `fecha_fin=NULL`
+  (nunca hubo egreso porque nunca hubo ingreso real). Un "Egreso" nunca se bloquea, incluso sobre un
+  grupo BANEADO. `Ingreso.tipo` (INGRESO/EGRESO/INTENTO_BLOQUEADO, migración `20260904_01`) es lo que
+  distingue esto de un Ingreso real "en curso" con el mismo `fecha_fin IS NULL` — tanto
+  `tiene_ingreso_activo` (`camara_estado_service.py`) como el cierre de Egreso NULL-safe
+  (`ingreso_service.py`) filtran explícitamente `tipo == INGRESO`.
+
 ### Estados de cámara
 
 | Estado | Comportamiento |
@@ -236,7 +277,10 @@ El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Sl
 
 ### Jerarquía de validación de acceso
 
-Antes de responder al técnico, `_construir_respuesta_camara()` evalúa **en orden**:
+Una vez resuelta la `Camara` (propia, o vía botella Cromo), `_evaluar_estado_acceso_camara()`
+evalúa **en orden** (factorizada de `_construir_respuesta_camara()` en la Tarea 2 del refactor de
+ingreso, 2026-08-23, para poder reusarse también desde `_procesar_seguimiento_empalme` cuando la
+cámara se resuelve por el camino del ID de empalme):
 
 1. **Incidente de red activo** (`IncidenteBaneo.activo == True`) → 🚨 `*ATENCIÓN*` con número de incidente y ticket.
 2. **Baneo manual sin incidente** (`camara.estado == BANEADA` y lista de incidentes vacía) → `:no_entry:` con el motivo extraído del último registro de `app.camaras_estado_auditoria` (`estado_nuevo = BANEADA`, ordenado por `created_at DESC`).  Si no hay registro de auditoría, se informa _"sin motivo registrado"_.
@@ -295,7 +339,7 @@ Los técnicos a veces mencionan dos botellas de la misma cámara en un mismo for
 | 1 | base sin prefijo (Botella 1 = cámara principal) |
 | ≥2 | `"Bot N " + base` (Botella 2 = cámara secundaria) |
 
-El listener procesa ambas búsquedas y envía una respuesta combinada en el mismo hilo, separada por un divisor visual. Si alguna no se encuentra, se auto-registra como `PENDIENTE_REVISION` de forma independiente.
+El listener procesa ambas búsquedas y envía una respuesta combinada en el mismo hilo, separada por un divisor visual. Si alguna no se encuentra, se registra como `IngresoSinMatch` de forma independiente (ver sección "Auto-registro de cámaras desconocidas" más abajo — el registro en `app.camaras` con `PENDIENTE_REVISION` está retirado desde 2026-08-11).
 
 #### Abreviaturas expandidas
 
@@ -335,17 +379,32 @@ Antes de consultar la DB y antes de auto-registrar, el listener aplica `limpiar_
 
 **El corte es condicional**: si el token después del separador NO es una stopword conocida, el string se preserva íntegro. Ejemplo: `"Poste Lavalle - Campana"` → `"Poste Lavalle - Campana"` (Campana es una localidad, no ruido).
 
-### Auto-registro de cámaras desconocidas
+### Ingresos sin match (reemplaza el auto-registro `PENDIENTE_REVISION`, 2026-08-11)
 
-Cuando `buscar_camara()` retorna `None`, el listener **auto-registra** la cámara en la DB con:
-- `estado = PENDIENTE_REVISION`
-- `origen_datos = MANUAL`
-- `last_update = now()`
+> **Retirado.** Hasta 2026-08-11 esta sección describía que, cuando `buscar_camara()` retornaba
+> `None`, el listener auto-registraba una `Camara` nueva con `estado = PENDIENTE_REVISION`. Ese
+> flujo está retirado — Cromo Red es la fuente de verdad del inventario, y un caso sin match es un
+> problema de escritura/regex, no una cámara faltante de alta. El bloque "Aprobar / Convertir en
+> Alias / Definir Nombre Canón / Eliminar" más abajo sigue vigente **sólo** como panel de gestión de
+> las ~34 filas legado que ya estaban en `PENDIENTE_REVISION` a esa fecha — no recibe filas nuevas.
 
-Y responde al técnico:
-> ✅ Cámara no registrada previamente, se registra automáticamente bajo revisión. Sin incidentes activos. Podés proceder.
+Desde la Tarea 2 del refactor de ingreso (2026-08-23), la búsqueda usa
+`buscar_camara_o_botella_cromo()` (`core/services/cromo/camara_botella_busqueda.py`, ver
+`docs/modulo_ingesta_cromo.md`), que extiende `buscar_camara()` a también cubrir botellas que sólo
+existen en el inventario de Cromo (`app.cromo_botellas`). Si ninguna de las dos fuentes matchea, el
+listener (`_construir_respuesta_camara` en `modules/slack_baneo_notifier/listener.py`) registra el
+caso en `IngresoSinMatch` (`origen="slack"`, con el `thread_ts` del mensaje) y responde dejando
+explícito que **el ingreso nunca se bloquea por esto**, invitando al técnico a responder en el mismo
+hilo con el ID de empalme más cercano si lo conoce. Si responde con un número en ese hilo,
+`_procesar_seguimiento_empalme` resuelve la Botella dueña de esa fusión
+(`core/services/cromo/empalme_resolucion.py::resolver_botella_por_fusion_sync`) y, si tiene cámara
+padre, evalúa su estado de acceso (misma jerarquía de `_evaluar_estado_acceso_camara` — incidente de
+red > baneo manual > OK) igual que si hubiera matcheado desde el principio; marca
+`resuelto_via_empalme=True` para no reprocesar el mismo hilo dos veces, tenga éxito o no. Ver
+`docs/db.md` (tabla `ingresos_sin_match`) y `docs/infra.md` (sección "Ingresos sin match").
 
-El administrador luego revisa las cámaras pendientes desde el panel `/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión** y puede:
+**Panel legado** (`/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión**, sólo
+las filas ya existentes al 2026-08-11):
 - **Aprobar** → cambia el estado a `LIBRE` (mantiene el nombre tal como lo escribió el técnico)
 - **Convertir en Alias** → crea un registro en `app.camara_alias` vinculado a una cámara existente y elimina el registro pendiente
 - **Definir Nombre Canón** → permite editar el nombre al formato oficial y lo promueve a `LIBRE`; el nombre original del técnico queda guardado automáticamente como un alias en `app.camara_alias` para que futuras búsquedas del mismo término sigan resolviendo esta cámara

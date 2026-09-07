@@ -1,0 +1,127 @@
+{
+  "nocom": 0,
+  "id": 9057909,
+  "type": 1,
+  "class": 68,
+  "net": 2,
+  "vfrom": 27995,
+  "vto": 27999,
+  "vmax": 168149,
+  "from": 1662496113,
+  "to": 1662496722,
+  "hist": [
+    {
+      "id": 9057909,
+      "next_id": 9057952,
+      "from": 1662496113,
+      "vfrom": 27995,
+      "to": 1662496722,
+      "vto": 27999
+    },
+    {
+      "id": 9057952,
+      "next_id": 0,
+      "from": 1662496722,
+      "vfrom": 27999,
+      "to": 0,
+      "vto": 0
+    }
+  ],
+  "is_meshed": 1,
+  "is_geo": 1,
+  "is_container": 1,
+  "name": "B2-FO-CAR",
+  "code": "GPJ-08V7",
+  "col": 0,
+  "stp": 21,
+  "opp": 2587348,
+  "srcs": -1,
+  "sc": 1,
+  "an": 0.0,
+  "pts": [
+    5597038.290494,
+    6204158.649264
+  ],
+  "ll": [
+    -58.94588983,
+    -34.30329048
+  ],
+  "op": [
+    {
+      "id": 2587348,
+      "type": 10,
+      "status": 21,
+      "date": 1662496113,
+      "vfrom": 27995,
+      "to": 0
+    }
+  ],
+  "at": [
+    {
+      "seq": 0,
+      "id": 20,
+      "value": "Subterraneo",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 1,
+      "id": 41,
+      "value": "GPJ-08V7",
+      "name": "fo.tipo",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 2,
+      "id": 45,
+      "value": "SI",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 3,
+      "id": 34,
+      "value": "B2-FO-CAR",
+      "name": "nombre",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 4,
+      "id": 67,
+      "value": "SAN MARTIN",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 5,
+      "id": 16,
+      "value": "5500",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 6,
+      "id": 68,
+      "value": "Campana",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 7,
+      "id": 69,
+      "value": "Buenos Aires",
+      "from": 1662496113,
+      "vfrom": 27995
+    },
+    {
+      "seq": 8,
+      "id": 118,
+      "value": "https://maps.app.goo.gl/rvucLTREzXsRWZDDA",
+      "from": 1726254880,
+      "vfrom": 168149
+    }
+  ],
+  "inner": []
+}

@@ -84,6 +84,20 @@
           <strong>{{ total.toLocaleString('es-AR') }}</strong> servicios · mostrando {{ items.length }}
         </span>
       </div>
+
+      <div class="servicios-view__toolbar-row servicios-view__chips-row">
+        <span class="servicios-view__chips-label">Nivel Cliente</span>
+
+        <button
+          v-for="chip in categoriaChips"
+          :key="chip.value"
+          type="button"
+          :class="['servicios-view__chip', { 'is-active': filtros.categoria === chip.value }]"
+          @click="setCategoria(chip.value)"
+        >
+          {{ chip.label }}
+        </button>
+      </div>
     </div>
 
     <div ref="scrollEl" class="servicios-view__scroll">
@@ -93,7 +107,9 @@
             v-for="item in items"
             :key="item.numero_primer_servicio"
             :servicio="item"
+            :selected="seleccionadas.has(item.id)"
             @open-detail="openServicioDetail"
+            @toggle-select="toggleSeleccion(item.id)"
           />
         </div>
 
@@ -108,8 +124,16 @@
               @click="selectedIdOrigen = item.numero_primer_servicio"
               @keyup.enter="selectedIdOrigen = item.numero_primer_servicio"
             >
+              <input
+                type="checkbox"
+                class="servicios-view__list-checkbox"
+                :checked="seleccionadas.has(item.id)"
+                @click.stop
+                @change="toggleSeleccion(item.id)"
+              />
               <span :class="['servicios-view__list-dot', `is-${estadoServicioToken(item.estado_servicio)}`]" aria-hidden="true"></span>
-              <span class="servicios-view__list-cliente">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
+              <span :class="['servicios-view__list-cliente', { 'is-baja': estadoServicioToken(item.estado_servicio) === 'error' }]">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
+              <span class="servicios-view__list-categoria">{{ categoriaLabel(item.categoria) }}</span>
               <span class="servicios-view__list-historico">{{ historicoLabel(item) }}</span>
               <span class="servicios-view__list-tipo">{{ (item.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
               <span class="servicios-view__list-cta">{{ ctaLabel(item) }}</span>
@@ -119,7 +143,7 @@
           <aside v-if="selectedItem" class="servicios-view__preview">
             <div>
               <span class="servicios-view__preview-kicker">Vista previa</span>
-              <h2 class="servicios-view__preview-title">{{ selectedItem.nombre_cliente || 'Cliente sin dato' }}</h2>
+              <h2 :class="['servicios-view__preview-title', { 'is-baja': estadoServicioToken(selectedItem.estado_servicio) === 'error' }]">{{ selectedItem.nombre_cliente || 'Cliente sin dato' }}</h2>
               <p class="servicios-view__preview-domicilio">{{ previewDomicilio(selectedItem) }}</p>
             </div>
 
@@ -127,6 +151,7 @@
               <span class="servicios-view__preview-tag is-accent">{{ selectedItem.estado_servicio || 'Sin estado' }}</span>
               <span class="servicios-view__preview-tag">{{ (selectedItem.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
               <span v-if="selectedItem.sla_prometido" class="servicios-view__preview-tag is-outline">SLA {{ selectedItem.sla_prometido }}</span>
+              <span v-if="!selectedItem.es_verificable" class="servicios-view__preview-tag is-warn">No verificable</span>
             </div>
 
             <div class="servicios-view__hairline"></div>
@@ -183,8 +208,32 @@
         Cargando más servicios...
       </div>
 
+      <div v-else-if="hasMore && items.length > 0" class="servicios-view__load-more">
+        <button class="btn subtle" type="button" @click="loadNextPage">
+          Cargar más resultados
+          <i class="ph ph-arrow-down" aria-hidden="true"></i>
+        </button>
+      </div>
+
       <div ref="sentinel" class="servicios-view__sentinel" aria-hidden="true"></div>
     </div>
+
+    <ServiciosCambioCategoriaModal
+      :open="modalCategoriaOpen"
+      :servicio-ids="Array.from(seleccionadas)"
+      :categoria="categoriaMasivaSeleccionada"
+      @close="modalCategoriaOpen = false"
+      @aplicada="handleCategoriaAplicada"
+    />
+
+    <ServiciosBulkActionsPanel
+      v-if="seleccionadas.size > 0"
+      :count="seleccionadas.size"
+      v-model="categoriaMasivaSeleccionada"
+      :error="errorCategoriaMasiva"
+      @apply="modalCategoriaOpen = true"
+      @clear="limpiarSeleccion"
+    />
   </section>
 </template>
 
@@ -192,8 +241,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { estadoServicioToken, searchServicios, type ServicioItem } from '../api/servicios';
+import { categoriaLabel, estadoServicioToken, searchServicios, type ServicioItem } from '../api/servicios';
 import ServicioCard from '../components/servicios/ServicioCard.vue';
+import ServiciosBulkActionsPanel from '../components/servicios/ServiciosBulkActionsPanel.vue';
+import ServiciosCambioCategoriaModal from '../components/servicios/ServiciosCambioCategoriaModal.vue';
 
 const LIMIT = 30;
 const VISTA_STORAGE_KEY = 'servicios.vista';
@@ -208,8 +259,20 @@ const offset = ref(0);
 const hasMore = ref(true);
 const sentinel = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
-const filtros = ref({ tipo: '', estado: '' });
+// Sin filtro de Nivel Cliente por default: el campo dejó de ser "sin clasificar vs clasificado"
+// (donde C6 era una cola de triage útil) y pasó a traer el Nivel Cliente real del Excel, así que
+// filtrar por C6 al entrar dejaba el listado casi vacío después de cada ingesta — mismo bug que ya
+// pasó en /infra con la paginación por default. Ojo: `clearFiltros` reconstruye este mismo estado.
+//
+// `estado: 'activo'` sí tiene default (a diferencia de Nivel Cliente arriba): a diferencia de C6,
+// "Activo" es la mayoría real de los servicios, así que no vacía el listado — y esconder "Baja" por
+// default es un pedido explícito del usuario para no ensuciar la vista con servicios dados de baja.
+const filtros = ref({ tipo: '', estado: 'activo', categoria: '' });
 const selectedIdOrigen = ref('');
+const seleccionadas = ref<Set<number>>(new Set());
+const categoriaMasivaSeleccionada = ref(6);
+const modalCategoriaOpen = ref(false);
+const errorCategoriaMasiva = ref('');
 
 const vista = ref<'grid' | 'list'>(
   (localStorage.getItem(VISTA_STORAGE_KEY) as 'grid' | 'list' | null) === 'list' ? 'list' : 'grid',
@@ -219,12 +282,21 @@ const tipoChips = [
   { label: 'Tipo: todos', value: '' },
   { label: 'TLS', value: 'TLS' },
   { label: 'VID', value: 'VID' },
+  { label: 'INT', value: 'INT' },
+  { label: 'RPV', value: 'RPV' },
+  { label: 'FO', value: 'FO' },
+  { label: 'EWS', value: 'EWS' },
 ];
 
 const estadoChips = [
   { label: 'Activo', value: 'activo', token: 'ok' as const },
   { label: 'Observado', value: 'observado', token: 'warn' as const },
   { label: 'Baja', value: 'baja', token: 'error' as const },
+];
+
+const categoriaChips = [
+  { label: 'Todas', value: '' },
+  ...[0, 1, 2, 3, 4, 5, 6].map((categoria) => ({ label: categoriaLabel(categoria), value: String(categoria) })),
 ];
 
 const selectedItem = computed(() => {
@@ -253,6 +325,7 @@ async function loadNextPage(): Promise<void> {
       q: query.value.trim(),
       tipo: filtros.value.tipo,
       estado: filtros.value.estado,
+      categoria: filtros.value.categoria,
       limit: LIMIT,
       offset: offset.value,
     });
@@ -273,6 +346,7 @@ async function reloadFromZero(): Promise<void> {
   total.value = 0;
   offset.value = 0;
   hasMore.value = true;
+  seleccionadas.value = new Set();
   await loadNextPage();
 }
 
@@ -294,9 +368,34 @@ function setEstado(value: string): void {
   void reloadFromZero();
 }
 
+function setCategoria(value: string): void {
+  if (filtros.value.categoria === value) return;
+  filtros.value.categoria = value;
+  void reloadFromZero();
+}
+
 function clearFiltros(): void {
   query.value = '';
-  filtros.value = { tipo: '', estado: '' };
+  filtros.value = { tipo: '', estado: 'activo', categoria: '' };
+  void reloadFromZero();
+}
+
+function toggleSeleccion(id: number): void {
+  const next = new Set(seleccionadas.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  seleccionadas.value = next;
+}
+
+function limpiarSeleccion(): void {
+  seleccionadas.value = new Set();
+}
+
+function handleCategoriaAplicada(payload: { actualizados: number; noEncontrados: number[] }): void {
+  errorCategoriaMasiva.value =
+    payload.noEncontrados.length > 0
+      ? `${payload.noEncontrados.length} servicio(s) ya no existían y no se actualizaron.`
+      : '';
   void reloadFromZero();
 }
 
@@ -595,6 +694,11 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
 
+.servicios-view__list-checkbox {
+  flex: none;
+  accent-color: var(--color-accent);
+}
+
 .servicios-view__list-dot {
   width: 6px;
   height: 6px;
@@ -606,6 +710,16 @@ onBeforeUnmount(() => {
 .servicios-view__list-dot.is-warn { background: var(--color-state-warn); }
 .servicios-view__list-dot.is-error { background: var(--color-state-error); }
 
+.servicios-view__list-categoria {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-200);
+}
+
 .servicios-view__list-cliente {
   flex: 1;
   min-width: 0;
@@ -614,6 +728,11 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.servicios-view__list-cliente.is-baja,
+.servicios-view__preview-title.is-baja {
+  color: var(--color-state-error);
 }
 
 .servicios-view__list-historico {
@@ -697,6 +816,12 @@ onBeforeUnmount(() => {
   background: transparent;
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
+}
+
+.servicios-view__preview-tag.is-warn {
+  background: transparent;
+  border: 1px solid var(--color-state-warn);
+  color: var(--color-state-warn);
 }
 
 .servicios-view__hairline {
@@ -813,6 +938,12 @@ onBeforeUnmount(() => {
 .servicios-view__spin {
   font-size: 14px;
   animation: spin 1s linear infinite;
+}
+
+.servicios-view__load-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0;
 }
 
 .servicios-view__sentinel {

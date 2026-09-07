@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Tuple
+import logging
 import re
 import unicodedata
 
@@ -15,6 +16,9 @@ try:
     from unidecode import unidecode as _unidecode
 except Exception:  # noqa: BLE001
     _unidecode = None
+
+
+logger = logging.getLogger(__name__)
 
 
 MAPPER: Dict[str, str] = {
@@ -57,6 +61,14 @@ MAPPER: Dict[str, str] = {
     "provincia": "provincia",
     "direccion 2": "direccion_2",
     "direcci\u00f3n 2": "direccion_2",
+    "direccion servicio": "direccion",
+    "domicilio servicio": "direccion",
+    "direccion 2 servicio": "direccion_2",
+    "localidad servicio": "localidad",
+    "provincia servicio": "provincia",
+    "nivel cliente": "categoria",
+    "linea upgrade de": "linea_upgrade_de",
+    "linea upgrade a": "linea_upgrade_a",
     "estado servicio": "estado_servicio",
     "estado del servicio": "estado_servicio",
     "estado": "estado_servicio",
@@ -73,6 +85,9 @@ RELEVANT_COLS = [
     "provincia",
     "direccion_2",
     "estado_servicio",
+    "categoria",
+    "linea_upgrade_de",
+    "linea_upgrade_a",
 ]
 
 MIN_REQUIRED = ["numero_primer_servicio"]
@@ -103,12 +118,31 @@ NORMALIZED_MAPPER: Dict[str, str] = {_clean_key(k): v for k, v in MAPPER.items()
 def parse_servicios_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestServiciosSummary]:
     """Normaliza encabezados del archivo de servicios y valida filas mínimas."""
 
+    # Dedupe por columna DESTINO: dos encabezados distintos pueden mapear al mismo destino
+    # ("Dirección" y "Dirección Servicio" → "direccion"). Sin esto `rename` produce dos columnas
+    # homónimas, y más abajo `df[col]` devuelve un DataFrame en vez de una Series → AttributeError
+    # en `.astype(str).str.strip()`, fuera del único try/except de la ruta de ingesta (que sólo
+    # envuelve la lectura del archivo). Gana el PRIMER encabezado que reclama cada destino, en el
+    # orden de `df.columns`; los descartados quedan loggeados.
     rename: Dict[str, str] = {}
+    destinos_usados: Dict[str, str] = {}
+    descartados: list[tuple[str, str]] = []
     for col in df.columns:
         key = _clean_key(col)
-        if key in NORMALIZED_MAPPER:
-            rename[col] = NORMALIZED_MAPPER[key]
+        if key not in NORMALIZED_MAPPER:
+            continue
+        destino = NORMALIZED_MAPPER[key]
+        if destino in destinos_usados:
+            descartados.append((col, destinos_usados[destino]))
+            continue
+        rename[col] = destino
+        destinos_usados[destino] = col
     df = df.rename(columns=rename)
+    if descartados:
+        logger.warning(
+            "action=parse_servicios_df evento=encabezados_duplicados_descartados detalle=%s",
+            descartados,
+        )
 
     for col in RELEVANT_COLS:
         if col not in df.columns:
@@ -119,6 +153,9 @@ def parse_servicios_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestServiciosS
     for col in RELEVANT_COLS:
         df[col] = df[col].astype(str).str.strip()
         df.loc[df[col].isin(["", "nan", "None", "<NA>", "<na>"]), col] = pd.NA
+
+    for col in ("linea_upgrade_de", "linea_upgrade_a"):
+        df.loc[df[col] == "-", col] = pd.NA
 
     df["numero_primer_servicio"] = df["numero_primer_servicio"].astype("string")
     df["estado_servicio"] = df["estado_servicio"].fillna("DESCONOCIDO").astype("string")

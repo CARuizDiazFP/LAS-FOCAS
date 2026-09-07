@@ -292,10 +292,11 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
   2. Parsea el contenido buscando líneas `Empalme <ID>: <Dirección/Ubicación>`.
   3. Crea o actualiza el servicio en `app.servicios`.
   4. Para cada empalme/ubicación:
-     - Busca la cámara por nombre (coincidencia exacta o normalizada case-insensitive).
-     - **Si no existe:** crea una nueva cámara con `estado=DETECTADA` y `origen_datos=TRACKING`.
+     - Resuelve una cámara o botella real con la búsqueda extendida `Camara + CromoBotella`.
+     - Si no hay match, registra un `IngresoSinMatch` y deja el empalme sin `camara_id` en lugar de crear una cámara nueva.
      - Registra el empalme y la asociación servicio-empalme.
   5. Guarda el tracking crudo en `raw_tracking_data` del servicio.
+  6. Devuelve `ubicaciones_sin_match` junto con el total de empalmes procesados para mostrar qué ubicaciones quedaron pendientes de revisión.
 
 - **Enriquecimiento progresivo:** las cámaras detectadas automáticamente pueden enriquecerse posteriormente con coordenadas y estado real mediante el endpoint `/sync/camaras` o edición manual.
 
@@ -308,9 +309,10 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
     "status": "ok",
     "servicios_procesados": 1,
     "servicio_id": "111995",
-    "camaras_nuevas": 3,
+    "camaras_nuevas": 0,
     "camaras_existentes": 5,
     "empalmes_registrados": 8,
+    "ubicaciones_sin_match": 2,
     "mensaje": "Tracking del servicio 111995 procesado correctamente"
   }
   ```
@@ -754,6 +756,7 @@ Obtiene el resumen operativo base de una cámara para la vista dedicada del pane
         }
       ],
       "tiene_baneo_activo": true,
+      "tiene_incidente_activo": true,
       "tiene_ingreso_activo": false,
       "inconsistente": true,
       "estado_sugerido": "BANEADA",
@@ -773,7 +776,7 @@ Obtiene el resumen operativo base de una cámara para la vista dedicada del pane
   }
   ```
 
-- **Notas:** el `id` numérico de cámara es el identificador canónico usado por la tarjeta principal y por la ruta SPA `/infra/Camaras/:id`.
+- **Notas:** el `id` numérico de cámara es el identificador canónico usado por la tarjeta principal y por la ruta SPA `/infra/Camaras/:id`. `tiene_baneo_activo` es el signal AMPLIO (`True` si hay un `IncidenteBaneo` activo **o** un baneo manual — `Camara.estado == BANEADA` — en cualquier miembro del grupo Cámara/Botellas hermanas) y es el que consume este badge "Contexto operativo". `tiene_incidente_activo` (agregado 2026-09-04) es el signal ESTRECHO — sólo `IncidenteBaneo` activo — usado por el panel de "Baneos Activos" (`GET /api/admin/baneos/grupos` más abajo) para decidir si una liberación masiva necesita `forzar`; no lo usa este endpoint.
 
 ### GET `/api/infra/camaras/{camara_id}/aliases`
 
@@ -800,7 +803,7 @@ Obtiene los alias conocidos de una cámara.
 
 ### GET `/api/infra/camaras/{camara_id}/registros`
 
-Obtiene registros operativos parciales de una cámara para la vista dedicada.
+Obtiene registros operativos de una cámara para la vista dedicada: auditoría manual de estado, baneos relacionados e ingresos/egresos reales.
 
 - **Autenticación:** requiere sesión activa.
 - **Respuesta 200:**
@@ -814,6 +817,7 @@ Obtiene registros operativos parciales de una cámara para la vista dedicada.
       "estado_actual": "LIBRE",
       "estado_sugerido": "BANEADA",
       "tiene_baneo_activo": true,
+      "tiene_incidente_activo": true,
       "tiene_ingreso_activo": false,
       "inconsistente": true,
       "incidentes_activos": [
@@ -853,14 +857,80 @@ Obtiene registros operativos parciales de una cámara para la vista dedicada.
         "fecha_fin": null
       }
     ],
-    "placeholders": {
-      "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
-      "egresos": "Pendiente de integrar registros de egresos en una próxima iteración."
-    }
+    "ingresos": [
+      {
+        "id": 1,
+        "fecha_inicio": "2026-08-31T17:07:24.172940+00:00",
+        "fecha_fin": "2026-08-31T17:07:40.073927+00:00",
+        "tecnico_id": "rider.fernandez",
+        "cromo_botella_id": null,
+        "botella_label": "Botella 1",
+        "tipo": "INGRESO"
+      },
+      {
+        "id": 2,
+        "fecha_inicio": "2026-09-04T10:15:00+00:00",
+        "fecha_fin": null,
+        "tecnico_id": "rider.fernandez",
+        "cromo_botella_id": 555,
+        "botella_label": "Bot 2 Cra Mitre 440",
+        "tipo": "INTENTO_BLOQUEADO"
+      }
+    ]
   }
   ```
 
-- **Notas:** en esta iteración los registros de ingresos y egresos no se exponen todavía; el endpoint devuelve placeholders explícitos para que la UI pueda maquetar esa expansión futura.
+- **Notas:** `ingresos` (desde 2026-08-31) refleja movimientos reales de `app.ingresos` — se escriben
+  automáticamente desde el `IngresoListener` de Slack (`registrar_movimiento_ingreso()`/
+  `registrar_intento_bloqueado()`, ver `docs/infra.md` sección "Escritura de `Ingreso` sobre el
+  grupo"), no hay alta manual. Incluye ingresos de la cámara consultada **y** de todas sus botellas
+  hermanas del mismo grupo (`miembros_del_grupo`), ordenados por `fecha_inicio` descendente (nulls al
+  final), límite 50. `tecnico_id` guarda el NOMBRE resuelto del técnico (vía Slack `users.info`,
+  desde 2026-09-04) en filas nuevas — filas escritas antes de esa fecha pueden todavía tener el ID
+  crudo de Slack (ver `docs/db.md`, columna `app.ingresos.tecnico_id`). `botella_label` (desde
+  2026-09-04, nunca `null`) es el nombre legible de la Botella intervenida — "Botella 1" por
+  convención cuando no se especificó ninguna (es la Cámara raíz misma), el nombre propio de una
+  Botella legado, el nombre de la `CromoBotella` resuelta, o `"Botella #<id>"` como último fallback.
+  `tipo` (desde 2026-09-04) distingue `INGRESO`/`EGRESO`/`INTENTO_BLOQUEADO` — **importante:** tanto
+  un `INGRESO` real "en curso" como un `INTENTO_BLOQUEADO` (bloqueado por baneo del grupo, nunca
+  llega a ocurrir) tienen `fecha_fin: null` — no asumir que `fecha_fin: null` por sí solo significa
+  "ingreso todavía abierto", hay que mirar `tipo` para distinguirlos. `fecha_inicio: null` (posible
+  sólo en un Egreso sin Ingreso previo registrado, `tipo=EGRESO`) indica que se detectó la salida pero
+  no la entrada. `cromo_botella_id` viene poblado sólo cuando el movimiento fue sobre una botella
+  Cromo específica dentro del grupo, `null` cuando fue sobre la cámara padre o una Botella legado.
+  Reemplaza el bloque `placeholders` (`ingresos`/`egresos` fijos) que existía antes del 2026-08-31.
+
+### GET `/api/infra/servicios/{servicio_id}/ingresos`
+
+Obtiene los registros de ingreso/egreso de técnico (Slack) a las cámaras que atraviesa un servicio, para la vista de Detalle de Servicio (nuevo, 2026-08-31).
+
+- **Autenticación:** requiere sesión activa.
+- **Parámetro de ruta:** `servicio_id` — acepta `servicio_id`, `numero_primer_servicio` o `numero_linea` (mismo lookup flexible que `GET /api/infra/servicios/{servicio_id}/odfs`, vía `_find_servicio_por_identificador_web`).
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "servicio_id": "2001",
+    "total": 1,
+    "ingresos": [
+      {
+        "id": 1,
+        "fecha_inicio": "2026-08-31T17:07:24.172940+00:00",
+        "fecha_fin": "2026-08-31T17:07:40.073927+00:00",
+        "tecnico_id": "rider.fernandez",
+        "cromo_botella_id": null,
+        "botella_label": "Botella 1",
+        "tipo": "INGRESO",
+        "camara_id": 2724,
+        "camara_nombre": "Cra Ruta 8 Km 34 MALVINAS ARGENTINAS"
+      }
+    ]
+  }
+  ```
+
+- **Respuesta 404** (`{"error": "Servicio {servicio_id} no encontrado"}`) si el identificador no matchea ningún `Servicio`.
+- **Notas:** las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio()` (`core/services/protection_service.py`), que ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada. `total` es la cantidad de filas devueltas (post-`limit(100)`, no un total real contra todo lo que matchea — no asumir que sigue creciendo más allá de 100). Cada item lleva los mismos campos que `_serialize_camara_ingreso` (ver `GET /api/infra/camaras/{camara_id}/registros` arriba, incluidos `botella_label`/`tipo` desde 2026-09-04) más `camara_id`/`camara_nombre` de la cámara concreta a la que corresponde ese movimiento dentro del servicio. Consumido por `ServicioDetalleView.vue` (sección "Ingresos").
 
 ### GET `/api/infra/rutas/{ruta_id}/tracking`
 
@@ -1295,6 +1365,245 @@ Obtiene todos los incidentes de baneo activos.
 Obtiene el detalle de un incidente específico con las cámaras afectadas.
 
 - **Respuesta 200:** Incluye datos del incidente y lista de cámaras afectadas.
+
+---
+
+## Ingesta Excel de Cámaras y Panel de Baneos Agrupados
+
+Endpoints agregados/extendidos en el refactor de baneos de 2026-08-24. Cubren la ingesta masiva de
+cámaras críticas desde Excel (**nunca crea una `Camara` nueva** — Cromo Red es la fuente de verdad
+del inventario; un alias sin match es un problema de escritura/regex, no una cámara faltante) y el
+panel administrativo que agrupa y libera baneos por Cámara padre. Contexto de negocio completo en
+`docs/infra.md`, secciones "Ingesta Excel de cámaras baneadas" y "Dos dominios de baneo conviviendo".
+
+### POST `/ingest/camaras`
+
+Endpoint interno del servicio `api` (requiere API key, ver "Autenticación de API core" más arriba).
+Lee la columna B (índice 1, sin cabecera) de un Excel `.xlsx`/`.xlsm` y banea las Cámaras/Botellas
+existentes que matcheen (búsqueda extendida Camara+CromoBotella). **Nunca crea una `Camara` nueva.**
+
+- **Body (multipart/form-data):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `file` | archivo | Sí | Excel `.xlsx`/`.xlsm`, alias en columna B, sin cabecera. |
+  | `motivo_baneo` | string | Sí | Motivo del baneo masivo — no puede quedar vacío tras `.strip()`. |
+  | `usuario` | string | Sí | Usuario admin que ejecuta la operación (lo agrega el proxy `POST /api/admin/ingesta/camaras` de `web/app/main.py` a partir de la sesión). |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "total_leidos": 40,
+    "grupos_baneados": 35,
+    "grupos_ya_baneados": 3,
+    "sin_match": [{"caso_id": 12, "nombre": "Cra 14 de Julio 240 Bot 9"}],
+    "errores": []
+  }
+  ```
+
+- **Notas:**
+  - `grupos_baneados`/`grupos_ya_baneados` cuentan por grupo (raíz Cámara padre + Botellas), no por
+    fila del Excel — dos alias que resuelven al mismo grupo sólo cuentan una vez.
+  - Un nombre ambiguo (`AmbiguousSearchError`, 2+ candidatas) se trata igual que sin match: nunca se
+    banea a ciegas entre candidatas.
+  - Cada `sin_match` queda registrado en `app.ingresos_sin_match` (`origen="excel_camaras"`) para
+    resolución manual — ver `POST /api/admin/ingesta/camaras/asociar` abajo.
+  - Errores: `400` (falta nombre de archivo, archivo vacío, `motivo_baneo`/`usuario` vacíos), `415`
+    (formato no soportado), `422` (columna B sin ningún alias válido).
+
+### POST `/api/admin/ingesta/camaras/asociar`
+
+Resuelve a mano uno o más `IngresoSinMatch` (`origen="excel_camaras"`) hacia una Cámara/Botella
+existente: crea un `CamaraAlias` por cada texto que no lo tenga ya (para que el mismo texto matchee
+solo en la próxima corrida de `POST /ingest/camaras`) y banea el grupo destino una sola vez. Admin,
+CSRF.
+
+- **Body (JSON):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `caso_ids` | int[] | Sí | Ids de `IngresoSinMatch` a resolver. |
+  | `camara_id` | int | Sí | Id de la Cámara/Botella destino. |
+  | `motivo` | string | No | Motivo del baneo. Vacío/omitido usa el default `"Baneo por ingesta Excel (asociación manual)"`. |
+  | `csrf_token` | string | Sí (salvo `TESTING=true`) | Token CSRF de la sesión. |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "ok": true,
+    "camara_id": 501,
+    "camara_nombre": "Cra 14 de Julio 240 CF",
+    "estado_final": "BANEADA",
+    "baneo_aplicado": true,
+    "alias_creados": 2,
+    "alias_preexistentes": 0,
+    "casos_marcados": 2,
+    "conflictos": [
+      {"caso_id": 8, "nombre": "Cra 14 de Julio 240 Bot 9", "camara_actual_id": 900, "camara_actual_nombre": "Otra Cámara"}
+    ],
+    "error": null
+  }
+  ```
+
+- **Notas:**
+  - `conflictos`: un `caso_id` cuyo texto ya está aliasado a OTRA cámara — no se reasigna
+    automáticamente, queda sin marcar revisado para que el admin decida.
+  - `ok=true` puede venir con `error` no nulo si el baneo final falló pero los alias/casos ya se
+    aplicaron — no distinguir por `error is None`, distinguir por el status code (200 siempre que
+    `camara_id` exista) y leer `error` para el detalle.
+  - `404` con `{"error": "Cámara no encontrada"}` sólo si `camara_id` no existe.
+  - `403` CSRF inválido; `400` si `caso_ids` viene vacío.
+
+### GET `/api/admin/infra/ingresos-sin-match`
+
+Lista casos de ingreso (Slack, tracking o ingesta Excel de cámaras) sin match contra el inventario —
+sólo lectura para triage, no crea ninguna `Camara`. Admin.
+
+- **Query params:**
+
+  | Parámetro | Tipo | Descripción |
+  |---|---|---|
+  | `revisado` | bool, opcional | Filtra por el flag de triage (default: todos). |
+  | `origen` | string, opcional | Uno o más valores separados por coma (ej. `?origen=excel_camaras` o `?origen=slack,tracking`; default: todos). |
+
+- **Respuesta 200:** array (no envuelto en `{status: ...}`) de hasta 200 casos, orden `created_at desc`:
+
+  ```json
+  [
+    {
+      "id": 12,
+      "texto_original": "Cra 14 de Julio 240 Bot 9",
+      "origen": "excel_camaras",
+      "contexto": "cámaras_criticas.xlsx | motivo: Corte preventivo",
+      "revisado": false,
+      "created_at": "2026-08-24T10:00:00+00:00"
+    }
+  ]
+  ```
+
+### POST `/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo`
+
+Marca en lote varios `IngresoSinMatch` como revisados — el "Descartar" del Revisor Manual de la
+ingesta Excel: sólo oculta de la vista, no muta ningún dato de infraestructura; la fila queda en la
+base para ajustar a futuro el regex/normalización de búsqueda. Admin, CSRF.
+
+- **Body (JSON):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `ids` | int[] | Sí | Ids de `IngresoSinMatch` a marcar. |
+  | `csrf_token` | string | Sí (salvo `TESTING=true`) | Token CSRF de la sesión. |
+
+- **Respuesta 200:**
+
+  ```json
+  { "ok": true, "actualizados": 3 }
+  ```
+
+- **Notas:** `403` CSRF inválido; `400` si `ids` viene vacío.
+
+### GET `/api/admin/baneos/grupos`
+
+Lista Cámaras padre raíz baneadas (`camara_padre_id IS NULL`, `estado=BANEADA`) con sus Botellas
+hijas (legado + Cromo), paginado, para el panel `/admin/Servicios/Baneos` → pestaña "Baneos Activos".
+Admin.
+
+- **Query params:** `q` (string, opcional, `ILIKE` sobre nombre), `limit` (int, default 25, clamp
+  1-100), `offset` (int, default 0).
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "limit": 25,
+    "offset": 0,
+    "total": 1,
+    "grupos": [
+      {
+        "camara_id": 501,
+        "nombre": "Cra 14 de Julio 240 CF",
+        "direccion": "Cra 14 de Julio 240",
+        "fontine_id": "F-501",
+        "estado": "BANEADA",
+        "botellas": [
+          {"origen": "legado", "id": 502, "nombre": "Cra 14 de Julio 240 Bot 2 CF", "estado": "BANEADA"},
+          {"origen": "cromo", "id": 9936402, "nombre": "Cra 14 de Julio 240 Bot 3 CF", "estado": "BANEADA"}
+        ],
+        "botellas_count": 2,
+        "motivo": "Corte preventivo",
+        "usuario": "operador1",
+        "fecha": "2026-08-20T09:00:00+00:00",
+        "tiene_baneo_activo": true,
+        "tiene_incidente_activo": false,
+        "ticket_baneo": null,
+        "incidentes_activos_ids": [],
+        "estado_mixto": false,
+        "puede_liberar": true
+      }
+    ]
+  }
+  ```
+
+- **Notas:** este panel es exclusivamente sobre el Protocolo de Protección (baneo por incidente) —
+  `tiene_incidente_activo`/`ticket_baneo`/`incidentes_activos_ids` describen si hay un
+  `IncidenteBaneo` activo detrás del baneo, y `puede_liberar = not tiene_incidente_activo` (fix
+  2026-09-04: antes usaba el signal amplio `tiene_baneo_activo`, que también agregado ese mismo día
+  para el badge "Contexto operativo" — ver `GET /api/infra/camaras/{camara_id}` arriba — bloqueaba
+  incorrectamente la liberación de CUALQUIER grupo baneado, incluido uno baneado sólo manualmente sin
+  ningún incidente detrás). `tiene_baneo_activo` sigue presente, sólo informativo (True si el grupo
+  está baneado por cualquier motivo, incidente o manual) — no gobierna `puede_liberar`. El ejemplo de
+  arriba muestra justamente ese caso: `tiene_baneo_activo=true` (el grupo está BANEADA) pero
+  `tiene_incidente_activo=false` (sin incidente detrás) → `puede_liberar=true`, se puede liberar sin
+  `forzar`. `estado_mixto` es un concepto distinto: alguna Botella hija en un estado distinto al de su
+  raíz (posible legado de datos previos al fix de cascada, o de un `lift_ban` parcial) — no implica
+  nada sobre el Protocolo de Protección.
+
+### POST `/api/admin/baneos/grupos/liberar`
+
+Libera (desbanea) varios grupos de una — la única acción masiva de este panel; **no hay ningún
+borrado físico** de Cámaras/Botellas. Admin, CSRF.
+
+- **Body (JSON):**
+
+  | Campo | Tipo | Requerido | Descripción |
+  |---|---|---|---|
+  | `camara_ids` | int[] | Sí | Ids de Cámara o Botella — cada uno se resuelve a su grupo (raíz). |
+  | `motivo` | string | Sí | Motivo de la liberación — no puede quedar vacío tras `.strip()`. |
+  | `forzar` | bool | No (default `false`) | Ver guard abajo. |
+  | `csrf_token` | string | Sí (salvo `TESTING=true`) | Token CSRF de la sesión. |
+
+- **Respuesta 200:**
+
+  ```json
+  {
+    "ok": true,
+    "total_solicitados": 2,
+    "liberados": 1,
+    "omitidos": 1,
+    "detalle": [
+      {"camara_id": 501, "liberado": true, "estado_final": "LIBRE", "razon_omision": null},
+      {"camara_id": 900, "liberado": false, "estado_final": null, "razon_omision": "bloqueado_por_incidente"}
+    ]
+  }
+  ```
+
+- **Guard de incidente activo:** sin `forzar`, un grupo con `tiene_incidente_activo=true` (un
+  `IncidenteBaneo` activo detrás — NUNCA un baneo sólo manual, ver nota de `GET
+  /api/admin/baneos/grupos` arriba) se omite (`razon_omision="bloqueado_por_incidente"`) —
+  `override_camara_estado_manual` NUNCA se llama para ese grupo, para no levantar un baneo que el
+  Protocolo de Protección todavía necesita. Un grupo baneado sólo manualmente (sin incidente) nunca
+  necesita `forzar`. El destino de la liberación se calcula directamente: `OCUPADA` si el grupo tiene
+  un ingreso activo real, si no `LIBRE` — tanto con `forzar=true` sobre un incidente activo como sin
+  él, nunca a través de `estado_sugerido` (fix 2026-09-04: `estado_sugerido` deriva del signal amplio
+  `tiene_baneo_activo`, así que para un grupo con baneo manual seguía devolviendo `BANEADA` en el
+  momento de calcular el contexto — usarlo acá era un no-op disfrazado de liberación).
+- **Notas:** dos ids del mismo grupo en `camara_ids` se deduplican silenciosamente (una sola fila en
+  `detalle`, `total_solicitados` puede ser mayor que `len(detalle)`). `403` CSRF inválido; `400` si
+  `camara_ids` o `motivo` vienen vacíos.
 
 ---
 

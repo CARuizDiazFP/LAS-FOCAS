@@ -1,15 +1,22 @@
 # Nombre de archivo: listener.py
 # Ubicación de archivo: modules/slack_baneo_notifier/listener.py
-# Descripción: Listener de ingresos técnicos via Slack Bolt (Socket Mode) — responde en hilo con estado de baneo
+# Descripción: Listener de ingresos técnicos + comandos de Cables via Slack Bolt (Socket Mode)
 
 """Escucha en tiempo real los formularios de ingreso a cámaras enviados por técnicos
 en un canal de Slack.  Cuando llega un mensaje, extrae el nombre de cámara del campo
 "Cámara:", normaliza el texto, consulta la DB y responde en el **hilo original**
 con uno de los tres estados posibles.
 
+Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
+Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
+listener de ingresos, sólo un evento distinto de Slack. Implementados los 3 comandos: "Info cable
+<nombre>", "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (ver `cable_info.py`).
+
 Requiere:
   - SLACK_BOT_TOKEN  (xoxb-...)  — ya existente en .env
   - SLACK_APP_TOKEN  (xapp-...)  — nuevo, para Socket Mode
+  - Scope adicional para app_mention: `app_mentions:read` en la Slack App (verificar en Slack, no
+    asumible desde el código)
 
 Se integra en worker.py como un daemon thread independiente.
 """
@@ -19,13 +26,49 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
-from core.services.camara_estado_service import obtener_ultimo_motivo_baneo_manual
+from core.services.camara_estado_service import (
+    get_camara_estado_contexto,
+    miembros_del_grupo,
+    obtener_ultimo_motivo_baneo_manual,
+)
+from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+from core.services.cromo.detalle import pelos_de_tubo_sync
+from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
+from core.services.cromo.verificador import servicios_por_tubo_sync
+from core.services.ingreso_service import registrar_intento_bloqueado, registrar_movimiento_ingreso
+from db.models.cromo import CromoCable
 from db.session import SessionLocal
-from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara, detectar_multi_bot, extraer_nombre_camara, limpiar_ruido_operativo
+from modules.slack_baneo_notifier.cable_info import (
+    buscar_cable_por_n_id_o_nombre,
+    construir_respuesta_ambiguo,
+    construir_respuesta_buffer_no_encontrado,
+    construir_respuesta_info_buffer,
+    construir_respuesta_info_cable,
+    construir_respuesta_no_encontrado,
+    construir_respuesta_verificar_buffer,
+    contar_buffers_cable,
+    extraer_comando_cable_buffer,
+    extraer_comando_info_cable,
+    resolver_tubo_por_numero,
+)
+from modules.slack_baneo_notifier.camara_search import (
+    AmbiguousSearchError,
+    detectar_multi_bot,
+    extraer_nombre_camara,
+    extraer_slack_user_id_autorizacion,
+    extraer_tipo_movimiento,
+    limpiar_ruido_operativo,
+)
+from modules.slack_baneo_notifier.slack_user_resolver import resolver_nombre_tecnico
 
 logger = logging.getLogger("slack_baneo_worker.listener")
+
+# Slack antepone el mention token (ej. "<@U01ABCXYZ> ") al texto de un evento app_mention — se
+# recorta antes de intentar matchear cualquier comando.
+_RE_MENTION_PREFIX = re.compile(r"^\s*<@[^>]+>\s*")
 
 _NOMBRE_SERVICIO_LISTENER = "slack_ingreso_listener"
 _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
@@ -34,6 +77,23 @@ _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
 # Se aplica sobre el nombre extraído —no el texto completo— para evitar falsos
 # positivos con el label del Workflow "*Nombre: Nodo/Camara/botella*".
 _RE_NODO = re.compile(r"\bnodos?\b", re.IGNORECASE)
+
+# Detecta una respuesta de seguimiento con el ID de empalme más cercano, en el hilo de un caso
+# `IngresoSinMatch` pendiente (ver el aviso agregado en `_construir_respuesta_camara` cuando no hay
+# match). Dígitos puros, opcionalmente precedidos de "empalme" o "#". Mínimo 3 dígitos a propósito:
+# evita falsos positivos con respuestas cortas tipo "sí"/"ok"/números de piso — un `fusion_n_id`
+# real de Cromo tiene muchos más dígitos (ver ejemplos en `core/services/cromo/empalmes.py`).
+_RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class _ResultadoAccesoCamara:
+    """Resultado de evaluar si se puede ingresar a `camara` — separa el texto de respuesta de Slack
+    del booleano `bloqueado`, que `_registrar_movimiento_si_corresponde` necesita para decidir entre
+    un Ingreso real y un Intento bloqueado (Tarea 5, 2026-09-04)."""
+
+    texto: str
+    bloqueado: bool
 
 
 class IngresoListener:
@@ -99,81 +159,315 @@ class IngresoListener:
         self,
         nombre_buscado: str,
         session: Any,
+        *,
+        channel: str = "",
+        thread_ts: str | None = None,
+        texto_mensaje: str,
+        client: Any,
     ) -> str:
         """Busca una cámara por nombre y construye el texto de respuesta.
 
         Aplica el filtro de ruido operativo antes de buscar y antes de registrar,
         descartando sufijos como '- CUADRILLA DE HIDROCONS' o '/ Móvil 4'.
 
-        Si no la encuentra, la auto-registra como ``PENDIENTE_REVISION`` y
-        retorna el mensaje correspondiente.  Si la encuentra, evalúa el estado
-        de acceso siguiendo esta jerarquía:
+        Desde la Tarea 2 del refactor de ingreso (2026-08-23), la búsqueda usa
+        ``buscar_camara_o_botella_cromo()`` (no ``buscar_camara()`` directo): además de
+        ``app.camaras``, cubre botellas que sólo existen en el inventario de Cromo (ver
+        `core/services/cromo/camara_botella_busqueda.py`). Puede lanzar ``AmbiguousSearchError``,
+        que no se captura acá — la maneja el caller (`_handle_message`).
 
-        1. Incidente de red activo (``IncidenteBaneo.activo``) → 🚨 ATENCIÓN.
-        2. Estado ``BANEADA`` sin incidente activo (baneo manual desde el panel)
-           → :no_entry: con el motivo extraído de ``camaras_estado_auditoria``.
-        3. Cualquier otro estado → ✅ podés proceder.
+        Si no encuentra nada en ninguna fuente, NUNCA bloquea el ingreso ni crea una `Camara` nueva
+        (2026-08-11 — Cromo es la fuente de verdad del inventario; un caso sin match es un problema
+        de escritura/regex, no una cámara faltante de alta). Registra el caso en `IngresoSinMatch`
+        (junto con `thread_ts`, para poder detectar más tarde una respuesta de seguimiento con el ID
+        de empalme más cercano — ver `_procesar_seguimiento_empalme`) para revisión manual posterior
+        y mejora del regex, y responde dejando explícito que el técnico puede continuar igual —
+        nunca lee como un rechazo. Si encuentra una cámara (propia o resuelta desde una
+        `CromoBotella`), evalúa el estado de acceso vía `_evaluar_estado_acceso_camara` — ANTES de
+        intentar ningún registro, para que la respuesta ya calculada quede inmune tanto a un fallo
+        de escritura como al `expire_on_commit` de un commit exitoso — y luego, como efecto
+        secundario final que nunca condiciona esa respuesta, registra el movimiento de Ingreso/
+        Egreso/Intento bloqueado si el mensaje completo del evento (`texto_mensaje` — no
+        `nombre_buscado`, que ya viene recortado al nombre de cámara) lo trae — ver
+        `_registrar_movimiento_si_corresponde`.
+
+        ``texto_mensaje`` es el texto completo del evento de Slack (no recortado como
+        `nombre_buscado`) — los campos "Ingreso o Egreso" y "Persona que solicito La Autorizacion"
+        del Workflow viven fuera del campo de nombre de cámara. ``client`` es el `slack_sdk.WebClient`
+        inyectado por Bolt (Tarea 5, 2026-09-04) — se enhebra hasta `_registrar_movimiento_si_corresponde`
+        para poder resolver el nombre real del técnico vía `resolver_nombre_tecnico`.
         """
         nombre_buscado = limpiar_ruido_operativo(nombre_buscado)
-        camara, nombre_norm = buscar_camara(nombre_buscado, session)
-        logger.info("Resultado búsqueda — cámara: %s (normalizado: '%s')", camara, nombre_norm)
+        resultado = buscar_camara_o_botella_cromo(nombre_buscado, session)
+        camara = resultado.camara
+        nombre_norm = resultado.nombre_norm
+        logger.info(
+            "Resultado búsqueda — cámara: %s (normalizado: '%s', fuente: %s)",
+            camara,
+            nombre_norm,
+            resultado.fuente,
+        )
 
         if camara is None:
-            from datetime import datetime, timezone
+            from db.models.infra import IngresoSinMatch
 
-            from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
-
-            nueva_camara = Camara(
-                nombre=nombre_buscado,
-                estado=CamaraEstado.PENDIENTE_REVISION,
-                origen_datos=CamaraOrigenDatos.MANUAL,
-                last_update=datetime.now(timezone.utc),
+            caso = IngresoSinMatch(
+                texto_original=nombre_buscado,
+                origen="slack",
+                contexto=channel or None,
+                thread_ts=thread_ts,
             )
-            session.add(nueva_camara)
+            session.add(caso)
             session.commit()
             logger.info(
-                "Cámara desconocida '%s' auto-registrada PENDIENTE_REVISION (id=%s)",
+                "Cámara '%s' sin match — registrado IngresoSinMatch id=%s para revisión manual",
                 nombre_buscado,
-                nueva_camara.id,
+                caso.id,
             )
             return (
-                "✅ Cámara no registrada previamente, se registra automáticamente "
-                "bajo revisión. Sin incidentes activos. puede cotinuar con el proceso de aprobacion."
-            )
+                "⚠️ No pude confirmar automáticamente la cámara *{}* contra el inventario — "
+                "quedó registrada para revisión manual (puede ser un error de tipeo o una "
+                "diferencia de formato). *Podés continuar con el ingreso con normalidad.* "
+                "Si conocés el ID de empalme más cercano, respondé en este mismo hilo sólo "
+                "con el número."
+            ).format(nombre_buscado)
 
-        incidentes = _obtener_incidentes_activos_camara(camara, session)
-        if incidentes:
-            inc = incidentes[0]
-            logger.info("Cámara '%s' BANEADA — incidente #%s", camara.nombre, inc.id)
-            return (
-                f"🚨 *ATENCIÓN* — La cámara *{camara.nombre}* tiene el incidente "
-                f"*#{inc.id}* activo (Baneo de Protección).\n"
-                f"Ticket: {inc.ticket_asociado or 'sin ticket'} | "
-                f"Servicio protegido: {inc.servicio_protegido_id}\n"
-                "_No acceder a esta cámara hasta nuevo aviso._"
-            )
+        resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
+        self._registrar_movimiento_si_corresponde(
+            resultado, texto_mensaje, session, client, bloqueado=resultado_acceso.bloqueado
+        )
+        return resultado_acceso.texto
 
+    def _registrar_movimiento_si_corresponde(
+        self, resultado: Any, texto_mensaje: str, session: Any, client: Any, *, bloqueado: bool
+    ) -> None:
+        """Escribe Ingreso/Egreso/Intento bloqueado en DB si el mensaje trae el campo 'Ingreso o
+        Egreso' parseable. Nunca lanza — cualquier excepción se loguea y se ignora, la respuesta de
+        Slack no debe bloquearse porque falle la escritura en DB.
+
+        Un movimiento "Ingreso" sobre un grupo bloqueado (`bloqueado=True`, calculado por
+        `_evaluar_estado_acceso_camara` vía `get_camara_estado_contexto`) se registra como
+        `registrar_intento_bloqueado` en vez de `registrar_movimiento_ingreso` — Tarea 5, 2026-09-04.
+        Un "Egreso" nunca se bloquea, incluso sobre un grupo BANEADO (salir sigue permitido).
+
+        Si el registro falla después de que su `commit()` ya arrancó la transacción (o por cualquier
+        otro error de DB), SQLAlchemy deja la `session` — compartida por el resto de
+        `_handle_message`, incluida una eventual llamada a `_construir_respuesta_camara` para el
+        próximo nombre en un caso multi-botella — en estado "inactivo": cualquier operación posterior
+        sobre ella relanza `PendingRollbackError` hasta que se haga un `rollback()` explícito. Sin
+        este `rollback()`, un solo fallo de escritura podía dejar sin respuesta a TODO el mensaje de
+        Slack (no sólo a la fila que falló) — viola la garantía de nunca bloquear/romper la respuesta
+        por un fallo de DB.
+
+        `resolver_nombre_tecnico` (llamada a la Slack Web API `users.info`) vive DENTRO del mismo
+        `try` que las escrituras de DB (revisión final 2026-09-04, hallazgo I3) — aunque ya tiene su
+        propio catch-all interno (nunca lanza), moverla adentro es defensa en profundidad: mismo
+        criterio del resto de este archivo de "nunca confiar en una sola capa" para la garantía de
+        nunca romper la respuesta de Slack ni dejar la `session` en estado inconsistente."""
+        tipo = extraer_tipo_movimiento(texto_mensaje)
+        if tipo is None:
+            return
+        slack_user_id = extraer_slack_user_id_autorizacion(texto_mensaje)
+        try:
+            tecnico_nombre = resolver_nombre_tecnico(client, slack_user_id)
+            if bloqueado and tipo == "Ingreso":
+                registrar_intento_bloqueado(
+                    session,
+                    camara=resultado.camara,
+                    botella=resultado.botella,
+                    tecnico_nombre=tecnico_nombre,
+                )
+                return
+            registrar_movimiento_ingreso(
+                session,
+                camara=resultado.camara,
+                botella=resultado.botella,
+                tipo_movimiento=tipo,
+                tecnico_nombre=tecnico_nombre,
+                slack_user_id=slack_user_id,
+            )
+        except Exception as exc:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            logger.warning("No se pudo registrar movimiento de ingreso: %s", exc, exc_info=True)
+
+    def _evaluar_estado_acceso_camara(self, camara: Any, session: Any) -> _ResultadoAccesoCamara:
+        """Evalúa el estado de acceso de una `Camara` ya resuelta (raíz o Botella) y arma el texto de
+        respuesta — GRUPO-CONSCIENTE desde esta revisión (Tarea 5, 2026-09-04): reusa
+        `get_camara_estado_contexto()` (`core/services/camara_estado_service.py`), que evalúa
+        incidentes Y baneo manual sobre TODO el grupo (cámara padre + botellas hermanas), en vez de
+        la versión anterior que sólo miraba el `estado`/incidentes de la fila puntual resuelta — bug
+        real: pedir ingreso a la cámara raíz mientras una Botella hermana estaba BANEADA respondía
+        "OK" porque nunca se consultaba el grupo. Ver el fix equivalente en
+        `camara_estado_service.get_camara_estado_contexto` (Task 3 de este plan).
+
+        Jerarquía (sin cambios de negocio, sólo de alcance — ahora sobre el grupo completo):
+
+        1. Incidente de red activo (``IncidenteBaneo.activo``) en cualquier miembro del grupo → 🚨 ATENCIÓN.
+        2. Baneo manual (``estado == BANEADA``) sin incidente activo, en cualquier miembro del grupo
+           → :no_entry: con el motivo extraído de ``camaras_estado_auditoria`` del miembro baneado
+           (no siempre `camara` misma — puede ser una Botella hermana).
+        3. Cualquier otro estado → ✅ podés proceder.
+
+        Fail-open ante un error de `get_camara_estado_contexto` (revisión final 2026-09-04, hallazgo
+        I3): la función que este método reemplazó (`_obtener_incidentes_activos_camara`, retirada)
+        tenía su propio `try/except Exception: return []` — sin un guard equivalente acá, cualquier
+        excepción (hiccup de DB, lazy-load) se propagaría hasta el `except Exception` de
+        `_handle_message`, que NO postea ninguna respuesta en Slack — peor que el comportamiento
+        previo (que sí respondía ✅ ante un error puntual de este chequeo). Ante un fallo se cae al
+        mismo camino que `contexto is None`: no bloquea, responde ✅.
+        """
         from db.models.infra import CamaraEstado
 
-        if camara.estado == CamaraEstado.BANEADA:
-            motivo = obtener_ultimo_motivo_baneo_manual(session, camara.id)
+        try:
+            contexto = get_camara_estado_contexto(session, camara.id)
+        except Exception as exc:
+            logger.warning(
+                "get_camara_estado_contexto falló para camara_id=%s — fail-open, no se bloquea el ingreso: %s",
+                camara.id,
+                exc,
+                exc_info=True,
+            )
+            contexto = None
+
+        if contexto is None:
+            logger.warning("get_camara_estado_contexto devolvió None para camara_id=%s ya resuelta", camara.id)
+            return _ResultadoAccesoCamara(
+                texto=(
+                    f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
+                    f"Sin incidentes activos.\n_puede continuar con el proceso de aprobación._"
+                ),
+                bloqueado=False,
+            )
+
+        if contexto.incidentes_activos:
+            inc = contexto.incidentes_activos[0]
+            logger.info("Cámara '%s' BANEADA — incidente #%s", camara.nombre, inc.id)
+            return _ResultadoAccesoCamara(
+                texto=(
+                    f"🚨 *ATENCIÓN* — La cámara *{camara.nombre}* tiene el incidente "
+                    f"*#{inc.id}* activo (Baneo de Protección).\n"
+                    f"Ticket: {inc.ticket_asociado or 'sin ticket'} | "
+                    f"Servicio protegido: {inc.servicio_protegido_id}\n"
+                    "_No acceder a esta cámara hasta nuevo aviso._"
+                ),
+                bloqueado=True,
+            )
+
+        if contexto.tiene_baneo_activo:
+            # tiene_baneo_activo=True sin incidentes_activos sólo puede ser baneo manual (ver Task 3)
+            # — el miembro baneado no siempre es `camara` misma (puede ser una Botella hermana).
+            miembro_baneado = next(
+                (m for m in miembros_del_grupo(camara) if m.estado == CamaraEstado.BANEADA), camara
+            )
+            motivo = obtener_ultimo_motivo_baneo_manual(session, miembro_baneado.id)
             motivo_texto = motivo or "sin motivo registrado"
+            detalle_miembro = (
+                f" (Botella *{miembro_baneado.nombre}* del mismo grupo)"
+                if miembro_baneado.id != camara.id
+                else ""
+            )
             logger.info(
-                "Cámara '%s' BANEADA manualmente — sin incidente activo, motivo: '%s'",
+                "Cámara '%s' BANEADA manualmente (miembro '%s' del grupo) — sin incidente activo, motivo: '%s'",
                 camara.nombre,
+                miembro_baneado.nombre,
                 motivo_texto,
             )
-            return (
-                f":no_entry: La cámara *{camara.nombre}* fue baneada manualmente. "
-                f"Motivo: _{motivo_texto}_.\n"
-                "_No podés proceder con el ingreso._"
+            return _ResultadoAccesoCamara(
+                texto=(
+                    f":no_entry: La cámara *{camara.nombre}*{detalle_miembro} fue baneada manualmente. "
+                    f"Motivo: _{motivo_texto}_.\n"
+                    "_No podés proceder con el ingreso._"
+                ),
+                bloqueado=True,
             )
 
         logger.info("Cámara '%s' OK — sin incidentes activos", camara.nombre)
-        return (
-            f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
-            f"Sin incidentes activos.\n_puede cotinuar con el proceso de aprobacion._"
+        return _ResultadoAccesoCamara(
+            texto=(
+                f"✅ Cámara *{camara.nombre}* registrada en el sistema. "
+                f"Sin incidentes activos.\n_puede continuar con el proceso de aprobación._"
+            ),
+            bloqueado=False,
         )
+
+    def _procesar_seguimiento_empalme(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+    ) -> bool:
+        """Detecta y procesa una respuesta de seguimiento con un ID de empalme, en el hilo de un
+        caso `IngresoSinMatch` pendiente (invitado por `_construir_respuesta_camara` cuando no
+        matcheó ninguna cámara).
+
+        Devuelve `True` cuando el mensaje fue tratado como intento de seguimiento (el caller debe
+        cortar ahí, no seguir al flujo normal) y `False` cuando no aplica: el texto no matchea el
+        patrón numérico, o matchea pero no hay un caso `IngresoSinMatch` pendiente para este hilo
+        (puede ser cualquier otro mensaje numérico del canal sin relación — no se trata como un
+        intento de empalme fallido).
+        """
+        match = _RE_SEGUIMIENTO_EMPALME.match(texto)
+        if not match:
+            return False
+
+        from db.models.infra import IngresoSinMatch
+
+        caso = (
+            session.query(IngresoSinMatch)
+            .filter(
+                IngresoSinMatch.thread_ts == thread_ts_evento,
+                IngresoSinMatch.resuelto_via_empalme == False,  # noqa: E712
+            )
+            .order_by(IngresoSinMatch.id.desc())
+            .first()
+        )
+        if caso is None:
+            return False
+
+        fusion_n_id = int(match.group(1))
+        logger.info(
+            "Seguimiento de empalme detectado en hilo %s: fusion_n_id=%s (caso IngresoSinMatch id=%s)",
+            thread_ts_evento,
+            fusion_n_id,
+            caso.id,
+        )
+
+        botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
+        camara = None
+        if botella is not None and botella.camara_id is not None:
+            from db.models.infra import Camara
+
+            camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
+
+        if camara is not None:
+            resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
+            respuesta = resultado_acceso.texto
+        else:
+            logger.info(
+                "Empalme #%s no resolvió una botella con cámara asociada (caso id=%s)",
+                fusion_n_id,
+                caso.id,
+            )
+            respuesta = (
+                f"⚠️ No pude ubicar una botella asociada al ID de empalme *{fusion_n_id}*. "
+                "*Podés continuar con el ingreso con normalidad.*"
+            )
+
+        caso.resuelto_via_empalme = True
+        session.commit()
+
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=respuesta,
+            mrkdwn=True,
+        )
+        return True
 
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
@@ -185,7 +479,9 @@ class IngresoListener:
         # mensajes de cualquier bot externo (incluidos Workflows).
 
         texto = event.get("text", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
+        event_thread_ts = event.get("thread_ts")
+        event_ts = event.get("ts")
+        thread_ts = event_thread_ts or event_ts
         channel = event.get("channel", "")
 
         session = SessionLocal()
@@ -200,6 +496,30 @@ class IngresoListener:
                 logger.debug("Mensaje de canal %s ignorado (esperado: %s)", channel, canal_id)
                 return
 
+            logger.info(
+                "Mensaje de ingreso recibido — canal=%s ts=%s bot_id=%s",
+                channel,
+                event.get("ts"),
+                event.get("bot_id", "—"),
+            )
+
+            # Respuesta de seguimiento con ID de empalme: sólo aplica si el evento es una
+            # respuesta REAL dentro de un hilo (thread_ts presente y distinto del ts propio del
+            # mensaje raíz) — evita interpretar el primer mensaje de un hilo nuevo como
+            # seguimiento. Se evalúa ANTES del filtro `solo_workflows` a propósito (2026-08-23,
+            # fix post-revisión de rama completa): la respuesta manual de un técnico en el hilo NO
+            # trae `workflow_id` (no la generó el Workflow de Slack, la escribió una persona), así
+            # que con la config real de dev (`solo_workflows=True` + `workflow_ids` puntuales) el
+            # filtro de abajo la descartaría ANTES de llegar acá — dejando inalcanzable el mecanismo
+            # de seguimiento que el propio mensaje de "sin match" invita a usar. El propio guard de
+            # `_procesar_seguimiento_empalme` (regex numérico + fila `IngresoSinMatch` pendiente para
+            # este `thread_ts` exacto) ya es suficientemente estricto para no necesitar el filtro de
+            # Workflow como red adicional — cualquier mensaje que no matchee las 3 condiciones sigue
+            # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica.
+            if event_thread_ts and event_thread_ts != event_ts:
+                if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
+                    return
+
             # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
             if solo_workflows:
                 event_workflow_id = event.get("workflow_id") or ""
@@ -212,13 +532,6 @@ class IngresoListener:
                         event_workflow_id,
                     )
                     return
-
-            logger.info(
-                "Mensaje de ingreso recibido — canal=%s ts=%s bot_id=%s",
-                channel,
-                event.get("ts"),
-                event.get("bot_id", "—"),
-            )
 
             nombre_raw = extraer_nombre_camara(texto)
             logger.info("Nombre extraído por regex: '%s'", nombre_raw)
@@ -249,7 +562,9 @@ class IngresoListener:
                 nombres_a_buscar = [nombre_raw]
 
             respuestas = [
-                self._construir_respuesta_camara(nombre, session)
+                self._construir_respuesta_camara(
+                    nombre, session, channel=channel, thread_ts=thread_ts, texto_mensaje=texto, client=client
+                )
                 for nombre in nombres_a_buscar
             ]
 
@@ -265,17 +580,28 @@ class IngresoListener:
             )
 
         except AmbiguousSearchError as exc:
+            # Los candidatos ya vienen fusionados (Camara + CromoBotella) y acotados a 3 desde la
+            # Tarea 1 (`AmbiguousSearchError.__init__`) — se listan como viñetas de texto plano.
+            candidatos_texto = ""
+            if exc.candidatos:
+                vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+                candidatos_texto = f"\nCandidatos:\n{vinetas}"
+
             if exc.cantidad == 0:
                 aviso = (
                     f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
                     "para identificar una cámara. Por favor, especificá la dirección "
                     "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
+                    f"{candidatos_texto}\n"
+                    "*Podés continuar con el ingreso con normalidad.*"
                 )
             else:
                 aviso = (
                     f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
                     f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
                     "la dirección o el número exacto."
+                    f"{candidatos_texto}\n"
+                    "*Podés continuar con el ingreso con normalidad.*"
                 )
             logger.info(
                 "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s",
@@ -291,6 +617,97 @@ class IngresoListener:
             )
         except Exception as exc:
             logger.error("Error procesando mensaje de ingreso: %s", exc, exc_info=True)
+        finally:
+            session.close()
+
+    # ── Comandos de Cables (docs/slack_app_cables.md) ───────────────────────
+
+    def _resolver_cable_o_responder(
+        self, session: Any, nombre_cable: str, client: Any, channel: str, thread_ts: str
+    ) -> Optional[CromoCable]:
+        """Busca el cable por n_id (si `nombre_cable` es puramente numérico — el técnico
+        reintentando con el n_id que el propio bot sugirió en un caso ambiguo) o por nombre; si no
+        hay exactamente un match, ya responde el aviso correspondiente (no encontrado / ambiguo) y
+        devuelve `None` para que el caller corte."""
+        cables = buscar_cable_por_n_id_o_nombre(session, nombre_cable)
+        if not cables:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=construir_respuesta_no_encontrado(nombre_cable), mrkdwn=True
+            )
+            return None
+        if len(cables) > 1:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=construir_respuesta_ambiguo(nombre_cable, cables), mrkdwn=True
+            )
+            return None
+        return cables[0]
+
+    def _handle_app_mention(self, event: dict[str, Any], client: Any) -> None:
+        """Procesa una mención directa al bot (`@bot <comando>`) — soporta "Info cable <nombre>",
+        "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (docs/slack_app_cables.md).
+        Mismo canal/config que el listener de ingresos; no se pisan entre sí porque escuchan eventos
+        distintos de Slack (`message` vs `app_mention`).
+
+        El comando CON buffer se intenta primero: `extraer_comando_info_cable` es "goloso" (toma todo
+        el resto de la línea como nombre de cable) y matchearía de más si un mensaje con sufijo
+        "B<N>" llegara primero acá."""
+        texto = _RE_MENTION_PREFIX.sub("", event.get("text", ""))
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        channel = event.get("channel", "")
+
+        comando_buffer = extraer_comando_cable_buffer(texto)
+        if comando_buffer is not None:
+            self._handle_cable_buffer(comando_buffer, client, channel, thread_ts)
+            return
+
+        nombre_cable = extraer_comando_info_cable(texto)
+        if nombre_cable is None:
+            logger.debug("Mención sin comando reconocido: '%s'", texto)
+            return
+
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+            respuesta = construir_respuesta_info_cable(cable, session)
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error("Error procesando 'Info cable %s': %s", nombre_cable, exc, exc_info=True)
+        finally:
+            session.close()
+
+    def _handle_cable_buffer(
+        self, comando: tuple[str, str, int], client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"Verificar cable <nombre> B<N>" / "Info cable <nombre> B<N>" — resuelve cable, resuelve
+        buffer por número (1-indexado, ver `cable_info.py`), y arma la respuesta según el verbo."""
+        verbo, nombre_cable, numero_buffer = comando
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+
+            tubo = resolver_tubo_por_numero(session, cable.n_id, numero_buffer)
+            if tubo is None:
+                total = contar_buffers_cable(session, cable.n_id)
+                respuesta = construir_respuesta_buffer_no_encontrado(nombre_cable, numero_buffer, total)
+                client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+                return
+
+            if verbo == "verificar":
+                resultado = servicios_por_tubo_sync(session, tubo.n_id)
+                respuesta = construir_respuesta_verificar_buffer(cable, tubo, resultado)
+            else:
+                pelos = pelos_de_tubo_sync(session, tubo.n_id)
+                respuesta = construir_respuesta_info_buffer(cable, tubo, pelos)
+
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error(
+                "Error procesando '%s cable %s B%s': %s", verbo, nombre_cable, numero_buffer, exc, exc_info=True
+            )
         finally:
             session.close()
 
@@ -314,9 +731,13 @@ class IngresoListener:
         def on_message(event: dict[str, Any], client: Any) -> None:
             self._handle_message(event, client)
 
+        @app.event("app_mention")
+        def on_app_mention(event: dict[str, Any], client: Any) -> None:
+            self._handle_app_mention(event, client)
+
         self._handler = SocketModeHandler(app, self._app_token)
         self._running = True
-        logger.info("IngresoListener iniciado en modo Socket (escuchando eventos message)")
+        logger.info("IngresoListener iniciado en modo Socket (escuchando eventos message + app_mention)")
         try:
             self._handler.start()
         finally:
@@ -335,34 +756,3 @@ class IngresoListener:
     def is_running(self) -> bool:
         """Retorna True si el listener está activo."""
         return self._running
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-
-def _obtener_incidentes_activos_camara(camara: Any, session: Any) -> list[Any]:
-    """Retorna los incidentes de baneo activos cuando la cámara está en estado BANEADA.
-
-    Las cámaras con estado LIBRE, DETECTADA o PENDIENTE_REVISION se tratan como
-    aptas para ingreso: devuelven lista vacía.  Estado BANEADA con un
-    ``IncidenteBaneo.activo`` asociado retorna ese incidente (nivel 1 de la
-    jerarquía).  BANEADA sin incidente activo es manejado por la rama
-    siguiente en ``_construir_respuesta_camara`` (baneo manual, nivel 2).
-    """
-    try:
-        from db.models.infra import CamaraEstado, IncidenteBaneo
-
-        estado = getattr(camara, "estado", None)
-        if estado != CamaraEstado.BANEADA:
-            return []
-
-        return (
-            session.query(IncidenteBaneo)
-            .filter(IncidenteBaneo.activo == True)  # noqa: E712
-            .order_by(IncidenteBaneo.fecha_inicio.desc())
-            .limit(1)
-            .all()
-        )
-    except Exception as exc:
-        logger.warning("Error consultando incidentes para cámara %s: %s", getattr(camara, "id", "?"), exc)
-        return []

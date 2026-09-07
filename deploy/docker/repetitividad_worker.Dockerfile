@@ -24,4 +24,7 @@ RUN pip install --no-cache-dir geopandas==0.14.4
 
 COPY . /app
 
+RUN chown -R focas:focas /app
+USER focas
+
 CMD ["python", "-m", "modules.informes_repetitividad.worker"]

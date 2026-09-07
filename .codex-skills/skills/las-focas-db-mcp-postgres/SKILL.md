@@ -3,7 +3,7 @@ name: "las-focas-db-mcp-postgres"
 description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app con enfoque async"
 metadata:
   short-description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar..."
-  source: ".github/skills/db-mcp-postgres/SKILL.md"
+  source: ".agentes-comunes/skills/db-mcp-postgres/SKILL.md"
   triggers:
     - "db-mcp-postgres"
     - "mcp"
@@ -19,6 +19,7 @@ metadata:
     - "tablas"
     - "esquema"
     - "app"
+    - "cromo"
   globs:
     - "db/**"
     - "deploy/**"
@@ -32,7 +33,7 @@ metadata:
 
 # Skill portable: db-mcp-postgres
 
-> Fuente original: `.github/skills/db-mcp-postgres/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/db-mcp-postgres/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Skill: MCP PostgreSQL para LAS-FOCAS
 
@@ -67,14 +68,19 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 ## 🎯 Reglas de Consulta (Importante)
 
 1. **Esquema Principal**: Todas las tablas del negocio están bajo el esquema `app`:
-   - `app.camaras` - Cámaras de fibra óptica
-   - `app.ruta_servicio` - Rutas de servicios
+   - `app.camaras` - Cámaras de fibra óptica. Desde 2026-08-10 tiene `camara_padre_id` (FK
+     auto-referencial nullable, jerarquía Cámara→Botella de 2 niveles) — ver sección 4b más abajo.
+   - `app.rutas_servicio` - Rutas de servicios (nombre real en plural, no `app.ruta_servicio`)
    - `app.cables`, `app.empalmes` - Infraestructura de red
    - `app.servicios` - Servicios de clientes
    - `app.users` - Usuarios del sistema
    - `app.chat_sessions`, `app.chat_messages` - Historial de chat
    - `app.incidentes_baneo` - Protocolo de protección
+   - `app.camaras_estado_auditoria` - Auditoría de todo cambio de `Camara.estado` — única fuente de
+     verdad para reconstruir el estado previo real de una cámara, ver sección 4b.
    - `app.reports` - Informes generados
+   - `app.cromo_*` - Inventario FO ingerido desde Cromo Red (cables, botellas, tubos, pelos, fusiones,
+     corridas de ingesta, config de scheduler) — ver sección 4 más abajo
 
 2. **Solo Lectura (Read-Only)**: Utiliza el MCP **estrictamente para consultas `SELECT`**. Si necesitas modificaciones:
    - Cambios de esquema → Migraciones Alembic (`db/alembic/`)
@@ -93,23 +99,28 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 Si el usuario reporta que las tarjetas de cámaras perdieron servicios o hay fallos en los correos de protección:
 
 ```sql
--- Ver cámaras baneadas actualmente
-SELECT id, nombre, estado, baneada_en
+-- Ver cámaras baneadas actualmente (Camara no tiene columna "baneada_en" — el momento del baneo vive
+-- en incidentes_baneo.fecha_inicio o en camaras_estado_auditoria.created_at, no en la fila misma)
+SELECT id, nombre, estado, camara_padre_id
 FROM app.camaras
 WHERE estado = 'BANEADA'
 LIMIT 20;
 
--- Verificar incidentes de baneo activos
-SELECT id, servicio_afectado, motivo, creado_en, activo
+-- Verificar incidentes de baneo activos (columnas reales: servicio_afectado_id, fecha_inicio)
+SELECT id, ticket_asociado, servicio_afectado_id, servicio_protegido_id, motivo, fecha_inicio, activo
 FROM app.incidentes_baneo
 WHERE activo = true
-ORDER BY creado_en DESC
+ORDER BY fecha_inicio DESC
 LIMIT 10;
 
--- Cruzar cámaras con rutas de servicio
-SELECT c.nombre, c.estado, rs.servicio, rs.cliente
+-- Cruzar cámaras con rutas de servicio (no existe app.ruta_servicio.camaras_ids — la relación real es
+-- Servicio → RutaServicio → Empalme → Camara)
+SELECT c.nombre, c.estado, s.servicio_id
 FROM app.camaras c
-JOIN app.ruta_servicio rs ON c.id = ANY(rs.camaras_ids)
+JOIN app.empalmes e ON e.camara_id = c.id
+JOIN app.ruta_empalme_association rea ON rea.empalme_id = e.id
+JOIN app.rutas_servicio rs ON rs.id = rea.ruta_id
+JOIN app.servicios s ON s.id = rs.servicio_id
 WHERE c.estado = 'BANEADA'
 LIMIT 20;
 ```
@@ -130,8 +141,8 @@ FROM app.reports
 ORDER BY fecha_generacion DESC
 LIMIT 10;
 
--- Verificar datos geoespaciales de cámaras
-SELECT id, nombre, latitud, longitud, zona
+-- Verificar datos geoespaciales de cámaras (Camara no tiene columna "zona")
+SELECT id, nombre, latitud, longitud
 FROM app.camaras
 WHERE latitud IS NOT NULL AND longitud IS NOT NULL
 LIMIT 10;
@@ -163,7 +174,60 @@ ORDER BY created_at DESC
 LIMIT 10;
 ```
 
-### 4. Verificación de Migraciones
+### 4. Inventario Cromo Red (planta externa FO)
+
+Tablas pobladas por el módulo de ingesta Cromo (ver `docs/modulo_ingesta_cromo.md` y la skill portable
+`las-focas-cromo-inventario` para el detalle completo). Datos reales, no de prueba:
+
+```sql
+-- Cables por jerarquía (ojo: jerarquia tiene ~10 valores reales distintos, no sólo
+-- "Acceso"/"Troncal"/"Subtroncal" — usar ILIKE, nunca comparación exacta)
+SELECT jerarquia, count(*) FROM app.cromo_cables GROUP BY 1 ORDER BY 2 DESC;
+
+-- Última corrida de ingesta y su estado
+SELECT id, estado, iniciada_at, finalizada_at, ultimo_error
+FROM app.cromo_ingesta_corridas ORDER BY id DESC LIMIT 5;
+
+-- Configuración del scheduler automático (fila única)
+SELECT habilitado, intervalo_horas, hora_inicio, psize, clases, ultima_ejecucion, ultimo_error
+FROM app.cromo_ingesta_config;
+```
+
+**Gotcha real de `asyncpg`** (encontrado en `core/services/cromo/inventario.py`): si escribís un
+`WHERE` con varios filtros opcionales que pueden venir todos `NULL` a la vez, `asyncpg` no puede
+inferir el tipo del bind parameter y tira `AmbiguousParameterError`. Desde el MCP (que ejecuta SQL
+literal, sin bind params) esto no aplica — pero si estás **escribiendo código** con `sqlalchemy.text()`
+y parámetros opcionales, casteá explícito: `CAST(:param AS text)`, no el atajo `:param::text`
+(SQLAlchemy interpreta mal el `::` pegado al bind parameter).
+
+**Archivos de código relacionados:**
+- `core/services/cromo/inventario.py` - Inventario navegable (búsqueda + paginación)
+- `core/services/cromo/verificador.py` - Qué servicios pasan por un cable/tubo/botella puntual
+- `core/services/cromo/ingesta.py` - Fases del barrido periódico
+
+### 4b. Jerarquía Cámara→Botella y auditoría de estado (2026-08-10)
+
+```sql
+-- Grupo completo de una Cámara (ella + todas sus Botellas)
+SELECT id, nombre, estado, camara_padre_id
+FROM app.camaras
+WHERE id = 2663 OR camara_padre_id = 2663;
+
+-- Última transición a BANEADA de una cámara — única forma de saber su estado REAL previo
+SELECT camara_id, usuario, motivo, estado_anterior, estado_nuevo, created_at
+FROM app.camaras_estado_auditoria
+WHERE camara_id = 753 AND estado_nuevo = 'BANEADA'
+ORDER BY created_at DESC LIMIT 1;
+```
+
+**Archivos de código relacionados:**
+- `core/services/camara_hierarchy_service.py` - Detección de sufijo "Bot N", resolución de padre
+- `core/services/camara_estado_service.py` - `aplicar_estado_a_grupo()`, `obtener_ultima_transicion_a_baneada()`
+- `core/services/protection_service.py` - Protocolo de Protección con cascada de grupo
+- `core/services/botellas_unificadas_service.py` - Listado unificado Cromo + legado
+- `las-focas-baneo-qa-real` - Metodología para probar cascadas de baneo sin causar drift
+
+### 5. Verificación de Migraciones
 
 ```sql
 -- Ver estado de migraciones Alembic

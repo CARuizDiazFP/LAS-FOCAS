@@ -155,3 +155,1138 @@
   4. Al rotar `POSTGRES_PASSWORD` (mismo día, ver `docs/PR/2026-07-28.md`), `ALTER ROLE <nombre> ...` sin comillas pliega el identificador a minúsculas — falló con `role "focalbot" does not exist` hasta usar `ALTER ROLE "FOCALBOT" ...`. Aplica a cualquier rol creado con mayúsculas (vía `POSTGRES_USER` con mayúsculas en el entorno).
 - **Alternativas:** (1) Mantener Swarm como estrategia productiva documentada — descartada por no reflejar la realidad del host (no-Swarm). (2) Seguir con `.env`/`.env.dev` en texto plano indefinidamente — descartada por exposición de credenciales en filesystem plano sin rotación controlada. (3) Un solo set de archivos sin distinguir dev/prod — descartada explícitamente por el usuario para evitar pisar secretos productivos durante trabajo en dev.
 - **Impacto:** `deploy/compose.yml` y `deploy/docker-compose.dev.yml` quedan con secretos file-based; `scripts/check_no_plaintext_secrets.sh` ahora escanea ambos composes; `docs/Seguridad.md`, `docs/infra.md`, `docs/db.md`, `docs/api.md` actualizados. Recrear cualquiera de estos 8 secretos sobre un volumen Postgres ya inicializado exige copiar el valor exacto vigente (no regenerar) o coordinar `ALTER ROLE`/recreación de volumen. Mismo día, ya se ejecutó la primera rotación real: `POSTGRES_PASSWORD` de prod (antes el placeholder de la plantilla) se rotó a un valor generado con `secrets.token_urlsafe(32)`, con ensayo previo en dev. Futuras rotaciones deben seguir el mismo patrón: backup → nueva password en el secret + `.env` → `ALTER ROLE "<user>" WITH PASSWORD ...` vía socket local → recreate por servicio con verificación de health/DB entre cada paso.
+
+## 2026-07-29 — Rediseño Nocturne del portal y hallazgo operativo: `--env-file` explícito obligatorio en `docker compose build/up` con `-f deploy/*.yml`
+
+- **Contexto:** Se implementó el rediseño visual Nocturne del SPA (tokens, shell, tarjeta de servicio mínima, iconos Phosphor) en `web/frontend`, sin cambios de lógica de negocio ni de backend. Detalle completo en `docs/PR/2026-07-29.md` y en `docs/web.md`. Al desplegarlo se detectó un problema operativo separado, no relacionado al frontend en sí, que vale la pena registrar porque puede repetirse con cualquier cambio futuro que toque `deploy/compose.yml` o `deploy/docker-compose.dev.yml`.
+- **Hallazgo:** Ejecutar `docker compose -f deploy/compose.yml up -d --force-recreate <servicio>` (o el equivalente para `docker-compose.dev.yml`) **sin** pasar `--env-file .env` (o `.env.dev`) explícito hace que Compose no resuelva las variables `${POSTGRES_DB}` / `${POSTGRES_USER}` usadas directamente en el bloque `environment:` del servicio `postgres` — Compose por default solo busca un `.env` en el directorio del archivo compose (`deploy/`), no en la raíz del repo donde viven realmente `.env`/`.env.dev`. El resultado: Compose detecta una diferencia de configuración y **recrea también `postgres`**, con `POSTGRES_DB=` y `POSTGRES_USER=` vacíos en el contenedor recreado. El volumen de datos no se pierde (Postgres no reinicializa un `PGDATA` ya poblado) y el healthcheck puede seguir en `healthy`, pero el contenedor queda con env vars incorrectas hasta la próxima recreación con el flag correcto.
+- **Decisión:** Todo comando `docker compose build` o `docker compose up` sobre `deploy/compose.yml` o `deploy/docker-compose.dev.yml` debe incluir siempre `--env-file .env` / `--env-file .env.dev` explícito, incluso cuando el objetivo es un único servicio (`web`, por ejemplo) que en apariencia no depende de esas variables. Los scripts `./Start` y `./scripts/start_dev.sh` ya lo hacen correctamente (arman `COMPOSE_BASE`/`COMPOSE_DEV` con `--env-file` incluido); el riesgo aparece únicamente al ejecutar comandos `docker compose` sueltos a mano.
+- **Alternativas:** (1) Mover `.env`/`.env.dev` a `deploy/` para que coincida con el default de Compose — descartada porque rompe la convención vigente de raíz del repo y otros scripts que ya asumen esa ubicación. (2) Confiar en que nunca se ejecuten comandos manuales fuera de `./Start`/`start_dev.sh` — descartada por ser el escenario que efectivamente causó el problema.
+- **Impacto:** Ninguna pérdida de datos; se corrigió recreando `postgres` una vez más con `--env-file` correcto. Se documenta acá para que cualquier intervención manual futura sobre estos composes (rebuild puntual de un servicio, debugging) pase primero por este hallazgo.
+
+## 2026-08-05 — Subred /24 explícita en la red Docker dev (secuestro de ruta hacia 172.19.217.20)
+
+- **Contexto:** Ninguno de los dos compose (`deploy/compose.yml`, `deploy/docker-compose.dev.yml`) declaraba `ipam.config.subnet` en su red — quedaban en manos del pool de direcciones por default de Docker, que asigna bloques `/16` secuenciales (`172.17.0.0/16` para el bridge default, `172.19.0.0/16` para `lasfocasdev_lasfocas_dev_net`, `172.20.0.0/16` para `lasfocas_lasfocas_net`). El host real tiene la interfaz `ens192` en `172.18.208.162/28` y necesita alcanzar, entre otros, el destino externo `172.19.217.20`. Al crear la red dev, el kernel agregó una ruta conectada `172.19.0.0/16 dev br-f8196088db69` que tiene prioridad sobre cualquier ruta hacia ese `/16` — cualquier paquete hacia `172.19.217.20` se enviaba al bridge Docker en vez de salir por `ens192`, dejando ese host externo inalcanzable desde la VM.
+- **Decisión:** Declarar explícitamente `ipam.config` en la red `lasfocas_dev_net` de `deploy/docker-compose.dev.yml` con subred `172.19.0.0/24` (gateway `172.19.0.1`), achicando la máscara de `/16` a `/24`. Con `/24`, la ruta conectada que agrega Docker pasa a ser `172.19.0.0/24` (rango `172.19.0.0`–`172.19.0.255`), que ya no incluye `172.19.217.20` — ese destino vuelve a resolverse por la ruta por default hacia `ens192`. No se reasignó ninguna IP estática porque ningún servicio del compose usa `ipv4_address` (Docker asigna dinámicamente dentro del rango, y el stack dev usa solo 6 servicios en red — muy por debajo de las 254 IPs utilizables de un `/24`).
+- **Alternativas:** (1) Configurar `default-address-pools` con tamaño de bloque `/24` a nivel del daemon Docker (`/etc/docker/daemon.json`) para que **toda** red nueva del host use `/24` — se descarta por ahora porque afecta a cualquier stack futuro del host, no solo LAS-FOCAS, y requiere reiniciar el daemon completo; queda como mejora a evaluar si vuelve a aparecer el mismo problema con otra red. (2) Elegir una base distinta (ej. `172.30.0.0/24`) en vez de conservar `172.19.0.0/24` — se descarta porque no aporta nada extra: el conflicto era por la máscara ancha, no por la base, y conservarla minimiza el diff.
+- **Impacto:** `deploy/compose.yml` (producción, red `lasfocas_net` en `172.20.0.0/16`) tiene el mismo riesgo latente si alguna vez existe un destino externo dentro de `172.20.0.0/16`, pero **no se modificó** en este cambio — ver [[Directiva solo-dev tras migración Nocturne]], no se toca `compose.yml`/contenedores `lasfocas-*` sin aviso explícito puntual. Aplicar el mismo `ipam.config` allí si se autoriza una intervención en prod. Requiere recrear la red dev (`docker compose ... down` sin `-v` + `up -d`); no afecta volúmenes ni datos.
+  - **Actualización (mismo día, ver entrada siguiente):** el usuario autorizó explícitamente tocar `deploy/compose.yml` solo a nivel de código, sin ejecutar comandos contra el host de producción — ese cambio quedó registrado por separado.
+
+## 2026-08-05 — Subred /24 en `deploy/compose.yml` (producción), solo en código, para próxima ventana de mantenimiento
+
+- **Contexto:** Mismo hallazgo que la entrada anterior, ahora extendido a producción a pedido explícito y puntual del usuario, con una restricción dura: los 6 contenedores `lasfocas-*` están en ejecución y **no pueden detenerse, reiniciarse ni recrearse en esta sesión**. La tarea se limita a dejar `deploy/compose.yml` listo en código y documentar el procedimiento para aplicarlo en la próxima ventana de mantenimiento.
+- **Decisión:** Se agregó `ipam.config` a la red `lasfocas_net` en `deploy/compose.yml` con subred `172.20.0.0/24` (gateway `172.20.0.1`, sin cambio respecto al gateway actual). **No se ejecutó ningún comando `docker compose`/`docker network` sobre el host** — se verificó en modo solo-lectura (`docker network inspect`, `docker ps`) que la red actual sigue en `172.20.0.0/16` con los 6 contenedores sanos, y que ninguno usa `ipv4_address` (no hay IPs estáticas que reasignar). El cambio en el archivo no tiene ningún efecto sobre el runtime hasta que se corra `docker compose down` + `up` en la ventana de mantenimiento, porque Docker no permite cambiar la subred de una red existente sin recrearla. Procedimiento completo, con comandos exactos de baja, limpieza de red vieja, alta y verificación post-despliegue, en [docs/mantenimiento_redes_produccion.md](mantenimiento_redes_produccion.md).
+- **Alternativas:** mismas que la entrada dev anterior (pool `/24` a nivel de daemon, o base de subred distinta) — se descartan por las mismas razones; se prioriza consistencia con el cambio ya aplicado en dev (misma base `172.20.0.0`, solo se achica la máscara).
+- **Impacto:** Ninguno sobre el runtime actual (criterio de aceptación de esta tarea). El diff en `deploy/compose.yml` debe llegar a `main` vía PR revisado antes de la ventana de mantenimiento — ver `docs/mantenimiento_redes_produccion.md` para pre-requisitos, comandos y rollback.
+
+## 2026-08-11 — Proxy de socket Docker + usuarios no-root en `api`/`web`/`bot`/`repetitividad_worker`
+
+- **Contexto:** Una auditoría de seguridad (`/revisar-seguridad`) encontró que `web` —el único servicio publicado en LAN— montaba `/var/run/docker.sock` para poder arrancar `slack_baneo_worker` desde el panel admin, y corría como root porque `deploy/docker/base.Dockerfile` nunca definió `USER`. Combinado, cualquier compromiso de `web` daba control total del host vía el daemon Docker.
+- **Decisión:** Reemplazar el mount directo del socket por `tecnativa/docker-socket-proxy:v0.5.0` en una red dedicada `docker_proxy_net`/`docker_proxy_dev_net` (`internal: true`, compartida solo con `web`), acotado a `CONTAINERS=1` + `ALLOW_START=1` + `POST=0` (permite `containers.get`/`.start`/`.reload` sobre un contenedor existente, bloquea `create`/`exec`/`images`/`volumes`/etc.). `web/app/main.py` no requirió cambios: `docker_sdk.from_env()` respeta `DOCKER_HOST=tcp://docker-socket-proxy:2375`. En paralelo, `base.Dockerfile` agregó un usuario compartido `focas` (UID 1000) y los 4 Dockerfiles (`api`, `web`, `bot`, `repetitividad_worker`) cierran con `chown -R focas:focas /app` + `USER focas`; `compose.yml`/`docker-compose.dev.yml` fuerzan `user: "1001:1001"` en runtime (mismo patrón ya usado por `slack_baneo_worker`/`cromo_worker`, que matchea al dueño real de los bind mounts del host).
+- **Incidentes reales durante el rollout en producción** (ambos resueltos en la misma sesión, sin pérdida de datos):
+  1. **Drift de red no detectado antes de actuar**: `docker compose up -d api` (incremental, un solo servicio) detectó que la red viva `lasfocas_lasfocas_net` seguía en `172.20.0.0/16` mientras `compose.yml` ya declaraba `172.20.0.0/24` (migración pendiente documentada en `docs/mantenimiento_redes_produccion.md`, ver entrada 2026-08-05). Compose intentó recrear la red, no pudo (otros contenedores seguían conectados) y dejó `postgres`/`api` **desconectados** de la red, con DNS de servicio roto entre ellos. Se resolvió con `docker network connect --alias postgres lasfocas_lasfocas_net lasfocas-postgres` (e idem `api`) — Compose no restaura sola el alias de servicio al reconectar a mano, hay que pasarlo explícito con `--alias`. Lección: **antes de un `up` incremental sobre un stack con contenedores ya corriendo, comparar la subred declarada vs. la real** (`docker network inspect <red> --format '{{json .IPAM.Config}}'`); si difieren, no hacer `up` de un servicio suelto — usar `./Start` (down + up completo).
+  2. **Colisión de UID al modificar la imagen base**: `deploy/docker/slack_baneo_worker.Dockerfile` y `cromo_worker.Dockerfile` ya creaban su propio usuario con `useradd -m -u 1000 worker`. Al agregar `useradd --uid 1000 focas` a `base.Dockerfile` (de la que ambos heredan), el build de `slack_baneo_worker` falló con `UID 1000 is not unique` y tumbó el `docker compose up --build` completo del stack mínimo — **outage total de los 6 contenedores de prod** hasta corregirlo. El plan de implementación había marcado esto como "nota al margen, no bloqueante" (duplicación prolija, no colisión real) — subestimación real que casi no se detecta antes de aplicar en prod. Se corrigió haciendo que ambos Dockerfiles reutilicen `focas` (`chown -R focas:focas /app` + `USER focas`) en vez de crear su propio usuario — sin impacto funcional porque el `user: "1001:1001"` de compose ya pisa el `USER` del Dockerfile en runtime.
+- **Alternativas:** proxy con `POST=1` genérico (descartado: habilita `/containers/create` con binds arbitrarios del host, vía de escape); compartir `lasfocas_net` en vez de una red dedicada para el proxy (descartado: hoy 6 servicios la comparten y el proxy no distingue cliente por identidad); bakear UID 1001 directo en el Dockerfile en vez de 1000+override en compose (descartado: rompe la consistencia con el patrón ya establecido por los workers).
+- **Impacto:** `web` dejó de tener acceso directo al daemon Docker del host; `web`/`api`/`bot`/`repetitividad_worker` corren como `uid=1001` no-root. Volúmenes `reports_data`/`uploads_data`/`bot_data` (named, eran 100% `root:root`) y el bind mount `Logs/` (archivos `web.log*` sueltos en `root:root`) se migraron a `1001:1001` antes de recrear `web` — paso obligatorio, sin él la primera escritura post-cambio falla con `Permission denied`. Verificado de punta a punta en dev y prod: `docker.sock` ya no aparece en los mounts de `web`, `web`→proxy responde 200, `api` (fuera de `docker_proxy_net`) no lo alcanza, y el botón "iniciar worker" del panel admin ejercita el proxy real.
+
+## 2026-08-11 — pgAdmin: Docker Secrets + bind a localhost, y permisos de secrets para imágenes de terceros no-root
+
+- **Contexto:** El mismo audit encontró `pgadmin` (servicio opcional, `profiles: ["pgadmin"]`, nunca levantado hasta esta sesión) con `PGADMIN_DEFAULT_EMAIL`/`PGADMIN_DEFAULT_PASSWORD` hardcodeados en texto plano en `compose.yml` (`admin@local`/`admin`) y publicado en `5050:80`/`5051:80` sin binding de IP (`0.0.0.0`).
+- **Decisión:** Mover la password a un secreto real (`pgadmin_password_v1`, mismo mecanismo que `postgres` con `_FILE`) y el binding a `127.0.0.1:5050:80`/`127.0.0.1:5051:80`. El email no tiene equivalente `_FILE` en la imagen `dpage/pgadmin4` (verificado contra la documentación oficial) — se sacó del compose versionado hacia `${PGADMIN_EMAIL}` en `.env`/`.env.dev` (gitignored), sin default inline, para que falle explícito si falta en vez de caer a un valor adivinable.
+- **Hallazgos técnicos que condicionaron la implementación:**
+  1. **Compose sin Swarm ignora `uid`/`gid`/`mode` de la sintaxis larga de `secrets:`** (warning explícito de Compose: "not supported, they will be ignored"). El secret se monta como bind mount preservando el ownership/permisos reales del archivo del host. Los servicios propios de LAS-FOCAS no lo notan porque corren como root o como `uid 1001` (mismo dueño que `.secrets/*.txt`); una imagen de terceros con UID fijo propio (`dpage/pgadmin4` corre `uid=5050 gid=0`) no puede leer un secret en `600` de otro dueño — falla con `Permission denied` recién visible en `docker logs`, no en `docker compose config`. Se resolvió generando ese secret puntual en `640` (`write_secret()` en `scripts/setup_local_secrets.sh` ahora acepta un modo opcional) + `group_add: ["1001"]` en el servicio `pgadmin` (GID del dueño real del archivo) — nunca `chgrp` a un grupo ajeno desde un usuario no-root, falla con `Operation not permitted`.
+  2. El valor previo `admin@local` **nunca hubiera sido válido**: dominio de una sola etiqueta (sin punto) y, aparte, `.local` está en la lista de dominios reservados que el validador de pgAdmin rechaza por default (`ALLOW_SPECIAL_EMAIL_DOMAINS: []`). Nadie lo había detectado porque el profile nunca se había levantado. Se usó `admin@lasfocas.com.ar` en `.env.dev`.
+- **Alternativas:** dejar el email hardcodeado con un valor menos obvio (descartado: sigue siendo un literal versionado, no resuelve el hallazgo de fondo); usar la sintaxis larga de secrets con `uid`/`gid` esperando que Compose los aplicara (descartado tras comprobar que Compose los ignora fuera de Swarm — ver hallazgo 1).
+- **Impacto:** Probado end-to-end en dev: sin `PGADMIN_DEFAULT_PASSWORD` en texto plano en el entorno del contenedor, secret legible por el proceso `pgadmin`, servicio responde `302` en `127.0.0.1:5051` y no responde en la IP LAN del host. Contenedor de prueba removido tras validar (el profile sigue sin levantarse por defecto). Prod queda con el mismo compose listo; falta crear `.secrets/pgadmin_password_v1.txt` a mano y setear `PGADMIN_EMAIL` en `.env` el día que se decida habilitar el profile ahí.
+
+## 2026-08-11 — Cromo pasa a ser la fuente de verdad de la jerarquía Cámara/Botella; retiro de `DETECTADA` y del auto-registro `PENDIENTE_REVISION`
+
+- **Contexto:** El módulo Infra/Baneos tenía una jerarquía Cámara→Botella completa pero exclusivamente legado (`app.camaras`, alta manual/Slack/tracking). En paralelo, `app.cromo_botellas` (mirror de sólo lectura de Cromo Red) no tenía ninguna vinculación a Cámara propia — una vinculación diferida explícitamente el 2026-08-10 hasta ingerir Cámaras/Postes propios desde Cromo. El usuario retomó esa decisión y la amplió: Cromo pasa a ser la fuente de verdad; el alta manual/por tracking de `app.camaras` queda como legado en desuso a futuro.
+- **Decisión:** `scripts/cromo_backfill_camara_padre.py` vincula cada `CromoBotella` a una `Camara` padre (nueva o reusada) vía el mismo regex de sufijo "Bot N" ya probado (`RE_BOT_SUFIJO`) más un patrón de prefijo nuevo ("Botella N &lt;nombre&gt;"). Toda Cámara padre **nueva** nace `NO_OPERATIVA` (nunca `LIBRE`) porque Cromo no aporta ninguna señal operativa real — asumir disponibilidad sería el mismo riesgo de seguridad de campo ya rechazado en la decisión de diferimiento original. Si el nombre matchea una `Camara` legado ya existente, se reutiliza y se hereda su estado real (dato legítimo con auditoría propia, no inferencia). En la misma línea, el usuario pidió reducir el estado operable de todo el sistema a 4 valores (`LIBRE`/`OCUPADA`/`BANEADA`/`NO_OPERATIVA`) y retirar `DETECTADA` — `scripts/retirar_estado_detectada.py` migró retroactivamente 1.053 filas reales a su estado real (100% `LIBRE`, 0 incidentes/ingresos activos en el sistema al momento de la corrida). Por último, el auto-registro de una `Camara PENDIENTE_REVISION` cuando un ingreso de técnico (bot de Slack o carga de tracking) no matchea quedó reemplazado por `app.ingresos_sin_match` — información de sólo lectura para revisión manual/mejora del regex; **el ingreso nunca se rechaza**.
+- **Hallazgos reales durante la implementación (no teóricos):**
+  1. **Bug de performance real**: la primera versión del backfill reutilizaba la función de resolución ya auditada del legado (`resolver_o_crear_padre_desde_base`), pensada para 1 llamada aislada por evento en vivo — llamarla 1.588 veces en un loop batch (contra hasta ~2.900 Cámaras raíz creciendo) tardó más de 25 minutos sin terminar y sostuvo 78% de CPU dentro de `lasfocasdev-api` (contenedor compartido con la API real en uso). Se corrigió con una resolución en memoria propia del script (carga única de raíces + diccionarios) — de 25+ min sin terminar a ~90 segundos reales.
+  2. **Cadena de más de 2 niveles preexistente**: el retiro de `DETECTADA` encontró 6 filas reales (ej. ids 163→2552→2553) que la cascada de grupo (`aplicar_estado_a_grupo`/`miembros_del_grupo`, que sólo recorre un nivel de `.botellas`) no alcanzaba, porque violaban la invariante "exactamente 2 niveles" que toda la jerarquía Cámara/Botella asume. Se corrigieron esas 6 filas puntualmente (escritura directa, sin cascada de grupo posible sobre una cadena ya rota); la cadena en sí **no se corrigió** — mismo tipo de anomalía de datos que los duplicados de Cámara sin sufijo Bot-N, ya documentados como limitación conocida.
+  3. **Bug de routing FastAPI**: un endpoint nuevo (`GET /api/infra/camaras/buscar`) quedó registrado después de una ruta con parámetro de la misma forma (`GET /api/infra/camaras/{camara_id}`, mucho más vieja en el archivo) — Starlette matchea por orden de registro, así que "buscar" se interpretaba como `camara_id: int` y devolvía 422. Sólo visible en un curl real post-deploy, nunca en `pytest` (los tests mockean el servicio, no pasan por el router real). Corregido reordenando el registro.
+- **Alternativas consideradas para "eliminar" una Cámara duplicada al unificar** (ver entrada siguiente) y para el reemplazo de `PENDIENTE_REVISION`: mantener el auto-registro pero agregando un paso de "buscar primero en Cromo" (descartado por el usuario — mayor complejidad para un caso que ya tiene remedio más simple); un hard delete de la Cámara duplicada (descartado — pierde auditoría real vía `ON DELETE CASCADE` en `camaras_estado_auditoria`).
+- **Impacto:** `db/alembic/versions/20260811_01_cromo_botella_camara_padre.py` (primera migración de este repo que necesitó `op.get_context().autocommit_block()`, porque Postgres prohíbe usar un valor de enum recién agregado en la misma transacción que lo crea) y `20260811_02_ingresos_sin_match.py`, ambas aplicadas y verificadas contra `lasfocasdev-postgres` real. `DETECTADA`/`PENDIENTE_REVISION` siguen en el enum de Postgres (no removibles sin recrear el tipo) pero ya no son seteables. El panel admin "Cámaras Pendientes de Revisión" sigue vigente sólo para las 34 filas legado ya existentes, sin recibir filas nuevas. Detalle completo en `docs/infra.md` y `docs/db.md`.
+
+## 2026-08-11 — Unificación de Cámaras duplicadas: reparentado como Botella, no hard delete
+
+- **Contexto:** Ya documentado como limitación conocida desde el 2026-08-10 (duplicados de Cámara sin sufijo "Bot N" que el matcher no agrupa por no compartir ningún token normalizado). Confirmado a mayor escala: 47 grupos de duplicados reales, 99 Cámaras raíz involucradas de un total de 2.554, con estados a veces en conflicto dentro del mismo grupo (ej. una `LIBRE`, otra `BANEADA`).
+- **Decisión:** En vez de un hard delete de la Cámara "secundaria" o un flag "archivada" nuevo, la secundaria queda **re-parentada como Botella de la principal** (mismo `camara_padre_id` self-FK de la jerarquía Bot-N ya existente) — decisión explícita del usuario, confirmada tras proponerla como alternativa a lo que pedía originalmente. Da, sin código nuevo: conserva el 100% de la auditoría/historial de la secundaria (nunca se borra la fila, `CamaraEstadoAuditoria` no dispara su `ON DELETE CASCADE`), desaparece sola del dashboard de Cámaras raíz (que ya filtra `camara_padre_id IS NULL`), y sus rutas/servicios/empalmes propios se agregan automáticamente al ver el detalle de la principal vía la misma lógica de "grupo" que ya usa toda la jerarquía Cámara/Botella. Lo que sí se mueve explícitamente (no viaja gratis con el reparent): las Botellas propias de la secundaria (se aplanan directo a la principal, para no crear una cadena de 3 niveles) y las `CromoBotella` vinculadas a la secundaria (la agregación de Botellas Cromo no es recursiva por grupo). El nombre de la secundaria queda como alias de la principal; el estado final del grupo completo es el más restrictivo (mismo criterio que la cascada de baneo existente).
+- **Alternativas:** hard delete real de la fila secundaria (descartado — pierde auditoría vía `ON DELETE CASCADE`); un flag "archivada" nuevo (descartado — agrega esquema nuevo sin necesidad, cuando el mecanismo de self-FK ya existente resuelve el mismo problema con menos código y consistencia total con el resto del módulo).
+- **Impacto:** `core/services/camara_merge_service.py` (nuevo), endpoint `POST /api/infra/camaras/merge` (admin, CSRF) + búsqueda liviana `GET /api/infra/camaras/buscar` (deliberadamente no reusa `smart-search`, que tiene N+1 de rutas/servicios/cables pensado para el dashboard). Botón "Unificar Cámara" nuevo en el header del detalle de Cámara. Verificado con tests unitarios (mock de sesión); no se ejecutó ninguna unificación real contra datos de producción/dev en esta sesión — los 47 grupos reales quedan pendientes de que un admin los revise y decida manualmente cuáles unificar.
+
+## 2026-08-12 — Fallback de nombre exacto para Cromo, fix de idempotencia real y propagación de estado a CromoBotella
+
+- **Contexto:** Extensión del backfill Cromo→Cámara del 2026-08-11. De las 9.512 Botellas Cromo huérfanas (86%), la muestra real mostraba que casi ninguna era "sin información" — eran direcciones válidas sin el patrón "Bot N"/"Botella N". Por separado, el usuario reportó desde el propio dashboard filas mostrando `OCUPADA` sin ningún `Ingreso` activo real.
+- **Decisión 1 (fallback de nombre exacto):** si `extraer_base_cromo` no matchea ni sufijo ni prefijo, usa el nombre exacto de la Botella (recortado) como nombre de su propia Cámara padre — misma política `NO_OPERATIVA` fail-closed que los otros dos caminos. Resultado real: huérfanas 9.512 → 0.
+- **Hallazgo real y decisión 2 (idempotencia)**: la clasificación "padre ya establecido" vs. "pelada absorbible" (tanto en `resolver_o_crear_padre_desde_base` como en la resolución en memoria del script) sólo miraba `Camara.botellas` (self-FK legado) — una Cámara padre de Cromo tiene cero Botellas legado, así que en cualquier corrida posterior del backfill (o el listener de Slack, que reusa la misma función) se la trataba como "pelada" y se la absorbía como Botella de un padre duplicado, rompiendo el invariante "`camara_id` siempre apunta a una raíz" (~400 vinculaciones habrían quedado inválidas, detectado en `--dry-run` antes de aplicar). Corregido con `ids_camaras_con_cromo_hijos` (`core/services/camara_hierarchy_service.py`), compartido entre el backfill y la función en vivo.
+- **Hallazgo real y decisión 3 (propagación de estado)**: verificado contra `lasfocasdev-postgres`, 0 `Ingreso` activos en todo el sistema pero 295 `CromoBotella` con estado (`OCUPADA`/`BANEADA`) que ya no coincidía con el de su propia Cámara padre (`LIBRE`) — causa: el backfill del 2026-08-11 mapeó `DETECTADA→OCUPADA` al fijar esas filas, y horas después `retirar_estado_detectada.py` corrigió los padres a `LIBRE` sin que `aplicar_estado_a_grupo` (que sólo escribía `Camara.estado`) propagara el cambio hacia atrás. El usuario eligió explícitamente corrección puntual + cierre estructural (no sólo el resync one-off): `aplicar_estado_a_grupo` ahora sincroniza también las `CromoBotella` vinculadas a cada miembro del grupo modificado, en la misma transacción — así cualquier baneo/liberación/override futuro ya deja ambas tablas consistentes, sin depender de una corrida manual.
+- **Alternativas consideradas (decisión 3):** sólo el resync puntual, sin tocar `aplicar_estado_a_grupo` (descartado por el usuario — el gap de raíz volvería a producir el mismo problema con el próximo baneo/liberación real); recalcular `CromoBotella.estado` en cada lectura en vez de mantenerlo escrito (descartado — cambiaría el contrato de la tabla y el patrón de consulta unificado de `botellas_unificadas_service.py`, mayor alcance que lo pedido).
+- **Impacto:** `core/services/camara_estado_service.py` (mapa `MAPEO_ESTADO_CROMO` + propagación en `aplicar_estado_a_grupo`), `scripts/resync_cromo_botella_estado.py` (nuevo, corrida única — 295 filas corregidas, 0 desincronizadas verificado post-commit), `core/services/botellas_estado_masivo_service.py` (nuevo, endpoint `PUT /api/infra/botellas/estado`), `BotellasInventarioView.vue` (checkbox de selección + barra de acciones masivas). Backfill real: 8.598 Cámaras padre nuevas, 914 reutilizadas, invariante `camara_id`→raíz verificado en 0 violaciones. Detalle completo en `docs/infra.md`.
+
+## 2026-08-13 — Reversión de la política fail-closed: Cámara padre nueva (Cromo) nace `LIBRE`
+
+- **Contexto:** La política vigente desde el 2026-08-11 (ver entrada de esa fecha) hacía nacer toda Cámara padre *nueva* sintetizada desde Cromo en `NO_OPERATIVA`, fail-closed, porque `cromo_botellas` no aporta ninguna señal operativa real. El usuario pidió explícitamente revertir esto a `LIBRE` por defecto, "a menos que exista un baneo activo" — un pedido que, en este dominio concreto, resultó no requerir ningún chequeo nuevo: una Cámara recién creada no tiene todavía ningún empalme/ruta propio, así que estructuralmente no puede existir un `IncidenteBaneo` activo real que la afecte en el momento del alta (los baneos se resuelven cruzando servicios/rutas de los empalmes de la cámara, cero para una fila recién insertada). Se le planteó explícitamente este choque con la decisión de seguridad de campo previa antes de implementar, y el usuario confirmó la reversión con ese contexto ya sobre la mesa.
+- **Decisión:** Cambiar `estado_si_nuevo`/el valor por defecto a `CamaraEstado.LIBRE` en los 3 caminos de alta de Cámara padre desde Cromo (`core/services/cromo/camara_padre_service.py::resolver_o_crear_padre_cromo`, `scripts/cromo_backfill_camara_padre.py`, `core/services/cromo/orfanas_service.py::asociar_huerfanas`) y en el `server_default` de `app.cromo_botellas.estado` (migración `20260813_01`, metadata-only). El caso que sí importaba proteger — reutilizar una `Camara` legado ya existente, potencialmente `BANEADA` — no se tocó: ese camino nunca escribió el estado de una fila reusada, con o sin esta reversión.
+- **Alternativas:** (1) Implementar un chequeo activo de `IncidenteBaneo`/`get_camara_estado_contexto` en el momento del alta antes de decidir el estado — descartada por no tener ningún caso real que cubrir (una Cámara nueva no puede tener incidentes propios) y por agregar validación para un escenario que no puede ocurrir. (2) Mantener `NO_OPERATIVA` fail-closed — es lo que había, descartada por pedido explícito del usuario tras contrastarla con el motivo original.
+- **Impacto:** Sólo afecta altas **futuras** — las ~9.672 Cámaras padre ya creadas en `NO_OPERATIVA` por los backfills del 2026-08-11/12 no se tocaron retroactivamente (no se re-corrió ningún backfill masivo). Ver `docs/infra.md` sección "Cambio de política de estado, paginación real y navegación cruzada (2026-08-13)".
+
+## 2026-08-14 — Fix de nombres residuales de Cámara padre Cromo y backfill retroactivo de estado
+
+- **Contexto:** El usuario reportó desde el propio dashboard `/infra` cámaras con nombres rotos (ej. `". Cra Marcos Sastre y Colectora Este"`, `". Poste Est . Bs. As. C.F"`) — un punto residual al inicio. Diagnóstico contra código y datos reales: `RE_BOT_SUFIJO` (`modules/slack_baneo_notifier/camara_search.py`) y `RE_BOTELLA_PREFIJO` (`core/services/cromo/camara_padre_service.py`) tenían `\.?` ANTES del dígito de "Bot N" (consumían "Bot." con punto antes del número) pero ninguno consumía un punto DESPUÉS del dígito — cuando el nombre real de Cromo traía el punto ahí (ej. `"Bot 2. Cra Marcos Sastre y Colectora Este"`), el match terminaba en el dígito y el punto sobrevivía como residuo (ni el colapso de espacios ni el `.strip()` posterior lo eliminan, no es whitespace). Verificado contra `lasfocasdev-postgres`: sólo 7 de las 9.770 Cámaras `INFERIDO_CROMO` tenían este residuo real — el punto AL FINAL de muchos nombres (ej. `"...C.F."`, 732 filas) es formato legítimo original de Cromo, no el bug, y no se tocó. Por separado, quedaba pendiente desde la entrada anterior (2026-08-13) la corrección retroactiva de las ~9.672 Cámaras que nacieron `NO_OPERATIVA` bajo el default fail-closed ya revertido.
+- **Decisión 1 (fix de regex):** agregar `\.?` **después** del lookahead `(?!\d)` en ambos regex — consume el punto residual sin interferir con la protección existente contra falsos positivos (`"Bot 30 de Septiembre..."` sigue sin matchear). `extraer_base_cromo()` llama internamente a `extraer_base()` (que usa `RE_BOT_SUFIJO`), así que el fix de esa única constante compartida corrige ambos caminos (legado Bot-N y Cromo) a la vez. Se descartó explícitamente agregar una función de sanitización genérica o soporte de sinónimos "mufa"/"caja" — el fix quirúrgico cierra el 100% del bug confirmado, y ninguno de esos dos tokens tiene un solo caso real en datos ni en código existente.
+- **Decisión 2 (corrección retroactiva de nombres, 7 filas):** script nuevo `scripts/cromo_fix_nombre_camara_padre_residual.py` — corrección quirúrgica (`regexp` sobre el nombre ya guardado), no re-derivación desde la `CromoBotella` vinculada, matemáticamente equivalente y sin depender de qué hijo vinculado usar como representativo. Preserva intacto cualquier punto interno legítimo (ej. `"Poste Est ."` en el id 6561).
+- **Decisión 3 (backfill retroactivo de estado, ~9.672 filas):** script nuevo `scripts/cromo_backfill_estado_no_operativa_retroactivo.py` — separado del script de nombres y de `cromo_backfill_camara_padre.py` (sigue la convención ya establecida: `resync_cromo_botella_estado.py`/`retirar_estado_detectada.py` son siempre correcciones puntuales independientes). Candidatas: `origen_datos=INFERIDO_CROMO` + `estado=NO_OPERATIVA` + sin ninguna fila en `camaras_estado_auditoria` (criterio `NOT EXISTS` simple, no una lista de usuarios-bot a excluir — verificado que de las 98 Cámaras `INFERIDO_CROMO` con auditoría propia, el 100% fue escrita por procesos automáticos, cero por un humano, así que ambos criterios dan hoy el mismo resultado y el `NOT EXISTS` es más simple y se auto-actualiza). Aplicado vía `aplicar_estado_a_grupo` (único punto de escritura sancionado, sincroniza `CromoBotella.estado` en la misma transacción) en un loop simple con commit único al final.
+- **Alternativas consideradas:** para la decisión 3, un `UPDATE`/`INSERT` bulk directo que bypasee `aplicar_estado_a_grupo` — descartado de entrada (Plan B, no aplicado) dado el riesgo de repetir el gap de 295 filas desincronizadas ya documentado el 2026-08-12; el `--dry-run` cronometrado confirmó 9.672 filas en 35.6 segundos reales, sin necesidad de recurrir al Plan B.
+- **Impacto:** Verificado contra `lasfocasdev-postgres` real: 7/7 nombres corregidos (0 residuos restantes), 9.672 Cámaras `NO_OPERATIVA`→`LIBRE` (0 `NO_OPERATIVA` restantes en `origen_datos=INFERIDO_CROMO`, 17 `BANEADA` sin tocar). Tests nuevos en `tests/test_camara_hierarchy_service.py`/`tests/test_cromo_camara_padre_service.py` cubriendo el punto post-dígito; suite completa 611 tests pasando. Ver `docs/infra.md`.
+
+## 2026-08-14 — Categoría C0-C6 en Servicios, placeholders del matching Cromo↔Servicio y backfill retroactivo
+
+- **Contexto:** El pedido original asumía que había que crear la columna `categoria` en `app.servicios` — falso: existía desde la migración fundacional (`20251230_01_infra.py`) como `Integer nullable=True`, sin `CHECK` ni `default`, y 100% NULL en las 1488 filas reales de dev. El pedido de "placeholders cuando un pelo mapea a un servicio no sincronizado" reveló que `core/services/cromo/ingesta.py::fase_servicios` maneja "sin match" de forma deliberada y auditada (`CromoServicioMatch.servicio_id = NULL`, traza de auditoría, nunca error) — nunca creaba un `Servicio`. Verificado contra datos reales: 115.484 filas sin match, 9.078 `servicio_numero` distintos, con basura de parseo obvia en los extremos (`"1"`→729 veces, `"10"`→630, números de 8-10 dígitos).
+- **Decisión 1 (heurística de plausibilidad):** filtro de longitud 4-6 dígitos (`core/services/cromo/parser.py::es_numero_servicio_plausible`), dato-informado contra los 1488 `Servicio.numero_primer_servicio` reales (99.8% caen en ese rango). De los 9.078 números distintos sin match, 9.054 pasan el filtro (462 de 4 dígitos, 6305 de 5, 2287 de 6); los ~24 restantes (1-3 u 8-10 dígitos, ~3.144 filas) siguen sin generar nada, igual que antes.
+- **Decisión 2 (campo `origen_datos` explícito):** enum nativo Postgres `app.servicio_origen_datos` (`MANUAL`/`TRACKING`/`INGEST_EXCEL`/`INFERIDO_CROMO`), mismo patrón que `CamaraOrigenDatos` — permite distinguir un placeholder de un servicio real más allá de `categoria=0`. Las 1488 filas existentes se etiquetaron `MANUAL` uniforme (no se puede reconstruir con certeza cuáles vinieron de tracking vs. Excel); se agregó `TRACKING` al enum para uso futuro pero no se cableó en ningún código todavía, fuera del alcance pedido.
+- **Decisión 3 (backfill retroactivo, no sólo altas en vivo):** confirmado con el usuario incluir el backfill sobre las 115.484 filas ya acumuladas, además de la lógica en vivo en `fase_servicios`. Script nuevo `scripts/cromo_backfill_placeholders_servicios.py` — un placeholder por `servicio_numero` distinto (no uno por fila de match), con re-validación contra el estado ACTUAL de `app.servicios` (cubre el caso `alias_ids`, que ningún `ON CONFLICT` detectaría) antes de crear nada.
+- **Decisión 4 (edición de categoría admin-only, sin tabla de auditoría dedicada):** `PATCH /servicios/{id}/categoria` y `PATCH /servicios/bulk-categoria` restringidos a admin (confirmado con el usuario). Se decidió explícitamente NO agregar una tabla de auditoría tipo `camaras_estado_auditoria` para `categoria` — es una clasificación de prioridad de reporting, no un estado operativo de seguridad de campo, y no se justificó esa infraestructura extra fuera del alcance pedido (ver `core/services/servicios_categoria_service.py`).
+- **Hallazgo cruzado corregido:** el `ON CONFLICT ... DO UPDATE` de `POST /servicios/ingest` (upsert de Excel real) no tocaba `origen_datos` — sin el fix, un placeholder enriquecido después por un Excel real quedaba `INFERIDO_CROMO` para siempre, rompiendo el propósito del campo. Se agregó `origen_datos="INGEST_EXCEL"` tanto al INSERT como al `set_map` del upsert (nunca `categoria`, que no viene del Excel).
+- **Gotcha técnico encontrado al correr el backfill contra dev real** (no detectable con `pytest` + mocks): `sqlalchemy.text()` con el engine sync (psycopg3) rompe en `:nombre::tipo` (bind nombrado seguido de cast sin espacio) — hace falta `:nombre ::tipo`. Además, castear a `::text[]` contra una columna `ARRAY(String(N))` (`varchar[]` real) falla en el operador `&&`; hace falta `::varchar[]` para que los tipos coincidan. Ver memoria de sesión `feedback_sqlalchemy_psycopg3_named_bind_cast_space`.
+- **Impacto:** Verificado contra `lasfocasdev-postgres` real tras aplicar el backfill: 9.054 `Servicio` nuevos (`origen_datos=INFERIDO_CROMO`, `categoria=0`), 112.340 filas de `cromo_servicio_match` resueltas, 3.144 sin resolver (esperado). `app.servicios` pasó de 1488 a 10.542 filas. Suite completa de tests backend (633 tests) pasando. Ver `docs/db.md` sección `servicios` y `docs/modulo_ingesta_cromo.md`.
+
+## 2026-08-14 — Unificación de Cámaras: fusión real Cámara-a-Cámara con hard delete seguro (reemplaza el reparentado del 2026-08-11)
+
+- **Contexto:** La entrada del 2026-08-11 ("Unificación de Cámaras duplicadas: reparentado como Botella, no hard delete") resolvió evitar el hard delete re-parentando la Cámara secundaria como Botella de la principal, para no perder la auditoría (`CamaraEstadoAuditoria` tiene `ondelete="CASCADE"`). El usuario pidió retomar y ampliar ese flujo (transferir también Cables, Empalmes e Ingresos, más un alias opcional) y, al plantearle el choque con la decisión previa, aclaró explícitamente: Cámara y Botella son conceptos distintos, y este flujo es una fusión **entre Cámaras** — la secundaria no debe sobrevivir como Botella de la principal, debe dejar de existir tras heredar todo lo heredable.
+- **Decisión:** Revertir conscientemente el reparentado del 2026-08-11. `unificar_camaras()` (`core/services/camara_merge_service.py`) ahora hace un hard delete real de la Cámara secundaria, pero reasigna EXPLÍCITAMENTE (con `session.flush()` antes del delete) las 7 FK reales hacia `app.camaras.id` para que ninguna cascada destruya datos:
+  1. `Camara.camara_padre_id` (self-FK) — Botellas propias de la secundaria.
+  2. `CromoBotella.camara_id` — Botellas Cromo vinculadas (ya se hacía en el diseño anterior).
+  3. `Cable.origen_camara_id` / `Cable.destino_camara_id` (`ondelete=SET NULL` — sin reasignar, quedaban huérfanos en vez de "transferidos").
+  4. `Empalme.camara_id` — crítico: `Camara.empalmes` tiene `cascade="all, delete-orphan"`, sin reasignar el delete hubiera borrado empalmes reales de servicios/rutas activos.
+  5. `Ingreso.camara_id` — mismo riesgo de cascada ORM que Empalme.
+  6. `CamaraAlias.camara_id` — se migran los alias que la secundaria YA tenía (no sólo se crea uno nuevo con su nombre), evitando duplicar un `alias_nombre` que la principal ya tuviera.
+  7. `CamaraEstadoAuditoria.camara_id` (`ondelete="CASCADE"` en Postgres) — sin reasignar, el DELETE hubiera borrado el historial completo de la secundaria pase lo que pase con el ORM; con la reasignación, ese historial queda preservado bajo la principal.
+
+  `CromoPelo`/`CromoFusion`/`CromoCable`/`CromoTubo` no tienen `camara_id` propio (cuelgan de `CromoBotella`/`CromoCable` por `n_id`, sin FK dura) — viajan solos en cuanto se reasigna `CromoBotella.camara_id`, no requirieron tratamiento propio.
+
+  Se agregó `guardar_alias: bool = True` (antes el alias con el nombre de la secundaria se creaba siempre sin opción) y un evento explícito en `CamaraEstadoAuditoria` de la principal ("Cámara '{nombre}' (ID {id}) fusionada dentro de esta cámara") que se escribe SIEMPRE, incluso si el estado no cambió — a diferencia de `aplicar_estado_a_grupo`, que sólo audita cambios reales. El estado final ahora se calcula como el más restrictivo entre el grupo de la principal (`miembros_del_grupo`, que ya no incluye a la secundaria) y el estado que tenía la secundaria antes de desaparecer.
+- **Alternativas consideradas:** (1) Mantener el reparentado y sólo agregar las migraciones de Cable/Empalme/Ingreso — descartada tras la aclaración del usuario: seguiría dejando a la secundaria "viva" como Botella, que es justo lo que no quería. (2) Híbrido reparentado-por-defecto + purga opcional — descartada por agregar dos caminos de código para un caso donde el usuario ya definió con claridad el comportamiento único que quiere.
+- **Impacto:** Endpoint `POST /api/infra/camaras/merge` ahora acepta `guardar_alias` en el body y devuelve contadores nuevos (`cables_migrados`, `empalmes_migrados`, `ingresos_migrados`, `aliases_migrados`). `GET /api/infra/camaras/buscar` suma `cables_count` junto a `botellas_count` (mismo costo por-candidata ya asumido ahí, lista acotada a `limit<=50`). `ModalUnificarCamara.vue` actualiza el texto (ya no dice "pasa a ser Botella"), agrega el checkbox de alias y el resumen de impacto (Botellas + Cables de la candidata), y emite `error` al padre (patrón ya usado por `CamaraEstadoModal.vue`). `tests/test_camara_merge_service.py` reescrito: cubre las 7 reasignaciones, el borrado físico, el evento de auditoría siempre creado y el cálculo de estado con la secundaria fuera del grupo self-FK. No se ejecutó ninguna fusión real contra datos de producción/dev en esta sesión — los 47 grupos de duplicados reales (ver 2026-08-11) siguen pendientes de revisión manual por un admin.
+
+## 2026-08-14 — Dashboard Viewer de Cámaras: detección de duplicados en vivo y corrección del universo real (10.212, no 2.554)
+
+- **Contexto:** El usuario pidió un dashboard nuevo (`/admin/servicios/viewer/Camaras`) para reemplazar dos cosas que hoy dependían de análisis manual ad-hoc: listar Cámaras raíz con el "estilo dual" de `ServiciosView.vue`, y filtrar candidatas a duplicado. Verificado contra `lasfocasdev-postgres` real durante el diseño: `SELECT count(*) FROM app.camaras WHERE camara_padre_id IS NULL` da **10.212** filas hoy, no las 2.554 que documentaban `docs/infra.md`/`docs/decisiones.md` (entrada 2026-08-11) — esa cifra quedó obsoleta tras los backfills de Cromo (~9.672 Cámaras padre nuevas) y **nunca fue producida por un script reusable**: fue un análisis manual de esa única sesión.
+- **Decisión 1 (nivel de detección, confirmada con el usuario):** "normalización extendida" — reusar `_ABREVIATURAS`/`_SINONIMOS` de `camara_search.py` para expandir el nombre antes de agrupar por igualdad exacta de string. Sin similitud difusa (`difflib`/`pg_trgm`/scoring), descartada explícitamente. Caso real verificado: "Cámara 14 de Julio 240" / "Cra 14 de Julio 240 CF" colapsan a la misma clave (sinónimo camara→cra + abreviatura cf→""). Implementado como `expandir_abreviaturas_y_sinonimos()` (nuevo, público, en `camara_search.py`, compuesto sobre texto ya normalizado — no reimplementa el pipeline de limpieza) y `normalizar_para_detectar_duplicados()` (`core/services/camara_duplicados_service.py`, **archivo nuevo**, no agregado a `camara_hierarchy_service.py` a propósito para no mezclar con su responsabilidad ya documentada de "no reinventar la detección de Bot N").
+- **Decisión 2 (visualización, confirmada):** "tarjeta por grupo" — con el filtro activo, el área de contenido cambia de la vista dual a una tarjeta por cada grupo de 2+ Cámaras con botón "Fusionar" por miembro (reusa `ModalUnificarCamara.vue`, extendido con un prop opcional `sugerenciaInicial` que precarga el picker con el nombre del otro miembro del grupo). El toggle grid/lista se oculta mientras el filtro está activo — comportamiento esperado, no inconsistencia.
+- **Decisión 3 (sin cache/persistencia nueva):** con 10.212 filas, agrupar en Python es O(n) sub-segundo — no se agregó tabla de candidatos, Redis, ni job en background.
+- **Alternativas consideradas (nivel de detección):** (a) sólo el algoritmo ya existente (`normalizar_para_agrupar`, sin abreviaturas) — descartada, contra el dataset real sólo encuentra 1 grupo, no resuelve el problema real de "es muy difícil identificarlas". (b) similitud difusa (blocking por número de calle + `difflib`) — descartada por el usuario, más trabajo de afinar umbral y riesgo de falsos positivos que compliquen la revisión manual.
+- **Impacto:** `core/services/camara_duplicados_service.py` (nuevo), `expandir_abreviaturas_y_sinonimos()` nuevo en `camara_search.py`, endpoints `GET /api/admin/infra/camaras/viewer` y `.../viewer/duplicados` (namespace `/api/admin/infra/camaras/...` elegido para no colisionar con ninguna ruta existente bajo ese prefijo), rutas `/admin/servicios/viewer` y `/admin/servicios/viewer/Camaras`, tarjeta nueva en `AdminServicios.vue`, componente nuevo reusable `CamaraViewerCard.vue`. `docs/infra.md` corregido (universo real 10.212). `tests/test_camara_duplicados_service.py` (nuevo, 6 tests) — verificado a mano y con tests que el caso real documentado colapsa a la misma clave normalizada. No se ejecutó ninguna fusión real contra datos de producción/dev en esta sesión.
+
+## 2026-08-14 — Cierre parcial del gap de duplicados nuevos: normalización extendida en la resolución de Cámara padre, fusión de grupo completo y fix de conteo de Botellas Cromo
+
+- **Contexto:** Usando el dashboard `/admin/servicios/viewer/Camaras` recién construido, el usuario reportó tres problemas reales y pidió investigar el origen de los duplicados. (1) Investigación real (no hipótesis): `resolver_o_crear_padre_desde_base` (`core/services/camara_hierarchy_service.py`) — núcleo compartido por los 5 caminos de alta legado (`infra_service.py`, `infra_sync.py`, `camara_ingest_service.py`, altas admin en `web/app/main.py`) y por `resolver_o_crear_padre_cromo` (Cromo) — sólo usaba `normalizar_para_agrupar` (sin abreviaturas/sinónimos) para decidir si ya existe una Cámara padre. Esto generaba duplicados nuevos reales cada vez que el mismo sitio físico llegaba una vez con "CF"/abreviatura y otra vez sin ella (ej. real: "Bot Tza San Antonio 640" vs "Bot. Tza.San Antonio 640 CF", "Cra Balcarce 302" vs "Cra Balcarce 302 CF") — no son "dos algoritmos distintos" (Cromo vs legado), es un único punto de deduplicación compartido que es demasiado débil. (2) No existía forma de fusionar TODAS las Cámaras de un grupo con un solo click — sólo de a pares. (3) `botellas_count` en las tarjetas de grupo (`camara_busqueda_service.py`/`camara_duplicados_service.py`, agregados horas antes) sólo contaba `len(c.botellas)` (self-FK legado), dando 0 para ~9.770/10.212 Cámaras raíz `INFERIDO_CROMO` que nunca tienen Botellas legado propias.
+- **Decisión 1 (revierte parcialmente la premisa "sólo detección, nunca prevención" de la entrada anterior del mismo día — confirmada explícitamente por el usuario, aceptando el riesgo de falsos positivos):** mover `normalizar_para_detectar_duplicados` desde `camara_duplicados_service.py` a `camara_hierarchy_service.py`, renombrada `normalizar_para_agrupar_extendido`, y usarla dentro de `resolver_o_crear_padre_desde_base` en los 3 puntos donde antes usaba `normalizar_para_agrupar` (cálculo de la clave, chequeo de "¿ya existe un padre?", absorción de "peladas"). Se movió (no se reimportó al revés) para evitar un ciclo de import: `camara_duplicados_service.py` ya depende de `camara_hierarchy_service.py`. También se actualizó `scripts/cromo_backfill_camara_padre.py` (reimplementa su propia agrupación en memoria por performance, sin pasar por la función compartida) — sin este cambio, correr el backfill periódico seguiría generando duplicados nuevos por un camino de código distinto.
+- **Decisión 2:** `fusionar_grupo_camaras()` nueva (`core/services/camara_merge_service.py`) — orquesta N llamadas a `unificar_camaras()` (ya existente, sin cambios) sobre las secundarias de un grupo, con `session.expire_all()` obligatorio entre cada llamada. Hallazgo real de investigación: `unificar_camaras` reasigna la FK de Botellas propias de la secundaria escribiendo la columna cruda (`camara_padre_id`), no el atributo de relación — sin expirar, una llamada posterior del mismo loop leería `principal.botellas` desde una colección ya cacheada, dejando `Camara.estado` desincronizado en silencio para botellas de fusiones intermedias. Endpoint nuevo `POST /api/infra/camaras/merge-grupo`. Frontend: botón "Fusionar todas" por tarjeta de grupo, modal nuevo `ModalFusionarGrupo.vue` — sugiere como principal la Cámara con más `botellas_count + cables_count` (empate → id más bajo), editable por el admin antes de confirmar.
+- **Decisión 3:** `botellas_count` pasa a ser `len(c.botellas) + len(c.cromo_botellas)` en ambos servicios afectados.
+- **Alternativas consideradas (decisión 1):** dejar sólo el detector de solo-lectura y no tocar la creación — descartada explícitamente por el usuario, prefiere cerrar el gap ahora aunque implique el riesgo de falsos positivos ya señalado en el propio código como motivo original para no haberlo hecho.
+- **Impacto:** Tests nuevos en `tests/test_camara_hierarchy_service.py` (normalización extendida + 2 regresiones reales de `resolver_o_crear_padre_desde_base`), `tests/test_camara_duplicados_service.py`/`tests/test_camara_busqueda_service.py` (conteo Cromo), `tests/test_camara_merge_service.py` (orquestación de `fusionar_grupo_camaras`). Ver `docs/infra.md`.
+
+## 2026-08-14 — Dashboard Viewer de Botellas: detección de duplicados por Cámara padre y apropiación legado→Cromo
+
+- **Contexto:** El usuario pidió, en el mismo turno, un dashboard análogo para Botellas (`/admin/servicios/viewer/Botellas`). El problema de "duplicado" es distinto acá: no es entre dos Cámaras raíz, sino entre dos hijas (Botella legado y/o `CromoBotella`) de la MISMA Cámara padre — típicamente aparece después de fusionar dos Cámaras raíz duplicadas (ver entrada anterior), cuando ambas traían botellas que ahora conviven bajo el mismo padre. El usuario fijó explícitamente la política de resolución: *"La fuente de verdad actualmente es Cromo. Lo legado quedará eliminado en caso de duplicados. Las botellas de Cromo y sus respectivas cámaras son las que deberán apropiarse de los datos que no estén duplicados."*
+- **Decisión 1 (alcance de la resolución automática):** sólo se resuelve con botón de acción el caso mixto con exactamente 1 Botella legado + 1 `CromoBotella` dentro del mismo padre — la `CromoBotella` se conserva intacta, la legado se elimina físicamente tras reasignar sus 7 tipos de FK reales (mismo mecanismo que `camara_merge_service.py::unificar_camaras`, adaptado) hacia la Cámara PADRE compartida, nunca hacia la `CromoBotella` (vive en otra tabla/PK, no puede recibir FKs de tipo `Camara`). Casos legado↔legado, cromo↔cromo, o mixtos con 2+ legado quedan fuera de alcance de la acción automática en este turno — se detectan y muestran (badge "Revisión manual") pero sin botón, no hay política de resolución definida para esos casos.
+- **Decisión 2 (herencia de estado):** se reusa `aplicar_estado_a_grupo` sin reimplementar — si la legado eliminada tenía un estado más restrictivo, se propaga a la Cámara padre, que ya sincroniza automáticamente cualquier `CromoBotella` vinculada.
+- **Decisión 3 (performance de la detección):** en vez de iterar las ~10.212 Cámaras raíz consultando `CromoBotella` una por una (N+1 real a esa escala), se hacen 2 queries totales con `joinedload` sobre la relación al padre y se agrupa en Python — ver `core/services/botella_duplicados_service.py`.
+- **Decisión 4 (sin alias automático):** a diferencia de `unificar_camaras`, la apropiación NO crea un alias con el nombre propio de la legado eliminada — no fue pedido para este flujo, sólo se migran los alias que la legado ya tenía.
+- **Impacto:** `core/services/botella_duplicados_service.py` (nuevo), `core/services/botella_merge_service.py` (nuevo), endpoints `GET /api/admin/infra/botellas/viewer`, `GET /api/admin/infra/botellas/viewer/duplicados`, `POST /api/infra/botellas/apropiar`, ruta `/admin/servicios/viewer/Botellas`, `AdminBotellasViewer.vue`/`BotellaViewerCard.vue`/`ModalApropiarBotella.vue` (nuevos), `api/botellas.ts` extendido. `tests/test_botella_duplicados_service.py` (7 tests) y `tests/test_botella_merge_service.py` (11 tests), nuevos. No se ejecutó ninguna apropiación real contra datos de producción/dev en esta sesión.
+
+## 2026-08-14 — Acciones masivas: fusión de TODOS los grupos de Cámaras y apropiación de TODOS los grupos resolubles de Botellas, con un click
+
+- **Contexto:** Con 64 grupos reales de Cámaras candidatas a duplicado (y un número análogo esperable en Botellas), fusionar/apropiar de a un grupo por vez —aun con "Fusionar todas"/"Apropiar" por grupo, ya construidos— es lento a esa escala. El usuario pidió un botón de fusión masiva en el viewer de Cámaras, replicable en el de Botellas.
+- **Decisión 1 (criterio de selección centralizado en el backend):** `sugerir_principal()` (`core/services/camara_duplicados_service.py`) y `sugerir_apropiacion()` (`core/services/botella_duplicados_service.py`) — mismos criterios que ya usaban los modales de fusión/apropiación individual (más botellas+cables empate id más bajo; único par legado+cromo del grupo resoluble), ahora centralizados server-side para que la acción masiva no dependa de que un admin recorra cada grupo.
+- **Decisión 2 (una transacción POR GRUPO, no una sola para todo el lote):** `POST /api/infra/camaras/merge-masivo` y `POST /api/infra/botellas/apropiar-masivo` abren una `SessionLocal` independiente por grupo — si un grupo falla (ej. una Cámara ya fue tocada por otra operación entre la detección y la fusión), los grupos anteriores ya commiteados NO se revierten; el error de ese grupo queda reportado en `detalle` y se sigue con el resto. Es una desviación deliberada del patrón habitual de este repo (una sesión/transacción por request) porque acá cada grupo es independiente por diseño (nunca comparten Cámaras/Botellas entre sí) y una falla aislada no debe descartar el lote completo — mismo espíritu que `botellas_estado_masivo_service.py` reportando `no_encontrados` en vez de abortar.
+- **Decisión 3 (sin cap silencioso):** se procesan TODOS los grupos detectados en el momento de la ejecución, sin límite artificial — a la escala real (64 grupos de Cámaras, cada fusión unas pocas queries) el request completo tarda segundos, no minutos.
+- **Frontend:** botón "Fusión masiva"/"Apropiación masiva" en el toolbar de cada viewer (visible sólo con el filtro "Sólo duplicadas" activo), modal de confirmación genérico y reusable `ModalConfirmarAccionMasiva.vue` (presentacional, el padre maneja la llamada real) con el conteo real de grupos afectados en el mensaje antes de confirmar. Tras ejecutar, se muestra un resumen ("N de M grupos fusionados/apropiados — X con error") y se recargan tanto los grupos como el listado general.
+- **Impacto:** `core/services/camara_duplicados_service.py::sugerir_principal` + tests, `core/services/botella_duplicados_service.py::sugerir_apropiacion` + tests, endpoints `POST /api/infra/camaras/merge-masivo` y `POST /api/infra/botellas/apropiar-masivo` en `web/app/main.py`, componente nuevo `ModalConfirmarAccionMasiva.vue`, `api/camaras.ts`/`api/botellas.ts` extendidos. No se ejecutó ninguna fusión/apropiación masiva real contra datos de producción/dev en esta sesión.
+
+## 2026-08-19 — Tabla de alias/exclusiones para Botellas Cromo (escudo de ingesta)
+
+- **Contexto:** Cromo Red tiene datos de mala calidad conocidos (botellas duplicadas/triplicadas, sin nombre). Hasta ahora `core/services/cromo/ingesta.py` upsertea cualquier objeto que llegue de Cromo matcheando sólo por `n_id`, sin ninguna capa de filtrado de basura conocida. Se pidió un "escudo": una tabla de resoluciones manuales que la ingesta consulte antes de guardar.
+- **Decisión 1 (tabla nueva, sin FK dura):** `app.cromo_botella_alias` (migración `20260819_01`) — `id_cromo_origen` (basura, `UNIQUE`) y `id_cromo_destino` (golden record, obligatorio sólo si `accion='fusionar'`), ambos **sin FK dura** hacia `cromo_botellas.n_id` — mismo criterio ya establecido en todo el dominio Cromo (`CromoCable.extremo_a_n_id`, `CromoFusion.botella_n_id`): el origen puede no tener nunca fila propia (es justamente lo que se busca evitar) y el destino puede ser una clase que este repo nunca ingiere (ODF). `accion` restringida por CHECK, no por un enum de Postgres nuevo (`ck_cromo_botella_alias_accion_valida`/`_destino_coherente`/`_no_autoreferencia`).
+- **Decisión 2 (remapeo en el punto de escritura, no en `fase_reconciliacion`):** `core/services/cromo/alias_service.py` carga TODAS las filas en memoria una sola vez por corrida (mismo patrón que el cache de `_resolver_o_crear_servicio`) y `resolver_referencia()` reescribe cualquier referencia blanda que apunte al origen ANTES de cada upsert (`_procesar_cable_directo`, `_procesar_botella_completa`, `_procesar_fusion_directa`): `'fusionar'` redirige al destino, `'ignorar'` anula la referencia a `NULL`. Para un `n_id` aliaseado (cualquiera de las 2 acciones), su propia `CromoBotella` nunca se crea/actualiza. Consecuencia deliberada: `fase_reconciliacion` queda "alias-aware" gratis, sin lógica duplicada, porque para cuando corre (fase 5) los valores ya son post-alias.
+- **Decisión 3 (sin CRUD/API, fuera de alcance):** las filas se cargan por SQL directo o script puntual — el ticket sólo pidió modelo + migración + función de lookup + wiring de ingesta. `motivo`/`creado_por` (columnas agregadas más allá de las 4 mínimas pedidas) son la única traza de auditoría mientras eso sea así.
+- **Riesgo documentado, no corregido en código:** si `id_cromo_destino` es una clase que este repo nunca ingiere como `CromoBotella`, esa fila queda como `REF_COLGADA` permanente en reconciliación — comportamiento esperado, no un bug.
+- **Gap conocido, fuera de alcance:** una `CromoBotella` que ya existía de una corrida ANTERIOR a que se cargara el alias no se borra ni se marca — "saltar el upsert" sólo detiene escrituras futuras. Análogo a `scripts/cromo_backfill_camara_padre.py`: un futuro script de limpieza retroactiva si hace falta.
+- **Impacto:** `db/models/cromo.py::CromoBotellaAlias`, migración `20260819_01_cromo_botella_alias.py` (aplicada y verificada real contra `lasfocasdev-postgres`: upgrade, downgrade y re-upgrade limpios, más las 3 CHECK y el UNIQUE ejercitados con INSERTs reales), `core/services/cromo/alias_service.py` (nuevo), `core/services/cromo/ingesta.py` extendido, `tests/test_cromo_alias_service.py` (nuevo) + `tests/test_cromo_ingesta.py` ampliado (19 tests nuevos, 45 pasando en total). Sin ingesta real corrida con un alias cargado en esta sesión — sólo verificado con datos sintéticos/mocks.
+
+## 2026-08-19 (cont.) — Visor en vivo de un elemento Cromo (endpoint + modal), no `api/app/`
+
+- **Contexto:** para auditar/resolver inconsistencias puntuales, un admin necesita ver qué dice Cromo AHORA MISMO para un `n_id` puntual, sin pasar por la ingesta completa ni depender de lo que ya quedó guardado localmente. El pedido original proponía el endpoint en `api/app/routes/cromo.py`.
+- **Desvío deliberado de la propuesta original — `web/app/main.py`, no `api/app/`:** `api/app/` es un servicio distinto (`lasfocasdev-api`), gateado por una API key compartida (`require_api_key`) pensada para consumidores de máquina a máquina — no apta para que la SPA la use desde el navegador. El 100% de los endpoints Cromo existentes (ingesta admin y consultas de sólo lectura) ya vive en `web/app/main.py`, con auth por sesión (`_require_auth`). Confirmado además que el contenedor `web` ya tiene las credenciales de Cromo montadas (`CROMO_*`/secret `cromo_password_v1`, `deploy/docker-compose.dev.yml`) — no hace falta proxear a través de `api/app/` ni del worker dedicado para esta consulta puntual de un único objeto.
+- **Decisión 1 (reuso, no reinvención, del catálogo de atributos):** `parser.py` ya conocía el significado de cada `at[].id` como números mágicos dispersos en `parse_botella`/`parse_cable`/`parse_fusion`. Se centralizó en `parser.ATRIBUTOS_CONOCIDOS` (dict id→etiqueta), reusado tanto acá como donde ya se usaba `atributo()`. Un id no listado no se oculta — cae a un fallback `Atributo {id}`, porque el propósito es auditar, no filtrar.
+- **Decisión 2 (`CromoClientError.status_code`):** pequeño agregado retrocompatible al cliente Cromo para distinguir "Cromo dijo 404" (el id no existe → 404 al frontend) de cualquier otra falla (5xx agotado, red → 502). Antes, ambos casos eran indistinguibles desde el mensaje de texto.
+- **Decisión 3 (nunca oculta el dato crudo):** el modal (`ModalVerificadorCromo.vue`) destaca Nombre/Notas y muestra el resto en una tabla de propiedades legible, pero incluye un `<details>` colapsado "Ver payload crudo" con el JSON completo — escape hatch para auditoría real sin que sea la cara principal del modal (pedido explícito: nunca JSON crudo por defecto).
+- **Riesgo documentado, no de código:** `obtener_elemento_vivo` no persiste nada — un `n_id` inexistente en Cromo es simplemente un 404, nunca escribe ni corrige la tabla local ya ingerida.
+- **Impacto:** `core/services/cromo/client.py` (`CromoClientError.status_code`), `core/services/cromo/parser.py` (`ATRIBUTOS_CONOCIDOS`), `core/services/cromo/live_lookup_service.py` (nuevo), endpoint `GET /api/infra/cromo/elementos/{n_id}/vivo` en `web/app/main.py`, `web/frontend/src/api/cromo.ts` (`obtenerElementoVivoCromo`), `ModalVerificadorCromo.vue` (nuevo) integrado en `VerificadorCromoView.vue` (botón "Ver info en Cromo", sólo para `tipo === 'botella'` — es el único resultado con `n_id` de Cromo disponible en esa vista). Verificado real: migración N/A (sin cambio de esquema), `web` reconstruido y reiniciado contra `lasfocasdev-web`, endpoint responde `401` (no `404`) sin sesión — confirma wiring correcto. `pytest -q` completo: 705 passed, 0 failed. `npx vue-tsc --noEmit`: 0 errores en los archivos tocados (los 4 preexistentes son de `InfraTab.vue`, ajeno a este cambio). Sin verificación de browser real (sin herramienta de automatización disponible en esta sesión) ni login real contra un usuario de dev — el happy path autenticado se cubrió con el fake `CromoClient` en `tests/test_web_cromo_verificador.py`, no con una sesión real.
+
+## 2026-08-19 (cont.) — Consolidación manual de duplicados Cromo + export de inconsistencias
+
+- **Contexto:** `AdminBotellasViewer.vue`/`botella_duplicados_service.py` (2026-08-14) sólo resuelve automáticamente el caso 1 legado + 1 Cromo dentro de la misma Cámara padre — todo lo demás (2+ Cromo, 2+ legado, mixtos) quedaba en "Revisión manual" sin ninguna acción, gap dejado explícitamente abierto ese día. Además, botellas Cromo sin nombre (la motivación original de `app.cromo_botella_alias`, ver entrada anterior) nunca se agrupan por nombre normalizado — ni siquiera aparecen como candidatas hoy.
+- **Confirmado explícitamente por el usuario (2 preguntas de alcance) antes de diseñar:** (1) Cromo siempre gana — si un grupo en revisión manual incluye una Botella legado, sus datos se heredan a la Cromo ganadora, reusando `apropiar_legado_a_cromo` tal cual, sin reinventar la migración de FKs. (2) "Consolidar" debe operar sobre un **grupo libre** de n_ids Cromo tipeados a mano, no restringido a los miembros de un grupo que el detector automático ya armó por nombre — cubre exactamente el caso de botellas sin nombre.
+- **Decisión 1 (orquestador nuevo, sesión síncrona):** `core/services/cromo/consolidacion_service.py::consolidar_grupo_botellas` — deliberadamente NO reusa `alias_service.py` (async, sólo para el loop de ingesta); usa `sqlalchemy.orm.Session`, igual que `apropiar_legado_a_cromo`/`detectar_grupos_duplicados_botellas`. Reusa `apropiar_legado_a_cromo` tal cual para cada `id_legado` (0 o más — el diseño original sólo contemplaba 1), sin envolver su validación de mismo padre: si el admin combina un legado y un destino de otra Cámara padre, la función debe rechazarlo (mismo motivo por el que existe esa validación).
+- **Decisión 2 (nunca silencioso — 2 guardas encontradas al revisar el diseño con un agente de planificación):** repuntear un origen ya aliaseado a OTRO destino se aplica igual (es una corrección legítima), pero se reporta aparte (`alias_repuntados`), nunca se dobla en el contador genérico. Cualquier alias preexistente cuyo `id_cromo_destino` fuera uno de los orígenes que ahora desaparecen se recablea directo al destino final — si no, quedaría una cadena de 2 saltos que `resolver_referencia` (ingesta) nunca persigue por diseño. También se rechaza elegir como destino un n_id que otra fila ya marcó como basura (`id_cromo_origen` de otro alias).
+- **Decisión 3 (señal "operativa" batcheada, no N+1):** `core/services/cromo/verificador.py::tiene_cables_asociados_batch_sync` — una sola query (`extremo_a/b_n_id = ANY(:ids)`) para TODOS los n_ids de una página de grupos, nunca una por miembro. Enriquece `GET /api/admin/infra/botellas/viewer/duplicados` (miembros Cromo) y alimenta `POST /api/admin/infra/botellas/operatividad` para IDs tipeados a mano fuera de cualquier grupo detectado.
+- **Decisión 4 (export reusa el patrón ya existente):** `GET /api/admin/infra/botellas/inconsistencias/exportar` sigue el mismo `pandas.ExcelWriter(engine="openpyxl")` + `Response` con `Content-Disposition` ya usado en este archivo para el export de Cámaras — no se inventó un patrón nuevo. Para un miembro legado (sin n_id Cromo por definición), la columna "ID Cromo" queda vacía a propósito y su `Camara.id` se referencia dentro de "Motivo" — se prefirió no inventar un valor falso en una columna que pide específicamente un ID Cromo.
+- **Impacto:** `core/services/cromo/verificador.py` (+`tiene_cables_asociados_batch_sync`), `core/services/cromo/consolidacion_service.py` (nuevo), 3 endpoints nuevos + enriquecido `.../viewer/duplicados` en `web/app/main.py`, `web/frontend/src/api/botellas.ts` extendido, `ModalConsolidarBotellas.vue` (nuevo) integrado en `AdminBotellasViewer.vue` (botón "Consolidar" por grupo no `resoluble` + "Consolidar manualmente" + "Exportar inconsistencias" en el toolbar). `pytest -q` completo: 723 passed, 0 failed (18 tests nuevos). Hallazgo real durante la verificación: `tests/test_slack_cable_info.py`/`test_slack_ingreso_listener.py` hacen `os.environ.setdefault("TESTING", "true")` a nivel de módulo sin revertirlo — si corren antes en el mismo proceso de pytest, cualquier test posterior que dependa de CSRF real queda con el chequeo salteado en silencio; el test nuevo de CSRF de este cambio lo hizo explícito con `monkeypatch.setenv("TESTING", "false")` (mismo workaround que ya usaban `test_web_sla_flow.py`/`test_web_infra_camera_state.py` para este caso exacto — no se tocó el origen del leak, fuera de alcance de este cambio). `npx vue-tsc --noEmit` + `npm run build`: 0 errores nuevos. Verificado real contra `lasfocasdev-web`: rebuild + restart, los 3 endpoints nuevos y el enriquecido responden `401` (no `404`) sin sesión. Sin consolidación real contra datos de dev en esta sesión (no había credenciales de un usuario admin real a mano) — el comportamiento completo está cubierto por 12 tests de servicio con mocks.
+
+## 2026-08-19 (cont.) — "Validar datos DB Cromo": nueva herramienta de Tool Kit, no una evolución de "Verificador Cromo"
+
+- **Contexto:** el pedido original describía crear una vista "Verificador Cromo" en Tool Kit — pero esa página YA existe (`/infra/cromo/verificador`, ya en Tool Kit desde antes), y el botón "Ver info en Cromo" agregado en la entrada anterior de este mismo día ya muestra Nombre/Notas de un elemento en vivo. Se le presentó el solape al usuario antes de diseñar (mismo criterio que la entrada de Consolidación, más arriba) — confirmó explícitamente que se trata de una **herramienta nueva y separada**, sin tocar la página existente, con nombre propio: "Validar datos DB Cromo".
+- **Decisión 1 (reuso total del parseo de la ingesta, no reinvención):** `core/services/cromo/validador_datos_service.py::validar_elemento_cromo` usa `parser.parse_objeto` — el mismo dispatcher genérico por clase que usa `parse_pagina` en la ingesta real — y, según el tipo concreto devuelto, `parse_arbol_botella` (botella → árbol completo) o `extraer_tubos_y_pelos` (cable con `inner[]` propio). Es "el mismo tratamiento que el módulo de ingesta" literal, no una reimplementación paralela.
+- **Decisión 2 (cero DB, confirmado explícitamente):** a diferencia de `live_lookup_service.py` (que sí lee el catálogo `app.cromo_clases` para la etiqueta de clase), este servicio no abre ninguna sesión de base de datos — la clase del objeto se deriva directo del nombre del tipo Python que devuelve `parse_objeto` (`Botella`/`Cable`/`Tubo`/`Pelo`/`Fusion`), sin ningún lookup. Los servicios de cada pelo se muestran crudos (`servicio_raw`/`servicio_numero`), nunca matcheados contra `app.servicios` — confirmado explícitamente, es diagnóstico 100% en vivo contra Cromo.
+- **Decisión 3 (nunca rompe ante una clase rara):** una clase excluida (120, parcela catastral) o no soportada no interrumpe la consulta — `ClaseExcluidaError`/`ClaseNoSoportadaError` se capturan y quedan como una entrada en `errores_parseo` con `tipo_objeto="Desconocido"`, mismo espíritu tolerante que la propia ingesta (un objeto raro no aborta el resto).
+- **Impacto:** `core/services/cromo/validador_datos_service.py` (nuevo), endpoint `GET /api/infra/cromo/validar/{n_id}` en `web/app/main.py` (sin sesión de DB en absoluto), `web/frontend/src/api/cromo.ts` (`validarElementoCromo` + interfaces), `ValidarDatosCromoView.vue` (nuevo) en `/toolkit/validar-datos-cromo`, nueva entrada en el dropdown Tool Kit de `AppShell.vue` (+`moduleByView`/`resolveCurrentView`). `pytest -q` completo: 736 passed, 0 failed (13 tests nuevos: 10 de servicio, 3 de ruta). `npx vue-tsc --noEmit` + `npm run build`: 0 errores nuevos. Verificado real contra `lasfocasdev-web`: rebuild + restart, el endpoint nuevo responde `401` (no `404`) sin sesión, logs de arranque limpios. Sin verificación de browser real ni login real contra un usuario de dev (misma limitación que las 2 entradas anteriores de este día) — el árbol completo (botella/cable/fusión/tubo/pelo, clases excluidas/no soportadas) está cubierto por los 10 tests de servicio.
+
+## 2026-08-20 — Eliminación permanente de Cámaras/Botellas basura + exclusión automática en Cromo
+
+- **Contexto:** El "Verificador Cromo"/"Validar datos DB Cromo" (2026-08-19) dejaron a la vista basura heredada de backfills viejos: Botellas Cromo con nombre "0", sin cables asociados (ej. ID 9016313, bajo una Cámara ID 31921 con "Registros: 1"). Se pidió poder eliminarlas desde el frontend, registrando automáticamente el `n_id` de Cromo en la tabla de exclusiones (`app.cromo_botella_alias`, `accion='ignorar'`, ver entrada 2026-08-19 más arriba) para que la ingesta nunca las resucite.
+- **Confirmado explícitamente por el usuario (2 preguntas de alcance) antes de diseñar:** (1) **Bloquear, nunca forzar** — si la Botella/Cámara (o cualquier hijo, para una Cámara) tiene Cables/Empalmes/Ingresos reales asociados, la eliminación se rechaza sin borrar nada; se descartó explícitamente cualquier variante que permitiera forzar el borrado igual. (2) **Todo o nada** para `eliminar_camara` — si un solo hijo bloquea, se aborta la operación completa, en vez de borrar parcialmente los hijos que sí estaban limpios.
+- **Decisión 1 (un único criterio de "vacío", compartido entre el borrado individual y el cascada):** `_bloqueo_camara`/`_bloqueo_cromo_botella` (`core/services/camara_botella_delete_service.py`) se usan tanto en `eliminar_botella` como en `eliminar_camara` — evita mantener dos implementaciones del mismo chequeo que puedan divergir con el tiempo. Corrección real encontrada al validar el diseño con un agente de planificación antes de implementar: el borrador inicial confundía `Cable` (`db/models/infra.py`, legado) con `CromoCable` (`db/models/cromo.py`, Cromo) para el chequeo de una `CromoBotella` — son tablas distintas, `Cable` no tiene `extremo_a/b_n_id`.
+- **Decisión 2 (reuso de `eliminar_camara` para el paso "¿el padre quedó vacío?"):** `eliminar_botella` no reimplementa esa lógica — llama a `eliminar_camara` sobre el padre tras borrar el hijo, y atrapa en silencio un `EliminacionBloqueadaError` (el padre sobrevive porque tiene otros datos reales, no es un error). Hereda gratis el mismo fail-safe contra los 6 casos reales conocidos que violan el invariante de 2 niveles Cámara→Botella (un padre que resulta ser él mismo una Botella se rechaza por el propio guard de `eliminar_camara`, nunca se toca).
+- **Decisión 3 (`session.flush()` obligatorio entre el borrado del hijo y el chequeo del padre):** con `autoflush=False` (`db/session.py`), sin un flush explícito tras `session.delete()` + registrar el alias, la comprobación siguiente de "¿el padre quedó vacío?" todavía vería la fila recién borrada — trampa real encontrada por el mismo agente de planificación antes de implementar, no en producción.
+- **Decisión 4 (sin tabla de auditoría nueva):** a diferencia de `unificar_camaras`/`apropiar_legado_a_cromo` (que siempre dejan un evento en `CamaraEstadoAuditoria` de un sobreviviente), acá no hay sobreviviente — la auditoría de la fila borrada cascadea junto con ella (`ondelete=CASCADE`). No se pidió una tabla de auditoría persistente nueva y agregar una sería una migración fuera de alcance de este ticket; el único rastro es el `logger.info(...)` del endpoint.
+- **Impacto:** `core/services/camara_botella_delete_service.py` (nuevo), endpoints `POST /api/infra/botellas/eliminar` y `POST /api/infra/camaras/eliminar` en `web/app/main.py`, `web/frontend/src/api/botellas.ts`/`api/camaras.ts` extendidos, botón "Eliminar Botella"/"Eliminar Cámara" admin-gateado (`useSession`) con confirmación inline en `CamaraDetailView.vue` (redirige a `/infra` al confirmar — la vista deja de tener sentido) y `VerificadorCromoView.vue` (limpia el resultado local + mensaje transitorio). `tests/test_camara_botella_delete_service.py` (nuevo, 22 tests) + 3 tests de ruta en `tests/test_web_botellas_admin.py`. `pytest -q` completo: 761 passed, 0 failed, 5 skipped. `npx vue-tsc --noEmit` + `npm run build`: 0 errores nuevos (los 4 preexistentes siguen siendo de `InfraTab.vue`, ajeno a este cambio — confirmado comparando contra el baseline sin este cambio vía `git stash`). Verificado real contra `lasfocasdev-web`: rebuild + restart, ambos endpoints nuevos responden `401` (no `404`) sin sesión. Sin borrado real contra datos de dev en esta sesión (no había credenciales de un usuario admin real a mano) — el comportamiento completo (bloqueo por cada tipo de dato real, todo-o-nada, limpieza en cascada del padre) está cubierto por los 22 tests de servicio con mocks.
+
+## 2026-08-21 — Verificador Cromo: detección/repoblación de cables e edición de nombre (caso "ID dual")
+
+- **Contexto:** se detectaron casos de "ID dual" en Cromo Red — un objeto queda vacío (`tp[]=[]`) en su historial de versiones y la topología real pasa a vivir en su `next_id` (`hist[]` de `GET /db/objects/{id}?show=TOPOLOGIES&show=REL_ATTRIBUTE`). Se pidió que el Verificador Cromo detecte los cables reales que la ingesta omitió por esto, y capacidad para corregir nombres duplicados y forzar el repoblamiento local.
+- **Validación obligatoria contra Cromo real antes de codear el parseo** (mismo criterio que la skill `cromo-diagnostico-real`): se corrió una sonda puntual (`scripts/cromo_sonda_id_dual.py`, throwaway, ya borrado) contra el caso real que aportó el usuario — botella "B2-FO-CAR", `n_id=9057909`/`next_id=9057952`, 6 cables esperados. Confirmó 3 cosas que cambiaron el diseño respecto de la lectura inicial del pedido:
+  1. `hist[]` trae la cadena completa en una sola respuesta (no hace falta "adivinar" cuál id consultar primero).
+  2. El ítem embebido en `botella.tp[]` es una vista PARCIAL del cable (sin `vmax`/id de versión, un solo extremo, `at[]` recortado) — no alcanza para upsertear un `CromoCable` completo; hace falta un fetch directo por cable candidato.
+  3. **Causa raíz real**: el extremo de un cable conectado a una botella con historial reporta el id de VERSIÓN vigente (`9057952`), no el `n_id` ESTABLE (`9057909`) que usa la fila local — nunca matchean. Confirmado además contra Postgres real: los 6 cables no existían en absoluto en `app.cromo_cables` (0 filas).
+- **Decisión 1 (enfoque integrado, no aislado — decidido con el usuario):** en vez de duplicar la lógica de upsert de `ingesta.py` en un servicio nuevo separado, se promovieron a públicas `upsert_versionado`/`upsert_simple`/`registrar_evento`/`sincronizar_contadores`/`CABLE_CAMPOS`/`TUBO_CAMPOS`/`PELO_CAMPOS` (renombres mecánicos, sin tocar su lógica) y se agregó `upsert_forzado` (nueva, variante que ignora el gate de `vmax` — necesaria porque el hallazgo 3 de arriba significa que un cable ya ingerido con extremo viejo puede tener el mismo `vmax` que el vigente, así que `upsert_versionado` normal lo clasificaría `SIN_CAMBIOS` y nunca corregiría el extremo). La protección de nombre editado a mano (decisión 2) también decidió integrarse: se corrige en TODAS las vistas que leen `cromo_botellas.nombre`, no sólo el Verificador.
+- **Decisión 2 (nombre protegido en la fuente, no en una tabla de overrides lateral):** columna nueva `cromo_botellas.nombre_editado_manual` (migración `20260821_01`) — `"nombre"` se sacó de `_BOTELLA_CAMPOS` y `_procesar_botella_completa` copia `nombre` sólo si el flag es `False` o la acción es `CREADA`. Mismo criterio idiomático que la exclusión ya existente de `camara_id`/`estado`, pero condicional en vez de estructural.
+- **Decisión 3 (alcance de "Repoblar Cables": completo, cable+tubos+pelos):** dado que hay que hacer un fetch directo por cable candidato de todos modos (hallazgo 2), se aprovecha esa misma respuesta para poblar tubos/pelos también (`extraer_tubos_y_pelos`, ya existente) — no deja el trabajo a mitad de camino hasta la próxima ingesta regular. Deliberadamente NUNCA toca `CromoBotella`/`CromoFusion` desde este flujo — sólo `CromoCable`/`CromoTubo`/`CromoPelo` — para no crear una fila de botella espuria bajo un id intermedio de la cadena `hist`.
+- **Decisión 4 (anclaje de extremo, confirmado necesario con datos reales):** `_anclar_extremo_a_botella` normaliza cualquier extremo de cable que caiga en la cadena `hist` resuelta de la botella (cualquier id de esa cadena, no sólo el consultado) al `n_id` local — aplicado ANTES de persistir, independientemente de si el upsert termina siendo `upsert_versionado` (cable nuevo) o `upsert_forzado` (cable existente con extremo desactualizado).
+- **Decisión 5 (corrida sintética para auditoría):** `repoblar_cables` crea una corrida vía `ingesta.iniciar_corrida(..., params_extra={"tipo": "MANUAL_REPOBLAR_CABLES", ...})` (kwarg nuevo, aditivo) sólo si hay cables pendientes — visible en el mismo histórico admin que una corrida regular, sin ensuciarlo con clicks repetidos que no cambian nada.
+- **Impacto:** `core/services/cromo/client.py` (`get_objeto_con_topologia`), `core/services/cromo/ingesta.py` (renombres públicos + `upsert_forzado` + protección de nombre + `params_extra`), `core/services/cromo/repoblacion_service.py` (nuevo), `db/models/cromo.py` (`nombre_editado_manual`), migración `20260821_01_cromo_botella_nombre_editado_manual.py` (aplicada y verificada real contra `lasfocasdev-postgres`: upgrade, downgrade y re-upgrade limpios), 3 endpoints nuevos en `web/app/main.py`, `api/cromo.ts`/`api/botellas.ts` extendidos, `VerificadorCromoView.vue` (tarjeta "Cables detectados en Cromo", botón "Repoblar Cables", nombre editable — todo admin-gateado salvo la detección, sólo lectura). `tests/fixtures/cromo/` con 4 fixtures reales (recortadas) del caso B2-FO-CAR. `pytest -q` completo: 796 passed, 0 failed, 5 skipped (35 tests nuevos: 1 de cliente, 3 de protección de nombre en `test_cromo_ingesta.py`, 17 de `repoblacion_service`, 14 de wiring web). `npx vue-tsc --noEmit` + `npm run build`: 0 errores nuevos (los 4 preexistentes siguen siendo de `InfraTab.vue`, ajeno a este cambio). Verificado real contra `lasfocasdev-web`: `focas-base:latest` reconstruida (no existía localmente), `web` reconstruido y reiniciado, los 3 endpoints nuevos responden `401` (no `404`) sin sesión — confirma wiring correcto. Sin smoke test autenticado real (no había credenciales de un usuario admin de dev a mano, y no correspondía generarlas sin pedirlo) — el usuario decidió probar el flujo completo (Repoblar Cables + editar nombre) en el navegador por su cuenta.
+
+## 2026-08-21 (cont.) — Redis + worker dedicado + WebSocket para el visor de Botellas duplicadas
+
+- **Contexto:** se pidió desacoplar `detectar_grupos_duplicados_botellas` (2 queries `joinedload` sin paginar sobre `app.camaras`+`app.cromo_botellas`, agrupadas en Python — costo escala con el tamaño total de esas tablas, no con la cantidad de duplicados) del hilo HTTP del visor `/admin/servicios/viewer/Botellas`, con background tasks + caché Redis + notificación WebSocket, usando Docker.
+- **La premisa original no coincidía con el código real** (verificado leyendo `web/app/main.py` antes de diseñar, no asumido): la función se llama de forma síncrona en sólo 3 lugares (GET del viewer, GET de export de inconsistencias, y dentro de `POST apropiar-masivo` como insumo de su propia lógica). "Recalcular en el hilo de consolidar" no era exacto — **ningún** endpoint mutador recalculaba server-side; los 7 que cambian datos que afectan la agrupación (`vigente`, `camara_id`/`camara_padre_id`, `nombre`) dependían de que el frontend disparara un GET aparte después, sin ninguna garantía de que lo hiciera.
+- **Corrección del alcance aprobado — 7 endpoints, no 6:** la decisión previa del usuario ("aplicar a las 6 mutaciones del visor") quedó corregida sin volver a preguntar, mismo criterio ya aprobado ("cambia datos que afectan la agrupación"): la exploración inicial no había listado la apropiación individual (`botellas_apropiar_web`, `POST /api/infra/botellas/apropiar`). Lista final: `apropiar`, `apropiar-masivo` (condicionado a `grupos_apropiados > 0`), `consolidar`, `eliminar`, `repoblar-cables` (condicionado a `resultado.corrida_id is not None` — existe un camino "nada pendiente" que no debe encolar nada), `separar-padre`, `actualizar-nombre`.
+- **Sólo `AdminBotellasViewer.vue` necesitó el refetch WS** — es la única vista que muestra la agrupación de duplicados; de los 7 mutadores, sólo 3 (apropiar individual, apropiar masiva, consolidar) tenían ahí un handler que bloqueaba en `Promise.all([reloadDuplicados(), reloadFromZero()])`, ahora reemplazado por `reloadFromZero()` + refetch silencioso disparado por el evento WS. Los otros 4 mutadores viven en `VerificadorCromoView.vue`/`CamaraDetailView.vue`, que no muestran esa agrupación — no había nada que conectar ahí (regla YAGNI, confirmada sin volver a preguntar).
+- **2 bugs de Dockerfile reales, encontrados sólo por verificación en vivo** (ningún test unitario los detectó): `deploy/docker/botellas_recalculo_worker.Dockerfile` no copiaba `modules/slack_baneo_notifier/` — dependencia transitiva real de `detectar_grupos_duplicados_botellas` vía los helpers de regex compartidos de `camara_hierarchy_service.py` (confirmado que ese submódulo no arrastra `slack_sdk`, su `__init__.py` está vacío); y `web/Dockerfile` no copiaba `web/admin_ws.py` (`ModuleNotFoundError` real en cualquier rebuild). Ambos corregidos y verificados reales contra `lasfocasdev-web`/`lasfocasdev-botellas-recalculo-worker` (`healthy`).
+- **`socket_timeout` de Redis, `2`→`10`:** encontrado durante la misma verificación en vivo — `2` es menor que `BLPOP_TIMEOUT_SECONDS=5` del worker, así que cada ciclo `BLPOP` sin jobs (el caso normal, idle) tiraba un `TimeoutError` espurio del lado cliente tratado como "Redis caído" (log spam real, confirmado contra el código fuente de redis-py 5.0.8: el timeout de lectura del socket y el timeout del comando bloqueante no están coordinados). Fix en `core/cache/redis_client.py`: `10` = 2× `BLPOP_TIMEOUT_SECONDS` + margen.
+- ~~**Issue conocido, diferido deliberadamente (no una 3ra ronda de fix):**~~ **RESUELTO el 2026-08-22 en la revisión final de rama, ver más abajo.** El texto original decía: el subscriber de `web/admin_ws.py` cicla timeout+reconexión cada ~15s con el canal genuinamente idle — mismo mecanismo de `socket_timeout` que el punto anterior, pero sin un "timeout máximo conocido" equivalente al parámetro explícito de `BLPOP` para el `listen()` bloqueante de pub/sub; ruling explícito de entonces: autocurativo, impacto acotado a ruido de logs + un eventual toast de UI en vivo perdido. **Ese ruling subestimó el impacto**: la revisión final midió que el canal quedaba con CERO suscriptores ~1/3 del tiempo, y como el Task 8 ya había sacado el `Promise.all([reloadDuplicados(), reloadFromZero()])` bloqueante del frontend, ese WebSocket pasó a ser el ÚNICO camino de refresco automático — así que ~1 de cada 3 avisos reales de "recálculo terminado" se perdía para siempre, no "un eventual toast".
+- **Redis + worker en `deploy/compose.yml` (prod) como código, sin recrear contenedores:** decisión explícita del usuario, misma política ya usada para la migración de subred `/16`→`/24` (`docs/mantenimiento_redes_produccion.md`) — listos para la próxima ventana de mantenimiento real, ningún `docker compose up`/`restart` se ejecutó contra prod como parte de este trabajo. Nota real de la exploración: `cromo_worker` (el precedente de "worker dedicado" en este repo) no existe en `deploy/compose.yml` — sólo en dev — así que el bloque nuevo de prod se mirroreó desde el patrón de `postgres`/`api` (que sí están en prod), no literalmente desde `cromo_worker`.
+- **Impacto:** `core/cache/redis_client.py` (nuevo), `core/services/botella_recompute_queue.py` (nuevo), cache-read-through en 3 endpoints + invalidación/encolado en 7 endpoints de `web/app/main.py`, `modules/botellas_recalculo_worker/` (nuevo: `worker.py`/`config.py`/`requirements.txt`), `deploy/docker/botellas_recalculo_worker.Dockerfile` (nuevo), `web/admin_ws.py` (nuevo), servicios `redis`+`botellas_recalculo_worker` en `deploy/docker-compose.dev.yml` y `deploy/compose.yml`, secrets `Dev_redis_password_v1.txt`/`redis_password_v1.txt`, `redis==5.0.8` en `common-requirements.txt`, `web/frontend/src/composables/useAdminNotifications.ts` (nuevo), `AdminBotellasViewer.vue` (3 handlers migrados a refetch silencioso). `pytest -q` completo (venv, `LLM_PROVIDER=heuristic`): 842 passed, 5 skipped, 0 failed. `npx vue-tsc --noEmit`: los mismos 4 errores preexistentes de `InfraTab.vue`, ajenos a este cambio, 0 errores nuevos. Verificado real contra dev: `redis` y `botellas_recalculo_worker` levantados y `healthy` en `lasfocasdev-*`; log real confirmó 0 ocurrencias del `TimeoutError` espurio tras el fix de `socket_timeout` (~9-10min de observación post-fix).
+
+### Revisión final de rama (2026-08-22) — 3 Important + 4 menores, corregidos en una sola pasada
+
+- **Conexión Redis dedicada para el subscriber pub/sub (`get_redis_pubsub_client()`):** el issue "diferido" de arriba resultó ser una pérdida real de notificaciones, no ruido. Cadena confirmada leyendo el fuente instalado de redis-py 5.0.8 (`.venv/`): `PubSub.listen()` → `parse_response(block=True)` → `read_timeout=None` → `Connection.read_response()` hace `read_timeout = timeout if timeout is not None else self.socket_timeout` → cae al `socket_timeout=10` del cliente compartido → `asyncio.TimeoutError` → `raise TimeoutError` → `Retry.call_with_retry` lo trata como error soportado → `PubSub._disconnect_raise_connect` hace `await conn.disconnect()` y re-lanza. Medición previa al fix con `PUBSUB NUMSUB admin-notifications` cada 2s: `1,1,1,0,0,0,1,1,1,1,0,0,0,...` — 9 ceros en 24 muestras (37,5% del tiempo sin suscriptores). Post-fix: 46/46 muestras en 96s dieron `1`, cero caídas; el log pasó de un par `error_reintentando`+`suscripto` cada 15s (630 acumulados) a **una sola** línea `suscripto` desde el arranque. **Decisión de diseño:** el cliente compartido `get_redis()` NO se toca — su `socket_timeout=10` es correcto para el `BLPOP` del worker y para los GET/SET/DEL/RPUSH, que son operaciones acotadas; el listener de larga vida es el caso distinto y se lleva su propia conexión con `socket_timeout=None` + keepalive TCP (60s idle / 3 sondas × 10s, único mecanismo contra un peer que muera sin FIN/RST). **La detección de fallos reales no se debilita** — verificado deteniendo el contenedor `redis` en vivo: el parser levanta `ConnectionError("Connection closed by server.")` desde `_readline`/EOF en el mismo segundo, el `except` de siempre reintenta cada 5s, y al volver Redis se resuscribe solo.
+- **Escotilla manual `?refrescar=true`, e invalidación desde otros escritores explícitamente diferida:** `detectar_grupos_duplicados_botellas` lee campos que también escriben la ingesta Cromo (`modules/cromo_worker/`, intervalo propio de 24h), los cambios de estado/baneo (`aplicar_estado_a_grupo`), merge/eliminar de Cámaras y `scripts/cromo_backfill_camara_padre.py` — ninguno invalida la caché, así que el visor podía servir hasta 24h de datos viejos (el TTL) sin ninguna forma de forzar una vista fresca. **Decisión consciente, no un olvido:** se agrega la escotilla manual (`GET /api/admin/infra/botellas/viewer/duplicados?refrescar=true`, cableada al botón "Actualizar" del visor) y **se difiere a propósito** cablear la invalidación automática en esos cuatro subsistemas — son superficies de revisión separadas y meterles llamadas al final de este plan sería expandir el alcance sin disciplina. El riesgo queda acotado porque `apropiar_legado_a_cromo` revalida todas sus precondiciones contra filas vivas antes de actuar: dato viejo no puede provocar una fusión incorrecta, a lo sumo un error por grupo, atrapado.
+- **Pre-requisito de prod documentado donde se busca:** el secret `redis_password_v1` que `deploy/compose.yml` ahora exige en `web` sólo estaba anotado dentro del plan interno. Se documentó en `docs/mantenimiento_redes_produccion.md` (sección nueva, misma casa que la migración de subred `/16`→`/24`, con generación, verificación post-despliegue y rollback), con punteros desde `docs/infra.md` y desde esta entrada. Falta el archivo **bloquea** la creación del contenedor `web` — Compose no degrada ante un secret file-based inexistente.
+- **Menores de la misma pasada:** (1) el healthcheck del worker en ambos compose ahora mira el cuerpo (`curl -fsS .../health | grep -qv loop_muerto`) — con el `CMD curl` pelado un loop muerto seguía figurando `healthy`; las 4 ramas (`ok`, `loop_muerto`, cuerpo vacío, curl fallido) se probaron dentro del contenedor real. (2) `get_redis()` se movió DENTRO del `try` del `while` de `_loop_principal`: construir el cliente puede fallar y ahí el loop moría antes de poder reintentar. (3) `ADMIN_NOTIFICATIONS_CHANNEL` era un literal independiente en `worker.py` y en `admin_ws.py`; pasó a `core/services/botella_recompute_queue.py` junto a `CACHE_KEY`/`QUEUE_KEY`/`JOB_KIND_*`, importado por ambos extremos. (4) el subscriber libera la conexión pub/sub (`aclose()`) antes de cada reintento — `PubSub.__del__` no la devuelve al pool, así que con el ciclo de 15s previo se iban acumulando.
+- **Hallazgo extra de la verificación en vivo (no estaba en la lista de la revisión):** el worker se marcaba `unhealthy` **mientras hacía bien su trabajo** — `detectar_grupos_duplicados_botellas` es síncrona y pesada (~100s medidos contra el dev real) y corría directo en el event loop, dejando `GET /health` sin responder y venciendo 3 healthchecks seguidos. Pasó a `asyncio.to_thread`; el loop principal sigue serializando jobs (hace `await`), no se paraleliza nada. Verificado real: un recálculo completo (~70s) con `status=healthy streak=0` en las 45 muestras, contra 3 `Health check exceeded timeout (5s)` seguidos antes del cambio.
+- **Impacto de la revisión final:** `core/cache/redis_client.py` (factory nueva `get_redis_pubsub_client()`), `core/services/botella_recompute_queue.py` (constante de canal), `web/admin_ws.py`, `modules/botellas_recalculo_worker/worker.py`, `web/app/main.py` (`refrescar`), `web/frontend/src/api/botellas.ts`, `AdminBotellasViewer.vue`, `deploy/docker-compose.dev.yml` + `deploy/compose.yml` (healthcheck), `docs/mantenimiento_redes_produccion.md`, `docs/infra.md`, y 4 archivos de test. `pytest -q`: 853 passed, 5 skipped, 1 failed — la falla es `tests/test_cromo_worker.py::test_build_trigger_con_hora_inicio_pasada_suma_un_intervalo`, **flake preexistente dependiente del reloj** (el test hace `ahora.replace(hour=(ahora - 1h).hour)`, que entre las 00:00 y las 00:59 locales cae en el FUTURO del mismo día en vez del pasado): verificado reproduciéndolo en un worktree limpio del commit `69d5437`, sin ninguno de estos cambios, y el mismo test pasó a las 23:40 locales y falló a las 00:24. Baseline 842+5; **12 tests nuevos** en esta pasada. `npm run build` limpio y `npx vue-tsc --noEmit` con exactamente los mismos 4 errores preexistentes de `InfraTab.vue`, 0 nuevos. Ningún comando `docker compose` se ejecutó contra `deploy/compose.yml` (prod) — sólo edición de código.
+
+## 2026-08-22 — Separar Botella Cromo de su Cámara padre (agrupamiento erróneo por nombre)
+
+- **Contexto:** se pidió una acción para separar una Botella Cromo agrupada erróneamente con otra bajo la misma Cámara padre "porque comparten el mismo nombre", creándole una Cámara nueva y "registrando la excepción en la tabla de alias" para que la ingesta no la vuelva a agrupar.
+- **La premisa no coincidía con el código real** (validado antes de diseñar, no asumido):
+  (1) el agrupamiento no lo hace `ingesta.py` — es un script batch manual/periódico separado (`scripts/cromo_backfill_camara_padre.py`), sin cron/worker; (2) el match no es "mismo nombre" literal sino una clave normalizada y expandida, con falsos positivos aceptados explícitamente por diseño (2026-08-14); (3) el backfill es idempotente por `camara_id IS NULL` (sin `--force`) — reasignar `camara_id` ya protege por sí solo contra ESE mecanismo; (4) la tabla `cromo_botella_alias` es para deduplicar n_ids de Cromo (`fusionar`/`ignorar`, `CHECK` cerrado), reusarla habría dejado de sincronizar la Botella para siempre — el efecto contrario al pedido; (5) `BotellaDetalleUnificadaView.vue` no es una vista de detalle, es un shim que redirige toda Botella Cromo al Verificador — único punto de integración de UI real.
+- **Decisión 1 (auditoría explícita, no sólo confiar en `camara_id IS NULL`):** columnas nuevas en `CromoBotella` (`separada_manualmente`/`separada_motivo`/`separada_por`/`separada_at`, migración `20260822_01`) — decidido con el usuario tras explicarle que no eran funcionalmente necesarias para el mecanismo actual, como blindaje documentado a futuro. El backfill las chequea también (`AND NOT separada_manualmente`), redundante hoy con `camara_id IS NULL` pero es el blindaje concreto pedido.
+- **Decisión 2 (nombre siempre editable, con validación de colisión):** el usuario pidió explícitamente que si el nombre corregido sigue sin diferir de otra Cámara ya existente (normalizado), se solicite cambiarlo — `core/services/cromo/separacion_service.py` rechaza con 400 en ese caso, reusando `normalizar_para_agrupar_extendido` (mismo criterio que `camara_duplicados_service.py`, mismo patrón O(n) sobre ~10.212 Cámaras raíz — no existe una query SQL barata para esto en el repo). Reusa además el mecanismo `nombre_editado_manual` de la tarea anterior (Verificador Cromo, 2026-08-21) para el nombre de la propia Botella.
+- **Decisión 3 (`CamaraOrigenDatos.MANUAL`, no `INFERIDO_CROMO`):** ese valor del enum existe desde antes pero ningún código lo usaba nunca (sólo el `default=` de la columna) — es semánticamente el correcto para "Cámara creada a mano por una decisión explícita de un admin", a diferencia de `INFERIDO_CROMO` ("sintetizada por un backfill heurístico, no dato real") que usa `asociar_huerfanas` para un caso distinto.
+- **Decisión 4 (no se toca la Cámara padre anterior):** aunque quede sin ninguna otra Botella, separar no la elimina ni la audita — es el flujo separado "Eliminar Cámara", con sus propias validaciones de bloqueo; encadenarlo automáticamente sería una eliminación silenciosa no pedida.
+- **Endpoint en `web/app/main.py`, no `api/app/routes/infra.py`** (propuesta original) — mismo desvío deliberado que la entrada anterior: `api/app/` es API-key sin concepto de rol, el `_require_admin` real vive en `web/app/main.py`.
+- **Impacto:** `core/services/cromo/separacion_service.py` (nuevo), `db/models/cromo.py` (columnas de auditoría), migración `20260822_01_cromo_botella_separada_manualmente.py`, endpoint `POST /api/infra/botellas/{n_id}/separar-padre` en `web/app/main.py`, filtro adicional en `scripts/cromo_backfill_camara_padre.py`, `api/botellas.ts` extendido, `VerificadorCromoView.vue` (botón "Separar a nueva Cámara" + modal, admin-gateado). `pytest -q` completo: 807 passed, 0 failed, 5 skipped (11 tests nuevos sobre el baseline de 796 passed/5 skipped: 5 del servicio + 6 de wiring del endpoint). `npx vue-tsc --noEmit` + `npx vite build`: 0 errores nuevos (los 4 preexistentes siguen siendo de `InfraTab.vue`, confirmado sin modificaciones — `git status --porcelain` vacío; build termina `✓ built`). Migración `20260822_01` ya verificada real contra `lasfocasdev-postgres` en la Task 1 (upgrade/downgrade/re-upgrade limpios). Verificado real contra `lasfocasdev-web`: `web` reconstruido (`focas-base:latest` ya existía) y reiniciado, contenedor queda `healthy`, y el endpoint nuevo responde `401` (no `404`) sin sesión — confirma wiring correcto.
+
+## 2026-08-22 (cont. 2) — Cierre de los 2 residuales documentados: `web` bloqueaba su event loop, el worker retenía el GIL
+
+- **Contexto:** los 2 residuales dejados a propósito en la entrada "Redis + worker dedicado + WebSocket" de arriba (`?refrescar=true` bloqueando `web` ~127s; stall de ~20s en el `/health` del worker durante un recompute real) se pidió cerrarlos de forma definitiva, no parchear el síntoma.
+- **Fix 1 — `asyncio.to_thread` en los 3 call-sites síncronos de `web/app/main.py`, no sólo en el endpoint con `?refrescar=true`:** el ticket original sólo nombraba el GET del visor, pero `detectar_grupos_duplicados_botellas(session)` se llamaba directo (sin `to_thread`) en exactamente esa misma línea también en cache-miss normal (no sólo `refrescar=true`, es el mismo código), y además en `apropiar-masivo` y en el export de inconsistencias — los 3 tenían el idéntico antipatrón. Corregir sólo el nombrado habría dejado el mismo bug vivo en 2 de 3 lugares; se aplicó el mismo `await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)` a los 3 (mismo patrón ya probado en `modules/botellas_recalculo_worker/worker.py`).
+- **Fix 2 — `yield_per(500)` + `time.sleep(0)` cada 500 filas en `detectar_grupos_duplicados_botellas` (`core/services/botella_duplicados_service.py`), reemplazando los 2 `.all()`:** `joinedload` many-to-one (`camara_padre`, `camara`) es compatible con `yield_per` (no multiplica filas, a diferencia de una colección) — la agrupación en Python sigue necesitando ver todas las filas, así que el algoritmo no cambia, sólo la materialización pasa a ser incremental con un checkpoint explícito de liberación del GIL.
+- **Hallazgo real no buscado — el `.all()` original puede tirar el proceso por memoria, no sólo por latencia:** al aislar el aporte del Fix 2 revirtiendo temporalmente sólo el archivo del servicio dentro de `lasfocasdev-web` (dejando el `asyncio.to_thread` del Fix 1 puesto) para medir la diferencia, el proceso de verificación terminó con `exit code 137` y `docker inspect` confirmó `OOMKilled: true` — el host de dev tiene sólo 7.7 GiB de RAM con 3.7 GiB de swap ya en uso al momento de la prueba. La versión sin `yield_per` no sólo bloqueaba el loop: materializar ambas queries completas de una vez (~10 mil Cámaras raíz + relacionadas) puede agotar la memoria disponible del host bajo presión real, no sólo en un caso hipotético de crecimiento futuro.
+- **Verificación en vivo (no sólo unitaria) de los 2 fixes, contra el dataset real de dev:**
+  - `web`: script ad-hoc corrido dentro de `lasfocasdev-web` con una tarea `heartbeat()` de `asyncio.sleep(0.2)` corriendo en paralelo al cómputo real. Con `asyncio.to_thread`: cómputo de ~72s con 298-305 heartbeats registrados y gap máximo entre heartbeats de 0.56-0.68s (2 corridas independientes). Sin `asyncio.to_thread` (simulando el código previo al fix, mismo dataset): 0 heartbeats en ~56-60s — el loop quedó completamente congelado durante todo el cómputo, reproduciendo el bug reportado tal cual.
+  - Worker: se encoló un job real (`RPUSH admin:recompute:jobs`) y se sondeó `GET /health` cada ~0.3s durante el recompute completo (confirmado por `jobs_procesados` incrementando). Latencia máxima observada: **0.40s** (vs. los ~20s documentados antes del fix) — el healthcheck del compose (que ya mira el cuerpo, ver entrada de arriba) queda con margen amplio incluso si las tablas siguen creciendo.
+- **Impacto:** `web/app/main.py` (3 call-sites), `core/services/botella_duplicados_service.py` (`yield_per`+`time.sleep(0)`, constante `_BATCH_SIZE=500`), `tests/test_web_botellas_admin.py` (3 tests discriminantes nuevos que espían `asyncio.to_thread` — fallan si el cómputo deja de correr en un hilo aparte), `tests/test_botella_duplicados_service.py` (mock chain `.all()`→`.yield_per()` actualizado en las 8 pruebas existentes + 1 test discriminante nuevo que cuenta los checkpoints de `time.sleep(0)` con ~1000 filas sintéticas). `pytest -q` completo: 858 passed, 5 skipped, 0 failed (16 tests nuevos sobre el baseline de 842+5 — no se corrigió ningún test roto, todos pasaron desde la primera corrida). Reconstruido y verificado real contra `lasfocasdev-web`/`lasfocasdev-botellas-recalculo-worker` (`healthy` ambos tras el rebuild). Ningún residual pendiente queda de la entrada anterior — la invalidación automática desde otros escritores (ingesta Cromo, baneos, merge/eliminar Cámaras, backfill) sigue deliberadamente fuera de alcance, sin cambios.
+
+## 2026-08-22 (cont. 3) — Fix "ID dual" en Botellas Cromo: infraestructura defensiva construida, causa raíz del caso real NO confirmada (corregido en revisión final, no antes de codear)
+
+- **Contexto:** el usuario reportó, con capturas del Verificador Cromo y del visor de Cromo, que la Botella "BOT interna en Hotel Nuevo fondo Posadas 1557 C.F." (n_id=9936406) no podía corregirse de nombre (404 "No existe una Botella Cromo con n_id=9936406") pese a ser visible en el raw de Cromo, mientras 6 Botellas placeholder con el mismo nombre y sin cables (n_id 9936396-9936401) sí existían localmente. Hipótesis del usuario: mismo fenómeno "ID dual" (hist[]/next_id) ya resuelto para Cables el 2026-08-21 (entrada de arriba), nunca replicado para Botellas.
+- **Incumplimiento del proceso — no se corrió `cromo-diagnostico-real` antes de diseñar:** a diferencia de la entrada del 2026-08-21 (que sí corrió una sonda contra Cromo real antes de codear y eso cambió el diseño en 3 puntos), este plan se diseñó e implementó completo — 4 tareas, revisadas una por una contra el diff — **sobre la hipótesis del usuario sin validarla contra el sistema real**. La única validación real llegó recién en la revisión final de toda la rama, cuando el revisor final corrió por su cuenta una sonda de sólo lectura contra Cromo + consultas contra `lasfocasdev-postgres` (dev) para confirmar el diseño del punto de mayor riesgo (Task 4). Esa sonda reveló que la premisa del caso concreto reportado por el usuario es incorrecta:
+  - `n_id=9936406` **no es un n_id faltante** — es el `id` de VERSIÓN vigente. El n_id de linaje ESTABLE de esa Botella es `9936402`, y esa fila **ya existe** en `app.cromo_botellas` (`version_id=9936406`, con `camara_id=33410`). El 404 original no era "la Botella no existe", era "el admin estaba mirando un id de versión en vez del n_id estable" — el mismo Verificador ya tenía, sin usarla para este caso, la herramienta correcta: `POST /api/infra/botellas/9936402/repoblar-cables` (2026-08-21) re-ancla los extremos de cable 9936406→9936402 vía `_anclar_extremo_a_botella`.
+  - Los 6 placeholders (9936396-9936401) tienen `hist=[]` — **no pertenecen a ninguna cadena de versiones de 9936402/9936406**. Cuelgan además de una Cámara padre distinta (33409, no 33410). No son un caso de "ID dual": son basura no relacionada, aparentemente de otro origen.
+  - El fenómeno que la Task 4 de este plan previene automáticamente (una corrida de ingesta crea una fila nueva para un `n_id` que en realidad es la misma entidad física que una fila ya existente) tiene **0 instancias reales** en `app.cromo_botellas` hoy (`SELECT count(*) FROM cromo_botellas a JOIN cromo_botellas b ON a.n_id=b.version_id AND a.n_id<>b.n_id` → 0, sobre 2.205 filas con `version_id <> n_id`, todas correctamente keyed).
+  - La causa real y sistémica del síntoma visible (Botellas reales que se ven "sin cables" en el visor/Verificador) es otra, no cubierta por este plan: **`fase_cables`/`_procesar_cable_directo` (la ingesta masiva automática de Cables) nunca aplican `_anclar_extremo_a_botella`** — ese anclaje sólo corre en el flujo manual `repoblar-cables`. Medido: ~3.383 `extremo_a_n_id` + ~3.195 `extremo_b_n_id` de clase Botella (de 19.122/17.270 totales) no resuelven contra ninguna fila local — quedan anclados al id de versión en vez del n_id estable. Por esto `tiene_cables_asociados_batch_sync` (usado tanto por el visor de duplicados como por el propio Verificador) puede leer una Botella real como "sin cables".
+- **Decisión — se conserva la infraestructura construida, con su alcance corregido, en vez de revertir el plan:** las 4 tareas (extracción del resolver hist[]/next_id compartido, creación puntual de Botella desde Cromo en vivo en el Verificador, sugerencia de consolidación de placeholders huérfanos, detección automática de ID dual en la ingesta) están bien construidas, testeadas, y el supuesto de diseño que las sostiene (`hist[]` de una Botella se comporta igual que el de un Cable — cadena completa desde cualquier id de la cadena) **quedó confirmado como cierto** por la misma sonda que reveló el error de diagnóstico. Es una defensa genuina contra un fenómeno que, aunque con 0 instancias hoy, ya se demostró real para Cables y es razonable que ocurra para Botellas en el futuro. Se documenta explícitamente que **no cierra el caso concreto que lo motivó** — ese caso se resuelve con la herramienta ya existente (`repoblar-cables` sobre 9936402), no con nada de este plan.
+- **Bug real encontrado y corregido en la propia infraestructura defensiva, antes de que causara daño:** `core/services/cromo/botella_creacion_service.py` (Task 2) anclaba SIEMPRE la fila nueva al `n_id` que el admin tipeaba en el Verificador, incluso cuando Cromo reportaba un n_id de linaje estable distinto — plantando exactamente el tipo de duplicado que todo el plan busca evitar. Corregido en la revisión final (fix wave 1): sólo se ancla al n_id solicitado cuando Cromo no reporta ningún id propio utilizable; en cualquier otro caso se usa el n_id real de linaje que Cromo reportó, propagado al endpoint (que ahora puede devolver un `n_id` distinto del de la URL, con `n_id_solicitado` cuando difieren).
+- **Bug de despliegue real encontrado y corregido:** el import nuevo de Task 4 en `ingesta.py` (para invalidar la caché de duplicados tras una corrida productiva) arrastra transitivamente `modules.slack_baneo_notifier.camara_search`, que `deploy/docker/cromo_worker.Dockerfile` no copiaba a la imagen — confirmado con `docker exec`/`docker build`/`docker run` reales que el worker de ingesta entra en crash-loop (`restart: unless-stopped`) en el próximo rebuild. Corregido replicando el mismo `COPY modules/slack_baneo_notifier/` que ya usa `deploy/docker/botellas_recalculo_worker.Dockerfile` para la misma dependencia transitiva (mismo bug, mismo fix, segunda vez en este repo — ver entrada "Redis + worker dedicado" de arriba).
+- **Pendiente operativo, explícitamente NO resuelto por este plan (decisión del usuario, no del código):**
+  1. Confirmar si el gap sistémico real (extremos de cable de clase Botella nunca anclados al n_id estable en la ingesta automática) se ataca en un ticket aparte — es el mismo mecanismo ya construido y probado (`_anclar_extremo_a_botella`), pero aplicarlo dentro del barrido automático de `fase_cables` (no sólo en el flujo manual) es una decisión de alcance/costo que no se tomó acá.
+  2. Los 6 placeholders (9936396-9936401) no se consolidaron ni eliminaron — no son huérfanos de 9936402/9936406, así que el runbook original del plan (consolidarlos contra 9936406) no aplica. Requieren revisión manual aparte para decidir su destino real (¿pertenecen a otra Cámara/Botella? ¿son basura para "Eliminar Botella"?).
+  3. El Verificador (`VerificadorCromoView.vue`) todavía no consume el `n_id`/`n_id_solicitado` que el endpoint de creación ya expone tras una redirección de identidad — sigue mostrando el n_id que el admin tipeó, no el real. Follow-up de UX, no implementado.
+- **Impacto:** `core/services/cromo/id_dual_resolver.py` (nuevo), `core/services/cromo/botella_creacion_service.py` (nuevo), `core/services/cromo/repoblacion_service.py` (imports actualizados, sin cambio de comportamiento), `core/services/cromo/ingesta.py` (`BOTELLA_CAMPOS` público, detección dirigida en `_procesar_botella_completa`, invalidación de caché en `continuar_corrida`), `core/services/botella_duplicados_service.py` (`sugerir_consolidacion_placeholders`), `web/app/main.py` (endpoint `PATCH .../nombre` y `GET .../viewer/duplicados`), `deploy/docker/cromo_worker.Dockerfile`, `docs/infra.md`, `docs/modulo_ingesta_cromo.md`. `pytest -q` completo: 891 passed, 5 skipped, 0 failed. Verificado real: `docker build`+`docker run` del `cromo_worker` reconstruido confirma el import ya no rompe. **Sin verificación end-to-end contra Cromo/DB real de los flujos nuevos** (crear Botella desde vivo, consolidar) — la validación real que sí se hizo fue la sonda de diagnóstico de la revisión final, no un smoke test de los endpoints nuevos; corresponde antes de dar el plan por cerrado del todo.
+
+## 2026-08-24 — La ingesta Excel de cámaras deja de crear; panel de baneos agrupados con desbaneo masivo
+
+- **Contexto:** la ingesta masiva de cámaras críticas desde Excel (`/admin/ingesta/camaras`) creaba
+  una `Camara` nueva (`origen_datos=SHEET`) cada vez que un alias no matcheaba por nombre/alias
+  exacto — legacy de cuando el inventario de Cámaras no estaba completo. Con Cromo Red como fuente de
+  verdad del inventario, el ticket pidió que la ingesta deje de crear y en su lugar resuelva contra el
+  inventario real, con una vía de revisión/asociación manual para lo que no matchee; además, un panel
+  para ver y liberar (desbanear) en lote los grupos ya baneados por cualquier camino, agrupados por
+  Cámara padre.
+- **Decisión 1 — reusar `app.ingresos_sin_match` en vez de una tabla nueva** para la trazabilidad de
+  los alias del Excel que no matchean (`origen="excel_camaras"`, tercer valor de esa columna junto a
+  `"slack"`/`"tracking"`): sigue el precedente ya establecido por
+  `_resolve_camara_o_registrar_sin_match` (`core/services/infra_service.py`, commit `2c17296`) para
+  el mismo problema en la carga de tracking, en vez de reabrir la discusión sobre si este origen
+  merecía una tabla dedicada. Es además el único de los 3 orígenes con una acción de resolución real
+  (asociación manual que crea `CamaraAlias` + banea), no sólo triage.
+- **Decisión 2 — "Liberar" agrupado usa `estado_sugerido` + guard de incidente activo, no un `PUT`
+  uniforme existente** (`actualizar_estado_masivo`, ya usado por el cambio de estado masivo de
+  Botellas): `liberar_grupos_masivo` (`core/services/baneos_grupos_service.py`) resuelve cada
+  `camara_id` a su grupo raíz, consulta `get_camara_estado_contexto` y omite (sin llamar nunca a
+  `override_camara_estado_manual`) cualquier grupo con un `IncidenteBaneo` activo detrás, salvo que se
+  pase `forzar=true` explícito — evita que el panel anule silenciosamente un baneo que el Protocolo de
+  Protección todavía respalda. Con `forzar=true` sobre un grupo con incidente activo el destino es
+  siempre `LIBRE` (nunca `estado_sugerido`, que devolvería `BANEADA` de nuevo mientras el incidente
+  siga activo — un no-op disfrazado de "forzado").
+- **Decisión 3 — "Borrar" del pedido original del usuario = desbaneo masivo, no borrado físico:**
+  aclarado explícitamente por el usuario durante la planificación. No se agregó ningún endpoint de
+  eliminación de Cámaras/Botellas en este plan — la única acción masiva nueva es
+  `POST /api/admin/baneos/grupos/liberar` (cambio de estado).
+- **Bug real encontrado y corregido antes de construir el resto del plan:** `override_camara_estado_manual`
+  (`core/services/camara_estado_service.py`) comparaba el estado de la fila puntual (`camara.estado ==
+  nuevo_estado`) en vez del grupo completo — si esa fila ya estaba en el estado destino pero el grupo
+  había quedado mixto (ej. tras un `lift_ban` parcial), la cascada hacía short-circuit y las hermanas
+  quedaban desincronizadas. Corregido para comparar `all(m.estado == nuevo_estado for m in
+  miembros_del_grupo(camara))` — resuelto antes que el resto del plan porque tanto la ingesta Excel
+  como el panel de liberación dependen de que la cascada sea correcta sobre grupos mixtos.
+- **Impacto:** `core/services/camara_ingest_service.py` (reescrito: matcher extendido vía
+  `buscar_camara_o_botella_cromo`, sin creación, `asociar_nombres_a_camara`), `core/services/baneos_grupos_service.py`
+  (nuevo: `listar_grupos_baneados`/`liberar_grupos_masivo`), `core/services/camara_busqueda_service.py`
+  (`solo_raiz`), `core/services/camara_estado_service.py` (fix de cascada), `api/app/routes/ingest.py`
+  (nueva forma de respuesta de `POST /ingest/camaras`), `web/app/main.py` (endpoints
+  `POST /api/admin/ingesta/camaras/asociar`, `POST /api/admin/infra/ingresos-sin-match/marcar-revisado-masivo`,
+  `GET/POST /api/admin/baneos/grupos*`), `modules/slack_baneo_notifier/notifier.py` (reporte Excel de
+  Slack agrupado por Cámara padre), frontend: `AdminIngestaCamaras.vue` (Revisor Manual),
+  `ModalAsociarSinMatch.vue` (nuevo), `AdminBaneos.vue` dividido en 3 tabs
+  (`BaneosActivosPanel.vue`/`BaneosConfigPanel.vue`/`BaneosRevisionPanel.vue`, nuevos),
+  `admin/api/admin.ts`, `api/camaras.ts`. `git diff --stat` sobre todo el rango del plan: 21 archivos,
+  +4113/-943 líneas. `LLM_PROVIDER=heuristic pytest -q` completo al cierre: **1012 passed, 5 skipped,
+  0 failed**.
+
+## 2026-08-24 (cont.) — "Borrar y Excluir Cromo" (grupo) + "Forzar asociación a la Cámara" (consolidación)
+
+- **Contexto:** el visor de Botellas duplicadas dejaba dos casos sin salida: un grupo de
+  `CromoBotella` conflictivas (residuo de un cambio de nombre en la ingesta) que SÍ tienen
+  `CromoCable`/`CromoFusion` reales no se podía borrar (`eliminar_botella` las bloquea, correctamente,
+  por diseño); y consolidar un grupo mixto legado+Cromo se rechazaba sin excepción cuando la Cromo
+  destino no compartía Cámara padre con el legado (`apropiar_legado_a_cromo`, guard deliberado del
+  2026-08-19). El ticket pidió una vía deliberada para ambos casos, confirmada explícitamente por el
+  usuario para 4 puntos antes de diseñar:
+  1. El checkbox de forzado en consolidación sólo bypasea el guard YA EXISTENTE (legado↔Cromo); no se
+     toca el camino Cromo↔Cromo puro.
+  2. "Borrar y Excluir Cromo" actúa sobre TODOS los miembros Cromo del grupo mostrado, sin selección
+     por subconjunto.
+  3. El borrado en cascada es físico completo (`DELETE` real de `CromoCable`/`CromoFusion`), incluso
+     si el otro extremo de un cable pertenece a una botella que se conserva.
+  4. Se implementa como una función nueva y separada — `eliminar_botella`/`eliminar_camara` no
+     cambian, siguen bloqueando siempre; "bloquear, nunca forzar" (2026-08-20) sigue vigente para
+     todo el resto del sistema.
+- **Hallazgo real al auditar el código para este ticket (no pedido, dejado documentado y sin
+  resolver por decisión explícita)**: la consolidación Cromo↔Cromo pura
+  (`consolidar_grupo_botellas` con `ids_origen_cromo` y sin `ids_legado`) **nunca tuvo ningún guard de
+  "misma Cámara padre"**, ni en el servicio ni en `ModalConsolidarBotellas.vue` — se puede fusionar
+  cualquier n_id Cromo hacia cualquier destino sin ninguna advertencia. El único guard real vive
+  dentro de `apropiar_legado_a_cromo` y sólo se dispara si el payload incluye `ids_legado`. Confirmado
+  con el usuario (decisión 1 arriba): se documenta como gap conocido, no se cierra en este ticket.
+- **`apropiar_legado_a_cromo` (`core/services/botella_merge_service.py`)**: nuevo parámetro
+  `forzar_camara`. Los datos reales del legado (Cable/Empalme/Ingreso/hijas/alias) SIEMPRE se migran a
+  `legado.camara_padre_id`, nunca al `camara_id` previo de la Cromo — así que forzar el bypass, por sí
+  solo, no dejaba el resultado coherente. Fix: cuando `forzar_camara=True` y había mismatch, la
+  `CromoBotella` superviviente adopta `legado.camara_padre_id` tras la migración
+  (`ResultadoApropiacionBotella.camara_forzada`, nunca silencioso — mismo criterio que
+  `alias_repuntados` de `consolidacion_service.py`). `consolidar_grupo_botellas` gana
+  `force_camera_association`, pasado tal cual a `apropiar_legado_a_cromo` sólo para el loop de
+  `ids_legado`; agrega `legados_con_camara_forzada` al resultado. `BotellaConsolidarRequestModel`
+  (`web/app/main.py`) gana el campo homónimo.
+- **`core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`** (nueva): sin
+  ningún chequeo de bloqueo — borra `CromoCable`/`CromoFusion` asociados (bulk `.delete()`, sin FK
+  dura así que la limpieza es explícita), registra cada n_id en `cromo_botella_alias`
+  (`accion='ignorar'`, reusa `_registrar_alias_ignorar`) y borra la `CromoBotella`. No toca la Cámara
+  padre aunque quede vacía — no fue pedido. Nuevo endpoint `POST /api/infra/botellas/eliminar-grupo`
+  (admin, CSRF) — es el **8vo** endpoint mutador (no 7) que encola un recálculo de duplicados vía
+  `encolar_recalculo_duplicados_botellas` (ver entrada 2026-08-21 (cont.)).
+- **Frontend**: `AdminBotellasViewer.vue` — botón "Borrar y Excluir Cromo" por tarjeta de grupo +
+  confirmación inline (mismo estilo que la eliminación individual, no modal).
+  `ModalConsolidarBotellas.vue` — checkbox "Forzar asociación a la Cámara" junto a la selección de
+  Botellas legado.
+- **Verificado real**: `pytest -q` completo, 1034 passed / 5 skipped (0 regresiones); `vue-tsc
+  --noEmit` — 4 errores, los mismos preexistentes de `InfraTab.vue` (ajenos, no tocado); `npm run
+  build` sin errores; `lasfocasdev-web` reconstruido y reiniciado, ambos endpoints responden 401 sin
+  sesión.
+- **No hecho, fuera de alcance de esta sesión**: sin ejercitar el flujo end-to-end contra
+  `lasfocasdev-postgres` real (mismo límite que casi todas las sesiones previas de este módulo —
+  consolidación 2026-08-19, eliminación 2026-08-20, separación 2026-08-21 — sin credenciales de un
+  usuario admin real a mano). Crear un usuario QA temporal en `app.web_users` para esta sesión quedó
+  bloqueado por el clasificador de permisos de Claude Code (mutación sobre el sistema de auth); el
+  usuario confirmó cerrar sin esa verificación. El comportamiento nuevo queda cubierto por 56 tests
+  unitarios con mocks (incluyendo el caso explícito "cable con un extremo en botella conservada se
+  borra igual" a nivel de estructura de la query, no de efecto real en Postgres).
+
+## 2026-08-25 — Ampliación de la tabla de pelos (Cromo) + fix del bug "Info cable X BN" con cables duplicados
+
+- **Contexto:** Pedido de ampliar la tabla de detalle de cables (Inventario Cromo) con columnas de
+  verificación (`Verificable`/`Status`/`Fecha y Hora Status`, nuevas) y una columna "Servicio" (tipo
+  extraído por regex), más un bug reportado en el bot de Slack `slack_baneo_notifier`: "info cable
+  F-LEM-11-A B6" fallaba pidiendo `n_id` o respondiendo "no encontrado", supuestamente por los cambios
+  recientes de baneos/consolidación de Cámaras y Botellas.
+- **Hallazgo real — el bug NO es una regresión de baneos:** verificado contra `lasfocasdev-postgres`,
+  `F-LEM-11-A` tiene 2 cables `vigente=true` reales (n_id `10260935` y `9498169`), ambos con un
+  buffer en `orden=5` (B6) — un segundo par duplicado real, además de `F-ALV-2335` (2026-08-13).
+  Ningún commit de `botella_merge_service.py`/`camara_botella_delete_service.py`/
+  `consolidacion_service.py` toca `CromoCable.nombre` ni `.vigente` (ningún código del repo escribe
+  `CromoCable.vigente`, sólo se lee). La causa real: `buscar_cable_por_nombre` sólo busca por
+  `nombre` — cuando el bot pedía "especificá por n_id" y el técnico reintentaba con el n_id sugerido
+  (ej. `info cable 10260935 B6`), la búsqueda no matcheaba nada (ningún cable se llama literalmente
+  "10260935") y respondía "no encontrado" — explica los dos síntomas reportados con una sola causa.
+- **Decisión 1 (fix):** `buscar_cable_por_n_id_o_nombre` (`cable_info.py`) resuelve por `n_id` si el
+  texto es puramente numérico, si no cae a `buscar_cable_por_nombre` — único punto de cambio en
+  `listener._resolver_cable_o_responder`, arregla los 3 comandos que comparten ese resolver.
+  Verificado real contra `lasfocasdev-postgres` reproduciendo el caso exacto: ambiguo por nombre →
+  reintento por cada uno de los 2 n_ids → resuelve correctamente.
+- **Decisión 2 (regex de "Servicio" nuevo, no el de ingesta):** el regex de ingesta (`_REGEX_SERVICIO`
+  en `core/services/cromo/parser.py`) excluye a propósito "ISI"/"ATI" (0 matches reales, alto riesgo
+  de falso positivo, hallazgo de Etapa 9c) — el ticket pedía incluir "ISIS"/"ATI" en la nueva columna.
+  Confirmado con el usuario: se crea `extraer_tipo_servicio_display`, un regex NUEVO e independiente
+  (`PREFIJOS_TIPO_SERVICIO_DISPLAY`, extensible), sólo para la columna "Servicio" del detalle de cable
+  y del bot de Slack — no toca `_REGEX_SERVICIO`/`parsear_servicio`, que siguen gobernando
+  `tipo_asociacion` y la creación de `Servicio` placeholder en la ingesta real. También incluye
+  "VID"/"TDM"/"ATD"/"TRUNK" (ya seguros en `_REGEX_SERVICIO`, hallazgo real al verificar contra datos:
+  sin ellos, un pelo con Línea/Cliente ya matcheados mostraba "Servicio" en "-" — inconsistencia
+  visual sin motivo, no reabre el riesgo de ISI/ATI).
+- **Decisión 3 ("Línea" recicla "Servicio", no un JOIN nuevo):** el usuario confirmó que la columna
+  "Línea" es el pill clickeable que hoy vive bajo "Servicio" (matcheado vía `cromo_servicio_match` →
+  `app.servicios`, ya resuelto sin N+1 por `obtener_detalle_cable`/`pelos_de_tubo_sync`), sólo
+  renombrado — sin JOIN nuevo contra `Servicio.numero_linea`. "Cliente" sale del mismo match
+  (`nombre_cliente || cliente`).
+- **Decisión 4 (`verificable`/`status`/`fecha_hora_status`, sólo esquema):** sin ningún proceso
+  existente (admin/worker/integración externa) que los calcule — confirmado con el usuario: sólo
+  migración (`20260825_01_cromo_pelo_verificacion.py`, 3 columnas nullable en `app.cromo_pelos`) +
+  plumbing de lectura/escritura pasiva. Deliberadamente fuera de `PELO_CAMPOS` (`ingesta.py`): no
+  vienen del payload de Cromo, una re-ingesta los pisaría a `NULL`. Poblarlos queda como deuda técnica
+  declarada.
+- **Impacto:** `db/models/cromo.py::CromoPelo` (3 columnas nuevas); `core/services/cromo/parser.py`
+  (`extraer_tipo_servicio_display`); `core/services/cromo/detalle.py` (`PeloDetalle` expone los 3
+  campos nuevos); `web/app/main.py::_serializar_pelo_detalle` (agrega `tipo_servicio`/`linea`/
+  `cliente`/`verificable`/`status`/`fecha_hora_status`); `web/frontend/src/api/cromo.ts` y
+  `CableDetalleCromoView.vue` (10 columnas, badge de Status con el mismo patrón `color-mix()` de
+  `VerificadorCromoView.vue`); `modules/slack_baneo_notifier/cable_info.py`/`listener.py` (fix de
+  resolución + nuevo formato de "Info cable X BN"). 20 tests nuevos (parser, detalle, endpoint, Slack)
+  + 1055 tests totales pasando, 0 regresiones. Verificado real contra `lasfocasdev-postgres`/
+  `lasfocasdev-web`/`lasfocasdev-slack-baneo-worker` reconstruidos: endpoint y bot probados con datos
+  reales (cable n_id 6612400 con servicios matcheados; F-LEM-11-A n_id 10260935/9498169 para el bug).
+  Migración aplicada, downgrade/upgrade verificado reversible.
+- **No hecho, fuera de alcance:** sin poblador de `verificable`/`status`/`fecha_hora_status` (deuda
+  técnica declarada por el ticket); sin verificación visual en navegador real de la tabla del frontend
+  (no hay tool de browser en este entorno — se verificó el flujo de datos completo contra la DB real y
+  el `vue-tsc --noEmit` no reporta errores nuevos, mismos 4 preexistentes de `InfraTab.vue`).
+
+## 2026-08-25 (cont.) — Corrección real: prod y dev son 2 Slack Apps distintas, no 1 con 2 instancias; regla dura nueva en `repo-updater`
+
+- **Contexto:** al revisar en vivo el fix de "Info cable X BN" contra Slack real, el usuario compartió
+  una captura donde el bot respondía "no encontré" para un cable ("F-VDP-JUR") que sí existe en la
+  base de dev. La primera hipótesis de esta sesión (heredada sin reverificar de
+  `docs/slack_app_cables.md`/memoria de 2026-08-13) fue que prod y dev comparten una misma Slack App
+  con dos conexiones Socket Mode, y que Slack pudo haber enrutado el evento a la instancia de prod
+  (cuya base de Cromo carece de ese cable, confirmado con 0 filas). **El usuario corrigió esto de
+  inmediato, dos veces**: son dos Slack Apps genuinamente distintas.
+- **Decisión (corrección de hecho, no de diseño):** `@sandy02` (App ID `A08V22C3S3B`) es la app real
+  de **dev** — bot user `registrador_de_ingres`, real name en Slack "Registrador de Ingresos a
+  Camara", `bot_id` `B0B345MCXF1`. Prod es otra app — bot user `lasfocas_cambot`, real name
+  "Verificador de caminos Criticos (Bot)", `bot_id` `B0A9JA3S5V3`. Verificado con `auth.test` de Slack
+  contra ambos tokens reales (`bot_id`/`user_id` distintos) y `slack_read_user_profile` (vía el
+  conector de claude.ai, los bot tokens de este proyecto no tienen scope `users:read`) — el real_name
+  de dev coincide carácter por carácter con la captura del usuario, confirmando que fue el bot de DEV
+  el que respondió, no prod. Se verificó además, por separado, que `lasfocasdev-slack-baneo-worker`
+  conecta exclusivamente a `postgres:5432/focas_dev` (nunca a los datos de prod) — descarta la
+  hipótesis de una mala configuración de conexión. **La causa real de por qué el bot de dev no
+  encontró un cable que sí existe en su propia base queda sin resolver** (el log crudo del evento se
+  perdió al recrear el contenedor después) — ver pendientes en `docs/cierres/2026-08-25.md`.
+- **Impacto:** corregidos `docs/slack_app_cables.md` (el bloque que descartaba `@sandy02` como
+  "hipótesis incorrecta" estaba mal) y la memoria de sesión `project_slack_info_cable_implementado.md`
+  (Hallazgo 1). Nueva memoria de feedback documentando que este mismo error se cometió dos veces
+  (2026-08-13 y 2026-08-25), ambas ignorando una afirmación explícita del usuario en el momento.
+- **Decisión 2 (regla dura nueva en `repo-updater`):** el usuario confirmó explícitamente, en el mismo
+  intercambio: *"la skill repo updater siempre debe hacer commit en el worktree dev nunca en prod u
+  otro creado para ese fin... porque para los prompts e investigaciones se usa la rama dev"*. Se
+  amplió la skill (fuente `.agentes-comunes/skills/repo-updater/SKILL.md` + 6 mirrors:
+  `.github/skills/`, `.codex-skills/skills/`, `.gemini/rules/` ×2, `.claude/commands/`,
+  `.github/prompts/`) con: (1) paso obligatorio de confirmar `git rev-parse --abbrev-ref HEAD == dev`
+  y worktree real antes de tocar nada; (2) detección de working tree mixto (trabajo de la sesión
+  actual + trabajo previo sin commitear de otro origen) con la técnica de separación por hunk
+  (`git diff` + `git apply --cached --check`/`--cached`) ya usada horas antes en esta misma sesión
+  para separar el push de la tabla de Pelos del de "Borrar grupo Cromo".
+- **Impacto:** sin cambios de código de aplicación — sólo documentación y los 7 archivos de la skill/
+  prompt `repo-updater`. Ver `docs/cierres/2026-08-25.md` (addendum) y `docs/Mate_y_Ruta.md`.
+
+## 2026-08-25 (cont. 2) — Bug real: negrita de Slack en el código rompía "Info cable"/"Info cable X BN"
+
+- **Contexto:** el usuario retesteó en vivo y compartió una segunda captura ("info cable F-VDP-JUR
+  b1" → "no encontré ... F-VDP-JUR b1", con el código glueado al sufijo de buffer en la respuesta).
+  Se leyó el payload crudo real vía el conector de Slack de claude.ai (`slack_read_thread` sobre el
+  canal `#baneo-de-camaras-prueba`, mensajes `1787653453.531689` y `1787657001.749649`): el texto
+  real que Slack entrega al bot es `info cable *F-VDP-JUR*` / `info cable *F-VDP-JUR b1*` — el
+  técnico resalta el código en **negrita** (uso normal de Slack) y esos asteriscos llegan literales
+  en `event["text"]`, Slack no los renderiza antes de mandarlos.
+- **Decisión (root cause, no de diseño):** `extraer_comando_info_cable` capturaba el `*`/`*` como
+  parte del `nombre` buscado (nunca podía matchear contra `cromo_cables.nombre`), y con sufijo de
+  buffer el `*` final rompía directamente el ancla `$` de `extraer_comando_cable_buffer`, cayendo al
+  parser goloso de "Info cable" (que se comía "B1*" completo). Esto explica retroactivamente **ambas**
+  capturas de esta sesión — no tiene relación con la identidad de bots prod/dev (2026-08-25 (cont.))
+  ni con los datos de Cromo, investigados antes en la misma sesión sobre la hipótesis equivocada.
+- **Fix:** `_quitar_formato_slack` (`modules/slack_baneo_notifier/cable_info.py`) quita `*`/`_`/
+  `` ` ``/`~` del texto normalizado antes de correr cualquiera de los dos regex de comando — ningún
+  código de cable real usa esos 4 caracteres, así que no hay riesgo de falso negativo.
+- **Impacto:** 3 tests nuevos (TDD, RED confirmado reproduciendo el payload crudo real antes de
+  implementar), 1062 tests totales, 0 regresiones. Verificado real contra `lasfocasdev-postgres`
+  dentro de `lasfocasdev-slack-baneo-worker` reconstruido, con el string exacto que Slack mandó
+  (`F-VDP-JUR`, n_id 6613666) — antes fallaba, ahora resuelve. `docs/slack_app_cables.md` actualizado.
+- **No hecho:** prod (`lasfocas-slack-baneo-worker`) corre el mismo código, así que tiene el mismo
+  bug — no se tocó (directriz vigente de no tocar prod sin aviso explícito puntual).
+
+## 2026-08-26 — Trazabilidad de IDs de Servicios SLA: ID final por cadena de upgrades, fusión de placeholders Cromo, repurpose de `categoria`
+
+- **Contexto:** la ingesta de Excel de Servicios SLA (`POST /servicios/ingest`) pisaba
+  `servicio_id = numero_primer_servicio` en cada corrida, ignorando cualquier upgrade real de línea
+  — el bot de Slack "Validador de Cables" y `CableDetalleCromoView.vue` (que leen `servicio_id`)
+  nunca mostraban el ID vigente. Ejecutado vía `superpowers:subagent-driven-development` (10 tareas
+  + 2 rondas de fix de la revisión final del branch completo), plan en
+  `docs/superpowers/plans/2026-08-25-servicios-trazabilidad-ids.md`.
+- **Decisión 1 (regla de negocio, confirmada por el usuario):** el ID numérico más alto conocido de
+  una familia (`Número Primer Servicio` + `Número Línea` + punteros "Línea Upgrade De/A" del Excel +
+  lo ya persistido en `servicio_id`/`alias_ids`) es siempre el ID de línea vigente — no hace falta
+  perseguir los punteros de upgrade en cadena, sólo tomar el máximo. Implementado en
+  `core/services/servicios_consolidacion_service.py::consolidar_identidad_servicio`, función pura
+  sin acceso a DB. Costó 4 rondas de fix encontrar la forma correcta de deduplicar dos strings que
+  representan el mismo entero ("093" vs "93") sin perder ninguno como alias — la solución final
+  canonicaliza cada ID una sola vez al entrar (`_forma_canonica`), verificada con fuzz-testing de
+  363k casos (0 violaciones) contra ~58% de violaciones en la versión previa a esa ronda.
+- **Decisión 2 (repurpose de `categoria`, elegido explícitamente por el usuario sobre la alternativa
+  recomendada de un campo nuevo):** `servicios.categoria` (antes: prioridad de reporting manual, sin
+  relación con el Excel) pasa a significar "Nivel Cliente" del Excel SLA. Verificado antes de decidir
+  que no rompía trabajo real: 0 filas con un valor manual 1-5 en dev (sólo 0/6, los dos sentinels).
+  Sin migración de esquema (mismo `Integer 0-6`, mismo `CHECK`) — sólo cambia la fuente de datos. Los
+  valores legacy (0/6) se dejan como están, sin backfill retroactivo (elección explícita del
+  usuario), se sobreescriben naturalmente en la próxima ingesta real de esa fila.
+- **Decisión 3 (fusión de placeholders Cromo, elegido explícitamente por el usuario sobre la opción
+  mínima recomendada de sólo degradar sin fusionar):** como `servicios.servicio_id` es `UNIQUE`, el
+  ID final calculado puede coincidir con el de una fila ya existente — medido en dev: 176 casos
+  reales (161 contra un placeholder `INFERIDO_CROMO`, 15 contra filas `MANUAL`). Se fusiona
+  automáticamente SÓLO cuando la fila en colisión es un placeholder Cromo puro (nunca tocado por
+  tracking físico — verificado con un guard explícito contra `rutas_servicio`/
+  `servicio_empalme_association`, no sólo contra el flag `origen_datos`, porque
+  `infra_service.py::create_new` puede reusar un placeholder para tracking sin cambiarle ese flag).
+  Cualquier otra colisión (`MANUAL`/`INGEST_EXCEL`, o intra-archivo contra otra familia del mismo
+  Excel) degrada sin fusionar — fusionar dos registros reales sin confirmación humana sigue fuera de
+  alcance a propósito, mismo criterio que el merge de Cámaras (entrada 2026-08-14) pero sin
+  extenderlo a este caso. La revisión final encontró y corrigió 2 bugs reales del propio diseño antes
+  de cerrarlo (un skip demasiado amplio que dejaba vivo el 500 original contra colisiones
+  intra-archivo, y el guard de "placeholder puro" incompleto que exponía datos reales de tracking a
+  un hard delete).
+- **Hallazgo operativo (no de código):** la primera verificación end-to-end real (ingerir
+  `docs/Doc Privada/Servicios C4.xlsx` contra `lasfocasdev-api`) dio 500 — no por un bug, sino porque
+  el contenedor corría una imagen de horas antes de que se aplicara ningún fix del día. Los tests de
+  integración (`TestClient(app)` in-process contra el código del host) nunca lo hubieran detectado.
+  Reconstruir `api`/`web` (`docker-rebuild`) resolvió la ingesta real: 1230/1230 filas, 176 fusiones
+  de placeholder, 0 huérfanos en `cromo_servicio_match`.
+- **Impacto:** endpoint nuevo `PATCH /servicios/{id}/verificable` (+ su proxy en
+  `web/app/main.py`, faltante en la implementación original — encontrado por la revisión final, no
+  por ningún test), columnas nuevas `servicios.es_verificable`/`es_verificable_override` (migración
+  `20260825_02`), script `scripts/cromo_backfill_reconciliar_servicio_final.py`, fix de un bug
+  preexistente del parser (encabezados reales del Excel con sufijo "Servicio" quedaban sin mapear).
+  1092 tests, 5 skipped (los de integración de ingesta se saltan en CI por falta de Postgres real,
+  sin tocar `ci.yml`). Ver `docs/db.md` (tabla `servicios`) para el detalle de columnas.
+- **No hecho:** verificación visual en navegador de los cambios de Vue (Tasks 9/10, nombre en rojo
+  para servicios de baja, badge "No verificable") — sin navegador disponible en el entorno de
+  sub-agentes de esta sesión; verificado en su lugar por revisión de código + datos reales de DB.
+
+## 2026-08-28 — Bug real de producción: incidentes hermanos (rutas redundantes del mismo servicio)
+dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales quedaron huérfanas
+
+- **Contexto:** el usuario pidió analizar si había botellas/cámaras en prod que no se hubieran
+  desbaneado al cerrar el incidente del 19/08. Investigación contra `lasfocas-postgres` real (sólo
+  lectura) encontró dos incidentes (`#41`/`#42`, ticket `MKT-1299557`, servicio protegido `112922`)
+  que protegían el mismo servicio por dos rutas redundantes (Principal ruta 75, Backup ruta 78),
+  abiertos el 19/08 y cerrados el mismo día 28/08 con 4 segundos de diferencia por `admin2`. Logs
+  reales de `lasfocas-web` confirmaron la causa exacta: `lift_ban(42)` restauró 0 de 60 cámaras
+  (`mantenidas=60`, bloqueadas por el hermano `#41` que todavía estaba activo en ese instante —
+  comportamiento correcto de `_camara_tiene_otro_baneo_activo`); `lift_ban(41)`, 4 segundos después,
+  sólo reevaluó las cámaras de SU PROPIA ruta (78) y dejó 18 más mantenidas. Ningún camino del código
+  vuelve a mirar las cámaras de un incidente ya cerrado — 74 cámaras/botellas reales quedaron
+  `BANEADA` sin ningún `IncidenteBaneo` activo detrás.
+- **Hallazgo adicional (no de código, de despliegue):** las imágenes `lasfocas-api`/`lasfocas-web`
+  están construidas del 2026-08-11 (17 días de atraso respecto de `dev`) — anteriores al retiro de
+  `DETECTADA`/`PENDIENTE_REVISION` (2026-08-11 en dev) y a la vinculación Cromo↔Cámara
+  (`app.cromo_botellas` en prod no tiene columna `camara_id`, migrada sólo en dev). Por eso parte de
+  la restauración real volvió a `DETECTADA` en vez de `LIBRE` — prod corre una versión más vieja de
+  `_determinar_estado_restauracion` que sí preserva ese estado. No se tocó el despliegue de prod en
+  esta sesión — sigue la directiva "sólo dev hasta aviso" (ver `docs/decisiones.md` 2026-07-29); esto
+  queda documentado como deuda de despliegue, no resuelto acá.
+- **Remediación puntual en prod (autorizada explícitamente por el usuario):** en vez de un
+  `UPDATE` directo, se ejecutó un script de uso único (no versionado) DENTRO de `lasfocas-web` que
+  reconstruyó la restauración pendiente reusando el código REAL ya desplegado en ese contenedor
+  (`ProtectionService._determinar_estado_restauracion`/`_camara_tiene_otro_baneo_activo` +
+  `aplicar_estado_a_grupo`), para no perder auditoría ni desincronizar el grupo Cámara/Botella —
+  mismo criterio que exige `.agentes-comunes/skills/baneo-qa-real/SKILL.md`. Resultado verificado
+  contra la DB real: 172→98 cámaras `BANEADA` en prod (-74), 2 cámaras correctamente mantenidas
+  `BANEADA` por tener un baneo independiente anterior a estos incidentes.
+- **Decisión — fix de causa raíz en `dev`:** `ProtectionService.lift_ban` ahora, al cerrar CUALQUIER
+  incidente, llama a `_reconciliar_hermanos_cerrados(servicio_protegido_id, incidente_id)` (nuevo)
+  — busca incidentes YA CERRADOS del mismo `servicio_protegido_id` y reintenta su restauración con la
+  misma lógica real (`get_camaras_for_servicio` + `_camara_tiene_otro_baneo_activo` +
+  `_determinar_estado_restauracion`). Así, sea cual sea el orden en que cierren dos incidentes
+  hermanos, el último en cerrar termina de liberar también lo que el primero no pudo — sin necesidad
+  de tocar el esquema (no hay FK de `CamaraEstadoAuditoria` a `IncidenteBaneo`, se evitó agregarla
+  para mantener el fix acotado) ni de parsear texto de `motivo` (frágil, ya que `create_ban` acepta
+  un `motivo` custom que reemplaza la plantilla `"Baneo por incidente #N..."`).
+- **Alternativas:** (1) reconciliación global periódica sobre TODAS las `Camara` en `BANEADA` —
+  descartada por mayor blast radius y por requerir parsear `motivo` para saber qué incidente banueó
+  cada una (frágil); la solución elegida acota el barrido a incidentes cerrados del MISMO servicio,
+  que es exactamente el conjunto que puede haber quedado bloqueado por este incidente en particular.
+  (2) Agregar `incidente_id` FK a `CamaraEstadoAuditoria` — más robusto a largo plazo pero fuera de
+  alcance de este fix puntual (requiere migración Alembic + backfill); queda como mejora futura si
+  se necesita reconciliación más general.
+- **Impacto:** `core/services/protection_service.py` (`_reconciliar_hermanos_cerrados` nuevo, llamado
+  desde `lift_ban`), `tests/test_protection_service.py` (5 tests nuevos: reconciliación directa +
+  integración con `lift_ban`). Sin cambios de esquema. 20/20 tests de `test_protection_service.py`
+  passing; suite completa corrida sin regresiones.
+
+## 2026-08-28 — Submódulo ODFs: el ticket mezclaba dos sistemas distintos
+
+- **Contexto:** El ticket original pedía un submódulo `/infra/odfs` sobre "Cromo Clase 69", un
+  listado de ODFs en Detalle de Servicio reutilizando "la lógica actual de pelos/servicios", y una
+  ingesta exclusiva de ODFs con clasificación ODF/Empalme por patrones de string
+  (`O-`/`Patch` vs `F-`/`Empalme`) y agrupamiento por sitio (`O-1238223-1/-2/-#`).
+- **Hallazgo real (brainstorming + diagnóstico contra Cromo real, no asumido):** clase 69 = ODF es
+  real y distinta en `app.cromo_clases` (`ingerible=true, homologada=true, count_cromo=7955` al
+  2026-08-05) pero nunca se había ingerido. Un diagnóstico de sólo lectura (30 objetos reales,
+  corrido dentro de `lasfocasdev-cromo-worker`) mostró que los nombres reales son texto libre
+  (`"ODF Calle 9 Nro 593 PILAR"`, 26/30) sin ningún patrón `O-`/`Patch`/`F-`/`Empalme` ni ningún ID
+  de sitio — ese vocabulario resultó pertenecer a `core/parsers/tracking_parser.py` (archivos de
+  trazado de ruta subidos a mano por servicio), un sistema completamente distinto sin ninguna clave
+  compartida con Cromo. También se descartó que existiera una función de mapeo "número de pelo →
+  color" — nunca existió, Cables/Botellas ya muestran el string crudo `nombre_color` tal cual.
+- **Decisión:** combinar ambos sistemas, cada uno para lo suyo, sin mezclarlos: el submódulo
+  `/infra/odfs` (inventario global, análogo a Cables/Botellas) se construye sobre Cromo clase 69,
+  con `tipo_elemento` (ODF/EMPALME/SIN_CLASIFICAR) mantenido por robustez aunque `EMPALME` no se
+  espera en datos reales, y agrupamiento por dirección (`calle`+`altura`+`localidad`) en vez de por
+  ID de sitio. El listado de ODFs en Detalle de Servicio reutiliza el clasificador YA EXISTENTE de
+  `tracking_parser.py` (`ODF_IDENTIFIER_REGEX`, `TRANSITO_KEYWORDS`, `get_transitos()`) sin tocar
+  Cromo — es ahí donde realmente viven los patrones `O-`/`Patch`/`F-`/`Empalme` del ticket. La
+  ingesta exclusiva (`modo="SOLO_ODF"`) aplica sólo a la parte Cromo.
+- **Alternativas:** construir todo sobre Cromo (el ticket lo pedía así) — descartada porque los
+  patrones de clasificación del ticket no matchean ningún dato real de Cromo, y hubiera significado
+  reimplementar desde cero un clasificador que ya existe y funciona en `tracking_parser.py`.
+  Construir todo sobre tracking — descartada porque no hay inventario global de ODFs ahí, sólo datos
+  por servicio, y el ticket sí pedía un submódulo de inventario tipo Cables/Botellas.
+- **Decisión de producto (confirmada 2026-08-28, mismo día):** sí exponer `SOLO_ODF` en la UI.
+  Selector "Alcance de la corrida" agregado a `AdminIngestaCromo.vue`, deshabilita la grilla de
+  clases de botella (irrelevante en ese modo). Ver `docs/modulo_ingesta_cromo.md` para el detalle.
+- **Verificación real end-to-end pedida explícitamente por el usuario antes de dar la feature por
+  cerrada** (checklist: se guarda en infra, se relacionan cables, se asocian servicios, se
+  visualizan clasificadas en Detalle de Servicio) — corrida real `SOLO_ODF` (`psize=20,
+  max_paginas=1`) dentro de `lasfocasdev-cromo-worker`: 20 objetos reales creados, 0 errores.
+  Verificado contra los 3 endpoints reales (no sólo la tabla): `servicios_por_odf` resolvió
+  servicios reales (ej. YPF SOCIEDAD ANONIMA vía 2 cables), `cables_asociados` con nombres reales
+  de cable, geo real reproyectada en el detalle. Las "ODFs asociadas" de Detalle de Servicio
+  (servicio 91719, sistema de tracking, no depende de esta ingesta) siguen clasificando
+  correctamente. `app.cromo_odfs` ya NO está vacía en dev — 20 filas reales.
+- **Impacto:** ver `docs/modulo_ingesta_cromo.md` (submódulo ODFs) para el detalle técnico completo.
+  Ejecutado con `superpowers:subagent-driven-development` (9 tareas + 1 diagnóstico + 1 ronda de fix
+  en la revisión final de rama completa, 11 commits propios). 1195 tests pasando, 4 fallos
+  preexistentes no relacionados (falta el build de Vite en el entorno de test local, no en el
+  contenedor real).
+
+## 2026-08-31 — Duplicidad de identidad de Servicios: causa raíz compartida por 3 bugs distintos
+
+- **Contexto:** Ticket con 4 síntomas reportados a la vez: (1) el servicio "61943" aparece dos veces
+  en el Buscador (tarjeta "FO" y tarjeta "SERVICIO"); (2) una ODF concreta del tracking de un
+  servicio (empalme 6642085) no aparecía en la sección "ODFs asociadas" de su Detalle de Servicio;
+  (3) el visor de Cables Cromo muestra "—" en el Extremo B cuando el cable termina en una ODF en vez
+  de una Botella; (4) el visor de ODFs Cromo detecta por regex el servicio "61943" en un Pelo pero
+  muestra Estado "DESCONOCIDO" y sin link navegable.
+- **Investigación (3 agentes en paralelo, systematic-debugging):** (3) es un bug de código aislado —
+  ver más abajo. (1), (2) y (4) resultaron ser el MISMO bug de datos visto desde tres ángulos
+  distintos: `app.servicios` tenía dos filas reales para el mismo servicio "41140→61943" (Banco
+  Comafi SA) — id=49 (`origen_datos=MANUAL`, creada por una subida de tracking físico anterior,
+  dueña del tracking real con la ODF del ticket) e id=557 (`origen_datos=INGEST_EXCEL`, roster SLA,
+  dueña del cliente/estado real, con "61943" sólo en `alias_ids` tras la renumeración) — nunca
+  fusionadas. El buscador las mostraba como dos tarjetas (sin deduplicar); el matcher de ingesta de
+  Cromo (`_SQL_BUSCAR_SERVICIO`, sin `ORDER BY`) resolvía siempre contra la 49 (sin cliente/estado
+  real, de ahí "DESCONOCIDO"); el Detalle de Servicio resolvía al revés, contra la 557 (sin tracking
+  propio, de ahí "sin ODFs detectadas"). Verificado real contra `lasfocasdev-postgres`: **642 pares
+  del mismo patrón** en dev (una fila cuyo `servicio_id`/`numero_primer_servicio` ya figura en el
+  `alias_ids` de otra), ~11.000 pelos de `cromo_servicio_match` ya matcheados contra la fila
+  perdedora de algún par, al menos 15 filas perdedoras con `rutas_servicio` propias como la 49. El
+  código ya tenía una decisión previa deliberada de no fusionar automáticamente dos registros reales
+  sin confirmación humana (`api/app/routes/servicios.py::ingest_servicios`, comentario "fusionar dos
+  registros reales sin confirmación humana está fuera de alcance a propósito") — se presentó el
+  hallazgo al usuario antes de tocar nada (ver `feedback_confrontar_conflicto_antes_de_revertir_decision_previa`).
+- **Decisión (confirmada por el usuario, opción "Fusión completa + fix de ingesta"):**
+  1. Fusión manual del par 49/557: reasignación de FKs (`rutas_servicio` CASCADE,
+     `cromo_servicio_match`/`servicio_empalme_association` sin cascada, auditadas contra
+     `information_schema` — mismo trío que ya reasigna la fusión de placeholders de
+     `ingest_servicios`), fusión de `alias_ids`, retiro de la fila 49, `servicio_id` final "61943" en
+     la 557 (mismo criterio MAX-based ID final de `consolidar_identidad_servicio`). Verificado en
+     vivo contra los 3 endpoints reales tras reconstruir `lasfocasdev-web`: buscador con 1 resultado,
+     `servicios_por_odf` con Cliente/Estado reales, `get_servicio_odfs` encuentra el empalme 6642085.
+  2. Fix hacia adelante en `core/services/cromo/ingesta.py::_SQL_BUSCAR_SERVICIO`: agregada exclusión
+     `NOT EXISTS` — una fila cuyo `servicio_id`/`numero_primer_servicio` ya fue absorbido como alias
+     de otra fila nunca gana el match, sin importar el orden físico de los datos. Test de regresión
+     real-DB en `tests/test_cromo_ingesta_ambiguedad_servicio_real_db.py` (TDD, falla sin el fix).
+  3. Los otros 641 pares (637 seguros 1-a-1 + 4 en 2 pares mutuos que necesitan revisión humana, ver
+     abajo) **no se tocaron** — queda `scripts/servicios_fusionar_identidades_duplicadas.py`
+     (dry-run por defecto, `--apply` explícito) escrito y auditado para una corrida posterior, sujeta
+     a aprobación separada del usuario.
+  4. Bug (3), aislado: `core/services/cromo/{inventario,detalle,verificador}.py` resolvían
+     `extremo_a`/`extremo_b` de cable con `LEFT JOIN` sólo a `cromo_botellas`, nunca a `cromo_odfs`
+     (tabla separada, más nueva) — corregido con un segundo `LEFT JOIN`. Frontend
+     (`CableDetalleCromoView.vue`) también enrutaba siempre a Botella al hacer click en un extremo;
+     ahora usa `clase === 69` para enrutar a la ODF. `OdfDetalleCromoView.vue` no linkeaba el número
+     de servicio de "Servicios asociados"; agregado el mismo patrón botón→`/servicios/ID/{id}` que ya
+     usa `CableDetalleCromoView.vue`. Test de regresión real-DB en
+     `tests/test_cromo_cable_extremo_odf_real_db.py` (TDD, falla sin el fix).
+- **Hallazgo colateral, un par MUTUO real (ids 30338/30339 y 30356/30357 en dev):** dos filas
+  `INGEST_EXCEL` (no un placeholder) se referencian una a la otra en `alias_ids` — dato cruzado real,
+  no una renumeración simple. `scripts/servicios_fusionar_identidades_duplicadas.py` detecta y
+  excluye explícitamente estos pares mutuos de la fusión automática (no confía en el
+  try/except de la corrida para "resolverlos" silenciosamente a medias).
+- **Alternativas:** mitigar sólo en lectura (combinar resultados de ambas filas al mostrar, sin
+  tocar la DB) — descartada como solución principal porque no arregla la ingesta futura y deja el
+  dato sucio creciendo; el usuario eligió la fusión real. Fusionar los 642 pares de una sola pasada
+  — descartado por el volumen y por los pares mutuos/ambiguos reales encontrados en la propia
+  muestra; se acotó a lo verificado a mano y se dejó el resto auditado para aprobación separada.
+- **Impacto:** `core/services/cromo/{inventario,detalle,verificador,ingesta}.py`,
+  `web/frontend/src/views/{CableDetalleCromoView,OdfDetalleCromoView}.vue`,
+  `scripts/servicios_fusionar_identidades_duplicadas.py` (nuevo, no ejecutado con `--apply`),
+  2 tests real-DB nuevos, 1 remediación de datos aplicada en dev (par 49/557). Suite completa:
+  1218 passed, 2 fallos preexistentes no relacionados (`test_cromo_odf_inventario_real_db.py`,
+  `buscar_odfs` con filtro `servicio` — "cannot extract elements from a scalar", confirmado
+  preexistente vía `git stash` antes/después de este trabajo, no investigado más por estar fuera de
+  alcance).
+
+## 2026-08-31 (seguimiento) — Tercer bug real en el mismo ticket + corrida del script retroactivo
+
+- **Contexto:** Al revisar en pantalla el resultado del fix de arriba, el usuario detectó un tercer
+  bug real en "ODFs asociadas" del Detalle de Servicio: para el servicio 41140/61943 se mostraban
+  "4 ODF(s)" cuando en realidad son 2 ODFs físicas (empalmes 6641368 y 6642085) — el servicio tiene 2
+  pelos ("Principal" y "Principal - Pelo 2 (C2)", mismo cable físico, cada uno con su propio archivo
+  de tracking y sus propios conectores en cada ODF), y ambos atraviesan las mismas 2 ODFs.
+- **Causa raíz:** `get_servicio_odfs` (`web/app/main.py`) calculaba `total_odfs`/`total_empalmes`
+  sumando `transitos_count`/`empalmes_count` POR RUTA, sin deduplicar por `empalme_id` entre rutas
+  del mismo servicio — cuando dos pelos comparten el mismo tramo físico (caso común, no la
+  excepción), cada empalme compartido se contaba una vez por cada ruta que lo atraviesa.
+- **Decisión:** contar `empalme_id` distintos entre TODAS las rutas del servicio (no ocurrencias),
+  mismo criterio de identidad ya usado para el enriquecimiento de cámara
+  (`tracking_id = f"{servicio.servicio_id}_{entry.empalme_id}"`). La cantidad de rutas/pelos por
+  servicio sigue siendo variable (2 en este caso, puede ser otra cantidad en otro servicio) — el fix
+  no asume un número fijo. Test de regresión en
+  `tests/test_web_infra_servicio_odfs.py::test_get_servicio_odfs_no_duplica_odf_compartida_entre_rutas`
+  (TDD, falla sin el fix). Verificado en vivo tras reconstruir `lasfocasdev-web`: `total_odfs` pasó de
+  4 a 2 para el servicio del ticket.
+- **Corrida del script retroactivo** (`scripts/servicios_fusionar_identidades_duplicadas.py --apply`,
+  autorizada explícitamente por el usuario): fusionados los 637 pares seguros restantes —
+  10.818 filas de `cromo_servicio_match`, 28 de `rutas_servicio` y 1.015 de
+  `servicio_empalme_association` reasignadas, 637 filas huérfanas retiradas. Verificado post-corrida:
+  0 valores duplicados de `servicio_id` en `app.servicios`, y los únicos 4 pares que siguen en
+  conflicto son exactamente los 2 pares MUTUOS reales detectados en el dry-run (ids 30338/30339 y
+  30356/30357) — quedan sin tocar, requieren revisión humana (no son una renumeración simple, ver
+  entrada anterior).
+- **Impacto:** `web/app/main.py` (`get_servicio_odfs`), `tests/test_web_infra_servicio_odfs.py`
+  (1 test nuevo, 6/6 passing), datos de dev remediados (637 pares fusionados). Pendiente: revisión
+  manual de los 2 pares mutuos por el usuario/equipo de datos, no automatizable con el criterio
+  actual del script.
+
+## 2026-08-31 (submódulo nuevo) — Conectores de ODF: mismo espíritu que Empalmes de Botella
+
+- **Contexto:** al revisar el visor de escritorio de Cromo Red para la ODF del ticket (n_id
+  6642085), el usuario notó que una ODF tiene una jerarquía interna de bandejas/patcheras
+  ("O-1238223-1"/"-2") y posiciones de conector, análoga a los empalmes internos de una Botella —
+  pero terminando en una posición de conector propia, no en un pelo de otro cable. Pidió indagar si
+  esa relación ya estaba en el `payload_raw` ya ingerido.
+- **Diagnóstico real (sólo lectura, `cliente.get_inner()`/`get_coleccion()` contra Cromo real):**
+  la relación NO estaba ingerida — `fase_odfs` nunca pidió `inner[]`. Confirmado que existe, vía
+  clases Cromo nuevas no catalogadas (135 "Patchera", 136 "Posición Patchera"). Dos hallazgos reales
+  que cambiaron el diseño sobre la marcha:
+  1. `show=["ALL"]` en el barrido de colección SÍ trae `inner[]`, pero en forma LIVIANA (sin el
+     atributo id=62 de servicio directo) — ese atributo sólo viaja en `GET /db/objects/{id}/inner`,
+     una llamada por objeto. Se agregó ese segundo llamado dentro de `_procesar_odf_directo`, sólo
+     cuando el barrido liviano ya mostró que la ODF tiene `inner` (confirmado con el usuario,
+     opción "agregar el llamado ahora" pese al costo de ~7.955 llamadas extra en una corrida
+     completa, antes que lanzar con el atributo siempre en NULL).
+  2. La respuesta de `get_inner()` tiene una forma distinta a la liviana: sin campo `parent` propio
+     (el padre viaja como atributo id=71, string) y sin `n_id` (sólo `id`) ni en bandejas ni en
+     conectores — encontrado recién al verificar en vivo contra la ODF real del ticket, después de
+     que los tests unitarios (con fixtures fabricadas a mano) pasaran en falso. `parse_odf_conectores`
+     soporta ambas formas.
+- **Decisión de diseño (brainstorming arquitectónico con el usuario, aprobado por secciones):**
+  tabla nueva `app.cromo_odf_conectores` (bandeja denormalizada, sin tabla propia — nunca se navega
+  "a" una bandeja sola). `pelo_n_id` referencia directo a `app.cromo_pelos.n_id` ya ingerido (sin
+  "ID dual" acá, confirmado real). Cuando el atributo directo de Cromo y el regex del pelo
+  coexisten y difieren, se guardan AMBOS: el mayor como `servicio_resuelto` (vigente), el menor como
+  `servicio_id_historico` (posible ID viejo) — mismo criterio MAX-based ID final de Servicios SLA,
+  decisión explícita del usuario. Cliente/Estado se resuelven contra `app.servicios` con el mismo
+  criterio anti-ambigüedad de `_SQL_BUSCAR_SERVICIO` (2026-08-31, entrada anterior) aplicado a
+  `servicio_resuelto` — no vía el match ya resuelto del pelo, que puede apuntar a un servicio
+  distinto cuando el atributo directo le gana al regex. Vista dedicada
+  `/infra/cromo/verificador/conectores` (mismo patrón que Empalmes de Botella), no una card inline
+  en el detalle de ODF.
+- **Verificado en vivo contra la ODF real del ticket** (tras reconstruir `lasfocasdev-web`/
+  `lasfocasdev-cromo-worker`): 48 conectores, 2 bandejas, conectores 15/16 con
+  `servicio_resuelto=61943`/`servicio_id_historico=41140`/Cliente "Banco Comafi SA"/Estado
+  "Activo" — exactamente el caso que motivó el ticket original.
+- **Impacto:** migración `20260831_01_cromo_odf_conectores.py`, `db/models/cromo.py`
+  (`CromoOdfConector`), `core/services/cromo/{modelos,parser,ingesta}.py`,
+  `core/services/cromo/odf_conectores.py` (nuevo), `web/app/main.py` (endpoint nuevo),
+  `web/frontend/src/{api/cromo.ts,router/index.ts,views/ConectoresOdfCromoView.vue (nuevo),
+  views/OdfDetalleCromoView.vue}`. Tests nuevos en `test_cromo_parser.py`, `test_cromo_ingesta.py`,
+  `test_cromo_odf_conectores.py`, `test_cromo_odf_conectores_real_db.py`,
+  `test_cromo_odf_conectores_ingesta_real_db.py`. Ejecutado con `superpowers:brainstorming`
+  (arquitectónico, aprobado por secciones) seguido de implementación directa (sin
+  subagent-driven-development, alcance ya bien acotado tras el brainstorming).
+- **Backfill retroactivo** (`scripts/cromo_backfill_conectores_odf.py`, mismo día, a pedido del
+  usuario): las ~7.955 ODFs ingeridas el 2026-08-28 (antes de que este submódulo existiera) no
+  tienen conectores hasta que se las reprocesa — mismo camino que `_procesar_odf_directo`
+  (`cliente.get_inner()` por ODF, sin re-tocar la fila propia de `cromo_odfs`), dry-run por
+  defecto, `--apply` explícito para persistir, `--solo-faltantes` para reanudar tras un corte.
+  Validado real contra Cromo (dry-run + `--apply` + `--solo-faltantes`, 10 ODFs reales de dev,
+  0 errores, hasta 288 conectores en una sola ODF). Estimación real de tiempo total para las
+  ~7.955: **varias horas** (una llamada de red por ODF, ~0,5-5 s cada una en la medición real) —
+  se recomienda correrlo detached (`docker exec -d`) y monitorear el log
+  (`Logs/dev/cromo_backfill_conectores_odf.log`, visible desde el host por el volumen ya montado
+  de `cromo_worker`), no en una sesión de terminal que pueda cortarse. Los dos helpers de
+  `_resolver_servicio_conectores`/`_mayor_menor_servicio_numero` de `ingesta.py` se hicieron
+  públicos (sin `_` inicial) al pasar a ser reusados por este script además de la ingesta.
+
+## 2026-08-31 (histórico de IDs + estado Baja/Activo) — Alias físico filtrado del histórico de IDs; catch-up histórico de Excel ya no degrada un servicio Activo
+
+- **Contexto:** el usuario reportó, sobre `ServicioDetalleView.vue`, que (1) el bloque "Histórico de
+  IDs" mostraba un alias raro tipo "C2" intercalado entre dos IDs numéricos, y (2) muchos servicios
+  figuran "Baja" cuando en realidad están de alta. Investigado con `superpowers:systematic-debugging`.
+- **Bug 1 (confirmado, fixeado)**: `Servicio.alias_ids` mezcla dos dominios sin distinguirlos — IDs
+  numéricos históricos de línea (los que arma `consolidar_identidad_servicio` en la ingesta SLA, ver
+  entrada 2026-08-26) y alias físicos de tracking FO tipo "C2"/"O1C1" que
+  `core/services/infra_service.py::execute_upgrade`/`_action_confirm_upgrade` agregan al mismo array
+  al confirmar un upgrade de pelo/hilo (extraídos del nombre del archivo de tracking subido). El
+  computed `historicoIds` de `ServicioDetalleView.vue` (Tarea 9 del plan de trazabilidad de IDs,
+  commit `41e7e71`) concatenaba todo `alias_ids` sin filtrar. Fix: filtrar a sólo valores `/^\d+$/`
+  antes de armar la cadena — un alias físico no es un ID de línea. Fix de presentación puro (no toca
+  DB), corrige retroactivamente todos los servicios con este patrón apenas se reconstruye
+  `lasfocasdev-web`.
+- **Bug 2 (investigado a fondo, SIN causa de código encontrada, NO fixeado retroactivamente sobre los
+  datos ya persistidos)**: `estado_servicio` es pass-through puro del último Excel SLA ingerido — sin
+  transformación/normalización/mapeo erróneo en todo el pipeline (verificado exhaustivo, back y
+  front). Encontrada una correlación real (65% de los "Baja" en dev tienen historial de upgrade de
+  línea vs 29.4% de los "Activo"), pero no prueba por sí sola un bug de código — también es
+  consistente con "los servicios más viejos churnean más" como patrón de negocio normal. Sólo 5 filas
+  en dev tienen una contradicción directa y verificable entre subsistemas (SLA dice Baja, pero el
+  módulo de tracking de Infra registró actividad física reciente) — el servicio del ejemplo original
+  del usuario es una de esas 5, pero no explica el patrón masivo. `app.servicios` no tiene columnas de
+  fecha para evaluar antigüedad del dato, y sólo hay un Excel real en el repo (todo "Activo", sin ese
+  servicio) — no hay forma de re-derivar retroactivamente cuáles de los ~4.534 "Baja" actuales son
+  incorrectos sin una fuente de verdad externa.
+- **Regla de negocio nueva, confirmada por el usuario (hacia adelante, no retroactiva)**: un Excel que
+  se ingiere y no aporta el ID de línea más alto ya conocido para esa familia (ej. un archivo
+  histórico subido más adelante para completar el encadenado de IDs) no puede degradar un servicio ya
+  "Activo" — sólo completa/relaciona el ID en `alias_ids`. Si el Excel sí aporta un ID más alto que el
+  conocido, es la fuente más vigente y su estado se respeta tal cual (incluida una "Baja" legítima).
+  Implementado en `core/services/servicios_consolidacion_service.py`: `IdentidadConsolidada` gana el
+  campo `avanza_por_excel: bool`, y una función pura nueva `resolver_estado_servicio(estado_actual,
+  estado_excel, avanza_identidad)`. Wireado en `api/app/routes/servicios.py::ingest_servicios`
+  (`existentes_stmt` ahora también trae `estado_servicio`). Ver `docs/db.md`, tabla `servicios`.
+- **Verificación:** TDD real — tests unitarios en `tests/test_servicios_consolidacion_service.py`
+  (RED confirmado con `ImportError` antes de implementar), 2 tests de integración nuevos en
+  `tests/test_servicios_ingest_routes.py` contra Postgres real, RED confirmado con `git stash` del
+  wiring del endpoint. Suite completa: 1281 passed, sólo 2 fallos preexistentes no relacionados
+  (`test_cromo_odf_inventario_real_db.py`, confirmado con el mismo `git stash`). E2E real contra
+  `lasfocasdev-api`/`-web` reconstruidos: servicio Activo con ID conocido mayor, ingesta de un Excel
+  con sólo un ID menor y "Baja" → quedó "Activo", el ID menor se completó en `alias_ids`. Datos de
+  prueba limpiados de dev al terminar.
+- **Pendiente real, no resuelto:** los ~4.534 servicios ya marcados "Baja" en dev siguen así — la
+  regla nueva sólo protege ingestas futuras. Si en algún momento se dispone de un Excel SLA actual
+  para re-ingestar, esa corrida quedaría protegida por esta regla y corregiría cualquier "Baja"
+  desactualizado de las familias que ese archivo cubra.
+
+## 2026-09-02 — Empalmes de Botella Cromo: falsos Splitters, no "ID dual" (premisa del ticket incorrecta, 3 causas raíz reales distintas)
+
+- **Contexto:** ticket reportó, con captura del Verificador Cromo (`/infra/cromo/verificador/empalmes?n_id=6639055`),
+  que Botellas con "ID dual" duplican registros de destino y clasifican fusiones 1 a 1 reales como
+  "Splitter 1-2", y que además fusiones normales se etiquetan como el imposible físico "Splitter
+  1-1". Hipótesis propuesta por el ticket: un `JOIN`/producto cartesiano en `empalmes.py`/
+  `id_dual_resolver.py` causado por el fenómeno "ID dual" (hist[]/next_id) ya conocido para Cables.
+- **Premisa del ticket NO confirmada — investigado con `superpowers:systematic-debugging` contra
+  `lasfocasdev-postgres` real antes de tocar código (mismo criterio que la entrada "2026-08-22 (cont.
+  3)" de arriba, donde otra hipótesis de "ID dual" tampoco resultó ser la causa real):**
+  `id_dual_resolver.py` no interviene en absoluto en `empalmes.py` — ese resolver sólo se usa hoy
+  para Cables en vivo contra la API de Cromo (`repoblacion_service.py`); `empalmes.py` lee
+  exclusivamente tablas ya ingeridas (`cromo_fusiones`/`cromo_pelos`/`cromo_cables`), nunca llama a
+  Cromo. La botella del ticket (n_id=6639055) no tiene ningún par "ID dual" real asociado. Los falsos
+  "Splitter" tienen 3 causas raíz reales y distintas, ninguna relacionada con id_dual_resolver:
+  1. **Fuga entre botellas adyacentes:** el `WHERE` de `_SQL_EMPALMES_DE_BOTELLA` OR'aba sin guarda el
+     filtro directo (`f.botella_n_id = :botella_n_id`) con un fallback indirecto por cable extremo. Un
+     cable "de paso" que es extremo de 2 botellas distintas (real: "F-822-ARSA", extremo A en botella
+     6634842 y extremo B en 6639055) filtraba fusiones de la botella ADYACENTE. El fallback existía
+     porque un sondeo de 2026-08-22 (sólo 5 filas de `cromo_fusiones` en todo el ambiente en ese
+     momento) había concluido que `botella_n_id` "nunca viene poblado en la práctica" — verificado
+     ahora que esa premisa quedó obsoleta: 530.206 de 530.208 filas (99.9996%) lo tienen poblado.
+     Fix: `botella_n_id` pasa a ser el filtro autoritativo; el fallback queda gateado por
+     `f.botella_n_id IS NULL`.
+  2. **Fusiones duplicadas en la ingesta:** la misma fusión física (idéntico par de pelos) ingerida
+     más de una vez bajo `fusion.n_id` distintos (real: botella_n_id=9450157, 12 pares de pelos cada
+     uno bajo 3 `n_id` de fusión). Fix: `_deduplicar_legs` colapsa por par de pelos antes de contar
+     apariciones.
+  3. **`splitter_ratio` subestimado:** sólo contaba patas con destino RESUELTO, no patas reales —
+     una pata colgada real (componente Splitter que Cromo no modela como pelo, ej. "S4-6") quedaba
+     fuera del conteo, produciendo el imposible físico "Splitter 1-1" (real: botella_n_id=6632435,
+     pelo 7056127). Fix: el ratio cuenta patas reales (`ramas`); un grupo que termina con una sola
+     pata real (caso adicional real encontrado en la misma botella: 2 pelos compitiendo por la única
+     pata resuelta de un puente compartido) se disuelve y cae al mismo tratamiento que una pata
+     aislada, nunca a ratio 1.
+- **Frontend sin cambios:** el paso 5 propuesto por el ticket (revisar rowspans en
+  `EmpalmesBotellaCromoView.vue`) no aplicaba — el componente actual no usa rowspans, agrupa cada
+  Splitter en una única fila con sus patas apiladas en una celda `colspan`. El contrato de la API
+  (`es_splitter`/`splitter_destinos`/`splitter_ratio`) no cambió de forma, sólo los valores.
+- **Verificación:** TDD real (4 tests nuevos en `tests/test_cromo_empalmes.py`, RED confirmado antes
+  de cada fix, 8/8 passed). Verificado además en vivo contra `lasfocasdev-postgres`/`lasfocasdev-web`
+  reconstruido: las 3 botellas reales de diagnóstico (6639055, 9450157, 6632435) dan el resultado
+  esperado, y una muestra de 300 botellas reales (269 Splitters detectados) no tiene ningún ratio
+  inválido remanente. Plan de consulta corregido (`EXPLAIN ANALYZE`) usa `ix_cromo_fusiones_botella`
+  y ejecuta en ~3ms — performance igual o mejor que antes del fix.
+- **Impacto:** `core/services/cromo/empalmes.py` (SQL + `_deduplicar_legs` nuevo + `_agrupar_splitters`),
+  `tests/test_cromo_empalmes.py`, `docs/modulo_ingesta_cromo.md`, `docs/decisiones.md`. Sin cambios en
+  `web/app/main.py` ni en el frontend — el contrato de la API no cambió de forma.
+- **Pendiente real, no resuelto:** no se auditó si el mismo patrón de fuga entre botellas adyacentes
+  (cable de paso, extremo de 2 botellas) afecta a otras consultas de `verificador.py`/`detalle.py`
+  que también usan `_SQL_CABLES_DE_BOTELLA` — fuera del alcance de este ticket, que era específico a
+  `empalmes.py`.
+
+## 2026-09-02 (cont.) — Integración con la API PROV: coexistencia con Excel, tabla de historial nueva pese a la decisión previa de reusar `alias_ids`, y sin rate limiter distribuido
+
+- **Contexto:** Servicios SLA sólo se enriquecía manualmente vía `POST /servicios/ingest` (Excel).
+  Existe una API interna, PROV (`API_Contexto_Servicio`), que devuelve el detalle completo de un
+  servicio por número: cliente, dirección, equipos de última milla y la cadena completa de upgrades
+  de ID con fecha/estado/motivo. Ejecutado vía `superpowers:subagent-driven-development` (12 tareas:
+  originalmente 11, y la nueva se insertó como 11ª a mitad de ejecución tras un gap real encontrado
+  en la revisión de la 10ª —empujando la Task 11 original a Task 12—, ver más abajo). Diseño
+  en `docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md`, plan en
+  `docs/superpowers/plans/2026-09-02-servicios-prov-integracion.md`.
+- **Decisión 1 (coexistencia, no reemplazo):** `POST /servicios/ingest` (Excel) queda intacto, sin
+  ningún cambio de comportamiento — la integración PROV es un flujo nuevo y paralelo
+  (`POST /servicios/prov/refrescar` on-demand + `scripts/servicios_backfill_prov.py` masivo), ambos
+  reusando **sin modificar** `consolidar_identidad_servicio`/`resolver_estado_servicio`/
+  `es_verificable_por_tipo_y_estado` de `core/services/servicios_consolidacion_service.py` — esas
+  funciones ya eran agnósticas de la fuente. Retirar el flujo Excel queda explícitamente fuera de
+  alcance; no hay fecha ni condición fijada para hacerlo.
+- **Decisión 2 (tabla nueva `ServicioHistorialId`, no reusar `alias_ids`):** el plan
+  `docs/superpowers/plans/2026-08-25-servicios-trazabilidad-ids.md` había decidido explícitamente
+  ("Global Constraints", 2026-08-25) **no** crear tabla ni migración nueva para el histórico de IDs de
+  un Servicio, reusando `alias_ids` (`ARRAY(String(64))`) — decisión que se sostuvo en la
+  implementación resultante (`docs/decisiones.md`, entrada 2026-08-26). Esa decisión seguía vigente
+  para lo que resuelve el Excel: `alias_ids` es y sigue siendo la fuente que consulta
+  `consolidar_identidad_servicio` y el matching Cromo↔Servicio, sin cambios. Pero PROV trae algo que
+  el Excel nunca trajo: por cada eslabón de la cadena de upgrades, `cadena_upgrade[*]` incluye
+  `fecha_instalacion`, `fecha_baja`, `estado_comercial` y `motivo_baja` — un `ARRAY(String)` plano no
+  puede guardar 4 campos estructurados por entrada. La distinción no es "PROV sí necesita una tabla y
+  el Excel no": es que el dato de origen cambió de forma (una lista plana de IDs vs. una cadena de
+  eventos con fecha/estado/motivo), y el modelo de datos tiene que seguir esa forma. Se creó
+  `app.servicios_historial_id` (`ServicioHistorialId`, ver `docs/db.md`) sin tocar `alias_ids` — ambas
+  coexisten con roles distintos: `alias_ids` sigue siendo la fuente de matching/identidad,
+  `servicios_historial_id` es la vista enriquecida para el Timeline del frontend
+  (`ServiceTimeline.vue`). Misma tabla de traducción para `ServicioEquipoUltimaMilla` (última milla),
+  que no tenía ningún equivalente previo en el esquema.
+- **Decisión 3 (rate limiting in-process, no distribuido):** el cliente PROV
+  (`core/services/prov/`) nunca supera 5 req/s, forzado por un `AsyncRateLimiter` propio de pacing
+  uniforme (cada turno se espacia `1/rate_per_second` segundos del anterior, sin permitir ráfagas —
+  no es un token bucket con capacidad, que sí las permitiría). Se buscó `Semaphore`/`rate_limit`/
+  `throttle` reutilizable para este cliente async sin encontrar nada equivalente (el único throttle
+  ya existente en el repo, `_login_rate_limit_key` en `web/app/main.py`, es un contador sync por
+  IP/usuario para intentos de login — forma distinta, no aplicable a pacing de un cliente HTTP
+  async). Se decidió explícitamente **no** construir un limiter distribuido
+  (Redis) entre el proceso de la API (`uvicorn` sin `--workers`, un único worker — confirmado en
+  `api/Dockerfile:32`) y el proceso aparte del backfill (`scripts/servicios_backfill_prov.py`):
+  sobre-ingeniería para el volumen esperado. **Riesgo operativo aceptado, no resuelto con
+  infraestructura:** si el backfill masivo corriera a la vez que uso interactivo intensivo del botón
+  "Actualizar desde PROV", el máximo combinado teórico sube a ~10 req/s — se documenta como
+  recomendación (no como gate técnico) no correr el backfill en horario de uso intensivo.
+- **Gap real encontrado durante la ejecución (Task 11, insertada a mitad del plan):** las Tasks 1-10
+  nunca tocaron `web/app/main.py` porque ninguna exploración previa relevó que el contenedor `web`
+  expone su propio FastAPI que proxya **a mano, ruta por ruta**, cada endpoint de `/api/servicios/*`
+  que consume el frontend — no existe un proxy genérico `/api/{path:path}`. El endpoint nuevo del
+  Task 6 (`POST /servicios/prov/refrescar` en `api/app/routes/servicios.py`) nunca tuvo su
+  contraparte proxy en `web/app/main.py`, así que el botón "Actualizar desde PROV" no funcionaba en
+  un navegador real pese a que backend y frontend, cada uno por separado, estaban correctos —
+  confirmado con curl real contra `lasfocasdev-web` durante la revisión del Task 10. Al diseñar el
+  proxy se encontró un segundo bug real en la misma cadena: `refrescarServicioDesdeProv`
+  (`web/frontend/src/api/servicios.ts`) pasaba `csrf: true` sin un `json`, y `request()`
+  (`web/frontend/src/api/client.ts`) sólo inyecta `csrf_token` en el body cuando `json` es un objeto
+  truthy — sin `json: {}`, el POST salía sin body y el proxy nuevo lo hubiera rechazado con "CSRF
+  inválido". Ambos se corrigieron en la Task 11 (commit `7147b61`), verificado con curl real
+  post-rebuild (401 "No autenticado" sin cookie de sesión, no 404/405, confirmando que la ruta quedó
+  bien cableada). **Nota para futuras integraciones:** cualquier endpoint nuevo bajo
+  `api/app/routes/servicios.py` (u otro router expuesto al frontend) necesita su proxy explícito en
+  `web/app/main.py` — agregarlo no es automático ni implícito en el registro del router del backend.
+- **Decisión 4 (el refresco es `_require_auth`, no `_require_admin`):** el proxy
+  `POST /api/servicios/prov/refrescar` (`web/app/main.py::servicio_prov_refrescar_web`) queda
+  abierto a **cualquier usuario autenticado**, a diferencia de sus vecinos
+  `servicio_categoria_web`/`servicio_verificable_web`, que sí son `_require_admin`. La diferencia es
+  qué puede hacer el caller: esos dos dejan a un admin **fijar un valor arbitrario** (Nivel Cliente,
+  verificabilidad), mientras que "Actualizar desde PROV" sólo dispara una resincronización **desde
+  la fuente de verdad externa** — el caller no elige ningún valor, PROV los dicta. Se hereda de cómo
+  se construyó el botón en `ServicioDetalleView.vue` (nunca estuvo condicionado a `isAdmin`) y se
+  registra acá como **decisión deliberada, no un descuido**. Si en el futuro el refresco pudiera
+  pisar correcciones manuales de un admin (hoy respeta `es_verificable_override`), habría que
+  revisar este criterio.
+- **Decisión 5 (el ID vigente lo decide `consolidar_identidad_servicio`, no PROV):** el diseño
+  (`docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md`, tabla de mapeos) dice
+  que `nro_servicio` de PROV es "siempre el vigente" y lo mapea directo a `Servicio.servicio_id`.
+  Lo que se implementó es más conservador y es el comportamiento intencional: el `nro_servicio` de
+  PROV entra como un candidato más a `consolidar_identidad_servicio` (reusada **sin modificar**, por
+  la restricción global de este plan de no tocar `core/services/servicios_consolidacion_service.py`),
+  que elige el **máximo numérico de TODOS los IDs conocidos** — los de PROV más los alias/IDs
+  numéricos que la fila ya tenga en la DB. En la enorme mayoría de los casos reales coinciden (el
+  vigente de PROV ES el número más alto conocido); si la DB ya tuviera un alias numérico MÁS alto
+  que lo que reporta PROV, gana el de la DB y la respuesta de PROV no se fuerza. Reusar la lógica ya
+  probada (y su regla "el ID más alto es el vigente", confirmada con el usuario en 2026-08-26) es
+  preferible a introducir una segunda regla de identidad sólo para PROV; la tabla del diseño era
+  simplemente demasiado absoluta.
+- **Decisión 6 (colisión de `servicio_id`: degradar, nunca fusionar dos filas reales):** encontrada
+  en la revisión final de rama. `app.servicios.servicio_id` tiene índice UNIQUE, así que si el ID
+  vigente que calcula la consolidación ya lo ocupa otra fila, escribirlo revienta el commit
+  (`duplicate key value violates unique constraint "ix_servicios_servicio_id"`, reproducido en un
+  test de integración real). `ingerir_contexto_prov` chequea antes de asignar y, si hay colisión,
+  aplica **el mismo criterio que ya usa la ingesta Excel** (`api/app/routes/servicios.py`, sección
+  "Fusión de placeholders Cromo puros"): conserva su `servicio_id`, avanza igual `numero_linea` (que
+  no tiene UNIQUE), baja el ID rechazado a `alias_ids` y loguea
+  `evento=servicio_id_colision_no_fusionable`. **No** se portó la fusión de placeholders Cromo puros
+  del camino Excel: esa resuelve dos filas del MISMO batch de un Excel y no aplica a un refresco
+  fila-por-fila. Fusionar dos registros reales sin confirmación humana sigue estando fuera de alcance
+  a propósito, igual que en el camino Excel. **Costo operativo no mencionado inicialmente:** tras una
+  degradación, el ID rechazado queda ambiguo para búsquedas futuras — vive como `numero_linea` de la
+  fila degradada Y como `servicio_id` de la fila que ya lo ocupaba. `_buscar_servicio_por_id` (que
+  matchea por `OR` sobre `numero_primer_servicio`/`numero_linea`/`servicio_id` con
+  `order_by(id.desc()).limit(1)`) resolvería una búsqueda de ese valor eligiendo arbitrariamente la
+  fila de `id` más alto. Mismo costo que ya tiene el camino Excel (no es una regresión de esta
+  integración), sólo quedaba sin explicitar acá.
+- **Limitaciones conocidas — resueltas en una pasada de seguimiento (ver spec/plan de esta
+  sesión):**
+  1. **La llamada a PROV ya no ocurre con una sesión/transacción de DB abierta.**
+     `refrescar_servicio_desde_prov` dejó de usar `Depends(get_async_db)`: abre una sesión corta
+     (`AsyncSessionLocal`) sólo para el lookup inicial, la cierra antes de llamar a PROV, y abre una
+     segunda sesión recién para escribir/commitear. Además, esta llamada puntual acota sus
+     reintentos a `_PROV_REFRESCAR_MAX_REINTENTOS=1` (peor caso ~61s en vez de ~127s) vía el nuevo
+     kwarg `max_reintentos` de `ProvClient.obtener_contexto_servicio`/`_get` (el backfill sigue sin
+     pasarlo, usa el default `_REINTENTOS_MAX=3`). El proxy de `web/app/main.py` subió su timeout de
+     30s a 70s en esta ruta específica, con margen sobre el nuevo peor caso.
+  2. **El `ProvClient` singleton ahora cierra su `httpx.AsyncClient` al apagar la API.** Se agregó
+     `cerrar_prov_client()` (sólo actúa si el singleton llegó a instanciarse, para no reventar con
+     `ProvConfigError` en un entorno sin PROV configurado) conectado vía un `lifespan` de
+     `api/app/main.py` — el repo ya tenía precedente de `lifespan` en otros servicios
+     (`office_service/app/main.py`, workers de Cromo/Botellas), sólo faltaba en `api/app/main.py`.
+- **No hecho / pendiente:** secrets y bloque de compose de producción para PROV (sólo dev tiene
+  `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` y el bloque `secrets:` de
+  `deploy/docker-compose.dev.yml`) — sin ventana de despliegue en el alcance de esta integración,
+  proyecto en modo "solo dev" salvo aviso puntual. Mientras ese estado siga, el endpoint responde
+  `503 "PROV no está configurado en este entorno"` en prod (captura de `ProvConfigError`, agregada en
+  la revisión final) en vez de un 500 sin manejar. Ingesta de Reclamos/Ingresos/Mantenimientos al
+  Timeline: el tipo `TimelineEvent` y `ServiceTimeline.vue` ya admiten esos `tipo`s, pero no se
+  implementó ninguna fuente de datos para ellos todavía.
+- **Impacto:** paquete nuevo `core/services/prov/` (`config.py`, `rate_limiter.py`, `client.py`,
+  `ingesta.py`), migración `20260902_01` (tablas + enum `INGEST_PROV`), endpoint
+  `POST /servicios/prov/refrescar` + extensión de `GET /servicios/detail`, su proxy en
+  `web/app/main.py`, script `scripts/servicios_backfill_prov.py`, frontend
+  (`web/frontend/src/types/timeline.ts`, `components/servicios/ServiceTimeline.vue`, integración en
+  `ServicioDetalleView.vue`). Ver `docs/PR/2026-09-02.md` para comandos ejecutados y detalle de
+  impacto/riesgos.
+
+## 2026-09-03 — Reconciliación de Botellas críticas en prod + descubrimiento de que `main` no es la base real de los contenedores productivos
+
+- **Contexto:** El usuario pidió, contra producción: (a) banear las Botellas listadas en
+  `docs/Doc Privada/Criticas en seguimiento.xlsx` (hoja "Criticas al 02092026", 57 filas) y liberar
+  el resto del inventario, y (b) llevar a prod el fix de baneos-hermanos ya validado en dev
+  (`99a2306`, 2026-08-28).
+- **Hallazgo real que cambió el diseño de (a):** prod está en migración `20260810_01` — anterior a
+  `cromo_botellas.camara_id`/`estado` (2026-08-12). La tabla Cromo en prod no tiene esa columna, así
+  que el matching no puede pasar por Cromo (como hace `procesar_ingesta_camaras` en dev). Los 57
+  `nombre_botella` del Excel matchearon **100% exacto** contra `app.camaras.nombre` (legado) — cubren
+  56 Cámaras raíz distintas (dos filas del Excel comparten el mismo nombre). Como `aplicar_estado_a_grupo`
+  ya está en el código corriendo hoy en `lasfocas-web`, esta parte **no requirió ningún rebuild**.
+- **Decisión — alcance de "liberar el resto" (confirmado explícitamente por el usuario):** forzar a
+  `LIBRE` todo lo que no esté en la lista crítica, sin excepción de estado (`BANEADA`/`DETECTADA`),
+  salvo dos guardrails no negociables: nunca tocar `PENDIENTE_REVISION` (se elimina después desde la
+  UI, pedido explícito) y nunca liberar una Cámara/grupo bajo un incidente activo real
+  (`get_camara_estado_contexto(...).tiene_baneo_activo` — hoy 0 incidentes activos en prod).
+- **Ejecución:** script de uso único (`docker cp` a `lasfocas-web:/tmp/`, `PYTHONPATH=/app`, mismo
+  `SessionLocal`/código real), dry-run revisado con el usuario antes de aplicar, luego `--apply` con
+  commit real vía `aplicar_estado_a_grupo` (nunca `UPDATE` directo, auditoría completa en
+  `CamaraEstadoAuditoria`). Resultado verificado contra la DB real: 3 Cámaras → `BANEADA` (2 `LIBRE`→
+  `BANEADA`, 1 `DETECTADA`→`BANEADA`), 938 → `LIBRE` (44 `BANEADA`→`LIBRE` reales, 894 `DETECTADA`→
+  `LIBRE`), 565 `PENDIENTE_REVISION` intactas, 794 sin cambio. Script borrado del contenedor al
+  terminar.
+- **Hallazgo de proceso, no buscado — `main` no es la base real de prod:** al preparar (b) se
+  encontró que `main` (HEAD `657b239`, 2026-07-29, fecha de la migración Nocturne) **no** es de donde
+  salieron las imágenes `lasfocas-web`/`api`/`slack-baneo-worker` (construidas 2026-08-11). La
+  migración aplicada en prod (`20260810_01`) coincide exacto con el commit de `dev` `dc1a4a4`/`1618b06`
+  (2026-08-10) — nunca mergeado a `main`. Es decir: en algún momento se construyeron las imágenes de
+  prod directo desde un commit de `dev`, sin pasar por `main`. Documentado acá porque cualquier futuro
+  "qué corre en prod" debe partir de comparar contra el commit real (`docker inspect` + versión de
+  migración), no asumir que `main` refleja el estado desplegado.
+- **Preparación de (b), sin aplicar todavía:** rama `fix-baneos-hermanos-prod` creada desde `dc1a4a4`
+  (no desde `main`), con cherry-pick de `041f46d` (2026-08-23, gap Cromo en
+  `get_camaras_for_servicio`/`_camara_tiene_otro_baneo_activo` — necesario porque `99a2306` depende de
+  esas dos funciones) + `99a2306`. 3 conflictos reales resueltos a mano (`core/services/cromo/verificador.py`,
+  su test y este mismo archivo) — en los tres casos el conflicto era contenido de OTRAS features
+  (dashboard de duplicados, tarjeta "Cables asociados") que mutaron esos archivos entre el 08-10 y
+  estos commits; se descartó ese contenido no relacionado y se dejó sólo lo que estos 2 commits
+  aportan. 39/39 tests (`test_protection_service.py` + `test_cromo_verificador.py`) pasando. Rama
+  pusheada a `origin/fix-baneos-hermanos-prod` (no a `main`) — **el usuario decidió posponer el
+  merge/build/restart de prod a una ventana de mantenimiento**, queda pendiente: mergear a `main`,
+  push, rebuild + restart de `lasfocas-web`/`api`/`slack-baneo-worker`.
+- **Impacto:** 941 filas reales de `app.camaras` mutadas en prod (auditadas en
+  `camaras_estado_auditoria`); ningún cambio de código en `dev`/`main` todavía (la rama del fix queda
+  en `origin/fix-baneos-hermanos-prod` a la espera de la ventana de mantenimiento).
+
+## 2026-09-07 — Plan de sincronización main/prod y corte de datos Cromo
+
+- **Contexto:** Continuación directa del hallazgo del 2026-09-03: `main` sigue congelado en `657b239`
+  (2026-07-29) mientras prod corre un estado compuesto de `dev` (`dc1a4a4` app/DB + `c2c1d70` infra,
+  10/11-ago) nunca mergeado — 16 migraciones Alembic atrás de `dev` (`20260810_01` vs `20260904_01`),
+  y `deploy/compose.yml` (el compose real de prod) sin el servicio `cromo_worker` ni los secrets de
+  Cromo/PROV. Mientras tanto `dev` acumuló 238 commits y 941 MB de datos Cromo reales (`focas_dev`)
+  contra 13 MB en `lasfocas` (prod), que además sigue creando Cámaras `PENDIENTE_REVISION` legado
+  (582 filas al 2026-09-07, subiendo desde las 565 del 2026-09-03) porque corre código anterior al
+  retiro de ese flujo.
+- **Decisión (confirmada explícitamente por el usuario):** cerrar la brecha con un único PR
+  `dev`→`main`, reconstruir el stack completo de prod con ese código, y reemplazar el dataset
+  operativo de prod (ODFs/Botellas/Servicios/Cables/Cromo) por el de `dev`, preservando únicamente
+  los baneos reales activos de prod (se reconcilian después del restore vía `aplicar_estado_a_grupo`,
+  nunca `UPDATE` directo — mismo patrón que la reconciliación del 09-03). Credenciales Cromo: misma
+  cuenta real que ya usa `dev`. PROV: se provisionan credenciales reales de producción como parte de
+  este despliegue (antes no existían). La rama `fix-baneos-hermanos-prod` queda redundante (sus 2
+  fixes ya son nativos en `dev`) y se cierra una vez confirmado que el merge a `main` los incluye.
+- **Alternativas consideradas:** re-ingesta en vivo de Cromo directo en prod contra la API real (más
+  "correcto" respecto a "Cromo es la fuente de verdad", pero una corrida inicial completa en dev tardó
+  ~9.5 h) — descartada por el usuario a favor de copiar el dataset ya consolidado de `dev`.
+  Cámaras `PENDIENTE_REVISION`: exportadas primero a un `.txt` (texto crudo tal cual lo escribió el
+  técnico, para auditar el formato de sus anuncios) antes de que el restore las borre — `dev` tiene
+  0 filas en ese estado.
+- **Plan de ejecución completo:**
+  `docs/superpowers/plans/2026-09-07-produccion-sync-main-cromo.md`.
+- **Impacto:** downtime real estimado 10-15 min durante la ventana de mantenimiento (más servicios que
+  el precedente de sólo-Redis). Requiere backup completo de `lasfocas` antes de tocar nada y snapshot
+  de baneos activos por clave de negocio estable (no ID serial) para poder reaplicarlos post-restore.

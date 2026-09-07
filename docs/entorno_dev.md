@@ -8,7 +8,7 @@
 
 > **Nunca probar directamente en producción.**
 >
-> Todo trabajo de exploración, feature, bug-fix o experimento se realiza sobre la rama `dev` y el stack `lasfocasdev`. Los cambios solo llegan a producción (`main` / stack `lasfocas`) mediante Pull Request revisado.
+> Todo trabajo de exploración, feature, bug-fix o experimento se realiza sobre una rama efímera creada desde `dev` (stack `lasfocasdev`); nunca se commitea directo en `dev`. Los cambios llegan a `dev` vía `cierre-sesion`, y a producción (`main` / stack `lasfocas`) solo mediante Pull Request revisado.
 
 ---
 
@@ -17,20 +17,24 @@
 ```
 main  ──────────────────────────────────────►  producción (172.18.208.162:8080)
   └─ dev  ──────────────────────────────────►  desarrollo  (localhost:8090)
-       └─ feature/xxx  ──────────────────────►  (opcional, para features largas)
+       └─ <tipo>/<slug> (obligatoria)  ─────►  rama efímera por tarea/sesión
 ```
 
 | Rama | Propósito | Stack |
 |------|-----------|-------|
 | `main` | Refleja exactamente lo que corre en producción. **Protegida.** | `lasfocas` (`compose.yml`) |
-| `dev` | Rama de trabajo habitual. Recibe todos los commits nuevos. | `lasfocasdev` (`docker-compose.dev.yml`) |
-| `feature/xxx` | Opcional, para features largas. Mergear a `dev`, nunca directo a `main`. | `lasfocasdev` |
+| `dev` | Rama de integración. Recibe únicamente merges automáticos de ramas efímeras vía `cierre-sesion`, nunca commits directos de agentes. | `lasfocasdev` (`docker-compose.dev.yml`) |
+| `<tipo>/<slug>` | **Obligatoria** para todo cambio (`feat/`, `fix/`, `docs/`, `chore/`, `refactor/`, `test/`). Creada automáticamente por `dev-workflow` desde `origin/dev`; integrada a `dev` automáticamente por `cierre-sesion` al cerrar la sesión. Nunca commit directo en `dev`/`main`. | `lasfocasdev` |
 
 ---
 
 ## Stack de desarrollo (Docker)
 
 El entorno dev corre en paralelo al productivo sin compartir puertos, volúmenes ni red.
+
+### Red Docker
+
+La red `lasfocas_dev_net` usa una subred explícita **`172.19.0.0/24`** (no el default `/16` que asigna Docker) para evitar que la ruta conectada del bridge "secuestre" tráfico hacia hosts externos reales que caigan dentro del mismo bloque `/16` (ver `docs/decisiones.md`, entrada 2026-08-05). Si se agrega una nueva red Docker a este repo, declarar siempre `ipam.config.subnet` explícito en vez de dejar que Docker asigne un `/16` por default.
 
 ### Puertos
 
@@ -39,7 +43,7 @@ El entorno dev corre en paralelo al productivo sin compartir puertos, volúmenes
 | PostgreSQL           | `127.0.0.1:5432`             | `127.0.0.1:5433`    |
 | API (docs: `/docs`)  | `:8001`                      | `:8011`             |
 | Web (panel)          | `172.18.208.162:8080`        | `127.0.0.1:8090`    |
-| pgAdmin (profile)    | `:5050`                      | `:5051`             |
+| pgAdmin (profile)    | `127.0.0.1:5050`             | `127.0.0.1:5051`    |
 | NLP / Office / Slack | interno                      | interno             |
 
 El panel dev está vinculado a `127.0.0.1:8090`. Para acceso desde una máquina remota:
@@ -60,6 +64,12 @@ git checkout dev
 git checkout -b dev
 git push -u origin dev
 ```
+
+> Esto es el setup inicial del repositorio en sí (crear la rama compartida `dev` si todavía no
+> existe), **no** el flujo de trabajo por tarea: nunca se commitea directo en `dev`. La rama de
+> trabajo de cada tarea es una rama efímera (`feat|fix|docs|chore|refactor|test/<slug>`) que crea
+> `dev-workflow` desde `origin/dev`, y que `cierre-sesion` integra de vuelta a `dev` al cerrar la
+> sesión.
 
 ### 2. Configurar variables de entorno dev y secretos
 
@@ -143,22 +153,25 @@ docker compose -f deploy/docker-compose.dev.yml logs -f slack_baneo_worker
 
 - Panel web: `http://localhost:8090/`
 - API docs (Swagger): `http://localhost:8011/docs`
-- pgAdmin: `docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d` → `http://localhost:5051`
+- pgAdmin: `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev --profile pgadmin up -d pgadmin` → `http://localhost:5051` (solo loopback). Requiere `PGADMIN_EMAIL` seteado en `.env.dev` y el secreto `.secrets/Dev_pgadmin_password_v1.txt` generado por `./scripts/setup_local_secrets.sh` — la password ya no es `admin`/`admin` hardcodeada, ver `docs/decisiones.md` entrada 2026-08-11.
 
 ---
 
-## Flujo de commits en rama dev
+## Flujo de commits en rama efímera
 
 ```bash
-# 1. Asegurarse de estar en dev
-git checkout dev
+# 1. dev-workflow crea o reutiliza la rama efímera desde origin/dev
+#    (formato <tipo>/<slug>, p. ej. feat/mi-cambio)
 
 # 2. Hacer los cambios...
 
-# 3. Staging y commit
+# 3. Staging y commit sobre la rama efímera
 git add .
 git commit -m "feat(módulo): descripción técnica del cambio"
-git push origin dev
+git push -u origin HEAD
+
+# 4. dev sólo recibe el merge final, ejecutado automáticamente por cierre-sesion
+#    al cerrar la sesión. Nunca commitear ni pushear directo a dev/main.
 ```
 
 ### Convención de commits
@@ -208,19 +221,19 @@ git push origin dev
 
 Ver `.github/skills/dev-workflow/SKILL.md` para el protocolo completo. Reglas mínimas:
 
-1. Verificar que la rama activa sea `dev` antes de modificar código: `git branch --show-current`.
+1. Trabajar siempre sobre una rama efímera `<tipo>/<slug>` creada desde `origin/dev` — nunca commitear directo en `dev` ni en `main`. `dev-workflow` crea o reutiliza esa rama automáticamente al inicio de la sesión/tarea.
 2. No modificar `deploy/compose.yml`, `.env` ni ningún archivo de producción sin aprobación explícita.
 3. Usar siempre `docker compose -f deploy/docker-compose.dev.yml` para operaciones Docker en dev.
-4. Hacer push siempre a `origin/dev`, nunca directo a `origin/main`.
-5. Los merges a `main` se hacen solo mediante PR revisado.
+4. Hacer push siempre a la rama efímera activa (`git push -u origin HEAD`), nunca directo a `origin/dev` ni `origin/main`.
+5. La integración a `dev` es automática al cierre de sesión (`cierre-sesion`), que mergea la rama efímera. Los merges de `dev` a `main` se hacen solo mediante PR revisado.
 
 ---
 
 ## Limitaciones conocidas
 
-### Panel admin y docker.sock
+### Panel admin y control del worker de baneos
 
-El servicio `web` monta `/var/run/docker.sock` para controlar contenedores desde el panel admin. En producción busca `lasfocas-slack-baneo-worker`. En dev el contenedor es `lasfocasdev-slack-baneo-worker`, por lo que el toggle admin del panel dev no controla el worker dev vía socket. El worker funciona autónomamente sin problema.
+El panel admin controla el contenedor `slack_baneo_worker` sin montar `/var/run/docker.sock` en `web` (desde 2026-08-11): `web` habla con `docker-socket-proxy` (`tecnativa/docker-socket-proxy`, red dedicada `docker_proxy_dev_net`), acotado a `containers.get`/`.start`/`.reload` sobre un único contenedor — ver `docs/decisiones.md`, entrada 2026-08-11. En producción el panel busca `lasfocas-slack-baneo-worker`; en dev el contenedor es `lasfocasdev-slack-baneo-worker`, por lo que el toggle admin del panel dev sigue sin controlar el worker dev por nombre (limitación preexistente, no relacionada al proxy). El worker funciona autónomamente sin problema en ambos casos.
 
 ### Slack App de desarrollo
 

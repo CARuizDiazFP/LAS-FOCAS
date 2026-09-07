@@ -26,11 +26,15 @@ RUN pip install --no-cache-dir -r /tmp/web-requirements.txt \
 COPY web/app /app/app
 COPY web/tools /app/web/tools
 COPY web/chat_ws.py /app/web/chat_ws.py
+COPY web/admin_ws.py /app/web/admin_ws.py
 # Incluir paquete core para logging centralizado
 COPY core /app/core
 COPY modules /app/modules
 COPY db /app/db
 COPY --from=web-build /frontend/dist /app/frontend/dist
+
+RUN chown -R focas:focas /app
+USER focas
 
 EXPOSE 8080
 

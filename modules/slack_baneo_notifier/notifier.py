@@ -10,48 +10,59 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from core.services.baneos_grupos_service import listar_grupos_baneados
 from core.utils.tz import TZ_ARG, ahora_local, fmt_local
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.orm import Session
 
-from db.models.infra import Camara, CamaraEstado
+from db.models.infra import Camara
 
 logger = logging.getLogger("slack_baneo_worker.notifier")
 
 
 def generar_excel_baneadas(session: Session) -> tuple[int, io.BytesIO | None, str]:
-    """Consulta cámaras baneadas y genera un Excel en memoria.
+    """Consulta grupos de Cámaras baneadas (agrupados por Cámara padre — ver
+    `core/services/baneos_grupos_service.py::listar_grupos_baneados`) y genera un Excel en memoria,
+    una fila por grupo (no por Botella individual — evita filas redundantes del mismo incidente
+    físico).
 
     Returns:
-        Tupla (cantidad, buffer_excel_o_None, nombre_archivo).
-        Si no hay cámaras baneadas, buffer es None.
+        Tupla (cantidad_de_grupos, buffer_excel_o_None, nombre_archivo).
+        Si no hay grupos baneados, buffer es None.
     """
-    camaras = (
-        session.query(Camara)
-        .filter(Camara.estado == CamaraEstado.BANEADA)
-        .order_by(Camara.nombre)
-        .all()
-    )
+    resultado = listar_grupos_baneados(session, limit=None, incluir_contexto=False)
+    grupos = resultado.grupos
 
-    cantidad = len(camaras)
+    cantidad = len(grupos)
     ahora = ahora_local()
     nombre_archivo = f"camaras_baneadas_{ahora:%Y%m%d_%H%M}.xlsx"
 
     if cantidad == 0:
         return cantidad, None, nombre_archivo
 
+    # `GrupoBaneado` no trae latitud/longitud/last_update (el panel interactivo no las necesita) —
+    # se completan acá con una query propia y liviana, sólo para las filas del Excel.
+    ids = [g.camara_id for g in grupos]
+    extra = {c.id: c for c in session.query(Camara).filter(Camara.id.in_(ids)).all()}
+
     rows = [
         {
-            "ID": c.id,
-            "Fontine ID": c.fontine_id or "",
-            "Nombre": c.nombre,
-            "Dirección": c.direccion or "",
-            "Latitud": c.latitud,
-            "Longitud": c.longitud,
-            "Último Update": fmt_local(c.last_update, "%d/%m/%Y %H:%M") if c.last_update else "",
+            "ID": g.camara_id,
+            "Fontine ID": (extra[g.camara_id].fontine_id or "") if g.camara_id in extra else "",
+            "Cámara": g.nombre,
+            "Dirección": g.direccion or "",
+            "Botellas baneadas": g.botellas_count,
+            "Botellas": " · ".join(b.nombre for b in g.botellas) if g.botellas else "",
+            "Latitud": extra[g.camara_id].latitud if g.camara_id in extra else None,
+            "Longitud": extra[g.camara_id].longitud if g.camara_id in extra else None,
+            "Último Update": (
+                fmt_local(extra[g.camara_id].last_update, "%d/%m/%Y %H:%M")
+                if g.camara_id in extra and extra[g.camara_id].last_update
+                else ""
+            ),
         }
-        for c in camaras
+        for g in grupos
     ]
 
     df = pd.DataFrame(rows)

@@ -20,6 +20,11 @@ COPY core /app/core
 COPY Templates /app/Templates
 # Incluir migraciones Alembic para ejecutar dentro del contenedor API
 COPY db /app/db
+# Incluir scripts de operación
+COPY scripts /app/scripts
+
+RUN chown -R focas:focas /app
+USER focas
 
 EXPOSE 8000
 

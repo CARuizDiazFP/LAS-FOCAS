@@ -57,7 +57,7 @@ web/
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
 - La administración incorpora `/admin/ingesta` como **hub de navegación** con dos sub-módulos:
   - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
-  - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo.
+  - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo. Desde el refactor de baneos (2026-08-24) suma un "Revisor Manual": los alias que no matchearon contra el inventario se listan con selección múltiple, para descartarlos (marcar revisado en lote) o asociarlos a mano a una Cámara/Botella existente vía typeahead — la ingesta ya no crea `Camara` nuevas por su cuenta. Detalle completo en `docs/infra.md`, sección "Ingesta Excel de cámaras baneadas".
 
 > **CRITICAL — Arquitectura del router admin**: Existe el archivo `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts`, pero ambos son **código huérfano**. El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y usa `src/router/index.ts` como router unificado. Las rutas `/admin/*` son **children anidadas** de `{ path: '/admin', component: AppShell }` dentro de ese router. Toda ruta admin nueva debe agregarse en `src/router/index.ts`, no en `src/admin/router/index.ts`.
 
@@ -66,6 +66,21 @@ web/
 - Los tokens visuales viven en `web/frontend/src/assets/styles/tokens.css`.
 - `panel.css` y `admin.css` consumen estos tokens en lugar de redeclarar su propia paleta base.
 - El objetivo de la capa es concentrar identidad cromática, spacing, radios y layout en variables CSS nativas (`--color-*`, `--space-*`, `--layout-*`).
+
+**Sistema de diseño Nocturne (2026-07-29).** `tokens.css` implementa el sistema Nocturne:
+fondo `#161826`, superficie `#232532`, texto `#e9e9ed`, acento blurple `#9184d9`, rampas
+tonales `--color-neutral-100..900` / `--color-accent-100..900` en OKLCH, tipografía Inter
+(400/500, nunca más de 500 en títulos), espaciado con densidad 0.70× y tres niveles de
+elevación (`--shadow-sm/md/lg`) basados en hairline + oscuridad ambiente — nunca sombras
+apiladas. Los estados semánticos (`--color-state-ok/warn/error/idle`) se derivaron en OKLCH
+a la misma luminosidad/croma que el acento porque Nocturne es monocromo y no trae
+verde/ámbar/rojo saturados. Los alias legacy cortos (`--bg`, `--surface`, `--text`,
+`--primary`, `--border`, `--muted`, `--radius`, `--color-bg-*`, `--shadow-card`,
+`--shadow-focus`) se conservan apuntando a los tokens nuevos para no romper `panel.css`,
+`admin.css` ni las pantallas todavía sin rediseñar (`/toolkit/vlan`, `/fo`, `/dwdm/ciena`,
+`/infra/Camaras/:id`, `/admin`). Iconografía: `@phosphor-icons/web`, importado en `main.ts`;
+reemplaza los emojis del sidebar, la toolbar principal de Infra FO y las tarjetas de
+servicio/cámara. Detalle completo del rediseño en `docs/PR/2026-07-29.md`.
 
 El contenedor se lanza con:
 ```
@@ -151,6 +166,13 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET/POST /api/infra/camaras/{id}/estado` → estado de cámara (admin).
 - `GET /api/infra/servicios/{svcId}/rutas` → rutas de un servicio.
 - `GET /api/infra/rutas/{rutaId}/tracking` → tracking de una ruta.
+- `GET /api/infra/servicios/{svcId}/odfs` (2026-08-28) → ODFs/empalmes asociados al servicio, vía
+  `core/parsers/tracking_parser.py` sobre `raw_file_content` de cada ruta — **no** usa Cromo Red (ver
+  submódulo `/infra/odfs` en `docs/modulo_ingesta_cromo.md`, sistema completamente distinto). Nunca
+  confía en la columna `Empalme.es_transito` de la DB (sólo confiable en un camino de resolución de
+  varios) — siempre re-deriva `es_transito` en vivo parseando el archivo. Enriquecimiento de cámara
+  en batch (`Empalme.tracking_empalme_id.in_(...)`, una sola query). Devuelve `terminal_a`/
+  `terminal_b` sólo como metadata de ruta, nunca cruzados contra filas de empalme puntuales.
 - `GET /api/infra/tracking/{rutaId}/download` → descarga de tracking.
 - `POST /api/infra/trackings/analyze` → analiza archivo `.txt` (multipart). Devuelve `AnalyzeResult` con `status`: `NEW`, `IDENTICAL`, `CONFLICT`, `POTENTIAL_UPGRADE`, `NEW_STRAND`, `ERROR`.
 - `POST /api/infra/trackings/resolve` → ejecuta la acción seleccionada. JSON body: `{action, content, filename, target_ruta_id?, new_ruta_name?, new_ruta_tipo?, old_service_id?}`.
@@ -166,6 +188,10 @@ En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras inte
 
 - **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
 - **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
+- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — sección
+  aparte, agrupada por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran
+  los que son tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de
+  color.
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
 
@@ -204,7 +230,7 @@ El modal **Editar estado** en la vista dedicada recupera el mismo modo oscuro y 
 
 ### InfraTab — Baneos Activos (gestión de incidentes)
 
-El botón **🔒 Baneos Activos** en la toolbar (junto a "Protocolo Protección") muestra un badge numérico cuando hay incidentes abiertos. Al hacer clic abre el modal de gestión:
+El botón **Baneos activos** (icono `ph-lock-key`) en el encabezado, junto a "Protocolo Protección", muestra un badge numérico cuando hay incidentes abiertos. Al hacer clic abre el modal de gestión:
 
 **Carga**: Al abrir, hace `GET /api/infra/ban/active` y lista las tarjetas de incidentes.
 **Botón ↻ Actualizar**: recarga la lista sin cerrar el modal.
@@ -248,7 +274,7 @@ Al activar un filtro aparece un **chip removible** junto al área de búsqueda i
 
 ### InfraTab — Protocolo de Protección (Wizard 3 pasos)
 
-El botón **🔴 Protocolo Protección** abre un wizard guiado de 3 pasos con stepper visual:
+El botón **Protocolo Protección** (icono `ph-shield-warning`) abre un wizard guiado de 3 pasos con stepper visual:
 
 **Paso 1 — Identificación**:
 - Ticket del incidente (opcional)
@@ -300,27 +326,7 @@ El flujo de carga de trackings opera en 2 fases:
 
 > **Nota de nomenclatura**: La acción `BRANCH` se presenta como **"Crear Camino"** en la UI (caminos alternativos/redundantes de FO). La opción **"Nuevo Pelo"** es visible tanto cuando el status es `NEW_STRAND` como dentro del modal `CONFLICT`, permitiendo al usuario agregar manualmente un pelo adicional a un camino existente.
 
-**Zona de upload — Drag & Drop**: La zona "📁 Subir Tracking" acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia a azul (`--drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
-
-El flujo de carga de trackings opera en 2 fases:
-
-**Fase 1 — Análisis (`/analyze`)**: Se sube el `.txt`; la API responde con el `status` del archivo y, si corresponde, lista de rutas existentes (`rutas_existentes`).
-
-**Fase 2 — Resolución (`/resolve`)**: El usuario elige la acción y se envía el JSON con `action` + extras según la tabla:
-
-| Acción UI | `action` enviado | Extras |
-|---|---|---|
-| Crear nuevo servicio | `CREATE_NEW` | — |
-| Merge empalmes | `MERGE_APPEND` | `target_ruta_id` |
-| Reemplazar ruta | `REPLACE` | `target_ruta_id` |
-| **Crear Camino** | `BRANCH` | `new_ruta_name`, `new_ruta_tipo: "ALTERNATIVA"` |
-| **Nuevo Pelo** | `ADD_STRAND` | `target_ruta_id` |
-| Confirmar upgrade | `CONFIRM_UPGRADE` | `old_service_id` |
-| Agregar pelo (auto-detect) | `ADD_STRAND` | `target_ruta_id` (de `strand_info.ruta_id`) |
-
-> **Nota de nomenclatura**: La acción `BRANCH` se presenta como **"Crear Camino"** en la UI (caminos alternativos/redundantes de FO). La opción **"Nuevo Pelo"** es visible tanto cuando el status es `NEW_STRAND` como dentro del modal `CONFLICT`, permitiendo al usuario agregar manualmente un pelo adicional a un camino existente.
-
-**Zona de upload — Drag & Drop**: La zona "📁 Subir Tracking" acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia a azul (`--drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
+**Zona de upload — Drag & Drop**: El botón "Subir tracking" (icono `ph-folder-simple-plus`, sin emoji) acepta tanto clic (selector nativo) como arrastre de archivos `.txt` directamente. Al arrastrar, el borde cambia al acento Nocturne (`.drag-over`). Se valida extensión `.txt` antes de disparar el análisis.
 
 ## Frontend SPA (Vue 3)
 
@@ -377,13 +383,19 @@ admin/
 | `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
 | `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
 
-El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`.
+> **Nota (2026-08-24):** `AdminBaneos.vue` es hoy un contenedor de 3 tabs — Baneos Activos
+> (`BaneosActivosPanel.vue`, listado agrupado por Cámara padre + liberación/desbaneo masivo),
+> Configuración (`BaneosConfigPanel.vue`, worker de notificaciones Slack) y Revisión
+> (`BaneosRevisionPanel.vue`, Cámaras Pendientes de Revisión + Ingresos sin match) — ya no es la vista
+> monolítica que era antes. Misma ruta, mismo componente raíz.
+
+El **navigation guard** llama a `ensureSession()` en cada navegación. Si no hay sesión redirige a `/login`. Si la ruta requiere admin y el rol no es `admin`, redirige a `/`. Si la ruta es `/login` y ya hay sesión autenticada, redirige a `/` (evita ver el formulario estando logueado).
 Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida para preservar marcadores antiguos sin reintroducir tabs en el Home.
 
 ### Composable `useSession`
 
 Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession()}`.  
-Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con el código `admin.ts` existente.
+Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con `chat/main.ts` (widget de chat embebible, superficie legacy separada del SPA principal). El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
 
 ## Variables de entorno
 

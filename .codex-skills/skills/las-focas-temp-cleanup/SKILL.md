@@ -3,7 +3,7 @@ name: "las-focas-temp-cleanup"
 description: "Usar cuando haya que limpiar archivos temporales, __pycache__, bytecode o caches de desarrollo del repo"
 metadata:
   short-description: "Usar cuando haya que limpiar archivos temporales, __pycache__, bytecode o caches de desarrollo del repo"
-  source: ".github/skills/temp-cleanup/SKILL.md"
+  source: ".agentes-comunes/skills/temp-cleanup/SKILL.md"
   triggers:
     - "temp-cleanup"
     - "habilidad"
@@ -31,7 +31,7 @@ metadata:
 
 # Skill portable: temp-cleanup
 
-> Fuente original: `.github/skills/temp-cleanup/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/temp-cleanup/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Limpieza de Temporales
 

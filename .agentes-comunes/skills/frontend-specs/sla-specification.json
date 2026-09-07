@@ -1,0 +1,52 @@
+{
+  "nombre_archivo": "sla-specification.json",
+  "ubicacion_archivo": ".github/skills/frontend-specs/sla-specification.json",
+  "descripcion": "Especificación funcional y visual inicial para la vista SLA del frontend modular.",
+  "feature": "sla-report-view",
+  "owner": "web/frontend",
+  "design_tokens": [
+    "--color-brand-primary",
+    "--color-status-sla",
+    "--color-bg-surface",
+    "--color-border-default",
+    "--space-4",
+    "--radius-lg"
+  ],
+  "route": "/sla",
+  "api": {
+    "endpoint": "/api/reports/sla",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "security": {
+      "credentials": "include",
+      "csrf": true
+    }
+  },
+  "states": [
+    "idle",
+    "upload-required",
+    "loading",
+    "success",
+    "error"
+  ],
+  "modules": [
+    "useSla.ts",
+    "SlaView.vue",
+    "api/client.ts"
+  ],
+  "layout": {
+    "wrapper": "sla-wrapper",
+    "card": "sla-form",
+    "actions": [
+      "Generar informe",
+      "Abrir carpeta de reportes"
+    ],
+    "inputs": [
+      "dropzone xlsx",
+      "mes",
+      "anio",
+      "pdf_enabled",
+      "use_db"
+    ]
+  }
+}

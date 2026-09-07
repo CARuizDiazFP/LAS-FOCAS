@@ -86,13 +86,6 @@ body {
   cursor: not-allowed;
 }
 
-/* ─── Contenedor principal ──────────────────────────────────────────────── */
-.container {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 32px 24px;
-}
-
 /* ─── Cards ─────────────────────────────────────────────────────────────── */
 .card {
   background: var(--surface);
@@ -132,7 +125,7 @@ body {
 .service-card:hover {
   border-color: var(--primary);
   transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--color-accent) 15%, transparent);
 }
 
 .service-card .card-icon {
@@ -179,7 +172,7 @@ body {
 
 .dashboard-btn:hover {
   border-color: var(--primary);
-  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--color-accent) 15%, transparent);
   transform: translateY(-2px);
 }
 
@@ -243,8 +236,8 @@ form .btn.primary {
 }
 
 .msg.visible { display: block; }
-.msg.ok  { background: #16a34a22; color: var(--success); border: 1px solid #16a34a55; }
-.msg.err { background: #dc262622; color: var(--error);   border: 1px solid #dc262655; }
+.msg.ok  { background: color-mix(in srgb, var(--success) 13%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 33%, transparent); }
+.msg.err { background: color-mix(in srgb, var(--error) 13%, transparent);   color: var(--error);   border: 1px solid color-mix(in srgb, var(--error) 33%, transparent); }
 
 /* ─── Toggle switch ────────────────────────────────────────────────────── */
 .toggle-row {
@@ -296,16 +289,16 @@ form .btn.primary {
   font-weight: 600;
 }
 
-.status-badge.ok      { background: #16a34a22; color: var(--success); border: 1px solid #16a34a55; }
-.status-badge.offline { background: #dc262622; color: var(--error);   border: 1px solid #dc262655; }
-.status-badge.unknown { background: #a3a3a322; color: #a3a3a3;        border: 1px solid #a3a3a355; }
+.status-badge.ok      { background: color-mix(in srgb, var(--success) 13%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 33%, transparent); }
+.status-badge.offline { background: color-mix(in srgb, var(--error) 13%, transparent);   color: var(--error);   border: 1px solid color-mix(in srgb, var(--error) 33%, transparent); }
+.status-badge.unknown { background: color-mix(in srgb, var(--color-state-idle) 13%, transparent); color: var(--color-state-idle); border: 1px solid color-mix(in srgb, var(--color-state-idle) 33%, transparent); }
 
 .status-dot {
   width: 8px; height: 8px; border-radius: 50%;
 }
 .status-dot.ok      { background: var(--success); box-shadow: 0 0 6px var(--success); }
 .status-dot.offline { background: var(--error);   box-shadow: 0 0 6px var(--error); }
-.status-dot.unknown { background: #a3a3a3; }
+.status-dot.unknown { background: var(--color-state-idle); }
 
 /* ─── Rows de info ──────────────────────────────────────────────────────── */
 .info-row {

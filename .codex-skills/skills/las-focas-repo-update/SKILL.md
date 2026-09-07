@@ -3,7 +3,7 @@ name: "las-focas-repo-update"
 description: "Usar solo cuando el pedido mencione el nombre legacy repo-update; redirige al workflow vigente repo-updater"
 metadata:
   short-description: "Usar solo cuando el pedido mencione el nombre legacy repo-update; redirige al workflow vigente repo-updater"
-  source: ".github/skills/repo-update/SKILL.md"
+  source: ".agentes-comunes/skills/repo-update/SKILL.md"
   triggers:
     - "repo-update"
     - "habilidad"
@@ -35,7 +35,7 @@ metadata:
 
 # Skill portable: repo-update
 
-> Fuente original: `.github/skills/repo-update/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/repo-update/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Repo Update (Legado)
 

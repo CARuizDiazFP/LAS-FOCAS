@@ -4,7 +4,7 @@
 
 # Project Guidelines
 
-LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. Este archivo debe mantenerse breve y útil para cualquier tarea del repo. La documentación detallada vive en `docs/` y las instrucciones especializadas en `.github/agents/`, `.github/prompts/` y `.github/skills/`.
+LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. Este archivo debe mantenerse breve y útil para cualquier tarea del repo. La documentación detallada vive en `docs/` y las instrucciones especializadas en `.github/agents/`, `.github/prompts/` y `.agentes-comunes/skills/` (con mirrors por plataforma).
 
 ## Arquitectura
 
@@ -30,7 +30,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ```
 
 - Idioma obligatorio: español en código, commits, PRs y documentación.
-- Rama de trabajo habitual: `dev`. Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
+- Rama de trabajo: ramas efímeras `<tipo>/<slug>` creadas desde `origin/dev` (obligatorio — prohibido commitear directo en `dev`). La integración a `dev` es automática al cierre de sesión (`cierre-sesion`). Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
 - Compose de desarrollo: `deploy/docker-compose.dev.yml`. No usar `deploy/compose.yml` en entorno local ni de agentes.
 - Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
 - Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.
@@ -80,14 +80,22 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Office service: `docs/office_service.md`
 - Infraestructura: `docs/infra.md`
 - PRs diarios: `docs/PR/YYYY-MM-DD.md`
+- Documentación privada de la empresa: `docs/Doc Privada/` — **ignorada por git** (ver `.gitignore`), nunca debe commitearse ni subirse al repo
+- Ingesta de inventario FO desde Cromo (contexto estructural, sin datos sensibles): `docs/modulo_ingesta_cromo.md`. Modelo de datos y autenticación (privado, no versionado): `docs/Doc Privada/ingesta_cromo.md`
 
 ## Agentes y Skills
 
 - Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
-- Usar skills de `.github/skills/` para workflows repetibles como pytest, alembic, Docker, mantenimiento, sincronización trazable del repositorio y verificación de arquitectura frontend.
+- Usar skills de `.agentes-comunes/skills/` como fuente central para workflows repetibles (pytest, alembic, Docker, mantenimiento, sincronización trazable y verificación de arquitectura frontend).
+- Mantener mirrors por plataforma (`.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/`, `.claude/skills/`) sincronizados con `.agentes-comunes/skills/`.
+- El flujo recursivo SDD/superpowers se mantiene habilitado; optimizar ejecución acotando rondas redundantes (evitar cadenas abiertas de re-review cuando no hay hallazgos nuevos).
+- La regla operativa de corte de rondas recursivas está formalizada en `docs/politica_recursion_sdd.md`.
 - Para tareas de frontend (agregar rutas, vistas o componentes Vue), usar la skill `frontend-spa-architecture` para verificar el entry point activo y el router unificado antes de escribir código.
+- Antes de cerrar cualquier tarea de UI/CSS, usar la skill `nocturne-token-compliance`: audita colores hardcodeados no sólo en la vista tocada sino en todo su árbol de imports (los modales/cards de `components/` repiten el mismo problema por copy-paste), y define cómo verificar el resultado real cuando no hay navegador disponible en la sesión.
 - Para revisiones safe-by-design de seguridad, usar `security` junto con `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`; priorizar `.env`, `deploy/`, `Keys/`, Docker, red y superficies expuestas.
 - Para migrar o rotar Docker Secrets file-based (dev y prod), usar la skill `secrets-rollout`: recreate de a un servicio con verificación de health/DB entre pasos, nunca password como argumento de shell.
+- Para trabajar sobre datos ya ingeridos de Cromo Red (`app.cromo_*`), usar la skill `cromo-inventario`. Antes de escribir código nuevo de parseo/ingesta contra Cromo, usar `cromo-diagnostico-real` — el diseño documentado no siempre coincide con el comportamiento real del sistema externo.
+- Antes de probar `create_ban`/`lift_ban` o cualquier cascada de estado de `Camara` (jerarquía Cámara→Botella) contra `lasfocasdev-*`, usar la skill `baneo-qa-real` — un servicio de prueba "cualquiera" puede tocar cámaras fuera del grupo objetivo; resolver el blast radius real antes de mutar y revertir sólo vía las funciones reales, nunca `UPDATE` directo.
 - El agente `security` se enfoca en APIs y SPAs modernas: XSS en Vue 3, CORS en FastAPI y manejo seguro de tokens/sesiones.
-- Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.github/skills/skill-generator/`.
-- **Claude Code**: comandos slash disponibles en `.claude/commands/` (`/repo-updater`, `/generar-pr-diario`, `/mantenimiento-disco`, `/migracion-alembic`, `/nuevo-modulo`, `/revisar-seguridad`, `/crear-skill`). Catálogo detallado de agentes, skills y comandos en `CLAUDE.md`.
+- Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.agentes-comunes/skills/skill-generator/`.
+- **Claude Code**: comandos slash disponibles en `.claude/commands/` (`/repo-updater`, `/generar-pr-diario`, `/cierre-sesion`, `/mantenimiento-disco`, `/migracion-alembic`, `/nuevo-modulo`, `/revisar-seguridad`, `/crear-skill`). Catálogo detallado de agentes, skills y comandos en `CLAUDE.md`.

@@ -188,10 +188,10 @@ watch(
 <style scoped>
 .tracking-detail-embedded {
   margin-top: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  border: 1px solid var(--color-divider);
   border-radius: 16px;
   overflow: hidden;
-  background: rgba(9, 14, 23, 0.92);
+  background: var(--color-bg);
 }
 
 .tracking-detail-header--embedded {
@@ -213,7 +213,7 @@ watch(
 .tracking-summary-chip {
   border-radius: 999px;
   padding: 4px 10px;
-  background: rgba(148, 163, 184, 0.12);
+  background: color-mix(in srgb, var(--color-neutral-400) 12%, transparent);
   color: var(--text);
   font-size: 0.76rem;
 }

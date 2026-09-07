@@ -1,0 +1,29 @@
+{
+  "id": 9345925,
+  "type": 1,
+  "class": 132,
+  "net": 11,
+  "vfrom": 75559,
+  "vmax": 76234,
+  "from": 1680115030,
+  "name": "17-1",
+  "col": 0,
+  "network": { "type": 0, "switch": 0, "chain": 0 },
+  "stp": 21,
+  "opp": 2985764,
+  "sc": 1,
+  "an": 0.0,
+  "pts": [5643800.611408, 6168093.94847],
+  "op": [
+    { "id": 2982314, "type": 10, "status": 1, "date": 1680115030, "vfrom": 75559, "to": 0 },
+    { "id": 2985764, "type": 10, "status": 21, "date": 1680280488, "vfrom": 76234, "to": 0 }
+  ],
+  "tp": [
+    { "type": 0, "nfrom": -1, "id_to": 9345620, "nto": -1, "from": 1680115030, "vfrom": 75559, "class": 130 },
+    { "type": 0, "nfrom": -1, "id_to": 9344768, "nto": -1, "from": 1680115030, "vfrom": 75559, "class": 130 }
+  ],
+  "at": [
+    { "seq": 0, "id": 84, "value": "17-1", "name": "nombre", "from": 1680115030, "vfrom": 75559 },
+    { "seq": 1, "id": 85, "value": "FUSION", "name": "fo.tipo", "from": 1680115030, "vfrom": 75559 }
+  ]
+}

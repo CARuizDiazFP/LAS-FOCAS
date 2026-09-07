@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
@@ -28,6 +28,7 @@ from core.password import hash_password, verify_password
 from core.repositories.conversations import get_or_create_conversation_for_web_user
 from core.repositories.messages import insert_message, get_last_messages
 from core.chatbot import ChatMessage
+from web.admin_ws import mount_admin_websocket
 from web.chat_ws import ChatWebSocketSettings, mount_chat_websocket
 from web.tools.vlan_comparator import compare_vlan_sets, parse_cisco_vlans
 import psycopg
@@ -201,6 +202,11 @@ os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))
 os.environ.setdefault("TEMPLATES_DIR", TEMPLATES_ROOT)
 
 # Importar servicio de informes después de setear variables de entorno
+from core.services.botella_recompute_queue import (  # noqa: E402
+    encolar_recalculo_duplicados_botellas,
+    guardar_cache_duplicados,
+    leer_cache_duplicados,
+)
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
@@ -246,6 +252,7 @@ mount_chat_websocket(
     ),
     logger=logger,
 )
+mount_admin_websocket(app, allowed_origins=CHAT_ALLOWED_ORIGINS, logger=logger)
 
 
 @dataclass
@@ -1957,6 +1964,17 @@ def _serialize_camara_response(
         estado_sugerido = contexto.estado_sugerido.value
         incidentes_activos = [incidente.to_dict() for incidente in contexto.incidentes_activos]
 
+    # Navegación cruzada Botella→Cámara padre (2026-08-13): sólo tiene datos si `camara_padre_id`
+    # está seteado (es una Botella legado) — el acceso a `.camara_padre` es lazy-load, pero acá
+    # nunca dispara N+1 real: los listados batch (smart-search/search) sólo traen cámaras raíz
+    # (`camara_padre_id IS NULL`), así que este branch sólo se ejecuta en fetches de una Botella
+    # puntual (GET /api/infra/camaras/{id} con un id de Botella).
+    camara_padre_id = getattr(camara, "camara_padre_id", None)
+    camara_padre_nombre = None
+    if camara_padre_id:
+        camara_padre = getattr(camara, "camara_padre", None)
+        camara_padre_nombre = camara_padre.nombre if camara_padre is not None else None
+
     return {
         "id": camara.id,
         "nombre": camara.nombre or "",
@@ -1975,35 +1993,66 @@ def _serialize_camara_response(
         "ticket_baneo": ticket_baneo,
         "editable": editable,
         "incidentes_activos": incidentes_activos,
+        # Etapa Cámara/Botella: `es_botella`/`botellas_count` sólo tienen sentido si `camara` trae
+        # cargada la columna/relación nueva — con getattr por si algún caller viejo pasa un objeto
+        # sin esos atributos (tests con SimpleNamespace, por ejemplo).
+        "es_botella": bool(camara_padre_id),
+        "camara_padre_id": camara_padre_id,
+        "camara_padre_nombre": camara_padre_nombre,
+        "botellas_count": len(getattr(camara, "botellas", None) or []),
     }
 
 
-def _collect_camara_rutas_info(camara: Any) -> list[dict[str, Any]]:
-    """Obtiene las rutas asociadas a una cámara a través de sus empalmes."""
+def _serialize_cromo_botella_hija(cromo_botella: Any) -> dict[str, Any]:
+    """Serializa una `CromoBotella` como hija de grupo para `get_camara_botellas_web`. Shape
+    reducido a lo que el único consumidor confirmado (`ModalBotellas.vue`) necesita — Cromo no
+    asocia botellas a rutas/empalmes/incidentes (conceptos del módulo Infra/Baneos, ya cubiertos
+    por `_serialize_camara_response` para el origen "legado")."""
+    return {
+        "origen": "cromo",
+        "id": cromo_botella.n_id,
+        "nombre": cromo_botella.nombre,
+        "estado": cromo_botella.estado.value if cromo_botella.estado else None,
+        "servicios": [],
+    }
+
+
+def _collect_camara_rutas_info(camara: Any, *, incluir_botellas: bool = False) -> list[dict[str, Any]]:
+    """Obtiene las rutas asociadas a una cámara a través de sus empalmes.
+
+    `incluir_botellas=True` (Etapa Cámara/Botella) también recorre los empalmes de todas las Botellas
+    de `camara` — para que una cámara-raíz muestre los servicios de todo su grupo físico, no sólo los
+    que pasan por su propia fila (los empalmes reales de un grupo suelen vivir en las botellas, no en
+    la cámara padre sintetizada por el backfill)."""
+
+    camaras_a_recorrer = [camara]
+    if incluir_botellas:
+        camaras_a_recorrer.extend(getattr(camara, "botellas", None) or [])
 
     rutas_info: list[dict[str, Any]] = []
     seen_rutas: set[int] = set()
-    for empalme in camara.empalmes:
-        for ruta in empalme.rutas:
-            if ruta.id in seen_rutas:
-                continue
-            seen_rutas.add(ruta.id)
-            alias_ids = ruta.servicio.alias_ids or []
-            transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
-            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
-            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
-            rutas_info.append(
-                {
-                    "ruta_id": ruta.id,
-                    "servicio_id": ruta.servicio.servicio_id,
-                    "ruta_nombre": ruta.nombre,
-                    "ruta_tipo": ruta.tipo.value,
-                    "alias_ids": alias_ids,
-                    "transitos_count": transitos_count,
-                    "punta_a_sitio": punta_a_sitio,
-                    "punta_b_sitio": punta_b_sitio,
-                }
-            )
+    for cam in camaras_a_recorrer:
+        for empalme in cam.empalmes:
+            for ruta in empalme.rutas:
+                if ruta.id in seen_rutas:
+                    continue
+                seen_rutas.add(ruta.id)
+                alias_ids = ruta.servicio.alias_ids or []
+                transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
+                punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
+                punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
+                rutas_info.append(
+                    {
+                        "ruta_id": ruta.id,
+                        "servicio_id": ruta.servicio.servicio_id,
+                        "ruta_nombre": ruta.nombre,
+                        "ruta_tipo": ruta.tipo.value,
+                        "alias_ids": alias_ids,
+                        "transitos_count": transitos_count,
+                        "punta_a_sitio": punta_a_sitio,
+                        "punta_b_sitio": punta_b_sitio,
+                    }
+                )
     return rutas_info
 
 
@@ -2053,6 +2102,38 @@ def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
         "activo": bool(item.activo),
         "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
         "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
+    }
+
+
+def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
+    """`botella_label` (Tarea 6, 2026-09-04) resuelve el nombre legible de la Botella intervenida —
+    reemplaza el fallback "Sin botella asociada" del frontend (`ModalRegistros.vue`), que mostraba el
+    `n_id` crudo o ese texto sin distinguir "no se especificó botella" (= la Cámara raíz, "Botella 1"
+    por convención — ver `camara_search.detectar_multi_bot`) de "se especificó una Botella legado sin
+    CromoBotella asociada". `getattr` defensivo: tolera objetos de test (`SimpleNamespace`) sin
+    `.camara`/`.tipo` poblados, cayendo a los defaults más comunes."""
+    if item.cromo_botella_id is not None:
+        cromo_botella = getattr(item, "cromo_botella", None)
+        # `CromoBotella.nombre` es nullable: si la relación existe pero su `nombre` es None/vacío,
+        # el `or` cae al fallback numerado — nunca basta con chequear "la relación existe" (bug real,
+        # revisión final 2026-09-04: `cromo_botella.nombre if cromo_botella is not None else ...`
+        # devolvía `botella_label=None` cuando `cromo_botella.nombre IS NULL`, violando la garantía
+        # documentada de "nunca null" y el tipo TypeScript `botella_label: string`).
+        botella_label = (cromo_botella.nombre if cromo_botella is not None else None) or f"Botella #{item.cromo_botella_id}"
+    elif getattr(getattr(item, "camara", None), "camara_padre_id", None):
+        botella_label = item.camara.nombre
+    else:
+        botella_label = "Botella 1"
+
+    tipo = getattr(item, "tipo", None)
+    return {
+        "id": item.id,
+        "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
+        "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
+        "tecnico_id": item.tecnico_id,
+        "cromo_botella_id": item.cromo_botella_id,
+        "botella_label": botella_label,
+        "tipo": tipo.value if tipo else "INGRESO",
     }
 
 
@@ -2187,6 +2268,59 @@ async def search_camaras_web(
         )
 
 
+@app.get("/api/infra/camaras/buscar")
+async def camaras_buscar_ligero_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 10,
+    excluir_id: Optional[int] = None,
+    solo_raiz: bool = True,
+) -> JSONResponse:
+    """Búsqueda liviana de Cámaras raíz por nombre — para selectores/autocomplete (picker de
+    "Unificar Cámara", picker de "Asociar a Cámara existente" de Botellas huérfanas). Deliberadamente
+    no reusa `smart-search` (N+1 de rutas/servicios/cables por cámara, pensado para el dashboard, no
+    para un selector liviano). Sólo lectura, cualquier usuario autenticado.
+
+    `solo_raiz=False` (picker de asociación manual de la ingesta de Excel, Tarea 5) incluye también
+    Botellas legado en los resultados, con `es_botella`/`camara_padre_id`/`camara_padre_nombre`
+    poblados — así el admin ve a qué grupo (padre + hermanas) se va a aplicar el baneo antes de
+    confirmar. Default `True` preserva el comportamiento histórico (sólo Cámaras raíz).
+
+    Registrada ANTES de `GET /api/infra/camaras/{camara_id}` a propósito (hallazgo real durante la
+    verificación): FastAPI/Starlette matchea rutas en orden de registro, y `/camaras/buscar` tiene la
+    misma forma de un segmento que `/camaras/{camara_id}` — si esta ruta se registrara después, esa
+    otra la interceptaría primero e intentaría parsear "buscar" como `camara_id: int`, devolviendo
+    422 en vez de ejecutar esta búsqueda."""
+    from core.services.camara_busqueda_service import buscar_camaras_ligero
+    from db.session import SessionLocal
+
+    _require_auth(request)
+    try:
+        with SessionLocal() as session:
+            candidatas = buscar_camaras_ligero(
+                session, q, limit=limit, excluir_id=excluir_id, solo_raiz=solo_raiz
+            )
+            return JSONResponse({
+                "camaras": [
+                    {
+                        "id": c.id,
+                        "nombre": c.nombre,
+                        "direccion": c.direccion,
+                        "estado": c.estado,
+                        "botellas_count": c.botellas_count,
+                        "cables_count": c.cables_count,
+                        "es_botella": c.es_botella,
+                        "camara_padre_id": c.camara_padre_id,
+                        "camara_padre_nombre": c.camara_padre_nombre,
+                    }
+                    for c in candidatas
+                ]
+            })
+    except Exception as exc:
+        logger.exception("action=camaras_buscar_ligero_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo buscar cámaras"}, status_code=500)
+
+
 @app.get("/api/infra/camaras/{camara_id}")
 async def get_camara_detail_web(request: Request, camara_id: int) -> JSONResponse:
     """Obtiene el resumen operativo base de una cámara para la vista de detalle."""
@@ -2203,7 +2337,7 @@ async def get_camara_detail_web(request: Request, camara_id: int) -> JSONRespons
             if not camara:
                 return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
 
-            rutas_info = _collect_camara_rutas_info(camara)
+            rutas_info = _collect_camara_rutas_info(camara, incluir_botellas=True)
             servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
             payload = _serialize_camara_response(
                 camara=camara,
@@ -2253,15 +2387,28 @@ async def get_camara_aliases_web(request: Request, camara_id: int) -> JSONRespon
         return JSONResponse({"error": "No se pudieron obtener los alias de la cámara"}, status_code=500)
 
 
-@app.get("/api/infra/camaras/{camara_id}/registros")
-async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResponse:
-    """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
+@app.get("/api/infra/camaras/{camara_id}/botellas")
+async def get_camara_botellas_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene las Botellas (jerarquía Cámara/Botella) de una cámara — sólo lectura. Une las dos
+    fuentes que pueden colgar de una Cámara padre: Botellas legado (`camara.botellas`, self-FK) y
+    Botellas Cromo (`CromoBotella.camara_id`, vigentes, backfilleadas por
+    `scripts/cromo_backfill_camara_padre.py`) — cada una etiquetada con su `origen`.
 
-    _require_auth(request)
+    Nunca aplica un filtro de "no operativa": es un drill-down sobre un grupo ya identificado por
+    ID (el usuario ya abrió el detalle de esta Cámara puntual) — ocultar una hija NO_OPERATIVA en
+    el detalle de su propio padre haría creer que el grupo físico tiene menos botellas de las que
+    tiene realmente.
+
+    Si `camara_id` es en sí una Botella legado (`camara_padre_id` seteado), devuelve una lista
+    vacía para ese origen — el modelo self-FK es de exactamente 2 niveles, una Botella no tiene sus
+    propias botellas."""
+
+    _, role = _require_auth(request)
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto
-        from db.models.infra import Camara, CamaraEstadoAuditoria, IncidenteBaneo
+        from db.models.cromo import CromoBotella
+        from db.models.infra import Camara
         from db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -2269,7 +2416,61 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
             if not camara:
                 return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
 
-            rutas_info = _collect_camara_rutas_info(camara)
+            botellas_legado = [
+                {
+                    **_serialize_camara_response(
+                        camara=botella,
+                        rutas_info=_collect_camara_rutas_info(botella),
+                        servicios_ids=_collect_camara_servicios_ids(botella),
+                        contexto=get_camara_estado_contexto(session, botella.id),
+                        editable=role == "admin",
+                    ),
+                    "origen": "legado",
+                }
+                for botella in camara.botellas
+            ]
+
+            cromo_hijas = (
+                session.query(CromoBotella)
+                .filter(CromoBotella.camara_id == camara_id, CromoBotella.vigente.is_(True))
+                .order_by(CromoBotella.nombre)
+                .all()
+            )
+            botellas_cromo = [_serialize_cromo_botella_hija(cb) for cb in cromo_hijas]
+
+            botellas = botellas_legado + botellas_cromo
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "camara_id": camara_id,
+                    "camara_nombre": camara.nombre,
+                    "total": len(botellas),
+                    "botellas": botellas,
+                }
+            )
+    except Exception as exc:
+        logger.exception("action=get_camara_botellas_error camara_id=%s error=%s", camara_id, exc)
+        return JSONResponse({"error": "No se pudieron obtener las botellas de la cámara"}, status_code=500)
+
+
+@app.get("/api/infra/camaras/{camara_id}/registros")
+async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResponse:
+    """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
+
+    _require_auth(request)
+
+    try:
+        from core.services.camara_estado_service import get_camara_estado_contexto, miembros_del_grupo
+        from db.models.infra import Camara, CamaraEstadoAuditoria, IncidenteBaneo, Ingreso
+        from db.session import SessionLocal
+        from sqlalchemy import nullslast
+
+        with SessionLocal() as session:
+            camara = session.query(Camara).filter(Camara.id == camara_id).first()
+            if not camara:
+                return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
+
+            rutas_info = _collect_camara_rutas_info(camara, incluir_botellas=True)
             rutas_ids = {int(ruta["ruta_id"]) for ruta in rutas_info if ruta.get("ruta_id") is not None}
             servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
 
@@ -2296,6 +2497,18 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
                     if incidente.ruta_protegida_id is None or incidente.ruta_protegida_id in rutas_ids
                 ][:20]
 
+            # Mismo grupo (cámara + botellas hermanas) que usa `tiene_ingreso_activo` en
+            # `camara_estado_service`, para que los ingresos mostrados acá sean consistentes con
+            # el estado sugerido de la cámara.
+            ids_grupo = [miembro.id for miembro in miembros_del_grupo(camara)]
+            ingresos_db = (
+                session.query(Ingreso)
+                .filter(Ingreso.camara_id.in_(ids_grupo))
+                .order_by(nullslast(Ingreso.fecha_inicio.desc()))
+                .limit(50)
+                .all()
+            )
+
             contexto = get_camara_estado_contexto(session, camara_id)
             return JSONResponse(
                 {
@@ -2304,15 +2517,34 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
                     "contexto": contexto.to_dict() if contexto else None,
                     "auditoria": [_serialize_camara_auditoria(item) for item in auditoria],
                     "baneos": [_serialize_camara_baneo(item) for item in baneos],
-                    "placeholders": {
-                        "ingresos": "Pendiente de integrar registros de ingresos en una próxima iteración.",
-                        "egresos": "Pendiente de integrar registros de egresos en una próxima iteración.",
-                    },
+                    "ingresos": [_serialize_camara_ingreso(item) for item in ingresos_db],
                 }
             )
     except Exception as exc:
         logger.exception("action=get_camara_registros_error camara_id=%s error=%s", camara_id, exc)
         return JSONResponse({"error": "No se pudieron obtener los registros de la cámara"}, status_code=500)
+
+
+def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
+    """Resuelve un `Servicio` por identificador flexible: `servicio_id`,
+    `numero_primer_servicio` o `numero_linea`. Lookup compartido por
+    `get_servicio_rutas_web` y `get_servicio_odfs` (ambos reciben el mismo tipo
+    de identificador desde el frontend)."""
+
+    from db.models.infra import Servicio
+    from sqlalchemy import or_
+
+    return (
+        session.query(Servicio)
+        .filter(
+            or_(
+                Servicio.servicio_id == servicio_id,
+                Servicio.numero_primer_servicio == servicio_id,
+                Servicio.numero_linea == servicio_id,
+            )
+        )
+        .first()
+    )
 
 
 @app.get("/api/infra/servicios/{servicio_id}/rutas")
@@ -2321,23 +2553,16 @@ async def get_servicio_rutas_web(
     servicio_id: str,
 ) -> JSONResponse:
     """Obtiene las rutas de un servicio para el wizard de baneo."""
-    
+
     username, _ = _require_auth(request)
-    
+
     try:
         from db.models.infra import Servicio, RutaServicio
         from db.session import SessionLocal
-        from sqlalchemy import or_
-        
+
         with SessionLocal() as session:
-            servicio = session.query(Servicio).filter(
-                or_(
-                    Servicio.servicio_id == servicio_id,
-                    Servicio.numero_primer_servicio == servicio_id,
-                    Servicio.numero_linea == servicio_id,
-                )
-            ).first()
-            
+            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+
             if not servicio:
                 return JSONResponse(
                     {"error": f"Servicio {servicio_id} no encontrado"},
@@ -2381,6 +2606,257 @@ async def get_servicio_rutas_web(
         )
 
 
+@app.get("/api/infra/servicios/{servicio_id}/odfs")
+async def get_servicio_odfs(
+    request: Request,
+    servicio_id: str,
+) -> JSONResponse:
+    """Obtiene las ODFs/empalmes de tracking de todas las rutas de un servicio, para
+    la vista de Detalle de Servicio.
+
+    Este sistema es independiente del submódulo Cromo Red (`/infra/odfs`): las ODFs
+    acá salen del archivo de tracking de ruta subido manualmente para el servicio
+    (`RutaServicio.raw_file_content`), no de la ingesta automática de Cromo.
+
+    `es_transito` (si un empalme es un punto de distribución tipo ODF) se deriva
+    SIEMPRE en vivo parseando `raw_file_content` con `parse_tracking(...)` —
+    la columna persistida `Empalme.es_transito` no es confiable: sólo se setea
+    consistentemente en un camino de resolución de empalmes
+    (`_action_confirm_upgrade` en `core/services/infra_service.py`); el resto de
+    caminos que crean/reutilizan un `Empalme` (`_get_or_create_empalme`) la dejan
+    en `False` por default aunque el empalme sea realmente un tránsito. En cambio
+    `Empalme.camara_id` sí se setea consistentemente en todos los caminos, por eso
+    es seguro usarla para enriquecer cada empalme con nombre/estado de cámara.
+    """
+
+    username, _ = _require_auth(request)
+
+    try:
+        from core.parsers.tracking_parser import parse_tracking
+        from db.models.infra import Empalme
+        from db.session import SessionLocal
+        from sqlalchemy.orm import joinedload
+
+        with SessionLocal() as session:
+            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+
+            if not servicio:
+                return JSONResponse(
+                    {"error": f"Servicio {servicio_id} no encontrado"},
+                    status_code=404,
+                )
+
+            rutas_info: list[dict[str, Any]] = []
+            tracking_ids: set[str] = set()
+
+            for ruta in servicio.rutas:
+                ruta_tipo = ruta.tipo.value if ruta.tipo else "PRINCIPAL"
+
+                if not ruta.raw_file_content:
+                    rutas_info.append(
+                        {
+                            "ruta_id": ruta.id,
+                            "ruta_nombre": ruta.nombre,
+                            "ruta_tipo": ruta_tipo,
+                            "activa": bool(ruta.activa),
+                            "sin_tracking": True,
+                            "terminal_a": None,
+                            "terminal_b": None,
+                            "transitos_count": 0,
+                            "empalmes_count": 0,
+                            "empalmes": [],
+                        }
+                    )
+                    continue
+
+                parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
+                empalmes_parseados = parsed.get_empalmes()
+
+                for entry in empalmes_parseados:
+                    if entry.empalme_id:
+                        tracking_ids.add(f"{servicio.servicio_id}_{entry.empalme_id}")
+
+                rutas_info.append(
+                    {
+                        "ruta_id": ruta.id,
+                        "ruta_nombre": ruta.nombre,
+                        "ruta_tipo": ruta_tipo,
+                        "activa": bool(ruta.activa),
+                        "sin_tracking": False,
+                        "terminal_a": (
+                            {"odf_id": parsed.terminal_a[0], "conector": parsed.terminal_a[1]}
+                            if parsed.terminal_a
+                            else None
+                        ),
+                        "terminal_b": (
+                            {"odf_id": parsed.terminal_b[0], "conector": parsed.terminal_b[1]}
+                            if parsed.terminal_b
+                            else None
+                        ),
+                        "transitos_count": parsed.transitos_count,
+                        "empalmes_count": parsed.empalmes_count,
+                        # Placeholder temporal con las entries parseadas en crudo — se
+                        # reemplaza por su forma serializable abajo, una vez resuelto el
+                        # enriquecimiento de cámara en batch (evita re-parsear el archivo).
+                        "empalmes": empalmes_parseados,
+                    }
+                )
+
+            # Enriquecimiento de cámara en UNA sola query batched (no N+1): se junta acá
+            # el universo completo de tracking_empalme_id candidatos de todas las rutas.
+            empalmes_db_por_tracking_id: dict[str, Any] = {}
+            if tracking_ids:
+                empalmes_db = (
+                    session.query(Empalme)
+                    .options(joinedload(Empalme.camara))
+                    .filter(Empalme.tracking_empalme_id.in_(tracking_ids))
+                    .all()
+                )
+                empalmes_db_por_tracking_id = {e.tracking_empalme_id: e for e in empalmes_db}
+
+            # Bug real (2026-08-31, ticket duplicidad Buscador/ODFs): `transitos_count`/
+            # `empalmes_count` son por-ruta, así que sumarlos entre rutas sobrecuenta cuando dos
+            # rutas del mismo servicio (ej. "Principal" y "Principal - Pelo 2", dos pelos del MISMO
+            # cable físico) atraviesan el mismo empalme — el usuario lo detectó en pantalla: "4
+            # ODF(s)" cuando en realidad eran 2 ODFs físicas repetidas en ambas rutas. `empalme_id`
+            # es la identidad estable de un empalme para este servicio (mismo criterio que
+            # `tracking_id = f"{servicio.servicio_id}_{entry.empalme_id}"` de más arriba), así que
+            # los totales ahora cuentan `empalme_id` DISTINTOS entre todas las rutas, no ocurrencias.
+            odfs_distintas: set[str] = set()
+            empalmes_distintos: set[str] = set()
+            for ruta_info in rutas_info:
+                if ruta_info["sin_tracking"]:
+                    continue
+
+                empalmes_serializados = []
+                for entry in ruta_info["empalmes"]:
+                    if entry.empalme_id:
+                        empalmes_distintos.add(entry.empalme_id)
+                        if entry.es_transito:
+                            odfs_distintas.add(entry.empalme_id)
+                    tracking_id = (
+                        f"{servicio.servicio_id}_{entry.empalme_id}" if entry.empalme_id else None
+                    )
+                    empalme_db = empalmes_db_por_tracking_id.get(tracking_id) if tracking_id else None
+                    camara = empalme_db.camara if empalme_db else None
+                    empalmes_serializados.append(
+                        {
+                            "empalme_id": entry.empalme_id,
+                            "descripcion": entry.empalme_descripcion,
+                            "es_transito": entry.es_transito,
+                            "camara_id": camara.id if camara else None,
+                            "camara_nombre": camara.nombre if camara else None,
+                            "camara_estado": camara.estado.value if camara and camara.estado else None,
+                        }
+                    )
+                ruta_info["empalmes"] = empalmes_serializados
+
+            total_odfs = len(odfs_distintas)
+            total_empalmes = len(empalmes_distintos)
+
+            logger.info(
+                "action=get_servicio_odfs user=%s servicio_id=%s rutas=%d total_odfs=%d total_empalmes=%d",
+                username,
+                servicio_id,
+                len(rutas_info),
+                total_odfs,
+                total_empalmes,
+            )
+
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "servicio_id": servicio.servicio_id,
+                    "total_odfs": total_odfs,
+                    "total_empalmes": total_empalmes,
+                    "rutas": rutas_info,
+                }
+            )
+
+    except Exception as exc:
+        logger.exception("action=get_servicio_odfs_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo ODFs: {exc!s}"},
+            status_code=500,
+        )
+
+
+@app.get("/api/infra/servicios/{servicio_id}/ingresos")
+async def get_servicio_ingresos_web(
+    request: Request,
+    servicio_id: str,
+) -> JSONResponse:
+    """Obtiene los registros de ingreso de técnico (Slack) a las cámaras que atraviesa un
+    servicio, para la vista de Detalle de Servicio.
+
+    Las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio`
+    (ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada) para
+    no reimplementar esa resolución acá.
+    """
+
+    username, _ = _require_auth(request)
+
+    try:
+        from core.services.protection_service import ProtectionService
+        from db.models.infra import Ingreso
+        from db.session import SessionLocal
+        from sqlalchemy import nullslast
+
+        with SessionLocal() as session:
+            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+
+            if not servicio:
+                return JSONResponse(
+                    {"error": f"Servicio {servicio_id} no encontrado"},
+                    status_code=404,
+                )
+
+            camaras = ProtectionService(session).get_camaras_for_servicio(servicio.servicio_id)
+            camaras_por_id = {camara.id: camara for camara in camaras}
+            camara_ids = list(camaras_por_id.keys())
+
+            ingresos_db: list[Any] = []
+            if camara_ids:
+                ingresos_db = (
+                    session.query(Ingreso)
+                    .filter(Ingreso.camara_id.in_(camara_ids))
+                    .order_by(nullslast(Ingreso.fecha_inicio.desc()))
+                    .limit(100)
+                    .all()
+                )
+
+            ingresos_info = []
+            for item in ingresos_db:
+                serializado = _serialize_camara_ingreso(item)
+                camara = camaras_por_id.get(item.camara_id)
+                serializado["camara_id"] = item.camara_id
+                serializado["camara_nombre"] = camara.nombre if camara else None
+                ingresos_info.append(serializado)
+
+            logger.info(
+                "action=get_servicio_ingresos user=%s servicio_id=%s total=%d",
+                username,
+                servicio_id,
+                len(ingresos_info),
+            )
+
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "servicio_id": servicio.servicio_id,
+                    "total": len(ingresos_info),
+                    "ingresos": ingresos_info,
+                }
+            )
+
+    except Exception as exc:
+        logger.exception("action=get_servicio_ingresos_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
+        return JSONResponse(
+            {"error": f"Error obteniendo ingresos: {exc!s}"},
+            status_code=500,
+        )
+
+
 @app.get("/api/infra/rutas/{ruta_id}/tracking")
 async def get_ruta_tracking(
     request: Request,
@@ -2405,12 +2881,17 @@ async def get_ruta_tracking(
             tracking_entries = []
             punta_a_info = None
             punta_b_info = None
-            
+            # Sólo se calcula cuando se parsea raw_file_content (parse_tracking ya lo
+            # trae); en los fallbacks (contenido_original / empalmes de la base) queda
+            # en None por no tener esa info disponible sin reparsear el texto original.
+            transitos_count = None
+
             # Primero intentar parsear raw_file_content (el TXT original)
             if ruta.raw_file_content:
                 from core.parsers.tracking_parser import parse_tracking
                 parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
-                
+                transitos_count = parsed.transitos_count
+
                 # Extraer puntas A y B del parsing
                 if parsed.punta_a:
                     punta_a_info = {
@@ -2527,8 +3008,9 @@ async def get_ruta_tracking(
                 "tracking": tracking_entries,
                 "punta_a": punta_a_info,
                 "punta_b": punta_b_info,
+                "transitos_count": transitos_count,
             })
-    
+
     except Exception as exc:
         logger.exception("action=get_ruta_tracking_error ruta_id=%d error=%s", ruta_id, exc)
         return JSONResponse(
@@ -2864,6 +3346,97 @@ async def lift_ban_web(
             {"success": False, "error": f"Error levantando baneo: {exc!s}"},
             status_code=500
         )
+
+
+# -----------------------------------------------------------------------------
+# ENDPOINTS DE GRUPOS BANEADOS (Cámara padre + Botellas) — listado admin y liberación masiva.
+# Distinto del Protocolo de Protección arriba (`/api/infra/ban/*`, `IncidenteBaneo`): este listado
+# agrupa por Cámara padre TODO baneo activo (incidente o no — override manual/import Excel también
+# entran) y su única acción es "liberar" (= cambiar estado a LIBRE/estado_sugerido), nunca borrar
+# filas — ver `core/services/baneos_grupos_service.py`.
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/admin/baneos/grupos")
+async def baneos_grupos_listar_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> JSONResponse:
+    """Lista grupos baneados (Cámara padre raíz + sus Botellas legado/Cromo), paginado. `limit`
+    siempre viene de query param acá (int) — el `limit=None` sin paginar de
+    `listar_grupos_baneados` sólo lo usa internamente el reporte Excel de la Tarea 8, nunca este
+    endpoint web."""
+    _require_admin(request)
+
+    try:
+        from core.services.baneos_grupos_service import listar_grupos_baneados
+        from db.session import SessionLocal
+
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        with SessionLocal() as session:
+            resultado = listar_grupos_baneados(session, q=q, limit=limit, offset=offset)
+            return JSONResponse({"status": "ok", "limit": limit, "offset": offset, **resultado.to_dict()})
+    except Exception as exc:
+        logger.exception("action=baneos_grupos_listar_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo obtener el listado de grupos baneados"}, status_code=500)
+
+
+class BaneosLiberarMasivoRequestModel(BaseModel):
+    """Payload para liberar (desbanear) varios grupos de una — NO es un borrado físico."""
+
+    camara_ids: list[int]
+    motivo: str
+    forzar: bool = False
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/admin/baneos/grupos/liberar")
+async def baneos_grupos_liberar_web(request: Request, body: BaneosLiberarMasivoRequestModel) -> JSONResponse:
+    """Libera (desbanea) varios grupos de una — la única acción masiva nueva de este dominio.
+    Guard de incidente activo por grupo (`core.services.baneos_grupos_service.liberar_grupos_masivo`):
+    sin `forzar`, un grupo con un `IncidenteBaneo` activo detrás se omite en vez de desbanearse."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=baneos_grupos_liberar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.camara_ids:
+        return JSONResponse({"error": "No se especificaron grupos a liberar"}, status_code=400)
+    motivo = body.motivo.strip()
+    if not motivo:
+        return JSONResponse({"error": "El motivo es obligatorio"}, status_code=400)
+
+    try:
+        from core.services.baneos_grupos_service import liberar_grupos_masivo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = liberar_grupos_masivo(
+                session,
+                body.camara_ids,
+                usuario=username,
+                motivo=motivo,
+                forzar=body.forzar,
+            )
+            session.commit()
+            logger.info(
+                "action=baneos_grupos_liberar user=%s solicitados=%d liberados=%d omitidos=%d forzar=%s",
+                username,
+                resultado.total_solicitados,
+                resultado.liberados,
+                resultado.omitidos,
+                body.forzar,
+            )
+            return JSONResponse({"ok": True, **resultado.to_dict()})
+    except Exception as exc:
+        logger.exception("action=baneos_grupos_liberar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudieron liberar los grupos"}, status_code=500)
 
 
 # -----------------------------------------------------------------------------
@@ -3639,6 +4212,7 @@ class SmartSearchRequestModel(BaseModel):
     limit: int = 100
     offset: int = 0
     estado: Optional[str] = None
+    incluir_no_operativas: bool = False
 
 
 @app.get("/api/infra/camaras/{camara_id}/estado")
@@ -3661,7 +4235,16 @@ async def get_camara_estado_web(request: Request, camara_id: int) -> JSONRespons
                 {
                     "status": "ok",
                     "editable": True,
-                    "estados_disponibles": [estado.value for estado in CamaraEstado],
+                    # Estado operable de Cámara/Botella (2026-08-11): sólo estos 4 valores son
+                    # seteables por un admin. DETECTADA y PENDIENTE_REVISION siguen existiendo en el
+                    # enum de Postgres (filas legado, no removibles sin recrear el tipo) pero ya no
+                    # deben poder asignarse manualmente — ver scripts/retirar_estado_detectada.py.
+                    "estados_disponibles": [
+                        CamaraEstado.LIBRE.value,
+                        CamaraEstado.OCUPADA.value,
+                        CamaraEstado.BANEADA.value,
+                        CamaraEstado.NO_OPERATIVA.value,
+                    ],
                     "contexto": contexto.to_dict(),
                 }
             )
@@ -3692,8 +4275,19 @@ async def update_camara_estado_web(
         from db.models.infra import CamaraEstado
         from db.session import SessionLocal
 
+        # Estado operable de Cámara/Botella (2026-08-11): un override manual sólo puede apuntar a
+        # estos 4 valores — DETECTADA/PENDIENTE_REVISION quedaron retirados de la asignación activa
+        # (siguen existiendo en el enum de Postgres sólo por filas legado, ver
+        # scripts/retirar_estado_detectada.py), aunque alguien llame a este endpoint directo sin
+        # pasar por el modal (que ya sólo ofrece estos 4 en `estados_disponibles`).
+        _ESTADOS_OVERRIDE_VALIDOS = {
+            CamaraEstado.LIBRE.value,
+            CamaraEstado.OCUPADA.value,
+            CamaraEstado.BANEADA.value,
+            CamaraEstado.NO_OPERATIVA.value,
+        }
         estado_normalizado = body.estado.strip().upper()
-        if estado_normalizado not in {estado.value for estado in CamaraEstado}:
+        if estado_normalizado not in _ESTADOS_OVERRIDE_VALIDOS:
             return JSONResponse({"error": "Estado inválido"}, status_code=400)
 
         with SessionLocal() as session:
@@ -3722,6 +4316,110 @@ async def update_camara_estado_web(
 
 
 # ── Endpoints admin: gestión de cámaras PENDIENTE_REVISION ───────────────
+
+
+@app.get("/api/admin/infra/ingresos-sin-match")
+async def admin_ingresos_sin_match(
+    request: Request, revisado: Optional[bool] = None, origen: Optional[str] = None,
+) -> JSONResponse:
+    """Lista casos de ingreso (bot de Slack o carga de tracking) cuya cámara no matcheó contra el
+    inventario (2026-08-11) — reemplaza el auto-registro `PENDIENTE_REVISION`. Es información de
+    sólo lectura para revisión manual y mejora del regex, no crea ninguna Cámara. `revisado` filtra
+    por el flag (default: todos, sin filtrar). `origen` filtra por uno o más valores separados por
+    coma (ej. `?origen=excel_camaras` o `?origen=slack,tracking`; default: todos, sin filtrar)."""
+    _require_admin(request)
+    try:
+        from db.models.infra import IngresoSinMatch
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            query = session.query(IngresoSinMatch)
+            if revisado is not None:
+                query = query.filter(IngresoSinMatch.revisado == revisado)
+            if origen:
+                origenes = [o.strip() for o in origen.split(",") if o.strip()]
+                if origenes:
+                    query = query.filter(IngresoSinMatch.origen.in_(origenes))
+            casos = query.order_by(IngresoSinMatch.created_at.desc()).limit(200).all()
+            return JSONResponse([
+                {
+                    "id": caso.id,
+                    "texto_original": caso.texto_original,
+                    "origen": caso.origen,
+                    "contexto": caso.contexto,
+                    "revisado": caso.revisado,
+                    "created_at": caso.created_at.isoformat() if caso.created_at else None,
+                }
+                for caso in casos
+            ])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_ingresos_sin_match error=%s", exc)
+        return JSONResponse({"error": "Error al obtener ingresos sin match"}, status_code=500)
+
+
+@app.post("/api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado")
+async def admin_marcar_revisado_ingreso_sin_match(request: Request, caso_id: int) -> JSONResponse:
+    """Marca un caso de ingreso sin match como revisado — no muta ningún dato de infraestructura,
+    sólo el flag de triage."""
+    _require_admin(request)
+    try:
+        from db.models.infra import IngresoSinMatch
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            caso = session.query(IngresoSinMatch).filter(IngresoSinMatch.id == caso_id).first()
+            if not caso:
+                return JSONResponse({"error": "Caso no encontrado"}, status_code=404)
+            caso.revisado = True
+            session.commit()
+            return JSONResponse({"ok": True, "id": caso.id})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=admin_marcar_revisado_ingreso_sin_match error=%s", exc)
+        return JSONResponse({"error": "Error al marcar el caso como revisado"}, status_code=500)
+
+
+class MarcarRevisadoMasivoRequestModel(BaseModel):
+    """Payload para marcar en lote varios `IngresoSinMatch` como revisados."""
+
+    ids: list[int]
+    csrf_token: str | None = None
+
+
+@app.post("/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo")
+async def admin_marcar_revisado_masivo_web(request: Request, body: MarcarRevisadoMasivoRequestModel) -> JSONResponse:
+    """Marca en lote varios casos de ingreso sin match como revisados — es el 'Borrado' del visor de
+    ingesta: sólo descarta de la vista, no muta ningún dato de infraestructura, la fila queda en la
+    base para poder ajustar a futuro el regex/normalización de búsqueda."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.ids:
+        return JSONResponse({"error": "No se especificaron casos"}, status_code=400)
+
+    try:
+        from db.models.infra import IngresoSinMatch
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            actualizados = (
+                session.query(IngresoSinMatch)
+                .filter(IngresoSinMatch.id.in_(body.ids))
+                .update({IngresoSinMatch.revisado: True}, synchronize_session=False)
+            )
+            session.commit()
+            return JSONResponse({"ok": True, "actualizados": actualizados})
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=admin_marcar_revisado_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo marcar los casos como revisados"}, status_code=500)
 
 
 @app.get("/api/admin/infra/camaras/pendientes")
@@ -3773,9 +4471,20 @@ async def admin_aprobar_camara(request: Request, camara_id: int) -> JSONResponse
                     status_code=400,
                 )
             camara.estado = CamaraEstado.LIBRE
+
+            # Jerarquía Cámara/Botella: si el nombre ya registrado matchea el sufijo "Bot N",
+            # resolver (o crear) la cámara padre y vincularla — ver camara_hierarchy_service.py.
+            from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+            padre = resolver_o_crear_padre(session, camara.nombre, usuario="admin:aprobar")
+            if padre is not None:
+                camara.camara_padre_id = padre.id
+                if padre.estado == CamaraEstado.BANEADA:
+                    camara.estado = CamaraEstado.BANEADA
+
             session.commit()
             logger.info("action=aprobar_camara camara_id=%s nombre='%s'", camara_id, camara.nombre)
-            return JSONResponse({"ok": True, "camara_id": camara_id, "estado": "LIBRE"})
+            return JSONResponse({"ok": True, "camara_id": camara_id, "estado": camara.estado.value})
     except HTTPException:
         raise
     except Exception as exc:
@@ -3893,6 +4602,16 @@ async def admin_dar_de_alta_camara(
                     session.add(CamaraAlias(camara_id=camara_id, alias_nombre=nombre_original))
                     alias_creado = True
 
+            # Jerarquía Cámara/Botella: recién ahora se conoce el nombre FINAL de la cámara — si
+            # matchea el sufijo "Bot N", resolver (o crear) la cámara padre y vincularla.
+            from core.services.camara_hierarchy_service import resolver_o_crear_padre
+
+            padre = resolver_o_crear_padre(session, nombre_canon, usuario="admin:dar-de-alta")
+            if padre is not None:
+                camara.camara_padre_id = padre.id
+                if padre.estado == CamaraEstado.BANEADA:
+                    camara.estado = CamaraEstado.BANEADA
+
             session.commit()
             logger.info(
                 "action=definir_nombre_canon camara_id=%s nombre_original='%s' nombre_canon='%s' alias_creado=%s",
@@ -3958,6 +4677,92 @@ async def admin_eliminar_camara_pendiente(
         return JSONResponse({"error": "Error al eliminar la cámara"}, status_code=500)
 
 
+@app.get("/api/admin/infra/camaras/viewer")
+async def camaras_viewer_listado_web(
+    request: Request,
+    q: Optional[str] = None,
+    estado: Optional[str] = None,
+    limit: int = 60,
+    offset: int = 0,
+) -> JSONResponse:
+    """Listado paginado de Cámaras raíz para el dashboard `/admin/servicios/viewer/Camaras` (vista
+    dual grid/lista). Paginación real en SQL, sin el N+1 en memoria de `smart-search`."""
+    _require_admin(request)
+    try:
+        from db.models.infra import Camara, CamaraEstado
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            query = session.query(Camara).filter(Camara.camara_padre_id.is_(None))
+            if estado and estado.upper() in {e.value for e in CamaraEstado}:
+                query = query.filter(Camara.estado == CamaraEstado(estado.upper()))
+            if q and q.strip():
+                query = query.filter(Camara.nombre.ilike(f"%{q.strip()}%"))
+
+            total = query.count()
+            limit = max(1, min(limit, 100))
+            offset = max(0, offset)
+            filas = query.order_by(Camara.nombre).offset(offset).limit(limit).all()
+
+            return JSONResponse({
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "camaras": [
+                    {
+                        "id": c.id,
+                        "nombre": c.nombre,
+                        "estado": c.estado.value if c.estado else "LIBRE",
+                        "botellas_count": len(c.botellas),
+                        "cables_count": len(c.cables),
+                    }
+                    for c in filas
+                ],
+            })
+    except Exception as exc:
+        logger.exception("action=camaras_viewer_listado_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo obtener el listado de cámaras"}, status_code=500)
+
+
+@app.get("/api/admin/infra/camaras/viewer/duplicados")
+async def camaras_viewer_duplicados_web(request: Request) -> JSONResponse:
+    """Grupos de Cámaras raíz candidatas a duplicado por nombre normalizado extendido (sin
+    similitud difusa). Devuelve TODOS los grupos sin paginar — la cantidad de grupos es órdenes de
+    magnitud menor que el total de Cámaras raíz. Ver `core/services/camara_duplicados_service.py`."""
+    _require_admin(request)
+    try:
+        from core.services.camara_duplicados_service import detectar_grupos_duplicados
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            grupos = detectar_grupos_duplicados(session)
+            return JSONResponse({
+                "total_grupos": len(grupos),
+                "grupos": [
+                    {
+                        "clave_normalizada": g.clave_normalizada,
+                        "criterio": g.criterio,
+                        "estados_en_conflicto": g.estados_en_conflicto,
+                        "estado_mas_restrictivo": g.estado_mas_restrictivo,
+                        "miembros": [
+                            {
+                                "id": m.id,
+                                "nombre": m.nombre,
+                                "estado": m.estado,
+                                "botellas_count": m.botellas_count,
+                                "cables_count": m.cables_count,
+                            }
+                            for m in g.miembros
+                        ],
+                    }
+                    for g in grupos
+                ],
+            })
+    except Exception as exc:
+        logger.exception("action=camaras_viewer_duplicados_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo calcular los grupos de duplicados"}, status_code=500)
+
+
 @app.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
     request: Request,
@@ -3972,6 +4777,8 @@ async def smart_search_camaras_web(
     username, role = _require_auth(request)
 
     try:
+        from sqlalchemy.orm import selectinload
+
         from core.services.camara_estado_service import get_camara_estado_contexto
         from db.models.infra import Camara
         from db.session import SessionLocal
@@ -3981,53 +4788,35 @@ async def smart_search_camaras_web(
 
         with SessionLocal() as session:
             from db.models.infra import CamaraEstado as _CamaraEstado
-            _query = session.query(Camara)
+            # Etapa Cámara/Botella: el dashboard sólo muestra cámaras-raíz — sus Botellas viven en el
+            # detalle (GET /api/infra/camaras/{id}/botellas). `selectinload(Camara.botellas)` evita que
+            # `incluir_botellas=True` (abajo) dispare una query lazy por cada cámara de la página
+            # encima del N+1 ya preexistente de este endpoint (empalmes/rutas/cables sin eager load).
+            _query = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).options(
+                selectinload(Camara.botellas)
+            )
             estado_filter: Optional[str] = None
             if body.estado:
                 estado_upper = body.estado.strip().upper()
                 if estado_upper in [e.value for e in _CamaraEstado]:
                     _query = _query.filter(Camara.estado == _CamaraEstado(estado_upper))
                     estado_filter = estado_upper
-            all_camaras = _query.order_by(Camara.nombre).all()
+
+            # Filtro ADICIONAL (AND), independiente del chip de estado de arriba: por defecto nunca
+            # se traen cámaras NO_OPERATIVA (infraestructura fantasma/sin señal real que contamina
+            # el dashboard) salvo que el toggle "Mostrar No operativas" esté activo, o que el chip de
+            # estado ya apunte explícitamente a NO_OPERATIVA.
+            if not body.incluir_no_operativas and estado_filter != _CamaraEstado.NO_OPERATIVA.value:
+                _query = _query.filter(Camara.estado != _CamaraEstado.NO_OPERATIVA)
 
             def get_camara_rutas(camara: Camara) -> list[dict]:
-                """Obtiene las rutas asociadas a una cámara a través de empalmes."""
-                rutas_info = []
-                seen_rutas = set()
-                for empalme in camara.empalmes:
-                    for ruta in empalme.rutas:
-                        if ruta.id not in seen_rutas:
-                            seen_rutas.add(ruta.id)
-                            # Obtener alias del servicio
-                            alias_ids = ruta.servicio.alias_ids or []
-                            # Contar tránsitos en esta ruta
-                            transitos_count = sum(1 for e in ruta.empalmes if e.es_transito)
-                            # Obtener puntas
-                            punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
-                            punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
-                            rutas_info.append({
-                                "ruta_id": ruta.id,
-                                "servicio_id": ruta.servicio.servicio_id,
-                                "ruta_nombre": ruta.nombre,
-                                "ruta_tipo": ruta.tipo.value,
-                                "alias_ids": alias_ids,
-                                "transitos_count": transitos_count,
-                                "punta_a_sitio": punta_a_sitio,
-                                "punta_b_sitio": punta_b_sitio,
-                            })
-                return rutas_info
+                """Rutas del grupo completo (cámara + sus botellas) — reusa la función módulo-level
+                que ya usan `get_camara_detail_web`/`get_camara_registros_web`, sin duplicar lógica."""
+                return _collect_camara_rutas_info(camara, incluir_botellas=True)
 
             def get_camara_servicios(camara: Camara, rutas_info: list[dict] = None) -> list[str]:
-                """Obtiene servicios desde rutas (preferido) o empalmes legacy."""
-                if rutas_info:
-                    return list(set(r["servicio_id"] for r in rutas_info))
-                # Fallback: relación legacy
-                servicios_ids = []
-                for empalme in camara.empalmes:
-                    for servicio in empalme.servicios:
-                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                            servicios_ids.append(servicio.servicio_id)
-                return servicios_ids
+                """Servicios del grupo completo — idem, reusa la función módulo-level."""
+                return _collect_camara_servicios_ids(camara, rutas_info)
 
             def get_camara_cables(camara: Camara) -> list[str]:
                 cables_nombres = []
@@ -4073,10 +4862,12 @@ async def smart_search_camaras_web(
 
                 return False
 
-            # Si no hay términos, devolver todas
+            # Si no hay términos, devolver todas — LIMIT/OFFSET real en SQL (no hay términos que
+            # matchear contra servicios/cables computados, así que no hace falta materializar todo
+            # el resultado en memoria como sí requiere la rama con términos, más abajo).
             if not body.terms:
-                total = len(all_camaras)
-                paginated = all_camaras[offset:offset + limit]
+                total = _query.count()
+                paginated = _query.order_by(Camara.nombre).offset(offset).limit(limit).all()
                 camaras_response = []
                 for cam in paginated:
                     rutas_info = get_camara_rutas(cam)
@@ -4098,10 +4889,14 @@ async def smart_search_camaras_web(
                     "offset": offset,
                     "filters_applied": 1 if estado_filter else 0,
                     "estado_filter": estado_filter,
+                    "incluir_no_operativas": body.incluir_no_operativas,
                     "camaras": camaras_response,
                 })
 
-            # Aplicar términos con lógica AND
+            # Aplicar términos con lógica AND — necesita el set completo en memoria porque el match
+            # incluye campos computados (servicios/cables/rutas) que no se pueden filtrar en SQL sin
+            # reescribir esto como un join; a la escala real de cámaras raíz (~10k) es aceptable.
+            all_camaras = _query.order_by(Camara.nombre).all()
             matching_camaras = []
             for camara in all_camaras:
                 rutas_info = get_camara_rutas(camara)
@@ -4136,10 +4931,11 @@ async def smart_search_camaras_web(
 
             terms_count = len([t for t in body.terms if t.strip()])
             logger.info(
-                "action=smart_search user=%s terms=%d estado=%s total=%d returned=%d",
+                "action=smart_search user=%s terms=%d estado=%s incluir_no_operativas=%s total=%d returned=%d",
                 username,
                 terms_count,
                 estado_filter or "ninguno",
+                body.incluir_no_operativas,
                 total,
                 len(camaras_response),
             )
@@ -4151,6 +4947,7 @@ async def smart_search_camaras_web(
                 "offset": offset,
                 "filters_applied": terms_count + (1 if estado_filter else 0),
                 "estado_filter": estado_filter,
+                "incluir_no_operativas": body.incluir_no_operativas,
                 "camaras": camaras_response,
             })
 
@@ -4269,6 +5066,2525 @@ async def camaras_ingest_web(
         return JSONResponse({"error": f"Error en ingesta de cámaras: {exc!s}"}, status_code=500)
 
 
+class AsociarSinMatchCamarasRequestModel(BaseModel):
+    """Payload para resolver a mano uno o más `IngresoSinMatch` de ingesta de cámaras."""
+
+    caso_ids: list[int]
+    camara_id: int
+    motivo: str | None = None
+    csrf_token: str | None = None
+
+
+@app.post("/api/admin/ingesta/camaras/asociar")
+async def ingesta_camaras_asociar_web(request: Request, body: AsociarSinMatchCamarasRequestModel) -> JSONResponse:
+    """Resuelve a mano uno o más nombres del Excel de ingesta que no matchearon (`IngresoSinMatch`,
+    origen='excel_camaras') hacia una Cámara/Botella existente: crea un alias por cada uno (para que
+    futuros Excel con el mismo texto matcheen solos) y banea el grupo destino una sola vez."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.caso_ids:
+        return JSONResponse({"error": "No se especificaron casos a asociar"}, status_code=400)
+
+    motivo = (body.motivo or "").strip() or "Baneo por ingesta Excel (asociación manual)"
+
+    try:
+        from core.services.camara_ingest_service import asociar_nombres_a_camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = asociar_nombres_a_camara(
+                session, caso_ids=body.caso_ids, camara_id=body.camara_id, motivo=motivo, usuario=username,
+            )
+            if not resultado.ok:
+                session.rollback()
+                return JSONResponse({"error": resultado.error}, status_code=404)
+            session.commit()
+            return JSONResponse({
+                "ok": resultado.ok,
+                "camara_id": resultado.camara_id,
+                "camara_nombre": resultado.camara_nombre,
+                "estado_final": resultado.estado_final,
+                "baneo_aplicado": resultado.baneo_aplicado,
+                "alias_creados": resultado.alias_creados,
+                "alias_preexistentes": resultado.alias_preexistentes,
+                "casos_marcados": resultado.casos_marcados,
+                "conflictos": [
+                    {
+                        "caso_id": c.caso_id,
+                        "nombre": c.nombre,
+                        "camara_actual_id": c.camara_actual_id,
+                        "camara_actual_nombre": c.camara_actual_nombre,
+                    }
+                    for c in resultado.conflictos
+                ],
+                "error": resultado.error,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=ingesta_camaras_asociar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo completar la asociación"}, status_code=500)
+
+
+# ── Endpoints admin: ingesta de inventario FO desde Cromo Red (Etapa 4) ──────
+# Contrato completo: docs/Doc Privada/ingesta_cromo.md §9. Contexto público: docs/modulo_ingesta_cromo.md.
+
+
+class CromoIngestaIniciarRequest(BaseModel):
+    """Payload para disparar una corrida de ingesta Cromo.
+
+    `modo` (Task 3): `None` (default) o `"COMPLETA"` corren la secuencia de siempre + ODFs;
+    `"SOLO_ODF"` corre únicamente la fase de ODFs. Validado explícitamente en el handler contra
+    `_MODOS_INGESTA_VALIDOS` porque acá no hay un enum de Pydantic (mismo criterio simple que el
+    resto de este payload, p.ej. `psize` contra `PSIZE_PERMITIDOS`).
+    """
+
+    csrf_token: str
+    clases: List[int] | None = None
+    psize: int | None = None
+    max_paginas: int | None = None
+    modo: Optional[str] = None
+
+
+class CromoIngestaCancelarRequest(BaseModel):
+    """Payload para cancelar una corrida en curso."""
+
+    csrf_token: str
+
+
+class CromoSchedulerConfigRequest(BaseModel):
+    """Payload para configurar el scheduler del worker dedicado (Etapa 7)."""
+
+    csrf_token: str
+    habilitado: bool
+    intervalo_horas: int
+    hora_inicio: Optional[int] = None
+    psize: int
+    max_paginas: Optional[int] = None
+    clases: List[int]
+
+
+# Task 3 (submódulo ODFs): valores aceptados de `CromoIngestaIniciarRequest.modo`. `None` (el
+# request no lo mandó) es válido y equivale a "COMPLETA" — sólo se rechaza un string que no sea
+# ninguno de estos dos.
+_MODOS_INGESTA_VALIDOS = ("COMPLETA", "SOLO_ODF")
+
+# Etapa 7: la ingesta corre en su propio worker Docker (modules/cromo_worker/), no en este proceso.
+_CROMO_WORKER_BASE_URL = os.getenv("CROMO_WORKER_BASE_URL", "http://cromo_worker:8096")
+_CROMO_WORKER_RUN_URL = f"{_CROMO_WORKER_BASE_URL}/run"
+_CROMO_WORKER_RELOAD_URL = f"{_CROMO_WORKER_BASE_URL}/reload"
+_CROMO_WORKER_HEALTH_URL = f"{_CROMO_WORKER_BASE_URL}/health"
+
+
+async def _marcar_corrida_fallida(corrida_id: int, motivo: str) -> None:
+    """La corrida ya se creó como EN_CURSO — si no se pudo delegar al worker, no debe quedar huérfana."""
+    from datetime import datetime, timezone
+
+    from db.models.cromo import CromoIngestaCorrida, CromoIngestaEvento
+    from db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return
+        corrida.estado = "FALLIDA"
+        corrida.finalizada_at = datetime.now(timezone.utc)
+        sesion.add(CromoIngestaEvento(corrida_id=corrida_id, accion="ERROR", detalle=motivo))
+        await sesion.commit()
+
+
+async def _reload_cromo_worker_config() -> None:
+    """Solicita al worker de Cromo que relea su configuración en caliente. Best-effort: si el worker
+    está caído, el próximo `/health`/corrida manual lo va a evidenciar; no bloquea el guardado."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(_CROMO_WORKER_RELOAD_URL)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning("No se pudo recargar la config del worker de Cromo: %s", exc)
+
+
+@app.post("/api/admin/ingesta/cromo")
+async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarRequest) -> JSONResponse:
+    """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Crea la corrida acá (para devolver
+    el `corrida_id` de inmediato) y delega su ejecución al worker dedicado (Etapa 7)."""
+    from core.services.cromo.config import CromoConfigError, PSIZE_PERMITIDOS, get_cromo_config
+    from core.services.cromo.ingesta import CLASES_BOTELLA, iniciar_corrida
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if body.psize is not None and body.psize not in PSIZE_PERMITIDOS:
+        return JSONResponse(
+            {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
+        )
+
+    if body.modo is not None and body.modo not in _MODOS_INGESTA_VALIDOS:
+        return JSONResponse(
+            {"error": f"modo inválido. Valores permitidos: {sorted(_MODOS_INGESTA_VALIDOS)}"}, status_code=400
+        )
+
+    try:
+        cromo_config = get_cromo_config()
+    except CromoConfigError as exc:
+        return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=503)
+
+    psize_final = body.psize if body.psize is not None else cromo_config.psize_default
+    clases_final = tuple(body.clases) if body.clases else CLASES_BOTELLA
+    # Igual mecanismo genérico y aditivo que usa `repoblacion_service.py` (ver `iniciar_corrida`):
+    # sólo se agrega a `params` cuando el caller pidió explícitamente algo distinto del default, así
+    # una corrida COMPLETA sin `modo` en el body sigue reproduciendo el `params` de siempre.
+    params_extra = {"modo": body.modo} if body.modo not in (None, "COMPLETA") else None
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await iniciar_corrida(
+            sesion,
+            usuario=username,
+            psize=psize_final,
+            max_paginas=body.max_paginas,
+            clases=clases_final,
+            params_extra=params_extra,
+        )
+        corrida_id = corrida.id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(_CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username})
+            response.raise_for_status()
+    except Exception as exc:
+        motivo = f"No se pudo delegar la corrida al worker de ingesta: {exc}"
+        logger.error("action=cromo_ingesta_iniciar_error corrida_id=%s error=%s", corrida_id, exc)
+        await _marcar_corrida_fallida(corrida_id, motivo)
+        return JSONResponse(
+            {"error": "El worker de ingesta no está disponible. Intentá nuevamente en unos segundos."},
+            status_code=503,
+        )
+
+    logger.info("action=cromo_ingesta_iniciar user=%s corrida_id=%s psize=%s", username, corrida_id, psize_final)
+    return JSONResponse({"corrida_id": corrida_id}, status_code=202)
+
+
+@app.get("/api/admin/ingesta/cromo/config")
+async def cromo_scheduler_config_obtener_web(request: Request) -> JSONResponse:
+    """Devuelve la configuración persistida del scheduler del worker de ingesta Cromo."""
+    from db.models.cromo import CromoIngestaConfig
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        config = await sesion.get(CromoIngestaConfig, 1)
+    if config is None:
+        return JSONResponse({"error": "Configuración no encontrada"}, status_code=404)
+
+    return JSONResponse(
+        {
+            "habilitado": config.habilitado,
+            "intervalo_horas": config.intervalo_horas,
+            "hora_inicio": config.hora_inicio,
+            "psize": config.psize,
+            "max_paginas": config.max_paginas,
+            "clases": config.clases,
+            "ultima_ejecucion": config.ultima_ejecucion.isoformat() if config.ultima_ejecucion else None,
+            "ultimo_error": config.ultimo_error,
+        }
+    )
+
+
+@app.post("/api/admin/ingesta/cromo/config")
+async def cromo_scheduler_config_guardar_web(request: Request, body: CromoSchedulerConfigRequest) -> JSONResponse:
+    """Actualiza la configuración del scheduler y le pide al worker que la relea (best-effort)."""
+    from core.services.cromo.config import PSIZE_PERMITIDOS
+    from db.models.cromo import CromoIngestaConfig
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if body.psize not in PSIZE_PERMITIDOS:
+        return JSONResponse(
+            {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
+        )
+    if body.intervalo_horas < 1:
+        return JSONResponse({"error": "El intervalo debe ser al menos 1 hora"}, status_code=400)
+    if body.hora_inicio is not None and not (0 <= body.hora_inicio <= 23):
+        return JSONResponse({"error": "hora_inicio debe estar entre 0 y 23"}, status_code=400)
+    if not body.clases:
+        return JSONResponse({"error": "Elegí al menos una clase de botella"}, status_code=400)
+
+    async with AsyncSessionLocal() as sesion:
+        config = await sesion.get(CromoIngestaConfig, 1)
+        if config is None:
+            return JSONResponse({"error": "Configuración no encontrada"}, status_code=404)
+        config.habilitado = body.habilitado
+        config.intervalo_horas = body.intervalo_horas
+        config.hora_inicio = body.hora_inicio
+        config.psize = body.psize
+        config.max_paginas = body.max_paginas
+        config.clases = body.clases
+        await sesion.commit()
+
+    await _reload_cromo_worker_config()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/admin/ingesta/cromo/config/health")
+async def cromo_scheduler_health_web(request: Request) -> JSONResponse:
+    """Proxy al health check del worker dedicado de ingesta Cromo."""
+    _require_admin(request)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(_CROMO_WORKER_HEALTH_URL)
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"status": "offline", "service": "cromo_ingesta", "error": "Worker no accesible"}, status_code=503
+        )
+    except Exception as exc:
+        logger.error("Error consultando health del worker de Cromo: %s", exc)
+        return JSONResponse({"status": "error", "service": "cromo_ingesta"}, status_code=500)
+
+
+@app.post("/api/admin/ingesta/cromo/config/trigger")
+async def cromo_scheduler_trigger_web(request: Request, body: CromoIngestaCancelarRequest) -> JSONResponse:
+    """Dispara una ejecución manual inmediata usando la configuración guardada ("Ejecutar ahora")."""
+    username = _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(_CROMO_WORKER_RUN_URL, json={"usuario": username})
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.ConnectError:
+        return JSONResponse({"error": "Worker no accesible. Verificá que esté corriendo."}, status_code=503)
+    except Exception as exc:
+        logger.error("Error disparando ejecución manual del worker de Cromo: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+_CROMO_ACCION_A_EVENTO_SSE = {
+    "INICIO": "inicio",
+    "FASE": "fase",
+    "PAGINA": "pagina",
+    "RESUMEN": "resumen",
+    "ERROR": "error",
+    "REF_COLGADA": "error",
+}
+
+
+async def _cromo_eventos_a_sse(corrida_id: int, ultimo_id: int):
+    """Traduce `cromo_ingesta_eventos` a mensajes SSE, con heartbeat y corte al terminar la corrida.
+
+    No emite un mensaje por cada CREADA/ACTUALIZADA/SIN_CAMBIOS/OMITIDA (serían miles) — el progreso
+    granular ya viaja en el evento `pagina`. `ultimo_id` sigue avanzando sobre esas filas igual, para
+    que el replay por Last-Event-ID (que sólo conoce ids de mensajes SÍ emitidos) no las repita ni las
+    pierda.
+    """
+    from sqlalchemy import text
+
+    from db.session import AsyncSessionLocal
+
+    ultima_actividad = time.monotonic()
+    async with AsyncSessionLocal() as sesion:
+        while True:
+            filas = (
+                await sesion.execute(
+                    text(
+                        "SELECT id, n_id, clase, accion, detalle FROM app.cromo_ingesta_eventos "
+                        "WHERE corrida_id = :corrida_id AND id > :ultimo_id ORDER BY id"
+                    ),
+                    {"corrida_id": corrida_id, "ultimo_id": ultimo_id},
+                )
+            ).all()
+
+            for evento_id, n_id, clase, accion, detalle in filas:
+                ultimo_id = evento_id
+                tipo_sse = _CROMO_ACCION_A_EVENTO_SSE.get(accion)
+                if tipo_sse is None:
+                    continue
+                ultima_actividad = time.monotonic()
+                if accion in ("INICIO", "FASE", "PAGINA", "RESUMEN"):
+                    data = detalle or "{}"
+                else:
+                    data = json.dumps({"n_id": n_id, "clase": clase, "detalle": detalle})
+                yield f"id: {evento_id}\nevent: {tipo_sse}\ndata: {data}\n\n"
+
+            estado_fila = (
+                await sesion.execute(
+                    text("SELECT estado FROM app.cromo_ingesta_corridas WHERE id = :id"), {"id": corrida_id}
+                )
+            ).first()
+            if estado_fila is None:
+                return
+            if estado_fila[0] != "EN_CURSO" and not filas:
+                return
+
+            if time.monotonic() - ultima_actividad > 15:
+                yield ": heartbeat\n\n"
+                ultima_actividad = time.monotonic()
+
+            await asyncio.sleep(1.0)
+
+
+@app.get("/api/admin/ingesta/cromo/corridas/{corrida_id}/stream")
+async def cromo_ingesta_stream_web(request: Request, corrida_id: int) -> StreamingResponse:
+    """SSE de progreso de una corrida. `EventSource` no manda headers custom (salvo `Last-Event-ID`,
+    que el browser agrega solo al reconectar) — por eso no hay CSRF acá; la escritura ya quedó
+    protegida en el POST que dispara la corrida. Igual requiere cookie de sesión autenticada.
+    """
+    _require_admin(request)
+
+    ultimo_id = 0
+    last_event_id = request.headers.get("last-event-id")
+    if last_event_id and last_event_id.isdigit():
+        ultimo_id = int(last_event_id)
+
+    return StreamingResponse(
+        _cromo_eventos_a_sse(corrida_id, ultimo_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _serializar_cromo_corrida(corrida: Any) -> dict[str, Any]:
+    return {
+        "id": corrida.id,
+        "usuario": corrida.usuario,
+        "estado": corrida.estado,
+        "params": corrida.params,
+        "total_objetivo": corrida.total_objetivo,
+        "leidas": corrida.leidas,
+        "creadas": corrida.creadas,
+        "actualizadas": corrida.actualizadas,
+        "sin_cambios": corrida.sin_cambios,
+        "errores": corrida.errores,
+        "refs_colgadas": corrida.refs_colgadas,
+        "iniciada_at": corrida.iniciada_at.isoformat() if corrida.iniciada_at else None,
+        "finalizada_at": corrida.finalizada_at.isoformat() if corrida.finalizada_at else None,
+    }
+
+
+@app.get("/api/admin/ingesta/cromo/corridas")
+async def cromo_ingesta_historico_web(request: Request, limit: int = 20, offset: int = 0) -> JSONResponse:
+    """Histórico paginado de corridas, más recientes primero."""
+    from sqlalchemy import func, select
+
+    from db.models.cromo import CromoIngestaCorrida
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        total = (await sesion.execute(select(func.count()).select_from(CromoIngestaCorrida))).scalar_one()
+        filas = (
+            await sesion.execute(
+                select(CromoIngestaCorrida).order_by(CromoIngestaCorrida.id.desc()).limit(limit).offset(offset)
+            )
+        ).scalars().all()
+
+    return JSONResponse(
+        {"total": total, "limit": limit, "offset": offset, "corridas": [_serializar_cromo_corrida(c) for c in filas]}
+    )
+
+
+@app.get("/api/admin/ingesta/cromo/corridas/{corrida_id}")
+async def cromo_ingesta_detalle_web(request: Request, corrida_id: int, limit: int = 200) -> JSONResponse:
+    """Detalle de una corrida con sus últimos eventos (más recientes primero)."""
+    from sqlalchemy import text
+
+    from db.models.cromo import CromoIngestaCorrida
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    limit = max(1, min(limit, 1000))
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return JSONResponse({"error": "Corrida no encontrada"}, status_code=404)
+        eventos = (
+            await sesion.execute(
+                text(
+                    "SELECT id, n_id, clase, accion, detalle, created_at FROM app.cromo_ingesta_eventos "
+                    "WHERE corrida_id = :id ORDER BY id DESC LIMIT :limit"
+                ),
+                {"id": corrida_id, "limit": limit},
+            )
+        ).all()
+
+    return JSONResponse(
+        {
+            "corrida": _serializar_cromo_corrida(corrida),
+            "eventos": [
+                {
+                    "id": e[0],
+                    "n_id": e[1],
+                    "clase": e[2],
+                    "accion": e[3],
+                    "detalle": e[4],
+                    "created_at": e[5].isoformat() if e[5] else None,
+                }
+                for e in eventos
+            ],
+        }
+    )
+
+
+@app.post("/api/admin/ingesta/cromo/corridas/{corrida_id}/cancelar")
+async def cromo_ingesta_cancelar_web(
+    request: Request, corrida_id: int, body: CromoIngestaCancelarRequest
+) -> JSONResponse:
+    """Marca la corrida para detenerse: el chequeo cooperativo entre páginas la corta y la cierra
+    como CANCELADA al terminar la página en curso — no la interrumpe a mitad de una página.
+    """
+    from db.models.cromo import CromoIngestaCorrida
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if body.csrf_token != request.session.get("csrf"):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return JSONResponse({"error": "Corrida no encontrada"}, status_code=404)
+        if corrida.estado != "EN_CURSO":
+            return JSONResponse(
+                {"error": f"La corrida ya está {corrida.estado}, no se puede cancelar"}, status_code=409
+            )
+        corrida.estado = "CANCELADA"
+        await sesion.commit()
+
+    logger.info("action=cromo_ingesta_cancelar user=%s corrida_id=%s", username, corrida_id)
+    return JSONResponse({"ok": True})
+
+
+# ── Endpoints: verificador de servicios sobre inventario Cromo (Etapa 6) ─────
+# Contrato: docs/Doc Privada/ingesta_cromo.md §8.2. Sólo lectura, cualquier usuario autenticado
+# (no requiere rol admin: a diferencia de disparar una ingesta, consultar el inventario ya ingerido
+# no es una operación administrativa).
+
+
+def _serializar_servicio_encontrado(servicio: Any) -> dict[str, Any]:
+    return {
+        "servicio_id": servicio.servicio_id,
+        "servicio_id_externo": servicio.servicio_id_externo,
+        "numero_primer_servicio": servicio.numero_primer_servicio,
+        "nombre_cliente": servicio.nombre_cliente,
+        "cliente": servicio.cliente,
+        "estado_servicio": servicio.estado_servicio,
+        "categoria": servicio.categoria,
+        "tipo_servicio": servicio.tipo_servicio,
+        "pelo_n_id": servicio.pelo_n_id,
+        "servicio_numero_match": servicio.servicio_numero_match,
+        "metodo": servicio.metodo,
+    }
+
+
+@app.get("/api/infra/cromo/cables/{cable_n_id}/servicios")
+async def cromo_verificador_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
+    """Servicios que pasan por un cable entero (cualquiera de sus tubos/pelos)."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_cable
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_cable(sesion, cable_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "cable_n_id": resultado.cable_n_id,
+            "nombre": resultado.nombre,
+            "capacidad": resultado.capacidad,
+            "extremo_a_nombre": resultado.extremo_a_nombre,
+            "extremo_b_nombre": resultado.extremo_b_nombre,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/tubos/{tubo_n_id}/servicios")
+async def cromo_verificador_por_tubo_web(request: Request, tubo_n_id: int) -> JSONResponse:
+    """Servicios que pasan por un tubo/buffer específico dentro de un cable."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_tubo
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_tubo(sesion, tubo_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "tubo_n_id": resultado.tubo_n_id,
+            "cable_n_id": resultado.cable_n_id,
+            "orden": resultado.orden,
+            "nombre_color": resultado.nombre_color,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/botellas/{botella_n_id}/servicios")
+async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
+    """Servicios que pasan por los cables que tienen esta botella como uno de sus extremos, más el
+    listado de esos cables (id, nombre, cantidad de servicios) para la tarjeta "Cables asociados"
+    del detalle de Botella en el Verificador."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_botella
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_botella(sesion, botella_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "botella_n_id": resultado.botella_n_id,
+            "nombre": resultado.nombre,
+            "clase": resultado.clase,
+            "localidad": resultado.localidad,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+            "cables": [
+                {"n_id": c.n_id, "nombre": c.nombre, "cantidad_servicios": c.cantidad_servicios}
+                for c in resultado.cables
+            ],
+        }
+    )
+
+
+def _serializar_pelo_empalme(pelo: Any) -> Optional[dict[str, Any]]:
+    if pelo is None:
+        return None
+    return {
+        "n_id": pelo.n_id,
+        "cable_n_id": pelo.cable_n_id,
+        "cable_nombre": pelo.cable_nombre,
+        "tubo_n_id": pelo.tubo_n_id,
+        "tubo_color": pelo.tubo_color,
+        "numero_pelo": pelo.numero_pelo,
+        "orden": pelo.orden,
+        "color": pelo.color,
+        "servicio_raw": pelo.servicio_raw,
+        "servicio_numero": pelo.servicio_numero,
+    }
+
+
+@app.get("/api/infra/cromo/botellas/{botella_n_id}/empalmes")
+async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
+    """Empalmes (fusiones) internos de una Botella, aplanados y con Splitters agrupados en una sola
+    fila por pelo de origen — para la tabla dinámica de `/infra/cromo/verificador?...&n_id=.../empalmes`.
+    Sólo lectura sobre `app.cromo_fusiones` ya ingerido, cualquier usuario autenticado (mismo
+    criterio que el resto de `/api/infra/cromo/*`)."""
+    from core.services.cromo.empalmes import empalmes_de_botella
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await empalmes_de_botella(sesion, botella_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "botella_n_id": resultado.botella_n_id,
+            "nombre": resultado.nombre,
+            "cables": [
+                {"n_id": c.n_id, "nombre": c.nombre, "cantidad_empalmes": c.cantidad_empalmes}
+                for c in resultado.cables
+            ],
+            "empalmes": [
+                {
+                    "fusion_n_id": e.fusion_n_id,
+                    "nombre_par": e.nombre_par,
+                    "es_splitter": e.es_splitter,
+                    "pelo_origen": _serializar_pelo_empalme(e.pelo_origen),
+                    "pelo_destino": _serializar_pelo_empalme(e.pelo_destino),
+                    "splitter_destinos": [_serializar_pelo_empalme(p) for p in e.splitter_destinos],
+                    "splitter_ratio": e.splitter_ratio,
+                }
+                for e in resultado.empalmes
+            ],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/cables")
+async def cromo_inventario_cables_web(
+    request: Request,
+    q: Optional[str] = None,
+    jerarquia: Optional[str] = None,
+    propietario: Optional[str] = None,
+    vigente: Optional[bool] = None,
+    n_id: Optional[int] = None,
+    botella: Optional[str] = None,
+    servicio: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Inventario navegable de cables ya ingeridos (Etapa 8b, filtros extendidos en Etapa 9) —
+    búsqueda + paginación. Sólo lectura, cualquier usuario autenticado (es consulta, no
+    administración, mismo criterio que el verificador)."""
+    from core.services.cromo.inventario import buscar_cables
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_cables(
+            sesion,
+            q=q,
+            jerarquia=jerarquia,
+            propietario=propietario,
+            vigente=vigente,
+            n_id=n_id,
+            botella=botella,
+            servicio=servicio,
+            limit=limit,
+            offset=offset,
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "cables": [
+                {
+                    "n_id": c.n_id,
+                    "nombre": c.nombre,
+                    "capacidad": c.capacidad,
+                    "capacidad_pelos": c.capacidad_pelos,
+                    "jerarquia": c.jerarquia,
+                    "propietario": c.propietario,
+                    "extremo_a_nombre": c.extremo_a_nombre,
+                    "extremo_b_nombre": c.extremo_b_nombre,
+                    "vigente": c.vigente,
+                    "cantidad_servicios": c.cantidad_servicios,
+                }
+                for c in resultado.cables
+            ],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/odfs")
+async def cromo_inventario_odfs_web(
+    request: Request,
+    q: Optional[str] = None,
+    n_id: Optional[int] = None,
+    vigente: Optional[bool] = None,
+    tipo_elemento: Optional[str] = None,
+    servicio: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Inventario navegable de ODFs ya ingeridos (Tarea 4 del plan ODFs) — búsqueda + paginación.
+    Sólo lectura, cualquier usuario autenticado (mismo criterio que el inventario de cables)."""
+    from core.services.cromo.odf_inventario import buscar_odfs
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_odfs(
+            sesion,
+            q=q,
+            n_id=n_id,
+            vigente=vigente,
+            tipo_elemento=tipo_elemento,
+            servicio=servicio,
+            limit=limit,
+            offset=offset,
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "odfs": [
+                {
+                    "n_id": o.n_id,
+                    "nombre": o.nombre,
+                    "tipo_elemento": o.tipo_elemento,
+                    "localidad": o.localidad,
+                    "calle": o.calle,
+                    "altura": o.altura,
+                    "propietario": o.propietario,
+                    "vigente": o.vigente,
+                    "cantidad_cables_asociados": o.cantidad_cables_asociados,
+                    "cantidad_servicios": o.cantidad_servicios,
+                }
+                for o in resultado.odfs
+            ],
+        }
+    )
+
+
+def _serializar_detalle_odf(detalle: Any) -> dict[str, Any]:
+    return {
+        "n_id": detalle.n_id,
+        "nombre": detalle.nombre,
+        "tipo_elemento": detalle.tipo_elemento,
+        "propietario": detalle.propietario,
+        "codigo_modelo": detalle.codigo_modelo,
+        "id_legacy": detalle.id_legacy,
+        "notas": detalle.notas,
+        "calle": detalle.calle,
+        "altura": detalle.altura,
+        "localidad": detalle.localidad,
+        "provincia": detalle.provincia,
+        "ubicacion_fisica": detalle.ubicacion_fisica,
+        "tendido": detalle.tendido,
+        "latitud": detalle.latitud,
+        "longitud": detalle.longitud,
+        "vigente": detalle.vigente,
+        "cables_asociados": list(detalle.cables_asociados),
+        "odfs_en_la_misma_direccion": list(detalle.odfs_en_la_misma_direccion),
+    }
+
+
+@app.get("/api/infra/cromo/odfs/{n_id}/detalle")
+async def cromo_odf_detalle_web(request: Request, n_id: int) -> JSONResponse:
+    """Detalle de un ODF: metadata, cables asociados resueltos (n_id + nombre) y otros ODFs que
+    comparten domicilio físico (Tarea 4 del plan ODFs). Sólo lectura, cualquier usuario autenticado
+    (mismo criterio que el detalle de cable)."""
+    from core.services.cromo.odf_detalle import obtener_detalle_odf
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            detalle = await obtener_detalle_odf(sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(_serializar_detalle_odf(detalle))
+
+
+@app.get("/api/infra/cromo/odfs/{odf_n_id}/servicios")
+async def cromo_verificador_por_odf_web(request: Request, odf_n_id: int) -> JSONResponse:
+    """Servicios que pasan por los cables asociados a este ODF, más el listado de esos cables (id,
+    nombre, cantidad de servicios) — mismo formato de tarjeta "Cables asociados" que el verificador
+    de Botella (Tarea 4 del plan ODFs). Sólo lectura, cualquier usuario autenticado."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_odf
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_por_odf(sesion, odf_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "odf_n_id": resultado.odf_n_id,
+            "nombre": resultado.nombre,
+            "tipo_elemento": resultado.tipo_elemento,
+            "localidad": resultado.localidad,
+            "servicios": [_serializar_servicio_encontrado(s) for s in resultado.servicios],
+            "cables": [
+                {"n_id": c.n_id, "nombre": c.nombre, "cantidad_servicios": c.cantidad_servicios}
+                for c in resultado.cables
+            ],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/odfs/{odf_n_id}/conectores")
+async def cromo_conectores_de_odf_web(request: Request, odf_n_id: int) -> JSONResponse:
+    """Conectores/posiciones de patchera de esta ODF, con Cliente/Estado ya resueltos (atributo
+    directo de Cromo + regex del pelo, combinados por MAX-based ID final — ver
+    `core/services/cromo/odf_conectores.py`). Sólo lectura, cualquier usuario autenticado."""
+    from core.services.cromo.odf_conectores import ObjetoNoEncontrado, conectores_de_odf
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await conectores_de_odf(sesion, odf_n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(
+        {
+            "odf_n_id": resultado.odf_n_id,
+            "odf_nombre": resultado.odf_nombre,
+            "conectores": [
+                {
+                    "n_id": c.n_id,
+                    "bandeja_n_id": c.bandeja_n_id,
+                    "bandeja_nombre": c.bandeja_nombre,
+                    "numero_conector": c.numero_conector,
+                    "pelo_n_id": c.pelo_n_id,
+                    "pelo_numero": c.pelo_numero,
+                    "servicio_resuelto": c.servicio_resuelto,
+                    "servicio_id_historico": c.servicio_id_historico,
+                    "servicio_id_externo": c.servicio_id_externo,
+                    "nombre_cliente": c.nombre_cliente,
+                    "cliente": c.cliente,
+                    "estado_servicio": c.estado_servicio,
+                }
+                for c in resultado.conectores
+            ],
+        }
+    )
+
+
+@app.get("/api/infra/botellas/buscar")
+async def botellas_unificadas_buscar_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 30,
+    offset: int = 0,
+    incluir_no_operativas: bool = False,
+) -> JSONResponse:
+    """Listado unificado de Botellas: `app.cromo_botellas` (Cromo, siempre primero) + `app.camaras`
+    con `camara_padre_id` seteado (legado Infra/Baneos) — ambos con estado real desde 2026-08-11.
+    `incluir_no_operativas=False` (default) oculta infraestructura fantasma/sin señal real de
+    ambos orígenes. Sólo lectura, cualquier usuario autenticado — es consulta, no administración."""
+    from core.services.botellas_unificadas_service import buscar_botellas_unificadas
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_botellas_unificadas(
+            sesion, q=q, limit=limit, offset=offset, incluir_no_operativas=incluir_no_operativas
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "incluir_no_operativas": incluir_no_operativas,
+            "botellas": [
+                {"origen": b.origen, "id": b.id, "nombre": b.nombre, "estado": b.estado}
+                for b in resultado.botellas
+            ],
+        }
+    )
+
+
+class BotellaEstadoMasivoItemModel(BaseModel):
+    """Item de la clave compuesta `{origen, id}` del inventario unificado — nunca un id numérico
+    solo (`CromoBotella.n_id` y `Camara.id` son espacios de ID independientes que pueden colisionar
+    en valor)."""
+
+    origen: str  # "cromo" | "legado"
+    id: int
+
+
+class BotellasEstadoMasivoRequestModel(BaseModel):
+    """Payload para cambiar el estado de un lote de Botellas de origen mixto (Cromo + legado)."""
+
+    items: list[BotellaEstadoMasivoItemModel]
+    estado: str
+    motivo: str = "Cambio de estado masivo"
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.put("/api/infra/botellas/estado")
+async def botellas_estado_masivo_web(request: Request, body: BotellasEstadoMasivoRequestModel) -> JSONResponse:
+    """Cambia el estado de un lote de Botellas (Cromo + legado) en una sola operación. Legado
+    cascadea por grupo completo vía `aplicar_estado_a_grupo`; Cromo actualiza `CromoBotella.estado`
+    directo (foto propia, ver `core/services/botellas_estado_masivo_service.py`)."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_estado_masivo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.items:
+        return JSONResponse({"error": "No se especificaron botellas a actualizar"}, status_code=400)
+
+    try:
+        from core.services.botellas_estado_masivo_service import (
+            ESTADOS_ADMISIBLES,
+            EstadoMasivoError,
+            ItemBotellaEstado,
+            actualizar_estado_masivo,
+        )
+        from db.models.infra import CamaraEstado
+        from db.session import SessionLocal
+
+        estado_normalizado = body.estado.strip().upper()
+        if estado_normalizado not in {estado.value for estado in ESTADOS_ADMISIBLES}:
+            return JSONResponse({"error": "Estado inválido"}, status_code=400)
+
+        items = [ItemBotellaEstado(origen=item.origen, id=item.id) for item in body.items]
+
+        with SessionLocal() as session:
+            try:
+                resultado = actualizar_estado_masivo(
+                    session,
+                    items,
+                    CamaraEstado(estado_normalizado),
+                    usuario=username,
+                    motivo=body.motivo.strip() or "Cambio de estado masivo",
+                )
+            except EstadoMasivoError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_estado_masivo user=%s estado_nuevo=%s legado=%d cromo=%d no_encontrados=%d",
+                username,
+                resultado.estado_nuevo,
+                resultado.legado_actualizadas,
+                resultado.cromo_actualizadas,
+                len(resultado.no_encontrados),
+            )
+            return JSONResponse({"ok": True, **resultado.to_dict()})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_estado_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo actualizar el estado de las Botellas"}, status_code=500)
+
+
+@app.get("/api/admin/infra/botellas/viewer")
+async def botellas_viewer_listado_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 30,
+    offset: int = 0,
+    incluir_no_operativas: bool = False,
+) -> JSONResponse:
+    """Listado paginado dual (Cromo + legado) para `/admin/servicios/viewer/Botellas` — delega
+    íntegramente en `buscar_botellas_unificadas` (mismo servicio y patrón `AsyncSessionLocal` que ya
+    usa `GET /api/infra/botellas/buscar`), con guarda admin adicional para el namespace del dashboard."""
+    _require_admin(request)
+    try:
+        from core.services.botellas_unificadas_service import buscar_botellas_unificadas
+        from db.session import AsyncSessionLocal
+
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        async with AsyncSessionLocal() as sesion:
+            resultado = await buscar_botellas_unificadas(
+                sesion, q=q, limit=limit, offset=offset, incluir_no_operativas=incluir_no_operativas
+            )
+
+        return JSONResponse({
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "incluir_no_operativas": incluir_no_operativas,
+            "botellas": [
+                {"origen": b.origen, "id": b.id, "nombre": b.nombre, "estado": b.estado}
+                for b in resultado.botellas
+            ],
+        })
+    except Exception as exc:
+        logger.exception("action=botellas_viewer_listado_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo obtener el listado de Botellas"}, status_code=500)
+
+
+@app.get("/api/admin/infra/botellas/viewer/duplicados")
+async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = False) -> JSONResponse:
+    """Grupos de Botellas (Cromo + legado) candidatas a duplicado dentro de la misma Cámara padre.
+    Sin paginar — ver `core/services/botella_duplicados_service.py`. Cada miembro Cromo lleva
+    `tiene_cables` (señal "operativa" para elegir el destino al consolidar un grupo no `resoluble`,
+    ver `core/services/cromo/verificador.py::tiene_cables_asociados_batch_sync` — una sola query
+    batcheada para todos los n_ids de la página, nunca una por miembro); `None` para legado, donde esa
+    señal no existe.
+
+    Cada grupo también lleva `sugerencia_placeholders` (`{id_destino_cromo, ids_origen_cromo}` o
+    `null`) — patrón "ID dual" (ver `core/services/botella_duplicados_service.py::
+    sugerir_consolidacion_placeholders`): grupo 100% Cromo con exactamente un miembro operativo y el
+    resto placeholders vacíos del mismo nombre. Es sólo detección/exposición para que un admin la
+    consolide manualmente vía `POST /api/infra/botellas/consolidar` — no ejecuta nada acá.
+
+    `?refrescar=true` (el botón "Actualizar" del visor) saltea la lectura de caché y fuerza el cómputo
+    síncrono, repoblando la caché con el resultado fresco. Es la escotilla manual para los escritores
+    que NO invalidan la caché (ingesta Cromo, cambios de estado/baneo, merge/eliminar Cámaras, el
+    backfill de Cámara padre): sin esto, un admin que sabe que algo cambió por fuera de los 7
+    mutadores cableados tendría que esperar hasta el TTL de 24h — ver `docs/decisiones.md`,
+    entrada 2026-08-21 (cont.). El cómputo (cache miss o `refrescar=true`) corre en un hilo aparte
+    (`asyncio.to_thread`) para no bloquear el event loop del proceso `web` — mismo patrón ya usado en
+    `modules/botellas_recalculo_worker/worker.py`, ver `docs/decisiones.md`, entrada 2026-08-22."""
+    _require_admin(request)
+    try:
+        from core.services.botella_duplicados_service import (
+            detectar_grupos_duplicados_botellas,
+            sugerir_consolidacion_placeholders,
+        )
+        from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            grupos = None if refrescar else await leer_cache_duplicados()
+            if grupos is None:
+                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)
+                await guardar_cache_duplicados(grupos)
+            ids_cromo = [m.id for g in grupos for m in g.miembros if m.origen == "cromo"]
+            operativos = tiene_cables_asociados_batch_sync(session, ids_cromo)
+            return JSONResponse({
+                "total_grupos": len(grupos),
+                "grupos": [
+                    {
+                        "camara_padre_id": g.camara_padre_id,
+                        "camara_padre_nombre": g.camara_padre_nombre,
+                        "clave_normalizada": g.clave_normalizada,
+                        "criterio": g.criterio,
+                        "estados_en_conflicto": g.estados_en_conflicto,
+                        "estado_mas_restrictivo": g.estado_mas_restrictivo,
+                        "resoluble": g.resoluble,
+                        "sugerencia_placeholders": (
+                            {"id_destino_cromo": s.id_destino_cromo, "ids_origen_cromo": s.ids_origen_cromo}
+                            if (s := sugerir_consolidacion_placeholders(g, operativos))
+                            else None
+                        ),
+                        "miembros": [
+                            {
+                                "origen": m.origen,
+                                "id": m.id,
+                                "nombre": m.nombre,
+                                "estado": m.estado,
+                                "tiene_cables": (m.id in operativos) if m.origen == "cromo" else None,
+                            }
+                            for m in g.miembros
+                        ],
+                    }
+                    for g in grupos
+                ],
+            })
+    except Exception as exc:
+        logger.exception("action=botellas_viewer_duplicados_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo calcular los grupos de duplicados"}, status_code=500)
+
+
+class BotellasOperatividadRequestModel(BaseModel):
+    """Payload para consultar, en lote, cuáles de los n_ids Cromo dados tienen cables asociados."""
+
+    n_ids: list[int]
+
+
+@app.post("/api/admin/infra/botellas/operatividad")
+async def botellas_operatividad_web(request: Request, body: BotellasOperatividadRequestModel) -> JSONResponse:
+    """Cuáles de los n_ids Cromo dados tienen al menos un cable asociado (extremo_a/b) — señal
+    "operativa" para el flujo de consolidación manual con IDs tipeados a mano (sin pasar por un grupo
+    ya detectado). Una sola query batcheada, sin N+1."""
+    _require_admin(request)
+    try:
+        from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            operativos = tiene_cables_asociados_batch_sync(session, body.n_ids)
+        return JSONResponse({"operativos": sorted(operativos)})
+    except Exception as exc:
+        logger.exception("action=botellas_operatividad_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo calcular operatividad"}, status_code=500)
+
+
+class BotellaApropiarRequestModel(BaseModel):
+    """Payload para apropiar una Botella legado hacia su CromoBotella hermana (mismo padre)."""
+
+    legado_id: int
+    cromo_n_id: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/apropiar")
+async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestModel) -> JSONResponse:
+    """Apropia una Botella legado hacia su CromoBotella hermana: Cromo se conserva, la legado se
+    elimina físicamente tras reasignar sus FKs reales a la Cámara padre. Ver
+    `core/services/botella_merge_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_apropiar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = apropiar_legado_a_cromo(
+                    session, legado_id=body.legado_id, cromo_n_id=body.cromo_n_id, usuario=username,
+                )
+            except ApropiacionBotellaError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_apropiar user=%s legado_id=%s cromo_n_id=%s camara_padre_id=%s "
+                "estado_final=%s cables=%d empalmes=%d ingresos=%d aliases=%d",
+                username,
+                resultado.legado_id,
+                resultado.cromo_n_id,
+                resultado.camara_padre_id,
+                resultado.estado_final,
+                resultado.cables_migrados,
+                resultado.empalmes_migrados,
+                resultado.ingresos_migrados,
+                resultado.aliases_migrados,
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"apropiar legado_id={resultado.legado_id} cromo_n_id={resultado.cromo_n_id} usuario={username}"
+            )
+            return JSONResponse({
+                "ok": True,
+                "legado_id": resultado.legado_id,
+                "legado_nombre": resultado.legado_nombre,
+                "cromo_n_id": resultado.cromo_n_id,
+                "cromo_nombre": resultado.cromo_nombre,
+                "camara_padre_id": resultado.camara_padre_id,
+                "camara_padre_nombre": resultado.camara_padre_nombre,
+                "botellas_legado_migradas": resultado.botellas_legado_migradas,
+                "cromo_reasignadas": resultado.cromo_reasignadas,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "aliases_migrados": resultado.aliases_migrados,
+                "estado_final": resultado.estado_final,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_apropiar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo apropiar la Botella"}, status_code=500)
+
+
+class BotellaApropiarMasivoRequestModel(BaseModel):
+    """Payload para apropiar automáticamente TODOS los grupos de Botellas duplicadas resolubles."""
+
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/apropiar-masivo")
+async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMasivoRequestModel) -> JSONResponse:
+    """Apropia automáticamente TODOS los grupos de Botellas duplicadas `resoluble` (1 legado + 1
+    Cromo dentro del mismo padre) detectados en este momento — mismo patrón que
+    `POST /api/infra/camaras/merge-masivo`: cada grupo corre en su PROPIA transacción, así que un
+    fallo aislado no revierte los grupos ya apropiados exitosamente. Grupos no `resoluble` (todo
+    legado, todo cromo, o mixto con 2+ legado) se omiten — no tienen política de resolución
+    automática definida, ver `core/services/botella_duplicados_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_apropiar_masivo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.botella_duplicados_service import (
+            detectar_grupos_duplicados_botellas,
+            sugerir_apropiacion,
+        )
+        from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
+        from db.session import SessionLocal
+
+        grupos = await leer_cache_duplicados()
+        if grupos is None:
+            with SessionLocal() as session_deteccion:
+                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session_deteccion)
+            await guardar_cache_duplicados(grupos)
+
+        resolubles = [(grupo, sugerir_apropiacion(grupo)) for grupo in grupos]
+        resolubles = [(grupo, par) for grupo, par in resolubles if par is not None]
+
+        detalle: list[dict[str, Any]] = []
+        for grupo, (legado_id, cromo_n_id) in resolubles:
+            with SessionLocal() as session:
+                try:
+                    resultado = apropiar_legado_a_cromo(
+                        session, legado_id=legado_id, cromo_n_id=cromo_n_id, usuario=username,
+                    )
+                except ApropiacionBotellaError as exc:
+                    session.rollback()
+                    detalle.append({
+                        "exito": False,
+                        "legado_id": legado_id,
+                        "cromo_n_id": cromo_n_id,
+                        "camara_padre_nombre": grupo.camara_padre_nombre,
+                        "error": str(exc),
+                    })
+                    continue
+
+                session.commit()
+                detalle.append({
+                    "exito": True,
+                    "legado_id": resultado.legado_id,
+                    "cromo_n_id": resultado.cromo_n_id,
+                    "camara_padre_nombre": resultado.camara_padre_nombre,
+                    "estado_final": resultado.estado_final,
+                })
+
+        grupos_apropiados = sum(1 for item in detalle if item["exito"])
+        grupos_con_error = len(detalle) - grupos_apropiados
+        logger.info(
+            "action=botellas_apropiar_masivo user=%s total_grupos=%d grupos_resolubles=%d "
+            "grupos_apropiados=%d grupos_con_error=%d",
+            username,
+            len(grupos),
+            len(resolubles),
+            grupos_apropiados,
+            grupos_con_error,
+        )
+        if grupos_apropiados > 0:
+            await encolar_recalculo_duplicados_botellas(motivo=f"apropiar-masivo usuario={username}")
+        return JSONResponse({
+            "ok": True,
+            "total_grupos": len(grupos),
+            "grupos_resolubles": len(resolubles),
+            "grupos_apropiados": grupos_apropiados,
+            "grupos_con_error": grupos_con_error,
+            "detalle": detalle,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_apropiar_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo ejecutar la apropiación masiva"}, status_code=500)
+
+
+class BotellaConsolidarRequestModel(BaseModel):
+    """Payload para consolidar un grupo LIBRE de n_ids Cromo (no restringido a un grupo detectado
+    automáticamente) hacia un único n_id destino, más opcionalmente una o más Botellas legado y un
+    nombre corregido para el destino. `force_camera_association=True` bypasea el guard de "misma
+    Cámara padre" de `apropiar_legado_a_cromo` para los `ids_legado` incluidos — no afecta la
+    consolidación Cromo↔Cromo (`ids_origen_cromo`), que no tiene ese guard (ver docs/decisiones.md
+    2026-08-24)."""
+
+    ids_origen_cromo: list[int] = Field(default_factory=list)
+    id_destino_cromo: int
+    ids_legado: list[int] = Field(default_factory=list)
+    nombre_destino: str | None = None
+    motivo: str | None = None
+    force_camera_association: bool = False
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/consolidar")
+async def botellas_consolidar_web(request: Request, body: BotellaConsolidarRequestModel) -> JSONResponse:
+    """Consolida un grupo libre de Botellas Cromo duplicadas hacia un único n_id destino: crea/
+    actualiza filas en `app.cromo_botella_alias` (`accion='fusionar'`), opcionalmente migra una o más
+    Botellas legado hacia el destino (reusa `apropiar_legado_a_cromo` tal cual) y opcionalmente
+    corrige el nombre del destino si falta. Cierra el gap "Revisión manual" documentado 2026-08-14 en
+    `core/services/botella_duplicados_service.py`. Ver `core/services/cromo/consolidacion_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_consolidar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.botella_merge_service import ApropiacionBotellaError
+        from core.services.cromo.consolidacion_service import (
+            ConsolidacionBotellaError,
+            consolidar_grupo_botellas,
+        )
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = consolidar_grupo_botellas(
+                    session,
+                    ids_origen_cromo=body.ids_origen_cromo,
+                    id_destino_cromo=body.id_destino_cromo,
+                    ids_legado=body.ids_legado,
+                    nombre_destino=body.nombre_destino,
+                    motivo=body.motivo,
+                    usuario=username,
+                    force_camera_association=body.force_camera_association,
+                )
+            except (ConsolidacionBotellaError, ApropiacionBotellaError) as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_consolidar user=%s destino=%s origenes=%s legados=%s "
+                "alias_creados=%d alias_actualizados=%d repuntados=%d",
+                username,
+                resultado.id_destino_cromo,
+                body.ids_origen_cromo,
+                body.ids_legado,
+                resultado.alias_creados,
+                resultado.alias_actualizados,
+                len(resultado.alias_repuntados),
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"consolidar destino={resultado.id_destino_cromo} usuario={username}"
+            )
+            return JSONResponse({
+                "ok": True,
+                "id_destino_cromo": resultado.id_destino_cromo,
+                "alias_creados": resultado.alias_creados,
+                "alias_actualizados": resultado.alias_actualizados,
+                "alias_repuntados": resultado.alias_repuntados,
+                "alias_dependientes_recableados": resultado.alias_dependientes_recableados,
+                "cables_existentes_recableados": resultado.cables_existentes_recableados,
+                "fusiones_existentes_recableadas": resultado.fusiones_existentes_recableadas,
+                "legados_migrados": resultado.legados_migrados,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "camara_aliases_migrados": resultado.camara_aliases_migrados,
+                "nombre_anterior": resultado.nombre_anterior,
+                "nombre_nuevo": resultado.nombre_nuevo,
+                "legados_con_camara_forzada": resultado.legados_con_camara_forzada,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_consolidar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo consolidar el grupo"}, status_code=500)
+
+
+@app.get("/api/admin/infra/botellas/inconsistencias/exportar")
+async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
+    """Excel de inconsistencias de Botellas sin resolver: huérfanas (sin Cámara padre) + miembros de
+    grupos duplicados no `resoluble` automáticamente. Columnas: ID Cromo, Nombre, Cámara Padre,
+    Motivo — mismo patrón de export ya usado en este archivo para Cámaras (`pd.ExcelWriter(engine=
+    "openpyxl")` + `Response` con `Content-Disposition`)."""
+    username = _require_admin(request)
+    try:
+        from datetime import datetime, timezone
+
+        import pandas as pd
+
+        from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
+        from core.services.cromo.orfanas_service import buscar_huerfanas
+        from db.session import AsyncSessionLocal, SessionLocal
+
+        rows: list[dict[str, Any]] = []
+
+        async with AsyncSessionLocal() as sesion:
+            huerfanas = await buscar_huerfanas(sesion, limit=100_000, offset=0)
+        for h in huerfanas.botellas:
+            rows.append({
+                "ID Cromo": h.n_id,
+                "Nombre": h.nombre or "",
+                "Cámara Padre": "",
+                "Motivo": "Huérfana — sin Cámara padre asociada",
+            })
+
+        with SessionLocal() as session:
+            grupos = await leer_cache_duplicados()
+            if grupos is None:
+                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)
+                await guardar_cache_duplicados(grupos)
+        for g in grupos:
+            if g.resoluble:
+                continue
+            cuenta_cromo = sum(1 for m in g.miembros if m.origen == "cromo")
+            cuenta_legado = sum(1 for m in g.miembros if m.origen == "legado")
+            descripcion_grupo = (
+                f"Duplicado no resoluble — grupo de {len(g.miembros)} miembros "
+                f"({cuenta_cromo} Cromo, {cuenta_legado} legado)"
+            )
+            for m in g.miembros:
+                motivo = descripcion_grupo
+                if m.origen == "legado":
+                    motivo += f"; miembro legado (Camara.id={m.id})"
+                rows.append({
+                    "ID Cromo": m.id if m.origen == "cromo" else "",
+                    "Nombre": m.nombre,
+                    "Cámara Padre": g.camara_padre_nombre,
+                    "Motivo": motivo,
+                })
+
+        logger.info("action=botellas_inconsistencias_exportar user=%s filas=%d", username, len(rows))
+
+        df = pd.DataFrame(rows, columns=["ID Cromo", "Nombre", "Cámara Padre", "Motivo"])
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Inconsistencias", index=False)
+        output.seek(0)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return Response(
+            content=output.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="botellas_inconsistencias_{timestamp}.xlsx"'},
+        )
+    except Exception as exc:
+        logger.exception("action=botellas_inconsistencias_exportar_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
+
+
+def _serializar_bloqueos(bloqueos: list[Any]) -> list[dict[str, Any]]:
+    return [{"origen": b.origen, "id": b.id, "nombre": b.nombre, "razon": b.razon} for b in bloqueos]
+
+
+class BotellaEliminarRequestModel(BaseModel):
+    """Payload para eliminar permanentemente una Botella (legado o Cromo) genuinamente vacía."""
+
+    origen: str
+    id: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/eliminar")
+async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestModel) -> JSONResponse:
+    """Elimina permanentemente una Botella (legado o Cromo) — se rechaza si tiene Cables/Empalmes/
+    Ingresos (legado) o Cables/Fusiones Cromo (o si ya es destino de otra fila de alias) asociados;
+    sólo se puede eliminar lo que esté genuinamente vacío. Para Cromo, registra automáticamente el
+    n_id en `app.cromo_botella_alias` (`accion='ignorar'`) para que la ingesta no la resucite. Si la
+    Cámara padre queda vacía como consecuencia, también se elimina. Ver
+    `core/services/camara_botella_delete_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_eliminar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_botella
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = eliminar_botella(session, origen=body.origen, id=body.id, usuario=username)
+            except EliminacionBloqueadaError as exc:
+                session.rollback()
+                return JSONResponse(
+                    {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
+                )
+
+            session.commit()
+            logger.info(
+                "action=botellas_eliminar user=%s origen=%s id=%s camara_padre_eliminada=%s alias_registrado=%s",
+                username,
+                resultado.origen,
+                resultado.id,
+                resultado.camara_padre_eliminada,
+                resultado.alias_registrado,
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"eliminar origen={resultado.origen} id={resultado.id} usuario={username}"
+            )
+            return JSONResponse({
+                "ok": True,
+                "origen": resultado.origen,
+                "id": resultado.id,
+                "camara_padre_eliminada": resultado.camara_padre_eliminada,
+                "alias_registrado": resultado.alias_registrado,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_eliminar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo eliminar la Botella"}, status_code=500)
+
+
+class BotellaEliminarGrupoRequestModel(BaseModel):
+    """Payload para "Borrar y Excluir Cromo": borrado físico FORZADO de un grupo de `CromoBotella`
+    conflictivas (botón de grupo del visor de duplicados). A diferencia de
+    `BotellaEliminarRequestModel`, ignora deliberadamente la política "bloquear, nunca forzar" —
+    ver `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
+
+    ids_cromo: list[int] = Field(default_factory=list)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/eliminar-grupo")
+async def botellas_eliminar_grupo_web(
+    request: Request, body: BotellaEliminarGrupoRequestModel
+) -> JSONResponse:
+    """Elimina físicamente un grupo de Botellas Cromo conflictivas (residuo de cambios de nombre en
+    la ingesta) junto con sus `CromoCable`/`CromoFusion` asociados, SIN bloquear por datos reales —
+    a diferencia de `/api/infra/botellas/eliminar`. Registra cada n_id en `app.cromo_botella_alias`
+    (`accion='ignorar'`) para que la ingesta no las resucite. Ver
+    `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botellas_eliminar_grupo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_botella_delete_service import (
+            EliminacionBloqueadaError,
+            eliminar_y_excluir_grupo_cromo,
+        )
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = eliminar_y_excluir_grupo_cromo(
+                    session, ids_cromo=body.ids_cromo, usuario=username
+                )
+            except EliminacionBloqueadaError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=botellas_eliminar_grupo user=%s botellas=%s cables=%d fusiones=%d "
+                "aliases=%d no_encontradas=%s",
+                username,
+                resultado.botellas_eliminadas,
+                resultado.cables_eliminados,
+                resultado.fusiones_eliminadas,
+                resultado.aliases_registrados,
+                resultado.no_encontradas,
+            )
+            await encolar_recalculo_duplicados_botellas(
+                motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
+            )
+            return JSONResponse({
+                "ok": True,
+                "botellas_eliminadas": resultado.botellas_eliminadas,
+                "cables_eliminados": resultado.cables_eliminados,
+                "fusiones_eliminadas": resultado.fusiones_eliminadas,
+                "aliases_registrados": resultado.aliases_registrados,
+                "no_encontradas": resultado.no_encontradas,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botellas_eliminar_grupo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo eliminar el grupo de Botellas"}, status_code=500)
+
+
+class CamaraEliminarRequestModel(BaseModel):
+    """Payload para eliminar permanentemente una Cámara raíz genuinamente vacía (cascada a sus Botellas)."""
+
+    camara_id: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/eliminar")
+async def camaras_eliminar_web(request: Request, body: CamaraEliminarRequestModel) -> JSONResponse:
+    """Elimina permanentemente una Cámara raíz junto con TODAS sus Botellas (legado + Cromo) — todo
+    o nada: si un solo hijo (o la propia Cámara) tiene Cables/Empalmes/Ingresos/Fusiones reales
+    asociados, se rechaza la operación completa sin borrar nada. Cada Botella Cromo eliminada
+    registra su n_id en `app.cromo_botella_alias` (`accion='ignorar'`). Ver
+    `core/services/camara_botella_delete_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_eliminar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_camara
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = eliminar_camara(session, camara_id=body.camara_id, usuario=username)
+            except EliminacionBloqueadaError as exc:
+                session.rollback()
+                return JSONResponse(
+                    {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
+                )
+
+            session.commit()
+            logger.info(
+                "action=camaras_eliminar user=%s camara_id=%s legado=%d cromo=%d aliases=%d",
+                username,
+                resultado.camara_id,
+                resultado.botellas_legado_eliminadas,
+                resultado.botellas_cromo_eliminadas,
+                resultado.aliases_registrados,
+            )
+            return JSONResponse({
+                "ok": True,
+                "camara_id": resultado.camara_id,
+                "botellas_legado_eliminadas": resultado.botellas_legado_eliminadas,
+                "botellas_cromo_eliminadas": resultado.botellas_cromo_eliminadas,
+                "aliases_registrados": resultado.aliases_registrados,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_eliminar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo eliminar la Cámara"}, status_code=500)
+
+
+@app.get("/api/infra/cromo-botellas/{n_id}/estado-asociacion")
+async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JSONResponse:
+    """Chequeo liviano de una Botella Cromo puntual: ¿está huérfana (sin `camara_id`)? Usado por
+    `BotellaDetalleUnificadaView.vue` para decidir si mostrar el panel de resolución individual en
+    vez de redirigir directo al Verificador Cromo. Desde 2026-08-13 también trae `camara_id`/
+    `camara_nombre` (Cámara padre) cuando no está huérfana, para la navegación cruzada del
+    Verificador hacia `CamaraDetailView.vue`."""
+    from sqlalchemy import select
+
+    from db.models.cromo import CromoBotella
+    from db.models.infra import Camara
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    async with AsyncSessionLocal() as sesion:
+        botella = (
+            await sesion.execute(
+                select(
+                    CromoBotella.n_id,
+                    CromoBotella.nombre,
+                    CromoBotella.camara_id,
+                    Camara.nombre,
+                )
+                .outerjoin(Camara, Camara.id == CromoBotella.camara_id)
+                .where(CromoBotella.n_id == n_id)
+            )
+        ).first()
+    if botella is None:
+        return JSONResponse({"error": "Botella no encontrada"}, status_code=404)
+    return JSONResponse({
+        "n_id": botella[0],
+        "nombre": botella[1],
+        "huerfana": botella[2] is None,
+        "camara_id": botella[2],
+        "camara_nombre": botella[3],
+    })
+
+
+@app.get("/api/infra/cromo-botellas/huerfanas")
+async def cromo_botellas_huerfanas_web(
+    request: Request,
+    q: Optional[str] = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> JSONResponse:
+    """Botellas Cromo vigentes sin `camara_id` — no matchearon el regex del backfill automático.
+    Sólo lectura, cualquier usuario autenticado. Ver `core/services/cromo/orfanas_service.py`."""
+    from core.services.cromo.orfanas_service import buscar_huerfanas
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_huerfanas(sesion, q=q, limit=limit, offset=offset)
+
+    return JSONResponse({
+        "total": resultado.total,
+        "limit": resultado.limit,
+        "offset": resultado.offset,
+        "botellas": [
+            {"n_id": b.n_id, "nombre": b.nombre, "calle": b.calle, "localidad": b.localidad}
+            for b in resultado.botellas
+        ],
+    })
+
+
+class CromoBotellasAsociarRequestModel(BaseModel):
+    """Payload para asociar una o más Botellas Cromo huérfanas a una Cámara (existente o nueva)."""
+
+    n_ids: list[int]
+    camara_id: Optional[int] = None
+    nombre_nueva_camara: Optional[str] = None
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/cromo-botellas/asociar")
+async def cromo_botellas_asociar_web(request: Request, body: CromoBotellasAsociarRequestModel) -> JSONResponse:
+    """Asocia una o más Botellas Cromo huérfanas a una Cámara existente o recién creada — resolución
+    manual individual o masiva (Caso 1, huérfanas). Ver `core/services/cromo/orfanas_service.py`."""
+    username = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=cromo_botellas_asociar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.cromo.orfanas_service import AsociarHuerfanasError, asociar_huerfanas
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = asociar_huerfanas(
+                    session,
+                    n_ids=body.n_ids,
+                    camara_id=body.camara_id,
+                    nombre_nueva_camara=body.nombre_nueva_camara,
+                    usuario=username,
+                )
+            except AsociarHuerfanasError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=cromo_botellas_asociar user=%s camara_id=%s camara_creada=%s botellas=%d",
+                username,
+                resultado.camara_id,
+                resultado.camara_creada,
+                resultado.botellas_vinculadas,
+            )
+            return JSONResponse({
+                "ok": True,
+                "camara_id": resultado.camara_id,
+                "camara_creada": resultado.camara_creada,
+                "botellas_vinculadas": resultado.botellas_vinculadas,
+                "estado_asignado": resultado.estado_asignado,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=cromo_botellas_asociar_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudieron asociar las Botellas"}, status_code=500)
+
+
+class CamaraMergeRequestModel(BaseModel):
+    """Payload para unificar dos Cámaras raíz duplicadas."""
+
+    camara_principal_id: int
+    camara_secundaria_id: int
+    guardar_alias: bool = True
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/merge")
+async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> JSONResponse:
+    """Fusiona dos Cámaras raíz duplicadas: la principal hereda todo lo heredable de la secundaria
+    (Botellas propias, Botellas Cromo, Cables, Empalmes, Ingresos, alias y auditoría/historial) y la
+    secundaria se elimina físicamente. Ver `core/services/camara_merge_service.py`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_merge result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_merge_service import MergeCamarasError, unificar_camaras
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = unificar_camaras(
+                    session,
+                    principal_id=body.camara_principal_id,
+                    secundaria_id=body.camara_secundaria_id,
+                    usuario=username,
+                    guardar_alias=body.guardar_alias,
+                )
+            except MergeCamarasError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=camaras_merge user=%s principal=%s secundaria=%s botellas_legado=%d "
+                "botellas_cromo=%d cables=%d empalmes=%d ingresos=%d aliases=%d alias_creado=%s "
+                "estado_final=%s",
+                username,
+                resultado.principal_id,
+                resultado.secundaria_id,
+                resultado.botellas_legado_migradas,
+                resultado.botellas_cromo_migradas,
+                resultado.cables_migrados,
+                resultado.empalmes_migrados,
+                resultado.ingresos_migrados,
+                resultado.aliases_migrados,
+                resultado.alias_creado,
+                resultado.estado_final,
+            )
+            return JSONResponse({
+                "ok": True,
+                "principal_id": resultado.principal_id,
+                "secundaria_id": resultado.secundaria_id,
+                "secundaria_nombre": resultado.secundaria_nombre,
+                "botellas_legado_migradas": resultado.botellas_legado_migradas,
+                "botellas_cromo_migradas": resultado.botellas_cromo_migradas,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "aliases_migrados": resultado.aliases_migrados,
+                "alias_creado": resultado.alias_creado,
+                "estado_final": resultado.estado_final,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_merge_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo unificar las cámaras"}, status_code=500)
+
+
+class CamaraMergeGrupoRequestModel(BaseModel):
+    """Payload para fusionar TODAS las Cámaras de un grupo de duplicados dentro de una sola principal."""
+
+    camara_principal_id: int
+    camara_secundaria_ids: list[int]
+    guardar_alias: bool = True
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/merge-grupo")
+async def camaras_merge_grupo_web(request: Request, body: CamaraMergeGrupoRequestModel) -> JSONResponse:
+    """Fusiona TODAS las Cámaras de un grupo de duplicados dentro de una única principal, con un solo
+    click admin. Mismo mecanismo que `POST /api/infra/camaras/merge` (`unificar_camaras`), aplicado en
+    loop con `session.expire_all()` entre cada llamada — ver
+    `core/services/camara_merge_service.py::fusionar_grupo_camaras`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_merge_grupo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_merge_service import MergeCamarasError, fusionar_grupo_camaras
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            try:
+                resultado = fusionar_grupo_camaras(
+                    session,
+                    principal_id=body.camara_principal_id,
+                    secundaria_ids=body.camara_secundaria_ids,
+                    usuario=username,
+                    guardar_alias=body.guardar_alias,
+                )
+            except MergeCamarasError as exc:
+                session.rollback()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            session.commit()
+            logger.info(
+                "action=camaras_merge_grupo user=%s principal=%s secundarias=%s botellas_legado=%d "
+                "botellas_cromo=%d cables=%d empalmes=%d ingresos=%d aliases=%d aliases_creados=%d "
+                "estado_final=%s",
+                username,
+                resultado.principal_id,
+                resultado.secundarias_fusionadas,
+                resultado.botellas_legado_migradas,
+                resultado.botellas_cromo_migradas,
+                resultado.cables_migrados,
+                resultado.empalmes_migrados,
+                resultado.ingresos_migrados,
+                resultado.aliases_migrados,
+                resultado.aliases_creados,
+                resultado.estado_final,
+            )
+            return JSONResponse({
+                "ok": True,
+                "principal_id": resultado.principal_id,
+                "secundarias_fusionadas": resultado.secundarias_fusionadas,
+                "secundarias_nombres": resultado.secundarias_nombres,
+                "botellas_legado_migradas": resultado.botellas_legado_migradas,
+                "botellas_cromo_migradas": resultado.botellas_cromo_migradas,
+                "cables_migrados": resultado.cables_migrados,
+                "empalmes_migrados": resultado.empalmes_migrados,
+                "ingresos_migrados": resultado.ingresos_migrados,
+                "aliases_migrados": resultado.aliases_migrados,
+                "aliases_creados": resultado.aliases_creados,
+                "estado_final": resultado.estado_final,
+            })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_merge_grupo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo fusionar el grupo de Cámaras"}, status_code=500)
+
+
+class CamaraMergeMasivoRequestModel(BaseModel):
+    """Payload para fusionar automáticamente TODOS los grupos de Cámaras duplicadas detectados."""
+
+    guardar_alias: bool = True
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/camaras/merge-masivo")
+async def camaras_merge_masivo_web(request: Request, body: CamaraMergeMasivoRequestModel) -> JSONResponse:
+    """Fusiona automáticamente TODOS los grupos de Cámaras duplicadas detectados en este momento —
+    para cada grupo, `sugerir_principal()` (`core/services/camara_duplicados_service.py`) elige la
+    Cámara con más `botellas_count + cables_count` (empate → id más bajo) y fusiona las demás dentro
+    de ella vía `fusionar_grupo_camaras()` (mismo mecanismo que la fusión de un grupo individual).
+
+    A diferencia de los demás endpoints de este dominio, cada grupo corre en su PROPIA transacción
+    (`with SessionLocal()` independiente por grupo, no una sola sesión compartida) — si un grupo falla
+    (ej. una Cámara ya fue tocada por otra operación concurrente entre la detección y la fusión), los
+    grupos anteriores que ya se commitearon exitosamente NO se revierten; el error de ese grupo queda
+    reportado en `detalle` y se sigue con el resto. Es una desviación deliberada del patrón habitual
+    (una única sesión/transacción por request) porque acá cada grupo es independiente por diseño
+    (nunca comparten Cámaras entre sí) y una falla aislada no debe descartar el resto del lote."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=camaras_merge_masivo result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services.camara_duplicados_service import detectar_grupos_duplicados, sugerir_principal
+        from core.services.camara_merge_service import MergeCamarasError, fusionar_grupo_camaras
+        from db.session import SessionLocal
+
+        with SessionLocal() as session_deteccion:
+            grupos = detectar_grupos_duplicados(session_deteccion)
+
+        detalle: list[dict[str, Any]] = []
+        for grupo in grupos:
+            principal_id = sugerir_principal(grupo)
+            secundaria_ids = [m.id for m in grupo.miembros if m.id != principal_id]
+            with SessionLocal() as session:
+                try:
+                    resultado = fusionar_grupo_camaras(
+                        session,
+                        principal_id=principal_id,
+                        secundaria_ids=secundaria_ids,
+                        usuario=username,
+                        guardar_alias=body.guardar_alias,
+                    )
+                except MergeCamarasError as exc:
+                    session.rollback()
+                    detalle.append({
+                        "exito": False,
+                        "principal_id": principal_id,
+                        "secundaria_ids": secundaria_ids,
+                        "error": str(exc),
+                    })
+                    continue
+
+                session.commit()
+                detalle.append({
+                    "exito": True,
+                    "principal_id": resultado.principal_id,
+                    "secundarias_fusionadas": resultado.secundarias_fusionadas,
+                    "estado_final": resultado.estado_final,
+                })
+
+        grupos_fusionados = sum(1 for item in detalle if item["exito"])
+        grupos_con_error = len(detalle) - grupos_fusionados
+        logger.info(
+            "action=camaras_merge_masivo user=%s total_grupos=%d grupos_fusionados=%d grupos_con_error=%d",
+            username,
+            len(grupos),
+            grupos_fusionados,
+            grupos_con_error,
+        )
+        return JSONResponse({
+            "ok": True,
+            "total_grupos": len(grupos),
+            "grupos_fusionados": grupos_fusionados,
+            "grupos_con_error": grupos_con_error,
+            "detalle": detalle,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=camaras_merge_masivo_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": "No se pudo ejecutar la fusión masiva"}, status_code=500)
+
+
+def _serializar_extremo_cable(n_id: Any, clase: Any, legacy: Any, nombre: Any) -> dict[str, Any]:
+    return {"n_id": n_id, "clase": clase, "legacy": legacy, "nombre": nombre}
+
+
+def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
+    from core.services.cromo.parser import extraer_tipo_servicio_display
+
+    # "Línea"/"Cliente" reciclan el match ya resuelto por `obtener_detalle_cable`/`pelos_de_tubo_sync`
+    # (`cromo_servicio_match` → `app.servicios`, sin JOIN nuevo) — el primero de `pelo.servicios` si
+    # existe alguno (ver PeloDetalle.servicios). "-"/None si no hay match, ningún JOIN nuevo por
+    # `Servicio.numero_linea`.
+    primer_match = pelo.servicios[0] if pelo.servicios else None
+    return {
+        "n_id": pelo.n_id,
+        "numero_pelo": pelo.numero_pelo,
+        "orden": pelo.orden,
+        "color": pelo.color,
+        "tipo_asociacion": pelo.tipo_asociacion,
+        "servicio_raw": pelo.servicio_raw,
+        "servicio_numero": pelo.servicio_numero,
+        "vigente": pelo.vigente,
+        "servicios": [_serializar_servicio_encontrado(s) for s in pelo.servicios],
+        "tipo_servicio": extraer_tipo_servicio_display(pelo.servicio_raw),
+        "linea": primer_match.servicio_id_externo if primer_match else None,
+        "cliente": (primer_match.nombre_cliente or primer_match.cliente) if primer_match else None,
+        "verificable": pelo.verificable,
+        "status": pelo.status,
+        "fecha_hora_status": pelo.fecha_hora_status.isoformat() if pelo.fecha_hora_status else None,
+    }
+
+
+def _serializar_detalle_cable(detalle: Any) -> dict[str, Any]:
+    return {
+        "n_id": detalle.n_id,
+        "nombre": detalle.nombre,
+        "capacidad": detalle.capacidad,
+        "capacidad_pelos": detalle.capacidad_pelos,
+        "jerarquia": detalle.jerarquia,
+        "propietario": detalle.propietario,
+        "tendido": detalle.tendido,
+        # Decimal no es serializable por JSONResponse/json.dumps — a float explícito.
+        "distancia_geo": float(detalle.distancia_geo) if detalle.distancia_geo is not None else None,
+        "distancia_real": float(detalle.distancia_real) if detalle.distancia_real is not None else None,
+        "id_legacy": detalle.id_legacy,
+        "notas": detalle.notas,
+        "vigente": detalle.vigente,
+        "extremo_a": _serializar_extremo_cable(
+            detalle.extremo_a_n_id, detalle.extremo_a_clase, detalle.extremo_a_legacy, detalle.extremo_a_nombre
+        ),
+        "extremo_b": _serializar_extremo_cable(
+            detalle.extremo_b_n_id, detalle.extremo_b_clase, detalle.extremo_b_legacy, detalle.extremo_b_nombre
+        ),
+        "tubos": [
+            {
+                "n_id": t.n_id,
+                "orden": t.orden,
+                "nombre_color": t.nombre_color,
+                "vigente": t.vigente,
+                "tiene_fila_propia": t.tiene_fila_propia,
+                "pelos": [_serializar_pelo_detalle(p) for p in t.pelos],
+            }
+            for t in detalle.tubos
+        ],
+    }
+
+
+@app.get("/api/infra/cromo/cables/{n_id}/detalle")
+async def cromo_cable_detalle_web(request: Request, n_id: int) -> JSONResponse:
+    """Detalle jerárquico completo de un cable: metadata, extremos, tubos/buffers y pelos con su
+    servicio matcheado (Etapa 9). Sólo lectura, cualquier usuario autenticado (mismo criterio que el
+    verificador/inventario)."""
+    from core.services.cromo.detalle import obtener_detalle_cable
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            detalle = await obtener_detalle_cable(sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+
+    return JSONResponse(_serializar_detalle_cable(detalle))
+
+
+def _serializar_elemento_vivo(elemento: Any) -> dict[str, Any]:
+    return {
+        "n_id": elemento.n_id,
+        "version_id": elemento.version_id,
+        "clase": elemento.clase,
+        "clase_etiqueta": elemento.clase_etiqueta,
+        "clase_entidad": elemento.clase_entidad,
+        "nombre": elemento.nombre,
+        "notas": elemento.notas,
+        "atributos": [{"id": a.id, "etiqueta": a.etiqueta, "valor": a.valor} for a in elemento.atributos],
+        "payload_raw": elemento.payload_raw,
+    }
+
+
+@app.get("/api/infra/cromo/elementos/{n_id}/vivo")
+async def cromo_elemento_vivo_web(request: Request, n_id: int) -> JSONResponse:
+    """Visor en vivo de un elemento Cromo por `n_id` — GET directo contra Cromo (nunca contra las
+    tablas ya ingeridas), para auditar inconsistencias sin esperar a la próxima corrida de ingesta.
+    Sólo lectura, cualquier usuario autenticado (mismo criterio que el resto de `/api/infra/cromo/*`).
+    Nunca persiste nada."""
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.live_lookup_service import obtener_elemento_vivo
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
+            elemento = await obtener_elemento_vivo(cliente, sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    return JSONResponse(_serializar_elemento_vivo(elemento))
+
+
+def _serializar_cable_validacion(cable: Any) -> dict[str, Any]:
+    return {
+        "n_id": cable.n_id,
+        "nombre": cable.nombre,
+        "capacidad": cable.capacidad,
+        "extremo_a_n_id": cable.extremo_a_n_id,
+        "extremo_a_nombre": cable.extremo_a_nombre,
+        "extremo_b_n_id": cable.extremo_b_n_id,
+        "extremo_b_nombre": cable.extremo_b_nombre,
+    }
+
+
+def _serializar_tubo_validacion(tubo: Any) -> dict[str, Any]:
+    return {"n_id": tubo.n_id, "cable_n_id": tubo.cable_n_id, "orden": tubo.orden, "nombre_color": tubo.nombre_color}
+
+
+def _serializar_pelo_validacion(pelo: Any) -> dict[str, Any]:
+    return {
+        "n_id": pelo.n_id,
+        "tubo_n_id": pelo.tubo_n_id,
+        "cable_n_id": pelo.cable_n_id,
+        "numero_pelo": pelo.numero_pelo,
+        "color": pelo.color,
+        "servicio_raw": pelo.servicio_raw,
+        "servicio_numero": pelo.servicio_numero,
+    }
+
+
+def _serializar_fusion_validacion(fusion: Any) -> dict[str, Any]:
+    return {
+        "n_id": fusion.n_id,
+        "botella_n_id": fusion.botella_n_id,
+        "nombre_par": fusion.nombre_par,
+        "pelo_a_n_id": fusion.pelo_a_n_id,
+        "pelo_b_n_id": fusion.pelo_b_n_id,
+    }
+
+
+def _serializar_validacion_cromo(resultado: Any) -> dict[str, Any]:
+    return {
+        "n_id": resultado.n_id,
+        "clase": resultado.clase,
+        "tipo_objeto": resultado.tipo_objeto,
+        "nombre": resultado.nombre,
+        "notas": resultado.notas,
+        "latitud": resultado.latitud,
+        "longitud": resultado.longitud,
+        "codigo_modelo": resultado.codigo_modelo,
+        "id_legacy": resultado.id_legacy,
+        "cables": [_serializar_cable_validacion(c) for c in resultado.cables],
+        "tubos": [_serializar_tubo_validacion(t) for t in resultado.tubos],
+        "pelos": [_serializar_pelo_validacion(p) for p in resultado.pelos],
+        "fusiones": [_serializar_fusion_validacion(f) for f in resultado.fusiones],
+        "errores_parseo": [{"n_id": e.n_id, "clase": e.clase, "motivo": e.motivo} for e in resultado.errores_parseo],
+        "payload_raw": resultado.payload_raw,
+    }
+
+
+@app.get("/api/infra/cromo/validar/{n_id}")
+async def cromo_validar_datos_web(request: Request, n_id: int) -> JSONResponse:
+    """"Validar datos DB Cromo" (Tool Kit) — consulta un n_id en vivo contra Cromo y le aplica el
+    MISMO parseo que usa la ingesta (`parse_objeto`/`parse_arbol_botella`/`extraer_tubos_y_pelos`):
+    árbol completo de cables/tubos/pelos/fusiones, no sólo los atributos planos del objeto. Distinto
+    de `GET /api/infra/cromo/elementos/{n_id}/vivo` (ese es plano, sin árbol) y de
+    `VerificadorCromoView.vue` (que consulta servicios ya matcheados contra el inventario YA
+    ingerido) — herramienta separada, confirmada explícitamente con el usuario. Sin sesión de DB en
+    absoluto: cero acceso a la base de datos local, ni siquiera en lectura. Los servicios de cada
+    pelo se devuelven crudos (`servicio_raw`/`servicio_numero`), nunca matcheados contra
+    `app.servicios`. Sólo lectura, cualquier usuario autenticado."""
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.validador_datos_service import validar_elemento_cromo
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+
+    _require_auth(request)
+    try:
+        async with CromoClient(config=get_cromo_config()) as cliente:
+            resultado = await validar_elemento_cromo(cliente, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    return JSONResponse(_serializar_validacion_cromo(resultado))
+
+
+def _serializar_cable_detectado(cable: Any) -> dict[str, Any]:
+    return {
+        "n_id": cable.n_id,
+        "nombre": cable.nombre,
+        "extremo_a_n_id": cable.extremo_a_n_id,
+        "extremo_b_n_id": cable.extremo_b_n_id,
+        "estado_local": cable.estado_local,
+    }
+
+
+@app.get("/api/infra/cromo/botellas/{n_id}/cables-detectados")
+async def cromo_botella_cables_detectados_web(request: Request, n_id: int) -> JSONResponse:
+    """Verificador Cromo — "Cables detectados en Cromo": consulta la botella en vivo (siguiendo
+    `hist[]`/`next_id` si el `n_id` quedó vacío por un caso de "ID dual") y compara sus cables
+    contra `app.cromo_cables` local. Sólo lectura, nunca persiste — mismo criterio que el resto de
+    `/api/infra/cromo/*`, cualquier usuario autenticado. El botón de escritura correspondiente es
+    `POST /api/infra/botellas/{n_id}/repoblar-cables` (sólo admin)."""
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.repoblacion_service import detectar_cables_faltantes
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
+            resultado = await detectar_cables_faltantes(cliente, sesion, n_id)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    return JSONResponse(
+        {
+            "botella_n_id": resultado.botella_n_id,
+            "ids_cadena": resultado.ids_cadena,
+            "cables": [_serializar_cable_detectado(c) for c in resultado.cables],
+        }
+    )
+
+
+class BotellaRepoblarCablesRequestModel(BaseModel):
+    """Payload para repoblar los cables detectados en Cromo hacia la base local de una Botella."""
+
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/{n_id}/repoblar-cables")
+async def botella_repoblar_cables_web(request: Request, n_id: int, body: BotellaRepoblarCablesRequestModel) -> JSONResponse:
+    """Verificador Cromo — "Repoblar Cables": toma los cables que `GET .../cables-detectados`
+    encontró faltantes o desactualizados y los persiste en `app.cromo_cables`/`cromo_tubos`/
+    `cromo_pelos` local, con el extremo correctamente anclado a esta Botella. Nunca escribe hacia
+    Cromo (`CromoClient` es de sólo lectura por diseño) ni toca `CromoBotella`/`CromoFusion`. Sólo
+    admin — ver `core/services/cromo/repoblacion_service.py::repoblar_cables`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botella_repoblar_cables result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.repoblacion_service import repoblar_cables
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    try:
+        async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
+            resultado = await repoblar_cables(cliente, sesion, botella_n_id=n_id, usuario=username)
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=botella_repoblar_cables_error user=%s n_id=%s error=%s", username, n_id, exc)
+        return JSONResponse({"error": "No se pudo repoblar cables"}, status_code=500)
+
+    if resultado.corrida_id is not None:
+        await encolar_recalculo_duplicados_botellas(motivo=f"repoblar-cables n_id={n_id} usuario={username}")
+    return JSONResponse(
+        {
+            "ok": True,
+            "corrida_id": resultado.corrida_id,
+            "botella_n_id": resultado.botella_n_id,
+            "creados": resultado.creados,
+            "actualizados": resultado.actualizados,
+            "sin_cambios": resultado.sin_cambios,
+            "errores": resultado.errores,
+            "detalle": [{"n_id": i.n_id, "accion": i.accion, "detalle": i.detalle} for i in resultado.detalle],
+        }
+    )
+
+
+class BotellaActualizarNombreRequestModel(BaseModel):
+    """Payload para corregir a mano el nombre de una Botella Cromo."""
+
+    nombre: str = Field(min_length=1, max_length=500)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/infra/botellas/{n_id}/nombre")
+async def botella_actualizar_nombre_web(request: Request, n_id: int, body: BotellaActualizarNombreRequestModel) -> JSONResponse:
+    """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Marca
+    `nombre_editado_manual=True` para que ninguna corrida de ingesta futura la pise (ver
+    `core/services/cromo/ingesta.py::_procesar_botella_completa`). Si la Botella ya existe
+    localmente es escritura local pura y no toca Cromo. Si todavía no existe
+    localmente (caso "ID dual": Cromo reportó la misma Botella física bajo otro n_id en una corrida
+    anterior), LEE Cromo en vivo (`CromoClient` de sólo lectura) para crearla antes de aplicar la
+    corrección — nunca escribe hacia Cromo. En ese camino la fila puede quedar bajo un n_id DISTINTO
+    al de la URL (el de la URL puede ser un id de versión; Cromo manda con su n_id de linaje), así
+    que el `n_id` de la respuesta es siempre el real, más `n_id_solicitado` cuando difieren.
+    Sólo admin."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botella_actualizar_nombre result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    from db.models.cromo import CromoBotella
+    from db.session import AsyncSessionLocal
+
+    nombre_normalizado = body.nombre.strip()
+    if not nombre_normalizado:
+        return JSONResponse({"error": "El nombre no puede quedar vacío."}, status_code=400)
+
+    async with AsyncSessionLocal() as sesion:
+        botella = await sesion.get(CromoBotella, n_id)
+        if botella is None:
+            from core.services.cromo.botella_creacion_service import (
+                IdentidadYaResueltaError,
+                crear_o_actualizar_botella_desde_vivo,
+            )
+            from core.services.cromo.client import CromoClient, CromoClientError
+            from core.services.cromo.config import CromoConfigError, get_cromo_config
+            from core.services.cromo.parser import ClaseExcluidaError
+            from core.services.cromo.verificador import ObjetoNoEncontrado
+
+            try:
+                async with CromoClient(config=get_cromo_config()) as cliente:
+                    resultado = await crear_o_actualizar_botella_desde_vivo(
+                        cliente, sesion, n_id=n_id, usuario=username
+                    )
+            except ObjetoNoEncontrado as exc:
+                return JSONResponse({"error": str(exc)}, status_code=404)
+            except IdentidadYaResueltaError as exc:
+                return JSONResponse(
+                    {"error": str(exc), "n_id_correcto": exc.n_id_resuelto}, status_code=409
+                )
+            except ClaseExcluidaError as exc:
+                return JSONResponse({"error": f"n_id={n_id} no es una Botella: {exc}"}, status_code=400)
+            except CromoClientError as exc:
+                return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+            except CromoConfigError as exc:
+                # Faltan credenciales/URL de Cromo: no es un 500 opaco, es "no pudimos hablar con
+                # Cromo" — mismo 502 que `CromoClientError`, con la causa real en el log.
+                logger.error(
+                    "action=botella_actualizar_nombre result=fail reason=cromo_no_configurado n_id=%s error=%s",
+                    n_id,
+                    exc,
+                )
+                return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=502)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                # Red de seguridad final, mismo patrón que `botella_repoblar_cables_web`: cualquier
+                # otra falla queda logueada con traza en vez de propagarse como 500 sin contexto.
+                logger.exception(
+                    "action=botella_actualizar_nombre result=fail reason=error_inesperado n_id=%s error=%s",
+                    n_id,
+                    exc,
+                )
+                return JSONResponse(
+                    {"error": "Error inesperado al crear la Botella desde Cromo."}, status_code=500
+                )
+
+            logger.info(
+                "action=botella_creada_desde_vivo user=%s n_id=%s n_id_solicitado=%s accion=%s corrida_id=%s",
+                username,
+                resultado.n_id,
+                n_id,
+                resultado.accion,
+                resultado.corrida_id,
+            )
+            # La fila puede haber quedado bajo un n_id distinto al del path: el solicitado puede ser
+            # un id de versión y `crear_o_actualizar_botella_desde_vivo` ancla a la identidad de
+            # linaje que reporta Cromo (ver su docstring).
+            botella = await sesion.get(CromoBotella, resultado.n_id)
+
+        n_id_final = botella.n_id
+        botella.nombre = nombre_normalizado
+        botella.nombre_editado_manual = True
+        await sesion.commit()
+
+    logger.info(
+        "action=botella_actualizar_nombre user=%s n_id=%s n_id_solicitado=%s nombre=%r",
+        username,
+        n_id_final,
+        n_id,
+        nombre_normalizado,
+    )
+    await encolar_recalculo_duplicados_botellas(
+        motivo=f"actualizar-nombre n_id={n_id_final} usuario={username}"
+    )
+    respuesta = {"ok": True, "n_id": n_id_final, "nombre": nombre_normalizado}
+    if n_id_final != n_id:
+        respuesta["n_id_solicitado"] = n_id
+    return JSONResponse(respuesta)
+
+
+class BotellaSepararPadreRequestModel(BaseModel):
+    """Payload para separar una Botella Cromo de su Cámara padre actual hacia una Cámara nueva."""
+
+    nombre: str = Field(min_length=1, max_length=255)
+    motivo: str = Field(min_length=1, max_length=1000)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/infra/botellas/{n_id}/separar-padre")
+async def botella_separar_padre_web(request: Request, n_id: int, body: BotellaSepararPadreRequestModel) -> JSONResponse:
+    """Verificador Cromo — separa una Botella agrupada erróneamente por nombre bajo una Cámara
+    padre compartida: crea una Cámara nueva e independiente y reasigna `camara_id`. Rechaza si el
+    nombre (siempre editable en el modal) colisiona, tras normalizar, con cualquier Cámara raíz
+    existente. Nunca toca la Cámara padre anterior. Sólo admin — ver
+    `core/services/cromo/separacion_service.py::separar_botella_de_padre`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=botella_separar_padre result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    from core.services.cromo.separacion_service import (
+        BotellaNoEncontradaError,
+        SeparacionBotellaError,
+        separar_botella_de_padre,
+    )
+    from db.session import SessionLocal
+
+    with SessionLocal() as session:
+        try:
+            resultado = separar_botella_de_padre(
+                session, botella_n_id=n_id, nombre=body.nombre, motivo=body.motivo, usuario=username
+            )
+        except BotellaNoEncontradaError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except SeparacionBotellaError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        session.commit()
+
+    logger.info(
+        "action=botella_separar_padre user=%s botella_n_id=%s camara_anterior_id=%s camara_nueva_id=%s",
+        username, resultado.botella_n_id, resultado.camara_anterior_id, resultado.camara_nueva_id,
+    )
+    await encolar_recalculo_duplicados_botellas(motivo=f"separar-padre n_id={n_id} usuario={username}")
+    return JSONResponse({
+        "ok": True,
+        "botella_n_id": resultado.botella_n_id,
+        "camara_anterior_id": resultado.camara_anterior_id,
+        "camara_nueva_id": resultado.camara_nueva_id,
+        "camara_nueva_nombre": resultado.camara_nueva_nombre,
+    })
+
+
 @app.get("/api/servicios/search")
 async def servicios_search_web(
     request: Request,
@@ -4278,6 +7594,7 @@ async def servicios_search_web(
     domicilio: str | None = None,
     tipo: str | None = None,
     estado: str | None = None,
+    categoria: str | None = None,
     limit: int = 30,
     offset: int = 0,
 ) -> JSONResponse:
@@ -4291,6 +7608,7 @@ async def servicios_search_web(
         "domicilio": domicilio,
         "tipo": tipo,
         "estado": estado,
+        "categoria": categoria,
         "limit": max(1, min(limit, 200)),
         "offset": max(offset, 0),
     }
@@ -4366,6 +7684,201 @@ async def servicios_detail_web(
         return JSONResponse({"error": f"Error consultando detalle de servicio: {exc!s}"}, status_code=500)
 
 
+class ServicioCategoriaUpdateRequestModel(BaseModel):
+    categoria: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/{id}/categoria")
+async def servicio_categoria_web(request: Request, id: int, body: ServicioCategoriaUpdateRequestModel) -> JSONResponse:
+    """Cambia la categoría (C0-C6) de un Servicio individual — sólo admin. Proxya al endpoint
+    interno, mismo patrón que `servicios_search_web`/`servicios_detail_web`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_categoria result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria",
+                json={"categoria": body.categoria},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error actualizando categoría"}
+
+        logger.info(
+            "action=servicio_categoria user=%s id=%s categoria=%s status=%s",
+            username,
+            id,
+            body.categoria,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_categoria_error user=%s id=%s error=%s", username, id, exc)
+        return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+
+
+class ServicioVerificableUpdateRequestModel(BaseModel):
+    es_verificable: bool
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/{id}/verificable")
+async def servicio_verificable_web(request: Request, id: int, body: ServicioVerificableUpdateRequestModel) -> JSONResponse:
+    """Fija el override de verificabilidad de un Servicio individual — sólo admin. Proxya al
+    endpoint interno, mismo patrón que `servicio_categoria_web`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_verificable result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/{id}/verificable",
+                json={"es_verificable": body.es_verificable},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error actualizando verificabilidad"}
+
+        logger.info(
+            "action=servicio_verificable user=%s id=%s es_verificable=%s status=%s",
+            username,
+            id,
+            body.es_verificable,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_verificable_error user=%s id=%s error=%s", username, id, exc)
+        return JSONResponse({"error": f"Error actualizando verificabilidad: {exc!s}"}, status_code=500)
+
+
+class ServicioProvRefrescarRequestModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/servicios/prov/refrescar")
+async def servicio_prov_refrescar_web(
+    request: Request,
+    id: str,
+    body: ServicioProvRefrescarRequestModel,
+) -> JSONResponse:
+    """Dispara el refresco on-demand de un Servicio contra PROV. Proxya al endpoint interno, mismo
+    patrón que `servicios_detail_web`/`servicio_categoria_web` — visible a cualquier usuario
+    autenticado (no sólo admin), igual que el botón en `ServicioDetalleView.vue` (Task 10), que no
+    está condicionado a `isAdmin`."""
+    username, _ = _require_auth(request)
+    id_consultado = (id or "").strip()
+    if not id_consultado:
+        return JSONResponse({"error": "ID requerido"}, status_code=400)
+
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_prov_refrescar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        # 70s, no los 30s del resto de los proxies de este archivo: el backend acota sus
+        # reintentos a PROV a `_PROV_REFRESCAR_MAX_REINTENTOS=1` (~61s de peor caso, ver
+        # api/app/routes/servicios.py) — este timeout necesita margen sobre ese peor caso, no
+        # sobre el default de 30s que usan las demás rutas (que no llaman a una API externa).
+        async with httpx.AsyncClient(timeout=70.0) as client:
+            response = await client.post(
+                f"{INTERNAL_API_BASE_URL}/servicios/prov/refrescar",
+                params={"id": id_consultado},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error refrescando servicio desde PROV"}
+
+        logger.info(
+            "action=servicio_prov_refrescar user=%s id=%s status=%s",
+            username,
+            id_consultado,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_prov_refrescar_error user=%s id=%s error=%s", username, id_consultado, exc)
+        return JSONResponse({"error": f"Error refrescando servicio desde PROV: {exc!s}"}, status_code=500)
+
+
+class ServiciosCategoriaMasivaRequestModel(BaseModel):
+    servicio_ids: list[int]
+    categoria: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/bulk-categoria")
+async def servicios_categoria_masiva_web(request: Request, body: ServiciosCategoriaMasivaRequestModel) -> JSONResponse:
+    """Cambia la categoría (C0-C6) de un lote de Servicios — sólo admin. Proxya al endpoint interno."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicios_categoria_masiva result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    if not body.servicio_ids:
+        return JSONResponse({"error": "No se especificaron servicios a actualizar"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/bulk-categoria",
+                json={"servicio_ids": body.servicio_ids, "categoria": body.categoria},
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error actualizando categoría"}
+
+        logger.info(
+            "action=servicios_categoria_masiva user=%s cantidad=%d categoria=%s status=%s",
+            username,
+            len(body.servicio_ids),
+            body.categoria,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicios_categoria_masiva_error user=%s error=%s", username, exc)
+        return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+
+
 @app.post("/api/infra/upload_tracking")
 async def upload_tracking_web(
     request: Request,
@@ -4384,9 +7897,12 @@ async def upload_tracking_web(
 
     try:
         from core.parsers.tracking_parser import parse_tracking
-        from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos, Empalme, Servicio
+        from core.services.infra_service import (
+            _get_or_create_empalme,
+            _resolve_camara_o_registrar_sin_match,
+        )
+        from db.models.infra import Servicio
         from db.session import SessionLocal
-        from datetime import datetime, timezone
 
         # Leer contenido
         content = await file.read()
@@ -4419,8 +7935,8 @@ async def upload_tracking_web(
             len(topologia),
         )
 
-        camaras_nuevas = 0
         camaras_existentes = 0
+        ubicaciones_sin_match = 0
         empalmes_registrados = 0
 
         with SessionLocal() as session:
@@ -4441,63 +7957,40 @@ async def upload_tracking_web(
 
             servicio.raw_tracking_data = result.to_dict()
 
-            # Procesar empalmes
+            # Procesar empalmes — la búsqueda de cámara/botella y el registro de "sin match" están
+            # unificados en `core.services.infra_service` (Tarea 3 del refactor "Adjuntar
+            # tracking", 2026-08-23): antes esta ruta tenía su propia búsqueda O(n) duplicada de
+            # `api/app/routes/infra.py` e `InfraService`.
             for empalme_id, ubicacion in topologia:
-                # Buscar cámara
-                nombre_norm = " ".join(ubicacion.strip().lower().split())
-                camara = session.query(Camara).filter(Camara.nombre == ubicacion).first()
-
-                if not camara:
-                    # Buscar normalizado
-                    all_cams = session.query(Camara).all()
-                    for c in all_cams:
-                        if c.nombre and " ".join(c.nombre.strip().lower().split()) == nombre_norm:
-                            camara = c
-                            break
-
-                if camara:
+                # Cromo Red es la fuente de verdad del inventario: nunca se crea una Camara nueva.
+                # Sin match, se registra un IngresoSinMatch (dentro de la función) y el empalme
+                # queda sin camara_id — el procesamiento nunca se bloquea por esto.
+                camara = _resolve_camara_o_registrar_sin_match(
+                    session, ubicacion, filename=file.filename, servicio_id=result.servicio_id
+                )
+                if camara is not None:
                     camaras_existentes += 1
                 else:
-                    camara = Camara(
-                        nombre=ubicacion.strip(),
-                        estado=CamaraEstado.DETECTADA,
-                        origen_datos=CamaraOrigenDatos.TRACKING,
-                        last_update=datetime.now(timezone.utc),
-                    )
-                    session.add(camara)
-                    session.flush()
-                    camaras_nuevas += 1
+                    ubicaciones_sin_match += 1
 
-                # Registrar empalme
+                # Registrar empalme — `_get_or_create_empalme` nunca pisa con `None` un
+                # `camara_id` previo válido de una corrida anterior cuando esta corrida no matchea.
                 tracking_id_completo = f"{result.servicio_id}_{empalme_id}"
-                empalme = session.query(Empalme).filter(
-                    Empalme.tracking_empalme_id == tracking_id_completo
-                ).first()
-
-                if empalme:
-                    if empalme.camara_id != camara.id:
-                        empalme.camara_id = camara.id
-                    if servicio not in empalme.servicios:
-                        empalme.servicios.append(servicio)
-                else:
-                    empalme = Empalme(
-                        tracking_empalme_id=tracking_id_completo,
-                        camara_id=camara.id,
-                    )
-                    session.add(empalme)
-                    session.flush()
+                empalme, empalme_nuevo = _get_or_create_empalme(session, tracking_id_completo, camara)
+                if servicio not in empalme.servicios:
                     empalme.servicios.append(servicio)
+                if empalme_nuevo:
                     empalmes_registrados += 1
 
             session.commit()
 
             logger.info(
-                "action=upload_tracking_complete user=%s servicio_id=%s camaras_nuevas=%d "
-                "camaras_existentes=%d empalmes=%d",
+                "action=upload_tracking_complete user=%s servicio_id=%s camaras_existentes=%d "
+                "ubicaciones_sin_match=%d empalmes=%d",
                 username,
                 result.servicio_id,
-                camaras_nuevas,
                 camaras_existentes,
+                ubicaciones_sin_match,
                 empalmes_registrados,
             )
 
@@ -4505,8 +7998,8 @@ async def upload_tracking_web(
                 "status": "ok",
                 "servicios_procesados": 1,
                 "servicio_id": result.servicio_id,
-                "camaras_nuevas": camaras_nuevas,
                 "camaras_existentes": camaras_existentes,
+                "ubicaciones_sin_match": ubicaciones_sin_match,
                 "empalmes_registrados": empalmes_registrados,
                 "mensaje": f"Tracking del servicio {result.servicio_id} procesado correctamente",
             })
@@ -4751,6 +8244,7 @@ async def resolve_tracking_web(
                 "camaras_existentes": result.camaras_existentes,
                 "empalmes_creados": result.empalmes_creados,
                 "empalmes_asociados": result.empalmes_asociados,
+                "ubicaciones_sin_match": result.ubicaciones_sin_match,
                 "message": result.message,
                 "error": result.error,
             })

@@ -3,7 +3,7 @@ name: "las-focas-logs-cleanup"
 description: "Usar cuando haya que revisar o limpiar logs del proyecto y de contenedores sin perder información necesaria para diagnóstico"
 metadata:
   short-description: "Usar cuando haya que revisar o limpiar logs del proyecto y de contenedores sin perder información necesaria para diag..."
-  source: ".github/skills/logs-cleanup/SKILL.md"
+  source: ".agentes-comunes/skills/logs-cleanup/SKILL.md"
   triggers:
     - "logs-cleanup"
     - "habilidad"
@@ -29,7 +29,7 @@ metadata:
 
 # Skill portable: logs-cleanup
 
-> Fuente original: `.github/skills/logs-cleanup/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/logs-cleanup/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Limpieza de Logs
 

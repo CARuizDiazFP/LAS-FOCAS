@@ -1,0 +1,56 @@
+{
+  "nombre_archivo": "repetitividad-layout.json",
+  "ubicacion_archivo": ".github/skills/frontend-specs/repetitividad-layout.json",
+  "descripcion": "Esquema base de layout para el módulo de repetitividad dentro del nuevo panel modular.",
+  "feature": "repetitividad-tab",
+  "owner": "web/frontend",
+  "design_tokens": [
+    "--color-bg-surface",
+    "--color-bg-elevated",
+    "--color-brand-primary-soft",
+    "--space-3",
+    "--space-6",
+    "--radius-lg"
+  ],
+  "container": {
+    "surface": "card",
+    "header": "card-header",
+    "body": "stack",
+    "results": "result-box"
+  },
+  "sections": [
+    {
+      "id": "upload",
+      "label": "Carga de archivo",
+      "elements": [
+        "dropzone",
+        "helper text",
+        "form actions"
+      ]
+    },
+    {
+      "id": "filters",
+      "label": "Configuración",
+      "elements": [
+        "mes",
+        "anio",
+        "include_pdf",
+        "with_geo",
+        "use_db"
+      ]
+    },
+    {
+      "id": "result",
+      "label": "Resultado",
+      "elements": [
+        "feedback message",
+        "links a docx/pdf",
+        "estadísticas"
+      ]
+    }
+  ],
+  "notes": [
+    "Mantener la carga asíncrona del tab para no inflar el bundle inicial.",
+    "La lógica de red debe residir en composables y no en la vista."
+  ]
+}

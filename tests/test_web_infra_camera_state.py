@@ -2,7 +2,6 @@
 # Ubicación de archivo: tests/test_web_infra_camera_state.py
 # Descripción: Pruebas del flujo web para consulta y edición manual del estado de cámaras
 
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,12 +118,20 @@ class _FakeQuery:
 
 
 class _InfraDetailSession(_FakeSession):
-    def __init__(self, camara: Any, aliases: list[Any], auditoria: list[Any], baneos: list[Any]):
+    def __init__(
+        self,
+        camara: Any,
+        aliases: list[Any],
+        auditoria: list[Any],
+        baneos: list[Any],
+        ingresos: Optional[list[Any]] = None,
+    ):
         super().__init__()
         self._camara = camara
         self._aliases = aliases
         self._auditoria = auditoria
         self._baneos = baneos
+        self._ingresos = ingresos or []
 
     def query(self, *entities):
         entity_count = len(entities)
@@ -141,6 +148,8 @@ class _InfraDetailSession(_FakeSession):
             return _FakeQuery(many=self._auditoria)
         if entity_name == "IncidenteBaneo":
             return _FakeQuery(many=self._baneos)
+        if entity_name == "Ingreso":
+            return _FakeQuery(many=self._ingresos)
         return _FakeQuery()
 
 
@@ -149,15 +158,13 @@ def _login(client: TestClient, monkeypatch, *, role: str, password: str = "secre
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok(role, password))
     response = client.post(
-        "/login",
-        data={"username": role, "password": password},
-        follow_redirects=False,
+        "/api/auth/login",
+        json={"username": role, "password": password},
     )
-    assert response.status_code == 302
-    html = client.get("/").text
-    csrf = re.search(r'window.CSRF_TOKEN = "([\w-]+)";', html)
-    assert csrf is not None
-    return csrf.group(1)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    return data["csrf"]
 
 
 def _build_contexto() -> CamaraEstadoContexto:
@@ -166,6 +173,7 @@ def _build_contexto() -> CamaraEstadoContexto:
         estado_actual=CamaraEstado.LIBRE,
         estado_sugerido=CamaraEstado.BANEADA,
         tiene_baneo_activo=True,
+        tiene_incidente_activo=True,
         tiene_ingreso_activo=False,
         inconsistente=True,
         incidentes_activos=[
@@ -193,7 +201,7 @@ def _build_fake_camara() -> Any:
         punta_b=SimpleNamespace(sitio="POP B"),
     )
     empalme = SimpleNamespace(rutas=[ruta], servicios=[])
-    return SimpleNamespace(
+    camara = SimpleNamespace(
         id=7,
         nombre="Cámara Canon Norte",
         direccion="Av. Siempre Viva 742",
@@ -203,7 +211,10 @@ def _build_fake_camara() -> Any:
         latitud=-34.6,
         longitud=-58.4,
         empalmes=[empalme],
+        camara_padre=None,
+        botellas=[],
     )
+    return camara
 
 
 def _build_aliases() -> list[Any]:
@@ -247,13 +258,16 @@ def _build_baneos() -> list[Any]:
     ]
 
 
-def test_panel_inyecta_user_role(monkeypatch):
-    client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
-
-    html = client.get("/").text
-
-    assert 'window.USER_ROLE = "admin";' in html
+def _build_ingresos() -> list[Any]:
+    return [
+        SimpleNamespace(
+            id=5,
+            fecha_inicio=datetime(2026, 5, 10, 8, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="tecnico.lopez",
+            cromo_botella_id=None,
+        )
+    ]
 
 
 def test_get_camara_estado_forbidden_para_no_admin(monkeypatch):
@@ -415,7 +429,9 @@ def test_get_camara_registros_web_devuelve_auditoria_y_baneos(monkeypatch):
     client = TestClient(app)
     _login(client, monkeypatch, role="user", password="userpass")
 
-    fake_session = _InfraDetailSession(_build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos())
+    fake_session = _InfraDetailSession(
+        _build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos(), _build_ingresos()
+    )
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
     monkeypatch.setattr(camara_estado_service, "get_camara_estado_contexto", lambda session, camara_id: _build_contexto())
 
@@ -426,4 +442,210 @@ def test_get_camara_registros_web_devuelve_auditoria_y_baneos(monkeypatch):
     assert payload["camara_id"] == 7
     assert payload["auditoria"][0]["motivo"] == "Corrección manual validada"
     assert payload["baneos"][0]["ticket_asociado"] == "INC-11"
-    assert "ingresos" in payload["placeholders"]
+    assert payload["ingresos"][0]["tecnico_id"] == "tecnico.lopez"
+    assert payload["ingresos"][0]["fecha_fin"] is None
+    assert "placeholders" not in payload
+
+
+class _ServicioIngresosSession(_FakeSession):
+    """Sesión fake para `GET /api/infra/servicios/{servicio_id}/ingresos`: sólo necesita resolver
+    `session.query(Servicio)` (usado por `_find_servicio_por_identificador_web`) y
+    `session.query(Ingreso)` — la resolución de cámaras del servicio se mockea aparte, a nivel de
+    `ProtectionService.get_camaras_for_servicio` (no reimplementa esa lógica acá)."""
+
+    def __init__(self, servicio: Any, ingresos: list[Any]):
+        super().__init__()
+        self._servicio = servicio
+        self._ingresos = ingresos
+
+    def query(self, *entities):
+        entity = entities[0]
+        entity_name = getattr(entity, "__name__", "")
+        if entity_name == "Servicio":
+            return _FakeQuery(one=self._servicio)
+        if entity_name == "Ingreso":
+            return _FakeQuery(many=self._ingresos)
+        return _FakeQuery()
+
+
+def _build_servicio() -> Any:
+    return SimpleNamespace(servicio_id="2001", numero_primer_servicio="2001", numero_linea=None)
+
+
+def _build_servicio_camaras() -> list[Any]:
+    return [SimpleNamespace(id=7, nombre="Cámara Canon Norte")]
+
+
+def _build_servicio_ingresos() -> list[Any]:
+    return [
+        SimpleNamespace(
+            id=5,
+            camara_id=7,
+            fecha_inicio=datetime(2026, 5, 10, 8, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="tecnico.lopez",
+            cromo_botella_id=None,
+        )
+    ]
+
+
+def test_get_servicio_ingresos_web_devuelve_datos_reales(monkeypatch):
+    from core.services.protection_service import ProtectionService
+    from db import session as db_session
+
+    client = TestClient(app)
+    _login(client, monkeypatch, role="user", password="userpass")
+
+    fake_session = _ServicioIngresosSession(_build_servicio(), _build_servicio_ingresos())
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
+    monkeypatch.setattr(
+        ProtectionService,
+        "get_camaras_for_servicio",
+        lambda self, servicio_id: _build_servicio_camaras(),
+    )
+
+    response = client.get("/api/infra/servicios/2001/ingresos")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["servicio_id"] == "2001"
+    assert payload["total"] == 1
+    item = payload["ingresos"][0]
+    assert item["id"] == 5
+    assert item["tecnico_id"] == "tecnico.lopez"
+    assert item["fecha_fin"] is None
+    assert item["cromo_botella_id"] is None
+    assert item["camara_id"] == 7
+    assert item["camara_nombre"] == "Cámara Canon Norte"
+
+
+def test_get_servicio_ingresos_web_404_si_servicio_no_existe(monkeypatch):
+    from db import session as db_session
+
+    client = TestClient(app)
+    _login(client, monkeypatch, role="user", password="userpass")
+
+    fake_session = _ServicioIngresosSession(None, [])
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
+
+    response = client.get("/api/infra/servicios/NOPE-9999/ingresos")
+
+    assert response.status_code == 404
+    assert "no encontrado" in response.json()["error"]
+
+
+def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
+    """Task 6 + fix de revisión final (2026-09-04): `botella_label` resuelve estos casos:
+    1. Root Cámara (cromo_botella_id=None, camara sin padre): fallback a 'Botella 1'
+    2. Legacy Botella (cromo_botella_id=None, camara.camara_padre_id set): nombre propio de la Botella
+    3. CromoBotella (cromo_botella_id set, cromo_botella.nombre disponible): nombre de la CromoBotella
+    4. Sin relación CromoBotella (cromo_botella_id set, cromo_botella=None — la relación en sí no
+       resuelve ningún objeto): fallback f"Botella #{id}"
+    5. CromoBotella SIN nombre (cromo_botella_id set, la relación SÍ resuelve un objeto pero su
+       `.nombre` es None/falsy — columna nullable): mismo fallback f"Botella #{id}" — bug real
+       encontrado en la revisión final: antes de este fix, este caso devolvía `botella_label=None`
+       (sólo se chequeaba "la relación existe", no "el nombre existe"), violando la garantía
+       documentada de "nunca null" y el tipo TypeScript `botella_label: string` (no opcional).
+
+    `tipo` refleja el enum value (INGRESO/EGRESO/INTENTO_BLOQUEADO)."""
+    from core.services import camara_estado_service
+    from db import session as db_session
+    from db.models.infra import IngresoTipo
+
+    client = TestClient(app)
+    _login(client, monkeypatch, role="user", password="userpass")
+
+    # Legacy Botella para caso 2: Cámara con camara_padre_id set (es hija de otra Cámara)
+    legacy_botella_camara = SimpleNamespace(
+        id=8,
+        nombre="Bot 2 Cra Mitre 440",
+        direccion="Cra Mitre 440",
+        fontine_id="CAM-008",
+        estado=CamaraEstado.LIBRE,
+        origen_datos=CamaraOrigenDatos.TRACKING,
+        latitud=-34.6,
+        longitud=-58.4,
+        empalmes=[],
+        camara_padre_id=7,  # Tiene padre, es una Botella legado
+        botellas=[],
+    )
+
+    ingresos = [
+        SimpleNamespace(
+            id=5,
+            fecha_inicio=datetime(2026, 5, 10, 8, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="tecnico.lopez",
+            cromo_botella_id=None,
+            camara=_build_fake_camara(),  # Root Cámara (sin camara_padre_id) → caso 1
+            tipo=IngresoTipo.INGRESO,
+        ),
+        SimpleNamespace(
+            id=6,
+            fecha_inicio=datetime(2026, 5, 11, 9, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Rider Fernández",
+            cromo_botella_id=999,
+            camara=_build_fake_camara(),
+            cromo_botella=SimpleNamespace(nombre="Bot 2 Cra Mitre 440"),  # Caso 3
+            tipo=IngresoTipo.INTENTO_BLOQUEADO,
+        ),
+        SimpleNamespace(
+            id=7,
+            fecha_inicio=datetime(2026, 5, 12, 10, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Técnico Silva",
+            cromo_botella_id=None,
+            camara=legacy_botella_camara,  # Legacy Botella con camara_padre_id → caso 2
+            tipo=IngresoTipo.INGRESO,
+        ),
+        SimpleNamespace(
+            id=8,
+            fecha_inicio=datetime(2026, 5, 13, 11, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Técnico García",
+            cromo_botella_id=555,
+            camara=_build_fake_camara(),
+            cromo_botella=None,  # cromo_botella_id set pero sin objeto relacionado → caso 4
+            tipo=IngresoTipo.EGRESO,
+        ),
+        SimpleNamespace(
+            id=9,
+            fecha_inicio=datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc),
+            fecha_fin=None,
+            tecnico_id="Técnico Paredes",
+            cromo_botella_id=777,
+            camara=_build_fake_camara(),
+            # Caso 5: la relación SÍ resuelve un objeto, pero su `nombre` es None (columna
+            # nullable) — debe caer al mismo fallback numerado que el caso 4, no a `None`.
+            cromo_botella=SimpleNamespace(nombre=None),
+            tipo=IngresoTipo.INGRESO,
+        ),
+    ]
+    fake_session = _InfraDetailSession(
+        _build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos(), ingresos
+    )
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
+    monkeypatch.setattr(camara_estado_service, "get_camara_estado_contexto", lambda session, camara_id: _build_contexto())
+
+    response = client.get("/api/infra/camaras/7/registros")
+
+    assert response.status_code == 200
+    payload = response.json()
+    # Caso 1: Root Cámara sin botella especificada → "Botella 1"
+    assert payload["ingresos"][0]["botella_label"] == "Botella 1"
+    assert payload["ingresos"][0]["tipo"] == "INGRESO"
+    # Caso 3: CromoBotella con nombre disponible → usa ese nombre
+    assert payload["ingresos"][1]["botella_label"] == "Bot 2 Cra Mitre 440"
+    assert payload["ingresos"][1]["tipo"] == "INTENTO_BLOQUEADO"
+    # Caso 2: Legacy Botella (camara_padre_id set) → nombre propio de la Botella
+    assert payload["ingresos"][2]["botella_label"] == "Bot 2 Cra Mitre 440"
+    assert payload["ingresos"][2]["tipo"] == "INGRESO"
+    # Caso 4: cromo_botella_id set pero sin objeto relacionado → fallback f"Botella #{id}"
+    assert payload["ingresos"][3]["botella_label"] == "Botella #555"
+    assert payload["ingresos"][3]["tipo"] == "EGRESO"
+    # Caso 5: objeto relacionado presente pero su `nombre` es None → mismo fallback numerado,
+    # nunca `botella_label=None` (bug real corregido en la revisión final).
+    assert payload["ingresos"][4]["botella_label"] == "Botella #777"
+    assert payload["ingresos"][4]["tipo"] == "INGRESO"

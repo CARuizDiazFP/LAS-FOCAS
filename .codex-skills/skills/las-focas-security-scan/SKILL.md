@@ -3,7 +3,7 @@ name: "las-focas-security-scan"
 description: "Usar cuando haya que ejecutar una revisión integral de seguridad de APIs y SPAs, correlacionar secretos, dependencias, SAST y proponer mitigaciones"
 metadata:
   short-description: "Usar cuando haya que ejecutar una revisión integral de seguridad, correlacionar secretos, dependencias, SAST y propon..."
-  source: ".github/skills/security-scan/SKILL.md"
+  source: ".agentes-comunes/skills/security-scan/SKILL.md"
   triggers:
     - "security-scan"
     - "habilidad"
@@ -36,7 +36,7 @@ metadata:
 
 # Skill portable: security-scan
 
-> Fuente original: `.github/skills/security-scan/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+> Fuente original: `.agentes-comunes/skills/security-scan/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Security Scan
 
