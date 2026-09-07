@@ -171,7 +171,7 @@ git commit -m "docs(decisiones): registra el plan de sincronizacion main/prod y 
 
 **Pre-requisito:** Task 1 ya integrada a `dev` (verificar `git log origin/dev` incluye el commit de `chore/prod-compose-cromo-prov`).
 
-- [ ] **Paso 1: Confirmar que `dev` está verde antes de proponer el PR**
+- [x] **Paso 1: Confirmar que `dev` está verde antes de proponer el PR**
 
 ```bash
 git fetch origin
@@ -179,7 +179,7 @@ git log --oneline main..origin/dev | wc -l   # debe ser > 238 (Task 1 lo suma)
 gh run list --branch dev --limit 5           # confirmar CI en verde en el último commit de dev
 ```
 
-- [ ] **Paso 2: Revisión dirigida (no línea por línea de 468+ archivos)** — el volumen es demasiado grande para revisión exhaustiva; enfocar la revisión en lo que puede romper producción:
+- [x] **Paso 2: Revisión dirigida (no línea por línea de 468+ archivos)** — el volumen es demasiado grande para revisión exhaustiva; enfocar la revisión en lo que puede romper producción:
 
 ```bash
 git diff main origin/dev -- deploy/compose.yml deploy/docker/ api/Dockerfile web/Dockerfile office_service/Dockerfile
@@ -188,7 +188,11 @@ git diff main origin/dev -- deploy/env.sample deploy/env.dev.sample
 ```
 Confirmar: no hay downgrade destructivo en las 16 migraciones nuevas, ninguna borra columnas con datos reales sin backfill, los Dockerfiles no reintroducen usuario root.
 
-- [ ] **Paso 3: Crear el PR**
+- [x] **Paso 3: Crear el PR** — ⚠️ desviación real: `gh` CLI no está instalado en este host. Ejecutado
+  en su lugar (elegido explícitamente por el usuario entre 3 opciones): revisión dirigida vía `git
+  diff main origin/dev` (Dockerfiles, migraciones, env.sample) documentada en el chat de la sesión, y
+  merge directo por git (`git merge --no-ff origin/dev` sobre `main`, commit `0773bac`) en vez de
+  `gh pr create`/`gh pr merge`. Sin PR formal en GitHub para este cambio.
 
 ```bash
 gh pr create --base main --head dev \
@@ -212,15 +216,15 @@ EOF
 )"
 ```
 
-- [ ] **Paso 4: 🛑 Esperar aprobación explícita del usuario para mergear.** No ejecutar el merge hasta recibirla en el momento.
+- [x] **Paso 4: 🛑 Esperar aprobación explícita del usuario para mergear.** No ejecutar el merge hasta recibirla en el momento.
 
-- [ ] **Paso 5: Mergear (merge commit, no squash — preservar historia de 238+ commits)**
+- [x] **Paso 5: Mergear (merge commit, no squash — preservar historia de 238+ commits)**
 
 ```bash
 gh pr merge --merge --delete-branch=false
 ```
 
-- [ ] **Paso 6: Verificar**
+- [x] **Paso 6: Verificar**
 
 ```bash
 git fetch origin
@@ -238,7 +242,7 @@ Expected: mismo commit hash en `origin/main` y `origin/dev`.
 
 **Pre-requisito:** Task 3 completada.
 
-- [ ] **Paso 1: Confirmar que sus 2 fixes ya son ancestros del nuevo `main`**
+- [x] **Paso 1: Confirmar que sus 2 fixes ya son ancestros del nuevo `main`**
 
 ```bash
 git merge-base --is-ancestor 041f46d origin/main && echo "OK: fix Cromo en get_camaras_for_servicio presente"
@@ -246,7 +250,7 @@ git merge-base --is-ancestor 99a2306 origin/main && echo "OK: fix reconciliacion
 ```
 Expected: ambos imprimen `OK`. Si alguno falla, **NO borrar la rama** — investigar por qué el commit no llegó antes de continuar.
 
-- [ ] **Paso 2: 🛑 Confirmar con el usuario, luego borrar**
+- [x] **Paso 2: 🛑 Confirmar con el usuario, luego borrar**
 
 ```bash
 git push origin --delete fix-baneos-hermanos-prod
