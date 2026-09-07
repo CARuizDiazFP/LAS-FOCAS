@@ -1276,9 +1276,12 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   operativo de prod (ODFs/Botellas/Servicios/Cables/Cromo) por el de `dev`, preservando únicamente
   los baneos reales activos de prod (se reconcilian después del restore vía `aplicar_estado_a_grupo`,
   nunca `UPDATE` directo — mismo patrón que la reconciliación del 09-03). Credenciales Cromo: misma
-  cuenta real que ya usa `dev`. PROV: se provisionan credenciales reales de producción como parte de
-  este despliegue (antes no existían). La rama `fix-baneos-hermanos-prod` queda redundante (sus 2
-  fixes ya son nativos en `dev`) y se cierra una vez confirmado que el merge a `main` los incluye.
+  cuenta real que ya usa `dev`. PROV: **corrección post-decisión inicial** — el usuario aclaró que
+  usuario/contraseña de PROV son los mismos para prod y dev (no hace falta gestionar credenciales
+  nuevas); se copiaron directo `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` a
+  `api_prov_user_v1.txt`/`api_prov_pass_v1.txt` sin prefijo, mismo patrón que Cromo. La rama
+  `fix-baneos-hermanos-prod` queda redundante (sus 2 fixes ya son nativos en `dev`) y se cierra una vez
+  confirmado que el merge a `main` los incluye.
 - **Alternativas consideradas:** re-ingesta en vivo de Cromo directo en prod contra la API real (más
   "correcto" respecto a "Cromo es la fuente de verdad", pero una corrida inicial completa en dev tardó
   ~9.5 h) — descartada por el usuario a favor de copiar el dataset ya consolidado de `dev`.
@@ -1290,3 +1293,65 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Impacto:** downtime real estimado 10-15 min durante la ventana de mantenimiento (más servicios que
   el precedente de sólo-Redis). Requiere backup completo de `lasfocas` antes de tocar nada y snapshot
   de baneos activos por clave de negocio estable (no ID serial) para poder reaplicarlos post-restore.
+
+## 2026-09-07 — Ejecución de la ventana de mantenimiento: main→prod sincronizado, dataset Cromo cargado
+
+- **Contexto:** ejecución real de `docs/superpowers/plans/2026-09-07-produccion-sync-main-cromo.md`
+  (Partes A-D) en la misma sesión que la decisión anterior. `main` (`0773bac`) mergeado con `dev`
+  (242 commits, merge directo por git — `gh` CLI no está instalado en este host, revisión dirigida
+  hecha vía `git diff` y documentada en el chat; sin PR formal en GitHub). `fix-baneos-hermanos-prod`
+  cerrada (sus 2 fixes ya nativos en `main`). Secrets de prod completos (`redis_password_v1` nuevo,
+  `cromo_password_v1`/`api_prov_user_v1`/`api_prov_pass_v1` copiados de `Dev_*` — el usuario aclaró que
+  PROV usa la misma cuenta real que dev, corrigiendo la decisión inicial de "provisionar credenciales
+  nuevas"). `.env` de prod actualizado (`ENV=production`, `LOG_LEVEL=INFO`, ~35 variables nuevas).
+- **Hallazgo real durante la ejecución — orden Task 10/11 invertido respecto al plan escrito:** el
+  plan original preveía reconciliar baneos (Task 10) antes de reconstruir los contenedores (Task 11).
+  Se invirtió en vivo: los contenedores parados en ese momento corrían código de `c2c1d70` (2026-08-11),
+  anterior al esquema Cromo restaurado — ejecutar `aplicar_estado_a_grupo` con ese código contra el
+  esquema nuevo era un riesgo real de incompatibilidad. Se hizo primero el rebuild+up completo
+  (código nuevo + esquema nuevo, coherentes entre sí) y recién después la reconciliación de baneos con
+  el código correcto ya corriendo.
+- **Datos de baneo reales de prod, verificados antes del restore:** 0 `IncidenteBaneo` activos, **56
+  Cámaras en `estado=BANEADA` manual sin incidente asociado** (coincide con la lista de "Críticas"
+  aplicada el 2026-09-03). Snapshot por nombre (clave estable) guardado en
+  `~/lasfocas-prod-sync-20260907/prod_baneos_snapshot.json` antes del restore.
+- **Restore:** `pg_dump` de `focas_dev` (dev, 941 MB) → `pg_restore --clean --if-exists` sobre
+  `lasfocas` (prod). Post-restore: 815 MB, `alembic_version=20260904_01`, `cromo_botellas`=11072,
+  `camaras`=10183 (coincide con dev). Backup previo de prod verificado en
+  `~/lasfocas-prod-sync-20260907/prod_backup_pre_sync_20260907_141354.dump` (631 KB).
+- **Reconciliación de baneos — hallazgo real de diseño:** el restore trajo 97 Cámaras `BANEADA`
+  heredadas de `dev` (0 incidentes activos también en dev, así que ninguna tenía respaldo de
+  incidente — mismo patrón "baneo manual" que prod). Script de uso único
+  (`reconciliar_baneos_prod.py`, dry-run revisado → `--apply`, mismo patrón que 2026-08-28/2026-09-03:
+  reusa `aplicar_estado_a_grupo` real, nunca `UPDATE` directo) comparó por nombre exacto contra el
+  snapshot de 56. **Primer intento de re-ejecutar el dry-run post-apply mostró el contador de
+  "a revertir" subiendo de 56 a 58 en vez de bajar a 0** — investigado antes de asumir un bug:
+  no lo era. `aplicar_estado_a_grupo` cascada al grupo físico completo (padre + hermanas/botellas), así
+  que al reaplicar BANEADA a 2 nombres reales que no coincidían exacto, la cascada correctamente
+  también baneó a sus hermanas de grupo — hermanas que el snapshot legado (modelo pre-Cromo, sin
+  agrupación) nunca había registrado como entradas separadas. El contador ingenuo del script (que sólo
+  compara por nombre plano) las contaba como "ilegítimas" cuando en realidad son protección correcta
+  del mismo grupo físico. Verificado directamente contra la DB (no contra el contador del script): de
+  los 56 nombres reales, **39 tienen match exacto y están BANEADA (0 con estado incorrecto)**.
+- **17 de los 56 sin match exacto de nombre** — investigados con búsqueda difusa antes de descartar:
+  **6 resueltos** (5 por diferencia trivial de espacios/puntuación con una fila ya BANEADA existente —
+  ej. `Cra  Av Dorrego 1802 CF`→id 2770 `Cra Av Dorrego 1802 CF`; 1 por cascada padre→botella del
+  modelo nuevo — ej. `Cra Estacion Avellaneda Bot 2` ya cubierta por su padre `Cra Estacion Avellaneda`
+  BANEADA). **11 sin ningún candidato ni por búsqueda difusa** — quedan como pendiente de revisión
+  manual, no se adivinó ningún match: `Cra Av Santa Fe 4276 Bot 2 CF`, `Cra Av. Cabildo 451 Bot 2 C.F`,
+  `Cra Balcarce 699 Bot 2 CF`, `Cra Chile 402 Bot 2 CF`, `Cra Dorrego 2202 Bot 2 CF`,
+  `Cra Hipolito Yrigoyen 2187 Bot 2 Martinez`, `Cra Miguel de Azcuenaga 1813 Bot 3 VICENTE LOPEZ`,
+  `Cra Parana 3998 y Panamericana Bot 2 VTE LOPEZ`, `Cra Ruta 8 y Panamericana Bot 2 RICARDO ROJAS`,
+  `Cra Sarmiento 1101 Bot 2 CF`, `Poste Av Ramon Falcon y Gordillo CF`.
+- **Redeploy:** `docker compose -f deploy/compose.yml --env-file .env down --remove-orphans` + `up -d
+  --build` de todo el stack excepto `bot` (Telegram, decisión explícita del usuario — nunca corrió en
+  prod, se deja afuera de este despliegue). Los 10 contenedores (`postgres`, `redis`,
+  `docker-socket-proxy`, `api`, `web`, `nlp_intent`, `office`, `slack_baneo_worker`,
+  `botellas_recalculo_worker`, `cromo_worker`) healthy, sin errores en logs de los primeros minutos.
+  `cromo_worker` corriendo pero con `habilitado=False` (config en `app.cromo_ingesta_config`, no env
+  var — el sync incremental automático queda apagado hasta que un admin lo habilite desde el panel,
+  comportamiento por defecto esperado, no un pendiente bloqueante).
+- **Script de uso único borrado del contenedor al terminar**, mismo patrón que remediaciones previas.
+- **Pendiente concreto:** las 11 Cámaras sin match requieren revisión manual (¿existen todavía en el
+  inventario real de Cromo con otro nombre, o son ubicaciones que ya no corresponden banear?) antes de
+  decidir si banearlas manualmente o darlas de baja del seguimiento de "Críticas".

@@ -420,3 +420,12 @@ cat .secrets/Dev_api_key_v1.txt
 curl -s http://localhost:8011/servicios/detail?id=123 \
   -H "Authorization: Bearer $(cat .secrets/Dev_api_key_v1.txt)"
 ```
+
+## Ventana de mantenimiento con restore de datos + rebuild de código: reconstruir el código PRIMERO
+
+Hallazgo real (2026-09-07, sincronización main/prod): si una ventana combina (a) un
+`pg_restore`/migración que cambia el esquema y (b) un rebuild de las imágenes con código nuevo, hacer
+(a) antes que (b) deja código VIEJO corriendo contra esquema NUEVO — cualquier script de
+reconciliación de dominio ejecutado ahí puede fallar en silencio si el código no conoce las
+columnas/tablas que el restore acaba de traer. Orden correcto: parar la app (dejar sólo `postgres`) →
+backup → restore → **rebuild + `up` completo con el código nuevo** → recién ahí reconciliar.

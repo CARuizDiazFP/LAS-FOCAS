@@ -347,3 +347,16 @@ cat .secrets/Dev_api_key_v1.txt
 curl -s http://localhost:8011/servicios/detail?id=123 \
   -H "Authorization: Bearer $(cat .secrets/Dev_api_key_v1.txt)"
 ```
+
+## Ventana de mantenimiento con restore de datos + rebuild de código: reconstruir el código PRIMERO
+
+Hallazgo real (2026-09-07, sincronización main/prod, ver `docs/decisiones.md`): si una ventana de
+mantenimiento combina (a) un `pg_restore`/migración que cambia el esquema y (b) un rebuild de las
+imágenes con código nuevo, hacer (a) antes que (b) deja una ventana donde el código VIEJO corre contra
+el esquema NUEVO — cualquier script de reconciliación/dominio que se ejecute ahí (ej. vía
+`docker exec` reusando el código ya desplegado, patrón de `baneo-qa-real`) puede fallar en silencio o
+de forma sutil si ese código no conoce columnas/tablas que el restore acaba de traer.
+
+**Orden correcto:** parar la capa de aplicación (dejar sólo `postgres` arriba) → backup → restore del
+esquema/datos nuevo → **rebuild + `up` completo del stack con el código nuevo** → recién ahí correr
+cualquier script de reconciliación de dominio, ya con código y esquema coherentes entre sí.

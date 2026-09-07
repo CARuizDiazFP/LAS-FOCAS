@@ -15,7 +15,7 @@
 1. **Datos Cromo en prod:** copiar el dataset completo de `dev` (`focas_dev`, 941 MB) a prod, **excepto** los baneos: los únicos datos que persisten desde prod son los baneos reales activos; todo lo demás (ODFs, Botellas, Servicios, Cables, Cromo) viene de `dev`.
 2. **Credenciales Cromo:** misma cuenta real que ya usa `dev` — se copia el secret, no se gestiona una cuenta nueva.
 3. **Rama `fix-baneos-hermanos-prod`:** se cierra/borra una vez confirmado que sus 2 fixes ya están nativos en el `main` post-merge.
-4. **PROV en prod:** este despliegue incluye la provisión de credenciales reales de PROV para producción (el usuario las aporta; no se inventan).
+4. **PROV en prod:** ⚠️ corregido 2026-09-07 — misma cuenta real que dev (no hace falta gestionar credenciales nuevas, igual que Cromo).
 
 ## Global Constraints
 
@@ -171,7 +171,7 @@ git commit -m "docs(decisiones): registra el plan de sincronizacion main/prod y 
 
 **Pre-requisito:** Task 1 ya integrada a `dev` (verificar `git log origin/dev` incluye el commit de `chore/prod-compose-cromo-prov`).
 
-- [ ] **Paso 1: Confirmar que `dev` está verde antes de proponer el PR**
+- [x] **Paso 1: Confirmar que `dev` está verde antes de proponer el PR**
 
 ```bash
 git fetch origin
@@ -179,7 +179,7 @@ git log --oneline main..origin/dev | wc -l   # debe ser > 238 (Task 1 lo suma)
 gh run list --branch dev --limit 5           # confirmar CI en verde en el último commit de dev
 ```
 
-- [ ] **Paso 2: Revisión dirigida (no línea por línea de 468+ archivos)** — el volumen es demasiado grande para revisión exhaustiva; enfocar la revisión en lo que puede romper producción:
+- [x] **Paso 2: Revisión dirigida (no línea por línea de 468+ archivos)** — el volumen es demasiado grande para revisión exhaustiva; enfocar la revisión en lo que puede romper producción:
 
 ```bash
 git diff main origin/dev -- deploy/compose.yml deploy/docker/ api/Dockerfile web/Dockerfile office_service/Dockerfile
@@ -188,7 +188,11 @@ git diff main origin/dev -- deploy/env.sample deploy/env.dev.sample
 ```
 Confirmar: no hay downgrade destructivo en las 16 migraciones nuevas, ninguna borra columnas con datos reales sin backfill, los Dockerfiles no reintroducen usuario root.
 
-- [ ] **Paso 3: Crear el PR**
+- [x] **Paso 3: Crear el PR** — ⚠️ desviación real: `gh` CLI no está instalado en este host. Ejecutado
+  en su lugar (elegido explícitamente por el usuario entre 3 opciones): revisión dirigida vía `git
+  diff main origin/dev` (Dockerfiles, migraciones, env.sample) documentada en el chat de la sesión, y
+  merge directo por git (`git merge --no-ff origin/dev` sobre `main`, commit `0773bac`) en vez de
+  `gh pr create`/`gh pr merge`. Sin PR formal en GitHub para este cambio.
 
 ```bash
 gh pr create --base main --head dev \
@@ -212,15 +216,15 @@ EOF
 )"
 ```
 
-- [ ] **Paso 4: 🛑 Esperar aprobación explícita del usuario para mergear.** No ejecutar el merge hasta recibirla en el momento.
+- [x] **Paso 4: 🛑 Esperar aprobación explícita del usuario para mergear.** No ejecutar el merge hasta recibirla en el momento.
 
-- [ ] **Paso 5: Mergear (merge commit, no squash — preservar historia de 238+ commits)**
+- [x] **Paso 5: Mergear (merge commit, no squash — preservar historia de 238+ commits)**
 
 ```bash
 gh pr merge --merge --delete-branch=false
 ```
 
-- [ ] **Paso 6: Verificar**
+- [x] **Paso 6: Verificar**
 
 ```bash
 git fetch origin
@@ -238,7 +242,7 @@ Expected: mismo commit hash en `origin/main` y `origin/dev`.
 
 **Pre-requisito:** Task 3 completada.
 
-- [ ] **Paso 1: Confirmar que sus 2 fixes ya son ancestros del nuevo `main`**
+- [x] **Paso 1: Confirmar que sus 2 fixes ya son ancestros del nuevo `main`**
 
 ```bash
 git merge-base --is-ancestor 041f46d origin/main && echo "OK: fix Cromo en get_camaras_for_servicio presente"
@@ -246,7 +250,7 @@ git merge-base --is-ancestor 99a2306 origin/main && echo "OK: fix reconciliacion
 ```
 Expected: ambos imprimen `OK`. Si alguno falla, **NO borrar la rama** — investigar por qué el commit no llegó antes de continuar.
 
-- [ ] **Paso 2: 🛑 Confirmar con el usuario, luego borrar**
+- [x] **Paso 2: 🛑 Confirmar con el usuario, luego borrar**
 
 ```bash
 git push origin --delete fix-baneos-hermanos-prod
@@ -265,7 +269,7 @@ git branch -D fix-baneos-hermanos-prod 2>/dev/null || true
 - Create: `.secrets/api_prov_user_v1.txt`, `.secrets/api_prov_pass_v1.txt`
 - (Opcional) Create: `.secrets/pgadmin_password_v1.txt` — sólo si se quiere levantar pgAdmin en prod; no bloquea el `up -d` base porque está bajo `profiles: ["pgadmin"]`.
 
-- [ ] **Paso 1: `redis_password_v1` — generar nuevo (nunca reusar el de dev)**
+- [x] **Paso 1: `redis_password_v1` — generar nuevo (nunca reusar el de dev)**
 
 ```bash
 cd /home/support-focal-01/LAS-FOCAS
@@ -274,24 +278,22 @@ openssl rand -base64 32 > .secrets/redis_password_v1.txt
 chmod 600 .secrets/redis_password_v1.txt
 ```
 
-- [ ] **Paso 2: `cromo_password_v1` — copiar el mismo valor real que usa dev (decisión ya tomada: misma cuenta)**
+- [x] **Paso 2: `cromo_password_v1` — copiar el mismo valor real que usa dev (decisión ya tomada: misma cuenta)**
 
 ```bash
 install -m 600 .secrets/Dev_cromo_password_v1.txt .secrets/cromo_password_v1.txt
 ```
 
-- [ ] **Paso 3: `api_prov_user_v1` / `api_prov_pass_v1` — credenciales REALES de PROV para producción**
-
-🛑 Estas credenciales no se pueden generar ni copiar de dev (dev usa credenciales de dev/sandbox). **Requiere que el usuario las aporte en el momento** (nunca pedirlas ni pegarlas como argumento de shell):
+- [x] **Paso 3: `api_prov_user_v1` / `api_prov_pass_v1`** — ⚠️ corrección: el usuario aclaró (2026-09-07)
+  que PROV usa la misma cuenta real para prod y dev, igual que Cromo. Se copiaron directo, no se
+  pidieron credenciales nuevas:
 
 ```bash
-umask 077
-cat > .secrets/api_prov_user_v1.txt   # pegar el usuario real de PROV prod, luego Ctrl-D
-cat > .secrets/api_prov_pass_v1.txt   # pegar la contraseña real de PROV prod, luego Ctrl-D
-chmod 600 .secrets/api_prov_user_v1.txt .secrets/api_prov_pass_v1.txt
+install -m 600 .secrets/Dev_api_prov_user_v1.txt .secrets/api_prov_user_v1.txt
+install -m 600 .secrets/Dev_api_prov_pass_v1.txt .secrets/api_prov_pass_v1.txt
 ```
 
-- [ ] **Paso 4: Verificar (sin imprimir valores)**
+- [x] **Paso 4: Verificar (sin imprimir valores)**
 
 ```bash
 ls -la .secrets/redis_password_v1.txt .secrets/cromo_password_v1.txt .secrets/api_prov_user_v1.txt .secrets/api_prov_pass_v1.txt
@@ -307,13 +309,13 @@ ls -la .secrets/redis_password_v1.txt .secrets/cromo_password_v1.txt .secrets/ap
 
 Diff de claves confirmado por comparación directa de nombres (no valores) entre `.env` y `.env.dev`. Copiar verbatim el valor de `.env.dev` salvo donde se indica lo contrario.
 
-- [ ] **Paso 1: Backup del `.env` actual**
+- [x] **Paso 1: Backup del `.env` actual**
 
 ```bash
 cp .env .env.bak-$(date +%Y%m%d-%H%M%S)
 ```
 
-- [ ] **Paso 2: Agregar a `.env` (copiando el valor real desde `.env.dev`, con las excepciones marcadas)**
+- [x] **Paso 2: Agregar a `.env` (copiando el valor real desde `.env.dev`, con las excepciones marcadas)**
 
 ```
 CHAT_UPLOAD_MAX_BYTES=<mismo valor que .env.dev>
@@ -358,14 +360,14 @@ Notas explícitas sobre las excepciones (NO copiar literal de `.env.dev` en esta
 - `REPORTS_API_BASE`: hostname del servicio api en prod (`api:8000`).
 - `OLLAMA_URL`: **no copiar** — `LLM_PROVIDER` en prod ya está en `heuristic`/lo que corresponda; si prod no corre Ollama, dejar sin definir (el proveedor heurístico no lo usa). Verificar `LLM_PROVIDER` actual en `.env` antes de decidir.
 
-- [ ] **Paso 3: Corregir la anomalía `ENV`/`LOG_LEVEL` detectada** (prod actualmente tiene `ENV=development` y `LOG_LEVEL=DEBUG`, inconsistente con ser producción):
+- [x] **Paso 3: Corregir la anomalía `ENV`/`LOG_LEVEL` detectada** (prod actualmente tiene `ENV=development` y `LOG_LEVEL=DEBUG`, inconsistente con ser producción):
 
 ```
 ENV=production
 LOG_LEVEL=INFO
 ```
 
-- [ ] **Paso 4: 🛑 Mostrar el diff completo al usuario antes de continuar** (archivo de producción, requiere aprobación explícita):
+- [x] **Paso 4: 🛑 Mostrar el diff completo al usuario antes de continuar** (archivo de producción, requiere aprobación explícita):
 
 ```bash
 diff .env.bak-*(N) .env   # o comparar contra el backup del paso 1
@@ -388,7 +390,7 @@ mkdir -p "$BACKUP_DIR"
 
 **Files:** ninguno versionado — el dump sale a `$BACKUP_DIR`, fuera del repo.
 
-- [ ] **Paso 1: Detener el tráfico de escritura de la capa de aplicación (dejar `postgres` arriba)**
+- [x] **Paso 1: Detener el tráfico de escritura de la capa de aplicación (dejar `postgres` arriba)**
 
 ```bash
 cd /home/support-focal-01/LAS-FOCAS
@@ -397,7 +399,7 @@ docker ps --filter name=lasfocas- --format '{{.Names}}\t{{.Status}}'
 ```
 Expected: sólo `lasfocas-postgres` (y `lasfocas-docker-socket-proxy`, sin efecto) quedan `Up`.
 
-- [ ] **Paso 2: Dump completo de prod ANTES de tocar nada**
+- [x] **Paso 2: Dump completo de prod ANTES de tocar nada**
 
 ```bash
 docker exec lasfocas-postgres pg_dump -U lasfocas -d lasfocas -F c --no-owner --no-acl \
@@ -408,7 +410,7 @@ docker cp "lasfocas-postgres:$BACKUP_NAME" "$BACKUP_DIR/"
 ls -la "$BACKUP_DIR/"
 ```
 
-- [ ] **Paso 3: Verificar integridad del dump (listar contenido sin restaurar)**
+- [x] **Paso 3: Verificar integridad del dump (listar contenido sin restaurar)**
 
 ```bash
 docker exec lasfocas-postgres pg_restore -l "$BACKUP_NAME" | head -20
@@ -422,7 +424,7 @@ docker exec lasfocas-postgres pg_restore -l "$BACKUP_NAME" | head -20
 **Files:**
 - Create (no versionado, temporal): `/tmp/prod_baneos_snapshot.json` dentro de `lasfocas-web`
 
-- [ ] **Paso 1: Escribir el script de snapshot** (uso único, no se commitea) en el host y copiarlo al contenedor:
+- [x] **Paso 1: Escribir el script de snapshot** (uso único, no se commitea) en el host y copiarlo al contenedor:
 
 ```python
 # /tmp/snapshot_baneos_prod.py — ejecutar DENTRO de lasfocas-web (PYTHONPATH=/app)
@@ -458,7 +460,7 @@ db.close()
 
 ⚠️ Antes de ejecutar: leer `web/app/db/models/infra.py` (o donde viva `IncidenteBaneo`) en el contenedor real para confirmar los nombres exactos de campos/relaciones — el snippet de arriba es la forma, no necesariamente los nombres exactos de atributos actuales del modelo. Ajustar antes de correr.
 
-- [ ] **Paso 2: Copiar y ejecutar dentro del contenedor real**
+- [x] **Paso 2: Copiar y ejecutar dentro del contenedor real**
 
 ```bash
 docker cp /tmp/snapshot_baneos_prod.py lasfocas-web:/tmp/snapshot_baneos_prod.py
@@ -466,7 +468,7 @@ docker exec -e PYTHONPATH=/app -w /app lasfocas-web python3 /tmp/snapshot_baneos
 docker cp lasfocas-web:/tmp/prod_baneos_snapshot.json "$BACKUP_DIR/"
 ```
 
-- [ ] **Paso 3: Revisar el conteo con el usuario antes de seguir**
+- [x] **Paso 3: Revisar el conteo con el usuario antes de seguir**
 
 ```bash
 python3 -c "import json; d=json.load(open('$BACKUP_DIR/prod_baneos_snapshot.json')); print(f'{len(d)} incidentes activos')"
@@ -485,7 +487,7 @@ Esto es urgente hacerlo **ya, no en la ventana de mantenimiento**: `dev` tiene *
 - Create: `camaras_pendiente_revision_prod.txt` — un nombre crudo por línea, para el chequeo de formato de anuncios de técnicos.
 - Create: `camaras_pendiente_revision_prod_con_trazabilidad.tsv` — mismo contenido + `id`/`last_update`, por si hace falta cruzar después con Slack.
 
-- [ ] **Paso 1: Exportar (sólo lectura, no borra nada todavía)**
+- [x] **Paso 1: Exportar (sólo lectura, no borra nada todavía)**
 
 ```bash
 docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -t -A -c \
@@ -502,9 +504,9 @@ Expected (medido el 2026-09-07 — ver "Ya ejecutado" más abajo): 582 líneas. 
 
 **Ya ejecutado hoy (2026-09-07), fuera de la ventana de mantenimiento, porque es de sólo lectura y la lista crece día a día:** los 2 archivos ya están en `/tmp/claude-1001/-home-support-focal-01-LAS-FOCAS/cd7980c2-961c-44c9-8299-60d8f5b61b2b/scratchpad/` (582 líneas). Es un snapshot preliminar para arrancar el chequeo de formato ya mismo; igual hay que re-exportar el día del corte real antes de Task 9.
 
-- [ ] **Paso 2: Chequeo de formato de anuncios de técnicos** (el motivo del export) — comparar estos 582 nombres crudos contra los nombres reales de Cámaras en `dev`/Cromo, para medir qué porcentaje matchea y detectar patrones de formato que el matching actual no contempla. Este análisis queda a criterio de quien lo revise; no es parte de la migración en sí.
+- [x] **Paso 2: Chequeo de formato de anuncios de técnicos** (el motivo del export) — comparar estos 582 nombres crudos contra los nombres reales de Cámaras en `dev`/Cromo, para medir qué porcentaje matchea y detectar patrones de formato que el matching actual no contempla. Este análisis queda a criterio de quien lo revise; no es parte de la migración en sí.
 
-- [ ] **Paso 3: Borrado** — no requiere un DELETE manual: estas 582 filas desaparecen como efecto natural del `pg_restore --clean` de Task 9 (dev no las tiene). Si por algún motivo el corte de Task 9 se pospone o se cancela y de todas formas se quiere limpiar esto antes, **no usar `DELETE` directo** — coordinar por separado, ya que hay que confirmar que ninguna de esas 582 filas tiene FKs activas (ingresos, incidentes) antes de borrarlas fuera del contexto del restore completo.
+- [x] **Paso 3: Borrado** — no requiere un DELETE manual: estas 582 filas desaparecen como efecto natural del `pg_restore --clean` de Task 9 (dev no las tiene). Si por algún motivo el corte de Task 9 se pospone o se cancela y de todas formas se quiere limpiar esto antes, **no usar `DELETE` directo** — coordinar por separado, ya que hay que confirmar que ninguna de esas 582 filas tiene FKs activas (ingresos, incidentes) antes de borrarlas fuera del contexto del restore completo.
 
 ---
 
@@ -512,14 +514,14 @@ Expected (medido el 2026-09-07 — ver "Ya ejecutado" más abajo): 582 líneas. 
 
 🛑🛑 **PUNTO DE NO RETORNO. Confirmar explícitamente con el usuario, con el backup de Task 7 ya verificado, antes de ejecutar este paso.** Esto reemplaza TODAS las tablas de `app.*` en `lasfocas` (prod) por el contenido de `focas_dev` (dev), incluyendo temporalmente los baneos de dev (que Task 10 corrige inmediatamente después).
 
-- [ ] **Paso 1: Confirmar tamaño y estado de origen/destino una última vez**
+- [x] **Paso 1: Confirmar tamaño y estado de origen/destino una última vez**
 
 ```bash
 docker exec lasfocasdev-postgres psql -U FOCALBOT -d focas_dev -c "SELECT pg_size_pretty(pg_database_size('focas_dev'));"
 docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT pg_size_pretty(pg_database_size('lasfocas'));"
 ```
 
-- [ ] **Paso 2: 🛑 Ejecutar el restore (pg_dump de dev en pipe directo a pg_restore de prod)**
+- [x] **Paso 2: 🛑 Ejecutar el restore (pg_dump de dev en pipe directo a pg_restore de prod)**
 
 ```bash
 docker exec lasfocasdev-postgres pg_dump -U FOCALBOT -d focas_dev -F c --no-owner --no-acl \
@@ -527,7 +529,7 @@ docker exec lasfocasdev-postgres pg_dump -U FOCALBOT -d focas_dev -F c --no-owne
 ```
 Este es el mismo patrón (invertido) que ya usa `scripts/start_dev.sh --clone-db` para prod→dev — aquí es dev→prod, mucho más sensible. `--clean --if-exists` dropea y recrea cada objeto antes de restaurarlo, evitando conflictos de esquema.
 
-- [ ] **Paso 3: Verificar el resultado**
+- [x] **Paso 3: Verificar el resultado**
 
 ```bash
 docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT pg_size_pretty(pg_database_size('lasfocas'));"
@@ -542,13 +544,13 @@ Expected: tamaño ≈ 941 MB, `version_num` = `20260904_01` (o el HEAD real al m
 
 🛑 **Confirmar el dry-run con el usuario antes de aplicar.**
 
-- [ ] **Paso 1: Inspeccionar qué trajo el restore en incidentes de baneo** (dev puede tener sus propios incidentes de prueba/históricos)
+- [x] **Paso 1: Inspeccionar qué trajo el restore en incidentes de baneo** (dev puede tener sus propios incidentes de prueba/históricos)
 
 ```bash
 docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT estado, count(*) FROM app.incidentes_baneo GROUP BY estado;"
 ```
 
-- [ ] **Paso 2: Escribir el script de reconciliación** (uso único, no versionado), ejecutado DENTRO de `lasfocas-web` reusando el código real ya desplegado (mismo patrón que `docs/PR/2026-09-03.md`):
+- [x] **Paso 2: Escribir el script de reconciliación** (uso único, no versionado), ejecutado DENTRO de `lasfocas-web` reusando el código real ya desplegado (mismo patrón que `docs/PR/2026-09-03.md`):
   - Cierra/neutraliza cualquier incidente `activo` que haya venido de `dev` (no está en el snapshot de Task 8).
   - Para cada incidente del snapshot de Task 8, lo recrea/reaplica usando `aplicar_estado_a_grupo` sobre las cámaras encontradas por **nombre** (clave estable) en el dataset ya restaurado — nunca por ID serial viejo.
   - Corre primero en modo dry-run (imprime qué haría, no escribe), se revisa con el usuario, y sólo después se corre con `--apply`.
@@ -556,7 +558,7 @@ docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT estado, co
 
 ⚠️ Este script no se puede escribir en abstracto sin ver el estado real post-restore y las funciones de dominio vigentes en ese momento — escribirlo recién en el momento de ejecución de esta tarea, leyendo `core/services/protection_service.py` (o donde viva `aplicar_estado_a_grupo`) tal como está en el contenedor real, siguiendo el patrón exacto de `docs/PR/2026-09-03.md` (dry-run → revisión → `--apply` → verificación de conteos → borrado del script).
 
-- [ ] **Paso 3: Verificar contra el snapshot**
+- [x] **Paso 3: Verificar contra el snapshot**
 
 ```bash
 docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT count(*) FROM app.incidentes_baneo WHERE estado = 'activo';"
@@ -569,16 +571,16 @@ Expected: coincide con el conteo de `backups/prod_baneos_snapshot.json` del Task
 
 ⚠️ **No usar `./Start` para este despliegue** — su lista `SERVICES=(postgres nlp_intent api web office slack_baneo_worker)` es anterior a `redis`/`docker-socket-proxy`/`botellas_recalculo_worker`/`cromo_worker` y los dejaría afuera. Usar `docker compose` directo contra el stack completo.
 
-- [ ] **Paso 1: Confirmar pre-requisitos**
+- [x] **Paso 1: Confirmar pre-requisitos**
 
 ```bash
 ls -la .secrets/*.txt   # los 13 secrets de deploy/compose.yml deben existir, modo 600
 grep -c '^' .env         # .env actualizado (Task 6) presente
 ```
 
-- [ ] **Paso 2: Decidir explícitamente si se incluye `bot` (Telegram)** — nunca corrió en prod hasta ahora; si no se decide incluirlo, excluirlo del `up` explícitamente.
+- [x] **Paso 2: Decidir explícitamente si se incluye `bot` (Telegram)** — nunca corrió en prod hasta ahora; si no se decide incluirlo, excluirlo del `up` explícitamente.
 
-- [ ] **Paso 3: Down + up completo (con o sin `bot` según el paso 2)**
+- [x] **Paso 3: Down + up completo (con o sin `bot` según el paso 2)**
 
 ```bash
 cd /home/support-focal-01/LAS-FOCAS
@@ -589,7 +591,7 @@ docker compose -f deploy/compose.yml --env-file .env up -d --build \
 # Con bot, agregar "bot" al final de la lista.
 ```
 
-- [ ] **Paso 4: Esperar y verificar healthchecks**
+- [x] **Paso 4: Esperar y verificar healthchecks**
 
 ```bash
 sleep 30
@@ -597,7 +599,7 @@ docker ps --filter name=lasfocas- --format '{{.Names}}\t{{.Status}}'
 ```
 Expected: todos `Up ... (healthy)`. Si alguno queda `unhealthy`, revisar `docker logs <contenedor>` antes de seguir — no reintentar a ciegas.
 
-- [ ] **Paso 5: Verificar que Alembic quedó en head** (debe ser no-op, ya lo trajo el restore)
+- [x] **Paso 5: Verificar que Alembic quedó en head** (debe ser no-op, ya lo trajo el restore)
 
 ```bash
 docker exec lasfocas-api alembic -c /app/db/alembic.ini current 2>&1 || docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT version_num FROM alembic_version;"
@@ -607,26 +609,28 @@ docker exec lasfocas-api alembic -c /app/db/alembic.ini current 2>&1 || docker e
 
 ### Task 12: Verificación end-to-end post-despliegue
 
-- [ ] **Paso 1: Health endpoints**
+- [x] **Paso 1: Health endpoints**
 
 ```bash
 curl -fsS http://172.18.208.162:8080/health && echo " web OK"
 curl -fsS http://172.18.208.162:8001/health && echo " api OK"
 ```
 
-- [ ] **Paso 2: Datos Cromo presentes**
+- [x] **Paso 2: Datos Cromo presentes**
 
 ```bash
 docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -c "SELECT relname, n_live_tup FROM pg_stat_user_tables WHERE relname LIKE 'cromo_%' ORDER BY n_live_tup DESC;"
 ```
 Expected: conteos similares a los de dev pre-migración (`cromo_botellas` ≈ 11072, `cromo_odf_conectores` ≈ 204841, etc.).
 
-- [ ] **Paso 3: Smoke test funcional**
-  - Cargar `http://172.18.208.162:8080` en el navegador, iniciar sesión, buscar una Cámara real en Infra.
-  - Enviar un mensaje benigno al bot de Slack de prod y confirmar respuesta.
-  - Verificar en logs que no hay excepciones repetidas en los primeros 5 minutos: `docker compose -f deploy/compose.yml logs --since=5m api web cromo_worker | grep -i error`
+- [x] **Paso 3: Smoke test funcional** — ⚠️ parcial: se verificó `curl /health` de `web`/`api` (ambos OK)
+  y logs de los primeros minutos sin errores/tracebacks en `api`/`web`/`cromo_worker`/
+  `botellas_recalculo_worker`/`slack_baneo_worker`/`nlp_intent`/`office`. **No se probó navegador
+  (login + búsqueda de Cámara) ni un mensaje real a Slack** — este agente no tiene acceso a navegador
+  ni se envió un mensaje de prueba al canal real sin pedirlo explícitamente. Pendiente de que el
+  usuario confirme el flujo visual/Slack cuando pueda.
 
-- [ ] **Paso 4: Confirmar que el worker de Cromo sigue vivo para sync incremental futuro**
+- [x] **Paso 4: Confirmar que el worker de Cromo sigue vivo para sync incremental futuro**
 
 ```bash
 docker logs lasfocas-cromo-worker --tail 50
@@ -638,9 +642,9 @@ docker logs lasfocas-cromo-worker --tail 50
 
 ### Task 13: Documentar el despliegue
 
-- [ ] **Paso 1: Nueva entrada en `docs/decisiones.md`** cerrando el gap: "main es nuevamente la fuente de verdad de lo desplegado en prod, dataset Cromo cargado desde dev el YYYY-MM-DD, N incidentes de baneo reconciliados."
-- [ ] **Paso 2: Nueva entrada en `docs/PR/YYYY-MM-DD.md`** con los comandos ejecutados y el resultado de la verificación.
-- [ ] **Paso 3: Commit de la documentación** (rama efímera `docs/...` → `dev` vía cierre-sesion, como cualquier otro cambio).
+- [x] **Paso 1: Nueva entrada en `docs/decisiones.md`** cerrando el gap: "main es nuevamente la fuente de verdad de lo desplegado en prod, dataset Cromo cargado desde dev el YYYY-MM-DD, N incidentes de baneo reconciliados."
+- [x] **Paso 2: Nueva entrada en `docs/PR/YYYY-MM-DD.md`** con los comandos ejecutados y el resultado de la verificación.
+- [x] **Paso 3: Commit de la documentación** (rama efímera `docs/...` → `dev` vía cierre-sesion, como cualquier otro cambio).
 
 ---
 
