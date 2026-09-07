@@ -110,6 +110,21 @@ _RE_TIENE_BOT = re.compile(r"\bbot(ella)?\b", re.IGNORECASE)
 
 
 def _cascada_botella(nombre_raw: str, session: Session) -> list["CromoBotella"]:
+    """Intenta primero sólo con el texto antes del primer guión (mismo criterio que
+    `buscar_camara()` — ver su docstring: cubre el caso real del técnico pegando el título
+    completo de Cromo, "Nombre - Calle Altura - Localidad - Provincia"). Si el prefijo no resuelve
+    a exactamente una `CromoBotella`, cae a `_cascada_botella_intento()` con el string completo —
+    preserva casos donde el sufijo es parte legítima del nombre (ej. "Poste Lavalle - Campana")."""
+    if "-" in nombre_raw:
+        prefijo = nombre_raw.split("-", 1)[0].strip()
+        if prefijo and prefijo != nombre_raw.strip():
+            candidatos_prefijo = _cascada_botella_intento(prefijo, session)
+            if len(candidatos_prefijo) == 1:
+                return candidatos_prefijo
+    return _cascada_botella_intento(nombre_raw, session)
+
+
+def _cascada_botella_intento(nombre_raw: str, session: Session) -> list["CromoBotella"]:
     """Cascada equivalente a los Intentos 1-2 de `buscar_camara()`, pero contra
     `CromoBotella.nombre`: ILIKE con el nombre normalizado completo, y si no reduce a 1 candidato,
     AND-ILIKE por tokens significativos (≥3 chars). En ambos pasos se filtra por números requeridos

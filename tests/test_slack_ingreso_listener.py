@@ -338,6 +338,101 @@ class TestBuscarCamara(unittest.TestCase):
         self.assertIn("cra", nombre_norm)
         self.assertNotIn("carrera", nombre_norm)
 
+    def test_prefijo_antes_del_guion_se_intenta_primero(self) -> None:
+        """Regresión (prod, ticket MKT 122293, 2026-09-07): el técnico pegó el título completo
+        que muestra Cromo para la Botella ('Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital
+        Federal - Capital Federal' — Nombre + Calle/Altura/Localidad/Provincia concatenados).
+        buscar_camara() debe resolver con sólo el prefijo antes del primer guión, sin que el
+        resto (atributos de Cromo, con OTRO número — 2964 — que rompería el filtro de números
+        si se usara el string completo) contamine la búsqueda."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        camara_mock = self._make_camara(42, "Cra Curupayti 2951 CF")
+
+        def ilike_lista_side_effect(patron: str, session: Any) -> Any:
+            # Sólo matchea el prefijo limpio; si algo del resto de Cromo (2964, capital
+            # federal) llega a este patrón, el fix no está funcionando.
+            if "2964" in patron or "capital" in patron:
+                return []
+            return [camara_mock]
+
+        with (
+            patch(
+                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                side_effect=ilike_lista_side_effect,
+            ),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+        ):
+            camara, nombre_norm = buscar_camara(
+                "Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal",
+                session=MagicMock(),
+            )
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Cra Curupayti 2951 CF")
+
+    def test_end_to_end_mensaje_real_prod_ticket_122293(self) -> None:
+        """End-to-end (extraer_nombre_camara + buscar_camara) con el mensaje real de producción
+        (ticket MKT 122293, 2026-09-07): salto de línea accidental ('e:' + Enter) seguido del
+        título completo que muestra Cromo para la Botella. Ambos fixes encadenados deben resolver
+        a la cámara real."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara, extraer_nombre_camara
+
+        texto_mensaje = (
+            "*Nombre: Nodo/Camara/botella*\n"
+            "e:\n"
+            "Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal\n"
+            "*Ingreso o Egreso*\nEgreso\n"
+        )
+        nombre_extraido = extraer_nombre_camara(texto_mensaje)
+
+        camara_mock = self._make_camara(44, "Cra Curupayti 2951 CF")
+
+        def ilike_lista_side_effect(patron: str, session: Any) -> Any:
+            if "2964" in patron or "capital" in patron:
+                return []
+            return [camara_mock]
+
+        with (
+            patch(
+                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                side_effect=ilike_lista_side_effect,
+            ),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+        ):
+            camara, nombre_norm = buscar_camara(nombre_extraido, session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Cra Curupayti 2951 CF")
+
+    def test_prefijo_sin_match_cae_al_nombre_completo(self) -> None:
+        """Si el prefijo antes del guión no alcanza para encontrar nada, se reintenta con el
+        string completo — preserva 'Poste Lavalle - Campana', donde la localidad después del
+        guión es parte legítima y necesaria del nombre real (no un atributo de Cromo pegado de
+        más)."""
+        from modules.slack_baneo_notifier.camara_search import buscar_camara
+
+        camara_mock = self._make_camara(43, "Poste Lavalle - Campana")
+
+        def ilike_lista_side_effect(patron: str, session: Any) -> Any:
+            # El prefijo solo ("poste lavalle") no encuentra nada; sólo el string completo
+            # (con "campana") matchea.
+            if "campana" in patron:
+                return [camara_mock]
+            return []
+
+        with (
+            patch(
+                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                side_effect=ilike_lista_side_effect,
+            ),
+            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+        ):
+            camara, nombre_norm = buscar_camara("Poste Lavalle - Campana", session=MagicMock())
+
+        self.assertIsNotNone(camara)
+        self.assertEqual(camara.nombre, "Poste Lavalle - Campana")
+
     def test_intento4_fallback_sin_expansion(self) -> None:
         """Intento 4 usa el nombre sin expansión cuando intento 1-2 fallan.
 

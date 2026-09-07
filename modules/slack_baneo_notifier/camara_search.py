@@ -345,6 +345,32 @@ class AmbiguousSearchError(Exception):
 
 
 def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", str]:
+    """Busca una cámara, intentando primero sólo con el texto antes del primer guión.
+
+    Cuando el técnico pega en el Workflow el título completo que muestra Cromo para una Cámara/
+    Botella (``<Nombre> - <Calle> <Altura> - <Localidad> - <Provincia>``, ver
+    `docs/decisiones.md` entrada 2026-09-07, caso real "Cra Curupayti 2951 CF - CURUPAYTI 2964 -
+    Capital Federal - Capital Federal"), todo lo posterior al primer guión son atributos de Cromo,
+    no parte del nombre real. Por eso el primer intento usa sólo el prefijo antes del guión; si eso
+    no resuelve a una única cámara (ni matchea, ni es ambiguo), se reintenta con el string completo
+    — esto preserva casos donde el sufijo SÍ es parte legítima del nombre real y necesaria para
+    desambiguar (ej. "Poste Lavalle - Campana", ver `TestLimpiarRuidoOperativo
+    .test_localidad_con_guion_se_preserva`).
+    """
+    if "-" in nombre_raw:
+        prefijo = nombre_raw.split("-", 1)[0].strip()
+        if prefijo and prefijo != nombre_raw.strip():
+            try:
+                camara, nombre_norm = _buscar_camara_intento(prefijo, session)
+            except AmbiguousSearchError:
+                pass  # el prefijo solo no alcanza — cae al intento con el string completo
+            else:
+                if camara is not None:
+                    return camara, nombre_norm
+    return _buscar_camara_intento(nombre_raw, session)
+
+
+def _buscar_camara_intento(nombre_raw: str, session: Session) -> tuple["Camara | None", str]:
     """Busca una cámara en DB tolerando abreviaturas, sinónimos y variaciones ortográficas.
 
     Preprocesamiento:

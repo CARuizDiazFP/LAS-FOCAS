@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("TESTING", "true")
@@ -351,6 +352,47 @@ class TestCascadaBotellaReal(unittest.TestCase):
             resultado = _cascada_botella("Bot 2 Cra Mitre 440", MagicMock())
 
         self.assertEqual(resultado, [c440])
+
+    def test_prefijo_antes_del_guion_se_intenta_primero(self) -> None:
+        """Regresión (mismo caso real que `buscar_camara()`, prod ticket MKT 122293, 2026-09-07):
+        el técnico pegó el título completo de Cromo para la Botella ('Nombre - Calle Altura -
+        Localidad - Provincia', con un número de Altura distinto al de Nombre). _cascada_botella
+        debe resolver con sólo el prefijo antes del primer guión."""
+        botella = _make_botella(1, "Cra Curupayti 2951 CF", camara_id=1)
+
+        def ilike_side_effect(patron: str, session: Any) -> Any:
+            if "2964" in patron or "capital" in patron:
+                return []
+            return [botella]
+
+        with (
+            patch(f"{MODULE}._buscar_botella_ilike_lista", side_effect=ilike_side_effect),
+            patch(f"{MODULE}._buscar_botella_tokens_lista", return_value=[]),
+        ):
+            resultado = _cascada_botella(
+                "Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal",
+                MagicMock(),
+            )
+
+        self.assertEqual(resultado, [botella])
+
+    def test_prefijo_sin_match_cae_al_nombre_completo(self) -> None:
+        """Si el prefijo antes del guión no encuentra nada, cae al string completo — preserva
+        casos donde el sufijo es parte legítima del nombre (ej. 'Poste Lavalle - Campana')."""
+        botella = _make_botella(1, "Poste Lavalle - Campana", camara_id=1)
+
+        def ilike_side_effect(patron: str, session: Any) -> Any:
+            if "campana" in patron:
+                return [botella]
+            return []
+
+        with (
+            patch(f"{MODULE}._buscar_botella_ilike_lista", side_effect=ilike_side_effect),
+            patch(f"{MODULE}._buscar_botella_tokens_lista", return_value=[]),
+        ):
+            resultado = _cascada_botella("Poste Lavalle - Campana", MagicMock())
+
+        self.assertEqual(resultado, [botella])
 
 
 if __name__ == "__main__":
