@@ -132,6 +132,25 @@ reservado para cuando se declare explícitamente.
     git branch -d <rama-efímera-actual>
     git push origin --delete <rama-efímera-actual>
     ```
+    **Si la sesión corre dentro de un worktree dedicado a la rama efímera** (`EnterWorktree` /
+    `superpowers:using-git-worktrees`, patrón recomendado por `dev-workflow` ante sospecha de sesión
+    concurrente — ver su guardrail de `ListAgents`): el segundo bloque de arriba falla, porque `dev`
+    ya está checkouteada en el checkout principal compartido y git no permite la misma rama en dos
+    worktrees a la vez. Reemplazarlo por un push fast-forward directo, sin checkoutear `dev` en ningún
+    momento (real, 2026-09-07, ver `docs/cierres/2026-09-07.md`):
+    ```bash
+    git push origin <rama-efímera-actual>          # sincroniza la rama efímera en el remoto
+    git push origin <rama-efímera-actual>:dev      # fast-forward de dev al tip de la rama efímera
+    git push origin --delete <rama-efímera-actual>
+    ```
+    Si el segundo push no es fast-forward (`origin/dev` avanzó entre el `fetch` y el push — otra
+    sesión mergeó algo mientras tanto), git lo rechaza solo (protección nativa) — repetir
+    `git fetch origin` + `git merge origin/dev` (bloque anterior) y reintentar. El borrado de la rama
+    LOCAL (`git branch -d`) sólo es posible después de salir del worktree (no se puede borrar la rama
+    que un worktree tiene checkouteada); si la sesión sigue en el worktree al cerrar, dejarla sin
+    borrar es inofensivo (ya quedó mergeada a `dev` y borrada en el remoto) — documentarlo como
+    pendiente cosmético en el checklist final, no bloquea el cierre.
+
     **Excepción**: si en esta misma sesión el usuario indicó explícitamente que esta rama debe
     diferirse (ej. ventana de mantenimiento — precedente real: `fix-baneos-hermanos-prod`), no forzar
     este flujo. Dejar la rama activa sin mergear, documentarlo en el checklist final, y sugerir
