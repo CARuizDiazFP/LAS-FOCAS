@@ -125,6 +125,14 @@ SELECT id, nombre, estado FROM app.camaras WHERE id = <padre> OR camara_padre_id
 `estado` debe ser el mismo en TODOS los miembros del grupo durante el baneo, y cada miembro debe
 volver a su propio estado real al desbanear.
 
+**Hallazgo real (2026-09-07, reconciliación post-restore en prod):** un script que compara por nombre
+plano contra una lista fija puede mostrar su contador de "a revertir" SUBIENDO tras aplicar cambios —
+no es necesariamente un bug. `aplicar_estado_a_grupo()` cascada al grupo físico completo; si el
+snapshot original (pre-agrupación) no conocía a las hermanas de grupo, reaplicar el estado a un
+nombre de la lista banea correctamente también a ellas, y el contador ingenuo las cuenta como
+"ilegítimas". Verificar contra el estado real de cada nombre objetivo, nunca contra el contador de
+reversión del script.
+
 ## Reglas
 
 1. **Nunca correr contra `lasfocas-*`** (producción) — sólo `lasfocasdev-*`.

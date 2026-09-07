@@ -115,6 +115,18 @@ SELECT id, nombre, estado FROM app.camaras WHERE id = <padre> OR camara_padre_id
 completa), y cada miembro debe volver a su propio estado real (no necesariamente igual entre sí) al
 desbanear.
 
+**Hallazgo real (2026-09-07, reconciliación post-restore en prod — no QA en dev, pero el mismo
+principio aplica):** un script de reconciliación que compara por nombre plano contra una lista fija
+(ej. "estos N nombres deben quedar BANEADA, el resto no") puede mostrar su propio contador de
+"a revertir" SUBIENDO después de aplicar cambios, en vez de bajar a 0 — no es necesariamente un bug.
+`aplicar_estado_a_grupo()` cascada al grupo físico completo (padre + hermanas/botellas); si el modelo
+de datos vigente agrupa entidades que un snapshot legado (pre-agrupación) nunca había registrado por
+separado, reaplicar el estado a un nombre de la lista banea correctamente también a sus hermanas de
+grupo — hermanas que el contador ingenuo del script no conoce y cuenta como "ilegítimas". **La
+verificación correcta es contra el estado real de cada nombre objetivo de la lista original
+(¿terminó BANEADA?), nunca contra el contador de reversión del script** — ese contador puede subir
+sin que haya ningún error real.
+
 ## Reglas
 
 1. **Nunca correr contra `lasfocas-*`** (producción) — sólo `lasfocasdev-*`.
