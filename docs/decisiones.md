@@ -1276,9 +1276,12 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   operativo de prod (ODFs/Botellas/Servicios/Cables/Cromo) por el de `dev`, preservando únicamente
   los baneos reales activos de prod (se reconcilian después del restore vía `aplicar_estado_a_grupo`,
   nunca `UPDATE` directo — mismo patrón que la reconciliación del 09-03). Credenciales Cromo: misma
-  cuenta real que ya usa `dev`. PROV: se provisionan credenciales reales de producción como parte de
-  este despliegue (antes no existían). La rama `fix-baneos-hermanos-prod` queda redundante (sus 2
-  fixes ya son nativos en `dev`) y se cierra una vez confirmado que el merge a `main` los incluye.
+  cuenta real que ya usa `dev`. PROV: **corrección post-decisión inicial** — el usuario aclaró que
+  usuario/contraseña de PROV son los mismos para prod y dev (no hace falta gestionar credenciales
+  nuevas); se copiaron directo `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` a
+  `api_prov_user_v1.txt`/`api_prov_pass_v1.txt` sin prefijo, mismo patrón que Cromo. La rama
+  `fix-baneos-hermanos-prod` queda redundante (sus 2 fixes ya son nativos en `dev`) y se cierra una vez
+  confirmado que el merge a `main` los incluye.
 - **Alternativas consideradas:** re-ingesta en vivo de Cromo directo en prod contra la API real (más
   "correcto" respecto a "Cromo es la fuente de verdad", pero una corrida inicial completa en dev tardó
   ~9.5 h) — descartada por el usuario a favor de copiar el dataset ya consolidado de `dev`.

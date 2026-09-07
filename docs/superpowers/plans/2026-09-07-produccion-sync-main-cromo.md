@@ -15,7 +15,7 @@
 1. **Datos Cromo en prod:** copiar el dataset completo de `dev` (`focas_dev`, 941 MB) a prod, **excepto** los baneos: los únicos datos que persisten desde prod son los baneos reales activos; todo lo demás (ODFs, Botellas, Servicios, Cables, Cromo) viene de `dev`.
 2. **Credenciales Cromo:** misma cuenta real que ya usa `dev` — se copia el secret, no se gestiona una cuenta nueva.
 3. **Rama `fix-baneos-hermanos-prod`:** se cierra/borra una vez confirmado que sus 2 fixes ya están nativos en el `main` post-merge.
-4. **PROV en prod:** este despliegue incluye la provisión de credenciales reales de PROV para producción (el usuario las aporta; no se inventan).
+4. **PROV en prod:** ⚠️ corregido 2026-09-07 — misma cuenta real que dev (no hace falta gestionar credenciales nuevas, igual que Cromo).
 
 ## Global Constraints
 
@@ -269,7 +269,7 @@ git branch -D fix-baneos-hermanos-prod 2>/dev/null || true
 - Create: `.secrets/api_prov_user_v1.txt`, `.secrets/api_prov_pass_v1.txt`
 - (Opcional) Create: `.secrets/pgadmin_password_v1.txt` — sólo si se quiere levantar pgAdmin en prod; no bloquea el `up -d` base porque está bajo `profiles: ["pgadmin"]`.
 
-- [ ] **Paso 1: `redis_password_v1` — generar nuevo (nunca reusar el de dev)**
+- [x] **Paso 1: `redis_password_v1` — generar nuevo (nunca reusar el de dev)**
 
 ```bash
 cd /home/support-focal-01/LAS-FOCAS
@@ -278,24 +278,22 @@ openssl rand -base64 32 > .secrets/redis_password_v1.txt
 chmod 600 .secrets/redis_password_v1.txt
 ```
 
-- [ ] **Paso 2: `cromo_password_v1` — copiar el mismo valor real que usa dev (decisión ya tomada: misma cuenta)**
+- [x] **Paso 2: `cromo_password_v1` — copiar el mismo valor real que usa dev (decisión ya tomada: misma cuenta)**
 
 ```bash
 install -m 600 .secrets/Dev_cromo_password_v1.txt .secrets/cromo_password_v1.txt
 ```
 
-- [ ] **Paso 3: `api_prov_user_v1` / `api_prov_pass_v1` — credenciales REALES de PROV para producción**
-
-🛑 Estas credenciales no se pueden generar ni copiar de dev (dev usa credenciales de dev/sandbox). **Requiere que el usuario las aporte en el momento** (nunca pedirlas ni pegarlas como argumento de shell):
+- [x] **Paso 3: `api_prov_user_v1` / `api_prov_pass_v1`** — ⚠️ corrección: el usuario aclaró (2026-09-07)
+  que PROV usa la misma cuenta real para prod y dev, igual que Cromo. Se copiaron directo, no se
+  pidieron credenciales nuevas:
 
 ```bash
-umask 077
-cat > .secrets/api_prov_user_v1.txt   # pegar el usuario real de PROV prod, luego Ctrl-D
-cat > .secrets/api_prov_pass_v1.txt   # pegar la contraseña real de PROV prod, luego Ctrl-D
-chmod 600 .secrets/api_prov_user_v1.txt .secrets/api_prov_pass_v1.txt
+install -m 600 .secrets/Dev_api_prov_user_v1.txt .secrets/api_prov_user_v1.txt
+install -m 600 .secrets/Dev_api_prov_pass_v1.txt .secrets/api_prov_pass_v1.txt
 ```
 
-- [ ] **Paso 4: Verificar (sin imprimir valores)**
+- [x] **Paso 4: Verificar (sin imprimir valores)**
 
 ```bash
 ls -la .secrets/redis_password_v1.txt .secrets/cromo_password_v1.txt .secrets/api_prov_user_v1.txt .secrets/api_prov_pass_v1.txt
@@ -311,13 +309,13 @@ ls -la .secrets/redis_password_v1.txt .secrets/cromo_password_v1.txt .secrets/ap
 
 Diff de claves confirmado por comparación directa de nombres (no valores) entre `.env` y `.env.dev`. Copiar verbatim el valor de `.env.dev` salvo donde se indica lo contrario.
 
-- [ ] **Paso 1: Backup del `.env` actual**
+- [x] **Paso 1: Backup del `.env` actual**
 
 ```bash
 cp .env .env.bak-$(date +%Y%m%d-%H%M%S)
 ```
 
-- [ ] **Paso 2: Agregar a `.env` (copiando el valor real desde `.env.dev`, con las excepciones marcadas)**
+- [x] **Paso 2: Agregar a `.env` (copiando el valor real desde `.env.dev`, con las excepciones marcadas)**
 
 ```
 CHAT_UPLOAD_MAX_BYTES=<mismo valor que .env.dev>
@@ -362,14 +360,14 @@ Notas explícitas sobre las excepciones (NO copiar literal de `.env.dev` en esta
 - `REPORTS_API_BASE`: hostname del servicio api en prod (`api:8000`).
 - `OLLAMA_URL`: **no copiar** — `LLM_PROVIDER` en prod ya está en `heuristic`/lo que corresponda; si prod no corre Ollama, dejar sin definir (el proveedor heurístico no lo usa). Verificar `LLM_PROVIDER` actual en `.env` antes de decidir.
 
-- [ ] **Paso 3: Corregir la anomalía `ENV`/`LOG_LEVEL` detectada** (prod actualmente tiene `ENV=development` y `LOG_LEVEL=DEBUG`, inconsistente con ser producción):
+- [x] **Paso 3: Corregir la anomalía `ENV`/`LOG_LEVEL` detectada** (prod actualmente tiene `ENV=development` y `LOG_LEVEL=DEBUG`, inconsistente con ser producción):
 
 ```
 ENV=production
 LOG_LEVEL=INFO
 ```
 
-- [ ] **Paso 4: 🛑 Mostrar el diff completo al usuario antes de continuar** (archivo de producción, requiere aprobación explícita):
+- [x] **Paso 4: 🛑 Mostrar el diff completo al usuario antes de continuar** (archivo de producción, requiere aprobación explícita):
 
 ```bash
 diff .env.bak-*(N) .env   # o comparar contra el backup del paso 1
