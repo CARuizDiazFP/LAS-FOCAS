@@ -1355,3 +1355,62 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Pendiente concreto:** las 11 Cámaras sin match requieren revisión manual (¿existen todavía en el
   inventario real de Cromo con otro nombre, o son ubicaciones que ya no corresponden banear?) antes de
   decidir si banearlas manualmente o darlas de baja del seguimiento de "Críticas".
+
+## 2026-09-07 (cont. 2) — Diagnóstico real de Servicios sin ODF asociada (Cromo) + fix del gap de resolución de `fase_servicios`
+
+- **Contexto:** arranque del diseño de un viewer nuevo (análogo a Cámaras/Botellas) para "Servicios
+  Activos sin ODF correctamente asociada", con asociación manual y — a futuro, fuera de esta
+  iteración — reconstrucción del camino físico ODF↔Cable↔Botella↔ODF y descarga de trackings en
+  Detalle de Servicio. Antes de diseñar el viewer se corrió un diagnóstico real contra
+  `lasfocasdev-postgres` (sólo `SELECT`) para las 3 hipótesis de causa raíz planteadas por el usuario.
+- **Universo real (snapshot pre-fix):** de 5731 Servicios Activos verificables, **2939 sin ODF
+  asociada (51%)**. Desglose real de la muestra: **~38%+ por switch/rack compartido** (varios
+  servicios en el mismo `tubo_n_id`/`cable_n_id` Cromo, sólo uno con descripción de pelo que
+  resuelve — hipótesis del usuario confirmada y dominante; ejemplo real: Municipalidad de Pilar, hasta
+  9 servicios en el mismo tubo), **mayoría del resto genuinamente ausente de la red Cromo** (hipótesis
+  1), **667 casos (23%) con pelo matcheado pero sin conector de ODF ingerido** (patrón nuevo, no
+  anticipado — el pelo/tubo/cable resuelve al servicio pero nunca quedó vinculado a una patchera),
+  **77 casos (3.4%) de baja lógica heredada** (hermano en `Baja` con la misma dirección sí tiene pelo
+  — hipótesis 3 confirmada pero minoritaria, y sólo contra bajas reales `INGEST_EXCEL`, nunca
+  placeholders `INFERIDO_CROMO`). Confirmado con el usuario: Cromo (`cromo_pelos`/
+  `cromo_odf_conectores`) es la fuente de verdad para el viewer, el tracking legacy
+  (`core/parsers/tracking_parser.py`) queda fuera de alcance. `tipo_servicio='FO'` se confirma
+  correctamente excluido de `TIPOS_SERVICIO_VERIFICABLES` (no son circuitos de fibra por definición
+  pese a buen ratio de match aparente).
+- **Bug de pipeline real encontrado durante el diagnóstico:** el scheduler de ingesta Cromo está
+  deshabilitado a propósito desde antes del 2026-08-29 (decisión explícita del usuario, se mantiene
+  así). Todas las corridas manuales posteriores usaron `modo="SOLO_ODF"` o
+  `tipo="MANUAL_REPOBLAR_CABLES"` — ambas saltan `fase_servicios` por diseño
+  (`core/services/cromo/ingesta.py::continuar_corrida`). Resultado: **944 pelos con
+  `servicio_numero` ya ingerido (varios con match EXACTO y sin ambigüedad) nunca generaron fila en
+  `app.cromo_servicio_match`** porque esa fase no volvía a correr desde 2026-08-07 — el 100% de los
+  944 casos tienen `ultima_ingesta` posterior a esa fecha, 0 excepciones. No es un bug de lógica de
+  matching (el algoritmo resuelve bien si corre), es puramente operativo/de scheduling.
+- **Remediación aplicada:** por decisión del usuario, sin reactivar el scheduler ni tocar los modos
+  `SOLO_ODF`/`MANUAL_REPOBLAR_CABLES` — catch-up puntual reusando la `fase_servicios()` ya desplegada
+  y probada (`scripts/cromo_backfill_fase_servicios.py`, corrida sintética
+  `tipo="MANUAL_CATCHUP_SERVICIOS"`, mismo patrón que `repoblacion_service.py`). Corre 100% contra
+  datos ya ingeridos, sin llamadas de red a Cromo.
+- **Segundo bug real, encontrado en la primera corrida de la remediación (`systematic-debugging`,
+  root cause antes de fix):** `_SQL_CREAR_PLACEHOLDER_SERVICIO` (creación de Servicio placeholder
+  para `servicio_numero` plausible sin match) usaba `:origen::app.servicio_origen_datos` — el cast
+  `::tipo` pegado sin espacio al bind param hace que SQLAlchemy no reconozca `:origen` como parámetro
+  y lo mande literal al driver; Postgres/asyncpg responde `syntax error at or near ":"`. Mismo patrón
+  ya documentado para psycopg3 síncrono, confirmado ahora también bajo asyncpg async. 199/944 pelos
+  (exactamente los que necesitaban crear un placeholder nuevo, no sólo resolver contra un Servicio
+  existente) fallaron con este error en la primera corrida; los otros 745 resolvieron bien porque no
+  pasan por ese INSERT. Fix de una línea (espacio antes de `::`) + test de regresión contra Postgres
+  real (`tests/test_cromo_ingesta_placeholder_servicio_real_db.py`, TDD: rojo confirmado con el bug,
+  verde tras el fix) + suite completa de `test_cromo_ingesta.py` (75 tests) sin romper nada.
+- **Resultado final verificado en dev:** 944 → **0 pelos pendientes de match**. 745 resueltos contra
+  Servicios reales existentes, 199 resueltos tras el fix (13 Servicios placeholder nuevos,
+  `origen_datos=INFERIDO_CROMO`, deduplicados por número repetido entre pelos). Recuento post-fix:
+  de los 5731 verificables, 3411 tienen ahora al menos un pelo matcheado en `cromo_servicio_match`
+  (antes de este catch-up, ninguno de los 944 lo tenía). El recuento fino de "con ODF asociada" vs.
+  "sin ODF" por categoría (con la query definitiva del viewer) se rehace como parte del diseño del
+  viewer, ya que las categorías "sin conector ODF ingerido" (667) y "switch compartido" (dominante)
+  son independientes de este fix — `fase_servicios` sólo resuelve pelo→servicio, no crea conectores.
+- **Pendiente concreto:** diseño y construcción del viewer de "Servicios sin ODF asociada" (hub
+  `/admin/servicios/viewer`, tabla escudo de asociación manual `cromo_servicio_odf_override`
+  soportando muchos-a-uno, categorización de causa por tarjeta) — próxima fase de esta misma tarea,
+  en la rama efímera `feat/odf-viewer-servicios-sin-odf`.

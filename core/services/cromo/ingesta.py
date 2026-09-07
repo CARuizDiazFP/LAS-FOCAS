@@ -965,10 +965,13 @@ _SQL_BUSCAR_SERVICIO = text(
 # ambas columnas — cualquiera de los dos puede disparar el conflicto (ej. otra sesión/corrida ganó la
 # carrera de creación para el mismo número). Sin `DO NOTHING` sobre un índice puntual, absorbe
 # cualquiera de los dos en vez de acoplarse al nombre de uno.
+# Bug real (2026-09-07): `:origen::tipo` (sin espacio) hace que SQLAlchemy no reconozca `:origen` como
+# bind param y lo mande literal al driver — Postgres/asyncpg responde "syntax error at or near ':'".
+# El espacio antes de `::` es obligatorio, no estético.
 _SQL_CREAR_PLACEHOLDER_SERVICIO = text(
     """
     INSERT INTO app.servicios (servicio_id, numero_primer_servicio, categoria, origen_datos, estado_servicio)
-    VALUES (:numero, :numero, 0, :origen::app.servicio_origen_datos, 'DESCONOCIDO')
+    VALUES (:numero, :numero, 0, :origen ::app.servicio_origen_datos, 'DESCONOCIDO')
     ON CONFLICT DO NOTHING
     RETURNING id
     """
