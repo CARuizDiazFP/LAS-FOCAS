@@ -75,6 +75,18 @@ _SINONIMOS: dict[str, str] = {
 _RE_NOMBRE_WORKFLOW = re.compile(
     r"(?i)\*?Nombre:\s*Nodo[/\\]C[aá]mara[/\\]botella\*?\n(.+?)(?:\n|$)"
 )
+# Fallback cuando la primera línea capturada por `_RE_NOMBRE_WORKFLOW` resulta demasiado corta/
+# insuficiente (`_pocos_tokens_significativos`, mismo umbral que la heurística de ambigüedad de
+# `buscar_camara`): probablemente un salto de línea accidental del técnico al copiar/pegar el
+# nombre — real en prod, ticket MKT 122293, 2026-09-07: campo cargado como "e:\nCra Curupayti 2951
+# CF - CURUPAYTI 2964 - Capital Federal - Capital Federal". En ese caso se extiende la captura hasta
+# el próximo campo en negrita ("\n*") o el fin del mensaje — `re.DOTALL` permite que `(.+?)` cruce
+# los saltos de línea intermedios. No se usa como regex principal para no swallowear contenido de
+# otro campo cuando la primera línea YA es un nombre válido y autosuficiente.
+_RE_NOMBRE_WORKFLOW_EXTENDIDO = re.compile(
+    r"(?i)\*?Nombre:\s*Nodo[/\\]C[aá]mara[/\\]botella\*?\n(.+?)(?=\n\*|\Z)",
+    re.DOTALL,
+)
 # Regex fallback: campo libre "Cámara: [valor]" o "Cámara, [valor]"
 _RE_CAMPO_CAMARA = re.compile(r"(?i)c[aá]maras?\s*[,:]\s*(.+?)(?:\n|$)")
 
@@ -235,6 +247,21 @@ def expandir_abreviaturas_y_sinonimos(texto_normalizado: str) -> str:
     return _aplicar_sinonimos(_expandir_abreviaturas(texto_normalizado))
 
 
+def _pocos_tokens_significativos(texto: str) -> bool:
+    """True si `texto` tiene menos de 2 tokens significativos (≥3 chars) y ningún número.
+
+    Reusa el mismo pipeline de normalización y el mismo umbral que la heurística de ambigüedad
+    de `buscar_camara()` — una línea que caería en `AmbiguousSearchError(cantidad=0)` es, por
+    definición, demasiado corta/insuficiente para ser un nombre de cámara completo.
+    """
+    limpio = _limpiar_puntuacion(texto)
+    expandido = _expandir_abreviaturas(limpio)
+    norm = _aplicar_sinonimos(_normalizar(expandido))
+    numeros = re.findall(r"\d+", norm)
+    tokens_sig = [t for t in norm.split() if len(t) >= 3]
+    return len(tokens_sig) < 2 and not numeros
+
+
 def extraer_nombre_camara(mensaje: str) -> str:
     """Extrae el nombre de cámara del mensaje.
 
@@ -242,10 +269,19 @@ def extraer_nombre_camara(mensaje: str) -> str:
       1. Formato Workflow: ``*Nombre: Nodo/Camara/botella*\\n[valor]``
       2. Campo libre: ``Cámara: [valor]``
       3. Fallback: primera línea del mensaje.
+
+    Si la primera línea del formato Workflow resulta insuficiente (`_pocos_tokens_significativos`),
+    se asume que es un salto de línea accidental del técnico al copiar/pegar y se extiende la
+    captura a las líneas siguientes hasta el próximo campo (`_RE_NOMBRE_WORKFLOW_EXTENDIDO`).
     """
     match = _RE_NOMBRE_WORKFLOW.search(mensaje)
     if match:
-        return match.group(1).strip()
+        primera_linea = match.group(1).strip()
+        if _pocos_tokens_significativos(primera_linea):
+            match_extendido = _RE_NOMBRE_WORKFLOW_EXTENDIDO.search(mensaje)
+            if match_extendido:
+                return re.sub(r"\s*\n\s*", " ", match_extendido.group(1)).strip()
+        return primera_linea
     match = _RE_CAMPO_CAMARA.search(mensaje)
     if match:
         return match.group(1).strip()

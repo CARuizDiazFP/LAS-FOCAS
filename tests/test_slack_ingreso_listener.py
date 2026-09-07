@@ -109,6 +109,24 @@ class TestExtraerNombreCamara(unittest.TestCase):
         result = self.extraer(texto)
         self.assertEqual(result, "Bartolomé Mitre 301 CF")
 
+    def test_workflow_valor_con_salto_de_linea_erroneo_se_une(self) -> None:
+        """Regresión (prod, ticket MKT 122293, 2026-09-07): el técnico pegó el nombre con un
+        salto de línea accidental en el medio ('e:' en una línea, la dirección real en la
+        siguiente). El salto de línea es un error de copiado del técnico, no un separador de
+        campo del Workflow — debe unirse en una sola línea en vez de truncar en el primer '\\n'
+        (lo que antes producía sólo 'e:', disparando el falso 'nombre demasiado genérico')."""
+        texto = (
+            "*Nombre: Nodo/Camara/botella*\n"
+            "e:\n"
+            "Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal\n"
+            "*Ingreso o Egreso*\nEgreso\n"
+        )
+        result = self.extraer(texto)
+        self.assertEqual(
+            result,
+            "e: Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal",
+        )
+
 
 # ─── Tests de extracción de tipo de movimiento ────────────────────────────────
 
