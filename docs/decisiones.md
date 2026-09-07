@@ -1260,3 +1260,33 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Impacto:** 941 filas reales de `app.camaras` mutadas en prod (auditadas en
   `camaras_estado_auditoria`); ningún cambio de código en `dev`/`main` todavía (la rama del fix queda
   en `origin/fix-baneos-hermanos-prod` a la espera de la ventana de mantenimiento).
+
+## 2026-09-07 — Plan de sincronización main/prod y corte de datos Cromo
+
+- **Contexto:** Continuación directa del hallazgo del 2026-09-03: `main` sigue congelado en `657b239`
+  (2026-07-29) mientras prod corre un estado compuesto de `dev` (`dc1a4a4` app/DB + `c2c1d70` infra,
+  10/11-ago) nunca mergeado — 16 migraciones Alembic atrás de `dev` (`20260810_01` vs `20260904_01`),
+  y `deploy/compose.yml` (el compose real de prod) sin el servicio `cromo_worker` ni los secrets de
+  Cromo/PROV. Mientras tanto `dev` acumuló 238 commits y 941 MB de datos Cromo reales (`focas_dev`)
+  contra 13 MB en `lasfocas` (prod), que además sigue creando Cámaras `PENDIENTE_REVISION` legado
+  (582 filas al 2026-09-07, subiendo desde las 565 del 2026-09-03) porque corre código anterior al
+  retiro de ese flujo.
+- **Decisión (confirmada explícitamente por el usuario):** cerrar la brecha con un único PR
+  `dev`→`main`, reconstruir el stack completo de prod con ese código, y reemplazar el dataset
+  operativo de prod (ODFs/Botellas/Servicios/Cables/Cromo) por el de `dev`, preservando únicamente
+  los baneos reales activos de prod (se reconcilian después del restore vía `aplicar_estado_a_grupo`,
+  nunca `UPDATE` directo — mismo patrón que la reconciliación del 09-03). Credenciales Cromo: misma
+  cuenta real que ya usa `dev`. PROV: se provisionan credenciales reales de producción como parte de
+  este despliegue (antes no existían). La rama `fix-baneos-hermanos-prod` queda redundante (sus 2
+  fixes ya son nativos en `dev`) y se cierra una vez confirmado que el merge a `main` los incluye.
+- **Alternativas consideradas:** re-ingesta en vivo de Cromo directo en prod contra la API real (más
+  "correcto" respecto a "Cromo es la fuente de verdad", pero una corrida inicial completa en dev tardó
+  ~9.5 h) — descartada por el usuario a favor de copiar el dataset ya consolidado de `dev`.
+  Cámaras `PENDIENTE_REVISION`: exportadas primero a un `.txt` (texto crudo tal cual lo escribió el
+  técnico, para auditar el formato de sus anuncios) antes de que el restore las borre — `dev` tiene
+  0 filas en ese estado.
+- **Plan de ejecución completo:**
+  `docs/superpowers/plans/2026-09-07-produccion-sync-main-cromo.md`.
+- **Impacto:** downtime real estimado 10-15 min durante la ventana de mantenimiento (más servicios que
+  el precedente de sólo-Redis). Requiere backup completo de `lasfocas` antes de tocar nada y snapshot
+  de baneos activos por clave de negocio estable (no ID serial) para poder reaplicarlos post-restore.
