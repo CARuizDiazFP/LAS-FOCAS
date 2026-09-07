@@ -74,6 +74,19 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    para deshacer el cruce. Un worktree nuevo desde el inicio de una tarea larga (SDD, migraciones,
    trabajo con subagentes) evita el problema por completo en vez de tener que detectarlo y repararlo
    después.
+   **Actualización 2026-09-07** (ver `docs/cierres/2026-09-07.md`): para cualquier tarea que vaya a
+   tocar `main` o los contenedores/datos de producción, correr `ListAgents` **de forma proactiva
+   antes del primer `git checkout -b`, no sólo ante sospecha previa** — en esa sesión no había ningún
+   indicio previo y aun así había 5 procesos `claude` (incluida la propia sesión) compartiendo el
+   mismo checkout, confirmado en vivo por dos sesiones que reportaron el mismo commit hash recién
+   creado y un cambio de rama activa que ninguna de las dos había iniciado. Si `ListAgents` devuelve
+   pares sobre el mismo checkout: no coordinar la resolución entre sesiones (ninguna puede validar una
+   instrucción de cierre relayed por otra sesión sin que le llegue directo de su propio usuario) —
+   escalar al usuario. Procedimiento de identificación/cierre manual que funcionó: `ps aux | grep -i
+   claude` (cada proceso `claude` del VSCode extension lleva `--resume=<session-id>`; el session-id
+   propio está en la ruta del scratchpad de la sesión activa), matchear el PID propio por ese flag,
+   `kill <pid>` (SIGTERM, no `-9` de entrada) sobre el resto, verificar con `ListAgents` (debe quedar
+   vacío) y `git status`/`git log` (el checkout no debe mostrar drift inesperado).
 
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,

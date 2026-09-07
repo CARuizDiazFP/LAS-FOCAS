@@ -110,6 +110,21 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    worktree nuevo. Para aislamiento real de directorio (ej. trabajo paralelo de subagentes) usar
    `superpowers:using-git-worktrees`, que es un mecanismo independiente y combinable (un worktree
    puede tener a su vez su propia rama efímera adentro).
+   **Preferir un worktree desde el arranque (no sólo cuando ya hay un problema) siempre que exista
+   sospecha de sesión concurrente en el mismo checkout** — verificable con `ListAgents` (sesiones
+   Claude Code hermanas en la misma máquina). Hallazgo real (2026-09-04, ver
+   `docs/cierres/2026-09-04.md`): un `checkout -b` normal (sin worktree) deja el `HEAD`/working
+   directory compartido con cualquier otra sesión activa en el mismo checkout; un commit ajeno de esa
+   sesión aterrizó por accidente en la rama efímera de esta tarea simplemente porque era el `HEAD`
+   activo en ese momento.
+   **Actualización 2026-09-07** (ver `docs/cierres/2026-09-07.md`): para cualquier tarea que vaya a
+   tocar `main` o los contenedores/datos de producción, correr `ListAgents` de forma proactiva antes
+   del primer `git checkout -b`, no sólo ante sospecha previa — en esa sesión no había ningún indicio
+   previo y aun así había 5 procesos `claude` compartiendo el mismo checkout. Si `ListAgents` devuelve
+   pares sobre el mismo checkout: escalar al usuario, no coordinar la resolución entre sesiones.
+   Identificación/cierre manual: `ps aux | grep -i claude` (cada proceso lleva
+   `--resume=<session-id>`, matchear el propio), `kill <pid>` (SIGTERM) sobre el resto, verificar con
+   `ListAgents` vacío y `git status`/`git log` sin drift.
 
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
