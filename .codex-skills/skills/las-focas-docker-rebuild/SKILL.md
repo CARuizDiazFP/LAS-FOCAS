@@ -432,3 +432,9 @@ Hallazgo real (2026-09-07, sincronización main/prod): si una ventana combina (a
 reconciliación de dominio ejecutado ahí puede fallar en silencio si el código no conoce las
 columnas/tablas que el restore acaba de traer. Orden correcto: parar la app (dejar sólo `postgres`) →
 backup → restore → **rebuild + `up` completo con el código nuevo** → recién ahí reconciliar.
+
+Config dependiente de ambiente en tablas operativas (`app.config_servicios`: canal Slack, `workflow_id`)
+sobrevive a una copia de la base de dev a prod con los valores de ORIGEN (dev) — arranca sano, falla
+100% silencioso (ningún evento matchea el canal/workflow real, ni se loguea). Auditar y corregir esas
+filas + smoke test real end-to-end del canal externo ANTES de cerrar la ventana, nunca como pendiente
+diferido (hallazgo real 2026-09-07, listener de baneos Slack).

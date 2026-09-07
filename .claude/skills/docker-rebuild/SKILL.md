@@ -360,3 +360,20 @@ de forma sutil si ese código no conoce columnas/tablas que el restore acaba de 
 **Orden correcto:** parar la capa de aplicación (dejar sólo `postgres` arriba) → backup → restore del
 esquema/datos nuevo → **rebuild + `up` completo del stack con el código nuevo** → recién ahí correr
 cualquier script de reconciliación de dominio, ya con código y esquema coherentes entre sí.
+
+## Config operativa dependiente de ambiente no se resetea sola tras un restore
+
+Hallazgo real (2026-09-07, listener de baneos Slack en prod tras la sincronización main/prod): copiar
+la base de dev a prod trae también las filas de tablas de configuración operativa (`app.config_servicios`
+y similares) con los valores del AMBIENTE DE ORIGEN — canal de Slack de prueba, `workflow_id` de dev —
+en vez de los reales de producción. El proceso arranca sano (conexión Socket Mode viva, healthcheck
+OK) y el fallo es 100% silencioso: el canal/`workflow_id` real nunca matchea el configurado, así que
+ningún evento llega ni siquiera a loguearse a nivel INFO. Sin un smoke test real (un mensaje real a
+través del canal real), este tipo de bug pasa desapercibido indefinidamente — esto es exactamente lo
+que la sesión anterior había diferido como "smoke test pendiente".
+
+**Antes de dar por cerrada una ventana que copió la base de dev a prod:** auditar toda fila de
+configuración operativa con valores dependientes de ambiente (IDs de canal, `workflow_id`, URLs de
+webhook, etc. — no sólo `slack_ingreso_listener`) contra los valores reales de producción, y hacer el
+smoke test real end-to-end del canal externo (Slack u otro) ANTES de cerrar la ventana — nunca como
+pendiente diferido a la próxima sesión.
