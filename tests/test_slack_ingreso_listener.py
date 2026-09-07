@@ -804,6 +804,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             tipo_movimiento="Ingreso",
             tecnico_nombre="Rider Fernández",
             slack_user_id="U0AUB6CRE4A",
+            momento=None,
         )
         # La respuesta de Slack de siempre no debe verse afectada por el registro.
         client_mock.chat_postMessage.assert_called_once()
@@ -868,6 +869,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             tipo_movimiento="Egreso",
             tecnico_nombre="Rider Fernández",
             slack_user_id="U0AUB6CRE4A",
+            momento=None,
         )
         client_mock.chat_postMessage.assert_called_once()
 
@@ -1143,7 +1145,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
 
         mock_intento.assert_called_once_with(
-            session_mock, camara=camara_mock, botella=None, tecnico_nombre="Rider Fernández"
+            session_mock, camara=camara_mock, botella=None, tecnico_nombre="Rider Fernández", momento=None
         )
         mock_registrar.assert_not_called()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
@@ -1197,7 +1199,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
 
         mock_registrar.assert_called_once_with(
             session_mock, camara=camara_mock, botella=None, tipo_movimiento="Egreso",
-            tecnico_nombre="Rider Fernández", slack_user_id="U0AUB6CRE4A",
+            tecnico_nombre="Rider Fernández", slack_user_id="U0AUB6CRE4A", momento=None,
         )
         mock_intento.assert_not_called()
 
@@ -1419,13 +1421,17 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Podés continuar con el ingreso con normalidad", texto)
 
-    def test_listener_no_autoregistra_en_ambiguedad(self) -> None:
-        """Con AmbiguousSearchError, el listener NO escribe en DB (no auto-registro)."""
+    def test_listener_registra_ingreso_sin_match_en_ambiguedad(self) -> None:
+        """Regresión (2026-09-07, revierte el comportamiento anterior deliberadamente — ver
+        docs/decisiones.md): con AmbiguousSearchError, el listener AHORA sí crea un
+        `IngresoSinMatch` (igual que el caso "sin match"), para que el caso quede revalidable con
+        "Revalidar ingreso" en el mismo hilo. Antes no persistía nada en absoluto."""
         from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
 
         listener = self._make_listener()
         client_mock = MagicMock()
         session_mock = MagicMock()
+        texto_evento = "Cámara: Vicente Lopez"
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -1437,13 +1443,19 @@ class TestFiltroAmbiguedad(unittest.TestCase):
                   side_effect=AmbiguousSearchError("Vicente Lopez", 5, [])),
         ):
             listener._handle_message(
-                self._make_event(text="Cámara: Vicente Lopez"),
+                self._make_event(text=texto_evento),
                 client_mock,
             )
 
-        # No debe haber escritura (add/commit) en la sesión
-        session_mock.add.assert_not_called()
-        session_mock.commit.assert_not_called()
+        session_mock.add.assert_called_once()
+        caso = session_mock.add.call_args[0][0]
+        self.assertEqual(caso.texto_original, "Vicente Lopez")
+        self.assertEqual(caso.texto_mensaje, texto_evento)
+        self.assertEqual(caso.origen, "slack")
+        session_mock.commit.assert_called_once()
+
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
+        self.assertIn("Revalidar ingreso", texto_respuesta)
 
     def test_multibot_no_se_confunde_con_ambiguedad(self) -> None:
         """'Botella 1 y 2' es multi-bot, no ambigüedad — se procesan como dos cámaras."""
@@ -2667,6 +2679,322 @@ class TestSeguimientoEmpalme(unittest.TestCase):
         session_mock.query.assert_not_called()
         mock_resolver.assert_not_called()
         mock_extraer.assert_called_once()
+
+
+# ─── Tests del regex de "Revalidar ingreso" ─────────────────────────────────────
+
+
+class TestRegexRevalidarIngreso(unittest.TestCase):
+    """Prueba directa de `_RE_REVALIDAR_INGRESO` (2026-09-07)."""
+
+    def setUp(self) -> None:
+        from modules.slack_baneo_notifier.listener import _RE_REVALIDAR_INGRESO
+        self.regex = _RE_REVALIDAR_INGRESO
+
+    def test_matchea_frase_exacta(self) -> None:
+        self.assertIsNotNone(self.regex.match("Revalidar ingreso"))
+
+    def test_matchea_case_insensitive_y_espacios_extra(self) -> None:
+        self.assertIsNotNone(self.regex.match("  REVALIDAR   ingreso  "))
+        self.assertIsNotNone(self.regex.match("revalidar Ingreso"))
+
+    def test_no_matchea_solo_una_palabra(self) -> None:
+        self.assertIsNone(self.regex.match("Revalidar"))
+        self.assertIsNone(self.regex.match("ingreso"))
+
+    def test_no_matchea_frase_con_palabras_de_mas(self) -> None:
+        self.assertIsNone(self.regex.match("Revalidar el ingreso"))
+        self.assertIsNone(self.regex.match("necesito revalidar ingreso urgente"))
+
+
+# ─── Tests del mecanismo "Revalidar ingreso" ────────────────────────────────────
+
+
+class TestRevalidacionIngreso(unittest.TestCase):
+    """Prueba `_procesar_revalidacion_ingreso` / la integración en `_handle_message` (2026-09-07):
+    respuesta en el hilo de un caso `IngresoSinMatch` pendiente (sin match o ambiguo) que reintenta
+    la búsqueda y, si resuelve, registra el movimiento real preservando el horario original."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event_reply(
+        self, text: str = "Revalidar ingreso", thread_ts: str = "1111.000001",
+        ts: str = "2222.000002", channel: str = "C123",
+    ) -> dict:
+        return {"text": text, "channel": channel, "ts": ts, "thread_ts": thread_ts}
+
+    def _query_side_effect(self, caso_mock: Any) -> Any:
+        from db.models.infra import IngresoSinMatch
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso_mock
+            return q
+
+        return _side_effect
+
+    def _make_caso(
+        self, *, texto_mensaje: str | None = "*Nombre: ...*\ntexto", resuelto_empalme: bool = False,
+        resuelto_revalidacion: bool = False, created_at: Any = None,
+    ) -> Any:
+        from datetime import datetime, timezone
+
+        caso = MagicMock()
+        caso.id = 5
+        caso.texto_mensaje = texto_mensaje
+        caso.resuelto_via_empalme = resuelto_empalme
+        caso.resuelto_via_revalidacion = resuelto_revalidacion
+        caso.ingreso_id = None
+        caso.created_at = created_at or datetime(2026, 9, 7, 22, 22, 8, tzinfo=timezone.utc)
+        return caso
+
+    def test_sin_fila_pendiente_responde_y_corta(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        session_mock.query.side_effect = self._query_side_effect(None)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara") as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+            mock_extraer.assert_not_called()  # cortó antes de llegar al flujo normal
+
+        session_mock.add.assert_not_called()
+        session_mock.commit.assert_not_called()
+        kwargs = client_mock.chat_postMessage.call_args.kwargs
+        self.assertIn("No encontré", kwargs["text"])
+
+    def test_caso_ya_resuelto_via_empalme_no_reprocesa(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso(resuelto_empalme=True)
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        mock_buscar.assert_not_called()
+        session_mock.commit.assert_not_called()
+        self.assertIn("ya fue validado", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_caso_ya_resuelto_via_revalidacion_no_reprocesa(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso(resuelto_revalidacion=True)
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        mock_buscar.assert_not_called()
+        self.assertIn("ya fue validado", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_sin_texto_mensaje_guardado_no_puede_revalidar(self) -> None:
+        """Caso creado antes de 2026-09-07 (sin `texto_mensaje`) — no hay forma de re-extraer nada,
+        no se marca resuelto (para que un humano lo revise vía `revisado`, no se pierde)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso(texto_mensaje=None)
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        mock_buscar.assert_not_called()
+        self.assertFalse(caso_mock.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+
+    def test_sigue_ambigua_no_marca_resuelto(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso()
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="e:"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                side_effect=AmbiguousSearchError("e:", 0, []),
+            ),
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        self.assertFalse(caso_mock.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        self.assertIn("sigue sin poder", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_sigue_sin_match_no_marca_resuelto(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso()
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+        resultado_sin_match = ResultadoBusquedaExtendida(
+            camara=None, nombre_norm="algo", fuente=None, botella=None
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Algo"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=resultado_sin_match,
+            ),
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        self.assertFalse(caso_mock.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        self.assertIn("todavía no matchea", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_resuelve_y_registra_movimiento_con_horario_original(self) -> None:
+        """Caso feliz: la revalidación matchea una única cámara y el mensaje original traía
+        'Ingreso o Egreso' — se registra el movimiento real con `momento=caso.created_at` (el
+        horario del intento original, no el de la revalidación), se enlaza `ingreso_id` y se marca
+        `resuelto_via_revalidacion=True`."""
+        from datetime import datetime, timezone
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        momento_original = datetime(2026, 9, 7, 22, 22, 8, tzinfo=timezone.utc)
+        caso_mock = self._make_caso(
+            texto_mensaje="*Nombre: Nodo/Camara/botella*\nCra Curupayti 2951 CF\n*Ingreso o Egreso*\nEgreso\n",
+            created_at=momento_original,
+        )
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        camara_mock = self._make_camara(id_=42, nombre="Cra Curupayti 2951 CF")
+        camara_mock.estado = CamaraEstado.LIBRE
+        resultado_ok = ResultadoBusquedaExtendida(
+            camara=camara_mock, nombre_norm="cra curupayti 2951", fuente="camara", botella=None
+        )
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=42, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False,
+            inconsistente=False, incidentes_activos=[], ticket_baneo=None,
+        )
+        ingreso_creado = MagicMock()
+        ingreso_creado.id = 777
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=resultado_ok,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso",
+                return_value=ingreso_creado,
+            ) as mock_registrar,
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        mock_registrar.assert_called_once_with(
+            session_mock,
+            camara=camara_mock,
+            botella=None,
+            tipo_movimiento="Egreso",
+            tecnico_nombre="Rider Fernández",
+            slack_user_id=None,
+            momento=momento_original,
+        )
+        self.assertTrue(caso_mock.resuelto_via_revalidacion)
+        self.assertEqual(caso_mock.ingreso_id, 777)
+        session_mock.commit.assert_called_once()
+
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("✅", texto_respuesta)
+        self.assertIn("Cra Curupayti 2951 CF", texto_respuesta)
+
+    def test_resuelve_pero_sin_tipo_no_registra_movimiento(self) -> None:
+        """La cámara matchea pero el mensaje original no traía 'Ingreso o Egreso' — se marca
+        resuelto igual (la identificación de la cámara sí se logró) pero no se crea ningún
+        `Ingreso`, y la respuesta lo deja explícito."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso(texto_mensaje="*Nombre: Nodo/Camara/botella*\nCra Curupayti 2951 CF\n")
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        camara_mock = self._make_camara(id_=42, nombre="Cra Curupayti 2951 CF")
+        camara_mock.estado = CamaraEstado.LIBRE
+        resultado_ok = ResultadoBusquedaExtendida(
+            camara=camara_mock, nombre_norm="cra curupayti 2951", fuente="camara", botella=None
+        )
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=42, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False,
+            inconsistente=False, incidentes_activos=[], ticket_baneo=None,
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=resultado_ok,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        mock_registrar.assert_not_called()
+        self.assertTrue(caso_mock.resuelto_via_revalidacion)
+        self.assertIsNone(caso_mock.ingreso_id)
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("no se registró ningún movimiento", texto_respuesta)
+
+    def _make_camara(self, id_: int, nombre: str) -> MagicMock:
+        cam = MagicMock()
+        cam.id = id_
+        cam.nombre = nombre
+        return cam
 
 
 if __name__ == "__main__":

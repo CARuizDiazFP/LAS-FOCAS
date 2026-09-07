@@ -27,6 +27,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Optional
 
 from core.services.camara_estado_service import (
@@ -84,6 +85,13 @@ _RE_NODO = re.compile(r"\bnodos?\b", re.IGNORECASE)
 # evita falsos positivos con respuestas cortas tipo "sí"/"ok"/números de piso — un `fusion_n_id`
 # real de Cromo tiene muchos más dígitos (ver ejemplos en `core/services/cromo/empalmes.py`).
 _RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IGNORECASE)
+
+# Detecta el trigger "Revalidar ingreso" como respuesta en el hilo de un caso `IngresoSinMatch`
+# pendiente (sin match o ambiguo/genérico) — reintenta la búsqueda con el código ACTUAL contra el
+# `texto_mensaje` guardado, preservando el horario original del intento (ver
+# `_procesar_revalidacion_ingreso`). Anclado igual que `_RE_SEGUIMIENTO_EMPALME` para no interpretar
+# la frase si aparece como parte de otro texto más largo.
+_RE_REVALIDAR_INGRESO = re.compile(r"^\s*revalidar\s+ingreso\s*$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -216,6 +224,7 @@ class IngresoListener:
                 origen="slack",
                 contexto=channel or None,
                 thread_ts=thread_ts,
+                texto_mensaje=texto_mensaje,
             )
             session.add(caso)
             session.commit()
@@ -229,7 +238,8 @@ class IngresoListener:
                 "quedó registrada para revisión manual (puede ser un error de tipeo o una "
                 "diferencia de formato). *Podés continuar con el ingreso con normalidad.* "
                 "Si conocés el ID de empalme más cercano, respondé en este mismo hilo sólo "
-                "con el número."
+                "con el número. Si más adelante se corrige el nombre en el inventario, "
+                "respondé *\"Revalidar ingreso\"* en este hilo para reintentarlo."
             ).format(nombre_buscado)
 
         resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
@@ -239,11 +249,24 @@ class IngresoListener:
         return resultado_acceso.texto
 
     def _registrar_movimiento_si_corresponde(
-        self, resultado: Any, texto_mensaje: str, session: Any, client: Any, *, bloqueado: bool
-    ) -> None:
+        self,
+        resultado: Any,
+        texto_mensaje: str,
+        session: Any,
+        client: Any,
+        *,
+        bloqueado: bool,
+        momento: datetime | None = None,
+    ) -> Any:
         """Escribe Ingreso/Egreso/Intento bloqueado en DB si el mensaje trae el campo 'Ingreso o
         Egreso' parseable. Nunca lanza — cualquier excepción se loguea y se ignora, la respuesta de
-        Slack no debe bloquearse porque falle la escritura en DB.
+        Slack no debe bloquearse porque falle la escritura en DB. Retorna la fila `Ingreso` creada/
+        actualizada, o `None` si no se registró nada (tipo no parseable, o falló la escritura) —
+        usado por `_procesar_revalidacion_ingreso` para enlazar `IngresoSinMatch.ingreso_id`.
+
+        `momento` (opcional): horario a usar en vez de "ahora" — ver `registrar_movimiento_ingreso`.
+        Sólo lo pasa `_procesar_revalidacion_ingreso`; el flujo en vivo normal no lo usa (queda en
+        `None`, cada servicio usa `datetime.now(timezone.utc)` como siempre).
 
         Un movimiento "Ingreso" sobre un grupo bloqueado (`bloqueado=True`, calculado por
         `_evaluar_estado_acceso_camara` vía `get_camara_estado_contexto`) se registra como
@@ -266,25 +289,26 @@ class IngresoListener:
         nunca romper la respuesta de Slack ni dejar la `session` en estado inconsistente."""
         tipo = extraer_tipo_movimiento(texto_mensaje)
         if tipo is None:
-            return
+            return None
         slack_user_id = extraer_slack_user_id_autorizacion(texto_mensaje)
         try:
             tecnico_nombre = resolver_nombre_tecnico(client, slack_user_id)
             if bloqueado and tipo == "Ingreso":
-                registrar_intento_bloqueado(
+                return registrar_intento_bloqueado(
                     session,
                     camara=resultado.camara,
                     botella=resultado.botella,
                     tecnico_nombre=tecnico_nombre,
+                    momento=momento,
                 )
-                return
-            registrar_movimiento_ingreso(
+            return registrar_movimiento_ingreso(
                 session,
                 camara=resultado.camara,
                 botella=resultado.botella,
                 tipo_movimiento=tipo,
                 tecnico_nombre=tecnico_nombre,
                 slack_user_id=slack_user_id,
+                momento=momento,
             )
         except Exception as exc:
             try:
@@ -469,6 +493,143 @@ class IngresoListener:
         )
         return True
 
+    def _procesar_revalidacion_ingreso(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+    ) -> bool:
+        """Detecta y procesa el trigger "Revalidar ingreso" en el hilo de un caso `IngresoSinMatch`
+        (sin match o ambiguo/genérico) — reintenta la búsqueda con el código ACTUAL contra el
+        `texto_mensaje` completo guardado en el intento original, para recuperar trazabilidad de
+        matcheos que fallaron por un gap del regex/normalización que ya se corrigió, y para poder
+        probar en vivo mejoras al matcheo de ingresos a botellas/cámaras.
+
+        Si ahora resuelve a una única cámara: registra el `Ingreso`/`Egreso` real con
+        `fecha_inicio`/`fecha_fin` = `caso.created_at` (el horario REAL del intento original, nunca
+        el momento en que se corre la revalidación) y enlaza `caso.ingreso_id` para trazabilidad.
+
+        Devuelve `True` siempre que el texto matchee el trigger (el caller corta ahí, sin caer al
+        flujo normal — que interpretaría "Revalidar ingreso" como un nombre de cámara real) y
+        `False` sólo cuando el texto no matchea el trigger en absoluto.
+        """
+        if not _RE_REVALIDAR_INGRESO.match(texto):
+            return False
+
+        from db.models.infra import IngresoSinMatch
+
+        caso = (
+            session.query(IngresoSinMatch)
+            .filter(IngresoSinMatch.thread_ts == thread_ts_evento)
+            .order_by(IngresoSinMatch.id.desc())
+            .first()
+        )
+        if caso is None:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text="No encontré ningún intento de ingreso pendiente de revisión en este hilo para revalidar.",
+                mrkdwn=True,
+            )
+            return True
+
+        if caso.resuelto_via_empalme or caso.resuelto_via_revalidacion:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text="Este caso ya fue validado anteriormente — no hace falta revalidarlo de nuevo.",
+                mrkdwn=True,
+            )
+            return True
+
+        logger.info(
+            "Revalidación de ingreso solicitada en hilo %s (caso IngresoSinMatch id=%s)",
+            thread_ts_evento,
+            caso.id,
+        )
+
+        if not caso.texto_mensaje:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    "⚠️ Este caso es anterior a que se empezara a guardar el mensaje completo — "
+                    "no puedo revalidarlo automáticamente."
+                ),
+                mrkdwn=True,
+            )
+            return True
+
+        nombre_raw = extraer_nombre_camara(caso.texto_mensaje)
+        nombre_buscado = limpiar_ruido_operativo(nombre_raw)
+
+        try:
+            resultado = buscar_camara_o_botella_cromo(nombre_buscado, session)
+        except AmbiguousSearchError as exc:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    f"⚠️ Reintenté la búsqueda de *'{exc.nombre_raw}'* pero sigue sin poder "
+                    "identificarse una única cámara. Podés responder *\"Revalidar ingreso\"* de "
+                    "nuevo más adelante."
+                ),
+                mrkdwn=True,
+            )
+            return True
+
+        if resultado.camara is None:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    f"⚠️ Reintenté la búsqueda de *'{nombre_buscado}'* pero todavía no matchea "
+                    "ninguna cámara del inventario. Podés responder *\"Revalidar ingreso\"* de "
+                    "nuevo más adelante."
+                ),
+                mrkdwn=True,
+            )
+            return True
+
+        resultado_acceso = self._evaluar_estado_acceso_camara(resultado.camara, session)
+        ingreso = self._registrar_movimiento_si_corresponde(
+            resultado,
+            caso.texto_mensaje,
+            session,
+            client,
+            bloqueado=resultado_acceso.bloqueado,
+            momento=caso.created_at,
+        )
+
+        caso.resuelto_via_revalidacion = True
+        if ingreso is not None:
+            caso.ingreso_id = ingreso.id
+        session.commit()
+
+        if ingreso is not None:
+            respuesta = (
+                f"✅ Revalidado — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
+                f"el movimiento con el horario original ({caso.created_at:%d/%m/%Y %H:%M}).\n"
+                f"{resultado_acceso.texto}"
+            )
+        else:
+            respuesta = (
+                f"✅ Revalidado — *{resultado.camara.nombre}* matcheó correctamente, pero el "
+                "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
+                "ningún movimiento.\n"
+                f"{resultado_acceso.texto}"
+            )
+
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=respuesta,
+            mrkdwn=True,
+        )
+        return True
+
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
         # Ignorar ediciones para no procesar dos veces el mismo ingreso
@@ -518,6 +679,11 @@ class IngresoListener:
             # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica.
             if event_thread_ts and event_thread_ts != event_ts:
                 if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
+                    return
+                # Mismo criterio que el seguimiento de empalme (evaluado antes del filtro
+                # `solo_workflows`, ver comentario arriba): "Revalidar ingreso" es un mensaje
+                # manual de una persona, nunca lo genera el Workflow de Slack.
+                if self._procesar_revalidacion_ingreso(texto, event_thread_ts, session, client, channel):
                     return
 
             # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
@@ -587,13 +753,32 @@ class IngresoListener:
                 vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
                 candidatos_texto = f"\nCandidatos:\n{vinetas}"
 
+            # Desde 2026-09-07: a diferencia del caso "sin match" (que ya crea una fila arriba en
+            # `_construir_respuesta_camara`), el caso ambiguo/genérico históricamente no persistía
+            # nada — quedaba sin ningún rastro auditable ni forma de revalidarlo más adelante (ver
+            # `docs/decisiones.md` entrada 2026-09-07). Ahora también crea un `IngresoSinMatch`,
+            # revalidable con la frase "Revalidar ingreso" en este mismo hilo.
+            from db.models.infra import IngresoSinMatch
+
+            caso = IngresoSinMatch(
+                texto_original=exc.nombre_raw,
+                origen="slack",
+                contexto=channel or None,
+                thread_ts=thread_ts,
+                texto_mensaje=texto,
+            )
+            session.add(caso)
+            session.commit()
+
             if exc.cantidad == 0:
                 aviso = (
                     f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
                     "para identificar una cámara. Por favor, especificá la dirección "
                     "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
                     f"{candidatos_texto}\n"
-                    "*Podés continuar con el ingreso con normalidad.*"
+                    "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
+                    "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
+                    "para reintentarlo."
                 )
             else:
                 aviso = (
@@ -601,13 +786,16 @@ class IngresoListener:
                     f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
                     "la dirección o el número exacto."
                     f"{candidatos_texto}\n"
-                    "*Podés continuar con el ingreso con normalidad.*"
+                    "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
+                    "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
+                    "para reintentarlo."
                 )
             logger.info(
-                "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s",
+                "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s — registrado IngresoSinMatch id=%s",
                 exc.nombre_raw,
                 exc.cantidad,
                 exc.candidatos,
+                caso.id,
             )
             client.chat_postMessage(
                 channel=channel,

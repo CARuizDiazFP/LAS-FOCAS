@@ -52,6 +52,7 @@ def registrar_movimiento_ingreso(
     tipo_movimiento: str,  # "Ingreso" | "Egreso" (ya validado por el caller, no se revalida acá)
     tecnico_nombre: str | None,
     slack_user_id: str | None = None,
+    momento: datetime | None = None,
 ) -> Ingreso:
     """Persiste un movimiento de Ingreso o Egreso REAL de un técnico a `camara` (Cámara o Botella ya
     resuelta) y comita la transacción antes de retornar. `tecnico_nombre` ya debe venir resuelto por
@@ -77,8 +78,13 @@ def registrar_movimiento_ingreso(
 
     Para un intento BLOQUEADO por baneo, usar `registrar_intento_bloqueado` — nunca este servicio con
     `tipo_movimiento="Ingreso"`.
+
+    `momento` (opcional): horario a usar en vez de "ahora" — para el mecanismo "Revalidar ingreso"
+    (`modules/slack_baneo_notifier/listener.py`), que reintenta un caso `IngresoSinMatch` pendiente
+    mucho después del intento original y necesita preservar el horario REAL en que el técnico entró/
+    salió, no el momento en que se corrió la revalidación.
     """
-    ahora = datetime.now(timezone.utc)
+    ahora = momento if momento is not None else datetime.now(timezone.utc)
     cromo_botella_id = botella.n_id if botella is not None else None
 
     if tipo_movimiento == "Ingreso":
@@ -132,6 +138,7 @@ def registrar_intento_bloqueado(
     camara: Camara,
     botella: CromoBotella | None,
     tecnico_nombre: str | None,
+    momento: datetime | None = None,
 ) -> Ingreso:
     """Persiste un intento de Ingreso BLOQUEADO por baneo (de la Cámara o de una Botella del mismo
     grupo — ver `core/services/camara_estado_service.py::get_camara_estado_contexto`).
@@ -144,8 +151,11 @@ def registrar_intento_bloqueado(
 
     El caller (`IngresoListener._registrar_movimiento_si_corresponde`) sólo invoca esto para
     movimientos de tipo "Ingreso" — un "Egreso" nunca se bloquea (salir de una cámara que pasó a
-    estar baneada durante la visita sigue permitido, no hay razón operativa para impedirlo)."""
-    ahora = datetime.now(timezone.utc)
+    estar baneada durante la visita sigue permitido, no hay razón operativa para impedirlo).
+
+    `momento` (opcional): ver `registrar_movimiento_ingreso` — mismo propósito para "Revalidar
+    ingreso"."""
+    ahora = momento if momento is not None else datetime.now(timezone.utc)
     intento = Ingreso(
         camara_id=camara.id,
         cromo_botella_id=botella.n_id if botella is not None else None,

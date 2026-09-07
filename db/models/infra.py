@@ -597,6 +597,19 @@ class IngresoSinMatch(Base):
     respuesta de seguimiento numérica en ese hilo, resuelve la Botella dueña de esa fusión
     (`core/services/cromo/empalme_resolucion.py`) y marca `resuelto_via_empalme=True` para no
     reprocesar el mismo hilo dos veces — tanto si la resolución tuvo éxito como si no.
+
+    `texto_mensaje`/`resuelto_via_revalidacion`/`ingreso_id` (desde 2026-09-07) sostienen el
+    mecanismo de "Revalidar ingreso": el técnico u operador responde esa frase en el mismo hilo para
+    reintentar la búsqueda con el código ACTUAL (no el de cuando falló el intento original) contra el
+    mensaje completo guardado en `texto_mensaje` — necesario porque `texto_original` sólo guarda el
+    nombre ya recortado, sin los campos "Ingreso o Egreso"/"Persona que solicito La Autorizacion" que
+    hacen falta para completar el registro real. Desde esta fecha, el caso "ambiguo/genérico"
+    (`AmbiguousSearchError`, antes sin ningún rastro persistido — ver `docs/decisiones.md` entrada
+    2026-09-07) también crea esta fila, para que también sea revalidable. Si la revalidación
+    encuentra una única cámara, `modules/slack_baneo_notifier/listener.py` registra el `Ingreso` real
+    con `fecha_inicio`/`fecha_fin` = `created_at` de ESTA fila (el momento real del intento
+    original, nunca el momento en que se corrió la revalidación), enlaza `ingreso_id` a la fila
+    creada (trazabilidad) y marca `resuelto_via_revalidacion=True`.
     """
 
     __tablename__ = "ingresos_sin_match"
@@ -609,12 +622,23 @@ class IngresoSinMatch(Base):
     revisado = Column(Boolean, nullable=False, default=False)
     thread_ts = Column(String(32), nullable=True)  # ts del hilo Slack — habilita el seguimiento por empalme
     resuelto_via_empalme = Column(Boolean, nullable=False, default=False)
+    # Mensaje completo del evento de Slack (no sólo el nombre recortado en `texto_original`) —
+    # habilita re-extraer tipo/persona/nombre con el código ACTUAL al revalidar. `None` en filas
+    # creadas antes de 2026-09-07 — esos casos históricos no son revalidables automáticamente.
+    texto_mensaje = Column(Text, nullable=True)
+    resuelto_via_revalidacion = Column(Boolean, nullable=False, default=False)
+    # Vínculo de trazabilidad al `Ingreso` real creado cuando "Revalidar ingreso" resuelve el caso.
+    ingreso_id = Column(
+        Integer, ForeignKey("app.ingresos.id", ondelete="SET NULL"), nullable=True
+    )
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         index=True,
     )
+
+    ingreso = relationship("Ingreso")
 
     def __repr__(self) -> str:
         return f"<IngresoSinMatch id={self.id} origen='{self.origen}' texto_original='{self.texto_original}'>"

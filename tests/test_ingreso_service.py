@@ -81,6 +81,26 @@ def test_ingreso_con_botella_crea_fila_con_cromo_botella_id_poblado() -> None:
     session.query.assert_not_called()
 
 
+def test_ingreso_con_momento_explicito_usa_ese_horario_no_ahora() -> None:
+    """Para 'Revalidar ingreso' (2026-09-07): al revalidar un caso pendiente, `fecha_inicio` debe
+    ser el horario ORIGINAL del intento (guardado en `IngresoSinMatch.created_at`), no el momento
+    en que se corre la revalidación."""
+    session = MagicMock()
+    camara = _camara()
+    momento_original = datetime(2026, 9, 7, 22, 22, 8, tzinfo=timezone.utc)
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=None,
+        tipo_movimiento="Ingreso",
+        tecnico_nombre="Rider Fernández",
+        momento=momento_original,
+    )
+
+    assert resultado.fecha_inicio == momento_original
+
+
 def test_ingreso_sin_botella_deja_cromo_botella_id_en_none() -> None:
     session = MagicMock()
     camara = _camara()
@@ -163,6 +183,24 @@ def test_egreso_sin_ingreso_abierto_matching_crea_fila_nueva_con_fecha_inicio_no
     _assert_filtro_null_safe(filtros, "fecha_fin", None)
 
 
+def test_egreso_con_momento_explicito_cierra_con_ese_horario() -> None:
+    session = MagicMock()
+    camara = _camara()
+    ingreso_abierto = Ingreso(
+        id=1, camara_id=10, cromo_botella_id=None, tecnico_id="Rider Fernández",
+        tipo=IngresoTipo.INGRESO, fecha_inicio=datetime(2026, 8, 30, tzinfo=timezone.utc), fecha_fin=None,
+    )
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = ingreso_abierto
+    momento_original = datetime(2026, 9, 7, 22, 25, 0, tzinfo=timezone.utc)
+
+    resultado = registrar_movimiento_ingreso(
+        session, camara=camara, botella=None, tipo_movimiento="Egreso",
+        tecnico_nombre="Rider Fernández", momento=momento_original,
+    )
+
+    assert resultado.fecha_fin == momento_original
+
+
 # --- (d) Egreso sin tecnico_nombre no debe cerrar el ingreso de un técnico real ----------------------
 
 
@@ -206,6 +244,18 @@ def test_registrar_intento_bloqueado_crea_fila_tipo_intento_sin_egreso() -> None
     session.commit.assert_called_once()
     # Nunca busca reabrir/cerrar una fila existente — un intento bloqueado es siempre una fila nueva.
     session.query.assert_not_called()
+
+
+def test_registrar_intento_bloqueado_con_momento_explicito_usa_ese_horario() -> None:
+    session = MagicMock()
+    camara = _camara()
+    momento_original = datetime(2026, 9, 7, 22, 22, 8, tzinfo=timezone.utc)
+
+    resultado = registrar_intento_bloqueado(
+        session, camara=camara, botella=None, tecnico_nombre="Rider Fernández", momento=momento_original
+    )
+
+    assert resultado.fecha_inicio == momento_original
 
 
 def test_registrar_intento_bloqueado_sin_botella_deja_cromo_botella_id_en_none() -> None:
