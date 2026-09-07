@@ -66,6 +66,8 @@ services:
       - smtp_password_v1
       - slack_bot_token_v1
       - slack_app_token_v1
+      - api_prov_user_v1
+      - api_prov_pass_v1
     depends_on:
       postgres:
         condition: service_healthy
@@ -149,6 +151,7 @@ services:
       - slack_bot_token_v1
       - slack_app_token_v1
       - redis_password_v1
+      - cromo_password_v1
     depends_on:
       - api
       - nlp_intent
@@ -276,6 +279,43 @@ services:
     networks:
       - lasfocas_net
 
+  cromo_worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/cromo_worker.Dockerfile
+    container_name: lasfocas-cromo-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - cromo_password_v1
+      - redis_password_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8096"
+    volumes:
+      - ../Logs:/app/Logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_net
+
   botellas_recalculo_worker:
     build:
       context: ..
@@ -387,3 +427,9 @@ secrets:
     file: ../.secrets/pgadmin_password_v1.txt
   redis_password_v1:
     file: ../.secrets/redis_password_v1.txt
+  cromo_password_v1:
+    file: ../.secrets/cromo_password_v1.txt
+  api_prov_user_v1:
+    file: ../.secrets/api_prov_user_v1.txt
+  api_prov_pass_v1:
+    file: ../.secrets/api_prov_pass_v1.txt
