@@ -433,6 +433,50 @@ class CromoBotellaAlias(Base):
         return f"<CromoBotellaAlias id_cromo_origen={self.id_cromo_origen} accion='{self.accion}'>"
 
 
+class CromoServicioOdfOverride(Base):
+    """Asociación manual "escudo" de un Servicio sin ODF resuelta automáticamente a su ODF real
+    en Cromo — Tarea 1 del gestor "Servicios sin ODF". Un operador confirma a mano qué ODF (y
+    opcionalmente qué posición de conector/pelo específico) le corresponde a un Servicio que el
+    detector automático (tareas siguientes) no pudo resolver por sí solo.
+
+    `servicio_id` es FK DURA a `app.servicios.id` (`ondelete="CASCADE"`) — a diferencia del resto
+    de las referencias cruzadas de Cromo, acá sí corresponde integridad referencial real porque
+    `app.servicios` es un maestro propio de este repo, no un objeto de Cromo. `odf_n_id`/
+    `pelo_n_id` siguen el criterio "sin FK dura" ya establecido para todo lo que referencia a
+    Cromo (ver docstrings de `CromoCable`/`CromoBotellaAlias`): Cromo puede reingerir/renumerar, y
+    este repo no debe bloquear un INSERT acá por eso. `pelo_n_id` es nullable a propósito: `NULL`
+    significa "asociado a la ODF en general, sin pin a una posición física específica" —
+    limitación de alcance ya aceptada para esta primera iteración.
+
+    Sin `UNIQUE` en `servicio_id` a propósito: permite reasociar sin perder historial (cada fila
+    es un evento de asociación, no el estado actual único de un Servicio).
+
+    `categoria_causa`/`subcategoria`/`senal_direccion` son `Text` + `CHECK` (nunca ENUM Postgres,
+    mismo criterio ya usado en el resto del repo, ver `ck_cromo_botella_alias_accion_valida`):
+    agregar un valor nuevo es un `ALTER TABLE ... DROP/ADD CONSTRAINT`, no un `ALTER TYPE`
+    irreversible.
+    """
+
+    __tablename__ = "cromo_servicio_odf_override"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    odf_n_id = Column(BigInteger, nullable=False, index=True)  # referencia blanda a cromo_odfs.n_id
+    pelo_n_id = Column(BigInteger, nullable=True)  # referencia blanda a cromo_pelos.n_id; NULL = sin pin
+    categoria_causa = Column(Text, nullable=False)  # CHECK en la migración
+    subcategoria = Column(Text, nullable=True)  # CHECK en la migración
+    senal_direccion = Column(Text, nullable=True)  # CHECK en la migración
+    usuario = Column(String(128), nullable=False)
+    notas = Column(Text, nullable=True)
+    creado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+
+    def __repr__(self) -> str:
+        return f"<CromoServicioOdfOverride servicio_id={self.servicio_id} odf_n_id={self.odf_n_id}>"
+
+
 class CromoServicioMatch(Base):
     """Puente entre un pelo con servicio parseado (`at.61`) y el maestro `app.servicios`."""
 
