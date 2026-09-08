@@ -54,6 +54,13 @@ Los dos cambios sólo funcionan juntos, medido real contra `lasfocasdev-postgres
 Con ambos, el nodo pasa de `Seq Scan on servicios v2` (41M filas descartadas) a
 `Bitmap Heap Scan` con un `BitmapOr` de dos `Bitmap Index Scan on ix_servicios_alias_ids_gin`.
 
+Los ~11.6s de esa tabla son el estado INTERMEDIO, no el actual: después de este índice apareció un
+tercer cuello de botella (el `NOT EXISTS` contra la CTE `resueltos AS MATERIALIZED`, ~46M filas
+descartadas por `Join Filter`) y desarmarlo por De Morgan dejó la query en **~0.15s**. Ver la nota
+de performance de `core/services/cromo/servicios_sin_odf.py`. Este índice sigue siendo necesario:
+sin él la query vuelve a ~12s, y hay un test que lo verifica
+(`tests/test_cromo_servicios_sin_odf_real_db.py::test_plan_del_listado_usa_los_dos_indices_sin_seq_scan_ni_cte`).
+
 Índice completo (no parcial) a propósito: `alias_ids` es `NULL` en la mayoría de las filas y GIN ya
 no indexa filas nulas/vacías por sí mismo, así que un `WHERE alias_ids IS NOT NULL` no ahorraría
 nada y sólo agregaría una condición que el planner tendría que probar. Pesa 480 kB medido real.
