@@ -81,52 +81,66 @@ async def main(apply: bool, solo_ids: list[str] | None, limit: int | None) -> No
     errores = 0
     errores_ingesta = 0
 
+    total_candidatas = len(ids_candidatos)
     async with ProvClient() as cliente:
-        for servicio_id in ids_candidatos:
-            async with AsyncSessionLocal() as session:
-                stmt = (
-                    select(Servicio)
-                    .options(selectinload(Servicio.historial_ids), selectinload(Servicio.equipos_ultima_milla))
-                    .where(Servicio.id == servicio_id)
-                )
-                servicio = (await session.execute(stmt)).scalars().first()
-                if servicio is None:
-                    continue
-
-                numero_consulta = servicio.numero_primer_servicio or servicio.servicio_id
-                try:
-                    contexto = await cliente.obtener_contexto_servicio(numero_consulta)
-                except ProvServicioNoEncontradoError:
-                    no_encontrados += 1
-                    logger.warning("action=backfill_prov evento=no_encontrado numero=%s", numero_consulta)
-                    continue
-                except ProvClientError as exc:
-                    errores += 1
-                    logger.error(
-                        "action=backfill_prov evento=error_cliente numero=%s error=%s", numero_consulta, exc
+        for procesados, servicio_id in enumerate(ids_candidatos, start=1):
+            try:
+                async with AsyncSessionLocal() as session:
+                    stmt = (
+                        select(Servicio)
+                        .options(selectinload(Servicio.historial_ids), selectinload(Servicio.equipos_ultima_milla))
+                        .where(Servicio.id == servicio_id)
                     )
-                    continue
+                    servicio = (await session.execute(stmt)).scalars().first()
+                    if servicio is None:
+                        continue
 
-                # Catch-all deliberadamente ancho: una corrida masiva desatendida (miles de filas)
-                # no puede abortar entera por una sola fila anómala — un `IntegrityError` de
-                # cualquier origen, un dato inesperado en el payload, etc. Se descarta esa fila
-                # (rollback) y se sigue; el resumen final reporta cuántas cayeron acá.
-                try:
-                    await ingerir_contexto_prov(session, servicio, contexto)
-                    if apply:
-                        await session.commit()
-                    else:
+                    numero_consulta = servicio.numero_primer_servicio or servicio.servicio_id
+                    try:
+                        contexto = await cliente.obtener_contexto_servicio(numero_consulta)
+                    except ProvServicioNoEncontradoError:
+                        no_encontrados += 1
+                        logger.warning("action=backfill_prov evento=no_encontrado numero=%s", numero_consulta)
+                        continue
+                    except ProvClientError as exc:
+                        errores += 1
+                        logger.error(
+                            "action=backfill_prov evento=error_cliente numero=%s error=%s", numero_consulta, exc
+                        )
+                        continue
+
+                    # Catch-all deliberadamente ancho: una corrida masiva desatendida (miles de filas)
+                    # no puede abortar entera por una sola fila anómala — un `IntegrityError` de
+                    # cualquier origen, un dato inesperado en el payload, etc. Se descarta esa fila
+                    # (rollback) y se sigue; el resumen final reporta cuántas cayeron acá.
+                    try:
+                        await ingerir_contexto_prov(session, servicio, contexto)
+                        if apply:
+                            await session.commit()
+                        else:
+                            await session.rollback()
+                    except Exception:
+                        errores_ingesta += 1
                         await session.rollback()
-                except Exception:
-                    errores_ingesta += 1
-                    await session.rollback()
-                    logger.exception(
-                        "action=backfill_prov evento=error_ingesta numero=%s servicio_pk=%s",
-                        numero_consulta,
-                        servicio_id,
+                        logger.exception(
+                            "action=backfill_prov evento=error_ingesta numero=%s servicio_pk=%s",
+                            numero_consulta,
+                            servicio_id,
+                        )
+                        continue
+                    exitosos += 1
+            finally:
+                if procesados % 50 == 0 or procesados == total_candidatas:
+                    logger.info(
+                        "action=backfill_prov progreso=%d/%d exitosos=%d no_encontrados=%d errores=%d "
+                        "errores_ingesta=%d",
+                        procesados,
+                        total_candidatas,
+                        exitosos,
+                        no_encontrados,
+                        errores,
+                        errores_ingesta,
                     )
-                    continue
-                exitosos += 1
 
     elapsed = time.perf_counter() - inicio
     logger.info(
