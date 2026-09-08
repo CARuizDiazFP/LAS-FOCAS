@@ -61,6 +61,11 @@ _ABREVIATURAS: dict[str, str] = {
     r"\bsta\b": "santa",
     r"\bsto\b": "santo",
     r"\bcf\b": "",          # código de filial — ignorar al buscar
+    # "C.F." escrito con puntos: `_limpiar_puntuacion` ya convirtió cada punto en espacio, así que
+    # llega como los dos tokens sueltos "c f" y el patrón `\bcf\b` de arriba no lo alcanza. Sin esta
+    # entrada, "Cra X CF" y "Cra X C.F." normalizan distinto — medido contra prod el 2026-09-08: el
+    # detector de Cámaras duplicadas informaba 0 grupos cuando había 96 pares que sólo difieren en eso.
+    r"\bc\s+f\b": "",
 }
 
 # ── Diccionario de sinónimos (aplicado DESPUÉS de normalizar) ────────────
@@ -128,7 +133,7 @@ RE_BOT_SUFIJO = re.compile(r"\bbot\.?\s*[1-9](?!\d)\.?", re.IGNORECASE)
 _RE_RUIDO_OPERATIVO = re.compile(
     r"(?i)\s*[-/|]\s*"
     r"(?:cuadrilla|m[oó]vil|contratista|ticket|equipo|personal|guardia|"
-    r"inspector|t[eé]cnico|brigada|grupo|empresa)\b.*"
+    r"inspector|t[eé]cnico|brigada|grupo|empresa|cr[ií]tic[ao])\b.*"
 )
 
 

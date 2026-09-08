@@ -89,6 +89,46 @@ def test_normalizar_para_agrupar_extendido_colapsa_caso_real() -> None:
     assert a == b == "cra 14 de julio 240"
 
 
+def test_normalizar_para_agrupar_extendido_colapsa_cf_con_puntos() -> None:
+    """Bug real medido contra prod (2026-09-08): `_limpiar_puntuacion` convierte cada punto en
+    espacio, así que "C.F." quedaba como el par de tokens `c f` y la regla `\\bcf\\b -> ""` de
+    `_ABREVIATURAS` ya no matcheaba. Consecuencia: el detector de Cámaras duplicadas informaba 0
+    grupos cuando en prod había 96 pares que sólo difieren en cómo se escribió CF."""
+    a = normalizar_para_agrupar_extendido("Cra San Martin 1 CF")
+    b = normalizar_para_agrupar_extendido("Cra San Martin 1 C.F.")
+    c = normalizar_para_agrupar_extendido("Cra San Martin 1 C.F")
+    assert a == b == c == "cra san martin 1"
+
+
+def test_normalizar_para_agrupar_extendido_recorta_sufijo_de_ruido() -> None:
+    """Caso real en prod (2026-09-08): la Botella legado 1615 "…Bot 2" y la Cromo 6631710
+    "…Bot 2 - CRITICA" son la misma botella bajo la misma Cámara padre, pero el sufijo sobrevivía a
+    la normalización y el visor nunca las ofrecía como grupo. `limpiar_ruido_operativo` ya sabía
+    recortar sufijos tras separador, pero no participaba de esta normalización."""
+    a = normalizar_para_agrupar_extendido("Cra  Diag Norte 902 Esq Suipacha Bot 2")
+    b = normalizar_para_agrupar_extendido("Cra  Diag Norte 902 Esq Suipacha Bot 2 - CRITICA")
+    assert a == b
+
+    # El ruido operativo que la tabla ya conocía tampoco se recortaba acá.
+    c = normalizar_para_agrupar_extendido("Cra Test 100 - CUADRILLA DE HIDROCONS")
+    assert c == normalizar_para_agrupar_extendido("Cra Test 100")
+
+
+@pytest.mark.parametrize(
+    "nombre_a,nombre_b",
+    [
+        # Falso positivo medido en prod: recortar TODO lo que sigue a un guion colapsaría hermanas
+        # legítimamente distintas, porque el recorte se come el "Bot N" posterior.
+        ("B. Candelarias - Bot. 1 Calle 4 y Calle Principal", "B. Candelarias - Bot. 2 Calle 4 y Calle Principal"),
+        # El sufijo más frecuente tras guion es una LOCALIDAD, no ruido operativo — nunca recortarla.
+        ("Poste Lavalle - Campana", "Poste Lavalle"),
+        ("Cra Rotonda V Sarfield - Alto Avellaneda Bot 2", "Cra Rotonda V Sarfield - Alto Avellaneda"),
+    ],
+)
+def test_normalizar_para_agrupar_extendido_no_colapsa_sitios_distintos(nombre_a: str, nombre_b: str) -> None:
+    assert normalizar_para_agrupar_extendido(nombre_a) != normalizar_para_agrupar_extendido(nombre_b)
+
+
 def test_estado_mas_restrictivo_prioriza_baneada() -> None:
     resultado = estado_mas_restrictivo([CamaraEstado.LIBRE, CamaraEstado.BANEADA, CamaraEstado.OCUPADA])
     assert resultado == CamaraEstado.BANEADA
