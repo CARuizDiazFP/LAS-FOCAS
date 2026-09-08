@@ -7,15 +7,21 @@ Mismo motivo y guard que el resto de los tests `*_real_db.py` del módulo Cromo.
 
 Por qué no alcanza un mock acá:
 
-- El anti-join del listado usa `= ANY(text[])`, `alias_ids @> ARRAY[...]` y una CTE
-  `AS MATERIALIZED` — nada de eso se ejercita sin el driver y el planner reales.
+- El anti-join del listado usa `= ANY(text[])` y `alias_ids @> ARRAY[...]` — nada de eso se
+  ejercita sin el driver y el planner reales.
 - La exclusión por `app.cromo_servicio_odf_override` es el guardrail crítico del gestor (sin
   ella un Servicio recién asociado a mano seguiría apareciendo tras confirmarlo) y sólo se
   puede probar insertando la fila de verdad.
-- El test del plan (`EXPLAIN (FORMAT JSON)`) es una regresión automática de los DOS índices de
-  performance de este gestor: si alguien dropea `ix_cromo_odf_conectores_servicio_resuelto`
-  (migración `20260908_01`) o `ix_servicios_alias_ids_gin` (`20260908_02`), la query vuelve a
-  tardar ~24s en silencio y este test lo detecta.
+- `test_el_universo_es_identico_al_de_la_forma_original_sin_optimizar` compara el universo de la
+  query optimizada contra el de la forma ORIGINAL del plan (la del brief de la Tarea 1: `= ANY(...)`
+  en el self-join y un único `NOT EXISTS` sobre la CTE `resueltos AS MATERIALIZED`). La query pasó
+  por TRES rewrites de performance (~23.9s → ~0.15s) y este test es el que garantiza que ninguno
+  cambió la semántica de detección. Compara las dos formas entre sí, no contra un número fijo, así
+  que no se desactualiza cuando cambian los datos de dev.
+- El test del plan (`EXPLAIN (FORMAT JSON)`) es la regresión automática de los DOS índices y del
+  rewrite: si alguien dropea `ix_cromo_odf_conectores_servicio_resuelto` (migración `20260908_01`)
+  o `ix_servicios_alias_ids_gin` (`20260908_02`), o revierte cualquiera de los dos rewrites, la
+  query vuelve a tardar 12-24s en silencio y este test lo detecta.
 
 El escenario sintético reproduce el patrón REAL 618/1 de dev: el grupo
 `ElRincon842_Pilar`/`OLT2_Pilar` tiene 618 servicios y sólo 1 con ODF ya resuelta — que es
@@ -39,10 +45,13 @@ from sqlalchemy.pool import NullPool
 from core.services.cromo.servicios_sin_odf import (
     CATEGORIA_OLT_PON_COMPARTIDO,
     CATEGORIA_SIN_SENAL_PROV,
+    CATEGORIA_SWITCH_COMPARTIDO_REVISAR,
+    CATEGORIAS_POR_PRIORIDAD,
     SUBCATEGORIA_AUSENTE_RED_CROMO,
     SUBCATEGORIA_BAJA_LOGICA_HEREDADA,
     SUBCATEGORIA_PELO_SIN_CONECTOR_ODF,
     _SQL_LISTADO_SIN_ODF,
+    _SQL_LISTADO_SIN_ODF_CON_BUSQUEDA,
     listar_servicios_sin_odf,
     subcategoria_sin_senal_prov,
     sugerencia_odf_para_servicio,
@@ -403,6 +412,13 @@ async def test_listado_incluye_el_sin_odf_categorizado_y_excluye_al_hermano_resu
     # `subcategoria` NUNCA se calcula en el listado paginado (evita N+1).
     assert fila.subcategoria is None
 
+    # La prioridad de categorización NO oculta información: los DOS extremos se exponen enteros,
+    # en orden de `extremo`, aunque sólo el 2 haya ganado la categoría.
+    assert [(e.extremo, e.nodo, e.equipo) for e in fila.extremos] == [
+        (1, _NODO_GRUPO, _EQUIPO_SWITCH),
+        (2, _NODO_GRUPO, _EQUIPO_OLT),
+    ]
+
     # El hermano tiene ODF resuelta en `cromo_odf_conectores`: está fuera del universo.
     assert escenario_grupo_olt["hermano_id"] not in por_id
 
@@ -433,9 +449,11 @@ async def test_override_saca_al_servicio_del_listado(servicio_para_override):
     async with AsyncSessionLocal() as sesion:
         antes = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, offset=0)
     assert servicio_para_override in {i.id for i in antes.items}
-    assert antes.items[
-        [i.id for i in antes.items].index(servicio_para_override)
-    ].categoria_causa == CATEGORIA_SIN_SENAL_PROV
+    fila = antes.items[[i.id for i in antes.items].index(servicio_para_override)]
+    assert fila.categoria_causa == CATEGORIA_SIN_SENAL_PROV
+    # Sin fila PROV: `extremos` vacía (no `None`), y `nodo`/`equipo` en `None`.
+    assert fila.extremos == []
+    assert fila.nodo is None and fila.equipo is None
 
     with SessionLocal() as session:
         session.execute(
@@ -457,6 +475,207 @@ async def test_override_saca_al_servicio_del_listado(servicio_para_override):
 
     assert servicio_para_override not in {i.id for i in despues.items}
     assert despues.total == antes.total - 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Equivalencia semántica: la query optimizada vs. la forma original del plan
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Forma ORIGINAL, tal cual la especificó el brief de la Tarea 1, ANTES de los tres rewrites de
+# performance: `= ANY(v2.alias_ids)` en el self-join anti-ambigüedad y UN solo `NOT EXISTS` con tres
+# `OR` adentro sobre la CTE `resueltos AS MATERIALIZED`. Es la referencia semántica de "qué es un
+# Servicio sin ODF", no una query que se use en producción — acá vive sólo para compararle el
+# resultado a la optimizada. Tarda ~24s a propósito: es exactamente el costo que los rewrites
+# eliminaron.
+_SQL_UNIVERSO_FORMA_ORIGINAL = text(
+    """
+    WITH verificables AS (
+      SELECT s.id, s.servicio_id, s.numero_primer_servicio, s.alias_ids
+      FROM app.servicios s
+      WHERE s.estado_servicio ILIKE 'activo' AND s.es_verificable = true
+        AND s.numero_primer_servicio IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM app.servicios v2
+          WHERE v2.id <> s.id
+            AND (s.servicio_id = ANY(v2.alias_ids) OR s.numero_primer_servicio = ANY(v2.alias_ids))
+        )
+    ),
+    resueltos AS MATERIALIZED (
+      SELECT servicio_resuelto FROM app.cromo_odf_conectores WHERE servicio_resuelto IS NOT NULL
+    ),
+    con_override AS (
+      SELECT DISTINCT servicio_id FROM app.cromo_servicio_odf_override
+    )
+    SELECT v.id FROM verificables v
+    WHERE NOT EXISTS (
+      SELECT 1 FROM resueltos c
+      WHERE c.servicio_resuelto = v.servicio_id
+         OR c.servicio_resuelto = v.numero_primer_servicio
+         OR c.servicio_resuelto = ANY(v.alias_ids)
+    )
+    AND v.id NOT IN (SELECT servicio_id FROM con_override)
+    """
+)
+
+
+@pytest.mark.asyncio
+async def test_el_universo_es_identico_al_de_la_forma_original_sin_optimizar(escenario_grupo_olt):
+    """La query pasó por TRES rewrites de performance (~23.9s → ~0.15s):
+
+    1. índice btree parcial sobre `cromo_odf_conectores.servicio_resuelto` (migración `20260908_01`);
+    2. `= ANY(v2.alias_ids)` → `v2.alias_ids @> ARRAY[...]` + índice GIN (`20260908_02`);
+    3. la CTE `resueltos AS MATERIALIZED` + un `NOT EXISTS` con tres `OR` → tres `NOT EXISTS`
+       independientes por De Morgan.
+
+    Ninguno de los tres debe cambiar QUÉ servicios se consideran "sin ODF". Este test lo verifica
+    comparando los dos conjuntos de ids entre sí sobre los datos reales de dev (incluido el
+    escenario sintético del fixture, que aporta un Servicio que SÍ debe estar y un hermano resuelto
+    que NO), en vez de contra un número fijo — así no se desactualiza cuando cambian los datos.
+    """
+    async with AsyncSessionLocal() as sesion:
+        optimizada = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, offset=0)
+        referencia = (await sesion.execute(_SQL_UNIVERSO_FORMA_ORIGINAL)).all()
+
+    ids_optimizada = {i.id for i in optimizada.items}
+    ids_referencia = {fila.id for fila in referencia}
+
+    assert ids_optimizada == ids_referencia, (
+        f"la optimización cambió el universo: {len(ids_optimizada - ids_referencia)} de más, "
+        f"{len(ids_referencia - ids_optimizada)} de menos"
+    )
+    assert optimizada.total == len(ids_referencia)
+    # Sanity: el fixture garantiza que el conjunto no está vacío ni degenerado.
+    assert escenario_grupo_olt["sin_odf_id"] in ids_referencia
+    assert escenario_grupo_olt["hermano_id"] not in ids_referencia
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Filtros `q` (SQL) y `categoria` (Python)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_filtro_q_busca_por_servicio_id_y_por_nombre_cliente(escenario_grupo_olt):
+    async with AsyncSessionLocal() as sesion:
+        por_numero = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, q=_NUM_SIN_ODF)
+        por_cliente = await listar_servicios_sin_odf(
+            sesion, limit=_LIMIT_UNIVERSO, q="QA SinOdf Actual"
+        )
+        parcial = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, q="QA SinOdf")
+        sin_matches = await listar_servicios_sin_odf(
+            sesion, limit=_LIMIT_UNIVERSO, q="zzz-no-existe-en-dev-zzz"
+        )
+
+    # Por número exacto: sólo el sintético (los números `99999 2x` no existen en datos reales).
+    assert [i.id for i in por_numero.items] == [escenario_grupo_olt["sin_odf_id"]]
+    assert por_numero.total == 1
+    # Por nombre de cliente.
+    assert [i.id for i in por_cliente.items] == [escenario_grupo_olt["sin_odf_id"]]
+    # Substring (ILIKE '%...%'): matchea el sin-ODF; el hermano igual queda fuera del universo.
+    assert escenario_grupo_olt["sin_odf_id"] in {i.id for i in parcial.items}
+    assert escenario_grupo_olt["hermano_id"] not in {i.id for i in parcial.items}
+    # Sin matches: total 0 y lista vacía, no el universo entero.
+    assert sin_matches.total == 0
+    assert sin_matches.items == []
+
+
+@pytest.mark.asyncio
+async def test_filtro_q_es_case_insensitive(escenario_grupo_olt):
+    async with AsyncSessionLocal() as sesion:
+        minusculas = await listar_servicios_sin_odf(
+            sesion, limit=_LIMIT_UNIVERSO, q="qa sinodf actual"
+        )
+    assert [i.id for i in minusculas.items] == [escenario_grupo_olt["sin_odf_id"]]
+
+
+@pytest.mark.asyncio
+async def test_filtro_categoria_particiona_el_universo_sin_perder_ni_duplicar(escenario_grupo_olt):
+    """Las 4 categorías tienen que sumar exactamente el universo sin filtrar: si sumaran menos hay
+    filas sin categorizar, y si sumaran más hay filas contadas dos veces."""
+    async with AsyncSessionLocal() as sesion:
+        universo = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO)
+        por_categoria = {
+            categoria: await listar_servicios_sin_odf(
+                sesion, limit=_LIMIT_UNIVERSO, categoria=categoria
+            )
+            for categoria in CATEGORIAS_POR_PRIORIDAD
+        }
+
+    for categoria, resultado in por_categoria.items():
+        assert all(i.categoria_causa == categoria for i in resultado.items), categoria
+        assert resultado.total == len(resultado.items), categoria
+
+    assert sum(r.total for r in por_categoria.values()) == universo.total
+    ids_por_categoria = [{i.id for i in r.items} for r in por_categoria.values()]
+    assert set().union(*ids_por_categoria) == {i.id for i in universo.items}
+
+    # El sintético con OLT en el extremo 2 tiene que caer en OLT, no en el bucket de switch.
+    assert escenario_grupo_olt["sin_odf_id"] in {
+        i.id for i in por_categoria[CATEGORIA_OLT_PON_COMPARTIDO].items
+    }
+    assert escenario_grupo_olt["sin_odf_id"] not in {
+        i.id for i in por_categoria[CATEGORIA_SWITCH_COMPARTIDO_REVISAR].items
+    }
+
+
+@pytest.mark.asyncio
+async def test_paginacion_se_aplica_despues_de_filtrar_y_el_total_es_el_del_set_filtrado():
+    """El bug que este test previene: cortar por `LIMIT`/`OFFSET` ANTES de filtrar por categoría
+    daría páginas con menos filas de las pedidas y un `total` del universo sin filtrar, así que el
+    paginador de la UI prometería páginas que no existen."""
+    async with AsyncSessionLocal() as sesion:
+        completo = await listar_servicios_sin_odf(
+            sesion, limit=_LIMIT_UNIVERSO, categoria=CATEGORIA_OLT_PON_COMPARTIDO
+        )
+        universo = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO)
+        pagina_1 = await listar_servicios_sin_odf(
+            sesion, limit=7, offset=0, categoria=CATEGORIA_OLT_PON_COMPARTIDO
+        )
+        pagina_2 = await listar_servicios_sin_odf(
+            sesion, limit=7, offset=7, categoria=CATEGORIA_OLT_PON_COMPARTIDO
+        )
+
+    # `total` es el del set FILTRADO, estrictamente menor que el universo.
+    assert pagina_1.total == pagina_2.total == completo.total < universo.total
+    # Páginas llenas y del tamaño pedido: se cortó después de filtrar.
+    assert len(pagina_1.items) == len(pagina_2.items) == 7
+    assert all(i.categoria_causa == CATEGORIA_OLT_PON_COMPARTIDO for i in pagina_1.items)
+    # Y son exactamente las dos primeras tajadas del set filtrado, en el mismo orden.
+    assert [i.id for i in pagina_1.items] == [i.id for i in completo.items[:7]]
+    assert [i.id for i in pagina_2.items] == [i.id for i in completo.items[7:14]]
+    assert pagina_1.limit == 7 and pagina_2.offset == 7
+
+
+@pytest.mark.asyncio
+async def test_filtros_q_y_categoria_se_combinan(escenario_grupo_olt):
+    async with AsyncSessionLocal() as sesion:
+        acierto = await listar_servicios_sin_odf(
+            sesion,
+            limit=_LIMIT_UNIVERSO,
+            q="QA SinOdf",
+            categoria=CATEGORIA_OLT_PON_COMPARTIDO,
+        )
+        # Misma búsqueda, categoría que no le corresponde: 0 resultados, no el set de `q` entero.
+        categoria_que_no_aplica = await listar_servicios_sin_odf(
+            sesion,
+            limit=_LIMIT_UNIVERSO,
+            q="QA SinOdf",
+            categoria=CATEGORIA_SIN_SENAL_PROV,
+        )
+
+    assert [i.id for i in acierto.items] == [escenario_grupo_olt["sin_odf_id"]]
+    assert acierto.total == 1
+    assert categoria_que_no_aplica.total == 0
+    assert categoria_que_no_aplica.items == []
+
+
+@pytest.mark.asyncio
+async def test_categoria_desconocida_levanta_value_error():
+    """Explícito antes que silencioso: un listado vacío parecería "no hay servicios de esta
+    categoría" en vez de "escribiste mal el nombre de la categoría"."""
+    async with AsyncSessionLocal() as sesion:
+        with pytest.raises(ValueError, match="categoria desconocida"):
+            await listar_servicios_sin_odf(sesion, categoria="OLT")  # prefijo, no la categoría
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -563,65 +782,104 @@ def _aplanar_plan(nodo, acumulador=None):
     return acumulador
 
 
-@pytest.mark.asyncio
-async def test_plan_del_listado_usa_los_dos_indices_y_no_seq_scan():
-    """Regresión automática de performance: si alguien dropea alguno de los dos índices, o
-    reescribe la subquery anti-ambigüedad de `@>` a `= ANY(...)`, la query vuelve a tardar ~24s en
-    silencio. Números reales medidos en dev: ~23.9s sin los dos fixes, ~11.6s con los dos.
-
-    `EXPLAIN` sin `ANALYZE`: pide el plan, no ejecuta la query.
-    """
+async def _nodos_del_plan(sql, params=None):
+    """Nodos del plan de `EXPLAIN (FORMAT JSON)`. Sin `ANALYZE`: pide el plan, no ejecuta."""
     async with AsyncSessionLocal() as sesion:
         crudo = (
-            await sesion.execute(
-                text("EXPLAIN (FORMAT JSON) " + str(_SQL_LISTADO_SIN_ODF)),
-                {"limit": 50, "offset": 0},
-            )
+            await sesion.execute(text("EXPLAIN (FORMAT JSON) " + str(sql)), params or {})
         ).scalar_one()
-
     plan_json = json.loads(crudo) if isinstance(crudo, str) else crudo
-    nodos = _aplanar_plan(plan_json[0]["Plan"])
+    return _aplanar_plan(plan_json[0]["Plan"])
 
-    # 1. `ix_cromo_odf_conectores_servicio_resuelto` (migración 20260908_01): la CTE `resueltos`
-    #    tiene que leerse por índice, no con un Seq Scan sobre las ~205k filas de la tabla.
+
+def _verificar_plan_optimo(nodos):
+    """Las 4 aserciones de performance del plan, comunes a la query con y sin filtro `q`."""
+    # 1. `ix_cromo_odf_conectores_servicio_resuelto` (migración 20260908_01) usado al menos 3
+    #    veces: el `NOT EXISTS` de "no tiene ODF resuelta" está desarmado por De Morgan en tres
+    #    subqueries independientes, y cada una tiene que sondear por índice. Con la forma vieja (un
+    #    único `NOT EXISTS` con tres `OR` sobre la CTE materializada) el índice aparecía UNA sola
+    #    vez, para construir la CTE — y la query tardaba ~11.4s en vez de ~0.15s.
     por_indice = [
         n
         for n in nodos
         if n.get("Index Name") == "ix_cromo_odf_conectores_servicio_resuelto"
         and n.get("Node Type") in _NODOS_INDEXADOS
     ]
-    assert por_indice, (
-        "el plan no usa ix_cromo_odf_conectores_servicio_resuelto; nodos sobre "
-        f"cromo_odf_conectores: {[(n.get('Node Type'), n.get('Index Name')) for n in nodos if n.get('Relation Name') == 'cromo_odf_conectores']}"
+    nodos_conectores = [
+        (n.get("Node Type"), n.get("Index Name"))
+        for n in nodos
+        if n.get("Relation Name") == "cromo_odf_conectores"
+    ]
+    assert len(por_indice) >= 3, (
+        "se esperaban >=3 sondeos por ix_cromo_odf_conectores_servicio_resuelto (uno por cada "
+        "NOT EXISTS de De Morgan) y hay "
+        f"{len(por_indice)}; nodos sobre cromo_odf_conectores: {nodos_conectores}"
     )
-    seq_conectores = [
+
+    # 2. Cero `Seq Scan` sobre `cromo_odf_conectores` (~205k filas).
+    assert not [
         n
         for n in nodos
         if n.get("Relation Name") == "cromo_odf_conectores" and n.get("Node Type") == "Seq Scan"
-    ]
-    assert not seq_conectores, "Seq Scan sobre cromo_odf_conectores: el índice parcial no se usó"
+    ], f"Seq Scan sobre cromo_odf_conectores: el índice parcial no se usó ({nodos_conectores})"
 
-    # 2. `ix_servicios_alias_ids_gin` (migración 20260908_02): el self-join anti-ambigüedad (alias
+    # 3. Cero `CTE Scan`: la CTE `resueltos AS MATERIALIZED` tiene que seguir FUERA de la query.
+    #    Materializarla obliga a re-escanearla completa por cada fila candidata (~46M filas
+    #    descartadas por Join Filter) y el índice del punto 1 sólo acelera construirla, no
+    #    recorrerla. `con_override` no aparece como CTE Scan: el planner la aplana a un SubPlan.
+    assert not [n for n in nodos if n.get("Node Type") == "CTE Scan"], (
+        "volvió un CTE Scan al plan (¿reapareció `resueltos AS MATERIALIZED`?): "
+        f"{[(n.get('Node Type'), n.get('CTE Name')) for n in nodos if n.get('Node Type') == 'CTE Scan']}"
+    )
+
+    # 4. `ix_servicios_alias_ids_gin` (migración 20260908_02): el self-join anti-ambigüedad (alias
     #    `v2`) tiene que resolverse por el GIN. Ojo: `Seq Scan on servicios s` (el barrido de
     #    candidatos) SÍ es esperado y correcto — la aserción es específica del alias `v2`.
-    por_gin = [
+    nodos_servicios = [
+        (n.get("Node Type"), n.get("Alias"), n.get("Index Name"))
+        for n in nodos
+        if n.get("Relation Name") == "servicios"
+    ]
+    assert [
         n
         for n in nodos
         if n.get("Index Name") == "ix_servicios_alias_ids_gin"
         and n.get("Node Type") in _NODOS_INDEXADOS
-    ]
-    assert por_gin, (
-        "el plan no usa ix_servicios_alias_ids_gin; nodos sobre servicios: "
-        f"{[(n.get('Node Type'), n.get('Alias'), n.get('Index Name')) for n in nodos if n.get('Relation Name') == 'servicios']}"
-    )
-    seq_v2 = [
+    ], f"el plan no usa ix_servicios_alias_ids_gin; nodos sobre servicios: {nodos_servicios}"
+    assert not [
         n
         for n in nodos
         if n.get("Relation Name") == "servicios"
         and n.get("Alias") == "v2"
         and n.get("Node Type") == "Seq Scan"
-    ]
-    assert not seq_v2, (
+    ], (
         "Seq Scan sobre servicios v2: el GIN no se usó (¿volvió el `= ANY(v2.alias_ids)` en vez "
-        "del `v2.alias_ids @> ARRAY[...]`?)"
+        f"del `v2.alias_ids @> ARRAY[...]`?); nodos sobre servicios: {nodos_servicios}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_del_listado_usa_los_dos_indices_sin_seq_scan_ni_cte():
+    """Regresión automática de performance de la query final. Números reales medidos en dev sobre
+    el mismo universo (2891 filas), con `EXPLAIN (ANALYZE, TIMING OFF)`:
+
+    | forma                                                     | Execution Time |
+    |-----------------------------------------------------------|----------------|
+    | original del plan (`= ANY` + CTE MATERIALIZED)            | ~23.9 s        |
+    | + GIN y rewrite a `@>`                                    | ~11.6 s        |
+    | + De Morgan sin CTE (la actual)                           | **~0.15 s**    |
+
+    Si alguien dropea cualquiera de los dos índices, revierte el `@>` a `= ANY(...)` o reintroduce
+    la CTE materializada, la query vuelve a tardar 12-24s **en silencio** — nada falla, sólo se
+    pone lenta. Estas aserciones son lo que convierte esa regresión en un test rojo.
+    """
+    _verificar_plan_optimo(await _nodos_del_plan(_SQL_LISTADO_SIN_ODF))
+
+
+@pytest.mark.asyncio
+async def test_plan_del_listado_con_filtro_q_mantiene_los_mismos_indices():
+    """El filtro `q` se inyecta en la CTE `verificables` como una cláusula extra; no debe hacer
+    que el planner abandone ninguno de los dos índices."""
+    _verificar_plan_optimo(
+        await _nodos_del_plan(_SQL_LISTADO_SIN_ODF_CON_BUSQUEDA, {"patron": "%SA%"})
     )

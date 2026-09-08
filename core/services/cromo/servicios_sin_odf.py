@@ -25,25 +25,28 @@ Qué NO hace este módulo, a propósito:
 - No distingue "SW de frontera" de "SW con FO dedicada al cliente" dentro de
   `SWITCH_COMPARTIDO_REVISAR` — ver el TODO en `categorizar()`.
 
-## Performance: los dos índices y el rewrite que esta query necesita
+## Performance: los dos índices y los dos rewrites que esta query necesita
 
 La query de listado es un anti-join de `app.servicios` contra dos tablas grandes y contra sí misma.
-Dos fixes de índice, ambos verificados con `EXPLAIN ANALYZE` real contra `lasfocasdev-postgres`:
+Arrancó en ~23.9s y quedó en **~0.1s**. Los cuatro cambios, todos verificados con
+`EXPLAIN ANALYZE` real contra `lasfocasdev-postgres` y todos con universo IDÉNTICO (2891 filas):
 
-1. `ix_cromo_odf_conectores_servicio_resuelto` (btree parcial, migración `20260908_01`) — la CTE
-   `resueltos` pasó de `Seq Scan` sobre 204.840 filas a `Index Only Scan` (cost 31923 → 6736).
-2. `ix_servicios_alias_ids_gin` (GIN, migración `20260908_02`) — **sólo sirve junto con el rewrite
-   a contención de `_SUBQUERY_ANTI_AMBIGUEDAD`**: la opclass `array_ops` de GIN indexa `@>`/`<@`/
-   `&&`/`=`, nunca `escalar = ANY(columna_array)`. Con los dos, el self-join pasa de
+1. `ix_cromo_odf_conectores_servicio_resuelto` (btree parcial, migración `20260908_01`) — sin él,
+   `Seq Scan` sobre las 204.840 filas de la tabla (sólo el 5,36% tiene `servicio_resuelto` no nulo).
+2. `ix_servicios_alias_ids_gin` (GIN, migración `20260908_02`), que **sólo sirve junto con** el
+   rewrite a contención de `_SUBQUERY_ANTI_AMBIGUEDAD`: la opclass `array_ops` de GIN indexa
+   `@>`/`<@`/`&&`/`=`, nunca `escalar = ANY(columna_array)`. Con los dos, el self-join pasa de
    `Seq Scan on servicios v2` (41M filas descartadas por `Join Filter`) a `Bitmap Heap Scan` con un
    `BitmapOr` de dos `Bitmap Index Scan`. Medido: ~23.9s → ~11.6s.
+3. El `NOT EXISTS` de "no tiene ODF resuelta" **sin** CTE `MATERIALIZED` y desarmado por De Morgan
+   en tres `NOT EXISTS` independientes — ver `_SQL_NO_TIENE_ODF_RESUELTA`. Medido: ~11.6s → ~0.09s.
 
-Queda un tercer cuello de botella **no resuelto acá** (fuera del alcance de esta tarea, evidencia y
-número real en
-`.superpowers/sdd/tambiem-validemos-domicilios-extraidos-robust-swing/task-3-report.md`): el
-anti-join contra la CTE `resueltos AS MATERIALIZED` descarta ~46M filas por `Join Filter`, porque
-materializar la CTE obliga a re-escanearla completa por cada fila candidata y el índice del punto 1
-sólo acelera *construirla*, no recorrerla. Es la mitad del tiempo restante.
+La lección de las tres, para quien toque esta query: **el cost-estimate del planner no
+correlaciona con el tiempo real** en ninguno de los tres casos. El plan original de este gestor
+descartó el GIN por mirar el cost (~483 de ~37.828) y se equivocó, y la CTE `MATERIALIZED` también
+venía de un cost-estimate. Medir con `EXPLAIN (ANALYZE, TIMING OFF)` sobre el universo real, no
+estimar. `tests/test_cromo_servicios_sin_odf_real_db.py` tiene una regresión automática que falla
+si alguien dropea cualquiera de los dos índices o revierte el rewrite del punto 2.
 """
 
 from __future__ import annotations
@@ -63,6 +66,7 @@ __all__ = [
     "SUBCATEGORIA_AUSENTE_RED_CROMO",
     "SUBCATEGORIA_BAJA_LOGICA_HEREDADA",
     "SUBCATEGORIA_PELO_SIN_CONECTOR_ODF",
+    "ExtremoUltimaMilla",
     "ResultadoListadoSinOdf",
     "ServicioSinOdf",
     "SugerenciaOdf",
@@ -113,13 +117,29 @@ _PREFIJO_NODO_CLIENTE = "CLI_"
 
 
 @dataclass(slots=True)
+class ExtremoUltimaMilla:
+    """Un extremo de última milla de un Servicio, tal como lo trajo PROV
+    (`app.servicios_equipos_ultima_milla`). Un Servicio tiene 1 o 2."""
+
+    extremo: Optional[int]
+    nodo: Optional[str]
+    equipo: Optional[str]
+
+
+@dataclass(slots=True)
 class ServicioSinOdf:
     """Un Servicio Activo verificable sin ODF resuelta, con su causa probable ya categorizada.
 
     `subcategoria` es siempre `None` en el listado paginado: la cascada de `SIN_SENAL_PROV`
     (`subcategoria_sin_senal_prov`) cuesta 3 queries por fila y se calcula sólo on-demand en el
-    endpoint de detalle. `nodo`/`equipo` son los del extremo de última milla que ganó la
-    categorización (ver `categorizar_extremos`), no necesariamente el extremo 1.
+    endpoint de detalle.
+
+    `nodo`/`equipo` son los del extremo que ganó la categorización (ver `categorizar_extremos`),
+    no necesariamente el extremo 1. `extremos` trae **todos** los extremos, sin filtrar: la
+    prioridad de categorización nunca debe ocultarle información al operador — un Servicio con
+    `SW_x` en el extremo 1 y un OLT en el extremo 2 se categoriza como OLT, pero la UI tiene que
+    poder mostrar los dos. `extremos` está vacía cuando no hay fila PROV (4 servicios reales en
+    dev).
     """
 
     id: int
@@ -130,12 +150,14 @@ class ServicioSinOdf:
     subcategoria: Optional[str]
     nodo: Optional[str]
     equipo: Optional[str]
+    extremos: list[ExtremoUltimaMilla] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class ResultadoListadoSinOdf:
-    """`total` es el tamaño del universo COMPLETO (no de la página): se calcula con
-    `COUNT(*) OVER ()` en la misma pasada, para no pagar dos veces el anti-join."""
+    """`total` es el tamaño del conjunto **ya filtrado** (por `categoria`/`q`) antes de cortar por
+    `limit`/`offset` — nunca el del universo sin filtrar, para que el paginador de la UI no
+    prometa páginas que no existen."""
 
     total: int
     limit: int
@@ -279,126 +301,216 @@ _SUBQUERY_ANTI_AMBIGUEDAD = """
       )
 """
 
-# `resueltos AS MATERIALIZED`: fuerza a Postgres a construir la lista de `servicio_resuelto` una
-# sola vez (vía `ix_cromo_odf_conectores_servicio_resuelto`) en vez de re-planificar el `NOT
-# EXISTS` inline. Ver la nota de performance del docstring del módulo: materializar acelera
-# *construirla* pero obliga a re-escanearla por cada fila candidata (~46M filas descartadas por
-# `Join Filter`), y ése es el cuello de botella que queda abierto.
+# "No tiene ODF resuelta" — el mismo patrón de matching textual de
+# `odf_conectores.py::conectores_de_odf`, invertido.
 #
+# Desarmado por De Morgan en TRES `NOT EXISTS` independientes en vez de UNO con tres `OR` adentro:
+# `NOT EXISTS(P1 OR P2 OR P3)` ≡ `NOT EXISTS(P1) AND NOT EXISTS(P2) AND NOT EXISTS(P3)` cuando los
+# tres predicados corren sobre la misma tabla (es la misma equivalencia que
+# `EXISTS(P1 OR P2 OR P3)` ≡ `EXISTS(P1) OR EXISTS(P2) OR EXISTS(P3)`, negada).
+#
+# No es cosmético: con los tres `OR` juntos el planner no puede usar
+# `ix_cromo_odf_conectores_servicio_resuelto` para sondear, y arma un anti-join que descarta ~46
+# MILLONES de filas por `Join Filter` (~11.4s). Separados, hace tres sondeos por índice — un
+# `Merge Anti Join` y dos `Index Only Scan` parametrizados sobre ese mismo índice — y baja a ~90ms.
+# Medido real contra dev, mismo universo (2891) en las dos formas.
+#
+# También se sacó la CTE `resueltos AS MATERIALIZED` que tenía la versión anterior: materializar
+# obligaba a re-escanear la lista completa de `servicio_resuelto` por cada fila candidata, que es
+# exactamente el anti-join de 46M filas. El índice sólo puede ayudar si el predicado le llega a la
+# tabla, no a una CTE ya materializada.
+#
+# Sin `servicio_resuelto IS NOT NULL` explícito a propósito: `c.servicio_resuelto = <valor>` nunca
+# es TRUE con NULL, y Postgres además prueba solo que esa igualdad implica el `WHERE` del índice
+# PARCIAL, así que lo usa igual (confirmado en el plan real). Agregarlo no cambiaría el resultado.
+_SQL_NO_TIENE_ODF_RESUELTA = """
+    NOT EXISTS (
+        SELECT 1 FROM app.cromo_odf_conectores c WHERE c.servicio_resuelto = v.servicio_id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM app.cromo_odf_conectores c WHERE c.servicio_resuelto = v.numero_primer_servicio
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM app.cromo_odf_conectores c WHERE c.servicio_resuelto = ANY(v.alias_ids)
+    )
+"""
+
+# Búsqueda libre opcional. Se inyecta en la CTE `verificables` (no en el `WHERE` final) para
+# recortar el set de candidatos lo antes posible. La CLÁUSULA es dinámica (está o no está), pero el
+# VALOR siempre viaja como bind param `:patron` — nunca interpolado. Se hace así, y no con un
+# `:q IS NULL OR ...`, porque un bind comparado contra NULL obliga a un `CAST(:q AS text)` que en
+# `text()` de SQLAlchemy arrastra el gotcha del espacio antes del `::` y además le esconde al
+# planner que el filtro no aplica.
+_FILTRO_BUSQUEDA_LIBRE = """
+          AND (s.servicio_id ILIKE :patron OR s.nombre_cliente ILIKE :patron)
+"""
+
 # `con_override` es CRÍTICO, no cosmético: sin él, un Servicio recién asociado a mano por un
 # operador seguiría apareciendo en el listado después de confirmarlo. `DISTINCT` porque
 # `cromo_servicio_odf_override` no tiene `UNIQUE (servicio_id)` a propósito (cada fila es un evento
 # de asociación, permite reasociar sin perder historial).
 #
-# El LATERAL trae TODOS los extremos agregados en dos arrays paralelos ordenados por `extremo`, no
-# el extremo 1: la elección de extremo la hace `categorizar_extremos()` en Python, para no duplicar
-# la regla de categorización en SQL. `array_agg` sobre cero filas devuelve `NULL`, que se traduce a
-# "sin fila PROV".
-_SQL_LISTADO_SIN_ODF = text(
-    f"""
+# El LATERAL trae TODOS los extremos agregados en tres arrays paralelos ordenados por `extremo`, no
+# sólo el extremo 1: la elección de extremo la hace `categorizar_extremos()` en Python, para no
+# duplicar la regla de categorización en SQL, y los tres se exponen enteros en
+# `ServicioSinOdf.extremos`. `array_agg` sobre cero filas devuelve `NULL`, que se traduce a "sin
+# fila PROV".
+#
+# Sin `LIMIT`/`OFFSET` en SQL a propósito: `categoria_causa` no existe como columna (la calcula
+# `categorizar_extremos()` en Python), así que cortar en SQL daría un `total` y unas páginas
+# incorrectas en cuanto se filtra por categoría. Ver `listar_servicios_sin_odf`.
+_PLANTILLA_LISTADO = """
     WITH verificables AS (
         SELECT s.id, s.servicio_id, s.numero_primer_servicio, s.alias_ids, s.nombre_cliente
         FROM app.servicios s
         WHERE s.estado_servicio ILIKE 'activo'
           AND s.es_verificable = true
           AND s.numero_primer_servicio IS NOT NULL
-          AND {_SUBQUERY_ANTI_AMBIGUEDAD}
-    ),
-    resueltos AS MATERIALIZED (
-        SELECT servicio_resuelto
-        FROM app.cromo_odf_conectores
-        WHERE servicio_resuelto IS NOT NULL
+{filtro_busqueda}          AND {anti_ambiguedad}
     ),
     con_override AS (
         SELECT DISTINCT servicio_id FROM app.cromo_servicio_odf_override
     )
     SELECT
         v.id, v.servicio_id, v.numero_primer_servicio, v.nombre_cliente,
-        e.nodos, e.equipos,
-        COUNT(*) OVER () AS total
+        e.extremos, e.nodos, e.equipos
     FROM verificables v
     LEFT JOIN LATERAL (
         SELECT
+            array_agg(eq.extremo ORDER BY eq.extremo) AS extremos,
             array_agg(eq.nodo ORDER BY eq.extremo) AS nodos,
             array_agg(eq.equipo ORDER BY eq.extremo) AS equipos
         FROM app.servicios_equipos_ultima_milla eq
         WHERE eq.servicio_id = v.id
     ) e ON true
-    WHERE NOT EXISTS (
-        SELECT 1 FROM resueltos c
-        WHERE c.servicio_resuelto = v.servicio_id
-           OR c.servicio_resuelto = v.numero_primer_servicio
-           OR c.servicio_resuelto = ANY(v.alias_ids)
-    )
+    WHERE {no_tiene_odf}
     AND v.id NOT IN (SELECT servicio_id FROM con_override)
     ORDER BY v.nombre_cliente NULLS LAST, v.id
-    LIMIT :limit OFFSET :offset
-    """
+"""
+
+_SQL_LISTADO_SIN_ODF = text(
+    _PLANTILLA_LISTADO.format(
+        filtro_busqueda="",
+        anti_ambiguedad=_SUBQUERY_ANTI_AMBIGUEDAD,
+        no_tiene_odf=_SQL_NO_TIENE_ODF_RESUELTA,
+    )
+)
+_SQL_LISTADO_SIN_ODF_CON_BUSQUEDA = text(
+    _PLANTILLA_LISTADO.format(
+        filtro_busqueda=_FILTRO_BUSQUEDA_LIBRE,
+        anti_ambiguedad=_SUBQUERY_ANTI_AMBIGUEDAD,
+        no_tiene_odf=_SQL_NO_TIENE_ODF_RESUELTA,
+    )
 )
 
 
 def _extremos_de_arrays(
-    nodos: Optional[Sequence[Optional[str]]], equipos: Optional[Sequence[Optional[str]]]
-) -> list[tuple[Optional[str], Optional[str]]]:
-    """`(equipo, nodo)` por extremo, a partir de los dos arrays paralelos del LATERAL.
+    extremos: Optional[Sequence[Optional[int]]],
+    nodos: Optional[Sequence[Optional[str]]],
+    equipos: Optional[Sequence[Optional[str]]],
+) -> list[ExtremoUltimaMilla]:
+    """Los extremos de última milla, a partir de los tres arrays paralelos del LATERAL.
 
-    Tolera que uno de los dos venga `NULL` (Servicio sin fila PROV) y que tengan largos
-    distintos — no debería pasar (el mismo `array_agg ORDER BY extremo` sobre las mismas filas),
-    pero un `zip` estricto acá haría fallar el listado completo por una fila anómala, y esta
-    función corre sobre datos de una tabla que reescribe otra ingesta.
+    Tolera que alguno venga `NULL` (Servicio sin fila PROV) y que tengan largos distintos — no
+    debería pasar (el mismo `array_agg ORDER BY extremo` sobre las mismas filas), pero un `zip`
+    estricto acá haría fallar el listado COMPLETO por una sola fila anómala, y esta función corre
+    sobre datos de una tabla que reescribe otra ingesta.
     """
+    lista_extremos = list(extremos or [])
     lista_nodos = list(nodos or [])
     lista_equipos = list(equipos or [])
-    total = max(len(lista_nodos), len(lista_equipos))
+    cantidad = max(len(lista_extremos), len(lista_nodos), len(lista_equipos))
+
+    def en(lista, indice):
+        return lista[indice] if indice < len(lista) else None
+
     return [
-        (
-            lista_equipos[i] if i < len(lista_equipos) else None,
-            lista_nodos[i] if i < len(lista_nodos) else None,
+        ExtremoUltimaMilla(
+            extremo=en(lista_extremos, i), nodo=en(lista_nodos, i), equipo=en(lista_equipos, i)
         )
-        for i in range(total)
+        for i in range(cantidad)
     ]
 
 
 async def listar_servicios_sin_odf(
-    sesion: AsyncSession, *, limit: int = 50, offset: int = 0
+    sesion: AsyncSession,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    categoria: Optional[str] = None,
+    q: Optional[str] = None,
 ) -> ResultadoListadoSinOdf:
     """Página del universo "Servicios Activos verificables sin ODF resuelta", ya categorizada.
 
-    Excluye los que ya tienen una asociación manual en `app.cromo_servicio_odf_override`. `total`
-    es el universo completo, no el largo de la página.
+    Excluye los que ya tienen una asociación manual en `app.cromo_servicio_odf_override`.
 
-    Cada fila se categoriza en Python con `categorizar_extremos()` sobre los extremos que trajo el
-    LATERAL — barato (no hay query por fila) y sin duplicar la regla en SQL. `subcategoria` queda
-    en `None`: la cascada de `SIN_SENAL_PROV` es on-demand (`subcategoria_sin_senal_prov`), nunca
-    en el paginado, para no hacer N+1 sobre cientos de filas.
+    Filtros:
+
+    - `q`: búsqueda libre por `servicio_id` o `nombre_cliente`, en **SQL** (`ILIKE '%q%'`) — son
+      columnas reales, así que filtrar allá recorta el set de candidatos antes de traerlo.
+    - `categoria`: uno de `CATEGORIAS_POR_PRIORIDAD`, en **Python**. Va acá y no en SQL porque
+      `categoria_causa` NO existe como columna: la calculan `categorizar()`/`categorizar_extremos()`,
+      que quedan como única fuente de verdad de la taxonomía. Un `CASE WHEN upper(equipo) LIKE
+      'OLT%' ...` en SQL duplicaría la regla (y también la prioridad entre extremos) y driftaría.
+      Levanta `ValueError` con una categoría desconocida — mejor un error explícito que un listado
+      vacío que parezca "no hay servicios de esta categoría".
+
+    `total` es el tamaño del conjunto **ya filtrado**, y `limit`/`offset` se aplican DESPUÉS de
+    filtrar, así que la paginación es correcta con y sin filtros.
+
+    Límite conocido, aceptado a esta escala: trae TODOS los candidatos del universo en cada request
+    (2891 filas hoy, ~90ms) y corta en Python. Es lo que permite que `categorizar_extremos()` sea la
+    única fuente de verdad. Si el universo "sin ODF" crece 10x o más, esto se vuelve derrochador
+    (memoria y ancho de banda por request) y habría que mover la categorización a SQL —
+    materializándola como columna generada o en una vista, no duplicándola a mano— para poder
+    volver a paginar y filtrar del lado del motor.
+
+    Cada fila se categoriza con `categorizar_extremos()` sobre los extremos que trajo el LATERAL:
+    barato, sin query por fila. `subcategoria` queda en `None` — la cascada de `SIN_SENAL_PROV` es
+    on-demand (`subcategoria_sin_senal_prov`), nunca en el paginado, para no hacer N+1.
     """
-    filas = (
-        await sesion.execute(_SQL_LISTADO_SIN_ODF, {"limit": limit, "offset": offset})
-    ).all()
+    if categoria is not None and categoria not in CATEGORIAS_POR_PRIORIDAD:
+        raise ValueError(
+            f"categoria desconocida: {categoria!r}. Válidas: {', '.join(CATEGORIAS_POR_PRIORIDAD)}"
+        )
+
+    busqueda = q.strip() if q else ""
+    if busqueda:
+        filas = (
+            await sesion.execute(
+                _SQL_LISTADO_SIN_ODF_CON_BUSQUEDA, {"patron": f"%{busqueda}%"}
+            )
+        ).all()
+    else:
+        filas = (await sesion.execute(_SQL_LISTADO_SIN_ODF)).all()
 
     items: list[ServicioSinOdf] = []
     for fila in filas:
-        categoria, subcategoria, nodo, equipo = categorizar_extremos(
-            _extremos_de_arrays(fila.nodos, fila.equipos)
+        extremos = _extremos_de_arrays(fila.extremos, fila.nodos, fila.equipos)
+        categoria_causa, subcategoria, nodo, equipo = categorizar_extremos(
+            [(e.equipo, e.nodo) for e in extremos]
         )
+        if categoria is not None and categoria_causa != categoria:
+            continue
         items.append(
             ServicioSinOdf(
                 id=fila.id,
                 servicio_id=fila.servicio_id,
                 numero_primer_servicio=fila.numero_primer_servicio,
                 nombre_cliente=fila.nombre_cliente,
-                categoria_causa=categoria,
+                categoria_causa=categoria_causa,
                 subcategoria=subcategoria,
                 nodo=nodo,
                 equipo=equipo,
+                extremos=extremos,
             )
         )
 
     return ResultadoListadoSinOdf(
-        total=int(filas[0].total) if filas else 0,
+        total=len(items),
         limit=limit,
         offset=offset,
-        items=items,
+        items=items[offset : offset + limit] if limit > 0 else [],
     )
 
 
