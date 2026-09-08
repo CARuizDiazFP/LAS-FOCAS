@@ -123,10 +123,22 @@ def test_normalizar_para_agrupar_extendido_recorta_sufijo_de_ruido() -> None:
         # El sufijo más frecuente tras guion es una LOCALIDAD, no ruido operativo — nunca recortarla.
         ("Poste Lavalle - Campana", "Poste Lavalle"),
         ("Cra Rotonda V Sarfield - Alto Avellaneda Bot 2", "Cra Rotonda V Sarfield - Alto Avellaneda"),
+        # "crítica" NO terminal: es un calificador seguido de información que sí identifica el sitio.
+        # Sin anclar el recorte al final, el `.*` greedy colapsaría dos postes distintos de la misma
+        # ruta — y esta normalización decide además si crear o reusar una Cámara padre en la ingesta.
+        ("Cra Ruta 9 - Critica Km 45", "Cra Ruta 9 - Critica Km 46"),
     ],
 )
 def test_normalizar_para_agrupar_extendido_no_colapsa_sitios_distintos(nombre_a: str, nombre_b: str) -> None:
     assert normalizar_para_agrupar_extendido(nombre_a) != normalizar_para_agrupar_extendido(nombre_b)
+
+
+def test_normalizar_para_agrupar_extendido_recorta_critica_en_plural() -> None:
+    """El archivo de negocio de referencia se llama "Criticas en seguimiento" — el plural es una
+    forma esperable en los nombres cargados a mano."""
+    base = normalizar_para_agrupar_extendido("Cra Belgrano 500")
+    assert normalizar_para_agrupar_extendido("Cra Belgrano 500 - CRITICA") == base
+    assert normalizar_para_agrupar_extendido("Cra Belgrano 500 - CRITICAS") == base
 
 
 def test_estado_mas_restrictivo_prioriza_baneada() -> None:

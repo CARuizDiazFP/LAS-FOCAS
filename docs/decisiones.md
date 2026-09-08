@@ -1409,3 +1409,27 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   detectado, así que sólo dejaba tipear n_ids Cromo. El backend ya aceptaba `ids_legado` y
   `force_camera_association` — el gap era exclusivamente de UI. Ahora se pueden sumar Botellas legado
   por ID con el mismo patrón de chips que los orígenes Cromo.
+
+- **Revisión adversarial posterior (mismo día), 3 hallazgos — 2 aplicados, 1 refutado con datos:**
+  - *Aplicado:* el `.*` greedy de `_RE_RUIDO_OPERATIVO` se come todo lo que sigue a la stopword. Para
+    las stopwords originales es inocuo (siempre son terminales: "- CUADRILLA DE HIDROCONS"), pero
+    "crítica" es un calificador que puede venir seguido de información que identifica el sitio:
+    `"Cra Ruta 9 - Critica Km 45"` y `"… Km 46"` colapsaban al mismo nombre. En prod hoy los 10 casos
+    de "- CRITICA" son todos terminales (0 no terminales), pero como esta normalización también
+    decide si crear o reusar una Cámara padre en la ingesta, el modo de falla sería silencioso. Se
+    separó "crítica" a `_RE_SUFIJO_CRITICA`, **anclada al final** del nombre.
+  - *Aplicado:* el plural "CRITICAS" no estaba cubierto (`s?` faltante). 0 casos en prod hoy, pero el
+    archivo de negocio se llama "Criticas en seguimiento", así que es una forma esperable.
+  - *Refutado con medición:* se objetó que `\bc\s+f\b` no está anclado y podría colapsar iniciales de
+    calle ("Av. C. F. Alvear" con "Avenida Alvear"). En los datos reales hay 89 nombres con "c f" en
+    posición NO terminal, y **ninguno** son iniciales: todos son el código de filial seguido de una
+    aclaración (`"Cra Teodoro García 2402 C.F (INSTALAR)"`, `"Tza Esmeralda 561 C.F. 4 piso frente
+    izq"`), donde recortar es lo correcto. Anclar al final habría roto esos 89. También se objetó que
+    recortar "C F" del medio rompería el ILIKE de substring de `buscar_camara()` (bot de Slack): se
+    ejecutó la búsqueda real contra la DB de prod sobre 238 nombres reales (los 36 con "c f" medio,
+    los 5 con "crítica" y 200 aleatorios) comparando antes/después — **0 regresiones y 1 mejora**
+    (`"Cra. Reconquista 490 C.F."` pasó de ambiguo a resolver). El riesgo está cubierto por diseño:
+    el Intento 2 de la cascada busca por tokens de ≥3 chars (inmune a recortar tokens de 1 char) y el
+    Intento 4 corre explícitamente sin expansión de abreviaturas.
+  - Impacto final tras las correcciones: idéntico (Cámaras 0 → 96, Botellas 52 → 53) — más seguro sin
+    perder detección.

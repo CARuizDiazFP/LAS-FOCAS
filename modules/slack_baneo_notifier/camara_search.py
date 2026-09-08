@@ -133,8 +133,18 @@ RE_BOT_SUFIJO = re.compile(r"\bbot\.?\s*[1-9](?!\d)\.?", re.IGNORECASE)
 _RE_RUIDO_OPERATIVO = re.compile(
     r"(?i)\s*[-/|]\s*"
     r"(?:cuadrilla|m[oó]vil|contratista|ticket|equipo|personal|guardia|"
-    r"inspector|t[eé]cnico|brigada|grupo|empresa|cr[ií]tic[ao])\b.*"
+    r"inspector|t[eé]cnico|brigada|grupo|empresa)\b.*"
 )
+
+# "CRITICA" va aparte de `_RE_RUIDO_OPERATIVO` y ANCLADA al final del nombre a propósito. Las
+# stopwords de arriba son siempre terminales en los datos reales ("- CUADRILLA DE HIDROCONS"), así
+# que su `.*` greedy no hace daño; "crítica", en cambio, es un calificador que podría venir seguido
+# de información que sí identifica el sitio. Sin el ancla, "Cra Ruta 9 - Critica Km 45" y
+# "… Km 46" colapsarían al mismo nombre — dos postes distintos de la misma ruta. Hoy los 10 casos
+# reales en prod son todos terminales, pero esta normalización también decide si crear o reusar una
+# Cámara padre durante la ingesta, así que el modo de falla sería silencioso. Plural incluido:
+# el archivo de negocio se llama "Criticas en seguimiento".
+_RE_SUFIJO_CRITICA = re.compile(r"(?i)\s*[-/|]\s*cr[ií]tic[ao]s?\s*$")
 
 
 def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
@@ -193,8 +203,10 @@ def limpiar_ruido_operativo(texto: str) -> str:
         "Cra Quesada 2396 CF - CUADRILLA DE HIDROCONS"  →  "Cra Quesada 2396 CF"
         "Camara 1 - Móvil 4"                            →  "Camara 1"
         "Poste Lavalle - Campana"                       →  "Poste Lavalle - Campana"
+        "Cra San Martin 1 CF - CRITICA"                 →  "Cra San Martin 1 CF"
+        "Cra Ruta 9 - Critica Km 45"                    →  "Cra Ruta 9 - Critica Km 45"
     """
-    return _RE_RUIDO_OPERATIVO.sub("", texto).strip()
+    return _RE_SUFIJO_CRITICA.sub("", _RE_RUIDO_OPERATIVO.sub("", texto)).strip()
 
 
 def _limpiar_puntuacion(texto: str) -> str:
