@@ -1355,3 +1355,57 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Pendiente concreto:** las 11 Cámaras sin match requieren revisión manual (¿existen todavía en el
   inventario real de Cromo con otro nombre, o son ubicaciones que ya no corresponden banear?) antes de
   decidir si banearlas manualmente o darlas de baja del seguimiento de "Críticas".
+
+## 2026-09-08 — Duplicados invisibles para los visores: dos bugs de normalización de nombres
+
+- **Contexto:** El usuario reportó Botellas duplicadas en prod que el visor de duplicados **no
+  agrupa** — distintas de los grupos ya conocidos que el visor sí muestra. Su hipótesis era que el
+  sufijo `" - CRITICA"` generaba el mismatch. Se confirmó, y al medir contra la DB real de producción
+  apareció una segunda causa bastante más grande que no estaba en la hipótesis.
+
+- **Bug 1 — el sufijo tras separador sobrevive a la normalización.** `_limpiar_puntuacion`
+  (`modules/slack_baneo_notifier/camara_search.py`) convierte `" - "` en espacio pero conserva la
+  palabra, así que `"…Bot 2 - CRITICA"` normalizaba a `…bot 2 critica` y nunca coincidía con
+  `…bot 2`. Ya existía `_RE_RUIDO_OPERATIVO` / `limpiar_ruido_operativo()`, que sabe recortar sufijos
+  tras separador ante una stopword conocida (cuadrilla, móvil, contratista, ticket…), pero **sólo lo
+  usaba `buscar_camara()`** — la normalización de agrupamiento nunca lo llamaba. Caso real: bajo la
+  Cámara padre 2753, la Botella legado 1615 `"Cra  Diag Norte 902 Esq Suipacha Bot 2"` y la Cromo
+  6631710 `"…Bot 2 - CRITICA"` son la misma botella y jamás se ofrecieron como grupo.
+
+- **Bug 2 — `"C.F."` con puntos no colapsa a `"cf"`.** `_limpiar_puntuacion` hace
+  `re.sub(r"\.(?!\d)", " ")`, con lo que `"C.F."` queda como los dos tokens sueltos `c f` y la regla
+  `\bcf\b -> ""` de `_ABREVIATURAS` deja de alcanzarlo. Medido en prod: **el detector de Cámaras
+  duplicadas informaba 0 grupos cuando en realidad había 96 pares** que sólo difieren en cómo se
+  escribió CF (`"Cra Cerrito 410 CF"` vs `"Cra Cerrito 410 C.F."`, `"Datacenter Tacuari 355 CF"` vs
+  `"… C.F."`). Este es el que mejor explica el síntoma original: el detector de Botellas agrupa **por
+  Cámara padre**, así que con el padre partido en dos, las botellas del mismo sitio nunca se comparan.
+
+- **Decisión:** agregar `r"\bc\s+f\b": ""` a `_ABREVIATURAS`, sumar `cr[ií]tic[ao]` a
+  `_RE_RUIDO_OPERATIVO`, y anteponer `limpiar_ruido_operativo` en
+  `normalizar_para_agrupar_extendido` (`core/services/camara_hierarchy_service.py`).
+
+- **Alternativa descartada (medida, no intuida):** recortar genéricamente **todo** lo que sigue a un
+  guion. Suma 6 grupos de Botellas de los cuales 5 son falsos positivos: se come el `"Bot N"`
+  posterior y colapsa hermanas legítimas (`"B. Candelarias - Bot. 1 …"` con `"… - Bot. 2 …"`,
+  `"…Playa 13 Bot 2"` con `"…Playa 13"`). Además, de las 808 Botellas con sufijo tras separador, el
+  sufijo más frecuente es una **localidad** (FIBRASTAR 55, PILAR 30, MORON 23; CRITICA sólo 7). El
+  recorte queda entonces restringido a stopwords conocidas, y hay tests de no-regresión que fijan
+  esos tres casos.
+
+- **Impacto medido contra la DB de producción (antes → después):** Cámaras raíz 0 → 96 grupos (194
+  Cámaras involucradas); Botellas 52 → 53 grupos (121 → 123 filas). Control de falsos positivos: el
+  grupo más grande queda en 4 miembros en ambos dominios y ninguna clave normaliza a cadena vacía.
+
+- **Riesgo asumido:** `normalizar_para_agrupar_extendido` no la usa sólo la detección — también
+  `resolver_o_crear_padre_desde_base()` (ingesta de Cromo), `cromo/separacion_service.py` y
+  `scripts/cromo_backfill_camara_padre.py`. El cambio, por lo tanto, **también altera escritura**: la
+  ingesta deja de crear un padre nuevo cuando ya existe uno que sólo difería en la escritura de CF.
+  Es el efecto buscado (cierra el punto de alta de estos duplicados), pero es más que un cambio de
+  visor. Continúa la línea del riesgo ya aceptado explícitamente el 2026-08-14 para esta función.
+
+- **Gap de UI resuelto en el mismo trabajo:** para Cámaras existía "Unificar Cámara" desde la ficha,
+  independiente del detector; para Botellas, "Consolidar manualmente" abría el modal con `grupo=null`
+  y la sección "Botellas legado a heredar" estaba detrás de un `v-if` alimentado por el grupo
+  detectado, así que sólo dejaba tipear n_ids Cromo. El backend ya aceptaba `ids_legado` y
+  `force_camera_association` — el gap era exclusivamente de UI. Ahora se pueden sumar Botellas legado
+  por ID con el mismo patrón de chips que los orígenes Cromo.
