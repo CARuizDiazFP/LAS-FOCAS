@@ -4,7 +4,7 @@
   Descripción: Modal para asociar manualmente un Servicio sin ODF a la ODF correcta — causa/extremos, sugerencia no auto-aplicada, buscador de ODF (reusa el inventario Cromo) y badge de señal de dirección no bloqueante
 -->
 <template>
-  <dialog ref="dialogEl" class="asociar-odf-modal" @click.self="handleClose">
+  <dialog ref="dialogEl" class="asociar-odf-modal" @click.self="handleClose" @cancel="handleCancelKey">
     <div class="modal-content">
       <div class="asociar-odf-title-row">
         <strong>Asociar ODF — Servicio {{ servicioNumero || servicioId }}</strong>
@@ -40,6 +40,7 @@
             <span>{{ extremo.nodo || '—' }} / {{ extremo.equipo || '—' }}</span>
           </div>
         </div>
+        <p v-else class="asociar-odf-direccion">Sin fila de última milla PROV.</p>
 
         <div v-if="detalle.sugerencia" class="asociar-odf-sugerencia">
           <p>
@@ -182,18 +183,28 @@ const justificacionSugerencia = computed(() => {
  * OLT_PON_COMPARTIDO, 53% del universo); ahora se calcula igual para CUALQUIER ODF elegida a mano
  * vía `GET .../senal-direccion` (puro read-only, nunca persiste). Si falla (red, 404 de una ODF
  * que dejó de existir entre la búsqueda y el click, etc.) se degrada a "no se pudo comparar" sin
- * romper el flujo — nunca bloquea la selección ni el botón de confirmar. */
+ * romper el flujo — nunca bloquea la selección ni el botón de confirmar.
+ *
+ * Fix round 2: guarda contra resolución fuera de orden. `odf` queda capturado en el closure de
+ * esta invocación puntual del watcher — si para cuando la response llega `odfSeleccionada.value`
+ * ya cambió (el operador volvió a buscar y eligió otra ODF, o deseleccionó), esta respuesta es
+ * stale y se descarta sin tocar el estado. Sin esta guarda, una respuesta vieja que llega después
+ * de una más nueva (jitter de red normal) pisa la señal correcta con la de una ODF que ya no es la
+ * seleccionada — silenciosa y sin nada que la corrija después. Una señal de la ODF equivocada es
+ * peor que ninguna señal, porque el operador le cree. */
 watch(odfSeleccionada, async (odf) => {
   senalPreview.value = null;
   if (!odf || props.servicioId == null) return;
   cargandoSenal.value = true;
   try {
     const respuesta = await getSenalDireccionPreview(props.servicioId, odf.n_id);
+    if (odf !== odfSeleccionada.value) return; // selección cambió mientras esperábamos: descartar
     senalPreview.value = respuesta.senal_direccion;
   } catch {
+    if (odf !== odfSeleccionada.value) return;
     senalPreview.value = null;
   } finally {
-    cargandoSenal.value = false;
+    if (odf === odfSeleccionada.value) cargandoSenal.value = false;
   }
 });
 
@@ -282,6 +293,18 @@ function handleClose(): void {
   dialogEl.value?.close();
   resetState();
   emit('close');
+}
+
+/** Escape dispara el evento nativo `cancel` de `<dialog>` ANTES de cerrarlo — sin este listener,
+ * el browser cierra el `<dialog>` por su cuenta pero nunca llama a `handleClose()`, así que
+ * `modalOpen` en el padre queda en `true` (nadie emitió `close`) y un click posterior en "Asociar
+ * ODF" de cualquier tarjeta vuelve a asignar el mismo `true` — no-op para la reactividad de Vue, el
+ * modal no vuelve a abrirse. `preventDefault()` frena el auto-cierre nativo para que `handleClose()`
+ * sea el ÚNICO camino que cierra el diálogo y sincroniza el estado — Escape pasa por exactamente el
+ * mismo código que el botón "×"/el click en el backdrop, nunca un camino paralelo. */
+function handleCancelKey(event: Event): void {
+  event.preventDefault();
+  handleClose();
 }
 
 async function handleConfirmar(): Promise<void> {
