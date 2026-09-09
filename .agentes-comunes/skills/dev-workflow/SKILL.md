@@ -97,6 +97,18 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    rama es — si pasa, separar en 3 llamadas de Bash individuales lo destraba (funcionó dos veces en la
    sesión del 2026-09-07).
 
+9. **Trabajo largo despachado a un subagente: prescribir cortes de commit explícitos, no "commiteá
+   incremental".** Hallazgo real (2026-09-08/09, gestor de Servicios sin ODF): tres subagentes murieron
+   por límite de API (rate limit) en una misma sesión. Los dos que sólo tenían la instrucción genérica
+   "commiteá incremental" perdieron **todo** el trabajo no commiteado (working tree limpio, cero
+   commits, cero reporte, nada que rescatar); el que recibió una lista enumerada de cortes ("1. cliente
+   de API + fix de tipos → commit; 2. tarjeta → commit; 3. modal → commit; 4. viewer + wiring →
+   commit", cada uno exigiendo el build en verde) completó con sus 4 commits, y una ola de fixes
+   posterior con cortes agrupados por hallazgo preservó 3 de 4 al morir. La diferencia no fue el modelo
+   ni la suerte: fue enumerar los cortes. Para cualquier dispatch que vaya a tocar más de 2-3 archivos,
+   listar los cortes concretos y exigir que cada uno deje el build/tests en verde — un commit que no
+   compila no sirve como punto de recuperación.
+
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
 `docker-rebuild`, `cierre-sesion` (único punto que integra la rama efímera a `dev`).

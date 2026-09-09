@@ -377,3 +377,44 @@ configuración operativa con valores dependientes de ambiente (IDs de canal, `wo
 webhook, etc. — no sólo `slack_ingreso_listener`) contra los valores reales de producción, y hacer el
 smoke test real end-to-end del canal externo (Slack u otro) ANTES de cerrar la ventana — nunca como
 pendiente diferido a la próxima sesión.
+
+## Verificar que el contenedor sirve TU código, no uno stale
+
+Hallazgo real repetido (2026-09-08/09, gestor de Servicios sin ODF): un rebuild que "salió bien" no
+prueba que el contenedor esté sirviendo el código de la rama actual, y los tests in-process
+(`TestClient`) nunca lo detectan porque no pasan por el contenedor. Tres técnicas usadas en esa sesión,
+cada una con evidencia concluyente — elegir la que aplique al cambio:
+
+**Rutas nuevas de FastAPI** — probar que la ruta estaba AUSENTE antes del rebuild y PRESENTE después,
+no sólo que responde ahora:
+
+```bash
+# Pre-rebuild: la ruta no debe existir en el router del contenedor viejo.
+# Ojo con la ruta de import: dentro de lasfocasdev-web es `app.main`, no `web.app.main`.
+docker exec lasfocasdev-web python -c "
+from app.main import app
+print([r.path for r in app.router.routes if 'mi-ruta-nueva' in r.path])"
+
+# Post-rebuild: un 401/403 sin cookie ya prueba que la ruta existe y está cableada.
+# Un 404/405 significa que quedó mal registrada (ver el bug de orden de rutas de FastAPI).
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:<puerto>/api/<ruta-nueva>
+```
+
+**Cambios de frontend** — comparar el hash del bundle servido contra el build local, y grepear el chunk
+servido por un literal introducido por el cambio (un string de UI, un nombre de handler):
+
+```bash
+curl -s http://localhost:<puerto>/ | grep -o 'index-[a-z0-9]*\.js'   # hash servido
+ls web/frontend/dist/assets/index-*.js                               # hash local
+curl -s http://localhost:<puerto>/assets/index-<hash>.js | grep -c '<literal-del-cambio>'
+```
+
+**Cambios de backend sin ruta nueva** — grepear el símbolo o el fragmento de SQL nuevo dentro del
+contenedor:
+
+```bash
+docker exec lasfocasdev-web grep -c '<simbolo-o-fragmento-sql-nuevo>' /app/<ruta-del-modulo>
+```
+
+Regla: si no podés mostrar evidencia de que el contenedor tiene tu código, cualquier verificación E2E
+contra él no prueba nada sobre tu cambio.
