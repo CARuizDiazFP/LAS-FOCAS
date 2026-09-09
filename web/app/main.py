@@ -5956,6 +5956,265 @@ async def cromo_conectores_de_odf_web(request: Request, odf_n_id: int) -> JSONRe
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Servicios sin ODF — gestor de asociación manual Servicio→ODF (Tasks 2-4: Cromo)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _serializar_extremos_sin_odf(extremos: Any) -> list[dict[str, Any]]:
+    """`[{extremo, nodo, equipo}, ...]` a partir de una secuencia de `ExtremoUltimaMilla` (listado,
+    dataclass) o de filas `ServicioEquipoUltimaMilla` (detalle, ORM) — ambas exponen los mismos tres
+    atributos, así que sirve para las dos. Serializa TODOS los extremos, nunca sólo el ganador: es
+    requisito de diseño del plan que la prioridad de categorización nunca le oculte información al
+    operador (ver `ServicioSinOdf.extremos` en `core/services/cromo/servicios_sin_odf.py`)."""
+    return [{"extremo": e.extremo, "nodo": e.nodo, "equipo": e.equipo} for e in extremos]
+
+
+async def _obtener_servicio_categorizado(sesion: Any, servicio_id: int) -> Optional[dict[str, Any]]:
+    """Carga el Servicio (PK `app.servicios.id`) + sus extremos de última milla y les aplica la
+    categorización PURA de `core/services/cromo/servicios_sin_odf.py` (`categorizar_extremos`,
+    `subcategoria_sin_senal_prov`) — puro wiring de datos, la decisión de categoría/subcategoría
+    siempre la toma ese módulo, nunca esta función. `None` si el Servicio no existe.
+
+    La usan tanto `GET .../sugerencia` (mostrarle la causa al operador) como `POST .../asociar`
+    (persistir la MISMA `categoria_causa`/`subcategoria` que el operador vio en el detalle, no
+    recalcularla de otra forma en cada endpoint)."""
+    from sqlalchemy import select
+
+    from core.services.cromo.servicios_sin_odf import (
+        CATEGORIA_SIN_SENAL_PROV,
+        categorizar_extremos,
+        subcategoria_sin_senal_prov,
+    )
+    from db.models.infra import Servicio, ServicioEquipoUltimaMilla
+
+    servicio = (
+        await sesion.execute(select(Servicio).where(Servicio.id == servicio_id))
+    ).scalar_one_or_none()
+    if servicio is None:
+        return None
+
+    extremos = list(
+        (
+            await sesion.execute(
+                select(ServicioEquipoUltimaMilla)
+                .where(ServicioEquipoUltimaMilla.servicio_id == servicio_id)
+                .order_by(ServicioEquipoUltimaMilla.extremo)
+            )
+        ).scalars()
+    )
+
+    categoria_causa, _subcategoria_barata, _nodo, _equipo, indice_ganador = categorizar_extremos(
+        [(e.equipo, e.nodo) for e in extremos]
+    )
+    subcategoria = None
+    if categoria_causa == CATEGORIA_SIN_SENAL_PROV:
+        subcategoria = await subcategoria_sin_senal_prov(sesion, servicio_id)
+
+    return {
+        "servicio": servicio,
+        "extremos": extremos,
+        "categoria_causa": categoria_causa,
+        "subcategoria": subcategoria,
+        "indice_extremo_categorizado": indice_ganador,
+    }
+
+
+async def _senal_direccion_contra_odf(sesion: Any, direccion_prov: Optional[str], odf_n_id: int) -> Any:
+    """Devuelve el `SenalDireccion` de comparar `direccion_prov` contra la calle/altura de la ODF
+    `odf_n_id` (`NO_SE_PUDO_COMPARAR` si esa ODF no tiene fila en `cromo_odfs`) — wiring sobre
+    `core/services/cromo/direccion_comparacion.py`, cero lógica de comparación propia acá."""
+    from sqlalchemy import select
+
+    from core.services.cromo.direccion_comparacion import comparar_direccion_prov_vs_odf
+    from db.models.cromo import CromoOdf
+
+    fila = (
+        await sesion.execute(select(CromoOdf.calle, CromoOdf.altura).where(CromoOdf.n_id == odf_n_id))
+    ).first()
+    return comparar_direccion_prov_vs_odf(direccion_prov, fila.calle if fila else None, fila.altura if fila else None)
+
+
+@app.get("/api/admin/infra/servicios-odf/listado")
+async def servicios_sin_odf_listado_web(
+    request: Request,
+    categoria: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Listado paginado de Servicios Activos verificables sin ODF Cromo resuelta, con causa
+    probable ya categorizada por fila — barata (sin sugerencia de ODF ni subcategoría de detalle,
+    eso corre sólo bajo demanda en `GET .../sugerencia`, para no hacer N+1 en el paginado). Ver
+    `core/services/cromo/servicios_sin_odf.py::listar_servicios_sin_odf`.
+
+    `offset`/`limit` negativos o una `categoria` desconocida levantan `ValueError` en el servicio —
+    se mapean acá a 400, nunca a un 500 ni a una página silenciosamente incorrecta."""
+    from core.services.cromo.servicios_sin_odf import listar_servicios_sin_odf
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await listar_servicios_sin_odf(
+                sesion, limit=limit, offset=offset, categoria=categoria, q=q
+            )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "items": [
+                {
+                    "id": item.id,
+                    "servicio_id": item.servicio_id,
+                    "numero_primer_servicio": item.numero_primer_servicio,
+                    "nombre_cliente": item.nombre_cliente,
+                    "categoria_causa": item.categoria_causa,
+                    "subcategoria": item.subcategoria,
+                    "nodo": item.nodo,
+                    "equipo": item.equipo,
+                    "extremos": _serializar_extremos_sin_odf(item.extremos),
+                    "indice_extremo_categorizado": item.indice_extremo_categorizado,
+                }
+                for item in resultado.items
+            ],
+        }
+    )
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/sugerencia")
+async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -> JSONResponse:
+    """Detalle de causa + sugerencia de ODF para UN Servicio sin ODF: categoría/subcategoría
+    completas (incluida la cascada `subcategoria_sin_senal_prov` on-demand), AMBOS extremos de
+    última milla + el índice del que ganó la categorización, dirección PROV cruda del Servicio, y —
+    sólo para `OLT_PON_COMPARTIDO` — la sugerencia de ODF de un hermano resuelto más la
+    `senal_direccion` calculada contra esa ODF sugerida. Sólo lectura e informativo: NADA se
+    auto-aplica acá, el operador confirma vía `POST .../asociar`. `_require_auth` (no admin): es
+    consulta, mismo criterio que `odfs/{id}/conectores`. 404 si `servicio_id` no existe."""
+    from core.services.cromo.servicios_sin_odf import (
+        CATEGORIA_OLT_PON_COMPARTIDO,
+        sugerencia_odf_para_servicio,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+
+    async with AsyncSessionLocal() as sesion:
+        detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
+        if detalle is None:
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+        servicio = detalle["servicio"]
+        sugerencia_payload = None
+        senal_direccion = None
+        if detalle["categoria_causa"] == CATEGORIA_OLT_PON_COMPARTIDO:
+            sugerencia = await sugerencia_odf_para_servicio(sesion, servicio_id)
+            if sugerencia is not None:
+                sugerencia_payload = {"odf_n_id": sugerencia.odf_n_id, "nombre": sugerencia.nombre}
+                senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, sugerencia.odf_n_id)
+                senal_direccion = senal.value
+
+    return JSONResponse(
+        {
+            "id": servicio.id,
+            "servicio_id": servicio.servicio_id,
+            "nombre_cliente": servicio.nombre_cliente,
+            "direccion": servicio.direccion,
+            "categoria_causa": detalle["categoria_causa"],
+            "subcategoria": detalle["subcategoria"],
+            "extremos": _serializar_extremos_sin_odf(detalle["extremos"]),
+            "indice_extremo_categorizado": detalle["indice_extremo_categorizado"],
+            "sugerencia": sugerencia_payload,
+            "senal_direccion": senal_direccion,
+        }
+    )
+
+
+class ServicioOdfAsociarRequestModel(BaseModel):
+    """Payload para confirmar la asociación manual Servicio→ODF (`crear_override`, Task 4)."""
+
+    odf_n_id: int
+    pelo_n_id: Optional[int] = None
+    notas: Optional[str] = None
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/asociar")
+async def servicios_sin_odf_asociar_web(
+    request: Request, servicio_id: int, body: ServicioOdfAsociarRequestModel
+) -> JSONResponse:
+    """Confirma la asociación manual Servicio→ODF que el operador eligió (la sugerida, u otra que
+    haya buscado a mano). Recalcula `senal_direccion` (Task 2) en el backend contra la ODF
+    REALMENTE elegida en `body.odf_n_id` — nunca confía en lo que mandó el frontend, que puede
+    haber elegido una ODF distinta a la sugerida — y la persiste vía `crear_override` (Task 4) junto
+    con la MISMA `categoria_causa`/`subcategoria` que ve el operador en el detalle.
+
+    `senal_direccion` es sólo informativa: un `no_coincide` se persiste y se devuelve igual, nunca
+    bloquea la asociación. `ObjetoNoEncontrado` de `crear_override` (la ODF no tiene fila propia en
+    `cromo_odfs`) se mapea a 404, nunca a un 500."""
+    from core.services.cromo.servicio_odf_override_service import ObjetoNoEncontrado, crear_override
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicios_sin_odf_asociar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
+            if detalle is None:
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+            servicio = detalle["servicio"]
+            senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, body.odf_n_id)
+
+            try:
+                await crear_override(
+                    sesion,
+                    servicio_id=servicio_id,
+                    odf_n_id=body.odf_n_id,
+                    pelo_n_id=body.pelo_n_id,
+                    categoria_causa=detalle["categoria_causa"],
+                    subcategoria=detalle["subcategoria"],
+                    usuario=username,
+                    notas=body.notas,
+                    senal_direccion=senal,
+                )
+            except ObjetoNoEncontrado as exc:
+                return JSONResponse({"error": str(exc)}, status_code=404)
+
+            logger.info(
+                "action=servicios_sin_odf_asociar user=%s servicio_id=%s odf_n_id=%s "
+                "categoria_causa=%s senal_direccion=%s",
+                username,
+                servicio_id,
+                body.odf_n_id,
+                detalle["categoria_causa"],
+                senal.value,
+            )
+            return JSONResponse(
+                {"ok": True, "categoria_causa": detalle["categoria_causa"], "senal_direccion": senal.value}
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "action=servicios_sin_odf_asociar_error user=%s servicio_id=%s error=%s",
+            username,
+            servicio_id,
+            exc,
+        )
+        return JSONResponse({"error": "No se pudo asociar el Servicio a la ODF"}, status_code=500)
+
+
 @app.get("/api/infra/botellas/buscar")
 async def botellas_unificadas_buscar_web(
     request: Request,
