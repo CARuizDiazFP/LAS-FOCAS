@@ -68,12 +68,20 @@ _ODF_DEDUPE_N_ID = 999_940_010  # servicios_por_odf: override + automático a la
 _CABLE_DEDUPE_N_ID = 999_940_011
 _PELO_DEDUPE_N_ID = 999_940_012
 
+_ODF_REASOCIACION_A_N_ID = 999_940_020  # reasociación cross-ODF (fix Important 1, round 1)
+_ODF_REASOCIACION_B_N_ID = 999_940_021
+
+_ODF_SOLO_CONECTOR_N_ID = 999_940_030  # fix Important 2, round 1: ODF SIN fila propia
+_CONECTOR_SOLO_N_ID = 999_940_031
+
 _NUM_OVERRIDE_FELIZ = "9999951"
 _NUM_CASCADE = "9999952"
 _NUM_ODF_INEXISTENTE = "9999953"
 _NUM_CHECK = "9999954"
 _NUM_AUTOMATICO_Y_OVERRIDE = "9999955"
 _NUM_SOLO_OVERRIDE = "9999956"
+_NUM_REASOCIACION = "9999957"
+_NUM_ODF_SOLO_CONECTOR = "9999958"
 
 
 _SQL_ALTA_SERVICIO = text(
@@ -99,6 +107,13 @@ _SQL_ALTA_PELO = text(
 _SQL_ALTA_MATCH = text(
     "INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, servicio_id, metodo) "
     "VALUES (:pelo_n_id, :servicio_numero, :servicio_id, 'REGEX_EXACTO')"
+)
+# ODF conocida SOLO por un conector, sin fila propia en `cromo_odfs` — el escenario que
+# `crear_override` debe rechazar (fix Important 2, round 1: antes de la review aceptaba esto con
+# el criterio tolerante copiado de `odf_conectores.py`, que acá es INCORRECTO).
+_SQL_ALTA_CONECTOR_SOLO = text(
+    "INSERT INTO app.cromo_odf_conectores (n_id, odf_n_id, numero_conector, payload_raw) "
+    "VALUES (:n_id, :odf_n_id, '1', '{}'::jsonb)"
 )
 _SQL_INSERT_OVERRIDE_RAW = text(
     """
@@ -617,3 +632,132 @@ async def test_overrides_vigentes_por_odf_vacio_sin_overrides():
     async with AsyncSessionLocal() as sesion:
         vigentes = await overrides_vigentes_por_odf(sesion, _ODF_INEXISTENTE_N_ID)
     assert vigentes == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reasociación cross-ODF — bug real (Important 1, round 1 de review): el `DISTINCT ON` no puede
+# filtrar por `odf_n_id` ANTES de deduplicar, o un Servicio reasociado de una ODF a otra queda
+# duplicado entre las dos vistas de detalle en vez de aparecer sólo bajo la más nueva.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def servicio_para_reasociacion():
+    _borrar_servicios_y_overrides([_NUM_REASOCIACION])
+    with SessionLocal() as session:
+        session.execute(_SQL_ALTA_ODF, {"n_id": _ODF_REASOCIACION_A_N_ID, "nombre": "ODF QA Reasociacion A"})
+        session.execute(_SQL_ALTA_ODF, {"n_id": _ODF_REASOCIACION_B_N_ID, "nombre": "ODF QA Reasociacion B"})
+        servicio_id = _alta_servicio(session, _NUM_REASOCIACION, cliente="QA Reasociacion")
+        session.commit()
+    try:
+        yield servicio_id
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text("DELETE FROM app.cromo_odfs WHERE n_id = ANY(:ids)"),
+                {"ids": [_ODF_REASOCIACION_A_N_ID, _ODF_REASOCIACION_B_N_ID]},
+            )
+            session.commit()
+        _borrar_servicios_y_overrides([_NUM_REASOCIACION])
+
+
+@pytest.mark.asyncio
+async def test_reasociacion_a_otra_odf_no_deja_al_servicio_duplicado_entre_las_dos(
+    servicio_para_reasociacion,
+):
+    """Repro exacto del bug que encontró la review: override a la ODF A en t1, reasociación (INSERT
+    nuevo, sin UPDATE) a la ODF B en t2 > t1. El Servicio debe aparecer SÓLO bajo B — nunca bajo
+    las dos, y nunca "olvidado" de las dos."""
+    servicio_id = servicio_para_reasociacion
+    async with AsyncSessionLocal() as sesion:
+        viejo = await crear_override(
+            sesion,
+            servicio_id=servicio_id,
+            odf_n_id=_ODF_REASOCIACION_A_N_ID,
+            categoria_causa="OTRO",
+            usuario="qa-real-db",
+            notas="odf-a-vieja",
+        )
+        nuevo = await crear_override(
+            sesion,
+            servicio_id=servicio_id,
+            odf_n_id=_ODF_REASOCIACION_B_N_ID,
+            categoria_causa="OTRO",
+            usuario="qa-real-db",
+            notas="odf-b-nueva",
+        )
+    assert nuevo.id > viejo.id
+
+    async with AsyncSessionLocal() as sesion:
+        vigente = await override_vigente_de_servicio(sesion, servicio_id)
+        vigentes_a = await overrides_vigentes_por_odf(sesion, _ODF_REASOCIACION_A_N_ID)
+        vigentes_b = await overrides_vigentes_por_odf(sesion, _ODF_REASOCIACION_B_N_ID)
+
+    assert vigente is not None
+    assert vigente.id == nuevo.id
+    # El corazón del bug: la ODF vieja NO debe seguir viendo a este Servicio como vigente.
+    assert vigentes_a == []
+    assert [o.id for o in vigentes_b] == [nuevo.id]
+
+    async with AsyncSessionLocal() as sesion:
+        resultado_a = await servicios_por_odf(sesion, _ODF_REASOCIACION_A_N_ID)
+        resultado_b = await servicios_por_odf(sesion, _ODF_REASOCIACION_B_N_ID)
+
+    # Sin match automático a ninguna de las dos: sólo el override manda, y sólo bajo la ODF nueva.
+    assert resultado_a.servicios == []
+    assert [s.servicio_id for s in resultado_b.servicios] == [servicio_id]
+    assert resultado_b.servicios[0].origen == "override_manual"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# crear_override rechaza una ODF conocida SOLO por sus conectores (Important 2, round 1 de review)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def servicio_para_odf_solo_conector():
+    """Una ODF sin fila propia en `cromo_odfs`, conocida únicamente por un conector real en
+    `cromo_odf_conectores` — el mismo tipo de "referencia colgada" que `odf_conectores.py::
+    conectores_de_odf` SÍ tolera para lectura, pero que `servicios_por_odf`/`obtener_detalle_odf`
+    (y, desde el fix de esta review, `crear_override`) tratan como "no existe"."""
+    _borrar_servicios_y_overrides([_NUM_ODF_SOLO_CONECTOR])
+    with SessionLocal() as session:
+        session.execute(
+            _SQL_ALTA_CONECTOR_SOLO,
+            {"n_id": _CONECTOR_SOLO_N_ID, "odf_n_id": _ODF_SOLO_CONECTOR_N_ID},
+        )
+        servicio_id = _alta_servicio(session, _NUM_ODF_SOLO_CONECTOR)
+        session.commit()
+    try:
+        yield servicio_id
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text("DELETE FROM app.cromo_odf_conectores WHERE n_id = :n_id"),
+                {"n_id": _CONECTOR_SOLO_N_ID},
+            )
+            session.commit()
+        _borrar_servicios_y_overrides([_NUM_ODF_SOLO_CONECTOR])
+
+
+@pytest.mark.asyncio
+async def test_crear_override_rechaza_odf_conocida_solo_por_conectores_sin_fila_propia(
+    servicio_para_odf_solo_conector,
+):
+    servicio_id = servicio_para_odf_solo_conector
+    async with AsyncSessionLocal() as sesion:
+        with pytest.raises(ObjetoNoEncontrado):
+            await crear_override(
+                sesion,
+                servicio_id=servicio_id,
+                odf_n_id=_ODF_SOLO_CONECTOR_N_ID,
+                categoria_causa="OTRO",
+                usuario="qa-real-db",
+            )
+
+    with SessionLocal() as session:
+        fila = session.execute(
+            text("SELECT 1 FROM app.cromo_servicio_odf_override WHERE servicio_id = :sid"),
+            {"sid": servicio_id},
+        ).first()
+    assert fila is None
