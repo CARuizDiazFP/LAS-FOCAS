@@ -78,24 +78,26 @@ def test_categorizar_cubre_las_cuatro_categorias_posibles():
 
 
 @pytest.mark.parametrize(
-    ("extremos", "categoria_esperada", "nodo_esperado", "equipo_esperado"),
+    ("extremos", "categoria_esperada", "nodo_esperado", "equipo_esperado", "indice_esperado"),
     [
         # Sin fila PROV en absoluto (los 4 servicios reales de dev sin `equipo`).
-        ([], CATEGORIA_SIN_SENAL_PROV, None, None),
+        ([], CATEGORIA_SIN_SENAL_PROV, None, None, None),
         # Un solo extremo: se usa tal cual.
         (
             [("OLT2_Pilar", "ElRincon842_Pilar")],
             CATEGORIA_OLT_PON_COMPARTIDO,
             "ElRincon842_Pilar",
             "OLT2_Pilar",
+            0,
         ),
-        # Dos extremos con categorías distintas (206 servicios reales en dev): gana el más
+        # Dos extremos con categorías distintas (204 servicios reales en dev): gana el más
         # informativo, aunque sea el extremo 2 — si no, la sugerencia OLT nunca se ofrecería.
         (
             [("SW_4_ElRincon842_Pilar", "ElRincon842_Pilar"), ("OLT2_Pilar", "OtroNodo")],
             CATEGORIA_OLT_PON_COMPARTIDO,
             "OtroNodo",
             "OLT2_Pilar",
+            1,
         ),
         # Mismo caso pero con el OLT en el extremo 1: mismo resultado, sin depender del orden.
         (
@@ -103,6 +105,7 @@ def test_categorizar_cubre_las_cuatro_categorias_posibles():
             CATEGORIA_OLT_PON_COMPARTIDO,
             "OtroNodo",
             "OLT2_Pilar",
+            0,
         ),
         # CLI_ en el extremo 2 le gana a un switch genérico en el extremo 1.
         (
@@ -110,6 +113,7 @@ def test_categorizar_cubre_las_cuatro_categorias_posibles():
             CATEGORIA_EQUIPO_DOMICILIO_CLIENTE,
             "CLI_UnCliente",
             None,
+            1,
         ),
         # Empate de categoría: gana el primer extremo, resultado determinista.
         (
@@ -117,19 +121,34 @@ def test_categorizar_cubre_las_cuatro_categorias_posibles():
             CATEGORIA_SWITCH_COMPARTIDO_REVISAR,
             "NodoUno",
             "SW_1",
+            0,
         ),
         # Filas PROV presentes pero sin equipo utilizable en ningún extremo.
-        ([(None, "NodoUno"), (None, "NodoDos")], CATEGORIA_SIN_SENAL_PROV, "NodoUno", None),
+        ([(None, "NodoUno"), (None, "NodoDos")], CATEGORIA_SIN_SENAL_PROV, "NodoUno", None, 0),
     ],
 )
 def test_categorizar_extremos_elige_el_extremo_mas_informativo(
-    extremos, categoria_esperada, nodo_esperado, equipo_esperado
+    extremos, categoria_esperada, nodo_esperado, equipo_esperado, indice_esperado
 ):
-    categoria, subcategoria, nodo, equipo = categorizar_extremos(extremos)
+    categoria, subcategoria, nodo, equipo, indice = categorizar_extremos(extremos)
     assert categoria == categoria_esperada
     assert subcategoria is None
     assert nodo == nodo_esperado
     assert equipo == equipo_esperado
+    assert indice == indice_esperado
+
+
+def test_categorizar_extremos_devuelve_el_indice_del_ganador_no_su_valor_normalizado():
+    """El índice existe porque `nodo`/`equipo` salen normalizados (`.strip()`) y los extremos de
+    entrada traen el valor crudo: comparar por valor para saber quién ganó no es confiable."""
+    extremos = [("SW_1", "NodoGenerico"), ("  OLT2_Pilar  ", "  OtroNodo  ")]
+    _, _, nodo, equipo, indice = categorizar_extremos(extremos)
+
+    assert indice == 1
+    # El ganador viene normalizado y NO es igual al crudo, que es justo el punto.
+    assert (equipo, nodo) == ("OLT2_Pilar", "OtroNodo")
+    assert extremos[indice] == ("  OLT2_Pilar  ", "  OtroNodo  ")
+    assert extremos[indice] != (equipo, nodo)
 
 
 def test_categorizar_extremos_es_consistente_con_categorizar_para_un_extremo():

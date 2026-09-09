@@ -513,6 +513,9 @@ async def test_listado_incluye_el_sin_odf_categorizado_y_excluye_al_hermano_resu
         (1, _NODO_GRUPO, _EQUIPO_SWITCH),
         (2, _NODO_GRUPO, _EQUIPO_OLT),
     ]
+    # Y se dice CUÁL ganó, sin que la UI tenga que deducirlo comparando valores.
+    assert fila.indice_extremo_categorizado == 1
+    assert fila.extremos[fila.indice_extremo_categorizado].equipo == _EQUIPO_OLT
 
     # El hermano tiene ODF resuelta en `cromo_odf_conectores`: está fuera del universo.
     assert escenario_grupo_olt["hermano_id"] not in por_id
@@ -546,9 +549,10 @@ async def test_override_saca_al_servicio_del_listado(servicio_para_override):
     assert servicio_para_override in {i.id for i in antes.items}
     fila = antes.items[[i.id for i in antes.items].index(servicio_para_override)]
     assert fila.categoria_causa == CATEGORIA_SIN_SENAL_PROV
-    # Sin fila PROV: `extremos` vacía (no `None`), y `nodo`/`equipo` en `None`.
+    # Sin fila PROV: `extremos` vacía (no `None`), y `nodo`/`equipo`/índice en `None`.
     assert fila.extremos == []
     assert fila.nodo is None and fila.equipo is None
+    assert fila.indice_extremo_categorizado is None
 
     with SessionLocal() as session:
         session.execute(
@@ -771,6 +775,62 @@ async def test_categoria_desconocida_levanta_value_error():
     async with AsyncSessionLocal() as sesion:
         with pytest.raises(ValueError, match="categoria desconocida"):
             await listar_servicios_sin_odf(sesion, categoria="OLT")  # prefijo, no la categoría
+
+
+@pytest.mark.asyncio
+async def test_filtro_q_trata_los_metacaracteres_de_like_como_literales(escenario_grupo_olt):
+    """Sin escapar, `q="_"` matchearía TODO y `q="100%"` sería el prefijo "100" — resultados
+    plausibles pero equivocados, y la Task 5 va a exponer esto a un buscador de UI."""
+    async with AsyncSessionLocal() as sesion:
+        universo = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO)
+        guion_bajo = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, q="_")
+        porcentaje = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, q="%")
+        # El número sintético existe; con `%` de wildcard este patrón matchearía, literal no.
+        con_porcentaje = await listar_servicios_sin_odf(
+            sesion, limit=_LIMIT_UNIVERSO, q=f"{_NUM_SIN_ODF[:4]}%{_NUM_SIN_ODF[5:]}"
+        )
+        barra = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO, q="\\")
+
+    assert universo.total > 0
+    # `_` como comodín de UN carácter traería casi todo el universo; literal, ninguno de estos
+    # `servicio_id`/`nombre_cliente` sintéticos ni reales lo contiene como texto.
+    assert guion_bajo.total < universo.total
+    assert porcentaje.total < universo.total
+    assert con_porcentaje.total == 0
+    # Una barra sola no debe romper la query (sin `ESCAPE` bien armado, Postgres tira error).
+    assert barra.total >= 0
+
+
+@pytest.mark.asyncio
+async def test_offset_y_limit_negativos_levantan_value_error():
+    """`items[-3:-1]` devolvería una página del FINAL en silencio: plausible y equivocada, el peor
+    tipo de bug para un paginador. Misma convención explícita que `categoria`."""
+    async with AsyncSessionLocal() as sesion:
+        with pytest.raises(ValueError, match="offset no puede ser negativo"):
+            await listar_servicios_sin_odf(sesion, limit=2, offset=-3)
+        with pytest.raises(ValueError, match="limit no puede ser negativo"):
+            await listar_servicios_sin_odf(sesion, limit=-1)
+
+
+@pytest.mark.asyncio
+async def test_limit_cero_devuelve_lista_vacia_con_el_total_real():
+    """`limit=0` es válido y significa "sólo quiero el conteo" — la UI lo usa para los chips de
+    categoría sin traer filas."""
+    async with AsyncSessionLocal() as sesion:
+        universo = await listar_servicios_sin_odf(sesion, limit=_LIMIT_UNIVERSO)
+        solo_total = await listar_servicios_sin_odf(sesion, limit=0)
+
+    assert solo_total.items == []
+    assert solo_total.limit == 0
+    assert solo_total.total == universo.total > 0
+
+
+@pytest.mark.asyncio
+async def test_offset_mas_alla_del_total_devuelve_pagina_vacia_sin_error():
+    async with AsyncSessionLocal() as sesion:
+        pagina = await listar_servicios_sin_odf(sesion, limit=10, offset=10_000_000)
+    assert pagina.items == []
+    assert pagina.total > 0  # el total sigue siendo el del set completo
 
 
 # ─────────────────────────────────────────────────────────────────────────────

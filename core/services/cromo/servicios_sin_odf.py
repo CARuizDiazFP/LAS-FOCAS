@@ -140,6 +140,11 @@ class ServicioSinOdf:
     `SW_x` en el extremo 1 y un OLT en el extremo 2 se categoriza como OLT, pero la UI tiene que
     poder mostrar los dos. `extremos` está vacía cuando no hay fila PROV (4 servicios reales en
     dev).
+
+    `indice_extremo_categorizado` es la posición en `extremos` del que ganó (`None` si no hay
+    ninguno), para que la UI pueda marcarlo — `extremos[indice_extremo_categorizado]`. Hace falta
+    porque `nodo`/`equipo` vienen normalizados (`.strip()`, ver `_texto_util`) y `extremos` trae el
+    valor crudo de PROV, así que identificar al ganador comparando valores no es confiable.
     """
 
     id: int
@@ -151,6 +156,7 @@ class ServicioSinOdf:
     nodo: Optional[str]
     equipo: Optional[str]
     extremos: list[ExtremoUltimaMilla] = field(default_factory=list)
+    indice_extremo_categorizado: Optional[int] = None
 
 
 @dataclass(slots=True)
@@ -233,11 +239,16 @@ def categorizar(equipo: Optional[str], nodo: Optional[str]) -> tuple[str, Option
 
 def categorizar_extremos(
     extremos: Sequence[tuple[Optional[str], Optional[str]]],
-) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[int]]:
     """Categoría de un Servicio a partir de TODOS sus extremos de última milla.
 
-    Devuelve `(categoria_causa, subcategoria, nodo, equipo)` — `nodo`/`equipo` son los del extremo
-    que ganó, para que la fila del listado muestre el dato que justifica la categoría.
+    Devuelve `(categoria_causa, subcategoria, nodo, equipo, indice_ganador)` — `nodo`/`equipo` son
+    los del extremo que ganó, para que la fila del listado muestre el dato que justifica la
+    categoría, e `indice_ganador` es su posición en `extremos` (`None` si la secuencia está vacía).
+
+    El índice hace falta porque `nodo`/`equipo` salen normalizados por `_texto_util()` mientras la
+    secuencia de entrada trae los valores crudos: sin el índice, un consumidor no puede identificar
+    cuál extremo ganó comparando valores (`"  OLT2  "` vs `"OLT2"` no son iguales).
 
     Por qué existe: `ServicioSinOdf` tiene un solo `nodo`/`equipo`, pero
     `app.servicios_equipos_ultima_milla` guarda 1 **o 2** extremos por Servicio (368 servicios con
@@ -256,15 +267,21 @@ def categorizar_extremos(
     — ya ordenada por `extremo` ascendente.
     """
     if not extremos:
-        return (*categorizar(None, None), None, None)
+        return (*categorizar(None, None), None, None, None)
 
     def prioridad(indice_y_extremo: tuple[int, tuple[Optional[str], Optional[str]]]) -> tuple[int, int]:
         indice, (equipo, nodo) = indice_y_extremo
         return CATEGORIAS_POR_PRIORIDAD.index(categorizar(equipo, nodo)[0]), indice
 
-    _, (equipo_ganador, nodo_ganador) = min(enumerate(extremos), key=prioridad)
+    indice_ganador, (equipo_ganador, nodo_ganador) = min(enumerate(extremos), key=prioridad)
     categoria, subcategoria = categorizar(equipo_ganador, nodo_ganador)
-    return categoria, subcategoria, _texto_util(nodo_ganador), _texto_util(equipo_ganador)
+    return (
+        categoria,
+        subcategoria,
+        _texto_util(nodo_ganador),
+        _texto_util(equipo_ganador),
+        indice_ganador,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -341,8 +358,13 @@ _SQL_NO_TIENE_ODF_RESUELTA = """
 # `:q IS NULL OR ...`, porque un bind comparado contra NULL obliga a un `CAST(:q AS text)` que en
 # `text()` de SQLAlchemy arrastra el gotcha del espacio antes del `::` y además le esconde al
 # planner que el filtro no aplica.
-_FILTRO_BUSQUEDA_LIBRE = """
-          AND (s.servicio_id ILIKE :patron OR s.nombre_cliente ILIKE :patron)
+#
+# `ESCAPE '\'` + `_escapar_like()`: sin eso, los metacaracteres de LIKE que el operador escriba en
+# el buscador actúan como wildcards — `q="_"` matchearía TODO y `q="100%"` sería el prefijo "100".
+# No es inyección (el valor va como bind), pero sí un resultado incorrecto y visible en la UI.
+_FILTRO_BUSQUEDA_LIBRE = r"""
+          AND (s.servicio_id ILIKE :patron ESCAPE '\'
+               OR s.nombre_cliente ILIKE :patron ESCAPE '\')
 """
 
 # `con_override` es CRÍTICO, no cosmético: sin él, un Servicio recién asociado a mano por un
@@ -404,6 +426,15 @@ _SQL_LISTADO_SIN_ODF_CON_BUSQUEDA = text(
 )
 
 
+def _escapar_like(texto: str) -> str:
+    r"""Neutraliza los metacaracteres de `LIKE` para que la búsqueda sea literal.
+
+    El `\` va primero, si no se re-escaparían las barras que agregan los otros dos reemplazos.
+    Se usa junto con `ESCAPE '\'` en `_FILTRO_BUSQUEDA_LIBRE`.
+    """
+    return texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _extremos_de_arrays(
     extremos: Optional[Sequence[Optional[int]]],
     nodos: Optional[Sequence[Optional[str]]],
@@ -440,14 +471,20 @@ async def listar_servicios_sin_odf(
     categoria: Optional[str] = None,
     q: Optional[str] = None,
 ) -> ResultadoListadoSinOdf:
-    """Página del universo "Servicios Activos verificables sin ODF resuelta", ya categorizada.
+    r"""Página del universo "Servicios Activos verificables sin ODF resuelta", ya categorizada.
 
     Excluye los que ya tienen una asociación manual en `app.cromo_servicio_odf_override`.
 
     Filtros:
 
     - `q`: búsqueda libre por `servicio_id` o `nombre_cliente`, en **SQL** (`ILIKE '%q%'`) — son
-      columnas reales, así que filtrar allá recorta el set de candidatos antes de traerlo.
+      columnas reales, así que filtrar allá recorta el set de candidatos antes de traerlo. El texto
+      se busca **literal**: los metacaracteres de `LIKE` (`%`, `_`, `\`) van escapados, así que
+      buscar `"100%"` no se comporta como el prefijo `"100"`.
+
+    `offset`/`limit` negativos levantan `ValueError` (un `offset` negativo devolvería una página
+    del final en silencio). `limit=0` es válido: devuelve lista vacía con el `total` real, útil para
+    pedir sólo el conteo.
     - `categoria`: uno de `CATEGORIAS_POR_PRIORIDAD`, en **Python**. Va acá y no en SQL porque
       `categoria_causa` NO existe como columna: la calculan `categorizar()`/`categorizar_extremos()`,
       que quedan como única fuente de verdad de la taxonomía. Un `CASE WHEN upper(equipo) LIKE
@@ -473,12 +510,20 @@ async def listar_servicios_sin_odf(
         raise ValueError(
             f"categoria desconocida: {categoria!r}. Válidas: {', '.join(CATEGORIAS_POR_PRIORIDAD)}"
         )
+    # Mismo criterio explícito que `categoria`: un `offset` negativo con el slice de Python
+    # devolvería una página del FINAL en silencio (`items[-3:-1]`), que es un resultado plausible
+    # pero equivocado — el peor tipo de bug para un paginador.
+    if offset < 0:
+        raise ValueError(f"offset no puede ser negativo: {offset}")
+    if limit < 0:
+        raise ValueError(f"limit no puede ser negativo: {limit}")
 
     busqueda = q.strip() if q else ""
     if busqueda:
         filas = (
             await sesion.execute(
-                _SQL_LISTADO_SIN_ODF_CON_BUSQUEDA, {"patron": f"%{busqueda}%"}
+                _SQL_LISTADO_SIN_ODF_CON_BUSQUEDA,
+                {"patron": f"%{_escapar_like(busqueda)}%"},
             )
         ).all()
     else:
@@ -487,7 +532,7 @@ async def listar_servicios_sin_odf(
     items: list[ServicioSinOdf] = []
     for fila in filas:
         extremos = _extremos_de_arrays(fila.extremos, fila.nodos, fila.equipos)
-        categoria_causa, subcategoria, nodo, equipo = categorizar_extremos(
+        categoria_causa, subcategoria, nodo, equipo, indice_ganador = categorizar_extremos(
             [(e.equipo, e.nodo) for e in extremos]
         )
         if categoria is not None and categoria_causa != categoria:
@@ -503,6 +548,7 @@ async def listar_servicios_sin_odf(
                 nodo=nodo,
                 equipo=equipo,
                 extremos=extremos,
+                indice_extremo_categorizado=indice_ganador,
             )
         )
 
@@ -510,6 +556,7 @@ async def listar_servicios_sin_odf(
         total=len(items),
         limit=limit,
         offset=offset,
+        # `limit == 0` es válido y significa "sólo quiero el total": lista vacía, `total` real.
         items=items[offset : offset + limit] if limit > 0 else [],
     )
 
