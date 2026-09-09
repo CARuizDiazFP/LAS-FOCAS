@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Optional
 
 import pytest
@@ -21,6 +22,13 @@ class _ResultadoFilas:
     def first(self):
         return self._filas[0] if self._filas else None
 
+    def scalars(self):
+        # `overrides_vigentes_por_odf` (Tarea 4) hace `sesion.execute(select(...)).scalars().all()`
+        # sobre un `select()` ORM — acá alcanza con devolver `self`, porque ninguno de los tests de
+        # este archivo configura una respuesta que matchee esa query (siempre cae al `[]` default de
+        # `execute`), así que nunca se itera un elemento como si fuera una fila cruda con atributos.
+        return self
+
 
 class _SesionFake:
     """Reemplaza sólo `execute`: matchea por substring de la consulta compilada, como en test_cromo_ingesta.py."""
@@ -29,7 +37,17 @@ class _SesionFake:
         self._respuestas = respuestas or {}
 
     async def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
-        texto = str(stmt)
+        # `warnings.catch_warnings()` sólo acá: desde la Tarea 4, `servicios_por_odf` también
+        # ejecuta un `select(CromoServicioOdfOverride).distinct(columna)` ORM (vía
+        # `overrides_vigentes_por_odf`) — `str()` sobre ese `Select` sin dialect explícito compila
+        # con el dialect genérico, que emite `SADeprecationWarning` al renderizar `DISTINCT ON`
+        # (sintaxis específica de Postgres). No cambia el texto resultante ni el resto del matching
+        # por substring de los `text()` de siempre — sólo silencia el warning de compilar sin
+        # dialect, que nunca ocurre contra el motor real (`AsyncSession` real siempre compila con el
+        # dialect de Postgres).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            texto = str(stmt)
         for clave, filas in self._respuestas.items():
             if clave in texto:
                 return _ResultadoFilas(filas)

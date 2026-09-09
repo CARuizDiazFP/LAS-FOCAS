@@ -18,7 +18,9 @@ class ObjetoNoEncontrado(RuntimeError):
 
 @dataclass(slots=True)
 class ServicioEncontrado:
-    """Un servicio de `app.servicios` alcanzado a través de un pelo con match (`cromo_servicio_match`)."""
+    """Un servicio de `app.servicios` alcanzado a través de un pelo con match (`cromo_servicio_match`)
+    — o, sólo en `servicios_por_odf`, a través de una asociación manual confirmada por un operador
+    (`app.cromo_servicio_odf_override`, Tarea 4 del gestor "Servicios sin ODF")."""
 
     servicio_id: int
     servicio_id_externo: str
@@ -28,9 +30,20 @@ class ServicioEncontrado:
     estado_servicio: Optional[str]
     categoria: Optional[int]
     tipo_servicio: Optional[str]
-    pelo_n_id: int
+    # `Optional` (y no `int`) desde la Tarea 4: un Servicio alcanzado por override manual puede no
+    # tener `pelo_n_id` pineado ("asociado a la ODF en general", ver `CromoServicioOdfOverride`) —
+    # sigue siendo siempre un `int` real para las filas de matching automático (`servicios_por_cable/
+    # tubo/botella`), este cambio de tipo no les afecta.
+    pelo_n_id: Optional[int]
     servicio_numero_match: str
     metodo: str
+    # Distingue de dónde vino la fila: "automatico" (matching por texto vía `cromo_servicio_match`/
+    # `servicio_resuelto`, el único origen hasta la Tarea 4) u "override_manual" (asociación manual
+    # confirmada por un operador, sólo posible en `servicios_por_odf`). Default para no romper la
+    # forma de `servicios_por_cable/tubo/botella` (y de `detalle.py`, y de los tests que construyen
+    # `ServicioEncontrado` a mano): ninguno de esos call-sites pasa `origen`, y todos siguen
+    # obteniendo "automatico" como antes de este campo existir.
+    origen: str = "automatico"
 
 
 @dataclass(slots=True)
@@ -242,6 +255,22 @@ _SQL_CABLES_DE_ODF = text(
     """
 )
 
+# Datos de `app.servicios` para los Servicios alcanzados sólo por override manual (Tarea 4) — batch
+# por `id` (la PK, la misma identidad que `CromoServicioOdfOverride.servicio_id`), nunca uno por
+# fila: `servicios_por_odf` puede sumar varios en la misma llamada. Subconjunto de columnas de
+# `_COLUMNAS_SERVICIO` (sin `p.n_id`/`m.servicio_numero`/`m.metodo`: esos vienen del JOIN a
+# `cromo_servicio_match`, que un override no tiene). `::integer[]` con espacio antes del cast —
+# gotcha real de este repo con `text()` + psycopg3 (ver docstrings de otras queries `ANY(...)` acá
+# mismo, ej. `_SQL_SERVICIO_IDS_POR_CAMARAS`).
+_SQL_SERVICIOS_POR_IDS = text(
+    """
+    SELECT id, servicio_id, numero_primer_servicio, nombre_cliente, cliente,
+           estado_servicio, categoria, tipo_servicio
+    FROM app.servicios
+    WHERE id = ANY(:ids ::integer[])
+    """
+)
+
 # Versión batcheada de `_SQL_EXISTE_BOTELLA_POR_CABLES` para N n_ids en una sola query — usada por el
 # dashboard de duplicados (`AdminBotellasViewer.vue`) para marcar cuál de varias `CromoBotella`
 # candidatas de un grupo es la "operativa" (tiene cables reales asociados), sin una query por miembro.
@@ -314,6 +343,43 @@ def _fila_a_servicio(fila: tuple) -> ServicioEncontrado:
         pelo_n_id=pelo_n_id,
         servicio_numero_match=servicio_numero_match,
         metodo=metodo,
+    )
+
+
+def _fila_a_servicio_desde_override(fila: tuple, pelo_n_id: Optional[int]) -> ServicioEncontrado:
+    """Arma un `ServicioEncontrado` a partir de una fila de `_SQL_SERVICIOS_POR_IDS` (columnas
+    propias de `app.servicios`, sin pelo/match) + el `pelo_n_id` del override (puede ser `None` — el
+    operador asoció "a la ODF en general", sin pinear una posición física).
+
+    `servicio_numero_match`/`metodo` no tienen un equivalente real acá (no hubo regex ni pelo que
+    matcheara): se completan con la propia identidad del Servicio y un método explícito
+    (`"OVERRIDE_MANUAL"`) en vez de dejarlos vacíos, para que el campo nunca sea un string vacío
+    engañoso. `origen="override_manual"` es el campo que de verdad distingue esta fila — ver
+    `ServicioEncontrado`.
+    """
+    (
+        servicio_id,
+        servicio_id_externo,
+        numero_primer_servicio,
+        nombre_cliente,
+        cliente,
+        estado_servicio,
+        categoria,
+        tipo_servicio,
+    ) = fila
+    return ServicioEncontrado(
+        servicio_id=servicio_id,
+        servicio_id_externo=servicio_id_externo,
+        numero_primer_servicio=numero_primer_servicio,
+        nombre_cliente=nombre_cliente,
+        cliente=cliente,
+        estado_servicio=estado_servicio,
+        categoria=categoria,
+        tipo_servicio=tipo_servicio,
+        pelo_n_id=pelo_n_id,
+        servicio_numero_match=servicio_id_externo,
+        metodo="OVERRIDE_MANUAL",
+        origen="override_manual",
     )
 
 
@@ -424,7 +490,19 @@ async def servicios_por_odf(sesion: AsyncSession, odf_n_id: int) -> ResultadoOdf
     hay fila, levanta `ObjetoNoEncontrado`.
 
     Es un estado degradado esperado, no un error, que `servicios`/`cables` vuelvan vacíos mientras el
-    volumen real de `cables_asociados` poblado sea bajo (ver brief de la Tarea 4).
+    volumen real de `cables_asociados` poblado sea bajo (ver brief de la Tarea 4 del plan ODFs,
+    2026-08-28 — plan distinto del que agrega los overrides, ver el párrafo siguiente).
+
+    Desde la Tarea 4 del gestor "Servicios sin ODF" (2026-09-09), además suma los Servicios con una
+    asociación manual VIGENTE a esta ODF (`app.cromo_servicio_odf_override`, ver
+    `servicio_odf_override_service.py`) que el matching automático de arriba no haya encontrado —
+    cada uno de esos con `ServicioEncontrado.origen="override_manual"` (las filas de matching
+    automático quedan con el default `"automatico"`, sin cambios de comportamiento para ellas). Un
+    Servicio con override Y match automático a esta MISMA ODF no se duplica: gana la fila
+    automática (trae `pelo_n_id`/`servicio_numero_match`/`metodo` reales de la resolución por
+    texto; el override sólo confirma la misma conclusión a la que ya había llegado el matching) y el
+    override se descarta en silencio para ese Servicio puntual — no es un error, es el caso
+    esperado de "el operador confirmó algo que el detector ya había resuelto solo".
     """
     odf = (await sesion.execute(_SQL_ODF_POR_N_ID, {"n_id": odf_n_id})).first()
     if odf is None:
@@ -433,12 +511,41 @@ async def servicios_por_odf(sesion: AsyncSession, odf_n_id: int) -> ResultadoOdf
     filas_servicios = (await sesion.execute(_SQL_SERVICIOS_POR_ODF, {"odf_n_id": odf_n_id})).all()
     filas_cables = (await sesion.execute(_SQL_CABLES_DE_ODF, {"odf_n_id": odf_n_id})).all()
 
+    servicios = [_fila_a_servicio(f) for f in filas_servicios]
+
+    # Import diferido (no a nivel de módulo) a propósito: `servicio_odf_override_service` importa
+    # `ObjetoNoEncontrado` DE ESTE módulo a nivel de módulo (mismo criterio que ya usa
+    # `odf_conectores.py` para "no encontrado"). Si acá arriba se importara
+    # `servicio_odf_override_service` a nivel de módulo también, cualquiera de los dos que se
+    # importe primero fallaría con un ciclo (`ImportError: cannot import name ... from partially
+    # initialized module`). Se resuelve difiriendo UNO de los dos lados nada más — este, porque
+    # `verificador.py` es el módulo más "de base" del paquete (varios otros ya le importan
+    # `ObjetoNoEncontrado` a nivel de módulo) y no conviene invertir esa dirección.
+    from core.services.cromo.servicio_odf_override_service import overrides_vigentes_por_odf
+
+    overrides = await overrides_vigentes_por_odf(sesion, odf_n_id)
+    ids_automaticos = {s.servicio_id for s in servicios}
+    ids_override_nuevos = [o.servicio_id for o in overrides if o.servicio_id not in ids_automaticos]
+    if ids_override_nuevos:
+        filas_override_servicio = (
+            await sesion.execute(_SQL_SERVICIOS_POR_IDS, {"ids": ids_override_nuevos})
+        ).all()
+        pelo_por_servicio = {o.servicio_id: o.pelo_n_id for o in overrides}
+        servicios.extend(
+            _fila_a_servicio_desde_override(fila, pelo_por_servicio.get(fila.id))
+            for fila in filas_override_servicio
+        )
+        # Mismo orden (`ORDER BY s.id`) que ya tenía la lista puramente automática — re-ordenar sólo
+        # cuando de verdad se agregó algo, para no tocar el resultado en el caso (hoy mayoritario)
+        # sin overrides.
+        servicios.sort(key=lambda s: s.servicio_id)
+
     return ResultadoOdf(
         odf_n_id=odf_n_id,
         nombre=odf[1],
         tipo_elemento=odf[2],
         localidad=odf[3],
-        servicios=[_fila_a_servicio(f) for f in filas_servicios],
+        servicios=servicios,
         cables=[CableDeBotella(n_id=f[0], nombre=f[1], cantidad_servicios=f[2]) for f in filas_cables],
     )
 
