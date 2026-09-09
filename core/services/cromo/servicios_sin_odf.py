@@ -518,17 +518,45 @@ async def listar_servicios_sin_odf(
 # Cascada de subcategoría para SIN_SENAL_PROV — on-demand, NUNCA en el listado
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Cuántos pelos matchean este número en `cromo_servicio_match`, y cuántos de esos pelos están
-# efectivamente cableados a un conector de ODF. Las dos cuentas en una sola query: distinguen
-# "Cromo no conoce el servicio" de "lo conoce pero el pelo no llega a ninguna patchera".
+# Un pelo de Cromo "es de este Servicio" si su match apunta a la fila por FK, o si el número que
+# el regex le sacó a la descripción del pelo coincide con CUALQUIERA de las tres identidades del
+# Servicio. Es el mismo criterio de identidad de `ingesta.py::_SQL_BUSCAR_SERVICIO` y del listado
+# de este módulo — la constraint global del plan: el matching Servicio↔Cromo es siempre por las
+# tres identidades, nunca por una sola.
+#
+# Por qué importa (bug real corregido en la review de la Tarea 3): keyear sólo por UN número
+# etiquetaba `AUSENTE_RED_CROMO` ("Cromo no conoce este Servicio") a un Servicio cuyos pelos SÍ
+# están en Cromo pero bajo su otra numeración o bajo un alias. Un diagnóstico falso mostrado al
+# operador es peor que no mostrar ninguno.
+#
+# `m.servicio_id = s.id` primero, y no sólo los tres números: es el vínculo ya resuelto por
+# `fase_servicios` y cubre el caso en que `alias_ids` cambió DESPUÉS de que se registró el match.
+# Además hace la función consistente consigo misma — el paso 3 de la cascada
+# (`_SQL_HERMANO_DE_BAJA_CON_PELO`) ya keyeaba por esta misma FK.
+#
+# `= ANY(s.alias_ids)` y no `@>`: acá el escalar es de `cromo_servicio_match` y el array es de la
+# fila candidata de `servicios` — la dirección inversa al self-join anti-ambigüedad, donde el GIN
+# sí aplica. Misma asimetría deliberada que en `_SQL_NO_TIENE_ODF_RESUELTA`.
+_IDENTIDADES_DEL_SERVICIO = """
+             m.servicio_id = s.id
+          OR m.servicio_numero = s.servicio_id
+          OR m.servicio_numero = s.numero_primer_servicio
+          OR m.servicio_numero = ANY(s.alias_ids)
+"""
+
+# Cuántos pelos de Cromo son de este Servicio, y cuántos de esos están efectivamente cableados a un
+# conector de ODF. Las dos cuentas en una sola query: distinguen "Cromo no conoce el Servicio" de
+# "lo conoce pero el pelo no llega a ninguna patchera".
 _SQL_PELOS_Y_CONECTORES = text(
-    """
+    f"""
     SELECT
         (SELECT COUNT(*) FROM app.cromo_servicio_match m
-          WHERE m.servicio_numero = :numero) AS pelos_matcheados,
+          WHERE {_IDENTIDADES_DEL_SERVICIO}) AS pelos_matcheados,
         (SELECT COUNT(*) FROM app.cromo_servicio_match m
           JOIN app.cromo_odf_conectores c ON c.pelo_n_id = m.pelo_n_id
-          WHERE m.servicio_numero = :numero) AS pelos_con_conector
+          WHERE {_IDENTIDADES_DEL_SERVICIO}) AS pelos_con_conector
+    FROM app.servicios s
+    WHERE s.id = :servicio_id
     """
 )
 
@@ -564,41 +592,48 @@ _SQL_HERMANO_DE_BAJA_CON_PELO = text(
 
 
 async def subcategoria_sin_senal_prov(
-    sesion: AsyncSession, servicio_id: int, numero: Optional[str]
+    sesion: AsyncSession, servicio_id: int
 ) -> Optional[str]:
     """Subcausa de un Servicio categorizado `SIN_SENAL_PROV`, o `None` si ninguna aplica.
 
     **Sólo on-demand** (endpoint de detalle). NUNCA se llama desde `listar_servicios_sin_odf`:
-    son hasta 3 queries por Servicio y el listado tiene cientos de filas por página.
+    son hasta 2 queries por Servicio y el listado tiene cientos de filas por página.
 
-    `servicio_id` es la PK de `app.servicios` (para buscar el hermano de Baja); `numero` es el
-    número de servicio en texto (`servicio_id`/`numero_primer_servicio`) con el que Cromo matchea
-    los pelos en `cromo_servicio_match.servicio_numero`.
+    `servicio_id` es la **PK** de `app.servicios` (`servicios.id`), no un número de servicio. Es el
+    único argumento a propósito: las tres identidades del Servicio (`servicio_id`,
+    `numero_primer_servicio`, `alias_ids`) las resuelve la query sola, por
+    `_IDENTIDADES_DEL_SERVICIO`. Antes recibía además un `numero` y keyeaba sólo por él, y eso
+    dejaba que el llamador eligiera UNA identidad y obtuviera respuestas distintas según cuál
+    eligiera — con `AUSENTE_RED_CROMO` (un diagnóstico FALSO) para un Servicio cuyos pelos están en
+    Cromo bajo otra de sus numeraciones. Sin ese parámetro, ese error ya no se puede cometer.
 
     Cascada, en este orden:
 
-    1. Cromo conoce el número (hay pelos matcheados) pero ninguno de esos pelos está cableado a un
-       conector de ODF → `PELO_SIN_CONECTOR_ODF`.
-    2. Cromo no conoce el número en absoluto (sin pelos matcheados) → `AUSENTE_RED_CROMO`.
+    1. Cromo conoce el Servicio (hay pelos matcheados por cualquiera de sus identidades) pero
+       ninguno de esos pelos está cableado a un conector de ODF → `PELO_SIN_CONECTOR_ODF`.
+    2. Cromo no lo conoce en absoluto (ningún pelo matchea ninguna de sus identidades) →
+       `AUSENTE_RED_CROMO`.
     3. Hay un Servicio hermano (mismo cliente + misma dirección) dado de Baja que sí tiene pelo →
        `BAJA_LOGICA_HEREDADA` (la fibra física quedó asociada al servicio viejo).
     4. Ninguna aplica → `None`.
 
-    Los pasos 1 y 2 son ramas excluyentes de la misma query; el 3 sólo se evalúa cuando el número
-    sí tiene pelos Y esos pelos sí llegan a conectores (o sea: la fibra está en Cromo, pero no bajo
-    la identidad de ESTE Servicio).
+    Los pasos 1 y 2 son ramas excluyentes de la misma query; el 3 sólo se evalúa cuando el Servicio
+    sí tiene pelos Y esos pelos sí llegan a conectores (o sea: la fibra está en Cromo, pero la ODF
+    no quedó resuelta bajo la identidad de ESTE Servicio).
+
+    Devuelve `None` también si `servicio_id` no existe: sin fila no hay evidencia de nada, y es
+    preferible a una excepción para el caso de carrera "el Servicio se borró entre el 404 del
+    endpoint y esta consulta".
     """
-    if numero is not None and numero.strip():
-        fila = (
-            await sesion.execute(_SQL_PELOS_Y_CONECTORES, {"numero": numero.strip()})
-        ).one()
-        if fila.pelos_matcheados == 0:
-            return SUBCATEGORIA_AUSENTE_RED_CROMO
-        if fila.pelos_con_conector == 0:
-            return SUBCATEGORIA_PELO_SIN_CONECTOR_ODF
-    else:
-        # Sin número no hay forma de preguntarle nada a Cromo: es el caso extremo de "ausente".
+    fila = (
+        await sesion.execute(_SQL_PELOS_Y_CONECTORES, {"servicio_id": servicio_id})
+    ).first()
+    if fila is None:
+        return None
+    if fila.pelos_matcheados == 0:
         return SUBCATEGORIA_AUSENTE_RED_CROMO
+    if fila.pelos_con_conector == 0:
+        return SUBCATEGORIA_PELO_SIN_CONECTOR_ODF
 
     hermano = (
         await sesion.execute(_SQL_HERMANO_DE_BAJA_CON_PELO, {"servicio_id": servicio_id})

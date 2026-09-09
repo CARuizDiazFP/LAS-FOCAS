@@ -77,6 +77,9 @@ _CONECTOR_DEL_PELO_N_ID = 999_920_005
 _PELO_HERMANO_BAJA_N_ID = 999_920_006
 _PELO_SIN_BAJA_N_ID = 999_920_007
 _CONECTOR_SIN_BAJA_N_ID = 999_920_008
+_PELO_IDENT_NPS_N_ID = 999_920_011
+_PELO_IDENT_ALIAS_N_ID = 999_920_012
+_PELO_IDENT_FK_N_ID = 999_920_013
 
 _NUM_SIN_ODF = "9999921"
 _NUM_HERMANO_RESUELTO = "9999922"
@@ -86,6 +89,14 @@ _NUM_AUSENTE_CROMO = "9999925"
 _NUM_CON_HERMANO_BAJA = "9999926"
 _NUM_HERMANO_BAJA = "9999927"
 _NUM_SIN_HERMANO_BAJA = "9999928"
+# Servicios con las TRES identidades distintas entre sí, para probar que la cascada de subcategoría
+# las resuelve todas y no sólo `servicio_id`.
+_NUM_IDENT_SERVICIO_ID = "9999931"
+_NUM_IDENT_NPS = "9999932"  # `numero_primer_servicio` del mismo Servicio, distinto del anterior
+_NUM_IDENT_CON_ALIAS = "9999933"
+_NUM_IDENT_ALIAS = "9999934"  # sólo en `alias_ids`
+_NUM_IDENT_SOLO_FK = "9999935"
+_NUM_IDENT_AJENO = "9999936"  # no es identidad de ningún Servicio del escenario
 
 # Grupo OLT sintético, calcado del real `ElRincon842_Pilar` / `OLT2_Pilar`.
 _NODO_GRUPO = "QA_ElRincon842_Pilar"
@@ -384,6 +395,90 @@ def escenario_subcategorias():
         yield ids
     finally:
         _borrar_todo(numeros, pelos=pelos, conectores=conectores)
+
+
+@pytest.fixture
+def escenario_identidades_cromo():
+    """Tres Servicios cuyos pelos están en Cromo bajo una identidad **distinta** de su
+    `servicio_id`: uno bajo su `numero_primer_servicio`, uno bajo un `alias_ids`, y uno vinculado
+    sólo por la FK `cromo_servicio_match.servicio_id` (con un `servicio_numero` que no es identidad
+    de nadie, como pasa cuando la numeración cambió después de que se registró el match).
+
+    Ninguno tiene conector, así que la respuesta correcta para los tres es
+    `PELO_SIN_CONECTOR_ODF`. Con la versión anterior de la cascada — que keyeaba por UN número
+    recibido del llamador — los tres daban `AUSENTE_RED_CROMO`, un diagnóstico falso.
+    """
+    numeros = [_NUM_IDENT_SERVICIO_ID, _NUM_IDENT_CON_ALIAS, _NUM_IDENT_SOLO_FK]
+    pelos = [_PELO_IDENT_NPS_N_ID, _PELO_IDENT_ALIAS_N_ID, _PELO_IDENT_FK_N_ID]
+    _borrar_todo(numeros, pelos=pelos)
+    with SessionLocal() as session:
+        ids = {}
+
+        # 1. `servicio_id` != `numero_primer_servicio`, pelo registrado bajo el segundo.
+        ids["bajo_numero_primer_servicio"] = int(
+            session.execute(
+                text(
+                    "INSERT INTO app.servicios (servicio_id, numero_primer_servicio, "
+                    " nombre_cliente, categoria, origen_datos, estado_servicio, es_verificable) "
+                    "VALUES (:sid, :nps, 'QA Ident NPS', 6, 'INGEST_EXCEL', 'Activo', true) "
+                    "RETURNING id"
+                ),
+                {"sid": _NUM_IDENT_SERVICIO_ID, "nps": _NUM_IDENT_NPS},
+            ).scalar_one()
+        )
+        session.execute(_SQL_ALTA_PELO, {"n_id": _PELO_IDENT_NPS_N_ID, "servicio_numero": _NUM_IDENT_NPS})
+        session.execute(
+            text(
+                "INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, servicio_id, metodo) "
+                "VALUES (:pelo_n_id, :servicio_numero, NULL, 'REGEX_EXACTO')"
+            ),
+            {"pelo_n_id": _PELO_IDENT_NPS_N_ID, "servicio_numero": _NUM_IDENT_NPS},
+        )
+
+        # 2. Pelo registrado bajo un `alias_ids`.
+        ids["bajo_alias"] = int(
+            session.execute(
+                text(
+                    "INSERT INTO app.servicios (servicio_id, numero_primer_servicio, alias_ids, "
+                    " nombre_cliente, categoria, origen_datos, estado_servicio, es_verificable) "
+                    "VALUES (:sid, :sid, ARRAY[:alias], 'QA Ident Alias', 6, 'INGEST_EXCEL', "
+                    " 'Activo', true) RETURNING id"
+                ),
+                {"sid": _NUM_IDENT_CON_ALIAS, "alias": _NUM_IDENT_ALIAS},
+            ).scalar_one()
+        )
+        session.execute(
+            _SQL_ALTA_PELO, {"n_id": _PELO_IDENT_ALIAS_N_ID, "servicio_numero": _NUM_IDENT_ALIAS}
+        )
+        session.execute(
+            text(
+                "INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, servicio_id, metodo) "
+                "VALUES (:pelo_n_id, :servicio_numero, NULL, 'REGEX_EXACTO')"
+            ),
+            {"pelo_n_id": _PELO_IDENT_ALIAS_N_ID, "servicio_numero": _NUM_IDENT_ALIAS},
+        )
+
+        # 3. Vinculado SÓLO por la FK: `servicio_numero` no es identidad de este Servicio.
+        ids["solo_por_fk"] = _alta_servicio(
+            session, _NUM_IDENT_SOLO_FK, cliente="QA Ident Solo FK"
+        )
+        session.execute(
+            _SQL_ALTA_PELO, {"n_id": _PELO_IDENT_FK_N_ID, "servicio_numero": _NUM_IDENT_AJENO}
+        )
+        session.execute(
+            _SQL_ALTA_MATCH,
+            {
+                "pelo_n_id": _PELO_IDENT_FK_N_ID,
+                "servicio_numero": _NUM_IDENT_AJENO,
+                "servicio_id": ids["solo_por_fk"],
+            },
+        )
+        session.commit()
+
+    try:
+        yield ids
+    finally:
+        _borrar_todo(numeros, pelos=pelos)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -719,7 +814,7 @@ async def test_sugerencia_es_none_para_un_servicio_sin_ultima_milla(servicio_par
 async def test_subcategoria_pelo_sin_conector_odf(escenario_subcategorias):
     async with AsyncSessionLocal() as sesion:
         sub = await subcategoria_sin_senal_prov(
-            sesion, escenario_subcategorias["pelo_sin_conector"], _NUM_PELO_SIN_CONECTOR
+            sesion, escenario_subcategorias["pelo_sin_conector"]
         )
     assert sub == SUBCATEGORIA_PELO_SIN_CONECTOR_ODF
 
@@ -727,23 +822,16 @@ async def test_subcategoria_pelo_sin_conector_odf(escenario_subcategorias):
 @pytest.mark.asyncio
 async def test_subcategoria_ausente_red_cromo(escenario_subcategorias):
     async with AsyncSessionLocal() as sesion:
-        sub = await subcategoria_sin_senal_prov(
-            sesion, escenario_subcategorias["ausente"], _NUM_AUSENTE_CROMO
-        )
+        sub = await subcategoria_sin_senal_prov(sesion, escenario_subcategorias["ausente"])
     assert sub == SUBCATEGORIA_AUSENTE_RED_CROMO
 
 
 @pytest.mark.asyncio
-async def test_subcategoria_ausente_red_cromo_cuando_no_hay_numero(escenario_subcategorias):
+async def test_subcategoria_es_none_para_un_servicio_inexistente():
+    """Sin fila no hay evidencia de nada. Preferido a una excepción para la carrera "el Servicio se
+    borró entre el 404 del endpoint y esta consulta"."""
     async with AsyncSessionLocal() as sesion:
-        assert (
-            await subcategoria_sin_senal_prov(sesion, escenario_subcategorias["ausente"], None)
-            == SUBCATEGORIA_AUSENTE_RED_CROMO
-        )
-        assert (
-            await subcategoria_sin_senal_prov(sesion, escenario_subcategorias["ausente"], "   ")
-            == SUBCATEGORIA_AUSENTE_RED_CROMO
-        )
+        assert await subcategoria_sin_senal_prov(sesion, 999_929_999) is None
 
 
 @pytest.mark.asyncio
@@ -752,7 +840,7 @@ async def test_subcategoria_baja_logica_heredada(escenario_subcategorias):
     existe un hermano mismo-cliente/misma-dirección dado de Baja que también tiene pelo."""
     async with AsyncSessionLocal() as sesion:
         sub = await subcategoria_sin_senal_prov(
-            sesion, escenario_subcategorias["con_hermano_baja"], _NUM_CON_HERMANO_BAJA
+            sesion, escenario_subcategorias["con_hermano_baja"]
         )
     assert sub == SUBCATEGORIA_BAJA_LOGICA_HEREDADA
 
@@ -761,9 +849,34 @@ async def test_subcategoria_baja_logica_heredada(escenario_subcategorias):
 async def test_subcategoria_none_cuando_ninguna_cascada_aplica(escenario_subcategorias):
     async with AsyncSessionLocal() as sesion:
         sub = await subcategoria_sin_senal_prov(
-            sesion, escenario_subcategorias["sin_hermano_baja"], _NUM_SIN_HERMANO_BAJA
+            sesion, escenario_subcategorias["sin_hermano_baja"]
         )
     assert sub is None
+
+
+@pytest.mark.parametrize(
+    "clave",
+    ["bajo_numero_primer_servicio", "bajo_alias", "solo_por_fk"],
+)
+@pytest.mark.asyncio
+async def test_subcategoria_resuelve_las_tres_identidades_no_solo_una(
+    escenario_identidades_cromo, clave
+):
+    """Bug real encontrado en la review de la Tarea 3.
+
+    `cromo_servicio_match.servicio_numero` sale del regex sobre la descripción del pelo, así que
+    puede ser CUALQUIERA de las identidades del Servicio (`servicio_id`, `numero_primer_servicio`,
+    o un `alias_ids`) — es exactamente el motivo por el que el listado y `conectores_de_odf`
+    matchean por las tres. La versión anterior de esta cascada keyeaba por UN solo número recibido
+    del llamador: los tres Servicios de este test tienen su pelo en Cromo registrado bajo una
+    identidad distinta de su `servicio_id`, así que devolvía `AUSENTE_RED_CROMO` ("Cromo no conoce
+    este Servicio") — un diagnóstico FALSO mostrado al operador.
+
+    Los tres deben dar `PELO_SIN_CONECTOR_ODF`: Cromo sí los conoce, lo que falta es el conector.
+    """
+    async with AsyncSessionLocal() as sesion:
+        sub = await subcategoria_sin_senal_prov(sesion, escenario_identidades_cromo[clave])
+    assert sub == SUBCATEGORIA_PELO_SIN_CONECTOR_ODF
 
 
 # ─────────────────────────────────────────────────────────────────────────────
