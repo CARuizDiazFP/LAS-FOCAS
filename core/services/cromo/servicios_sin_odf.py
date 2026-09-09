@@ -28,7 +28,7 @@ Qué NO hace este módulo, a propósito:
 ## Performance: los dos índices y los dos rewrites que esta query necesita
 
 La query de listado es un anti-join de `app.servicios` contra dos tablas grandes y contra sí misma.
-Arrancó en ~23.9s y quedó en **~0.1s**. Los cuatro cambios, todos verificados con
+Arrancó en ~23.9s y quedó en **~0.15s**. Los tres pasos, todos verificados con
 `EXPLAIN ANALYZE` real contra `lasfocasdev-postgres` y todos con universo IDÉNTICO (2891 filas):
 
 1. `ix_cromo_odf_conectores_servicio_resuelto` (btree parcial, migración `20260908_01`) — sin él,
@@ -39,14 +39,15 @@ Arrancó en ~23.9s y quedó en **~0.1s**. Los cuatro cambios, todos verificados 
    `Seq Scan on servicios v2` (41M filas descartadas por `Join Filter`) a `Bitmap Heap Scan` con un
    `BitmapOr` de dos `Bitmap Index Scan`. Medido: ~23.9s → ~11.6s.
 3. El `NOT EXISTS` de "no tiene ODF resuelta" **sin** CTE `MATERIALIZED` y desarmado por De Morgan
-   en tres `NOT EXISTS` independientes — ver `_SQL_NO_TIENE_ODF_RESUELTA`. Medido: ~11.6s → ~0.09s.
+   en tres `NOT EXISTS` independientes — ver `_SQL_NO_TIENE_ODF_RESUELTA`. Medido: ~11.6s → ~0.15s
+   (145.6 ms de `Execution Time`; el índice del punto 1 pasa a usarse TRES veces, una por subquery).
 
 La lección de las tres, para quien toque esta query: **el cost-estimate del planner no
 correlaciona con el tiempo real** en ninguno de los tres casos. El plan original de este gestor
 descartó el GIN por mirar el cost (~483 de ~37.828) y se equivocó, y la CTE `MATERIALIZED` también
 venía de un cost-estimate. Medir con `EXPLAIN (ANALYZE, TIMING OFF)` sobre el universo real, no
 estimar. `tests/test_cromo_servicios_sin_odf_real_db.py` tiene una regresión automática que falla
-si alguien dropea cualquiera de los dos índices o revierte el rewrite del punto 2.
+si alguien dropea cualquiera de los dos índices o revierte cualquiera de los dos rewrites.
 """
 
 from __future__ import annotations

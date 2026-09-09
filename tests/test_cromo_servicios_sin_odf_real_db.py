@@ -1,6 +1,6 @@
 # Nombre de archivo: test_cromo_servicios_sin_odf_real_db.py
 # Ubicación de archivo: tests/test_cromo_servicios_sin_odf_real_db.py
-# Descripción: Integración contra Postgres real del detector "Servicios sin ODF" — anti-join con ANY(text[]), CTE MATERIALIZED, exclusión por override, sugerencia OLT y regresión del plan de índices
+# Descripción: Integración contra Postgres real del detector "Servicios sin ODF" — anti-join con ANY(text[]) y contención @>, exclusión por override, filtros q/categoría, sugerencia OLT, identidades del Servicio en la cascada de subcategoría y regresión del plan de índices
 
 """Este archivo es de integración: necesita un Postgres real con el esquema `app.*` poblado.
 Mismo motivo y guard que el resto de los tests `*_real_db.py` del módulo Cromo.
@@ -77,6 +77,14 @@ _CONECTOR_DEL_PELO_N_ID = 999_920_005
 _PELO_HERMANO_BAJA_N_ID = 999_920_006
 _PELO_SIN_BAJA_N_ID = 999_920_007
 _CONECTOR_SIN_BAJA_N_ID = 999_920_008
+# Cada fixture crea y limpia SU PROPIA ODF: compartir un `n_id` entre fixtures funcionaba sólo
+# porque `cromo_odf_conectores.odf_n_id` no tiene FK dura, y se rompía con `-p random-order`/xdist
+# (una fixture borraba la ODF que la otra estaba usando).
+_ODF_SUBCATEGORIAS_N_ID = 999_920_021
+# Referencia BLANDA: `cromo_servicio_odf_override.odf_n_id` es NOT NULL pero sin FK a `cromo_odfs`
+# (criterio ya establecido para todo lo que apunta a Cromo), así que este test no necesita que
+# exista la fila — sólo que el número no colisione con nada real.
+_ODF_OVERRIDE_N_ID = 999_920_022
 _PELO_IDENT_NPS_N_ID = 999_920_011
 _PELO_IDENT_ALIAS_N_ID = 999_920_012
 _PELO_IDENT_FK_N_ID = 999_920_013
@@ -104,8 +112,9 @@ _EQUIPO_OLT = "OLT9_QA_Pilar"
 _EQUIPO_SWITCH = "SW_9_QA_ElRincon842_Pilar"
 
 # La página tiene que abarcar el universo entero (2891 filas reales en dev al escribir esto) para
-# poder buscar la fila sintética por id. No cuesta más que `LIMIT 50`: el `COUNT(*) OVER ()` obliga
-# a evaluar el anti-join completo igual, así que el LIMIT no ahorra tiempo.
+# poder buscar la fila sintética por id. No cuesta más que `LIMIT 50`: `listar_servicios_sin_odf`
+# trae siempre todos los candidatos y corta en Python (la categoría se calcula acá, no en SQL — ver
+# su docstring), así que el `limit` no cambia lo que se ejecuta en el motor.
 _LIMIT_UNIVERSO = 20_000
 
 _SQL_ALTA_SERVICIO = text(
@@ -140,6 +149,14 @@ _SQL_ALTA_MATCH = text(
     """
     INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, servicio_id, metodo)
     VALUES (:pelo_n_id, :servicio_numero, :servicio_id, 'REGEX_EXACTO')
+    """
+)
+
+
+_SQL_ALTA_ODF = text(
+    """
+    INSERT INTO app.cromo_odfs (n_id, version_id, vmax, clase, nombre, calle, altura, payload_raw)
+    VALUES (:n_id, 1, 1, 69, :nombre, :calle, :altura, '{}'::jsonb)
     """
 )
 
@@ -236,12 +253,13 @@ def escenario_grupo_olt():
             {"servicio_id": hermano_id, "extremo": 1, "nodo": _NODO_GRUPO, "equipo": _EQUIPO_OLT},
         )
         session.execute(
-            text(
-                "INSERT INTO app.cromo_odfs (n_id, version_id, vmax, clase, nombre, calle, altura, "
-                " payload_raw) "
-                "VALUES (:n_id, 1, 1, 69, 'ODF QA Pilar', 'CALLE QA SINODF', '100', '{}'::jsonb)"
-            ),
-            {"n_id": _ODF_N_ID},
+            _SQL_ALTA_ODF,
+            {
+                "n_id": _ODF_N_ID,
+                "nombre": "ODF QA Pilar",
+                "calle": "CALLE QA SINODF",
+                "altura": "100",
+            },
         )
         # El hermano SÍ está resuelto: por eso queda fuera del universo "sin ODF" y por eso su ODF
         # sirve como sugerencia para el otro.
@@ -289,9 +307,19 @@ def escenario_subcategorias():
     ]
     pelos = [_PELO_SIN_CONECTOR_N_ID, _PELO_CON_CONECTOR_N_ID, _PELO_HERMANO_BAJA_N_ID, _PELO_SIN_BAJA_N_ID]
     conectores = [_CONECTOR_DEL_PELO_N_ID, _CONECTOR_SIN_BAJA_N_ID]
-    _borrar_todo(numeros, pelos=pelos, conectores=conectores)
+    _borrar_todo(numeros, pelos=pelos, conectores=conectores, odfs=[_ODF_SUBCATEGORIAS_N_ID])
     with SessionLocal() as session:
         ids = {}
+        # ODF propia de ESTA fixture (ver el comentario de `_ODF_SUBCATEGORIAS_N_ID`).
+        session.execute(
+            _SQL_ALTA_ODF,
+            {
+                "n_id": _ODF_SUBCATEGORIAS_N_ID,
+                "nombre": "ODF QA Subcategorias",
+                "calle": "CALLE QA SUB",
+                "altura": "10",
+            },
+        )
         # 1. Cromo conoce el número, pero el pelo no llega a ninguna patchera.
         ids["pelo_sin_conector"] = _alta_servicio(
             session, _NUM_PELO_SIN_CONECTOR, cliente="QA Sub PeloSinConector"
@@ -342,7 +370,7 @@ def escenario_subcategorias():
             _SQL_ALTA_CONECTOR,
             {
                 "n_id": _CONECTOR_DEL_PELO_N_ID,
-                "odf_n_id": _ODF_N_ID,
+                "odf_n_id": _ODF_SUBCATEGORIAS_N_ID,
                 "conector": "20",
                 "pelo_n_id": _PELO_CON_CONECTOR_N_ID,
                 "servicio_resuelto": None,
@@ -383,7 +411,7 @@ def escenario_subcategorias():
             _SQL_ALTA_CONECTOR,
             {
                 "n_id": _CONECTOR_SIN_BAJA_N_ID,
-                "odf_n_id": _ODF_N_ID,
+                "odf_n_id": _ODF_SUBCATEGORIAS_N_ID,
                 "conector": "21",
                 "pelo_n_id": _PELO_SIN_BAJA_N_ID,
                 "servicio_resuelto": None,
@@ -394,7 +422,7 @@ def escenario_subcategorias():
     try:
         yield ids
     finally:
-        _borrar_todo(numeros, pelos=pelos, conectores=conectores)
+        _borrar_todo(numeros, pelos=pelos, conectores=conectores, odfs=[_ODF_SUBCATEGORIAS_N_ID])
 
 
 @pytest.fixture
@@ -528,6 +556,11 @@ async def test_listado_incluye_el_sin_odf_categorizado_y_excluye_al_hermano_resu
 
 @pytest.mark.asyncio
 async def test_listado_pagina_con_limit_y_offset_sin_cambiar_el_total(escenario_grupo_olt):
+    """DEPENDE DEL VOLUMEN DE DATOS DE DEV: exige que el universo "sin ODF" tenga **más de 5**
+    filas para que las dos páginas de 5 estén llenas y sean disjuntas (2891 al escribir esto). La
+    fixture sólo garantiza 1 fila propia, no las 10. Si este test falla con páginas cortas, mirá
+    primero el tamaño del universo (`listar_servicios_sin_odf(limit=0).total`) antes de sospechar
+    de la paginación."""
     async with AsyncSessionLocal() as sesion:
         pagina_1 = await listar_servicios_sin_odf(sesion, limit=5, offset=0)
         pagina_2 = await listar_servicios_sin_odf(sesion, limit=5, offset=5)
@@ -563,7 +596,7 @@ async def test_override_saca_al_servicio_del_listado(servicio_para_override):
             ),
             {
                 "servicio_id": servicio_para_override,
-                "odf_n_id": _ODF_N_ID,
+                "odf_n_id": _ODF_OVERRIDE_N_ID,
                 "categoria": CATEGORIA_SIN_SENAL_PROV,
             },
         )
@@ -721,7 +754,13 @@ async def test_filtro_categoria_particiona_el_universo_sin_perder_ni_duplicar(es
 async def test_paginacion_se_aplica_despues_de_filtrar_y_el_total_es_el_del_set_filtrado():
     """El bug que este test previene: cortar por `LIMIT`/`OFFSET` ANTES de filtrar por categoría
     daría páginas con menos filas de las pedidas y un `total` del universo sin filtrar, así que el
-    paginador de la UI prometería páginas que no existen."""
+    paginador de la UI prometería páginas que no existen.
+
+    DEPENDE DEL VOLUMEN DE DATOS DE DEV: exige **≥14** filas en la categoría `OLT_PON_COMPARTIDO`
+    (dos páginas de 7 llenas; 1537 al escribir esto) y **≥1** fila fuera de esa categoría (para que
+    el set filtrado sea estrictamente menor que el universo; 1354 al escribir esto). Ninguna fixture
+    garantiza esos volúmenes. Si falla, chequeá primero la distribución por categoría antes de
+    sospechar de la paginación."""
     async with AsyncSessionLocal() as sesion:
         completo = await listar_servicios_sin_odf(
             sesion, limit=_LIMIT_UNIVERSO, categoria=CATEGORIA_OLT_PON_COMPARTIDO
