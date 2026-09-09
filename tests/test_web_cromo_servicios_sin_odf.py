@@ -288,7 +288,9 @@ def test_sugerencia_incluye_ambos_extremos_sugerencia_y_senal(monkeypatch):
     monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
 
     async def _fake_sugerencia(sesion, servicio_id):
-        return servicios_sin_odf.SugerenciaOdf(odf_n_id=555, nombre="ODF Pilar")
+        return servicios_sin_odf.SugerenciaOdf(
+            odf_n_id=555, nombre="ODF Pilar", cantidad_candidatas=1
+        )
 
     monkeypatch.setattr(servicios_sin_odf, "sugerencia_odf_para_servicio", _fake_sugerencia)
 
@@ -313,8 +315,58 @@ def test_sugerencia_incluye_ambos_extremos_sugerencia_y_senal(monkeypatch):
         {"extremo": 2, "nodo": "OLT2_Pilar", "equipo": "OLT2_Pilar"},
     ]
     assert body["indice_extremo_categorizado"] == 1
-    assert body["sugerencia"] == {"odf_n_id": 555, "nombre": "ODF Pilar"}
+    assert body["sugerencia"] == {"odf_n_id": 555, "nombre": "ODF Pilar", "cantidad_candidatas": 1}
     assert body["senal_direccion"] == "coincide"
+
+
+def test_sugerencia_serializa_cantidad_candidatas_mayor_a_uno(monkeypatch):
+    """`cantidad_candidatas` tiene que viajar al frontend tal cual: es lo único que le permite
+    avisarle al operador que la sugerencia era una entre varias, en vez de presentarla como la
+    única ODF posible (88 de 1057 Servicios OLT con sugerencia tienen 2-4 candidatas)."""
+    from web.app import main as web_main
+    import core.services.cromo.servicios_sin_odf as servicios_sin_odf
+    from core.services.cromo.direccion_comparacion import SenalDireccion
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+
+    servicio_fake = SimpleNamespace(
+        id=101, servicio_id="61943", nombre_cliente="Banco Comafi SA", direccion="AV MITRE 2525"
+    )
+
+    async def _fake_detalle(sesion, servicio_id):
+        return {
+            "servicio": servicio_fake,
+            "extremos": [SimpleNamespace(extremo=1, nodo="OLT2_Pilar", equipo="OLT2_Pilar")],
+            "categoria_causa": servicios_sin_odf.CATEGORIA_OLT_PON_COMPARTIDO,
+            "subcategoria": None,
+            "indice_extremo_categorizado": 0,
+        }
+
+    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+
+    async def _fake_sugerencia(sesion, servicio_id):
+        return servicios_sin_odf.SugerenciaOdf(
+            odf_n_id=6641873, nombre="ODF Azopardo 250", cantidad_candidatas=4
+        )
+
+    monkeypatch.setattr(servicios_sin_odf, "sugerencia_odf_para_servicio", _fake_sugerencia)
+
+    async def _fake_senal(sesion, direccion_prov, odf_n_id):
+        return SenalDireccion.NO_SE_PUDO_COMPARAR
+
+    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_sugerencia(101))
+    assert res.status_code == 200
+    assert res.json()["sugerencia"] == {
+        "odf_n_id": 6641873,
+        "nombre": "ODF Azopardo 250",
+        "cantidad_candidatas": 4,
+    }
 
 
 def test_sugerencia_sin_olt_no_ofrece_sugerencia(monkeypatch):

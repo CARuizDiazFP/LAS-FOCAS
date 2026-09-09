@@ -177,10 +177,18 @@ class SugerenciaOdf:
     """ODF de un Servicio hermano del mismo (nodo, equipo) que sí quedó resuelto.
 
     Es un dato para mostrar, NUNCA una asociación aplicada — el operador confirma explícitamente.
+
+    `cantidad_candidatas` es cuántas ODFs distintas cumplen la condición de hermano resuelto para
+    este Servicio, no cuántas se devuelven (siempre se devuelve UNA, la mejor rankeada por
+    `_SQL_SUGERENCIA_ODF`). Existe porque presentar "la" sugerencia cuando hay varias candidatas le
+    esconde al operador que estaba eligiendo entre opciones: medido real 2026-09-09, de los 1057
+    Servicios `OLT_PON_COMPARTIDO` sin ODF que tienen al menos una candidata, **88 tienen más de
+    una** (969 con 1, 35 con 2, 53 con 4). Siempre `>= 1` cuando hay sugerencia.
     """
 
     odf_n_id: int
     nombre: Optional[str]
+    cantidad_candidatas: int
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -704,22 +712,65 @@ async def subcategoria_sin_senal_prov(
 # el grupo (nodo, equipo) es el mismo concepto en ambos casos. Coherente con
 # `categorizar_extremos()`, que tampoco privilegia el extremo 1.
 #
-# `LIMIT 1` + `DISTINCT`: alcanza con UNA ODF candidata para mostrarla como sugerencia. No se
-# auto-aplica nunca — el operador confirma.
+# Se devuelve UNA sola ODF (`LIMIT 1`) porque la UI muestra una sugerencia, pero el `LIMIT` va
+# SIEMPRE con `ORDER BY` explícito y la fila trae además cuántas candidatas había:
+#
+# - **`ORDER BY` determinista, no cosmético.** La versión anterior era un `SELECT DISTINCT ...
+#   LIMIT 1` SIN `ORDER BY`, y eso no le pide a Postgres ninguna fila en particular: devuelve la
+#   que el plan alcanza primero, y ese "primero" puede cambiar con el plan, con el orden del heap
+#   tras una ingesta o con un scan paralelo. Medido real 2026-09-09 sobre los 94 Servicios con
+#   varias candidatas: la forma vieja resultó ESTABLE en dev hoy (8 repeticiones × 11 variantes de
+#   plan forzadas con `enable_hashjoin`/`enable_hashagg`/`enable_nestloop`/paralelismo/
+#   `join_collapse_limit` — siempre la misma ODF), así que el flapping es un riesgo LATENTE, no un
+#   bug observado. Lo que falta es la garantía: con `ORDER BY` el resultado es estable por
+#   definición y no depende de que el planner siga eligiendo el mismo plan.
+# - **Criterio de orden:** `hermanos_resueltos DESC` primero — la ODF a la que ya se resolvieron
+#   MÁS Servicios hermanos del mismo (nodo, equipo) es la más corroborada por los datos — y
+#   `odf_n_id` como desempate estable (nunca `nombre`: 217 ODFs comparten nombre con otra, ver
+#   I2/`ModalAsociarOdf.vue`). Verificado real: con este orden las 94 sugerencias multi-candidata
+#   de dev dan la MISMA ODF que devolvía la forma vieja (en todos esos grupos `hermanos_resueltos`
+#   empata en 1 y gana el desempate por `odf_n_id`), así que el cambio agrega garantía sin mover
+#   ninguna sugerencia existente.
+# - **`cantidad_candidatas`** sale de la misma CTE (`(SELECT COUNT(*) FROM candidatas)`), sin una
+#   segunda ida a la base: es el dato que la UI necesita para no presentar como única una elección
+#   entre 2-4 opciones. Medido: 88 de 1057.
+#
+# El `JOIN app.cromo_odfs` va DENTRO de la CTE a propósito (igual que en la forma vieja): una ODF
+# sin fila propia en `cromo_odfs` no es ofrecible — mismo criterio estricto que exige
+# `crear_override` — así que tampoco debe contarse como candidata.
+#
+# `GROUP BY c.odf_n_id, o.nombre` y no sólo por `c.odf_n_id`: la detección de dependencia funcional
+# de Postgres sólo aplica cuando se agrupa por la PK de la propia tabla (`o.n_id`), no por una
+# columna igualada de otra tabla. Como `cromo_odfs.n_id` es PK, agrupar por el par da exactamente
+# los mismos grupos.
+#
+# `COUNT(DISTINCT s_hermano.id)` y no `COUNT(*)`: un mismo hermano puede llegar a la misma ODF por
+# varios conectores (o por más de una de sus tres identidades), y eso inflaría la corroboración de
+# una ODF con un solo hermano muy cableado.
 _SQL_SUGERENCIA_ODF = text(
     """
-    SELECT DISTINCT c.odf_n_id, o.nombre
-    FROM app.servicios_equipos_ultima_milla e_actual
-    JOIN app.servicios_equipos_ultima_milla e_hermano
-      ON e_hermano.nodo = e_actual.nodo AND e_hermano.equipo = e_actual.equipo
-      AND e_hermano.servicio_id <> e_actual.servicio_id
-    JOIN app.servicios s_hermano ON s_hermano.id = e_hermano.servicio_id
-    JOIN app.cromo_odf_conectores c
-      ON c.servicio_resuelto = s_hermano.servicio_id
-      OR c.servicio_resuelto = s_hermano.numero_primer_servicio
-      OR c.servicio_resuelto = ANY(s_hermano.alias_ids)
-    JOIN app.cromo_odfs o ON o.n_id = c.odf_n_id
-    WHERE e_actual.servicio_id = :servicio_id
+    WITH candidatas AS (
+        SELECT c.odf_n_id, o.nombre, COUNT(DISTINCT s_hermano.id) AS hermanos_resueltos
+        FROM app.servicios_equipos_ultima_milla e_actual
+        JOIN app.servicios_equipos_ultima_milla e_hermano
+          ON e_hermano.nodo = e_actual.nodo AND e_hermano.equipo = e_actual.equipo
+          AND e_hermano.servicio_id <> e_actual.servicio_id
+        JOIN app.servicios s_hermano ON s_hermano.id = e_hermano.servicio_id
+        JOIN app.cromo_odf_conectores c
+          ON c.servicio_resuelto = s_hermano.servicio_id
+          OR c.servicio_resuelto = s_hermano.numero_primer_servicio
+          OR c.servicio_resuelto = ANY(s_hermano.alias_ids)
+        JOIN app.cromo_odfs o ON o.n_id = c.odf_n_id
+        WHERE e_actual.servicio_id = :servicio_id
+        GROUP BY c.odf_n_id, o.nombre
+    )
+    SELECT
+        odf_n_id,
+        nombre,
+        hermanos_resueltos,
+        (SELECT COUNT(*) FROM candidatas) AS cantidad_candidatas
+    FROM candidatas
+    ORDER BY hermanos_resueltos DESC, odf_n_id
     LIMIT 1
     """
 )
@@ -737,9 +788,18 @@ async def sugerencia_odf_para_servicio(
     puede ser una coincidencia irrelevante — de ahí que sea una **sugerencia** que el operador
     confirma, nunca una asociación automática.
 
+    Devuelve la candidata mejor rankeada por `_SQL_SUGERENCIA_ODF` (más hermanos ya resueltos a esa
+    ODF, desempate por `odf_n_id`) junto con `cantidad_candidatas` — cuántas había en total. Quien
+    muestre la sugerencia tiene que exponer ese número cuando es `> 1`: presentar una sola ODF sin
+    decir que había 4 le esconde al operador que estaba eligiendo entre opciones.
+
     `servicio_id` es la PK de `app.servicios`.
     """
     fila = (await sesion.execute(_SQL_SUGERENCIA_ODF, {"servicio_id": servicio_id})).first()
     if fila is None:
         return None
-    return SugerenciaOdf(odf_n_id=int(fila.odf_n_id), nombre=fila.nombre)
+    return SugerenciaOdf(
+        odf_n_id=int(fila.odf_n_id),
+        nombre=fila.nombre,
+        cantidad_candidatas=int(fila.cantidad_candidatas),
+    )

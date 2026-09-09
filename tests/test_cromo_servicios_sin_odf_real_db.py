@@ -89,6 +89,16 @@ _PELO_IDENT_NPS_N_ID = 999_920_011
 _PELO_IDENT_ALIAS_N_ID = 999_920_012
 _PELO_IDENT_FK_N_ID = 999_920_013
 
+# Ranking de sugerencia con VARIAS candidatas (fix de review: `_SQL_SUGERENCIA_ODF` tenía `LIMIT 1`
+# sin `ORDER BY`). La ODF MENOS corroborada tiene el `n_id` MÁS BAJO a propósito: así, si el orden
+# fuera sólo por `odf_n_id` (o el que devuelva el plan), ganaría la equivocada — el test distingue
+# "ordena por corroboración" de "ordena por id".
+_ODF_RANKING_MENOS_N_ID = 999_920_031  # 1 hermano resuelto, n_id más bajo
+_ODF_RANKING_MAS_N_ID = 999_920_032  # 2 hermanos resueltos, n_id más alto → tiene que ganar
+_CONECTOR_RANKING_MENOS_N_ID = 999_920_033
+_CONECTOR_RANKING_MAS_A_N_ID = 999_920_034
+_CONECTOR_RANKING_MAS_B_N_ID = 999_920_035
+
 _NUM_SIN_ODF = "9999921"
 _NUM_HERMANO_RESUELTO = "9999922"
 _NUM_CON_OVERRIDE = "9999923"
@@ -105,11 +115,21 @@ _NUM_IDENT_CON_ALIAS = "9999933"
 _NUM_IDENT_ALIAS = "9999934"  # sólo en `alias_ids`
 _NUM_IDENT_SOLO_FK = "9999935"
 _NUM_IDENT_AJENO = "9999936"  # no es identidad de ningún Servicio del escenario
+# Grupo del escenario de ranking de sugerencia: 1 Servicio sin ODF + 3 hermanos resueltos.
+_NUM_RANKING_SIN_ODF = "9999941"
+_NUM_RANKING_HERMANO_MENOS = "9999942"  # resuelto a la ODF con menos corroboración
+_NUM_RANKING_HERMANO_MAS_A = "9999943"  # los dos siguientes, a la ODF más corroborada
+_NUM_RANKING_HERMANO_MAS_B = "9999944"
 
 # Grupo OLT sintético, calcado del real `ElRincon842_Pilar` / `OLT2_Pilar`.
 _NODO_GRUPO = "QA_ElRincon842_Pilar"
 _EQUIPO_OLT = "OLT9_QA_Pilar"
 _EQUIPO_SWITCH = "SW_9_QA_ElRincon842_Pilar"
+
+# Grupo aparte para el escenario de ranking: no puede compartir (nodo, equipo) con el de arriba o
+# las dos fixtures se verían como hermanas entre sí.
+_NODO_RANKING = "QA_Ranking_Pilar"
+_EQUIPO_RANKING_OLT = "OLT9_QA_Ranking"
 
 # La página tiene que abarcar el universo entero (2891 filas reales en dev al escribir esto) para
 # poder buscar la fila sintética por id. No cuesta más que `LIMIT 50`: `listar_servicios_sin_odf`
@@ -279,6 +299,86 @@ def escenario_grupo_olt():
         yield {"sin_odf_id": sin_odf_id, "hermano_id": hermano_id}
     finally:
         _borrar_todo(numeros, conectores=[_CONECTOR_HERMANO_N_ID], odfs=[_ODF_N_ID])
+
+
+@pytest.fixture
+def escenario_ranking_sugerencia():
+    """Un Servicio sin ODF con DOS ODFs candidatas en su grupo (nodo, equipo), corroboradas de
+    forma distinta: `_ODF_RANKING_MAS_N_ID` tiene 2 hermanos resueltos y `_ODF_RANKING_MENOS_N_ID`
+    uno solo.
+
+    Es el escenario que la forma vieja de `_SQL_SUGERENCIA_ODF` (`SELECT DISTINCT ... LIMIT 1` sin
+    `ORDER BY`) no podía resolver de forma definida: devolvía la que el plan alcanzaba primero, sin
+    garantía de estabilidad y sin decirle al operador que había más de una. Medido real 2026-09-09:
+    88 de los 1057 Servicios `OLT_PON_COMPARTIDO` con sugerencia tienen entre 2 y 4 candidatas.
+    """
+    numeros = [
+        _NUM_RANKING_SIN_ODF,
+        _NUM_RANKING_HERMANO_MENOS,
+        _NUM_RANKING_HERMANO_MAS_A,
+        _NUM_RANKING_HERMANO_MAS_B,
+    ]
+    conectores = [
+        _CONECTOR_RANKING_MENOS_N_ID,
+        _CONECTOR_RANKING_MAS_A_N_ID,
+        _CONECTOR_RANKING_MAS_B_N_ID,
+    ]
+    odfs = [_ODF_RANKING_MENOS_N_ID, _ODF_RANKING_MAS_N_ID]
+    _borrar_todo(numeros, conectores=conectores, odfs=odfs)
+    with SessionLocal() as session:
+        sin_odf_id = _alta_servicio(
+            session, _NUM_RANKING_SIN_ODF, cliente="QA Ranking Actual", direccion="CALLE QA RANK 1"
+        )
+        hermanos = {
+            _NUM_RANKING_HERMANO_MENOS: _alta_servicio(
+                session, _NUM_RANKING_HERMANO_MENOS, cliente="QA Ranking Hermano Menos"
+            ),
+            _NUM_RANKING_HERMANO_MAS_A: _alta_servicio(
+                session, _NUM_RANKING_HERMANO_MAS_A, cliente="QA Ranking Hermano Mas A"
+            ),
+            _NUM_RANKING_HERMANO_MAS_B: _alta_servicio(
+                session, _NUM_RANKING_HERMANO_MAS_B, cliente="QA Ranking Hermano Mas B"
+            ),
+        }
+        for servicio_id in (sin_odf_id, *hermanos.values()):
+            session.execute(
+                _SQL_ALTA_EQUIPO,
+                {
+                    "servicio_id": servicio_id,
+                    "extremo": 1,
+                    "nodo": _NODO_RANKING,
+                    "equipo": _EQUIPO_RANKING_OLT,
+                },
+            )
+        for n_id, nombre in (
+            (_ODF_RANKING_MENOS_N_ID, "ODF QA Ranking Menos"),
+            (_ODF_RANKING_MAS_N_ID, "ODF QA Ranking Mas"),
+        ):
+            session.execute(
+                _SQL_ALTA_ODF,
+                {"n_id": n_id, "nombre": nombre, "calle": "CALLE QA RANK", "altura": "1"},
+            )
+        for conector_n_id, odf_n_id, numero in (
+            (_CONECTOR_RANKING_MENOS_N_ID, _ODF_RANKING_MENOS_N_ID, _NUM_RANKING_HERMANO_MENOS),
+            (_CONECTOR_RANKING_MAS_A_N_ID, _ODF_RANKING_MAS_N_ID, _NUM_RANKING_HERMANO_MAS_A),
+            (_CONECTOR_RANKING_MAS_B_N_ID, _ODF_RANKING_MAS_N_ID, _NUM_RANKING_HERMANO_MAS_B),
+        ):
+            session.execute(
+                _SQL_ALTA_CONECTOR,
+                {
+                    "n_id": conector_n_id,
+                    "odf_n_id": odf_n_id,
+                    "conector": "1",
+                    "pelo_n_id": None,
+                    "servicio_resuelto": numero,
+                },
+            )
+        session.commit()
+
+    try:
+        yield {"sin_odf_id": sin_odf_id}
+    finally:
+        _borrar_todo(numeros, conectores=conectores, odfs=odfs)
 
 
 @pytest.fixture
@@ -885,6 +985,65 @@ async def test_sugerencia_encuentra_la_odf_del_hermano_del_mismo_grupo_olt(escen
     assert sugerencia is not None
     assert sugerencia.odf_n_id == _ODF_N_ID
     assert sugerencia.nombre == "ODF QA Pilar"
+    assert sugerencia.cantidad_candidatas == 1, "una sola ODF candidata en este grupo"
+
+
+@pytest.mark.asyncio
+async def test_sugerencia_gana_la_odf_mas_corroborada_no_la_de_id_mas_bajo(
+    escenario_ranking_sugerencia,
+):
+    """Con varias candidatas gana la que MÁS hermanos ya resolvieron, no la del `odf_n_id` más
+    bajo: `_ODF_RANKING_MAS_N_ID` tiene 2 hermanos resueltos y el `n_id` más ALTO, así que si el
+    orden fuera por id (o el que devolviera el plan sin `ORDER BY`) ganaría la equivocada."""
+    async with AsyncSessionLocal() as sesion:
+        sugerencia = await sugerencia_odf_para_servicio(
+            sesion, escenario_ranking_sugerencia["sin_odf_id"]
+        )
+
+    assert sugerencia is not None
+    assert sugerencia.odf_n_id == _ODF_RANKING_MAS_N_ID
+    assert sugerencia.nombre == "ODF QA Ranking Mas"
+    assert sugerencia.cantidad_candidatas == 2, (
+        "la UI necesita saber que había MÁS de una candidata para no presentar la sugerencia como "
+        "la única ODF posible"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sugerencia_es_estable_entre_ejecuciones_repetidas(escenario_ranking_sugerencia):
+    """La misma pregunta tiene que dar la misma respuesta, incluso forzando planes distintos.
+
+    Es la regresión del `LIMIT 1` sin `ORDER BY`: sin orden explícito, Postgres devuelve la fila
+    que el plan alcanza primero y nada garantiza que sea la misma tras un cambio de plan, una
+    ingesta que reordena el heap o un scan paralelo. Se fuerzan planes distintos (deshabilitando
+    hash join / hash agg / nested loop y forzando paralelismo) para que el test no dependa de que
+    el planner elija hoy lo mismo que mañana.
+    """
+    planes = (
+        [],
+        ["SET LOCAL enable_hashjoin = off"],
+        ["SET LOCAL enable_hashagg = off"],
+        ["SET LOCAL enable_nestloop = off"],
+        [
+            "SET LOCAL max_parallel_workers_per_gather = 4",
+            "SET LOCAL parallel_setup_cost = 0",
+            "SET LOCAL parallel_tuple_cost = 0",
+            "SET LOCAL min_parallel_table_scan_size = 0",
+        ],
+    )
+    vistos = set()
+    for ajustes in planes:
+        async with AsyncSessionLocal() as sesion:
+            for ajuste in ajustes:
+                await sesion.execute(text(ajuste))
+            sugerencia = await sugerencia_odf_para_servicio(
+                sesion, escenario_ranking_sugerencia["sin_odf_id"]
+            )
+            await sesion.rollback()
+        assert sugerencia is not None
+        vistos.add((sugerencia.odf_n_id, sugerencia.cantidad_candidatas))
+
+    assert vistos == {(_ODF_RANKING_MAS_N_ID, 2)}, f"sugerencia inestable entre planes: {vistos}"
 
 
 @pytest.mark.asyncio

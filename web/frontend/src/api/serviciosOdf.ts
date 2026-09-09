@@ -127,6 +127,11 @@ export async function listarServiciosSinOdf(
 export interface SugerenciaOdf {
   odf_n_id: number;
   nombre: string | null;
+  /** Cuántas ODFs candidatas había para este Servicio (siempre `>= 1`; se devuelve UNA sola, la
+   * más corroborada). La UI TIENE que avisar cuando es `> 1`: mostrar una sola ODF sin decir que
+   * había 4 le esconde al operador que estaba eligiendo entre opciones — 88 de 1057 Servicios
+   * `OLT_PON_COMPARTIDO` con sugerencia tienen más de una candidata (medido real 2026-09-09). */
+  cantidad_candidatas: number;
 }
 
 export interface SugerenciaServicioResponse {

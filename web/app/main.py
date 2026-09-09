@@ -6132,7 +6132,14 @@ async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -
         if detalle["categoria_causa"] == CATEGORIA_OLT_PON_COMPARTIDO:
             sugerencia = await sugerencia_odf_para_servicio(sesion, servicio_id)
             if sugerencia is not None:
-                sugerencia_payload = {"odf_n_id": sugerencia.odf_n_id, "nombre": sugerencia.nombre}
+                # `cantidad_candidatas` NO es decorativo: el frontend lo necesita para no
+                # presentar como única una elección entre 2-4 ODFs candidatas (88 de 1057
+                # Servicios OLT con sugerencia tienen más de una, medido real 2026-09-09).
+                sugerencia_payload = {
+                    "odf_n_id": sugerencia.odf_n_id,
+                    "nombre": sugerencia.nombre,
+                    "cantidad_candidatas": sugerencia.cantidad_candidatas,
+                }
                 senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, sugerencia.odf_n_id)
                 senal_direccion = senal.value
 

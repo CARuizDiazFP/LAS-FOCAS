@@ -46,7 +46,14 @@
           <p>
             <i class="ph ph-lightbulb" aria-hidden="true"></i>
             Sugerencia: <strong>{{ detalle.sugerencia.nombre || `ODF ${detalle.sugerencia.odf_n_id}` }}</strong>
+            <span class="asociar-odf-sugerencia-nid">(n_id {{ detalle.sugerencia.odf_n_id }})</span>
             — {{ justificacionSugerencia }}
+          </p>
+          <p v-if="detalle.sugerencia.cantidad_candidatas > 1" class="asociar-odf-sugerencia-aviso">
+            <i class="ph ph-warning" aria-hidden="true"></i>
+            Hay <strong>{{ detalle.sugerencia.cantidad_candidatas }} ODFs candidatas</strong> para este grupo de
+            última milla. Esta es la más corroborada (la que más Servicios hermanos ya tienen resuelta), no la
+            única — conviene verificarla antes de confirmar.
           </p>
           <button class="btn subtle" type="button" @click="usarSugerencia">Usar esta ODF</button>
         </div>
@@ -55,10 +62,14 @@
       <div class="asociar-odf-hairline"></div>
 
       <template v-if="!odfSeleccionada">
+        <!-- El placeholder dice SÓLO "nombre" porque es lo único que el backend matchea:
+             `odf_inventario.py::_FILTROS_SQL` filtra por `o.nombre ILIKE`, nunca por calle/altura.
+             Prometer "o dirección" hacía que una búsqueda legítima por domicilio pareciera "no hay
+             ninguna ODF ahí" cuando en realidad ese filtro no existe. -->
         <input
           v-model="query"
           type="text"
-          placeholder="Buscar ODF por nombre o dirección..."
+          placeholder="Buscar ODF por nombre..."
           class="asociar-odf-search"
           @input="onSearchInput"
         />
@@ -236,15 +247,21 @@ function onSearchInput(): void {
   debounceTimer = setTimeout(() => void buscar(), 300);
 }
 
-async function buscar(): Promise<void> {
-  if (!query.value.trim()) {
+/** Búsqueda de ODFs en el inventario Cromo. Por defecto busca por el texto del buscador
+ * (`nombre ILIKE`), pero con `nId` busca por identidad EXACTA (`o.n_id = :n_id` en
+ * `odf_inventario.py`), que es lo que usa `usarSugerencia()`. */
+async function buscar(opciones: { nId?: number } = {}): Promise<void> {
+  const texto = query.value.trim();
+  if (opciones.nId === undefined && !texto) {
     resultadosOdf.value = [];
     return;
   }
   buscandoOdf.value = true;
   errorBusqueda.value = '';
   try {
-    const respuesta = await buscarInventarioOdfs({ q: query.value.trim(), limit: 10 });
+    const respuesta = await buscarInventarioOdfs(
+      opciones.nId !== undefined ? { nId: opciones.nId, limit: 10 } : { q: texto, limit: 10 },
+    );
     resultadosOdf.value = respuesta.odfs;
   } catch (e: unknown) {
     errorBusqueda.value = e instanceof Error ? e.message : 'No se pudo buscar ODFs.';
@@ -253,13 +270,24 @@ async function buscar(): Promise<void> {
   }
 }
 
-/** Sólo completa el buscador con el nombre sugerido y dispara la búsqueda — el operador sigue
- * teniendo que hacer click en el resultado para seleccionarlo. Nunca dispara el POST por su
- * cuenta: la asociación siempre pasa por `handleConfirmar`. */
+/** Trae la ODF sugerida al buscador por su `n_id`, NUNCA por su nombre — el operador sigue
+ * teniendo que hacer click en el resultado para seleccionarlo, y la asociación siempre pasa por
+ * `handleConfirmar` (esto nunca dispara el POST por su cuenta).
+ *
+ * Por qué por `n_id` y no por nombre: **217 ODFs de dev comparten nombre con otra** (100 grupos de
+ * homónimos, hasta 4 por grupo, medido real 2026-09-09). Buscando por nombre, una sugerencia como
+ * "ODF Azopardo 250 Piso 12" devolvía las 3 homónimas sin ninguna forma de saber cuál había
+ * sugerido la API — el operador tenía 1 de 3 de acertar y confirmaba creyendo que confirmaba la
+ * sugerida, escribiendo la ODF equivocada en `cromo_servicio_odf_override`. El filtro `n_id` de
+ * `odf_inventario.py` es igualdad exacta sobre la PK, así que devuelve exactamente esa ODF.
+ *
+ * `query` queda con el `n_id` en texto para que el estado vacío ("Ninguna ODF coincide con ...")
+ * diga contra qué se buscó si la ODF sugerida dejó de existir entre el detalle y este click. */
 function usarSugerencia(): void {
-  if (!detalle.value?.sugerencia) return;
-  query.value = detalle.value.sugerencia.nombre ?? `ODF ${detalle.value.sugerencia.odf_n_id}`;
-  void buscar();
+  const sugerencia = detalle.value?.sugerencia;
+  if (!sugerencia) return;
+  query.value = String(sugerencia.odf_n_id);
+  void buscar({ nId: sugerencia.odf_n_id });
 }
 
 async function cargarDetalle(): Promise<void> {
@@ -458,6 +486,24 @@ watch(
 
 .asociar-odf-sugerencia .btn {
   align-self: flex-start;
+}
+
+.asociar-odf-sugerencia-nid {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Selector con el `p` incluido a propósito: `.asociar-odf-sugerencia p` (0,1,1) le gana en
+   especificidad a una clase sola (0,1,0) y le pisaría el color de aviso. */
+.asociar-odf-sugerencia p.asociar-odf-sugerencia-aviso {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--color-state-warn);
+}
+
+.asociar-odf-sugerencia p.asociar-odf-sugerencia-aviso strong {
+  color: var(--color-state-warn);
 }
 
 .asociar-odf-hairline {
