@@ -1414,3 +1414,135 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   `/admin/servicios/viewer`, tabla escudo de asociación manual `cromo_servicio_odf_override`
   soportando muchos-a-uno, categorización de causa por tarjeta) — próxima fase de esta misma tarea,
   en la rama efímera `feat/odf-viewer-servicios-sin-odf`.
+
+## 2026-09-09 — Gestor "Servicios sin ODF": detección, categorización y asociación manual (cierre del plan iniciado 2026-09-07)
+
+- **Contexto:** cierre del plan de 7 tareas (rama `feat/odf-viewer-servicios-sin-odf`, trabajo real
+  2026-09-08/09, vía `superpowers:subagent-driven-development`) que sigue al diagnóstico de la
+  entrada anterior: de 5731 Servicios Activos verificables, **2891 sin ODF Cromo resuelta** tras el
+  catch-up de `fase_servicios` (bajó de las 2939 del diagnóstico inicial — drift esperado entre
+  corridas de ingesta). El plan construye un gestor dedicado (`AdminServiciosSinOdfViewer.vue`) que
+  lista ese universo, categoriza la causa probable por fila, sugiere la ODF de un "hermano" resuelto
+  cuando es posible, y deja asociar manualmente vía una tabla escudo — sin auto-aplicar nada.
+- **Decisión 1 (taxonomía y prioridad, 4 categorías que particionan exacto el universo):**
+  `categorizar()`/`categorizar_extremos()` en `core/services/cromo/servicios_sin_odf.py` clasifican
+  cada Servicio (o, si tiene 2 extremos de última milla — 364 casos reales, 204 con categorías
+  divergentes entre extremos — el extremo ganador) en orden de prioridad:
+  1. `OLT_PON_COMPARTIDO` (equipo `ILIKE 'OLT%'`) — **1537 servicios (53%)**. Prioridad más alta
+     porque es la ÚNICA categoría con sugerencia asistida accionable: un hermano del mismo (nodo,
+     equipo) que ya tiene ODF resuelta.
+  2. `EQUIPO_DOMICILIO_CLIENTE` (nodo `LIKE 'CLI\_%'`) — **687 (24%)**.
+  3. `SWITCH_COMPARTIDO_REVISAR` (resto con equipo/nodo) — **583 (20%)**. Va después de CLI_ porque
+     es un bucket genérico "revisar a mano", señal menos específica que "equipo en domicilio".
+  4. `SIN_SENAL_PROV` (sin última milla en absoluto) — **84 (3%)**, con subcategoría diagnóstica
+     adicional (`PELO_SIN_CONECTOR_ODF`/`AUSENTE_RED_CROMO`/`BAJA_LOGICA_HEREDADA`) calculada
+     on-demand, nunca en el listado paginado (evita N+1).
+  Total 1537+687+583+84 = 2891, reverificado real hoy vía el endpoint de listado (QA de cierre, ver
+  abajo) tras limpiar la fila de verificación que había dejado la tarea anterior.
+- **Decisión 2 (tabla escudo `app.cromo_servicio_odf_override` sin `UNIQUE`):** cada fila es un
+  EVENTO de asociación manual, no el estado actual de un Servicio — `crear_override` siempre hace
+  INSERT puro, nunca UPDATE. Sin `UNIQUE(servicio_id)` a propósito: permite que un operador corrija
+  una asociación previa (reasociar a otra ODF) sin perder historial. La lectura
+  (`override_vigente_de_servicio`/`overrides_vigentes_por_odf`) siempre toma la fila más reciente por
+  `servicio_id` (`ORDER BY creado_en DESC, id DESC`). Verificado real en el QA de cierre: reasociar el
+  mismo Servicio a una ODF distinta lo deja SOLO bajo la ODF más nueva, nunca duplicado bajo las
+  dos — exactamente el caso que motivó no poner `UNIQUE`. `servicio_id` es FK dura a
+  `app.servicios.id` (`ON DELETE CASCADE`); `odf_n_id`/`pelo_n_id` son referencias blandas (sin FK),
+  mismo criterio que el resto de las referencias cruzadas a Cromo.
+- **Decisión 3 (señal de dirección, ayuda no bloqueante):**
+  `core/services/cromo/direccion_comparacion.py::comparar_direccion_prov_vs_odf` compara la dirección
+  PROV del Servicio contra calle/altura de la ODF candidata (`coincide`/`no_coincide`/
+  `no_se_pudo_comparar`) — nunca bloquea la confirmación de una asociación manual, sólo informa. Gap
+  real cerrado durante el plan: la sugerencia automática sólo existe para `OLT_PON_COMPARTIDO`
+  (1537/2891, 53%), así que para el 47% restante — y para cualquier operador que rechace la
+  sugerencia dentro de OLT y busque otra ODF a mano — el badge de señal quedaba inerte justo donde
+  más se necesitaba. Fix: endpoint de sólo lectura `GET .../{id}/senal-direccion?odf_n_id=` que
+  recalcula la señal para CUALQUIER ODF que el operador busque, sin persistir nada — `POST
+  .../asociar` sigue siendo quien recalcula y persiste server-side contra la ODF REALMENTE elegida,
+  nunca confía en lo que mandó el frontend.
+- **Historia de performance** (medida real contra `lasfocasdev-postgres`, tres cuellos de botella
+  sucesivos, los tres con universo idéntico de 2891 filas — `tests/test_cromo_servicios_sin_odf_real_db.py`
+  tiene una regresión automática que falla si se dropea cualquiera de los 2 índices o se revierte
+  cualquiera de los 2 rewrites):
+  1. Query original: **~23.9s**.
+  2. + índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — el plan pasó de `Seq Scan`
+     a `Index Only Scan` (cost 31923→6736) pero el tiempo total apenas bajó a **~20.8s**: había un
+     segundo cuello de botella no anticipado por el diseño original (self-join anti-ambigüedad de
+     `servicios` contra sí misma, O(n²) en ejecución real pese a que el planner lo estimaba barato).
+  3. + GIN `ix_servicios_alias_ids_gin` + rewrite de `= ANY(alias_ids)` a contención
+     `@> ARRAY[...]` — los dos SÓLO funcionan juntos (el GIN solo no mueve nada, y el rewrite solo
+     empeora a ~39.8s) — **~11.6s**.
+  4. + eliminar la CTE `MATERIALIZED` y desarmar el `NOT EXISTS` en 3 `NOT EXISTS` independientes vía
+     De Morgan — **145.6 ms de Execution Time / ~0.15-0.19s wallclock**, medido el 2026-09-08. Una
+     medición posterior el MISMO día, con el SQL byte-idéntico, dio 262-275ms — confirmado que no es
+     regresión (mismo plan de ejecución, mismos tamaños de tabla): variación de caché/carga de dev,
+     no del código. **Rango honesto a citar: ~145-275ms**, no sólo el mejor número.
+  Total: **~164x** (23.9s → ~150-275ms). Lección técnica para quien vuelva a tocar esta query: **el
+  cost-estimate del planner de Postgres no correlacionó con el tiempo real en NINGUNO de los tres
+  cuellos de botella** — el diseño original descartó el GIN por mirar el cost (~483 de ~37.828) y se
+  equivocó; la CTE `MATERIALIZED` también venía de una estimación de costo. Sólo medir con
+  `EXPLAIN (ANALYZE, TIMING OFF)` contra datos reales lo reveló las tres veces.
+- **Fuera de alcance, explícito (no implementado, no diseñado):**
+  - El trazado físico completo OLT→Caja PON→Splitter→Cable de bajada→Roseta. El usuario confirmó los
+    IDs de clase Cromo reales de esos objetos (84, 66, 85) pero **ninguno está ingerido hoy** en este
+    repo — el gestor llega hasta "qué ODF" (donde el pelo termina en la patchera), no hasta el
+    circuito físico completo hasta la roseta del cliente.
+  - Descarga de trackings desde el Detalle de Servicio.
+  - Distinción algorítmica entre "SW de frontera" (nodo compartido real) y "SW con FO dedicada al
+    cliente" dentro de `SWITCH_COMPARTIDO_REVISAR` — el usuario no entregó todavía un criterio
+    verificable para separarlos; queda como bucket único "revisar manualmente" con un TODO explícito
+    en `categorizar()`.
+- **Deuda técnica conocida, documentada y NO arreglada** (salió de las reviews del plan):
+  1. **La más sustantiva:** `_SQL_HERMANO_DE_BAJA_CON_PELO` (`servicios_sin_odf.py`, paso 3 de la
+     cascada de `subcategoria_sin_senal_prov`) matchea el pelo del hermano dado de baja sólo por FK
+     (`m.servicio_id = hermano.id`), no por las TRES identidades (`servicio_id`/
+     `numero_primer_servicio`/`ANY(alias_ids)`) que sí se corrigieron en los pasos 1/2 de la misma
+     cascada (ese sí fue un Important real, arreglado). Un hermano cuyo pelo está matcheado sólo vía
+     número o alias podría perder silenciosamente el diagnóstico `BAJA_LOGICA_HEREDADA`.
+  2. Docstring auto-contradictorio en el mismo archivo: una línea dice que la cascada "cuesta 3
+     queries por fila" y otra dice "hasta 2 queries por Servicio" — quedaron desincronizadas en el
+     mismo fix round.
+  3. `overrides_vigentes_por_odf` deduplica TODA la tabla de overrides (`DISTINCT ON` global) antes
+     de filtrar por `odf_n_id` — necesario para la corrección (ver Decisión 2), pero corre un sort
+     sobre la tabla completa en cada llamada. Inofensivo al volumen esperado (unos pocos miles de
+     filas, un evento por asociación/reasociación sobre ~2891 Servicios); mitigación ya identificada
+     si la tabla creciera mucho más (prefiltrar `servicio_id IN (...)` antes del dedup global).
+  4. Ciclo de imports entre `verificador.py` y el módulo nuevo de overrides, resuelto con un import
+     diferido (in-function) en `verificador.py`. El fix arquitectónico (extraer `ObjetoNoEncontrado`
+     a su propio módulo, ej. `core/services/cromo/errores.py`) toca 8 archivos existentes —
+     desproporcionado para este plan.
+  5. El gap de la tecla Escape (backdrop/botón cierran el modal, Escape no) sigue vivo en
+     `ModalUnificarCamara.vue` — mismo defecto que se corrigió en `ModalAsociarOdf.vue` de este plan,
+     pero en un componente preexistente de otra feature, fuera de alcance de esta rama.
+- **QA E2E real de cierre (2026-09-09):** `lasfocasdev-web` reconstruido y confirmado en HEAD
+  `764e62f` antes de medir nada (build con capas 100% cacheadas — el código ya coincidía). Vía
+  `TestClient` contra Postgres real dentro del contenedor (**sin navegador disponible en este
+  entorno** — declarado explícitamente, no fingido): listado sin filtro (2891) y por categoría
+  (1537/687/583/84, exacto); filtro `q` por número de servicio (`122519`→"LEADING BRANDS SA",
+  `101778`→"MUNICIPALIDAD DE PILAR"); sugerencia real para un Servicio del grupo
+  `ElRincon842_Pilar`/`OLT2_Pilar` (618 servicios, 1 ya resuelto) — trajo la ODF real del hermano
+  (`ODF Frondizi 1413 - Pilar`, n_id 6643800); preview de señal de dirección a mano para un Servicio
+  que NO recibe sugerencia automática; asociación real completa (POST → desaparece del listado →
+  aparece en `GET /api/infra/cromo/odfs/{n_id}/servicios` con `metodo="OVERRIDE_MANUAL"`);
+  reasociación a otra ODF (el Servicio queda SOLO bajo la ODF nueva, nunca duplicado); rechazo real
+  de CSRF inválido (403). Suite completa: 1471 passed / 3 failed (los 3 ya conocidos y ajenos a este
+  plan — 2 en `test_cromo_odf_inventario_real_db.py` por un cast de `asyncpg` sin datos de prueba, 1
+  por orden de ejecución en `test_servicios_prov_routes.py`, ninguno en archivos tocados por esta
+  rama) / 5 skipped. Base dejada limpia: los overrides creados durante el QA se borraron, universo
+  confirmado de vuelta en 2891 con la misma distribución exacta.
+- **Nota de drift real encontrada en el QA:** el ejemplo puntual que el brief de cierre pedía repetir
+  (`LEADING BRANDS SA`, servicio 122519, esperado en `SIN_SENAL_PROV`/`PELO_SIN_CONECTOR_ODF`) ya no
+  cae ahí — hoy su última milla resuelve a `OLT2_Atento` (prefijo `OLT`), así que categoriza como
+  `OLT_PON_COMPARTIDO` con sugerencia real (aunque `no_coincide` en dirección). No es un bug: es el
+  mismo tipo de drift de datos entre corridas de ingesta que ya movió el conteo total de 2939 a 2891.
+  Se usó `ANTENA OESTE` (servicio 118363) como ejemplo vigente de `PELO_SIN_CONECTOR_ODF` para no
+  dejar ese camino sin verificar.
+- **Impacto:** gestor nuevo en `/admin/servicios/viewer` → "Servicios sin ODF" (4 endpoints bajo
+  `/api/admin/infra/servicios-odf/...`), tabla `app.cromo_servicio_odf_override` + 2 índices de
+  performance (migraciones `20260908_01`/`20260908_02`, detalle en `docs/db.md`). Sin cambios de
+  comportamiento para ningún flujo existente — el override es aditivo sobre `servicios_por_odf`.
+- **No hecho / limitación del entorno:** sin navegador disponible, ningún flujo se verificó clic a
+  clic — la evidencia más fuerte disponible es `TestClient` contra Postgres real dentro del
+  contenedor reconstruido, más lectura de código (revisiones del plan) para los 3 no-negociables de
+  UI (ambos extremos visibles, sugerencia nunca auto-aplicada, señal nunca bloqueante) y el guardrail
+  de paleta de tokens.
