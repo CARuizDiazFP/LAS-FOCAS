@@ -194,7 +194,10 @@ export interface CromoServicioEncontrado {
   estado_servicio: string | null;
   categoria: number | null;
   tipo_servicio: string | null;
-  pelo_n_id: number;
+  // Puede venir `null`: `/api/infra/cromo/odfs/{odf_n_id}/servicios` ahora incluye también los
+  // servicios asociados por override manual (gestor de Servicios sin ODF), y un override sin
+  // conector puntual no tiene pelo — ver `ServicioOdfAsociarRequestModel` en `web/app/main.py`.
+  pelo_n_id: number | null;
   servicio_numero_match: string;
   metodo: string;
 }
