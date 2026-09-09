@@ -1426,8 +1426,10 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   cuando es posible, y deja asociar manualmente vía una tabla escudo — sin auto-aplicar nada.
 - **Decisión 1 (taxonomía y prioridad, 4 categorías que particionan exacto el universo):**
   `categorizar()`/`categorizar_extremos()` en `core/services/cromo/servicios_sin_odf.py` clasifican
-  cada Servicio (o, si tiene 2 extremos de última milla — 364 casos reales, 204 con categorías
-  divergentes entre extremos — el extremo ganador) en orden de prioridad:
+  cada Servicio (o, si tiene 2 extremos de última milla — 364 casos dentro de este universo sin
+  ODF, 204 con categorías divergentes entre extremos; medido sobre TODA
+  `app.servicios_equipos_ultima_milla` son 368/206, y el docstring de `categorizar_extremos()`
+  aclara los dos alcances — el extremo ganador) en orden de prioridad:
   1. `OLT_PON_COMPARTIDO` (equipo `ILIKE 'OLT%'`) — **1537 servicios (53%)**. Prioridad más alta
      porque es la ÚNICA categoría con sugerencia asistida accionable: un hermano del mismo (nodo,
      equipo) que ya tiene ODF resuelta.
@@ -1514,6 +1516,34 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   5. El gap de la tecla Escape (backdrop/botón cierran el modal, Escape no) sigue vivo en
      `ModalUnificarCamara.vue` — mismo defecto que se corrigió en `ModalAsociarOdf.vue` de este plan,
      pero en un componente preexistente de otra feature, fuera de alcance de esta rama.
+  6. **Una asociación equivocada es irreversible desde la UI** (salió de la revisión final de rama,
+     2026-09-09). `cromo_servicio_odf_override` es append-only y **sin tombstone**: a diferencia de
+     `cromo_botella_alias` (que tiene `accion` `fusionar`|`ignorar`), acá no hay ninguna forma de
+     marcar una fila como anulada. Y el listado del gestor excluye un Servicio por la PRESENCIA de
+     cualquier fila (`con_override AS (SELECT DISTINCT servicio_id FROM
+     app.cromo_servicio_odf_override)`), no por la fila vigente. Consecuencia real: si el operador
+     confirma el Servicio equivocado, ese Servicio desaparece del gestor **para siempre** —
+     reasociarlo a la ODF correcta agrega otra fila (y `overrides_vigentes_por_odf` sí lo mueve a la
+     ODF nueva, ver Decisión 2), pero el Servicio nunca vuelve a aparecer en el listado de
+     pendientes, así que el error no se puede ni encontrar ni deshacer desde la UI. El único remedio
+     hoy es SQL manual: `DELETE FROM app.cromo_servicio_odf_override WHERE servicio_id = (SELECT id
+     FROM app.servicios WHERE servicio_id = '<numero>');` (borra TODOS los eventos de ese Servicio y
+     lo devuelve al listado; para borrar sólo el último, agregar `AND id = (SELECT max(id) FROM
+     app.cromo_servicio_odf_override WHERE servicio_id = ...)`). **No se implementó la anulación**:
+     es una feature nueva (endpoint de borrado/anulación + columna `accion` o `anulado_en` +
+     cambiar el `con_override` del listado a "fila vigente no anulada") y la decide el usuario, no
+     una ronda de fixes de review.
+- **Requisito DURO de orden de despliegue: migraciones primero, SIEMPRE** (documentado en la
+  revisión final de rama, 2026-09-09). `verificador.py::servicios_por_odf` ahora llama
+  `overrides_vigentes_por_odf` **sin condición**, y eso consulta `app.cromo_servicio_odf_override`.
+  Ese servicio alimenta `GET /api/infra/cromo/odfs/{n_id}/servicios`, un endpoint **preexistente**
+  que usa `OdfDetalleCromoView.vue` y que hoy funciona. Y ni `deploy/compose.yml` ni
+  `deploy/docker-compose.dev.yml` ni `web/Dockerfile` corren `alembic upgrade` en ningún
+  `command`/`entrypoint`/`CMD` (verificado por grep, 2026-09-09): las migraciones de este repo son
+  **manuales**. Si alguien reconstruye/levanta `web` antes de correr `alembic upgrade head`, el
+  detalle de ODF pasa a devolver 500 con `relation "app.cromo_servicio_odf_override" does not
+  exist` — una vista que funcionaba se rompe. Orden obligatorio: `alembic upgrade head` (20260908_01
+  y 20260908_02) → recién después rebuild/up de `web`. Aplica igual a prod.
 - **QA E2E real de cierre (2026-09-09):** `lasfocasdev-web` reconstruido y confirmado en HEAD
   `764e62f` antes de medir nada (build con capas 100% cacheadas — el código ya coincidía). Vía
   `TestClient` contra Postgres real dentro del contenedor (**sin navegador disponible en este
@@ -1537,10 +1567,64 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   mismo tipo de drift de datos entre corridas de ingesta que ya movió el conteo total de 2939 a 2891.
   Se usó `ANTENA OESTE` (servicio 118363) como ejemplo vigente de `PELO_SIN_CONECTOR_ODF` para no
   dejar ese camino sin verificar.
+- **Ola de fixes de la revisión final de rama (2026-09-09), 4 cambios de código:**
+  1. **Sugerencia de ODF determinista + conteo de candidatas.** `_SQL_SUGERENCIA_ODF` era un
+     `SELECT DISTINCT ... LIMIT 1` **sin `ORDER BY`**: no le pedía a Postgres ninguna fila en
+     particular. Medido real: de los 1057 Servicios `OLT_PON_COMPARTIDO` sin ODF que tienen al menos
+     una ODF candidata, **88 tienen más de una** (969 con 1, 35 con 2, 53 con 4), y a esos 88 la UI
+     les presentaba una sola como si fuera la única. Ahora la query agrupa por ODF candidata,
+     ordena por `hermanos_resueltos DESC, odf_n_id` (la más corroborada primero, desempate estable
+     — nunca por `nombre`, ver el punto 2) y devuelve `cantidad_candidatas` en la misma pasada, que
+     el modal muestra cuando es `> 1`. **Honestidad de la medición:** el flapping era un riesgo
+     LATENTE, no un bug observado — la forma vieja resultó estable en dev hoy en 8 repeticiones ×
+     11 variantes de plan forzadas (`enable_hashjoin`/`enable_hashagg`/`enable_nestloop`/
+     paralelismo/`join_collapse_limit`), y con el orden nuevo las 94 sugerencias multi-candidata de
+     dev devuelven la MISMA ODF que antes. Lo que faltaba era la garantía, no un valor distinto.
+  2. **El puente sugerencia→confirmación buscaba por NOMBRE** (`ModalAsociarOdf.vue::usarSugerencia`)
+     y **217 ODFs de dev comparten nombre con otra** (100 grupos de homónimos, hasta 4 por grupo,
+     medido real). Con una sugerencia homónima el operador obtenía 3-4 resultados indistinguibles —
+     el `n_id` ni se mostraba en la línea de sugerencia — y confirmaba creyendo que confirmaba la
+     sugerida: **escribía la ODF equivocada** en `cromo_servicio_odf_override`. Ahora busca por
+     `nId` (el filtro `n_id` de `odf_inventario.py` es igualdad exacta sobre la PK, devuelve
+     exactamente 1) y el `n_id` se muestra en la sugerencia. Verificado real contra el grupo de
+     homónimos `ODF Domingo de Acassuso 3780 OLIVOS` (n_id 6644757/6646045/6646155/6646208):
+     buscar por nombre devuelve `total=4`, buscar por cada `n_id` devuelve `total=1`.
+     **Honestidad de la medición:** hoy, con los datos de dev, **ninguna** de las ODFs que la
+     sugerencia puede llegar a proponer tiene nombre duplicado (medido: 0 de las candidatas de los
+     1057 Servicios con sugerencia caen en un nombre no único), así que por el camino de la
+     sugerencia el error concreto no es alcanzable HOY — el riesgo es de datos, no de código:
+     `cromo_odfs` no tiene ninguna restricción de unicidad de nombre, la ingesta agrega ODFs
+     continuamente y ya hay 217 homónimas en la tabla, cualquiera de las cuales puede volverse
+     candidata mañana. Buscar por PK en vez de por un texto no único es correcto igual y no cuesta
+     nada, y mostrar el `n_id` sirve además en el buscador manual, donde los homónimos SÍ aparecen
+     hoy.
+  3. **Los chips de conteo multiplicaban por 5 la query más cara de la feature.** El viewer hacía
+     `Promise.all` de 4 requests `limit: 0` (uno por categoría) en paralelo con el listado, en cada
+     montaje/búsqueda/refresco/asociación, y cada uno re-corría la detección completa (~2891 filas
+     candidatas categorizadas en Python) para devolver un entero. Como `listar_servicios_sin_odf` ya
+     calcula `categoria_causa` de cada fila antes de filtrar, ahora devuelve
+     `conteos_por_categoria` en la misma pasada (4 claves siempre presentes, calculadas después del
+     filtro `q` y ANTES del filtro `categoria`, que es lo que los chips necesitan) y los 4 requests
+     se borraron: 1 ejecución en vez de 5.
+  4. **Los guards de los 4 endpoints no eran coherentes.** `GET {id}/sugerencia` y
+     `GET {id}/senal-direccion` eran `_require_auth` mientras `listado`/`asociar` eran
+     `_require_admin`, los 4 bajo `/api/admin/`. El guard ancho no habilitaba ningún caso de uso (la
+     ruta de UI ya es `meta: { requiresAdmin: true }`) y `/sugerencia` es el **único** endpoint de la
+     app del SPA que serializa `Servicio.direccion` — el domicilio del cliente; los otros 14 usos de
+     `.direccion` en `web/app/main.py` son de `Camara`, y el precedente que citaba el docstring
+     (`odfs/{id}/conectores`) expone `nombre_cliente` pero no la dirección — más el `nodo`/`equipo`
+     de última milla (topología). Un rol `user` podía iterar `servicio_id` y cosecharlo todo,
+     mientras el listado, que muestra menos, sí exigía admin. Los 2 tests que fijaban el guard ancho
+     quedaron invertidos.
 - **Impacto:** gestor nuevo en `/admin/servicios/viewer` → "Servicios sin ODF" (4 endpoints bajo
-  `/api/admin/infra/servicios-odf/...`), tabla `app.cromo_servicio_odf_override` + 2 índices de
-  performance (migraciones `20260908_01`/`20260908_02`, detalle en `docs/db.md`). Sin cambios de
-  comportamiento para ningún flujo existente — el override es aditivo sobre `servicios_por_odf`.
+  `/api/admin/infra/servicios-odf/...`, los 4 `_require_admin`), tabla
+  `app.cromo_servicio_odf_override` + 2 índices de performance (migraciones
+  `20260908_01`/`20260908_02`, detalle en `docs/db.md`). A nivel de **comportamiento observable con
+  el esquema ya aplicado** no cambia ningún flujo existente — el override es aditivo sobre
+  `servicios_por_odf` y sin filas de override el resultado es idéntico. A nivel de **despliegue** sí
+  hay un cambio: `servicios_por_odf` pasa a depender de una tabla nueva, así que el detalle de ODF
+  preexistente se rompe si se levanta `web` sin haber migrado (ver el requisito de orden de
+  despliegue más arriba).
 - **No hecho / limitación del entorno:** sin navegador disponible, ningún flujo se verificó clic a
   clic — la evidencia más fuerte disponible es `TestClient` contra Postgres real dentro del
   contenedor reconstruido, más lectura de código (revisiones del plan) para los 3 no-negociables de

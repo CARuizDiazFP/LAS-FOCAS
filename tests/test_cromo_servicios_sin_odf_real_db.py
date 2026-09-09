@@ -245,9 +245,10 @@ def escenario_grupo_olt():
     sin ODF resuelta y su "hermano" con ODF ya resuelta vía `cromo_odf_conectores`.
 
     El Servicio sin ODF tiene última milla DOBLE a propósito: extremo 1 en un switch genérico y
-    extremo 2 en el OLT. Es el caso real de 206 servicios de dev en los que los dos extremos caen
-    en categorías distintas — si el listado se quedara con el extremo 1, quedaría como
-    `SWITCH_COMPARTIDO_REVISAR` y nunca se le ofrecería la sugerencia del grupo OLT.
+    extremo 2 en el OLT. Es el caso real de **204 servicios del universo sin ODF** (de los 364 que
+    tienen 2 extremos ahí; 206 de 368 contando toda `servicios_equipos_ultima_milla`) en los que
+    los dos extremos caen en categorías distintas — si el listado se quedara con el extremo 1,
+    quedaría como `SWITCH_COMPARTIDO_REVISAR` y nunca se le ofrecería la sugerencia del grupo OLT.
     """
     numeros = [_NUM_SIN_ODF, _NUM_HERMANO_RESUELTO]
     _borrar_todo(numeros, conectores=[_CONECTOR_HERMANO_N_ID], odfs=[_ODF_N_ID])

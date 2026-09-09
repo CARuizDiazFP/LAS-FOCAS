@@ -4,11 +4,16 @@
 
 """Universo "Servicios Activos verificables sin ODF resuelta" + por qué cada uno quedó sin ODF.
 
-Diagnóstico real que motiva el módulo: 2939 de 5731 Servicios Activos verificables de dev (51%) no
-tienen ODF resuelta. Este módulo los lista paginados, le pone a cada uno una causa probable a
-partir del equipo/nodo de última milla que trajo PROV, y — cuando el dato ya lo permite — sugiere
-la ODF de un "hermano" del mismo (nodo, equipo) que sí está resuelto. **Nada se auto-aplica**: la
-sugerencia es un dato para que el operador confirme a mano (ver
+Diagnóstico real que motiva el módulo: de los 5731 Servicios Activos verificables de dev, **2891
+(50%) no tienen ODF resuelta** — ése es el universo vigente y el número que citan el resto de este
+módulo y `docs/decisiones.md`. El diagnóstico inicial (entrada del 2026-09-07 de
+`docs/decisiones.md`) había medido 2939: es el mismo universo ANTES del catch-up de
+`fase_servicios`, no otra definición ni una medición contradictoria.
+
+Este módulo los lista paginados, le pone a cada uno una causa probable a partir del equipo/nodo de
+última milla que trajo PROV, y — cuando el dato ya lo permite — sugiere la ODF de un "hermano" del
+mismo (nodo, equipo) que sí está resuelto. **Nada se auto-aplica**: la sugerencia es un dato para
+que el operador confirme a mano (ver
 `core/services/cromo/servicio_odf_override_service.py`).
 
 Qué NO hace este módulo, a propósito:
@@ -132,8 +137,8 @@ class ServicioSinOdf:
     """Un Servicio Activo verificable sin ODF resuelta, con su causa probable ya categorizada.
 
     `subcategoria` es siempre `None` en el listado paginado: la cascada de `SIN_SENAL_PROV`
-    (`subcategoria_sin_senal_prov`) cuesta 3 queries por fila y se calcula sólo on-demand en el
-    endpoint de detalle.
+    (`subcategoria_sin_senal_prov`) cuesta **1 o 2 queries por fila** (la segunda sólo si los pasos
+    1/2 no cortaron antes) y se calcula sólo on-demand en el endpoint de detalle.
 
     `nodo`/`equipo` son los del extremo que ganó la categorización (ver `categorizar_extremos`),
     no necesariamente el extremo 1. `extremos` trae **todos** los extremos, sin filtrar: la
@@ -269,9 +274,15 @@ def categorizar_extremos(
     cuál extremo ganó comparando valores (`"  OLT2  "` vs `"OLT2"` no son iguales).
 
     Por qué existe: `ServicioSinOdf` tiene un solo `nodo`/`equipo`, pero
-    `app.servicios_equipos_ultima_milla` guarda 1 **o 2** extremos por Servicio (368 servicios con
-    2 extremos en dev) y en **206 de esos 368** los dos extremos caen en categorías DISTINTAS
-    (medido real). Tomar siempre el extremo 1 sería arbitrario y tendría un costo funcional
+    `app.servicios_equipos_ultima_milla` guarda 1 **o 2** extremos por Servicio, y cuando hay 2 los
+    dos suelen caer en categorías DISTINTAS. Medido real 2026-09-09, con el alcance explícito
+    porque son dos universos distintos y los dos números circulan: **368 servicios con 2 extremos
+    en toda la tabla, 206 de ellos con categorías divergentes**; **364 con 2 extremos dentro del
+    universo "sin ODF resuelta" que lista este módulo, 204 divergentes** (los otros 4 ya tienen ODF
+    y quedan fuera del listado). `docs/decisiones.md`/`docs/PR/2026-09-09.md` citan los 364/204
+    porque hablan del gestor.
+
+    Tomar siempre el extremo 1 sería arbitrario y tendría un costo funcional
     concreto: un Servicio con `SW_x` en el extremo 1 y un OLT en el extremo 2 quedaría como
     `SWITCH_COMPARTIDO_REVISAR` y **nunca** se le ofrecería la sugerencia de ODF del grupo OLT
     (Task 5 sólo la pide para `OLT_PON_COMPARTIDO`), pese a que
@@ -679,7 +690,8 @@ async def subcategoria_sin_senal_prov(
     """Subcausa de un Servicio categorizado `SIN_SENAL_PROV`, o `None` si ninguna aplica.
 
     **Sólo on-demand** (endpoint de detalle). NUNCA se llama desde `listar_servicios_sin_odf`:
-    son hasta 2 queries por Servicio y el listado tiene cientos de filas por página.
+    son 1 o 2 queries por Servicio (la segunda, `_SQL_HERMANO_DE_BAJA_CON_PELO`, sólo cuando los
+    pasos 1/2 no cortaron antes) y el listado tiene cientos de filas por página.
 
     `servicio_id` es la **PK** de `app.servicios` (`servicios.id`), no un número de servicio. Es el
     único argumento a propósito: las tres identidades del Servicio (`servicio_id`,

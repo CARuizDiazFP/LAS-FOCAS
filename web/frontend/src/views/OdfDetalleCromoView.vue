@@ -118,7 +118,10 @@
                 <td>{{ s.nombre_cliente || s.cliente || '—' }}</td>
                 <td>{{ s.estado_servicio || '—' }}</td>
                 <td>{{ s.tipo_servicio || '—' }}</td>
-                <td>{{ s.pelo_n_id }}</td>
+                <!-- `??` y no `||` como las columnas vecinas: `pelo_n_id` es numérico y `||`
+                     escondería un 0 legítimo. El fallback hacía falta porque las filas de override
+                     manual (`metodo="OVERRIDE_MANUAL"`) no traen pelo y dejaban la celda vacía. -->
+                <td>{{ s.pelo_n_id ?? '—' }}</td>
                 <td>{{ s.metodo }}</td>
               </tr>
             </tbody>
