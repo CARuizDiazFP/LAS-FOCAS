@@ -34,6 +34,7 @@ const AdminServicios = () => import('../admin/views/AdminServicios.vue');
 const AdminServiciosViewer = () => import('../admin/views/AdminServiciosViewer.vue');
 const AdminCamarasViewer = () => import('../admin/views/AdminCamarasViewer.vue');
 const AdminBotellasViewer = () => import('../admin/views/AdminBotellasViewer.vue');
+const AdminServiciosSinOdfViewer = () => import('../admin/views/AdminServiciosSinOdfViewer.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
@@ -292,6 +293,12 @@ const routes: RouteRecordRaw[] = [
         path: 'servicios/viewer/Botellas',
         name: 'admin-servicios-viewer-botellas',
         component: AdminBotellasViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/ServiciosSinOdf',
+        name: 'admin-servicios-viewer-sin-odf',
+        component: AdminServiciosSinOdfViewer,
         meta: { requiresAdmin: true },
       },
       { path: ':pathMatch(.*)*', redirect: '/admin' },
