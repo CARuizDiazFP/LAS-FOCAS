@@ -148,6 +148,27 @@ export async function getSugerenciaServicio(servicioId: number): Promise<Sugeren
   return requestJson<SugerenciaServicioResponse>(`/api/admin/infra/servicios-odf/${servicioId}/sugerencia`);
 }
 
+// ── Preview de señal de dirección (fix round 1) ──────────────────────────
+
+export interface SenalDireccionPreviewResponse {
+  senal_direccion: SenalDireccion;
+}
+
+/** Preview de `senal_direccion` para una ODF que el operador eligió A MANO en el buscador —
+ * `GET .../sugerencia` sólo la calcula contra la ODF que la propia API sugirió, y esa sugerencia
+ * sólo existe para la categoría `OLT_PON_COMPARTIDO` (47% de los Servicios sin ODF no la tienen).
+ * Puro read-only: nunca persiste nada, `POST .../asociar` sigue siendo quien recalcula y persiste
+ * la señal real contra la ODF que termine eligiéndose. Cualquier usuario autenticado puede
+ * consultarlo (no requiere admin), mismo criterio que `getSugerenciaServicio`. */
+export async function getSenalDireccionPreview(
+  servicioId: number,
+  odfNId: number,
+): Promise<SenalDireccionPreviewResponse> {
+  return requestJson<SenalDireccionPreviewResponse>(
+    `/api/admin/infra/servicios-odf/${servicioId}/senal-direccion?odf_n_id=${odfNId}`,
+  );
+}
+
 // ── Confirmación manual de asociación ────────────────────────────────────
 
 export interface AsociarServicioOdfBody {

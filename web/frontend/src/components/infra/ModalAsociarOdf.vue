@@ -94,7 +94,7 @@
             </span>
           </div>
           <span :class="['asociar-odf-senal', `is-${senalTokenActual}`]">
-            <i :class="['ph', senalIconoActual]" aria-hidden="true"></i>
+            <i :class="['ph', senalIconoActual, { 'asociar-odf-senal-spin': cargandoSenal }]" aria-hidden="true"></i>
             {{ senalLabelActual }}
           </span>
         </div>
@@ -123,6 +123,7 @@ import { buscarInventarioOdfs, type CromoOdfInventario } from '../../api/cromo';
 import {
   asociarServicioOdf,
   categoriaServicioLabel,
+  getSenalDireccionPreview,
   getSugerenciaServicio,
   subcategoriaLabel,
   type SenalDireccion,
@@ -153,6 +154,8 @@ const buscandoOdf = ref(false);
 const errorBusqueda = ref('');
 
 const odfSeleccionada = ref<CromoOdfInventario | null>(null);
+const senalPreview = ref<SenalDireccion | null>(null);
+const cargandoSenal = ref(false);
 const notas = ref('');
 const confirmando = ref(false);
 const errorConfirmar = ref('');
@@ -174,34 +177,44 @@ const justificacionSugerencia = computed(() => {
   return 'un Servicio hermano del mismo equipo de última milla ya está asociado a esta ODF.';
 });
 
-/** Señal de dirección a mostrar ANTES de confirmar. Sólo se conoce con certeza para la ODF que la
- * API ya sugirió: `GET .../sugerencia` la calculó puntualmente contra esa ODF. Para cualquier otra
- * ODF elegida a mano no existe endpoint de "previsualizar" sin persistir — el backend recalcula
- * `senal_direccion` recién dentro de `POST .../asociar`, contra la ODF que el operador termine
- * eligiendo — así que acá se muestra como "no se pudo comparar todavía". Nunca bloquea el botón de
- * confirmar en ningún caso (ver `senalTokenActual`, nunca deshabilita nada). */
-const senalPreConfirm = computed<SenalDireccion | null>(() => {
-  if (!odfSeleccionada.value || !detalle.value?.sugerencia) return null;
-  if (detalle.value.sugerencia.odf_n_id !== odfSeleccionada.value.n_id) return null;
-  return detalle.value.senal_direccion;
+/** Carga el preview real de `senal_direccion` para la ODF que el operador acaba de seleccionar —
+ * fix round 1: antes esto sólo se conocía para la ODF sugerida (y sólo existe sugerencia para
+ * OLT_PON_COMPARTIDO, 53% del universo); ahora se calcula igual para CUALQUIER ODF elegida a mano
+ * vía `GET .../senal-direccion` (puro read-only, nunca persiste). Si falla (red, 404 de una ODF
+ * que dejó de existir entre la búsqueda y el click, etc.) se degrada a "no se pudo comparar" sin
+ * romper el flujo — nunca bloquea la selección ni el botón de confirmar. */
+watch(odfSeleccionada, async (odf) => {
+  senalPreview.value = null;
+  if (!odf || props.servicioId == null) return;
+  cargandoSenal.value = true;
+  try {
+    const respuesta = await getSenalDireccionPreview(props.servicioId, odf.n_id);
+    senalPreview.value = respuesta.senal_direccion;
+  } catch {
+    senalPreview.value = null;
+  } finally {
+    cargandoSenal.value = false;
+  }
 });
 
 const senalLabelActual = computed(() => {
-  const senal = senalPreConfirm.value;
+  if (cargandoSenal.value) return 'Comparando direcciones...';
+  const senal = senalPreview.value;
   if (senal === 'coincide') return 'Dirección coincide';
   if (senal === 'no_coincide') return 'Dirección no coincide, ¿confirmás igual?';
-  return 'No se pudo comparar todavía — se recalcula al confirmar';
+  return 'No se pudo comparar';
 });
 
 const senalTokenActual = computed<'ok' | 'warn' | 'idle'>(() => {
-  const senal = senalPreConfirm.value;
+  const senal = senalPreview.value;
   if (senal === 'coincide') return 'ok';
   if (senal === 'no_coincide') return 'warn';
   return 'idle';
 });
 
 const senalIconoActual = computed(() => {
-  const senal = senalPreConfirm.value;
+  if (cargandoSenal.value) return 'ph-circle-notch';
+  const senal = senalPreview.value;
   if (senal === 'coincide') return 'ph-check-circle';
   if (senal === 'no_coincide') return 'ph-warning';
   return 'ph-question';
@@ -256,6 +269,8 @@ function resetState(): void {
   query.value = '';
   resultadosOdf.value = [];
   odfSeleccionada.value = null;
+  senalPreview.value = null;
+  cargandoSenal.value = false;
   notas.value = '';
   errorBusqueda.value = '';
   errorConfirmar.value = '';
@@ -529,6 +544,15 @@ watch(
 .asociar-odf-senal.is-idle {
   background: color-mix(in srgb, var(--color-state-idle) 18%, transparent);
   color: var(--color-state-idle);
+}
+
+.asociar-odf-senal-spin {
+  animation: asociar-odf-spin 1s linear infinite;
+}
+
+@keyframes asociar-odf-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .asociar-odf-notas {
