@@ -386,7 +386,16 @@ class Servicio(Base):
     """
 
     __tablename__ = "servicios"
-    __table_args__ = {"schema": "app"}
+    # El GIN sobre `alias_ids` va declarado acá y no como `index=True` porque `index=True` no puede
+    # expresar `postgresql_using="gin"`. Tiene que estar en la metadata: sin él, el próximo
+    # `alembic revision --autogenerate` emitiría un `drop_index` del índice que crea la migración
+    # `20260908_02` — y ese índice es lo que mantiene el detector de "Servicios sin ODF"
+    # (`core/services/cromo/servicios_sin_odf.py`) en ~0.15s en vez de ~12s. Ver el docstring de
+    # esa migración para los tiempos medidos.
+    __table_args__ = (
+        Index("ix_servicios_alias_ids_gin", "alias_ids", postgresql_using="gin"),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
     servicio_id = Column(String(64), nullable=False, unique=True, index=True)

@@ -380,7 +380,20 @@ class CromoOdfConector(Base):
     criterio MAX-based ID final ya usado en Servicios SLA, calculado en la ingesta."""
 
     __tablename__ = "cromo_odf_conectores"
-    __table_args__ = {"schema": "app"}
+    # El índice PARCIAL sobre `servicio_resuelto` va declarado acá y no como `index=True` porque
+    # `index=True` no puede expresar el `WHERE servicio_resuelto IS NOT NULL` (sólo el 5,36% de las
+    # ~205k filas tiene valor). Tiene que estar en la metadata: sin él, el próximo
+    # `alembic revision --autogenerate` emitiría un `drop_index` del índice que crea la migración
+    # `20260908_01` — y ese índice es lo que mantiene el detector de "Servicios sin ODF"
+    # (`core/services/cromo/servicios_sin_odf.py`) en ~0.15s en vez de ~24s.
+    __table_args__ = (
+        Index(
+            "ix_cromo_odf_conectores_servicio_resuelto",
+            "servicio_resuelto",
+            postgresql_where=text("servicio_resuelto IS NOT NULL"),
+        ),
+        {"schema": "app"},
+    )
 
     n_id = Column(BigInteger, primary_key=True)
     odf_n_id = Column(BigInteger, nullable=False, index=True)  # parent (raíz), sin FK dura
