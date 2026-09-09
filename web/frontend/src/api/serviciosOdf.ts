@@ -153,8 +153,9 @@ export interface SugerenciaServicioResponse {
   senal_direccion: SenalDireccion | null;
 }
 
-/** Detalle + sugerencia de ODF de UN Servicio sin ODF. Cualquier usuario autenticado puede
- * consultarlo (no requiere admin) — es sólo lectura, nada se aplica acá. */
+/** Detalle + sugerencia de ODF de UN Servicio sin ODF. Requiere admin, igual que los otros 3
+ * endpoints del gestor: es sólo lectura y nada se aplica acá, pero es el único endpoint del SPA
+ * que devuelve el domicilio del cliente (`direccion`) más la topología de última milla. */
 export async function getSugerenciaServicio(servicioId: number): Promise<SugerenciaServicioResponse> {
   return requestJson<SugerenciaServicioResponse>(`/api/admin/infra/servicios-odf/${servicioId}/sugerencia`);
 }
@@ -169,8 +170,8 @@ export interface SenalDireccionPreviewResponse {
  * `GET .../sugerencia` sólo la calcula contra la ODF que la propia API sugirió, y esa sugerencia
  * sólo existe para la categoría `OLT_PON_COMPARTIDO` (47% de los Servicios sin ODF no la tienen).
  * Puro read-only: nunca persiste nada, `POST .../asociar` sigue siendo quien recalcula y persiste
- * la señal real contra la ODF que termine eligiéndose. Cualquier usuario autenticado puede
- * consultarlo (no requiere admin), mismo criterio que `getSugerenciaServicio`. */
+ * la señal real contra la ODF que termine eligiéndose. Requiere admin, mismo criterio que
+ * `getSugerenciaServicio`. */
 export async function getSenalDireccionPreview(
   servicioId: number,
   odfNId: number,

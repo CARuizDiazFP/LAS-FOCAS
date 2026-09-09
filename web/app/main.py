@@ -6119,15 +6119,25 @@ async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -
     última milla + el índice del que ganó la categorización, dirección PROV cruda del Servicio, y —
     sólo para `OLT_PON_COMPARTIDO` — la sugerencia de ODF de un hermano resuelto más la
     `senal_direccion` calculada contra esa ODF sugerida. Sólo lectura e informativo: NADA se
-    auto-aplica acá, el operador confirma vía `POST .../asociar`. `_require_auth` (no admin): es
-    consulta, mismo criterio que `odfs/{id}/conectores`. 404 si `servicio_id` no existe."""
+    auto-aplica acá, el operador confirma vía `POST .../asociar`. 404 si `servicio_id` no existe.
+
+    `_require_admin`, igual que los otros 3 endpoints del gestor. Antes era `_require_auth` "porque
+    es consulta", citando `odfs/{id}/conectores` como precedente, y eso era un guard más ancho que
+    no habilitaba ningún caso de uso: la única ruta de UI que lo consume
+    (`/admin/servicios/viewer/ServiciosSinOdf`) es `meta: { requiresAdmin: true }`, así que sólo
+    ampliaba la superficie. Y no es el mismo caso que el precedente: éste es el ÚNICO endpoint de
+    la app del SPA que serializa `Servicio.direccion` (el domicilio del cliente) —
+    `odfs/{id}/conectores` expone `nombre_cliente` pero no la dirección — y devuelve además el
+    `nodo`/`equipo` de última milla, o sea topología de red. Con `_require_auth`, un usuario con rol
+    `user` podía iterar `servicio_id` y cosechar número + cliente + domicilio + topología de los
+    14.147 Servicios, mientras el listado, que muestra MENOS, sí exigía admin."""
     from core.services.cromo.servicios_sin_odf import (
         CATEGORIA_OLT_PON_COMPARTIDO,
         sugerencia_odf_para_servicio,
     )
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
+    _require_admin(request)
 
     async with AsyncSessionLocal() as sesion:
         detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
@@ -6185,7 +6195,9 @@ async def servicios_sin_odf_senal_direccion_web(
     (misma fuente de la dirección PROV cruda del Servicio) y `_senal_direccion_contra_odf` (wiring
     sobre `core/services/cromo/direccion_comparacion.py`) — cero lógica de comparación nueva acá.
 
-    `_require_auth` (no admin): sólo lectura, mismo criterio que `/sugerencia`. 400 si falta
+    `_require_admin`, mismo criterio que los otros 3 endpoints del gestor (ver la justificación en
+    `/sugerencia`: el guard `_require_auth` que tenían los dos GET no habilitaba ningún caso de uso
+    — la ruta de UI que los consume ya exige admin — y sólo ampliaba la superficie). 400 si falta
     `odf_n_id` (un tipo inválido, ej. `odf_n_id=abc`, ya lo rechaza la validación automática de
     FastAPI con 422 antes de llegar acá — mismo comportamiento que `limit`/`offset` en el listado).
     404 si el Servicio no existe, o si `odf_n_id` no tiene fila PROPIA en `app.cromo_odfs` — un
@@ -6194,7 +6206,7 @@ async def servicios_sin_odf_senal_direccion_web(
     que ya exige `crear_override`)."""
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
+    _require_admin(request)
 
     if odf_n_id is None:
         return JSONResponse({"error": "odf_n_id es requerido"}, status_code=400)

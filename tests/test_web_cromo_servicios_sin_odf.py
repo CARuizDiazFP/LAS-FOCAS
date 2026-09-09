@@ -1,6 +1,6 @@
 # Nombre de archivo: test_web_cromo_servicios_sin_odf.py
 # Ubicación de archivo: tests/test_web_cromo_servicios_sin_odf.py
-# Descripción: Pruebas de wiring (auth/admin/CSRF/serialización) de los 3 endpoints del gestor "Servicios sin ODF" — sin DB real
+# Descripción: Pruebas de wiring (auth/admin/CSRF/serialización) de los 4 endpoints del gestor "Servicios sin ODF" — sin DB real
 
 from __future__ import annotations
 
@@ -239,10 +239,17 @@ def test_sugerencia_requiere_autenticacion():
     assert res.status_code == 401
 
 
-def test_sugerencia_no_requiere_admin(monkeypatch):
-    """Sólo lectura/informativo: alcanza con estar autenticado, mismo criterio que
-    odfs/{id}/conectores. Se prueba con un 404 (servicio inexistente) para confirmar que no se
-    cortó antes por falta de rol admin (sería un 403)."""
+def test_sugerencia_requiere_admin(monkeypatch):
+    """Este endpoint es el ÚNICO de la app del SPA que serializa `Servicio.direccion` (el domicilio
+    del cliente), y devuelve además el `nodo`/`equipo` de última milla (topología de red). Con un
+    guard de sólo-autenticado, un usuario con rol `user` podía iterar `servicio_id` y cosechar
+    número + cliente + domicilio + topología de los 14.147 Servicios — mientras el listado, que
+    muestra MENOS, sí exigía admin. La ruta de UI que lo consume
+    (`/admin/servicios/viewer/ServiciosSinOdf`) ya es `requiresAdmin`, así que el guard ancho no
+    habilitaba ningún caso de uso: sólo ampliaba la superficie.
+
+    Se prueba con un rol `user` y un `servicio_id` que igual no existe: si el guard fuera
+    `_require_auth` la respuesta sería 404 (habría llegado al handler), no 403."""
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
@@ -257,7 +264,7 @@ def test_sugerencia_no_requiere_admin(monkeypatch):
     _login(client, "user", "userpass")
 
     res = client.get(_url_sugerencia(999))
-    assert res.status_code == 404
+    assert res.status_code == 403
 
 
 def test_sugerencia_404_si_no_existe(monkeypatch):
@@ -438,10 +445,10 @@ def test_senal_direccion_requiere_autenticacion():
     assert res.status_code == 401
 
 
-def test_senal_direccion_no_requiere_admin(monkeypatch):
-    """Sólo lectura/informativo, mismo criterio que /sugerencia: alcanza con estar autenticado. Se
-    prueba con un 404 (servicio inexistente) para confirmar que no se cortó antes por falta de rol
-    admin (sería un 403)."""
+def test_senal_direccion_requiere_admin(monkeypatch):
+    """Mismo criterio que `/sugerencia` y que los otros 2 endpoints del gestor: los 4 viven bajo
+    `/api/admin/` y la única ruta de UI que los consume ya exige admin. Un rol `user` corta en 403
+    antes de tocar la DB (con el guard viejo habría llegado al handler y devuelto 404)."""
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
@@ -456,7 +463,7 @@ def test_senal_direccion_no_requiere_admin(monkeypatch):
     _login(client, "user", "userpass")
 
     res = client.get(_url_senal_direccion(999), params={"odf_n_id": 555})
-    assert res.status_code == 404
+    assert res.status_code == 403
 
 
 def test_senal_direccion_400_si_falta_odf_n_id(monkeypatch):
