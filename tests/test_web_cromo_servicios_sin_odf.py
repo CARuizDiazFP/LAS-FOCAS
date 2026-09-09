@@ -99,6 +99,10 @@ def _url_asociar(servicio_id: int) -> str:
     return f"/api/admin/infra/servicios-odf/{servicio_id}/asociar"
 
 
+def _url_senal_direccion(servicio_id: int) -> str:
+    return f"/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion"
+
+
 # ── GET listado ──────────────────────────────────────────────────────────
 
 
@@ -352,6 +356,185 @@ def test_sugerencia_sin_olt_no_ofrece_sugerencia(monkeypatch):
     assert body["sugerencia"] is None
     assert body["senal_direccion"] is None
     assert llamado["sugerencia"] is False, "no debe pedir sugerencia fuera de OLT_PON_COMPARTIDO"
+
+
+# ── GET senal-direccion (preview, fix round 1 de Task 6) ────────────────
+
+
+def test_senal_direccion_requiere_autenticacion():
+    client = TestClient(app)
+    res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
+    assert res.status_code == 401
+
+
+def test_senal_direccion_no_requiere_admin(monkeypatch):
+    """Sólo lectura/informativo, mismo criterio que /sugerencia: alcanza con estar autenticado. Se
+    prueba con un 404 (servicio inexistente) para confirmar que no se cortó antes por falta de rol
+    admin (sería un 403)."""
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+
+    async def _fake_detalle(sesion, servicio_id):
+        return None
+
+    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+
+    client = TestClient(app)
+    _login(client, "user", "userpass")
+
+    res = client.get(_url_senal_direccion(999), params={"odf_n_id": 555})
+    assert res.status_code == 404
+
+
+def test_senal_direccion_400_si_falta_odf_n_id(monkeypatch):
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_senal_direccion(101))
+    assert res.status_code == 400
+
+
+def test_senal_direccion_404_si_servicio_no_existe(monkeypatch):
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+
+    async def _fake_detalle(sesion, servicio_id):
+        return None
+
+    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_senal_direccion(999), params={"odf_n_id": 555})
+    assert res.status_code == 404
+
+
+def test_senal_direccion_404_si_odf_no_existe(monkeypatch):
+    """`odf_n_id` inventado tiene que dar 404, nunca `no_se_pudo_comparar` silencioso — eso
+    confundiría "ODF sin dirección cargada" con "ODF que no existe"."""
+    from web.app import main as web_main
+    import core.services.cromo.servicios_sin_odf as servicios_sin_odf
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+
+    servicio_fake = SimpleNamespace(id=101, servicio_id="61943", nombre_cliente="X", direccion="X 1")
+
+    async def _fake_detalle(sesion, servicio_id):
+        return {
+            "servicio": servicio_fake,
+            "extremos": [],
+            "categoria_causa": servicios_sin_odf.CATEGORIA_OLT_PON_COMPARTIDO,
+            "subcategoria": None,
+            "indice_extremo_categorizado": None,
+        }
+
+    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+
+    async def _fake_existe(sesion, odf_n_id):
+        assert odf_n_id == 999999
+        return False
+
+    monkeypatch.setattr(web_main, "_existe_odf", _fake_existe)
+
+    llamado_senal = {"veces": 0}
+
+    async def _fake_senal(sesion, direccion_prov, odf_n_id):
+        llamado_senal["veces"] += 1
+        raise AssertionError("no debe calcular senal_direccion si la ODF no existe")
+
+    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_senal_direccion(101), params={"odf_n_id": 999999})
+    assert res.status_code == 404
+    assert llamado_senal["veces"] == 0
+
+
+def _mock_senal_direccion_ok(monkeypatch, senal, *, odf_n_id=555, direccion="AV MITRE 2525"):
+    """Wiring común de los 3 tests de serialización de abajo — el servicio y la ODF existen, sólo
+    cambia el valor de `SenalDireccion` que devuelve el cálculo real."""
+    from web.app import main as web_main
+    import core.services.cromo.servicios_sin_odf as servicios_sin_odf
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+
+    servicio_fake = SimpleNamespace(id=101, servicio_id="61943", nombre_cliente="X", direccion=direccion)
+
+    async def _fake_detalle(sesion, servicio_id):
+        return {
+            "servicio": servicio_fake,
+            "extremos": [],
+            "categoria_causa": servicios_sin_odf.CATEGORIA_SWITCH_COMPARTIDO_REVISAR,
+            "subcategoria": None,
+            "indice_extremo_categorizado": None,
+        }
+
+    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+
+    async def _fake_existe(sesion, n_id):
+        assert n_id == odf_n_id
+        return True
+
+    monkeypatch.setattr(web_main, "_existe_odf", _fake_existe)
+
+    llamada = {}
+
+    async def _fake_senal(sesion, direccion_prov, n_id):
+        llamada["direccion_prov"] = direccion_prov
+        llamada["odf_n_id"] = n_id
+        return senal
+
+    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    return llamada
+
+
+def test_senal_direccion_serializa_coincide(monkeypatch):
+    from core.services.cromo.direccion_comparacion import SenalDireccion
+
+    llamada = _mock_senal_direccion_ok(monkeypatch, SenalDireccion.COINCIDE)
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
+    assert res.status_code == 200
+    assert res.json() == {"senal_direccion": "coincide"}
+    assert llamada == {"direccion_prov": "AV MITRE 2525", "odf_n_id": 555}
+
+
+def test_senal_direccion_serializa_no_coincide(monkeypatch):
+    from core.services.cromo.direccion_comparacion import SenalDireccion
+
+    _mock_senal_direccion_ok(monkeypatch, SenalDireccion.NO_COINCIDE)
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
+    assert res.status_code == 200
+    assert res.json() == {"senal_direccion": "no_coincide"}
+
+
+def test_senal_direccion_serializa_no_se_pudo_comparar(monkeypatch):
+    from core.services.cromo.direccion_comparacion import SenalDireccion
+
+    _mock_senal_direccion_ok(monkeypatch, SenalDireccion.NO_SE_PUDO_COMPARAR)
+    client = TestClient(app)
+    _login(client, "admin", "adminpass")
+
+    res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
+    assert res.status_code == 200
+    assert res.json() == {"senal_direccion": "no_se_pudo_comparar"}
 
 
 # ── POST asociar ─────────────────────────────────────────────────────────

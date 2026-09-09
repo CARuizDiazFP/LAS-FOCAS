@@ -6035,6 +6035,23 @@ async def _senal_direccion_contra_odf(sesion: Any, direccion_prov: Optional[str]
     return comparar_direccion_prov_vs_odf(direccion_prov, fila.calle if fila else None, fila.altura if fila else None)
 
 
+async def _existe_odf(sesion: Any, odf_n_id: int) -> bool:
+    """`True` si `odf_n_id` tiene fila PROPIA en `app.cromo_odfs` — mismo criterio ESTRICTO que ya
+    exige `crear_override` antes de insertar un override (ver `_SQL_EXISTE_ODF` en
+    `core/services/cromo/servicio_odf_override_service.py`). Ese helper es privado de otro módulo,
+    así que acá se repite la misma pregunta vía el ORM en vez de importarlo — usado por
+    `GET .../senal-direccion` (Task 6, fix round 1) para distinguir 404 "ODF no existe" de
+    `NO_SE_PUDO_COMPARAR` "ODF existe pero sin calle/altura cargada", algo que
+    `_senal_direccion_contra_odf` no puede distinguir por sí solo (colapsa las dos situaciones al
+    mismo resultado)."""
+    from sqlalchemy import select
+
+    from db.models.cromo import CromoOdf
+
+    fila = (await sesion.execute(select(CromoOdf.n_id).where(CromoOdf.n_id == odf_n_id))).first()
+    return fila is not None
+
+
 @app.get("/api/admin/infra/servicios-odf/listado")
 async def servicios_sin_odf_listado_web(
     request: Request,
@@ -6133,6 +6150,52 @@ async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -
             "senal_direccion": senal_direccion,
         }
     )
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion")
+async def servicios_sin_odf_senal_direccion_web(
+    request: Request, servicio_id: int, odf_n_id: Optional[int] = None
+) -> JSONResponse:
+    """Preview de `senal_direccion` (Task 2) para una ODF que el operador eligió A MANO en el
+    buscador del modal, ANTES de confirmar — puro read-only, nunca persiste nada. Fix round 1 de
+    Task 6: `GET .../sugerencia` sólo calcula esta señal contra la ODF que la propia API sugirió, y
+    esa sugerencia sólo existe para `OLT_PON_COMPARTIDO` (1537 de 2891 Servicios sin ODF, medido
+    real 2026-09-09) — para el 47% restante, y para cualquier operador que rechace la sugerencia y
+    busque otra ODF, el badge del frontend quedaba inerte justo donde más se necesita. Este
+    endpoint cierra ese hueco sin mover la fuente de verdad: `POST .../asociar` sigue siendo quien
+    recalcula y persiste la señal, contra la ODF REALMENTE elegida en su body — esto es sólo una
+    ayuda visual previa.
+
+    Mismo cálculo que ya usan `/sugerencia` y `POST /asociar`: reusa `_obtener_servicio_categorizado`
+    (misma fuente de la dirección PROV cruda del Servicio) y `_senal_direccion_contra_odf` (wiring
+    sobre `core/services/cromo/direccion_comparacion.py`) — cero lógica de comparación nueva acá.
+
+    `_require_auth` (no admin): sólo lectura, mismo criterio que `/sugerencia`. 400 si falta
+    `odf_n_id` (un tipo inválido, ej. `odf_n_id=abc`, ya lo rechaza la validación automática de
+    FastAPI con 422 antes de llegar acá — mismo comportamiento que `limit`/`offset` en el listado).
+    404 si el Servicio no existe, o si `odf_n_id` no tiene fila PROPIA en `app.cromo_odfs` — un
+    `odf_n_id` inventado nunca debe devolver silenciosamente `no_se_pudo_comparar`, eso confundiría
+    "ODF sin dirección cargada" con "ODF que no existe" (ver `_existe_odf`, mismo criterio ESTRICTO
+    que ya exige `crear_override`)."""
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+
+    if odf_n_id is None:
+        return JSONResponse({"error": "odf_n_id es requerido"}, status_code=400)
+
+    async with AsyncSessionLocal() as sesion:
+        detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
+        if detalle is None:
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+        if not await _existe_odf(sesion, odf_n_id):
+            return JSONResponse({"error": "ODF no encontrada"}, status_code=404)
+
+        servicio = detalle["servicio"]
+        senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, odf_n_id)
+
+    return JSONResponse({"senal_direccion": senal.value})
 
 
 class ServicioOdfAsociarRequestModel(BaseModel):
