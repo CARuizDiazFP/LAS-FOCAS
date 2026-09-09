@@ -849,6 +849,47 @@ async def test_filtro_categoria_particiona_el_universo_sin_perder_ni_duplicar(es
         i.id for i in por_categoria[CATEGORIA_SWITCH_COMPARTIDO_REVISAR].items
     }
 
+    # `conteos_por_categoria` tiene que coincidir EXACTAMENTE con lo que devuelve un request por
+    # categoría: es lo que lo hace un reemplazo válido de esos 4 requests, no una aproximación.
+    for categoria, resultado in por_categoria.items():
+        assert universo.conteos_por_categoria[categoria] == resultado.total, categoria
+
+
+@pytest.mark.asyncio
+async def test_conteos_por_categoria_no_dependen_del_filtro_categoria(escenario_grupo_olt):
+    """Los chips de la UI muestran el número de las 4 categorías incluso con una seleccionada, así
+    que `conteos_por_categoria` se calcula ANTES del filtro `categoria` — un listado filtrado a
+    OLT tiene que traer los mismos 4 conteos que el listado sin filtrar (y `total`, en cambio, sí
+    es el del set filtrado).
+
+    También verifica que las 4 claves estén SIEMPRE presentes: si una categoría quedara fuera del
+    diccionario cuando no tiene filas, el chip mostraría `—` ("no se sabe") en vez de `0`.
+    """
+    async with AsyncSessionLocal() as sesion:
+        universo = await listar_servicios_sin_odf(sesion, limit=0)
+        filtrado = await listar_servicios_sin_odf(
+            sesion, limit=0, categoria=CATEGORIA_OLT_PON_COMPARTIDO
+        )
+
+    assert set(universo.conteos_por_categoria) == set(CATEGORIAS_POR_PRIORIDAD)
+    assert universo.conteos_por_categoria == filtrado.conteos_por_categoria
+    assert sum(universo.conteos_por_categoria.values()) == universo.total
+    assert filtrado.total == universo.conteos_por_categoria[CATEGORIA_OLT_PON_COMPARTIDO]
+    assert filtrado.total < universo.total, "el filtro por categoría sí tiene que recortar `total`"
+
+
+@pytest.mark.asyncio
+async def test_conteos_por_categoria_respetan_el_filtro_q(escenario_grupo_olt):
+    """Con `q` puesto, los conteos son los del subconjunto buscado — si no, los chips le mostrarían
+    al operador los números del universo entero al lado de una lista ya filtrada."""
+    async with AsyncSessionLocal() as sesion:
+        universo = await listar_servicios_sin_odf(sesion, limit=0)
+        buscado = await listar_servicios_sin_odf(sesion, limit=0, q=_NUM_SIN_ODF)
+
+    assert buscado.conteos_por_categoria[CATEGORIA_OLT_PON_COMPARTIDO] == 1
+    assert sum(buscado.conteos_por_categoria.values()) == buscado.total
+    assert buscado.total < universo.total
+
 
 @pytest.mark.asyncio
 async def test_paginacion_se_aplica_despues_de_filtrar_y_el_total_es_el_del_set_filtrado():

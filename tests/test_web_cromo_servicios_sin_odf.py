@@ -183,7 +183,18 @@ def test_listado_serializa_items_con_ambos_extremos_e_indice(monkeypatch):
         ],
         indice_extremo_categorizado=1,
     )
-    resultado = servicios_sin_odf.ResultadoListadoSinOdf(total=1, limit=50, offset=0, items=[item])
+    resultado = servicios_sin_odf.ResultadoListadoSinOdf(
+        total=1,
+        limit=50,
+        offset=0,
+        items=[item],
+        conteos_por_categoria={
+            "OLT_PON_COMPARTIDO": 1537,
+            "EQUIPO_DOMICILIO_CLIENTE": 687,
+            "SWITCH_COMPARTIDO_REVISAR": 583,
+            "SIN_SENAL_PROV": 84,
+        },
+    )
 
     async def _fake_listar(sesion, *, limit, offset, categoria, q):
         return resultado
@@ -209,6 +220,14 @@ def test_listado_serializa_items_con_ambos_extremos_e_indice(monkeypatch):
     assert fila["extremos"][0] == {"extremo": 1, "nodo": "SW_Frontera", "equipo": "SW1"}
     assert fila["extremos"][1] == {"extremo": 2, "nodo": "OLT2_Pilar", "equipo": "OLT2_Pilar"}
     assert fila["indice_extremo_categorizado"] == 1
+    # Los conteos de los chips viajan CON el listado: sin esto el frontend volvería a pedir un
+    # request `limit=0` por categoría, que re-corre la query completa del universo 4 veces.
+    assert body["conteos_por_categoria"] == {
+        "OLT_PON_COMPARTIDO": 1537,
+        "EQUIPO_DOMICILIO_CLIENTE": 687,
+        "SWITCH_COMPARTIDO_REVISAR": 583,
+        "SIN_SENAL_PROV": 84,
+    }
 
 
 # ── GET sugerencia ───────────────────────────────────────────────────────

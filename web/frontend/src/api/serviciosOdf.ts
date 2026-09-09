@@ -86,6 +86,12 @@ export interface ListadoServiciosSinOdfResponse {
   limit: number;
   offset: number;
   items: ServicioSinOdfItem[];
+  /** Las 4 categorías con su conteo real, sobre el mismo conjunto filtrado por `q` y ANTES del
+   * filtro `categoria` (los chips siguen mostrando el número de las otras categorías mientras una
+   * está seleccionada). Viene con el listado a propósito: el backend ya categorizó todas las filas
+   * candidatas en esa misma pasada, así que pedirlo por separado costaba 4 ejecuciones extra de la
+   * query más cara de la feature para devolver 4 enteros. */
+  conteos_por_categoria: Record<string, number>;
 }
 
 export interface ListarServiciosSinOdfParams {
@@ -106,9 +112,9 @@ function toQuery(params: Record<string, string | number | undefined>): string {
 }
 
 /** Página del universo "Servicios Activos verificables sin ODF resuelta", ya categorizada por
- * fila. `limit: 0` es válido y devuelve `items: []` con el `total` real — es el modo barato que
- * usa el viewer para los conteos de los chips de categoría (ver
- * `core/services/cromo/servicios_sin_odf.py::listar_servicios_sin_odf`). */
+ * fila, más `conteos_por_categoria` para los chips (ver
+ * `core/services/cromo/servicios_sin_odf.py::listar_servicios_sin_odf`). `limit: 0` sigue siendo
+ * válido y devuelve `items: []` con el `total` real, pero ya NO hace falta para los conteos. */
 export async function listarServiciosSinOdf(
   params: ListarServiciosSinOdfParams,
 ): Promise<ListadoServiciosSinOdfResponse> {

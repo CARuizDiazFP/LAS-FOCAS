@@ -45,7 +45,7 @@
             aria-hidden="true"
           ></span>
           {{ categoriaServicioLabel(categoria) }}
-          <span class="servicios-sin-odf-viewer__chip-count">{{ conteos[categoria] ?? (cargandoConteos ? '…' : '—') }}</span>
+          <span class="servicios-sin-odf-viewer__chip-count">{{ conteos[categoria] ?? (loading ? '…' : '—') }}</span>
         </button>
 
         <span class="servicios-sin-odf-viewer__count">
@@ -122,8 +122,10 @@ const sentinel = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
 const filtroCategoria = ref('');
 
-const conteos = ref<Partial<Record<string, number>>>({});
-const cargandoConteos = ref(false);
+/** Conteo por categoría para los chips. Lo llena la respuesta del listado (`conteos_por_categoria`),
+ * no un request propio. Arranca vacío, así que mientras carga la primera página los chips muestran
+ * `…` y nunca un número inventado. */
+const conteos = ref<Record<string, number>>({});
 
 const modalOpen = ref(false);
 const modalServicioId = ref<number | null>(null);
@@ -153,6 +155,14 @@ async function loadNextPage(): Promise<void> {
       offset: offset.value,
     });
     total.value = response.total;
+    // Los conteos de los chips vienen EN esta misma respuesta (calculados en la misma pasada que
+    // categoriza las filas, ver el docstring de `listar_servicios_sin_odf`) — antes eran 4
+    // requests `limit: 0` extra, uno por categoría, disparados en paralelo con el listado en cada
+    // montaje/búsqueda/refresco/asociación: 5 ejecuciones concurrentes de la query más cara de la
+    // feature (~2891 filas candidatas, 145-275 ms) para devolver 4 enteros.
+    // Son los mismos para cualquier página y para cualquier `categoria` (se calculan antes de ese
+    // filtro), así que reasignarlos en cada página es un no-op salvo si cambia `q`.
+    conteos.value = response.conteos_por_categoria;
     mergeItems(response.items);
     offset.value += response.items.length;
     hasMore.value = response.items.length === LIMIT && offset.value < response.total;
@@ -171,38 +181,10 @@ async function reloadFromZero(): Promise<void> {
   await loadNextPage();
 }
 
-/** Un conteo por categoría vía `limit: 0` (el modo barato documentado por
- * `listar_servicios_sin_odf` para "sólo quiero el total"), respetando el mismo `q` que el
- * listado — nunca se inventa un conteo, se pide el real. Si una categoría falla, no rompe el
- * resto: simplemente esa chip queda sin número. */
-async function reloadConteos(): Promise<void> {
-  cargandoConteos.value = true;
-  try {
-    const entradas = await Promise.all(
-      categorias.map(async (categoria) => {
-        try {
-          const respuesta = await listarServiciosSinOdf({ categoria, q: query.value.trim(), limit: 0 });
-          return [categoria, respuesta.total] as const;
-        } catch {
-          return [categoria, null] as const;
-        }
-      }),
-    );
-    const next: Partial<Record<string, number>> = {};
-    for (const [categoria, valor] of entradas) {
-      if (valor != null) next[categoria] = valor;
-    }
-    conteos.value = next;
-  } finally {
-    cargandoConteos.value = false;
-  }
-}
-
 function onSearchInput(): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     void reloadFromZero();
-    void reloadConteos();
   }, 320);
 }
 
@@ -213,7 +195,6 @@ function setCategoria(value: string): void {
 
 function refrescar(): void {
   void reloadFromZero();
-  void reloadConteos();
 }
 
 function abrirModal(servicio: ServicioSinOdfItem): void {
@@ -225,8 +206,9 @@ function abrirModal(servicio: ServicioSinOdfItem): void {
 async function handleAsociado(): Promise<void> {
   modalOpen.value = false;
   // El Servicio recién asociado deja de aparecer en el listado (tiene override) — recargar
-  // desde cero para no mostrar una fila resuelta como si siguiera pendiente.
-  await Promise.all([reloadFromZero(), reloadConteos()]);
+  // desde cero para no mostrar una fila resuelta como si siguiera pendiente. Los conteos de los
+  // chips se actualizan solos: vienen en la respuesta del listado.
+  await reloadFromZero();
 }
 
 function handleModalError(message: string): void {
@@ -234,7 +216,7 @@ function handleModalError(message: string): void {
 }
 
 onMounted(async () => {
-  await Promise.all([reloadFromZero(), reloadConteos()]);
+  await reloadFromZero();
 
   observer = new IntersectionObserver(
     (entries) => {

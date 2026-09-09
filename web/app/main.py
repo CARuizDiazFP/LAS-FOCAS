@@ -6065,6 +6065,10 @@ async def servicios_sin_odf_listado_web(
     eso corre sólo bajo demanda en `GET .../sugerencia`, para no hacer N+1 en el paginado). Ver
     `core/services/cromo/servicios_sin_odf.py::listar_servicios_sin_odf`.
 
+    Devuelve además `conteos_por_categoria` (las 4 categorías, sobre el mismo conjunto filtrado por
+    `q` y ANTES del filtro `categoria`): son los chips de la UI, calculados en la misma pasada que
+    el listado para que el frontend no tenga que pedir un request `limit=0` por categoría.
+
     `offset`/`limit` negativos o una `categoria` desconocida levantan `ValueError` en el servicio —
     se mapean acá a 400, nunca a un 500 ni a una página silenciosamente incorrecta."""
     from core.services.cromo.servicios_sin_odf import listar_servicios_sin_odf
@@ -6085,6 +6089,10 @@ async def servicios_sin_odf_listado_web(
             "total": resultado.total,
             "limit": resultado.limit,
             "offset": resultado.offset,
+            # Los 4 conteos de los chips viajan con el listado: el frontend NO tiene que pedir un
+            # `limit=0` por categoría (eso re-corría la query completa del universo 4 veces más,
+            # en paralelo con el listado, para devolver 4 enteros que esta misma pasada ya calculó).
+            "conteos_por_categoria": resultado.conteos_por_categoria,
             "items": [
                 {
                     "id": item.id,

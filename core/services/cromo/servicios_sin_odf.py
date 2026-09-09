@@ -164,12 +164,21 @@ class ServicioSinOdf:
 class ResultadoListadoSinOdf:
     """`total` es el tamaño del conjunto **ya filtrado** (por `categoria`/`q`) antes de cortar por
     `limit`/`offset` — nunca el del universo sin filtrar, para que el paginador de la UI no
-    prometa páginas que no existen."""
+    prometa páginas que no existen.
+
+    `conteos_por_categoria` tiene las 4 categorías de `CATEGORIAS_POR_PRIORIDAD` SIEMPRE presentes
+    (0 cuando ninguna fila cae ahí) y se calcula sobre el conjunto filtrado por `q` pero **antes**
+    del filtro `categoria`: son los números de los chips de la UI, que tienen que seguir mostrando
+    el conteo de las otras categorías mientras una está seleccionada. Va en el mismo resultado, y
+    no en un request por categoría, porque la categorización ya está hecha en esta misma pasada —
+    ver el docstring de `listar_servicios_sin_odf`.
+    """
 
     total: int
     limit: int
     offset: int
     items: list[ServicioSinOdf] = field(default_factory=list)
+    conteos_por_categoria: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -514,6 +523,12 @@ async def listar_servicios_sin_odf(
     Cada fila se categoriza con `categorizar_extremos()` sobre los extremos que trajo el LATERAL:
     barato, sin query por fila. `subcategoria` queda en `None` — la cascada de `SIN_SENAL_PROV` es
     on-demand (`subcategoria_sin_senal_prov`), nunca en el paginado, para no hacer N+1.
+
+    Y como esa categorización ya se hizo para TODAS las filas candidatas (no sólo para la página),
+    el resultado trae también `conteos_por_categoria` — las 4 categorías con su conteo real sobre
+    el mismo conjunto filtrado por `q`, antes de aplicar `categoria`. Es el dato de los chips de la
+    UI, y sale gratis de esta pasada: pedirlo con un request `limit=0` por categoría costaba 4
+    ejecuciones EXTRA de esta misma query (la más cara de la feature) para devolver 4 enteros.
     """
     if categoria is not None and categoria not in CATEGORIAS_POR_PRIORIDAD:
         raise ValueError(
@@ -539,11 +554,21 @@ async def listar_servicios_sin_odf(
         filas = (await sesion.execute(_SQL_LISTADO_SIN_ODF)).all()
 
     items: list[ServicioSinOdf] = []
+    # Los conteos de los chips salen de ESTA pasada, no de 4 requests extra: la categoría de cada
+    # fila ya está calculada acá abajo, así que sumarla a un contador es gratis. Antes el frontend
+    # pedía `limit=0` una vez por categoría, y cada uno de esos requests volvía a correr la query
+    # completa del universo (~2891 filas, 145-275 ms) para devolver un entero — 5 ejecuciones
+    # concurrentes de la query más cara de la feature por cada búsqueda, montaje, refresco y
+    # asociación.
+    conteos: dict[str, int] = {nombre: 0 for nombre in CATEGORIAS_POR_PRIORIDAD}
     for fila in filas:
         extremos = _extremos_de_arrays(fila.extremos, fila.nodos, fila.equipos)
         categoria_causa, subcategoria, nodo, equipo, indice_ganador = categorizar_extremos(
             [(e.equipo, e.nodo) for e in extremos]
         )
+        # Antes del filtro por categoría a propósito: los chips muestran el conteo de las 4
+        # categorías incluso con una seleccionada.
+        conteos[categoria_causa] = conteos.get(categoria_causa, 0) + 1
         if categoria is not None and categoria_causa != categoria:
             continue
         items.append(
@@ -567,6 +592,7 @@ async def listar_servicios_sin_odf(
         offset=offset,
         # `limit == 0` es válido y significa "sólo quiero el total": lista vacía, `total` real.
         items=items[offset : offset + limit] if limit > 0 else [],
+        conteos_por_categoria=conteos,
     )
 
 
