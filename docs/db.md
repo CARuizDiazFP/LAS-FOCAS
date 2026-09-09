@@ -751,6 +751,63 @@ apuntaba a un id de versión vieja de la botella, así que `upsert_versionado` n
 `SIN_CAMBIOS` y nunca corregiría el extremo. Expuesto vía `GET /api/infra/cromo/botellas/{n_id}/cables-detectados`
 (sólo lectura) y `POST /api/infra/botellas/{n_id}/repoblar-cables` (admin) — ver `docs/infra.md`.
 
+### Tabla `cromo_servicio_odf_override` (2026-09-08)
+
+Escudo de asociación manual Servicio→ODF: cada fila es un EVENTO de asociación que un operador
+confirma cuando el detector automático de "Servicios sin ODF"
+(`core/services/cromo/servicios_sin_odf.py`) no puede resolver la ODF real de un Servicio por sí
+solo. Alimenta el gestor `AdminServiciosSinOdfViewer.vue` (`/admin/servicios/viewer` → "Servicios sin
+ODF").
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | Autoincrement. |
+| `servicio_id` (FK) | Integer | → `app.servicios.id`, `ON DELETE CASCADE`. Única FK **dura** de la tabla — a diferencia del resto de Cromo, `app.servicios` es un maestro propio de este repo, no un objeto de Cromo. |
+| `odf_n_id` | BigInteger | La ODF elegida. **Sin FK dura** — mismo criterio que el resto de las referencias cruzadas a Cromo (`CromoCable.extremo_a_n_id`, `CromoBotellaAlias.id_cromo_destino`, etc.). |
+| `pelo_n_id` (nullable) | BigInteger | Pin opcional a un conector físico concreto de la ODF. `NULL` = asociado a la ODF en general, sin pin a una posición específica (límite de alcance aceptado en esta primera iteración). Sin FK dura. |
+| `categoria_causa` | Text + CHECK | `'OLT_PON_COMPARTIDO'` \| `'EQUIPO_DOMICILIO_CLIENTE'` \| `'SWITCH_COMPARTIDO_REVISAR'` \| `'SIN_SENAL_PROV'` \| `'OTRO'` — mismo vocabulario que devuelve `categorizar()`, congelado como CHECK y no como Enum de Postgres (agregar un valor es `DROP`/`ADD CONSTRAINT`, no `ALTER TYPE`). |
+| `subcategoria` (nullable) | Text + CHECK | `NULL` o `'PELO_SIN_CONECTOR_ODF'` \| `'AUSENTE_RED_CROMO'` \| `'BAJA_LOGICA_HEREDADA'` — sólo tiene valor cuando `categoria_causa='SIN_SENAL_PROV'`. |
+| `senal_direccion` (nullable) | Text + CHECK | `NULL` o `'coincide'` \| `'no_coincide'` \| `'no_se_pudo_comparar'` — resultado de `direccion_comparacion.comparar_direccion_prov_vs_odf` recalculado y persistido server-side en el momento de la asociación (nunca confía en lo que mande el frontend). Puramente informativo, nunca bloquea el `INSERT`. |
+| `usuario` | String(128) | Quién confirmó la asociación. |
+| `notas` (nullable) | Text | Texto libre opcional del operador. |
+| `creado_en` | DateTime(tz) | `server_default=CURRENT_TIMESTAMP`. |
+
+Índices: `ix_cromo_servicio_odf_override_servicio_id` (btree, `servicio_id`) e
+`ix_cromo_servicio_odf_override_odf_n_id` (btree, `odf_n_id`).
+
+**Sin `UNIQUE(servicio_id)` a propósito**: permite reasociar (el operador corrige una asociación
+previa) sin perder historial — cada fila es un evento, nunca se pisa con `UPDATE`. La lectura siempre
+toma la fila más reciente por `servicio_id` (`ORDER BY creado_en DESC, id DESC`,
+`core/services/cromo/servicio_odf_override_service.py::override_vigente_de_servicio`/
+`overrides_vigentes_por_odf`) — verificado real que reasociar a otra ODF deja al Servicio sólo bajo
+la ODF más nueva, nunca duplicado bajo las dos.
+
+**Migración:** `20260908_01_cromo_servicio_odf_override.py` — crea esta tabla + los 3 CHECK + los 2
+índices propios, y además un índice btree **parcial** nuevo sobre una tabla preexistente:
+`ix_cromo_odf_conectores_servicio_resuelto` (`cromo_odf_conectores(servicio_resuelto) WHERE
+servicio_resuelto IS NOT NULL`) — sólo 5,36% de esas ~205k filas tiene ese campo no nulo, así que un
+índice completo hubiera desperdiciado espacio sin cambiar el plan. Fix de performance verificado real
+contra `EXPLAIN ANALYZE` (ver `docs/decisiones.md`, entrada 2026-09-09, para la historia completa de
+los tres cuellos de botella medidos).
+
+**Migración `20260908_02_servicios_alias_ids_gin.py`:** índice GIN `ix_servicios_alias_ids_gin`
+sobre `app.servicios.alias_ids` (`character varying(64)[]`, ya existente) — habilita el self-join
+anti-ambigüedad del detector de "Servicios sin ODF" cuando se reescribe a contención (`alias_ids @>
+ARRAY[...]`) en vez de `escalar = ANY(columna_array)` (la opclass default de GIN para arrays no
+acelera esta última forma). Índice completo, no parcial: `alias_ids` es `NULL` en la mayoría de las
+filas y GIN ya no indexa filas nulas por sí mismo.
+
+**Escritura:** `core/services/cromo/servicio_odf_override_service.py::crear_override` — valida que
+`odf_n_id` tenga fila PROPIA en `app.cromo_odfs` (criterio ESTRICTO, mismo que exige
+`verificador.py::servicios_por_odf`) antes de insertar, para no dejar un override "colgado" contra
+una ODF conocida sólo por referencia.
+
+**Lectura:** `core/services/cromo/verificador.py::servicios_por_odf` suma los overrides vigentes de
+una ODF al resultado del match automático por texto, deduplicando por `servicio_id` si el mismo
+Servicio ya resolvía por el camino automático (gana el automático, que trae datos más ricos). Expuesto
+vía `GET /api/infra/cromo/odfs/{n_id}/servicios` (`web/app/main.py`) — cada fila con override manual
+aparece con `metodo="OVERRIDE_MANUAL"`.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -794,6 +851,12 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260821_01` | `20260821_01_cromo_botella_nombre_editado_manual.py` | Columna `cromo_botellas.nombre_editado_manual BOOLEAN NOT NULL DEFAULT false` — protege un nombre corregido a mano (Verificador Cromo) de que una corrida futura lo pise (ver sección "Repoblación de cables con historial 'ID dual'" arriba) |
 | `20260822_01` | `20260822_01_cromo_botella_separada_manualmente.py` | Columnas de auditoría `cromo_botellas.separada_manualmente/separada_motivo/separada_por/separada_at` — separación manual de Botella agrupada erróneamente por nombre bajo una Cámara padre compartida |
 | `20260825_02` | `20260825_02_servicios_verificable.py` | Columnas `servicios.es_verificable BOOLEAN NOT NULL` (backfill por `tipo_servicio` sobre las filas existentes) y `servicios.es_verificable_override BOOLEAN` nullable — trazabilidad de IDs y verificabilidad de Servicios SLA (ver sección "Tabla `servicios`" arriba y `docs/decisiones.md`) |
+| `20260908_01` | `20260908_01_cromo_servicio_odf_override.py` | Tabla `app.cromo_servicio_odf_override` (+ 3 CHECK + 2 índices propios) y el índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — gestor "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
+| `20260908_02` | `20260908_02_servicios_alias_ids_gin.py` | Índice GIN `ix_servicios_alias_ids_gin` sobre `app.servicios.alias_ids` — habilita el self-join anti-ambigüedad por contención del detector "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
+
+*(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
+migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta
+entrada, que sólo documenta las 2 migraciones de este plan.)*
 
 ---
 
