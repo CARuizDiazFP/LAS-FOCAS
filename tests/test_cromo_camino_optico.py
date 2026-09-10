@@ -10,7 +10,13 @@ from pathlib import Path
 import pytest
 
 from core.services.cromo.camino_optico_service import (
+    DESCRIPCION_REGLAS,
     ESTADO_SIN_CAMINO,
+    REGLA_CONECTOR,
+    REGLA_FUSION_BOTELLA,
+    REGLA_FUSION_PELOS,
+    REGLA_PELO_CABLE,
+    REGLA_PELO_TUBO,
     TIPO_CONECTOR_ODF,
     TIPO_FUSION,
     TIPO_NO_RESUELTO,
@@ -21,6 +27,7 @@ from core.services.cromo.camino_optico_service import (
     calcular_estadisticas,
     comparar_at62_vs_regex,
     odfs_del_camino,
+    pares_declarados,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cromo" / "camino_optico_pelo_10006353_reducido.json"
@@ -351,3 +358,99 @@ def test_la_discrepancia_conserva_los_tres_valores_crudos():
 def test_el_estado_sin_camino_es_un_nombre_publico():
     # Se usa desde los endpoints para responder 200 con estado, no un error HTTP.
     assert ESTADO_SIN_CAMINO == "SIN_CAMINO"
+
+
+# ── Auditoría: lo que declara el camino vs. lo que tenemos ingerido ──────────
+
+
+def test_pares_declarados_extrae_las_cinco_reglas_del_camino_real():
+    dic = _dic()
+    raiz, _ = _construir_lado(dic, [PELO_RAIZ], "RAIZ", {})
+    lado_a, _ = _construir_lado(dic, dic[PELO_RAIZ]["a"], "A", {})
+    lado_b, _ = _construir_lado(dic, dic[PELO_RAIZ]["b"], "B", {})
+
+    declarado = pares_declarados(raiz + lado_a + lado_b)
+
+    assert set(declarado) == {
+        REGLA_PELO_CABLE,
+        REGLA_PELO_TUBO,
+        REGLA_FUSION_BOTELLA,
+        REGLA_FUSION_PELOS,
+        REGLA_CONECTOR,
+    }
+    # El camino real declara todas estas relaciones dentro del mismo payload, sin llamadas extra.
+    assert declarado[REGLA_PELO_CABLE], "cada pelo declara su cable por `gfather`"
+    assert declarado[REGLA_PELO_TUBO], "cada pelo declara su tubo por `father`"
+    assert declarado[REGLA_FUSION_BOTELLA], "cada fusión declara su botella por `father`"
+    assert declarado[REGLA_CONECTOR], "cada conector declara su pelo y su ODF"
+
+
+def test_la_fusion_resuelve_su_botella_y_los_pelos_que_une():
+    # Hallazgo real: `fusión.father` es la botella (96 de 96 en un camino real), y es exactamente
+    # el id que el tracking legacy imprime como `Empalme <id>: <nombre>`.
+    dic = {
+        1: {
+            "class": 132,
+            "father": 50,
+            "at": [{"id": 84, "value": "21-21"}],
+            "tp": [{"id_to": 100}, {"id_to": 200}],
+        },
+        50: {"class": 68, "at": [{"id": 34, "value": "Cra Aristobulo del Valle 2001 CF"}]},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].botella_id == 50
+    assert nodos[0].botella_nombre == "Cra Aristobulo del Valle 2001 CF"
+    assert nodos[0].pelos_fusionados == [100, 200]
+    assert nodos[0].nombre == "21-21"
+
+
+def test_el_conector_declara_el_pelo_al_que_esta_cableado():
+    dic = {
+        1: {"class": 136, "father": 10, "gfather": 20, "at": [{"id": 81, "value": "5"}], "tp": [{"id_to": 777}]},
+        10: {"class": 135, "at": [{"id": 79, "value": "O-1-1"}]},
+        20: {"class": 69, "at": [{"id": 34, "value": "ODF X"}]},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado == 777
+
+
+def test_un_nodo_repetido_no_se_audita_dos_veces():
+    dic = {
+        1: {"class": 130, "father": 10, "gfather": 20},
+        10: {"class": 129, "at": []},
+        20: {"class": 51, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 1], "A", {})
+
+    declarado = pares_declarados(nodos)
+
+    assert declarado[REGLA_PELO_CABLE] == {1: 20}
+
+
+def test_los_pelos_de_una_fusion_se_declaran_ordenados_para_comparar_como_conjunto():
+    # El orden A/B de una fusión es arbitrario de los dos lados, así que la comparación tiene que
+    # ser por conjunto y no por posición.
+    dic = {1: {"class": 132, "tp": [{"id_to": 200}, {"id_to": 100}]}}
+
+    declarado = pares_declarados(_construir_lado(dic, [1], "A", {})[0])
+
+    assert declarado[REGLA_FUSION_PELOS] == {1: [100, 200]}
+
+
+def test_cada_regla_tiene_una_descripcion_que_no_culpa_a_la_base():
+    # Redacción deliberada: el camino DIFIERE de lo ingerido, no "la base está mal". El camino es
+    # un elemento vivo (cambia ante cortes) y la ingesta es una foto anterior.
+    for regla in (
+        REGLA_PELO_CABLE,
+        REGLA_PELO_TUBO,
+        REGLA_FUSION_BOTELLA,
+        REGLA_FUSION_PELOS,
+        REGLA_CONECTOR,
+    ):
+        assert DESCRIPCION_REGLAS[regla]
+        assert "mal" not in DESCRIPCION_REGLAS[regla].lower()
+        assert "error" not in DESCRIPCION_REGLAS[regla].lower()

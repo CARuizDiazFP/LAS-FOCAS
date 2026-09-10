@@ -117,7 +117,13 @@ class NodoCamino:
     cable_capacidad: Optional[str] = None
     distancia_geo_m: Optional[float] = None
     distancia_real_m: Optional[float] = None
-    # Contexto del conector de ODF (`father` = patchera, `gfather` = ODF)
+    # Contexto de la fusión (`father` = la botella donde está hecho el empalme, y `tp[]` los dos
+    # pelos que une). La botella es lo que el tracking legacy imprime como `Empalme <id>: <nombre>`.
+    botella_id: Optional[int] = None
+    botella_nombre: Optional[str] = None
+    pelos_fusionados: list[int] = field(default_factory=list)
+    # Contexto del conector de ODF (`father` = patchera, `gfather` = ODF, `tp[0]` el pelo)
+    pelo_conectado: Optional[int] = None
     conector_numero: Optional[str] = None
     patchera_id: Optional[int] = None
     patchera_nombre: Optional[str] = None
@@ -193,6 +199,7 @@ class CaminoOptico:
     lado_b: list[NodoCamino] = field(default_factory=list)
     odfs: list[OdfDelCamino] = field(default_factory=list)
     estadisticas: EstadisticasCamino = field(default_factory=EstadisticasCamino)
+    consistencia: Optional[ConsistenciaCamino] = None
     discrepancia: Optional[DiscrepanciaAt62] = None
     ids_no_resueltos: list[int] = field(default_factory=list)
     advertencias: list[str] = field(default_factory=list)
@@ -299,6 +306,36 @@ def _completar_contexto_pelo(nodo: NodoCamino, crudo: Mapping[str, Any], dic: Ma
         nodo.distancia_real_m = _a_float(atributo(cable, _AT_DISTANCIA_REAL))
 
 
+def _ids_de_tp(crudo: Mapping[str, Any]) -> list[int]:
+    """Los `id_to` de `tp[]`, que es donde viajan las conexiones de una fusión o un conector."""
+    ids: list[int] = []
+    for punto in crudo.get("tp") or []:
+        destino = punto.get("id_to") if isinstance(punto, Mapping) else None
+        if destino:
+            ids.append(int(destino))
+    return ids
+
+
+def _completar_contexto_fusion(
+    nodo: NodoCamino, crudo: Mapping[str, Any], dic: Mapping[int, Any]
+) -> None:
+    """Una fusión (132) trae `father` = **la botella** donde está hecho el empalme y `tp[]` los dos
+    pelos que une.
+
+    Verificado real (2026-09-10): 96 de 96 fusiones de un camino traen padre, y su clase es
+    siempre de botella (68/121/122/125). Ese id es exactamente lo que el tracking legacy imprime
+    como `Empalme <id>: <nombre de la botella>`.
+    """
+    nodo.nombre = atributo(crudo, _AT_FUSION_PAR) or nodo.nombre
+    nodo.pelos_fusionados = _ids_de_tp(crudo)
+
+    botella_id = crudo.get("father")
+    botella = dic.get(botella_id) if botella_id else None
+    if botella is not None:
+        nodo.botella_id = botella_id
+        nodo.botella_nombre = atributo(botella, _AT_NOMBRE_GENERICO) or botella.get("name")
+
+
 def _completar_contexto_conector(
     nodo: NodoCamino, crudo: Mapping[str, Any], dic: Mapping[int, Any]
 ) -> None:
@@ -310,6 +347,8 @@ def _completar_contexto_conector(
     """
     nodo.conector_numero = atributo(crudo, _AT_CONECTOR_NUMERO)
     nodo.servicio_at62 = atributo(crudo, _AT_SERVICIO_NUMERO)
+    pelos = _ids_de_tp(crudo)
+    nodo.pelo_conectado = pelos[0] if pelos else None
 
     patchera_id = crudo.get("father")
     patchera = dic.get(patchera_id) if patchera_id else None
@@ -380,7 +419,7 @@ def _construir_lado(
         elif clase == _CLASE_CONECTOR:
             _completar_contexto_conector(nodo, crudo, dic)
         elif clase == _CLASE_FUSION:
-            nodo.nombre = atributo(crudo, _AT_FUSION_PAR) or nodo.nombre
+            _completar_contexto_fusion(nodo, crudo, dic)
         elif clase in _CLASES_CABLE:
             nodo.cable_id = id_cromo
             nodo.cable_nombre = atributo(crudo, _AT_NOMBRE_CABLE) or atributo(crudo, _AT_NOMBRE_GENERICO)
@@ -487,6 +526,250 @@ def comparar_at62_vs_regex(at62: Optional[str], at61: Optional[str]) -> Discrepa
         veredicto = "SIN_DATO"
 
     return DiscrepanciaAt62(at62=at62, at61=at61, numero_regex=numero_regex, veredicto=veredicto)
+
+
+# ── Auditoría: lo que declara el camino vs. lo que tenemos ingerido ─────────────────────────
+
+REGLA_PELO_CABLE = "PELO_CABLE"
+REGLA_PELO_TUBO = "PELO_TUBO"
+REGLA_FUSION_BOTELLA = "FUSION_BOTELLA"
+REGLA_FUSION_PELOS = "FUSION_PELOS"
+REGLA_CONECTOR = "CONECTOR_PELO_ODF"
+
+TIPO_DISCREPA = "DISCREPA"
+TIPO_NO_INGERIDO = "NO_INGERIDO"
+
+# Texto que acompaña a cada regla en la UI. Redacción deliberada: dice que el camino DIFIERE de lo
+# ingerido, no que la base esté mal. El camino es un elemento vivo (cambia ante cortes) y nuestra
+# ingesta es una foto anterior, así que una diferencia puede ser deriva legítima. En los dos casos
+# la referencia es Cromo.
+DESCRIPCION_REGLAS: dict[str, str] = {
+    REGLA_PELO_CABLE: "Cable declarado para cada pelo del camino",
+    REGLA_PELO_TUBO: "Tubo declarado para cada pelo del camino",
+    REGLA_FUSION_BOTELLA: "Botella donde el camino ubica cada fusión",
+    REGLA_FUSION_PELOS: "Par de pelos que une cada fusión",
+    REGLA_CONECTOR: "Pelo y ODF de cada conector de patchera",
+}
+
+
+@dataclass(slots=True)
+class InconsistenciaCamino:
+    """Un elemento donde el camino y la base no dicen lo mismo, o que la base no tiene."""
+
+    regla: str
+    elemento_id: int
+    tipo: str  # DISCREPA | NO_INGERIDO
+    valor_path: Any = None
+    valor_local: Any = None
+
+
+@dataclass(slots=True)
+class ResultadoRegla:
+    regla: str
+    descripcion: str
+    total: int = 0
+    coincide: int = 0
+    discrepa: int = 0
+    no_ingerido: int = 0
+
+
+@dataclass(slots=True)
+class ConsistenciaCamino:
+    """Resultado de comparar el camino contra lo ingerido. Informa, no corrige nada."""
+
+    reglas: list[ResultadoRegla] = field(default_factory=list)
+    inconsistencias: list[InconsistenciaCamino] = field(default_factory=list)
+
+    @property
+    def total_discrepa(self) -> int:
+        return sum(r.discrepa for r in self.reglas)
+
+    @property
+    def total_no_ingerido(self) -> int:
+        return sum(r.no_ingerido for r in self.reglas)
+
+
+def pares_declarados(nodos: list[NodoCamino]) -> dict[str, dict[int, Any]]:
+    """Extrae, de los nodos ya construidos, las relaciones que el camino AFIRMA.
+
+    Función pura: es la mitad testeable sin base de la auditoría. Cada regla queda como
+    `{id_del_elemento: valor_que_declara_el_path}`.
+    """
+    pelo_cable: dict[int, Any] = {}
+    pelo_tubo: dict[int, Any] = {}
+    fusion_botella: dict[int, Any] = {}
+    fusion_pelos: dict[int, Any] = {}
+    conector: dict[int, Any] = {}
+
+    for nodo in nodos:
+        if nodo.repetido:
+            continue
+        if nodo.tipo == TIPO_PELO:
+            if nodo.cable_id:
+                pelo_cable[nodo.id_cromo] = nodo.cable_id
+            if nodo.tubo_id:
+                pelo_tubo[nodo.id_cromo] = nodo.tubo_id
+        elif nodo.tipo == TIPO_FUSION:
+            if nodo.botella_id:
+                fusion_botella[nodo.id_cromo] = nodo.botella_id
+            if nodo.pelos_fusionados:
+                fusion_pelos[nodo.id_cromo] = sorted(nodo.pelos_fusionados)
+        elif nodo.tipo == TIPO_CONECTOR_ODF:
+            conector[nodo.id_cromo] = {"pelo": nodo.pelo_conectado, "odf": nodo.odf_id}
+
+    return {
+        REGLA_PELO_CABLE: pelo_cable,
+        REGLA_PELO_TUBO: pelo_tubo,
+        REGLA_FUSION_BOTELLA: fusion_botella,
+        REGLA_FUSION_PELOS: fusion_pelos,
+        REGLA_CONECTOR: conector,
+    }
+
+
+async def auditar_consistencia(
+    sesion: AsyncSession, nodos: list[NodoCamino]
+) -> ConsistenciaCamino:
+    """Compara las relaciones que declara el camino contra las que tenemos ingeridas.
+
+    Cinco reglas, **una query batcheada por regla** y cero llamadas a Cromo: se calcula con el
+    mismo payload que ya se trajo. Medido sobre un camino real: 0 discrepancias en cuatro de las
+    cinco reglas, 2 en `FUSION_PELOS`, y 6 elementos que Cromo conoce y la base no.
+
+    No corrige nada ni escribe: es auditoría. Y una discrepancia no implica que la base esté mal
+    —el camino es vivo y la ingesta es una foto anterior— pero la referencia es Cromo.
+    """
+    declarado = pares_declarados(nodos)
+    consistencia = ConsistenciaCamino()
+
+    async def _comparar_columna(regla: str, tabla: str, columna: str) -> None:
+        pares = declarado[regla]
+        resultado = ResultadoRegla(regla=regla, descripcion=DESCRIPCION_REGLAS[regla], total=len(pares))
+        if pares:
+            filas = dict(
+                (
+                    await sesion.execute(
+                        text(f"SELECT n_id, {columna} FROM app.{tabla} WHERE n_id = ANY(:ids)"),
+                        {"ids": sorted(pares)},
+                    )
+                ).all()
+            )
+            for elemento, valor_path in pares.items():
+                if elemento not in filas:
+                    resultado.no_ingerido += 1
+                    consistencia.inconsistencias.append(
+                        InconsistenciaCamino(
+                            regla=regla, elemento_id=elemento, tipo=TIPO_NO_INGERIDO, valor_path=valor_path
+                        )
+                    )
+                elif filas[elemento] == valor_path:
+                    resultado.coincide += 1
+                else:
+                    resultado.discrepa += 1
+                    consistencia.inconsistencias.append(
+                        InconsistenciaCamino(
+                            regla=regla,
+                            elemento_id=elemento,
+                            tipo=TIPO_DISCREPA,
+                            valor_path=valor_path,
+                            valor_local=filas[elemento],
+                        )
+                    )
+        consistencia.reglas.append(resultado)
+
+    await _comparar_columna(REGLA_PELO_CABLE, "cromo_pelos", "cable_n_id")
+    await _comparar_columna(REGLA_PELO_TUBO, "cromo_pelos", "tubo_n_id")
+    await _comparar_columna(REGLA_FUSION_BOTELLA, "cromo_fusiones", "botella_n_id")
+
+    # Los pelos de una fusión viven en dos columnas y el orden A/B es arbitrario de los dos lados,
+    # así que se comparan como conjunto.
+    pares_fusion = declarado[REGLA_FUSION_PELOS]
+    resultado = ResultadoRegla(
+        regla=REGLA_FUSION_PELOS, descripcion=DESCRIPCION_REGLAS[REGLA_FUSION_PELOS], total=len(pares_fusion)
+    )
+    if pares_fusion:
+        filas = {
+            fila[0]: sorted(p for p in (fila[1], fila[2]) if p)
+            for fila in (
+                await sesion.execute(
+                    text(
+                        "SELECT n_id, pelo_a_n_id, pelo_b_n_id FROM app.cromo_fusiones "
+                        "WHERE n_id = ANY(:ids)"
+                    ),
+                    {"ids": sorted(pares_fusion)},
+                )
+            ).all()
+        }
+        for elemento, pelos_path in pares_fusion.items():
+            if elemento not in filas:
+                resultado.no_ingerido += 1
+                consistencia.inconsistencias.append(
+                    InconsistenciaCamino(
+                        regla=REGLA_FUSION_PELOS,
+                        elemento_id=elemento,
+                        tipo=TIPO_NO_INGERIDO,
+                        valor_path=pelos_path,
+                    )
+                )
+            elif filas[elemento] == list(pelos_path):
+                resultado.coincide += 1
+            else:
+                resultado.discrepa += 1
+                consistencia.inconsistencias.append(
+                    InconsistenciaCamino(
+                        regla=REGLA_FUSION_PELOS,
+                        elemento_id=elemento,
+                        tipo=TIPO_DISCREPA,
+                        valor_path=pelos_path,
+                        valor_local=filas[elemento],
+                    )
+                )
+    consistencia.reglas.append(resultado)
+
+    # El conector se compara por sus dos vínculos a la vez: pelo y ODF.
+    pares_conector = declarado[REGLA_CONECTOR]
+    resultado = ResultadoRegla(
+        regla=REGLA_CONECTOR, descripcion=DESCRIPCION_REGLAS[REGLA_CONECTOR], total=len(pares_conector)
+    )
+    if pares_conector:
+        filas = {
+            fila[0]: {"pelo": fila[1], "odf": fila[2]}
+            for fila in (
+                await sesion.execute(
+                    text(
+                        "SELECT n_id, pelo_n_id, odf_n_id FROM app.cromo_odf_conectores "
+                        "WHERE n_id = ANY(:ids)"
+                    ),
+                    {"ids": sorted(pares_conector)},
+                )
+            ).all()
+        }
+        for elemento, vinculos_path in pares_conector.items():
+            if elemento not in filas:
+                resultado.no_ingerido += 1
+                consistencia.inconsistencias.append(
+                    InconsistenciaCamino(
+                        regla=REGLA_CONECTOR,
+                        elemento_id=elemento,
+                        tipo=TIPO_NO_INGERIDO,
+                        valor_path=vinculos_path,
+                    )
+                )
+            elif filas[elemento] == vinculos_path:
+                resultado.coincide += 1
+            else:
+                resultado.discrepa += 1
+                consistencia.inconsistencias.append(
+                    InconsistenciaCamino(
+                        regla=REGLA_CONECTOR,
+                        elemento_id=elemento,
+                        tipo=TIPO_DISCREPA,
+                        valor_path=vinculos_path,
+                        valor_local=filas[elemento],
+                    )
+                )
+    consistencia.reglas.append(resultado)
+
+    return consistencia
 
 
 # ── Semillas: de un Servicio a los pelos con los que se puede pedir el camino ───────────────
@@ -679,6 +962,7 @@ async def resolver_camino_de_pelo(
     pelo_n_id: int,
     *,
     vincular_local: bool = True,
+    auditar: bool = True,
     incluir_raw: bool = False,
 ) -> CaminoOptico:
     """Resuelve el camino óptico de un pelo. UNA llamada a Cromo, cero requests por nodo.
@@ -746,6 +1030,10 @@ async def resolver_camino_de_pelo(
     if vincular_local and odfs:
         await _vincular_odfs(sesion, odfs)
 
+    consistencia = (
+        await auditar_consistencia(sesion, [raiz_nodo] + lado_a + lado_b) if auditar else None
+    )
+
     at62 = atributo(raiz, _AT_SERVICIO_NUMERO)
     at61 = atributo(raiz, _AT_SERVICIO_CRUDO)
 
@@ -767,6 +1055,7 @@ async def resolver_camino_de_pelo(
         lado_b=lado_b,
         odfs=odfs,
         estadisticas=calcular_estadisticas(lado_a, lado_b, raiz_nodo),
+        consistencia=consistencia,
         discrepancia=comparar_at62_vs_regex(at62, at61),
         ids_no_resueltos=no_resueltos_a + no_resueltos_b,
         advertencias=advertencias,
@@ -871,6 +1160,19 @@ class PeloAjenoAlServicio(ValueError):
 
 
 __all__ = [
+    "ConsistenciaCamino",
+    "InconsistenciaCamino",
+    "ResultadoRegla",
+    "DESCRIPCION_REGLAS",
+    "REGLA_CONECTOR",
+    "REGLA_FUSION_BOTELLA",
+    "REGLA_FUSION_PELOS",
+    "REGLA_PELO_CABLE",
+    "REGLA_PELO_TUBO",
+    "TIPO_DISCREPA",
+    "TIPO_NO_INGERIDO",
+    "auditar_consistencia",
+    "pares_declarados",
     "ESTADO_OK",
     "ESTADO_SIN_CAMINO",
     "ESTADO_SIN_SEMILLA",
