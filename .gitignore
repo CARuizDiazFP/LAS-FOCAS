@@ -83,3 +83,6 @@ Legacy/
 
 # Documentación privada de la empresa (no debe subirse al repo)
 docs/Doc Privada/
+
+# Handoffs operativos entre sesiones (contexto efímero, no se versiona)
+docs/handoffs/
