@@ -2,6 +2,8 @@
 // Ubicación de archivo: web/frontend/src/composables/useTracking.ts
 // Descripción: Utilidades reutilizables para consultar y descargar tracking de rutas FO en el panel web
 
+import { ApiError, requestDownload } from '../api/client';
+
 export interface TrackingPointInfo {
   sitio: string;
   identificador: string;
@@ -43,32 +45,22 @@ export async function loadTrackingDetail(rutaId: number): Promise<TrackingDetail
   return parseJsonResponse<TrackingDetailPayload>(response);
 }
 
+/**
+ * Descarga el `.txt` ORIGINAL de una ruta legacy (el que se subió a mano).
+ *
+ * Envuelve `requestDownload` de `api/client.ts` en vez de repetir el patrón
+ * blob+anchor+revoke. Se preserva textual el mensaje de 404, que es específico de este dominio:
+ * un 404 acá significa que esa ruta no tiene `raw_file_content`, no que la ruta no exista.
+ */
 export async function downloadTracking(rutaId: number): Promise<string> {
-  const response = await fetch(`/api/infra/tracking/${rutaId}/download`, {
-    credentials: 'include',
-    headers: { Accept: 'text/plain, application/octet-stream' },
-  });
-
-  if (response.status === 404) {
-    throw new Error('El TXT original no está disponible para esta ruta.');
+  try {
+    return await requestDownload(`/api/infra/tracking/${rutaId}/download`, {
+      fallbackFilename: `tracking_ruta_${rutaId}.txt`,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      throw new Error('El TXT original no está disponible para esta ruta.');
+    }
+    throw error;
   }
-  if (!response.ok) {
-    throw new Error(`Error ${response.status}`);
-  }
-
-  const blob = await response.blob();
-  const disposition = response.headers.get('Content-Disposition') ?? '';
-  const match = disposition.match(/filename="(.+?)"/);
-  const filename = match ? match[1] : `tracking_ruta_${rutaId}.txt`;
-  const blobUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-
-  anchor.href = blobUrl;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(blobUrl);
-
-  return filename;
 }
