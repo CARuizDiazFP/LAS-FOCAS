@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 import re
 import sys
 import time
@@ -22,7 +24,7 @@ if str(ROOT_DIR) not in sys.path:
 from core.logging import setup_logging
 from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo.config import CromoConfigError, get_cromo_config
-from core.services.cromo.parser import atributo
+from core.services.cromo.parser import ATRIBUTOS_CONOCIDOS, atributo
 
 logger = setup_logging("cromo_sonda")
 
@@ -247,6 +249,222 @@ def _extraer_primer_n_id_cable(botellas: list[dict[str, Any]]) -> int | None:
     return None
 
 
+_CLASES_ETIQUETA = {
+    2: "cámara",
+    51: "cable",
+    68: "botella 6-1",
+    69: "ODF",
+    121: "botella 16-1",
+    122: "botella",
+    123: "botella",
+    124: "botella",
+    125: "botella",
+    129: "tubo",
+    130: "pelo",
+    132: "fusión",
+    135: "patchera",
+    136: "posición patchera",
+}
+
+
+def _desenvolver_dict_sonda(payload: Any) -> tuple[dict[int, dict[str, Any]], str]:
+    """Prueba las tres envolturas posibles de `/path` y normaliza las claves a `int`.
+
+    Las claves JSON son strings (`"10006353"`) pero `a[]`/`b[]` traen enteros; sin normalizar,
+    cualquier lookup es una bomba de tipos.
+    """
+    if not isinstance(payload, dict):
+        return {}, "ninguna (el cuerpo no es un objeto)"
+    respuesta = payload.get("response")
+    candidatos: list[tuple[str, Any]] = [
+        ("payload['dict']", payload.get("dict")),
+        ("payload['response']['dict']", respuesta.get("dict") if isinstance(respuesta, dict) else None),
+        ("payload['response']", respuesta),
+        ("payload", payload),
+    ]
+    for ruta, candidato in candidatos:
+        if not isinstance(candidato, dict):
+            continue
+        numericas = {
+            int(clave): valor
+            for clave, valor in candidato.items()
+            if str(clave).lstrip("-").isdigit() and isinstance(valor, dict)
+        }
+        if numericas:
+            return numericas, ruta
+    return {}, "ninguna (no hay claves numéricas)"
+
+
+def _describir_nodo(nodo: dict[str, Any]) -> str:
+    clase = nodo.get("class")
+    etiqueta = _CLASES_ETIQUETA.get(clase, f"clase {clase}")
+    nombre = nodo.get("name") or atributo(nodo, 75) or "-"
+    return f"{etiqueta} · {nombre}"
+
+
+async def _sondear_camino_optico(cliente: CromoClient, pelo_id: int) -> tuple[SeccionSonda, dict[str, Any]]:
+    """Contesta las incógnitas empíricas de `/network/fo/{id}/path` con UNA llamada real.
+
+    Sólo lectura: un GET, sin escribir en Cromo ni en la base local.
+    """
+    seccion = SeccionSonda(f"1. Camino óptico de `/network/fo/{pelo_id}/path`")
+
+    inicio = time.monotonic()
+    payload = await cliente.get_camino_optico(pelo_id)
+    duracion = time.monotonic() - inicio
+
+    dic, ruta_envoltura = _desenvolver_dict_sonda(payload)
+    seccion.agregar(f"- **Latencia real:** {duracion:.2f} s")
+    seccion.agregar(f"- **Claves de nivel superior:** `{sorted(payload)[:12] if isinstance(payload, dict) else type(payload).__name__}`")
+    seccion.agregar(f"- **Envoltura que resolvió el dict:** `{ruta_envoltura}`")
+    seccion.agregar(f"- **Nodos en el dict:** {len(dic)}")
+
+    if not dic:
+        seccion.marcar_error(
+            "La respuesta no trajo ningún nodo indexado por id numérico — revisar la envoltura "
+            "contra el payload crudo volcado abajo."
+        )
+        return seccion, payload
+
+    # ── Incógnita 1: ¿el endpoint habla en n_id de linaje o en id de versión? ──
+    con_ambos_lados = [oid for oid, nodo in dic.items() if nodo.get("a") is not None and nodo.get("b") is not None]
+    seccion.agregar("")
+    seccion.agregar("### Identidad del pelo consultado (n_id de linaje vs. id de versión)")
+    seccion.agregar(f"- ¿`{pelo_id}` es clave del dict?: **{'SÍ' if pelo_id in dic else 'NO'}**")
+    seccion.agregar(f"- Nodos con `a[]` y `b[]` a la vez (deberían ser sólo el pelo raíz): `{con_ambos_lados}`")
+    if pelo_id in dic:
+        seccion.agregar("- **Veredicto:** `/path` aceptó el `n_id` estable que tenemos en la base local.")
+    elif len(con_ambos_lados) == 1:
+        seccion.agregar(
+            f"- **Veredicto:** `/path` devolvió la raíz bajo otro id (`{con_ambos_lados[0]}`) — "
+            "es un id de VERSIÓN y hace falta traducir linaje↔versión."
+        )
+    else:
+        seccion.agregar("- **Veredicto:** indeterminado, no hay una raíz única identificable.")
+
+    raiz_id = pelo_id if pelo_id in dic else (con_ambos_lados[0] if len(con_ambos_lados) == 1 else None)
+    raiz = dic.get(raiz_id) if raiz_id is not None else None
+
+    # ── Incógnita 4/5: ¿dónde termina cada lado? ¿aparecen ODFs (69) y tubos (129)? ──
+    if raiz is not None:
+        lado_a = [int(x) for x in (raiz.get("a") or [])]
+        lado_b = [int(x) for x in (raiz.get("b") or [])]
+        seccion.agregar("")
+        seccion.agregar("### Recorrido")
+        seccion.agregar(f"- `father` (tubo): `{raiz.get('father')}` · `gfather` (cable): `{raiz.get('gfather')}`")
+        for etiqueta, lado in (("a[]", lado_a), ("b[]", lado_b)):
+            no_resueltos = [oid for oid in lado if oid not in dic]
+            ultimo = dic.get(lado[-1]) if lado and lado[-1] in dic else None
+            seccion.agregar(
+                f"- **{etiqueta}**: {len(lado)} elementos · "
+                f"último: {_describir_nodo(ultimo) if ultimo else 'no resuelto'} · "
+                f"ids ausentes del dict: {len(no_resueltos)}"
+            )
+        clases_por_lado = {
+            etiqueta: sorted({dic[oid].get("class") for oid in lado if oid in dic})
+            for etiqueta, lado in (("a[]", lado_a), ("b[]", lado_b))
+        }
+        seccion.agregar(f"- Clases presentes por lado: `{clases_por_lado}`")
+
+    histograma = Counter(nodo.get("class") for nodo in dic.values())
+    seccion.agregar("")
+    seccion.agregar("### Clases en el camino")
+    for clase, cantidad in histograma.most_common():
+        seccion.agregar(f"- `{clase}` ({_CLASES_ETIQUETA.get(clase, 'desconocida')}): {cantidad}")
+    seccion.agregar(f"- ¿Aparece la clase 69 (ODF)?: **{'SÍ' if 69 in histograma else 'NO'}** "
+                    "— de esto depende poder proponer una ODF desde el camino.")
+    seccion.agregar(f"- ¿Aparece la clase 129 (tubo)?: **{'SÍ' if 129 in histograma else 'NO'}**")
+
+    # ── Incógnita 3 + discrepancia de atributos del pelo ──
+    if raiz is not None:
+        seccion.agregar("")
+        seccion.agregar("### Atributos del pelo raíz (todos, crudos)")
+        for atr in raiz.get("at") or []:
+            etiqueta = atr.get("name") or ATRIBUTOS_CONOCIDOS.get(atr.get("id"), "?")
+            seccion.agregar(f"- `at.{atr.get('id')}` ({etiqueta}) = `{atr.get('value')}`")
+        seccion.agregar(f"- **¿Viene `at.62` (servicio limpio)?**: **{'SÍ' if atributo(raiz, 62) else 'NO'}**")
+
+    # Inventario de atributos por clase: alimenta ATRIBUTOS_CONOCIDOS y busca atenuación.
+    inventario: dict[int, dict[int, tuple[str, str]]] = {}
+    for nodo in dic.values():
+        clase = nodo.get("class")
+        for atr in nodo.get("at") or []:
+            inventario.setdefault(clase, {}).setdefault(
+                atr.get("id"), (str(atr.get("name") or ""), str(atr.get("value"))[:40])
+            )
+    seccion.agregar("")
+    seccion.agregar("### Inventario de atributos por clase (id · name de Cromo · valor de muestra)")
+    for clase in sorted(inventario, key=lambda c: (c is None, c)):
+        seccion.agregar(f"- **clase {clase}** ({_CLASES_ETIQUETA.get(clase, 'desconocida')}):")
+        for atr_id in sorted(inventario[clase], key=lambda a: (a is None, a)):
+            nombre, muestra = inventario[clase][atr_id]
+            conocido = "" if atr_id in ATRIBUTOS_CONOCIDOS else "  ⟵ no está en ATRIBUTOS_CONOCIDOS"
+            seccion.agregar(f"  - `at.{atr_id}` `{nombre}` = `{muestra}`{conocido}")
+
+    sospechosos_db = [
+        (clase, atr_id, nombre, muestra)
+        for clase, atrs in inventario.items()
+        for atr_id, (nombre, muestra) in atrs.items()
+        if re.search(r"db|aten|loss|perdida|pérdida", f"{nombre} {atr_id}", re.IGNORECASE)
+    ]
+    seccion.agregar("")
+    seccion.agregar("### ¿Publica Cromo la atenuación (dB)?")
+    if sospechosos_db:
+        for clase, atr_id, nombre, muestra in sospechosos_db:
+            seccion.agregar(f"- Candidato: clase `{clase}` `at.{atr_id}` `{nombre}` = `{muestra}`")
+    else:
+        seccion.agregar(
+            "- **NO** hay ningún atributo cuyo nombre sugiera atenuación/pérdida en todo el camino. "
+            "Decisión de producto pendiente: calcularla declarando procedencia, u omitirla."
+        )
+
+    # ── Incógnita 5: ¿alcanza tp[] de la fusión para armar el par fusionado? ──
+    fusiones = [(oid, nodo) for oid, nodo in dic.items() if nodo.get("class") == 132]
+    seccion.agregar("")
+    seccion.agregar("### Fusiones")
+    if fusiones:
+        oid, nodo = fusiones[0]
+        seccion.agregar(f"- Muestra `{oid}`: `name`=`{nodo.get('name')}` · `tp`=`{nodo.get('tp')}`")
+        seccion.agregar(f"- Total de fusiones en el camino: {len(fusiones)}")
+    else:
+        seccion.agregar("- No apareció ninguna fusión (clase 132) en este camino.")
+
+    return seccion, payload
+
+
+async def ejecutar_sonda_camino_optico(pelo_id: int) -> tuple[str, dict[str, Any]]:
+    """Modo acotado de la sonda: sólo el camino óptico de un pelo, con su payload crudo."""
+    inicio_ejecucion = datetime.now(timezone.utc).isoformat()
+    try:
+        config = get_cromo_config()
+    except CromoConfigError as exc:
+        return f"# Sonda de camino óptico\n\n**No se pudo iniciar:** {exc}\n", {}
+
+    logger.info(
+        "action=cromo_sonda_camino evento=inicio pelo_id=%s url_servidor=%s", pelo_id, config.url_servidor
+    )
+    async with CromoClient(config=config) as cliente:
+        try:
+            seccion, payload = await _sondear_camino_optico(cliente, pelo_id)
+        except (CromoClientError, httpx.HTTPError) as exc:
+            seccion = SeccionSonda(f"1. Camino óptico de `/network/fo/{pelo_id}/path`")
+            seccion.marcar_error(str(exc))
+            payload = {}
+
+    encabezado = [
+        "# Sonda de camino óptico — Cromo Red",
+        "",
+        f"- Inicio: {inicio_ejecucion}",
+        f"- Fin: {datetime.now(timezone.utc).isoformat()}",
+        f"- Servidor consultado: {config.base_url}",
+        f"- Pelo consultado: {pelo_id}",
+        "",
+        "Script de sólo lectura (un GET). No escribe en Cromo ni en la base local.",
+        "",
+    ]
+    return "\n".join(encabezado) + "\n" + seccion.a_markdown(), payload
+
+
 async def ejecutar_sonda() -> str:
     inicio_ejecucion = datetime.now(timezone.utc).isoformat()
     try:
@@ -317,11 +535,36 @@ async def ejecutar_sonda() -> str:
 
 
 def main() -> None:
-    reporte = asyncio.run(ejecutar_sonda())
+    parser_cli = argparse.ArgumentParser(
+        description="Sonda de descubrimiento de sólo lectura contra Cromo Red."
+    )
+    parser_cli.add_argument(
+        "--camino-optico",
+        type=int,
+        metavar="PELO_ID",
+        help=(
+            "Modo acotado: sondea sólo `GET /network/fo/PELO_ID/path` (camino óptico) y vuelca "
+            "además el payload crudo como fixture. Sin este flag corre la sonda completa."
+        ),
+    )
+    args = parser_cli.parse_args()
 
     salida_dir = ROOT_DIR / "devs" / "output"
     salida_dir.mkdir(parents=True, exist_ok=True)
     marca = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    if args.camino_optico is not None:
+        reporte, payload = asyncio.run(ejecutar_sonda_camino_optico(args.camino_optico))
+        salida_path = salida_dir / f"cromo_sonda_camino_{args.camino_optico}_{marca}.md"
+        salida_path.write_text(reporte, encoding="utf-8")
+        if payload:
+            payload_path = salida_dir / f"cromo_path_{args.camino_optico}_{marca}.json"
+            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[OK] Payload crudo volcado en {payload_path}")
+        print(f"[OK] Reporte de sonda escrito en {salida_path}")
+        return
+
+    reporte = asyncio.run(ejecutar_sonda())
     salida_path = salida_dir / f"cromo_sonda_{marca}.md"
     salida_path.write_text(reporte, encoding="utf-8")
 
