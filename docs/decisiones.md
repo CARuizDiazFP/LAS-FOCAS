@@ -1415,6 +1415,85 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   soportando muchos-a-uno, categorización de causa por tarjeta) — próxima fase de esta misma tarea,
   en la rama efímera `feat/odf-viewer-servicios-sin-odf`.
 
+
+## 2026-09-08 — Duplicados invisibles para los visores: dos bugs de normalización de nombres
+
+- **Contexto:** El usuario reportó Botellas duplicadas en prod que el visor de duplicados **no
+  agrupa** — distintas de los grupos ya conocidos que el visor sí muestra. Su hipótesis era que el
+  sufijo `" - CRITICA"` generaba el mismatch. Se confirmó, y al medir contra la DB real de producción
+  apareció una segunda causa bastante más grande que no estaba en la hipótesis.
+
+- **Bug 1 — el sufijo tras separador sobrevive a la normalización.** `_limpiar_puntuacion`
+  (`modules/slack_baneo_notifier/camara_search.py`) convierte `" - "` en espacio pero conserva la
+  palabra, así que `"…Bot 2 - CRITICA"` normalizaba a `…bot 2 critica` y nunca coincidía con
+  `…bot 2`. Ya existía `_RE_RUIDO_OPERATIVO` / `limpiar_ruido_operativo()`, que sabe recortar sufijos
+  tras separador ante una stopword conocida (cuadrilla, móvil, contratista, ticket…), pero **sólo lo
+  usaba `buscar_camara()`** — la normalización de agrupamiento nunca lo llamaba. Caso real: bajo la
+  Cámara padre 2753, la Botella legado 1615 `"Cra  Diag Norte 902 Esq Suipacha Bot 2"` y la Cromo
+  6631710 `"…Bot 2 - CRITICA"` son la misma botella y jamás se ofrecieron como grupo.
+
+- **Bug 2 — `"C.F."` con puntos no colapsa a `"cf"`.** `_limpiar_puntuacion` hace
+  `re.sub(r"\.(?!\d)", " ")`, con lo que `"C.F."` queda como los dos tokens sueltos `c f` y la regla
+  `\bcf\b -> ""` de `_ABREVIATURAS` deja de alcanzarlo. Medido en prod: **el detector de Cámaras
+  duplicadas informaba 0 grupos cuando en realidad había 96 pares** que sólo difieren en cómo se
+  escribió CF (`"Cra Cerrito 410 CF"` vs `"Cra Cerrito 410 C.F."`, `"Datacenter Tacuari 355 CF"` vs
+  `"… C.F."`). Este es el que mejor explica el síntoma original: el detector de Botellas agrupa **por
+  Cámara padre**, así que con el padre partido en dos, las botellas del mismo sitio nunca se comparan.
+
+- **Decisión:** agregar `r"\bc\s+f\b": ""` a `_ABREVIATURAS`, sumar `cr[ií]tic[ao]` a
+  `_RE_RUIDO_OPERATIVO`, y anteponer `limpiar_ruido_operativo` en
+  `normalizar_para_agrupar_extendido` (`core/services/camara_hierarchy_service.py`).
+
+- **Alternativa descartada (medida, no intuida):** recortar genéricamente **todo** lo que sigue a un
+  guion. Suma 6 grupos de Botellas de los cuales 5 son falsos positivos: se come el `"Bot N"`
+  posterior y colapsa hermanas legítimas (`"B. Candelarias - Bot. 1 …"` con `"… - Bot. 2 …"`,
+  `"…Playa 13 Bot 2"` con `"…Playa 13"`). Además, de las 808 Botellas con sufijo tras separador, el
+  sufijo más frecuente es una **localidad** (FIBRASTAR 55, PILAR 30, MORON 23; CRITICA sólo 7). El
+  recorte queda entonces restringido a stopwords conocidas, y hay tests de no-regresión que fijan
+  esos tres casos.
+
+- **Impacto medido contra la DB de producción (antes → después):** Cámaras raíz 0 → 96 grupos (194
+  Cámaras involucradas); Botellas 52 → 53 grupos (121 → 123 filas). Control de falsos positivos: el
+  grupo más grande queda en 4 miembros en ambos dominios y ninguna clave normaliza a cadena vacía.
+
+- **Riesgo asumido:** `normalizar_para_agrupar_extendido` no la usa sólo la detección — también
+  `resolver_o_crear_padre_desde_base()` (ingesta de Cromo), `cromo/separacion_service.py` y
+  `scripts/cromo_backfill_camara_padre.py`. El cambio, por lo tanto, **también altera escritura**: la
+  ingesta deja de crear un padre nuevo cuando ya existe uno que sólo difería en la escritura de CF.
+  Es el efecto buscado (cierra el punto de alta de estos duplicados), pero es más que un cambio de
+  visor. Continúa la línea del riesgo ya aceptado explícitamente el 2026-08-14 para esta función.
+
+- **Gap de UI resuelto en el mismo trabajo:** para Cámaras existía "Unificar Cámara" desde la ficha,
+  independiente del detector; para Botellas, "Consolidar manualmente" abría el modal con `grupo=null`
+  y la sección "Botellas legado a heredar" estaba detrás de un `v-if` alimentado por el grupo
+  detectado, así que sólo dejaba tipear n_ids Cromo. El backend ya aceptaba `ids_legado` y
+  `force_camera_association` — el gap era exclusivamente de UI. Ahora se pueden sumar Botellas legado
+  por ID con el mismo patrón de chips que los orígenes Cromo.
+
+- **Revisión adversarial posterior (mismo día), 3 hallazgos — 2 aplicados, 1 refutado con datos:**
+  - *Aplicado:* el `.*` greedy de `_RE_RUIDO_OPERATIVO` se come todo lo que sigue a la stopword. Para
+    las stopwords originales es inocuo (siempre son terminales: "- CUADRILLA DE HIDROCONS"), pero
+    "crítica" es un calificador que puede venir seguido de información que identifica el sitio:
+    `"Cra Ruta 9 - Critica Km 45"` y `"… Km 46"` colapsaban al mismo nombre. En prod hoy los 10 casos
+    de "- CRITICA" son todos terminales (0 no terminales), pero como esta normalización también
+    decide si crear o reusar una Cámara padre en la ingesta, el modo de falla sería silencioso. Se
+    separó "crítica" a `_RE_SUFIJO_CRITICA`, **anclada al final** del nombre.
+  - *Aplicado:* el plural "CRITICAS" no estaba cubierto (`s?` faltante). 0 casos en prod hoy, pero el
+    archivo de negocio se llama "Criticas en seguimiento", así que es una forma esperable.
+  - *Refutado con medición:* se objetó que `\bc\s+f\b` no está anclado y podría colapsar iniciales de
+    calle ("Av. C. F. Alvear" con "Avenida Alvear"). En los datos reales hay 89 nombres con "c f" en
+    posición NO terminal, y **ninguno** son iniciales: todos son el código de filial seguido de una
+    aclaración (`"Cra Teodoro García 2402 C.F (INSTALAR)"`, `"Tza Esmeralda 561 C.F. 4 piso frente
+    izq"`), donde recortar es lo correcto. Anclar al final habría roto esos 89. También se objetó que
+    recortar "C F" del medio rompería el ILIKE de substring de `buscar_camara()` (bot de Slack): se
+    ejecutó la búsqueda real contra la DB de prod sobre 238 nombres reales (los 36 con "c f" medio,
+    los 5 con "crítica" y 200 aleatorios) comparando antes/después — **0 regresiones y 1 mejora**
+    (`"Cra. Reconquista 490 C.F."` pasó de ambiguo a resolver). El riesgo está cubierto por diseño:
+    el Intento 2 de la cascada busca por tokens de ≥3 chars (inmune a recortar tokens de 1 char) y el
+    Intento 4 corre explícitamente sin expansión de abreviaturas.
+  - Impacto final tras las correcciones: idéntico (Cámaras 0 → 96, Botellas 52 → 53) — más seguro sin
+    perder detección.
+
 ## 2026-09-09 — Gestor "Servicios sin ODF": detección, categorización y asociación manual (cierre del plan iniciado 2026-09-07)
 
 - **Contexto:** cierre del plan de 7 tareas (rama `feat/odf-viewer-servicios-sin-odf`, trabajo real

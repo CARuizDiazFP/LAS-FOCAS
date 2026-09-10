@@ -61,6 +61,11 @@ _ABREVIATURAS: dict[str, str] = {
     r"\bsta\b": "santa",
     r"\bsto\b": "santo",
     r"\bcf\b": "",          # código de filial — ignorar al buscar
+    # "C.F." escrito con puntos: `_limpiar_puntuacion` ya convirtió cada punto en espacio, así que
+    # llega como los dos tokens sueltos "c f" y el patrón `\bcf\b` de arriba no lo alcanza. Sin esta
+    # entrada, "Cra X CF" y "Cra X C.F." normalizan distinto — medido contra prod el 2026-09-08: el
+    # detector de Cámaras duplicadas informaba 0 grupos cuando había 96 pares que sólo difieren en eso.
+    r"\bc\s+f\b": "",
 }
 
 # ── Diccionario de sinónimos (aplicado DESPUÉS de normalizar) ────────────
@@ -131,6 +136,16 @@ _RE_RUIDO_OPERATIVO = re.compile(
     r"inspector|t[eé]cnico|brigada|grupo|empresa)\b.*"
 )
 
+# "CRITICA" va aparte de `_RE_RUIDO_OPERATIVO` y ANCLADA al final del nombre a propósito. Las
+# stopwords de arriba son siempre terminales en los datos reales ("- CUADRILLA DE HIDROCONS"), así
+# que su `.*` greedy no hace daño; "crítica", en cambio, es un calificador que podría venir seguido
+# de información que sí identifica el sitio. Sin el ancla, "Cra Ruta 9 - Critica Km 45" y
+# "… Km 46" colapsarían al mismo nombre — dos postes distintos de la misma ruta. Hoy los 10 casos
+# reales en prod son todos terminales, pero esta normalización también decide si crear o reusar una
+# Cámara padre durante la ingesta, así que el modo de falla sería silencioso. Plural incluido:
+# el archivo de negocio se llama "Criticas en seguimiento".
+_RE_SUFIJO_CRITICA = re.compile(r"(?i)\s*[-/|]\s*cr[ií]tic[ao]s?\s*$")
+
 
 def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
     """Detecta si el nombre menciona múltiples botellas/bots en un mismo campo.
@@ -188,8 +203,10 @@ def limpiar_ruido_operativo(texto: str) -> str:
         "Cra Quesada 2396 CF - CUADRILLA DE HIDROCONS"  →  "Cra Quesada 2396 CF"
         "Camara 1 - Móvil 4"                            →  "Camara 1"
         "Poste Lavalle - Campana"                       →  "Poste Lavalle - Campana"
+        "Cra San Martin 1 CF - CRITICA"                 →  "Cra San Martin 1 CF"
+        "Cra Ruta 9 - Critica Km 45"                    →  "Cra Ruta 9 - Critica Km 45"
     """
-    return _RE_RUIDO_OPERATIVO.sub("", texto).strip()
+    return _RE_SUFIJO_CRITICA.sub("", _RE_RUIDO_OPERATIVO.sub("", texto)).strip()
 
 
 def _limpiar_puntuacion(texto: str) -> str:
