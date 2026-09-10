@@ -7579,6 +7579,315 @@ async def cromo_elemento_vivo_web(request: Request, n_id: int) -> JSONResponse:
     return JSONResponse(_serializar_elemento_vivo(elemento))
 
 
+def _serializar_pelo_semilla(semilla: Any) -> dict[str, Any]:
+    return {
+        "pelo_n_id": semilla.pelo_n_id,
+        "servicio_numero": semilla.servicio_numero,
+        "metodo": semilla.metodo,
+        "confianza": semilla.confianza,
+        "numero_pelo": semilla.numero_pelo,
+        "color": semilla.color,
+        "cable_n_id": semilla.cable_n_id,
+        "cable_nombre": semilla.cable_nombre,
+        "tiene_conector_odf": semilla.tiene_conector_odf,
+        "servicio_raw": semilla.servicio_raw,
+    }
+
+
+def _serializar_vinculo_local(vinculo: Any) -> Optional[dict[str, Any]]:
+    if vinculo is None:
+        return None
+    return {
+        "tabla": vinculo.tabla,
+        "n_id": vinculo.n_id,
+        "nombre": vinculo.nombre,
+        "vigente": vinculo.vigente,
+        "coincide_por": vinculo.coincide_por,
+    }
+
+
+def _serializar_nodo_camino(nodo: Any) -> dict[str, Any]:
+    return {
+        "orden": nodo.orden,
+        "lado": nodo.lado,
+        "id_cromo": nodo.id_cromo,
+        "clase": nodo.clase,
+        "tipo": nodo.tipo,
+        "nombre": nodo.nombre,
+        "repetido": nodo.repetido,
+        "numero_pelo": nodo.numero_pelo,
+        "color_pelo": nodo.color_pelo,
+        "tubo_id": nodo.tubo_id,
+        "tubo_color": nodo.tubo_color,
+        "cable_id": nodo.cable_id,
+        "cable_nombre": nodo.cable_nombre,
+        "cable_capacidad": nodo.cable_capacidad,
+        "distancia_geo_m": nodo.distancia_geo_m,
+        "distancia_real_m": nodo.distancia_real_m,
+        "botella_id": nodo.botella_id,
+        "botella_nombre": nodo.botella_nombre,
+        "conector_numero": nodo.conector_numero,
+        "patchera_nombre": nodo.patchera_nombre,
+        "odf_id": nodo.odf_id,
+        "odf_nombre": nodo.odf_nombre,
+        "servicio_at62": nodo.servicio_at62,
+        # `vinculo_local` en `null` NO es un error: puede ser una clase que la ingesta no barre
+        # o un objeto que Cromo movió después de la última corrida. Es dato de auditoría.
+        "vinculo_local": _serializar_vinculo_local(nodo.vinculo_local),
+    }
+
+
+def _serializar_consistencia(consistencia: Any) -> Optional[dict[str, Any]]:
+    if consistencia is None:
+        return None
+    return {
+        "reglas": [
+            {
+                "regla": r.regla,
+                "descripcion": r.descripcion,
+                "total": r.total,
+                "coincide": r.coincide,
+                "discrepa": r.discrepa,
+                "no_ingerido": r.no_ingerido,
+            }
+            for r in consistencia.reglas
+        ],
+        "inconsistencias": [
+            {
+                "regla": i.regla,
+                "elemento_id": i.elemento_id,
+                "tipo": i.tipo,
+                "valor_path": i.valor_path,
+                "valor_local": i.valor_local,
+            }
+            for i in consistencia.inconsistencias
+        ],
+        "total_discrepa": consistencia.total_discrepa,
+        "total_no_ingerido": consistencia.total_no_ingerido,
+    }
+
+
+def _serializar_camino_optico(camino: Any, semillas: list[Any]) -> dict[str, Any]:
+    return {
+        "estado": camino.estado,
+        "motivo": camino.motivo,
+        "pelo_n_id": camino.pelo_n_id,
+        # `identidad_cromo` instrumenta una incógnita del proveedor: medido real, `/path` acepta el
+        # `n_id` estable y devuelve la raíz bajo ese mismo id. Si algún día respondiera con ids de
+        # versión, se ve acá en vez de fallar en silencio.
+        "identidad_cromo": {
+            "id_pedido": camino.id_pedido,
+            "id_raiz": camino.id_raiz,
+            "raiz_es_mismo_id": camino.raiz_es_mismo_id,
+        },
+        "servicio_at62": camino.servicio_at62,
+        "servicio_at61": camino.servicio_at61,
+        "numero_pelo": camino.numero_pelo,
+        "color_pelo": camino.color_pelo,
+        "cable_id": camino.cable_id,
+        "cable_nombre": camino.cable_nombre,
+        "raiz": _serializar_nodo_camino(camino.raiz) if camino.raiz else None,
+        "lado_a": [_serializar_nodo_camino(n) for n in camino.lado_a],
+        "lado_b": [_serializar_nodo_camino(n) for n in camino.lado_b],
+        "odfs": [
+            {
+                "odf_id": o.odf_id,
+                "nombre": o.nombre,
+                "lado": o.lado,
+                "conector_numero": o.conector_numero,
+                "patchera_nombre": o.patchera_nombre,
+                "servicio_at62": o.servicio_at62,
+                "es_extremo": o.es_extremo,
+                "vinculo_local": _serializar_vinculo_local(o.vinculo_local),
+            }
+            for o in camino.odfs
+        ],
+        "estadisticas": {
+            "nodos": camino.estadisticas.nodos,
+            "pelos": camino.estadisticas.pelos,
+            "fusiones": camino.estadisticas.fusiones,
+            "conectores": camino.estadisticas.conectores,
+            "cables": camino.estadisticas.cables,
+            "odfs": camino.estadisticas.odfs,
+            "no_resueltos": camino.estadisticas.no_resueltos,
+            "longitud_geo_m": camino.estadisticas.longitud_geo_m,
+            "longitud_optica_m": camino.estadisticas.longitud_optica_m,
+        },
+        "consistencia": _serializar_consistencia(camino.consistencia),
+        "discrepancia_at62": (
+            {
+                "at62": camino.discrepancia.at62,
+                "at61": camino.discrepancia.at61,
+                "numero_regex": camino.discrepancia.numero_regex,
+                "veredicto": camino.discrepancia.veredicto,
+            }
+            if camino.discrepancia
+            else None
+        ),
+        "ids_no_resueltos": camino.ids_no_resueltos,
+        "advertencias": camino.advertencias,
+        "duracion_ms": camino.duracion_ms,
+        "semillas_disponibles": len(semillas),
+        "semillas_alternativas": [_serializar_pelo_semilla(s) for s in semillas],
+        "payload_raw": camino.payload_raw,
+    }
+
+
+async def _servicio_existe(sesion: Any, servicio_id: int) -> bool:
+    from sqlalchemy import text as _text
+
+    fila = await sesion.execute(
+        _text("SELECT 1 FROM app.servicios WHERE id = :id"), {"id": servicio_id}
+    )
+    return fila.first() is not None
+
+
+@app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos")
+async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResponse:
+    """Pelos de Cromo con los que se puede pedir el camino óptico de un Servicio.
+
+    SQL local barato: **no toca Cromo**. Existe para que el Detalle de Servicio sepa si el botón
+    de descarga va habilitado ANTES del click — de los 2.891 Servicios sin ODF, 2.228 (77%) no
+    tienen ningún pelo y para ellos `/path` no tiene input posible.
+    """
+    from core.services.cromo.camino_optico_service import listar_pelos_semilla
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        semillas = await listar_pelos_semilla(sesion, servicio_id)
+
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "total": len(semillas),
+            "pelos": [_serializar_pelo_semilla(s) for s in semillas],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt")
+async def cromo_camino_tracking_txt_web(
+    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None
+) -> Response:
+    """Tracking óptico de un Servicio, generado desde Cromo, en el formato `.txt` legacy.
+
+    `_require_auth` con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
+    entrega el tracking completo de una ruta a cualquier usuario autenticado.
+
+    `SIN_SEMILLA`/`SIN_CAMINO` responden **409** y no 200: no hay archivo que adjuntar, y un
+    `.txt` que dice "no hay datos" es basura en la carpeta de Descargas de alguien.
+    """
+    from datetime import datetime, timezone
+
+    from core.services.cromo.camino_optico_service import (
+        ESTADO_OK,
+        PeloAjenoAlServicio,
+        resolver_camino_de_servicio,
+    )
+    from core.services.cromo.camino_optico_txt import (
+        nombre_archivo_tracking,
+        renderizar_tracking_txt,
+    )
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from db.session import AsyncSessionLocal
+
+    usuario, _rol = _require_auth(request)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                camino, _semillas = await resolver_camino_de_servicio(
+                    cliente, sesion, servicio_id, pelo_n_id=pelo_n_id
+                )
+    except PeloAjenoAlServicio as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    if camino.estado != ESTADO_OK:
+        return JSONResponse({"error": camino.motivo, "estado": camino.estado}, status_code=409)
+
+    nombre = nombre_archivo_tracking(camino.servicio_at62, camino.pelo_n_id or servicio_id)
+    contenido = renderizar_tracking_txt(camino, generado_en=datetime.now(timezone.utc))
+    logger.info(
+        "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s nodos=%s duracion_ms=%s",
+        usuario,
+        servicio_id,
+        camino.pelo_n_id,
+        camino.estadisticas.nodos,
+        camino.duracion_ms,
+    )
+    return Response(
+        content=contenido,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico")
+async def servicios_sin_odf_camino_optico_web(
+    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None, raw: bool = False
+) -> JSONResponse:
+    """Camino óptico completo de un Servicio, con su auditoría de consistencia.
+
+    `_require_admin` por el mismo criterio ya escrito para `/sugerencia`: devuelve MÁS topología
+    que aquél (el recorrido entero, cable por cable) y además gasta recursos del proveedor en cada
+    request. La única UI que lo consume es `/admin/servicios/viewer/ServiciosSinOdf`, que ya es
+    `requiresAdmin`.
+
+    `estado ∈ {OK, SIN_SEMILLA, SIN_CAMINO}` **siempre con HTTP 200**: `SIN_SEMILLA` es el caso
+    del 77% de los Servicios del gestor, y usar un código de error para el caso mayoritario y
+    legítimo llena los logs de falsos incidentes y empuja la lógica de negocio al handler de
+    errores del frontend. Es la misma forma que ya tiene `/sugerencia` (200 con nulls).
+
+    `raw=true` agrega el payload crudo de Cromo. Por omisión no viaja: un camino real son ~880
+    nodos con todos sus atributos, cientos de KB por request.
+    """
+    from core.services.cromo.camino_optico_service import (
+        PeloAjenoAlServicio,
+        resolver_camino_de_servicio,
+    )
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from db.session import AsyncSessionLocal
+
+    usuario = _require_admin(request)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                camino, semillas = await resolver_camino_de_servicio(
+                    cliente, sesion, servicio_id, pelo_n_id=pelo_n_id, incluir_raw=raw
+                )
+    except PeloAjenoAlServicio as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    logger.info(
+        "action=cromo_camino_optico user=%s servicio_id=%s estado=%s pelo_n_id=%s "
+        "nodos=%s discrepa=%s no_ingerido=%s duracion_ms=%s",
+        usuario,
+        servicio_id,
+        camino.estado,
+        camino.pelo_n_id,
+        camino.estadisticas.nodos,
+        camino.consistencia.total_discrepa if camino.consistencia else None,
+        camino.consistencia.total_no_ingerido if camino.consistencia else None,
+        camino.duracion_ms,
+    )
+    return JSONResponse(_serializar_camino_optico(camino, semillas))
+
+
 def _serializar_cable_validacion(cable: Any) -> dict[str, Any]:
     return {
         "n_id": cable.n_id,
