@@ -468,6 +468,57 @@ async def test_get_camino_optico_pega_a_la_ruta_esperada_sin_query_params():
 
 
 @pytest.mark.asyncio
+async def test_get_camino_optico_acepta_varios_pelos_en_una_sola_llamada():
+    # El manual oficial (cromo_red-api-rest-2603.pdf, "Cromo FO") documenta el parámetro como
+    # "una lista de ID de pelos de fibra, separados por comas": una llamada puede resolver
+    # varias semillas, y cada llamada cuesta ~12 s del lado de Cromo.
+    capturado: dict = {}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok(capturado))))
+
+    await cliente.get_camino_optico([10006353, 10006401])
+
+    assert capturado["url"] == f"{BASE_URL}/network/fo/10006353,10006401/path"
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_rechaza_una_lista_vacia_de_pelos():
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok({}))))
+
+    with pytest.raises(ValueError, match="al menos un pelo"):
+        await cliente.get_camino_optico([])
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_propaga_projview_como_query_param():
+    # `projview` es la única perilla de correctitud del endpoint: 0 (default de Cromo) trae la red
+    # COMPLETA, incluidos elementos proyectados y a desinstalar; 1 es la red actual.
+    capturado: dict = {}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok(capturado))))
+
+    await cliente.get_camino_optico(10006353, projview=1)
+
+    assert capturado["query"] == b"projview=1"
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_sin_projview_no_manda_query_params():
+    capturado: dict = {}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok(capturado))))
+
+    await cliente.get_camino_optico(10006353)
+
+    assert capturado["query"] == b""
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_rechaza_projview_fuera_de_dominio():
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok({}))))
+
+    with pytest.raises(ValueError, match="projview"):
+        await cliente.get_camino_optico(10006353, projview=7)
+
+
+@pytest.mark.asyncio
 async def test_get_camino_optico_devuelve_el_cuerpo_tal_cual_sin_desenvolver():
     # Simetría con los otros métodos de la clase: desenvolver es del servicio, no del cliente
     # (hay tres formas posibles de envoltura y las tres se deciden en un solo lugar testeable).

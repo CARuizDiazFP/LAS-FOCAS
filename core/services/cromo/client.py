@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 _REINTENTOS_MAX = 3
 _BACKOFF_BASE_SEGUNDOS = 1.0
 _RUTA_CAMINO_FO = "/network/fo/{id}/path"
+# `projview` de `/path` según el manual oficial (cromo_red-api-rest-2603.pdf, "Cromo FO"):
+# 0 = red completa (default de Cromo, incluye proyectados y a desinstalar), 1 = red actual,
+# 2 = red proyectada.
+_PROJVIEW_PERMITIDOS = frozenset({0, 1, 2})
 
 # Limitador compartido de proceso para `/path`, módulo-level y NO por instancia: el patrón
 # establecido en la web (`web/app/main.py`, endpoint `/vivo`) construye un `CromoClient` nuevo por
@@ -262,8 +266,10 @@ class CromoClient:
         `next_id` en casos de "ID dual" (un objeto queda vacío y su topología pasa a otro id)."""
         return await self._get(f"/db/objects/{n_id_o_id}", params={"show": ["TOPOLOGIES", "REL_ATTRIBUTE"]})
 
-    async def get_camino_optico(self, pelo_id: int) -> dict[str, Any]:
-        """`GET /network/fo/{pelo_id}/path` — camino óptico completo resuelto por Cromo.
+    async def get_camino_optico(
+        self, pelo_id: int | Iterable[int], *, projview: Optional[int] = None
+    ) -> dict[str, Any]:
+        """`GET /network/fo/{pelos}/path` — camino óptico completo resuelto por Cromo.
 
         Devuelve el recorrido de la luz atravesando fusiones y empalmes, como un diccionario
         indexado por id de objeto (`a[]`/`b[]` del nodo raíz dan el orden hacia cada extremo).
@@ -275,14 +281,37 @@ class CromoClient:
         El limiter NO se aplica en `_get`: la ingesta masiva pagina con `psize=5` sobre más de
         1,2M de pelos y limitarla a la tasa de `/path` la volvería una corrida de días.
 
-        `pelo_id` puede ser un `n_id` de linaje o un `id` de versión — cuál acepta Cromo es una
-        pregunta empírica todavía abierta, y este método no la decide: pasa el entero tal cual y
-        devuelve el cuerpo **sin desenvolver** (hay tres formas posibles de envoltura, y elegir
+        `pelo_id` acepta un entero o un iterable de enteros: el manual oficial documenta el
+        parámetro como "una lista de ID de pelos de fibra, separados por comas", y una sola
+        llamada resolviendo varias semillas es mucho más barato que N llamadas de ~12 s.
+        Medido real (2026-09-10, pelo 10006353): `/path` acepta el **n_id de linaje** que
+        tenemos en la base local, así que no hace falta traducir linaje↔versión para la raíz.
+
+        `projview` es la perilla de correctitud del endpoint, y su default del lado de Cromo es
+        el más amplio: `0` = red COMPLETA (incluye proyectados y a desinstalar), `1` = red actual
+        ('en servicio' + 'desinstalación proyectada'), `2` = red proyectada. Se manda sólo si se
+        pide explícitamente, para no cambiar en silencio lo que Cromo devuelve por omisión.
+
+        Devuelve el cuerpo **sin desenvolver** (hay tres formas posibles de envoltura, y elegir
         entre ellas es del servicio, en un solo lugar testeable sin red).
         """
+        if isinstance(pelo_id, int):
+            pelos = [pelo_id]
+        else:
+            pelos = [int(pelo) for pelo in pelo_id]
+        if not pelos:
+            raise ValueError("get_camino_optico requiere al menos un pelo")
+        if projview is not None and projview not in _PROJVIEW_PERMITIDOS:
+            raise ValueError(
+                f"projview={projview} no es válido. Valores permitidos: {sorted(_PROJVIEW_PERMITIDOS)}"
+            )
+
+        params = None if projview is None else {"projview": projview}
         await self._limiter_camino().esperar_turno()
         return await self._get(
-            _RUTA_CAMINO_FO.format(id=pelo_id), timeout=self._config.camino_timeout
+            _RUTA_CAMINO_FO.format(id=",".join(str(pelo) for pelo in pelos)),
+            params,
+            timeout=self._config.camino_timeout,
         )
 
     async def get_coleccion(

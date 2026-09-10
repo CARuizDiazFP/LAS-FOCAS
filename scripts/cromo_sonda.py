@@ -302,19 +302,28 @@ def _describir_nodo(nodo: dict[str, Any]) -> str:
     return f"{etiqueta} · {nombre}"
 
 
-async def _sondear_camino_optico(cliente: CromoClient, pelo_id: int) -> tuple[SeccionSonda, dict[str, Any]]:
+async def _sondear_camino_optico(
+    cliente: CromoClient, pelo_id: int, projview: int | None = None
+) -> tuple[SeccionSonda, dict[str, Any]]:
     """Contesta las incógnitas empíricas de `/network/fo/{id}/path` con UNA llamada real.
 
     Sólo lectura: un GET, sin escribir en Cromo ni en la base local.
     """
-    seccion = SeccionSonda(f"1. Camino óptico de `/network/fo/{pelo_id}/path`")
+    seccion = SeccionSonda(
+        f"1. Camino óptico de `/network/fo/{pelo_id}/path`"
+        + (f" (projview={projview})" if projview is not None else " (projview por omisión)")
+    )
 
     inicio = time.monotonic()
-    payload = await cliente.get_camino_optico(pelo_id)
+    payload = await cliente.get_camino_optico(pelo_id, projview=projview)
     duracion = time.monotonic() - inicio
 
     dic, ruta_envoltura = _desenvolver_dict_sonda(payload)
     seccion.agregar(f"- **Latencia real:** {duracion:.2f} s")
+    histograma_stp = Counter(
+        nodo.get("stp") for nodo in (payload.get("dict") or {}).values() if isinstance(nodo, dict)
+    )
+    seccion.agregar(f"- **Histograma de `stp` (estado de proyecto):** `{dict(histograma_stp)}`")
     seccion.agregar(f"- **Claves de nivel superior:** `{sorted(payload)[:12] if isinstance(payload, dict) else type(payload).__name__}`")
     seccion.agregar(f"- **Envoltura que resolvió el dict:** `{ruta_envoltura}`")
     seccion.agregar(f"- **Nodos en el dict:** {len(dic)}")
@@ -432,7 +441,9 @@ async def _sondear_camino_optico(cliente: CromoClient, pelo_id: int) -> tuple[Se
     return seccion, payload
 
 
-async def ejecutar_sonda_camino_optico(pelo_id: int) -> tuple[str, dict[str, Any]]:
+async def ejecutar_sonda_camino_optico(
+    pelo_id: int, projview: int | None = None
+) -> tuple[str, dict[str, Any]]:
     """Modo acotado de la sonda: sólo el camino óptico de un pelo, con su payload crudo."""
     inicio_ejecucion = datetime.now(timezone.utc).isoformat()
     try:
@@ -445,7 +456,7 @@ async def ejecutar_sonda_camino_optico(pelo_id: int) -> tuple[str, dict[str, Any
     )
     async with CromoClient(config=config) as cliente:
         try:
-            seccion, payload = await _sondear_camino_optico(cliente, pelo_id)
+            seccion, payload = await _sondear_camino_optico(cliente, pelo_id, projview)
         except (CromoClientError, httpx.HTTPError) as exc:
             seccion = SeccionSonda(f"1. Camino óptico de `/network/fo/{pelo_id}/path`")
             seccion.marcar_error(str(exc))
@@ -547,6 +558,16 @@ def main() -> None:
             "además el payload crudo como fixture. Sin este flag corre la sonda completa."
         ),
     )
+    parser_cli.add_argument(
+        "--projview",
+        type=int,
+        choices=(0, 1, 2),
+        default=None,
+        help=(
+            "Filtro de estado de proyecto de `/path`: 0 red completa (default de Cromo, incluye "
+            "proyectados y a desinstalar), 1 red actual, 2 red proyectada. Sólo con --camino-optico."
+        ),
+    )
     args = parser_cli.parse_args()
 
     salida_dir = ROOT_DIR / "devs" / "output"
@@ -554,8 +575,11 @@ def main() -> None:
     marca = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     if args.camino_optico is not None:
-        reporte, payload = asyncio.run(ejecutar_sonda_camino_optico(args.camino_optico))
-        salida_path = salida_dir / f"cromo_sonda_camino_{args.camino_optico}_{marca}.md"
+        reporte, payload = asyncio.run(
+            ejecutar_sonda_camino_optico(args.camino_optico, args.projview)
+        )
+        sufijo_pv = "" if args.projview is None else f"_pv{args.projview}"
+        salida_path = salida_dir / f"cromo_sonda_camino_{args.camino_optico}{sufijo_pv}_{marca}.md"
         salida_path.write_text(reporte, encoding="utf-8")
         if payload:
             payload_path = salida_dir / f"cromo_path_{args.camino_optico}_{marca}.json"
