@@ -61,6 +61,132 @@
 
       <div class="asociar-odf-hairline"></div>
 
+      <!-- ── Camino óptico de Cromo ─────────────────────────────────────────────────────── -->
+      <section class="asociar-odf-camino">
+        <header class="asociar-odf-camino__head">
+          <h4 class="asociar-odf-camino__titulo">Camino óptico en Cromo</h4>
+          <button
+            v-if="camino.tieneSemilla.value"
+            class="btn subtle"
+            type="button"
+            :disabled="camino.resolviendo.value"
+            @click="props.servicioId != null && camino.resolver(props.servicioId)"
+          >
+            <i class="ph ph-tree-structure" aria-hidden="true"></i>
+            {{ camino.resultado.value ? 'Resolver de nuevo' : 'Resolver camino' }}
+          </button>
+        </header>
+
+        <p v-if="camino.cargandoPelos.value" class="asociar-odf-camino__nota">Buscando pelos…</p>
+        <p v-else-if="!camino.tieneSemilla.value" class="asociar-odf-camino__nota">
+          Este Servicio no tiene ningún pelo en Cromo, así que no hay camino que resolver.
+        </p>
+
+        <CromoPeloSelector
+          v-if="camino.tieneSemilla.value"
+          :pelos="camino.pelos.value"
+          :model-value="camino.peloElegido.value"
+          :disabled="camino.resolviendo.value"
+          @update:model-value="camino.peloElegido.value = $event"
+        />
+
+        <!-- Espera honesta: sin progreso del servidor, el único progreso real es el tiempo. -->
+        <div
+          v-if="camino.resolviendo.value"
+          class="asociar-odf-camino__esperando"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <i class="ph ph-circle-notch asociar-odf-camino__spin" aria-hidden="true"></i>
+          <span>Resolviendo camino en Cromo… {{ camino.segundos.value }} s</span>
+          <button class="btn subtle" type="button" @click="camino.cancelar()">Cancelar</button>
+          <p v-if="camino.avisoLento.value" class="asociar-odf-camino__nota">
+            Cromo resuelve el grafo en memoria; un camino largo puede tardar más. Podés cancelar y
+            seguir con la asociación manual: el camino es una señal, no un requisito.
+          </p>
+        </div>
+
+        <p v-else-if="camino.cancelado.value" class="asociar-odf-camino__nota">
+          Cancelaste la resolución.
+        </p>
+        <p v-else-if="camino.errorPath.value" class="asociar-odf-camino__error">
+          {{ camino.errorPath.value }}
+        </p>
+
+        <template v-else-if="camino.resultado.value">
+          <p v-if="camino.resultado.value.estado !== 'OK'" class="asociar-odf-camino__nota">
+            {{ camino.resultado.value.motivo }}
+          </p>
+
+          <template v-else>
+            <p class="asociar-odf-camino__meta">
+              {{ camino.resultado.value.estadisticas.nodos }} nodos ·
+              {{ camino.resultado.value.estadisticas.cables }} cables ·
+              {{ camino.resultado.value.estadisticas.odfs }} ODFs ·
+              {{ Math.round(camino.resultado.value.estadisticas.longitud_optica_m) }} m ópticos ·
+              pelo n_id {{ camino.resultado.value.pelo_n_id }}
+              <template v-if="camino.resultado.value.servicio_at62">
+                · at.62 <strong>{{ camino.resultado.value.servicio_at62 }}</strong>
+              </template>
+              <template v-if="camino.resultado.value.duracion_ms">
+                · {{ (camino.resultado.value.duracion_ms / 1000).toFixed(1) }} s
+              </template>
+            </p>
+
+            <p
+              v-for="(aviso, i) in camino.resultado.value.advertencias"
+              :key="i"
+              class="asociar-odf-camino__aviso"
+            >
+              <i class="ph ph-warning" aria-hidden="true"></i> {{ aviso }}
+            </p>
+
+            <!-- ODFs descubiertas: se ofrecen, no se aplican. -->
+            <ul v-if="camino.resultado.value.odfs.length > 0" class="asociar-odf-camino__odfs">
+              <li v-for="odf in camino.resultado.value.odfs" :key="odf.odf_id">
+                <span class="asociar-odf-camino__odf-nombre">
+                  {{ odf.nombre || `ODF ${odf.odf_id}` }}
+                  <span class="asociar-odf-camino__odf-meta">
+                    lado {{ odf.lado }}
+                    <template v-if="odf.patchera_nombre"> · {{ odf.patchera_nombre }}</template>
+                    <template v-if="odf.conector_numero"> · conector {{ odf.conector_numero }}</template>
+                  </span>
+                </span>
+                <button
+                  v-if="odf.vinculo_local"
+                  class="btn subtle"
+                  type="button"
+                  @click="usarOdfDelCamino(odf)"
+                >
+                  Traer al buscador
+                </button>
+                <!-- Sin fila local no se puede armar la asociación: se dice, no se ofrece un
+                     botón que fallaría. -->
+                <span v-else class="asociar-odf-camino__odf-sin-vinculo">
+                  No está en el inventario ingerido — buscala a mano
+                </span>
+              </li>
+            </ul>
+
+            <CromoConsistenciaPanel
+              v-if="camino.resultado.value.consistencia"
+              :consistencia="camino.resultado.value.consistencia"
+            />
+
+            <CromoPathSecuencia
+              :nodos="[
+                ...camino.resultado.value.lado_b.slice().reverse(),
+                ...(camino.resultado.value.raiz ? [camino.resultado.value.raiz] : []),
+                ...camino.resultado.value.lado_a,
+              ]"
+              :truncado="camino.resultado.value.ids_no_resueltos.length > 0"
+            />
+          </template>
+        </template>
+      </section>
+
+      <div class="asociar-odf-hairline"></div>
+
       <template v-if="!odfSeleccionada">
         <!-- El placeholder dice SÓLO "nombre" porque es lo único que el backend matchea:
              `odf_inventario.py::_FILTROS_SQL` filtra por `o.nombre ILIKE`, nunca por calle/altura.
@@ -129,9 +255,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import { buscarInventarioOdfs, type CromoOdfInventario } from '../../api/cromo';
+import type { OdfDelCamino } from '../../api/cromoPath';
+import { useCromoPath } from '../../composables/useCromoPath';
+import CromoConsistenciaPanel from './CromoConsistenciaPanel.vue';
+import CromoPathSecuencia from './CromoPathSecuencia.vue';
+import CromoPeloSelector from './CromoPeloSelector.vue';
 import {
   asociarServicioOdf,
   categoriaServicioLabel,
@@ -146,6 +277,9 @@ const props = defineProps<{
   open: boolean;
   servicioId: number | null;
   servicioNumero?: string;
+  /** Entrar directamente en modo camino (viene del botón "Resolver camino" de la tarjeta). Es una
+   * PROP y no estado interno a propósito: así es inmune a `resetState()`, que corre al abrir. */
+  iniciarEnCamino?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -173,6 +307,10 @@ const confirmando = ref(false);
 const errorConfirmar = ref('');
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+const camino = useCromoPath();
+/** Pelo que se persiste al confirmar: sólo si la ODF elegida salió de un camino resuelto. */
+const peloParaPersistir = ref<number | null>(null);
 
 const categoriaLabelActual = computed(() => (detalle.value ? categoriaServicioLabel(detalle.value.categoria_causa) : ''));
 const subcategoriaLabelActual = computed(() => subcategoriaLabel(detalle.value?.subcategoria ?? null));
@@ -283,11 +421,41 @@ async function buscar(opciones: { nId?: number } = {}): Promise<void> {
  *
  * `query` queda con el `n_id` en texto para que el estado vacío ("Ninguna ODF coincide con ...")
  * diga contra qué se buscó si la ODF sugerida dejó de existir entre el detalle y este click. */
+/** Único camino para traer una ODF al buscador: **siempre por `n_id`, nunca por nombre**.
+ * 217 ODFs de dev comparten nombre (100 grupos de homónimos), así que buscar por nombre le daba
+ * al operador 1 de 3 de acertar. */
+function traerAlBuscadorPorNId(nId: number): void {
+  query.value = String(nId);
+  void buscar({ nId });
+}
+
 function usarSugerencia(): void {
   const sugerencia = detalle.value?.sugerencia;
   if (!sugerencia) return;
-  query.value = String(sugerencia.odf_n_id);
-  void buscar({ nId: sugerencia.odf_n_id });
+  peloParaPersistir.value = null;
+  traerAlBuscadorPorNId(sugerencia.odf_n_id);
+}
+
+/**
+ * Trae al buscador una ODF descubierta en el camino.
+ *
+ * NO auto-selecciona ni confirma: `cromo_servicio_odf_override` es append-only sin tombstone
+ * —desasociar todavía no existe en la UI— así que el costo de no auto-seleccionar es un click y
+ * el de equivocarse es un registro irreversible.
+ */
+function usarOdfDelCamino(odf: OdfDelCamino): void {
+  const nId = odf.vinculo_local?.n_id;
+  if (!nId) return;
+  peloParaPersistir.value = camino.resultado.value?.pelo_n_id ?? null;
+  // La procedencia queda escrita en la asociación, no sólo en pantalla. No pisa lo que el
+  // operador ya escribió.
+  if (!notas.value.trim() && camino.resultado.value) {
+    const r = camino.resultado.value;
+    notas.value =
+      `Camino Cromo /path desde pelo n_id=${r.pelo_n_id} · ${r.estadisticas.nodos} nodos · ` +
+      `${((r.duracion_ms ?? 0) / 1000).toFixed(1)} s · ${new Date().toISOString()}`;
+  }
+  traerAlBuscadorPorNId(nId);
 }
 
 async function cargarDetalle(): Promise<void> {
@@ -302,6 +470,9 @@ async function cargarDetalle(): Promise<void> {
   } finally {
     cargandoDetalle.value = false;
   }
+  // Las semillas son SQL local: no tocan Cromo, así que se pueden pedir al abrir sin costo para
+  // el proveedor. Lo costoso es resolver el camino, y eso lo dispara el operador.
+  await camino.cargarPelos(props.servicioId);
 }
 
 function resetState(): void {
@@ -315,9 +486,14 @@ function resetState(): void {
   errorConfirmar.value = '';
   errorDetalle.value = '';
   detalle.value = null;
+  peloParaPersistir.value = null;
+  camino.reset();
 }
 
 function handleClose(): void {
+  // Cancela una resolución en vuelo: sin esto, una respuesta de 12 s llegaría a un modal ya
+  // cerrado y apagaría el spinner de un modal reabierto para OTRO Servicio.
+  camino.cancelar();
   dialogEl.value?.close();
   resetState();
   emit('close');
@@ -342,6 +518,9 @@ async function handleConfirmar(): Promise<void> {
   try {
     await asociarServicioOdf(props.servicioId, {
       odfNId: odfSeleccionada.value.n_id,
+      // Llena el `pelo_n_id` que hoy viaja siempre `null`: sólo cuando la ODF salió de un camino
+      // resuelto de ESTE Servicio, así queda la trazabilidad de dónde vino la asociación.
+      peloNId: peloParaPersistir.value,
       notas: notas.value.trim() || null,
     });
     emit('asociado', props.servicioId);
@@ -361,7 +540,11 @@ watch(
     if (isOpen) {
       resetState();
       dialogEl.value?.showModal();
-      void cargarDetalle();
+      void cargarDetalle().then(() => {
+        if (props.iniciarEnCamino && props.servicioId != null) {
+          void camino.autoResolverSiUnicaSemilla(props.servicioId);
+        }
+      });
       return;
     }
     if (dialogEl.value?.open) {
@@ -369,6 +552,10 @@ watch(
     }
   },
 );
+
+// Si el componente se desmonta con una resolución en vuelo, se aborta: la respuesta ya no tiene
+// dónde aterrizar.
+onBeforeUnmount(() => camino.cancelar());
 </script>
 
 <style scoped>
@@ -504,6 +691,112 @@ watch(
 
 .asociar-odf-sugerencia p.asociar-odf-sugerencia-aviso strong {
   color: var(--color-state-warn);
+}
+
+.asociar-odf-camino {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asociar-odf-camino__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.asociar-odf-camino__titulo {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.asociar-odf-camino__nota {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.asociar-odf-camino__error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
+  color: var(--color-state-error);
+}
+
+.asociar-odf-camino__aviso {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--color-state-warn);
+}
+
+.asociar-odf-camino__esperando {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  font-size: 12px;
+}
+
+/* Reusa el `@keyframes spin` global de tokens.css en vez de definir uno local. */
+.asociar-odf-camino__spin {
+  animation: spin 1s linear infinite;
+}
+
+.asociar-odf-camino__meta {
+  margin: 0;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+
+.asociar-odf-camino__odfs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.asociar-odf-camino__odfs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.asociar-odf-camino__odf-nombre {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.asociar-odf-camino__odf-meta {
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.asociar-odf-camino__odf-sin-vinculo {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--color-state-idle);
 }
 
 .asociar-odf-hairline {

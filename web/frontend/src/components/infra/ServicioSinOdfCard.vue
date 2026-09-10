@@ -35,10 +35,34 @@
     </div>
     <p v-else class="servicio-sin-odf-card__sin-extremos">Sin fila de última milla PROV.</p>
 
-    <button class="btn primary servicio-sin-odf-card__accion" type="button" @click="$emit('asociar', servicio)">
-      <i class="ph ph-link" aria-hidden="true"></i>
-      Asociar ODF
-    </button>
+    <!--
+      La tarjeta NO llama a la API: sólo emite. Con 60 tarjetas en pantalla, un botón que dispare
+      una resolución de grafo por click desde la grilla es el peor caso posible.
+
+      Y sin semilla va el microlabel en lugar del botón, no un botón deshabilitado: un control
+      muerto repetido en 2.228 de 2.891 tarjetas entrena al operador a ignorarlo, y cuando
+      aparezca habilitado en el 23% no lo va a ver. El microlabel es información; el botón muerto
+      es ruido.
+    -->
+    <div class="servicio-sin-odf-card__acciones">
+      <button class="btn primary" type="button" @click="$emit('asociar', servicio)">
+        <i class="ph ph-link" aria-hidden="true"></i>
+        Asociar ODF
+      </button>
+      <button
+        v-if="tieneSemilla"
+        class="btn subtle"
+        type="button"
+        :title="`Resolver el camino óptico en Cromo (${servicio.pelos_semilla} pelo(s) disponibles)`"
+        @click="$emit('resolver-path', servicio)"
+      >
+        <i class="ph ph-tree-structure" aria-hidden="true"></i>
+        Resolver camino
+      </button>
+      <p v-else class="servicio-sin-odf-card__sin-semilla">
+        Sin pelo en Cromo · no hay camino que resolver
+      </p>
+    </div>
   </article>
 </template>
 
@@ -57,10 +81,12 @@ const props = defineProps<{
 
 defineEmits<{
   asociar: [servicio: ServicioSinOdfItem];
+  'resolver-path': [servicio: ServicioSinOdfItem];
 }>();
 
 const categoriaLabel = computed(() => categoriaServicioLabel(props.servicio.categoria_causa));
 const categoriaToken = computed(() => categoriaServicioToken(props.servicio.categoria_causa));
+const tieneSemilla = computed(() => (props.servicio.pelos_semilla ?? 0) > 0);
 </script>
 
 <style scoped>
@@ -171,10 +197,24 @@ const categoriaToken = computed(() => categoriaServicioToken(props.servicio.cate
   color: color-mix(in srgb, var(--color-text) 50%, transparent);
 }
 
-.servicio-sin-odf-card__accion {
+.servicio-sin-odf-card__acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 2px;
+  /* El `align-self` migra del botón al wrapper: así los dos botones no estiran la tarjeta y la
+     grilla de 4 columnas sigue igual. */
+  align-self: flex-start;
+}
+
+.servicio-sin-odf-card__acciones .btn {
   padding: 6px 10px;
   font-size: 12px;
-  align-self: flex-start;
+}
+
+.servicio-sin-odf-card__sin-semilla {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
 }
 </style>

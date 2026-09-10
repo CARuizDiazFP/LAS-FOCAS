@@ -887,6 +887,36 @@ async def listar_pelos_semilla(
     ]
 
 
+_SQL_CONTAR_SEMILLAS = text(
+    f"""
+    SELECT s.id, COUNT(DISTINCT m.pelo_n_id) AS pelos
+    FROM app.servicios s
+    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    WHERE s.id = ANY(:ids)
+    GROUP BY s.id
+    """
+)
+
+
+async def contar_semillas_por_servicio(
+    sesion: AsyncSession, servicio_ids: list[int]
+) -> dict[int, int]:
+    """Cuántos pelos semilla tiene cada Servicio de una lista. UNA query para toda la página.
+
+    Existe para que el listado del gestor pueda decidir si muestra el botón de camino sin pedir
+    un request por tarjeta. Se resuelve en una pasada batcheada y **no se toca la query de
+    detección de Servicios sin ODF**, que costó bajar de 23,9 s a ~150 ms: agregarle una
+    subconsulta por fila era el camino fácil y el riesgoso.
+
+    Un Servicio ausente del resultado tiene cero semillas — es el 77% del universo del gestor.
+    """
+    if not servicio_ids:
+        return {}
+    filas = (await sesion.execute(_SQL_CONTAR_SEMILLAS, {"ids": sorted(set(servicio_ids))})).all()
+    return {int(servicio_id): int(pelos) for servicio_id, pelos in filas}
+
+
 async def _catalogo_clases(sesion: AsyncSession, clases: set[int]) -> dict[int, str]:
     """Traduce clase → entidad con el catálogo de la base, en una sola query.
 

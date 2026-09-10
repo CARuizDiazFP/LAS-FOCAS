@@ -79,6 +79,9 @@ export interface ServicioSinOdfItem {
   equipo: string | null;
   extremos: ExtremoUltimaMilla[];
   indice_extremo_categorizado: number | null;
+  /** Pelos de Cromo con los que se puede pedir el camino óptico. `0` significa que `/path` no
+   * tiene input posible para este Servicio — es el caso del 77% del universo del gestor. */
+  pelos_semilla?: number;
 }
 
 export interface ListadoServiciosSinOdfResponse {

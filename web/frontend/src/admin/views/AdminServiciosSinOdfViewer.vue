@@ -59,7 +59,13 @@
     <div ref="scrollEl" class="servicios-sin-odf-viewer__scroll">
       <template v-if="items.length > 0">
         <div class="servicios-sin-odf-viewer__grid">
-          <ServicioSinOdfCard v-for="item in items" :key="item.id" :servicio="item" @asociar="abrirModal" />
+          <ServicioSinOdfCard
+            v-for="item in items"
+            :key="item.id"
+            :servicio="item"
+            @asociar="abrirModal"
+            @resolver-path="abrirModalEnCamino"
+          />
         </div>
       </template>
 
@@ -86,6 +92,7 @@
       :open="modalOpen"
       :servicio-id="modalServicioId"
       :servicio-numero="modalServicioNumero"
+      :iniciar-en-camino="modalIniciarEnCamino"
       @close="modalOpen = false"
       @asociado="handleAsociado"
       @error="handleModalError"
@@ -130,6 +137,7 @@ const conteos = ref<Record<string, number>>({});
 const modalOpen = ref(false);
 const modalServicioId = ref<number | null>(null);
 const modalServicioNumero = ref('');
+const modalIniciarEnCamino = ref(false);
 
 let observer: IntersectionObserver | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -200,6 +208,16 @@ function refrescar(): void {
 function abrirModal(servicio: ServicioSinOdfItem): void {
   modalServicioId.value = servicio.id;
   modalServicioNumero.value = servicio.servicio_id;
+  modalIniciarEnCamino.value = false;
+  modalOpen.value = true;
+}
+
+/** El botón de la tarjeta es un atajo de navegación, no un segundo flujo: abre el mismo modal
+ * pero ya en modo camino. La resolución la dispara el modal, nunca la grilla. */
+function abrirModalEnCamino(servicio: ServicioSinOdfItem): void {
+  modalServicioId.value = servicio.id;
+  modalServicioNumero.value = servicio.servicio_id;
+  modalIniciarEnCamino.value = true;
   modalOpen.value = true;
 }
 

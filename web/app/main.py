@@ -6071,6 +6071,7 @@ async def servicios_sin_odf_listado_web(
 
     `offset`/`limit` negativos o una `categoria` desconocida levantan `ValueError` en el servicio —
     se mapean acá a 400, nunca a un 500 ni a una página silenciosamente incorrecta."""
+    from core.services.cromo.camino_optico_service import contar_semillas_por_servicio
     from core.services.cromo.servicios_sin_odf import listar_servicios_sin_odf
     from db.session import AsyncSessionLocal
 
@@ -6080,6 +6081,11 @@ async def servicios_sin_odf_listado_web(
         async with AsyncSessionLocal() as sesion:
             resultado = await listar_servicios_sin_odf(
                 sesion, limit=limit, offset=offset, categoria=categoria, q=q
+            )
+            # Una query batcheada para toda la página: le dice a la UI si el botón de camino va
+            # o no, sin un request por tarjeta y sin tocar la query de detección.
+            semillas_por_servicio = await contar_semillas_por_servicio(
+                sesion, [item.id for item in resultado.items]
             )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -6105,6 +6111,8 @@ async def servicios_sin_odf_listado_web(
                     "equipo": item.equipo,
                     "extremos": _serializar_extremos_sin_odf(item.extremos),
                     "indice_extremo_categorizado": item.indice_extremo_categorizado,
+                    # 0 = `/path` no tiene input posible para este Servicio (el 77% del universo).
+                    "pelos_semilla": semillas_por_servicio.get(item.id, 0),
                 }
                 for item in resultado.items
             ],
