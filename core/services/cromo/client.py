@@ -15,10 +15,40 @@ import json5
 
 from core.services.cromo.config import CromoConfig, enmascarar, get_cromo_config
 
+# Se importa el limitador de PROV en su lugar en vez de mudarlo a `core/services/`: el archivo no
+# tiene ningún acoplamiento a PROV en código (sólo `asyncio`/`time`/`typing`), y mudarlo metería a
+# PROV en el diff de un feature de Cromo. Si hace falta compartirlo más, la mudanza es un commit
+# aparte de 3 líneas.
+from core.services.prov.rate_limiter import AsyncRateLimiter
+
 logger = logging.getLogger(__name__)
 
 _REINTENTOS_MAX = 3
 _BACKOFF_BASE_SEGUNDOS = 1.0
+_RUTA_CAMINO_FO = "/network/fo/{id}/path"
+
+# Limitador compartido de proceso para `/path`, módulo-level y NO por instancia: el patrón
+# establecido en la web (`web/app/main.py`, endpoint `/vivo`) construye un `CromoClient` nuevo por
+# request, así que un limiter por instancia no limitaría nada. Vale para este uso porque el proceso
+# web corre con un solo worker uvicorn (`web/Dockerfile`, sin `--workers`).
+_limiter_camino_compartido: Optional[AsyncRateLimiter] = None
+
+
+def _limiter_camino_de_proceso(rate_per_second: float) -> AsyncRateLimiter:
+    """Instancia perezosa: se crea dentro del primer `await`, no al importar el módulo.
+
+    No hay carrera posible: entre el chequeo y la asignación no hay ningún `await`.
+    """
+    global _limiter_camino_compartido
+    if _limiter_camino_compartido is None:
+        _limiter_camino_compartido = AsyncRateLimiter(rate_per_second)
+    return _limiter_camino_compartido
+
+
+def reiniciar_limiter_camino() -> None:
+    """Descarta el limiter de proceso. Sólo para tests — en producción el pacing es global."""
+    global _limiter_camino_compartido
+    _limiter_camino_compartido = None
 
 
 class CromoClientError(RuntimeError):
@@ -60,7 +90,11 @@ class CromoClient:
         self,
         config: Optional[CromoConfig] = None,
         cliente_http: Optional[httpx.AsyncClient] = None,
+        limiter: Optional[AsyncRateLimiter] = None,
     ) -> None:
+        # `limiter` sólo afecta a `get_camino_optico` (ver su docstring). Se acepta inyectado para
+        # que los tests usen un doble sin dormir ni ensuciar el limiter de proceso.
+        self._limiter_camino_inyectado = limiter
         self._config = config or get_cromo_config()
         self._cliente_propio = cliente_http is None
         self._cliente = cliente_http or httpx.AsyncClient(
@@ -126,15 +160,32 @@ class CromoClient:
         """
         return await self._asegurar_token()
 
-    async def _get(self, ruta: str, params: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    def _limiter_camino(self) -> AsyncRateLimiter:
+        return self._limiter_camino_inyectado or _limiter_camino_de_proceso(
+            self._config.camino_rate_limit_per_second
+        )
+
+    async def _get(
+        self,
+        ruta: str,
+        params: Optional[Mapping[str, Any]] = None,
+        *,
+        timeout: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """`timeout` sobreescribe el del cliente HTTP sólo para esta llamada.
+
+        Se pasa condicionalmente (no como `timeout=None` explícito) para no pisar el
+        `httpx.Timeout` del cliente en las rutas que no lo necesitan.
+        """
         intento = 0
         reautenticado = False
+        extra: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
         while True:
             intento += 1
             token = await self._asegurar_token()
             try:
                 respuesta = await self._cliente.get(
-                    ruta, params=params, headers={"Authorization": f"Bearer {token}"}
+                    ruta, params=params, headers={"Authorization": f"Bearer {token}"}, **extra
                 )
             except httpx.TransportError as exc:
                 if intento > _REINTENTOS_MAX:
@@ -210,6 +261,29 @@ class CromoClient:
         Resuelve la topología conectada vigente de un objeto e incluye `hist[]` para seguir
         `next_id` en casos de "ID dual" (un objeto queda vacío y su topología pasa a otro id)."""
         return await self._get(f"/db/objects/{n_id_o_id}", params={"show": ["TOPOLOGIES", "REL_ATTRIBUTE"]})
+
+    async def get_camino_optico(self, pelo_id: int) -> dict[str, Any]:
+        """`GET /network/fo/{pelo_id}/path` — camino óptico completo resuelto por Cromo.
+
+        Devuelve el recorrido de la luz atravesando fusiones y empalmes, como un diccionario
+        indexado por id de objeto (`a[]`/`b[]` del nodo raíz dan el orden hacia cada extremo).
+        **No pagina.** Es el único método de esta clase con rate limiting y con timeout propio:
+        resuelve el grafo en memoria del lado del proveedor, por lo que el relevamiento lo
+        prescribe "on-demand o en batch diferido, nunca dentro del barrido masivo"
+        (docs/Doc Privada/Relevamiento_Arquitectura_Datos_Cromo.md §5.2 punto 4).
+
+        El limiter NO se aplica en `_get`: la ingesta masiva pagina con `psize=5` sobre más de
+        1,2M de pelos y limitarla a la tasa de `/path` la volvería una corrida de días.
+
+        `pelo_id` puede ser un `n_id` de linaje o un `id` de versión — cuál acepta Cromo es una
+        pregunta empírica todavía abierta, y este método no la decide: pasa el entero tal cual y
+        devuelve el cuerpo **sin desenvolver** (hay tres formas posibles de envoltura, y elegir
+        entre ellas es del servicio, en un solo lugar testeable sin red).
+        """
+        await self._limiter_camino().esperar_turno()
+        return await self._get(
+            _RUTA_CAMINO_FO.format(id=pelo_id), timeout=self._config.camino_timeout
+        )
 
     async def get_coleccion(
         self,

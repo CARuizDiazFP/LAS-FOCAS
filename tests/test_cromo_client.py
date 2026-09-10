@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import httpx
 import pytest
 
@@ -424,3 +426,207 @@ def test_enmascarar_acota_asteriscos_en_tokens_muy_largos():
     resultado = enmascarar(token_largo)
     assert resultado == "*" * 20 + "tP-g"
     assert len(resultado) == 24
+
+
+# ── Camino óptico (`GET /network/fo/{id}/path`) ──────────────────────────────
+
+
+class _LimiterEspia:
+    """Doble de `AsyncRateLimiter`: cuenta turnos pedidos sin dormir de verdad."""
+
+    def __init__(self) -> None:
+        self.turnos = 0
+
+    async def esperar_turno(self) -> None:
+        self.turnos += 1
+
+
+def _cliente_con_limiter(transport: httpx.MockTransport, limiter, config=None) -> CromoClient:
+    cliente_http = httpx.AsyncClient(base_url=BASE_URL, transport=transport)
+    return CromoClient(config=config or _config(), cliente_http=cliente_http, limiter=limiter)
+
+
+def _handler_ok(capturado: dict, cuerpo=None):
+    def handler_get(request: httpx.Request) -> httpx.Response:
+        capturado["url"] = str(request.url)
+        capturado["query"] = request.url.query
+        capturado["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json=cuerpo if cuerpo is not None else {"dict": {}})
+
+    return handler_get
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_pega_a_la_ruta_esperada_sin_query_params():
+    capturado: dict = {}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok(capturado))))
+
+    await cliente.get_camino_optico(10006353)
+
+    assert capturado["url"] == f"{BASE_URL}/network/fo/10006353/path"
+    assert capturado["query"] == b""  # `/path` no pagina y no lleva `show=`
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_devuelve_el_cuerpo_tal_cual_sin_desenvolver():
+    # Simetría con los otros métodos de la clase: desenvolver es del servicio, no del cliente
+    # (hay tres formas posibles de envoltura y las tres se deciden en un solo lugar testeable).
+    cuerpo = {"st": 0, "response": {"dict": {"10006353": {"class": 130}}}}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok({}, cuerpo))))
+
+    assert await cliente.get_camino_optico(10006353) == cuerpo
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_usa_su_timeout_propio():
+    # `/path` resuelve el grafo del lado de Cromo: con el timeout general (30 s, calibrado para
+    # `/db/objects`) una llamada larga falla y encima `_get` reintenta 3 veces con backoff.
+    capturado: dict = {}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok(capturado))))
+    cliente._config = replace(_config(), camino_timeout=45.0)
+
+    await cliente.get_camino_optico(10006353)
+
+    assert capturado["timeout"]["read"] == 45.0
+
+
+@pytest.mark.asyncio
+async def test_get_objeto_no_hereda_el_timeout_del_camino_optico():
+    capturado: dict = {}
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(_handler_ok(capturado))))
+    cliente._config = replace(_config(), camino_timeout=45.0)
+
+    await cliente.get_objeto(10006353)
+
+    assert capturado["timeout"]["read"] != 45.0
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_404_levanta_error_con_status():
+    def handler_get(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="objeto inexistente")
+
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(handler_get)))
+
+    with pytest.raises(CromoClientError) as exc:
+        await cliente.get_camino_optico(999_999_999)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_parsea_pseudo_json_con_claves_de_identificador_sin_comillas():
+    # Cromo v1 responde pseudo-JSON (claves sin comillas); `/path` no es la excepción.
+    def handler_get(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text='{dict: {"10006353": {class: 130, at: [{id: 62, value: "93154"}]}}}'
+        )
+
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(handler_get)))
+
+    resultado = await cliente.get_camino_optico(10006353)
+
+    assert resultado["dict"]["10006353"]["class"] == 130
+    assert resultado["dict"]["10006353"]["at"][0]["value"] == "93154"
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_falla_explicito_si_la_clave_numerica_viene_sin_comillas():
+    """Límite conocido del parseo tolerante, fijado acá para que no sea una sorpresa en producción.
+
+    `_parsear_cuerpo` cae a JSON5, que acepta claves sin comillas **sólo si son identificadores
+    válidos** (`class`, `at`): `{10006353: ...}` no lo es. Y `/path` está indexado justamente por
+    id numérico de objeto. Si Cromo emitiera esas claves sin comillas, el cliente falla con un
+    error claro en vez de devolver datos truncados — y esto es una de las incógnitas a confirmar
+    contra Cromo real antes de construir el resto del camino óptico.
+    """
+
+    def handler_get(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="{dict: {10006353: {class: 130}}}")
+
+    cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(handler_get)))
+
+    with pytest.raises(CromoClientError, match="no es JSON ni pseudo-JSON"):
+        await cliente.get_camino_optico(10006353)
+
+
+@pytest.mark.asyncio
+async def test_get_camino_optico_espera_turno_del_limiter():
+    limiter = _LimiterEspia()
+    cliente = _cliente_con_limiter(httpx.MockTransport(_con_oauth(_handler_ok({}))), limiter)
+
+    await cliente.get_camino_optico(1)
+    await cliente.get_camino_optico(2)
+
+    assert limiter.turnos == 2
+
+
+@pytest.mark.asyncio
+async def test_los_demas_metodos_no_esperan_al_limiter_del_camino():
+    # Blinda una decisión de diseño: un limiter en `_get` frenaría el barrido masivo de la
+    # ingesta (1.275.234 pelos con psize=5) a la tasa de `/path` — días de corrida.
+    limiter = _LimiterEspia()
+    cliente = _cliente_con_limiter(httpx.MockTransport(_con_oauth(_handler_ok({}))), limiter)
+
+    await cliente.get_objeto(1)
+    await cliente.get_inner(1)
+    await cliente.get_objeto_con_topologia(1)
+    await cliente.get_coleccion("51")
+
+    assert limiter.turnos == 0
+
+
+# ── Config del camino óptico ─────────────────────────────────────────────────
+
+
+def _env_minimo(monkeypatch) -> None:
+    monkeypatch.setenv("CROMO_BASE_URL", "http://cromo.invalido.test")
+    monkeypatch.setenv("CROMO_USER", "user_test")
+    monkeypatch.setenv("CROMO_PASSWORD", "pass_test")
+    monkeypatch.delenv("CROMO_CAMINO_TIMEOUT", raising=False)
+    monkeypatch.delenv("CROMO_CAMINO_RATE_LIMIT_PER_SECOND", raising=False)
+
+
+def test_config_camino_optico_tiene_defaults_propios(monkeypatch):
+    _env_minimo(monkeypatch)
+    get_cromo_config.cache_clear()
+
+    config = get_cromo_config()
+
+    assert config.camino_timeout == 60.0
+    assert config.camino_rate_limit_per_second == 1.0
+    get_cromo_config.cache_clear()
+
+
+def test_config_camino_optico_respeta_el_entorno(monkeypatch):
+    _env_minimo(monkeypatch)
+    monkeypatch.setenv("CROMO_CAMINO_TIMEOUT", "90")
+    monkeypatch.setenv("CROMO_CAMINO_RATE_LIMIT_PER_SECOND", "0.5")
+    get_cromo_config.cache_clear()
+
+    config = get_cromo_config()
+
+    assert config.camino_timeout == 90.0
+    assert config.camino_rate_limit_per_second == 0.5
+    get_cromo_config.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "variable, valor",
+    [
+        ("CROMO_CAMINO_TIMEOUT", "no-numerico"),
+        ("CROMO_CAMINO_TIMEOUT", "0"),
+        ("CROMO_CAMINO_RATE_LIMIT_PER_SECOND", "no-numerico"),
+        ("CROMO_CAMINO_RATE_LIMIT_PER_SECOND", "0"),
+        ("CROMO_CAMINO_RATE_LIMIT_PER_SECOND", "-1"),
+    ],
+)
+def test_config_rechaza_valores_invalidos_del_camino_al_arrancar(monkeypatch, variable, valor):
+    # Sin esta validación, un rate inválido explota con un ValueError crudo de AsyncRateLimiter
+    # en el primer request de un operador, no al levantar el proceso.
+    _env_minimo(monkeypatch)
+    monkeypatch.setenv(variable, valor)
+    get_cromo_config.cache_clear()
+
+    with pytest.raises(CromoConfigError, match="CROMO_CAMINO"):
+        get_cromo_config()
+    get_cromo_config.cache_clear()
