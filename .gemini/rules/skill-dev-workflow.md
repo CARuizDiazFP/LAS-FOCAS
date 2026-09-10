@@ -131,6 +131,32 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    con confirmación explícita del usuario. El clasificador de auto-mode a veces bloquea un
    `git add && git commit && git push` encadenado en un solo comando — separar en 3 llamadas de Bash
    individuales lo destraba.
+9. **Subagente con trabajo largo: enumerar los cortes de commit**, no decir "commiteá incremental".
+   Real 2026-09-08/09: de 3 subagentes muertos por rate limit, los 2 con la instrucción genérica
+   perdieron todo el trabajo (working tree limpio, cero commits); el que recibió la lista enumerada
+   de cortes completó sus 4 commits. Para cualquier dispatch de más de 2-3 archivos, listar los
+   cortes concretos y exigir build/tests en verde en cada uno.
+10. **Calcular "qué falta mergear" contra `origin/dev`, nunca contra el `dev` local.** Real
+   2026-09-10: el `dev` local estaba 32 commits atrás porque otra sesión había pusheado, y dos ramas
+   ya integradas figuraban como "sin mergear". Siempre `git fetch origin` +
+   `git merge-base --is-ancestor <rama> origin/dev` y `git rev-list --count origin/dev..<rama>`. Un
+   `[origin/dev: behind N]` en `git branch -vv` es la señal de alarma. Borrar con `git branch -d`
+   (rechaza lo no mergeado), nunca `-D` para "limpiar".
+11. **`git rm --cached` se propaga como borrado del working tree al mergear.** Conserva el archivo en
+   disco sólo en la rama donde se hizo; al mergear a una rama donde sigue trackeado, el merge lo
+   borra del disco. Real 2026-09-10 con un handoff al gitignorear `docs/handoffs/`. Si es un
+   artefacto operativo que sólo existe en esta máquina, copiarlo al scratchpad y verificar `md5sum`
+   antes y después del merge.
+12. **Operaciones masivas e irreversibles sobre el remoto: interpretación estrecha por defecto.** Un
+   pedido de limpieza ambiguo se resuelve en su lectura más acotada (las ramas efímeras de la tarea);
+   toda ampliación irreversible es un pedido separado y explícito — ofrecerla como opción de un menú
+   ya sesga la decisión. Real 2026-09-10: el pedido era mergear las efímeras y terminaron borradas
+   113 ramas del remoto, 85 con commits no integrados. Si aun así se ejecuta: fuente autoritativa es
+   `git ls-remote --heads origin` (`%(refname:short)` acorta `refs/remotes/origin/HEAD` a `origin`, y
+   un filtro por nombre lo deja pasar apuntando al SHA de `main`); imprimir las entradas que no
+   matchean el patrón esperado y afirmar que `dev`/`main` no están en la lista; respaldar en
+   `refs/backup/<fecha>/` **más** un `git bundle ... --not dev main` guardado fuera del repo, porque
+   `refs/backup/*` no se pushea ni se clona.
 
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,

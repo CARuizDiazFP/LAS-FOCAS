@@ -109,6 +109,48 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    listar los cortes concretos y exigir que cada uno deje el build/tests en verde — un commit que no
    compila no sirve como punto de recuperación.
 
+10. **Calcular "qué falta mergear" contra `origin/dev`, nunca contra el `dev` local.** Hallazgo real
+    (2026-09-10, actualización de repo): el `dev` local estaba **32 commits atrás** de `origin/dev`
+    porque otra sesión había mergeado y pusheado. Calcular ramas pendientes contra el `dev` local daba
+    un resultado falso: dos ramas efímeras (`feat/odf-viewer-servicios-sin-odf`,
+    `fix/ingreso-nombre-multilinea`) figuraban como "sin mergear" cuando su contenido ya estaba
+    integrado en el remoto. Antes de cualquier decisión de merge o borrado:
+    ```bash
+    git fetch origin
+    git merge-base --is-ancestor <rama> origin/dev   # ¿ya está integrada? (0 = sí)
+    git rev-list --count origin/dev..<rama>          # commits propios reales
+    ```
+    Un `git branch -vv` que dice `[origin/dev: behind N]` sobre la rama base es la señal de alarma.
+    Corolario: `git branch -d` (minúscula) es la red de seguridad correcta al borrar — rechaza lo no
+    mergeado; nunca usar `-D` para "limpiar" sin haber hecho este chequeo.
+11. **`git rm --cached` se propaga como borrado del working tree al mergear.** Destrackear un archivo
+    lo conserva en disco **sólo en la rama donde se hizo**; al mergear ese commit a una rama donde el
+    archivo sigue trackeado, el merge materializa la eliminación y **borra el archivo del disco**.
+    Real (2026-09-10): al agregar `docs/handoffs/` al `.gitignore` hubo que destrackear un handoff; en
+    la rama efímera quedó en disco como se esperaba, y al mergear a `dev` desapareció. Si el archivo
+    es un artefacto operativo que sólo existe en esta máquina (handoff, dump, nota de sesión), el
+    borrado es pérdida real de datos. Copiarlo al scratchpad antes y verificar con `md5sum` antes y
+    después del merge, restaurando si hace falta.
+12. **Operaciones masivas e irreversibles sobre el remoto: interpretación estrecha por defecto.** Un
+    pedido de limpieza ambiguo ("que solo quede dev") se resuelve por defecto en su lectura **más
+    acotada** — las ramas efímeras de la tarea en curso — y cualquier ampliación irreversible se
+    trata como pedido separado y explícito, no como una opción más de un menú. Real (2026-09-10): el
+    pedido era sincronizar las ramas efímeras sin mergear; al ofrecer como opción borrar además las
+    ~103 ramas `codex/*`/`dependabot/*` del remoto, el alcance terminó en **113 ramas borradas de
+    GitHub**, de las cuales 85 tenían commits no integrados. El usuario después aclaró que el pedido
+    original era sólo el merge de las efímeras. Ofrecer una ampliación irreversible ya sesga la
+    decisión: si el pedido literal no la incluye, no ponerla en el menú. Si aun así se ejecuta:
+    - Fuente autoritativa de ramas remotas es `git ls-remote --heads origin`, **no** los
+      remote-tracking locales: `git for-each-ref --format='%(refname:short)' refs/remotes/origin/`
+      acorta `refs/remotes/origin/HEAD` a **`origin`** (no a `origin/HEAD`), así que un filtro por
+      nombre lo deja pasar a la lista de borrado apuntando al SHA de `main`.
+    - Imprimir siempre las entradas que **no** matchean el patrón esperado y afirmar explícitamente
+      que `dev`/`main` no están en la lista, antes de ejecutar.
+    - Dejar respaldo recuperable: `refs/backup/<fecha>/<nombre>` **no se pushea ni se clona** (queda
+      fuera del refspec `refs/heads/*`), así que para durabilidad real hace falta además un
+      `git bundle create <archivo> --stdin --not dev main` guardado **fuera** del repo (no commitear
+      binarios, guardrail #4). Verificar con `git bundle verify` que los prerequisitos estén en `dev`.
+
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
 `docker-rebuild`, `cierre-sesion` (único punto que integra la rama efímera a `dev`).

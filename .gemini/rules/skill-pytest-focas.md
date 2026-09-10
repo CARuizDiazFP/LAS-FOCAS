@@ -337,6 +337,24 @@ Para un endpoint que en cambio reusa una capa **sync** existente vía `asyncio.t
 `MagicMock()` con el chain `query().filter().all()`/`.update()` ya seteado, igual que los tests de
 `core/services/*_service.py` puros.
 
+## Triage de fallas preexistentes: comparar contra baseline (lección 2026-09-10)
+
+Tras un merge o cambio amplio, la suite puede arrojar decenas de fallas que **no son tuyas**.
+Método verificado (2026-09-10, merge de 3 ramas efímeras a `dev`: 1407 pasaron, 97 fallaron):
+capturar los node IDs que fallan en el árbol actual, crear un worktree efímero en el commit anterior
+(`git worktree add /tmp/baseline <sha-base> --detach`, sin stash ni revert), correr los mismos
+archivos ahí reusando el venv del checkout principal, y `diff` de las dos listas ordenadas. Diff
+vacío = cero regresiones introducidas.
+
+- Comparar **node IDs ordenados**, no el conteo: dos corridas pueden dar el mismo total con fallas
+  distintas. `-p no:randomly` es obligatorio.
+- Correr sólo los archivos que fallan, no la suite completa.
+- Sin esta comparación, la única afirmación honesta es "hay N fallas y no sé de quién son".
+
+Causa típica en LAS-FOCAS: `failed to resolve host 'postgres'` — los tests `*_real_db.py` resuelven
+el hostname `postgres` de la red Docker y no corren desde el venv del host. Es gap de entorno, no
+falla de código.
+
 ## Checklist Pre-Commit
 
 - [ ] `pytest` pasa sin errores

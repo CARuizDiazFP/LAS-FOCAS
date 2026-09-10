@@ -300,6 +300,48 @@ Para un endpoint que en cambio reusa una capa **sync** existente vía `asyncio.t
 `MagicMock()` con el chain `query().filter().all()`/`.update()` ya seteado, igual que los tests de
 `core/services/*_service.py` puros.
 
+## Triage de fallas preexistentes: comparar contra baseline (lección 2026-09-10)
+
+Tras un merge (o cualquier cambio amplio), la suite puede arrojar decenas de fallas que **no son
+tuyas**. Distinguir "regresión que introduje" de "gap preexistente" a ojo no escala y lleva a
+"arreglar" tests que ya fallaban. El método que funcionó (2026-09-10, merge de 3 ramas efímeras a
+`dev`: 1407 pasaron, 97 fallaron):
+
+```bash
+# 1. Capturar los node IDs que fallan en el árbol actual (ya mergeado)
+python -m pytest <archivos-afectados> -q -p no:randomly 2>&1 \
+  | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-merged.txt
+
+# 2. Worktree efímero en el commit ANTERIOR al cambio (no hace falta stashear ni revertir)
+git worktree add /tmp/baseline <sha-base> --detach
+
+# 3. Misma corrida ahí, reusando el venv del checkout principal
+cd /tmp/baseline && source /ruta/al/.venv/bin/activate
+python -m pytest <mismos-archivos> -q -p no:randomly 2>&1 \
+  | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-baseline.txt
+
+# 4. El diff es la respuesta. Vacío = cero regresiones introducidas
+diff /tmp/fallos-baseline.txt /tmp/fallos-merged.txt
+
+git worktree remove /tmp/baseline --force
+```
+
+Claves:
+
+- Comparar **node IDs ordenados**, no el conteo: dos corridas pueden dar el mismo total con fallas
+  distintas. `-p no:randomly` es obligatorio para que el orden no introduzca diferencias espurias.
+- Correr sólo los archivos que fallan, no la suite completa — bajó la verificación de ~3 min a
+  segundos por corrida.
+- El worktree `--detach` evita tocar la rama activa: no hace falta stash, revert ni cambiar de rama.
+- Si el diff es vacío, se puede afirmar "cero regresiones" con evidencia; sin esta comparación, la
+  única afirmación honesta es "hay 97 fallas y no sé de quién son".
+
+Causa típica de estas fallas preexistentes en LAS-FOCAS: `failed to resolve host 'postgres'` — los
+tests `*_real_db.py` resuelven el hostname `postgres` de la red Docker y **no corren desde el venv
+del host**. Eso es gap de entorno (ver "Diagnóstico de Fallas: Heurísticas"), no falla de código; para
+verificarlos de verdad hay que correrlos dentro del contenedor, y ahí aplica el chequeo de imagen
+stale de `dev-workflow`.
+
 ## Checklist Pre-Commit
 
 - [ ] `pytest` pasa sin errores

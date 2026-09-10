@@ -340,6 +340,40 @@ Para un endpoint que en cambio reusa una capa **sync** existente vía `asyncio.t
 `MagicMock()` con el chain `query().filter().all()`/`.update()` ya seteado, igual que los tests de
 `core/services/*_service.py` puros.
 
+## Triage de fallas preexistentes: comparar contra baseline (lección 2026-09-10)
+
+Tras un merge o cambio amplio, la suite puede arrojar decenas de fallas que **no son tuyas**.
+Distinguir regresión propia de gap preexistente a ojo lleva a "arreglar" tests que ya fallaban.
+Método verificado (2026-09-10, merge de 3 ramas efímeras a `dev`: 1407 pasaron, 97 fallaron):
+
+```bash
+# 1. Node IDs que fallan en el arbol actual
+python -m pytest <archivos-afectados> -q -p no:randomly 2>&1 \
+  | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-merged.txt
+
+# 2. Worktree efimero en el commit ANTERIOR (sin stash ni revert)
+git worktree add /tmp/baseline <sha-base> --detach
+
+# 3. Misma corrida ahi, reusando el venv del checkout principal
+cd /tmp/baseline && source /ruta/al/.venv/bin/activate
+python -m pytest <mismos-archivos> -q -p no:randomly 2>&1 \
+  | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-baseline.txt
+
+# 4. Diff vacio = cero regresiones introducidas
+diff /tmp/fallos-baseline.txt /tmp/fallos-merged.txt
+git worktree remove /tmp/baseline --force
+```
+
+- Comparar **node IDs ordenados**, no el conteo: dos corridas pueden dar el mismo total con fallas distintas. `-p no:randomly` es obligatorio.
+- Correr sólo los archivos que fallan, no la suite completa.
+- El worktree `--detach` no toca la rama activa.
+- Sin esta comparación, la única afirmación honesta es "hay N fallas y no sé de quién son".
+
+Causa típica en LAS-FOCAS: `failed to resolve host 'postgres'` — los tests `*_real_db.py` resuelven el
+hostname `postgres` de la red Docker y no corren desde el venv del host. Es gap de entorno, no falla
+de código; verificarlos de verdad exige correrlos dentro del contenedor (y ahí aplica el chequeo de
+imagen stale de `dev-workflow`).
+
 ## Checklist Pre-Commit
 
 - [ ] `pytest` pasa sin errores
