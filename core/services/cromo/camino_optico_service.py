@@ -6,9 +6,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Iterable, Mapping, Optional
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.services.cromo.client import CromoClient
 from core.services.cromo.parser import atributo, es_numero_servicio_plausible, parsear_servicio
+from core.services.cromo.servicios_sin_odf import IDENTIDADES_DEL_SERVICIO_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +186,9 @@ class CaminoOptico:
     cable_id: Optional[int] = None
     cable_nombre: Optional[str] = None
     tubo_id: Optional[int] = None
+    # El pelo consultado, con su cable y tubo resueltos. No pertenece a ningún lado (`a[]`/`b[]`
+    # nacen en él) pero su cable es un tramo del camino y su nombre es la cabecera del tracking.
+    raiz: Optional[NodoCamino] = None
     lado_a: list[NodoCamino] = field(default_factory=list)
     lado_b: list[NodoCamino] = field(default_factory=list)
     odfs: list[OdfDelCamino] = field(default_factory=list)
@@ -386,9 +395,16 @@ def _construir_lado(
 
 
 def calcular_estadisticas(
-    lado_a: list[NodoCamino], lado_b: list[NodoCamino]
+    lado_a: list[NodoCamino],
+    lado_b: list[NodoCamino],
+    raiz: Optional[NodoCamino] = None,
 ) -> EstadisticasCamino:
     """Resumen del camino, contando cada cable una sola vez para las longitudes.
+
+    `raiz` es el pelo consultado y hay que pasarlo: **no está en `a[]` ni en `b[]`**, pero su
+    propio cable es un tramo del camino. Encontrado comparando contra el panel de la web de
+    Cromo sobre un camino real: faltaban exactamente los 295 m del cable del pelo raíz
+    (72.754 m calculados vs. 73.049 m que muestra Cromo).
 
     Un id repetido en la secuencia no vuelve a sumar metros: duplicaría la longitud de un mismo
     cable físico.
@@ -397,7 +413,7 @@ def calcular_estadisticas(
     cables_contados: set[int] = set()
     odfs: set[int] = set()
 
-    for nodo in list(lado_a) + list(lado_b):
+    for nodo in ([raiz] if raiz is not None else []) + list(lado_a) + list(lado_b):
         estadisticas.nodos += 1
         if nodo.tipo == TIPO_PELO:
             estadisticas.pelos += 1
@@ -473,6 +489,387 @@ def comparar_at62_vs_regex(at62: Optional[str], at61: Optional[str]) -> Discrepa
     return DiscrepanciaAt62(at62=at62, at61=at61, numero_regex=numero_regex, veredicto=veredicto)
 
 
+# ── Semillas: de un Servicio a los pelos con los que se puede pedir el camino ───────────────
+
+# Ranking deliberado, ver docstring de `listar_pelos_semilla`. `tiene_conector_odf` ASC pone
+# primero el pelo cuya ODF NO conocemos, que es justamente el que aporta información nueva
+# (medido: 124.371 de 132.962 pelos matcheados no tienen conector).
+_SQL_PELOS_SEMILLA = text(
+    f"""
+    SELECT DISTINCT ON (m.pelo_n_id)
+           m.pelo_n_id,
+           m.servicio_numero,
+           m.metodo,
+           m.confianza,
+           p.numero_pelo,
+           p.color,
+           p.cable_n_id,
+           cab.nombre AS cable_nombre,
+           EXISTS (
+               SELECT 1 FROM app.cromo_odf_conectores c WHERE c.pelo_n_id = m.pelo_n_id
+           ) AS tiene_conector_odf,
+           CASE WHEN m.servicio_numero = s.servicio_id            THEN 0
+                WHEN m.servicio_numero = s.numero_primer_servicio THEN 1
+                ELSE 2 END AS prioridad_identidad,
+           p.servicio_raw
+    FROM app.servicios s
+    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    LEFT JOIN app.cromo_cables cab ON cab.n_id = p.cable_n_id
+    WHERE s.id = :servicio_id
+    ORDER BY m.pelo_n_id,
+             prioridad_identidad,
+             tiene_conector_odf,
+             m.confianza DESC NULLS LAST
+    """
+)
+
+_SQL_CATALOGO_CLASES = text(
+    "SELECT clase, entidad FROM app.cromo_clases WHERE clase = ANY(:clases)"
+)
+
+# Vinculación local sin red: primero por `n_id` (la PK), y sólo con los que no resolvieron, por
+# `version_id`. Las tres tablas que tienen `version_id` son las únicas donde un id de versión de
+# Cromo puede resolverse localmente; `cromo_pelos`/`cromo_tubos`/`cromo_fusiones` sólo tienen
+# `n_id`. Resolver por red con `id_dual_resolver` costaría 1 request por nodo (100-600 por
+# camino): inviable frente a los ~12 s que ya cuesta el propio `/path`.
+#
+# La columna de nombre NO es uniforme entre tablas (verificado contra el esquema real: los
+# pelos tienen `numero_pelo`, los tubos `nombre_color`, las fusiones `nombre_par`) y sólo las
+# tres primeras tienen `version_id`. Un smoke real contra la base lo encontró: asumir `nombre`
+# en todas revienta con `column "nombre" does not exist`.
+_TABLAS_VINCULABLES: tuple[tuple[str, str, str, bool], ...] = (
+    ("cromo_odfs", "ODF", "nombre", True),
+    ("cromo_cables", "CABLE", "nombre", True),
+    ("cromo_botellas", "BOTELLA", "nombre", True),
+    ("cromo_pelos", TIPO_PELO, "numero_pelo", False),
+    ("cromo_tubos", "TUBO", "nombre_color", False),
+    ("cromo_fusiones", TIPO_FUSION, "nombre_par", False),
+)
+
+
+@dataclass(slots=True)
+class PeloSemilla:
+    """Pelo de Cromo con el que se puede pedir el camino de un Servicio."""
+
+    pelo_n_id: int
+    servicio_numero: Optional[str]
+    metodo: Optional[str]
+    confianza: Optional[int]
+    numero_pelo: Optional[str]
+    color: Optional[str]
+    cable_n_id: Optional[int]
+    cable_nombre: Optional[str]
+    tiene_conector_odf: bool
+    servicio_raw: Optional[str]
+
+
+async def listar_pelos_semilla(
+    sesion: AsyncSession, servicio_id: int, *, limite: int = 20
+) -> list[PeloSemilla]:
+    """Pelos candidatos a semilla de `/path` para un Servicio, ya rankeados. Una sola query.
+
+    `servicio_id` es la PK de `app.servicios`. El predicado de identidades es el mismo que usa
+    el gestor de Servicios sin ODF (importado, no copiado) para no divergir.
+
+    El orden pone primero el pelo cuya ODF todavía no conocemos: un pelo que ya tiene conector
+    no aporta una ODF nueva. Es determinista hasta el último criterio, para que dos consultas
+    del mismo Servicio elijan la misma semilla y el camino sea reproducible sin pagar dos veces
+    la llamada a Cromo.
+    """
+    filas = (await sesion.execute(_SQL_PELOS_SEMILLA, {"servicio_id": servicio_id})).mappings().all()
+    ordenadas = sorted(
+        filas,
+        key=lambda f: (
+            f["prioridad_identidad"],
+            f["tiene_conector_odf"],
+            -(f["confianza"] or 0),
+            f["pelo_n_id"],
+        ),
+    )
+    return [
+        PeloSemilla(
+            pelo_n_id=fila["pelo_n_id"],
+            servicio_numero=fila["servicio_numero"],
+            metodo=fila["metodo"],
+            confianza=fila["confianza"],
+            numero_pelo=fila["numero_pelo"],
+            color=fila["color"],
+            cable_n_id=fila["cable_n_id"],
+            cable_nombre=fila["cable_nombre"],
+            tiene_conector_odf=bool(fila["tiene_conector_odf"]),
+            servicio_raw=fila["servicio_raw"],
+        )
+        for fila in ordenadas[:limite]
+    ]
+
+
+async def _catalogo_clases(sesion: AsyncSession, clases: set[int]) -> dict[int, str]:
+    """Traduce clase → entidad con el catálogo de la base, en una sola query.
+
+    `app.cromo_clases` es la fuente: incorporar una clase nueva ahí es un INSERT, no una
+    migración ni un cambio de código.
+    """
+    if not clases:
+        return {}
+    filas = (await sesion.execute(_SQL_CATALOGO_CLASES, {"clases": sorted(clases)})).all()
+    return {int(clase): entidad for clase, entidad in filas if entidad}
+
+
+async def _vincular_local(sesion: AsyncSession, nodos: list[NodoCamino]) -> None:
+    """Vincula cada nodo con su fila local, en dos pasadas batcheadas por tabla y CERO red.
+
+    Muta los nodos in place. Un nodo sin vínculo no es un error: puede ser una clase que la
+    ingesta no barre (84 caja PON, 66 cable bajada, 85 roseta, 52 cable de tercero) o un objeto
+    que Cromo movió y la ingesta local todavía no refleja. `vigente=false` tampoco se oculta: es
+    dato de auditoría.
+    """
+    por_tipo: dict[str, dict[int, list[NodoCamino]]] = {}
+    for nodo in nodos:
+        if nodo.tipo == TIPO_NO_RESUELTO:
+            continue
+        por_tipo.setdefault(nodo.tipo, {}).setdefault(nodo.id_cromo, []).append(nodo)
+
+    for tabla, tipo, columna_nombre, tiene_version_id in _TABLAS_VINCULABLES:
+        pendientes = por_tipo.get(tipo)
+        if not pendientes:
+            continue
+        ids = sorted(pendientes)
+
+        filas = (
+            await sesion.execute(
+                text(
+                    f"SELECT n_id, {columna_nombre} AS nombre, vigente FROM app.{tabla} "
+                    "WHERE n_id = ANY(:ids)"
+                ),
+                {"ids": ids},
+            )
+        ).all()
+        for n_id, nombre, vigente in filas:
+            for nodo in pendientes.pop(int(n_id), []):
+                nodo.vinculo_local = VinculoLocal(
+                    tabla=tabla, n_id=int(n_id), nombre=nombre, vigente=bool(vigente), coincide_por="N_ID"
+                )
+
+        if not pendientes or not tiene_version_id:
+            continue
+        filas = (
+            await sesion.execute(
+                text(
+                    f"SELECT n_id, version_id, {columna_nombre} AS nombre, vigente "
+                    f"FROM app.{tabla} WHERE version_id = ANY(:ids)"
+                ),
+                {"ids": sorted(pendientes)},
+            )
+        ).all()
+        for n_id, version_id, nombre, vigente in filas:
+            for nodo in pendientes.pop(int(version_id), []):
+                nodo.vinculo_local = VinculoLocal(
+                    tabla=tabla,
+                    n_id=int(n_id),
+                    nombre=nombre,
+                    vigente=bool(vigente),
+                    coincide_por="VERSION_ID",
+                )
+
+
+async def resolver_camino_de_pelo(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    pelo_n_id: int,
+    *,
+    vincular_local: bool = True,
+    incluir_raw: bool = False,
+) -> CaminoOptico:
+    """Resuelve el camino óptico de un pelo. UNA llamada a Cromo, cero requests por nodo.
+
+    Nunca persiste nada: el resultado se descarta al responder el request, igual que
+    `live_lookup_service`. Cromo se consulta sólo por GET.
+    """
+    inicio = perf_counter()
+    payload = await cliente.get_camino_optico(pelo_n_id)
+    duracion_ms = int((perf_counter() - inicio) * 1000)
+
+    dic = _desenvolver_dict(payload)
+    if not dic:
+        claves = sorted(payload)[:8] if isinstance(payload, Mapping) else []
+        logger.warning(
+            "action=cromo_camino evento=sin_dict pelo_n_id=%s claves=%s", pelo_n_id, claves
+        )
+        return CaminoOptico(
+            estado=ESTADO_SIN_CAMINO,
+            pelo_n_id=pelo_n_id,
+            id_pedido=pelo_n_id,
+            motivo="Cromo no devolvió ningún elemento para este pelo.",
+            duracion_ms=duracion_ms,
+            payload_raw=payload if incluir_raw else None,
+        )
+
+    id_raiz, raiz, es_mismo_id = _localizar_raiz(dic, pelo_n_id)
+    if raiz is None:
+        return CaminoOptico(
+            estado=ESTADO_SIN_CAMINO,
+            pelo_n_id=pelo_n_id,
+            id_pedido=pelo_n_id,
+            motivo=(
+                "El camino no tiene un pelo raíz identificable: Cromo devolvió elementos pero "
+                "ninguno con los dos extremos resueltos."
+            ),
+            ids_no_resueltos=[],
+            duracion_ms=duracion_ms,
+            payload_raw=payload if incluir_raw else None,
+        )
+
+    clases = {nodo.get("class") for nodo in dic.values() if nodo.get("class") is not None}
+    catalogo = await _catalogo_clases(sesion, {int(c) for c in clases})
+
+    lado_a, no_resueltos_a = _construir_lado(dic, raiz.get("a"), "A", catalogo)
+    lado_b, no_resueltos_b = _construir_lado(dic, raiz.get("b"), "B", catalogo)
+
+    advertencias: list[str] = []
+    if not es_mismo_id:
+        advertencias.append(
+            f"Cromo devolvió la raíz bajo el id {id_raiz} y no el pedido {pelo_n_id}: "
+            "puede ser un id de versión."
+        )
+    for lado, secuencia in (("A", raiz.get("a")), ("B", raiz.get("b"))):
+        if secuencia and len(list(secuencia)) > MAX_NODOS_POR_LADO:
+            advertencias.append(f"El lado {lado} se cortó en {MAX_NODOS_POR_LADO} elementos.")
+
+    if vincular_local:
+        await _vincular_local(sesion, lado_a + lado_b)
+
+    raiz_nodo = NodoCamino(orden=-1, lado="RAIZ", id_cromo=id_raiz or pelo_n_id, clase=_CLASE_PELO, tipo=TIPO_PELO)
+    _completar_contexto_pelo(raiz_nodo, raiz, dic)
+
+    odfs = odfs_del_camino(lado_a, lado_b)
+    if vincular_local and odfs:
+        await _vincular_odfs(sesion, odfs)
+
+    at62 = atributo(raiz, _AT_SERVICIO_NUMERO)
+    at61 = atributo(raiz, _AT_SERVICIO_CRUDO)
+
+    return CaminoOptico(
+        estado=ESTADO_OK,
+        pelo_n_id=pelo_n_id,
+        id_pedido=pelo_n_id,
+        id_raiz=id_raiz,
+        raiz_es_mismo_id=es_mismo_id,
+        servicio_at62=at62,
+        servicio_at61=at61,
+        numero_pelo=raiz_nodo.numero_pelo,
+        color_pelo=raiz_nodo.color_pelo,
+        cable_id=raiz_nodo.cable_id,
+        cable_nombre=raiz_nodo.cable_nombre,
+        tubo_id=raiz_nodo.tubo_id,
+        raiz=raiz_nodo,
+        lado_a=lado_a,
+        lado_b=lado_b,
+        odfs=odfs,
+        estadisticas=calcular_estadisticas(lado_a, lado_b, raiz_nodo),
+        discrepancia=comparar_at62_vs_regex(at62, at61),
+        ids_no_resueltos=no_resueltos_a + no_resueltos_b,
+        advertencias=advertencias,
+        duracion_ms=duracion_ms,
+        payload_raw=payload if incluir_raw else None,
+    )
+
+
+async def _vincular_odfs(sesion: AsyncSession, odfs: list[OdfDelCamino]) -> None:
+    """Resuelve el `n_id` local de cada ODF descubierta, en una pasada por `n_id` y otra por
+    `version_id`. Sin vínculo local no se puede armar la asociación, así que este dato decide si
+    la ODF se puede proponer o sólo mostrar."""
+    pendientes = {odf.odf_id: odf for odf in odfs}
+    if not pendientes:
+        return
+
+    filas = (
+        await sesion.execute(
+            text("SELECT n_id, nombre, vigente FROM app.cromo_odfs WHERE n_id = ANY(:ids)"),
+            {"ids": sorted(pendientes)},
+        )
+    ).all()
+    for n_id, nombre, vigente in filas:
+        odf = pendientes.pop(int(n_id), None)
+        if odf is not None:
+            odf.vinculo_local = VinculoLocal(
+                tabla="cromo_odfs", n_id=int(n_id), nombre=nombre, vigente=bool(vigente), coincide_por="N_ID"
+            )
+
+    if not pendientes:
+        return
+    filas = (
+        await sesion.execute(
+            text(
+                "SELECT n_id, version_id, nombre, vigente FROM app.cromo_odfs "
+                "WHERE version_id = ANY(:ids)"
+            ),
+            {"ids": sorted(pendientes)},
+        )
+    ).all()
+    for n_id, version_id, nombre, vigente in filas:
+        odf = pendientes.pop(int(version_id), None)
+        if odf is not None:
+            odf.vinculo_local = VinculoLocal(
+                tabla="cromo_odfs",
+                n_id=int(n_id),
+                nombre=nombre,
+                vigente=bool(vigente),
+                coincide_por="VERSION_ID",
+            )
+
+
+async def resolver_camino_de_servicio(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    servicio_id: int,
+    *,
+    pelo_n_id: Optional[int] = None,
+    incluir_raw: bool = False,
+) -> tuple[CaminoOptico, list[PeloSemilla]]:
+    """Elige la semilla de un Servicio (o valida la pinneada) y resuelve su camino.
+
+    Devuelve además las semillas disponibles, para que la UI muestre cuál se usó y ofrezca las
+    otras sin pagar una segunda llamada. Si el Servicio no tiene ningún pelo en Cromo se
+    devuelve `SIN_SEMILLA` **sin llamar a Cromo**: es el 77% de los Servicios del gestor
+    (2.228 de 2.891), y para ellos `/path` no tiene input posible.
+
+    Una sola llamada a `/path` por invocación: sin fan-out. Pedir otra semilla es una acción
+    explícita del operador con `pelo_n_id`.
+    """
+    semillas = await listar_pelos_semilla(sesion, servicio_id)
+    if not semillas:
+        return (
+            CaminoOptico(
+                estado=ESTADO_SIN_SEMILLA,
+                motivo=(
+                    "El Servicio no tiene ningún pelo en `cromo_servicio_match`, así que "
+                    "`/path` no tiene input posible."
+                ),
+            ),
+            [],
+        )
+
+    if pelo_n_id is not None:
+        elegida = next((s for s in semillas if s.pelo_n_id == pelo_n_id), None)
+        if elegida is None:
+            raise PeloAjenoAlServicio(
+                f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."
+            )
+    else:
+        elegida = semillas[0]
+
+    camino = await resolver_camino_de_pelo(
+        cliente, sesion, elegida.pelo_n_id, incluir_raw=incluir_raw
+    )
+    return camino, semillas
+
+
+class PeloAjenoAlServicio(ValueError):
+    """El `pelo_n_id` pinneado no pertenece al Servicio pedido — evita usar el endpoint como un
+    `/path` genérico sobre cualquier pelo de la red."""
+
+
 __all__ = [
     "ESTADO_OK",
     "ESTADO_SIN_CAMINO",
@@ -488,8 +885,13 @@ __all__ = [
     "EstadisticasCamino",
     "NodoCamino",
     "OdfDelCamino",
+    "PeloAjenoAlServicio",
+    "PeloSemilla",
     "VinculoLocal",
     "calcular_estadisticas",
     "comparar_at62_vs_regex",
+    "listar_pelos_semilla",
     "odfs_del_camino",
+    "resolver_camino_de_pelo",
+    "resolver_camino_de_servicio",
 ]

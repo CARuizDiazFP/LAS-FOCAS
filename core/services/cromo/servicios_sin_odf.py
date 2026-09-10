@@ -64,6 +64,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 __all__ = [
+    # Público a propósito (2026-09-10): lo importa `camino_optico_service` para elegir el pelo
+    # semilla de `/path`. Ya hay tres copias del patrón de identidades en el repo y una causó un
+    # bug real (los pelos matcheados contra la fila perdedora, ver `ingesta.py`); una cuarta copia
+    # divergente es el modo de falla conocido de este predicado.
+    "IDENTIDADES_DEL_SERVICIO_SQL",
     "CATEGORIA_EQUIPO_DOMICILIO_CLIENTE",
     "CATEGORIA_OLT_PON_COMPARTIDO",
     "CATEGORIA_SIN_SENAL_PROV",
@@ -630,7 +635,7 @@ async def listar_servicios_sin_odf(
 # `= ANY(s.alias_ids)` y no `@>`: acá el escalar es de `cromo_servicio_match` y el array es de la
 # fila candidata de `servicios` — la dirección inversa al self-join anti-ambigüedad, donde el GIN
 # sí aplica. Misma asimetría deliberada que en `_SQL_NO_TIENE_ODF_RESUELTA`.
-_IDENTIDADES_DEL_SERVICIO = """
+IDENTIDADES_DEL_SERVICIO_SQL = """
              m.servicio_id = s.id
           OR m.servicio_numero = s.servicio_id
           OR m.servicio_numero = s.numero_primer_servicio
@@ -644,10 +649,10 @@ _SQL_PELOS_Y_CONECTORES = text(
     f"""
     SELECT
         (SELECT COUNT(*) FROM app.cromo_servicio_match m
-          WHERE {_IDENTIDADES_DEL_SERVICIO}) AS pelos_matcheados,
+          WHERE {IDENTIDADES_DEL_SERVICIO_SQL}) AS pelos_matcheados,
         (SELECT COUNT(*) FROM app.cromo_servicio_match m
           JOIN app.cromo_odf_conectores c ON c.pelo_n_id = m.pelo_n_id
-          WHERE {_IDENTIDADES_DEL_SERVICIO}) AS pelos_con_conector
+          WHERE {IDENTIDADES_DEL_SERVICIO_SQL}) AS pelos_con_conector
     FROM app.servicios s
     WHERE s.id = :servicio_id
     """
@@ -696,7 +701,7 @@ async def subcategoria_sin_senal_prov(
     `servicio_id` es la **PK** de `app.servicios` (`servicios.id`), no un número de servicio. Es el
     único argumento a propósito: las tres identidades del Servicio (`servicio_id`,
     `numero_primer_servicio`, `alias_ids`) las resuelve la query sola, por
-    `_IDENTIDADES_DEL_SERVICIO`. Antes recibía además un `numero` y keyeaba sólo por él, y eso
+    `IDENTIDADES_DEL_SERVICIO_SQL`. Antes recibía además un `numero` y keyeaba sólo por él, y eso
     dejaba que el llamador eligiera UNA identidad y obtuviera respuestas distintas según cuál
     eligiera — con `AUSENTE_RED_CROMO` (un diagnóstico FALSO) para un Servicio cuyos pelos están en
     Cromo bajo otra de sus numeraciones. Sin ese parámetro, ese error ya no se puede cometer.

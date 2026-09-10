@@ -266,6 +266,26 @@ def test_estadisticas_del_camino_real():
     assert estadisticas.longitud_optica_m >= estadisticas.longitud_geo_m
 
 
+def test_el_cable_del_pelo_raiz_entra_en_las_longitudes():
+    """Bug real encontrado comparando contra el panel de la web de Cromo: el pelo raíz no está
+    en `a[]` ni en `b[]`, pero su cable ES un tramo del camino. Sin contarlo faltaban
+    exactamente los 295 m de ese cable (72.754 m calculados vs. 73.049 m de Cromo)."""
+    dic = {
+        1: {"class": 130, "father": 10, "gfather": 20},
+        10: {"class": 129, "at": [{"id": 76, "value": "AZ"}]},
+        20: {"class": 51, "at": [{"id": 23, "value": "295"}, {"id": 24, "value": "302.36"}]},
+    }
+    raiz, _ = _construir_lado(dic, [1], "RAIZ", {})
+
+    sin_raiz = calcular_estadisticas([], [])
+    con_raiz = calcular_estadisticas([], [], raiz[0])
+
+    assert sin_raiz.longitud_geo_m == 0.0
+    assert con_raiz.longitud_geo_m == 295.0
+    assert con_raiz.longitud_optica_m == 302.36
+    assert con_raiz.cables == 1
+
+
 # ── ODFs descubiertas en el camino ───────────────────────────────────────────
 
 
