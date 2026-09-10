@@ -99,3 +99,36 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - El agente `security` se enfoca en APIs y SPAs modernas: XSS en Vue 3, CORS en FastAPI y manejo seguro de tokens/sesiones.
 - Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.agentes-comunes/skills/skill-generator/`.
 - **Claude Code**: comandos slash disponibles en `.claude/commands/` (`/repo-updater`, `/generar-pr-diario`, `/cierre-sesion`, `/mantenimiento-disco`, `/migracion-alembic`, `/nuevo-modulo`, `/revisar-seguridad`, `/crear-skill`). Catálogo detallado de agentes, skills y comandos en `CLAUDE.md`.
+
+## Conciencia agéntica y control de concurrencia
+
+- El ecosistema multi-agente debe tratarse como un sistema concurrente y no como una colección de archivos estáticos. El principal riesgo no es sólo el `git diff`, sino las condiciones de carrera sobre los mismos artefactos de gobernanza (`.github`, `.claude`, `.gemini`, `.codex-skills`, `.agentes-comunes`, `docs/`, `scripts/`).
+- Toda modificación de un flujo de trabajo, skill, agente, prompt o script compartido debe adquirir un lock de ámbito acotado antes de editar. El lock debe ser por componente (`skill:...`, `agent:...`, `workflow:...`, `docs:...`) y no global del repositorio, salvo que el cambio afecte la raíz del sistema agéntico completo.
+- Se debe mantener un estado de propiedad explícito para cada artefacto crítico: `owner`, `scope`, `started_at`, `heartbeat_at`, `lease_expires_at`, `handoff`, `status`. El estado debe registrarse en una base de estado agéntico y no sólo en el hilo de conversación.
+- Si dos agentes intentan tocar el mismo componente, la regla operativa es: primero `acquire lock`, luego `heartbeat`, luego `edit`; si se detecta conflicto, el segundo agente debe delegar, reintentar con backoff o requerir handoff formal, nunca sobrescribir silenciosamente.
+- El repositorio ya usa locks transaccionales reales en la capa de negocio; por ejemplo, `core/services/camara_hierarchy_service.py` usa `pg_advisory_xact_lock` para serializar la resolución concurrente de una misma entidad. El mismo principio debe aplicarse a la capa agéntica, con lock de recursos y lock de estado, no sólo en la base de datos.
+- El estado del agente y los locks deben ser persistidos en un registro único y versionado, por ejemplo `.agent-state/` con `agent_state.db` o una tabla equivalente en PostgreSQL. Las rutas de trabajo deben reflejar el corredor activo, la intención y el alcance exacto antes de cualquier edición.
+- La sincronización entre mirrors de skills no debe depender de la memoria o la buena voluntad. Debe ejecutarse con scripts idempotentes y con verificación de drift en CI. Una modificación en `.agentes-comunes/skills/` debe generar un estado de `dirty synchronization` si el mirror no refleja el mismo contenido o metadatos.
+- Para cambios de alta coordinación o riesgo, se requiere handoff explícito con `status=handoff` y archivo de continuidad si una sesión se interrumpe o si un agent está bloqueado por un lock de otro agente.
+- El archivo de referencia operativa para esta política es `docs/arquitectura_agent_awareness_2026-09-08.md`.
+
+## Reglas de sincronización de mirrors
+
+- La fuente de verdad de skills es `.agentes-comunes/skills/`.
+- Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y `.claude/skills/` se consideran artefactos derivados y deben sincronizarse tras cada cambio relevante.
+- La ejecución de `scripts/sync_agentes_comunes.sh` debe considerarse obligatoria en cambios de skills, prompts o agentes que impacten a cualquiera de los mirrors.
+- Si hay drift entre la fuente y los mirrors, el flujo de trabajo debe detenerse y corregirse antes de cerrar la tarea.
+
+## Patrón de implementación recomendado
+
+- `Agent Awareness` debe incluir: `owner`, `state`, `resource`, `scope`, `lease_expires_at`, `last_heartbeat`, `last_change`, `dependency_chain`.
+- `resource` debe apuntar al componente exacto: `skill:docker-rebuild`, `agent:security`, `workflow:repo-updater`, `docs:AGENTS.md`, etc.
+- El lock debe ser de corta duración con `heartbeat` periódico; un lock sin heartbeat se considera vencido y debe ser liberado automáticamente.
+- El lock no debe restringir lectura; sólo debe bloquear escritura concurrente y handoff conflictivo sobre el mismo recurso.
+- Este patrón se recomienda implementarlo con SQLite local para trabajo de agente dentro del repo y con PostgreSQL para coordinación distribuida o CI/CD.
+
+## Política de cierre y continuidad
+
+- Antes de cerrar una sesión, todo agente debe dejar el estado en `idle` o `handoff` y limpiar locks vencidos cuando el recurso ya no esté en uso.
+- Si una tarea queda bloqueada o interrumpida, debe emitirse un handoff con el estado exacto del recurso y el siguiente paso.
+- No se debe producir “oversubscription” de un recurso compartido: un recurso con `owner` activo no puede ser reasignado sin consentimiento explícito o expiración de lease.
