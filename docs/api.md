@@ -174,6 +174,87 @@ Busca cámaras en la base de datos con filtrado por texto y/o estado.
   curl "http://localhost:8001/api/infra/camaras?q=corrientes&estado=OCUPADA&limit=50"
   ```
 
+### GET `/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos`
+
+Lista los pelos de Cromo que sirven como semilla para pedir un camino óptico de un servicio.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos`
+- **Comportamiento:** consulta SQL local y no toca Cromo; devuelve los pelos disponibles para ese servicio y el total de candidatos.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "servicio_id": 93154,
+    "total": 1,
+    "pelos": [
+      {
+        "pelo_n_id": 10006353,
+        "servicio_numero": "93154",
+        "metodo": "REGEX_EXACTO",
+        "confianza": 100,
+        "numero_pelo": "4",
+        "color": "MR",
+        "cable_n_id": 10006296,
+        "cable_nombre": "FD-980-B",
+        "tiene_conector_odf": false,
+        "servicio_raw": "FO 93154 - ODF Guanahani 580"
+      }
+    ]
+  }
+  ```
+
+- **Códigos de error:** `401` si no hay sesión; `404` si el servicio no existe.
+
+### GET `/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt`
+
+Genera el tracking óptico en formato `.txt` legacy a partir del camino real resuelto por Cromo.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt?{pelo_n_id=...}`
+- **Comportamiento:** usa la semilla detectada para resolver el camino y devuelve un archivo de texto plano con `Content-Disposition` para descargar.
+- **Respuesta 200:** archivo `text/plain; charset=utf-8` listo para descarga.
+- **Códigos de error:** `400` si el `pelo_n_id` es ajeno al servicio; `409` si el servicio no tiene camino o no tiene semilla; `502` si Cromo responde con error.
+
+### GET `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico`
+
+Devuelve el camino óptico completo de un servicio, con estadística, consistencia y serialización de nodos para usarlo desde el panel admin.
+
+- **Autenticación:** requiere sesión admin.
+- **Ruta:** `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico?pelo_n_id=...&raw=true`
+- **Comportamiento:** si el servicio no tiene semilla, responde con `estado: "SIN_SEMILLA"` y el resto de campos `null`/vacíos; no falla con 4xx. Si hay camino, serializa nodos, ODFs, lados y consistencia.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "estado": "OK",
+    "motivo": null,
+    "pelo_n_id": 10006353,
+    "servicio_at62": "93154",
+    "raiz": { "n_id": 10006353, "tipo": "PELO", "nombre": "FO 93154 - ODF Guanahani 580" },
+    "lado_a": [],
+    "lado_b": [],
+    "odfs": [],
+    "estadisticas": {
+      "nodos": 883,
+      "pelos": 130,
+      "fusiones": 132,
+      "conectores": 136,
+      "cables": 98,
+      "odfs": 4,
+      "no_resueltos": 9
+    },
+    "consistencia": {
+      "reglas": [],
+      "inconsistencias": [],
+      "total_discrepa": 0,
+      "total_no_ingerido": 0
+    }
+  }
+  ```
+
+- **Códigos de error:** `400` si el `pelo_n_id` es ajeno al servicio; `404` si no existe el servicio; `502` si Cromo falla. En el caso usual del 77% de servicios sin semilla, la respuesta es `200` con un estado explícito.
+
 ### POST `/api/infra/search`
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.
