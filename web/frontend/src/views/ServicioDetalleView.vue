@@ -176,9 +176,49 @@
           <p v-else-if="odfsError" class="servicio-detalle__kv is-error"><span>ODFs asociadas</span><span>{{ odfsError }}</span></p>
           <p v-else class="servicio-detalle__kv"><span>ODFs asociadas</span><span>{{ totalOdfs }}</span></p>
 
+          <p class="servicio-detalle__kv">
+            <span>Pelos en Cromo</span>
+            <span v-if="camino.cargandoPelos.value">Cargando...</span>
+            <span v-else>{{ camino.pelos.value.length }}</span>
+          </p>
+
+          <!-- Con más de una semilla hay que dejar elegir: el camino de un pelo no es el de otro. -->
+          <CromoPeloSelector
+            v-if="camino.pelos.value.length > 1"
+            :pelos="camino.pelos.value"
+            :model-value="camino.peloElegido.value"
+            :disabled="camino.descargando.value"
+            @update:model-value="camino.peloElegido.value = $event"
+          />
+
+          <p v-if="camino.errorDescarga.value" class="servicio-detalle__kv is-error">
+            <span>Tracking Cromo</span><span>{{ camino.errorDescarga.value }}</span>
+          </p>
+
+          <!--
+            El segundo botón reemplaza un `RouterLink to="/infra"` que decía "Ver tracking" y no
+            llevaba a ningún tracking (no existe una ruta de tracking por Servicio en el router).
+            O se volvía una acción real, o correspondía borrarlo.
+
+            Acá sí va `disabled` y no ausencia del control, al revés que en la grilla del gestor:
+            es UN botón en la vista de UN Servicio, y el operador que abrió este Servicio puntual
+            necesita saber que la capacidad existe pero no aplica acá.
+          -->
           <div class="servicio-detalle__panel-actions">
             <RouterLink class="servicio-detalle__panel-link" to="/infra">Ir a Infra FO</RouterLink>
-            <RouterLink class="servicio-detalle__panel-link" to="/infra">Ver tracking</RouterLink>
+            <button
+              class="servicio-detalle__panel-link"
+              type="button"
+              :disabled="camino.pelos.value.length === 0 || camino.descargando.value"
+              :title="
+                camino.pelos.value.length === 0
+                  ? 'Cromo no tiene ningún pelo matcheado para este Servicio: no hay camino que trazar'
+                  : 'Descarga el tracking óptico generado desde Cromo'
+              "
+              @click="descargarTrackingDeCromo"
+            >
+              {{ camino.descargando.value ? 'Generando…' : 'Tracking Cromo (.txt)' }}
+            </button>
           </div>
         </article>
 
@@ -311,7 +351,9 @@ import {
   type ServicioHistorialIdItem,
   type ServicioItem,
 } from '../api/servicios';
+import CromoPeloSelector from '../components/infra/CromoPeloSelector.vue';
 import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
+import { useCromoPath } from '../composables/useCromoPath';
 import { useSession } from '../composables/useSession';
 import type { TimelineEvent } from '../types/timeline';
 
@@ -435,6 +477,10 @@ interface ReportsHistoryResponse {
 const foLoading = ref(false);
 const foError = ref('');
 const foRutas = ref<InfraRutaItem[]>([]);
+
+// Sólo se usan las semillas y la descarga: la resolución completa del camino (con su auditoría)
+// vive en el gestor de Servicios sin ODF, que es admin-only.
+const camino = useCromoPath();
 const foTrackingResumen = ref<{
   camaras: number;
   cables: number;
@@ -571,6 +617,13 @@ const domicilio = computed(() => {
   return parts.length > 0 ? parts.join(' · ') : 'Sin dato';
 });
 
+/** Descarga el tracking `.txt` generado desde Cromo para el Servicio abierto. */
+async function descargarTrackingDeCromo(): Promise<void> {
+  const servicioId = servicio.value?.id;
+  if (servicioId == null) return;
+  await camino.descargarTxt(servicioId);
+}
+
 async function loadDetalle(): Promise<void> {
   const id = idParam.value;
   if (!id) {
@@ -593,6 +646,9 @@ async function loadDetalle(): Promise<void> {
       loadReportesResumen(),
       loadOdfsAsociadas(response.id_origen),
       loadIngresosAsociados(response.id_origen),
+      // Semillas: SQL local, no toca Cromo. Se piden acá para que el botón sepa si va habilitado
+      // ANTES del click, en vez de hacerle descubrir al operador que no hay camino recién después.
+      camino.cargarPelos(response.servicio.id),
     ]);
 
     const idOrigen = response.id_origen.trim();
