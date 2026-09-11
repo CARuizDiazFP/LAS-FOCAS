@@ -201,6 +201,17 @@ def test_listado_serializa_items_con_ambos_extremos_e_indice(monkeypatch):
 
     monkeypatch.setattr(servicios_sin_odf, "listar_servicios_sin_odf", _fake_listar)
 
+    # El listado también cuenta las semillas de camino óptico de la página (2026-09-11): es otra
+    # función de servicio y va mockeada igual que la anterior, porque la sesión de este test es un
+    # doble que no ejecuta SQL.
+    async def _fake_contar_semillas(sesion, servicio_ids):
+        return {101: 3}
+
+    monkeypatch.setattr(
+        "core.services.cromo.camino_optico_service.contar_semillas_por_servicio",
+        _fake_contar_semillas,
+    )
+
     client = TestClient(app)
     _login(client, "admin", "adminpass")
 
@@ -220,6 +231,9 @@ def test_listado_serializa_items_con_ambos_extremos_e_indice(monkeypatch):
     assert fila["extremos"][0] == {"extremo": 1, "nodo": "SW_Frontera", "equipo": "SW1"}
     assert fila["extremos"][1] == {"extremo": 2, "nodo": "OLT2_Pilar", "equipo": "OLT2_Pilar"}
     assert fila["indice_extremo_categorizado"] == 1
+    # `pelos_semilla` decide si la tarjeta ofrece el botón de camino óptico: 0 significa que
+    # `/path` no tiene input posible para ese Servicio.
+    assert fila["pelos_semilla"] == 3
     # Los conteos de los chips viajan CON el listado: sin esto el frontend volvería a pedir un
     # request `limit=0` por categoría, que re-corre la query completa del universo 4 veces.
     assert body["conteos_por_categoria"] == {
