@@ -98,7 +98,7 @@ asyncio.run(main())
 ### 2. Contra datos ya ingeridos: consultar `lasfocasdev-postgres` directo
 
 Si la pregunta es sobre datos **ya guardados** (no sobre el comportamiento de la API), es más rápido
-consultar la DB real de dev directo — ver la skill `las-focas-db-mcp-postgres` sección "Inventario
+consultar la DB real de dev directo — ver `.github/skills/db-mcp-postgres/SKILL.md` sección "Inventario
 Cromo Red". Ejemplo real usado para descartar el bug de `tipo_asociacion`:
 
 ```sql

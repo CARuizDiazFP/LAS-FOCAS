@@ -36,6 +36,8 @@ metadata:
 # Ubicación de archivo: .codex-skills/skills/las-focas-secrets-rollout/SKILL.md
 # Descripción: Skill portable Codex migrada desde .github/skills/secrets-rollout/SKILL.md
 
+# Skill portable: secrets-rollout
+
 > Fuente original: `.agentes-comunes/skills/secrets-rollout/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
 
 # Habilidad: Secrets Rollout

@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-skill-generator.md
 # Ubicación de archivo: .gemini/rules/skill-skill-generator.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/skill-generator/SKILL.md
+
 ---
 name: "skill-skill-generator"
 description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas anti-legacy"
@@ -28,7 +29,7 @@ commands:
 
 # Regla Skill: skill-generator
 
-> Fuente original: `.github/skills/skill-generator/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/skill-generator/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Generador de Skills
 

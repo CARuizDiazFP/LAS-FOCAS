@@ -40,7 +40,7 @@ metadata:
 
 # Habilidad: Security Scan
 
-Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS, con foco en APIs FastAPI y SPAs Vue 3.
+Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
 
 ## Cuándo usar
 
@@ -50,20 +50,20 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS, c
 
 ## Skills que coordina
 
-- [dependency-audit](../dependency-audit/SKILL.md)
-- [secret-detection](../secret-detection/SKILL.md)
-- [sast-analysis](../sast-analysis/SKILL.md)
+- [dependency-audit](../las-focas-dependency-audit/SKILL.md)
+- [secret-detection](../las-focas-secret-detection/SKILL.md)
+- [sast-analysis](../las-focas-sast-analysis/SKILL.md)
 
 ## Procedimiento
 
 1. Delimitar alcance técnico: carpetas, servicios, manifests y superficies expuestas.
-2. Ejecutar primero [secret-detection](../secret-detection/SKILL.md) sobre `.env`, despliegue, Docker, `Keys/` y scripts.
-3. Continuar con [dependency-audit](../dependency-audit/SKILL.md) sobre `requirements*.txt`, manifests de servicios y `web/frontend/package.json` si aplica.
-4. Ejecutar [sast-analysis](../sast-analysis/SKILL.md) sobre endpoints, validación de entradas, auth, subprocess, SQL y logging sensible.
-5. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
-6. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
-7. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
-8. Revisar específicamente CORS, `v-html`, cookies/token handling y exposición de datos en frontend/API.
+2. Ejecutar primero [secret-detection](../las-focas-secret-detection/SKILL.md) sobre `.env`, despliegue, Docker, `Keys/` y scripts.
+3. Ejecutar `./scripts/check_no_plaintext_secrets.sh` como control preventivo automatizado.
+4. Continuar con [dependency-audit](../las-focas-dependency-audit/SKILL.md) sobre `requirements*.txt`, manifests de servicios y `web/frontend/package.json` si aplica.
+5. Ejecutar [sast-analysis](../las-focas-sast-analysis/SKILL.md) sobre endpoints, validación de entradas, auth, subprocess, SQL y logging sensible.
+6. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
+7. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
+8. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
 
 ## Criterios de salida
 
@@ -71,6 +71,7 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS, c
 - Secretos enmascarados; nunca completos.
 - Distinción clara entre hallazgo confirmado, sospecha y recomendación.
 - Cobertura declarada: qué rutas, manifiestos o servicios sí quedaron revisados.
+- Formato alineado al contrato `docs/seguridad_contrato_salida.md`.
 
 ## Guardrails
 

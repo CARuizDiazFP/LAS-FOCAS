@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-temp-cleanup.md
 # Ubicación de archivo: .gemini/rules/skill-temp-cleanup.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/temp-cleanup/SKILL.md
+
 ---
 name: "skill-temp-cleanup"
 description: "Usar cuando haya que limpiar archivos temporales, __pycache__, bytecode o caches de desarrollo del repo"
@@ -28,7 +29,7 @@ commands:
 
 # Regla Skill: temp-cleanup
 
-> Fuente original: `.github/skills/temp-cleanup/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/temp-cleanup/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Limpieza de Temporales
 
@@ -50,8 +51,8 @@ Este skill gestiona la limpieza de cachés y temporales del repo sin mezclarla c
 ## Referencias
 
 - [Operación detallada](./references/operacion.md)
-- [disk-analysis](../disk-analysis/SKILL.md)
-- [logs-cleanup](../logs-cleanup/SKILL.md)
+- [disk-analysis](skill-disk-analysis.md)
+- [logs-cleanup](skill-logs-cleanup.md)
 
 ## Guardrails
 

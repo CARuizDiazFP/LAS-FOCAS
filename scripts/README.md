@@ -15,6 +15,7 @@ Este directorio contiene herramientas auxiliares no incluidas en la ejecución p
 - `setup_local_secrets.sh`: Crea `.secrets/*.txt` para desarrollo local o CI sin imprimir secretos.
 - `check_no_plaintext_secrets.sh`: Bloquea secretos versionados y passwords dev en texto plano.
 - `sync_agentes_comunes.sh` / `check_skill_mirror_drift.sh`: Sincronizan y verifican los mirrors de skills desde `.agentes-comunes/skills/`.
+- `sync_skill_mirrors.py`: Propagador determinista de skills a los mirrors por plataforma (`.claude`, `.gemini`, `.codex-skills`). Preserva el frontmatter de cada mirror y reescribe los enlaces entre skills según la estructura de cada entorno. `--check` verifica drift sin escribir.
 
 ### Convenciones
 

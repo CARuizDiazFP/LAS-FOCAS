@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-nocturne-token-compliance.md
 # Ubicación de archivo: .gemini/rules/skill-nocturne-token-compliance.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/nocturne-token-compliance/SKILL.md
+
 ---
 name: "skill-nocturne-token-compliance"
 description: "Usar antes de dar por cerrada cualquier tarea de UI/CSS en el SPA: audita colores hardcodeados fuera de tokens.css (vista + todo su árbol de imports) y define cómo verificar el resultado real cuando no hay navegador disponible en la sesión"
@@ -53,7 +54,7 @@ commands:
 
 # Regla Skill: nocturne-token-compliance
 
-> Fuente original: `.github/skills/nocturne-token-compliance/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/nocturne-token-compliance/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Nocturne Token Compliance
 

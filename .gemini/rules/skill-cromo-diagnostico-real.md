@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-cromo-diagnostico-real.md
 # Ubicación de archivo: .gemini/rules/skill-cromo-diagnostico-real.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/cromo-diagnostico-real/SKILL.md
+
 ---
 name: "skill-cromo-diagnostico-real"
 description: "Usar antes de escribir o confiar en código de parseo/ingesta de Cromo Red: valida contra la API o la DB real en vez de asumir que el diseño documentado describe el comportamiento actual"
@@ -26,7 +27,7 @@ commands:
 
 # Regla Skill: cromo-diagnostico-real
 
-> Fuente original: `.github/skills/cromo-diagnostico-real/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/cromo-diagnostico-real/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Skill: Diagnóstico real contra Cromo Red
 
@@ -95,7 +96,7 @@ asyncio.run(main())
 ### 2. Contra datos ya ingeridos: consultar `lasfocasdev-postgres` directo
 
 Si la pregunta es sobre datos **ya guardados** (no sobre el comportamiento de la API), es más rápido
-consultar la DB real de dev directo — ver la regla `skill-db-mcp-postgres` sección "Inventario
+consultar la DB real de dev directo — ver `.github/skills/db-mcp-postgres/SKILL.md` sección "Inventario
 Cromo Red". Ejemplo real usado para descartar el bug de `tipo_asociacion`:
 
 ```sql

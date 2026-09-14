@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-dev-workflow.md
 # Ubicación de archivo: .gemini/rules/skill-dev-workflow.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/dev-workflow/SKILL.md
+
 ---
 name: "skill-dev-workflow"
 description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama efímera activa, stack correcto y restricciones del entorno dev."

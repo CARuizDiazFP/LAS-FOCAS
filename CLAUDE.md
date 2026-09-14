@@ -142,16 +142,16 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 
 Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejadas en `.github/skills/` y `.codex-skills/skills/` (formato OpenAI Codex).
 
-> **Para que sean invocables por el `Skill` tool de Claude Code hace falta además un mirror en
-> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.agentes-comunes/skills/`. Descubierto
-> 2026-08-14: `Skill(skill="docker-rebuild")` falló con "Unknown skill" pese a estar catalogada acá,
-> porque `.claude/skills/` no existía. `docker-rebuild`, `nocturne-token-compliance`, `cierre-sesion`,
-> `dev-workflow` y `agent-worktree` tienen mirror hoy (2026-09-03: `dev-workflow` se agregó junto con
-> el flujo de rama efímera obligatoria; 2026-09-14: `agent-worktree`, junto con el aislamiento por
-> worktree); el resto de la tabla de abajo **todavía
-> no es invocable vía `/nombre-skill` o el tool `Skill` en este entorno** — hay que copiarla a
-> `.claude/skills/` (mismo contenido que `.agentes-comunes/skills/`) antes de poder usarla así. Hasta
-> entonces, seguir sus procedimientos manualmente vía Bash. Ver `docs/cierres/2026-08-14.md`.
+> **Para que sean invocables por el `Skill` tool de Claude Code hace falta un mirror en
+> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.agentes-comunes/skills/`.
+> Descubierto 2026-08-14: `Skill(skill="docker-rebuild")` falló con "Unknown skill" pese a estar
+> catalogada acá, porque `.claude/skills/` no existía (ver `docs/cierres/2026-08-14.md`).
+>
+> **Cerrado el 2026-09-14**: `scripts/sync_skill_mirrors.py` genera y mantiene los mirrors de las
+> cuatro plataformas, así que **todas** las skills de la tabla son invocables. No hay que copiar
+> nada a mano: tras editar una skill en `.agentes-comunes/skills/`, correr
+> `scripts/sync_agentes_comunes.sh` (que lo invoca) y verificar con
+> `scripts/check_skill_mirror_drift.sh`.
 
 > El flujo recursivo (SDD/superpowers) se mantiene habilitado para trabajos largos; optimizar evitando re-reviews en cascada cuando el delta no introduce hallazgos nuevos.
 
@@ -191,9 +191,9 @@ Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejada
 
 | Entorno | Plataforma | Ubicación |
 |---|---|---|
-| Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` (slash commands) + `.claude/skills/` (skills invocables — `agent-worktree`, `docker-rebuild`, `nocturne-token-compliance`, `cierre-sesion` y `dev-workflow` mirroradas hoy, ver nota arriba) |
+| Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` (slash commands) + `.claude/skills/` (todas las skills de la tabla, mirroradas automáticamente por `scripts/sync_skill_mirrors.py`) |
 | GitHub Copilot / VS Code | Agentes, prompts, skills | `.github/agents/`, `.github/prompts/`, `.github/skills/` |
 | Gemini CLI | Rules flat | `.gemini/rules/` |
 | OpenAI Codex | Skills (formato Codex) | `.codex-skills/skills/` |
 
-**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts) → replicar cambios a `.github/skills/`, `.gemini/`, `.codex-skills/`, `.claude/commands/` y `.claude/skills/` (esta última, agregada 2026-08-14, es la que hace que una skill sea invocable por el tool `Skill` en Claude Code).
+**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts). Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y `.claude/skills/` los regenera `scripts/sync_agentes_comunes.sh` (que delega en `scripts/sync_skill_mirrors.py`); `scripts/check_skill_mirror_drift.sh` verifica los cuatro y falla si hay drift. `.claude/commands/` se mantiene a mano: son comandos, no mirrors de skills.

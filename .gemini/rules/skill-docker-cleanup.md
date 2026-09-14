@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-docker-cleanup.md
 # Ubicación de archivo: .gemini/rules/skill-docker-cleanup.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/docker-cleanup/SKILL.md
+
 ---
 name: "skill-docker-cleanup"
 description: "Usar cuando haya que limpiar imágenes, contenedores o build cache de Docker sin tocar volúmenes persistentes"
@@ -174,7 +175,7 @@ commands:
 
 # Regla Skill: docker-cleanup
 
-> Fuente original: `.github/skills/docker-cleanup/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/docker-cleanup/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Limpieza Docker
 
@@ -400,6 +401,6 @@ docker system df
 
 ## 🔗 Skills Relacionados
 
-- [disk-analysis](../disk-analysis/SKILL.md) - Diagnóstico de uso de disco
-- [logs-cleanup](../logs-cleanup/SKILL.md) - Gestión de archivos de log
-- [temp-cleanup](../temp-cleanup/SKILL.md) - Limpieza de temporales
+- [disk-analysis](skill-disk-analysis.md) - Diagnóstico de uso de disco
+- [logs-cleanup](skill-logs-cleanup.md) - Gestión de archivos de log
+- [temp-cleanup](skill-temp-cleanup.md) - Limpieza de temporales

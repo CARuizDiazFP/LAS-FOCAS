@@ -193,8 +193,12 @@ capas distintas y complementarias; la referencia completa es
   `.claude/skills/` se consideran artefactos derivados y deben sincronizarse tras cada
   cambio relevante.
 - La ejecución de `scripts/sync_agentes_comunes.sh` es obligatoria en cambios de skills,
-  prompts o agentes que impacten a cualquiera de los mirrors; `scripts/check_skill_mirror_drift.sh`
-  verifica el resultado.
+  prompts o agentes que impacten a cualquiera de los mirrors. Regenera `.github/skills/` y delega en
+  `scripts/sync_skill_mirrors.py`, que mantiene `.claude/skills/`, `.gemini/rules/` y
+  `.codex-skills/skills/` preservando el frontmatter propio de cada plataforma y reescribiendo los
+  enlaces relativos entre skills a la ruta que resuelve en cada una.
+- `scripts/check_skill_mirror_drift.sh` verifica los cuatro mirrors y **falla con código 1** si hay
+  drift. Ningún cierre de tarea que toque skills puede terminar con ese check en rojo.
 - Si hay drift entre la fuente y los mirrors, el flujo de trabajo debe detenerse y
   corregirse antes de cerrar la tarea.
 - Editar una skill o sus mirrors requiere el lease `skill:<nombre>`: la propagación

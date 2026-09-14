@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-dependency-audit.md
 # Ubicación de archivo: .gemini/rules/skill-dependency-audit.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/dependency-audit/SKILL.md
+
 ---
 name: "skill-dependency-audit"
 description: "Usar cuando haya que revisar requirements, package.json, pip-audit, npm audit y versiones expuestas a vulnerabilidades conocidas"
@@ -36,7 +37,7 @@ commands:
 
 # Regla Skill: dependency-audit
 
-> Fuente original: `.github/skills/dependency-audit/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/dependency-audit/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Dependency Audit
 

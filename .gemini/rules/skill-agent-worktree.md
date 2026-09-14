@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-agent-worktree.md
 # Ubicación de archivo: .gemini/rules/skill-agent-worktree.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/agent-worktree/SKILL.md
+
 ---
 name: "skill-agent-worktree"
 description: "Usar al INICIAR cualquier tarea y ante cualquier señal de concurrencia (otra sesión activa, trabajo largo, subagentes). Crea el worktree y la rama propios del agente, define cuándo tomar un lease de recurso compartido y cómo integrar a dev sin pisar a nadie."

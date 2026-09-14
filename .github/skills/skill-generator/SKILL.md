@@ -32,19 +32,19 @@ Usar esta skill cuando el usuario pida:
 Debe incluirse siempre:
 
 1. Contexto tecnológico obligatorio del proyecto:
-	- Vue 3 (Composition API) + Vite + TypeScript + CSS modular con tokens.
-	- FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL.
-	- SPA pura vía API REST JSON + WebSocket.
+  - Vue 3 (Composition API) + Vite + TypeScript + CSS modular con tokens.
+  - FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL.
+  - SPA pura vía API REST JSON + WebSocket.
 2. Prohibiciones legacy explícitas:
-	- No Vanilla JS para UI nueva.
-	- No manipulación directa del DOM como patrón principal.
-	- No Jinja para frontend moderno.
+  - No Vanilla JS para UI nueva.
+  - No manipulación directa del DOM como patrón principal.
+  - No Jinja para frontend moderno.
 3. Seguridad mínima obligatoria:
-	- XSS: evitar `v-html` con contenido no confiable.
-	- CORS: allowlist estricta en FastAPI, sin comodín en producción.
-	- Validación Pydantic estricta en entradas/salidas.
+  - XSS: evitar `v-html` con contenido no confiable.
+  - CORS: allowlist estricta en FastAPI, sin comodín en producción.
+  - Validación Pydantic estricta en entradas/salidas.
 4. Criterios universales de aceptación:
-	- arquitectura, seguridad, pruebas, observabilidad, documentación y versionado.
+  - arquitectura, seguridad, pruebas, observabilidad, documentación y versionado.
 
 ## Separación de responsabilidades
 

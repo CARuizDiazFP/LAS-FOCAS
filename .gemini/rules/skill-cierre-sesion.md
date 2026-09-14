@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-cierre-sesion.md
 # Ubicación de archivo: .gemini/rules/skill-cierre-sesion.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/cierre-sesion/SKILL.md
+
 ---
 name: "skill-cierre-sesion"
 description: "Usar al finalizar una sesión de trabajo, sólo con declaración explícita de cierre, para generar una retrospectiva técnica, evaluar evolución agéntica del entorno y mergear automáticamente la rama efímera activa a dev"

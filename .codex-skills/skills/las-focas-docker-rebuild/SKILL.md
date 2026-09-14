@@ -354,17 +354,33 @@ contenedores que ya se sabe que el ciclo tocó" — hay que chequear **cualquier
 el que se vaya a `docker exec`/curl por primera vez en la sesión, aunque nunca antes haya dado
 problemas. Al cerrar un plan de `subagent-driven-development` (submódulo ODFs), la primera ingesta
 real dentro de `lasfocasdev-cromo-worker` falló con `TypeError: ejecutar_ingesta() got an unexpected
-keyword argument 'modo'` — ese contenedor nunca se había reconstruido durante todo el ciclo. Regla
-ampliada: antes de `docker exec` dentro de CUALQUIER contenedor para una acción real, sin importar
-si "nunca dio problemas antes", chequear su fecha de build contra el último commit relevante.
+keyword argument 'modo'` — ese contenedor nunca se había reconstruido durante todo el ciclo (las
+tareas previas verificaron contra DB real vía `pytest` desde el host, nunca vía `docker exec` dentro
+del worker), así que corría una imagen de antes de que el parámetro `modo` existiera en el código.
+Regla ampliada: antes de `docker exec` dentro de CUALQUIER contenedor para una acción real (no un
+test), sin importar si "nunca dio problemas antes", chequear su fecha de build contra el último
+commit relevante — el mismo comando de arriba, aplicado a ese contenedor puntual.
 
-### Verificación real vía `TestClient` dentro de un contenedor: usar el context manager
+### Verificación real vía `TestClient` dentro de un contenedor: usar el context manager, no llamadas sueltas
 
-Cuando no hay credenciales de admin para un `curl` autenticado real, entrar al contenedor y usar
-`starlette.testclient.TestClient` contra la app real. Si se hacen varias llamadas sueltas (sin
-`with`), puede aparecer `RuntimeError: ... Future ... attached to a different loop`. Usar siempre
-`with TestClient(app) as client:` (login y todos los `GET`/`POST` posteriores dentro del mismo
-bloque) — mantiene un único loop estable.
+Cuando no hay credenciales de admin disponibles para un `curl` autenticado real, el patrón de este
+proyecto es entrar al contenedor ya reconstruido y usar `starlette.testclient.TestClient` contra la
+app real, pegando al Postgres real (ver ejemplos en los reportes de las Tareas 5/7/8/9 del submódulo
+ODFs). Si se hacen varias llamadas (`login` + varios `GET`) como sentencias sueltas del mismo script
+(sin `with`), el motor async de SQLAlchemy puede terminar con
+`RuntimeError: ... Future ... attached to a different loop` porque cada invocación de `TestClient`
+sin contexto puede levantar su propio loop de `anyio`, mientras el pool de conexiones async queda
+atado al loop de la primera. **Usar siempre `with TestClient(app) as client:`** (login y todos los
+`GET`/`POST` posteriores dentro del mismo bloque `with`) — mantiene un único loop estable para toda
+la sesión de verificación:
+
+```python
+import unittest.mock as mock
+with mock.patch.object(app_module, "verify_password", return_value=True):  # sólo si no hay credenciales reales
+    with TestClient(app_module.app) as client:
+        client.post("/api/auth/login", json={"username": "<usuario_real_existente>", "password": "x"})
+        r = client.get("/api/algun/endpoint/real")
+```
 
 ## Script de Inicio Rápido
 
@@ -426,15 +442,71 @@ curl -s http://localhost:8011/servicios/detail?id=123 \
 
 ## Ventana de mantenimiento con restore de datos + rebuild de código: reconstruir el código PRIMERO
 
-Hallazgo real (2026-09-07, sincronización main/prod): si una ventana combina (a) un
-`pg_restore`/migración que cambia el esquema y (b) un rebuild de las imágenes con código nuevo, hacer
-(a) antes que (b) deja código VIEJO corriendo contra esquema NUEVO — cualquier script de
-reconciliación de dominio ejecutado ahí puede fallar en silencio si el código no conoce las
-columnas/tablas que el restore acaba de traer. Orden correcto: parar la app (dejar sólo `postgres`) →
-backup → restore → **rebuild + `up` completo con el código nuevo** → recién ahí reconciliar.
+Hallazgo real (2026-09-07, sincronización main/prod, ver `docs/decisiones.md`): si una ventana de
+mantenimiento combina (a) un `pg_restore`/migración que cambia el esquema y (b) un rebuild de las
+imágenes con código nuevo, hacer (a) antes que (b) deja una ventana donde el código VIEJO corre contra
+el esquema NUEVO — cualquier script de reconciliación/dominio que se ejecute ahí (ej. vía
+`docker exec` reusando el código ya desplegado, patrón de `baneo-qa-real`) puede fallar en silencio o
+de forma sutil si ese código no conoce columnas/tablas que el restore acaba de traer.
 
-Config dependiente de ambiente en tablas operativas (`app.config_servicios`: canal Slack, `workflow_id`)
-sobrevive a una copia de la base de dev a prod con los valores de ORIGEN (dev) — arranca sano, falla
-100% silencioso (ningún evento matchea el canal/workflow real, ni se loguea). Auditar y corregir esas
-filas + smoke test real end-to-end del canal externo ANTES de cerrar la ventana, nunca como pendiente
-diferido (hallazgo real 2026-09-07, listener de baneos Slack).
+**Orden correcto:** parar la capa de aplicación (dejar sólo `postgres` arriba) → backup → restore del
+esquema/datos nuevo → **rebuild + `up` completo del stack con el código nuevo** → recién ahí correr
+cualquier script de reconciliación de dominio, ya con código y esquema coherentes entre sí.
+
+## Config operativa dependiente de ambiente no se resetea sola tras un restore
+
+Hallazgo real (2026-09-07, listener de baneos Slack en prod tras la sincronización main/prod): copiar
+la base de dev a prod trae también las filas de tablas de configuración operativa (`app.config_servicios`
+y similares) con los valores del AMBIENTE DE ORIGEN — canal de Slack de prueba, `workflow_id` de dev —
+en vez de los reales de producción. El proceso arranca sano (conexión Socket Mode viva, healthcheck
+OK) y el fallo es 100% silencioso: el canal/`workflow_id` real nunca matchea el configurado, así que
+ningún evento llega ni siquiera a loguearse a nivel INFO. Sin un smoke test real (un mensaje real a
+través del canal real), este tipo de bug pasa desapercibido indefinidamente — esto es exactamente lo
+que la sesión anterior había diferido como "smoke test pendiente".
+
+**Antes de dar por cerrada una ventana que copió la base de dev a prod:** auditar toda fila de
+configuración operativa con valores dependientes de ambiente (IDs de canal, `workflow_id`, URLs de
+webhook, etc. — no sólo `slack_ingreso_listener`) contra los valores reales de producción, y hacer el
+smoke test real end-to-end del canal externo (Slack u otro) ANTES de cerrar la ventana — nunca como
+pendiente diferido a la próxima sesión.
+
+## Verificar que el contenedor sirve TU código, no uno stale
+
+Hallazgo real repetido (2026-09-08/09, gestor de Servicios sin ODF): un rebuild que "salió bien" no
+prueba que el contenedor esté sirviendo el código de la rama actual, y los tests in-process
+(`TestClient`) nunca lo detectan porque no pasan por el contenedor. Tres técnicas usadas en esa sesión,
+cada una con evidencia concluyente — elegir la que aplique al cambio:
+
+**Rutas nuevas de FastAPI** — probar que la ruta estaba AUSENTE antes del rebuild y PRESENTE después,
+no sólo que responde ahora:
+
+```bash
+# Pre-rebuild: la ruta no debe existir en el router del contenedor viejo.
+# Ojo con la ruta de import: dentro de lasfocasdev-web es `app.main`, no `web.app.main`.
+docker exec lasfocasdev-web python -c "
+from app.main import app
+print([r.path for r in app.router.routes if 'mi-ruta-nueva' in r.path])"
+
+# Post-rebuild: un 401/403 sin cookie ya prueba que la ruta existe y está cableada.
+# Un 404/405 significa que quedó mal registrada (ver el bug de orden de rutas de FastAPI).
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:<puerto>/api/<ruta-nueva>
+```
+
+**Cambios de frontend** — comparar el hash del bundle servido contra el build local, y grepear el chunk
+servido por un literal introducido por el cambio (un string de UI, un nombre de handler):
+
+```bash
+curl -s http://localhost:<puerto>/ | grep -o 'index-[a-z0-9]*\.js'   # hash servido
+ls web/frontend/dist/assets/index-*.js                               # hash local
+curl -s http://localhost:<puerto>/assets/index-<hash>.js | grep -c '<literal-del-cambio>'
+```
+
+**Cambios de backend sin ruta nueva** — grepear el símbolo o el fragmento de SQL nuevo dentro del
+contenedor:
+
+```bash
+docker exec lasfocasdev-web grep -c '<simbolo-o-fragmento-sql-nuevo>' /app/<ruta-del-modulo>
+```
+
+Regla: si no podés mostrar evidencia de que el contenedor tiene tu código, cualquier verificación E2E
+contra él no prueba nada sobre tu cambio.

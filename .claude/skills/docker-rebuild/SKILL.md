@@ -1,6 +1,6 @@
 # Nombre de archivo: SKILL.md
-# Ubicación de archivo: .agentes-comunes/skills/docker-rebuild/SKILL.md
-# Descripción: Habilidad para reconstruir contenedores Docker de LAS-FOCAS
+# Ubicación de archivo: .claude/skills/docker-rebuild/SKILL.md
+# Descripción: Habilidad para reconstruir contenedores Docker de LAS-FOCAS (mirror de .agentes-comunes/skills/docker-rebuild/SKILL.md — fuente de verdad)
 
 ---
 name: docker-rebuild

@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-alembic-migrations.md
 # Ubicación de archivo: .gemini/rules/skill-alembic-migrations.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/alembic-migrations/SKILL.md
+
 ---
 name: "skill-alembic-migrations"
 description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
@@ -26,7 +27,7 @@ commands:
 
 # Regla Skill: alembic-migrations
 
-> Fuente original: `.github/skills/alembic-migrations/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/alembic-migrations/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Migraciones Alembic
 
