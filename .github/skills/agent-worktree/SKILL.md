@@ -39,6 +39,16 @@ gobernanza/skills/migraciones/Docker.
 
 ## Procedimiento
 
+### 0. Instalar los hooks (una vez por clon)
+
+```bash
+scripts/instalar_hooks.sh
+```
+
+Configura `core.hooksPath` y activa el `pre-commit` que bloquea commits directos en
+`dev`/`main` y ramas fuera de `<tipo>/<slug>`. Al vivir en el `git-common-dir`, una sola
+instalación cubre el checkout de control y todos los worktrees de agentes. Es idempotente.
+
 ### 1. Averiguar si ya se está dentro de un worktree de agente
 
 ```bash
@@ -107,7 +117,7 @@ ln -s <checkout-de-control>/web/frontend/node_modules web/frontend/node_modules
 | `governance:claude` | editar `CLAUDE.md`, `.claude/commands/`, `.claude/skills/` |
 | `db:migrations` | crear o aplicar migraciones Alembic |
 | `env:python-dependencies` | instalar o cambiar dependencias del venv compartido |
-| `env:docker-compose` | recrear, bajar o reconstruir el stack compartido |
+| `env:docker-compose` | recrear, bajar o reconstruir el stack compartido (es único: `container_name` fijos impiden stacks paralelos) |
 
 Si el `acquire` devuelve conflicto (código 1), **no sobrescribir**: esperar, trabajar en
 otra parte de la tarea, o pedir handoff. El mensaje indica dueño y tiempo restante.
@@ -192,6 +202,8 @@ y un checkout de control sucio o fuera de `dev`. **Sólo diagnostica: no corrige
    recursos que ningún worktree puede aislar.
 9. El estado runtime (`<git-common-dir>/las-focas-agents/`) **no se versiona nunca** y no
    debe contener secretos.
+9b. `git commit --no-verify` saltea el hook: usarlo sólo ante una excepción autorizada y
+   dejarla explicada en el mensaje del commit, nunca como atajo para evitar el guardrail.
 10. `node_modules` **no** se enlaza automáticamente (es mutable y un `npm install`
     cruzado rompería a otro agente). Para verificar el frontend desde un worktree,
     enlazarlo a mano según el guardrail 13 de `dev-workflow`; el patrón ya está en

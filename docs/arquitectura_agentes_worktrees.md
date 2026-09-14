@@ -220,6 +220,26 @@ Lo único serializado es la modificación de `dev`.
 
 ## 8. Seguridad Git
 
+### Guardrail activo: hook `pre-commit`
+
+La regla "prohibido commitear en `dev`" existía sólo en la documentación; nada lo
+impedía técnicamente. `scripts/hooks/pre-commit` (instalable con
+`scripts/instalar_hooks.sh`, que configura `core.hooksPath`) la hace efectiva:
+
+| Situación | Efecto |
+|---|---|
+| Commit en `dev` o `main` | **bloqueado** |
+| Rama fuera de `<tipo>/<slug>` | **bloqueado** |
+| Commit en el checkout de control | aviso, no bloquea |
+| Commit en el worktree de un agente | sin ruido |
+
+El commit en el control se advierte pero no se bloquea a propósito: el bootstrap del
+propio tooling y algunas tareas de mantenimiento ocurren legítimamente ahí. La salida de
+emergencia es `git commit --no-verify`, deliberada y visible en el comando. Al vivir el
+hook en el `git-common-dir`, una sola instalación cubre el control y todos los worktrees.
+
+### Operaciones prohibidas
+
 El tooling **nunca** ejecuta automáticamente `reset --hard`, `clean -fd`,
 `checkout -- .`, `restore .`, `push --force` ni `worktree remove --force`.
 
@@ -259,10 +279,26 @@ de `--env-file` y rutas relativas al levantar compose desde un worktree.
 
 ### Docker Compose
 
-Un stack compartido: recrearlo, bajarlo o reconstruirlo afecta a todos. Esas
-operaciones requieren `env:docker-compose`. Levantar stacks realmente aislados por
-agente exigiría `COMPOSE_PROJECT_NAME` propio más puertos dinámicos; no se implementa
-acá porque agrega complejidad operativa sin necesidad demostrada.
+**El stack de desarrollo es un recurso compartido y así se queda.** Recrearlo, bajarlo o
+reconstruirlo afecta a todos los agentes: esas operaciones requieren
+`env:docker-compose`.
+
+Conviene ser preciso sobre por qué no se aísla por agente, porque la receta habitual
+(`COMPOSE_PROJECT_NAME` distinto por sesión) **no funciona en este repositorio**:
+
+- `deploy/docker-compose.dev.yml` fija `name: lasfocasdev`, y además cada servicio
+  declara un `container_name:` explícito (`lasfocasdev-web`, `lasfocasdev-postgres`, …).
+  Un `container_name` explícito **ignora** el prefijo del proyecto, así que dos stacks
+  simultáneos colisionarían por nombre de contenedor, no sólo por puertos.
+- Esos nombres no son un detalle interno: **467 menciones en 106 archivos** del repo
+  (scripts, skills, documentación) hacen `docker exec lasfocasdev-<servicio> …`.
+
+Aislar de verdad exigiría quitar los `container_name` fijos, parametrizar los puertos
+publicados y actualizar esas 467 referencias. Es un cambio de infraestructura con su
+propio riesgo, ajeno al problema de concurrencia agéntica: se decide aparte, no como
+efecto colateral de esta arquitectura. Mientras tanto, el lease es la coordinación
+correcta, y es suficiente: las operaciones destructivas sobre el stack son puntuales,
+no continuas.
 
 ### Base de datos y Alembic
 
@@ -344,6 +380,8 @@ El patrón de lease cooperativo con TTL, conflicto explícito, expiración recup
 | `scripts/agent_worktree.py` | ciclo de vida: `start`, `list`, `status`, `heartbeat`, `sync`, `ready`, `integrate`, `handoff`, `accept-handoff`, `finish`, `cleanup`, `doctor` |
 | `scripts/agent_lock.py` | leases: `acquire`, `heartbeat`/`renew`, `release`, `status`, `list`, `stale-cleanup` |
 | `scripts/agentes/` | capas internas: `rutas` (descubrimiento), `estado` (SQLite), `gitops` (Git), `consola` (salida/logging) |
+| `scripts/sync_skill_mirrors.py` | propagación determinista de skills a los mirrors por plataforma; `--check` verifica drift |
+| `scripts/hooks/pre-commit` + `scripts/instalar_hooks.sh` | guardrail activo de la política de ramas |
 
 La lógica ejecutable vive en Python (capa neutral, stdlib únicamente, sin depender del
 venv ni de la app). Las skills y los comandos de cada plataforma sólo indican **cuándo

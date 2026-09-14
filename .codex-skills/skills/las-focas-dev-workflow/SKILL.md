@@ -114,6 +114,10 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
 5. Restricciones sobre archivos de producción (`deploy/compose.yml`, `.env`, secretos) — requieren aprobación explícita del Tech Lead; si se necesita, documentar en `docs/decisiones.md` y crear PR formal.
 
 ## Guardrails
+0. **El guardrail 1 es ahora efectivo, no sólo documental**: `scripts/hooks/pre-commit`
+   (instalar una vez con `scripts/instalar_hooks.sh`) bloquea el commit en `dev`/`main` y en
+   ramas fuera de `<tipo>/<slug>`. La salida de emergencia es `git commit --no-verify`, que
+   sólo corresponde ante una excepción autorizada y explicada.
 1. No commitear ni pushear estando parado en `dev` o `main`. Todo trabajo ocurre en una rama efímera
    creada desde `origin/dev` (paso 1). Esta regla es universal — sin excepciones por tipo de tarea.
 2. No hacer push a `origin/main` sin PR revisado que venga de `dev`.
