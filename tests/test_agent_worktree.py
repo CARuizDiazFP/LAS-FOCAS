@@ -651,3 +651,26 @@ def test_asegurar_exclusiones_es_idempotente(control: Path) -> None:
     assert segundo == []
     contenido = (comun / "info" / "exclude").read_text(encoding="utf-8")
     assert contenido.count("/.venv") == 1
+
+
+def test_start_avisa_si_faltan_artefactos_de_build(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Un worktree nuevo no hereda los artefactos de build ignorados por Git.
+
+    Hallazgo real (2026-09-14): los tests que sirven el shell SPA necesitan
+    ``web/frontend/dist/index.html``; en un worktree recién creado no existe y los
+    fallos parecen una regresión del cambio en curso. El aviso evita ese triage erróneo.
+    """
+    dist = control / "web" / "frontend" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text('<div id="app"></div>', encoding="utf-8")
+    (control / ".gitignore").write_text("web/frontend/dist/\n", encoding="utf-8")
+    _git(["add", ".gitignore"], control)
+    _git(["commit", "-m", "chore: ignorar dist"], control)
+
+    resultado = _iniciar("claude-web", "tarea-web", capsys)
+
+    assert resultado["artefactos_build_faltantes"] == ["web/frontend/dist"]
+    assert not (Path(resultado["worktree"]) / "web" / "frontend" / "dist").exists()
+    assert gitops.esta_limpio(Path(resultado["worktree"]))

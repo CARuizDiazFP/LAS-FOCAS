@@ -98,6 +98,20 @@ control (no se copian), y el tooling registra los patrones en
 
 Después: `cd <ruta-del-worktree>` y trabajar ahí.
 
+> **Artefactos de build**: un worktree nuevo **no** hereda `web/frontend/dist` ni
+> `web/frontend/node_modules` (están ignorados por Git y viven sólo en el checkout de
+> control). `start` lo avisa cuando faltan. Consecuencia concreta y verificada
+> (2026-09-14): los tests que sirven el shell SPA (`test_web_admin.py::test_admin_paths_*`)
+> fallan por ausencia de `dist/index.html`, y ese fallo **no** es una regresión del
+> cambio en curso. Si hace falta, enlazarlos a mano desde el control (los patrones ya
+> están en `info/exclude`, así que el symlink no ensucia `git status`) o buildear en el
+> worktree; recordar que son mutables y compartidos.
+
+```bash
+ln -s <checkout-de-control>/web/frontend/dist web/frontend/dist
+ln -s <checkout-de-control>/web/frontend/node_modules web/frontend/node_modules
+```
+
 ### 3. Trabajar
 
 - Editar, testear y commitear normalmente en la rama propia. **Sin leases.**

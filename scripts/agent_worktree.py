@@ -67,11 +67,18 @@ REMOTO = "origin"
 ENLACES_ENTORNO = (".venv", ".env", ".env.dev", ".secrets")
 
 # Rutas que NO se enlazan automáticamente pero que igual deben quedar excluidas: se
-# enlazan a mano y bajo demanda (ver la skill `agent-worktree`). `node_modules` es
-# mutable y compartirlo entre worktrees puede romper instalaciones cruzadas, así que
-# no se enlaza solo; pero cuando se lo enlaza para verificar el frontend, el symlink
-# no debe ensuciar `git status` (guardrail 13 de `dev-workflow`, 2026-09-11).
-EXCLUSIONES_ADICIONALES = ("web/frontend/node_modules",)
+# enlazan a mano y bajo demanda (ver la skill `agent-worktree`). Son artefactos de
+# build mutables y compartirlos entre worktrees puede romper el trabajo de otro agente
+# (un `npm install` o un `vite build` cruzado), así que no se enlazan solos; pero
+# cuando se los enlaza, el symlink no debe ensuciar `git status` (guardrail 13 de
+# `dev-workflow`, 2026-09-11).
+EXCLUSIONES_ADICIONALES = ("web/frontend/node_modules", "web/frontend/dist")
+
+# Artefactos de build ignorados por Git que un worktree recién creado NO tiene. Se
+# avisa en `start` porque hay tests que dependen de ellos (los que sirven el shell SPA
+# necesitan `web/frontend/dist/index.html`) y su ausencia produce fallos que parecen
+# regresiones del cambio en curso.
+ARTEFACTOS_BUILD = ("web/frontend/dist", "web/frontend/node_modules")
 
 logger = configurar_logging("agent_worktree")
 
@@ -241,6 +248,11 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
         agent_id=agent_id,
         detalle=f"ruta={destino} rama={rama} base={base_ref}@{base_sha[:12]} enlaces={','.join(enlazados) or '-'}",
     )
+    faltantes = [
+        ruta
+        for ruta in ARTEFACTOS_BUILD
+        if (entorno.control / ruta).exists() and not (destino / ruta).exists()
+    ]
     return {
         "agente": agent_id,
         "rama": rama,
@@ -248,6 +260,7 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
         "base": f"{base_ref}@{base_sha[:12]}",
         "estado": "active",
         "enlaces": enlazados,
+        "artefactos_build_faltantes": faltantes,
         "idempotente": False,
     }
 
@@ -923,6 +936,19 @@ def _imprimir(comando: str, resultado: object) -> None:
             emitir("Nota:     el agente ya existía con esta tarea; no se recreó nada.")
         elif resultado.get("enlaces"):
             emitir(f"Enlaces:  {', '.join(resultado['enlaces'])} (del checkout de control)")
+        if resultado.get("artefactos_build_faltantes"):
+            emitir("")
+            emitir(
+                "Aviso:    este worktree no tiene "
+                f"{', '.join(resultado['artefactos_build_faltantes'])} "
+                "(artefactos de build ignorados por Git)."
+            )
+            emitir(
+                "          Los tests que sirven el shell SPA fallarán hasta buildear o enlazar"
+            )
+            emitir(
+                "          esas rutas desde el checkout de control. No es una regresión del cambio."
+            )
         emitir("")
         emitir(f"Trabajar dentro de: cd {resultado['worktree']}")
         return

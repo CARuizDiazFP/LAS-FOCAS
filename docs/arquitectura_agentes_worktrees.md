@@ -270,12 +270,20 @@ Dos agentes generando o aplicando migraciones contra el mismo entorno es peligro
 requiere `db:migrations`. Esto es la contraparte agéntica del `pg_advisory_xact_lock`
 que `core/services/camara_hierarchy_service.py` ya usa en la capa de negocio.
 
-### Frontend / `node_modules`
+### Frontend: `node_modules` y `dist`
 
-**No se enlaza automáticamente**: es mutable y un `npm install` cruzado rompería a
-otro agente. Cuando haga falta verificar el frontend desde un worktree, se enlaza a
-mano (ver guardrail 13 de `dev-workflow`); el patrón ya está en `info/exclude`, así
-que el symlink no ensucia `git status` y no hay que acordarse de borrarlo.
+**No se enlazan automáticamente**: son mutables y un `npm install` o un `vite build`
+cruzado rompería a otro agente. Cuando haga falta, se enlazan a mano; los patrones ya
+están en `info/exclude`, así que el symlink no ensucia `git status` y no hay que
+acordarse de borrarlo.
+
+> **Consecuencia medida (2026-09-14)**: un worktree recién creado no tiene
+> `web/frontend/dist`, y los tests que sirven el shell SPA
+> (`test_web_admin.py::test_admin_paths_*`) fallan por eso. Comparando la suite completa
+> entre el checkout de control y un worktree limpio sobre `origin/dev`: 32 vs 36 fallos,
+> con **cero fallos nuevos** atribuibles al cambio — la diferencia son exactamente esos
+> 4 tests. `start` avisa cuando faltan los artefactos, para que la ausencia no se
+> confunda con una regresión.
 
 ## 10. Recuperación ante fallas
 
