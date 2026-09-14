@@ -254,6 +254,27 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
     sesión doble no sabía responder. Los tests propios de un feature no detectan lo que el feature
     le rompe al resto.
 
+14. **Afirmar que un check pasó exige leer su código de salida real, no el del pipe.** Real
+    (2026-09-14): reporté `scripts/check_no_plaintext_secrets.sh` como "OK" porque lo había corrido
+    como `bash script.sh 2>&1 | tail -5; echo "EXIT=$?"` — eso imprime el exit de `tail`, que es 0
+    casi siempre. El script en realidad salía con **código 1**. Los hallazgos resultaron
+    preexistentes y falsos positivos, pero la afirmación era infundada cuando la hice.
+    ```bash
+    bash scripts/check_no_plaintext_secrets.sh; echo "EXIT REAL=$?"   # sin pipe
+    # o: set -o pipefail   /   ${PIPESTATUS[0]}
+    ```
+    Si el check falla, antes de declarar los hallazgos ajenos al cambio, demostrarlo:
+    ```bash
+    git diff --name-only origin/dev...HEAD | grep -E "<archivos-del-hallazgo>"   # ¿los toqué?
+    git show origin/dev:<archivo> | grep -c "<patrón>"                           # ¿ya estaba?
+    ```
+15. **`sudo` no funciona en una sesión de agente no interactiva.** Real (2026-09-14): un
+    `sudo rm -rf` autorizado por el usuario falló con
+    `sudo: a terminal is required to read the password`. No hay forma de completarlo desde acá y la
+    contraseña **no** se pide por chat. Cuando una tarea requiera privilegios elevados: verificar y
+    dejar preparado todo lo que sí se puede hacer, y entregar al usuario el comando exacto a ejecutar,
+    registrándolo como pendiente explícito en el cierre.
+
 ## Relación con otras skills
 `agent-worktree` (crea el worktree/rama propios del agente y coordina leases e integración; es el
 paso 0 de este procedimiento), `repo-updater` (audita/commitea sobre la rama efímera activa),

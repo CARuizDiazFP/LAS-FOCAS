@@ -336,6 +336,27 @@ Claves:
 - Si el diff es vacío, se puede afirmar "cero regresiones" con evidencia; sin esta comparación, la
   única afirmación honesta es "hay 97 fallas y no sé de quién son".
 
+**Ampliación 2026-09-14 — el worktree de baseline no hereda los artefactos de build, y eso mete
+falsos positivos en el diff.** Al comparar la suite completa entre el checkout de control y un
+worktree limpio sobre `origin/dev`, el baseline dio **4 fallas de más**
+(`test_web_admin.py::test_admin_paths_*`). No eran regresiones al revés ni ruido aleatorio: esos
+tests sirven el shell SPA y necesitan `web/frontend/dist/index.html`, que está **gitignoreado** y
+vive sólo en el checkout principal. Un worktree recién creado no lo tiene, así que fallan ahí y no
+acá. Lo mismo vale para `web/frontend/node_modules`.
+
+Antes de interpretar el diff, igualar el entorno o descontar esos tests:
+
+```bash
+# Enlazar los artefactos al worktree de baseline (o aceptar la diferencia y justificarla)
+ln -s <checkout-principal>/web/frontend/dist         /tmp/baseline/web/frontend/dist
+ln -s <checkout-principal>/web/frontend/node_modules /tmp/baseline/web/frontend/node_modules
+```
+
+Un worktree creado con `agent_worktree.py start` avisa cuáles faltan, justamente para que esa
+diferencia no se lea como regresión. Corolario general: **un diff de fallas entre dos árboles sólo es
+concluyente si el entorno no versionado de ambos es equivalente** — venv, artefactos de build y
+acceso a servicios.
+
 Causa típica de estas fallas preexistentes en LAS-FOCAS: `failed to resolve host 'postgres'` — los
 tests `*_real_db.py` resuelven el hostname `postgres` de la red Docker y **no corren desde el venv
 del host**. Eso es gap de entorno (ver "Diagnóstico de Fallas: Heurísticas"), no falla de código; para
