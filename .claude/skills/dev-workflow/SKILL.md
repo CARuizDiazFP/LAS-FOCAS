@@ -151,6 +151,32 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
       `git bundle create <archivo> --stdin --not dev main` guardado **fuera** del repo (no commitear
       binarios, guardrail #4). Verificar con `git bundle verify` que los prerequisitos estén en `dev`.
 
+13. **Verificar el frontend desde un worktree: sin `node_modules` el type-check miente, y el
+    type-check solo no ve errores de plantilla.** Real (2026-09-11): `npx vue-tsc --noEmit` reportó
+    "0 errores" tres veces seguidas desde un worktree que **no tiene `node_modules`** (vive sólo en
+    el checkout principal, está gitignoreado). No podía resolver ni `vue`, así que no verificaba
+    nada y la afirmación "0 errores" era hueca. Con el symlink puesto, el chequeo real devolvió 4
+    errores —todos preexistentes de un archivo ajeno al cambio— y recién ahí sirvió de línea de
+    base. Y además `npx vite build` encontró un bug que el type-check **no ve ni con las
+    dependencias resueltas**: un `v-else` cuyo `v-if` no era su hermano adyacente. Antes de declarar
+    verde cualquier cambio de frontend hecho en un worktree:
+    ```bash
+    ln -s <checkout-principal>/web/frontend/node_modules web/frontend/node_modules
+    npx vue-tsc --noEmit   # tipos
+    npx vite build         # plantillas: encuentra lo que el type-check no ve
+    rm web/frontend/node_modules
+    ```
+    Borrar el symlink al terminar no es cosmético: `.gitignore` tiene `web/frontend/node_modules/`
+    **con barra final**, y una barra final sólo matchea directorios — un symlink es un archivo para
+    git, así que **no** queda ignorado y aparece en `git status` de todas las sesiones que compartan
+    el worktree.
+
+    Corolario del mismo día, mismo espíritu: correr la **suite completa** antes de cerrar, no sólo
+    los tests del feature. Los 74 tests nuevos de esa sesión estaban verdes mientras un test
+    **existente** del listado se rompía, porque el endpoint había ganado una llamada nueva que su
+    sesión doble no sabía responder. Los tests propios de un feature no detectan lo que el feature
+    le rompe al resto.
+
 ## Relación con otras skills
 `repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
 `docker-rebuild`, `cierre-sesion` (único punto que integra la rama efímera a `dev`).
