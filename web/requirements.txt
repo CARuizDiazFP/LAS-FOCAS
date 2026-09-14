@@ -3,5 +3,5 @@
 # Descripción: Dependencias específicas del servicio web (las comunes están en focas-base vía common-requirements.txt)
 
 # Solo paquetes específicos de este servicio
-docker==7.1.0  # Python SDK para gestión del contenedor del worker desde el panel admin
+docker==7.2.0  # Python SDK para gestión del contenedor del worker desde el panel admin
 slack_sdk==3.33.5  # Avisos inmediatos de baneo/desbaneo desde endpoints same-origin del panel web
