@@ -6,4 +6,4 @@
 python-dotenv==1.2.2  # Parche de seguridad, ver pip-audit
 folium==0.16.0
 gspread==6.0.0
-slack_sdk==3.33.5  # Avisos a Slack al crear/levantar baneos desde Infra
+slack_sdk==3.44.1  # Avisos a Slack al crear/levantar baneos desde Infra
