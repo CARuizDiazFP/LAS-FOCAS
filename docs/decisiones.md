@@ -1716,3 +1716,30 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   contenedor reconstruido, más lectura de código (revisiones del plan) para los 3 no-negociables de
   UI (ambos extremos visibles, sugerencia nunca auto-aplicada, señal nunca bloqueante) y el guardrail
   de paleta de tokens.
+
+## 2026-09-14 — Aislamiento físico multi-agente por Git worktree
+
+- **Contexto:** El aislamiento entre sesiones agénticas concurrentes era sólo histórico (una rama
+  efímera por tarea) sobre un único working tree compartido. Eso ya había producido fricción real y
+  documentada: un commit ajeno aterrizando en la rama efímera de otra tarea (`docs/cierres/2026-09-04.md`)
+  y cinco procesos `claude` compartiendo checkout con cambios de rama que ninguna sesión había
+  iniciado (`docs/cierres/2026-09-07.md`). `AGENTS.md` describía desde el 2026-09-08 una política de
+  ownership, leases y handoff que no tenía implementación.
+- **Decisión:** Implementar **un agente = una tarea = una rama = un Git worktree**
+  (`scripts/agent_worktree.py`), con leases por recurso compartido sobre SQLite
+  (`scripts/agent_lock.py`), estado runtime en `<git-common-dir>/las-focas-agents/` (fuera del
+  historial Git y visible desde todos los linked worktrees) e integración a `dev` serializada por el
+  lease `git:integrate-dev`. El checkout principal pasa a ser **checkout de control/integración**.
+- **Alternativas:** (a) Mantener el lock cooperativo global sobre un worktree único, como hace hoy
+  `Growen` — descartado: serializa toda la tarea, no sólo el recurso en disputa, y no impide que dos
+  agentes se pisen el working tree. (b) Estado en PostgreSQL o Redis — descartado para coordinación
+  local: agrega un servicio y una dependencia para un problema que SQLite con `BEGIN IMMEDIATE`
+  resuelve; queda documentado como backend futuro para agentes en máquinas distintas. (c) Una base
+  de estado por worktree — descartado: dejaría de ser estado compartido.
+- **Impacto:** Varias sesiones pueden trabajar en paralelo sin que un `git switch`, un staging o un
+  commit de una afecte a otra; el desarrollo normal no toma ningún lock; sólo la ventana de escritura
+  sobre `dev` se serializa. Se corrigió además un problema de `.gitignore` que afectaba a todo
+  worktree: los patrones con barra final (`.venv*/`, `.secrets/`, `web/frontend/node_modules/`) no
+  matchean symlinks, así que los enlaces de entorno aparecían como archivos sin trackear; ahora el
+  tooling registra esos patrones en `<git-common-dir>/info/exclude`, que es compartido y no depende
+  de la rama de cada worktree. Referencia: `docs/arquitectura_agentes_worktrees.md`.

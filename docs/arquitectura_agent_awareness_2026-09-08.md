@@ -4,6 +4,31 @@
 
 # Arquitectura de Agent Awareness y coordinación concurrente
 
+> **Estado (2026-09-14): implementado, con una evolución sobre esta propuesta.**
+> Este documento es el **diseño original**. La referencia operativa vigente es
+> [`docs/arquitectura_agentes_worktrees.md`](arquitectura_agentes_worktrees.md).
+>
+> Se implementó tal cual estaba propuesto: ownership por recurso, leases con heartbeat
+> y expiración, handoff formal, estado persistido en SQLite fuera del historial Git,
+> auditoría de eventos y `scripts/agent_lock.py` con
+> `acquire/heartbeat/release/status/list/stale-cleanup`.
+>
+> Cambió respecto de esta propuesta:
+>
+> - El estado **no** vive en `.agent-state/` dentro del working tree, sino en
+>   `<git-common-dir>/las-focas-agents/agent_state.sqlite3`. Motivo: un directorio del
+>   working tree no es visible de forma consistente entre worktrees distintos ni
+>   sobrevive a los cambios de rama; el git-common-dir sí, y además queda fuera del
+>   historial por construcción.
+> - Se agregó la capa que esta propuesta no contemplaba: **aislamiento físico por Git
+>   worktree** (`scripts/agent_worktree.py`). El lock lógico por recurso resuelve la
+>   coordinación sobre artefactos compartidos, pero no evita que dos agentes se pisen el
+>   working tree, el index y el `HEAD`. Con un worktree por agente, el lock por recurso
+>   deja de ser la defensa principal del trabajo diario y pasa a cubrir sólo lo que de
+>   verdad es compartido.
+> - En consecuencia, **no hay lock global** sostenido durante toda la tarea: sólo la
+>   integración a `dev` se serializa (`git:integrate-dev`).
+
 ## Objetivo
 
 Diseñar una capa de coordinación explícita para el ecosistema de agentes del repositorio, orientada a prevenir condiciones de carrera, bloquear sobrescrituras no coordinadas y mantener un estado compartido de trabajo entre múltiples agentes.
@@ -193,9 +218,11 @@ Si un agente queda interrumpido, no existe un contrato de continuidad formal par
 
 ## Plan de acción recomendado
 
-### Fase 1 — Gobernanza del estado
+### Fase 1 — Gobernanza del estado — **IMPLEMENTADA (2026-09-14)**
 
-- Crear `.agent-state/` o equivalente.
+- ~~Crear `.agent-state/` o equivalente~~ → implementado como
+  `<git-common-dir>/las-focas-agents/agent_state.sqlite3` (ver la nota de estado al
+  inicio de este documento), más `scripts/agent_worktree.py` para el aislamiento físico.
 - Definir `resource`, `owner`, `lease`, `heartbeat` y `handoff`.
 - Implementar `scripts/agent_lock.py` con `acquire`, `heartbeat`, `release`, `status`, `stale-cleanup`.
 

@@ -30,7 +30,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ```
 
 - Idioma obligatorio: español en código, commits, PRs y documentación.
-- Rama de trabajo: ramas efímeras `<tipo>/<slug>` creadas desde `origin/dev` (obligatorio — prohibido commitear directo en `dev`). La integración a `dev` es automática al cierre de sesión (`cierre-sesion`). Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
+- Rama de trabajo: ramas efímeras `<tipo>/<slug>` creadas desde `origin/dev` (obligatorio — prohibido commitear directo en `dev`), en un **worktree propio** creado con `scripts/agent_worktree.py start` (convención `<tipo>/<agent-id>-<task-slug>`; ver "Conciencia agéntica y control de concurrencia"). La integración a `dev` es automática al cierre de sesión (`cierre-sesion`) y está serializada por el lease `git:integrate-dev`. Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
 - Compose de desarrollo: `deploy/docker-compose.dev.yml`. No usar `deploy/compose.yml` en entorno local ni de agentes.
 - Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
 - Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.
@@ -79,6 +79,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - NLP: `docs/nlp/intent.md`
 - Office service: `docs/office_service.md`
 - Infraestructura: `docs/infra.md`
+- Concurrencia multi-agente (worktrees, leases, integración serializada): `docs/arquitectura_agentes_worktrees.md`
 - PRs diarios: `docs/PR/YYYY-MM-DD.md`
 - Documentación privada de la empresa: `docs/Doc Privada/` — **ignorada por git** (ver `.gitignore`), nunca debe commitearse ni subirse al repo
 - Ingesta de inventario FO desde Cromo (contexto estructural, sin datos sensibles): `docs/modulo_ingesta_cromo.md`. Modelo de datos y autenticación (privado, no versionado): `docs/Doc Privada/ingesta_cromo.md`
@@ -90,6 +91,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Mantener mirrors por plataforma (`.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/`, `.claude/skills/`) sincronizados con `.agentes-comunes/skills/`.
 - El flujo recursivo SDD/superpowers se mantiene habilitado; optimizar ejecución acotando rondas redundantes (evitar cadenas abiertas de re-review cuando no hay hallazgos nuevos).
 - La regla operativa de corte de rondas recursivas está formalizada en `docs/politica_recursion_sdd.md`.
+- **Antes de empezar cualquier tarea**, usar la skill `agent-worktree`: crea el worktree y la rama propios del agente, define cuándo hace falta un lease y cómo integrar sin pisar a otras sesiones.
 - Para tareas de frontend (agregar rutas, vistas o componentes Vue), usar la skill `frontend-spa-architecture` para verificar el entry point activo y el router unificado antes de escribir código.
 - Antes de cerrar cualquier tarea de UI/CSS, usar la skill `nocturne-token-compliance`: audita colores hardcodeados no sólo en la vista tocada sino en todo su árbol de imports (los modales/cards de `components/` repiten el mismo problema por copy-paste), y define cómo verificar el resultado real cuando no hay navegador disponible en la sesión.
 - Para revisiones safe-by-design de seguridad, usar `security` junto con `security-scan`, `dependency-audit`, `secret-detection` y `sast-analysis`; priorizar `.env`, `deploy/`, `Keys/`, Docker, red y superficies expuestas.
@@ -102,33 +104,98 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 ## Conciencia agéntica y control de concurrencia
 
-- El ecosistema multi-agente debe tratarse como un sistema concurrente y no como una colección de archivos estáticos. El principal riesgo no es sólo el `git diff`, sino las condiciones de carrera sobre los mismos artefactos de gobernanza (`.github`, `.claude`, `.gemini`, `.codex-skills`, `.agentes-comunes`, `docs/`, `scripts/`).
-- Toda modificación de un flujo de trabajo, skill, agente, prompt o script compartido debe adquirir un lock de ámbito acotado antes de editar. El lock debe ser por componente (`skill:...`, `agent:...`, `workflow:...`, `docs:...`) y no global del repositorio, salvo que el cambio afecte la raíz del sistema agéntico completo.
-- Se debe mantener un estado de propiedad explícito para cada artefacto crítico: `owner`, `scope`, `started_at`, `heartbeat_at`, `lease_expires_at`, `handoff`, `status`. El estado debe registrarse en una base de estado agéntico y no sólo en el hilo de conversación.
-- Si dos agentes intentan tocar el mismo componente, la regla operativa es: primero `acquire lock`, luego `heartbeat`, luego `edit`; si se detecta conflicto, el segundo agente debe delegar, reintentar con backoff o requerir handoff formal, nunca sobrescribir silenciosamente.
-- El repositorio ya usa locks transaccionales reales en la capa de negocio; por ejemplo, `core/services/camara_hierarchy_service.py` usa `pg_advisory_xact_lock` para serializar la resolución concurrente de una misma entidad. El mismo principio debe aplicarse a la capa agéntica, con lock de recursos y lock de estado, no sólo en la base de datos.
-- El estado del agente y los locks deben ser persistidos en un registro único y versionado, por ejemplo `.agent-state/` con `agent_state.db` o una tabla equivalente en PostgreSQL. Las rutas de trabajo deben reflejar el corredor activo, la intención y el alcance exacto antes de cualquier edición.
-- La sincronización entre mirrors de skills no debe depender de la memoria o la buena voluntad. Debe ejecutarse con scripts idempotentes y con verificación de drift en CI. Una modificación en `.agentes-comunes/skills/` debe generar un estado de `dirty synchronization` si el mirror no refleja el mismo contenido o metadatos.
-- Para cambios de alta coordinación o riesgo, se requiere handoff explícito con `status=handoff` y archivo de continuidad si una sesión se interrumpe o si un agent está bloqueado por un lock de otro agente.
-- El archivo de referencia operativa para esta política es `docs/arquitectura_agent_awareness_2026-09-08.md`.
+El ecosistema multi-agente es un sistema concurrente. El aislamiento se resuelve en
+capas distintas y complementarias; la referencia completa es
+`docs/arquitectura_agentes_worktrees.md`.
+
+### Regla base: un agente = una tarea = una rama = un worktree
+
+- Las tareas concurrentes normales **se aíslan físicamente mediante Git worktrees**, no
+  con locks. Cada agente trabaja en su propio working tree, con su propio index, su
+  propio `HEAD` y su propia rama efímera. Un `git switch`, `git add`, `git stash` o
+  commit de un agente no afecta el directorio de ningún otro.
+- El worktree y la rama se crean con
+  `python scripts/agent_worktree.py start --agent <id> --type <tipo> --task <slug>`;
+  la rama resultante es `<tipo>/<agent-id>-<task-slug>`.
+- **El checkout principal se reserva para control/integración**: permanece en `dev` y se
+  usa para crear o quitar worktrees, integrar, inspeccionar y coordinar. No es el
+  working tree habitual de ningún agente de desarrollo.
+- **No existe un lock global sostenido durante toda la tarea.** Dos agentes editando
+  `api/foo.py` y `web/bar.vue` trabajan en paralelo sin tomar ningún lease.
+
+### Los leases complementan a los worktrees, no los reemplazan
+
+- Un lease se toma **sólo** para recursos que ningún worktree puede aislar: skills y sus
+  mirrors, documentos de gobernanza, migraciones, el venv compartido, el stack Docker.
+  Formato `<clase>:<nombre>`; los canónicos son `skill:<nombre>`, `agent:<nombre>`,
+  `docs:AGENTS.md`, `governance:claude`, `db:migrations`, `env:python-dependencies`,
+  `env:docker-compose`, `git:worktree-lifecycle` y `git:integrate-dev`.
+- Ciclo: `acquire` → `heartbeat` → `edit` → `release`
+  (`python scripts/agent_lock.py acquire "<recurso>" --agent <id> --reason "<motivo>"`).
+- Si el recurso ya tiene dueño con lease vigente, el segundo agente **no sobrescribe**:
+  reintenta, delega o pide handoff formal. Robar un lease vigente exige `--force`
+  explícito y queda auditado.
+- Un lease vencido se readquiere con `acquire` tras verificar el estado real del
+  recurso. Un `heartbeat` **no revive** un lease vencido.
+- El lock nunca restringe la lectura: sólo la escritura concurrente y el handoff
+  conflictivo sobre el mismo recurso.
+
+### Sólo la integración a `dev` se serializa
+
+- `dev` se modifica exclusivamente durante la integración, bajo el lease
+  `git:integrate-dev` (`python scripts/agent_worktree.py integrate --agent <id>`).
+- Mientras un agente integra, los demás siguen desarrollando en sus worktrees sin
+  interrupción. Lo único serializado es la ventana de escritura sobre `dev`.
+- Antes de integrar, cada agente incorpora `origin/dev` a su rama **dentro de su propio
+  worktree** (`sync`) y resuelve ahí cualquier conflicto.
+
+### El runtime de coordinación vive fuera del historial Git
+
+- Estado compartido: `<git-common-dir>/las-focas-agents/agent_state.sqlite3`
+  (`git rev-parse --git-common-dir`). Es visible desde todos los linked worktrees,
+  sobrevive a los cambios de rama y **no se versiona nunca**.
+- Modela `agent_id`, `task_id`, `status`, `branch`, `worktree_path`, `started_at`,
+  `heartbeat_at`, `last_activity_at`; los leases con `resource`, `owner`, `scope`,
+  `lease_expires_at` y `heartbeat_at`; los handoffs con `next_action` y `blocked_on`; y
+  una bitácora de eventos. No se guardan secretos.
+- El mismo principio de serialización que la capa de negocio ya aplica con
+  `pg_advisory_xact_lock` en `core/services/camara_hierarchy_service.py`, trasladado a
+  la capa de gobernanza.
+
+### Seguridad y recuperación
+
+- Prohibido ejecutar automáticamente `git reset --hard`, `git clean -fd`,
+  `git checkout -- .`, `git restore .`, `git push --force` o
+  `git worktree remove --force` sobre trabajo no demostrado como descartable.
+- Un worktree con `git status --porcelain` no vacío **nunca** se elimina
+  automáticamente. Las ramas se borran con `git branch -d`, nunca con `-D`.
+- Un agente `stale` (sin heartbeat dentro del TTL) conserva su rama, su worktree y sus
+  cambios: `stale` es una señal, no una acción destructiva.
+- Ante cualquier inconsistencia (worktree sin registro, registro sin worktree, rama
+  desalineada, integración interrumpida): `python scripts/agent_worktree.py doctor`,
+  que diagnostica y **no corrige**.
+
+### Cierre y continuidad
+
+- Al cerrar, todo agente deja su estado en `finished` o `handoff` y libera sus leases.
+  El flujo completo está en la skill `cierre-sesion`.
+- Si una tarea queda bloqueada o interrumpida, se emite un handoff explícito
+  (`agent_worktree.py handoff --from <a> --to <b> --next-action "<paso>"`), que conserva
+  rama, worktree, último commit, archivos modificados, leases y bloqueo conocido. El
+  ownership no cambia de forma silenciosa: el destino lo acepta con `accept-handoff`.
+- Un recurso con dueño activo no se reasigna sin consentimiento explícito o expiración
+  del lease.
 
 ## Reglas de sincronización de mirrors
 
 - La fuente de verdad de skills es `.agentes-comunes/skills/`.
-- Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y `.claude/skills/` se consideran artefactos derivados y deben sincronizarse tras cada cambio relevante.
-- La ejecución de `scripts/sync_agentes_comunes.sh` debe considerarse obligatoria en cambios de skills, prompts o agentes que impacten a cualquiera de los mirrors.
-- Si hay drift entre la fuente y los mirrors, el flujo de trabajo debe detenerse y corregirse antes de cerrar la tarea.
-
-## Patrón de implementación recomendado
-
-- `Agent Awareness` debe incluir: `owner`, `state`, `resource`, `scope`, `lease_expires_at`, `last_heartbeat`, `last_change`, `dependency_chain`.
-- `resource` debe apuntar al componente exacto: `skill:docker-rebuild`, `agent:security`, `workflow:repo-updater`, `docs:AGENTS.md`, etc.
-- El lock debe ser de corta duración con `heartbeat` periódico; un lock sin heartbeat se considera vencido y debe ser liberado automáticamente.
-- El lock no debe restringir lectura; sólo debe bloquear escritura concurrente y handoff conflictivo sobre el mismo recurso.
-- Este patrón se recomienda implementarlo con SQLite local para trabajo de agente dentro del repo y con PostgreSQL para coordinación distribuida o CI/CD.
-
-## Política de cierre y continuidad
-
-- Antes de cerrar una sesión, todo agente debe dejar el estado en `idle` o `handoff` y limpiar locks vencidos cuando el recurso ya no esté en uso.
-- Si una tarea queda bloqueada o interrumpida, debe emitirse un handoff con el estado exacto del recurso y el siguiente paso.
-- No se debe producir “oversubscription” de un recurso compartido: un recurso con `owner` activo no puede ser reasignado sin consentimiento explícito o expiración de lease.
+- Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y
+  `.claude/skills/` se consideran artefactos derivados y deben sincronizarse tras cada
+  cambio relevante.
+- La ejecución de `scripts/sync_agentes_comunes.sh` es obligatoria en cambios de skills,
+  prompts o agentes que impacten a cualquiera de los mirrors; `scripts/check_skill_mirror_drift.sh`
+  verifica el resultado.
+- Si hay drift entre la fuente y los mirrors, el flujo de trabajo debe detenerse y
+  corregirse antes de cerrar la tarea.
+- Editar una skill o sus mirrors requiere el lease `skill:<nombre>`: la propagación
+  toca varios directorios y es exactamente el tipo de recurso que un worktree no aísla.

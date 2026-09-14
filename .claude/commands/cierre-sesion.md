@@ -26,6 +26,13 @@ Producir la retrospectiva técnica completa (guardada en `docs/cierres/`), imple
 # Pasos
 
 1. Confirmar el gate de activación. Si no se cumple, no continuar con los pasos siguientes.
+1b. **Identificar al agente y validar su workspace** (skill `agent-worktree`):
+    ```bash
+    python scripts/agent_worktree.py status        # agentes, leases, handoffs
+    git rev-parse --show-toplevel                  # ¿dónde está parada esta sesión?
+    python scripts/agent_worktree.py doctor        # inconsistencias (sólo diagnostica)
+    ```
+    Confirmar que el `toplevel` coincide con el `worktree_path` registrado para este `agent_id` y que la rama activa es la registrada. Si la sesión trabajó sin registrarse (flujo manual), continuar igual: el paso 14 cubre ambos casos. Si está parada en el checkout de control con cambios propios sin integrar, decirlo explícitamente en el checklist final.
 2. Leer `AGENTS.md`, el historial disponible de la conversación activa, resultados de tool calls, el diff actual (`git status`/`git diff`) y la documentación de dominio afectada. Declarar cualquier límite de evidencia detectado.
 3. Delimitar qué cambios son propios de esta sesión, cuáles son preexistentes del worktree y cuáles son acciones externas.
 4. Contrastar cada tarea supuestamente terminada contra código, tests, logs, estado del sistema o documentación. Clasificarla como completada, parcial, bloqueada o no verificada.
@@ -45,7 +52,20 @@ Producir la retrospectiva técnica completa (guardada en `docs/cierres/`), imple
 11. **Compuerta de Riesgo**: si hay al menos una propuesta 🔴, presentar su estado, preguntar si se avanza y **detener el flujo completo** (no continuar a los Pasos 12-15) hasta recibir respuesta explícita.
 12. Implementar las propuestas 🟢/🟡 aprobadas. Si crean/editan un skill, seguir `superpowers:writing-skills`. Registrar en el reporte del Paso 13 qué archivos de gobernanza se tocaron y por qué.
 13. Escribir el reporte completo en `docs/cierres/YYYY-MM-DD.md` con la "Estructura esperada del reporte" de abajo (no se muestra completo en el chat — ver Paso 15).
-14. **Flujo de Auto-Merge**. Antes de cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea `^(feat|fix|docs|chore|refactor|test)/` — si es `dev`, `main`, o no matchea el patrón, **DETENERSE inmediatamente** sin ejecutar ningún comando de este flujo (ni merge, ni push, ni borrado de rama), reportarlo en el checklist final y no continuar. Recién con la rama efímera confirmada:
+14. **Flujo de Auto-Merge**.
+
+    **Vía preferida — tooling de agentes** (si el paso 1b confirmó un `agent_id` registrado para esta sesión). Resuelve orden, serialización y guardrails, y deja auditoría en el estado compartido:
+    ```bash
+    python scripts/agent_worktree.py sync      --agent <agent-id>   # trae origin/dev a la rama
+    # resolver conflictos DENTRO del worktree propio y volver a validar (tests, drift de mirrors)
+    python scripts/agent_worktree.py ready     --agent <agent-id>   # exige worktree limpio
+    python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
+    python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
+    python scripts/agent_worktree.py cleanup   --agent <agent-id> --borrar-rama
+    ```
+    `integrate` adquiere `git:integrate-dev`, publica la rama, hace fast-forward de `dev`, actualiza el checkout de control y libera el lease. Si `dev` avanzó, Git rechaza el push y el comando lo informa: repetir `sync` y reintentar. Si la integración falla, el agente queda `blocked` y **el worktree no se elimina**. `cleanup` sólo remueve el worktree si está limpio. Verificar que no queden leases propios: `python scripts/agent_lock.py list --agent <agent-id>`.
+
+    **Vía manual** (sesión sin agente registrado). Antes de cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea `^(feat|fix|docs|chore|refactor|test)/` — si es `dev`, `main`, o no matchea el patrón, **DETENERSE inmediatamente** sin ejecutar ningún comando de este flujo (ni merge, ni push, ni borrado de rama), reportarlo en el checklist final y no continuar. Recién con la rama efímera confirmada:
     ```bash
     git checkout <rama-efímera-actual>
     git fetch origin

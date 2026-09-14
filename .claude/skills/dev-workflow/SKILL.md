@@ -19,11 +19,24 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
 
 ## Procedimiento de validación (ejecutar en orden)
 
+0. **Crear (o confirmar) el worktree propio del agente antes de tocar nada** — ver la skill
+   `agent-worktree`. Desde 2026-09-14 el aislamiento entre sesiones concurrentes es físico, no sólo
+   de rama: un `checkout -b` comparte working tree, index y `HEAD` con cualquier otra sesión parada
+   en el mismo checkout.
+   ```bash
+   python scripts/agent_worktree.py status                    # ¿ya estoy en un worktree de agente?
+   python scripts/agent_worktree.py start \
+     --agent <agent-id> --type <tipo> --task <slug>           # si no, crearlo
+   cd <ruta-del-worktree>                                     # el trabajo ocurre acá
+   ```
+   El checkout principal queda reservado como **checkout de control/integración** y permanece en
+   `dev`. Los pasos siguientes se ejecutan dentro del worktree del agente.
 1. Verificar rama activa (`git branch --show-current`).
    - Si es una rama efímera vigente (prefijo `feat/`, `fix/`, `docs/`, `chore/`, `refactor/` o
-     `test/`): continuar, es la rama de trabajo de esta tarea.
-   - Si es `dev` o `main`: **está prohibido modificar código o commitear ahí**. Crear una rama
-     efímera nueva desde el estado remoto de `dev` antes de cualquier cambio:
+     `test/`): continuar, es la rama de trabajo de esta tarea. `agent_worktree.py start` ya la deja
+     así, con la convención `<tipo>/<agent-id>-<task-slug>`.
+   - Si es `dev` o `main`: **está prohibido modificar código o commitear ahí**. Crear el worktree del
+     paso 0; el fallback manual (sin el tooling) es una rama efímera desde el estado remoto de `dev`:
      ```bash
      git fetch origin
      git checkout -b <tipo>/<slug-kebab-case> origin/dev
@@ -59,10 +72,15 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
 5. Si detectás que estás en `main`: no cherry-pickees a ciegas — crear la rama efímera desde
    `origin/dev` (paso 1) y evaluar si los cambios locales en `main` corresponden a esa tarea.
 6. `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
-7. Una rama efímera es un `git checkout -b` dentro del mismo checkout de trabajo — **no** es un
-   worktree nuevo. Para aislamiento real de directorio (ej. trabajo paralelo de subagentes) usar
-   `superpowers:using-git-worktrees`, que es un mecanismo independiente y combinable (un worktree
-   puede tener a su vez su propia rama efímera adentro).
+7. **Rama efímera y worktree son dos cosas distintas, y desde 2026-09-14 se usan siempre juntas.**
+   Un `git checkout -b` a secas aísla el *historial* pero comparte working tree, index y `HEAD` con
+   cualquier otra sesión parada en el mismo checkout. El aislamiento físico lo da un worktree propio
+   por agente: usar `scripts/agent_worktree.py start` (skill `agent-worktree`), que además registra
+   el agente en el estado compartido y habilita la integración serializada a `dev`.
+   `superpowers:using-git-worktrees` sigue siendo el mecanismo genérico equivalente cuando no hace
+   falta coordinación entre agentes.
+   El razonamiento que llevó a esta regla (vale la pena conservarlo, porque explica el costo de
+   no seguirla):
    **Preferir un worktree desde el arranque (no sólo cuando ya hay un problema) siempre que exista
    sospecha de sesión concurrente en el mismo checkout** — verificable con `ListAgents` (sesiones
    Claude Code hermanas en la misma máquina). Hallazgo real (2026-09-04, ver
@@ -166,10 +184,15 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
     npx vite build         # plantillas: encuentra lo que el type-check no ve
     rm web/frontend/node_modules
     ```
-    Borrar el symlink al terminar no es cosmético: `.gitignore` tiene `web/frontend/node_modules/`
-    **con barra final**, y una barra final sólo matchea directorios — un symlink es un archivo para
-    git, así que **no** queda ignorado y aparece en `git status` de todas las sesiones que compartan
-    el worktree.
+    Sobre el symlink al terminar: `.gitignore` tiene `web/frontend/node_modules/` **con barra
+    final**, y una barra final sólo matchea directorios — un symlink es un archivo para git, así que
+    **no** queda ignorado por esa regla. **Resuelto estructuralmente el 2026-09-14**: el tooling de
+    `agent-worktree` registra `web/frontend/node_modules` (y `.venv`, `.env`, `.env.dev`,
+    `.secrets`) en `<git-common-dir>/info/exclude`, que es compartido por todos los linked worktrees,
+    no se versiona y no depende de la rama que cada worktree tenga checkouteada. En un worktree
+    creado con `agent_worktree.py start` el symlink ya no aparece en `git status`. Fuera de ese
+    tooling (worktree creado a mano en un repo sin las exclusiones) sigue valiendo el consejo
+    original: borrarlo al terminar.
 
     Corolario del mismo día, mismo espíritu: correr la **suite completa** antes de cerrar, no sólo
     los tests del feature. Los 74 tests nuevos de esa sesión estaban verdes mientras un test
@@ -178,8 +201,10 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
     le rompe al resto.
 
 ## Relación con otras skills
-`repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
-`docker-rebuild`, `cierre-sesion` (único punto que integra la rama efímera a `dev`).
+`agent-worktree` (crea el worktree/rama propios del agente y coordina leases e integración; es el
+paso 0 de este procedimiento), `repo-updater` (audita/commitea sobre la rama efímera activa),
+`pytest-focas`, `alembic-migrations`, `docker-rebuild`, `cierre-sesion` (único punto que integra la
+rama efímera a `dev`).
 
 ## Resultado esperado
 Rama efímera confirmada (nunca `dev`/`main` en el momento de commitear), `.env.dev` presente, stack
