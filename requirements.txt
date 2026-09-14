@@ -21,7 +21,7 @@ python-docx==1.1.2  # Generación de documentos DOCX para informes
 folium==0.16.0  # Mapas interactivos para informes geoespaciales
 staticmap==0.5.7  # Mapas estáticos en PNG para incrustar en reportes
 Pillow==10.4.0  # Backend de imágenes requerido por staticmap
-matplotlib==3.9.2  # Backend de gráficos para mapas estáticos (Agg)
+matplotlib==3.11.2  # Backend de gráficos para mapas estáticos (Agg)
 contextily==1.5.2  # Tiles y fondos para mapas estáticos
 pyproj==3.6.1  # Transformaciones de coordenadas geográficas
 alembic==1.13.2  # Migraciones de base de datos
