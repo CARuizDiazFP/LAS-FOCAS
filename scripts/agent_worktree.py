@@ -634,7 +634,17 @@ def comando_cleanup(entorno: Entorno, args: argparse.Namespace) -> dict[str, obj
             "Cerrarlo primero con 'finish' (o integrar con 'integrate'): no se elimina el "
             "worktree de un agente que puede seguir trabajando."
         )
-    return {"agent_id": args.agent, **_limpiar(entorno, agente, borrar_rama=args.borrar_rama)}
+    detalle = _limpiar(entorno, agente, borrar_rama=args.borrar_rama)
+    if args.olvidar:
+        if not detalle["worktree_removido"]:
+            raise ErrorCLI(
+                f"no se retira el registro de {args.agent!r} porque su worktree sigue presente: "
+                "quedaría un directorio sin dueño. Resolver el worktree primero."
+            )
+        detalle["registro_retirado"] = entorno.registro.olvidar_agente(
+            agente.agent_id, detalle="cleanup --olvidar"
+        )
+    return {"agent_id": args.agent, **detalle}
 
 
 def _limpiar(entorno: Entorno, agente: Agente, *, borrar_rama: bool) -> dict[str, object]:
@@ -916,6 +926,11 @@ def construir_parser() -> argparse.ArgumentParser:
     limpieza.add_argument("--agent", default=None)
     limpieza.add_argument("--borrar-rama", action="store_true")
     limpieza.add_argument("--prune", action="store_true", help="Sólo 'git worktree prune' (metadata huérfana)")
+    limpieza.add_argument(
+        "--olvidar",
+        action="store_true",
+        help="Además, retirar al agente del registro (sólo si su worktree ya fue removido)",
+    )
 
     medico = sub.add_parser("doctor", help="Diagnóstico de inconsistencias (no corrige nada)", **sub_kwargs)
     medico.add_argument("--agent-ttl-minutes", type=int, default=TTL_AGENTE_MINUTOS)

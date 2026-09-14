@@ -674,3 +674,25 @@ def test_start_avisa_si_faltan_artefactos_de_build(
     assert resultado["artefactos_build_faltantes"] == ["web/frontend/dist"]
     assert not (Path(resultado["worktree"]) / "web" / "frontend" / "dist").exists()
     assert gitops.esta_limpio(Path(resultado["worktree"]))
+
+
+def test_cleanup_olvidar_retira_el_registro_solo_si_el_worktree_ya_no_esta(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    (worktree_a / "pendiente.txt").write_text("sin confirmar\n", encoding="utf-8")
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+
+    # Worktree sucio: no se elimina, y por lo tanto tampoco se retira el registro.
+    assert _correr(["cleanup", "--agent", "claude-api", "--olvidar"]) == 1
+    assert "sigue presente" in capsys.readouterr().err
+    registro = Registro(rutas.contexto(control).db_path)
+    assert registro.agente("claude-api") is not None
+
+    (worktree_a / "pendiente.txt").unlink()
+    resultado = _correr_json(["cleanup", "--agent", "claude-api", "--olvidar"], capsys)
+
+    assert resultado["worktree_removido"] is True
+    assert resultado["registro_retirado"] is True
+    assert registro.agente("claude-api") is None
+    assert registro.agente("codex-web") is not None  # el otro agente no se toca
