@@ -2,10 +2,11 @@
 # Ubicación de archivo: ./
 # Descripción: Ignora archivos temporales, entornos locales, artefactos y secretos
 
-# Entornos y secretos
+# Entornos y secretos (directorio propio o symlink desde un worktree de agente)
 .env
 .env.*
 .secrets/
+.secrets
 
 !.env.sample
 .envrc
@@ -13,8 +14,9 @@
 # Claves locales
 Keys/
 
-# Entorno virtual Python
+# Entorno virtual Python (directorio propio o symlink al venv del checkout de control)
 .venv*/
+.venv
 
 # Python
 __pycache__/
