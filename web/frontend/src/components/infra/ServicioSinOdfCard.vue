@@ -10,7 +10,22 @@
       <span class="servicio-sin-odf-card__categoria">{{ categoriaLabel }}</span>
     </div>
 
-    <h3 class="servicio-sin-odf-card__servicio">{{ servicio.servicio_id }}</h3>
+    <h3 class="servicio-sin-odf-card__servicio">
+      <!-- Pestaña nueva: la grilla tiene scroll infinito sobre 2.891 tarjetas y volver atrás lo
+           reinicia desde la primera página. Mismo criterio que el deep-link de CromoPathSecuencia. -->
+      <RouterLink
+        v-if="destinoServicio"
+        class="servicio-sin-odf-card__servicio-link"
+        :to="destinoServicio"
+        target="_blank"
+        rel="noopener"
+        :title="`Abrir el Servicio ${servicio.servicio_id} en una pestaña nueva`"
+      >
+        {{ servicio.servicio_id }}
+        <i class="ph ph-arrow-square-out servicio-sin-odf-card__servicio-icono" aria-hidden="true"></i>
+      </RouterLink>
+      <template v-else>{{ servicio.servicio_id }}</template>
+    </h3>
     <p class="servicio-sin-odf-card__cliente">{{ servicio.nombre_cliente || 'Sin nombre de cliente' }}</p>
 
     <div class="servicio-sin-odf-card__hairline"></div>
@@ -68,6 +83,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { RouterLink } from 'vue-router';
 
 import {
   categoriaServicioLabel,
@@ -87,6 +103,18 @@ defineEmits<{
 const categoriaLabel = computed(() => categoriaServicioLabel(props.servicio.categoria_causa));
 const categoriaToken = computed(() => categoriaServicioToken(props.servicio.categoria_causa));
 const tieneSemilla = computed(() => (props.servicio.pelos_semilla ?? 0) > 0);
+
+/** Destino del Nº de servicio. Se prefiere `numero_primer_servicio` -el `id_origen` al que el
+ * detalle normaliza con `router.replace`- y `servicio_id` queda de fallback: el backend
+ * (`_buscar_servicio_por_id`) matchea por los dos, pero arrancar por el id_origen ahorra el
+ * replace.
+ *
+ * Sin ninguno de los dos NO hay link, por la misma razón que abajo va un microlabel en vez de un
+ * botón deshabilitado: un control muerto repetido en una grilla de miles entrena a ignorarlo. */
+const destinoServicio = computed<string | null>(() => {
+  const id = (props.servicio.numero_primer_servicio || props.servicio.servicio_id || '').trim();
+  return id ? `/servicios/ID/${encodeURIComponent(id)}` : null;
+});
 </script>
 
 <style scoped>
@@ -131,6 +159,28 @@ const tieneSemilla = computed(() => (props.servicio.pelos_semilla ?? 0) > 0);
   font-size: 14.5px;
   font-weight: 500;
   letter-spacing: -0.005em;
+}
+
+.servicio-sin-odf-card__servicio-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.servicio-sin-odf-card__servicio-link:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.servicio-sin-odf-card__servicio-icono {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.servicio-sin-odf-card__servicio-link:hover .servicio-sin-odf-card__servicio-icono {
+  color: var(--color-accent);
 }
 
 .servicio-sin-odf-card__cliente {

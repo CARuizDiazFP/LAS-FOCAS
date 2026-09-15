@@ -182,14 +182,17 @@
             <span v-else>{{ camino.pelos.value.length }}</span>
           </p>
 
-          <!-- Con más de una semilla hay que dejar elegir: el camino de un pelo no es el de otro. -->
-          <CromoPeloSelector
-            v-if="camino.pelos.value.length > 1"
-            :pelos="camino.pelos.value"
-            :model-value="camino.peloElegido.value"
-            :disabled="camino.descargando.value"
-            @update:model-value="camino.peloElegido.value = $event"
-          />
+          <!--
+            El mismo panel que usa el modal de asociación: resolver el camino contra Cromo y
+            VERLO acá -secuencia de nodos, consistencia contra el inventario ingerido, ODFs
+            descubiertas- en vez de tener que descargar el .txt para saber qué dice. La elección
+            de semilla vive adentro del panel y manda también para la descarga: los dos leen el
+            mismo `camino.peloElegido`.
+          -->
+          <CromoCaminoPanel :camino="camino" :servicio-id="servicio?.id ?? null">
+            <!-- Sin slot de acción: este panel informa. Asociar una ODF es el trabajo del gestor
+                 de Servicios sin ODF, no de la ficha del Servicio. -->
+          </CromoCaminoPanel>
 
           <p v-if="camino.errorDescarga.value" class="servicio-detalle__kv is-error">
             <span>Tracking Cromo</span><span>{{ camino.errorDescarga.value }}</span>
@@ -334,7 +337,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { estadoCamaraToken } from '../api/camaras';
@@ -351,7 +354,7 @@ import {
   type ServicioHistorialIdItem,
   type ServicioItem,
 } from '../api/servicios';
-import CromoPeloSelector from '../components/infra/CromoPeloSelector.vue';
+import CromoCaminoPanel from '../components/infra/CromoCaminoPanel.vue';
 import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
 import { useCromoPath } from '../composables/useCromoPath';
 import { useSession } from '../composables/useSession';
@@ -866,6 +869,11 @@ watch(
   },
   { immediate: true },
 );
+
+/** Hasta ahora esta vista sólo descargaba el .txt; con el panel puede quedar una resolución de
+ * hasta 30 s en vuelo al navegar a otro Servicio o salir. `cancelar()` aborta la request y limpia
+ * los temporizadores del composable. */
+onBeforeUnmount(() => camino.cancelar());
 </script>
 
 <style scoped>

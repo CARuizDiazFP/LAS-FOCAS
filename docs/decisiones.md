@@ -1743,3 +1743,54 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   matchean symlinks, así que los enlaces de entorno aparecían como archivos sin trackear; ahora el
   tooling registra esos patrones en `<git-common-dir>/info/exclude`, que es compartido y no depende
   de la rama de cada worktree. Referencia: `docs/arquitectura_agentes_worktrees.md`.
+
+## 2026-09-15 — Camino óptico de Cromo visible en el Detalle de Servicio y navegación desde el gestor sin ODF
+
+- **Contexto:** Dos flujos quedaron a medio conectar. (a) Las tarjetas de
+  `/admin/servicios/viewer/ServiciosSinOdf` mostraban el Nº de servicio pero no permitían
+  abrirlo. (b) El Detalle de Servicio descargaba el tracking de Cromo como `.txt` pero no lo
+  mostraba, aunque el bloque que resuelve, audita y dibuja el camino ya existía **embebido**
+  dentro de `ModalAsociarOdf.vue`. El reporte original ("al hacer click en Ver tracking redirige
+  a Infra") resultó ser un **deploy stale**, no un bug: `d88baae` (11-sep) ya había reemplazado
+  ese `RouterLink`, pero la imagen `lasfocasdev-web` servía un bundle sin ese commit.
+- **Decisión:** Extraer el bloque a `CromoCaminoPanel.vue` y usarlo en los dos consumidores. El
+  estado (`useCromoPath`) se queda en el padre y viaja como prop: el modal necesita leer
+  `resultado.pelo_n_id` para persistirlo al asociar, y el detalle para descargar el `.txt` del
+  pelo elegido. La acción por ODF descubierta ("Traer al buscador") es del modal, así que sale
+  por un slot con scope; su regla CSS se queda en el modal, porque el contenido de un slot se
+  compila en el scope del padre y un `<style scoped>` del panel nunca lo alcanzaría. En la
+  tarjeta se linkea sólo el Nº (no la tarjeta entera, que tiene dos botones adentro), en pestaña
+  nueva porque la grilla tiene scroll infinito sobre 2.891 filas, y apuntando a
+  `numero_primer_servicio` con `servicio_id` de fallback: los dos resuelven, pero el primero
+  evita el `router.replace` de normalización del detalle.
+- **Alternativas:** Duplicar el bloque en el detalle (evita tocar un modal crítico, pero condena
+  las dos copias a divergir); mostrar en su lugar el tracking legado `.txt` por ruta
+  (`TrackingDetail.vue`), descartado con el usuario porque la fuente viva es Cromo.
+- **Impacto:** El camino se ve y se valida donde antes sólo se descargaba a ciegas: secuencia de
+  nodos, panel de consistencia (`DISCREPA`/`NO_INGERIDO`) y ODFs descubiertas. `ModalAsociarOdf`
+  pierde 233 líneas sin cambio funcional. El detalle ahora cancela la resolución en
+  `onBeforeUnmount`: antes no hacía falta porque nunca resolvía, ahora puede quedar una request
+  de hasta 30 s en vuelo al salir. Cambio menor deliberado: el selector de pelo pasa a verse
+  también con una sola semilla, que antes quedaba invisible.
+
+## 2026-09-15 — `docker compose` desde un worktree reescribe los bind mounts del stack compartido
+
+- **Contexto:** Al reconstruir `lasfocasdev-web` desde un agent worktree
+  (`docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build web && up -d web`),
+  Compose **recreó también `lasfocasdev-postgres`**, que no era el objetivo. La causa no fue
+  `--env-file` (iba puesto, y los datos quedaron intactos: el volumen `postgres_dev_data`
+  persiste): Compose resuelve los binds relativos contra el directorio del archivo de compose, así
+  que `db/init.sql` y `.secrets/Dev_db_password_v1.txt` pasaron a apuntar **dentro del worktree**.
+  Config distinta ⇒ recreate. Un worktree es efímero: al borrarlo, esos binds apuntarían a rutas
+  inexistentes y el próximo arranque de postgres fallaría.
+- **Decisión:** El `build` puede correrse desde el worktree (es lo que hornea el código de la
+  tarea en la imagen), pero el `up -d` que deja el stack corriendo se hace **desde el checkout de
+  control**, que reusa la imagen ya construida y devuelve los binds a `/home/support-focal-01/LAS-FOCAS`.
+  Verificar siempre después con `docker inspect <contenedor> --format '{{range .Mounts}}...'`.
+- **Alternativas:** Copiar el código al checkout de control antes de construir (pierde el
+  aislamiento del worktree); usar rutas absolutas en el compose (cambio de infraestructura con su
+  propio alcance).
+- **Impacto:** Amplía el guardrail que ya existía sobre `--env-file` y rutas relativas
+  (`docs/arquitectura_agentes_worktrees.md`): el riesgo no es sólo que falten variables, es que el
+  stack compartido quede atado a un directorio que está por desaparecer. La operación sigue
+  requiriendo el lease `env:docker-compose`.
