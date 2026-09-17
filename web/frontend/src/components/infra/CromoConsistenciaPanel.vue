@@ -46,6 +46,26 @@
       </tbody>
     </table>
 
+    <!-- La acción que faltaba: hasta ahora la tabla sólo informaba. Normalizar vuelve a traer de
+         Cromo el objeto real y lo reingiere, que es lo que significa "Cromo es la referencia". -->
+    <div v-if="mostrarAcciones" class="cromo-consistencia__acciones">
+      <button
+        type="button"
+        class="btn subtle"
+        :disabled="normalizando"
+        :title="
+          'Reingiere desde Cromo los ' +
+          consistencia.inconsistencias.length +
+          ' elementos inconsistentes. Cuesta una llamada a Cromo por elemento.'
+        "
+        @click="$emit('normalizar', null)"
+      >
+        {{ normalizando ? 'Normalizando…' : `Normalizar los ${consistencia.inconsistencias.length} casos` }}
+      </button>
+      <span v-if="resumen" class="cromo-consistencia__resultado">{{ resumen }}</span>
+      <span v-if="error" class="cromo-consistencia__resultado is-error">{{ error }}</span>
+    </div>
+
     <details v-if="consistencia.inconsistencias.length > 0" class="cromo-consistencia__detalle">
       <summary>Ver los {{ consistencia.inconsistencias.length }} casos</summary>
       <ul class="cromo-consistencia__lista">
@@ -68,6 +88,16 @@
               — el camino lo declara ({{ formatear(caso.valor_path) }}) y no está en la base
             </template>
           </span>
+          <button
+            v-if="mostrarAcciones"
+            type="button"
+            class="cromo-consistencia__caso-accion"
+            :disabled="normalizando"
+            title="Reingiere sólo este elemento desde Cromo"
+            @click="$emit('normalizar', [caso.elemento_id])"
+          >
+            Normalizar
+          </button>
         </li>
       </ul>
     </details>
@@ -81,7 +111,22 @@ import type { ConsistenciaCamino } from '../../api/cromoPath';
 
 const props = defineProps<{
   consistencia: ConsistenciaCamino;
+  /** Escribir inventario es admin: sin permiso el panel sigue informando, pero sin acciones. */
+  puedeNormalizar?: boolean;
+  normalizando?: boolean;
+  resumen?: string;
+  error?: string;
 }>();
+
+defineEmits<{
+  /** `null` = normalizar todo lo inconsistente; una lista = sólo esos elementos. */
+  normalizar: [elementoIds: number[] | null];
+}>();
+
+/** Sin casos que corregir no hay nada que normalizar: el botón sería ruido. */
+const mostrarAcciones = computed(
+  () => props.puedeNormalizar === true && props.consistencia.inconsistencias.length > 0,
+);
 
 const tokenResumen = computed(() => {
   if (props.consistencia.total_discrepa > 0) {
@@ -255,5 +300,43 @@ function formatear(valor: unknown): string {
   min-width: 0;
   line-height: 1.4;
   color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+
+.cromo-consistencia__acciones {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cromo-consistencia__resultado {
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 65%, transparent);
+}
+
+.cromo-consistencia__resultado.is-error {
+  color: var(--color-state-error);
+}
+
+.cromo-consistencia__caso-accion {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: color-mix(in srgb, var(--color-text) 75%, transparent);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.cromo-consistencia__caso-accion:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  color: var(--color-text);
+}
+
+.cromo-consistencia__caso-accion:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 </style>

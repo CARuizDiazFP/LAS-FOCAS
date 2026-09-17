@@ -1794,3 +1794,57 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   (`docs/arquitectura_agentes_worktrees.md`): el riesgo no es sólo que falten variables, es que el
   stack compartido quede atado a un directorio que está por desaparecer. La operación sigue
   requiriendo el lease `env:docker-compose`.
+
+## 2026-09-17 — Tracking multipelo con caché de 24 h y normalización de la consistencia del camino
+
+- **Contexto:** Dos límites reportados desde producción sobre el mismo panel. (a) Un Servicio tiene
+  tantos trackings como pelos —1 en PON, 2 o más en FO o con un SW de módulo bifilar— pero sólo se
+  podía descargar el de uno: `resolver_camino_de_servicio` elegía `semillas[0]` y el frontend
+  espejaba ese sesgo (`useCromoPath.ts`, `lista[0]`). (b) La tabla "Consistencia con lo ingerido"
+  informaba `DIFIERE`/`NO_INGERIDO` sin ninguna acción para corregirlo: era informativa por diseño.
+- **Medición que condicionó el diseño** (real contra Cromo, 2026-09-17): una llamada a
+  `GET /network/fo/{pelo}/path` tarda **4,6-14 s**. `CromoClient.get_camino_optico` acepta varios
+  ids separados por coma, pero **no sirve para esto**: con 3 ids Cromo devolvió **un único** nodo
+  raíz (455 nodos), no tres caminos. N trackings son entonces N llamadas secuenciales — el servicio
+  real 122347, con 6 pelos, costaba 30-85 s en frío.
+- **Decisión 1 (descarga):** un `.txt` **por pelo**, archivos sueltos, no un ZIP. El frontend pide
+  los pelos tildados en serie y muestra progreso. El nombre sólo se distingue con el `n_id` cuando
+  el Servicio tiene más de un pelo, así que el caso PON conserva exactamente el nombre de siempre y
+  nada de lo que consume ese `.txt` aguas abajo se entera.
+- **Decisión 2 (caché):** tabla `app.cromo_tracking_cache` con TTL de 24 h, clave por pelo. Guarda
+  el **artefacto renderizado**, no el camino: las tablas `cromo_*` de inventario siguen sin recibir
+  nada derivado de `/path`. Medido en dev: 5,41 s y 4,31 s en frío, **0,00 s** en caliente.
+- **Decisión 3 (preselección):** vienen tildadas las **posiciones de ODF** del Servicio
+  (`tiene_conector_odf`), que pueden ser varias. No se tocó el orden de `listar_pelos_semilla`, que
+  ordena al revés **a propósito** (`tiene_conector_odf` ASC) porque su fin es *descubrir* ODFs
+  nuevas: el criterio opuesto vive en el consumidor de tracking, no en el ranking. Si ninguna
+  semilla tiene conector, la ODF no fue relevada todavía: se avisa y se ofrece relevarla
+  (`relevar_odfs_del_servicio`), que releva sólo las ODFs que el camino ya descubrió.
+- **Decisión 4 (normalizar):** **reingesta dirigida**, no escritura del valor que declara el camino.
+  Se vuelve a traer de Cromo el objeto real y se lo persiste por el mismo parser y los mismos
+  upserts que la ingesta regular, con corrida sintética auditable. Las inconsistencias se
+  **recalculan en el servidor**: el cliente dice qué quiere normalizar, pero qué está realmente mal
+  lo decide quien va a escribir.
+- **Tres hallazgos reales que cambiaron la implementación** (ninguno visible sin probar contra
+  Cromo; los tests con mocks pasaban igual):
+  1. En un fetch directo `/db/objects/{id}`, **`parent` viene como objeto**
+     (`{"id": 10127039, "class": 51, ...}`), no como entero — durante la ingesta regular lo inyecta
+     el recorrido del árbol. Pasárselo crudo a `parse_pelo` producía un `tubo_n_id` que era un
+     diccionario, en silencio.
+  2. Ese `parent` de un pelo es el **cable**, no el tubo, y trae el id de **versión** (10127039)
+     en vez del de linaje (10126920). Por eso un pelo **no se puede reingerir suelto**: hay que
+     hacerlo por el **árbol de su cable** (`parse_cable` + `extraer_tubos_y_pelos`), que devuelve
+     exactamente lo que declara el camino y resuelve `PELO_CABLE` y `PELO_TUBO` de una sola vez.
+     Lo mismo para la fusión: su botella se resuelve traduciendo el id de versión a linaje.
+  3. La clase **52 (cable de un tercero, ej. Arsat)** también es un cable real del camino, aunque la
+     ingesta no la barra. Rechazarla dejaba sin normalizar al pelo 7967645 del servicio 93154.
+     `cromo_cables` no tiene columna de clase, así que guardarlo no rompe ninguna FK de catálogo.
+- **Alternativas:** un ZIP con todos los `.txt` (descartado por el usuario: quiere los archivos
+  sueltos); escribir directamente el valor que declara `/path` (instantáneo y sin llamadas extra,
+  pero persiste datos derivados del camino en las tablas que sólo escribe la ingesta); sólo marcar
+  la discrepancia para revisión manual (mínimo riesgo, pero no cumple el pedido de normalizar).
+- **Impacto, verificado real en dev** sobre el pelo 6823649 del servicio 93154 (el de la captura del
+  ticket): la auditoría pasó de **2 DIFIEREN / 10 SIN INGERIR** a **0 / 0** — `PELO_CABLE` 98/98,
+  `PELO_TUBO` 98/98, `FUSION_BOTELLA` 96/96, `FUSION_PELOS` 96/96, `CONECTOR_PELO_ODF` 4/4. Los tres
+  pelos creados quedaron con el tubo y el cable exactos que declara el camino (10126944 →
+  tubo 10126934, cable 10126920).

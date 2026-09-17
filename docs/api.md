@@ -198,6 +198,7 @@ Lista los pelos de Cromo que sirven como semilla para pedir un camino óptico de
         "cable_n_id": 10006296,
         "cable_nombre": "FD-980-B",
         "tiene_conector_odf": false,
+        "tracking_en_cache": null,
         "servicio_raw": "FO 93154 - ODF Guanahani 580"
       }
     ]
@@ -254,6 +255,51 @@ Devuelve el camino óptico completo de un servicio, con estadística, consistenc
   ```
 
 - **Códigos de error:** `400` si el `pelo_n_id` es ajeno al servicio; `404` si no existe el servicio; `502` si Cromo falla. En el caso usual del 77% de servicios sin semilla, la respuesta es `200` con un estado explícito.
+
+> **Tracking multipelo (2026-09-17).** Un Servicio tiene tantos trackings como pelos: 1 en PON, 2 o
+> más en FO o con un SW de módulo bifilar. Se descargan como **archivos `.txt` sueltos**, uno por
+> pelo, repitiendo la llamada a `.../tracking.txt?pelo_n_id=N` por cada pelo elegido — no hay un
+> endpoint que devuelva varios a la vez. Con un solo pelo el nombre del archivo es idéntico al
+> histórico; con varios se le intercala el `n_id` para que no se pisen entre sí. El endpoint lee y
+> escribe `app.cromo_tracking_cache` (TTL 24 h), así que la segunda descarga del día de un mismo
+> pelo es instantánea en vez de costar los 4,6-14 s de `/path`. `GET .../pelos` informa por pelo
+> `tracking_en_cache`, y a nivel respuesta `preseleccionados` (las posiciones de ODF del Servicio)
+> y `odf_relevada`.
+
+### POST `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar`
+
+Normaliza las discrepancias de la tabla "Consistencia con lo ingerido", tomando Cromo como referencia.
+
+- **Autenticación:** admin + CSRF. Escribe inventario.
+- **Cuerpo:** `{"pelo_n_id": 6823649, "elemento_ids": [10126944], "csrf_token": "..."}`. Sin
+  `elemento_ids` se normaliza todo lo que la auditoría haya encontrado.
+- **Comportamiento:** **reingesta dirigida**, no escritura del valor que declara el camino — vuelve a
+  traer de Cromo el objeto real y lo persiste por el mismo parser y los mismos upserts que la
+  ingesta regular, dejando una corrida sintética (`MANUAL_NORMALIZAR_CONSISTENCIA`) en el histórico
+  de ingesta. Las inconsistencias se **recalculan en el servidor**: la lista que manda el cliente
+  sólo acota, no decide qué está mal. Un pelo se reingiere por el árbol de su cable (es la única
+  forma de obtener `tubo_n_id`/`cable_n_id` correctos, ver `docs/decisiones.md` 2026-09-17). Al
+  terminar invalida el tracking cacheado del pelo.
+- **Costo:** resuelve el camino (4,6-14 s) más una a dos llamadas a Cromo por elemento. Es lento a
+  propósito: no hay vía rápida que no implique escribir inventario a ciegas.
+- **Respuesta 200:** `{"ok": true, "corrida_id": 2129, "creados": 1, "actualizados": 0,
+  "sin_cambios": 0, "errores": 0, "total_discrepa_previo": 2, "total_no_ingerido_previo": 10,
+  "detalle": [{"elemento_id": 7967645, "regla": "PELO_CABLE", "accion": "CREADA", "detalle": null}]}`
+- **Códigos de error:** `403` CSRF o no admin; `404` servicio inexistente; `409` si el camino no
+  resuelve; `502` si Cromo falla.
+
+### POST `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/relevar-odf`
+
+Releva las ODFs que atraviesa el camino, poblando sus posiciones de patchera.
+
+- **Autenticación:** admin + CSRF.
+- **Cuerpo:** `{"pelo_n_id": 6823649, "odfs_n_id": null, "csrf_token": "..."}`. Sin `odfs_n_id` se
+  relevan todas las ODFs que el camino descubrió.
+- **Comportamiento:** destraba el caso "la ODF de este Servicio no está relevada". Sin conectores
+  ingeridos no hay forma de saber qué posición de patchera le corresponde al Servicio, y por eso la
+  descarga de trackings no puede preseleccionar nada. Siempre pide `/inner` de la ODF: el atributo
+  id=62 (servicio declarado directo sobre el conector) sólo viaja en esa respuesta.
+- **Respuesta 200:** `{"ok": true, "corrida_id": 2130, "relevadas": 4, "errores": 0, "detalle": [...]}`
 
 ### POST `/api/infra/search`
 

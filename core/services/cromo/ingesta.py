@@ -112,6 +112,10 @@ PELO_CAMPOS = (
     "tipo_asociacion",
 )
 _FUSION_CAMPOS = ("botella_n_id", "nombre_par", "tipo", "pelo_a_n_id", "pelo_b_n_id", "latitud", "longitud")
+# Alias público: la normalización de consistencia (y cualquier reingesta dirigida futura)
+# necesita estos campos, y alcanzar un nombre privado desde otro módulo es peor que
+# publicarlo. El nombre con guion bajo se conserva para no tocar los usos existentes.
+FUSION_CAMPOS = _FUSION_CAMPOS
 ODF_CAMPOS = (
     "version_id",
     "vmax",
@@ -1290,6 +1294,7 @@ __all__ = [
     "CLASES_BOTELLA",
     "CLASES_CONTEO",
     "ContadoresCorrida",
+    "FUSION_CAMPOS",
     "ODF_CAMPOS",
     "PELO_CAMPOS",
     "TUBO_CAMPOS",

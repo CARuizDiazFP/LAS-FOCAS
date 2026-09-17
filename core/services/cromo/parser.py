@@ -27,6 +27,10 @@ _CLASES_EXCLUIDAS: dict[int, str] = {
 # Clase 124: estructuralmente una botella pero sin homologar (code = "NO-SABE").
 _CLASES_NO_HOMOLOGADAS: frozenset[int] = frozenset({124})
 _CLASES_BOTELLA: frozenset[int] = frozenset({68, 121, 122, 123, 124, 125})
+# Alias público: la reingesta dirigida necesita preguntar "¿este objeto es una botella?"
+# para traducir un id de versión a su n_id de linaje. Incluye la 124 (no homologada),
+# porque la pregunta es estructural, no de si corresponde barrerla en una corrida.
+CLASES_BOTELLA: frozenset[int] = _CLASES_BOTELLA
 
 _CLASE_CABLE = 51
 _CLASE_TUBO = 129

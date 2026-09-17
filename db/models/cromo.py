@@ -526,3 +526,43 @@ class CromoIngestaConfig(Base):
 
     def __repr__(self) -> str:
         return f"<CromoIngestaConfig habilitado={self.habilitado} intervalo_horas={self.intervalo_horas}>"
+
+
+class CromoTrackingCache(Base):
+    """Caché de salida del tracking `.txt` de un pelo, con vencimiento.
+
+    No es inventario: el camino óptico sigue sin persistirse en las tablas `cromo_*`
+    (ver `core/services/cromo/camino_optico_service.py::CaminoOptico`). Lo que se guarda acá es el
+    **artefacto ya renderizado** por `camino_optico_txt.renderizar_tracking_txt`, para no pagar de
+    nuevo la llamada a `/path` (medida real: 4,6-14 s por pelo) cada vez que alguien descarga el
+    tracking. Un servicio con 6 pelos costaba ~30-85 s en frío; con el caché, sólo la primera vez
+    del día.
+
+    La clave es el pelo (`pelo_n_id`), no el servicio: dos servicios que compartan pelo comparten
+    la entrada, y un pelo rematcheado a otro servicio reusa su tracking sin regenerarlo.
+    `servicio_id` queda como dato informativo del último servicio que lo generó.
+
+    Una entrada más vieja que el TTL se considera inexistente y se regenera; la lectura nunca
+    devuelve contenido vencido. Al normalizar una inconsistencia de consistencia hay que invalidar
+    la entrada del pelo afectado, porque el `.txt` pasa a estar desactualizado respecto de la base.
+    """
+
+    __tablename__ = "cromo_tracking_cache"
+    __table_args__ = {"schema": "app"}
+
+    pelo_n_id = Column(BigInteger, primary_key=True)  # n_id de linaje del pelo, sin FK dura
+    servicio_id = Column(
+        Integer,
+        ForeignKey("app.servicios.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    nombre_archivo = Column(String(256), nullable=False)
+    contenido = Column(Text, nullable=False)
+    duracion_ms = Column(Integer, nullable=True)  # lo que costó generarlo, para diagnóstico
+    generado_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), index=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<CromoTrackingCache pelo_n_id={self.pelo_n_id} generado_at={self.generado_at}>"

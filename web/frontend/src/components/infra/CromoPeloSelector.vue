@@ -1,11 +1,12 @@
 <!--
   Nombre de archivo: CromoPeloSelector.vue
   Ubicación de archivo: web/frontend/src/components/infra/CromoPeloSelector.vue
-  Descripción: Selector del pelo semilla con el que se resuelve el camino óptico de un Servicio
+  Descripción: Selector de pelos de un Servicio — tilda cuáles se descargan (varios) y cuál se
+  dibuja en pantalla (uno solo, porque resolver el camino cuesta una llamada a Cromo por pelo)
 -->
 <template>
-  <!-- Con una sola semilla no hay nada que elegir: un <select> de un elemento es ruido, así que
-       se informa cuál se va a usar en una oración. -->
+  <!-- Con una sola semilla no hay nada que elegir: una lista de un elemento es ruido, así que se
+       informa cuál se va a usar en una oración. -->
   <p v-if="pelos.length === 1" class="cromo-pelo-selector__unico">
     Se resolverá desde el pelo
     <strong>{{ pelos[0].numero_pelo ?? pelos[0].pelo_n_id }}</strong>
@@ -16,22 +17,48 @@
 
   <fieldset v-else-if="pelos.length > 1" class="cromo-pelo-selector">
     <legend class="cromo-pelo-selector__legend">
-      {{ pelos.length }} pelos de Cromo para este Servicio — elegí desde cuál resolver
+      {{ pelos.length }} pelos de Cromo — tildá cuáles descargar
     </legend>
-    <label
+
+    <!-- Un Servicio tiene un tracking por pelo, así que la selección de descarga es múltiple. -->
+    <div class="cromo-pelo-selector__acciones">
+      <span class="cromo-pelo-selector__conteo">
+        {{ seleccionados.length }} de {{ pelos.length }} tildados
+      </span>
+      <button
+        type="button"
+        class="cromo-pelo-selector__accion"
+        :disabled="disabled || seleccionados.length === pelos.length"
+        @click="$emit('seleccionar-todos')"
+      >
+        Todos
+      </button>
+      <button
+        type="button"
+        class="cromo-pelo-selector__accion"
+        :disabled="disabled || seleccionados.length === 0"
+        @click="$emit('limpiar-seleccion')"
+      >
+        Ninguno
+      </button>
+    </div>
+
+    <div
       v-for="pelo in pelos"
       :key="pelo.pelo_n_id"
       class="cromo-pelo-selector__opcion"
       :class="{ 'is-elegido': pelo.pelo_n_id === modelValue }"
     >
-      <input
-        type="radio"
-        :name="`pelo-semilla-${pelos[0].pelo_n_id}`"
-        :value="pelo.pelo_n_id"
-        :checked="pelo.pelo_n_id === modelValue"
-        :disabled="disabled"
-        @change="$emit('update:modelValue', pelo.pelo_n_id)"
-      />
+      <label class="cromo-pelo-selector__tilde">
+        <input
+          type="checkbox"
+          :checked="seleccionados.includes(pelo.pelo_n_id)"
+          :disabled="disabled"
+          @change="$emit('alternar', pelo.pelo_n_id)"
+        />
+        <span class="cromo-pelo-selector__sr">Descargar el tracking del pelo {{ pelo.pelo_n_id }}</span>
+      </label>
+
       <span class="cromo-pelo-selector__cuerpo">
         <span class="cromo-pelo-selector__titulo">
           Pelo {{ pelo.numero_pelo ?? '—' }}
@@ -39,10 +66,17 @@
           <span v-if="pelo.cable_nombre" class="cromo-pelo-selector__cable">
             · {{ pelo.cable_nombre }}
           </span>
-          <!-- Un pelo que ya tiene conector no aporta una ODF nueva: se marca para que el
-               operador sepa que la información nueva está en los otros. -->
+          <!-- Es una posición de patchera real del Servicio: el tracking que el operador quiere. -->
           <span v-if="pelo.tiene_conector_odf" class="cromo-pelo-selector__chip is-ok">
-            ODF ya conocida
+            Posición de ODF
+          </span>
+          <!-- Sin caché, cada pelo cuesta entre 4,6 s y 14 s contra Cromo. -->
+          <span
+            v-if="pelo.tracking_en_cache"
+            class="cromo-pelo-selector__chip is-cache"
+            :title="`Tracking generado el ${formatearFecha(pelo.tracking_en_cache)}`"
+          >
+            En caché
           </span>
         </span>
         <span class="cromo-pelo-selector__meta">
@@ -56,7 +90,22 @@
           {{ pelo.servicio_raw }}
         </span>
       </span>
-    </label>
+
+      <!-- Dibujar el camino es lo caro (una llamada a Cromo por pelo), así que sigue siendo de a
+           uno y por acción explícita, separado de la descarga. -->
+      <span v-if="pelo.pelo_n_id === modelValue" class="cromo-pelo-selector__chip is-activo">
+        En pantalla
+      </span>
+      <button
+        v-else
+        type="button"
+        class="cromo-pelo-selector__accion"
+        :disabled="disabled"
+        @click="$emit('update:modelValue', pelo.pelo_n_id)"
+      >
+        Ver camino
+      </button>
+    </div>
   </fieldset>
 </template>
 
@@ -66,12 +115,21 @@ import type { PeloSemilla } from '../../api/cromoPath';
 defineProps<{
   pelos: PeloSemilla[];
   modelValue: number | null;
+  seleccionados: number[];
   disabled?: boolean;
 }>();
 
 defineEmits<{
   'update:modelValue': [pelo: number];
+  alternar: [pelo: number];
+  'seleccionar-todos': [];
+  'limpiar-seleccion': [];
 }>();
+
+function formatearFecha(iso: string): string {
+  const fecha = new Date(iso);
+  return Number.isNaN(fecha.getTime()) ? iso : fecha.toLocaleString();
+}
 </script>
 
 <style scoped>
@@ -101,6 +159,41 @@ defineEmits<{
   color: color-mix(in srgb, var(--color-text) 66%, transparent);
 }
 
+.cromo-pelo-selector__acciones {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.cromo-pelo-selector__conteo {
+  margin-right: auto;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.cromo-pelo-selector__accion {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: color-mix(in srgb, var(--color-text) 75%, transparent);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.cromo-pelo-selector__accion:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  color: var(--color-text);
+}
+
+.cromo-pelo-selector__accion:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .cromo-pelo-selector__opcion {
   display: flex;
   align-items: flex-start;
@@ -108,7 +201,6 @@ defineEmits<{
   padding: 6px 7px;
   border-radius: var(--radius-sm);
   background: var(--color-bg);
-  cursor: pointer;
 }
 
 .cromo-pelo-selector__opcion.is-elegido {
@@ -116,11 +208,31 @@ defineEmits<{
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
+.cromo-pelo-selector__tilde {
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+  cursor: pointer;
+}
+
+.cromo-pelo-selector__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .cromo-pelo-selector__cuerpo {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .cromo-pelo-selector__titulo {
@@ -142,11 +254,23 @@ defineEmits<{
   font-size: 9.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .cromo-pelo-selector__chip.is-ok {
   background: color-mix(in srgb, var(--color-state-ok) 18%, transparent);
   color: var(--color-state-ok);
+}
+
+.cromo-pelo-selector__chip.is-cache {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+
+.cromo-pelo-selector__chip.is-activo {
+  align-self: center;
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  color: var(--color-text);
 }
 
 .cromo-pelo-selector__meta {

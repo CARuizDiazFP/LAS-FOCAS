@@ -397,6 +397,35 @@ Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida pa
 Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession()}`.  
 Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con `chat/main.ts` (widget de chat embebible, superficie legacy separada del SPA principal). El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
 
+### Camino óptico de Cromo en el Detalle de Servicio
+
+`CromoCaminoPanel.vue` es el panel reutilizable (lo usan el Detalle de Servicio y el modal de
+asociación del gestor de Servicios sin ODF). El estado vive en el padre, en `useCromoPath`, y viaja
+como prop.
+
+Dos selecciones distintas conviven a propósito, porque tienen costos distintos:
+
+- **`peloElegido`** — el pelo que se **dibuja** en pantalla. Es uno solo: resolver el camino cuesta
+  una llamada a Cromo de 4,6-14 s.
+- **`pelosSeleccionados`** — los pelos cuyo tracking se **descarga**. Son varios: un Servicio tiene
+  un tracking por pelo (1 en PON, 2 o más en FO o con un SW de módulo bifilar), y cada uno baja como
+  su propio `.txt`. `CromoPeloSelector.vue` los expone como checkboxes; el botón "Ver camino" de
+  cada fila es el que cambia `peloElegido`.
+
+Por defecto vienen tildadas las **posiciones de ODF** del Servicio (`preseleccionados` de
+`GET .../camino-optico/pelos`). Si ninguna semilla tiene conector, la ODF no fue relevada todavía:
+el panel lo dice y ofrece "Relevar la ODF" (sólo admin). Cada pelo muestra si su tracking ya está
+**en caché**, para que el operador sepa si la descarga es instantánea o va a tardar.
+
+Las descargas van **en serie**, no en paralelo: el cliente de Cromo ya tiene rate limiter propio, y
+en serie se puede informar progreso (`Generando… 2/6`). Un pelo que falla no corta el resto — se
+juntan y se informan al final.
+
+`CromoConsistenciaPanel.vue` deja de ser sólo informativo: con rol admin muestra "Normalizar" por
+caso y para todos, que dispara la reingesta dirigida contra Cromo y vuelve a resolver el camino
+(invalidando antes la memoización del pelo, si no mostraría las mismas discrepancias recién
+corregidas).
+
 ## Variables de entorno
 
 - `WEB_SECRET_KEY` → secreto para cookie de sesión (**obligatorio en prod**).

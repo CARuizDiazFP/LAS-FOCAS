@@ -808,6 +808,32 @@ Servicio ya resolvía por el camino automático (gana el automático, que trae d
 vía `GET /api/infra/cromo/odfs/{n_id}/servicios` (`web/app/main.py`) — cada fila con override manual
 aparece con `metodo="OVERRIDE_MANUAL"`.
 
+### `cromo_tracking_cache` (caché de trackings con vencimiento, 2026-09-17)
+
+Caché de **salida**, no inventario: guarda el `.txt` ya renderizado por
+`core/services/cromo/camino_optico_txt.py::renderizar_tracking_txt`, con vencimiento. Las tablas
+`cromo_*` de inventario siguen sin recibir nada derivado de `/path`.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `pelo_n_id` | BigInteger PK | `n_id` de linaje del pelo, **sin FK dura** (mismo criterio que el resto del namespace). La clave es el pelo y no el Servicio, para que dos Servicios que comparten pelo compartan la entrada. |
+| `servicio_id` | Integer FK → `app.servicios.id` `ON DELETE CASCADE` | FK dura porque apunta a un maestro propio. Informativo: el último Servicio que lo generó. |
+| `nombre_archivo` | String(256) | Nombre base, **sin** el sufijo de desambiguación por pelo: ése lo agrega el endpoint sólo si el Servicio tiene más de una semilla. |
+| `contenido` | Text | El `.txt` completo. |
+| `duracion_ms` | Integer | Lo que costó generarlo, para diagnóstico. |
+| `generado_at` | timestamptz, indexado | Base del TTL. |
+
+**TTL:** 24 h por defecto, ajustable con `CROMO_TRACKING_CACHE_TTL_HORAS`. Vive en la capa de
+servicio, no en el esquema: no hay constraint de frescura, la lectura descarta lo vencido y la
+escritura purga (aprovecha que el caché sólo crece cuando alguien descarga, así que no hace falta
+un job de limpieza). Un valor inválido no rompe la descarga: se registra y se cae al default.
+
+**Motivo medido** (real contra Cromo, 2026-09-17): una llamada a `GET /network/fo/{pelo}/path`
+tarda 4,6-14 s, y pasarle varios ids separados por coma **no** devuelve varios caminos — con 3 ids
+Cromo contestó un único nodo raíz. Bajar los trackings de un Servicio de 6 pelos costaba 30-85 s en
+frío; con el caché, 0,00 s en caliente. Al normalizar una inconsistencia se **invalida** la entrada
+del pelo: el `.txt` previo describe un estado de la base que ya cambió.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -853,6 +879,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260825_02` | `20260825_02_servicios_verificable.py` | Columnas `servicios.es_verificable BOOLEAN NOT NULL` (backfill por `tipo_servicio` sobre las filas existentes) y `servicios.es_verificable_override BOOLEAN` nullable — trazabilidad de IDs y verificabilidad de Servicios SLA (ver sección "Tabla `servicios`" arriba y `docs/decisiones.md`) |
 | `20260908_01` | `20260908_01_cromo_servicio_odf_override.py` | Tabla `app.cromo_servicio_odf_override` (+ 3 CHECK + 2 índices propios) y el índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — gestor "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
 | `20260908_02` | `20260908_02_servicios_alias_ids_gin.py` | Índice GIN `ix_servicios_alias_ids_gin` sobre `app.servicios.alias_ids` — habilita el self-join anti-ambigüedad por contención del detector "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
+| `20260917_01` | `20260917_01_cromo_tracking_cache.py` | Tabla `app.cromo_tracking_cache` — caché de salida con TTL de 24 h del `.txt` de tracking de cada pelo, para que la descarga multipelo no repita la llamada de 4,6-14 s a `/path` por cada archivo (ver sección "`cromo_tracking_cache`" arriba y `docs/decisiones.md` 2026-09-17) |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

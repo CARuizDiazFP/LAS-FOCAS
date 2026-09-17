@@ -7758,7 +7758,11 @@ async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResp
     de descarga va habilitado ANTES del click — de los 2.891 Servicios sin ODF, 2.228 (77%) no
     tienen ningún pelo y para ellos `/path` no tiene input posible.
     """
-    from core.services.cromo.camino_optico_service import listar_pelos_semilla
+    from core.services.cromo import tracking_cache
+    from core.services.cromo.camino_optico_service import (
+        listar_pelos_semilla,
+        semillas_por_defecto,
+    )
     from db.session import AsyncSessionLocal
 
     _require_auth(request)
@@ -7767,12 +7771,28 @@ async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResp
         if not await _servicio_existe(sesion, servicio_id):
             return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
         semillas = await listar_pelos_semilla(sesion, servicio_id)
+        frescura = await tracking_cache.frescura(sesion, [s.pelo_n_id for s in semillas])
+
+    preseleccionados = [s.pelo_n_id for s in semillas_por_defecto(semillas)]
+    # Si ninguna semilla tiene conector, la ODF del Servicio todavía no fue relevada y la
+    # preselección cae al comportamiento histórico (el primer pelo del ranking). La UI necesita
+    # distinguir ese caso para explicar por qué el default no son las posiciones de la ODF.
+    odf_relevada = any(s.tiene_conector_odf for s in semillas)
+
+    pelos = []
+    for semilla in semillas:
+        dato = _serializar_pelo_semilla(semilla)
+        generado_at = frescura.get(semilla.pelo_n_id)
+        dato["tracking_en_cache"] = generado_at.isoformat() if generado_at else None
+        pelos.append(dato)
 
     return JSONResponse(
         {
             "servicio_id": servicio_id,
             "total": len(semillas),
-            "pelos": [_serializar_pelo_semilla(s) for s in semillas],
+            "pelos": pelos,
+            "preseleccionados": preseleccionados,
+            "odf_relevada": odf_relevada,
         }
     )
 
@@ -7789,19 +7809,19 @@ async def cromo_camino_tracking_txt_web(
     `SIN_SEMILLA`/`SIN_CAMINO` responden **409** y no 200: no hay archivo que adjuntar, y un
     `.txt` que dice "no hay datos" es basura en la carpeta de Descargas de alguien.
     """
-    from datetime import datetime, timezone
-
     from core.services.cromo.camino_optico_service import (
-        ESTADO_OK,
+        ESTADO_SIN_SEMILLA,
         PeloAjenoAlServicio,
-        resolver_camino_de_servicio,
-    )
-    from core.services.cromo.camino_optico_txt import (
-        nombre_archivo_tracking,
-        renderizar_tracking_txt,
+        listar_pelos_semilla,
+        seleccionar_semillas,
     )
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.tracking_service import (
+        TrackingNoDisponible,
+        nombre_distinguible,
+        obtener_tracking,
+    )
     from db.session import AsyncSessionLocal
 
     usuario, _rol = _require_auth(request)
@@ -7810,32 +7830,215 @@ async def cromo_camino_tracking_txt_web(
         async with AsyncSessionLocal() as sesion:
             if not await _servicio_existe(sesion, servicio_id):
                 return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            semillas = await listar_pelos_semilla(sesion, servicio_id)
+            if not semillas:
+                return JSONResponse(
+                    {
+                        "error": (
+                            "El Servicio no tiene ningún pelo en Cromo, así que no hay camino "
+                            "que resolver."
+                        ),
+                        "estado": ESTADO_SIN_SEMILLA,
+                    },
+                    status_code=409,
+                )
+            elegidas = seleccionar_semillas(
+                semillas, [pelo_n_id] if pelo_n_id is not None else None
+            )
             async with CromoClient(config=get_cromo_config()) as cliente:
-                camino, _semillas = await resolver_camino_de_servicio(
-                    cliente, sesion, servicio_id, pelo_n_id=pelo_n_id
+                tracking = await obtener_tracking(
+                    cliente,
+                    sesion,
+                    servicio_id=servicio_id,
+                    pelo_n_id=elegidas[0].pelo_n_id,
                 )
     except PeloAjenoAlServicio as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except TrackingNoDisponible as exc:
+        return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
-    if camino.estado != ESTADO_OK:
-        return JSONResponse({"error": camino.motivo, "estado": camino.estado}, status_code=409)
-
-    nombre = nombre_archivo_tracking(camino.servicio_at62, camino.pelo_n_id or servicio_id)
-    contenido = renderizar_tracking_txt(camino, generado_en=datetime.now(timezone.utc))
+    # Con un solo pelo (el caso PON) el nombre queda idéntico al de siempre; con varios se
+    # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
+    # carpeta de Descargas y se pierde cuál es cuál.
+    nombre = nombre_distinguible(
+        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=len(semillas) > 1
+    )
     logger.info(
-        "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s nodos=%s duracion_ms=%s",
+        "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s desde_cache=%s duracion_ms=%s",
         usuario,
         servicio_id,
-        camino.pelo_n_id,
-        camino.estadisticas.nodos,
-        camino.duracion_ms,
+        tracking.pelo_n_id,
+        tracking.desde_cache,
+        tracking.duracion_ms,
     )
     return Response(
-        content=contenido,
+        content=tracking.contenido,
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
+class CaminoNormalizarRequestModel(BaseModel):
+    """Payload para normalizar las inconsistencias de la auditoría de un camino óptico."""
+
+    pelo_n_id: int = Field(description="Pelo semilla cuyo camino se auditó")
+    elemento_ids: list[int] | None = Field(
+        default=None,
+        description="Elementos puntuales a normalizar. Sin esto se normaliza todo lo inconsistente.",
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class CaminoRelevarOdfRequestModel(BaseModel):
+    """Payload para relevar las ODFs que atraviesa el camino de un pelo."""
+
+    pelo_n_id: int = Field(description="Pelo semilla cuyo camino descubre las ODFs")
+    odfs_n_id: list[int] | None = Field(
+        default=None, description="ODFs puntuales a relevar. Sin esto se relevan todas las del camino."
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+def _validar_csrf(request: Request, token: str | None, accion: str, username: str) -> bool:
+    """CSRF con el mismo criterio que el resto de los POST admin, incluida la excepción de tests."""
+    if os.getenv("TESTING", "false").lower() == "true":
+        return True
+    esperado = request.session.get("csrf")
+    if not token or token != esperado:
+        logger.warning("action=%s result=fail reason=csrf user=%s", accion, username)
+        return False
+    return True
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar")
+async def servicios_sin_odf_camino_normalizar_web(
+    request: Request, servicio_id: int, body: CaminoNormalizarRequestModel
+) -> JSONResponse:
+    """Normaliza las discrepancias de la tabla "Consistencia con lo ingerido", tomando Cromo como
+    referencia.
+
+    **Reingesta dirigida, no escritura del valor declarado por el camino**: se vuelve a traer de
+    Cromo el objeto real y se lo persiste por el mismo parser y los mismos upserts que usa la
+    ingesta regular, con su corrida sintética auditable. Escribe inventario, así que es admin.
+
+    Las inconsistencias se recalculan en el servidor: el cliente dice qué quiere normalizar, pero
+    qué está realmente mal lo decide quien va a escribir.
+    """
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.normalizacion_consistencia_service import (
+        CaminoNoResoluble,
+        normalizar_inconsistencias,
+    )
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "camino_normalizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                resultado = await normalizar_inconsistencias(
+                    cliente,
+                    sesion,
+                    pelo_n_id=body.pelo_n_id,
+                    usuario=username,
+                    elemento_ids=body.elemento_ids,
+                )
+    except CaminoNoResoluble as exc:
+        return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=camino_normalizar_error user=%s servicio_id=%s error=%s", username, servicio_id, exc
+        )
+        return JSONResponse({"error": "No se pudo normalizar la consistencia"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "corrida_id": resultado.corrida_id,
+            "pelo_n_id": resultado.pelo_n_id,
+            "creados": resultado.creados,
+            "actualizados": resultado.actualizados,
+            "sin_cambios": resultado.sin_cambios,
+            "errores": resultado.errores,
+            "total_discrepa_previo": resultado.total_discrepa_previo,
+            "total_no_ingerido_previo": resultado.total_no_ingerido_previo,
+            "detalle": [
+                {"elemento_id": i.elemento_id, "regla": i.regla, "accion": i.accion, "detalle": i.detalle}
+                for i in resultado.detalle
+            ],
+        }
+    )
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/relevar-odf")
+async def servicios_sin_odf_camino_relevar_odf_web(
+    request: Request, servicio_id: int, body: CaminoRelevarOdfRequestModel
+) -> JSONResponse:
+    """Releva las ODFs que atraviesa el camino, para poblar sus posiciones de patchera.
+
+    Es lo que destraba el caso "la ODF de este Servicio no está relevada": sin conectores
+    ingeridos no hay forma de saber qué posición le corresponde al Servicio, y por eso la descarga
+    de trackings no puede preseleccionar nada. Releva sólo lo que el camino ya descubrió, no todo
+    el universo de ODFs.
+    """
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.normalizacion_consistencia_service import (
+        CaminoNoResoluble,
+        relevar_odfs_del_servicio,
+    )
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "camino_relevar_odf", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                resultado = await relevar_odfs_del_servicio(
+                    cliente,
+                    sesion,
+                    pelo_n_id=body.pelo_n_id,
+                    usuario=username,
+                    odfs_n_id=body.odfs_n_id,
+                )
+    except CaminoNoResoluble as exc:
+        return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=camino_relevar_odf_error user=%s servicio_id=%s error=%s", username, servicio_id, exc
+        )
+        return JSONResponse({"error": "No se pudo relevar la ODF"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "corrida_id": resultado.corrida_id,
+            "relevadas": resultado.normalizados,
+            "errores": resultado.errores,
+            "detalle": [
+                {"odf_n_id": i.elemento_id, "accion": i.accion, "detalle": i.detalle}
+                for i in resultado.detalle
+            ],
+        }
     )
 
 

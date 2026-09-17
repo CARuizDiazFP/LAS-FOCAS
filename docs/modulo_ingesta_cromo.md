@@ -504,6 +504,30 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     `get_inner()` por ODF). Dry-run por defecto, `--apply` para persistir, `--solo-faltantes` para
     reanudar. Estimación real: varias horas para las ~7.955 ODFs (una llamada de red por objeto).
 
+  - `tracking_cache.py` / `tracking_service.py` (2026-09-17): caché de **salida** del `.txt` de
+    tracking de cada pelo (`app.cromo_tracking_cache`, TTL 24 h) y orquestación de su generación.
+    No es inventario: guarda el artefacto ya renderizado, no el camino. Existe porque un Servicio
+    tiene un tracking por pelo y cada uno cuesta una llamada a `/path` de 4,6-14 s.
+  - `normalizacion_consistencia_service.py` (2026-09-17): **reingesta dirigida** de los objetos que
+    la auditoría del camino marcó como `DIFIERE`/`NO_INGERIDO`, más el relevamiento puntual de una
+    ODF. Trae el objeto real de Cromo y lo persiste por este mismo parser y estos mismos upserts,
+    con corrida sintética auditable — nunca escribe el valor que declara el camino.
+
+    **Tres hallazgos reales que cualquiera que toque reingesta dirigida necesita saber** (ninguno
+    aparece con mocks; salieron de probar contra Cromo el 2026-09-17):
+    1. En un fetch directo `GET /db/objects/{id}`, **`parent` viene como objeto**
+       (`{"id": 10127039, "class": 51, ...}`), no como entero. Durante una corrida normal ese
+       `parent` lo inyecta el recorrido del árbol; pasárselo crudo a `parse_pelo`/`parse_fusion`
+       produce basura en silencio (un `tubo_n_id` que es un diccionario).
+    2. El `parent` de un pelo es el **cable**, no el tubo, y trae el id de **versión**, no el de
+       linaje. Por eso **un pelo no se puede reingerir suelto**: hay que hacerlo por el árbol de su
+       cable (`parse_cable` + `extraer_tubos_y_pelos`), que devuelve exactamente lo que declara el
+       camino y arregla `PELO_CABLE` y `PELO_TUBO` de todos sus pelos de una sola vez. Para la
+       fusión, la botella se resuelve traduciendo su id de versión a linaje con un fetch más.
+    3. La clase **52 (cable de un tercero, ej. Arsat)** también es un cable real del camino, aunque
+       la ingesta no la barra. `cromo_cables` no tiene columna de clase, así que persistirlo no
+       rompe ninguna FK contra `cromo_clases`.
+
 ## Principios de diseño
 
 - **Sólo lectura, siempre.** El cliente no expone ningún método de escritura contra el sistema externo.

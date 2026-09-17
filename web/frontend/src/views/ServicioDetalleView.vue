@@ -186,8 +186,9 @@
             El mismo panel que usa el modal de asociación: resolver el camino contra Cromo y
             VERLO acá -secuencia de nodos, consistencia contra el inventario ingerido, ODFs
             descubiertas- en vez de tener que descargar el .txt para saber qué dice. La elección
-            de semilla vive adentro del panel y manda también para la descarga: los dos leen el
-            mismo `camino.peloElegido`.
+            de semilla vive adentro del panel: `camino.peloElegido` manda para lo que se dibuja
+            en pantalla (uno solo, porque cada resolución cuesta una llamada a Cromo) y
+            `camino.pelosSeleccionados` para la descarga, que baja un .txt por cada pelo tildado.
           -->
           <CromoCaminoPanel :camino="camino" :servicio-id="servicio?.id ?? null">
             <!-- Sin slot de acción: este panel informa. Asociar una ODF es el trabajo del gestor
@@ -209,6 +210,8 @@
           -->
           <div class="servicio-detalle__panel-actions">
             <RouterLink class="servicio-detalle__panel-link" to="/infra">Ir a Infra FO</RouterLink>
+            <!-- Un Servicio tiene un tracking por pelo: 1 en PON, 2 o más en FO o con un SW de
+                 módulo bifilar. Se baja un .txt por cada pelo tildado, no un archivo único. -->
             <button
               class="servicio-detalle__panel-link"
               type="button"
@@ -216,11 +219,11 @@
               :title="
                 camino.pelos.value.length === 0
                   ? 'Cromo no tiene ningún pelo matcheado para este Servicio: no hay camino que trazar'
-                  : 'Descarga el tracking óptico generado desde Cromo'
+                  : 'Descarga un .txt por cada pelo tildado, generado desde Cromo'
               "
               @click="descargarTrackingDeCromo"
             >
-              {{ camino.descargando.value ? 'Generando…' : 'Tracking Cromo (.txt)' }}
+              {{ etiquetaDescargaTracking }}
             </button>
           </div>
         </article>
@@ -484,6 +487,23 @@ const foRutas = ref<InfraRutaItem[]>([]);
 // Sólo se usan las semillas y la descarga: la resolución completa del camino (con su auditoría)
 // vive en el gestor de Servicios sin ODF, que es admin-only.
 const camino = useCromoPath();
+
+/**
+ * La etiqueta dice cuántos archivos van a bajar, porque no es lo mismo un Servicio PON (1 pelo,
+ * 1 .txt) que uno de FO o con un SW de módulo bifilar (2 o más). Durante la descarga muestra el
+ * avance: en frío cada pelo cuesta entre 4,6 s y 14 s contra Cromo, así que sin progreso el
+ * operador cree que se colgó.
+ */
+const etiquetaDescargaTracking = computed(() => {
+  if (camino.descargando.value) {
+    const total = camino.descargaTotal.value;
+    return total > 1
+      ? `Generando… ${camino.descargadosCount.value}/${total}`
+      : 'Generando…';
+  }
+  const tildados = camino.pelosSeleccionados.value.length;
+  return tildados > 1 ? `Trackings Cromo (${tildados} .txt)` : 'Tracking Cromo (.txt)';
+});
 const foTrackingResumen = ref<{
   camaras: number;
   cables: number;
@@ -624,7 +644,7 @@ const domicilio = computed(() => {
 async function descargarTrackingDeCromo(): Promise<void> {
   const servicioId = servicio.value?.id;
   if (servicioId == null) return;
-  await camino.descargarTxt(servicioId);
+  await camino.descargarTrackings(servicioId);
 }
 
 async function loadDetalle(): Promise<void> {

@@ -14,7 +14,6 @@ from core.services.cromo.camino_optico_service import (
     ESTADO_SIN_SEMILLA,
     CaminoOptico,
     ConsistenciaCamino,
-    PeloAjenoAlServicio,
     PeloSemilla,
     ResultadoRegla,
 )
@@ -122,6 +121,42 @@ def _fake_cromo_client(monkeypatch):
     monkeypatch.setattr("core.services.cromo.config.get_cromo_config", lambda: object())
 
 
+def _fake_frescura(monkeypatch, frescos: Optional[dict] = None):
+    """Neutraliza la consulta de frescura del caché: estos tests mockean el servicio, no la base."""
+
+    async def _frescura(_sesion, _pelos, **_k):
+        return frescos or {}
+
+    monkeypatch.setattr("core.services.cromo.tracking_cache.frescura", _frescura)
+
+
+def _fake_semillas(monkeypatch, semillas):
+    async def _listar(*a, **k):
+        return list(semillas)
+
+    monkeypatch.setattr(
+        "core.services.cromo.camino_optico_service.listar_pelos_semilla", _listar
+    )
+
+
+def _fake_tracking(monkeypatch, *, contenido: str = "GENERADO desde Cromo\r\n", nombre: str = "93154 CROMO.txt"):
+    from datetime import datetime, timezone
+
+    from core.services.cromo.tracking_service import TrackingGenerado
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return TrackingGenerado(
+            pelo_n_id=pelo_n_id,
+            nombre_archivo=nombre,
+            contenido=contenido,
+            desde_cache=False,
+            generado_at=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
+            duracion_ms=10350,
+        )
+
+    monkeypatch.setattr("core.services.cromo.tracking_service.obtener_tracking", _obtener)
+
+
 def _semilla(pelo_n_id: int = 10006353) -> PeloSemilla:
     return PeloSemilla(
         pelo_n_id=pelo_n_id,
@@ -186,6 +221,7 @@ def test_pelos_requiere_autenticacion():
 
 def test_pelos_devuelve_las_semillas_serializadas(monkeypatch):
     _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
     monkeypatch.setattr(
         "core.services.cromo.camino_optico_service.listar_pelos_semilla",
         lambda *a, **k: _semillas_async(),
@@ -199,6 +235,63 @@ def test_pelos_devuelve_las_semillas_serializadas(monkeypatch):
     assert cuerpo["total"] == 1
     assert cuerpo["pelos"][0]["pelo_n_id"] == 10006353
     assert cuerpo["pelos"][0]["tiene_conector_odf"] is False
+    assert cuerpo["pelos"][0]["tracking_en_cache"] is None
+
+
+def test_pelos_preselecciona_las_posiciones_de_odf(monkeypatch):
+    """Lo que pidió operaciones: vienen tildadas las posiciones de la ODF, que pueden ser varias."""
+    _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
+    _fake_semillas(
+        monkeypatch,
+        [
+            _semilla(1),
+            _semilla_con_conector(2),
+            _semilla_con_conector(3),
+        ],
+    )
+    client = _cliente_user(monkeypatch)
+
+    cuerpo = client.get(_url_pelos()).json()
+
+    assert cuerpo["preseleccionados"] == [2, 3]
+    assert cuerpo["odf_relevada"] is True
+
+
+def test_pelos_avisa_cuando_la_odf_no_esta_relevada(monkeypatch):
+    """Caso real del servicio 122347: 6 pelos y ningún conector de ODF ingerido todavía."""
+    _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(7554378), _semilla(6967355)])
+    client = _cliente_user(monkeypatch)
+
+    cuerpo = client.get(_url_pelos()).json()
+
+    assert cuerpo["odf_relevada"] is False
+    assert cuerpo["preseleccionados"] == [7554378], "cae al comportamiento histórico"
+
+
+def test_pelos_informa_que_el_tracking_ya_esta_en_cache(monkeypatch):
+    """La UI necesita saber si la descarga es instantánea o va a tardar varios segundos."""
+    from datetime import datetime, timezone
+
+    _fake_session(monkeypatch)
+    _fake_frescura(
+        monkeypatch, {10006353: datetime(2026, 9, 17, 9, 0, tzinfo=timezone.utc)}
+    )
+    _fake_semillas(monkeypatch, [_semilla()])
+    client = _cliente_user(monkeypatch)
+
+    cuerpo = client.get(_url_pelos()).json()
+
+    assert cuerpo["pelos"][0]["tracking_en_cache"] == "2026-09-17T09:00:00+00:00"
+
+
+def _semilla_con_conector(pelo_n_id: int) -> PeloSemilla:
+    """Semilla que ya es posición de patchera de una ODF ingerida."""
+    base = _semilla(pelo_n_id)
+    base.tiene_conector_odf = True
+    return base
 
 
 async def _semillas_async():
@@ -215,19 +308,20 @@ def test_pelos_404_si_el_servicio_no_existe(monkeypatch):
 def test_pelos_devuelve_lista_vacia_sin_semillas(monkeypatch):
     # Es el 77% de los Servicios del gestor: no es un error, es la respuesta correcta.
     _fake_session(monkeypatch)
-
-    async def _vacio(*a, **k):
-        return []
-
-    monkeypatch.setattr(
-        "core.services.cromo.camino_optico_service.listar_pelos_semilla", _vacio
-    )
+    _fake_frescura(monkeypatch)
+    _fake_semillas(monkeypatch, [])
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_pelos())
 
     assert res.status_code == 200
-    assert res.json() == {"servicio_id": SERVICIO, "total": 0, "pelos": []}
+    assert res.json() == {
+        "servicio_id": SERVICIO,
+        "total": 0,
+        "pelos": [],
+        "preseleccionados": [],
+        "odf_relevada": False,
+    }
 
 
 # ── GET .../camino-optico/tracking.txt ──────────────────────────────────────
@@ -240,13 +334,8 @@ def test_tracking_txt_requiere_autenticacion():
 def test_tracking_txt_devuelve_el_archivo_con_content_disposition(monkeypatch):
     _fake_session(monkeypatch)
     _fake_cromo_client(monkeypatch)
-
-    async def _resolver(*a, **k):
-        return _camino_ok(), [_semilla()]
-
-    monkeypatch.setattr(
-        "core.services.cromo.camino_optico_service.resolver_camino_de_servicio", _resolver
-    )
+    _fake_semillas(monkeypatch, [_semilla()])
+    _fake_tracking(monkeypatch)
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_txt())
@@ -257,17 +346,71 @@ def test_tracking_txt_devuelve_el_archivo_con_content_disposition(monkeypatch):
     assert "GENERADO desde Cromo" in res.text
 
 
+def test_tracking_txt_con_un_solo_pelo_conserva_el_nombre_historico(monkeypatch):
+    """Caso PON. Nada de lo que consume ese `.txt` aguas abajo se entera del cambio."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(10006353)])
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.get(_url_txt(), params={"pelo_n_id": 10006353})
+
+    assert 'filename="93154 CROMO.txt"' in res.headers["content-disposition"]
+
+
+def test_tracking_txt_con_varios_pelos_identifica_a_cual_corresponde(monkeypatch):
+    """El hueco que no cubría ningún test: un Servicio con más de una semilla.
+
+    Sin esto los N archivos del mismo Servicio se llamarían igual y se pisarían al descargarlos.
+    """
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(10006353), _semilla(10006354)])
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    uno = client.get(_url_txt(), params={"pelo_n_id": 10006353})
+    otro = client.get(_url_txt(), params={"pelo_n_id": 10006354})
+
+    assert 'filename="93154 CROMO pelo 10006353.txt"' in uno.headers["content-disposition"]
+    assert 'filename="93154 CROMO pelo 10006354.txt"' in otro.headers["content-disposition"]
+
+
+def test_tracking_txt_sin_pelo_explicito_usa_la_posicion_de_odf(monkeypatch):
+    """Sin `pelo_n_id`, el default es la posición de ODF del Servicio, no el primero del ranking."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(111), _semilla_con_conector(222)])
+    elegidos = []
+
+    from datetime import datetime, timezone
+
+    from core.services.cromo.tracking_service import TrackingGenerado
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        elegidos.append(pelo_n_id)
+        return TrackingGenerado(
+            pelo_n_id=pelo_n_id,
+            nombre_archivo="93154 CROMO.txt",
+            contenido="GENERADO desde Cromo",
+            desde_cache=False,
+            generado_at=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
+            duracion_ms=1,
+        )
+
+    monkeypatch.setattr("core.services.cromo.tracking_service.obtener_tracking", _obtener)
+    client = _cliente_user(monkeypatch)
+
+    assert client.get(_url_txt()).status_code == 200
+    assert elegidos == [222]
+
+
 def test_tracking_txt_409_sin_semilla_en_vez_de_un_archivo_vacio(monkeypatch):
     """Un `.txt` que dice "no hay datos" es basura en la carpeta de Descargas de alguien."""
     _fake_session(monkeypatch)
     _fake_cromo_client(monkeypatch)
-
-    async def _resolver(*a, **k):
-        return CaminoOptico(estado=ESTADO_SIN_SEMILLA, motivo="sin pelos"), []
-
-    monkeypatch.setattr(
-        "core.services.cromo.camino_optico_service.resolver_camino_de_servicio", _resolver
-    )
+    _fake_semillas(monkeypatch, [])
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_txt())
@@ -279,13 +422,7 @@ def test_tracking_txt_409_sin_semilla_en_vez_de_un_archivo_vacio(monkeypatch):
 def test_tracking_txt_400_si_el_pelo_no_es_del_servicio(monkeypatch):
     _fake_session(monkeypatch)
     _fake_cromo_client(monkeypatch)
-
-    async def _resolver(*a, **k):
-        raise PeloAjenoAlServicio("El pelo 1 no pertenece al Servicio 557.")
-
-    monkeypatch.setattr(
-        "core.services.cromo.camino_optico_service.resolver_camino_de_servicio", _resolver
-    )
+    _fake_semillas(monkeypatch, [_semilla()])
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_txt(), params={"pelo_n_id": 1})
@@ -299,13 +436,12 @@ def test_tracking_txt_502_si_cromo_no_responde(monkeypatch):
 
     _fake_session(monkeypatch)
     _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla()])
 
-    async def _resolver(*a, **k):
+    async def _obtener(*a, **k):
         raise CromoClientError("timeout")
 
-    monkeypatch.setattr(
-        "core.services.cromo.camino_optico_service.resolver_camino_de_servicio", _resolver
-    )
+    monkeypatch.setattr("core.services.cromo.tracking_service.obtener_tracking", _obtener)
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_txt())

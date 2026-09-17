@@ -52,6 +52,10 @@ _CLASES_FALLBACK: dict[int, str] = {
 }
 
 _CLASES_CABLE = frozenset({51, 52})
+# Alias público: la reingesta dirigida necesita el mismo criterio de "qué es un cable".
+# La 52 es cable de un tercero (ej. Arsat): no la barre la ingesta, pero es un cable real
+# del camino y sus pelos son tan legítimos como los de un cable propio.
+CLASES_CABLE = _CLASES_CABLE
 _CLASE_TUBO = 129
 _CLASE_PELO = 130
 _CLASE_FUSION = 132
@@ -1189,6 +1193,56 @@ class PeloAjenoAlServicio(ValueError):
     `/path` genérico sobre cualquier pelo de la red."""
 
 
+
+def semillas_por_defecto(semillas: list[PeloSemilla]) -> list[PeloSemilla]:
+    """Semillas a preseleccionar para descargar el tracking de un Servicio.
+
+    Criterio pedido por operaciones: **las posiciones de ODF asociadas al Servicio**, que pueden
+    ser más de una. Un pelo que ya tiene conector de ODF ingerido es una posición de patchera real
+    del Servicio, y es el tracking que el operador quiere bajar.
+
+    Ojo con la asimetría respecto de `listar_pelos_semilla`, que ordena al revés a propósito
+    (`tiene_conector_odf` ASC): aquella función existe para **descubrir** ODFs nuevas, y para eso
+    el pelo interesante es justamente el que todavía no tiene conector. Acá el objetivo es el
+    opuesto — bajar el tracking de lo que ya se conoce — así que el criterio vive en este
+    consumidor y el ranking de descubrimiento queda intacto.
+
+    Si ninguna semilla tiene conector (la ODF del Servicio todavía no fue relevada) se cae a la
+    primera del ranking, que es el comportamiento histórico, y la UI avisa por qué.
+    """
+    con_conector = [s for s in semillas if s.tiene_conector_odf]
+    if con_conector:
+        return con_conector
+    return semillas[:1]
+
+
+def seleccionar_semillas(
+    semillas: list[PeloSemilla], pelos_n_id: Optional[Iterable[int]]
+) -> list[PeloSemilla]:
+    """Traduce los `pelo_n_id` pedidos a semillas del Servicio, preservando el orden del ranking.
+
+    Sin pedido explícito devuelve `semillas_por_defecto`. Cada id pedido tiene que pertenecer al
+    Servicio: si no, `PeloAjenoAlServicio`, el mismo guard que ya protege al endpoint de un solo
+    pelo de usarse como un `/path` genérico sobre cualquier pelo de la red.
+
+    Los duplicados se colapsan —pedir dos veces el mismo pelo no debe generar dos entradas
+    idénticas en el ZIP— y el orden de salida es el del ranking, no el del query string, para que
+    dos pedidos con los mismos ids produzcan exactamente el mismo archivo.
+    """
+    if pelos_n_id is None:
+        return semillas_por_defecto(semillas)
+    pedidos = {int(p) for p in pelos_n_id}
+    if not pedidos:
+        return semillas_por_defecto(semillas)
+    por_id = {s.pelo_n_id: s for s in semillas}
+    ajenos = sorted(pedidos - set(por_id))
+    if ajenos:
+        raise PeloAjenoAlServicio(
+            "Estos pelos no pertenecen al Servicio: " + ", ".join(str(p) for p in ajenos) + "."
+        )
+    return [s for s in semillas if s.pelo_n_id in pedidos]
+
+
 __all__ = [
     "ConsistenciaCamino",
     "InconsistenciaCamino",
@@ -1222,7 +1276,10 @@ __all__ = [
     "VinculoLocal",
     "calcular_estadisticas",
     "comparar_at62_vs_regex",
+    "CLASES_CABLE",
     "listar_pelos_semilla",
+    "seleccionar_semillas",
+    "semillas_por_defecto",
     "odfs_del_camino",
     "resolver_camino_de_pelo",
     "resolver_camino_de_servicio",

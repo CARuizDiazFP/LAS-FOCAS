@@ -69,6 +69,12 @@ export interface PeloSemilla {
   tiene_conector_odf: boolean;
   /** `at.61` crudo: es el "por qué matcheó" que le permite al operador evaluar la semilla. */
   servicio_raw: string | null;
+  /**
+   * Cuándo se generó el tracking cacheado de este pelo (ISO), o `null` si no hay uno fresco.
+   * Sirve para avisarle al operador si la descarga es instantánea o si va a pagar los 4,6-14 s
+   * que cuesta resolver el camino contra Cromo.
+   */
+  tracking_en_cache: string | null;
 }
 
 export interface VinculoLocalCamino {
@@ -196,6 +202,13 @@ export interface PelosCaminoResponse {
   servicio_id: number;
   total: number;
   pelos: PeloSemilla[];
+  /**
+   * Pelos a tildar por defecto: las posiciones de ODF asociadas al Servicio, que pueden ser más
+   * de una. Si la ODF todavía no fue relevada cae al primer pelo del ranking.
+   */
+  preseleccionados: number[];
+  /** `false` cuando ninguna semilla tiene conector de ODF ingerido: hay que relevar la ODF. */
+  odf_relevada: boolean;
 }
 
 // ── Llamadas ──────────────────────────────────────────────────────────────
@@ -278,4 +291,81 @@ export function mensajeErrorCromoPath(
     }
   }
   return error instanceof Error ? error.message : 'Error resolviendo el camino óptico en Cromo.';
+}
+
+// ── Normalización de la consistencia y relevamiento de ODF ─────────────────
+
+export interface ItemNormalizado {
+  elemento_id: number;
+  regla: string;
+  accion: string;
+  detalle: string | null;
+}
+
+export interface NormalizarConsistenciaResponse {
+  ok: boolean;
+  corrida_id: number | null;
+  pelo_n_id: number;
+  creados: number;
+  actualizados: number;
+  sin_cambios: number;
+  errores: number;
+  total_discrepa_previo: number;
+  total_no_ingerido_previo: number;
+  detalle: ItemNormalizado[];
+}
+
+/**
+ * Normaliza las discrepancias de la auditoría tomando **Cromo como referencia**: el backend vuelve
+ * a traer de Cromo el objeto real y lo reingiere por el mismo parser y los mismos upserts que la
+ * ingesta regular, con su corrida sintética auditable.
+ *
+ * Cuesta una llamada a Cromo por objeto más la resolución del camino, así que es lenta a
+ * propósito: no hay una vía rápida que no implique escribir inventario a ciegas.
+ *
+ * `elementoIds` acota qué corregir; sin él se normaliza todo lo inconsistente. En los dos casos el
+ * backend recalcula qué está realmente mal: no confía en esta lista para decidir qué escribir.
+ */
+export async function normalizarConsistencia(
+  servicioId: number,
+  peloNId: number,
+  opciones: { elementoIds?: number[]; signal?: AbortSignal } = {},
+): Promise<NormalizarConsistenciaResponse> {
+  return requestJson<NormalizarConsistenciaResponse>(
+    `/api/admin/infra/servicios-odf/${servicioId}/camino-optico/normalizar`,
+    {
+      method: 'POST',
+      json: { pelo_n_id: peloNId, elemento_ids: opciones.elementoIds ?? null },
+      csrf: true,
+      signal: opciones.signal,
+    },
+  );
+}
+
+export interface RelevarOdfResponse {
+  ok: boolean;
+  corrida_id: number | null;
+  relevadas: number;
+  errores: number;
+  detalle: { odf_n_id: number; accion: string; detalle: string | null }[];
+}
+
+/**
+ * Releva las ODFs que atraviesa el camino del pelo, poblando sus posiciones de patchera.
+ * Es lo que destraba la preselección de posiciones de ODF para descargar los trackings.
+ */
+export async function relevarOdfsDelCamino(
+  servicioId: number,
+  peloNId: number,
+  opciones: { odfsNId?: number[]; signal?: AbortSignal } = {},
+): Promise<RelevarOdfResponse> {
+  return requestJson<RelevarOdfResponse>(
+    `/api/admin/infra/servicios-odf/${servicioId}/camino-optico/relevar-odf`,
+    {
+      method: 'POST',
+      json: { pelo_n_id: peloNId, odfs_n_id: opciones.odfsNId ?? null },
+      csrf: true,
+      signal: opciones.signal,
+    },
+  );
 }
