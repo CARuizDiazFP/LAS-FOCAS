@@ -7,6 +7,11 @@ import { useSession } from '../composables/useSession';
 
 const LoginView = () => import('../views/LoginView.vue');
 const AppShell = () => import('../components/app-shell/AppShell.vue');
+const ServicioHistoricoView = () => import('../views/servicios/ServicioHistoricoView.vue');
+const ServicioIngresosView = () => import('../views/servicios/ServicioIngresosView.vue');
+const ServicioCaminoView = () => import('../views/servicios/ServicioCaminoView.vue');
+const ServicioReclamosView = () => import('../views/servicios/ServicioReclamosView.vue');
+const ServicioBaneosView = () => import('../views/servicios/ServicioBaneosView.vue');
 const PanelView = () => import('../views/PanelView.vue');
 const SlaView = () => import('../views/SlaView.vue');
 const ReportsHistoryView = () => import('../views/ReportsHistoryView.vue');
@@ -161,6 +166,35 @@ const routes: RouteRecordRaw[] = [
         path: 'servicios/ID/:idServicio',
         name: 'servicios-detail',
         component: ServicioDetalleView,
+      },
+      // Una ruta por sección: la ficha quedó compacta y cada detalle se abre en su propia vista,
+      // linkeable y compartible. Ojo: la navegación real está hardcodeada en `AppShell.vue`, así
+      // que estas rutas también se mapean en su `resolveCurrentView` para que el módulo
+      // "Servicios" quede marcado activo.
+      {
+        path: 'servicios/ID/:idServicio/historico',
+        name: 'servicios-detail-historico',
+        component: ServicioHistoricoView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/ingresos',
+        name: 'servicios-detail-ingresos',
+        component: ServicioIngresosView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/camino',
+        name: 'servicios-detail-camino',
+        component: ServicioCaminoView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/reclamos',
+        name: 'servicios-detail-reclamos',
+        component: ServicioReclamosView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/baneos',
+        name: 'servicios-detail-baneos',
+        component: ServicioBaneosView,
       },
       { path: 'infra/Camaras/:id(\\d+)', name: 'camara-detail', component: CamaraDetailView },
       { path: 'infra/cromo/verificador', name: 'infra-cromo-verificador', component: VerificadorCromoView },

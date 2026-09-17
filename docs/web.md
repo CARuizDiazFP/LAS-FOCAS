@@ -426,6 +426,42 @@ caso y para todos, que dispara la reingesta dirigida contra Cromo y vuelve a res
 (invalidando antes la memoización del pelo, si no mostraría las mismas discrepancias recién
 corregidas).
 
+### Detalle de Servicio: ficha compacta + una ruta por sección
+
+`ServicioDetalleView.vue` tenía 1356 líneas y 9 bloques, con tablas enteras de ODFs y de ingresos
+compitiendo por la pantalla. Ahora la ficha conserva identidad, equipos de última milla y la tira de
+métricas, y el resto son **tarjetas de resumen** (`components/servicios/detalle/ServicioSeccionCard.vue`)
+que abren su propia vista:
+
+| Tarjeta | Ruta |
+|---|---|
+| Histórico de IDs (timeline horizontal) | `/servicios/ID/:idServicio/historico` |
+| Camino óptico | `/servicios/ID/:idServicio/camino` |
+| Ingresos | `/servicios/ID/:idServicio/ingresos` |
+| Reclamos | `/servicios/ID/:idServicio/reclamos` |
+| Eventos de baneo *(nuevo)* | `/servicios/ID/:idServicio/baneos` |
+
+Las cinco vistas viven en `views/servicios/` y comparten `ServicioSeccionLayout.vue` (migas,
+cabecera, estados de carga) y el composable `useServicioBase` (identidad del Servicio). Cada una
+carga **sólo lo suyo**: la ficha llegaba a disparar cinco cargas en paralelo para mostrarlo todo
+junto, que es justo la densidad que este rediseño baja.
+
+**Dos trampas del repo que estas rutas tocan:**
+
+- La navegación real está hardcodeada en `AppShell.vue`, no en el `meta` del router. No hizo falta
+  tocarla porque `resolveCurrentView()` ya matchea `path.startsWith('/servicios/ID/')`, así que las
+  sub-rutas marcan "Servicios" activo solas — pero cualquier ruta nueva fuera de ese prefijo sí
+  habría que agregarla a mano ahí.
+- Los tipos y llamadas de cada sección pasaron de estar declarados **inline** en la vista a
+  `api/servicioSecciones.ts`. Con cinco consumidores nuevos, dejarlos en la vista obligaba a
+  duplicarlos. De paso se retiraron los cinco `fetch` crudos y el `parseJsonOrError` local, que
+  duplicaba lo que ya hace `requestJson`.
+
+El timeline pasó a **horizontal y colapsado** (`ServiceTimeline.vue`, últimos 4 hitos con scroll
+propio); el render vertical completo se conserva en `ServiceTimelineDetalle.vue`, que usa la vista
+dedicada. El formato de fecha —incluido el manejo del bug de fecha pura interpretada como UTC— se
+extrajo a `timelineFormato.ts` para que las dos lo compartan.
+
 ## Variables de entorno
 
 - `WEB_SECRET_KEY` → secreto para cookie de sesión (**obligatorio en prod**).
