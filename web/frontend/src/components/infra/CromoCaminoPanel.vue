@@ -96,6 +96,17 @@
           {{ camino.resultado.value.estadisticas.nodos }} nodos ·
           {{ camino.resultado.value.estadisticas.cables }} cables ·
           {{ camino.resultado.value.estadisticas.odfs }} ODFs ·
+          <!-- La red de acceso PON se cuenta aparte: un cable de bajada no es un tramo de la
+               troncal y sumarlo distorsionaría la longitud óptica del backbone. -->
+          <template v-if="camino.resultado.value.estadisticas.splitters">
+            {{ camino.resultado.value.estadisticas.splitters }} splitters ·
+          </template>
+          <template v-if="camino.resultado.value.estadisticas.cajas_pon">
+            {{ camino.resultado.value.estadisticas.cajas_pon }} cajas PON ·
+          </template>
+          <template v-if="camino.resultado.value.estadisticas.cables_bajada">
+            {{ camino.resultado.value.estadisticas.cables_bajada }} bajadas ·
+          </template>
           {{ Math.round(camino.resultado.value.estadisticas.longitud_optica_m) }} m ópticos ·
           pelo n_id {{ camino.resultado.value.pelo_n_id }}
           <template v-if="camino.resultado.value.servicio_at62">

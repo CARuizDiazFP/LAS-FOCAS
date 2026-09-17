@@ -16,6 +16,14 @@ export type TipoNodoCamino =
   | 'CONECTOR_ODF'
   | 'NO_RESUELTO'
   | 'CLASE_DESCONOCIDA'
+  // Red de acceso PON. Aparecen sólo cuando el camino se siembra desde una salida del splitter,
+  // hacia el extremo cliente: desde el lado de red el recorrido se corta en el splitter.
+  | 'SPLITTER'
+  | 'PUERTO_SPLITTER'
+  | 'CAJA_PON'
+  | 'CABLE_BAJADA'
+  | 'NODO'
+  | 'FUSION_ODF'
   | string;
 
 export type TipoInconsistencia = 'DISCREPA' | 'NO_INGERIDO';
@@ -32,6 +40,13 @@ const TIPO_NODO_LABELS: Record<string, string> = {
   ODF: 'ODF',
   PATCHERA: 'Patchera',
   CAMARA: 'Cámara',
+  SPLITTER: 'Splitter',
+  PUERTO_SPLITTER: 'Puerto de splitter',
+  CAJA_PON: 'Caja PON',
+  CABLE_BAJADA: 'Cable de bajada',
+  NODO: 'Nodo',
+  FUSION_ODF: 'Fusión en ODF',
+  ROSETA: 'Roseta',
 };
 
 /** Ícono Phosphor por tipo de nodo. Deliberadamente NO se usa color: los tipos se distinguen por
@@ -45,6 +60,13 @@ const TIPO_NODO_ICONOS: Record<string, string> = {
   BOTELLA: 'ph-package',
   ODF: 'ph-plugs-connected',
   CAMARA: 'ph-map-pin',
+  SPLITTER: 'ph-share-network',
+  PUERTO_SPLITTER: 'ph-arrow-elbow-down-right',
+  CAJA_PON: 'ph-package',
+  CABLE_BAJADA: 'ph-line-segment',
+  NODO: 'ph-buildings',
+  FUSION_ODF: 'ph-arrows-merge',
+  ROSETA: 'ph-house-line',
 };
 
 export function tipoNodoLabel(tipo: string): string {
@@ -109,6 +131,17 @@ export interface NodoCamino {
   odf_id: number | null;
   odf_nombre: string | null;
   servicio_at62: string | null;
+  /** Ratio del splitter tal como lo PUBLICA Cromo en `at.83` ("1x8", "1x4"). No es una inferencia
+   * por fan-out: es dato. */
+  splitter_ratio: string | null;
+  splitter_nombre: string | null;
+  splitter_id: number | null;
+  /** Cantidad de salidas reales del splitter, de `splitter_a.c_out`. */
+  splitter_salidas: number | null;
+  puerto_nombre: string | null;
+  puerto_sentido: string | null;
+  /** "Aereo" / "Subsuelo" / "Canalizado", en cables de bajada y cajas PON. */
+  tendido: string | null;
   /** `null` NO es error: puede ser una clase que la ingesta no barre, o un objeto que Cromo movió
    * después de la última corrida. Se pinta como "sólo en Cromo". */
   vinculo_local: VinculoLocalCamino | null;
@@ -133,6 +166,11 @@ export interface EstadisticasCamino {
   cables: number;
   odfs: number;
   no_resueltos: number;
+  /** La red de acceso PON se cuenta aparte: sumar un cable de bajada a la troncal distorsionaría
+   * la longitud óptica del backbone. */
+  splitters: number;
+  cajas_pon: number;
+  cables_bajada: number;
   longitud_geo_m: number;
   longitud_optica_m: number;
 }

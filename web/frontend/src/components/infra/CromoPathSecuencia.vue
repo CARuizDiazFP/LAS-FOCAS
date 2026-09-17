@@ -43,6 +43,23 @@
                 <template v-if="nodo.tubo_color">· tubo {{ nodo.tubo_color }}</template>
               </span>
             </template>
+            <template v-else-if="nodo.tipo === 'SPLITTER'">
+              Splitter {{ nodo.splitter_nombre ?? nodo.nombre ?? '' }}
+              <!-- El ratio lo publica Cromo en at.83: es dato, no una inferencia por fan-out. -->
+              <span v-if="nodo.splitter_ratio" class="cromo-path__pelo">{{ nodo.splitter_ratio }}</span>
+            </template>
+            <template v-else-if="nodo.tipo === 'PUERTO_SPLITTER'">
+              Puerto {{ nodo.puerto_nombre ?? '—' }}
+              <span class="cromo-path__pelo">
+                <template v-if="nodo.puerto_sentido">{{ nodo.puerto_sentido.toLowerCase() }}</template>
+                <template v-if="nodo.splitter_ratio"> · splitter {{ nodo.splitter_ratio }}</template>
+                <template v-if="nodo.splitter_salidas"> · {{ nodo.splitter_salidas }} salidas</template>
+              </span>
+            </template>
+            <template v-else-if="nodo.tipo === 'CABLE_BAJADA'">
+              Bajada {{ nodo.cable_nombre ?? nodo.nombre ?? '' }}
+              <span v-if="nodo.tendido" class="cromo-path__pelo">{{ nodo.tendido.toLowerCase() }}</span>
+            </template>
             <template v-else>
               {{ tipoNodoLabel(nodo.tipo) }} {{ nodo.nombre ?? nodo.id_cromo }}
             </template>

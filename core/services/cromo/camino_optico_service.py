@@ -27,6 +27,15 @@ TIPO_FUSION = "FUSION"
 TIPO_CONECTOR_ODF = "CONECTOR_ODF"
 TIPO_NO_RESUELTO = "NO_RESUELTO"
 TIPO_CLASE_DESCONOCIDA = "CLASE_DESCONOCIDA"
+# Red de acceso PON. Diagnóstico real 2026-09-17 (ver docs/decisiones.md): el camino sembrado desde
+# un pelo del lado de red **se corta en el splitter**; estas clases aparecen sólo sembrando desde
+# una SALIDA del splitter hacia el cliente, que es la regla operativa que aportó el usuario.
+TIPO_SPLITTER = "SPLITTER"
+TIPO_PUERTO_SPLITTER = "PUERTO_SPLITTER"
+TIPO_CAJA_PON = "CAJA_PON"
+TIPO_CABLE_BAJADA = "CABLE_BAJADA"
+TIPO_NODO = "NODO"
+TIPO_FUSION_ODF = "FUSION_ODF"
 
 # Clases medidas en un camino real (2026-09-10, pelo 10006353, 883 nodos). El catálogo de
 # `app.cromo_clases` manda cuando la clase está ahí; esto es sólo el fallback para las que no
@@ -49,7 +58,27 @@ _CLASES_FALLBACK: dict[int, str] = {
     132: TIPO_FUSION,
     135: "PATCHERA",
     136: TIPO_CONECTOR_ODF,
+    # Red de acceso PON, medida real sobre caminos de 6 servicios OLT (2026-09-17). Ninguna está
+    # ingerida: se etiquetan para que el diagrama deje de mostrar "CLASE_84" y muestre qué es cada
+    # nodo. 85 (Roseta) no se observó en ningún camino — el recorrido termina en la caja PON.
+    66: TIPO_CABLE_BAJADA,
+    84: TIPO_CAJA_PON,
+    86: TIPO_NODO,
+    133: TIPO_SPLITTER,
+    134: TIPO_PUERTO_SPLITTER,
+    137: TIPO_CAJA_PON,
+    141: TIPO_FUSION_ODF,
 }
+
+# Cables de bajada (drop). Se muestran con nombre y metraje como cualquier cable, pero NO entran en
+# `_CLASES_CABLE`: esa constante define qué se puede reingerir por `extraer_tubos_y_pelos`, y un
+# cable de bajada no tiene esa estructura de tubos/pelos.
+_CLASES_CABLE_BAJADA = frozenset({66})
+_CLASES_CAJA_PON = frozenset({84, 137})
+_CLASE_SPLITTER = 133
+_CLASE_PUERTO_SPLITTER = 134
+_CLASE_NODO = 86
+_CLASE_FUSION_ODF = 141
 
 _CLASES_CABLE = frozenset({51, 52})
 # Alias público: la reingesta dirigida necesita el mismo criterio de "qué es un cable".
@@ -81,6 +110,13 @@ _AT_PELO_COLOR = 77
 _AT_PATCHERA_NOMBRE = 79
 _AT_CONECTOR_NUMERO = 81
 _AT_FUSION_PAR = 84
+_AT_TENDIDO = 20              # "Aereo"/"Subsuelo", en cable de bajada y caja PON
+_AT_CABLE_BAJADA_TIPO = 27    # literalmente "Bajada" en los cables de bajada
+_AT_SPLITTER_NOMBRE = 78      # "S-1243457-3", "SPLITTER 1"
+_AT_PUERTO_NOMBRE = 80        # "S6", "E1"
+_AT_SPLITTER_RATIO = 83       # "1x8", "1x4" — Cromo PUBLICA el ratio, no hay que inferirlo
+_AT_PUERTO_SENTIDO = 82       # "ENTRADA"/"SALIDA"
+_AT_FUSION_TIPO = 85          # "FUSION"
 
 # Cota defensiva: el camino real medido más largo tiene 175 elementos de un lado, así que 500 es
 # ~3x el peor caso observado. Protege de un `a[]` desmedido, no de un camino normal.
@@ -134,6 +170,15 @@ class NodoCamino:
     odf_id: Optional[int] = None
     odf_nombre: Optional[str] = None
     servicio_at62: Optional[str] = None
+    # Contexto de la red de acceso PON (clases 133/134/84/137/66). `splitter_ratio` sale de `at.83`
+    # de Cromo: el ratio está PUBLICADO, no hay que inferirlo por fan-out como hace `empalmes.py`.
+    splitter_ratio: Optional[str] = None
+    splitter_nombre: Optional[str] = None
+    splitter_id: Optional[int] = None
+    puerto_nombre: Optional[str] = None
+    puerto_sentido: Optional[str] = None  # ENTRADA | SALIDA
+    splitter_salidas: Optional[int] = None
+    tendido: Optional[str] = None  # "Aereo" / "Subsuelo" / "Canalizado"
     vinculo_local: Optional[VinculoLocal] = None
 
 
@@ -164,6 +209,9 @@ class EstadisticasCamino:
     cables: int = 0
     odfs: int = 0
     no_resueltos: int = 0
+    splitters: int = 0
+    cajas_pon: int = 0
+    cables_bajada: int = 0
     longitud_geo_m: float = 0.0
     longitud_optica_m: float = 0.0
 
@@ -370,6 +418,63 @@ def _completar_contexto_conector(
     nodo.nombre = nodo.nombre or nodo.patchera_nombre
 
 
+def _completar_contexto_cable_bajada(nodo: NodoCamino, crudo: Mapping[str, Any]) -> None:
+    """Cable de bajada (drop, clase 66): el tramo final hacia el domicilio del cliente.
+
+    Comparte con el cable común el atributo de nombre (`at.26`) y el de distancia (`at.23`), así
+    que se muestra igual. Lo que lo distingue es `at.27 = "Bajada"` y el tipo de tendido
+    (`at.20`: "Aereo", "Subsuelo"). No se cuenta como cable en las estadísticas: tiene su propio
+    contador, porque mezclarlo con la troncal distorsionaría la longitud óptica del backbone.
+    """
+    nodo.cable_nombre = atributo(crudo, _AT_NOMBRE_CABLE) or atributo(crudo, _AT_NOMBRE_GENERICO)
+    nodo.nombre = nodo.nombre or nodo.cable_nombre
+    nodo.distancia_geo_m = _a_float(atributo(crudo, _AT_DISTANCIA_GEO))
+    nodo.distancia_real_m = _a_float(atributo(crudo, _AT_DISTANCIA_REAL))
+    nodo.tendido = atributo(crudo, _AT_TENDIDO)
+
+
+def _completar_contexto_splitter(nodo: NodoCamino, crudo: Mapping[str, Any]) -> None:
+    """Splitter (clase 133). **Cromo publica el ratio** en `at.83` ("1x8", "1x4").
+
+    Esto es dato, no inferencia: `core/services/cromo/empalmes.py` deduce hoy el ratio por fan-out
+    de fusiones, con los falsos "Splitter 1-1"/"Splitter 1-3" ya documentados. Cuando un camino
+    pasa por el splitter, acá el ratio viene dado por el propio Cromo.
+    """
+    nodo.splitter_id = nodo.id_cromo
+    nodo.splitter_nombre = atributo(crudo, _AT_SPLITTER_NOMBRE) or atributo(crudo, _AT_NOMBRE_GENERICO)
+    nodo.splitter_ratio = atributo(crudo, _AT_SPLITTER_RATIO)
+    nodo.nombre = nodo.nombre or nodo.splitter_nombre
+
+
+def _completar_contexto_puerto_splitter(
+    nodo: NodoCamino, crudo: Mapping[str, Any], dic: Mapping[int, Any]
+) -> None:
+    """Puerto de splitter (clase 134): `father` es el splitter y `gfather` su contenedor.
+
+    `splitter_a` (cuando viene) trae la topología explícita del splitter —`c_in` y `c_out`— así
+    que el fan-out real no hay que contarlo: está publicado. Sembrar el camino desde uno de esos
+    `c_out` es lo que revela la red de acceso (caja PON y cables de bajada); desde el lado de red,
+    el recorrido se corta acá.
+    """
+    nodo.puerto_nombre = atributo(crudo, _AT_PUERTO_NOMBRE)
+    nodo.puerto_sentido = atributo(crudo, _AT_PUERTO_SENTIDO)
+    nodo.nombre = nodo.nombre or nodo.puerto_nombre
+
+    splitter_id = crudo.get("father")
+    splitter = dic.get(splitter_id) if splitter_id else None
+    if splitter is not None:
+        nodo.splitter_id = splitter_id
+        nodo.splitter_nombre = atributo(splitter, _AT_SPLITTER_NOMBRE) or atributo(
+            splitter, _AT_NOMBRE_GENERICO
+        )
+        nodo.splitter_ratio = atributo(splitter, _AT_SPLITTER_RATIO)
+
+    topologia = crudo.get("splitter_a")
+    if isinstance(topologia, dict):
+        salidas = topologia.get("c_out") or []
+        nodo.splitter_salidas = len(salidas) or None
+
+
 def _construir_lado(
     dic: dict[int, dict[str, Any]],
     secuencia: Optional[Iterable[Any]],
@@ -429,6 +534,18 @@ def _construir_lado(
             nodo.cable_nombre = atributo(crudo, _AT_NOMBRE_CABLE) or atributo(crudo, _AT_NOMBRE_GENERICO)
             nodo.distancia_geo_m = _a_float(atributo(crudo, _AT_DISTANCIA_GEO))
             nodo.distancia_real_m = _a_float(atributo(crudo, _AT_DISTANCIA_REAL))
+        elif clase in _CLASES_CABLE_BAJADA:
+            _completar_contexto_cable_bajada(nodo, crudo)
+        elif clase == _CLASE_SPLITTER:
+            _completar_contexto_splitter(nodo, crudo)
+        elif clase == _CLASE_PUERTO_SPLITTER:
+            _completar_contexto_puerto_splitter(nodo, crudo, dic)
+        elif clase in _CLASES_CAJA_PON or clase == _CLASE_NODO:
+            nodo.nombre = atributo(crudo, _AT_NOMBRE_GENERICO) or nodo.nombre
+            nodo.tendido = atributo(crudo, _AT_TENDIDO)
+        elif clase == _CLASE_FUSION_ODF:
+            nodo.nombre = atributo(crudo, _AT_FUSION_PAR) or nodo.nombre
+            nodo.pelos_fusionados = _ids_de_tp(crudo)
         elif nodo.nombre is None:
             nodo.nombre = atributo(crudo, _AT_NOMBRE_GENERICO)
 
@@ -466,6 +583,12 @@ def calcular_estadisticas(
             estadisticas.conectores += 1
         elif nodo.tipo == TIPO_NO_RESUELTO:
             estadisticas.no_resueltos += 1
+        elif nodo.tipo == TIPO_SPLITTER:
+            estadisticas.splitters += 1
+        elif nodo.tipo == TIPO_CAJA_PON:
+            estadisticas.cajas_pon += 1
+        elif nodo.tipo == TIPO_CABLE_BAJADA:
+            estadisticas.cables_bajada += 1
 
         if nodo.odf_id:
             odfs.add(nodo.odf_id)

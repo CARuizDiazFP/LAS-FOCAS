@@ -1575,6 +1575,8 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
     IDs de clase Cromo reales de esos objetos (84, 66, 85) pero **ninguno está ingerido hoy** en este
     repo — el gestor llega hasta "qué ODF" (donde el pelo termina en la patchera), no hasta el
     circuito físico completo hasta la roseta del cliente.
+
+  > **Actualizado 2026-09-17:** medido contra Cromo real, las clases que aparecen en el camino de un servicio OLT son **133** (Splitter, con el ratio en `at.83`), **134** (puerto de splitter), **86** (nodo/sala), **141** (fusión en ODF) y, sembrando desde una **salida** del splitter, **84** (Caja PON), **66** (Cable de bajada) y **137** (caja PON de edificio). La **85 (Roseta) no se observó en ningún camino**. Además, ingerirlas **no** habilitaría el trazado continuo: `/path` corta el recorrido en cada splitter, y las cajas PON y bajadas quedan en el `dict` pero fuera de la ruta `a[]`/`b[]`. Ya están catalogadas y etiquetadas (migración `20260917_02`); ver la entrada del 2026-09-17 en `docs/decisiones.md`.
   - Descarga de trackings desde el Detalle de Servicio.
   - Distinción algorítmica entre "SW de frontera" (nodo compartido real) y "SW con FO dedicada al
     cliente" dentro de `SWITCH_COMPARTIDO_REVISAR` — el usuario no entregó todavía un criterio
@@ -1848,3 +1850,51 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   `PELO_TUBO` 98/98, `FUSION_BOTELLA` 96/96, `FUSION_PELOS` 96/96, `CONECTOR_PELO_ODF` 4/4. Los tres
   pelos creados quedaron con el tubo y el cable exactos que declara el camino (10126944 →
   tubo 10126934, cable 10126920).
+
+## 2026-09-17 (seguimiento) — Red de acceso PON en el camino óptico: qué se resolvió y qué no
+
+- **Contexto:** El ticket reportaba que "los diagramas de camino óptico para servicios con OLT
+  fallan al toparse con Splitters, Cables de Bajada y Cajas PON debido a clases de infraestructura
+  no ingeridas previamente". `docs/decisiones.md` (2026-09-09) registraba, desde capturas de la UI
+  de Cromo, que esas clases eran Roseta = 85, Caja PON = 84 y Cable de bajada = 66, y que sumarlas
+  era "un proyecto propio del tamaño del submódulo de ODFs".
+- **Diagnóstico real (2026-09-17), sembrando como indicó el usuario:** *"un splitter muestra camino
+  óptico ok siempre y cuando se use la posición de la Roseta o puerto PON asociado al servicio en el
+  extremo cliente; si se releva un splitter de mayor nivel el camino quedará cortado"*. Con esa
+  regla:
+  - Sembrando desde un pelo del **lado de red**, sobre **6 servicios OLT reales**, aparecen
+    **133/134/86/141** y **nunca** 84/66/85. El recorrido se corta en el splitter.
+  - Sembrando desde una **salida** del splitter (`splitter_a.c_out`), aparecen **84** (Caja PON) y
+    **66** (Cable de bajada, ×19), más una clase que no estaba en ninguna lista: **137**, otra caja
+    PON (de edificio) que **contiene** un splitter.
+  - Identificación por atributos reales: 84 → `at.34` "Caja PON Subs Libertador 602" (`at.35` trae
+    potencias ópticas por salida); 66 → `at.27` = **"Bajada"**, `at.26` = "FBJ-31363", `at.20` =
+    "Aereo"; 133 → **`at.83` = "1x8"/"1x4"**, el ratio **publicado**; 134 → `at.80`/`at.82` =
+    "S6"/"SALIDA" más `splitter_a` con `c_in`/`c_out`; 86 → nodo/sala; 141 → fusión dentro de una
+    ODF (la 132 es la de Botella). **La 85 (Roseta) no se observó en ningún camino.**
+- **Decisión:** catalogar las 8 clases en `app.cromo_clases` con `ingerible=false` (migración
+  `20260917_02`) y enriquecer los nodos en `camino_optico_service`. `ingerible=false` es deliberado:
+  **no** se barren en una corrida; sólo se catalogan para que el diagrama muestre qué es cada nodo.
+  La 85 se cataloga igual, con `motivo_exclusion` diciendo que todavía no se observó.
+- **Hallazgo que corrige la premisa del ticket, y que hay que decir sin adornos:** el diagrama
+  **no fallaba sólo por falta de ingesta**. Falla por dos cosas distintas y sólo una era de ingesta:
+  1. *Etiquetado* — los nodos PON se dibujaban como `CLASE_84`, sin nombre ni contexto. **Resuelto**:
+     verificado real, un camino que antes mostraba `CLASE_134` ahora muestra
+     `PUERTO_SPLITTER · E1 · entrada · splitter 1x4`, y **cero** nodos quedan en el genérico.
+  2. *Truncamiento* — `/path` **corta el recorrido en cada splitter**. Verificado en cascada:
+     sembrando en una salida del splitter de primer nivel, la ruta llega hasta la **entrada** del
+     splitter de segundo nivel y ahí termina. Las cajas PON y los 19 cables de bajada **están en el
+     `dict` de la respuesta pero fuera de la ruta `a[]`/`b[]`**. Esto **no se arregla ingiriendo
+     84/66/85**: es cómo responde Cromo, no un hueco de nuestro inventario.
+- **Consecuencia:** el trazado continuo OLT→Caja PON→Splitter→Cable de bajada→Roseta **sigue sin ser
+  alcanzable** por esta vía. Lo que lo haría posible es una vista **multi-tramo** que encadene
+  segmentos sembrando en las salidas de cada splitter (N llamadas de 4,6-14 s por segmento) — es una
+  funcionalidad propia, con su propio alcance, y no se implementó acá.
+- **Efecto colateral valioso:** Cromo **publica** el ratio del splitter en `at.83`. Hoy
+  `core/services/cromo/empalmes.py` lo **infiere** por fan-out de fusiones, con los falsos
+  "Splitter 1-1"/"Splitter 1-3" ya documentados (2026-09-02). Queda disponible el dato autoritativo
+  para reemplazar esa heurística; el reemplazo no se hizo en esta tarea.
+- **Alternativas:** ingerir 84/66/85 con tablas propias (el "proyecto del tamaño del submódulo de
+  ODFs" de 2026-09-09) — descartado por ahora porque, según la medición, **no resolvería el
+  truncamiento**, que es el síntoma de fondo; dejar los nodos como `CLASE_N` — descartado, es
+  justamente lo reportado.

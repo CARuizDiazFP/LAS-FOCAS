@@ -7639,6 +7639,15 @@ def _serializar_nodo_camino(nodo: Any) -> dict[str, Any]:
         "odf_id": nodo.odf_id,
         "odf_nombre": nodo.odf_nombre,
         "servicio_at62": nodo.servicio_at62,
+        # Red de acceso PON (clases 133/134/84/137/66). `splitter_ratio` viene de `at.83`: Cromo
+        # publica el ratio, no se infiere por fan-out como en el detalle de empalmes de Botella.
+        "splitter_id": nodo.splitter_id,
+        "splitter_nombre": nodo.splitter_nombre,
+        "splitter_ratio": nodo.splitter_ratio,
+        "splitter_salidas": nodo.splitter_salidas,
+        "puerto_nombre": nodo.puerto_nombre,
+        "puerto_sentido": nodo.puerto_sentido,
+        "tendido": nodo.tendido,
         # `vinculo_local` en `null` NO es un error: puede ser una clase que la ingesta no barre
         # o un objeto que Cromo movió después de la última corrida. Es dato de auditoría.
         "vinculo_local": _serializar_vinculo_local(nodo.vinculo_local),
@@ -7716,6 +7725,9 @@ def _serializar_camino_optico(camino: Any, semillas: list[Any]) -> dict[str, Any
             "fusiones": camino.estadisticas.fusiones,
             "conectores": camino.estadisticas.conectores,
             "cables": camino.estadisticas.cables,
+            "splitters": camino.estadisticas.splitters,
+            "cajas_pon": camino.estadisticas.cajas_pon,
+            "cables_bajada": camino.estadisticas.cables_bajada,
             "odfs": camino.estadisticas.odfs,
             "no_resueltos": camino.estadisticas.no_resueltos,
             "longitud_geo_m": camino.estadisticas.longitud_geo_m,
@@ -7748,6 +7760,89 @@ async def _servicio_existe(sesion: Any, servicio_id: int) -> bool:
         _text("SELECT 1 FROM app.servicios WHERE id = :id"), {"id": servicio_id}
     )
     return fila.first() is not None
+
+
+@app.get("/api/servicios/{servicio_id}/baneos")
+async def servicio_baneos_web(request: Request, servicio_id: int, limite: int = 50) -> JSONResponse:
+    """Eventos de baneo en los que participa un Servicio, como protegido o como afectado.
+
+    `app.incidentes_baneo` guarda los dos extremos como **texto** (`varchar(64)`), no como FK, así
+    que el match va por las **tres identidades** del Servicio —`servicio_id`,
+    `numero_primer_servicio` y `alias_ids`— igual que el resto del módulo. Matchear sólo por la PK
+    perdería silenciosamente los baneos registrados bajo un número viejo del mismo Servicio, que es
+    justo el caso que el histórico de IDs existe para contemplar.
+
+    `rol` distingue si el Servicio fue el **protegido** (se baneó a otros para cuidarlo) o el
+    **afectado** (se lo baneó para cuidar a un tercero): son dos lecturas muy distintas de la misma
+    fila y mezclarlas confundiría al operador.
+    """
+    from sqlalchemy import text as _sql
+
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limite = max(1, min(limite, 200))
+
+    consulta = _sql(
+        """
+        WITH ident AS (
+            SELECT ARRAY_REMOVE(
+                       ARRAY[s.servicio_id, s.numero_primer_servicio]::varchar[]
+                       || COALESCE(s.alias_ids, ARRAY[]::varchar[]),
+                       NULL
+                   ) AS ids
+            FROM app.servicios s
+            WHERE s.id = :servicio_id
+        )
+        SELECT b.id,
+               b.ticket_asociado,
+               b.servicio_afectado_id,
+               b.servicio_protegido_id,
+               b.usuario_ejecutor,
+               b.motivo,
+               b.fecha_inicio,
+               b.fecha_fin,
+               b.activo,
+               CASE WHEN b.servicio_protegido_id = ANY(ident.ids) THEN 'PROTEGIDO'
+                    ELSE 'AFECTADO' END AS rol
+        FROM app.incidentes_baneo b, ident
+        WHERE b.servicio_protegido_id = ANY(ident.ids)
+           OR b.servicio_afectado_id = ANY(ident.ids)
+        ORDER BY b.fecha_inicio DESC
+        LIMIT :limite
+        """
+    )
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        filas = (
+            await sesion.execute(consulta, {"servicio_id": servicio_id, "limite": limite})
+        ).mappings().all()
+
+    eventos = [
+        {
+            "id": f["id"],
+            "ticket_asociado": f["ticket_asociado"],
+            "servicio_afectado_id": f["servicio_afectado_id"],
+            "servicio_protegido_id": f["servicio_protegido_id"],
+            "usuario_ejecutor": f["usuario_ejecutor"],
+            "motivo": f["motivo"],
+            "fecha_inicio": f["fecha_inicio"].isoformat() if f["fecha_inicio"] else None,
+            "fecha_fin": f["fecha_fin"].isoformat() if f["fecha_fin"] else None,
+            "activo": f["activo"],
+            "rol": f["rol"],
+        }
+        for f in filas
+    ]
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "total": len(eventos),
+            "activos": sum(1 for e in eventos if e["activo"]),
+            "eventos": eventos,
+        }
+    )
 
 
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos")
