@@ -413,7 +413,12 @@ Dos selecciones distintas conviven a propósito, porque tienen costos distintos:
   cada fila es el que cambia `peloElegido`.
 
 Por defecto vienen tildadas las **posiciones de ODF** del Servicio (`preseleccionados` de
-`GET .../camino-optico/pelos`). Si ninguna semilla tiene conector, la ODF no fue relevada todavía:
+`GET .../camino-optico/pelos?priorizar_conector=true`). El selector **lista sólo esas** y colapsa el
+resto del recorrido en un `<details>`: el número de servicio viaja en el `at.61` de todos los pelos
+del camino, así que un Servicio puede tener cientos de pelos matcheados (227 el 93154) y sólo dos
+que sean fibras suyas. Mostrarlos al mismo nivel haría parecer que el Servicio tiene veinte fibras
+cuando tiene dos, y el `priorizar_conector` es lo que evita que esas dos caigan fuera del tope de
+20 que trunca la lista. Si ninguna semilla tiene conector, la ODF no fue relevada todavía:
 el panel lo dice y ofrece "Relevar la ODF" (sólo admin). Cada pelo muestra si su tracking ya está
 **en caché**, para que el operador sepa si la descarga es instantánea o va a tardar.
 

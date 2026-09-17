@@ -130,12 +130,30 @@ def _fake_frescura(monkeypatch, frescos: Optional[dict] = None):
     monkeypatch.setattr("core.services.cromo.tracking_cache.frescura", _frescura)
 
 
-def _fake_semillas(monkeypatch, semillas):
+def _fake_semillas(monkeypatch, semillas, *, total_matcheados=None):
+    """Stubea la lista de semillas y su conteo sin tope.
+
+    `total_matcheados` por defecto iguala al largo de la lista; pasarlo distinto simula el caso
+    real de un Servicio con cientos de pelos matcheados y sólo unos pocos listados.
+    """
     async def _listar(*a, **k):
         return list(semillas)
 
+    async def _contar(_sesion, _servicio_id):
+        total = len(semillas) if total_matcheados is None else total_matcheados
+        return total, sum(1 for s in semillas if s.tiene_conector_odf)
+
+    async def _pertenece(_sesion, _servicio_id, pelo_n_id):
+        # La pertenencia real NO depende de la lista truncada; acá el stub la resuelve contra el
+        # conjunto completo que el test declara, que es lo que hace la consulta directa.
+        return any(s.pelo_n_id == pelo_n_id for s in semillas)
+
     monkeypatch.setattr(
         "core.services.cromo.camino_optico_service.listar_pelos_semilla", _listar
+    )
+    monkeypatch.setattr("core.services.cromo.camino_optico_service.contar_semillas", _contar)
+    monkeypatch.setattr(
+        "core.services.cromo.camino_optico_service.pelo_pertenece_al_servicio", _pertenece
     )
 
 
@@ -222,10 +240,7 @@ def test_pelos_requiere_autenticacion():
 def test_pelos_devuelve_las_semillas_serializadas(monkeypatch):
     _fake_session(monkeypatch)
     _fake_frescura(monkeypatch)
-    monkeypatch.setattr(
-        "core.services.cromo.camino_optico_service.listar_pelos_semilla",
-        lambda *a, **k: _semillas_async(),
-    )
+    _fake_semillas(monkeypatch, [_semilla()])
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_pelos())
@@ -321,7 +336,34 @@ def test_pelos_devuelve_lista_vacia_sin_semillas(monkeypatch):
         "pelos": [],
         "preseleccionados": [],
         "odf_relevada": False,
+        "total_matcheados": 0,
+        "total_con_posicion_odf": 0,
     }
+
+
+def test_pelos_distingue_el_universo_matcheado_de_lo_listado(monkeypatch):
+    """Caso real del Servicio 93154: 227 pelos matcheados y sólo 2 que son posición de ODF.
+
+    El número de servicio viaja en el `at.61` de TODOS los pelos del recorrido, no sólo de los
+    extremos, así que el total es grande por diseño. Sin estos dos contadores la UI no puede
+    distinguir "este Servicio tiene 20 pelos" de "tiene 227 y te muestro 20", y el operador que
+    sabe que su Servicio tiene 2 fibras cree que el sistema está mal.
+    """
+    _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
+    _fake_semillas(
+        monkeypatch,
+        [_semilla_con_conector(1), _semilla_con_conector(2), _semilla(3)],
+        total_matcheados=227,
+    )
+    client = _cliente_user(monkeypatch)
+
+    cuerpo = client.get(_url_pelos()).json()
+
+    assert cuerpo["total"] == 3, "lo que se lista"
+    assert cuerpo["total_matcheados"] == 227, "el universo real, sin el tope"
+    assert cuerpo["total_con_posicion_odf"] == 2, "los pelos del Servicio propiamente dichos"
+    assert cuerpo["preseleccionados"] == [1, 2]
 
 
 # ── GET .../camino-optico/tracking.txt ──────────────────────────────────────
@@ -350,7 +392,7 @@ def test_tracking_txt_con_un_solo_pelo_conserva_el_nombre_historico(monkeypatch)
     """Caso PON. Nada de lo que consume ese `.txt` aguas abajo se entera del cambio."""
     _fake_session(monkeypatch)
     _fake_cromo_client(monkeypatch)
-    _fake_semillas(monkeypatch, [_semilla(10006353)])
+    _fake_semillas(monkeypatch, [_semilla(10006353)], total_matcheados=1)
     _fake_tracking(monkeypatch)
     client = _cliente_user(monkeypatch)
 
@@ -429,6 +471,34 @@ def test_tracking_txt_400_si_el_pelo_no_es_del_servicio(monkeypatch):
 
     assert res.status_code == 400
     assert "no pertenece" in res.json()["error"]
+
+
+def test_tracking_txt_acepta_un_pelo_real_aunque_quede_fuera_del_tope(monkeypatch):
+    """Regresión del bug real del Servicio 93154.
+
+    La pertenencia se resolvía contra la lista de semillas, que viene **truncada** en 20 sobre 227
+    pelos matcheados: un pelo legítimo que el propio selector acababa de ofrecer se rechazaba con
+    "no pertenece al Servicio". Ahora se consulta directo, sin ventana.
+    """
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    # La lista que ve el endpoint NO contiene al pelo pedido; el conjunto real sí.
+    semillas = [_semilla(6822061), _semilla(6822062)]
+    _fake_semillas(monkeypatch, semillas, total_matcheados=227)
+
+    async def _listar_truncado(*a, **k):
+        return [_semilla(999999)]
+
+    monkeypatch.setattr(
+        "core.services.cromo.camino_optico_service.listar_pelos_semilla", _listar_truncado
+    )
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.get(_url_txt(), params={"pelo_n_id": 6822061})
+
+    assert res.status_code == 200
+    assert 'filename="93154 CROMO pelo 6822061.txt"' in res.headers["content-disposition"]
 
 
 def test_tracking_txt_502_si_cromo_no_responde(monkeypatch):

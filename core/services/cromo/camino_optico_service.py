@@ -975,24 +975,37 @@ class PeloSemilla:
 
 
 async def listar_pelos_semilla(
-    sesion: AsyncSession, servicio_id: int, *, limite: int = 20
+    sesion: AsyncSession, servicio_id: int, *, limite: int = 20, priorizar_conector: bool = False
 ) -> list[PeloSemilla]:
     """Pelos candidatos a semilla de `/path` para un Servicio, ya rankeados. Una sola query.
 
     `servicio_id` es la PK de `app.servicios`. El predicado de identidades es el mismo que usa
     el gestor de Servicios sin ODF (importado, no copiado) para no divergir.
 
-    El orden pone primero el pelo cuya ODF todavía no conocemos: un pelo que ya tiene conector
-    no aporta una ODF nueva. Es determinista hasta el último criterio, para que dos consultas
-    del mismo Servicio elijan la misma semilla y el camino sea reproducible sin pagar dos veces
-    la llamada a Cromo.
+    **Dos consumidores con criterios opuestos, y por eso el flag.**
+
+    - Por defecto (`priorizar_conector=False`) el orden pone primero el pelo cuya ODF todavía no
+      conocemos: un pelo que ya tiene conector no aporta una ODF nueva. Es lo que necesita el
+      gestor de Servicios sin ODF, cuyo fin es **descubrir** ODFs.
+    - Con `priorizar_conector=True` se invierte ese criterio: primero los pelos que **sí** son
+      posición de patchera del Servicio. Es lo que necesita la descarga de trackings, donde esos
+      son los pelos reales del Servicio.
+
+    Por qué no alcanzaba con reordenar en el consumidor: la lista viene **truncada** en `limite`.
+    Medido real sobre el Servicio 93154, cuyo número matchea 227 pelos por regex —todos los del
+    recorrido llevan la etiqueta del servicio en `at.61`, no sólo los extremos— pero del que sólo
+    **2** son posición de ODF: con el orden de descubrimiento, esos 2 caen fuera del tope de 20 y
+    el consumidor nunca llega a verlos.
+
+    Es determinista hasta el último criterio, para que dos consultas del mismo Servicio elijan la
+    misma semilla y el camino sea reproducible sin pagar dos veces la llamada a Cromo.
     """
     filas = (await sesion.execute(_SQL_PELOS_SEMILLA, {"servicio_id": servicio_id})).mappings().all()
     ordenadas = sorted(
         filas,
         key=lambda f: (
             f["prioridad_identidad"],
-            f["tiene_conector_odf"],
+            (not f["tiene_conector_odf"]) if priorizar_conector else f["tiene_conector_odf"],
             -(f["confianza"] or 0),
             f["pelo_n_id"],
         ),
@@ -1024,6 +1037,70 @@ _SQL_CONTAR_SEMILLAS = text(
     GROUP BY s.id
     """
 )
+
+
+_SQL_TOTAL_SEMILLAS = text(
+    f"""
+    SELECT COUNT(DISTINCT m.pelo_n_id) AS pelos,
+           COUNT(DISTINCT m.pelo_n_id) FILTER (
+               WHERE EXISTS (
+                   SELECT 1 FROM app.cromo_odf_conectores c WHERE c.pelo_n_id = m.pelo_n_id
+               )
+           ) AS con_conector
+    FROM app.servicios s
+    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    WHERE s.id = :servicio_id
+    """
+)
+
+
+_SQL_PELO_PERTENECE = text(
+    f"""
+    SELECT 1
+    FROM app.servicios s
+    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    WHERE s.id = :servicio_id AND m.pelo_n_id = :pelo_n_id
+    LIMIT 1
+    """
+)
+
+
+async def pelo_pertenece_al_servicio(
+    sesion: AsyncSession, servicio_id: int, pelo_n_id: int
+) -> bool:
+    """¿Este pelo es del Servicio? Consulta directa, **sin** el tope de `listar_pelos_semilla`.
+
+    Validar la pertenencia contra la lista de semillas está mal por construcción: esa lista viene
+    truncada en 20 y ordenada con un criterio (descubrir ODFs) opuesto al de la descarga. Bug real
+    encontrado verificando el Servicio 93154: `/pelos?priorizar_conector=true` devolvía el pelo
+    6822061 como suyo y la descarga lo rechazaba con "no pertenece al Servicio", porque caía fuera
+    del tope de la otra lista. La pertenencia es un hecho del dato, no de la ventana que se listó.
+    """
+    fila = (
+        await sesion.execute(
+            _SQL_PELO_PERTENECE, {"servicio_id": servicio_id, "pelo_n_id": pelo_n_id}
+        )
+    ).first()
+    return fila is not None
+
+
+async def contar_semillas(sesion: AsyncSession, servicio_id: int) -> tuple[int, int]:
+    """`(total, con_posicion_de_odf)` de pelos del Servicio, **sin** el tope de `listar_pelos_semilla`.
+
+    La lista de semillas viene truncada, así que sin este conteo la UI no puede distinguir "este
+    Servicio tiene 20 pelos" de "tiene 227 y te estoy mostrando 20". La diferencia no es cosmética:
+    el número de servicio viaja en el `at.61` de **todos** los pelos del recorrido, así que el
+    total es grande por diseño y lo que el operador llama "los pelos del Servicio" son los que son
+    posición de ODF (2, en el Servicio 93154, contra 227 matcheados).
+    """
+    fila = (
+        await sesion.execute(_SQL_TOTAL_SEMILLAS, {"servicio_id": servicio_id})
+    ).mappings().first()
+    if fila is None:
+        return 0, 0
+    return int(fila["pelos"] or 0), int(fila["con_conector"] or 0)
 
 
 async def contar_semillas_por_servicio(
@@ -1400,6 +1477,8 @@ __all__ = [
     "calcular_estadisticas",
     "comparar_at62_vs_regex",
     "CLASES_CABLE",
+    "contar_semillas",
+    "pelo_pertenece_al_servicio",
     "listar_pelos_semilla",
     "seleccionar_semillas",
     "semillas_por_defecto",

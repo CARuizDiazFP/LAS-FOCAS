@@ -66,7 +66,7 @@ async function cargar(id: string): Promise<void> {
   camino.reset();
   const ok = await base.cargar(id);
   if (ok && base.servicio.value) {
-    await camino.cargarPelos(base.servicio.value.id);
+    await camino.cargarPelos(base.servicio.value.id, { priorizarConector: true });
   }
 }
 

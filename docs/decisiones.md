@@ -1898,3 +1898,43 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   ODFs" de 2026-09-09) — descartado por ahora porque, según la medición, **no resolvería el
   truncamiento**, que es el síntoma de fondo; dejar los nodos como `CLASE_N` — descartado, es
   justamente lo reportado.
+
+## 2026-09-17 (seguimiento 2) — "El Servicio tiene 2 pelos": el tope de semillas escondía los que importan
+
+- **Contexto:** Con el tracking multipelo ya desplegado, el usuario observó que el Servicio 93154
+  **tiene 2 pelos**, pero el selector ofrecía 20 y preseleccionaba uno solo —y equivocado—.
+- **Diagnóstico real:** `app.cromo_servicio_match` tiene **227 pelos** matcheados al número 93154
+  con `REGEX_EXACTO` y confianza 100. No es basura: el número de servicio viaja en el `at.61` de
+  **todos los pelos del recorrido**, no sólo de los extremos, así que un camino largo etiqueta
+  cientos de pelos. De esos 227, exactamente **2** son posición de patchera del Servicio
+  (`app.cromo_odf_conectores`: conectores 21 y 22 de `O-1239921-1`, y 5 y 6 de `O-1249382-1`). Esos
+  2 son lo que el operador llama "los pelos del Servicio".
+- **Causa raíz:** `listar_pelos_semilla` corta en 20 **y** ordena con `tiene_conector_odf` ASC —a
+  propósito, porque su consumidor original era el gestor de Servicios sin ODF, que quiere
+  *descubrir* ODFs nuevas—. Con 227 candidatos, ese orden empuja los 2 pelos que importan fuera del
+  tope. La decisión previa de "no toco el ranking, el criterio nuevo vive en el consumidor" era
+  **insuficiente**: el consumidor recibía una lista ya truncada y ordenada en su contra.
+- **Decisión 1:** `listar_pelos_semilla(..., priorizar_conector: bool = False)`. El default conserva
+  el orden de descubrimiento para el gestor; la descarga de trackings pide `True` y las posiciones
+  de ODF quedan primeras, dentro del tope. El endpoint `.../camino-optico/pelos` lo expone como
+  query param, así que los dos consumidores comparten endpoint sin compartir criterio.
+- **Decisión 2:** `contar_semillas` devuelve `(total, con_posicion_odf)` **sin tope**, y el endpoint
+  los publica como `total_matcheados` / `total_con_posicion_odf`. Sin eso la UI no puede distinguir
+  "este Servicio tiene 20 pelos" de "tiene 227 y te muestro 20", que es exactamente la confusión
+  reportada. El selector ahora lista **las posiciones de ODF** y colapsa el resto del recorrido en
+  un `<details>`, diciendo cuántos pelos llevan la etiqueta del Servicio.
+- **Segundo bug real, de la misma familia:** el endpoint `.txt` validaba la pertenencia del pelo
+  **contra la lista truncada de semillas**, así que rechazaba con "no pertenece al Servicio" un pelo
+  que el propio selector acababa de ofrecer (verificado: `pelo_n_id=6822061` → HTTP 400). La
+  pertenencia es un hecho del dato, no de la ventana que se listó: se agregó
+  `pelo_pertenece_al_servicio`, una consulta directa sin tope, y el nombre del archivo pasa a
+  distinguir el pelo según `contar_semillas`, no según el largo de la lista.
+- **Alternativas:** subir o quitar el tope de 20 (no resuelve nada: con 227 candidatos la lista
+  sería inusable y el orden seguiría siendo el opuesto al que necesita la descarga); filtrar en el
+  frontend (imposible, la truncación ya ocurrió en el backend).
+- **Impacto, verificado real en dev** sobre el Servicio 93154: `preseleccionados` pasó de
+  `[6823644]` —un pelo que no es posición de ODF— a **`[6822061, 6822062]`**, los dos correctos. Los
+  dos `.txt` bajan con nombres distintos (`93154 CROMO pelo 6822061.txt` / `...6822062.txt`) y
+  contenido genuinamente distinto: "Nombre de Pelo: 21 → conector 5" contra "Pelo: 22 → conector 6"
+  en `O-1249382-1`, que es la misma ODF que muestra la captura del ticket. 14,7 s y 13,9 s en frío,
+  **0,11 s y 0,09 s** en caliente.

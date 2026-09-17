@@ -7846,7 +7846,9 @@ async def servicio_baneos_web(request: Request, servicio_id: int, limite: int = 
 
 
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos")
-async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResponse:
+async def cromo_camino_pelos_web(
+    request: Request, servicio_id: int, priorizar_conector: bool = False
+) -> JSONResponse:
     """Pelos de Cromo con los que se puede pedir el camino óptico de un Servicio.
 
     SQL local barato: **no toca Cromo**. Existe para que el Detalle de Servicio sepa si el botón
@@ -7855,6 +7857,7 @@ async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResp
     """
     from core.services.cromo import tracking_cache
     from core.services.cromo.camino_optico_service import (
+        contar_semillas,
         listar_pelos_semilla,
         semillas_por_defecto,
     )
@@ -7865,8 +7868,11 @@ async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResp
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
             return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
-        semillas = await listar_pelos_semilla(sesion, servicio_id)
+        semillas = await listar_pelos_semilla(
+            sesion, servicio_id, priorizar_conector=priorizar_conector
+        )
         frescura = await tracking_cache.frescura(sesion, [s.pelo_n_id for s in semillas])
+        total_matcheados, total_con_conector = await contar_semillas(sesion, servicio_id)
 
     preseleccionados = [s.pelo_n_id for s in semillas_por_defecto(semillas)]
     # Si ninguna semilla tiene conector, la ODF del Servicio todavía no fue relevada y la
@@ -7888,6 +7894,13 @@ async def cromo_camino_pelos_web(request: Request, servicio_id: int) -> JSONResp
             "pelos": pelos,
             "preseleccionados": preseleccionados,
             "odf_relevada": odf_relevada,
+            # `total` es la lista ya truncada; estos dos son el universo real. Sin ellos la UI no
+            # puede distinguir "este Servicio tiene 20 pelos" de "tiene 227 y ves 20". El número de
+            # servicio viaja en el `at.61` de TODOS los pelos del recorrido, así que el total es
+            # grande por diseño y los pelos que el operador llama "del Servicio" son los que son
+            # posición de ODF.
+            "total_matcheados": total_matcheados,
+            "total_con_posicion_odf": total_con_conector,
         }
     )
 
@@ -7906,9 +7919,10 @@ async def cromo_camino_tracking_txt_web(
     """
     from core.services.cromo.camino_optico_service import (
         ESTADO_SIN_SEMILLA,
-        PeloAjenoAlServicio,
+        contar_semillas,
         listar_pelos_semilla,
-        seleccionar_semillas,
+        pelo_pertenece_al_servicio,
+        semillas_por_defecto,
     )
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
@@ -7925,8 +7939,11 @@ async def cromo_camino_tracking_txt_web(
         async with AsyncSessionLocal() as sesion:
             if not await _servicio_existe(sesion, servicio_id):
                 return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
-            semillas = await listar_pelos_semilla(sesion, servicio_id)
-            if not semillas:
+
+            # El universo real, sin el tope de `listar_pelos_semilla`. Es lo que decide tanto si
+            # hay camino posible como si el nombre del archivo tiene que distinguir el pelo.
+            total_pelos, _con_odf = await contar_semillas(sesion, servicio_id)
+            if total_pelos == 0:
                 return JSONResponse(
                     {
                         "error": (
@@ -7937,18 +7954,30 @@ async def cromo_camino_tracking_txt_web(
                     },
                     status_code=409,
                 )
-            elegidas = seleccionar_semillas(
-                semillas, [pelo_n_id] if pelo_n_id is not None else None
-            )
+
+            if pelo_n_id is not None:
+                # Pertenencia por consulta directa, NO contra la lista truncada de semillas: con
+                # el tope de 20 sobre cientos de pelos matcheados, un pelo legítimo que el propio
+                # selector acababa de ofrecer se rechazaba como ajeno (bug real, Servicio 93154).
+                if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
+                    return JSONResponse(
+                        {"error": f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."},
+                        status_code=400,
+                    )
+                elegido = pelo_n_id
+            else:
+                # Sin pedido explícito, la posición de ODF del Servicio: mismo criterio que el
+                # default del selector, así que pedir el `.txt` "a secas" baja lo mismo que el
+                # botón de la pantalla.
+                semillas = await listar_pelos_semilla(
+                    sesion, servicio_id, priorizar_conector=True
+                )
+                elegido = semillas_por_defecto(semillas)[0].pelo_n_id
+
             async with CromoClient(config=get_cromo_config()) as cliente:
                 tracking = await obtener_tracking(
-                    cliente,
-                    sesion,
-                    servicio_id=servicio_id,
-                    pelo_n_id=elegidas[0].pelo_n_id,
+                    cliente, sesion, servicio_id=servicio_id, pelo_n_id=elegido
                 )
-    except PeloAjenoAlServicio as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
     except TrackingNoDisponible as exc:
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
@@ -7958,7 +7987,7 @@ async def cromo_camino_tracking_txt_web(
     # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
     # carpeta de Descargas y se pierde cuál es cuál.
     nombre = nombre_distinguible(
-        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=len(semillas) > 1
+        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1
     )
     logger.info(
         "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s desde_cache=%s duracion_ms=%s",

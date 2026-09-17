@@ -247,14 +247,31 @@ export interface PelosCaminoResponse {
   preseleccionados: number[];
   /** `false` cuando ninguna semilla tiene conector de ODF ingerido: hay que relevar la ODF. */
   odf_relevada: boolean;
+  /**
+   * Universo real de pelos matcheados al Servicio, **sin** el tope que trunca `pelos`. Es grande
+   * por diseño: el número de servicio viaja en el `at.61` de todos los pelos del recorrido, no
+   * sólo de los extremos (medido: 227 para el Servicio 93154).
+   */
+  total_matcheados: number;
+  /** Cuántos de esos son posición de patchera: los que el operador llama "los pelos del Servicio"
+   * (2 en el Servicio 93154, contra 227 matcheados). */
+  total_con_posicion_odf: number;
 }
 
 // ── Llamadas ──────────────────────────────────────────────────────────────
 
 /** Semillas de un Servicio. SQL local: no toca Cromo, así se puede pedir en la carga de la vista. */
-export async function listarPelosCamino(servicioId: number): Promise<PelosCaminoResponse> {
+export async function listarPelosCamino(
+  servicioId: number,
+  opciones: { priorizarConector?: boolean } = {},
+): Promise<PelosCaminoResponse> {
+  // `priorizarConector` invierte el ranking del backend para poner primero las posiciones de ODF.
+  // Hace falta pedirlo explícitamente porque la lista viene truncada: con el orden por defecto
+  // —pensado para DESCUBRIR ODFs nuevas— los pelos que son posición de ODF quedan al final y, en
+  // un Servicio con cientos de pelos matcheados, fuera del tope.
+  const query = opciones.priorizarConector ? '?priorizar_conector=true' : '';
   return requestJson<PelosCaminoResponse>(
-    `/api/infra/cromo/servicios/${servicioId}/camino-optico/pelos`,
+    `/api/infra/cromo/servicios/${servicioId}/camino-optico/pelos${query}`,
   );
 }
 

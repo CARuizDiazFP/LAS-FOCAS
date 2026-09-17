@@ -56,6 +56,7 @@
       :pelos="camino.pelos.value"
       :model-value="camino.peloElegido.value"
       :seleccionados="camino.pelosSeleccionados.value"
+      :total-matcheados="camino.totalMatcheados.value"
       :disabled="camino.resolviendo.value || camino.descargando.value"
       @update:model-value="camino.peloElegido.value = $event"
       @alternar="camino.alternarPelo($event)"

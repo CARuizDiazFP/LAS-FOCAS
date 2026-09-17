@@ -484,7 +484,9 @@ async function loadDetalle(): Promise<void> {
       loadIngresosAsociados(response.id_origen),
       // Semillas: SQL local, no toca Cromo. Se piden acá para que el botón sepa si va habilitado
       // ANTES del click, en vez de hacerle descubrir al operador que no hay camino recién después.
-      camino.cargarPelos(response.servicio.id),
+      // Prioridad por conector: acá los pelos que importan son las posiciones de ODF del
+      // Servicio, al revés que en el gestor de Servicios sin ODF.
+      camino.cargarPelos(response.servicio.id, { priorizarConector: true }),
       loadBaneos(response.servicio.id),
     ]);
 

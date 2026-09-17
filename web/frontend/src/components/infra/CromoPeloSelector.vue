@@ -17,13 +17,24 @@
 
   <fieldset v-else-if="pelos.length > 1" class="cromo-pelo-selector">
     <legend class="cromo-pelo-selector__legend">
-      {{ pelos.length }} pelos de Cromo — tildá cuáles descargar
+      <template v-if="posiciones.length">
+        {{ posiciones.length }} posición(es) de ODF del Servicio — tildá cuáles descargar
+      </template>
+      <template v-else>{{ pelos.length }} pelos de Cromo — tildá cuáles descargar</template>
     </legend>
+
+    <!-- El número de servicio viaja en el at.61 de TODOS los pelos del recorrido, no sólo de los
+         extremos: por eso el total matcheado es grande y no es "la cantidad de pelos del
+         Servicio". Decirlo evita que el operador crea que le faltan o le sobran fibras. -->
+    <p v-if="totalMatcheados > pelos.length" class="cromo-pelo-selector__universo">
+      {{ totalMatcheados }} pelos del recorrido llevan la etiqueta de este Servicio; se listan
+      {{ pelos.length }}.
+    </p>
 
     <!-- Un Servicio tiene un tracking por pelo, así que la selección de descarga es múltiple. -->
     <div class="cromo-pelo-selector__acciones">
       <span class="cromo-pelo-selector__conteo">
-        {{ seleccionados.length }} de {{ pelos.length }} tildados
+        {{ seleccionados.length }} de {{ principales.length }} tildados
       </span>
       <button
         type="button"
@@ -44,7 +55,7 @@
     </div>
 
     <div
-      v-for="pelo in pelos"
+      v-for="pelo in principales"
       :key="pelo.pelo_n_id"
       class="cromo-pelo-selector__opcion"
       :class="{ 'is-elegido': pelo.pelo_n_id === modelValue }"
@@ -106,18 +117,91 @@
         Ver camino
       </button>
     </div>
+
+    <!-- Los pelos del recorrido que no son posición de ODF siguen disponibles —sirven para
+         resolver el camino desde otra semilla— pero colapsados: mostrarlos al mismo nivel haría
+         parecer que el Servicio tiene veinte fibras cuando tiene dos. -->
+    <details v-if="resto.length" class="cromo-pelo-selector__resto">
+      <summary>Ver los otros {{ resto.length }} pelos del recorrido</summary>
+      <div
+        v-for="pelo in resto"
+        :key="pelo.pelo_n_id"
+        class="cromo-pelo-selector__opcion"
+        :class="{ 'is-elegido': pelo.pelo_n_id === modelValue }"
+      >
+        <label class="cromo-pelo-selector__tilde">
+          <input
+            type="checkbox"
+            :checked="seleccionados.includes(pelo.pelo_n_id)"
+            :disabled="disabled"
+            @change="$emit('alternar', pelo.pelo_n_id)"
+          />
+          <span class="cromo-pelo-selector__sr">
+            Descargar el tracking del pelo {{ pelo.pelo_n_id }}
+          </span>
+        </label>
+        <span class="cromo-pelo-selector__cuerpo">
+          <span class="cromo-pelo-selector__titulo">
+            Pelo {{ pelo.numero_pelo ?? '—' }}
+            <span v-if="pelo.cable_nombre" class="cromo-pelo-selector__cable">
+              · {{ pelo.cable_nombre }}
+            </span>
+            <span
+              v-if="pelo.tracking_en_cache"
+              class="cromo-pelo-selector__chip is-cache"
+              :title="`Tracking generado el ${formatearFecha(pelo.tracking_en_cache)}`"
+            >
+              En caché
+            </span>
+          </span>
+          <span class="cromo-pelo-selector__meta">n_id {{ pelo.pelo_n_id }}</span>
+        </span>
+        <span v-if="pelo.pelo_n_id === modelValue" class="cromo-pelo-selector__chip is-activo">
+          En pantalla
+        </span>
+        <button
+          v-else
+          type="button"
+          class="cromo-pelo-selector__accion"
+          :disabled="disabled"
+          @click="$emit('update:modelValue', pelo.pelo_n_id)"
+        >
+          Ver camino
+        </button>
+      </div>
+    </details>
   </fieldset>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+
 import type { PeloSemilla } from '../../api/cromoPath';
 
-defineProps<{
-  pelos: PeloSemilla[];
-  modelValue: number | null;
-  seleccionados: number[];
-  disabled?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    pelos: PeloSemilla[];
+    modelValue: number | null;
+    seleccionados: number[];
+    disabled?: boolean;
+    /** Universo real de pelos matcheados, sin el tope que trunca `pelos`. */
+    totalMatcheados?: number;
+  }>(),
+  { totalMatcheados: 0 },
+);
+
+/**
+ * Las posiciones de patchera son "los pelos del Servicio" para el operador. El resto son los pelos
+ * del recorrido que llevan la misma etiqueta de servicio en su `at.61` — sirven para resolver el
+ * camino desde otra semilla, pero no son fibras del Servicio.
+ */
+const posiciones = computed(() => props.pelos.filter((p) => p.tiene_conector_odf));
+
+/** Si no hay ninguna posición de ODF (ODF sin relevar) se listan todos, que es lo único que hay. */
+const principales = computed(() => (posiciones.value.length ? posiciones.value : props.pelos));
+const resto = computed(() =>
+  posiciones.value.length ? props.pelos.filter((p) => !p.tiene_conector_odf) : [],
+);
 
 defineEmits<{
   'update:modelValue': [pelo: number];
@@ -285,5 +369,27 @@ function formatearFecha(iso: string): string {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.cromo-pelo-selector__universo {
+  margin: 0 0 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.cromo-pelo-selector__resto {
+  margin-top: 2px;
+}
+
+.cromo-pelo-selector__resto > summary {
+  cursor: pointer;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  padding: 3px 0;
+}
+
+.cromo-pelo-selector__resto > .cromo-pelo-selector__opcion {
+  margin-top: 4px;
 }
 </style>

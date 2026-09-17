@@ -47,6 +47,10 @@ export function useCromoPath() {
   const pelosSeleccionados = ref<number[]>([]);
   /** `false` cuando ninguna semilla tiene conector de ODF: hay que relevar la ODF primero. */
   const odfRelevada = ref(true);
+  /** Universo real de pelos matcheados, sin el tope que trunca la lista. */
+  const totalMatcheados = ref(0);
+  /** Cuántos de esos son posición de ODF: los que el operador llama "los pelos del Servicio". */
+  const totalConPosicionOdf = ref(0);
   /** Progreso de la descarga: cuántos trackings se bajaron de cuántos. */
   const descargadosCount = ref(0);
   const descargaTotal = ref(0);
@@ -112,12 +116,17 @@ export function useCromoPath() {
     pelosSeleccionados.value = [];
   }
 
-  async function cargarPelos(servicioId: number): Promise<void> {
+  async function cargarPelos(
+    servicioId: number,
+    opciones: { priorizarConector?: boolean } = {},
+  ): Promise<void> {
     cargandoPelos.value = true;
     errorPelos.value = '';
     try {
-      const respuesta = await listarPelosCamino(servicioId);
+      const respuesta = await listarPelosCamino(servicioId, opciones);
       setPelos(respuesta.pelos, respuesta);
+      totalMatcheados.value = respuesta.total_matcheados ?? respuesta.pelos.length;
+      totalConPosicionOdf.value = respuesta.total_con_posicion_odf ?? 0;
     } catch (error) {
       errorPelos.value = mensajeErrorCromoPath(error);
       pelos.value = [];
@@ -300,6 +309,8 @@ export function useCromoPath() {
     peloElegido.value = null;
     pelosSeleccionados.value = [];
     odfRelevada.value = true;
+    totalMatcheados.value = 0;
+    totalConPosicionOdf.value = 0;
     descargadosCount.value = 0;
     descargaTotal.value = 0;
     resultado.value = null;
@@ -339,6 +350,8 @@ export function useCromoPath() {
     errorDescarga,
     pelosSeleccionados,
     odfRelevada,
+    totalMatcheados,
+    totalConPosicionOdf,
     descargadosCount,
     descargaTotal,
     normalizando,

@@ -265,6 +265,20 @@ Devuelve el camino óptico completo de un servicio, con estadística, consistenc
 > pelo es instantánea en vez de costar los 4,6-14 s de `/path`. `GET .../pelos` informa por pelo
 > `tracking_en_cache`, y a nivel respuesta `preseleccionados` (las posiciones de ODF del Servicio)
 > y `odf_relevada`.
+>
+> **Query param `priorizar_conector` (2026-09-17).** `GET .../camino-optico/pelos` acepta
+> `?priorizar_conector=true`, que invierte el ranking para poner primero las posiciones de ODF.
+> Hace falta porque la lista viene **truncada en 20** y el orden por defecto —pensado para
+> *descubrir* ODFs nuevas— empuja fuera del tope justamente los pelos que sirven para descargar.
+> Medido real: el Servicio 93154 tiene **227 pelos matcheados** (el número de servicio viaja en el
+> `at.61` de todos los pelos del recorrido, no sólo de los extremos) y sólo **2** que son posición
+> de ODF. La respuesta publica además `total_matcheados` y `total_con_posicion_odf`, sin tope, para
+> que la UI pueda decir "te muestro 20 de 227" en vez de aparentar que el Servicio tiene 20 fibras.
+> El gestor de Servicios sin ODF **no** pasa el flag y conserva su orden de descubrimiento.
+>
+> La pertenencia del `pelo_n_id` en `.../tracking.txt` se valida con una **consulta directa**, no
+> contra esa lista truncada: hacerlo contra la lista rechazaba con HTTP 400 un pelo que el propio
+> selector acababa de ofrecer.
 
 ### POST `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar`
 
