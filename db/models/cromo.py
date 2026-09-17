@@ -159,6 +159,10 @@ class CromoBotella(Base):
     nombre = Column(Text, nullable=True)
     nombre_editado_manual = Column(Boolean, nullable=False, default=False, server_default=false())
     separada_manualmente = Column(Boolean, nullable=False, default=False, server_default=false())
+    # `false` no significa "no tiene splitters" sino "todavía no se barrió con el código que los
+    # lee". La distinción es la que le permite a `empalmes.py` saber cuándo dejar de aplicar su
+    # heurística de fan-out, que inventa splitters donde Cromo no tiene ninguno.
+    splitters_relevados = Column(Boolean, nullable=False, server_default=false())
     separada_motivo = Column(Text, nullable=True)
     separada_por = Column(String(128), nullable=True)
     separada_at = Column(DateTime(timezone=True), nullable=True)
@@ -566,3 +570,70 @@ class CromoTrackingCache(Base):
 
     def __repr__(self) -> str:
         return f"<CromoTrackingCache pelo_n_id={self.pelo_n_id} generado_at={self.generado_at}>"
+
+
+class CromoSplitter(Base):
+    """Splitter óptico (clase 133 de Cromo). Cuelga del `inner[]` de la Botella, como las fusiones.
+
+    **El ratio lo publica Cromo** en `at.83` ("1x8", "1x4", "1x2"). Hasta 2026-09-17 el sistema lo
+    deducía por fan-out de fusiones en `core/services/cromo/empalmes.py`; medido contra 30 botellas
+    reales, esa heurística acertaba en 18 y fallaba en 12, y **nunca** devolvía un ratio cuando el
+    splitter existía de verdad. El dato venía en cada barrido y se descartaba como "clase
+    inesperada".
+
+    `salidas` es el `N` de "1xN" ya parseado; `ratio` conserva el crudo porque es lo que el
+    operador reconoce. Sin FK dura hacia `cromo_botellas`, mismo criterio que el resto del
+    namespace: las referencias entre entidades de Cromo son blandas para tolerar colgadas.
+    """
+
+    __tablename__ = "cromo_splitters"
+    __table_args__ = {"schema": "app"}
+
+    n_id = Column(BigInteger, primary_key=True)
+    botella_n_id = Column(BigInteger, nullable=True, index=True)
+    nombre = Column(Text, nullable=True)
+    ratio = Column(Text, nullable=True)  # "1x8" crudo, tal como lo publica at.83
+    salidas = Column(Integer, nullable=True)  # el N de "1xN"; NULL si el texto no matchea
+    vigente = Column(Boolean, nullable=False, server_default=true())
+    ultima_ingesta = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return f"<CromoSplitter n_id={self.n_id} ratio={self.ratio!r} botella={self.botella_n_id}>"
+
+
+class CromoSplitterPuerto(Base):
+    """Puerto de un splitter (clase 134). `splitter_n_id` es su `parent` dentro de la Botella.
+
+    `sentido` distingue la ENTRADA (una sola, que agrega todos los servicios del splitter) de las
+    SALIDAS (una por servicio). Dato real de la botella 8941541: un splitter 1x8 con E1 listando
+    `['99250','99430','100950','106587']` y S1/S2/S3/S5 con uno cada una — S4/S6/S7/S8 libres.
+
+    `servicios_atributo` es el `at.62` del puerto y distingue tres estados, no dos:
+    **NULL = no se preguntó** (el barrido de colección no trae ese atributo, sólo `/inner`),
+    `[]` = se preguntó y el puerto está libre, y una lista con valores = los servicios que sirve.
+    Mezclar NULL con `[]` haría parecer libre a todo puerto que todavía no se relevó.
+    """
+
+    __tablename__ = "cromo_splitter_puertos"
+    __table_args__ = {"schema": "app"}
+
+    n_id = Column(BigInteger, primary_key=True)
+    splitter_n_id = Column(BigInteger, nullable=True, index=True)
+    botella_n_id = Column(BigInteger, nullable=True, index=True)
+    nombre = Column(Text, nullable=True)  # at.80: "E1", "S8"
+    sentido = Column(Text, nullable=True)  # at.82: ENTRADA | SALIDA (CHECK en la migración)
+    # `none_as_null=True` es imprescindible, no cosmético: por defecto SQLAlchemy serializa
+    # Python `None` como JSON `null`, y entonces `IS NOT NULL` da TRUE y
+    # `jsonb_array_length()` revienta con "cannot get array length of a scalar" (bug real
+    # encontrado corriendo contra la base). Además destruiría la distinción de tres estados
+    # documentada arriba: sin esto, "no se preguntó" y "se preguntó" serían indistinguibles.
+    servicios_atributo = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    vigente = Column(Boolean, nullable=False, server_default=true())
+    ultima_ingesta = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return f"<CromoSplitterPuerto n_id={self.n_id} {self.nombre!r} {self.sentido!r}>"

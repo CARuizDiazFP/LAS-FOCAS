@@ -36,6 +36,8 @@ from db.models.cromo import (
     CromoOdf,
     CromoOdfConector,
     CromoPelo,
+    CromoSplitter,
+    CromoSplitterPuerto,
     CromoServicioMatch,
     CromoTubo,
 )
@@ -112,6 +114,14 @@ PELO_CAMPOS = (
     "tipo_asociacion",
 )
 _FUSION_CAMPOS = ("botella_n_id", "nombre_par", "tipo", "pelo_a_n_id", "pelo_b_n_id", "latitud", "longitud")
+SPLITTER_CAMPOS = ("botella_n_id", "nombre", "ratio", "salidas")
+SPLITTER_PUERTO_CAMPOS = (
+    "splitter_n_id",
+    "botella_n_id",
+    "nombre",
+    "sentido",
+    "servicios_atributo",
+)
 # Alias público: la normalización de consistencia (y cualquier reingesta dirigida futura)
 # necesita estos campos, y alcanzar un nombre privado desde otro módulo es peor que
 # publicarlo. El nombre con guion bajo se conserva para no tocar los usos existentes.
@@ -719,7 +729,11 @@ async def _procesar_botella_completa(
     alias_por_origen = alias_por_origen or {}
     try:
         async with sesion.begin_nested():
-            arbol = cromo_parser.parse_arbol_botella(obj)
+            # `puertos_traen_servicios=False` (el default) es deliberado: esta fase corre sobre el
+            # barrido de colección, que NUNCA incluye el `at.62` de los puertos de splitter. Dejar
+            # `servicios_atributo` en NULL dice "no se preguntó", que es la verdad; marcarlo como
+            # `[]` afirmaría que los puertos están libres sin haberlo consultado.
+            arbol = cromo_parser.parse_arbol_botella(obj, puertos_traen_servicios=False)
 
             alias_botella = alias_por_origen.get(arbol.botella.n_id)
             if alias_botella is None:
@@ -811,6 +825,33 @@ async def _procesar_botella_completa(
                 await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
             for pelo in arbol.pelos:
                 await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
+
+            # Splitters y sus puertos: vienen en el MISMO `inner[]` del barrido, sin una sola
+            # llamada extra a Cromo. Hasta 2026-09-17 se descartaban como "clase inesperada"
+            # mientras `empalmes.py` deducía el ratio por fan-out (18 aciertos de 30 botellas
+            # medidas, y nunca un ratio correcto cuando el splitter existía).
+            for splitter in arbol.splitters:
+                splitter.botella_n_id = alias_service.resolver_referencia(
+                    splitter.botella_n_id, alias_por_origen
+                )
+                await upsert_simple(sesion, CromoSplitter, splitter, SPLITTER_CAMPOS)
+            for puerto in arbol.puertos_splitter:
+                puerto.botella_n_id = alias_service.resolver_referencia(
+                    puerto.botella_n_id, alias_por_origen
+                )
+                # `servicios_atributo` en None significa "no se preguntó": el barrido no trae
+                # `at.62`. Escribirlo como NULL preserva esa distinción contra el `[]` de un
+                # puerto realmente libre, que sólo puede venir de `/inner`.
+                await upsert_simple(
+                    sesion, CromoSplitterPuerto, puerto, SPLITTER_PUERTO_CAMPOS
+                )
+
+            # Se marca SIEMPRE, haya o no splitters: el valor de la marca es poder afirmar "esta
+            # botella no tiene ninguno", que es lo que `empalmes.py` necesita para dejar de
+            # inventarlos con la heurística.
+            fila_botella = await sesion.get(CromoBotella, arbol.botella.n_id)
+            if fila_botella is not None:
+                fila_botella.splitters_relevados = True
 
             for error in arbol.errores:
                 contadores.errores += 1
@@ -1296,6 +1337,8 @@ __all__ = [
     "ContadoresCorrida",
     "FUSION_CAMPOS",
     "ODF_CAMPOS",
+    "SPLITTER_CAMPOS",
+    "SPLITTER_PUERTO_CAMPOS",
     "PELO_CAMPOS",
     "TUBO_CAMPOS",
     "continuar_corrida",

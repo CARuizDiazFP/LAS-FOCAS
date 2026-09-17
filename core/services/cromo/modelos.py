@@ -1,6 +1,7 @@
 # Nombre de archivo: modelos.py
 # Ubicación de archivo: core/services/cromo/modelos.py
-# Descripción: Dataclasses del dominio de inventario de fibra óptica de Cromo Red (botella, cable, tubo, pelo, fusión)
+# Descripción: Dataclasses del dominio de inventario de fibra óptica de Cromo Red (botella,
+# cable, tubo, pelo, fusión, splitter y puerto de splitter)
 
 from __future__ import annotations
 
@@ -142,6 +143,45 @@ class ConectorOdf:
 
 
 @dataclass(slots=True)
+class Splitter:
+    """Splitter óptico (class 133). Cuelga de `botella.inner[]`, igual que las fusiones.
+
+    **Cromo publica el ratio** en `at.83` ("1x8", "1x4", "1x2"): es dato, no una inferencia. Hasta
+    2026-09-17 el sistema lo deducía por fan-out de fusiones en `empalmes.py`, y medido contra 30
+    botellas reales esa heurística acertaba en 18 y fallaba en 12 — incluyendo inventar splitters
+    donde no hay ninguno y no devolver NUNCA un ratio cuando el splitter existía de verdad.
+
+    `salidas` es el `N` de "1xN" ya parseado, para poder comparar y ordenar sin volver a romper el
+    string; `ratio` conserva el texto crudo porque es lo que el operador reconoce.
+    """
+
+    n_id: int
+    botella_n_id: Optional[int]
+    nombre: Optional[str]
+    ratio: Optional[str]
+    salidas: Optional[int]
+
+
+@dataclass(slots=True)
+class PuertoSplitter:
+    """Puerto de un splitter (class 134). `parent` apunta al `n_id` del splitter.
+
+    `sentido` es `at.82` ("ENTRADA"/"SALIDA") y `nombre` es `at.80` ("E1", "S1"…). El atributo de
+    servicio (`at.62`) **no viaja en el barrido de colección**, sólo en la respuesta de
+    `/db/objects/{id}/inner` — misma asimetría ya documentada para los conectores de ODF. Por eso
+    `servicios_atributo` queda en `None` cuando el objeto vino del barrido: `None` significa "no se
+    preguntó", y `[]` significa "se preguntó y el puerto está libre".
+    """
+
+    n_id: int
+    splitter_n_id: Optional[int]
+    botella_n_id: Optional[int]
+    nombre: Optional[str]
+    sentido: Optional[str]
+    servicios_atributo: Optional[list[str]] = None
+
+
+@dataclass(slots=True)
 class Fusion:
     """Fusión (class 132). Cuelga de `botella.inner[]`; `parent` apunta al `n_id` de la botella."""
 
@@ -155,4 +195,14 @@ class Fusion:
     longitud: Optional[float]
 
 
-__all__ = ["Botella", "Cable", "Odf", "ConectorOdf", "Tubo", "Pelo", "Fusion"]
+__all__ = [
+    "Botella",
+    "Cable",
+    "Odf",
+    "ConectorOdf",
+    "Tubo",
+    "Pelo",
+    "Fusion",
+    "Splitter",
+    "PuertoSplitter",
+]

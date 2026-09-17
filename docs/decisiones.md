@@ -1938,3 +1938,50 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   contenido genuinamente distinto: "Nombre de Pelo: 21 → conector 5" contra "Pelo: 22 → conector 6"
   en `O-1249382-1`, que es la misma ODF que muestra la captura del ticket. 14,7 s y 13,9 s en frío,
   **0,11 s y 0,09 s** en caliente.
+
+## 2026-09-17 (seguimiento 3) — El ratio del splitter lo publica Cromo: se ingiere en vez de deducirlo
+
+- **Contexto:** `core/services/cromo/empalmes.py` deduce los Splitters por **fan-out de fusiones**
+  (un pelo que aparece en 2+ filas de `cromo_fusiones` de la misma botella). Su docstring lo
+  justificaba con una premisa que **hoy es falsa**: *"los Splitter no son una clase Cromo propia
+  homologada"*. Lo son: **clase 133**, con el ratio en `at.83`.
+- **Medición real (2026-09-17, 30 botellas al azar):** la heurística **acertó en 18 y falló en 12** —
+  1 falso positivo (botella 6636551: ve 2 splitters, Cromo tiene **0**), 5 falsos negativos y 6 con
+  la cantidad equivocada. Y en **ningún** caso con splitter real devolvió un ratio: siempre `None`.
+  Ejemplos: botella 8941541 → heurística 6 splitters, Cromo **1 de 1x8**; botella 6630931 →
+  heurística 6, Cromo 1; botella 6630926 → heurística 4, Cromo `['1x2','1x4','1x8']`.
+- **Hallazgo que abarata todo:** el splitter (133) y sus puertos (134) **ya venían en el `inner[]`
+  de cada barrido de botella** y `parse_arbol_botella` los **descartaba como "clase inesperada"**.
+  El ratio se tiraba en cada corrida. Ingerirlos cuesta **cero llamadas extra**.
+- **Hallazgo adicional, aportado por el usuario y confirmado:** *"en un splitter sólo el último
+  tramo tiene el ID de servicio; los pelos intermedios sólo tienen la descripción del láser y OLT
+  padre"*. Verificado: el vínculo servicio↔splitter está en el **puerto** (`at.62`), no en el pelo.
+  Botella 8941541, splitter 1x8: la **ENTRADA** E1 agrega `['99250','99430','100950','106587']` y
+  las salidas S1/S2/S3/S5 tienen uno cada una — S4/S6/S7/S8 libres. Eso da el mapeo
+  **servicio → puerto** y la **ocupación real** del splitter, que el sistema no tenía de ninguna forma.
+- **Decisión:** tablas `app.cromo_splitters` y `app.cromo_splitter_puertos` (migración
+  `20260917_03`), pobladas desde el mismo árbol de botella. `empalmes.py` deja de afirmar qué es un
+  splitter cuando hay dato real, y lo publica aparte.
+- **Decisión clave, el marcador:** columna `cromo_botellas.splitters_relevados`. Cero filas de
+  splitter es **ambiguo** —"no tiene" contra "todavía no se barrió"— y sin resolver esa ambigüedad
+  no se puede apagar la heurística sin romper las botellas aún no barridas. Con el marcador, el
+  comportamiento viejo se conserva exactamente donde todavía no hay dato.
+- **Dos bugs reales encontrados al correr contra la base, invisibles con mocks:**
+  1. **SQLAlchemy serializa `None` como JSON `null`, no como SQL NULL.** Eso hacía que
+     `IS NOT NULL` diera TRUE y que `jsonb_array_length()` abortara la consulta entera con *"cannot
+     get array length of a scalar"*, y además destruía la distinción de tres estados de
+     `servicios_atributo` (NULL = no se preguntó, `[]` = puerto libre, lista = ocupado). Se corrigió
+     con `JSONB(none_as_null=True)` y la query pasó a guardarse con `jsonb_typeof(...) = 'array'`.
+  2. **`/db/objects/{id}/inner` devuelve los hijos SIN `parent`**, mientras el barrido de colección
+     sí lo trae. Confiar en `parent` dejaba el splitter sin botella y los puertos sin splitter según
+     por qué endpoint hubieran llegado. Ahora el vínculo lo aporta el recorrido del árbol, que
+     siempre sabe de quién cuelga; para los puertos sin `parent` sólo se infiere el splitter cuando
+     la botella tiene **uno solo** — con varios se deja en `None` antes que adivinar.
+- **Alternativas:** corregir la heurística (imposible de sostener: no puede distinguir un splitter
+  de dos fusiones que comparten pelo, que es el falso positivo real); pedir `at.83` en vivo por
+  botella (rompe el diseño de `empalmes.py`, que nunca toca la API, y cuesta una llamada por
+  consulta); ingerir sólo el splitter sin sus puertos (perdería el mapeo servicio→puerto, que
+  resultó ser lo más valioso).
+- **Impacto, verificado real en dev** sobre la botella 8941541: de **6 splitters sin ratio** a
+  **1 splitter "SPLITTER1" 1x8 con 4 de 8 salidas ocupadas**, que es exactamente lo que declara
+  Cromo. La heurística deja de marcar splitters en esa botella.

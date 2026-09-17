@@ -6,12 +6,22 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Optional, Union
 
 from pyproj import Transformer
 
-from core.services.cromo.modelos import Botella, Cable, ConectorOdf, Fusion, Odf, Pelo, Tubo
+from core.services.cromo.modelos import (
+    Botella,
+    Cable,
+    ConectorOdf,
+    Fusion,
+    Odf,
+    Pelo,
+    PuertoSplitter,
+    Splitter,
+    Tubo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +47,15 @@ _CLASE_TUBO = 129
 _CLASE_PELO = 130
 _CLASE_FUSION = 132
 _CLASE_ODF = 69
+_CLASE_SPLITTER = 133
+_CLASE_PUERTO_SPLITTER = 134
 _CLASE_PATCHERA = 135
 _CLASE_POSICION_PATCHERA = 136
+_AT_SERVICIO_DIRECTO = 62     # id de servicio declarado directo sobre el puerto
+_AT_SPLITTER_NOMBRE = 78      # "S-1269002-2", "SPLITTER1"
+_AT_PUERTO_NOMBRE = 80        # "E1", "S8"
+_AT_PUERTO_SENTIDO = 82       # "ENTRADA" / "SALIDA"
+_AT_SPLITTER_RATIO = 83       # "1x8", "1x4", "1x2"
 
 # Etiquetas de los `at[].id` ya conocidos por este parser — dispersos como números mágicos en
 # `parse_botella`/`parse_cable`/`parse_fusion` de más abajo, centralizados acá para que un consumidor
@@ -162,6 +179,11 @@ class ArbolBotella:
     tubos: list[Tubo]
     pelos: list[Pelo]
     errores: list[ErrorParseo]
+    # Los splitters y sus puertos viajan en el mismo `inner[]` que las fusiones. Hasta 2026-09-17
+    # el recorrido los descartaba como "clase inesperada": el dato venía en cada barrido de botella
+    # y se tiraba, mientras `empalmes.py` deducía el ratio por fan-out.
+    splitters: list[Splitter] = field(default_factory=list)
+    puertos_splitter: list[PuertoSplitter] = field(default_factory=list)
 
 
 ObjetoDominio = Union[Botella, Cable, Tubo, Pelo, Fusion, Odf]
@@ -419,6 +441,82 @@ def parse_pelo(obj: Mapping[str, Any]) -> Pelo:
     )
 
 
+_REGEX_RATIO_SPLITTER = re.compile(r"^\s*1\s*[xX]\s*(\d+)\s*$")
+
+
+def salidas_de_ratio(ratio: Optional[str]) -> Optional[int]:
+    """`"1x8"` → `8`. Devuelve `None` si el texto no tiene la forma `1xN`.
+
+    Se tolera espaciado y la `X` mayúscula porque `at.83` es texto libre de Cromo. Un ratio que no
+    matchea **no se inventa**: se conserva el crudo y `salidas` queda en `None`, que es honesto —
+    preferible a normalizar a un número equivocado un valor que no entendemos.
+    """
+    if not ratio:
+        return None
+    match = _REGEX_RATIO_SPLITTER.match(ratio)
+    if match is None:
+        return None
+    valor = int(match.group(1))
+    return valor if valor > 0 else None
+
+
+def parse_splitter(obj: Mapping[str, Any], *, botella_n_id: Optional[int] = None) -> Splitter:
+    """Parsea un splitter (class 133).
+
+    `botella_n_id` lo aporta el recorrido del árbol y **manda sobre `parent`**: el barrido de
+    colección trae `parent` con el `n_id` de la botella, pero la respuesta de `/db/objects/{id}/inner`
+    **no lo trae** (verificado real). Confiar sólo en `parent` dejaba el splitter huérfano según por
+    qué endpoint hubiera llegado; el árbol siempre sabe de quién cuelga.
+    """
+    ratio = atributo(obj, _AT_SPLITTER_RATIO)
+    return Splitter(
+        n_id=_resolver_n_id(obj),
+        botella_n_id=botella_n_id if botella_n_id is not None else obj.get("parent"),
+        nombre=atributo(obj, _AT_SPLITTER_NOMBRE) or obj.get("name") or None,
+        ratio=ratio,
+        salidas=salidas_de_ratio(ratio),
+    )
+
+
+def parse_puerto_splitter(
+    obj: Mapping[str, Any],
+    *,
+    botella_n_id: Optional[int] = None,
+    splitter_n_id: Optional[int] = None,
+    trae_servicios: bool = False,
+) -> PuertoSplitter:
+    """Parsea un puerto de splitter (class 134). `parent` es el `n_id` del splitter.
+
+    `botella_n_id` lo aporta el llamador: el puerto cuelga del splitter, no de la botella, así que
+    su `parent` nunca alcanza para desnormalizar a qué botella pertenece.
+
+    `splitter_n_id` es el respaldo para cuando el payload no trae `parent` — pasa con
+    `/db/objects/{id}/inner`, que devuelve los hijos sin él (verificado real). Sólo se usa cuando el
+    árbol tiene **un único** splitter: con varios, atribuir el puerto sería adivinar, y se prefiere
+    dejarlo en `None` antes que colgarlo del splitter equivocado.
+
+    `trae_servicios` lo declara el llamador porque el parser **no puede deducirlo**: un puerto sin
+    ningún `at.62` se ve idéntico venga del barrido de colección (que nunca incluye ese atributo) o
+    de `/inner` (donde su ausencia significa que el puerto está libre). Sin este flag, "no se
+    preguntó" y "se preguntó y está libre" colapsan en el mismo `None` y la distinción de tres
+    estados que documenta el modelo sería sólo aspiracional.
+    """
+    servicios = [
+        str(item.get("value"))
+        for item in (obj.get("at") or [])
+        if item.get("id") == _AT_SERVICIO_DIRECTO and item.get("value") not in (None, "")
+    ]
+    return PuertoSplitter(
+        n_id=_resolver_n_id(obj),
+        splitter_n_id=obj.get("parent") or splitter_n_id,
+        botella_n_id=botella_n_id,
+        nombre=atributo(obj, _AT_PUERTO_NOMBRE),
+        sentido=atributo(obj, _AT_PUERTO_SENTIDO),
+        # `None` = no se preguntó; `[]` = se preguntó y el puerto está libre.
+        servicios_atributo=servicios if trae_servicios else None,
+    )
+
+
 def parse_fusion(obj: Mapping[str, Any]) -> Fusion:
     """Parsea fusión (class 132). No asume que el tipo (at.85) sea siempre "FUSION"."""
     latitud, longitud = _resolver_geo(obj)
@@ -613,8 +711,15 @@ def extraer_tubos_y_pelos(
     return tubos, pelos, errores
 
 
-def parse_arbol_botella(obj: Mapping[str, Any]) -> ArbolBotella:
-    """Recorre una botella completa: `inner[]` → fusiones; `tp[]` → cables y su mundo interno."""
+def parse_arbol_botella(
+    obj: Mapping[str, Any], *, puertos_traen_servicios: bool = False
+) -> ArbolBotella:
+    """Recorre una botella completa: `inner[]` → fusiones, splitters y puertos; `tp[]` → cables.
+
+    `puertos_traen_servicios` declara de dónde vino el payload: el barrido de colección **nunca**
+    incluye el `at.62` de los puertos, y `/db/objects/{id}/inner` sí. Sólo el llamador lo sabe, y
+    de eso depende que un puerto sin servicios se registre como "libre" y no como "no se preguntó".
+    """
     botella = parse_botella(obj)
     fusiones: list[Fusion] = []
     cables: list[Cable] = []
@@ -622,14 +727,26 @@ def parse_arbol_botella(obj: Mapping[str, Any]) -> ArbolBotella:
     pelos: list[Pelo] = []
     errores: list[ErrorParseo] = []
 
+    splitters: list[Splitter] = []
+    puertos_crudos: list[Mapping[str, Any]] = []
+
     for item in obj.get("inner") or []:
         clase = item.get("class")
+        # Un splitter y sus puertos son vecinos legítimos de las fusiones dentro de `inner[]`, no
+        # una anomalía: hasta 2026-09-17 se los descartaba como "clase inesperada" y el ratio que
+        # Cromo publica en `at.83` se tiraba en cada corrida.
+        if clase == _CLASE_SPLITTER:
+            splitters.append(parse_splitter(item, botella_n_id=botella.n_id))
+            continue
+        if clase == _CLASE_PUERTO_SPLITTER:
+            puertos_crudos.append(item)
+            continue
         if clase != _CLASE_FUSION:
             errores.append(
                 ErrorParseo(
                     n_id=item.get("n_id") or item.get("id"),
                     clase=clase,
-                    motivo="clase inesperada en botella.inner[], se esperaba únicamente 132 (fusión)",
+                    motivo="clase inesperada en botella.inner[], se esperaba 132 (fusión), 133 (splitter) o 134 (puerto de splitter)",
                 )
             )
             continue
@@ -654,12 +771,37 @@ def parse_arbol_botella(obj: Mapping[str, Any]) -> ArbolBotella:
         pelos.extend(item_pelos)
         errores.extend(item_errores)
 
-    return ArbolBotella(botella=botella, fusiones=fusiones, cables=cables, tubos=tubos, pelos=pelos, errores=errores)
+    # Los puertos se resuelven al final: el respaldo de `splitter_n_id` necesita saber si el árbol
+    # tiene un único splitter, y eso sólo se sabe después de recorrer todo el `inner[]`.
+    unico_splitter = splitters[0].n_id if len(splitters) == 1 else None
+    puertos = [
+        parse_puerto_splitter(
+            item,
+            botella_n_id=botella.n_id,
+            splitter_n_id=unico_splitter,
+            trae_servicios=puertos_traen_servicios,
+        )
+        for item in puertos_crudos
+    ]
+
+    return ArbolBotella(
+        botella=botella,
+        fusiones=fusiones,
+        cables=cables,
+        tubos=tubos,
+        pelos=pelos,
+        errores=errores,
+        splitters=splitters,
+        puertos_splitter=puertos,
+    )
 
 
 __all__ = [
     "ATRIBUTOS_CONOCIDOS",
     "ArbolBotella",
+    "parse_splitter",
+    "parse_puerto_splitter",
+    "salidas_de_ratio",
     "ErrorParseo",
     "ClaseExcluidaError",
     "ClaseNoSoportadaError",

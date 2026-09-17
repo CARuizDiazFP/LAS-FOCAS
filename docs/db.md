@@ -834,6 +834,40 @@ Cromo contestó un único nodo raíz. Bajar los trackings de un Servicio de 6 pe
 frío; con el caché, 0,00 s en caliente. Al normalizar una inconsistencia se **invalida** la entrada
 del pelo: el `.txt` previo describe un estado de la base que ya cambió.
 
+### `cromo_splitters` y `cromo_splitter_puertos` (2026-09-17)
+
+Splitter óptico (clase 133) y sus puertos (clase 134). **Los dos ya venían en el `inner[]` de cada
+barrido de botella** y `parse_arbol_botella` los descartaba como "clase inesperada": ingerirlos
+cuesta **cero llamadas extra**.
+
+| `cromo_splitters` | Tipo | Notas |
+|---|---|---|
+| `n_id` | BigInteger PK | Sin FK dura, mismo criterio que el resto del namespace. |
+| `botella_n_id` | BigInteger, indexado | Lo aporta el **recorrido del árbol**, no `parent`: `/inner` devuelve los hijos sin él. |
+| `nombre` | Text | `at.78` ("S-1269002-2", "SPLITTER1"). |
+| `ratio` | Text | `at.83` crudo ("1x8"). **Cromo lo publica**: no se deduce. |
+| `salidas` | Integer | El `N` de "1xN" parseado. NULL si el texto no matchea — no se inventa. |
+
+| `cromo_splitter_puertos` | Tipo | Notas |
+|---|---|---|
+| `n_id` | BigInteger PK | |
+| `splitter_n_id` | BigInteger, indexado | `parent`; con `/inner` se infiere sólo si la botella tiene **un** splitter. |
+| `botella_n_id` | BigInteger, indexado | Desnormalizado desde el árbol. |
+| `nombre` / `sentido` | Text | `at.80` ("E1", "S8") y `at.82` (`ENTRADA`/`SALIDA`, Text + CHECK). |
+| `servicios_atributo` | JSONB **`none_as_null=True`** | `at.62`. **Tres estados**: NULL = no se preguntó (el barrido no trae el atributo, sólo `/inner`), `[]` = puerto libre, lista = servicios que sirve. |
+
+`cromo_botellas.splitters_relevados` (Boolean, default `false`) distingue "no tiene splitters" de
+"todavía no se barrió con el código que los lee". Sin ese marcador, cero filas sería ambiguo y
+`empalmes.py` no podría apagar su heurística sin romper las botellas aún no barridas.
+
+**Por qué existe:** medido sobre 30 botellas reales, la heurística de fan-out de `empalmes.py`
+acertó en 18 y falló en 12 —incluido inventar 2 splitters donde Cromo tiene 0— y **nunca** devolvió
+un ratio cuando el splitter existía. Ver `docs/decisiones.md` (2026-09-17, seguimiento 3).
+
+**Trampa de SQLAlchemy a no repetir:** sin `none_as_null=True`, Python `None` se serializa como JSON
+`null`; entonces `IS NOT NULL` da TRUE, `jsonb_array_length()` aborta la consulta con *"cannot get
+array length of a scalar"* y los tres estados se vuelven dos.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -880,6 +914,8 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260908_01` | `20260908_01_cromo_servicio_odf_override.py` | Tabla `app.cromo_servicio_odf_override` (+ 3 CHECK + 2 índices propios) y el índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — gestor "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
 | `20260908_02` | `20260908_02_servicios_alias_ids_gin.py` | Índice GIN `ix_servicios_alias_ids_gin` sobre `app.servicios.alias_ids` — habilita el self-join anti-ambigüedad por contención del detector "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
 | `20260917_01` | `20260917_01_cromo_tracking_cache.py` | Tabla `app.cromo_tracking_cache` — caché de salida con TTL de 24 h del `.txt` de tracking de cada pelo, para que la descarga multipelo no repita la llamada de 4,6-14 s a `/path` por cada archivo (ver sección "`cromo_tracking_cache`" arriba y `docs/decisiones.md` 2026-09-17) |
+| `20260917_02` | `20260917_02_cromo_clases_pon.py` | Catálogo de las clases de la red de acceso PON (66/84/85/86/133/134/137/141) con `ingerible=false` — sólo se etiquetan para que el diagrama de camino muestre qué es cada nodo |
+| `20260917_03` | `20260917_03_cromo_splitters.py` | Tablas `app.cromo_splitters` y `app.cromo_splitter_puertos` + `cromo_botellas.splitters_relevados` — el ratio del splitter lo publica Cromo en `at.83` y venía descartándose en cada barrido |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

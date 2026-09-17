@@ -216,7 +216,9 @@ async def test_empalmes_de_botella_splitter_pata_aislada_referencia_colgada():
     fila = _fila_fusion(9997965, "S7-1", None, None)
     sesion = _SesionFake(
         respuestas={
-            "FROM app.cromo_botellas": [(1, "Botella X")],
+            # `False` = botella todavía no barrida con el código que lee splitters: es el caso
+            # que ejercita la heurística de fan-out.
+            "FROM app.cromo_botellas": [(1, "Botella X", False)],
             "FROM app.cromo_fusiones": [fila],
         }
     )
@@ -242,3 +244,109 @@ async def test_empalmes_de_botella_referencia_colgada_con_cables():
     assert resultado.botella_n_id == 42
     assert resultado.nombre is None
     assert resultado.empalmes == []
+
+
+# ── Splitters declarados por Cromo (clase 133) vs. la heurística de fan-out ──────────────
+
+
+def _fila_splitter(n_id: int, nombre: str, ratio: str, salidas: int, totales=0, ocupados=0) -> tuple:
+    """Fila como la devuelve `_SQL_SPLITTERS_DE_BOTELLA`."""
+    return (n_id, nombre, ratio, salidas, totales, ocupados)
+
+
+@pytest.mark.asyncio
+async def test_el_splitter_real_reemplaza_al_deducido_por_fan_out():
+    """Con la botella ya barrida, el ratio sale de `at.83` y no de contar fusiones.
+
+    Medido real sobre 30 botellas: la heurística acertó en 18 y falló en 12, y **nunca** devolvió
+    un ratio correcto cuando el splitter existía de verdad (siempre `None`).
+    """
+    pelo_origen = (10, 100, "CABLE-A", 200, "AZ", "1", 1, "AZ", None, None)
+    filas = [
+        _fila_fusion(1, "S1-1", pelo_origen, (11, 101, "CABLE-B", 201, "VD", "2", 2, "VD", None, None)),
+        _fila_fusion(2, "S1-2", pelo_origen, (12, 101, "CABLE-B", 201, "VD", "3", 3, "VD", None, None)),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_splitters": [_fila_splitter(900, "SPLITTER1", "1x8", 8, totales=8, ocupados=4)],
+            "FROM app.cromo_botellas": [(1, "Botella X", True)],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 1)
+
+    assert resultado.splitters_relevados is True
+    assert [(s.ratio, s.salidas) for s in resultado.splitters] == [("1x8", 8)]
+    assert resultado.splitters[0].puertos_ocupados == 4
+    # La heurística habría dicho "Splitter 1-2"; con dato real, no afirma nada.
+    assert all(e.es_splitter is False for e in resultado.empalmes)
+    assert all(e.splitter_ratio is None for e in resultado.empalmes)
+
+
+@pytest.mark.asyncio
+async def test_sin_relevar_la_heuristica_sigue_siendo_el_unico_dato():
+    """No se cambia el comportamiento de lo que todavía no se barrió: cero filas de splitter en una
+    botella sin marcar no significa "no tiene", significa "no sabemos"."""
+    pelo_origen = (10, 100, "CABLE-A", 200, "AZ", "1", 1, "AZ", None, None)
+    filas = [
+        _fila_fusion(1, "S1-1", pelo_origen, (11, 101, "CABLE-B", 201, "VD", "2", 2, "VD", None, None)),
+        _fila_fusion(2, "S1-2", pelo_origen, (12, 101, "CABLE-B", 201, "VD", "3", 3, "VD", None, None)),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(1, "Botella X", False)],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 1)
+
+    assert resultado.splitters_relevados is False
+    assert resultado.splitters == []
+    assert any(e.es_splitter for e in resultado.empalmes), "la heurística sigue operando"
+
+
+@pytest.mark.asyncio
+async def test_botella_barrida_sin_splitters_deja_de_inventarlos():
+    """El falso positivo real: botella 6636551, la heurística ve 2 splitters y Cromo tiene 0."""
+    pelo_origen = (10, 100, "CABLE-A", 200, "AZ", "1", 1, "AZ", None, None)
+    filas = [
+        _fila_fusion(1, None, pelo_origen, (11, 101, "CABLE-B", 201, "VD", "2", 2, "VD", None, None)),
+        _fila_fusion(2, None, pelo_origen, (12, 101, "CABLE-B", 201, "VD", "3", 3, "VD", None, None)),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(1, "Botella X", True)],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 1)
+
+    assert resultado.splitters == []
+    assert resultado.splitters_relevados is True
+    assert all(e.es_splitter is False for e in resultado.empalmes)
+
+
+@pytest.mark.asyncio
+async def test_las_fusiones_no_se_pierden_al_retirar_la_marca():
+    """Se retira la AFIRMACIÓN de que es un Splitter, no la fila: el agrupamiento por pelo de
+    origen sigue siendo una lectura útil de las fusiones."""
+    pelo_origen = (10, 100, "CABLE-A", 200, "AZ", "1", 1, "AZ", None, None)
+    filas = [
+        _fila_fusion(1, "S1-1", pelo_origen, (11, 101, "CABLE-B", 201, "VD", "2", 2, "VD", None, None)),
+        _fila_fusion(2, "S1-2", pelo_origen, (12, 101, "CABLE-B", 201, "VD", "3", 3, "VD", None, None)),
+    ]
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_botellas": [(1, "Botella X", True)],
+            "FROM app.cromo_fusiones": filas,
+        }
+    )
+
+    resultado = await empalmes.empalmes_de_botella(sesion, 1)
+
+    assert len(resultado.empalmes) == 1
+    assert resultado.empalmes[0].pelo_origen is not None
+    assert [p.n_id for p in resultado.empalmes[0].splitter_destinos] == [11, 12]

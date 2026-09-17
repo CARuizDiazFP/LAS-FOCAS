@@ -5723,6 +5723,22 @@ async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> 
                 }
                 for e in resultado.empalmes
             ],
+            # Splitters tal como los declara Cromo (clase 133), con el ratio de `at.83`. Distinto de
+            # `empalmes[].es_splitter`, que es la heurística de fan-out: `splitters_relevados=false`
+            # significa que esta Botella todavía no se barrió con el código que los lee, no que no
+            # tenga ninguno — y mientras tanto la heurística sigue siendo lo único disponible.
+            "splitters": [
+                {
+                    "n_id": s.n_id,
+                    "nombre": s.nombre,
+                    "ratio": s.ratio,
+                    "salidas": s.salidas,
+                    "puertos_totales": s.puertos_totales,
+                    "puertos_ocupados": s.puertos_ocupados,
+                }
+                for s in resultado.splitters
+            ],
+            "splitters_relevados": resultado.splitters_relevados,
         }
     )
 

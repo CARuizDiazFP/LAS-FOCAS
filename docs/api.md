@@ -315,6 +315,23 @@ Releva las ODFs que atraviesa el camino, poblando sus posiciones de patchera.
   id=62 (servicio declarado directo sobre el conector) sólo viaja en esa respuesta.
 - **Respuesta 200:** `{"ok": true, "corrida_id": 2130, "relevadas": 4, "errores": 0, "detalle": [...]}`
 
+### GET `/api/infra/cromo/botellas/{botella_n_id}/empalmes`
+
+Empalmes internos de una Botella. Desde 2026-09-17 devuelve además los **splitters declarados por
+Cromo**, que son cosa distinta de `empalmes[].es_splitter`:
+
+- `splitters[]` — clase 133 tal como la publica Cromo: `nombre` (`at.78`), `ratio` (`at.83`, "1x8"),
+  `salidas` (el `N` parseado; `null` si el texto no matchea `1xN`), y `puertos_ocupados` /
+  `puertos_totales` de sus salidas. Es **dato**, no inferencia.
+- `splitters_relevados` — `false` significa "esta Botella todavía no se barrió con el código que lee
+  splitters", **no** "no tiene ninguno". Mientras sea `false`, `empalmes[].es_splitter` sigue siendo
+  la heurística de fan-out y es lo único disponible; cuando pasa a `true`, la heurística deja de
+  afirmar nada y `splitters[]` es la fuente.
+
+Por qué la distinción importa: medida contra 30 botellas reales, la heurística acertó en 18 y falló
+en 12 —inventó 2 splitters donde Cromo tiene 0— y **nunca** devolvió un ratio correcto cuando el
+splitter existía. Ver `docs/decisiones.md` (2026-09-17, seguimiento 3).
+
 ### POST `/api/infra/search`
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.

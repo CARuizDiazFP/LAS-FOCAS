@@ -25,8 +25,14 @@ sondeo 2026-08-22 citado antes acá, que ya no refleja el dataset real, ver `doc
   de pelos, cada uno bajo 3 `n_id` de fusión). Por eso `_agrupar_splitters` deduplica por par de
   pelos (`_deduplicar_legs`) antes de contar — sin esto, una fusión 1 a 1 duplicada 3 veces se
   clasificaba como "Splitter 1-3".
-- Los "Splitter" no son una clase Cromo propia homologada en `app.cromo_clases` (sólo hay BOTELLA/
-  CABLE/TUBO/PELO/FUSION) — no hay un ID de clase que detectar. La única señal real observada en
+- **DESACTUALIZADO desde 2026-09-17, se conserva para explicar la heurística que sigue viva como
+  respaldo:** decía que los "Splitter" no son una clase Cromo propia y que no hay un ID de clase que
+  detectar. **Lo son: clase 133**, con el ratio publicado en `at.83`, y sus puertos son la clase
+  134. Ambos venían en el `inner[]` de cada barrido de botella y este parser los descartaba. Desde
+  esa fecha se ingieren (`app.cromo_splitters`) y, cuando la botella ya fue barrida
+  (`cromo_botellas.splitters_relevados`), **el dato real manda y esta heurística deja de afirmar
+  nada**. Medida contra 30 botellas reales acertaba en 18 de 30 y nunca daba el ratio correcto.
+  Sigue operando sólo donde todavía no hay dato ingerido. Todo lo que sigue describe esa heurística: La única señal real observada en
   `nombre_par` (at.84) para fusiones de splitter es un prefijo "S" (ej. "S7-1", "S4-1"), con un solo
   pelo resuelto (el otro lado del par es el propio componente splitter, que Cromo no modela como
   pelo). Señal estructural más robusta, agnóstica del prefijo: un mismo pelo (`n_id`) que aparece en
@@ -95,11 +101,32 @@ class CableDeEmpalmes:
 
 
 @dataclass(slots=True)
+class SplitterDeBotella:
+    """Un splitter tal como lo declara Cromo (clase 133), no como lo deduce la heurística.
+
+    `ratio` es el texto crudo de `at.83` ("1x8") y `salidas` su `N` parseado. `puertos_ocupados` y
+    `puertos_totales` salen de los puertos ingeridos (clase 134): sirven para ver la ocupación real
+    del splitter, que hasta ahora el sistema no tenía de ninguna forma.
+    """
+
+    n_id: int
+    nombre: Optional[str]
+    ratio: Optional[str]
+    salidas: Optional[int]
+    puertos_totales: int = 0
+    puertos_ocupados: int = 0
+
+
+@dataclass(slots=True)
 class ResultadoEmpalmesBotella:
     botella_n_id: int
     nombre: Optional[str]
     cables: list[CableDeEmpalmes] = field(default_factory=list)
     empalmes: list[EmpalmeDeBotella] = field(default_factory=list)
+    # Splitters declarados por Cromo. Lista vacía + `splitters_relevados=True` significa que esta
+    # botella NO tiene splitters, que es distinto de no haberla barrido todavía.
+    splitters: list[SplitterDeBotella] = field(default_factory=list)
+    splitters_relevados: bool = False
 
 
 @dataclass(slots=True)
@@ -113,7 +140,9 @@ class _Leg:
     pelo_b: Optional[PeloEmpalme]
 
 
-_SQL_BOTELLA_POR_N_ID = text("SELECT n_id, nombre FROM app.cromo_botellas WHERE n_id = :n_id")
+_SQL_BOTELLA_POR_N_ID = text(
+    "SELECT n_id, nombre, splitters_relevados FROM app.cromo_botellas WHERE n_id = :n_id"
+)
 
 _SQL_EXISTE_BOTELLA_POR_CABLES = text(
     "SELECT 1 FROM app.cromo_cables WHERE extremo_a_n_id = :botella_n_id OR extremo_b_n_id = :botella_n_id LIMIT 1"
@@ -308,6 +337,28 @@ def _cables_origen(empalmes: list[EmpalmeDeBotella]) -> list[CableDeEmpalmes]:
     return sorted(por_cable.values(), key=lambda c: (c.nombre or "", c.n_id))
 
 
+_SQL_SPLITTERS_DE_BOTELLA = text(
+    """
+    SELECT s.n_id,
+           s.nombre,
+           s.ratio,
+           s.salidas,
+           COUNT(p.n_id) FILTER (WHERE p.sentido = 'SALIDA') AS puertos_totales,
+           COUNT(p.n_id) FILTER (
+               WHERE p.sentido = 'SALIDA'
+                 -- `jsonb_typeof` y no sólo `IS NOT NULL`: un JSONB puede contener el escalar
+                 -- `null`, y ahí `jsonb_array_length` aborta la consulta entera.
+                 AND jsonb_typeof(p.servicios_atributo) = 'array'
+                 AND jsonb_array_length(p.servicios_atributo) > 0
+           ) AS puertos_ocupados
+    FROM app.cromo_splitters s
+    LEFT JOIN app.cromo_splitter_puertos p ON p.splitter_n_id = s.n_id AND p.vigente = true
+    WHERE s.botella_n_id = :botella_n_id AND s.vigente = true
+    GROUP BY s.n_id, s.nombre, s.ratio, s.salidas
+    ORDER BY s.nombre NULLS LAST, s.n_id
+    """
+)
+
 async def empalmes_de_botella(sesion: AsyncSession, botella_n_id: int) -> ResultadoEmpalmesBotella:
     """Empalmes (fusiones) internos de una Botella, aplanados y con Splitters agrupados.
 
@@ -334,11 +385,57 @@ async def empalmes_de_botella(sesion: AsyncSession, botella_n_id: int) -> Result
     ]
     empalmes = _agrupar_splitters(legs)
 
+    filas_splitter = (
+        await sesion.execute(_SQL_SPLITTERS_DE_BOTELLA, {"botella_n_id": botella_n_id})
+    ).all()
+    splitters = [
+        SplitterDeBotella(
+            n_id=f[0],
+            nombre=f[1],
+            ratio=f[2],
+            salidas=f[3],
+            puertos_totales=int(f[4] or 0),
+            puertos_ocupados=int(f[5] or 0),
+        )
+        for f in filas_splitter
+    ]
+    # La marca viaja en la misma fila que el nombre. Una botella sin fila propia (referencia
+    # colgada tolerada, ver docstring) nunca fue barrida, así que `False` es el valor correcto.
+    relevados = bool(botella[2]) if botella is not None and len(botella) > 2 else False
+
+    # Con el dato real disponible, la heurística de fan-out deja de decidir qué es un splitter.
+    # Medido sobre 30 botellas: inventaba splitters donde Cromo no tiene ninguno (botella 6636551),
+    # partía uno solo en seis (8941541) y NUNCA acertaba el ratio. Las fusiones se siguen mostrando
+    # como lo que son —pares de pelos—, y los splitters salen aparte, declarados por Cromo.
+    if relevados:
+        empalmes = [_sin_marca_de_splitter(e) for e in empalmes]
+
     return ResultadoEmpalmesBotella(
         botella_n_id=botella_n_id,
         nombre=botella[1] if botella else None,
         cables=_cables_origen(empalmes),
         empalmes=empalmes,
+        splitters=splitters,
+        splitters_relevados=relevados,
+    )
+
+
+def _sin_marca_de_splitter(empalme: EmpalmeDeBotella) -> EmpalmeDeBotella:
+    """Devuelve el empalme sin el veredicto de la heurística, conservando su contenido.
+
+    No se descarta la fila: el agrupamiento por pelo de origen sigue siendo una lectura útil de
+    las fusiones. Lo que se retira es la **afirmación** de que eso es un Splitter y con qué ratio,
+    que es justamente lo que la heurística no puede sostener."""
+    if not empalme.es_splitter:
+        return empalme
+    return EmpalmeDeBotella(
+        fusion_n_id=empalme.fusion_n_id,
+        nombre_par=empalme.nombre_par,
+        es_splitter=False,
+        pelo_origen=empalme.pelo_origen,
+        pelo_destino=empalme.pelo_destino,
+        splitter_destinos=empalme.splitter_destinos,
+        splitter_ratio=None,
     )
 
 
@@ -346,6 +443,7 @@ __all__ = [
     "PeloEmpalme",
     "EmpalmeDeBotella",
     "CableDeEmpalmes",
+    "SplitterDeBotella",
     "ResultadoEmpalmesBotella",
     "empalmes_de_botella",
 ]

@@ -528,6 +528,30 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
        la ingesta no la barra. `cromo_cables` no tiene columna de clase, así que persistirlo no
        rompe ninguna FK contra `cromo_clases`.
 
+  - **Submódulo Splitters (clases 133 y 134, 2026-09-17):** el splitter y sus puertos viajan en el
+    **mismo `inner[]`** de la botella que las fusiones, así que se ingieren en `fase_botellas` sin
+    una sola llamada extra. Hasta esta fecha `parse_arbol_botella` los descartaba como "clase
+    inesperada" y el ratio que Cromo publica en `at.83` se tiraba en cada corrida, mientras
+    `empalmes.py` lo deducía por fan-out de fusiones.
+
+    Medición que lo motivó (30 botellas reales): la heurística acertó en 18 y falló en 12 — inventó
+    2 splitters donde Cromo tiene 0 (botella 6636551), partió 1 en 6 (botella 8941541) y **nunca**
+    devolvió un ratio cuando el splitter existía. La columna `cromo_botellas.splitters_relevados`
+    es lo que permite apagarla sólo donde ya hay dato real.
+
+    **Dos asimetrías de payload que hay que tener presentes** (verificadas real):
+    1. El barrido de colección (`show=ALL`) trae `parent` en cada hijo; `/db/objects/{id}/inner`
+       **no**. Por eso el vínculo splitter↔botella y puerto↔splitter lo aporta el recorrido del
+       árbol y no el payload.
+    2. El `at.62` del puerto —el id de servicio— **sólo** viaja en `/inner`, nunca en el barrido.
+       Misma asimetría ya documentada para los conectores de ODF. De ahí los tres estados de
+       `servicios_atributo`: NULL "no se preguntó", `[]` "puerto libre", lista "ocupado".
+
+    Dato de dominio que lo explica (aportado por el usuario): en un splitter **sólo el último tramo
+    lleva el ID de servicio**; los pelos intermedios sólo tienen la descripción del láser y la OLT
+    padre. Por eso el vínculo servicio↔splitter está en el **puerto** y no en el pelo: la ENTRADA
+    agrega todos los servicios del splitter y cada SALIDA identifica el suyo.
+
 ## Principios de diseño
 
 - **Sólo lectura, siempre.** El cliente no expone ningún método de escritura contra el sistema externo.
