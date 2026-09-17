@@ -129,6 +129,27 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    reflejar la realidad verificada, no quedar desactualizado silenciosamente.
 4. **Preferir un fetch acotado (`psize` chico, una clase) antes que un barrido completo** para
    diagnosticar — no hace falta correr una ingesta real para confirmar la forma de un payload.
+5. **El mismo objeto tiene forma distinta según el endpoint. Verificar SIEMPRE contra los dos**
+   antes de escribir un parser. Asimetrías reales medidas (2026-09-17, clases 133/134):
+   - El **barrido de colección** (`get_coleccion`, `show=ALL`) trae `parent` como **entero** en cada
+     hijo de `inner[]`; `GET /db/objects/{id}/inner` **no trae `parent` en absoluto**. Un parser que
+     dependa de `parent` deja el objeto huérfano según de dónde haya llegado — el vínculo lo tiene
+     que aportar el recorrido del árbol, que siempre sabe de quién cuelga.
+   - Un **fetch directo** (`get_objeto_con_topologia`) trae `parent` como **diccionario**
+     (`{"id":…, "class":…}`), no como entero. Pasárselo crudo al parser produce basura silenciosa
+     (un `tubo_n_id` que es un dict). Mismo hallazgo, 2026-09-17.
+   - El atributo `at.62` (id de servicio) **sólo** viaja en `/inner`, nunca en el barrido — ya
+     documentado para conectores de ODF (2026-08-28) y confirmado igual para puertos de splitter.
+     Consecuencia: un campo vacío puede significar "no se preguntó" o "está libre", y el parser **no
+     puede distinguirlo**. Que la procedencia la declare el llamador con un flag explícito; si no,
+     los dos estados colapsan y la distinción queda sólo en la documentación.
+6. **Antes de reemplazar una heurística por un dato real, medir cuánto se equivoca.** Receta usada
+   dos veces con resultado accionable: tomar una **muestra al azar** de objetos reales
+   (`ORDER BY random() LIMIT 30`), correr la heurística y el dato de Cromo sobre cada uno, y
+   clasificar en coincide / falso positivo / falso negativo / valor distinto. Sin ese número la
+   discusión es de opinión; con él se decide y queda en el commit. Ejemplo real: la heurística de
+   fan-out de `empalmes.py` acertó en 18 de 30 y **nunca** devolvió el ratio correcto cuando el
+   splitter existía (ver `docs/decisiones.md`, 2026-09-17).
 
 ## Documentación relacionada
 
