@@ -160,6 +160,12 @@ class Splitter:
     nombre: Optional[str]
     ratio: Optional[str]
     salidas: Optional[int]
+    # De qué objeto cuelga realmente. Medido sobre 800 splitters reales (2026-09-19): sólo el 12%
+    # cuelga de una Botella; el resto cuelga de una caja PON (137, 139, 138, 84, 140, 126, 127).
+    # `botella_n_id` se conserva porque `empalmes.py` consulta por esa columna, pero queda en None
+    # cuando el contenedor no es una Botella — antes se le metía el dict crudo de `parent`.
+    contenedor_n_id: Optional[int] = None
+    contenedor_clase: Optional[int] = None
 
 
 @dataclass(slots=True)

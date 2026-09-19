@@ -460,21 +460,79 @@ def salidas_de_ratio(ratio: Optional[str]) -> Optional[int]:
     return valor if valor > 0 else None
 
 
-def parse_splitter(obj: Mapping[str, Any], *, botella_n_id: Optional[int] = None) -> Splitter:
-    """Parsea un splitter (class 133).
+def _ref_n_id(valor: Any) -> Optional[int]:
+    """`n_id` de linaje de una referencia a otro objeto, venga como entero o como diccionario.
 
-    `botella_n_id` lo aporta el recorrido del árbol y **manda sobre `parent`**: el barrido de
-    colección trae `parent` con el `n_id` de la botella, pero la respuesta de `/db/objects/{id}/inner`
-    **no lo trae** (verificado real). Confiar sólo en `parent` dejaba el splitter huérfano según por
-    qué endpoint hubiera llegado; el árbol siempre sabe de quién cuelga.
+    Cromo usa las dos formas para lo mismo según el endpoint, y pasarle el diccionario crudo al
+    modelo produce basura silenciosa —una columna de id con un dict adentro— que nadie detecta
+    hasta consultarla. Se prefiere `n_id` sobre `id` porque **`id` es un id de versión**: medido
+    sobre 60 objetos reales, en 4 `container.id != container.n_id`.
+    """
+    if isinstance(valor, Mapping):
+        return valor.get("n_id") or valor.get("id")
+    if isinstance(valor, int):
+        return valor
+    return None
+
+
+def _ref_clase(valor: Any) -> Optional[int]:
+    return valor.get("class") if isinstance(valor, Mapping) else None
+
+
+def _contenedor_de(obj: Mapping[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """(n_id, clase) del contenedor de un objeto del barrido directo.
+
+    `extra.container` es la fuente preferida: está presente en 60/60 de los splitters y puertos
+    medidos y trae el `n_id` de linaje. `parent` es el respaldo, pero su `id` puede ser de versión.
+    """
+    extra = obj.get("extra") or {}
+    contenedor = extra.get("container") if isinstance(extra, Mapping) else None
+    padre = obj.get("parent")
+    n_id = _ref_n_id(contenedor) or _ref_n_id(padre)
+    clase = _ref_clase(contenedor) or _ref_clase(padre)
+    return n_id, clase
+
+
+def parse_splitter(
+    obj: Mapping[str, Any],
+    *,
+    botella_n_id: Optional[int] = None,
+    contenedor_clase: Optional[int] = None,
+) -> Splitter:
+    """Parsea un splitter (class 133), venga del árbol de una Botella o del barrido de su clase.
+
+    `botella_n_id` lo aporta el recorrido del árbol y **manda**: la respuesta de
+    `/db/objects/{id}/inner` no trae `parent` (verificado real), así que el árbol es la única fuente
+    en ese camino.
+
+    En el **barrido directo** (`filter=133`) no hay árbol, y `parent` es siempre un diccionario
+    (60/60 medidos) cuya clase es la del contenedor: una caja PON en el 88% de los casos, una
+    Botella en el 12%. Por eso `botella_n_id` se puebla **sólo** si el contenedor es de una clase
+    Botella — antes se le asignaba el diccionario crudo, que es un dato inservible escrito sin
+    error.
     """
     ratio = atributo(obj, _AT_SPLITTER_RATIO)
+    contenedor_n_id, clase_contenedor = _contenedor_de(obj)
+    if contenedor_clase is not None:
+        clase_contenedor = contenedor_clase
+    if botella_n_id is not None:
+        contenedor_n_id = botella_n_id
+    elif clase_contenedor in _CLASES_BOTELLA:
+        botella_n_id = contenedor_n_id
+    elif clase_contenedor is None and isinstance(obj.get("parent"), int):
+        # `parent` como entero pelado sólo aparece dentro del `inner[]` de una Botella: es la forma
+        # que trae el barrido de botellas, y ahí el padre ES la botella. En el barrido directo de la
+        # clase 133 `parent` es siempre un diccionario (60/60 medidos), así que esta rama no lo
+        # alcanza y ningún splitter de caja PON se cuelga de una botella inexistente.
+        botella_n_id = contenedor_n_id
     return Splitter(
         n_id=_resolver_n_id(obj),
-        botella_n_id=botella_n_id if botella_n_id is not None else obj.get("parent"),
+        botella_n_id=botella_n_id,
         nombre=atributo(obj, _AT_SPLITTER_NOMBRE) or obj.get("name") or None,
         ratio=ratio,
         salidas=salidas_de_ratio(ratio),
+        contenedor_n_id=contenedor_n_id,
+        contenedor_clase=clase_contenedor,
     )
 
 
@@ -508,7 +566,16 @@ def parse_puerto_splitter(
     ]
     return PuertoSplitter(
         n_id=_resolver_n_id(obj),
-        splitter_n_id=obj.get("parent") or splitter_n_id,
+        # En el barrido directo de la clase 134, `parent` es el CONTENEDOR PON, no el splitter
+        # (medido: 138/137/139 en 60 de 60); el splitter viaja en `extra.parent`, clase 133 en
+        # 60/60, y su n_id coincide con `at.71`. En el árbol de Botella, en cambio, `parent` SÍ es
+        # el splitter y llega como entero. Por eso se mira `extra.parent` primero y `parent` sólo
+        # si es un entero: un `parent` diccionario acá es siempre el contenedor equivocado.
+        splitter_n_id=(
+            _ref_n_id((obj.get("extra") or {}).get("parent"))
+            or (obj.get("parent") if isinstance(obj.get("parent"), int) else None)
+            or splitter_n_id
+        ),
         botella_n_id=botella_n_id,
         nombre=atributo(obj, _AT_PUERTO_NOMBRE),
         sentido=atributo(obj, _AT_PUERTO_SENTIDO),

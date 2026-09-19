@@ -184,3 +184,127 @@ class TestArbolBotella:
         arbol = parse_arbol_botella(botella)
         assert len(arbol.errores) == 1
         assert arbol.errores[0].clase == 999
+
+
+# --------------------------------------------------------------------------------------------
+# Barrido DIRECTO de las colecciones 133 y 134 (`filter=133`/`filter=134`, `show=ALL`).
+#
+# Forma medida contra Cromo real el 2026-09-19 sobre 60 objetos de cada clase. Es distinta de la
+# del árbol de Botella de más arriba, y la diferencia no es cosmética:
+#   - En el splitter, `parent` es SIEMPRE un diccionario (60/60), nunca el entero que trae `inner[]`.
+#   - En el puerto, `parent` es el CONTENEDOR PON (138/137/139 en la muestra), **no** el splitter.
+#     El splitter viaja en `extra.parent` (clase 133 en 60/60) y su `n_id` coincide con `at.71`
+#     en 60/60.
+# --------------------------------------------------------------------------------------------
+
+SPLITTER_BARRIDO_DIRECTO = {
+    "id": 9055426,
+    "n_id": 9055426,
+    "class": 133,
+    "name": "SPLITTER 1",
+    "vmax": 33490,
+    "at": [
+        {"id": 78, "value": "SPLITTER 1", "name": "nombre"},
+        {"id": 83, "value": "1x8", "name": "fo.tipo"},
+    ],
+    "parent": {"id": 8992249, "class": 138, "name": "PON 2 PARAGUAY 1338 RED 92889"},
+    "extra": {
+        "container": {"id": 8992249, "n_id": 8992249, "class": 138, "name": "PON 2 PARAGUAY 1338"},
+    },
+}
+
+SPLITTER_BARRIDO_DIRECTO_EN_BOTELLA = {
+    **SPLITTER_BARRIDO_DIRECTO,
+    "id": 8941542,
+    "n_id": 8941542,
+    "parent": {"id": 8941541, "class": 68, "name": "Bot Corrientes 1234 CF"},
+    "extra": {"container": {"id": 8941541, "n_id": 8941541, "class": 68}},
+}
+
+# `parent.id` es un id de VERSION, no el de linaje. Medido: en 4 de 60 objetos reales
+# `container.id != container.n_id`, y en esos mismos `parent.id` tampoco coincide con el n_id.
+# Tomar `parent.id` como contenedor deja la referencia apuntando a una version, que es el viejo
+# problema de "ID dual" ya documentado para cables y botellas.
+SPLITTER_CONTENEDOR_CON_ID_DUAL = {
+    **SPLITTER_BARRIDO_DIRECTO,
+    "id": 9200001,
+    "n_id": 9200001,
+    "parent": {"id": 7000999, "class": 137, "name": "IAAS - PON version vieja"},
+    "extra": {"container": {"id": 7000999, "n_id": 6999001, "class": 137}},
+}
+
+PUERTO_BARRIDO_DIRECTO = {
+    "id": 9055281,
+    "n_id": 9055281,
+    "class": 134,
+    "at": [
+        {"id": 80, "value": "S5", "name": "fo.nombre_ent_sal"},
+        {"id": 82, "value": "SALIDA", "name": "fo.entrada_salida"},
+        {"id": 70, "value": "6685157"},
+        {"id": 71, "value": "9055276"},
+    ],
+    "parent": {"id": 6685157, "class": 138, "name": "IAAS- PON SAN JOSE DE CALASANZ 530"},
+    "extra": {
+        "parent": {"id": 9055276, "n_id": 9055276, "class": 133, "name": "SPLITTER2"},
+        "container": {"id": 6685157, "n_id": 6685157, "class": 138},
+    },
+}
+
+
+class TestSplitterDelBarridoDirecto:
+    def test_no_guarda_el_diccionario_de_parent_como_botella(self):
+        """El bug que esta forma de payload provoca: `botella_n_id` terminaba siendo un dict.
+
+        Es la misma basura silenciosa que ya se documentó para `tubo_n_id`: nadie falla, la fila se
+        escribe y el dato queda inservible.
+        """
+        splitter = parse_splitter(SPLITTER_BARRIDO_DIRECTO)
+
+        assert splitter.botella_n_id is None
+
+    def test_registra_el_contenedor_y_su_clase(self):
+        splitter = parse_splitter(SPLITTER_BARRIDO_DIRECTO)
+
+        assert splitter.contenedor_n_id == 8992249
+        assert splitter.contenedor_clase == 138
+
+    def test_cuando_el_contenedor_es_una_botella_puebla_botella_n_id(self):
+        """`botella_n_id` sigue existiendo para `empalmes.py`, que consulta por esa columna.
+
+        Se puebla sólo cuando el contenedor es realmente una Botella — el 12% de los casos según la
+        medición de 800 splitters reales.
+        """
+        splitter = parse_splitter(SPLITTER_BARRIDO_DIRECTO_EN_BOTELLA)
+
+        assert splitter.botella_n_id == 8941541
+        assert splitter.contenedor_n_id == 8941541
+        assert splitter.contenedor_clase == 68
+
+    def test_prefiere_el_n_id_de_linaje_sobre_el_id_de_version_del_parent(self):
+        """Con "ID dual", `parent.id` apunta a una version y `extra.container.n_id` al linaje."""
+        splitter = parse_splitter(SPLITTER_CONTENEDOR_CON_ID_DUAL)
+
+        assert splitter.contenedor_n_id == 6999001
+        assert splitter.contenedor_clase == 137
+
+    def test_el_embebido_en_arbol_de_botella_conserva_su_comportamiento(self):
+        """La vía del árbol sigue mandando: el recorrido sabe de quién cuelga."""
+        splitter = parse_splitter(SPLITTER_CRUDO, botella_n_id=6637745)
+
+        assert splitter.botella_n_id == 6637745
+        assert splitter.contenedor_n_id == 6637745
+
+
+class TestPuertoDelBarridoDirecto:
+    def test_cuelga_del_splitter_y_no_del_contenedor_pon(self):
+        """`parent` acá es la caja PON, no el splitter: tomarlo sin mirar cuelga mal el puerto."""
+        puerto = parse_puerto_splitter(PUERTO_BARRIDO_DIRECTO)
+
+        assert puerto.splitter_n_id == 9055276
+
+    def test_no_inventa_botella(self):
+        puerto = parse_puerto_splitter(PUERTO_BARRIDO_DIRECTO)
+
+        assert puerto.botella_n_id is None
+        assert puerto.nombre == "S5"
+        assert puerto.sentido == "SALIDA"

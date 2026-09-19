@@ -591,6 +591,11 @@ class CromoSplitter(Base):
 
     n_id = Column(BigInteger, primary_key=True)
     botella_n_id = Column(BigInteger, nullable=True, index=True)
+    # De qué objeto cuelga realmente: una caja PON en el 88% de los casos (medido sobre 800
+    # splitters reales). Sin FK dura porque apunta a dos tablas según `contenedor_clase`, mismo
+    # criterio que el resto de las referencias cruzadas del módulo.
+    contenedor_n_id = Column(BigInteger, nullable=True, index=True)
+    contenedor_clase = Column(SmallInteger, nullable=True)
     nombre = Column(Text, nullable=True)
     ratio = Column(Text, nullable=True)  # "1x8" crudo, tal como lo publica at.83
     salidas = Column(Integer, nullable=True)  # el N de "1xN"; NULL si el texto no matchea

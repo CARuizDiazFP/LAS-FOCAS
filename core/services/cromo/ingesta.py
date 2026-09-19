@@ -114,7 +114,7 @@ PELO_CAMPOS = (
     "tipo_asociacion",
 )
 _FUSION_CAMPOS = ("botella_n_id", "nombre_par", "tipo", "pelo_a_n_id", "pelo_b_n_id", "latitud", "longitud")
-SPLITTER_CAMPOS = ("botella_n_id", "nombre", "ratio", "salidas")
+SPLITTER_CAMPOS = ("botella_n_id", "contenedor_n_id", "contenedor_clase", "nombre", "ratio", "salidas")
 SPLITTER_PUERTO_CAMPOS = (
     "splitter_n_id",
     "botella_n_id",
