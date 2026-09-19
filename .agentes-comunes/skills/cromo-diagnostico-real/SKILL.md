@@ -130,6 +130,34 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    fan-out de `empalmes.py` acertó en 18 de 30 y **nunca** devolvió el ratio correcto cuando el
    splitter existía (ver `docs/decisiones.md`, 2026-09-17).
 
+7. **Un barrido truncado NO es un total, y `stats[].count` puede mentir con 0.** Real (2026-09-19):
+   medí la clase 133 con un barrido acotado a 16 páginas y reporté "~800 splitters"; el total real,
+   paginando hasta que el cursor se agota, es **20.238** (405 páginas) y el de la clase 134 es
+   **154.284** (3.086). Un error de 25x que se coló en el plan y en la estimación de duración.
+   La trampa de fondo: para esas dos clases `stats[].count` devuelve **0** aunque la colección
+   pagine perfecto, así que no hay señal que avise que estás mirando una fracción.
+   - Para dimensionar, paginar hasta el final con `show=["BASIC"]` (barato) y contar, o leer
+     `cromo_clases.count_cromo`, que desde 2026-09-19 guarda esa medición con su fecha.
+   - Un `count` de 0 sobre una colección que devuelve filas es la firma de este bug, no un dato:
+     tratarlo como "no sé", nunca como "no hay".
+   - Nunca escribir en el catálogo un número que salga de un barrido acotado.
+
+8. **`parent` no es una referencia confiable: ni su forma ni su id.** Ampliación de la regla 5, con
+   tres defectos reales medidos el 2026-09-19 sobre 60 objetos de cada clase, todos de *basura
+   silenciosa* (nadie falla, la fila se escribe, el dato queda inservible):
+   - **La forma cambia por endpoint.** En el barrido de la colección 133, `parent` es un
+     **diccionario** en 60/60; en el `inner[]` de una botella es un **entero**. Pasarle el dict
+     crudo al modelo deja un `{'class': 138, 'id': …}` dentro de una columna de id.
+   - **Puede apuntar a otra cosa.** En el barrido de la clase 134, `parent` es el **contenedor PON**
+     (138/137/139 en 60/60), no el splitter; el splitter viaja en `extra.parent` (clase 133 en
+     60/60) y su `n_id` coincide con `at.71`.
+   - **Su `id` es de versión, no de linaje.** En 4 de 60 objetos `container.id != container.n_id`, y
+     ahí `parent.id` tampoco coincide — el mismo "ID dual" ya documentado para cables y botellas.
+   Receta: preferir `extra.container.n_id` / `extra.parent.n_id` (presentes en 60/60), caer a
+   `parent` sólo como respaldo, y **normalizar con un helper** que acepte int o dict y devuelva
+   siempre un entero. Antes de escribir el parser, medir la distribución de `type(parent)` y de la
+   clase del padre sobre ≥50 objetos reales del endpoint que se va a usar.
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)

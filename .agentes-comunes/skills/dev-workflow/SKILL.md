@@ -224,6 +224,28 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
     contraseña **no** se pide por chat. Cuando una tarea requiera privilegios elevados: verificar y
     dejar preparado todo lo que sí se puede hacer, y entregar al usuario el comando exacto a ejecutar,
     registrándolo como pendiente explícito en el cierre.
+16. **Un número de verificación no se escribe en el mismo comando que lo produce.** Real
+    (2026-09-19): armé el mensaje de commit y corrí los tests en una sola llamada encadenada, así
+    que el mensaje decía "97 tests en verde" cuando el resultado fue **171**. El commit quedó con un
+    dato inventado sobre su propia verificación, y ya pusheado no se corrige sin `--force`, que está
+    prohibido. Es la misma familia que el guardrail 14: **primero medir, leer el resultado, y recién
+    entonces escribir la afirmación**. Si el mensaje tiene que citar cifras (tests, filas, duración),
+    correr la medición en una llamada aparte y copiar el número real.
+
+17. **Tras una brecha de contexto, verificar el estado del repo ANTES de seguir trabajando.** Real
+    (2026-09-19): después de una compactación retomé escribiendo documentación que **ya estaba
+    escrita y commiteada**, y mientras lo hacía la rama se integró y el worktree se limpió — un
+    comando encontró el directorio y el siguiente falló con "No such file or directory". Parte del
+    trabajo fue redundante y un borrador sin commitear se perdió en el `cleanup`. Al reanudar:
+    ```bash
+    git log --oneline -5 | cat          # ¿qué se commiteó mientras no miraba?
+    git status --porcelain              # ¿hay trabajo sin commitear?
+    python scripts/agent_worktree.py status   # ¿mi worktree sigue existiendo?
+    git rev-parse --show-toplevel       # ¿sigo parado donde creo?
+    ```
+    Un `git status` vacío cuando se acaba de escribir un archivo **no** significa "ya estaba
+    commiteado": puede significar que el árbol de trabajo desapareció debajo. Comprobarlo antes de
+    narrar una explicación.
 
 ## Relación con otras skills
 `agent-worktree` (crea el worktree/rama propios del agente y coordina leases e integración; es el
