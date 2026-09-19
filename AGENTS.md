@@ -64,6 +64,12 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - El informe SLA depende de la columna U (`Horas Netas Reclamo`) en el Excel legacy; no reintroducir fallbacks a otras columnas.
 - La VM y varios defaults asumen la IP `172.18.208.162`; si cambia, revisar configuración y documentación relacionada.
 - La topología operativa actual usa proveedores LLM externos vía API; no asumir disponibilidad de Ollama/local LLM salvo trabajo explícito de compatibilidad heredada.
+- Una columna `JSONB` de SQLAlchemy **sin `none_as_null=True`** guarda el `None` de Python como el
+  escalar JSON `'null'`, no como SQL NULL, y `COALESCE(col, '[]'::jsonb)` **no** lo cubre:
+  `jsonb_array_elements_text` corta la query entera con `cannot extract elements from a scalar`. El
+  guard que cubre todos los casos es `CASE WHEN jsonb_typeof(col) = 'array' THEN col ELSE '[]'::jsonb END`
+  (real 2026-09-19: 176 filas de `app.cromo_odfs` en dev y en prod). Antes de confiar en un
+  `COALESCE` sobre JSONB, medir con `SELECT jsonb_typeof(col), count(*) ... GROUP BY 1`.
 
 ## Seguridad y Operación
 
