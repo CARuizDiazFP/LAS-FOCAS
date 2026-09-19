@@ -734,6 +734,10 @@ async def _procesar_botella_completa(
             # `servicios_atributo` en NULL dice "no se preguntó", que es la verdad; marcarlo como
             # `[]` afirmaría que los puertos están libres sin haberlo consultado.
             arbol = cromo_parser.parse_arbol_botella(obj, puertos_traen_servicios=False)
+            # De qué payload salió `arbol`. Normalmente es `obj`, pero la redirección por "ID dual"
+            # de más abajo lo reemplaza por el objeto vigente — y la marca `splitters_relevados`
+            # tiene que hablar del árbol que REALMENTE se procesó, no del cascarón del barrido.
+            payload_arbol = obj
 
             alias_botella = alias_por_origen.get(arbol.botella.n_id)
             if alias_botella is None:
@@ -766,6 +770,7 @@ async def _procesar_botella_completa(
                         # Cromo hubiera devuelto el objeto vigente en este mismo barrido.
                         n_id_cascaron = arbol.botella.n_id
                         arbol = cromo_parser.parse_arbol_botella(resultado_id_dual.obj_vigente)
+                        payload_arbol = resultado_id_dual.obj_vigente
                         # Traza auditable de la redirección: sin esto el n_id del cascarón desaparece
                         # del histórico (el único evento posterior es el CREADA/ACTUALIZADA bajo el
                         # n_id vigente) y no habría forma de medir cuántas veces disparó esta rama —
@@ -846,12 +851,19 @@ async def _procesar_botella_completa(
                     sesion, CromoSplitterPuerto, puerto, SPLITTER_PUERTO_CAMPOS
                 )
 
-            # Se marca SIEMPRE, haya o no splitters: el valor de la marca es poder afirmar "esta
-            # botella no tiene ninguno", que es lo que `empalmes.py` necesita para dejar de
-            # inventarlos con la heurística.
-            fila_botella = await sesion.get(CromoBotella, arbol.botella.n_id)
-            if fila_botella is not None:
-                fila_botella.splitters_relevados = True
+            # La marca se pone cuando el payload TRAJO el árbol, haya o no splitters adentro: su
+            # valor es poder afirmar "se miró y esta botella no tiene ninguno", que es lo que
+            # `empalmes.py` necesita para dejar de inventarlos con la heurística.
+            #
+            # Condicionarla a `inner` no es defensivo, es la diferencia entre afirmar y no afirmar:
+            # `fase_botellas` barre con `show=["SHOW","REL_ATTRIBUTE","TIME"]`, y eso **no** trae
+            # `inner[]` (medido 2026-09-17 contra Cromo real: 0 de 10 botellas; sólo `ALL` lo trae).
+            # Marcar igual dejaría las ~11.000 botellas declaradas "sin splitters" en la primera
+            # corrida completa, apagando la heurística en todo el inventario sin reemplazo.
+            if payload_arbol.get("inner") is not None:
+                fila_botella = await sesion.get(CromoBotella, arbol.botella.n_id)
+                if fila_botella is not None:
+                    fila_botella.splitters_relevados = True
 
             for error in arbol.errores:
                 contadores.errores += 1

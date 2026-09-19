@@ -538,6 +538,48 @@ async def test_procesar_botella_completa_con_fixture_real():
 
 
 @pytest.mark.asyncio
+async def test_procesar_botella_completa_no_marca_relevado_si_el_payload_no_trajo_inner():
+    """La marca es un hecho del payload, no del recorrido.
+
+    `fase_botellas` barre con `show=["SHOW","REL_ATTRIBUTE","TIME"]`, y eso **no** trae `inner[]`
+    (medido 2026-09-17 contra Cromo real: 0 de 10 botellas; sólo `show=["ALL"]` lo trae). Marcar
+    igual equivale a afirmar "Cromo dice que esta botella no tiene splitters", que es justo lo que
+    `empalmes.py` usa para apagar la heurística de fan-out en toda la botella.
+    """
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    sin_arbol = {clave: valor for clave, valor in obj.items() if clave != "inner"}
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=sin_arbol, contadores=contadores
+    )
+
+    botella = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert not botella.splitters_relevados
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_marca_relevado_cuando_el_payload_trajo_el_arbol():
+    """El contrapeso del test anterior: con `inner[]` presente la marca sí corresponde.
+
+    El fixture tiene `inner` con una fusión y ningún splitter — y ese es exactamente el caso que la
+    marca existe para representar: "se miró el árbol y no hay splitters acá".
+    """
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    assert obj.get("inner"), "el fixture debe traer el arbol para que este test signifique algo"
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
+
+    botella = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert botella.splitters_relevados
+
+
+@pytest.mark.asyncio
 async def test_procesar_botella_completa_crea_copia_nombre_con_flag_false_por_defecto():
     obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
     sesion = _SesionFake()
@@ -783,6 +825,50 @@ async def test_procesar_botella_completa_usa_objeto_vigente_de_la_cadena_en_vez_
     assert [c.n_id for c in cables] == [7001]
     assert {cables[0].extremo_a_n_id, cables[0].extremo_b_n_id} == {6001, 8001}
     assert cliente.pedidos == [5001, 6001]
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_marca_relevado_segun_el_payload_del_arbol_procesado():
+    """En la redirección por "ID dual" el árbol viene de OTRO payload que el del barrido.
+
+    El cascarón no trae `inner[]`; el objeto vigente sí. Lo que se relevó es el árbol del vigente,
+    así que la marca corresponde — consultar el cascarón daría la respuesta de un payload que no es
+    el que se procesó. `inner: []` es deliberado: "vino el árbol y está vacío" es exactamente el
+    caso que la marca existe para poder afirmar.
+    """
+    obj = _cascaron_sin_topologia(5001)
+    assert "inner" not in obj, "el cascaron no debe traer arbol, si no el test no discrimina nada"
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteTopologiaFake(
+        {
+            5001: {
+                "n_id": 5001,
+                "id": 5001,
+                "class": 68,
+                "vmax": 1,
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+            },
+            6001: {
+                "n_id": 6001,
+                "id": 6001,
+                "class": 68,
+                "vmax": 2,
+                "name": "BOT interna Hotel Nuevo fondo Posadas 1557",
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+                # `tp` es lo que marca a un objeto de la cadena como vigente
+                # (`_resolver_posible_id_dual`), sin el la redireccion no dispara.
+                "tp": [_cable_embebido(7001, botella_n_id=6001, otro_extremo=8001)],
+                "inner": [],
+            },
+        }
+    )
+
+    await ingesta._procesar_botella_completa(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    botella = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert botella.n_id == 6001
+    assert botella.splitters_relevados
 
 
 def _cliente_cadena_5001_a_6001() -> _ClienteTopologiaFake:
