@@ -637,3 +637,74 @@ class CromoSplitterPuerto(Base):
 
     def __repr__(self) -> str:
         return f"<CromoSplitterPuerto n_id={self.n_id} {self.nombre!r} {self.sentido!r}>"
+
+
+class CromoPonElemento(Base):
+    """Elemento raíz de la red de acceso PON ingerido desde Cromo: caja PON y roseta.
+
+    **Una sola tabla para ocho clases** (84, 126, 127, 137, 138, 139, 140 = caja PON; 85 = roseta),
+    discriminadas por `clase`. No es una simplificación: el esquema medido contra Cromo real
+    (2026-09-19) es idéntico en las ocho — todas son objetos raíz (`parent=None`), todas traen
+    `ll`/`pts`/`vmax`, y todas publican los mismos `at`. Ocho tablas serían ocho copias del mismo
+    DDL con ocho modelos y ocho consultas de inventario.
+
+    Lo que separa una caja PON de una roseta no es el esquema sino `cromo_clases.entidad`
+    (`'CAJA_PON'` vs `'ROSETA'`), que es de donde `camino_optico_service._tipo_de_clase` ya saca la
+    etiqueta del nodo. Cada vista de inventario filtra por su lista de clases.
+
+    Contrapartida asumida: el nombre de la tabla no coincide con ninguno de los dos conceptos que
+    ve el operador. Si algún día una de las dos necesita columnas propias, el split es un
+    `CREATE TABLE AS SELECT`, mucho más barato que mantener dos tablas hoy para nada.
+
+    Versionado (`version_id`/`vmax`) igual que `CromoOdf`, por dos razones concretas: `vmax` deja
+    que `upsert_versionado` distinga CREADA/ACTUALIZADA/SIN_CAMBIOS y alimente los contadores de la
+    corrida, y `version_id` es lo que habilita la segunda pasada de
+    `camino_optico_service._vincular_local` — sin él, un nodo de `/path` que llega identificado por
+    su id de versión nunca vincula con la fila local.
+
+    `capacidad_puertos` (`at.46`), `tipo_conector` (`at.40`) y `propietario` (`at.47`) tienen
+    columna propia porque se midieron y significan algo: sobre 81 objetos reales `at.46` tomó sólo
+    los valores 8, 16 y 4, y `at.40` sólo "Fast connect", "Easy Connect", "Conector de campo" y
+    "Con casquillo". En cambio `at.45` fue constante ("SI" en los 81) y `at.203` devolvió valores
+    incoherentes entre sí ("00000", "0", "115124", "90933"): no se les inventa semántica, quedan
+    en `payload_raw` hasta que alguien los entienda.
+    """
+
+    __tablename__ = "cromo_pon_elementos"
+    __table_args__ = (
+        # Mismo criterio que `ix_cromo_odfs_nombre_btree` / `ix_cromo_botellas_nombre_btree`:
+        # índice btree explícito y nombrado para la cascada ILIKE/tokens del buscador.
+        Index("ix_cromo_pon_elementos_nombre_btree", "nombre"),
+        Index("ix_cromo_pon_elementos_clase", "clase"),
+        Index("ix_cromo_pon_elementos_localidad", "localidad"),
+        {"schema": "app"},
+    )
+
+    n_id = Column(BigInteger, primary_key=True)
+    version_id = Column(BigInteger, nullable=False)  # 'id' de la versión vigente en Cromo
+    vmax = Column(Integer, nullable=False)  # detector de cambios
+    clase = Column(SmallInteger, ForeignKey("app.cromo_clases.clase"), nullable=False)
+    nombre = Column(Text, nullable=True)  # at.34
+    codigo_modelo = Column(Text, nullable=True)  # at.41, ej. "FASTCONNET8"
+    id_legacy = Column(Text, nullable=True)  # at.91
+    notas = Column(Text, nullable=True)  # at.35 (a veces una URL de Trello, texto libre real)
+    calle = Column(Text, nullable=True)  # at.67
+    altura = Column(Text, nullable=True)  # at.16
+    localidad = Column(Text, nullable=True)  # at.68
+    provincia = Column(Text, nullable=True)  # at.69
+    ubicacion_fisica = Column(Text, nullable=True)  # at.118
+    tendido = Column(Text, nullable=True)  # at.20, ej. "Aereo"/"Terraza"
+    propietario = Column(Text, nullable=True)  # at.47, ej. "Metrotel"
+    tipo_conector = Column(Text, nullable=True)  # at.40, ej. "Fast connect"
+    capacidad_puertos = Column(SmallInteger, nullable=True)  # at.46, medido: 4, 8 o 16
+    latitud = Column(Float, nullable=True)
+    longitud = Column(Float, nullable=True)
+    pts_raw = Column(JSONB(astext_type=Text()), nullable=True)
+    payload_raw = Column(JSONB(astext_type=Text()), nullable=False)
+    vigente = Column(Boolean, nullable=False, server_default=true())
+    primera_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    ultima_ingesta = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    ultima_modificacion = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<CromoPonElemento n_id={self.n_id} clase={self.clase} nombre={self.nombre!r}>"
