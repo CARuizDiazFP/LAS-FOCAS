@@ -122,21 +122,19 @@
       <form @submit.prevent="onDisparar">
         <label>Alcance de la corrida</label>
         <select v-model="modo" :disabled="disparando || corridaActiva">
-          <option value="COMPLETA">Completa (cables + botellas + fusiones + ODFs)</option>
-          <option value="SOLO_ODF">Sólo ODFs (clase 69, salta el resto)</option>
+          <option v-for="m in CROMO_MODOS_INGESTA_INFO" :key="m.valor" :value="m.valor">
+            {{ m.etiqueta }}
+          </option>
         </select>
-        <p class="hint">
-          "Sólo ODFs" ignora la selección de clases de abajo y corre únicamente la fase de ODFs —
-          útil para una sincronización acotada sin tocar cables/botellas/fusiones.
-        </p>
+        <p class="hint">{{ modoActual.hint }}</p>
 
         <label>Clases de botella a incluir</label>
         <div class="clases-grid">
-          <label v-for="c in CROMO_CATALOGO_BOTELLAS" :key="c.clase" class="clase-check" :class="{ 'clase-check--inactiva': modo === 'SOLO_ODF' }">
+          <label v-for="c in CROMO_CATALOGO_BOTELLAS" :key="c.clase" class="clase-check" :class="{ 'clase-check--inactiva': !modoActual.usaClasesBotella }">
             <input
               type="checkbox"
               :checked="clasesSeleccionadas.has(c.clase)"
-              :disabled="disparando || corridaActiva || modo === 'SOLO_ODF'"
+              :disabled="disparando || corridaActiva || !modoActual.usaClasesBotella"
               @change="toggleClase(c.clase)"
             />
             <span>{{ c.clase }}<template v-if="c.etiqueta"> · {{ c.etiqueta }}</template></span>
@@ -247,6 +245,7 @@
           <tr>
             <th>ID</th>
             <th>Usuario</th>
+            <th>Alcance</th>
             <th>Estado</th>
             <th>Leídas</th>
             <th>Creadas</th>
@@ -260,6 +259,7 @@
           <tr v-for="c in historico" :key="c.id" class="tabla-historico__fila" @click="verDetalle(c.id)">
             <td>{{ c.id }}</td>
             <td>{{ c.usuario }}</td>
+            <td class="celda-alcance">{{ alcanceDeCorrida(c) }}</td>
             <td><span class="ingesta-card__chip" :class="`ingesta-card__chip--${estadoClase(c.estado)}`">{{ c.estado }}</span></td>
             <td>{{ c.leidas }}</td>
             <td>{{ c.creadas }}</td>
@@ -306,6 +306,7 @@ import AdminPageHeader from '../components/AdminPageHeader.vue';
 import {
   CROMO_CATALOGO_BOTELLAS,
   CROMO_CLASE_EXCLUIDA,
+  CROMO_MODOS_INGESTA_INFO,
   CROMO_PSIZE_OPCIONES,
   cancelarIngestaCromo,
   dispararSchedulerCromo,
@@ -329,7 +330,15 @@ const psize = ref<CromoPsize>(5);
 const maxPaginasInput = ref('');
 const modo = ref<CromoModoIngesta>('COMPLETA');
 
-const puedeDisparar = computed(() => modo.value === 'SOLO_ODF' || clasesSeleccionadas.value.size > 0);
+// El modo elegido, resuelto contra el catálogo. Si el valor guardado no existe (un modo retirado
+// del catálogo entre dos despliegues) se cae al primero en vez de dejar la vista sin hint ni
+// condición de clases.
+const modoActual = computed(
+  () => CROMO_MODOS_INGESTA_INFO.find((m) => m.valor === modo.value) ?? CROMO_MODOS_INGESTA_INFO[0],
+);
+const puedeDisparar = computed(
+  () => !modoActual.value.usaClasesBotella || clasesSeleccionadas.value.size > 0,
+);
 
 const disparando = ref(false);
 const cancelando = ref(false);
@@ -384,6 +393,18 @@ function estadoClase(estado: string): string {
   if (estado === 'OK_CON_ERRORES') return 'warn';
   if (estado === 'CANCELADA') return 'warn';
   return 'err';
+}
+
+function alcanceDeCorrida(c: CromoCorrida): string {
+  // `params.modo` ya viajaba en el JSON desde 2026-08-28 y ninguna pantalla lo mostraba. Con dos
+  // modos se podía adivinar; con siete, una fila del histórico sin alcance no se puede interpretar.
+  // Una corrida sin `modo` es COMPLETA (así se persiste: el modo sólo se guarda cuando difiere).
+  const modoCorrida = typeof c.params?.modo === 'string' ? c.params.modo : 'COMPLETA';
+  // Las corridas sintéticas de mantenimiento usan `tipo` en vez de `modo` y aparecen en la misma
+  // tabla; mostrar su tipo es más útil que etiquetarlas todas como "Completa".
+  const tipo = typeof c.params?.tipo === 'string' ? c.params.tipo : null;
+  if (tipo) return tipo;
+  return CROMO_MODOS_INGESTA_INFO.find((m) => m.valor === modoCorrida)?.etiqueta ?? modoCorrida;
 }
 
 function formatFecha(iso: string | null): string {
@@ -474,7 +495,7 @@ async function onDisparar(): Promise<void> {
     const { corrida_id } = await iniciarIngestaCromo({
       psize: psize.value,
       maxPaginas,
-      clases: modo.value === 'SOLO_ODF' ? [] : Array.from(clasesSeleccionadas.value),
+      clases: modoActual.value.usaClasesBotella ? Array.from(clasesSeleccionadas.value) : [],
       modo: modo.value,
     });
     corridaActual.value = {
@@ -698,6 +719,12 @@ onUnmounted(() => {
   color: var(--error);
   background: color-mix(in srgb, var(--error) 18%, transparent);
   border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+.celda-alcance {
+  color: var(--muted);
+  font-size: 0.82rem;
+  max-width: 22ch;
 }
 
 .clases-grid {

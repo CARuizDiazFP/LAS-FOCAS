@@ -73,11 +73,76 @@ export const CROMO_CLASE_EXCLUIDA = {
   motivo: 'Parcela catastral, no es planta de FO — nunca se ingiere.',
 };
 
-/** Modo de corrida (2026-08-28, submódulo ODFs): `'COMPLETA'` corre la secuencia de siempre +
- * ODFs incondicional; `'SOLO_ODF'` corre únicamente la fase de ODFs, ignorando `clases`. Validado
- * en el backend contra `_MODOS_INGESTA_VALIDOS` — mismo criterio simple que el resto del payload. */
-export const CROMO_MODOS_INGESTA = ['COMPLETA', 'SOLO_ODF'] as const;
-export type CromoModoIngesta = (typeof CROMO_MODOS_INGESTA)[number];
+/** Alcance de una corrida de ingesta.
+ *
+ * Antes eran dos modos y la vista los tenía hardcodeados como `<option>`, con tres comparaciones
+ * literales a `'SOLO_ODF'` dispersas por el template y el script. Con siete, cada modo nuevo sería
+ * otra comparación más que olvidarse de agregar: por eso el catálogo es dato y la vista lo itera.
+ * Agregar un modo pasa a ser una fila acá.
+ *
+ * `usaClasesBotella` es la única condición que la vista necesita: dice si la grilla de clases de
+ * botella aplica a este modo o si hay que ignorarla y mandarla vacía.
+ *
+ * El backend valida contra `core.services.cromo.ingesta.MODOS_INGESTA`, que se deriva de la tabla
+ * que declara qué fase corre cada modo. Esta lista tiene que decir lo mismo.
+ *
+ * Duraciones medidas contra Cromo real el 2026-09-19, para que el operador sepa en qué se mete
+ * antes de apretar el botón: ninguna de las de la red de acceso entra en "Completa".
+ */
+export interface CromoModoInfo {
+  valor: string;
+  etiqueta: string;
+  hint: string;
+  usaClasesBotella: boolean;
+}
+
+export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
+  {
+    valor: 'COMPLETA',
+    etiqueta: 'Completa (cables + botellas + fusiones + ODFs)',
+    hint: 'La secuencia de siempre. No incluye ninguna clase de la red de acceso PON: sumarlas convertiría una corrida de rutina en una de varias horas.',
+    usaClasesBotella: true,
+  },
+  {
+    valor: 'SOLO_ODF',
+    etiqueta: 'Sólo ODFs (clase 69)',
+    hint: 'Corre únicamente la fase de ODFs, sin tocar cables, botellas ni fusiones. ~35 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_SPLITTERS',
+    etiqueta: 'Sólo splitters (clase 133)',
+    hint: '20.238 splitters de toda la red, no sólo los que cuelgan de una botella: el 88 % cuelga de una caja PON y por la vía del árbol de botella eran invisibles. ~22 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_PUERTOS_SPLITTER',
+    etiqueta: 'Sólo puertos de splitter (clase 134)',
+    hint: '154.284 puertos, ~91 min. Aporta nombre, sentido y de qué splitter cuelga cada puerto; la ocupación por servicio NO se releva por esta vía.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_CAJAS_PON',
+    etiqueta: 'Sólo cajas PON (7 clases)',
+    hint: '13.482 cajas PON de las clases 84, 126, 127, 137, 138, 139 y 140 — las cinco últimas no existían en el catálogo hasta ahora. ~75 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_ROSETAS',
+    etiqueta: 'Sólo rosetas (clase 85)',
+    hint: '17.348 rosetas. No aparecen en los recorridos de camino óptico —el recorrido termina en la caja PON— pero la colección existe. ~23 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_CABLES_BAJADA',
+    etiqueta: 'Sólo cables de bajada (clase 66)',
+    hint: '19.030 cables de bajada. Van a la misma tabla que los de FO, distinguidos por clase. ~32 min.',
+    usaClasesBotella: false,
+  },
+];
+
+export const CROMO_MODOS_INGESTA = CROMO_MODOS_INGESTA_INFO.map((m) => m.valor);
+export type CromoModoIngesta = (typeof CROMO_MODOS_INGESTA_INFO)[number]['valor'];
 
 export async function iniciarIngestaCromo(opciones: {
   psize: CromoPsize;
