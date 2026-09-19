@@ -48,6 +48,12 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Fallback Docker: `docker compose -f deploy/compose.yml up -d|build|logs -f`
 - Tests: `pytest`, `pytest -v -k "<filtro>"`, `pytest tests/test_sla_module.py`
 - Para evitar llamadas reales a LLM en tests: `LLM_PROVIDER=heuristic pytest -q`
+- Los tests de integración (`*_real_db.py`, rutas de Servicios) se **saltean solos** si no hay un
+  Postgres respondiendo: `pytest` a secas queda verde pero no los corre. Para correrlos de verdad
+  contra el Postgres de dev (publicado en `127.0.0.1:5433`, el `5432` es producción):
+  `POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev POSTGRES_USER=FOCALBOT \
+  POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" pytest`. El host `postgres` del
+  compose no resuelve desde fuera de la red de Docker. Guard: `tests/soporte_postgres_real.py`.
 - Cobertura esperada para módulos nuevos: al menos 60%
 - Migraciones: `ALEMBIC_URL="..." alembic upgrade head`
 

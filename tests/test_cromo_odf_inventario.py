@@ -9,6 +9,7 @@ from typing import Any, Optional
 import pytest
 
 from core.services.cromo import odf_inventario
+from core.services.cromo.verificador import CABLES_ASOCIADOS_ARRAY_SQL
 
 
 class _ResultadoFake:
@@ -200,7 +201,10 @@ async def test_buscar_odfs_filtro_servicio_no_correlacionado():
     assert "p.cable_n_id IN (\n                  SELECT (jsonb_array_elements_text" not in texto
     assert "SELECT p.cable_n_id" in texto
     assert "FROM app.cromo_pelos p" in texto
-    assert "jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)) AS cable_id_texto" in texto
+    # El guard dejó de ser `COALESCE` (2026-09-19): sólo cubría SQL NULL y una fila con el escalar
+    # JSON `null` reventaba la query entera — ver `CABLES_ASOCIADOS_ARRAY_SQL` en `verificador.py` y
+    # los tests de `test_cromo_odf_inventario_real_db.py`.
+    assert f"jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}) AS cable_id_texto" in texto
     assert "cable_id_texto::bigint IN (" in texto
 
 

@@ -250,7 +250,15 @@ class CromoOdf(Base):
     ultima_modificacion = Column(DateTime(timezone=True), nullable=True)
     propietario = Column(Text, nullable=True)  # at.47 en Cromo, ej. "Metrotel"
     tipo_elemento = Column(Text, nullable=False, server_default="SIN_CLASIFICAR")  # CHECK en la migración
-    cables_asociados = Column(JSONB(astext_type=Text()), nullable=True)  # n_ids de cables (tp[]), lo llena el parser
+    # `none_as_null=True` (2026-09-19): `parser.parse_odf` deja `None` cuando el payload de Cromo no
+    # trae `tp`, y sin esto SQLAlchemy lo serializa como el escalar JSON `'null'` en vez de SQL NULL.
+    # Eso fabricaba filas que `jsonb_array_elements_text` no puede desenrollar (176 reales en dev,
+    # ver `CABLES_ASOCIADOS_ARRAY_SQL` en `core/services/cromo/verificador.py`). La distinción de
+    # negocio que el parser quiere expresar — `None` "Cromo no mandó `tp`" vs `[]` "mandó `tp` sin
+    # cables" — se conserva igual, ahora como SQL NULL vs `'[]'::jsonb`.
+    cables_asociados = Column(
+        JSONB(astext_type=Text(), none_as_null=True), nullable=True
+    )  # n_ids de cables (tp[]), lo llena el parser
 
     def __repr__(self) -> str:
         return f"<CromoOdf n_id={self.n_id} nombre='{self.nombre}'>"

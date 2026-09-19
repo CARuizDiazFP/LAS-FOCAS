@@ -14,6 +14,11 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Guard compartido para desenrollar `cromo_odfs.cables_asociados`, que puede no ser un array (ver el
+# comentario largo junto a la constante en `verificador.py`). Se importa en vez de duplicarse para
+# que los cuatro usos no puedan divergir.
+from core.services.cromo.verificador import CABLES_ASOCIADOS_ARRAY_SQL
+
 
 @dataclass(slots=True)
 class OdfInventario:
@@ -59,7 +64,7 @@ class ResultadoBusquedaOdfs:
 # array JSONB ya expandido de esa fila, no re-ejecuta el join. Mismo patrón, adaptado de `c.n_id IN
 # (subquery)` a un `EXISTS` porque acá el lado ODF es un array (potencialmente varios cables por fila),
 # no una columna escalar.
-_FILTROS_SQL = """
+_FILTROS_SQL = f"""
     WHERE (CAST(:q AS text) IS NULL OR o.nombre ILIKE CAST(:q AS text))
       AND (CAST(:n_id AS bigint) IS NULL OR o.n_id = CAST(:n_id AS bigint))
       AND (CAST(:vigente AS boolean) IS NULL OR o.vigente = CAST(:vigente AS boolean))
@@ -68,7 +73,7 @@ _FILTROS_SQL = """
         CAST(:servicio AS text) IS NULL
         OR EXISTS (
             SELECT 1
-            FROM jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)) AS cable_id_texto
+            FROM jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}) AS cable_id_texto
             WHERE cable_id_texto::bigint IN (
                 SELECT p.cable_n_id
                 FROM app.cromo_pelos p
@@ -93,7 +98,7 @@ _SQL_BUSCAR = text(
         o.cables_asociados,
         (
             SELECT count(DISTINCT m.servicio_id)
-            FROM jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)) AS cable_id_texto
+            FROM jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}) AS cable_id_texto
             JOIN app.cromo_pelos p ON p.cable_n_id = cable_id_texto::bigint
             JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
             WHERE m.servicio_id IS NOT NULL

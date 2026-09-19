@@ -35,7 +35,6 @@ real de Cromo (`n_id` real observado: 6.6M–10.3M) y sin colisionar con el `999
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 from sqlalchemy import text
@@ -57,11 +56,11 @@ from core.services.cromo.servicios_sin_odf import (
     sugerencia_odf_para_servicio,
 )
 from db.session import SessionLocal, async_engine
+from tests.soporte_postgres_real import requiere_postgres_real
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("CI") == "true",
-    reason="requiere Postgres real alcanzable; el workflow de CI no tiene ese servicio configurado",
-)
+# Guard compartido (2026-09-19): saltea en CI Y en cualquier máquina sin un Postgres respondiendo,
+# con un motivo que dice cómo habilitarlos. Ver `tests/soporte_postgres_real.py`.
+pytestmark = requiere_postgres_real
 
 _engine_test = create_async_engine(
     async_engine.url.render_as_string(hide_password=False), poolclass=NullPool

@@ -20,7 +20,6 @@ módulo. Un mock nunca lo detecta porque nunca prepara un statement real.
 
 from __future__ import annotations
 
-import os
 
 import pytest
 from sqlalchemy import text
@@ -28,11 +27,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from db.session import SessionLocal, async_engine
+from tests.soporte_postgres_real import requiere_postgres_real
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("CI") == "true",
-    reason="requiere Postgres real alcanzable; el workflow de CI no tiene ese servicio configurado",
-)
+# Guard compartido (2026-09-19): saltea en CI Y en cualquier máquina sin un Postgres respondiendo,
+# con un motivo que dice cómo habilitarlos. Ver `tests/soporte_postgres_real.py`.
+pytestmark = requiere_postgres_real
 
 # `db.session.AsyncSessionLocal` está atado al pool singleton `db.session.async_engine`
 # (`AsyncAdaptedQueuePool`, un proceso = un pool), pero acá cada test async corre en su propio event
@@ -282,3 +281,130 @@ async def test_servicios_por_odf_resuelve_servicio_via_pelos_y_match_real(odf_co
     assert len(resultado.servicios) == 1
     assert resultado.servicios[0].numero_primer_servicio == _SERVICIO_NUMERO
     assert resultado.servicios[0].servicio_numero_match == _SERVICIO_NUMERO
+
+
+# ── cables_asociados como escalar JSON `null` — regresión 2026-09-19 ─────────
+#
+# Bug real encontrado corriendo la suite contra `lasfocasdev-postgres`: 176 de 7.916 filas de
+# `app.cromo_odfs` tienen `cables_asociados` guardado como el escalar JSON `null`, NO como SQL NULL.
+# Origen: `parser.parse_odf` deja `cables_asociados=None` a propósito cuando el payload de Cromo no
+# trae `tp` en absoluto (distinto de `[]`, que es "vino `tp` pero ningún item era cable), y la
+# columna `JSONB` del modelo serializaba ese `None` de Python como `'null'::jsonb`. Las 176 filas
+# son exactamente las que no tienen `tp` en `payload_raw` (0 de discrepancia, medido en dev).
+#
+# Consecuencia: `COALESCE(o.cables_asociados, '[]'::jsonb)` NO las cubre (la columna no es SQL NULL,
+# así que el COALESCE devuelve el `'null'` tal cual) y `jsonb_array_elements_text('null'::jsonb)`
+# revienta con `InvalidParameterValueError: cannot extract elements from a scalar`. Cualquier
+# búsqueda de ODFs por Servicio moría con un 500, y `servicios_por_odf` moría para esos 176 ODFs.
+#
+# Este fixture reproduce la fila venenosa explícitamente en vez de depender de que la DB de dev
+# todavía tenga las 176: el test tiene que seguir fallando en una DB limpia si alguien revierte el
+# fix.
+_ODF_JSON_NULL_N_ID = 999_900_011
+
+
+@pytest.fixture
+def odf_con_cables_asociados_json_null():
+    """ODF cuya `cables_asociados` es el escalar JSON `null` (no SQL NULL, no `[]`)."""
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.cromo_odfs "
+                "(n_id, version_id, vmax, clase, nombre, tipo_elemento, cables_asociados, payload_raw) "
+                "VALUES (:n_id, 1, 1, 69, 'ODF Test jsonb null', 'ODF', 'null'::jsonb, '{}'::jsonb)"
+            ),
+            {"n_id": _ODF_JSON_NULL_N_ID},
+        )
+        session.commit()
+
+    # Sanity: la fila quedó realmente como escalar JSON `null`, que es lo que se quiere cubrir.
+    with SessionLocal() as session:
+        tipo = session.execute(
+            text("SELECT jsonb_typeof(cables_asociados) FROM app.cromo_odfs WHERE n_id = :n_id"),
+            {"n_id": _ODF_JSON_NULL_N_ID},
+        ).scalar_one()
+    assert tipo == "null"
+
+    try:
+        yield _ODF_JSON_NULL_N_ID
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                text("DELETE FROM app.cromo_odfs WHERE n_id = :n_id"), {"n_id": _ODF_JSON_NULL_N_ID}
+            )
+            session.commit()
+
+
+@pytest.mark.asyncio
+async def test_buscar_odfs_por_servicio_no_revienta_con_cables_asociados_json_null(
+    odf_con_cables_asociados_json_null,
+):
+    """El filtro `servicio` desenrolla `cables_asociados` de TODAS las filas candidatas, así que una
+    sola fila con el escalar JSON `null` tumbaba la búsqueda entera (no sólo esa fila)."""
+    from core.services.cromo.odf_inventario import buscar_odfs
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_odfs(sesion, servicio="servicio-que-no-existe-en-dev")
+
+    assert resultado.total == 0
+
+
+@pytest.mark.asyncio
+async def test_buscar_odfs_lista_el_odf_con_cables_asociados_json_null_como_cero_cables(
+    odf_con_cables_asociados_json_null,
+):
+    """Sin filtro de servicio la fila tiene que listarse igual, con 0 cables asociados — el escalar
+    JSON `null` es "Cromo no mandó `tp`", que es indistinguible de "sin cables" para el inventario."""
+    from core.services.cromo.odf_inventario import buscar_odfs
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_odfs(sesion, n_id=odf_con_cables_asociados_json_null)
+
+    assert resultado.total == 1
+    assert resultado.odfs[0].cantidad_cables_asociados == 0
+    assert resultado.odfs[0].cantidad_servicios == 0
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_odf_no_revienta_con_cables_asociados_json_null(
+    odf_con_cables_asociados_json_null,
+):
+    """`servicios_por_odf` desenrolla la misma columna en dos subqueries (`_SQL_SERVICIOS_POR_ODF` y
+    `_SQL_CABLES_DE_ODF`). Estado degradado esperado: listas vacías, nunca una excepción."""
+    from core.services.cromo.verificador import servicios_por_odf
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await servicios_por_odf(sesion, odf_con_cables_asociados_json_null)
+
+    assert resultado.odf_n_id == odf_con_cables_asociados_json_null
+    assert resultado.servicios == []
+    assert resultado.cables == []
+
+
+def test_modelo_guarda_none_como_sql_null_no_como_escalar_json_null():
+    """Corte del origen: un `None` de Python en `cables_asociados` tiene que llegar a Postgres como
+    SQL NULL. Sin `none_as_null=True` en la columna, SQLAlchemy lo serializa como `'null'::jsonb` y
+    vuelve a fabricar filas venenosas en cada ingesta de un ODF sin `tp`."""
+    from db.models.cromo import CromoOdf
+
+    with SessionLocal() as session:
+        try:
+            session.add(
+                CromoOdf(
+                    n_id=_ODF_JSON_NULL_N_ID,
+                    version_id=1,
+                    vmax=1,
+                    clase=69,
+                    nombre="ODF Test none_as_null",
+                    payload_raw={},
+                    cables_asociados=None,
+                )
+            )
+            session.flush()
+            tipo = session.execute(
+                text("SELECT jsonb_typeof(cables_asociados) FROM app.cromo_odfs WHERE n_id = :n_id"),
+                {"n_id": _ODF_JSON_NULL_N_ID},
+            ).scalar_one()
+            assert tipo is None, f"se guardó como escalar JSON {tipo!r} en vez de SQL NULL"
+        finally:
+            session.rollback()

@@ -212,6 +212,28 @@ _SQL_ODF_POR_N_ID = text(
     "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs WHERE n_id = :n_id"
 )
 
+# `cables_asociados` puede NO ser un array JSONB. `parser.parse_odf` deja `None` a propósito cuando
+# el payload de Cromo no trae `tp` en absoluto (distinto de `[]`, que es "vino `tp` pero ningún item
+# era un cable"), y hasta 2026-09-19 la columna serializaba ese `None` de Python como el escalar JSON
+# `'null'` — 176 de 7.916 filas reales de dev, exactamente las que no tienen `tp` en `payload_raw`.
+#
+# `COALESCE(o.cables_asociados, '[]'::jsonb)` NO alcanza como guard: sólo cubre SQL NULL, así que el
+# escalar `'null'` pasa entero y `jsonb_array_elements_text` corta la query con
+# `InvalidParameterValueError: cannot extract elements from a scalar` (reproducido real contra
+# `lasfocasdev-postgres`). El `CASE` sobre `jsonb_typeof` cubre todos los casos de una — SQL NULL
+# (`jsonb_typeof` devuelve NULL), el escalar `'null'`, y cualquier número/string/objeto que Cromo
+# llegara a mandar — y garantiza que el desenrollado siempre reciba un array.
+#
+# El origen quedó cortado con `none_as_null=True` en `CromoOdf.cables_asociados` (un `None` nuevo ya
+# se guarda como SQL NULL), pero las filas viejas siguen en la tabla: este guard es el que las hace
+# inofensivas, y por eso va en los cuatro usos, no sólo en el que disparó el bug.
+#
+# Alias `o` porque los cuatro usos (dos acá, dos en `odf_inventario.py`) nombran así a
+# `app.cromo_odfs`. Se comparte como constante justamente para que no puedan divergir de nuevo.
+CABLES_ASOCIADOS_ARRAY_SQL = (
+    "CASE WHEN jsonb_typeof(o.cables_asociados) = 'array' THEN o.cables_asociados ELSE '[]'::jsonb END"
+)
+
 # `cables_asociados` es JSONB (lista de n_ids de cable, sin FK dura — ver docstring de `CromoOdf`),
 # no una columna que se pueda usar directo en un JOIN: se unnest con `jsonb_array_elements_text` en
 # un subquery correlacionado al propio ODF. A diferencia de `_SQL_SERVICIOS_POR_BOTELLA`
@@ -225,7 +247,7 @@ _SQL_SERVICIOS_POR_ODF = text(
     JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.cable_n_id IN (
-        SELECT (jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)))::bigint
+        SELECT (jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}))::bigint
         FROM app.cromo_odfs o
         WHERE o.n_id = :odf_n_id
     )
@@ -237,7 +259,7 @@ _SQL_SERVICIOS_POR_ODF = text(
 # sólo sobre los cables que este ODF referencia en `cables_asociados` (siempre pocos), no sobre todo
 # `cromo_cables`.
 _SQL_CABLES_DE_ODF = text(
-    """
+    f"""
     SELECT c.n_id, c.nombre,
         (
             SELECT count(DISTINCT m.servicio_id)
@@ -247,7 +269,7 @@ _SQL_CABLES_DE_ODF = text(
         ) AS cantidad_servicios
     FROM app.cromo_cables c
     WHERE c.n_id IN (
-        SELECT (jsonb_array_elements_text(COALESCE(o.cables_asociados, '[]'::jsonb)))::bigint
+        SELECT (jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}))::bigint
         FROM app.cromo_odfs o
         WHERE o.n_id = :odf_n_id
     )
