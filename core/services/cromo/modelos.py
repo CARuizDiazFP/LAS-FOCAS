@@ -41,6 +41,10 @@ class Cable:
     n_id: int
     version_id: Optional[int]
     vmax: Optional[int]
+    # 51 (cable de FO) o 66 (cable de bajada de la red PON). Comparten esquema y parser —los `at`
+    # son los mismos, medido— pero no se mezclan: un cable de bajada tiene sus extremos en cajas PON
+    # y rosetas, no en botellas, así que la fase de reconciliación tiene que poder excluirlo.
+    clase: Optional[int]
     nombre: Optional[str]
     capacidad: Optional[str]
     capacidad_pelos: Optional[int]
@@ -143,6 +147,41 @@ class ConectorOdf:
 
 
 @dataclass(slots=True)
+class PonElemento:
+    """Elemento raíz de la red de acceso PON: caja PON (84, 126, 127, 137, 138, 139, 140) o roseta
+    (85). Una sola dataclass para las ocho clases porque el esquema medido es idéntico; lo que las
+    distingue es `cromo_clases.entidad`, no la forma del payload.
+
+    `capacidad_puertos` sale de `at.46`, que sobre 81 objetos reales tomó sólo los valores 8, 16 y
+    4; `tipo_conector` de `at.40` ("Fast connect", "Easy Connect", "Conector de campo", "Con
+    casquillo"). Los `at` 45 y 203 no tienen campo: el primero fue constante y el segundo
+    incoherente, así que viajan en `payload_raw` sin que se les invente significado.
+    """
+
+    n_id: int
+    version_id: Optional[int]
+    vmax: Optional[int]
+    clase: Optional[int]
+    nombre: Optional[str]
+    codigo_modelo: Optional[str]
+    id_legacy: Optional[str]
+    notas: Optional[str]
+    calle: Optional[str]
+    altura: Optional[str]
+    localidad: Optional[str]
+    provincia: Optional[str]
+    ubicacion_fisica: Optional[str]
+    tendido: Optional[str]
+    propietario: Optional[str]
+    tipo_conector: Optional[str]
+    capacidad_puertos: Optional[int]
+    latitud: Optional[float]
+    longitud: Optional[float]
+    pts_raw: Optional[list]
+    payload_raw: dict
+
+
+@dataclass(slots=True)
 class Splitter:
     """Splitter óptico (class 133). Cuelga de `botella.inner[]`, igual que las fusiones.
 
@@ -209,6 +248,7 @@ __all__ = [
     "Tubo",
     "Pelo",
     "Fusion",
+    "PonElemento",
     "Splitter",
     "PuertoSplitter",
 ]

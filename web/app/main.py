@@ -5168,10 +5168,12 @@ class CromoSchedulerConfigRequest(BaseModel):
     clases: List[int]
 
 
-# Task 3 (submódulo ODFs): valores aceptados de `CromoIngestaIniciarRequest.modo`. `None` (el
-# request no lo mandó) es válido y equivale a "COMPLETA" — sólo se rechaza un string que no sea
-# ninguno de estos dos.
-_MODOS_INGESTA_VALIDOS = ("COMPLETA", "SOLO_ODF")
+# Los valores aceptados de `CromoIngestaIniciarRequest.modo` ya no viven acá: son
+# `core.services.cromo.ingesta.MODOS_INGESTA`, derivados de la tabla `MODOS_ACOTADOS` que declara
+# qué fase corre cada modo. Con siete modos, una lista duplicada es una lista que se desincroniza, y
+# el síntoma sería un 400 sobre un modo que el frontend sí ofrece.
+#
+# El import es local al handler, como el resto de los imports de Cromo en este archivo.
 
 # Etapa 7: la ingesta corre en su propio worker Docker (modules/cromo_worker/), no en este proceso.
 _CROMO_WORKER_BASE_URL = os.getenv("CROMO_WORKER_BASE_URL", "http://cromo_worker:8096")
@@ -5213,7 +5215,7 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
     """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Crea la corrida acá (para devolver
     el `corrida_id` de inmediato) y delega su ejecución al worker dedicado (Etapa 7)."""
     from core.services.cromo.config import CromoConfigError, PSIZE_PERMITIDOS, get_cromo_config
-    from core.services.cromo.ingesta import CLASES_BOTELLA, iniciar_corrida
+    from core.services.cromo.ingesta import CLASES_BOTELLA, MODOS_INGESTA, iniciar_corrida
     from db.session import AsyncSessionLocal
 
     username = _require_admin(request)
@@ -5225,9 +5227,9 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
             {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
         )
 
-    if body.modo is not None and body.modo not in _MODOS_INGESTA_VALIDOS:
+    if body.modo is not None and body.modo not in MODOS_INGESTA:
         return JSONResponse(
-            {"error": f"modo inválido. Valores permitidos: {sorted(_MODOS_INGESTA_VALIDOS)}"}, status_code=400
+            {"error": f"modo inválido. Valores permitidos: {sorted(MODOS_INGESTA)}"}, status_code=400
         )
 
     try:

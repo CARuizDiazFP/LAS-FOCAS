@@ -18,6 +18,7 @@ from core.services.cromo.modelos import (
     Fusion,
     Odf,
     Pelo,
+    PonElemento,
     PuertoSplitter,
     Splitter,
     Tubo,
@@ -371,6 +372,58 @@ def parse_botella(obj: Mapping[str, Any]) -> Botella:
     )
 
 
+_AT_PON_TIPO_CONECTOR = 40    # "Fast connect", "Easy Connect", "Conector de campo"
+_AT_PON_CAPACIDAD = 46        # "8" / "16" / "4" — medido sobre 81 objetos reales
+_AT_PON_PROPIETARIO = 47      # "Metrotel", "MB", "FANS"
+
+
+def _entero_o_none(valor: Optional[str]) -> Optional[int]:
+    """Mismo criterio que `salidas_de_ratio`: ante un valor que no se entiende, `None`.
+
+    Inventar un 0 sería peor que no saber — 0 puertos es una afirmación, y acá no la tenemos.
+    """
+    if valor is None:
+        return None
+    try:
+        return int(str(valor).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_pon_elemento(obj: Mapping[str, Any]) -> PonElemento:
+    """Parsea un elemento raíz de la red de acceso PON: caja PON o roseta.
+
+    El mapeo de dirección/nombre es **el mismo que `parse_botella`** (at 34, 41, 91, 35, 67, 16, 68,
+    69, 118, 20), verificado contra las ocho clases: por eso se reusa en vez de reinventarlo. Lo
+    propio de una caja PON son `at.40`/`at.46`/`at.47`; una roseta simplemente no los trae y quedan
+    en `None`.
+    """
+    latitud, longitud = _resolver_geo(obj)
+    return PonElemento(
+        n_id=_resolver_n_id(obj),
+        version_id=obj.get("id"),
+        vmax=obj.get("vmax"),
+        clase=obj.get("class"),
+        nombre=atributo(obj, 34) or obj.get("name"),
+        codigo_modelo=atributo(obj, 41) or obj.get("code"),
+        id_legacy=atributo(obj, 91),
+        notas=atributo(obj, 35),
+        calle=atributo(obj, 67),
+        altura=atributo(obj, 16),
+        localidad=atributo(obj, 68),
+        provincia=atributo(obj, 69),
+        ubicacion_fisica=atributo(obj, 118),
+        tendido=atributo(obj, 20),
+        propietario=atributo(obj, _AT_PON_PROPIETARIO),
+        tipo_conector=atributo(obj, _AT_PON_TIPO_CONECTOR),
+        capacidad_puertos=_entero_o_none(atributo(obj, _AT_PON_CAPACIDAD)),
+        latitud=latitud,
+        longitud=longitud,
+        pts_raw=obj.get("pts"),
+        payload_raw=dict(obj),
+    )
+
+
 def _resolver_extremos(obj: Mapping[str, Any]) -> tuple[Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
     extremo_a: Optional[Mapping[str, Any]] = None
     extremo_b: Optional[Mapping[str, Any]] = None
@@ -391,6 +444,7 @@ def parse_cable(obj: Mapping[str, Any]) -> Cable:
         n_id=n_id,
         version_id=obj.get("id"),
         vmax=obj.get("vmax"),
+        clase=obj.get("class"),
         nombre=atributo(obj, 26) or obj.get("name"),
         capacidad=capacidad,
         capacidad_pelos=_capacidad_a_entero(capacidad),
@@ -866,6 +920,7 @@ def parse_arbol_botella(
 __all__ = [
     "ATRIBUTOS_CONOCIDOS",
     "ArbolBotella",
+    "parse_pon_elemento",
     "parse_splitter",
     "parse_puerto_splitter",
     "salidas_de_ratio",

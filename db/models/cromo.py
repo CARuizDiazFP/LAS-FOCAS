@@ -265,6 +265,10 @@ class CromoCable(Base):
     n_id = Column(BigInteger, primary_key=True)
     version_id = Column(BigInteger, nullable=False)
     vmax = Column(Integer, nullable=False)
+    # 51 (cable de FO) o 66 (cable de bajada de la red PON). Comparten tabla porque comparten
+    # esquema y parser; la columna existe porque la fase de reconciliación TIENE que poder excluir
+    # los de bajada, cuyos extremos son cajas PON y rosetas y nunca botellas.
+    clase = Column(SmallInteger, ForeignKey("app.cromo_clases.clase"), nullable=False, server_default=text("51"))
     nombre = Column(Text, nullable=True, index=True)
     capacidad = Column(Text, nullable=True)  # at.32 crudo, ej. "72-BRUG"
     capacidad_pelos = Column(SmallInteger, nullable=True)  # derivado: prefijo numérico de capacidad

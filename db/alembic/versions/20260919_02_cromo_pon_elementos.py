@@ -15,7 +15,7 @@ raíz, con ``ll``/``pts``/``vmax`` y los mismos ``at``— así que ocho tablas s
 mismo DDL. Lo que las distingue es ``cromo_clases.entidad``, de donde el camino óptico ya saca la
 etiqueta del nodo; ver el docstring de ``CromoPonElemento`` para el razonamiento completo.
 
-Volumen esperado (conteos reales de `20260919_01`): 13.432 cajas PON + 17.348 rosetas ≈ 30.800
+Volumen esperado (conteos reales de `20260919_01`): 13.482 cajas PON + 17.348 rosetas ≈ 30.800
 filas.
 
 La FK de ``clase`` contra ``app.cromo_clases`` exige que las 5 clases nuevas ya estén catalogadas,
