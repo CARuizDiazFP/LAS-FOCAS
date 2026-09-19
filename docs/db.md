@@ -507,11 +507,11 @@ un `INSERT`, no una migración.
 |---|---|---|
 | `clase` (PK) | SmallInteger | Código de clase tal como lo usa Cromo. |
 | `etiqueta` | Text | Etiqueta corta de Cromo (ej. `6-1`), si existe. |
-| `entidad` | Text | `BOTELLA` \| `CABLE` \| `TUBO` \| `PELO` \| `FUSION` \| `ODF` \| `PARCELA`. |
+| `entidad` | Text | `BOTELLA` \| `CABLE` \| `TUBO` \| `PELO` \| `FUSION` \| `ODF` \| `PARCELA` \| `CAJA_PON` \| `ROSETA` \| `SPLITTER` \| `PUERTO_SPLITTER` \| `CABLE_BAJADA` \| `NODO` \| `FUSION_ODF`. |
 | `ingerible` | Boolean | Si la ingesta debe traer objetos de esta clase. |
 | `homologada` | Boolean | `false` para clases estructuralmente válidas pero sin homologar (ej. clase 124, `code: "NO-SABE"`). |
 | `motivo_exclusion` | Text | Motivo si `ingerible = false` (ej. clase 120, parcela catastral). |
-| `count_cromo` | BigInteger | Último count observado en Cromo (`stats[].count`), referencial. |
+| `count_cromo` | BigInteger | Último count observado en Cromo. **Ya no es sólo referencial**: desde 2026-09-19 es la fuente del fallback de `fase_conteo` para las clases cuyo `stats[].count` miente (133 y 134 devuelven 0 aunque la colección pagine perfecto; sus totales reales, 20.238 y 154.284, se midieron paginando hasta el final). |
 | `count_fecha` | DateTime(tz) | Fecha del último count observado. |
 
 Seed inicial (verificado contra Cromo real el 2026-08-05): clases `68/121/122/123/125` (botella,
@@ -528,7 +528,7 @@ Auditoría de una corrida de ingesta completa (Etapa 3, todavía no implementada
 | `id` (PK) | BigInteger | — |
 | `usuario` | String(128) | Quién disparó la corrida. |
 | `estado` | String(32) | `EN_CURSO` \| `OK` \| `OK_CON_ERRORES` \| `FALLIDA` \| `CANCELADA`. Texto libre, no enum: el vocabulario todavía lo termina de fijar la Etapa 3. |
-| `params` | JSONB | Clases, `psize`, `max_paginas`, `show` de la corrida. |
+| `params` | JSONB | Clases, `psize`, `max_paginas` de la corrida, más `modo` cuando difiere de `COMPLETA` (`SOLO_ODF`, `SOLO_SPLITTERS`, `SOLO_PUERTOS_SPLITTER`, `SOLO_CAJAS_PON`, `SOLO_ROSETAS`, `SOLO_CABLES_BAJADA`) o `tipo` en las corridas sintéticas de mantenimiento (`MANUAL_REPOBLAR_CABLES`, `MANUAL_CATCHUP_SERVICIOS`, `MANUAL_NORMALIZAR_CONSISTENCIA`). La UI lo muestra como columna "Alcance" del histórico. |
 | `total_objetivo`, `leidas`, `creadas`, `actualizadas`, `sin_cambios`, `errores`, `refs_colgadas` | Integer | Contadores en vivo. |
 | `iniciada_at`, `finalizada_at` | DateTime(tz) | — |
 
@@ -576,6 +576,19 @@ Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones
 
 Cable de FO. Extremos (`extremo_a/b_*`) sin FK dura — apuntan a la botella/ODF de cada punta, que puede
 no haber bajado todavía.
+
+**Columna `clase` (2026-09-19).** La tabla nunca la tuvo: era implícitamente la 51. Desde el modo
+`SOLO_CABLES_BAJADA` aloja además los 19.030 cables de la clase **66** (bajada / drop de la red PON),
+que comparten esquema y parser —medido: publican exactamente los mismos `at`, y tienen `vmax`, `tp`
+con dos extremos e `inner` con 1 tubo y 1 pelo— pero no son lo mismo. Las 32.790 filas existentes se
+backfillearon a 51.
+
+No es cosmética: **`fase_reconciliacion` marca como referencia colgada todo cable cuyo extremo no sea
+una botella**, y los extremos de un cable de bajada son una caja PON y una roseta. Sin el filtro
+`AND c.clase = 51` en esas dos consultas, cada corrida completa reportaría ~38.000 referencias
+colgadas inventadas. El filtro va en la consulta y no en la fase porque esa consulta lee la tabla
+entera, no lo que barrió la corrida. Lo mismo en `inventario.buscar_cables`, para que el listado de
+Cables no pase de 32.790 a 51.820 filas.
 
 | Columna | Tipo | Descripción |
 |---|---|---|
@@ -868,6 +881,49 @@ un ratio cuando el splitter existía. Ver `docs/decisiones.md` (2026-09-17, segu
 `null`; entonces `IS NOT NULL` da TRUE, `jsonb_array_length()` aborta la consulta con *"cannot get
 array length of a scalar"* y los tres estados se vuelven dos.
 
+**Ampliación 2026-09-19 — `contenedor_n_id` / `contenedor_clase`.** `botella_n_id` asumía que un
+splitter cuelga de una Botella. Medido sobre **800 splitters reales**, sólo el 12 % lo hace: el
+reparto por clase del contenedor es 137→435, 139→176, 68→84, 138→35, 84→32, 140→21, 122→8, 126→4,
+125→2 y 123/121/127→1. Las dos columnas nuevas guardan el contenedor real, sin FK dura porque apunta
+a dos tablas según la clase. `botella_n_id` se conserva sin tocar —es por donde consulta
+`empalmes.py`— y pasa a poblarse **sólo** cuando el contenedor es de una clase Botella.
+
+### `cromo_pon_elementos` (2026-09-19)
+
+Elementos raíz de la red de acceso PON: **cajas PON** (clases 84, 126, 127, 137, 138, 139, 140) y
+**rosetas** (85), en una sola tabla discriminadas por `clase` (FK contra `cromo_clases`).
+
+Una tabla y no ocho porque el esquema medido contra Cromo es idéntico en las ocho: todas son objetos
+raíz (`parent` ausente), traen `ll`/`pts`/`vmax` y publican los mismos `at` (16, 20, 34, 35, 40, 41,
+45, 46, 47, 67, 68, 69, 91, 203). Lo que separa una caja PON de una roseta es `cromo_clases.entidad`,
+que es de donde `camino_optico_service` ya saca la etiqueta del nodo; cada vista de inventario filtra
+por su lista de clases.
+
+Versionada (`version_id`/`vmax`/`payload_raw`) como `cromo_odfs`, no liviana como `cromo_splitters`:
+`vmax` deja que `upsert_versionado` distinga CREADA/ACTUALIZADA/SIN_CAMBIOS, y `version_id` habilita
+la segunda pasada de `camino_optico_service._vincular_local` —sin él, un nodo de `/path` que llega
+identificado por su id de versión nunca vincula con la fila local—.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `n_id` (PK) | BigInteger | Identidad de linaje. |
+| `version_id` / `vmax` | BigInteger / Integer | Versión vigente y detector de cambios. |
+| `clase` | SmallInteger, FK `cromo_clases` | 84/126/127/137/138/139/140 (caja PON) u 85 (roseta). |
+| `nombre`, `codigo_modelo`, `id_legacy`, `notas` | Text | `at.34`, `at.41`, `at.91`, `at.35`. |
+| `calle`, `altura`, `localidad`, `provincia`, `ubicacion_fisica`, `tendido` | Text | `at.67`, `at.16`, `at.68`, `at.69`, `at.118`, `at.20` — **mismo mapeo que `parse_botella`**, por eso el parser lo reusa. |
+| `propietario` | Text | `at.47` ("Metrotel", "MB", "FANS"). |
+| `tipo_conector` | Text | `at.40` ("Fast connect", "Easy Connect", "Conector de campo", "Con casquillo"). |
+| `capacidad_puertos` | SmallInteger | `at.46`. Sobre 81 objetos reales tomó **sólo** los valores 8, 16 y 4. |
+| `latitud`, `longitud`, `pts_raw` | Float / JSONB | Geo, igual que botellas y ODFs. |
+| `payload_raw` | JSONB | Objeto crudo. |
+| `vigente`, `primera_ingesta`, `ultima_ingesta`, `ultima_modificacion` | — | Auditoría estándar del módulo. |
+
+**Qué NO tiene columna, y por qué:** `at.45` fue constante ("SI" en los 81 objetos medidos) y
+`at.203` devolvió valores incoherentes entre sí ("00000", "0", "115124", "90933"). No se les inventa
+semántica: viajan en `payload_raw` hasta que alguien los entienda.
+
+Volumen esperado: 13.482 cajas PON + 17.348 rosetas ≈ 30.800 filas.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -916,6 +972,10 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260917_01` | `20260917_01_cromo_tracking_cache.py` | Tabla `app.cromo_tracking_cache` — caché de salida con TTL de 24 h del `.txt` de tracking de cada pelo, para que la descarga multipelo no repita la llamada de 4,6-14 s a `/path` por cada archivo (ver sección "`cromo_tracking_cache`" arriba y `docs/decisiones.md` 2026-09-17) |
 | `20260917_02` | `20260917_02_cromo_clases_pon.py` | Catálogo de las clases de la red de acceso PON (66/84/85/86/133/134/137/141) con `ingerible=false` — sólo se etiquetan para que el diagrama de camino muestre qué es cada nodo |
 | `20260917_03` | `20260917_03_cromo_splitters.py` | Tablas `app.cromo_splitters` y `app.cromo_splitter_puertos` + `cromo_botellas.splitters_relevados` — el ratio del splitter lo publica Cromo en `at.83` y venía descartándose en cada barrido |
+| `20260919_01` | `20260919_01_cromo_clases_pon_ingeribles.py` | Alta de las 5 clases de caja PON que faltaban (126/127/138/139/140) y `ingerible=true` para 66/84/85/133/134/137 — revierte parcialmente `20260917_02`; también puebla `count_cromo`/`count_fecha` con los conteos reales, que pasan a ser el fallback de `fase_conteo` |
+| `20260919_02` | `20260919_02_cromo_pon_elementos.py` | Tabla `app.cromo_pon_elementos` — cajas PON (7 clases) y rosetas en una sola tabla discriminadas por `clase`, porque el esquema medido es idéntico en las ocho |
+| `20260919_03` | `20260919_03_cromo_splitters_contenedor.py` | Columnas `cromo_splitters.contenedor_n_id/contenedor_clase` — el 88 % de los splitters cuelga de una caja PON y no de una Botella, así que `botella_n_id` sola no alcanzaba |
+| `20260919_04` | `20260919_04_cromo_cables_clase.py` | Columna `cromo_cables.clase` (backfill a 51) — habilita alojar los cables de bajada (66) sin que la fase de reconciliación los marque como referencias colgadas |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

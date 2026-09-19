@@ -332,6 +332,28 @@ Por qué la distinción importa: medida contra 30 botellas reales, la heurístic
 en 12 —inventó 2 splitters donde Cromo tiene 0— y **nunca** devolvió un ratio correcto cuando el
 splitter existía. Ver `docs/decisiones.md` (2026-09-17, seguimiento 3).
 
+### GET `/api/infra/cromo/pon`
+
+Inventario navegable de la **red de acceso PON**: cajas PON y rosetas ya ingeridas. Sólo lectura,
+cualquier usuario autenticado (mismo criterio que los inventarios de cables y ODFs).
+
+- **Query params:** `q` (nombre, ILIKE parcial), `n_id` (exacto), `clases` (lista separada por
+  comas), `vigente` (bool), `localidad` y `propietario` (ILIKE parcial), `limit` (default 50, tope
+  200) y `offset`.
+- **Respuesta:** `{ total, limit, offset, elementos[] }`, donde cada elemento trae `n_id`, `clase`,
+  `nombre`, dirección (`calle`/`altura`/`localidad`), `propietario`, `tipo_conector`,
+  `capacidad_puertos`, `latitud`/`longitud`, `vigente` y `cantidad_splitters`.
+
+`clases` es el parámetro que distingue una vista de la otra: cajas PON y rosetas **comparten tabla**
+porque comparten esquema, así que la vista de Cajas PON pide `?clases=84,126,127,137,138,139,140` y
+la de Rosetas `?clases=85`. Sin el parámetro devuelve las ocho clases mezcladas.
+
+Un valor no numérico dentro de `clases` se **ignora** y el resto sigue filtrando, en vez de
+devolver 400: un parámetro de listado mal tipeado no debería romper la pantalla.
+
+`cantidad_splitters` cuenta por `cromo_splitters.contenedor_n_id`, no por `botella_n_id` — el 88 %
+de los splitters cuelga de una caja PON y no de una Botella (ver `docs/decisiones.md`, 2026-09-19).
+
 ### POST `/api/infra/search`
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.

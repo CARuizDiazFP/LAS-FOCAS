@@ -1985,3 +1985,75 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Impacto, verificado real en dev** sobre la botella 8941541: de **6 splitters sin ratio** a
   **1 splitter "SPLITTER1" 1x8 con 4 de 8 salidas ocupadas**, que es exactamente lo que declara
   Cromo. La heurística deja de marcar splitters en esa botella.
+
+## 2026-09-19 — Ingesta de la red de acceso PON: cinco modos manuales, y tres defectos que sólo se veían midiendo
+
+- **Contexto:** el usuario pidió verificar si la UI de ingesta permitía correr por separado la
+  ingesta de splitters, cajas PON y rosetas. No lo permitía: el selector "Alcance de la corrida"
+  tenía exactamente dos opciones (`COMPLETA` y `SOLO_ODF`), y de las tres clases pedidas sólo los
+  splitters tenían código de persistencia — escrito el 2026-09-17, embebido en `fase_botellas`. El
+  usuario aclaró que el scheduler está apagado a propósito y que **las corridas van a ser sólo
+  manuales**, lo que convierte al selector en el único punto de control real del módulo.
+
+- **Esto revierte parcialmente la decisión del 2026-09-17**, que catalogó estas clases con
+  `ingerible=false`. El argumento de aquella decisión —que ingerirlas **no** arregla el truncamiento
+  de `/path` en cada splitter— **sigue siendo cierto y sigue fuera de alcance**. Lo que cambió es el
+  objetivo: no es el diagrama, es inventario. Y aparecieron mediciones que entonces no existían.
+
+- **Diagnóstico real contra la API de Cromo (todo lo de abajo son hechos medidos, no supuestos):**
+
+  | Hallazgo | Evidencia |
+  |---|---|
+  | `fase_botellas` no trae `inner[]` | Con su `show=["SHOW","REL_ATTRIBUTE","TIME"]`: 0 de 10 botellas. Con `["ALL"]`: 10 de 10 |
+  | El 88 % de los splitters no cuelga de una Botella | Sobre 800 reales: 137→435, 139→176, 68→84, 138→35, 84→32, 140→21, 122→8, 126→4, 125→2, 123/121/127→1 |
+  | Los splitters sí son barribles como colección | `stats[].count` = **0** para 133 y 134, pero `iterar_coleccion` pagina normal. Totales reales, barriendo hasta el final: **20.238** splitters y **154.284** puertos |
+  | Hay **7** clases de caja PON, no 2 | 84→3045, 137→6237, 139→1814, 138→1394, 140→490, 126→391, 127→111. Las cinco últimas **no existían en `cromo_clases`** y el diagrama las dibujaba como `CLASE_139` |
+  | Las rosetas existen y son muchas | Clase 85 → **17.348** objetos, pese al `motivo_exclusion` que decía "no observada todavia en ningun camino real" |
+  | El cable de bajada es un cable normal | Clase 66 → 19.030, con los mismos `at` que la 51, `vmax`, `tp` de dos extremos e `inner` con 1 tubo y 1 pelo |
+
+- **Tres defectos reales, ninguno detectable con mocks:**
+  1. **`splitters_relevados` se marcaba siempre.** Como el barrido no trae `inner[]`, una corrida
+     `COMPLETA` habría dejado las 11.072 botellas declaradas "relevadas sin splitters", y
+     `empalmes.py` lee esa marca para apagar su heurística de fan-out. La primera corrida completa
+     habría apagado la detección de splitters en todo el inventario, sin reemplazo. Corregido en una
+     rama propia y mergeado primero. `docs/cierres/2026-09-17.md` daba por sentado lo contrario.
+  2. **`parse_splitter` guardaba un diccionario en `botella_n_id`.** En el barrido directo `parent`
+     es siempre un dict (60/60 medidos), no el entero que trae el árbol de botella.
+  3. **`parse_puerto_splitter` colgaba el puerto de la caja PON.** En el barrido de la clase 134
+     `parent` es el contenedor (138/137/139 en 60/60); el splitter viaja en `extra.parent`.
+
+  Un cuarto hallazgo, de la misma familia: **`parent.id` es un id de versión, no de linaje** — en 4
+  de 60 objetos `container.id != container.n_id`. La resolución prefiere `extra.container.n_id`.
+
+- **Decisiones de diseño:**
+  - **Una tabla para las ocho clases** (`cromo_pon_elementos`), porque el esquema medido es idéntico;
+    lo que las separa es `cromo_clases.entidad`. Contrapartida asumida: el nombre de la tabla no
+    coincide con ninguno de los dos conceptos que ve el operador.
+  - **Cables de bajada dentro de `cromo_cables`**, con una columna `clase` nueva. Esa columna no es
+    cosmética: sin ella, la fase de reconciliación marcaría las 19.030 bajadas como referencias
+    colgadas, porque sus extremos son cajas PON y rosetas y esa consulta espera botellas.
+  - **Barrido directo de la clase 133**, no la vía embebida: tiene techo del 12 % y hoy ni llega.
+  - **Los puertos de splitter son un modo propio**, no parte de `SOLO_SPLITTERS`: son 91 minutos y
+    154.284 filas para un dato cuyo valor principal —la ocupación servicio↔puerto— necesita `/inner`
+    por objeto y quedó fuera de alcance. Decisión explícita del usuario.
+  - **Ningún modo nuevo entra en `COMPLETA`**: sumarlos convertiría una corrida de rutina en una de
+    varias horas.
+  - **`total_objetivo` sale del catálogo cuando la API miente.** `count_cromo`/`count_fecha` existían
+    desde `20260805_01` sin un solo consumidor; ahora lo tienen. Precedencia: API primero, catálogo
+    después — el catálogo es una foto con fecha, la API es el presente.
+
+- **Alternativas descartadas:** migrar `fase_botellas` a `show=["ALL"]` (paga payload por 11.072
+  botellas para conseguir, como techo, el 12 % de los splitters); tablas separadas por clase (ocho
+  copias del mismo DDL); una fase calcada por modo (con siete modos serían ocho copias del mismo
+  bucle, y cada copia una oportunidad de escribir distinto el chequeo de cancelación).
+
+- **Impacto, verificado real en dev:** los cuatro modos corren OK con `max_paginas=1` y
+  `total_objetivo` correcto en los cuatro; los cinco tipos de nodo de la red de acceso pasan de
+  `vinculo_local=null` a resolver contra filas locales con nombre; el filtro de reconciliación se
+  probó insertando un cable de bajada y uno de FO con extremos que no son botellas, en una
+  transacción revertida: con el filtro sólo se marca el de FO, sin él se marcaban los dos. Suite
+  completa comparada **nombre por nombre** contra `dev`: listas de fallos idénticas, 32 en cada lado.
+
+- **Duraciones medidas, para dimensionar una corrida:** cajas PON ~75 min (13.482), puertos de
+  splitter ~91 min (154.284), cables de bajada ~32 min (19.030), rosetas ~23 min (17.348), splitters
+  ~22 min (20.238).

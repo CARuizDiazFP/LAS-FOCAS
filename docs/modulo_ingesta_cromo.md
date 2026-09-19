@@ -140,12 +140,32 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas, fusiones,
     ODFs (clase 69, 2026-08-28, ver más abajo), reconciliación de referencias colgadas y matching de
     servicios. `continuar_corrida(modo=...)`: `"COMPLETA"` (default) corre todas las fases,
-    incluyendo ODFs sin que nadie lo pida; `"SOLO_ODF"` corre únicamente `fase_odfs`, saltando
-    cables/botellas/fusiones/reconciliación/servicios — es el modo exclusivo que pidió el ticket
-    original. Selector "Alcance de la corrida" en `AdminIngestaCromo.vue` desde 2026-08-28 (decisión
-    explícita del usuario), que además inhabilita/ignora la grilla de clases de botella cuando se
-    elige "Sólo ODFs". Primera corrida real verificada el mismo día (ver más abajo, submódulo
-    ODFs). Transacción por página (un
+    incluyendo ODFs sin que nadie lo pida. Los demás modos son **acotados**: corren UNA fase sobre
+    UNA colección y saltan todo lo demás, incluidas reconciliación y servicios.
+
+    Desde 2026-09-19 los modos viven en una tabla de datos (`MODOS_ACOTADOS`) que declara qué fase
+    corre cada uno y qué clases cuenta, en vez de una cadena de `if modo == "..."`; `MODOS_INGESTA`
+    se deriva de ahí y es lo que valida el endpoint web (antes esa lista estaba duplicada en
+    `web/app/main.py`). Los siete modos:
+
+    | Modo | Fase | Objetos | Duración medida |
+    |---|---|---:|---:|
+    | `COMPLETA` | la secuencia de siempre + ODFs | — | — |
+    | `SOLO_ODF` | `fase_odfs` (clase 69) | 7.955 | ~35 min |
+    | `SOLO_SPLITTERS` | `fase_splitters` (133) | 20.238 | ~22 min |
+    | `SOLO_PUERTOS_SPLITTER` | `fase_puertos_splitter` (134) | 154.284 | ~91 min |
+    | `SOLO_CAJAS_PON` | `fase_cajas_pon` (84/126/127/137/138/139/140) | 13.482 | ~75 min |
+    | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~23 min |
+    | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~32 min |
+
+    **Ninguno de los cinco modos de la red de acceso PON entra en `COMPLETA`**, por decisión
+    explícita: sumarlos convertiría una corrida de rutina en una de varias horas. El selector
+    "Alcance de la corrida" de `AdminIngestaCromo.vue` los ofrece uno por uno y el histórico de
+    corridas muestra con cuál corrió cada fila (columna "Alcance", que lee `params.modo`).
+
+    El bucle de paginación de las fases de barrido directo está factorizado en `_barrer_coleccion`
+    desde 2026-09-19: era el mismo cuerpo repetido byte a byte en tres fases, y con las nuevas
+    habrían sido ocho copias. Transacción por página (un
     commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
     cancelación cooperativa entre páginas. Desde 2026-08-19, las fases de cables/botellas/fusiones
     consultan `alias_service` antes de cada upsert: un `n_id` aliaseado nunca crea/actualiza su
