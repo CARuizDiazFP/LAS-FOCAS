@@ -672,6 +672,61 @@ export async function buscarInventarioOdfs(opciones: {
   return requestJson(`/api/infra/cromo/odfs?${params.toString()}`);
 }
 
+// ── Inventario de la red de acceso PON (2026-09-19) ──────────────────────────
+// Cajas PON y rosetas viven en la misma tabla porque comparten esquema; lo que separa una vista de
+// la otra es la lista de clases que pide. Por eso `clases` es un parámetro y no hay dos funciones.
+
+/** Las siete clases de caja PON, medidas contra Cromo. Hasta 2026-09-19 el sistema sólo conocía la
+ * 84 y la 137; las otras cinco (126, 127, 138, 139, 140) no estaban en ninguna lista y el diagrama
+ * de camino óptico las dibujaba como "CLASE_139". */
+export const CROMO_CLASES_CAJA_PON = [84, 126, 127, 137, 138, 139, 140] as const;
+export const CROMO_CLASE_ROSETA = 85;
+
+export interface CromoPonElementoInventario {
+  n_id: number;
+  clase: number;
+  nombre: string | null;
+  localidad: string | null;
+  calle: string | null;
+  altura: string | null;
+  propietario: string | null;
+  tipo_conector: string | null;
+  capacidad_puertos: number | null;
+  latitud: number | null;
+  longitud: number | null;
+  vigente: boolean;
+  cantidad_splitters: number;
+}
+
+export interface CromoInventarioPonResultado {
+  total: number;
+  limit: number;
+  offset: number;
+  elementos: CromoPonElementoInventario[];
+}
+
+export async function buscarInventarioPon(opciones: {
+  q?: string;
+  nId?: number;
+  clases?: readonly number[];
+  vigente?: boolean;
+  localidad?: string;
+  propietario?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<CromoInventarioPonResultado> {
+  const params = new URLSearchParams();
+  if (opciones.q) params.set('q', opciones.q);
+  if (opciones.nId !== undefined) params.set('n_id', String(opciones.nId));
+  if (opciones.clases && opciones.clases.length > 0) params.set('clases', opciones.clases.join(','));
+  if (opciones.vigente !== undefined) params.set('vigente', String(opciones.vigente));
+  if (opciones.localidad) params.set('localidad', opciones.localidad);
+  if (opciones.propietario) params.set('propietario', opciones.propietario);
+  params.set('limit', String(opciones.limit ?? 50));
+  params.set('offset', String(opciones.offset ?? 0));
+  return requestJson(`/api/infra/cromo/pon?${params.toString()}`);
+}
+
 // ── Detalle jerárquico de un ODF (Tarea 5, plan ODFs) ────────────────────────
 // Distinto del inventario (listar/buscar): esto es "mostrame este ODF puntual" — dirección
 // completa, cables que lo tienen asociado y otros ODFs en la misma dirección física.

@@ -25,6 +25,7 @@ const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue')
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
 const InventarioOdfsCromoView = () => import('../views/InventarioOdfsCromoView.vue');
+const InventarioPonCromoView = () => import('../views/InventarioPonCromoView.vue');
 const OdfDetalleCromoView = () => import('../views/OdfDetalleCromoView.vue');
 const BotellasInventarioView = () => import('../views/BotellasInventarioView.vue');
 const BotellaDetalleUnificadaView = () => import('../views/BotellaDetalleUnificadaView.vue');
@@ -210,6 +211,21 @@ const routes: RouteRecordRaw[] = [
         component: CableDetalleCromoView,
       },
       { path: 'infra/cromo/odfs', name: 'infra-cromo-odfs', component: InventarioOdfsCromoView },
+      // Cajas PON y rosetas comparten vista y endpoint: `ponVariante` es lo que la vista lee para
+      // decidir qué clases pedir y qué columnas mostrar. Dos rutas y un componente, porque son dos
+      // entradas distintas en la navegación pero la misma pantalla.
+      {
+        path: 'infra/cromo/pon',
+        name: 'infra-cromo-pon',
+        component: InventarioPonCromoView,
+        meta: { ponVariante: 'caja' },
+      },
+      {
+        path: 'infra/cromo/rosetas',
+        name: 'infra-cromo-rosetas',
+        component: InventarioPonCromoView,
+        meta: { ponVariante: 'roseta' },
+      },
       {
         path: 'infra/cromo/odfs/ID:nId(\\d+)',
         name: 'infra-cromo-odf-detalle',

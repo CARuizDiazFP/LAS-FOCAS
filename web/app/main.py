@@ -5806,6 +5806,79 @@ async def cromo_inventario_cables_web(
     )
 
 
+@app.get("/api/infra/cromo/pon")
+async def cromo_inventario_pon_web(
+    request: Request,
+    q: Optional[str] = None,
+    n_id: Optional[int] = None,
+    clases: Optional[str] = None,
+    vigente: Optional[bool] = None,
+    localidad: Optional[str] = None,
+    propietario: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Inventario navegable de la red de acceso PON: cajas PON y rosetas ya ingeridas.
+
+    Sólo lectura, cualquier usuario autenticado — mismo criterio que los inventarios de cables y
+    ODFs.
+
+    `clases` llega como lista separada por comas (`?clases=84,137`) porque cajas PON y rosetas
+    comparten tabla: es el parámetro que distingue una vista de la otra. Se ignoran los valores no
+    numéricos en vez de devolver 400: un filtro de listado mal tipeado no debería romper la
+    pantalla, y el resto de la lista sigue siendo un filtro válido.
+    """
+    from core.services.cromo.pon_inventario import buscar_pon_elementos
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    clases_filtro: Optional[list[int]] = None
+    if clases:
+        clases_filtro = [int(c) for c in clases.split(",") if c.strip().lstrip("-").isdigit()] or None
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_pon_elementos(
+            sesion,
+            q=q,
+            n_id=n_id,
+            clases=clases_filtro,
+            vigente=vigente,
+            localidad=localidad,
+            propietario=propietario,
+            limit=limit,
+            offset=offset,
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "elementos": [
+                {
+                    "n_id": e.n_id,
+                    "clase": e.clase,
+                    "nombre": e.nombre,
+                    "localidad": e.localidad,
+                    "calle": e.calle,
+                    "altura": e.altura,
+                    "propietario": e.propietario,
+                    "tipo_conector": e.tipo_conector,
+                    "capacidad_puertos": e.capacidad_puertos,
+                    "latitud": e.latitud,
+                    "longitud": e.longitud,
+                    "vigente": e.vigente,
+                    "cantidad_splitters": e.cantidad_splitters,
+                }
+                for e in resultado.elementos
+            ],
+        }
+    )
+
+
 @app.get("/api/infra/cromo/odfs")
 async def cromo_inventario_odfs_web(
     request: Request,
