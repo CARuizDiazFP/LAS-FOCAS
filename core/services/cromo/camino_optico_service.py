@@ -33,6 +33,7 @@ TIPO_CLASE_DESCONOCIDA = "CLASE_DESCONOCIDA"
 TIPO_SPLITTER = "SPLITTER"
 TIPO_PUERTO_SPLITTER = "PUERTO_SPLITTER"
 TIPO_CAJA_PON = "CAJA_PON"
+TIPO_ROSETA = "ROSETA"
 TIPO_CABLE_BAJADA = "CABLE_BAJADA"
 TIPO_NODO = "NODO"
 TIPO_FUSION_ODF = "FUSION_ODF"
@@ -58,23 +59,42 @@ _CLASES_FALLBACK: dict[int, str] = {
     132: TIPO_FUSION,
     135: "PATCHERA",
     136: TIPO_CONECTOR_ODF,
-    # Red de acceso PON, medida real sobre caminos de 6 servicios OLT (2026-09-17). Ninguna está
-    # ingerida: se etiquetan para que el diagrama deje de mostrar "CLASE_84" y muestre qué es cada
-    # nodo. 85 (Roseta) no se observó en ningún camino — el recorrido termina en la caja PON.
+    # Red de acceso PON. Desde 2026-09-19 estas clases SÍ se ingieren (modos acotados propios), así
+    # que el catálogo de la base las resuelve; esto queda como red de seguridad.
+    #
+    # Las cajas PON son SIETE, no dos: además de la 84 y la 137 existen 126, 127, 138, 139 y 140,
+    # que no estaban en ninguna lista y el diagrama dibujaba como "CLASE_139". Suman 13.482 objetos.
+    #
+    # La 85 (Roseta) sigue sin observarse en ningún camino real —el recorrido termina en la caja
+    # PON— pero su colección existe y tiene 17.348 objetos. Se mapea igual: que no aparezca en un
+    # `/path` no es razón para no saber qué es si aparece.
     66: TIPO_CABLE_BAJADA,
     84: TIPO_CAJA_PON,
+    85: TIPO_ROSETA,
     86: TIPO_NODO,
+    126: TIPO_CAJA_PON,
+    127: TIPO_CAJA_PON,
     133: TIPO_SPLITTER,
     134: TIPO_PUERTO_SPLITTER,
     137: TIPO_CAJA_PON,
+    138: TIPO_CAJA_PON,
+    139: TIPO_CAJA_PON,
+    140: TIPO_CAJA_PON,
     141: TIPO_FUSION_ODF,
 }
 
 # Cables de bajada (drop). Se muestran con nombre y metraje como cualquier cable, pero NO entran en
-# `_CLASES_CABLE`: esa constante define qué se puede reingerir por `extraer_tubos_y_pelos`, y un
-# cable de bajada no tiene esa estructura de tubos/pelos.
+# `_CLASES_CABLE`: esa constante define qué se puede reingerir por `extraer_tubos_y_pelos`.
+#
+# Corrección (2026-09-19): la razón que decía este comentario —"un cable de bajada no tiene esa
+# estructura de tubos/pelos"— es falsa. Medido contra Cromo, la clase 66 trae `inner` con 1 tubo y
+# 1 pelo, y `tp` con dos extremos, igual que un cable de FO. La razón real para dejarla afuera es
+# otra y sigue valiendo: sus extremos son cajas PON y rosetas, no botellas, así que arrastrarla a
+# la reingesta dirigida y al conteo de `cables` mezclaría dos dominios.
 _CLASES_CABLE_BAJADA = frozenset({66})
-_CLASES_CAJA_PON = frozenset({84, 137})
+# Las siete clases de caja PON, medidas contra Cromo el 2026-09-19. Gobierna qué nodos reciben el
+# enriquecimiento de nombre/tendido en `_construir_lado` y qué cuenta `estadisticas.cajas_pon`.
+_CLASES_CAJA_PON = frozenset({84, 126, 127, 137, 138, 139, 140})
 _CLASE_SPLITTER = 133
 _CLASE_PUERTO_SPLITTER = 134
 _CLASE_NODO = 86
@@ -955,6 +975,22 @@ _TABLAS_VINCULABLES: tuple[tuple[str, str, str, bool], ...] = (
     ("cromo_pelos", TIPO_PELO, "numero_pelo", False),
     ("cromo_tubos", "TUBO", "nombre_color", False),
     ("cromo_fusiones", TIPO_FUSION, "nombre_par", False),
+    # Red de acceso PON (2026-09-19). Hasta ahora estos nodos llegaban siempre con
+    # `vinculo_local=None`, no porque fallara la resolución sino porque no había fila local que
+    # resolver. Con los modos de ingesta propios, ahora la hay.
+    #
+    # Cajas PON y rosetas comparten tabla (`cromo_pon_elementos`) y por eso aparecen dos veces
+    # apuntando a ella: los `n_id` son disjuntos y cada entrada resuelve su propio tipo de nodo, así
+    # que no hace falta filtrar por clase en la consulta.
+    ("cromo_pon_elementos", TIPO_CAJA_PON, "nombre", True),
+    ("cromo_pon_elementos", TIPO_ROSETA, "nombre", True),
+    # `cromo_cables` aparece dos veces por el mismo motivo: aloja los de FO (51) y los de bajada
+    # (66), que son nodos de tipo distinto en el diagrama.
+    ("cromo_cables", TIPO_CABLE_BAJADA, "nombre", True),
+    # Splitters y puertos no tienen `version_id`: su tabla es liviana, sin versionado, así que sólo
+    # se resuelven por `n_id` (la segunda pasada del vinculador no aplica).
+    ("cromo_splitters", TIPO_SPLITTER, "nombre", False),
+    ("cromo_splitter_puertos", TIPO_PUERTO_SPLITTER, "nombre", False),
 )
 
 

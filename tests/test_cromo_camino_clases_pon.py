@@ -151,3 +151,69 @@ class TestEstadisticas:
         assert est.cajas_pon == 1
         assert est.cables_bajada == 1
         assert est.cables == 0, "un cable de bajada no es un tramo de la troncal"
+
+
+# ── Ampliación del submódulo PON (2026-09-19) ──
+
+
+class TestClasesPonQueFaltaban:
+    """Las cajas PON son siete clases, no dos.
+
+    Medido contra Cromo: además de la 84 y la 137 existen 126 (391 objetos), 127 (111), 138 (1.394),
+    139 (1.814) y 140 (490). Ninguna estaba en el catálogo ni en el fallback, así que el diagrama
+    las dibujaba como `CLASE_139`.
+    """
+
+    @pytest.mark.parametrize("clase", [126, 127, 138, 139, 140])
+    def test_las_cinco_clases_nuevas_se_etiquetan_como_caja_pon(self, clase):
+        dic = {1: {"class": clase, "at": [{"id": 34, "value": "IAAS - PON Alberdi 1642 RED"}]}}
+        nodos, _ = _construir_lado(dic, [1], "A", {})
+
+        assert nodos[0].tipo == TIPO_CAJA_PON
+        assert not nodos[0].tipo.startswith("CLASE_")
+
+    @pytest.mark.parametrize("clase", [126, 127, 138, 139, 140])
+    def test_las_cinco_reciben_el_enriquecimiento_de_nombre(self, clase):
+        """No alcanza con etiquetarlas: tienen que entrar en `_CLASES_CAJA_PON` para que
+        `_construir_lado` les lea el `at.34`, si no el nodo queda con tipo pero sin nombre."""
+        dic = {1: {"class": clase, "at": [{"id": 34, "value": "IAAS - PON Doblas 497 RED 90857"}]}}
+        nodos, _ = _construir_lado(dic, [1], "A", {})
+
+        assert nodos[0].nombre == "IAAS - PON Doblas 497 RED 90857"
+
+    def test_la_roseta_tiene_tipo_propio_y_no_cae_al_generico(self):
+        """La 85 no aparece en ningún `/path` medido, pero su colección existe (17.348 objetos).
+
+        Que no se haya observado en un recorrido no es razón para no saber qué es si aparece.
+        """
+        dic = {1: {"class": 85, "at": [{"id": 34, "value": "RST-66700"}]}}
+        nodos, _ = _construir_lado(dic, [1], "A", {})
+
+        assert nodos[0].tipo == "ROSETA"
+
+
+class TestTablasVinculables:
+    """Hasta ahora estos nodos llegaban siempre con `vinculo_local=None`: no fallaba la resolución,
+    no había fila local que resolver. Con los modos de ingesta propios, ahora la hay."""
+
+    def test_las_tablas_de_la_red_pon_estan_registradas(self):
+        from core.services.cromo.camino_optico_service import _TABLAS_VINCULABLES
+
+        registradas = {(tabla, tipo) for tabla, tipo, _col, _ver in _TABLAS_VINCULABLES}
+
+        assert ("cromo_pon_elementos", TIPO_CAJA_PON) in registradas
+        assert ("cromo_pon_elementos", "ROSETA") in registradas
+        assert ("cromo_cables", TIPO_CABLE_BAJADA) in registradas
+        assert ("cromo_splitters", TIPO_SPLITTER) in registradas
+        assert ("cromo_splitter_puertos", TIPO_PUERTO_SPLITTER) in registradas
+
+    def test_splitters_y_puertos_no_declaran_version_id(self):
+        """Su tabla es liviana, sin versionado: declarar `version_id` haría que el vinculador
+        corriera una segunda pasada contra una columna que no existe."""
+        from core.services.cromo.camino_optico_service import _TABLAS_VINCULABLES
+
+        por_tabla = {tabla: ver for tabla, _tipo, _col, ver in _TABLAS_VINCULABLES}
+
+        assert por_tabla["cromo_splitters"] is False
+        assert por_tabla["cromo_splitter_puertos"] is False
+        assert por_tabla["cromo_pon_elementos"] is True
