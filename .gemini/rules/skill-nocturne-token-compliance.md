@@ -172,6 +172,45 @@ docker exec lasfocasdev-web grep -c "<hex-viejo>" "/app/frontend/dist/assets/$CS
 docker exec lasfocasdev-web grep -o "color-mix(in srgb,var(--TOKEN-nuevo)" "/app/frontend/dist/assets/$CSS" | head -1
 ```
 
+### Desde un agent worktree, el contenedor NO puede tener tu código sin integrar primero
+
+Hallazgo real (2026-09-21, canaleta lateral del shell): se cerró una tanda declarando "verificado por
+bundle compilado, confirmación visual pendiente" y el usuario **no vio ningún cambio** —ni el de CSS
+ni el de backend— porque `lasfocasdev-web` sirve la imagen construida desde `dev`, y el trabajo vivía
+en una rama efímera dentro de un agent worktree. Tuvo que pedir "validá si se deben recrear los
+contenedores" para que se hiciera el paso que faltaba. Evidencia del stale, antes de tocar nada:
+
+```bash
+docker exec lasfocasdev-web sh -c "grep -ho 'app-shell__main\[[^]]*\]{[^}]*}' /app/frontend/dist/assets/*.css"
+#   ...{min-width:0;min-height:100vh;padding:0}     <- la regla VIEJA, no la del worktree
+docker exec lasfocasdev-web grep -n "<simbolo-nuevo>" /app/<ruta-del-modulo>   # 0 matches
+```
+
+**Verificar el `dist/` del worktree NO es la verificación por bundle servido que pide esta skill.**
+Prueba que compila, nada más. Y el paso 2 de arriba no alcanza por sí solo desde un worktree: el
+`build` corre, pero el `up -d` falla por los `env_file`/`secrets` relativos (ver `docker-rebuild`), y
+si construís desde el checkout de control la imagen sale con el código de `dev`, sin tu rama.
+
+**Regla**: cuando el cambio es visible en la UI y el usuario lo va a verificar mirando la pantalla, la
+tarea no está cerrada hasta que el contenedor sirva tu código. Dos vías, en este orden de preferencia:
+
+1. **Integrar primero** (`agent_worktree.py sync → ready → integrate`) y recién entonces
+   `build web` + `up -d web` desde el checkout de control. Es la vía limpia: el contenedor de dev
+   queda sirviendo `dev`, que es lo que debe servir.
+2. Si el cambio todavía no puede integrarse, los symlinks temporales de `docker-rebuild` — y decir
+   **explícitamente** que el contenedor dev quedó corriendo código no integrado.
+
+En cualquier caso, cerrar con el grep dentro del contenedor (no en `dist/`) y con el asset que baja
+el navegador, que es la prueba de punta a punta:
+
+```bash
+curl -s http://127.0.0.1:8090/ | grep -oE 'index-[A-Za-z0-9_-]+\.css'    # hash servido
+curl -s http://127.0.0.1:8090/assets/<hash>.css | grep -o '<token-o-regla-nueva>'
+```
+
+Avisar al usuario que haga **Ctrl+Shift+R**: el `index.html` que tiene abierto referencia los assets
+viejos por hash y un refresh normal puede no bastar.
+
 Documentar explícitamente en el PR diario (`docs/PR/YYYY-MM-DD.md`) que la verificación fue por
 bundle servido y no visual, y dejar la confirmación visual humana como pendiente explícito — no
 como implícitamente resuelto.

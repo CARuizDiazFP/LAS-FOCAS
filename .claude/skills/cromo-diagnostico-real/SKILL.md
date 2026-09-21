@@ -158,6 +158,42 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    siempre un entero. Antes de escribir el parser, medir la distribución de `type(parent)` y de la
    clase del padre sobre ≥50 objetos reales del endpoint que se va a usar.
 
+9. **Un "X no pertenece a Y" con ranking truncado se diagnostica replicando el ranking en SQL, no
+   leyendo el validador.** Real (2026-09-21, Servicio 559 / ID histórico 41579): el ticket atribuía
+   un `400 El pelo 6754728 no pertenece al Servicio 559` a un problema de mapeo entre el ID
+   histórico de la URL y la PK interna. **La premisa era falsa y se refutó con una sola query**: el
+   pelo matchea *precisamente* por el histórico (`prioridad_identidad = 1`), o sea que el mapeo que
+   el ticket culpaba era lo que lo hacía pertenecer. La causa era que el validador consultaba una
+   lista truncada en 20 y el pelo caía en el puesto 31 de 95.
+
+   Receta, antes de tocar el validador — reproducir su `ORDER BY` con `row_number()` y ubicar la
+   posición real del elemento rechazado:
+
+   ```sql
+   WITH base AS (  -- copiar el SELECT/JOIN del código, sin el LIMIT
+     SELECT DISTINCT ON (m.pelo_n_id) m.pelo_n_id, m.confianza,
+            EXISTS (SELECT 1 FROM app.cromo_odf_conectores c WHERE c.pelo_n_id = m.pelo_n_id) AS tiene_conector_odf,
+            CASE WHEN m.servicio_numero = s.servicio_id            THEN 0
+                 WHEN m.servicio_numero = s.numero_primer_servicio THEN 1
+                 ELSE 2 END AS prioridad_identidad
+     FROM app.servicios s
+     JOIN app.cromo_servicio_match m ON (/* IDENTIDADES_DEL_SERVICIO_SQL */)
+     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+     WHERE s.id = :servicio_id
+     ORDER BY m.pelo_n_id, prioridad_identidad, tiene_conector_odf, m.confianza DESC NULLS LAST
+   )
+   SELECT pelo_n_id, tiene_conector_odf, prioridad_identidad,
+          row_number() OVER (ORDER BY prioridad_identidad, tiene_conector_odf,
+                             COALESCE(confianza,0) DESC, pelo_n_id) AS pos
+   FROM base WHERE pelo_n_id = :pelo_n_id;
+   ```
+
+   `pos > limite` confirma la causa en una pasada y descarta las hipótesis de mapeo/identidad. Si
+   además `prioridad_identidad` es 1 o 2, el elemento pertenece **por un alias histórico**, lo que
+   suele ser justo lo que el ticket señala como culpable. Cerrar midiendo también el total
+   (`contar_semillas`) y un elemento de control inexistente, para probar que el guard sigue vivo.
+   Ver `[[feedback-lista-truncada-no-es-fuente-de-verdad]]` y `docs/decisiones.md` (2026-09-21).
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)
