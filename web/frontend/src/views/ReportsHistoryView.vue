@@ -240,7 +240,7 @@ onMounted(loadFiles);
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
-  padding: 22px 26px 0;
+  padding: 22px 0 0;
 }
 
 .reports-view__kicker {
@@ -270,7 +270,7 @@ onMounted(loadFiles);
   display: flex;
   align-items: flex-end;
   gap: 11px;
-  padding: 15px 26px 14px;
+  padding: 15px 0 14px;
   flex-wrap: wrap;
 }
 
@@ -324,7 +324,7 @@ onMounted(loadFiles);
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 12px 26px 30px;
+  padding: 12px 0 30px;
 }
 
 .reports-view__state-box {

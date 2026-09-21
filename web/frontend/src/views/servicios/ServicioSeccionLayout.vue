@@ -58,6 +58,8 @@ defineProps<{
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  /* Sólo el vertical: la canaleta lateral la pone `.app-shell__main` para todo el SPA. */
+  padding-block: 22px 30px;
 }
 
 .seccion__migas {

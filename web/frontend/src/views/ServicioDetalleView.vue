@@ -664,7 +664,7 @@ onBeforeUnmount(() => camino.cancelar());
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 16px 26px 0;
+  padding: 16px 0 0;
   font-size: 11.5px;
   color: color-mix(in srgb, var(--color-text) 48%, transparent);
 }
@@ -687,7 +687,7 @@ onBeforeUnmount(() => camino.cancelar());
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 20px;
-  padding: 14px 26px 18px;
+  padding: 14px 0 18px;
 }
 
 .servicio-detalle__identity {
@@ -818,7 +818,7 @@ onBeforeUnmount(() => camino.cancelar());
   flex-direction: column;
   align-items: stretch;
   gap: 11px;
-  padding: 16px 26px;
+  padding: 16px 0;
 }
 
 .servicio-detalle__historico-label {

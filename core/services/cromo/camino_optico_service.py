@@ -1410,16 +1410,23 @@ async def resolver_camino_de_servicio(
         )
 
     if pelo_n_id is not None:
-        elegida = next((s for s in semillas if s.pelo_n_id == pelo_n_id), None)
-        if elegida is None:
+        # Pertenencia por consulta directa, NO contra `semillas`: esa lista viene truncada en 20 y
+        # ordenada para **descubrir** ODFs, así que el pelo que ya es posición de patchera queda
+        # último y puede caer afuera. Bug real del Servicio 559 (ID histórico 41579), medido en
+        # dev: el pelo 6754728 matchea por el histórico y tiene conector de ODF, pero de 95 pelos
+        # matcheados cae en el puesto 31 y se rechazaba como ajeno. Es el mismo criterio que ya
+        # usa el endpoint del `.txt`; el guard sigue vivo, pero contra el dato y no contra la
+        # ventana que se listó.
+        if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
             raise PeloAjenoAlServicio(
                 f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."
             )
+        elegido = pelo_n_id
     else:
-        elegida = semillas[0]
+        elegido = semillas[0].pelo_n_id
 
     camino = await resolver_camino_de_pelo(
-        cliente, sesion, elegida.pelo_n_id, incluir_raw=incluir_raw
+        cliente, sesion, elegido, incluir_raw=incluir_raw
     )
     return camino, semillas
 

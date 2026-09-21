@@ -223,7 +223,7 @@ async function onBuscar(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px 26px 30px;
+  padding: 20px 0 30px;
 }
 
 .validar-cromo__header h1 {

@@ -73,6 +73,10 @@
   --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0,0,0,0.65);
 
   --layout-shell-sidebar: 224px;
+  /* Canaleta lateral entre el sidebar y el contenido. Vive en `.app-shell__main`, así que
+     las vistas NO vuelven a declararla: antes cada una repetía `26px` y las que se olvidaban
+     (las secciones de Servicio, CienaTab, FoTab, VlanTab) quedaban pegadas al sidebar. */
+  --layout-shell-gutter: 26px;
 
   /* ── Alias de compatibilidad — NO borrar ──────────────────────── */
   --color-bg-canvas:        var(--color-bg);

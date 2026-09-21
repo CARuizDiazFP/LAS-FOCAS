@@ -2057,3 +2057,66 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Duraciones medidas, para dimensionar una corrida:** cajas PON ~75 min (13.482), puertos de
   splitter ~91 min (154.284), cables de bajada ~32 min (19.030), rosetas ~23 min (17.348), splitters
   ~22 min (20.238).
+
+## 2026-09-21 — Pertenencia de la semilla: el dato, no la ventana listada
+
+- **Contexto:** `GET /servicios/ID/41579/camino` en el SPA devolvía `400 El pelo 6754728 no
+  pertenece al Servicio 559`. El ticket lo atribuía al mapeo entre el ID histórico de la URL y la PK
+  interna. **Es una premisa incorrecta y se descartó midiendo contra la base de dev**: el mapeo lo
+  resuelve `IDENTIDADES_DEL_SERVICIO_SQL` (`m.servicio_id = s.id`, `servicio_numero` contra
+  `s.servicio_id` / `numero_primer_servicio` / `alias_ids`) y funcionaba — el pelo pertenece
+  *precisamente* por el histórico `41579` (`prioridad_identidad = 1`).
+  La causa real: `resolver_camino_de_servicio()` validaba la pertenencia contra
+  `listar_pelos_semilla()`, que viene **truncada en 20** y ordenada para *descubrir* ODFs (primero
+  los pelos SIN conector). Medido: el Servicio 559 tiene **95 pelos matcheados** y 6 posiciones de
+  ODF; el pelo 6754728 tiene conector y cae en el puesto **31** — afuera de la ventana.
+  Es el mismo bug que ya se había corregido en `.../tracking.txt` para el Servicio 93154 (227
+  pelos); quedó vivo en esta función, el único consumidor que no se había migrado.
+
+- **Decisión:** la pertenencia se resuelve siempre con `pelo_pertenece_al_servicio()` —una consulta
+  directa con el mismo predicado de identidades, sin `LIMIT`— y la semilla elegida pasa a ser el
+  `pelo_n_id` pedido, no una fila de la lista. La lista sigue devolviéndose a la UI como catálogo de
+  opciones, que es lo único para lo que sirve estando truncada.
+
+- **Alternativas descartadas:** subir el tope de `listar_pelos_semilla` (mueve el límite pero no lo
+  elimina: con 95 pelos hoy y 227 medidos en otro Servicio, cualquier número es arbitrario);
+  llamarla con `priorizar_conector=True` sólo para validar (arregla este caso porque el pelo tiene
+  conector, y sigue fallando para cualquier pelo legítimo sin conector que caiga fuera del tope);
+  quitar el guard (convertiría el endpoint en un `/path` genérico sobre cualquier pelo de la red).
+
+- **Impacto, verificado real contra `lasfocasdev-postgres`:** `pelo_pertenece_al_servicio(559,
+  6754728)` → `True`, contra `False` del criterio viejo (el pelo no está en la ventana de 20); un
+  pelo de control inexistente (`999999`) sigue dando `False`, así que el guard no se aflojó. Dos
+  tests de regresión nuevos y 1806 de suite en verde. `seleccionar_semillas()` queda intacta: es una
+  función pura cuyo contrato es traducir ids *dentro de la lista que recibe*, y hoy no tiene ningún
+  consumidor en producción.
+
+## 2026-09-21 — La canaleta lateral del SPA vive en el shell, no en cada vista
+
+- **Contexto:** el contenido aparecía pegado al sidebar en las cinco secciones de Servicio
+  (entre ellas `/servicios/ID/:id/camino`), `CienaTab`, `FoTab` y `VlanTab`.
+  `.app-shell__main` iba en `padding: 0` y el espaciado lateral lo repetía cada vista a mano
+  (`padding: Npx 26px M`): 13 vistas lo declaraban en 28 reglas y el resto se lo olvidaba. Al no
+  haber un lugar único, "agregar una vista" y "que quede pegada al sidebar" eran el mismo acto.
+
+- **Decisión (elegida por el usuario entre tres opciones):** centralizar en el shell.
+  `.app-shell__main` declara `padding-inline: var(--layout-shell-gutter)` (token nuevo, `26px`) y
+  **ninguna vista vuelve a declarar padding lateral**. Las 28 reglas se migraron a `padding: Npx 0 M`
+  preservando los verticales, y `.app-shell__main--admin` pasó a declarar sólo `padding-block`.
+
+- **Sólo el eje horizontal se centraliza.** El `padding-block` del `main` queda en `0` a propósito:
+  varias vistas son `height: 100%` con un área de scroll interna, y el `padding-bottom` que le da
+  aire al final de una lista larga tiene que quedar DENTRO del elemento que scrollea — moverlo al
+  contenedor externo degradaría el scroll. Cada vista sigue siendo dueña de su espaciado vertical;
+  las dos que no lo tenían (`ServicioSeccionLayout`, `CienaTab`) recibieron `padding-block`.
+
+- **Alternativas descartadas:** `gap` en el grid de `.app-shell__body` (toca un solo archivo, pero
+  se suma al padding existente y dejaba las 13 vistas en 52px laterales); parchear sólo las cinco
+  vistas pegadas (cero riesgo, pero deja en pie la causa —no hay lugar único— y la próxima vista
+  nueva vuelve a nacer pegada).
+
+- **Impacto:** verificado sobre el bundle compilado — `.app-shell__main[data-v-*]` sale con
+  `padding-inline:var(--layout-shell-gutter)` y **cero** reglas con `26px` lateral en todo el CSS
+  generado. 1806 tests en verde. **La confirmación visual en navegador queda pendiente**: no hay
+  Chromium/Playwright en el entorno y el contenedor `lasfocasdev-web` sirve la imagen de `dev`, no
+  este worktree.

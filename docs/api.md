@@ -276,9 +276,20 @@ Devuelve el camino óptico completo de un servicio, con estadística, consistenc
 > que la UI pueda decir "te muestro 20 de 227" en vez de aparentar que el Servicio tiene 20 fibras.
 > El gestor de Servicios sin ODF **no** pasa el flag y conserva su orden de descubrimiento.
 >
-> La pertenencia del `pelo_n_id` en `.../tracking.txt` se valida con una **consulta directa**, no
-> contra esa lista truncada: hacerlo contra la lista rechazaba con HTTP 400 un pelo que el propio
-> selector acababa de ofrecer.
+> La pertenencia del `pelo_n_id` se valida con una **consulta directa**
+> (`pelo_pertenece_al_servicio`), no contra esa lista truncada: hacerlo contra la lista rechazaba
+> con HTTP 400 un pelo que el propio selector acababa de ofrecer. Vale para los **dos** endpoints
+> que aceptan `pelo_n_id` — `.../tracking.txt` y `.../camino-optico`.
+>
+> **Corregido en `.../camino-optico` el 2026-09-21.** `resolver_camino_de_servicio()` era el único
+> que seguía validando contra la ventana y arrastraba el bug: `GET /servicios/ID/41579/camino` en el
+> SPA fallaba con `400 El pelo 6754728 no pertenece al Servicio 559`. Medido en dev: ese Servicio
+> tiene **95 pelos matcheados** y 6 posiciones de ODF, y el pelo pedido —que matchea justamente por
+> el ID histórico `41579` y **sí** tiene conector de ODF— cae en el puesto **31** del ranking de
+> descubrimiento, fuera del tope de 20. El mapeo ID histórico → PK nunca fue el problema: lo
+> resuelve `IDENTIDADES_DEL_SERVICIO_SQL` (`servicio_id`, `numero_primer_servicio`, `alias_ids`), y
+> es el que hace que el pelo pertenezca. El guard sigue activo: un pelo realmente ajeno todavía
+> devuelve `400`.
 
 ### POST `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar`
 

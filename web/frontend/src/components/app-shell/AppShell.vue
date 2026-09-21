@@ -612,11 +612,17 @@ watch(
 .app-shell__main {
   min-width: 0;
   min-height: 100vh;
-  padding: 0;
+  /* Sólo el eje horizontal se centraliza acá: es el que separa del sidebar. Los verticales siguen
+     en cada vista a propósito — varias son `height: 100%` con un área de scroll interna, y el
+     `padding-bottom` que le da aire al final de una lista larga tiene que quedar DENTRO del
+     elemento que scrollea, no en este contenedor. */
+  padding-inline: var(--layout-shell-gutter);
+  padding-block: 0;
 }
 
 .app-shell__main--admin {
-  padding: 24px 26px 40px;
+  /* El lateral lo hereda del bloque de arriba; acá sólo los verticales propios del sector. */
+  padding-block: 24px 40px;
 }
 
 .app-shell__module-actions {

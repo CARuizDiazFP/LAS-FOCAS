@@ -68,6 +68,22 @@ web/
 - `panel.css` y `admin.css` consumen estos tokens en lugar de redeclarar su propia paleta base.
 - El objetivo de la capa es concentrar identidad cromática, spacing, radios y layout en variables CSS nativas (`--color-*`, `--space-*`, `--layout-*`).
 
+**Canaleta lateral del contenido (`--layout-shell-gutter`, 2026-09-21).** El espacio entre el
+sidebar y el contenido lo pone **una sola regla**: `.app-shell__main { padding-inline:
+var(--layout-shell-gutter) }` en `AppShell.vue`. Las vistas **no** vuelven a declararlo.
+
+Antes cada vista repetía `padding: Npx 26px M` por su cuenta y el `main` iba en `padding: 0`; las
+13 que se acordaban quedaban bien y las que no —las cinco secciones de Servicio (incluida
+`/servicios/ID/:id/camino`), `CienaTab`, `FoTab` y `VlanTab`— quedaban **pegadas al sidebar**. Se
+migraron las 28 reglas afectadas a `padding: Npx 0 M`, preservando los verticales.
+
+Sólo se centralizó el eje **horizontal**, y el `padding-block` del `main` queda en `0` a propósito:
+varias vistas son `height: 100%` con un área de scroll interna, y el `padding-bottom` que le da aire
+al final de una lista larga tiene que vivir DENTRO del elemento que scrollea. Cada vista sigue
+siendo dueña de su espaciado vertical; `.app-shell__main--admin` sólo declara `padding-block`.
+
+Al agregar una vista nueva: **no** pongas padding lateral propio, ya lo trae el shell.
+
 **Sistema de diseño Nocturne (2026-07-29).** `tokens.css` implementa el sistema Nocturne:
 fondo `#161826`, superficie `#232532`, texto `#e9e9ed`, acento blurple `#9184d9`, rampas
 tonales `--color-neutral-100..900` / `--color-accent-100..900` en OKLCH, tipografía Inter
@@ -365,24 +381,59 @@ admin/
 
 ### Rutas Vue Router
 
+Tabla regenerada desde `src/router/index.ts` el 2026-09-21: tenía 17 de las 37 rutas reales, y
+faltaban módulos enteros ya en producción (las cinco secciones de Servicio, todo el inventario
+Cromo y los cuatro viewers de admin).
+
 | Ruta | Componente | Auth | Admin |
 |------|------------|------|-------|
 | `/login` | LoginView | No | No |
 | `/` | AppShell + PanelView | Sí | No |
 | `/infra` | AppShell + InfraTab | Sí | No |
 | `/infra/Camaras/:id` | AppShell + CamaraDetailView | Sí | No |
+| `/infra/Botellas` | AppShell + BotellasInventarioView | Sí | No |
+| `/infra/Camaras/Botellas/ID:id` | AppShell + BotellaDetalleUnificadaView | Sí | No |
+| `/infra/cromo/verificador` | AppShell + VerificadorCromoView | Sí | No |
+| `/infra/cromo/verificador/empalmes` | AppShell + EmpalmesBotellaCromoView | Sí | No |
+| `/infra/cromo/verificador/conectores` | AppShell + ConectoresOdfCromoView | Sí | No |
+| `/infra/cromo/cables` | AppShell + InventarioCablesCromoView | Sí | No |
+| `/infra/cromo/cables/ID:nId` | AppShell + CableDetalleCromoView | Sí | No |
+| `/infra/cromo/odfs` | AppShell + InventarioOdfsCromoView | Sí | No |
+| `/infra/cromo/odfs/ID:nId` | AppShell + OdfDetalleCromoView | Sí | No |
+| `/infra/cromo/pon` | AppShell + InventarioPonCromoView | Sí | No |
+| `/infra/cromo/rosetas` | AppShell + InventarioPonCromoView | Sí | No |
 | `/repetitividad` | AppShell + RepetitividadTab | Sí | No |
 | `/toolkit/vlan` | AppShell + VlanTab | Sí | No |
+| `/toolkit/validar-datos-cromo` | AppShell + ValidarDatosCromoView | Sí | No |
 | `/fo` | AppShell + FoTab | Sí | No |
 | `/dwdm/ciena` | AppShell + CienaTab | Sí | No |
 | `/sla` | AppShell + SlaView | Sí | No |
 | `/reports-history` | AppShell + ReportsHistoryView | Sí | No |
 | `/servicios` | AppShell + ServiciosView | Sí | No |
 | `/servicios/ID/:idServicio` | AppShell + ServicioDetalleView | Sí | No |
+| `/servicios/ID/:idServicio/historico` | AppShell + ServicioHistoricoView | Sí | No |
+| `/servicios/ID/:idServicio/ingresos` | AppShell + ServicioIngresosView | Sí | No |
+| `/servicios/ID/:idServicio/camino` | AppShell + ServicioCaminoView | Sí | No |
+| `/servicios/ID/:idServicio/reclamos` | AppShell + ServicioReclamosView | Sí | No |
+| `/servicios/ID/:idServicio/baneos` | AppShell + ServicioBaneosView | Sí | No |
 | `/admin` | AppShell + AdminDashboard | Sí | Sí |
 | `/admin/usuarios` | AppShell + AdminUsuarios | Sí | Sí |
 | `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
 | `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
+| `/admin/ingesta` | AppShell + AdminIngesta | Sí | Sí |
+| `/admin/ingesta/servicios` | AppShell + AdminIngestaServicios | Sí | Sí |
+| `/admin/ingesta/camaras` | AppShell + AdminIngestaCamaras | Sí | Sí |
+| `/admin/ingesta/cromo` | AppShell + AdminIngestaCromo | Sí | Sí |
+| `/admin/servicios/viewer` | AppShell + AdminServiciosViewer | Sí | Sí |
+| `/admin/servicios/viewer/Camaras` | AppShell + AdminCamarasViewer | Sí | Sí |
+| `/admin/servicios/viewer/Botellas` | AppShell + AdminBotellasViewer | Sí | Sí |
+| `/admin/servicios/viewer/ServiciosSinOdf` | AppShell + AdminServiciosSinOdfViewer | Sí | Sí |
+
+> Las cinco rutas `servicios/ID/:idServicio/<sección>` son **hermanas** de la ficha, no hijas: cada
+> una monta su vista directamente en el `<main>` del shell y comparte presentación por
+> `views/servicios/ServicioSeccionLayout.vue`. El `:idServicio` de la URL es el **ID de negocio**
+> (puede ser un ID histórico del Servicio), no la PK de `app.servicios` — la resolución a PK la hace
+> el backend.
 
 > **Nota (2026-08-24):** `AdminBaneos.vue` es hoy un contenedor de 3 tabs — Baneos Activos
 > (`BaneosActivosPanel.vue`, listado agrupado por Cámara padre + liberación/desbaneo masivo),

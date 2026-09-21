@@ -173,7 +173,7 @@ async function generate() {
 }
 
 .rep-view__header {
-  padding: 22px 26px 0;
+  padding: 22px 0 0;
 }
 
 .rep-view__kicker {
@@ -215,7 +215,7 @@ async function generate() {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
   gap: 22px;
-  padding: 20px 26px 26px;
+  padding: 20px 0 26px;
 }
 
 .rep-view__column {

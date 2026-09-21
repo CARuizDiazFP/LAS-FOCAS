@@ -454,3 +454,79 @@ def test_cada_regla_tiene_una_descripcion_que_no_culpa_a_la_base():
         assert DESCRIPCION_REGLAS[regla]
         assert "mal" not in DESCRIPCION_REGLAS[regla].lower()
         assert "error" not in DESCRIPCION_REGLAS[regla].lower()
+
+
+# ── Pertenencia de la semilla pinneada, sin la ventana de `listar_pelos_semilla` ────────────
+
+def _semilla_de(pelo_n_id: int, *, conector: bool = False):
+    from core.services.cromo.camino_optico_service import PeloSemilla
+
+    return PeloSemilla(
+        pelo_n_id=pelo_n_id,
+        servicio_numero="41579",
+        metodo="AT62",
+        confianza=100,
+        numero_pelo="1",
+        color="azul",
+        cable_n_id=51,
+        cable_nombre="F-822-ARSA",
+        tiene_conector_odf=conector,
+        servicio_raw=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_camino_acepta_una_semilla_real_que_queda_fuera_del_tope(monkeypatch):
+    """Regresión del bug real del Servicio 559 (ID histórico 41579), medido contra la base de dev.
+
+    El pelo 6754728 **es** del Servicio —matchea justamente por su ID histórico, y es posición de
+    ODF— pero de los 95 pelos matcheados cae en el puesto 31 del ranking de descubrimiento, fuera
+    del tope de 20 de `listar_pelos_semilla`. Validar la pertenencia contra esa lista lo rechazaba
+    con "El pelo 6754728 no pertenece al Servicio 559". La pertenencia es un hecho del dato, no de
+    la ventana que se listó: es el mismo criterio que ya usa el endpoint del `.txt`.
+    """
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _listar_truncado(*_a, **_k):
+        # La ventana de 20 NO contiene al pelo pedido; el conjunto real del Servicio sí.
+        return [_semilla_de(6754700 + i) for i in range(20)]
+
+    async def _pertenece(_sesion, servicio_id, pelo_n_id):
+        assert (servicio_id, pelo_n_id) == (559, 6754728)
+        return True
+
+    async def _camino_de_pelo(_cliente, _sesion, pelo_n_id, **_k):
+        return svc.CaminoOptico(estado=svc.ESTADO_OK, pelo_n_id=pelo_n_id)
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _listar_truncado)
+    monkeypatch.setattr(svc, "pelo_pertenece_al_servicio", _pertenece)
+    monkeypatch.setattr(svc, "resolver_camino_de_pelo", _camino_de_pelo)
+
+    camino, semillas = await svc.resolver_camino_de_servicio(
+        object(), object(), 559, pelo_n_id=6754728
+    )
+
+    assert camino.estado == svc.ESTADO_OK
+    assert camino.pelo_n_id == 6754728
+    assert len(semillas) == 20
+
+
+@pytest.mark.asyncio
+async def test_el_camino_sigue_rechazando_un_pelo_ajeno_al_servicio(monkeypatch):
+    """El guard no se afloja: sin él el endpoint sería un `/path` genérico de toda la red."""
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _listar(*_a, **_k):
+        return [_semilla_de(6754728)]
+
+    async def _no_pertenece(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _listar)
+    monkeypatch.setattr(svc, "pelo_pertenece_al_servicio", _no_pertenece)
+
+    with pytest.raises(svc.PeloAjenoAlServicio) as exc:
+        await svc.resolver_camino_de_servicio(object(), object(), 559, pelo_n_id=999999)
+
+    assert "999999" in str(exc.value)
+    assert "559" in str(exc.value)

@@ -668,7 +668,7 @@ function irAEmpalmes(): void {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px 26px 30px;
+  padding: 20px 0 30px;
 }
 
 .verificador-cromo__header h1 {
