@@ -205,10 +205,13 @@ En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras inte
 
 - **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
 - **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
-- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — sección
-  aparte, agrupada por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran
-  los que son tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de
-  color.
+- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — agrupadas
+  por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran los que son
+  tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de color.
+  **Desde 2026-09-21 no viven en la ficha sino en `/servicios/ID/:id/camino`**
+  (`components/servicios/detalle/OdfsAsociadasPanel.vue`): el refactor a tarjetas de 5d68310 borró
+  la tabla sin darle vista propia, y la ficha quedó contando ODFs que no tenía dónde mostrar. La
+  ficha conserva sólo el total, para el resumen de la tarjeta "Camino óptico".
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
 
@@ -463,6 +466,11 @@ Dos selecciones distintas conviven a propósito, porque tienen costos distintos:
   un tracking por pelo (1 en PON, 2 o más en FO o con un SW de módulo bifilar), y cada uno baja como
   su propio `.txt`. `CromoPeloSelector.vue` los expone como checkboxes; el botón "Ver camino" de
   cada fila es el que cambia `peloElegido`.
+
+La vista muestra **dos fuentes distintas** sobre el mismo recorrido y las rotula como tales: arriba
+el camino que declara Cromo (este panel), abajo las ODFs del archivo de tracking de ruta subido a
+mano (`OdfsAsociadasPanel`, ver arriba). Que difieran es un dato operativo, no un bug de la
+pantalla — confundirlas lleva a "corregir" la que estaba bien.
 
 Por defecto vienen tildadas las **posiciones de ODF** del Servicio (`preseleccionados` de
 `GET .../camino-optico/pelos?priorizar_conector=true`). El selector **lista sólo esas** y colapsa el

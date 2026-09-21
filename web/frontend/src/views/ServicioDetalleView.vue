@@ -144,7 +144,7 @@
           :cargando="foLoading || camino.cargandoPelos.value"
           :error="foError"
           :resumen="resumenCamino"
-          accion="Ver camino y trackings"
+          accion="Ver camino, ODFs y trackings"
         />
 
         <ServicioSeccionCard
@@ -184,7 +184,6 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { estadoCamaraToken } from '../api/camaras';
 import {
   CATEGORIAS_SERVICIO,
   categoriaLabel,
@@ -199,9 +198,6 @@ import {
   type ServicioItem,
 } from '../api/servicios';
 import {
-  type InfraOdfEmpalme,
-  type InfraOdfTerminal,
-  type InfraOdfRuta,
   type InfraRutaItem,
   type InfraServicioIngreso,
   type ReportHistoryItem,
@@ -270,13 +266,8 @@ const foTrackingResumen = ref<{
   puntaB: string | null;
 } | null>(null);
 
-const odfsLoading = ref(false);
-const odfsError = ref('');
-const odfsRutas = ref<InfraOdfRuta[]>([]);
+// Sólo el total: las ODFs enteras se ven en la vista de Camino óptico (OdfsAsociadasPanel).
 const totalOdfs = ref(0);
-// Por defecto sólo se ven los empalmes que son ODF (es_transito === true); tildar el checkbox
-// revela también los empalmes simples (cámaras de paso, etc.) del tracking.
-const showAllEmpalmes = ref(false);
 
 const ingresosLoading = ref(false);
 const ingresosError = ref('');
@@ -396,26 +387,6 @@ const rutaPrincipal = computed(() => {
   const principal = rutas.find((ruta) => (ruta.tipo ?? '').toUpperCase() === 'PRINCIPAL');
   return principal ?? rutas[0];
 });
-
-// Fila individual aplanada de un empalme, etiquetada con los datos de su ruta padre — filtra a
-// sólo es_transito === true salvo que showAllEmpalmes esté activo. terminal_a/terminal_b viven
-// aparte, a nivel de ruta (ver odfsPorRuta) — nunca se cruzan contra una fila puntual acá.
-interface OdfFlatRow extends InfraOdfEmpalme {
-  ruta_id: number;
-  ruta_nombre: string;
-  ruta_tipo: string;
-}
-
-// Reagrupa odfsFlat por ruta para el render (subtítulo + leyenda de puntas + tabla por ruta),
-// omitiendo rutas sin ninguna fila visible bajo el filtro actual.
-interface OdfGrupoRuta {
-  ruta_id: number;
-  ruta_nombre: string;
-  ruta_tipo: string;
-  terminal_a: InfraOdfTerminal | null;
-  terminal_b: InfraOdfTerminal | null;
-  filas: OdfFlatRow[];
-}
 
 const resumenSla = computed(() => formatReporteSummary(reporteSla.value));
 const resumenRepetitividad = computed(() => formatReporteSummary(reporteRepetitividad.value));
@@ -582,23 +553,18 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
   }
 }
 
+/** Alimenta el "N ODFs" del resumen de la tarjeta de Camino. Si falla, el resumen omite esa parte
+ * en vez de gritar: el detalle -y su error, con texto- vive en la vista de Camino óptico. */
 async function loadOdfsAsociadas(idOrigen: string): Promise<void> {
   const clean = idOrigen.trim();
-  if (!clean) return;
-
-  odfsLoading.value = true;
-  odfsError.value = '';
-  odfsRutas.value = [];
   totalOdfs.value = 0;
+  if (!clean) return;
 
   try {
     const data = await getOdfsServicio(clean);
-    odfsRutas.value = data.rutas ?? [];
     totalOdfs.value = data.total_odfs ?? 0;
-  } catch (err: unknown) {
-    odfsError.value = err instanceof Error ? err.message : 'No se pudo cargar ODFs asociadas';
-  } finally {
-    odfsLoading.value = false;
+  } catch {
+    totalOdfs.value = 0;
   }
 }
 
@@ -1018,109 +984,6 @@ onBeforeUnmount(() => camino.cancelar());
 .servicio-detalle__panel-link:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-.servicio-detalle__odfs {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin: 0 26px 26px;
-  padding: 16px;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.servicio-detalle__odfs-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.servicio-detalle__odfs-header h2 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.servicio-detalle__odfs-header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.servicio-detalle__odfs-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
-  cursor: pointer;
-}
-
-.servicio-detalle__odfs-grupo {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.servicio-detalle__odfs-grupo + .servicio-detalle__odfs-grupo {
-  margin-top: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--color-divider);
-}
-
-.servicio-detalle__odfs-subtitulo {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.servicio-detalle__odfs-puntas {
-  margin: 0;
-  font-size: 11.5px;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
-}
-
-.servicio-detalle__odfs-muted {
-  color: color-mix(in srgb, var(--color-text) 40%, transparent);
-}
-
-.servicio-detalle__odfs-estado {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.servicio-detalle__odfs-dot {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--color-state-idle);
-}
-.servicio-detalle__odfs-dot.is-ok { background: var(--color-state-ok); }
-.servicio-detalle__odfs-dot.is-warn { background: var(--color-state-warn); }
-.servicio-detalle__odfs-dot.is-error { background: var(--color-state-error); }
-.servicio-detalle__odfs-dot.is-idle { background: var(--color-state-idle); }
-
-.tabla-odfs {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-
-.tabla-odfs th,
-.tabla-odfs td {
-  text-align: left;
-  padding: 6px 9px;
-  border-bottom: 1px solid var(--color-divider);
-}
-
-.tabla-odfs th {
-  font-weight: 500;
-  font-size: 11px;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
 @media (max-width: 960px) {

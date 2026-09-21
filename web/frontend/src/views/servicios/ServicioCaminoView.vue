@@ -1,14 +1,14 @@
 <!--
   Nombre de archivo: ServicioCaminoView.vue
   Ubicación de archivo: web/frontend/src/views/servicios/ServicioCaminoView.vue
-  Descripción: Camino óptico de Cromo de un Servicio en su vista dedicada — resolución, consistencia
-  con lo ingerido, secuencia de nodos y descarga de un .txt por pelo
+  Descripción: Camino óptico de un Servicio en su vista dedicada — lo que declara Cromo
+  (resolución, consistencia, secuencia, descarga de .txt) y las ODFs del archivo de tracking de ruta
 -->
 <template>
   <ServicioSeccionLayout
     :id-servicio="idServicio"
     titulo="Camino óptico"
-    descripcion="Recorrido físico que declara Cromo, su consistencia contra lo ingerido y la descarga de trackings."
+    descripcion="Dos lecturas del recorrido físico: la que declara Cromo y la del archivo de tracking de la ruta."
     :servicio="base.servicio.value"
     :loading="base.loading.value"
     :error="base.error.value"
@@ -33,6 +33,13 @@
         {{ camino.errorDescarga.value }}
       </span>
     </div>
+
+    <hr class="noc-rule" />
+
+    <!-- Fuente distinta a todo lo de arriba: el tracking de ruta subido a mano, no Cromo. Vive acá
+         y no en la ficha porque la ficha se compactó a tarjetas, y su tarjeta "Camino óptico" ya
+         contaba estas ODFs sin tener dónde mostrarlas. -->
+    <OdfsAsociadasPanel :id-origen="base.idOrigen.value" />
   </ServicioSeccionLayout>
 </template>
 
@@ -41,6 +48,7 @@ import { computed, onBeforeUnmount, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import CromoCaminoPanel from '../../components/infra/CromoCaminoPanel.vue';
+import OdfsAsociadasPanel from '../../components/servicios/detalle/OdfsAsociadasPanel.vue';
 import { useCromoPath } from '../../composables/useCromoPath';
 import { useServicioBase } from '../../composables/useServicioBase';
 import ServicioSeccionLayout from './ServicioSeccionLayout.vue';
