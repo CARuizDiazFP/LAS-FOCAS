@@ -582,6 +582,14 @@ class Ingreso(Base):
     )
     fecha_inicio = Column(DateTime(timezone=True), nullable=True)
     fecha_fin = Column(DateTime(timezone=True), nullable=True)
+    # Desde 2026-09-23 (migración `20260923_01`, Task 2 del refactor de corrección de
+    # ingresos/servicios): hilo de Slack en el que se originó este movimiento. Antes de esta
+    # migración no había forma de llegar del hilo a un `Ingreso` que sí matcheó bien — sólo
+    # `IngresoSinMatch` guardaba `thread_ts`, y sólo para los casos que fallaron. `NULL` en filas
+    # creadas antes de esta fecha; esos hilos históricos se resuelven por los niveles 2 y 3 de la
+    # cascada de búsqueda (Task 5), no por esta columna.
+    thread_ts = Column(String(32), nullable=True, index=True)
+    canal_id = Column(String(32), nullable=True)
 
     camara = relationship("Camara", back_populates="ingresos")
     cromo_botella = relationship("CromoBotella", foreign_keys=[cromo_botella_id])
@@ -651,6 +659,90 @@ class IngresoSinMatch(Base):
 
     def __repr__(self) -> str:
         return f"<IngresoSinMatch id={self.id} origen='{self.origen}' texto_original='{self.texto_original}'>"
+
+
+class IngresoCorreccion(Base):
+    """Log append-only de ejecuciones de los comandos Slack "Forzar ingreso"/"Forzar egreso"
+    (migración `20260923_01`, Task 2 del refactor de corrección de ingresos/servicios) —
+    una fila por cada invocación, exitosa o no.
+
+    Tabla nueva y **no** una extensión de `IngresoSinMatch`: esa tabla modela "el nombre no
+    matcheó" (subconjunto de los hilos) y sus filas se mutan en el tiempo
+    (`resuelto_via_empalme`, `resuelto_via_revalidacion`) — semántica opuesta a la de un log
+    inmutable. Una corrección manual puede ocurrir también sobre un hilo que matcheó
+    perfecto la primera vez, o sin hilo alguno (fecha/cámara pasadas explícitas en el comando).
+
+    La inmutabilidad no es sólo una convención de este modelo: la migración `20260923_01` crea
+    un trigger (`trg_ingresos_correcciones_inmutable`) que rechaza cualquier `UPDATE`/`DELETE`
+    a nivel de Postgres — corregir un registro mal escrito significa insertar una fila nueva que
+    lo referencia, nunca mutar la original.
+
+    `comando`, `resultado` y `fuente_momento` son `String`, no enums de Postgres: sus valores
+    previstos van a crecer durante las Tasks 5 y 6 (`resultado` sólo ya tiene al menos 10
+    valores previstos, incluido `PENDIENTE_FECHA`), y un enum de Postgres obligaría a una
+    migración `ALTER TYPE ... ADD VALUE` por cada valor nuevo.
+
+    `camara_id_resuelta`/`cromo_botella_id_resuelta`/`ingreso_id` quedan `NULL` cuando el
+    procesamiento no llegó a resolverlos (p. ej. `resultado` de falla antes de encontrar la
+    cámara, o `PENDIENTE_FECHA` antes de tener una fecha efectiva) — todas con
+    `ON DELETE SET NULL`: el log de auditoría sobrevive aunque la entidad referenciada se borre
+    después, perder la fila de auditoría sería peor que perder sólo el vínculo.
+    """
+
+    __tablename__ = "ingresos_correcciones"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    comando = Column(String(32), nullable=False)  # "FORZAR_INGRESO" | "FORZAR_EGRESO"
+    actor_slack_user_id = Column(String(32), nullable=False)
+    # Nombre resuelto del actor (mismo patrón que `Ingreso.tecnico_id`) — nullable porque la
+    # resolución de nombre puede fallar.
+    actor_nombre = Column(String(255), nullable=True)
+    canal_id = Column(String(32), nullable=False)
+    thread_ts = Column(String(32), nullable=True, index=True)
+    mensaje_ts = Column(String(32), nullable=False)
+    comando_crudo = Column(Text, nullable=False)
+    motivo = Column(Text, nullable=True)
+    camara_texto_solicitado = Column(String(512), nullable=False)
+    camara_id_resuelta = Column(
+        Integer,
+        ForeignKey("app.camaras.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    cromo_botella_id_resuelta = Column(
+        BigInteger(),
+        ForeignKey("app.cromo_botellas.n_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    momento_solicitado = Column(DateTime(timezone=True), nullable=True)
+    momento_efectivo = Column(DateTime(timezone=True), nullable=True)
+    fuente_momento = Column(String(16), nullable=True)  # "hilo" | "explicito"
+    ingreso_id = Column(
+        Integer,
+        ForeignKey("app.ingresos.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    resultado = Column(String(64), nullable=False)
+    error_detalle = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    camara_resuelta = relationship("Camara", foreign_keys=[camara_id_resuelta])
+    cromo_botella_resuelta = relationship("CromoBotella", foreign_keys=[cromo_botella_id_resuelta])
+    ingreso = relationship("Ingreso", foreign_keys=[ingreso_id])
+
+    def __repr__(self) -> str:
+        return (
+            f"<IngresoCorreccion id={self.id} comando='{self.comando}' "
+            f"resultado='{self.resultado}'>"
+        )
 
 
 class IncidenteBaneo(Base):
