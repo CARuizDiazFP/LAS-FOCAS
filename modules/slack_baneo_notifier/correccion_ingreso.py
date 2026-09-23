@@ -22,11 +22,13 @@ derivan de ella:
 - Texto vacío tras "Forzar egreso" (nada más) → forma "bare": ambos `camara_texto` e `ingreso_id`
   quedan en `None` — la Task 5 resuelve la cámara y el momento enteramente desde el hilo.
 - Texto tras "Forzar egreso" que NO matchea ni "<CAMARA> DD-MM-AAAA HH:MM" ni "#<id>" (ej. sólo
-  "Forzar egreso Cra Mitre 302", sin fecha) → se interpreta como cámara sin fecha: `camara_texto`
-  queda seteado, `momento` e `ingreso_id` en `None`. A diferencia de "Forzar ingreso", donde la
-  gramática SÍ permite cámara sin fecha (el momento se toma del hilo), acá esa combinación no es una
-  forma válida de la gramática — el caller usa esta distinción (`camara_texto is not None and
-  momento is None and ingreso_id is None`) para responder `construir_respuesta_falta_fecha`.
+  "Forzar egreso Cra Mitre 302", sin fecha) → `camara_texto` queda seteado, `momento` e `ingreso_id`
+  en `None`. Este parser no conoce el tipo de formulario del hilo (Ingreso o Egreso) — devuelve esa
+  combinación de forma neutral, sin prescribir una respuesta única. La decisión es de la Task 5,
+  según la tabla "Regla del momento implícito" del plan: si el hilo es de tipo Egreso, el momento
+  puede resolverse implícito desde su `ts` (misma regla que "Forzar ingreso <CAMARA>"); si no hay
+  ningún hilo así, no hay ningún momento disponible y corresponde pedirlo explícito con
+  `construir_respuesta_falta_fecha`.
 """
 
 from __future__ import annotations
@@ -115,7 +117,8 @@ class ComandoForzarEgreso:
     detalle de qué combinación de campos corresponde a cada forma:
 
     - bare: ``camara_texto=None``, ``ingreso_id=None``, ``momento=None``.
-    - cámara sin fecha (inválida, falta la fecha): ``camara_texto`` seteado, el resto en `None`.
+    - cámara sin momento resuelto (ver docstring del módulo — la Task 5 decide qué responder según
+      el tipo de hilo): ``camara_texto`` seteado, el resto en `None`.
     - cámara + fecha: ``camara_texto`` y ``momento`` seteados, ``ingreso_id=None``.
     - ``#<id>``: ``ingreso_id`` seteado, ``camara_texto=None``, ``momento=None``.
     """
@@ -130,7 +133,8 @@ class ComandoForzarEgreso:
 class IngresoAbiertoInfo:
     """Datos mínimos de un `Ingreso` abierto candidato a cerrar, para
     `construir_respuesta_varios_ingresos_abiertos` — un dataclass propio (no el modelo ORM `Ingreso`)
-    para que este módulo siga sin importar `db.models`, ni directa ni transitivamente."""
+    para que este resultado no dependa de una sesión de SQLAlchemy: la Task 5 lo arma a partir de
+    filas `Ingreso` ya resueltas y desconectadas de la sesión."""
 
     id: int
     tecnico: str | None
@@ -252,10 +256,10 @@ def extraer_comando_forzar_egreso(
         resto = (match.group(1) or "").strip()
         if not resto:
             return ComandoForzarEgreso(camara_texto=None, ingreso_id=None, momento=None, motivo=None)
-        # Hay texto pero no matcheó ni "#<id>" ni "<CAMARA> DD-MM-AAAA HH:MM": falta la fecha. No es
-        # una forma válida de la gramática (a diferencia de "Forzar ingreso", acá no hay momento
-        # implícito posible cuando se nombra una cámara) — el caller responde con
-        # `construir_respuesta_falta_fecha`.
+        # Hay texto pero no matcheó ni "#<id>" ni "<CAMARA> DD-MM-AAAA HH:MM": no hay ningún momento
+        # que este parser pueda resolver por sí mismo (no conoce el tipo de hilo). Se devuelve de
+        # forma neutral — la Task 5 decide si el hilo resuelve el momento implícito o si corresponde
+        # `construir_respuesta_falta_fecha` (ver docstring del módulo).
         camara_texto = limpiar_ruido_operativo(resto)
         return ComandoForzarEgreso(
             camara_texto=(camara_texto or None), ingreso_id=None, momento=None, motivo=None
@@ -314,10 +318,14 @@ def construir_respuesta_ok_forzar_egreso_asentado(camara_nombre: str, momento_ut
     )
 
 
-def construir_respuesta_falta_fecha(camara_texto: str) -> str:
+def construir_respuesta_falta_fecha(camara_texto: str, comando: Literal["ingreso", "egreso"]) -> str:
+    """Pide la fecha/hora explícita porque no hay ningún momento implícito disponible. Sirve para
+    los dos comandos, no sólo "Forzar egreso": la tabla "Regla del momento implícito" (Task 5) exige
+    fecha explícita tanto para "Forzar egreso <CAMARA>" en un hilo que no es de tipo Egreso como para
+    "Forzar ingreso <CAMARA>" en un hilo de tipo Egreso — mismo mensaje, sólo cambia el verbo."""
     return (
-        f":warning: Para forzar un egreso en *{camara_texto}* hace falta la fecha y hora — "
-        f"reenviá el comando completo (*Forzar egreso {camara_texto} DD-MM-AAAA HH:MM*) o "
+        f":warning: Para forzar un {comando} en *{camara_texto}* hace falta la fecha y hora — "
+        f"reenviá el comando completo (*Forzar {comando} {camara_texto} DD-MM-AAAA HH:MM*) o "
         f"respondé en este mismo hilo sólo con *DD-MM-AAAA HH:MM*."
     )
 

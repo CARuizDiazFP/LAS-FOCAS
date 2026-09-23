@@ -76,6 +76,28 @@ class TestExtraerComandoForzarIngreso(unittest.TestCase):
         assert resultado is not None
         self.assertEqual(resultado.camara_texto, "Cra Ruta 9 - Km 45")
 
+    def test_regex_no_goloso_discrimina_con_segunda_fecha_embebida(self) -> None:
+        """Fix round 1 (Important, hallazgo del revisor): `test_camara_con_guiones_y_numeros_con_fecha`
+        de arriba NO alcanza para detectar si alguien cambia el `.+?` de
+        `_RE_FORZAR_INGRESO_CON_FECHA` por `.+` (goloso) — con una sola fecha en el string, lazy y
+        goloso dan el mismo resultado. La divergencia real sólo aparece con una SEGUNDA subcadena con
+        forma de fecha más adelante (acá, dentro del motivo libre): un patrón goloso haría backtrack
+        desde el final y tomaría la ÚLTIMA fecha como la del comando, comiéndose el motivo entero
+        (incluida la primera fecha) como si fuera parte del nombre de cámara.
+
+        Verificado a mano (evidencia en task-4-report.md, sección "Fix round 1"): cambiando
+        `_RE_FORZAR_INGRESO_CON_FECHA` de `.+?` a `.+` este test falla — da
+        `camara_texto="Cra Mitre 302 20-09-2026 10:00 visto de nuevo"`, `momento` del 21-09 (no del
+        20-09) y `motivo=None`."""
+        resultado = extraer_comando_forzar_ingreso(
+            "Forzar ingreso Cra Mitre 302 20-09-2026 10:00 visto de nuevo 21-09-2026 11:00",
+            ahora=_AHORA,
+        )
+        assert resultado is not None
+        self.assertEqual(resultado.camara_texto, "Cra Mitre 302")
+        self.assertEqual(resultado.momento, datetime(2026, 9, 20, 13, 0, tzinfo=timezone.utc))
+        self.assertEqual(resultado.motivo, "visto de nuevo 21-09-2026 11:00")
+
     def test_negrita_slack_en_nombre_de_camara(self) -> None:
         """Bug real 2026-08-25 (mismo que `test_slack_cable_info.py`): Slack manda los asteriscos de
         negrita literales en `event["text"]`."""
@@ -181,6 +203,20 @@ class TestExtraerComandoForzarEgreso(unittest.TestCase):
         assert resultado is not None
         self.assertEqual(resultado.camara_texto, "Cra Ruta 9 - Km 45")
 
+    def test_regex_no_goloso_discrimina_con_segunda_fecha_embebida(self) -> None:
+        """Fix round 1 (Important) — gemelo egreso de
+        `TestExtraerComandoForzarIngreso.test_regex_no_goloso_discrimina_con_segunda_fecha_embebida`.
+        Con `_RE_FORZAR_EGRESO_CON_FECHA` cambiado a `.+` (goloso), este test falla exactamente igual:
+        toma la segunda fecha embebida en el motivo en vez de la primera."""
+        resultado = extraer_comando_forzar_egreso(
+            "Forzar egreso Cra Mitre 302 20-09-2026 10:00 visto de nuevo 21-09-2026 11:00",
+            ahora=_AHORA,
+        )
+        assert resultado is not None
+        self.assertEqual(resultado.camara_texto, "Cra Mitre 302")
+        self.assertEqual(resultado.momento, datetime(2026, 9, 20, 13, 0, tzinfo=timezone.utc))
+        self.assertEqual(resultado.motivo, "visto de nuevo 21-09-2026 11:00")
+
     def test_por_id(self) -> None:
         resultado = extraer_comando_forzar_egreso("Forzar egreso #123")
         self.assertEqual(
@@ -196,8 +232,10 @@ class TestExtraerComandoForzarEgreso(unittest.TestCase):
 
     def test_camara_sin_fecha_queda_incompleto(self) -> None:
         """No es una forma válida de la gramática de "Forzar egreso" (a diferencia de "Forzar
-        ingreso") — el caller usa `camara_texto` seteado + `momento is None` + `ingreso_id is None`
-        para responder `construir_respuesta_falta_fecha`."""
+        ingreso") — el parser no conoce el tipo de hilo, así que devuelve `camara_texto` seteado +
+        `momento is None` + `ingreso_id is None` de forma neutral. La Task 5 decide qué responder
+        (momento implícito del hilo si es de tipo Egreso, o `construir_respuesta_falta_fecha` si
+        no)."""
         resultado = extraer_comando_forzar_egreso("Forzar egreso Cra Mitre 302")
         self.assertEqual(resultado.camara_texto, "Cra Mitre 302")
         self.assertEqual(resultado.momento, None)
@@ -342,11 +380,25 @@ class TestConstructoresDeRespuesta(unittest.TestCase):
         self.assertIsInstance(texto, str)
         self.assertIn("Cra Mitre 302", texto)
 
-    def test_falta_fecha(self) -> None:
-        texto = construir_respuesta_falta_fecha("Cra Mitre 302")
+    def test_falta_fecha_egreso(self) -> None:
+        texto = construir_respuesta_falta_fecha("Cra Mitre 302", comando="egreso")
         self.assertIsInstance(texto, str)
         self.assertIn("Cra Mitre 302", texto)
         self.assertIn("DD-MM-AAAA", texto)
+        self.assertIn("egreso", texto)
+        self.assertIn("Forzar egreso Cra Mitre 302 DD-MM-AAAA HH:MM", texto)
+
+    def test_falta_fecha_ingreso(self) -> None:
+        """Fix round 1 (Minor): el hilo de Egreso + "Forzar ingreso <CAMARA>" (tabla "Regla del
+        momento implícito" de la Task 5) también exige fecha explícita — mismo constructor,
+        parametrizado por verbo, para no duplicar el texto en el servicio de la Task 5."""
+        texto = construir_respuesta_falta_fecha("Cra Mitre 302", comando="ingreso")
+        self.assertIsInstance(texto, str)
+        self.assertIn("Cra Mitre 302", texto)
+        self.assertIn("DD-MM-AAAA", texto)
+        self.assertIn("ingreso", texto)
+        self.assertIn("Forzar ingreso Cra Mitre 302 DD-MM-AAAA HH:MM", texto)
+        self.assertNotIn("egreso", texto)
 
     def test_camara_ambigua(self) -> None:
         texto = construir_respuesta_camara_ambigua(
