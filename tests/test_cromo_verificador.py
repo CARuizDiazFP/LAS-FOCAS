@@ -171,6 +171,157 @@ async def test_servicios_por_tubo_referencia_colgada_con_matches():
     assert len(resultado.servicios) == 1
 
 
+# ── servicios_unicos_por_cable / _por_tubo (Task 1, plan "Corrección ingresos + Servicios") ─────
+#
+# `_SesionFake` matchea por substring del SQL compilado (ver docstring de la clase) — las claves acá
+# usan "GROUP BY s.id" (exclusivo de las consultas nuevas, ninguna consulta vieja del archivo agrupa)
+# para no pisarse con las claves "cromo_pelos p\n    JOIN app.cromo_servicio_match" que usan los
+# tests de `servicios_por_cable`/`_por_tubo` de más arriba.
+
+_FILA_SERVICIO_UNICO_TRES_PELOS = (
+    501,  # s.id
+    "SRV-001",  # s.servicio_id
+    "SRV-001",  # numero_primer_servicio
+    "Cliente Uno",  # nombre_cliente
+    "Cliente Uno SA",  # cliente
+    "ACTIVO",  # estado_servicio
+    "CORPORATIVO",  # tipo_servicio
+    [9001, 9002, 9003],  # pelos_n_ids — el mismo servicio ocupa 3 pelos del cable
+    3,  # cantidad_pelos
+    ["1234"],  # numeros_en_pelo — un solo número, igual en los tres pelos
+    ["REGEX_EXACTO"],  # metodos
+)
+
+_FILA_SERVICIO_UNICO_DOS_NUMEROS = (
+    502,  # s.id
+    "SRV-002",  # s.servicio_id
+    "SRV-002",  # numero_primer_servicio
+    "Cliente Dos",  # nombre_cliente
+    "Cliente Dos SA",  # cliente
+    "ACTIVO",  # estado_servicio
+    "RESIDENCIAL",  # tipo_servicio
+    [9101],  # pelos_n_ids — un solo pelo
+    1,  # cantidad_pelos
+    ["108013", "66041"],  # numeros_en_pelo — gotcha real de los 85 pares (pelo, servicio) con 2 filas
+    ["REGEX_EXACTO"],  # metodos
+)
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_cable_no_encontrado():
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_unicos_por_cable(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_cable_tres_pelos_una_sola_fila():
+    """Caso discriminante del brief: un servicio con tres pelos en el mismo cable debe devolver UNA
+    fila con `cantidad_pelos == 3` y los tres `pelos_n_ids` — no tres filas."""
+    sesion = _SesionFake(respuestas={"GROUP BY s.id": [_FILA_SERVICIO_UNICO_TRES_PELOS]})
+    resultado = await verificador.servicios_unicos_por_cable(sesion, 6610203)
+
+    assert resultado.cable_n_id == 6610203
+    assert resultado.tubo_n_id is None
+    assert len(resultado.servicios) == 1
+    servicio = resultado.servicios[0]
+    assert servicio.servicio_id == 501
+    assert servicio.servicio_id_externo == "SRV-001"
+    assert servicio.cantidad_pelos == 3
+    assert servicio.pelos_n_ids == [9001, 9002, 9003]
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_cable_dos_numeros_en_pelo_sigue_una_sola_fila():
+    """El otro caso discriminante del brief: dos `servicio_numero` distintos para el mismo (pelo,
+    servicio) — el índice único real es `(pelo_n_id, servicio_numero)`, no `(pelo_n_id,
+    servicio_id)` — deben seguir devolviendo una sola fila, con ambos números en `numeros_en_pelo`."""
+    sesion = _SesionFake(respuestas={"GROUP BY s.id": [_FILA_SERVICIO_UNICO_DOS_NUMEROS]})
+    resultado = await verificador.servicios_unicos_por_cable(sesion, 6610203)
+
+    assert len(resultado.servicios) == 1
+    servicio = resultado.servicios[0]
+    assert servicio.cantidad_pelos == 1
+    assert servicio.numeros_en_pelo == ["108013", "66041"]
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_cable_referencia_colgada_sin_matches():
+    """Mismo criterio de tolerancia que `servicios_por_cable`: hay pelos que referencian el cable
+    pero ninguno con servicio matcheado todavía — no es "no encontrado", es una lista vacía."""
+    sesion = _SesionFake(respuestas={"FROM app.cromo_pelos WHERE cable_n_id": [(1,)]})
+    resultado = await verificador.servicios_unicos_por_cable(sesion, 10191706)
+
+    assert resultado.cable_n_id == 10191706
+    assert resultado.servicios == []
+
+
+def test_servicios_unicos_por_cable_sync_tres_pelos_una_sola_fila():
+    """Gemela sync — mismo caso discriminante que la versión async, para el listener de Slack."""
+    sesion = _SesionSyncFake(respuestas={"GROUP BY s.id": [_FILA_SERVICIO_UNICO_TRES_PELOS]})
+    resultado = verificador.servicios_unicos_por_cable_sync(sesion, 6610203)
+
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].cantidad_pelos == 3
+    assert resultado.servicios[0].pelos_n_ids == [9001, 9002, 9003]
+
+
+def test_servicios_unicos_por_cable_sync_no_encontrado():
+    sesion = _SesionSyncFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        verificador.servicios_unicos_por_cable_sync(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_tubo_no_encontrado():
+    sesion = _SesionFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        await verificador.servicios_unicos_por_tubo(sesion, 999)
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_tubo_tres_pelos_una_sola_fila():
+    sesion = _SesionFake(respuestas={"GROUP BY s.id": [_FILA_SERVICIO_UNICO_TRES_PELOS]})
+    resultado = await verificador.servicios_unicos_por_tubo(sesion, 7487868)
+
+    assert resultado.tubo_n_id == 7487868
+    assert resultado.cable_n_id is None
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].cantidad_pelos == 3
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_tubo_dos_numeros_en_pelo_sigue_una_sola_fila():
+    sesion = _SesionFake(respuestas={"GROUP BY s.id": [_FILA_SERVICIO_UNICO_DOS_NUMEROS]})
+    resultado = await verificador.servicios_unicos_por_tubo(sesion, 7487868)
+
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].numeros_en_pelo == ["108013", "66041"]
+
+
+@pytest.mark.asyncio
+async def test_servicios_unicos_por_tubo_referencia_colgada_sin_matches():
+    sesion = _SesionFake(respuestas={"FROM app.cromo_pelos WHERE tubo_n_id": [(1,)]})
+    resultado = await verificador.servicios_unicos_por_tubo(sesion, 10191747)
+
+    assert resultado.tubo_n_id == 10191747
+    assert resultado.servicios == []
+
+
+def test_servicios_unicos_por_tubo_sync_tres_pelos_una_sola_fila():
+    sesion = _SesionSyncFake(respuestas={"GROUP BY s.id": [_FILA_SERVICIO_UNICO_TRES_PELOS]})
+    resultado = verificador.servicios_unicos_por_tubo_sync(sesion, 7487868)
+
+    assert len(resultado.servicios) == 1
+    assert resultado.servicios[0].cantidad_pelos == 3
+
+
+def test_servicios_unicos_por_tubo_sync_no_encontrado():
+    sesion = _SesionSyncFake()
+    with pytest.raises(verificador.ObjetoNoEncontrado):
+        verificador.servicios_unicos_por_tubo_sync(sesion, 999)
+
+
 # ── servicios_por_botella ────────────────────────────────────────────────────
 
 

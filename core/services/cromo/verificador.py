@@ -106,6 +106,50 @@ class ResultadoOdf:
     cables: list[CableDeBotella] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class ServicioUnico:
+    """Un servicio de `app.servicios` alcanzado por al menos un pelo con match, agregado por
+    `s.id` — una fila por SERVICIO, no una por pelo (a diferencia de `ServicioEncontrado`, que es
+    una fila por pelo↔match). Producida por `servicios_unicos_por_cable`/`_por_tubo` (Task 1 del
+    plan "Corrección ingresos + Servicios", 2026-09-23), consumida por el comando de Slack
+    `Servicios <cable>` (Task 8) y por las rutas REST `/servicios-unicos` (Task 10).
+
+    Dataclass propio y no campos nuevos en `ServicioEncontrado`: la semántica es distinta (por-
+    servicio vs. por-pelo) y `ServicioEncontrado` está compartido con `detalle.py:156-183`, con
+    `_serializar_servicio_encontrado` (5 call-sites) y con la interfaz TS `CromoServicioEncontrado`
+    (4 tipos de respuesta) — tocarlo propaga a todo eso sin necesidad.
+
+    `numeros_en_pelo` en plural y no un solo valor: con varios pelos, cada uno puede traer un
+    `servicio_numero` distinto (el viejo en uno, el nuevo en otro — el gotcha real de los 85 pares
+    `(pelo_n_id, servicio_id)` con dos filas en `cromo_servicio_match`, índice único sobre
+    `(pelo_n_id, servicio_numero)`). Quedarse con uno solo sería elegir arbitrariamente.
+    """
+
+    servicio_id: int  # PK de app.servicios
+    servicio_id_externo: str  # el ID vigente
+    numero_primer_servicio: Optional[str]
+    nombre_cliente: Optional[str]
+    cliente: Optional[str]
+    estado_servicio: Optional[str]
+    tipo_servicio: Optional[str]
+    pelos_n_ids: list[int]  # todos los pelos por los que pasa
+    cantidad_pelos: int
+    numeros_en_pelo: list[str]  # servicio_numero distintos, para contrastar con el vigente
+    metodos: list[str]
+
+
+@dataclass(slots=True)
+class ResultadoServiciosUnicos:
+    """Bundle de `ServicioUnico` que devuelven `servicios_unicos_por_cable`/`_por_tubo` (y sus
+    gemelas `_sync`) — exactamente uno de `cable_n_id`/`tubo_n_id` queda en `None` según qué eje se
+    haya consultado, mismo criterio de "identidad de lo consultado" que ya usan `ResultadoCable`/
+    `ResultadoTubo` más arriba en este módulo."""
+
+    cable_n_id: Optional[int]
+    tubo_n_id: Optional[int]
+    servicios: list[ServicioUnico]
+
+
 # Columnas de `app.servicios` + `cromo_pelos`/`cromo_servicio_match` comunes a las tres consultas,
 # en el mismo orden que espera `_fila_a_servicio` — evita repetir el SELECT completo tres veces.
 _COLUMNAS_SERVICIO = """
@@ -168,6 +212,55 @@ _SQL_SERVICIOS_POR_TUBO = text(
     JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.tubo_n_id = :tubo_n_id
+    ORDER BY s.id
+    """
+)
+
+# Columnas agregadas por servicio (Task 1, plan "Corrección ingresos + Servicios", 2026-09-23), en
+# el mismo orden que espera `_fila_a_servicio_unico`. Subconjunto de `_COLUMNAS_SERVICIO` (sin
+# `s.categoria`: `ServicioUnico` no lo pide) más los cuatro `array_agg`/`count` que resuelven "un
+# servicio, aunque ocupe varios pelos" en una sola pasada de `GROUP BY s.id`.
+#
+# `GROUP BY s.id` a secas alcanza: es la PK de `app.servicios` y Postgres resuelve la dependencia
+# funcional del resto de las columnas de `s`.
+#
+# Deliberadamente NO se resuelve con un CTE que haga JOIN de vuelta a `cromo_servicio_match` por un
+# pelo representativo: el índice único de esa tabla es `ux_cromo_match_pelo_nro (pelo_n_id,
+# servicio_numero)`, no `(pelo_n_id, servicio_id)` — hay pares `(pelo, servicio)` con dos filas,
+# porque la descripción del pelo menciona el ID viejo y el nuevo del mismo servicio (85 pares
+# medidos real contra `lasfocasdev-postgres`, ej. pelo 6848348 → servicio 26179 vía "108013" y
+# "66041"). Un re-join volvería a multiplicar esas filas; el `GROUP BY` de una sola pasada lo evita
+# por construcción — por eso `numeros_en_pelo` es `array_agg(DISTINCT m.servicio_numero)` y no un
+# escalar.
+_COLUMNAS_SERVICIO_UNICO = """
+    s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
+    s.estado_servicio, s.tipo_servicio,
+    array_agg(DISTINCT p.n_id ORDER BY p.n_id)  AS pelos_n_ids,
+    count(DISTINCT p.n_id)                      AS cantidad_pelos,
+    array_agg(DISTINCT m.servicio_numero)       AS numeros_en_pelo,
+    array_agg(DISTINCT m.metodo)                AS metodos
+"""
+
+_SQL_SERVICIOS_UNICOS_POR_CABLE = text(
+    f"""
+    SELECT {_COLUMNAS_SERVICIO_UNICO}
+    FROM app.cromo_pelos p
+    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.servicios s ON s.id = m.servicio_id
+    WHERE p.cable_n_id = :cable_n_id
+    GROUP BY s.id
+    ORDER BY s.id
+    """
+)
+
+_SQL_SERVICIOS_UNICOS_POR_TUBO = text(
+    f"""
+    SELECT {_COLUMNAS_SERVICIO_UNICO}
+    FROM app.cromo_pelos p
+    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.servicios s ON s.id = m.servicio_id
+    WHERE p.tubo_n_id = :tubo_n_id
+    GROUP BY s.id
     ORDER BY s.id
     """
 )
@@ -368,6 +461,35 @@ def _fila_a_servicio(fila: tuple) -> ServicioEncontrado:
     )
 
 
+def _fila_a_servicio_unico(fila: tuple) -> ServicioUnico:
+    (
+        servicio_id,
+        servicio_id_externo,
+        numero_primer_servicio,
+        nombre_cliente,
+        cliente,
+        estado_servicio,
+        tipo_servicio,
+        pelos_n_ids,
+        cantidad_pelos,
+        numeros_en_pelo,
+        metodos,
+    ) = fila
+    return ServicioUnico(
+        servicio_id=servicio_id,
+        servicio_id_externo=servicio_id_externo,
+        numero_primer_servicio=numero_primer_servicio,
+        nombre_cliente=nombre_cliente,
+        cliente=cliente,
+        estado_servicio=estado_servicio,
+        tipo_servicio=tipo_servicio,
+        pelos_n_ids=list(pelos_n_ids),
+        cantidad_pelos=cantidad_pelos,
+        numeros_en_pelo=list(numeros_en_pelo),
+        metodos=list(metodos),
+    )
+
+
 def _fila_a_servicio_desde_override(fila: tuple, pelo_n_id: Optional[int]) -> ServicioEncontrado:
     """Arma un `ServicioEncontrado` a partir de una fila de `_SQL_SERVICIOS_POR_IDS` (columnas
     propias de `app.servicios`, sin pelo/match) + el `pelo_n_id` del override (puede ser `None` — el
@@ -471,6 +593,84 @@ def servicios_por_tubo_sync(session: Session, tubo_n_id: int) -> ResultadoTubo:
         orden=tubo[2] if tubo else None,
         nombre_color=tubo[3] if tubo else None,
         servicios=[_fila_a_servicio(f) for f in filas],
+    )
+
+
+async def servicios_unicos_por_cable(sesion: AsyncSession, cable_n_id: int) -> ResultadoServiciosUnicos:
+    """Servicios únicos que pasan por un cable entero — un `ServicioUnico` por servicio (agregado
+    por `s.id`, `GROUP BY` de una sola pasada, ver `_COLUMNAS_SERVICIO_UNICO`), no una fila por
+    pelo como `servicios_por_cable` (intacta, sigue sirviendo la tabla del Verificador con su
+    columna "Pelo"). Medido real contra `lasfocasdev-postgres`: el cable `FO-FL-1003`
+    (n_id=6610203) tiene 141 filas pelo↔servicio para sólo 118 servicios distintos.
+
+    Mismo criterio de "no encontrado" tolerante a referencias colgadas que `servicios_por_cable`
+    (`_SQL_EXISTE_CABLE_POR_PELOS`): un cable puede tener pelos con servicio matcheado aunque su
+    fila propia todavía no se haya ingerido. A diferencia de `servicios_por_cable`, esta consulta
+    no toca `cromo_cables` (no hay metadata de cable que devolver acá), así que "encontrado" se
+    reduce a "hubo al menos una fila agregada, o al menos un pelo que lo referencia sin servicio
+    matcheado todavía".
+    """
+    filas = (await sesion.execute(_SQL_SERVICIOS_UNICOS_POR_CABLE, {"cable_n_id": cable_n_id})).all()
+    if not filas:
+        existe = (await sesion.execute(_SQL_EXISTE_CABLE_POR_PELOS, {"cable_n_id": cable_n_id})).first()
+        if existe is None:
+            raise ObjetoNoEncontrado(f"No existe un cable con n_id={cable_n_id} en el inventario ingerido.")
+
+    return ResultadoServiciosUnicos(
+        cable_n_id=cable_n_id,
+        tubo_n_id=None,
+        servicios=[_fila_a_servicio_unico(f) for f in filas],
+    )
+
+
+def servicios_unicos_por_cable_sync(session: Session, cable_n_id: int) -> ResultadoServiciosUnicos:
+    """Gemela síncrona de `servicios_unicos_por_cable` — mismo patrón que `servicios_por_tubo_sync`
+    (misma `text()`, sólo cambia el `await`), para el comando de Slack `Servicios <cable>` (Task 8),
+    que corre dentro de un callback síncrono de Slack Bolt."""
+    filas = session.execute(_SQL_SERVICIOS_UNICOS_POR_CABLE, {"cable_n_id": cable_n_id}).all()
+    if not filas:
+        existe = session.execute(_SQL_EXISTE_CABLE_POR_PELOS, {"cable_n_id": cable_n_id}).first()
+        if existe is None:
+            raise ObjetoNoEncontrado(f"No existe un cable con n_id={cable_n_id} en el inventario ingerido.")
+
+    return ResultadoServiciosUnicos(
+        cable_n_id=cable_n_id,
+        tubo_n_id=None,
+        servicios=[_fila_a_servicio_unico(f) for f in filas],
+    )
+
+
+async def servicios_unicos_por_tubo(sesion: AsyncSession, tubo_n_id: int) -> ResultadoServiciosUnicos:
+    """Servicios únicos que pasan por un tubo/buffer específico — mismo espíritu que
+    `servicios_unicos_por_cable`, acotado a `p.tubo_n_id` en vez de `p.cable_n_id` (mismo eje que
+    distingue `servicios_por_tubo` de `servicios_por_cable`). Mismo criterio de "no encontrado"
+    tolerante a referencias colgadas (`_SQL_EXISTE_TUBO_POR_PELOS`)."""
+    filas = (await sesion.execute(_SQL_SERVICIOS_UNICOS_POR_TUBO, {"tubo_n_id": tubo_n_id})).all()
+    if not filas:
+        existe = (await sesion.execute(_SQL_EXISTE_TUBO_POR_PELOS, {"tubo_n_id": tubo_n_id})).first()
+        if existe is None:
+            raise ObjetoNoEncontrado(f"No existe un tubo con n_id={tubo_n_id} en el inventario ingerido.")
+
+    return ResultadoServiciosUnicos(
+        cable_n_id=None,
+        tubo_n_id=tubo_n_id,
+        servicios=[_fila_a_servicio_unico(f) for f in filas],
+    )
+
+
+def servicios_unicos_por_tubo_sync(session: Session, tubo_n_id: int) -> ResultadoServiciosUnicos:
+    """Gemela síncrona de `servicios_unicos_por_tubo` — mismo patrón que `servicios_por_tubo_sync`,
+    para el comando de Slack `Servicios <cable> B<N>` (Task 8)."""
+    filas = session.execute(_SQL_SERVICIOS_UNICOS_POR_TUBO, {"tubo_n_id": tubo_n_id}).all()
+    if not filas:
+        existe = session.execute(_SQL_EXISTE_TUBO_POR_PELOS, {"tubo_n_id": tubo_n_id}).first()
+        if existe is None:
+            raise ObjetoNoEncontrado(f"No existe un tubo con n_id={tubo_n_id} en el inventario ingerido.")
+
+    return ResultadoServiciosUnicos(
+        cable_n_id=None,
+        tubo_n_id=tubo_n_id,
+        servicios=[_fila_a_servicio_unico(f) for f in filas],
     )
 
 
@@ -620,11 +820,17 @@ __all__ = [
     "CableDeBotella",
     "ResultadoBotella",
     "ResultadoOdf",
+    "ServicioUnico",
+    "ResultadoServiciosUnicos",
     "servicios_por_cable",
     "servicios_por_tubo",
     "servicios_por_tubo_sync",
     "servicios_por_botella",
     "servicios_por_odf",
+    "servicios_unicos_por_cable",
+    "servicios_unicos_por_cable_sync",
+    "servicios_unicos_por_tubo",
+    "servicios_unicos_por_tubo_sync",
     "tiene_cables_asociados_batch_sync",
     "camara_ids_por_servicio_sync",
     "servicio_ids_por_camaras_sync",
