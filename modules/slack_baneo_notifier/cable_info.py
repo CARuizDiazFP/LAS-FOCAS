@@ -61,17 +61,23 @@ _RE_CABLE_BUFFER = re.compile(r"(?i)^(verificar|info)\s+cable\s+(.+?)\s+(?:b|buf
 # además rompía `_RE_CABLE_BUFFER` (el "*" final no encaja en el ancla `$`, caía a este regex goloso
 # y se comía "B1*"/"*" como si fueran parte del nombre). Se quitan globalmente antes de matchear
 # cualquiera de los dos regex — ningún código de cable real usa estos 4 caracteres.
+#
+# Público (promovido 2026-09-23, Task 4 del plan de corrección de ingresos/servicios): el mismo bug
+# aplica igual a "Forzar ingreso"/"Forzar egreso" (`modules/slack_baneo_notifier/correccion_ingreso.py`)
+# — un técnico escribe "Forzar egreso *Cra Balcarce 302*" igual que escribía "info cable *F-VDP-JUR*".
+# Verificado (grep) que no tenía otros usos antes de renombrar: sólo los dos call-sites de este mismo
+# archivo.
 _RE_FORMATO_SLACK = re.compile(r"[*_`~]")
 
 
-def _quitar_formato_slack(texto: str) -> str:
+def quitar_formato_slack(texto: str) -> str:
     return _RE_FORMATO_SLACK.sub("", texto)
 
 
 def extraer_comando_info_cable(texto: str) -> Optional[str]:
     """Extrae el nombre de cable de un texto tipo "Info cable F-VFL-IND". Devuelve `None` si el
     texto no matchea el comando (no es un error — puede ser una mención sin relación a este comando)."""
-    texto_normalizado = _quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
+    texto_normalizado = quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
     match = _RE_INFO_CABLE.search(texto_normalizado)
     if not match:
         return None
@@ -161,7 +167,7 @@ def extraer_comando_cable_buffer(texto: str) -> Optional[tuple[str, str, int]]:
     """Extrae (verbo, nombre_cable, numero_buffer) de "Verificar cable F-VFL-IND B1" o
     "Info cable F-VFL-IND B1". `verbo` normalizado a minúsculas ("verificar"|"info"). Devuelve
     `None` si el texto no matchea (no es un error — puede ser una mención sin relación)."""
-    texto_normalizado = _quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
+    texto_normalizado = quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
     match = _RE_CABLE_BUFFER.match(texto_normalizado)
     if not match:
         return None
@@ -261,5 +267,6 @@ __all__ = [
     "contar_buffers_cable",
     "extraer_comando_cable_buffer",
     "extraer_comando_info_cable",
+    "quitar_formato_slack",
     "resolver_tubo_por_numero",
 ]
