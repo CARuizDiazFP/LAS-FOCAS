@@ -53,6 +53,8 @@ def registrar_movimiento_ingreso(
     tecnico_nombre: str | None,
     slack_user_id: str | None = None,
     momento: datetime | None = None,
+    thread_ts: str | None = None,
+    canal_id: str | None = None,
 ) -> Ingreso:
     """Persiste un movimiento de Ingreso o Egreso REAL de un técnico a `camara` (Cámara o Botella ya
     resuelta) y comita la transacción antes de retornar. `tecnico_nombre` ya debe venir resuelto por
@@ -83,6 +85,16 @@ def registrar_movimiento_ingreso(
     (`modules/slack_baneo_notifier/listener.py`), que reintenta un caso `IngresoSinMatch` pendiente
     mucho después del intento original y necesita preservar el horario REAL en que el técnico entró/
     salió, no el momento en que se corrió la revalidación.
+
+    `thread_ts`/`canal_id` (opcionales): hilo y canal de Slack del evento que originó este movimiento
+    — necesarios para que un correctivo futuro (Tarea 5 de este mismo plan) pueda ubicar el mensaje
+    original del hilo a partir de la fila. Sólo se escriben en una fila NUEVA:
+    - "Ingreso": siempre crea fila nueva → se escriben siempre.
+    - "Egreso" que CIERRA un `Ingreso` abierto existente: esa fila ya tiene su propio `thread_ts`/
+      `canal_id` (los del ingreso original) — pisarlos con los del evento de Egreso perdería el hilo
+      correcto para la Tarea 5. No se tocan.
+    - "Egreso" huérfano (no encontró ningún `Ingreso` abierto para cerrar): crea fila nueva → se
+      escriben.
     """
     ahora = momento if momento is not None else datetime.now(timezone.utc)
     cromo_botella_id = botella.n_id if botella is not None else None
@@ -95,6 +107,8 @@ def registrar_movimiento_ingreso(
             tipo=IngresoTipo.INGRESO,
             fecha_inicio=ahora,
             fecha_fin=None,
+            thread_ts=thread_ts,
+            canal_id=canal_id,
         )
         session.add(ingreso)
         session.commit()
@@ -115,6 +129,8 @@ def registrar_movimiento_ingreso(
     )
 
     if ingreso_abierto is not None:
+        # No se pisan thread_ts/canal_id: son los del hilo del ingreso original que se está
+        # cerrando, no los del evento de Egreso actual — ver docstring de este parámetro arriba.
         ingreso_abierto.fecha_fin = ahora
         session.commit()
         return ingreso_abierto
@@ -126,6 +142,8 @@ def registrar_movimiento_ingreso(
         tipo=IngresoTipo.EGRESO,
         fecha_inicio=None,
         fecha_fin=ahora,
+        thread_ts=thread_ts,
+        canal_id=canal_id,
     )
     session.add(ingreso)
     session.commit()
@@ -139,6 +157,8 @@ def registrar_intento_bloqueado(
     botella: CromoBotella | None,
     tecnico_nombre: str | None,
     momento: datetime | None = None,
+    thread_ts: str | None = None,
+    canal_id: str | None = None,
 ) -> Ingreso:
     """Persiste un intento de Ingreso BLOQUEADO por baneo (de la Cámara o de una Botella del mismo
     grupo — ver `core/services/camara_estado_service.py::get_camara_estado_contexto`).
@@ -154,7 +174,11 @@ def registrar_intento_bloqueado(
     estar baneada durante la visita sigue permitido, no hay razón operativa para impedirlo).
 
     `momento` (opcional): ver `registrar_movimiento_ingreso` — mismo propósito para "Revalidar
-    ingreso"."""
+    ingreso".
+
+    `thread_ts`/`canal_id` (opcionales): ver `registrar_movimiento_ingreso` — acá siempre se
+    escriben, porque esta función SIEMPRE crea una fila nueva (nunca cierra ni reutiliza una
+    existente)."""
     ahora = momento if momento is not None else datetime.now(timezone.utc)
     intento = Ingreso(
         camara_id=camara.id,
@@ -163,6 +187,8 @@ def registrar_intento_bloqueado(
         tipo=IngresoTipo.INTENTO_BLOQUEADO,
         fecha_inicio=ahora,
         fecha_fin=None,
+        thread_ts=thread_ts,
+        canal_id=canal_id,
     )
     session.add(intento)
     session.commit()

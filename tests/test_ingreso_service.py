@@ -410,3 +410,113 @@ def test_egreso_huerfano_nuevo_escribe_tecnico_id_como_nombre_resuelto() -> None
     )
 
     assert resultado.tecnico_id == "rider.fernandez"
+
+
+# --- (g) thread_ts/canal_id (Tarea 3, 2026-09-23): trazabilidad al hilo de Slack --------------------
+
+
+def test_ingreso_nueva_fila_guarda_thread_ts_y_canal_id() -> None:
+    """"Ingreso" siempre crea fila nueva → thread_ts/canal_id del evento se escriben tal cual."""
+    session = MagicMock()
+    camara = _camara()
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=None,
+        tipo_movimiento="Ingreso",
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000100",
+        canal_id="C0123456789",
+    )
+
+    assert resultado.thread_ts == "1700000000.000100"
+    assert resultado.canal_id == "C0123456789"
+
+
+def test_egreso_huerfano_nueva_fila_guarda_thread_ts_y_canal_id() -> None:
+    """Egreso sin Ingreso abierto matcheando crea fila nueva → también se escriben."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000200",
+        canal_id="C0123456789",
+    )
+
+    assert resultado.thread_ts == "1700000000.000200"
+    assert resultado.canal_id == "C0123456789"
+
+
+def test_egreso_que_cierra_fila_existente_no_pisa_thread_ts_ni_canal_id() -> None:
+    """Bug que este test previene: el Egreso que CIERRA un Ingreso abierto existente NO debe pisar
+    su thread_ts/canal_id con los del evento de Egreso actual — son los del hilo del ingreso
+    ORIGINAL, y la Task 5 de este mismo plan los necesita intactos para ubicar ese hilo."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    ingreso_abierto = Ingreso(
+        id=1,
+        camara_id=10,
+        cromo_botella_id=555,
+        tecnico_id="Rider Fernández",
+        tipo=IngresoTipo.INGRESO,
+        fecha_inicio=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        fecha_fin=None,
+        thread_ts="1690000000.000001",  # hilo del ingreso ORIGINAL
+        canal_id="C_ORIGINAL",
+    )
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = ingreso_abierto
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000300",  # hilo del evento de Egreso actual — NO debe usarse
+        canal_id="C_EGRESO_ACTUAL",
+    )
+
+    assert resultado is ingreso_abierto
+    assert resultado.thread_ts == "1690000000.000001"
+    assert resultado.canal_id == "C_ORIGINAL"
+
+
+def test_ingreso_sin_thread_ts_ni_canal_id_quedan_en_none() -> None:
+    """Kwargs opcionales, default None — ninguna llamada existente que no los pase debe romperse."""
+    session = MagicMock()
+    camara = _camara()
+
+    resultado = registrar_movimiento_ingreso(
+        session, camara=camara, botella=None, tipo_movimiento="Ingreso", tecnico_nombre="Rider Fernández"
+    )
+
+    assert resultado.thread_ts is None
+    assert resultado.canal_id is None
+
+
+def test_registrar_intento_bloqueado_guarda_thread_ts_y_canal_id() -> None:
+    """`registrar_intento_bloqueado` SIEMPRE crea fila nueva → siempre se escriben."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+
+    resultado = registrar_intento_bloqueado(
+        session,
+        camara=camara,
+        botella=botella,
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000400",
+        canal_id="C0123456789",
+    )
+
+    assert resultado.thread_ts == "1700000000.000400"
+    assert resultado.canal_id == "C0123456789"

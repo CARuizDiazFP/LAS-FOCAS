@@ -805,6 +805,8 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             tecnico_nombre="Rider Fernández",
             slack_user_id="U0AUB6CRE4A",
             momento=None,
+            thread_ts="1234567890.000001",
+            canal_id="C123",
         )
         # La respuesta de Slack de siempre no debe verse afectada por el registro.
         client_mock.chat_postMessage.assert_called_once()
@@ -870,8 +872,72 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             tecnico_nombre="Rider Fernández",
             slack_user_id="U0AUB6CRE4A",
             momento=None,
+            thread_ts="1234567890.000001",
+            canal_id="C123",
         )
         client_mock.chat_postMessage.assert_called_once()
+
+    def test_registra_movimiento_propaga_thread_ts_y_canal_de_una_respuesta_en_hilo(self) -> None:
+        """El wiring de Tarea 3 (2026-09-23) debe leer `thread_ts`/`channel` del evento REAL, no un
+        valor fijo: acá se usa un canal y un hilo (`thread_ts` de una respuesta dentro de un hilo,
+        distinto del `ts` propio del mensaje) deliberadamente distintos de los defaults de
+        `_make_event`, para que la aserción sólo pase si el valor viaja desde el evento de Slack
+        hasta `registrar_movimiento_ingreso`."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+        camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
+        evento = {
+            "text": self.TEXTO_CON_INGRESO,
+            "channel": "C_OTRO_CANAL",
+            "ts": "1111.000111",
+            "thread_ts": "2222.000222",
+        }
+
+        with (
+            patch.object(listener, "_get_config", return_value=("", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(evento, client_mock)
+
+        mock_registrar.assert_called_once_with(
+            session_mock,
+            camara=camara_mock,
+            botella=None,
+            tipo_movimiento="Ingreso",
+            tecnico_nombre="Rider Fernández",
+            slack_user_id="U0AUB6CRE4A",
+            momento=None,
+            thread_ts="2222.000222",
+            canal_id="C_OTRO_CANAL",
+        )
 
     def test_no_registra_movimiento_cuando_texto_no_trae_campo(self) -> None:
         """Hay match de cámara, pero el texto no trae 'Ingreso o Egreso' → no se escribe nada. No
@@ -1145,7 +1211,13 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
 
         mock_intento.assert_called_once_with(
-            session_mock, camara=camara_mock, botella=None, tecnico_nombre="Rider Fernández", momento=None
+            session_mock,
+            camara=camara_mock,
+            botella=None,
+            tecnico_nombre="Rider Fernández",
+            momento=None,
+            thread_ts="1234567890.000001",
+            canal_id="C123",
         )
         mock_registrar.assert_not_called()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
@@ -1200,6 +1272,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         mock_registrar.assert_called_once_with(
             session_mock, camara=camara_mock, botella=None, tipo_movimiento="Egreso",
             tecnico_nombre="Rider Fernández", slack_user_id="U0AUB6CRE4A", momento=None,
+            thread_ts="1234567890.000001", canal_id="C123",
         )
         mock_intento.assert_not_called()
 
@@ -2739,6 +2812,7 @@ class TestRevalidacionIngreso(unittest.TestCase):
     def _make_caso(
         self, *, texto_mensaje: str | None = "*Nombre: ...*\ntexto", resuelto_empalme: bool = False,
         resuelto_revalidacion: bool = False, created_at: Any = None,
+        thread_ts: str | None = "9999.000009", contexto: str | None = "C_ORIGINAL",
     ) -> Any:
         from datetime import datetime, timezone
 
@@ -2749,6 +2823,11 @@ class TestRevalidacionIngreso(unittest.TestCase):
         caso.resuelto_via_revalidacion = resuelto_revalidacion
         caso.ingreso_id = None
         caso.created_at = created_at or datetime(2026, 9, 7, 22, 22, 8, tzinfo=timezone.utc)
+        # thread_ts/contexto (canal) del caso IngresoSinMatch ORIGINAL — deliberadamente distintos
+        # de los del evento "Revalidar ingreso" (`_make_event_reply`: thread_ts="1111.000001",
+        # channel="C123") para que un test pueda distinguir cuál de los dos se propaga.
+        caso.thread_ts = thread_ts
+        caso.contexto = contexto
         return caso
 
     def test_sin_fila_pendiente_responde_y_corta(self) -> None:
@@ -2936,6 +3015,10 @@ class TestRevalidacionIngreso(unittest.TestCase):
             tecnico_nombre="Rider Fernández",
             slack_user_id=None,
             momento=momento_original,
+            # Del caso IngresoSinMatch ORIGINAL (`caso.thread_ts`/`caso.contexto`), no del evento
+            # "Revalidar ingreso" en sí (`_make_event_reply`: thread_ts="1111.000001", channel="C123").
+            thread_ts="9999.000009",
+            canal_id="C_ORIGINAL",
         )
         self.assertTrue(caso_mock.resuelto_via_revalidacion)
         self.assertEqual(caso_mock.ingreso_id, 777)

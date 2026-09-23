@@ -197,7 +197,9 @@ class IngresoListener:
         secundario final que nunca condiciona esa respuesta, registra el movimiento de Ingreso/
         Egreso/Intento bloqueado si el mensaje completo del evento (`texto_mensaje` — no
         `nombre_buscado`, que ya viene recortado al nombre de cámara) lo trae — ver
-        `_registrar_movimiento_si_corresponde`.
+        `_registrar_movimiento_si_corresponde`, a quien también se le pasan `thread_ts`/`channel`
+        (Tarea 3, 2026-09-23) para que la fila de `Ingreso` que se registre quede trazable al hilo de
+        Slack que la originó — la Task 5 de este mismo plan la usa para ubicar el mensaje original.
 
         ``texto_mensaje`` es el texto completo del evento de Slack (no recortado como
         `nombre_buscado`) — los campos "Ingreso o Egreso" y "Persona que solicito La Autorizacion"
@@ -244,7 +246,13 @@ class IngresoListener:
 
         resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
         self._registrar_movimiento_si_corresponde(
-            resultado, texto_mensaje, session, client, bloqueado=resultado_acceso.bloqueado
+            resultado,
+            texto_mensaje,
+            session,
+            client,
+            bloqueado=resultado_acceso.bloqueado,
+            thread_ts=thread_ts,
+            canal_id=channel or None,
         )
         return resultado_acceso.texto
 
@@ -257,6 +265,8 @@ class IngresoListener:
         *,
         bloqueado: bool,
         momento: datetime | None = None,
+        thread_ts: str | None = None,
+        canal_id: str | None = None,
     ) -> Any:
         """Escribe Ingreso/Egreso/Intento bloqueado en DB si el mensaje trae el campo 'Ingreso o
         Egreso' parseable. Nunca lanza — cualquier excepción se loguea y se ignora, la respuesta de
@@ -267,6 +277,14 @@ class IngresoListener:
         `momento` (opcional): horario a usar en vez de "ahora" — ver `registrar_movimiento_ingreso`.
         Sólo lo pasa `_procesar_revalidacion_ingreso`; el flujo en vivo normal no lo usa (queda en
         `None`, cada servicio usa `datetime.now(timezone.utc)` como siempre).
+
+        `thread_ts`/`canal_id` (opcionales): hilo y canal de Slack del movimiento — se enhebran tal
+        cual a `registrar_movimiento_ingreso`/`registrar_intento_bloqueado` (Tarea 3, 2026-09-23),
+        que deciden si los escriben o no según si la fila es nueva o cierra una existente (ver
+        docstring de `registrar_movimiento_ingreso`). El caller en vivo (`_construir_respuesta_camara`)
+        pasa el `thread_ts`/`channel` del evento actual; `_procesar_revalidacion_ingreso` pasa los del
+        caso `IngresoSinMatch` que se está revalidando (`caso.thread_ts`/`caso.contexto`), no los del
+        evento "Revalidar ingreso" en sí.
 
         Un movimiento "Ingreso" sobre un grupo bloqueado (`bloqueado=True`, calculado por
         `_evaluar_estado_acceso_camara` vía `get_camara_estado_contexto`) se registra como
@@ -300,6 +318,8 @@ class IngresoListener:
                     botella=resultado.botella,
                     tecnico_nombre=tecnico_nombre,
                     momento=momento,
+                    thread_ts=thread_ts,
+                    canal_id=canal_id,
                 )
             return registrar_movimiento_ingreso(
                 session,
@@ -309,6 +329,8 @@ class IngresoListener:
                 tecnico_nombre=tecnico_nombre,
                 slack_user_id=slack_user_id,
                 momento=momento,
+                thread_ts=thread_ts,
+                canal_id=canal_id,
             )
         except Exception as exc:
             try:
@@ -601,6 +623,8 @@ class IngresoListener:
             client,
             bloqueado=resultado_acceso.bloqueado,
             momento=caso.created_at,
+            thread_ts=caso.thread_ts,
+            canal_id=caso.contexto,
         )
 
         caso.resuelto_via_revalidacion = True
