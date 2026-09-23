@@ -291,7 +291,11 @@ resolución real en `core/services/ingreso_correccion_service.py`.
   los rechazos, con su `resultado` y su `error_detalle`.
 - **El momento sale del `ts` del hilo sólo si el tipo del formulario coincide con el tipo forzado.**
   `Forzar egreso` en un hilo de *Ingreso* (y viceversa) exige fecha explícita: tomar el `ts` del hilo
-  registraría una visita de duración cero.
+  registraría una visita de duración cero. Ese pedido de fecha se audita con
+  `resultado='PENDIENTE_FECHA'` — es un **estado pendiente, no un rechazo**: habilita que el
+  operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute. La
+  respuesta de seguimiento **no muta** la fila anterior (la tabla es append-only): escribe una fila
+  nueva con la ejecución.
 - **Nunca se crea una fila EGRESO huérfana por accidente.** Antes de cerrar, se resuelve el conjunto
   de ingresos abiertos de la cámara: 0 → sólo la forma con cámara *y* fecha explícitas asienta
   deliberadamente; 1 → se cierra esa fila (`cerrar_ingreso_forzado`); 2+ → se listan y se exige

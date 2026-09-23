@@ -23,7 +23,6 @@ from core.services.ingreso_correccion_service import (
     RESULTADO_CAMARA_AMBIGUA,
     RESULTADO_CAMARA_NO_ENCONTRADA,
     RESULTADO_EGRESO_ANTERIOR_AL_INGRESO,
-    RESULTADO_FALTA_FECHA,
     RESULTADO_HILO_SIN_FORMULARIO,
     RESULTADO_INGRESO_NO_ENCONTRADO,
     RESULTADO_INGRESO_YA_CERRADO,
@@ -31,6 +30,7 @@ from core.services.ingreso_correccion_service import (
     RESULTADO_OK_EGRESO_ASENTADO,
     RESULTADO_OK_EGRESO_CERRADO,
     RESULTADO_OK_INGRESO,
+    RESULTADO_PENDIENTE_FECHA,
     RESULTADO_SIN_INGRESO_ABIERTO,
     RESULTADO_VARIOS_INGRESOS_ABIERTOS,
     procesar_comando_correccion,
@@ -447,12 +447,36 @@ class TestReglaDelMomentoImplicito:
         with _entorno(busqueda=_resultado_busqueda(camara)):
             resultado = _ejecutar("Forzar egreso Cra Mitre 302 CF", session, _client())
 
-        assert resultado.resultado == RESULTADO_FALTA_FECHA
+        assert resultado.resultado == RESULTADO_PENDIENTE_FECHA
         assert "egreso" in resultado.respuesta
         assert "DD-MM-AAAA HH:MM" in resultado.respuesta
         assert _ingresos_escritos(session) == []
         fila = _auditoria(session)
         assert fila.momento_efectivo is None and fila.fuente_momento is None
+
+    def test_el_pedido_de_fecha_se_audita_como_estado_pendiente_no_como_rechazo(self) -> None:
+        """Contrato cruzado con la Task 6: su guard de 30 minutos busca el string literal
+        `'PENDIENTE_FECHA'` en `app.ingresos_correcciones.resultado`. Si alguien renombra la
+        constante o su valor, el seguimiento deja de encontrar la fila y el flujo muere en silencio
+        — por eso se assertea el literal, no sólo la constante."""
+        assert RESULTADO_PENDIENTE_FECHA == "PENDIENTE_FECHA"
+
+        camara = _camara()
+        session = _session(
+            ingresos_hilo=[_ingreso(camara=camara, fecha_inicio=MOMENTO_HILO, thread_ts=THREAD_TS)],
+            candidatos=[_ingreso(77, camara=camara, fecha_inicio=MOMENTO_HILO)],
+        )
+        with _entorno(busqueda=_resultado_busqueda(camara)):
+            resultado = _ejecutar("Forzar egreso Cra Mitre 302 CF", session, _client())
+
+        fila = _auditoria(session)
+        assert fila.resultado == "PENDIENTE_FECHA"
+        assert resultado.resultado == "PENDIENTE_FECHA"
+        # Es un estado pendiente, no un movimiento: nada se escribió en app.ingresos, y el hilo
+        # queda identificado para que la respuesta de seguimiento lo encuentre.
+        assert _ingresos_escritos(session) == []
+        assert fila.thread_ts == THREAD_TS
+        assert fila.comando_crudo == "Forzar egreso Cra Mitre 302 CF"
 
     def test_hilo_egreso_forzar_ingreso_exige_fecha_explicita(self) -> None:
         camara = _camara()
@@ -465,7 +489,7 @@ class TestReglaDelMomentoImplicito:
         with _entorno(busqueda=_resultado_busqueda(camara)):
             resultado = _ejecutar("Forzar ingreso Cra Mitre 302 CF", session, _client())
 
-        assert resultado.resultado == RESULTADO_FALTA_FECHA
+        assert resultado.resultado == RESULTADO_PENDIENTE_FECHA
         assert "ingreso" in resultado.respuesta
         assert _ingresos_escritos(session) == []
 
@@ -857,7 +881,7 @@ class TestAuditoriaEnTodasLasRamas:
             (
                 "Forzar egreso Cra Mitre 302 CF",
                 {"ingresos_hilo": hilo_ingreso, "candidatos": [abierto]},
-                RESULTADO_FALTA_FECHA,
+                RESULTADO_PENDIENTE_FECHA,
             ),
             (
                 "Forzar egreso Cra Mitre 302 CF",

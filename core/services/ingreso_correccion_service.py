@@ -149,14 +149,13 @@ RESULTADO_INGRESO_YA_CERRADO = "INGRESO_YA_CERRADO"
 RESULTADO_INGRESO_NO_ENCONTRADO = "INGRESO_NO_ENCONTRADO"
 RESULTADO_HILO_SIN_FORMULARIO = "HILO_SIN_FORMULARIO"
 RESULTADO_MOMENTO_INVALIDO = "MOMENTO_INVALIDO"
-RESULTADO_FALTA_FECHA = "FALTA_FECHA"
 RESULTADO_ERROR_INTERNO = "ERROR_INTERNO"
 
-# Reservado para la Task 6 (flujo de "fecha pendiente"): el bot pide la fecha y deja la fila
-# marcada para poder reconocer, dentro de los 30 minutos siguientes y en ese mismo hilo, una
-# respuesta que traiga sólo `DD-MM-AAAA HH:MM`. Este módulo todavía no lo escribe — el rechazo por
-# falta de fecha se audita como `RESULTADO_FALTA_FECHA`. Si la Task 6 prefiere un único valor para
-# ambas cosas, el cambio es reemplazar la constante usada en `_resolver_momento`, no agregar lógica.
+# Pedido de fecha: NO es un rechazo terminal, es un **estado pendiente**. La Task 6 busca
+# exactamente esta fila (`resultado='PENDIENTE_FECHA'`, mismo `thread_ts`, menos de 30 minutos) para
+# reconocer la respuesta de seguimiento que trae sólo `DD-MM-AAAA HH:MM` y re-ejecutar el comando.
+# Deliberadamente no existe un `RESULTADO_FALTA_FECHA` paralelo: dos nombres para el mismo evento
+# dejarían el seguimiento consultando un valor que nadie escribe, y el flujo moriría en silencio.
 RESULTADO_PENDIENTE_FECHA = "PENDIENTE_FECHA"
 
 # ── Valores explícitos de `camara_texto_solicitado` (NOT NULL) ──────────────────────────────────
@@ -634,8 +633,14 @@ def _resolver_momento(
     if ctx.tipo_movimiento != tipo_forzado:
         # Filas 3 y 4 de la tabla: el tipo del hilo no coincide con el forzado. Usar el `ts` del
         # hilo registraría una visita de duración cero.
+        #
+        # Se audita como `PENDIENTE_FECHA` y no como un rechazo: la Task 6 consume esta fila como
+        # el estado que habilita, durante los 30 minutos siguientes y en este mismo hilo, una
+        # respuesta de seguimiento con sólo `DD-MM-AAAA HH:MM` (que re-ejecuta el comando vía
+        # `momento_explicito`, escribiendo una fila nueva — la tabla es append-only). Renombrar esto
+        # a un valor de rechazo rompería ese guard sin que ningún test de este módulo lo note.
         return _MomentoResuelto(
-            resultado=RESULTADO_FALTA_FECHA,
+            resultado=RESULTADO_PENDIENTE_FECHA,
             respuesta=construir_respuesta_falta_fecha(
                 camara_texto_respuesta, "ingreso" if tipo_forzado == "Ingreso" else "egreso"
             ),
@@ -1128,7 +1133,6 @@ __all__ = [
     "RESULTADO_CAMARA_NO_ENCONTRADA",
     "RESULTADO_EGRESO_ANTERIOR_AL_INGRESO",
     "RESULTADO_ERROR_INTERNO",
-    "RESULTADO_FALTA_FECHA",
     "RESULTADO_HILO_SIN_FORMULARIO",
     "RESULTADO_INGRESO_NO_ENCONTRADO",
     "RESULTADO_INGRESO_YA_CERRADO",
