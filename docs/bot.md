@@ -263,6 +263,42 @@ Este registro **nunca bloquea ni condiciona la respuesta de Slack**: se ejecuta 
   `tiene_ingreso_activo` (`camara_estado_service.py`) como el cierre de Egreso NULL-safe
   (`ingreso_service.py`) filtran explícitamente `tipo == INGRESO`.
 
+**Actualización 2026-09-23 (comandos de corrección `Forzar ingreso` / `Forzar egreso`):**
+
+Un ingreso mal registrado (cámara equivocada, o formulario de egreso que nunca llegó) se corrige
+respondiendo en el hilo del formulario original con uno de estos comandos:
+
+```
+Forzar ingreso <CAMARA>
+Forzar ingreso <CAMARA> DD-MM-AAAA HH:MM
+Forzar egreso
+Forzar egreso <CAMARA> DD-MM-AAAA HH:MM
+Forzar egreso #<ingreso_id>
+```
+
+El parser vive en `modules/slack_baneo_notifier/correccion_ingreso.py` (puro, sin DB ni Slack) y la
+resolución real en `core/services/ingreso_correccion_service.py`.
+
+- **Scope nuevo requerido: `channels:history` (o `groups:history`)** en el panel de la Slack App —
+  no verificable desde código, mismo criterio que `app_mentions:read` y `users:read`. Lo usa el
+  nivel 3 de la cascada de resolución del hilo (`conversations.replies`), que cubre los hilos
+  históricos sin fila `Ingreso.thread_ts` ni `IngresoSinMatch`. **Si el scope falta, nada se rompe**:
+  la llamada degrada con gracia (warning en el log nombrando el scope) y el bot pide la forma con
+  cámara y fecha explícitas.
+- **Sin allowlist:** cualquiera del canal puede ejecutarlos, y un operador puede cerrar el ingreso
+  abierto de otro técnico. La auditoría (`app.ingresos_correcciones`, append-only con trigger que
+  rechaza `UPDATE`/`DELETE`) es el único control: **cada** invocación deja una fila, incluidos todos
+  los rechazos, con su `resultado` y su `error_detalle`.
+- **El momento sale del `ts` del hilo sólo si el tipo del formulario coincide con el tipo forzado.**
+  `Forzar egreso` en un hilo de *Ingreso* (y viceversa) exige fecha explícita: tomar el `ts` del hilo
+  registraría una visita de duración cero.
+- **Nunca se crea una fila EGRESO huérfana por accidente.** Antes de cerrar, se resuelve el conjunto
+  de ingresos abiertos de la cámara: 0 → sólo la forma con cámara *y* fecha explícitas asienta
+  deliberadamente; 1 → se cierra esa fila (`cerrar_ingreso_forzado`); 2+ → se listan y se exige
+  `Forzar egreso #<id>`.
+- **`Forzar ingreso` sobre un grupo hoy baneado registra un INGRESO real**, no un
+  `INTENTO_BLOQUEADO` — ver `docs/decisiones.md`, entrada 2026-09-23. La respuesta avisa del baneo.
+
 ### Estados de cámara
 
 | Estado | Comportamiento |

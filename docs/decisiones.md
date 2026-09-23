@@ -2120,3 +2120,30 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   generado. 1806 tests en verde. **La confirmación visual en navegador queda pendiente**: no hay
   Chromium/Playwright en el entorno y el contenedor `lasfocasdev-web` sirve la imagen de `dev`, no
   este worktree.
+
+## 2026-09-23 — `Forzar ingreso` sobre un grupo baneado registra un INGRESO real, no un intento bloqueado
+
+- **Contexto:** el flujo en vivo del listener de Slack, desde 2026-09-04, convierte un movimiento
+  "Ingreso" sobre un grupo bloqueado (incidente activo o baneo manual) en
+  `registrar_intento_bloqueado` → fila con `tipo=INTENTO_BLOQUEADO`, que nunca cuenta como ingreso
+  real. El comando nuevo `Forzar ingreso` (corrección manual de un ingreso mal registrado) llega al
+  mismo punto de decisión, pero desde una situación distinta: no es un técnico pidiendo permiso
+  ahora, es un operador afirmando que un técnico **ya entró** en un momento del pasado.
+
+- **Decisión:** `Forzar ingreso` registra siempre un INGRESO real (`registrar_movimiento_ingreso`),
+  aunque el grupo esté baneado en este momento. El estado de baneo de *ahora* no es evidencia sobre
+  el pasado: el baneo puede haberse aplicado después de la visita que se está asentando, y un
+  `INTENTO_BLOQUEADO` afirmaría que el técnico **no** entró, que es justo lo contrario de lo que el
+  operador está declarando. La respuesta del bot sí avisa, en el mismo mensaje de confirmación, que
+  el grupo está baneado en este momento — el aviso es informativo, nunca bloqueante.
+
+- **Alternativas descartadas:** (a) replicar la lógica del flujo en vivo y registrar
+  `INTENTO_BLOQUEADO` — escribiría un dato falso; (b) rechazar el comando sobre un grupo baneado —
+  dejaría sin forma de corregir justamente los casos donde la cámara quedó `OCUPADA` fantasma y por
+  eso se la baneó.
+
+- **Impacto:** `core/services/ingreso_correccion_service.py` consulta
+  `get_camara_estado_contexto` **sólo** para el aviso (fail-open ante cualquier error: un hiccup en
+  un chequeo informativo no puede romper una corrección ya escrita), nunca para decidir qué se
+  escribe. Cubierto por `tests/test_ingreso_correccion_service.py::TestForzarIngreso
+  ::test_sobre_grupo_baneado_registra_ingreso_real_y_avisa`.

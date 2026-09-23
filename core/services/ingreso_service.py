@@ -150,6 +150,40 @@ def registrar_movimiento_ingreso(
     return ingreso
 
 
+def cerrar_ingreso_forzado(session: Session, *, ingreso: Ingreso, momento: datetime) -> Ingreso:
+    """Cierra EXACTAMENTE el `Ingreso` que el caller ya resolvió (`fecha_fin = momento`) y comita.
+
+    Existe para el camino de corrección manual (`core/services/ingreso_correccion_service.py`,
+    comandos Slack "Forzar egreso"), que resuelve el conjunto de ingresos abiertos candidatos por su
+    cuenta y sólo cierra cuando hay exactamente uno, o cuando el operador eligió uno por `#<id>`.
+    `registrar_movimiento_ingreso(tipo_movimiento="Egreso")` no sirve para eso por dos razones:
+
+    1. Re-selecciona la fila por heurística (cámara + botella + técnico, la más reciente por
+       `fecha_inicio`) — con dos ingresos abiertos del mismo técnico en la misma cámara cerraría la
+       más reciente, no la que el operador eligió por id.
+    2. Si no encuentra ninguna, **crea una fila EGRESO huérfana** — correcto para el flujo en vivo,
+       inaceptable para un comando que alguien puede repetir por error.
+
+    Sigue centralizando en este módulo toda escritura sobre `app.ingresos` (restricción global del
+    plan: ningún `UPDATE`/`DELETE` directo desde los comandos nuevos).
+
+    No toca `thread_ts`/`canal_id`: son los del hilo del ingreso original que se está cerrando, no
+    los del comando de corrección — mismo criterio que el camino de cierre de
+    `registrar_movimiento_ingreso` (ver su docstring).
+
+    Raises:
+        ValueError: si `ingreso` no es de tipo `INGRESO` o ya tiene `fecha_fin` — condiciones que el
+            caller ya verificó; el guard es defensa en profundidad para cualquier caller futuro.
+    """
+    if ingreso.tipo != IngresoTipo.INGRESO:
+        raise ValueError(f"Ingreso id={ingreso.id} no es de tipo INGRESO (tipo={ingreso.tipo})")
+    if ingreso.fecha_fin is not None:
+        raise ValueError(f"Ingreso id={ingreso.id} ya tiene fecha_fin={ingreso.fecha_fin}")
+    ingreso.fecha_fin = momento
+    session.commit()
+    return ingreso
+
+
 def registrar_intento_bloqueado(
     session: Session,
     *,
@@ -195,4 +229,4 @@ def registrar_intento_bloqueado(
     return intento
 
 
-__all__ = ["registrar_intento_bloqueado", "registrar_movimiento_ingreso"]
+__all__ = ["cerrar_ingreso_forzado", "registrar_intento_bloqueado", "registrar_movimiento_ingreso"]

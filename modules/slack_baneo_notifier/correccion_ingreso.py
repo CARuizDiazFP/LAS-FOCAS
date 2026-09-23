@@ -338,6 +338,38 @@ def construir_respuesta_camara_ambigua(camara_texto: str, candidatos: list[str])
     )
 
 
+def construir_respuesta_camara_no_encontrada(camara_texto: str) -> str:
+    """La búsqueda no devolvió ninguna cámara ni botella para el texto pedido (distinto de
+    `construir_respuesta_camara_ambigua`, que es "demasiadas"). Agregada en la Task 5: es un camino
+    real y alcanzable (`buscar_camara_o_botella_cromo` devuelve `camara=None` sin lanzar) que no
+    tenía respuesta propia."""
+    return (
+        f":warning: No encontré ninguna cámara ni botella que matchee *{camara_texto}* en el "
+        f"inventario — revisá el nombre y reenviá el comando."
+    )
+
+
+def construir_respuesta_ingreso_no_encontrado(ingreso_id: int) -> str:
+    """"Forzar egreso #<id>" con un id que no existe, o que no corresponde a una fila de tipo
+    `INGRESO` (puede ser un `EGRESO` huérfano o un `INTENTO_BLOQUEADO`, que nunca fue un ingreso
+    real y por lo tanto no se cierra)."""
+    return (
+        f":warning: No encontré ningún ingreso *#{ingreso_id}* que se pueda cerrar — verificá el "
+        f"número en la lista que te pasé."
+    )
+
+
+def construir_respuesta_sin_ingreso_abierto(camara_nombre: str) -> str:
+    """No hay ningún `Ingreso` abierto para cerrar en la cámara resuelta. Sólo la forma con cámara y
+    fecha explícitas puede asentar un egreso de cero (ver `construir_respuesta_ok_forzar_egreso_asentado`);
+    las formas implícitas responden esto en vez de crear una fila EGRESO huérfana."""
+    return (
+        f":warning: No hay ningún ingreso abierto en *{camara_nombre}* para cerrar. Si aun así "
+        f"querés asentar el egreso, usá la forma completa: *Forzar egreso {camara_nombre} "
+        f"DD-MM-AAAA HH:MM*."
+    )
+
+
 def construir_respuesta_varios_ingresos_abiertos(camara_nombre: str, ingresos: list[IngresoAbiertoInfo]) -> str:
     lineas = []
     for ing in ingresos:
@@ -395,14 +427,17 @@ __all__ = [
     "IngresoAbiertoInfo",
     "MomentoInvalidoError",
     "construir_respuesta_camara_ambigua",
+    "construir_respuesta_camara_no_encontrada",
     "construir_respuesta_egreso_anterior_al_ingreso",
     "construir_respuesta_falta_fecha",
     "construir_respuesta_hilo_sin_formulario",
+    "construir_respuesta_ingreso_no_encontrado",
     "construir_respuesta_ingreso_ya_cerrado",
     "construir_respuesta_momento_invalido",
     "construir_respuesta_ok_forzar_egreso_asentado",
     "construir_respuesta_ok_forzar_egreso_cerrado",
     "construir_respuesta_ok_forzar_ingreso",
+    "construir_respuesta_sin_ingreso_abierto",
     "construir_respuesta_varios_ingresos_abiertos",
     "extraer_comando_forzar_egreso",
     "extraer_comando_forzar_ingreso",
