@@ -27,7 +27,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from core.services.camara_estado_service import (
@@ -39,6 +39,10 @@ from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_
 from core.services.cromo.detalle import pelos_de_tubo_sync
 from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
 from core.services.cromo.verificador import servicios_por_tubo_sync
+from core.services.ingreso_correccion_service import (
+    RESULTADO_PENDIENTE_FECHA,
+    procesar_comando_correccion,
+)
 from core.services.ingreso_service import registrar_intento_bloqueado, registrar_movimiento_ingreso
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
@@ -62,6 +66,11 @@ from modules.slack_baneo_notifier.camara_search import (
     extraer_slack_user_id_autorizacion,
     extraer_tipo_movimiento,
     limpiar_ruido_operativo,
+)
+from modules.slack_baneo_notifier.correccion_ingreso import (
+    MomentoInvalidoError,
+    construir_respuesta_momento_invalido,
+    extraer_momento_solo,
 )
 from modules.slack_baneo_notifier.slack_user_resolver import resolver_nombre_tecnico
 
@@ -92,6 +101,12 @@ _RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IG
 # `_procesar_revalidacion_ingreso`). Anclado igual que `_RE_SEGUIMIENTO_EMPALME` para no interpretar
 # la frase si aparece como parte de otro texto más largo.
 _RE_REVALIDAR_INGRESO = re.compile(r"^\s*revalidar\s+ingreso\s*$", re.IGNORECASE)
+
+# Ventana de vigencia de una fila `PENDIENTE_FECHA` (`core/services/ingreso_correccion_service.py`,
+# Task 5) para que una respuesta de seguimiento con sólo `DD-MM-AAAA HH:MM` se interprete como la
+# fecha que el bot pidió — ver `_pendiente_fecha_vigente`. Pasada la ventana, la fecha suelta no se
+# interpreta (el operador tiene que reenviar el comando completo).
+_VENTANA_PENDIENTE_FECHA = timedelta(minutes=30)
 
 
 @dataclass(slots=True)
@@ -654,6 +669,186 @@ class IngresoListener:
         )
         return True
 
+    # ── Corrección manual: "Forzar ingreso"/"Forzar egreso" (Task 6) ────────────────────────
+
+    def _procesar_correccion_ingreso(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        actor_slack_user_id: str,
+        mensaje_ts: str,
+    ) -> bool:
+        """Detecta y procesa los comandos `Forzar ingreso`/`Forzar egreso`
+        (`core/services/ingreso_correccion_service.py`, Task 5) como respuesta dentro de un hilo, y
+        el segundo paso del flujo de "fecha pendiente": una respuesta de seguimiento que trae sólo
+        `DD-MM-AAAA HH:MM` cuando el bot ya pidió la fecha explícita (fila `PENDIENTE_FECHA`).
+
+        Devuelve `True` cuando el mensaje fue tratado como corrección (el caller corta, no sigue al
+        flujo normal) y `False` cuando no aplica: ni es un comando completo ni una fecha suelta con
+        un pendiente vigente en este hilo — cualquier otro mensaje del canal.
+
+        Mismo contrato de nunca romper la respuesta por un fallo de DB que
+        `_registrar_movimiento_si_corresponde` (`try/except` con `session.rollback()`): si
+        `procesar_comando_correccion` o el guard de "fecha pendiente" lanzan, se loguea, se sanea la
+        sesión compartida y se responde con un aviso genérico en vez de dejar el hilo sin respuesta
+        o propagar `PendingRollbackError` al resto de `_handle_message`."""
+        try:
+            resultado = procesar_comando_correccion(
+                session,
+                texto=texto,
+                actor_slack_user_id=actor_slack_user_id,
+                canal_id=channel,
+                mensaje_ts=mensaje_ts,
+                thread_ts=thread_ts_evento,
+                client=client,
+            )
+        except Exception as exc:
+            return self._responder_error_correccion(session, client, channel, thread_ts_evento, exc)
+
+        if resultado is not None:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts_evento, text=resultado.respuesta, mrkdwn=True
+            )
+            return True
+
+        # No es un comando completo — ¿es la respuesta de seguimiento del flujo de "fecha
+        # pendiente" (sólo `DD-MM-AAAA HH:MM`)?
+        try:
+            return self._procesar_fecha_pendiente_seguimiento(
+                texto, thread_ts_evento, session, client, channel, actor_slack_user_id, mensaje_ts
+            )
+        except Exception as exc:
+            return self._responder_error_correccion(session, client, channel, thread_ts_evento, exc)
+
+    def _procesar_fecha_pendiente_seguimiento(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        actor_slack_user_id: str,
+        mensaje_ts: str,
+    ) -> bool:
+        """Segundo paso del flujo de "fecha pendiente": el operador respondió en el hilo sólo con
+        `DD-MM-AAAA HH:MM`, en vez de reenviar el comando completo. Reintenta el `comando_crudo`
+        original guardado en la fila `PENDIENTE_FECHA` pasándole la fecha como `momento_explicito` —
+        la tabla `app.ingresos_correcciones` es append-only (trigger que bloquea UPDATE/DELETE), así
+        que esto nunca muta la fila anterior: `procesar_comando_correccion` escribe una fila nueva
+        con la ejecución real.
+
+        Guard (ruling vinculante del coordinador): tiene que existir una fila `PENDIENTE_FECHA`
+        para este `thread_ts` exacto, de menos de 30 minutos, y sin ninguna fila posterior del mismo
+        hilo con un `resultado` terminal (ver `_pendiente_fecha_vigente` — "terminal" es cualquier
+        valor distinto de `PENDIENTE_FECHA`, nunca una allowlist que se desactualice). Si no se
+        cumple, la fecha suelta no se interpreta: puede ser cualquier otro mensaje del canal, o el
+        pendiente ya fue resuelto por una respuesta anterior."""
+        try:
+            momento = extraer_momento_solo(texto)
+        except MomentoInvalidoError as exc:
+            pendiente = self._pendiente_fecha_vigente(session, thread_ts_evento)
+            if pendiente is None:
+                return False
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=construir_respuesta_momento_invalido(exc),
+                mrkdwn=True,
+            )
+            return True
+
+        if momento is None:
+            return False  # No matchea la forma "DD-MM-AAAA HH:MM": cualquier otro mensaje.
+
+        pendiente = self._pendiente_fecha_vigente(session, thread_ts_evento)
+        if pendiente is None:
+            return False  # Sin pendiente vigente — el guard estricto no interpreta la fecha suelta.
+
+        resultado = procesar_comando_correccion(
+            session,
+            texto=pendiente.comando_crudo,
+            actor_slack_user_id=actor_slack_user_id,
+            canal_id=channel,
+            mensaje_ts=mensaje_ts,
+            thread_ts=thread_ts_evento,
+            client=client,
+            momento_explicito=momento,
+        )
+        if resultado is None:
+            # No debería pasar (`comando_crudo` ya matcheó una vez para llegar a PENDIENTE_FECHA),
+            # pero no hay que romper si el parser cambió entre medio — se ignora, no se responde.
+            logger.warning(
+                "comando_crudo de la fila PENDIENTE_FECHA id=%s ya no matchea ningún comando: %r",
+                pendiente.id,
+                pendiente.comando_crudo,
+            )
+            return False
+
+        client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts_evento, text=resultado.respuesta, mrkdwn=True
+        )
+        return True
+
+    def _pendiente_fecha_vigente(self, session: Any, thread_ts: str) -> Any:
+        """Última fila `PENDIENTE_FECHA` de `thread_ts`, si sigue vigente para el guard del
+        seguimiento: de menos de `_VENTANA_PENDIENTE_FECHA` y sin ninguna fila posterior del mismo
+        hilo con un `resultado` terminal (cualquier valor distinto de `PENDIENTE_FECHA`).
+
+        Una sola consulta (todas las filas del hilo, ordenadas por `created_at`) en vez de dos
+        consultas separadas: se recorre una vez llevando el último `PENDIENTE_FECHA` visto — una
+        fila posterior a él que no sea `PENDIENTE_FECHA` invalida ese pendiente (ya fue resuelto);
+        una fila posterior que sí sea `PENDIENTE_FECHA` (un comando nuevo del mismo hilo que también
+        quedó pendiente) simplemente reemplaza cuál es "el último pendiente" a validar. Devuelve
+        `None` si no hay ningún pendiente vigente."""
+        from db.models.infra import IngresoCorreccion
+
+        filas = (
+            session.query(IngresoCorreccion)
+            .filter(IngresoCorreccion.thread_ts == thread_ts)
+            .order_by(IngresoCorreccion.created_at.asc())
+            .all()
+        )
+        pendiente = None
+        for fila in filas:
+            if fila.resultado == RESULTADO_PENDIENTE_FECHA:
+                pendiente = fila
+            elif pendiente is not None:
+                return None
+        if pendiente is None or pendiente.created_at is None:
+            return None
+
+        creado = pendiente.created_at
+        if creado.tzinfo is None:
+            creado = creado.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - creado > _VENTANA_PENDIENTE_FECHA:
+            return None
+        return pendiente
+
+    def _responder_error_correccion(
+        self, session: Any, client: Any, channel: str, thread_ts_evento: str, exc: Exception
+    ) -> bool:
+        """Sanea la sesión y responde con un aviso genérico ante cualquier fallo inesperado del
+        flujo de corrección — nunca deja el hilo sin respuesta ni la sesión compartida en
+        `PendingRollbackError` (mismo contrato que `_registrar_movimiento_si_corresponde`)."""
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        logger.error("Error procesando comando de corrección de ingreso: %s", exc, exc_info=True)
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=(
+                ":warning: No pude completar la corrección por un error interno — quedó "
+                "registrado en el log. Reintentá en un momento."
+            ),
+            mrkdwn=True,
+        )
+        return True
+
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
         # Ignorar ediciones para no procesar dos veces el mismo ingreso
@@ -700,7 +895,10 @@ class IngresoListener:
             # `_procesar_seguimiento_empalme` (regex numérico + fila `IngresoSinMatch` pendiente para
             # este `thread_ts` exacto) ya es suficientemente estricto para no necesitar el filtro de
             # Workflow como red adicional — cualquier mensaje que no matchee las 3 condiciones sigue
-            # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica.
+            # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica. Mismo criterio para
+            # `_procesar_correccion_ingreso` (Task 6, 2026-09-23): tanto "Forzar ingreso"/"Forzar
+            # egreso" como la respuesta de seguimiento de "fecha pendiente" (sólo `DD-MM-AAAA HH:MM`)
+            # los escribe un operador a mano, nunca un Workflow.
             if event_thread_ts and event_thread_ts != event_ts:
                 if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
                     return
@@ -708,6 +906,21 @@ class IngresoListener:
                 # `solo_workflows`, ver comentario arriba): "Revalidar ingreso" es un mensaje
                 # manual de una persona, nunca lo genera el Workflow de Slack.
                 if self._procesar_revalidacion_ingreso(texto, event_thread_ts, session, client, channel):
+                    return
+                # "Forzar ingreso"/"Forzar egreso" (y su respuesta de seguimiento de fecha
+                # pendiente) — nunca se confunde con los dos anteriores: el regex de empalme exige
+                # dígitos puros y el de "Revalidar ingreso" una frase fija, ninguno matchea ni
+                # "Forzar ingreso/egreso ..." ni una fecha suelta "DD-MM-AAAA HH:MM" (verificado:
+                # el día de 2 dígitos rompe el run de `\d{3,}` del regex de empalme).
+                if self._procesar_correccion_ingreso(
+                    texto,
+                    event_thread_ts,
+                    session,
+                    client,
+                    channel,
+                    actor_slack_user_id=event.get("user") or "",
+                    mensaje_ts=event.get("ts") or "",
+                ):
                     return
 
             # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
