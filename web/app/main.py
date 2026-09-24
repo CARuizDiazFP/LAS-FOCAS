@@ -12,6 +12,7 @@ import secrets
 import time
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 from time import time as now
 from typing import Any, Dict, List, Optional, Union
 
@@ -5667,6 +5668,463 @@ async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int)
                 {"n_id": c.n_id, "nombre": c.nombre, "cantidad_servicios": c.cantidad_servicios}
                 for c in resultado.cables
             ],
+        }
+    )
+
+
+# ── Endpoints: servicios ÚNICOS por cable/buffer + resolución de cable + refresco PROV on-demand
+# (Task 10, plan "Corrección ingresos + Servicios", 2026-09-23) ─────────────────────────────────
+# Vista COMPLEMENTARIA a las tres rutas de arriba (`/cables/{id}/servicios`, `/tubos/{id}/servicios`,
+# `/botellas/{id}/servicios`): esas devuelven una fila por PELO (la tabla del Verificador, con su
+# columna "Pelo" — varios pelos por servicio es normal, no un defecto). Estas cuatro rutas devuelven
+# IDs de servicio ÚNICOS (agregados por `s.id`, `servicios_unicos_por_cable`/`_por_tubo` de la
+# Task 1) — dos vistas legítimas del mismo dato que conviven; rutas nuevas, no una extensión de las
+# de arriba (no las tocan).
+
+
+class CromoServicioUnicoFrescuraModel(BaseModel):
+    """Estado de sincronización PROV de un `ServicioUnico` puntual (Task 7:
+    `core/services/prov/frescura.py`). `ultima_sincronizacion_prov` viaja como string ISO 8601 (no
+    `None` salvo que el servicio nunca sincronizó con éxito)."""
+
+    ultima_sincronizacion_prov: Optional[datetime] = Field(default=None)
+    antiguedad_horas: Optional[float] = Field(default=None)
+    vencida: bool
+
+
+class CromoServicioUnicoResponseModel(BaseModel):
+    """Un servicio único (Task 1: `ServicioUnico`) + su frescura PROV — forma que devuelven las
+    tres rutas de servicios únicos (por cable, por buffer, y tras el refresco). `cantidad_pelos`/
+    `pelos_n_ids` no son ruido: el ID es único, pero cuántas fibras ocupa es información real."""
+
+    servicio_id: int
+    servicio_id_externo: str
+    numero_primer_servicio: Optional[str] = None
+    nombre_cliente: Optional[str] = None
+    cliente: Optional[str] = None
+    estado_servicio: Optional[str] = None
+    tipo_servicio: Optional[str] = None
+    pelos_n_ids: list[int]
+    cantidad_pelos: int
+    numeros_en_pelo: list[str]
+    metodos: list[str]
+    frescura: CromoServicioUnicoFrescuraModel
+
+
+class CromoBufferIdentidadModel(BaseModel):
+    """Identidad de un buffer/tubo — `numero` es el 1-indexado que cuenta el técnico (`orden + 1`,
+    mismo criterio que `cable_info.py::resolver_tubo_por_numero`)."""
+
+    numero: int
+    orden: int
+    nombre_color: Optional[str] = None
+
+
+class CromoRefrescoProvFallidoModel(BaseModel):
+    servicio_id_externo: str
+    motivo: Optional[str] = None
+
+
+class CromoRefrescoProvModel(BaseModel):
+    """`estado` en {"no_solicitado", "sin_vencidos", "completado", "parcial"}: sólo el POST
+    `.../refrescar-prov` dispara un refresco de verdad (puede devolver cualquiera de los últimos
+    tres); los dos GET de servicios únicos son de sólo lectura y siempre devuelven
+    "no_solicitado" con `fallidos=[]` — no disparan nada."""
+
+    estado: str
+    fallidos: list[CromoRefrescoProvFallidoModel] = Field(default_factory=list)
+
+
+class CromoServiciosUnicosResponseModel(BaseModel):
+    cable_n_id: int
+    cable_nombre: Optional[str] = None
+    buffer: Optional[CromoBufferIdentidadModel] = None
+    datos_al: datetime
+    servicios: list[CromoServicioUnicoResponseModel]
+    refresco_prov: CromoRefrescoProvModel
+
+
+class CromoCableIdentidadResponseModel(BaseModel):
+    n_id: int
+    nombre: Optional[str] = None
+    capacidad: Optional[str] = None
+
+
+class CromoServiciosUnicosRefrescarRequestModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+async def _frescura_por_servicio(sesion: Any, servicio_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Frescura PROV cruda (timestamp + antigüedad + vencida) por `servicio_id`, para el detalle de
+    cada `ServicioUnico` en la respuesta REST — a diferencia de `servicios_vencidos` (Task 7), que
+    sólo devuelve el subconjunto vencido (un `set[int]`) sin el timestamp real. Reusa
+    `horas_frescura()` para el umbral en vez de un segundo valor hardcodeado que se pueda
+    desincronizar del real."""
+    from datetime import timedelta, timezone
+
+    from sqlalchemy import text
+
+    from core.services.prov.frescura import horas_frescura
+
+    if not servicio_ids:
+        return {}
+    ahora = datetime.now(timezone.utc)
+    corte = ahora - timedelta(hours=horas_frescura())
+    filas = (
+        await sesion.execute(
+            text(
+                "SELECT servicio_id, ultima_sincronizacion_ok FROM app.servicios_sync_prov "
+                "WHERE servicio_id = ANY(:ids ::integer[])"
+            ),
+            {"ids": servicio_ids},
+        )
+    ).all()
+    ultimas = {fila[0]: fila[1] for fila in filas}
+    resultado: dict[int, dict[str, Any]] = {}
+    for servicio_id in servicio_ids:
+        ultima = ultimas.get(servicio_id)
+        if ultima is not None and ultima.tzinfo is None:
+            ultima = ultima.replace(tzinfo=timezone.utc)
+        antiguedad = (ahora - ultima).total_seconds() / 3600 if ultima is not None else None
+        vencida = ultima is None or ultima < corte
+        resultado[servicio_id] = {
+            "ultima_sincronizacion_prov": ultima.isoformat() if ultima is not None else None,
+            "antiguedad_horas": antiguedad,
+            "vencida": vencida,
+        }
+    return resultado
+
+
+def _serializar_servicio_unico(servicio: Any, frescura: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "servicio_id": servicio.servicio_id,
+        "servicio_id_externo": servicio.servicio_id_externo,
+        "numero_primer_servicio": servicio.numero_primer_servicio,
+        "nombre_cliente": servicio.nombre_cliente,
+        "cliente": servicio.cliente,
+        "estado_servicio": servicio.estado_servicio,
+        "tipo_servicio": servicio.tipo_servicio,
+        "pelos_n_ids": list(servicio.pelos_n_ids),
+        "cantidad_pelos": servicio.cantidad_pelos,
+        "numeros_en_pelo": list(servicio.numeros_en_pelo),
+        "metodos": list(servicio.metodos),
+        "frescura": frescura,
+    }
+
+
+async def _identidad_cable(sesion: Any, cable_n_id: int) -> Optional[str]:
+    """Nombre del cable para la identidad de la respuesta — `None` si el cable sólo se conoce por
+    referencia colgada (pelos con servicio matcheado sin fila propia en `cromo_cables`, ver
+    docstring de `servicios_unicos_por_cable`)."""
+    from db.models.cromo import CromoCable
+
+    cable = await sesion.get(CromoCable, cable_n_id)
+    return cable.nombre if cable is not None else None
+
+
+async def _resolver_cable_por_texto(sesion: Any, texto: str) -> list[tuple[int, Optional[str], Optional[str]]]:
+    """Gemela async de `modules/slack_baneo_notifier/cable_info.py::buscar_cable_por_n_id_o_nombre`
+    (que usa `Session` síncrona, pensada para el listener de Slack) contra `AsyncSession` — mismo
+    criterio de resolución (n_id exacto si `texto` es puramente numérico, si no match exacto case-
+    insensitive por `nombre`, sólo cables vigentes). Devuelve una lista para que el caller distinga
+    0 (no encontrado) de 2+ (los duplicados reales conocidos, ej. "F-ALV-2335"/"F-LEM-11-A")."""
+    from sqlalchemy import text
+
+    texto_limpio = texto.strip()
+    if texto_limpio.isdigit():
+        filas = (
+            await sesion.execute(
+                text("SELECT n_id, nombre, capacidad FROM app.cromo_cables WHERE vigente = true AND n_id = :n_id"),
+                {"n_id": int(texto_limpio)},
+            )
+        ).all()
+    else:
+        filas = (
+            await sesion.execute(
+                text(
+                    "SELECT n_id, nombre, capacidad FROM app.cromo_cables "
+                    "WHERE vigente = true AND lower(nombre) = lower(:nombre)"
+                ),
+                {"nombre": texto_limpio},
+            )
+        ).all()
+    return [(fila[0], fila[1], fila[2]) for fila in filas]
+
+
+async def _resolver_buffer_por_numero(
+    sesion: Any, cable_n_id: int, numero: int
+) -> tuple[Optional[tuple[int, int, Optional[str]]], int]:
+    """Gemela async de `resolver_tubo_por_numero`/`contar_buffers_cable`
+    (`modules/slack_baneo_notifier/cable_info.py`, síncronas) — `numero` es 1-indexado como lo
+    cuenta el técnico, mapea a `cromo_tubos.orden = numero - 1` (confirmado con el usuario
+    2026-08-13). Devuelve `(tubo_n_id, orden, nombre_color)` o `None` si no existe, más el total de
+    buffers vigentes del cable (para que el 404 pueda orientar con `total_buffers`)."""
+    from sqlalchemy import text
+
+    fila_tubo = (
+        await sesion.execute(
+            text(
+                "SELECT n_id, orden, nombre_color FROM app.cromo_tubos "
+                "WHERE cable_n_id = :cable_n_id AND vigente = true AND orden = :orden"
+            ),
+            {"cable_n_id": cable_n_id, "orden": numero - 1},
+        )
+    ).first()
+    total_buffers = (
+        await sesion.execute(
+            text("SELECT count(*) FROM app.cromo_tubos WHERE cable_n_id = :cable_n_id AND vigente = true"),
+            {"cable_n_id": cable_n_id},
+        )
+    ).scalar_one()
+    tubo = (fila_tubo[0], fila_tubo[1], fila_tubo[2]) if fila_tubo else None
+    return tubo, int(total_buffers)
+
+
+@dataclass(slots=True)
+class _ResultadoRefrescoLote:
+    """Resultado directo de `_ejecutar_refresco_prov_lote` — a diferencia de
+    `refrescar_servicios_vencidos` (Task 9, fire-and-forget pensado para el hilo de Slack: devuelve
+    `None` y postea el resultado a un canal), esta ruta REST corre ya dentro del loop async de
+    FastAPI y puede simplemente awaitear el lote y devolver el resultado en la respuesta HTTP."""
+
+    fallidos: list[dict[str, Optional[str]]]
+
+
+async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefrescoLote:
+    """Corre el refresco PROV de `pendientes` (los `ServicioUnico` ya filtrados a vencidos por el
+    caller) de forma síncrona con la petición HTTP — decisión de diseño de la Task 10 (ver reporte):
+    reusa el tope/concurrencia/deadline/orden de prioridad y el worker por-servicio de la Task 9
+    (`modules/slack_baneo_notifier/refresco_prov.py`: `_priorizar_por_antiguedad`/
+    `_refrescar_un_servicio`, que no tienen ninguna dependencia de Slack) en vez de reimplementar la
+    orquestación PROV desde cero, pero NO reusa `refrescar_servicios_vencidos` en sí: esa función
+    pública es fire-and-forget, exige `client`/`channel`/`thread_ts` de Slack para postear el
+    resultado, y nunca lo devuelve — pensada para encolarse desde el thread síncrono de Slack Bolt
+    vía `run_coroutine_threadsafe`. Esta ruta ya corre en el loop de FastAPI (sin ese puente de
+    threads) y necesita el resultado directo para la respuesta HTTP, no un canal al que postear."""
+    from modules.slack_baneo_notifier.refresco_prov import (
+        CONCURRENCIA_MAXIMA,
+        DEADLINE_SEGUNDOS,
+        TOPE_SERVICIOS_POR_COMANDO,
+        ResultadoServicioRefrescado,
+        _priorizar_por_antiguedad,
+        _refrescar_un_servicio,
+    )
+    from core.services.prov.client import get_prov_client
+
+    cliente = get_prov_client()
+    ordenados = await _priorizar_por_antiguedad(pendientes)
+    candidatos = ordenados[:TOPE_SERVICIOS_POR_COMANDO]
+
+    semaforo = asyncio.Semaphore(CONCURRENCIA_MAXIMA)
+    resultados: dict[int, Any] = {}
+
+    async def _tarea(servicio: Any) -> None:
+        resultados[servicio.servicio_id] = await _refrescar_un_servicio(servicio, semaforo, cliente)
+
+    tareas = [asyncio.create_task(_tarea(s)) for s in candidatos]
+    try:
+        await asyncio.wait_for(asyncio.gather(*tareas, return_exceptions=True), timeout=DEADLINE_SEGUNDOS)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "action=cromo_servicios_unicos_refrescar_prov evento=deadline_alcanzado total=%d", len(candidatos)
+        )
+    finally:
+        for tarea in tareas:
+            if not tarea.done():
+                tarea.cancel()
+
+    for servicio in candidatos:
+        if servicio.servicio_id not in resultados:
+            resultados[servicio.servicio_id] = ResultadoServicioRefrescado(
+                servicio.servicio_id,
+                servicio.servicio_id_externo,
+                False,
+                "se agotó el tiempo del lote antes de poder intentarlo",
+            )
+
+    fallidos = [
+        {"servicio_id_externo": r.servicio_id_externo, "motivo": r.motivo_error}
+        for r in resultados.values()
+        if not r.ok
+    ]
+    return _ResultadoRefrescoLote(fallidos=fallidos)
+
+
+@app.get("/api/infra/cromo/cables/resolver", response_model=CromoCableIdentidadResponseModel)
+async def cromo_cable_resolver_web(request: Request, q: str) -> JSONResponse:
+    """Resuelve un cable por `n_id` (si `q` es puramente numérico) o por `nombre` exacto case-
+    insensitive (si no) — ver `_resolver_cable_por_texto`. 404 si no hay ningún cable vigente con
+    ese criterio; 409 explícito (nunca elegir arbitrariamente) si hay 2+ — hay al menos 2 pares de
+    nombres duplicados reales conocidos (`F-ALV-2335`, `F-LEM-11-A`) sobre ~32.782 cables."""
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    async with AsyncSessionLocal() as sesion:
+        candidatos = await _resolver_cable_por_texto(sesion, q)
+
+    if not candidatos:
+        return JSONResponse({"codigo": "NO_ENCONTRADO"}, status_code=404)
+    if len(candidatos) > 1:
+        return JSONResponse(
+            {
+                "codigo": "AMBIGUO",
+                "candidatos": [
+                    {"n_id": n_id, "nombre": nombre, "capacidad": capacidad} for n_id, nombre, capacidad in candidatos
+                ],
+            },
+            status_code=409,
+        )
+
+    n_id, nombre, capacidad = candidatos[0]
+    return JSONResponse({"n_id": n_id, "nombre": nombre, "capacidad": capacidad})
+
+
+@app.get(
+    "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos",
+    response_model=CromoServiciosUnicosResponseModel,
+)
+async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
+    """IDs de servicio únicos (Task 1: `servicios_unicos_por_cable`) de un cable entero, con
+    frescura PROV por servicio (Task 7) — vista complementaria a
+    `/api/infra/cromo/cables/{id}/servicios` (arriba), que es por-pelo para la tabla del
+    Verificador. Sólo lectura: no dispara ningún refresco (eso es el POST `.../refrescar-prov`, más
+    abajo) — `refresco_prov` siempre viaja en "no_solicitado" acá."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_cable
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_unicos_por_cable(sesion, cable_n_id)
+            cable_nombre = await _identidad_cable(sesion, cable_n_id)
+            frescura = await _frescura_por_servicio(sesion, [s.servicio_id for s in resultado.servicios])
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"codigo": "NO_ENCONTRADO", "error": str(exc)}, status_code=404)
+
+    from datetime import timezone
+
+    return JSONResponse(
+        {
+            "cable_n_id": cable_n_id,
+            "cable_nombre": cable_nombre,
+            "buffer": None,
+            "datos_al": datetime.now(timezone.utc).isoformat(),
+            "servicios": [_serializar_servicio_unico(s, frescura[s.servicio_id]) for s in resultado.servicios],
+            "refresco_prov": {"estado": "no_solicitado", "fallidos": []},
+        }
+    )
+
+
+@app.get(
+    "/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos",
+    response_model=CromoServiciosUnicosResponseModel,
+)
+async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: int, numero: int) -> JSONResponse:
+    """Igual que la ruta anterior, acotado a un buffer humano `B<numero>` puntual (`numero` 1-
+    indexado, mapea a `cromo_tubos.orden = numero - 1`, ver `_resolver_buffer_por_numero`). 404 con
+    `total_buffers` si el cable no tiene ese buffer — para que el cliente pueda orientar al técnico
+    ("el cable tiene 6 buffers, pediste B9")."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_tubo, ResultadoServiciosUnicos
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    async with AsyncSessionLocal() as sesion:
+        tubo, total_buffers = await _resolver_buffer_por_numero(sesion, cable_n_id, numero)
+        if tubo is None:
+            return JSONResponse({"codigo": "NO_ENCONTRADO", "total_buffers": total_buffers}, status_code=404)
+        tubo_n_id, orden, nombre_color = tubo
+        cable_nombre = await _identidad_cable(sesion, cable_n_id)
+        try:
+            resultado = await servicios_unicos_por_tubo(sesion, tubo_n_id)
+        except ObjetoNoEncontrado:
+            # El tubo existe de verdad (recién resuelto por fila propia arriba) — un buffer sin
+            # ningún pelo cargado todavía no es "no encontrado", es un buffer real sin servicios
+            # que reportar (el criterio de "no encontrado" de `servicios_unicos_por_tubo` es
+            # tolerante a la fila de TUBO faltante, no al revés: acá la fila sí existe).
+            resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=tubo_n_id, servicios=[])
+        frescura = await _frescura_por_servicio(sesion, [s.servicio_id for s in resultado.servicios])
+
+    from datetime import timezone
+
+    return JSONResponse(
+        {
+            "cable_n_id": cable_n_id,
+            "cable_nombre": cable_nombre,
+            "buffer": {"numero": numero, "orden": orden, "nombre_color": nombre_color},
+            "datos_al": datetime.now(timezone.utc).isoformat(),
+            "servicios": [_serializar_servicio_unico(s, frescura[s.servicio_id]) for s in resultado.servicios],
+            "refresco_prov": {"estado": "no_solicitado", "fallidos": []},
+        }
+    )
+
+
+@app.post(
+    "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov",
+    response_model=CromoServiciosUnicosResponseModel,
+)
+async def cromo_servicios_unicos_refrescar_prov_web(
+    request: Request, cable_n_id: int, body: CromoServiciosUnicosRefrescarRequestModel
+) -> JSONResponse:
+    """Dispara el refresco PROV (Task 9) de los servicios únicos vencidos de este cable, awaiteado
+    dentro del propio request (a diferencia del comando de Slack, fire-and-forget) — ver
+    `_ejecutar_refresco_prov_lote`. Responde con el mismo cuerpo que el GET de servicios únicos por
+    cable, con `refresco_prov` reflejando el resultado real del lote en vez de "no_solicitado"."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_cable
+    from core.services.prov.config import ProvConfigError
+    from core.services.prov.frescura import servicios_vencidos
+    from db.session import AsyncSessionLocal
+
+    username, _ = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=cromo_servicios_unicos_refrescar_prov result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_unicos_por_cable(sesion, cable_n_id)
+            vencidos = await servicios_vencidos(sesion, [s.servicio_id for s in resultado.servicios])
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"codigo": "NO_ENCONTRADO", "error": str(exc)}, status_code=404)
+
+    pendientes = [s for s in resultado.servicios if s.servicio_id in vencidos]
+    if not pendientes:
+        refresco_prov: dict[str, Any] = {"estado": "sin_vencidos", "fallidos": []}
+    else:
+        try:
+            lote = await _ejecutar_refresco_prov_lote(pendientes)
+        except ProvConfigError as exc:
+            logger.error(
+                "action=cromo_servicios_unicos_refrescar_prov evento=prov_no_configurado cable_n_id=%s error=%s",
+                cable_n_id,
+                exc,
+            )
+            return JSONResponse({"error": f"PROV no está configurado: {exc}"}, status_code=502)
+        except Exception as exc:
+            logger.exception(
+                "action=cromo_servicios_unicos_refrescar_prov_error cable_n_id=%s error=%s", cable_n_id, exc
+            )
+            return JSONResponse({"error": "No se pudo ejecutar el refresco PROV"}, status_code=500)
+        refresco_prov = {"estado": "completado" if not lote.fallidos else "parcial", "fallidos": lote.fallidos}
+
+    async with AsyncSessionLocal() as sesion:
+        resultado_final = await servicios_unicos_por_cable(sesion, cable_n_id)
+        cable_nombre = await _identidad_cable(sesion, cable_n_id)
+        frescura = await _frescura_por_servicio(sesion, [s.servicio_id for s in resultado_final.servicios])
+
+    from datetime import timezone
+
+    return JSONResponse(
+        {
+            "cable_n_id": cable_n_id,
+            "cable_nombre": cable_nombre,
+            "buffer": None,
+            "datos_al": datetime.now(timezone.utc).isoformat(),
+            "servicios": [
+                _serializar_servicio_unico(s, frescura[s.servicio_id]) for s in resultado_final.servicios
+            ],
+            "refresco_prov": refresco_prov,
         }
     )
 

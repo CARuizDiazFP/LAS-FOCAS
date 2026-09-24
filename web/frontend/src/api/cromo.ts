@@ -315,6 +315,99 @@ export async function verificarServiciosPorBotella(botellaNId: number): Promise<
   return requestJson(`/api/infra/cromo/botellas/${botellaNId}/servicios`);
 }
 
+// ── Servicios ÚNICOS por cable/buffer + resolución de cable + refresco PROV on-demand (Task 10,
+// plan "Corrección ingresos + Servicios", 2026-09-23) ────────────────────────────────────────────
+// Complementario a `verificarServiciosPorCable`/`verificarServiciosPorTubo` de arriba (una fila por
+// PELO, la vista de la tabla del Verificador con su columna "Pelo" — varios pelos por servicio es
+// normal). Estas rutas devuelven IDs de servicio ÚNICOS (agregados por servicio, ver `ServicioUnico`
+// en `core/services/cromo/verificador.py`), con frescura PROV por servicio (Task 7). Dos vistas
+// legítimas del mismo dato que conviven — no reemplazan nada de arriba.
+
+export interface CromoServicioUnicoFrescura {
+  ultima_sincronizacion_prov: string | null;
+  antiguedad_horas: number | null;
+  vencida: boolean;
+}
+
+export interface CromoServicioUnico {
+  servicio_id: number;
+  servicio_id_externo: string;
+  numero_primer_servicio: string | null;
+  nombre_cliente: string | null;
+  cliente: string | null;
+  estado_servicio: string | null;
+  tipo_servicio: string | null;
+  pelos_n_ids: number[];
+  cantidad_pelos: number;
+  numeros_en_pelo: string[];
+  metodos: string[];
+  frescura: CromoServicioUnicoFrescura;
+}
+
+/** `numero` es el buffer 1-indexado que cuenta el técnico (`orden + 1`). */
+export interface CromoBufferIdentidad {
+  numero: number;
+  orden: number;
+  nombre_color: string | null;
+}
+
+export interface CromoRefrescoProvFallido {
+  servicio_id_externo: string;
+  motivo: string | null;
+}
+
+/** `"no_solicitado"` en los dos GET (sólo lectura, no disparan nada); el POST de refresco puede
+ * devolver cualquiera de los otros tres según haya o no servicios vencidos y cómo haya salido el lote. */
+export interface CromoRefrescoProvEstado {
+  estado: 'no_solicitado' | 'sin_vencidos' | 'completado' | 'parcial';
+  fallidos: CromoRefrescoProvFallido[];
+}
+
+export interface CromoServiciosUnicosResultado {
+  cable_n_id: number;
+  cable_nombre: string | null;
+  buffer: CromoBufferIdentidad | null;
+  datos_al: string;
+  servicios: CromoServicioUnico[];
+  refresco_prov: CromoRefrescoProvEstado;
+}
+
+export interface CromoCableIdentidad {
+  n_id: number;
+  nombre: string | null;
+  capacidad: string | null;
+}
+
+export async function obtenerServiciosUnicosPorCable(cableNId: number): Promise<CromoServiciosUnicosResultado> {
+  return requestJson(`/api/infra/cromo/cables/${cableNId}/servicios-unicos`);
+}
+
+export async function obtenerServiciosUnicosPorBuffer(
+  cableNId: number,
+  numero: number,
+): Promise<CromoServiciosUnicosResultado> {
+  return requestJson(`/api/infra/cromo/cables/${cableNId}/buffers/${numero}/servicios-unicos`);
+}
+
+/** Resuelve un cable por `n_id` o por `nombre` exacto (case-insensitive). 404 si no existe; 409
+ * (`ApiError.status === 409`, candidatos en `ApiError.payload`) si hay 2+ cables vigentes con el
+ * mismo nombre — hay al menos 2 pares reales conocidos ("F-ALV-2335", "F-LEM-11-A") sobre ~32.782
+ * cables, la ambigüedad se expone en vez de elegir arbitrariamente. */
+export async function resolverCable(q: string): Promise<CromoCableIdentidad> {
+  return requestJson(`/api/infra/cromo/cables/resolver?q=${encodeURIComponent(q)}`);
+}
+
+/** Dispara el refresco PROV (Task 9) de los servicios únicos vencidos de este cable, awaiteado
+ * dentro del propio request — devuelve el mismo cuerpo que `obtenerServiciosUnicosPorCable`, con
+ * `refresco_prov` reflejando el resultado real del lote en vez de `"no_solicitado"`. */
+export async function refrescarServiciosUnicosProv(cableNId: number): Promise<CromoServiciosUnicosResultado> {
+  return requestJson(`/api/infra/cromo/cables/${cableNId}/servicios-unicos/refrescar-prov`, {
+    method: 'POST',
+    json: {},
+    csrf: true,
+  });
+}
+
 // ── Inventario de cables (Etapa 8b) ──────────────────────────────────────────
 // Distinto del verificador: "listame/buscame cables" (con paginación), no "qué servicios pasan por
 // este cable puntual". Mismo criterio de auth que el verificador — cualquier usuario autenticado.
