@@ -56,8 +56,18 @@ _RE_FORZAR_INGRESO_CON_FECHA = re.compile(
 # protegerlo.
 _RE_FORZAR_INGRESO_SIN_FECHA = re.compile(r"(?i)^forzar\s+ingreso\s+(.+)$")
 
-# "Forzar egreso #<ingreso_id>" — el operador ya sabe cuál de varios ingresos abiertos cerrar (ver
-# `construir_respuesta_varios_ingresos_abiertos`, que le ofrece justamente este comando).
+# "Forzar egreso #<ingreso_id> DD-MM-AAAA HH:MM" — mismo caso de uso que la forma con cámara: el
+# operador corrige la hora, pero ya sabe cuál de varios ingresos abiertos cerrar (ver
+# `construir_respuesta_varios_ingresos_abiertos`, que le ofrece justamente `#<id>`). Se intenta ANTES
+# que `_RE_FORZAR_EGRESO_POR_ID` (más específico, igual que `_RE_FORZAR_INGRESO_CON_FECHA` antes que
+# `_RE_FORZAR_INGRESO_SIN_FECHA`): fix final (Important A) — con el orden/patrón invertido, el grupo
+# de motivo libre de `_RE_FORZAR_EGRESO_POR_ID` se comía la fecha entera como texto y nunca llegaba a
+# parsearse como `momento`.
+_RE_FORZAR_EGRESO_POR_ID_CON_FECHA = re.compile(
+    r"(?i)^forzar\s+egreso\s+#(\d+)\s+(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2})(?:\s+(.+))?$"
+)
+# "Forzar egreso #<ingreso_id>" sin fecha (motivo libre opcional, sin intentar parsearlo como fecha) —
+# el operador ya sabe cuál de varios ingresos abiertos cerrar.
 _RE_FORZAR_EGRESO_POR_ID = re.compile(r"(?i)^forzar\s+egreso\s+#(\d+)(?:\s+(.+))?$")
 # "Forzar egreso <CAMARA> DD-MM-AAAA HH:MM" — mismo patrón/razón que `_RE_FORZAR_INGRESO_CON_FECHA`.
 _RE_FORZAR_EGRESO_CON_FECHA = re.compile(
@@ -226,6 +236,17 @@ def extraer_comando_forzar_egreso(
 
     Puede propagar `MomentoInvalidoError` (ver `extraer_comando_forzar_ingreso`)."""
     texto_normalizado = _normalizar_texto(texto)
+
+    match = _RE_FORZAR_EGRESO_POR_ID_CON_FECHA.match(texto_normalizado)
+    if match:
+        ingreso_id_str, fecha_str, hora_str, motivo = match.groups()
+        momento = parsear_momento_ar(fecha_str, hora_str, ahora=ahora)
+        return ComandoForzarEgreso(
+            camara_texto=None,
+            ingreso_id=int(ingreso_id_str),
+            momento=momento,
+            motivo=(motivo.strip() if motivo else None),
+        )
 
     match = _RE_FORZAR_EGRESO_POR_ID.match(texto_normalizado)
     if match:

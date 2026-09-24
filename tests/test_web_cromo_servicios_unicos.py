@@ -37,7 +37,7 @@ orquestación que vive acá, en `web/app/main.py` (Fix round 1, Important de la 
 mismo patrón que ya mordió en la Task 9, donde varios tests en verde convivían con un camino sin
 ejecutar ni una vez). La sección "`_ejecutar_refresco_prov_lote` (orquestación directa)" más abajo
 cierra ese hueco: monkeypatchea sólo las dependencias EXTERNAS de la función
-(`_priorizar_por_antiguedad`/`_refrescar_un_servicio`/`get_prov_client`, todas importadas
+(`priorizar_por_antiguedad`/`refrescar_un_servicio`/`get_prov_client`, todas importadas
 LOCALMENTE dentro de la función en cada invocación — el monkeypatch va sobre el atributo del módulo
 de origen, nunca sobre un nombre en `web_main`, porque el `from ... import ...` local vuelve a leer
 el atributo del módulo en cada llamada) y ejercita el `Semaphore`/deadline/cancelación/armado de
@@ -645,7 +645,7 @@ def test_refrescar_prov_502_si_prov_no_configurado(monkeypatch):
 # ── `_ejecutar_refresco_prov_lote` (orquestación directa) — Fix round 1, Important ───────────────
 # No mockea la función entera (eso lo hacen los 6 tests del POST de arriba): ejercita el
 # Semaphore/create_task/wait_for(deadline)/loop de cancelación/armado de `fallidos` de verdad,
-# monkeypatcheando sólo `_priorizar_por_antiguedad`/`_refrescar_un_servicio`/`get_prov_client` (las
+# monkeypatcheando sólo `priorizar_por_antiguedad`/`refrescar_un_servicio`/`get_prov_client` (las
 # 3 dependencias externas que la función importa LOCALMENTE en cada invocación desde
 # `modules.slack_baneo_notifier.refresco_prov`/`core.services.prov.client` — el monkeypatch va
 # sobre el atributo de ESOS módulos, no sobre un nombre en `web_main`, precisamente porque el
@@ -671,7 +671,7 @@ def _servicio_unico_lote(servicio_id: int, servicio_id_externo: str):
 
 
 async def _priorizar_identidad(servicios):
-    """Fake de `_priorizar_por_antiguedad` que no toca DB — devuelve la lista tal cual. El orden de
+    """Fake de `priorizar_por_antiguedad` que no toca DB — devuelve la lista tal cual. El orden de
     prioridad en sí (nulls primero, ascendente) ya lo cubre `tests/test_slack_refresco_prov.py`;
     acá sólo interesa la orquestación del lote (deadline/cancelación/`fallidos`)."""
     return list(servicios)
@@ -684,8 +684,8 @@ def _patch_dependencias_lote(monkeypatch, refrescar_fake):
     import core.services.prov.client as prov_client_module
     import modules.slack_baneo_notifier.refresco_prov as refresco_prov_module
 
-    monkeypatch.setattr(refresco_prov_module, "_priorizar_por_antiguedad", _priorizar_identidad)
-    monkeypatch.setattr(refresco_prov_module, "_refrescar_un_servicio", refrescar_fake)
+    monkeypatch.setattr(refresco_prov_module, "priorizar_por_antiguedad", _priorizar_identidad)
+    monkeypatch.setattr(refresco_prov_module, "refrescar_un_servicio", refrescar_fake)
     monkeypatch.setattr(prov_client_module, "get_prov_client", lambda: object())
     return refresco_prov_module
 
@@ -720,7 +720,7 @@ def test_ejecutar_refresco_prov_lote_deadline_corta_y_marca_no_resueltos(monkeyp
 
 def test_ejecutar_refresco_prov_lote_fallo_puntual_no_aborta_el_resto(monkeypatch):
     """Si UN servicio revienta con una excepción no controlada dentro de la tarea (algo que
-    `_refrescar_un_servicio` real nunca hace — atrapa todo — pero que la orquestación tiene que
+    `refrescar_un_servicio` real nunca hace — atrapa todo — pero que la orquestación tiene que
     tolerar igual, por robustez), el resto del lote se procesa igual: ni se cuelga ni propaga la
     excepción hacia el caller."""
     from modules.slack_baneo_notifier.refresco_prov import ResultadoServicioRefrescado

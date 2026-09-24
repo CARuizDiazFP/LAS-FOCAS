@@ -2302,3 +2302,112 @@ compose de prod no se corrió (`lasfocas-*` no se reinició en todo este plan, d
 vigente). Que los secrets y la variable existan en el filesystem/`.env` de prod no implica que el
 contenedor de prod ya los tenga montados — eso exigiría un `docker compose up` real contra prod, con
 su propia ventana de mantenimiento.
+
+## 2026-09-24 — La auditoría de corrección de ingresos no es atómica con el movimiento, y se escribe segunda
+
+- **Contexto:** revisión final de rama del plan "Corrección de ingresos/servicios"
+  (`docs/superpowers/plans/2026-09-23-correccion-ingresos-servicios.md`). `procesar_comando_correccion`
+  (`core/services/ingreso_correccion_service.py`) hace tres commits en secuencia, no uno: primero
+  `registrar_movimiento_ingreso` (`core/services/ingreso_service.py`, "comita la transacción antes de
+  retornar" según su propio docstring) escribe y comitea la fila `Ingreso`/`Egreso` real; después
+  `_marcar_caso_resuelto` comitea, si aplica, el cierre de `IngresoSinMatch`; recién al final
+  `_finalizar` arma y comitea la fila de `IngresoCorreccion` (`db/models/infra.py`). Si ese último
+  `INSERT` falla, `_finalizar` hace `session.rollback()`, loguea con `logger.error` y devuelve
+  igual el `ResultadoCorreccion` con la respuesta `✅` original (`respuesta` ya estaba armada antes
+  de intentar el commit de auditoría) — el operador ve éxito en Slack sin que exista ninguna fila
+  que lo respalde.
+
+- **Consecuencia concreta:** un reinicio del worker (o un pool de conexiones agotado) entre el
+  commit del `Ingreso`/`Egreso` y el commit de `IngresoCorreccion` deja `app.ingresos` mutada —la
+  cámara cambiando de `OCUPADA` a `LIBRE` o al revés, según el comando— y **cero filas** en
+  `app.ingresos_correcciones` que expliquen quién lo hizo ni cuándo.
+
+- **Por qué importa más de lo que parece:** la decisión de producto de esta misma tanda de trabajo
+  (entrada "2026-09-23 (cont. 2)" arriba) fue explícita — **sin allowlist**, cualquier persona del
+  canal puede ejecutar `Forzar ingreso`/`Forzar egreso`, y el único control es que "cada invocación,
+  exitosa o rechazada, escribe una fila en `app.ingresos_correcciones`". Este camino de mutación sin
+  rastro es la única grieta real en esa premisa: no es un caso raro de infraestructura, es el
+  escenario exacto (fallo de escritura entre dos commits) contra el que la auditoría se presentó
+  como la única salvaguarda.
+
+- **Por qué no se arregla en esta rama:** requeriría escribir la fila de auditoría en la misma
+  transacción que el movimiento — es decir, que `registrar_movimiento_ingreso` deje de comitear por
+  su cuenta y reciba (o devuelva) el control del commit al caller. Eso cambia el contrato de una
+  función ya usada por otros callers fuera de este plan, y las Global Constraints del plan
+  prohibieron tocar ese contrato. Queda como limitación conocida, junto a las otras dos que ya
+  documenta el plan/spec: la ventana de carrera del seguimiento de fecha pendiente y el POST de
+  refresco PROV sin candado compartido con el camino de Slack (ver entrada siguiente).
+
+- **Impacto:** ningún cambio de código en esta entrada — es documentación de una limitación
+  encontrada en la revisión final. `core/services/ingreso_correccion_service.py::_finalizar` (commit
+  de auditoría) y `core/services/ingreso_service.py::registrar_movimiento_ingreso` (commit del
+  movimiento) son los puntos exactos de la brecha.
+
+## 2026-09-24 (cont.) — El POST de refresco PROV por cable queda `_require_auth`, no `_require_admin`
+
+- **Contexto:** Task 10 del mismo plan agregó `POST /api/infra/cromo/cables/{cable_n_id}/servicios-
+  unicos/refrescar-prov` (`web/app/main.py::cromo_servicios_unicos_refrescar_prov_web`), que sólo
+  llama `_require_auth(request)`. Se deja escrito acá para que la decisión quede a la vista, no para
+  cambiarla.
+
+- **A favor de que fuera `_require_admin`:** las ~24 rutas mutantes bajo `/api/infra/*` de este mismo
+  archivo son todas `_require_admin` — `botellas/consolidar`, `botellas/eliminar`,
+  `botellas/eliminar-grupo`, `camaras/merge`, `camaras/merge-grupo`, `camaras/merge-masivo`,
+  `botellas/{n_id}/separar-padre`, `camaras/{camara_id}/estado`, entre otras. Esta ruta nueva escribe
+  en `app.servicios` y en `app.servicios_sync_prov` (vía `ingerir_contexto_prov`), y un usuario con
+  `role=user` puede dispararla para hasta 25 servicios por request (`TOPE_SERVICIOS_POR_COMANDO`),
+  cada uno una llamada real a la API externa PROV — sin rate-limit propio de esta ruta más allá del
+  `Semaphore` interno, y sin el candado `_cables_en_refresco` que sí protege el camino de Slack (ver
+  entrada siguiente) contra dos refrescos concurrentes del mismo cable.
+
+- **A favor de dejarlo como está:** su análoga ya existente, `POST /servicios/prov/refrescar`
+  (`api/app/routes/servicios.py`), tampoco es admin-only — y hay un precedente ya escrito para
+  exactamente esa asimetría: la Decisión 4 de la entrada "2026-09-02 (cont.)" de este mismo archivo
+  argumenta que un refresco PROV no deja al caller *elegir* ningún valor, sólo resincroniza desde la
+  fuente de verdad externa (a diferencia de fijar un Nivel Cliente o una verificabilidad a mano, que
+  sí son `_require_admin`). Esta ruta nueva es la misma operación —"resincronizar desde PROV"— sobre
+  un conjunto de servicios en vez de uno solo, así que el mismo argumento aplica sin forzarlo.
+
+- **Decisión: no se cambia el nivel de auth en esta rama.** Lo que faltaba era que la asimetría
+  quedara documentada para que alguien pueda revisarla a conciencia más adelante, con las dos caras
+  puestas una al lado de la otra — en particular si en algún momento el volumen (25 llamadas PROV
+  por click, sin allowlist de quién puede pedirlo) resulta un problema operativo real.
+
+- **Impacto:** ningún cambio de código. `web/app/main.py::cromo_servicios_unicos_refrescar_prov_web`
+  sigue en `_require_auth`.
+
+## 2026-09-24 (cont. 2) — Deuda declarada: duplicación de orquestación entre el refresco PROV REST y el de Slack
+
+- **Contexto:** `web/app/main.py::_ejecutar_refresco_prov_lote` (Task 10, REST) reimplementa
+  alrededor de 45 líneas de `modules/slack_baneo_notifier/refresco_prov.py::refrescar_servicios_vencidos`
+  (Task 9, Slack): mismo tope (`TOPE_SERVICIOS_POR_COMANDO`), mismo `asyncio.Semaphore`, el mismo
+  patrón `create_task` + `wait_for(DEADLINE_SEGUNDOS)` + bucle de cancelación de tareas no
+  terminadas, y el mismo relleno de los servicios que quedaron sin intentar
+  (`ResultadoServicioRefrescado` con motivo "se agotó el tiempo..."). El fix final de esta rama
+  promovió `priorizar_por_antiguedad`/`refrescar_un_servicio` de privadas a públicas (antes
+  `_priorizar_por_antiguedad`/`_refrescar_un_servicio`) puntualmente para que este import funcionara
+  sin un `from ... import` a un nombre privado — no factoriza la duplicación en sí, sólo evita que
+  quedara rota.
+
+- **Y ya divergió, no es una duplicación estática:** la versión REST no toma el candado
+  `_cables_en_refresco` (módulo `refresco_prov.py`) que evita que dos refrescos concurrentes del
+  mismo cable pisen resultados, y no emite el log `action=prov_refresco_slack
+  evento=lote_completado` con las métricas de duración/conteo que sí emite la versión de Slack. Dos
+  caminos que empezaron como "la misma orquestación, dos triggers" ya tienen comportamiento
+  observable distinto.
+
+- **Riesgo concreto de dejarlo así:** alguien corrige o extiende el camino de Slack (por ejemplo,
+  agregando otro guard o cambiando el criterio de prioridad) sin saber que existe una segunda copia
+  en `web/app/main.py`, y las dos rutas quedan con comportamiento distinto de forma silenciosa — la
+  suite de tests pasa en verde en ambos lados porque cada una prueba su propia copia, no la
+  consistencia entre ambas.
+
+- **Por qué no se resuelve en esta rama:** unificar exigiría rediseñar `refrescar_servicios_vencidos`
+  para separar "correr el lote y devolver el resultado" de "postear el resultado a Slack" (hoy están
+  fusionados en una sola función fire-and-forget pensada para `run_coroutine_threadsafe`), lo cual
+  excede el alcance de un fix final de revisión. Se declara acá como deuda explícita, no como
+  hallazgo nuevo a resolver.
+
+- **Impacto:** ningún cambio de orquestación. Cambio ya aplicado: `priorizar_por_antiguedad` y
+  `refrescar_un_servicio` (antes privadas) ahora están en `__all__` de
+  `modules/slack_baneo_notifier/refresco_prov.py`, con un comentario que apunta a esta entrada.

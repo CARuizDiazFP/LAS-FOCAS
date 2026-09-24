@@ -35,7 +35,7 @@ ruling pide evitar ("desplazando a servicios que sí se podrían refrescar"). Or
 `ultimo_intento` en cambio hace que, apenas se registra el intento fallido, ese servicio pase al
 FINAL de la cola de prioridad — le da lugar a los demás vencidos antes de reintentarlo.
 `_EPOCA_NUNCA_SINCRONIZADO` sigue existiendo como valor mínimo interno para ordenar el grupo "nunca
-intentado" de `_priorizar_por_antiguedad` — no tiene ninguna relación con lo que se escribe en
+intentado" de `priorizar_por_antiguedad` — no tiene ninguna relación con lo que se escribe en
 `ultima_sincronizacion_ok` (ver el punto siguiente).
 
 Escritura de fallo (ruling vinculante, no contemplada por la Task 7): `_persistir_intento_fallido`
@@ -93,7 +93,7 @@ MAX_REINTENTOS_INTERACTIVO = 0  # ver docstring del módulo: más conservador qu
 
 # Ya NO se escribe en `ultima_sincronizacion_ok` (esa columna usa `None`/NULL desde la migración
 # `20260923_03` — ver docstring del módulo, "Escritura de fallo"). Sigue existiendo únicamente como
-# valor mínimo interno para el desempate de `_priorizar_por_antiguedad._clave` ("nunca intentado" ->
+# valor mínimo interno para el desempate de `priorizar_por_antiguedad._clave` ("nunca intentado" ->
 # máxima prioridad); cualquier datetime lo bastante viejo serviría, se reusa éste por comodidad.
 _EPOCA_NUNCA_SINCRONIZADO = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -128,7 +128,7 @@ def _con_tz(momento: Optional[datetime]) -> Optional[datetime]:
     return momento
 
 
-async def _priorizar_por_antiguedad(servicios: list[ServicioUnico]) -> list[ServicioUnico]:
+async def priorizar_por_antiguedad(servicios: list[ServicioUnico]) -> list[ServicioUnico]:
     """Ordena `servicios` por `ultimo_intento` ascendente (nulls primero) — ver "Orden de
     prioridad" en el docstring del módulo. Sesión corta de sólo lectura, cerrada antes de que
     empiece cualquier llamada de red (mismo contrato que el resto del módulo)."""
@@ -203,7 +203,7 @@ def _motivo_de_excepcion(exc: Exception) -> str:
     return f"error inesperado: {exc}"
 
 
-async def _refrescar_un_servicio(
+async def refrescar_un_servicio(
     servicio: ServicioUnico, semaforo: asyncio.Semaphore, cliente: Any
 ) -> ResultadoServicioRefrescado:
     """Refresca un único `ServicioUnico` contra PROV. Nunca lanza — cualquier excepción (de PROV o
@@ -272,10 +272,22 @@ _TOPE_MOTIVO_EN_MENSAJE = 200
 
 
 def _construir_mensaje_seguimiento(
-    exitosos: list[ResultadoServicioRefrescado], fallidos: list[ResultadoServicioRefrescado]
+    exitosos: list[ResultadoServicioRefrescado],
+    fallidos: list[ResultadoServicioRefrescado],
+    *,
+    total_vencidos: int | None = None,
 ) -> str:
     """Segundo mensaje (Step 3): qué IDs cambiaron y la lista nominal de los que no se pudieron
-    refrescar, con el motivo de cada uno — nunca sólo un conteo."""
+    refrescar, con el motivo de cada uno — nunca sólo un conteo.
+
+    `total_vencidos` (fix final, Important D): el primer mensaje (`_linea_frescura_prov`,
+    `cable_info.py`) cuenta TODOS los vencidos del comando ("🕒 118 con validación PROV vencida —
+    refrescando…"), pero este lote sólo intenta `TOPE_SERVICIOS_POR_COMANDO` (25) — sin este
+    parámetro, los vencidos que quedan afuera del tope no figuraban ni como éxito ni como fallo en
+    ningún mensaje, y el orden por `ultimo_intento` hacía que cada reintento agarrara otro
+    subconjunto de 25 sin ninguna explicación visible. Con `total_vencidos` mayor que
+    `len(exitosos) + len(fallidos)` (siempre `len(candidatos)`, el tope aplicado), se agrega una
+    línea final explícita en vez de dejarlo implícito."""
     lineas = ["🔄 Refresco PROV completado"]
     if exitosos:
         ids = ", ".join(r.servicio_id_externo for r in exitosos)
@@ -287,6 +299,10 @@ def _construir_mensaje_seguimiento(
         )
     if not exitosos and not fallidos:
         lineas.append("Nada para reportar.")
+    intentados = len(exitosos) + len(fallidos)
+    if total_vencidos is not None and total_vencidos > intentados:
+        pendientes = total_vencidos - intentados
+        lineas.append(f"⏳ Quedan {pendientes} pendiente(s) — volvé a pedir el comando.")
     return "\n".join(lineas)
 
 
@@ -354,14 +370,14 @@ async def refrescar_servicios_vencidos(
             )
             return
 
-        ordenados = await _priorizar_por_antiguedad(servicios)
+        ordenados = await priorizar_por_antiguedad(servicios)
         candidatos = ordenados[:tope]
 
         semaforo = asyncio.Semaphore(concurrencia)
         resultados: dict[int, ResultadoServicioRefrescado] = {}
 
         async def _tarea(servicio: ServicioUnico) -> None:
-            resultados[servicio.servicio_id] = await _refrescar_un_servicio(servicio, semaforo, cliente)
+            resultados[servicio.servicio_id] = await refrescar_un_servicio(servicio, semaforo, cliente)
 
         tareas = [asyncio.create_task(_tarea(s)) for s in candidatos]
         try:
@@ -403,7 +419,7 @@ async def refrescar_servicios_vencidos(
             duracion_ms,
         )
 
-        texto = _construir_mensaje_seguimiento(exitosos, fallidos)
+        texto = _construir_mensaje_seguimiento(exitosos, fallidos, total_vencidos=len(servicios))
         try:
             # `slack_sdk.WebClient.chat_postMessage` es una llamada HTTP síncrona — se corre en un
             # thread aparte para no bloquear el loop compartido del worker mientras espera la
@@ -421,7 +437,7 @@ async def refrescar_servicios_vencidos(
             )
     except Exception as exc:
         # Red de seguridad de nivel superior (Important 1 de la revisión de calidad): sin este
-        # `except`, una excepción de `_priorizar_por_antiguedad` (Postgres caído, pool agotado) u
+        # `except`, una excepción de `priorizar_por_antiguedad` (Postgres caído, pool agotado) u
         # otro punto del lote escapa al `concurrent.futures.Future` que devuelve
         # `run_coroutine_threadsafe` en el listener — ese Future se descarta sin que nadie llame
         # `.result()`, así que ni loguea "exception was never retrieved" (eso sólo lo hace
@@ -460,4 +476,11 @@ __all__ = [
     "MAX_REINTENTOS_INTERACTIVO",
     "ResultadoServicioRefrescado",
     "refrescar_servicios_vencidos",
+    # Fix final (Important E, mecánico): promovidos de privados a públicos — el `from ... import`
+    # de `web/app/main.py::_ejecutar_refresco_prov_lote` los importaba con el nombre privado desde
+    # dentro del cuerpo de la función (un rename ahí revienta recién en runtime, ningún chequeo
+    # estático lo agarra). No se movió nada de lugar ni se factorizó la duplicación con
+    # `refrescar_servicios_vencidos` — eso queda como deuda declarada (ver `docs/decisiones.md`).
+    "priorizar_por_antiguedad",
+    "refrescar_un_servicio",
 ]

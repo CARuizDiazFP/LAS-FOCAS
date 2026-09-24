@@ -230,6 +230,27 @@ class TestExtraerComandoForzarEgreso(unittest.TestCase):
         self.assertEqual(resultado.ingreso_id, 123)
         self.assertEqual(resultado.motivo, "se fue antes de tiempo")
 
+    def test_por_id_con_fecha(self) -> None:
+        """Fix final (Important A) — antes de este fix, `_RE_FORZAR_EGRESO_POR_ID` se evaluaba
+        antes que `_RE_FORZAR_EGRESO_CON_FECHA` y su `(?:\\s+(.+))?` goloso se comía la fecha entera
+        como `motivo` en vez de parsearla como `momento`. La forma con `#<id>` tiene que aceptar el
+        mismo sufijo de fecha opcional que la forma con cámara."""
+        resultado = extraer_comando_forzar_egreso("Forzar egreso #42 22-09-2026 10:00", ahora=_AHORA)
+        assert resultado is not None
+        self.assertEqual(resultado.camara_texto, None)
+        self.assertEqual(resultado.ingreso_id, 42)
+        self.assertEqual(resultado.momento, datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc))
+        self.assertEqual(resultado.motivo, None)
+
+    def test_por_id_con_fecha_y_motivo_libre(self) -> None:
+        resultado = extraer_comando_forzar_egreso(
+            "Forzar egreso #42 22-09-2026 10:00 quedó mal cargado", ahora=_AHORA
+        )
+        assert resultado is not None
+        self.assertEqual(resultado.ingreso_id, 42)
+        self.assertEqual(resultado.momento, datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc))
+        self.assertEqual(resultado.motivo, "quedó mal cargado")
+
     def test_camara_sin_fecha_queda_incompleto(self) -> None:
         """No es una forma válida de la gramática de "Forzar egreso" (a diferencia de "Forzar
         ingreso") — el parser no conoce el tipo de hilo, así que devuelve `camara_texto` seteado +

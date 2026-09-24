@@ -3246,6 +3246,36 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
         self.assertIn("error interno", texto_respuesta)
 
+    def test_evento_sin_user_no_ejecuta_correccion(self) -> None:
+        """Fix final (Important B) — un evento sin `user` (los mensajes de bot/Workflow traen
+        `bot_id`, no `user`) nunca tiene que llegar a `procesar_comando_correccion`: escribiría una
+        fila de auditoría anónima (`actor_slack_user_id=""`), rompiendo la premisa de producto "sin
+        allowlist, la auditoría es el único control". El filtro `solo_workflows` no lo ataja porque
+        `_procesar_correccion_ingreso` se evalúa antes a propósito (ver comentario en
+        `_handle_message`) — el guard tiene que vivir en el propio call-site."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        event = {
+            "text": "Forzar egreso #42",
+            "channel": "C123",
+            "ts": "2222.000002",
+            "thread_ts": "1111.000001",
+            "bot_id": "B0AV5BDDUJE",
+        }
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion"
+            ) as mock_procesar,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""),
+        ):
+            listener._handle_message(event, client_mock)
+
+        mock_procesar.assert_not_called()
+
 
 # ─── Tests del flujo de "fecha pendiente" (respuesta de seguimiento) ────────────
 

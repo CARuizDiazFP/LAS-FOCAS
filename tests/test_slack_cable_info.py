@@ -18,6 +18,7 @@ from core.services.cromo.verificador import (
     ServicioUnico,
 )
 from modules.slack_baneo_notifier.cable_info import (
+    _linea_frescura_prov,
     buscar_cable_por_n_id_o_nombre,
     buscar_cable_por_nombre,
     construir_respuesta_ambiguo,
@@ -494,6 +495,27 @@ def _servicio_unico(
     )
 
 
+class TestLineaFrescuraProv(unittest.TestCase):
+    """Fix final (Important C) — cobertura cero de una decisión vinculante: `grep -rn
+    "refrescando" tests/` sólo encontraba `assertNotIn` (el caso `refrescando=False`, default).
+    Vaciar el sufijo en `_linea_frescura_prov` ("mutá la corrección") dejaba la suite entera en
+    verde porque el caso POSITIVO (`refrescando=True`) nunca se ejercitaba. Este test cubre
+    directamente la promesa: "prometer un refresco que no ocurre sería mentirle al técnico"."""
+
+    def test_refrescando_true_agrega_sufijo(self) -> None:
+        servicios = [_servicio_unico(1, "133345", [10]), _servicio_unico(2, "140002", [11])]
+        linea = _linea_frescura_prov(servicios, vencidos={1}, refrescando=True)
+        assert linea is not None
+        self.assertIn("— refrescando…", linea)
+        self.assertEqual(linea, "🕒 1 con validación PROV vencida — refrescando…")
+
+    def test_refrescando_false_no_agrega_sufijo(self) -> None:
+        servicios = [_servicio_unico(1, "133345", [10])]
+        linea = _linea_frescura_prov(servicios, vencidos={1}, refrescando=False)
+        assert linea is not None
+        self.assertNotIn("refrescando", linea)
+
+
 class TestVerboServiciosLibre(unittest.TestCase):
     """Precondición del brief (Task 8): antes de agregar el comando nuevo, confirmar que el verbo
     "Servicios" no matchea ya ninguno de los parsers existentes — si matcheara, el comando nuevo
@@ -775,6 +797,33 @@ class TestHandleServiciosCable(unittest.TestCase):
         self.assertEqual(len(todos_los_ids_listados), len(set(todos_los_ids_listados)))
         self.assertEqual(sorted(todos_los_ids_listados), ["133345", "140002", "145002"])
 
+    def test_refrescando_true_aparece_en_el_mensaje(self) -> None:
+        """Fix final (Important C), nivel "cableado del listener" — mutar `refrescando=False` a
+        mano en la llamada de `_handle_servicios_cable` a `construir_respuesta_servicios_cable`
+        dejaba la suite entera en verde (280 passed, 0 fallas): ningún test verificaba que un
+        `_disparar_refresco_prov` exitoso (`refrescando=True`) realmente llegue al mensaje
+        posteado en el hilo."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        event = self._make_event("Servicios F-VFL-IND")
+        cable_fake = SimpleNamespace(n_id=99, nombre="F-VFL-IND")
+        servicios = [_servicio_unico(1, "133345", [10])]
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=servicios)
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_local,
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.servicios_unicos_por_cable_sync", return_value=resultado),
+            patch("modules.slack_baneo_notifier.listener.servicios_vencidos_sync", return_value={1}),
+            patch.object(listener, "_disparar_refresco_prov", return_value=(True, None)),
+        ):
+            session_mock = mock_session_local.return_value
+            session_mock.execute.return_value.all.side_effect = [[(10, 100)], [(100, 0, "AZ")]]
+            listener._handle_app_mention(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("— refrescando…", texto)
+
     def test_cable_no_encontrado(self) -> None:
         listener = self._make_listener()
         client_mock = MagicMock()
@@ -858,6 +907,32 @@ class TestHandleServiciosBuffer(unittest.TestCase):
         mock_cable_sync.assert_not_called()
         texto = client_mock.chat_postMessage.call_args.kwargs["text"]
         self.assertIn("Buffer *B1*", texto)
+
+    def test_refrescando_true_aparece_en_el_mensaje(self) -> None:
+        """Fix final (Important C), nivel "cableado del listener" — gemelo de
+        `TestHandleServiciosCable.test_refrescando_true_aparece_en_el_mensaje` para la llamada de
+        `_handle_servicios_buffer` a `construir_respuesta_servicios_buffer`: mutar `refrescando=False`
+        a mano acá también dejaba la suite entera en verde."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        event = self._make_event("Servicios F-VFL-IND B1")
+        cable_fake = SimpleNamespace(n_id=99, nombre="F-VFL-IND")
+        tubo_fake = SimpleNamespace(n_id=1, orden=0, nombre_color="AZ")
+        servicios = [_servicio_unico(1, "133345", [10])]
+        resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=1, servicios=servicios)
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero", return_value=tubo_fake),
+            patch("modules.slack_baneo_notifier.listener.servicios_unicos_por_tubo_sync", return_value=resultado),
+            patch("modules.slack_baneo_notifier.listener.servicios_vencidos_sync", return_value={1}),
+            patch.object(listener, "_disparar_refresco_prov", return_value=(True, None)),
+        ):
+            listener._handle_app_mention(event, client_mock)
+
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("— refrescando…", texto)
 
     def test_buffer_inexistente_responde_aviso(self) -> None:
         listener = self._make_listener()

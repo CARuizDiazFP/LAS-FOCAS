@@ -23,12 +23,12 @@ reales de `app.servicios.id` son siempre positivos (columna `SERIAL`), así que 
 puede colisionar jamás con una fila real y no hace falta crear una fila en `app.servicios` para los
 tests que sólo verifican orquestación (tope/deadline/candado/fallo puntual) — cuando el camino de
 éxito busca el `Servicio` por ese PK y no lo encuentra, lo trata como "se borró entre medio" (no
-escribe nada, cuenta como éxito de todas formas, ver `_refrescar_un_servicio`). Los tests que
+escribe nada, cuenta como éxito de todas formas, ver `refrescar_un_servicio`). Los tests que
 verifican contenido real de `app.servicios`/`app.servicios_sync_prov`
 (`test_fallo_persiste_ultimo_intento_y_error`, `test_timeout_sin_reintentos_se_clasifica_como_timeout`,
 `test_camino_feliz_refresca_de_verdad_y_persiste_el_exito`,
 `test_priorizar_por_antiguedad_nulos_primero_y_ascendente` — agregados en el round de fix de la
-revisión de calidad, Important 5: el camino feliz real y `_priorizar_por_antiguedad` no tenían
+revisión de calidad, Important 5: el camino feliz real y `priorizar_por_antiguedad` no tenían
 ninguna cobertura antes) sí necesitan una o más filas reales — se crean con `_crear_servicio`, en el
 namespace reservado `9003xx` (confirmado libre el 2026-09-24 contra `lasfocasdev-postgres`, mismo
 criterio que `tests/test_prov_frescura.py`).
@@ -177,6 +177,40 @@ async def test_tope_de_25_respetado(monkeypatch):
 
     assert len(cliente_falso.llamadas) == 25
     client_mock.chat_postMessage.assert_called_once()
+    # Fix final (Important D): la promesa del primer mensaje cuenta los 30 vencidos, pero el lote
+    # sólo intenta el tope de 25 — los 5 restantes tienen que quedar explícitos en el mensaje de
+    # seguimiento, nunca desaparecer sin figurar como éxito ni como fallo.
+    texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+    assert "Quedan 5 pendiente(s) — volvé a pedir el comando." in texto
+
+
+def test_construir_mensaje_seguimiento_agrega_pendientes_cuando_hay_tope() -> None:
+    """Fix final (Important D) — unidad rápida y directa (sin Postgres) de
+    `_construir_mensaje_seguimiento`: con el cable de control real (`FO-FL-1003`, 118/118
+    vencidos) y el tope de 25 ya aplicado (25 intentados), el mensaje tiene que decir
+    explícitamente que quedan 93 pendientes en vez de dejarlos sin mencionar."""
+    exitosos = [
+        refresco_prov.ResultadoServicioRefrescado(i, f"OK{i:03d}", True, None) for i in range(20)
+    ]
+    fallidos = [
+        refresco_prov.ResultadoServicioRefrescado(100 + i, f"ERR{i:03d}", False, "timeout")
+        for i in range(5)
+    ]
+    assert len(exitosos) + len(fallidos) == 25
+
+    texto = refresco_prov._construir_mensaje_seguimiento(exitosos, fallidos, total_vencidos=118)
+
+    assert "Quedan 93 pendiente(s) — volvé a pedir el comando." in texto
+
+
+def test_construir_mensaje_seguimiento_sin_pendientes_no_agrega_la_linea() -> None:
+    """Caso negativo — gemelo del positivo de arriba: si `total_vencidos` coincide con lo
+    intentado (sin tope de por medio), no hay que prometer nada que no exista."""
+    exitosos = [refresco_prov.ResultadoServicioRefrescado(1, "OK001", True, None)]
+
+    texto = refresco_prov._construir_mensaje_seguimiento(exitosos, [], total_vencidos=1)
+
+    assert "pendiente" not in texto
 
 
 # ── Caso obligatorio: el deadline corta el lote ──────────────────────────────
@@ -244,7 +278,7 @@ async def test_fallo_puntual_no_aborta_el_resto(monkeypatch):
 @pytest.mark.asyncio
 async def test_error_no_manejado_del_lote_se_loguea_y_avisa(monkeypatch):
     """Antes de este fix, el `try` de `refrescar_servicios_vencidos` sólo tenía `finally` — una
-    excepción de cualquier punto del lote (acá se simula en `_priorizar_por_antiguedad`, el
+    excepción de cualquier punto del lote (acá se simula en `priorizar_por_antiguedad`, el
     ejemplo real del hallazgo es Postgres caído/pool agotado) escapaba al
     `concurrent.futures.Future` que descarta `run_coroutine_threadsafe` en el listener: ni un
     segundo mensaje, ni una línea de log. Después del fix, se loguea `evento=error_no_manejado` Y
@@ -254,7 +288,7 @@ async def test_error_no_manejado_del_lote_se_loguea_y_avisa(monkeypatch):
     async def _rompe(servicios: list[ServicioUnico]) -> list[ServicioUnico]:
         raise RuntimeError("Postgres caído (simulado)")
 
-    monkeypatch.setattr(refresco_prov, "_priorizar_por_antiguedad", _rompe)
+    monkeypatch.setattr(refresco_prov, "priorizar_por_antiguedad", _rompe)
 
     servicio = _servicio_unico(-900_151, "ERRINT")
     cable_n_id = -5_900_009
@@ -430,7 +464,7 @@ async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servi
 
 # ── Important 5 de la revisión de calidad: el camino feliz tenía cobertura CERO ──────────────
 #
-# Los 6 tests de arriba que llegan a `_refrescar_un_servicio` usan PKs negativos, así que
+# Los 6 tests de arriba que llegan a `refrescar_un_servicio` usan PKs negativos, así que
 # `select(Servicio)` nunca encuentra fila y salen por el early-return de la línea ~239 ("se borró
 # entre medio"), sin ejecutar nunca `ingerir_contexto_prov` ni el `commit` real. Los dos tests con
 # fila real (`test_fallo_persiste_ultimo_intento_y_error`,
@@ -504,7 +538,7 @@ async def test_camino_feliz_refresca_de_verdad_y_persiste_el_exito(monkeypatch, 
 @requiere_postgres_real
 @pytest.mark.asyncio
 async def test_priorizar_por_antiguedad_nulos_primero_y_ascendente(_limpiar_servicios_de_test):
-    """`_priorizar_por_antiguedad` no tenía ningún test propio — sólo se ejercitaba indirecto a
+    """`priorizar_por_antiguedad` no tenía ningún test propio — sólo se ejercitaba indirecto a
     través de `refrescar_servicios_vencidos` con servicios que nunca tenían fila previa (todos
     "nulls"). Este test verifica las dos mitades del orden: nulls (nunca intentado) primero, y
     entre los ya intentados, ascendente por `ultimo_intento` (el intentado hace más tiempo
@@ -535,9 +569,9 @@ async def test_priorizar_por_antiguedad_nulos_primero_y_ascendente(_limpiar_serv
     intento_viejo = _servicio_unico(pk_viejo, numero_viejo)
     intento_reciente = _servicio_unico(pk_reciente, numero_reciente)
 
-    # Orden de entrada deliberadamente mezclado — si `_priorizar_por_antiguedad` no ordenara nada,
+    # Orden de entrada deliberadamente mezclado — si `priorizar_por_antiguedad` no ordenara nada,
     # este orden de entrada ya "pasaría" la aserción por casualidad para el primer elemento.
-    ordenados = await refresco_prov._priorizar_por_antiguedad(
+    ordenados = await refresco_prov.priorizar_por_antiguedad(
         [intento_reciente, nunca_intentado, intento_viejo]
     )
 

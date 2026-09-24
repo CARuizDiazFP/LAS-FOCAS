@@ -937,14 +937,21 @@ class IngresoListener:
                 # vigente (corrección) en el MISMO hilo es realista: "Forzar ingreso/egreso" está
                 # pensado justamente para hilos donde el match automático falló. Fuera de este
                 # caso puntual, el orden general de la cadena no cambia.
+                # Guard (fix final, Important B): un evento sin `user` (bot/Workflow traen
+                # `bot_id`, no `user`) nunca tiene que ejecutar la corrección — escribiría una fila
+                # de auditoría anónima. El filtro `solo_workflows` no lo ataja porque este bloque se
+                # evalúa antes (deliberado, ver comentario arriba), así que el guard vive acá — el
+                # chequeo de prioridad de `_pendiente_fecha_vigente` en sí sigue siendo incondicional
+                # (decide el ORDEN de la cadena para cualquier evento, no si se ejecuta la corrección).
+                actor_slack_user_id = event.get("user")
                 if self._pendiente_fecha_vigente(session, event_thread_ts) is not None:
-                    if self._procesar_correccion_ingreso(
+                    if actor_slack_user_id and self._procesar_correccion_ingreso(
                         texto,
                         event_thread_ts,
                         session,
                         client,
                         channel,
-                        actor_slack_user_id=event.get("user") or "",
+                        actor_slack_user_id=actor_slack_user_id,
                         mensaje_ts=event.get("ts") or "",
                     ):
                         return
@@ -963,13 +970,14 @@ class IngresoListener:
                 # el día de 2 dígitos rompe el run de `\d{3,}` del regex de empalme). Se prueba de
                 # nuevo acá (aunque ya se haya intentado arriba cuando había un pendiente vigente)
                 # para el caso normal: comando completo nuevo, sin ningún pendiente todavía.
-                if self._procesar_correccion_ingreso(
+                # Mismo guard que arriba (Important B): sin `user` no se ejecuta la corrección.
+                if actor_slack_user_id and self._procesar_correccion_ingreso(
                     texto,
                     event_thread_ts,
                     session,
                     client,
                     channel,
-                    actor_slack_user_id=event.get("user") or "",
+                    actor_slack_user_id=actor_slack_user_id,
                     mensaje_ts=event.get("ts") or "",
                 ):
                     return

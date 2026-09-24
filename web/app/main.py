@@ -5941,8 +5941,8 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
     """Corre el refresco PROV de `pendientes` (los `ServicioUnico` ya filtrados a vencidos por el
     caller) de forma síncrona con la petición HTTP — decisión de diseño de la Task 10 (ver reporte):
     reusa el tope/concurrencia/deadline/orden de prioridad y el worker por-servicio de la Task 9
-    (`modules/slack_baneo_notifier/refresco_prov.py`: `_priorizar_por_antiguedad`/
-    `_refrescar_un_servicio`, que no tienen ninguna dependencia de Slack) en vez de reimplementar la
+    (`modules/slack_baneo_notifier/refresco_prov.py`: `priorizar_por_antiguedad`/
+    `refrescar_un_servicio`, que no tienen ninguna dependencia de Slack) en vez de reimplementar la
     orquestación PROV desde cero, pero NO reusa `refrescar_servicios_vencidos` en sí: esa función
     pública es fire-and-forget, exige `client`/`channel`/`thread_ts` de Slack para postear el
     resultado, y nunca lo devuelve — pensada para encolarse desde el thread síncrono de Slack Bolt
@@ -5953,20 +5953,20 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
         DEADLINE_SEGUNDOS,
         TOPE_SERVICIOS_POR_COMANDO,
         ResultadoServicioRefrescado,
-        _priorizar_por_antiguedad,
-        _refrescar_un_servicio,
+        priorizar_por_antiguedad,
+        refrescar_un_servicio,
     )
     from core.services.prov.client import get_prov_client
 
     cliente = get_prov_client()
-    ordenados = await _priorizar_por_antiguedad(pendientes)
+    ordenados = await priorizar_por_antiguedad(pendientes)
     candidatos = ordenados[:TOPE_SERVICIOS_POR_COMANDO]
 
     semaforo = asyncio.Semaphore(CONCURRENCIA_MAXIMA)
     resultados: dict[int, Any] = {}
 
     async def _tarea(servicio: Any) -> None:
-        resultados[servicio.servicio_id] = await _refrescar_un_servicio(servicio, semaforo, cliente)
+        resultados[servicio.servicio_id] = await refrescar_un_servicio(servicio, semaforo, cliente)
 
     tareas = [asyncio.create_task(_tarea(s)) for s in candidatos]
     try:
