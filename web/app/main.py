@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from time import time as now
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
@@ -5754,6 +5754,53 @@ class CromoServiciosUnicosRefrescarRequestModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
+# ── Modelos de error, sólo para documentar `/docs` (Fix round 1, Minor: `response_model` cubre el
+# 200 feliz pero `responses=` es la mitad que faltaba de la motivación original — que estas 4 rutas
+# sí documenten en OpenAPI, la única desventaja real de vivir acá y no en `api/app/routes/`). Igual
+# que el resto de esta sección, no se valida en runtime (los handlers siguen devolviendo
+# `JSONResponse` a mano) — sólo alimenta el schema que ve `/docs`.
+
+
+class CromoNoEncontradoModel(BaseModel):
+    """`GET /cables/resolver` cuando `q` no matchea ningún cable vigente — no lleva `error` (a
+    diferencia de las otras dos formas de 404 de acá abajo) porque no hay una excepción de dominio
+    detrás, sólo "0 candidatos"."""
+
+    codigo: Literal["NO_ENCONTRADO"] = "NO_ENCONTRADO"
+
+
+class CromoCableNoEncontradoModel(BaseModel):
+    """404 de los dos GET de servicios únicos por cable y del POST de refresco — el cable no existe
+    ni por fila propia ni por referencia colgada (`ObjetoNoEncontrado`)."""
+
+    codigo: Literal["NO_ENCONTRADO"] = "NO_ENCONTRADO"
+    error: str
+
+
+class CromoBufferNoEncontradoModel(BaseModel):
+    """404 propio del GET por buffer — `total_buffers` en vez de `error`, para que el cliente pueda
+    orientar al técnico ("el cable tiene 6 buffers, pediste B9")."""
+
+    codigo: Literal["NO_ENCONTRADO"] = "NO_ENCONTRADO"
+    total_buffers: int
+
+
+class CromoAmbiguoModel(BaseModel):
+    """409 de `GET /cables/resolver` — 2+ cables vigentes con el mismo nombre (hay al menos 2 pares
+    reales conocidos, "F-ALV-2335"/"F-LEM-11-A"); la ambigüedad se hace explícita en vez de elegir
+    arbitrariamente."""
+
+    codigo: Literal["AMBIGUO"] = "AMBIGUO"
+    candidatos: list[CromoCableIdentidadResponseModel]
+
+
+class CromoErrorModel(BaseModel):
+    """Forma genérica `{"error": "..."}` — CSRF inválido (403) y PROV no configurado (502) del
+    POST de refresco."""
+
+    error: str
+
+
 async def _frescura_por_servicio(sesion: Any, servicio_ids: list[int]) -> dict[int, dict[str, Any]]:
     """Frescura PROV cruda (timestamp + antigüedad + vencida) por `servicio_id`, para el detalle de
     cada `ServicioUnico` en la respuesta REST — a diferencia de `servicios_vencidos` (Task 7), que
@@ -5950,7 +5997,17 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
     return _ResultadoRefrescoLote(fallidos=fallidos)
 
 
-@app.get("/api/infra/cromo/cables/resolver", response_model=CromoCableIdentidadResponseModel)
+@app.get(
+    "/api/infra/cromo/cables/resolver",
+    response_model=CromoCableIdentidadResponseModel,
+    responses={
+        404: {"model": CromoNoEncontradoModel, "description": "Ningún cable vigente matchea `q`."},
+        409: {
+            "model": CromoAmbiguoModel,
+            "description": "2+ cables vigentes con el mismo nombre — ambigüedad explícita.",
+        },
+    },
+)
 async def cromo_cable_resolver_web(request: Request, q: str) -> JSONResponse:
     """Resuelve un cable por `n_id` (si `q` es puramente numérico) o por `nombre` exacto case-
     insensitive (si no) — ver `_resolver_cable_por_texto`. 404 si no hay ningún cable vigente con
@@ -5982,6 +6039,12 @@ async def cromo_cable_resolver_web(request: Request, q: str) -> JSONResponse:
 @app.get(
     "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos",
     response_model=CromoServiciosUnicosResponseModel,
+    responses={
+        404: {
+            "model": CromoCableNoEncontradoModel,
+            "description": "El cable no existe en el inventario ingerido (ni fila propia ni referencia colgada).",
+        },
+    },
 )
 async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
     """IDs de servicio únicos (Task 1: `servicios_unicos_por_cable`) de un cable entero, con
@@ -6018,6 +6081,12 @@ async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int
 @app.get(
     "/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos",
     response_model=CromoServiciosUnicosResponseModel,
+    responses={
+        404: {
+            "model": CromoBufferNoEncontradoModel,
+            "description": "El cable no tiene ese buffer (`total_buffers` orienta al cliente).",
+        },
+    },
 )
 async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: int, numero: int) -> JSONResponse:
     """Igual que la ruta anterior, acotado a un buffer humano `B<numero>` puntual (`numero` 1-
@@ -6061,6 +6130,14 @@ async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: in
 @app.post(
     "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov",
     response_model=CromoServiciosUnicosResponseModel,
+    responses={
+        403: {"model": CromoErrorModel, "description": "CSRF inválido."},
+        404: {
+            "model": CromoCableNoEncontradoModel,
+            "description": "El cable no existe en el inventario ingerido.",
+        },
+        502: {"model": CromoErrorModel, "description": "PROV no está configurado en este entorno."},
+    },
 )
 async def cromo_servicios_unicos_refrescar_prov_web(
     request: Request, cable_n_id: int, body: CromoServiciosUnicosRefrescarRequestModel
