@@ -247,6 +247,35 @@ PROV. Se escriben desde `core/services/prov/ingesta.py::ingerir_contexto_prov`, 
 `docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md` para los payloads reales
 de PROV que fijaron este mapeo.
 
+### Tabla `servicios_sync_prov` (2026-09-23)
+
+| Columna                    | Tipo                  | Descripción |
+|----------------------------|-----------------------|-------------|
+| `id`                       | Integer (PK)          | ID autoincremental. |
+| `servicio_id`              | FK → `servicios.id`, `ondelete=CASCADE`, **UNIQUE** | Una fila por `Servicio` — nunca un historial de intentos, sólo el estado vigente. |
+| `ultima_sincronizacion_ok` | DateTime(tz), `NOT NULL` | Momento del último refresco EXITOSO contra PROV. `NOT NULL` porque el único punto de escritura (el upsert al final de `ingerir_contexto_prov`) sólo corre con un contexto ya validado como éxito. |
+| `ultimo_intento`           | DateTime(tz), nullable | Momento del último intento, exitoso o no. Hoy siempre coincide con `ultima_sincronizacion_ok` (el embudo actual sólo escribe en éxito); queda separado para que un futuro camino de fallo lo actualice sin tocar la fecha de la última sincronización que sí funcionó. |
+| `ultimo_error`             | Text, nullable        | Detalle del último fallo, si lo hubo. Se limpia (`NULL`) en cada escritura exitosa — un error viejo no queda pegado después de un refresco que sí funcionó. |
+| `nro_servicio_consultado`  | String(64), nullable  | Número efectivamente consultado a PROV (`parseado.nro_servicio_original`) — trazabilidad de auditoría. |
+| `created_at` / `updated_at`| DateTime(tz), `NOT NULL` | Auditoría estándar, calculada en Python por el upsert (mismo criterio que `servicios_historial_id`). |
+
+Tabla nueva y no una columna en `Servicio`, por tres razones (ver `docs/decisiones.md`, entrada
+2026-09-23 "Tabla `app.servicios_sync_prov`"): `Servicio` la escriben tres ingestas distintas (Excel,
+PROV, placeholders Cromo) que re-etiquetan `origen_datos` incondicionalmente en cada una — una
+columna ahí heredaría ese mismo "pisado por ingesta ajena"; el estado de *fallo* no es un atributo de
+dominio del Servicio; y separar la escritura permite que un futuro camino de fallo actualice sólo el
+estado de sincronización.
+
+Se escribe en el mismo único embudo que `servicios_historial_id`/`servicios_equipos_ultima_milla`
+(`ingerir_contexto_prov`, upsert `ON CONFLICT (servicio_id) DO UPDATE`). Se lee en batch — nunca una
+query por servicio — desde `core/services/prov/frescura.py` (`servicios_vencidos`/
+`servicios_vencidos_sync`, versión async y sync), que alimenta las Tasks 8/10 (comandos de Slack
+sobre servicios) con el umbral `PROV_FRESCURA_HORAS` (default 48 h, ver `docs/bot.md`). Arranca
+vacía: hasta que corra `scripts/servicios_backfill_prov.py`, todo `servicio_id` consultado vuelve
+"vencido" por el `LEFT JOIN` con `ultima_sincronizacion_ok IS NULL` — no es un bug de la consulta,
+es el estado real de un 92,5% de los servicios que nunca pasó por PROV (medido real, ver
+`docs/bot.md`).
+
 ### Tabla `servicio_empalme_association` (Legacy)
 
 Tabla intermedia N-a-N entre `servicios` y `empalmes`. Mantenida por retrocompatibilidad.

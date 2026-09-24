@@ -303,6 +303,45 @@ resolución real en `core/services/ingreso_correccion_service.py`.
 - **`Forzar ingreso` sobre un grupo hoy baneado registra un INGRESO real**, no un
   `INTENTO_BLOQUEADO` — ver `docs/decisiones.md`, entrada 2026-09-23. La respuesta avisa del baneo.
 
+### Sincronización con PROV: tabla de frescura y prerrequisito de backfill (desde 2026-09-23)
+
+Las Tasks 8 y 10 (comandos de Slack sobre servicios) necesitan distinguir qué IDs de servicio están
+"validados contra PROV" de cuáles no. Esa distinción vive en `app.servicios_sync_prov` (migración
+`20260923_02`, una fila por `Servicio` con `ultima_sincronizacion_ok`) y se escribe en un único
+embudo: el final de `ingerir_contexto_prov` (`core/services/prov/ingesta.py`), por el que pasan los
+tres consumidores de PROV — el endpoint on-demand `POST /servicios/prov/refrescar`, el backfill
+masivo `scripts/servicios_backfill_prov.py` y, desde la Task 9, el comando de Slack nuevo.
+
+La consulta de "¿esto está vencido?" (`core/services/prov/frescura.py`, batch — nunca una query por
+servicio) usa un umbral configurable:
+
+| Variable | Descripción |
+|---|---|
+| `PROV_FRESCURA_HORAS` | Horas de vigencia de una sincronización PROV antes de considerarse vencida. Default `48`. Un valor no numérico o `<= 0` cae al default con un warning en el log — nunca rompe el comando. |
+
+**Prerrequisito operativo, no mejora futura: correr el backfill ANTES de anunciar cualquier comando
+que dependa de esta consulta.** Medido real contra `lasfocasdev-postgres` el 2026-09-23: de los
+servicios alcanzables por cable, el 92,5% (8.401 de 9.079) nunca pasó por PROV, y la tabla
+`servicios_sync_prov` arranca completamente vacía — sin backfill, el 100% de cualquier lote
+consultado vuelve vencido (verificado real: los 118 servicios únicos del cable `FO-FL-1003`,
+n_id=6610203, dan 118/118 vencidos con la tabla en cero filas). Anunciar el comando en ese estado
+significa que cada invocación choca contra el tope de refresco durante meses sin alcanzar régimen
+estacionario. Antes de anunciarlo:
+
+```
+source .venv/bin/activate
+export POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_USER=FOCALBOT POSTGRES_DB=focas_dev
+export POSTGRES_PASSWORD=$(cat .secrets/Dev_db_password_v1.txt)
+export PROV_BASE_URL=https://prov.metrotel.com.ar/api/v1/ADMEQ
+export PROV_USER=$(cat .secrets/Dev_api_prov_user_v1.txt)
+export PROV_PASSWORD=$(cat .secrets/Dev_api_prov_pass_v1.txt)
+python scripts/servicios_backfill_prov.py --apply
+```
+
+**No correrlo en horario de uso intensivo**: el rate limiter de PROV es in-process, no distribuido
+(`docs/decisiones.md`, Decisión 3 del 2026-09-02) — si el backfill masivo corre a la vez que uso
+interactivo del botón "Actualizar desde PROV", el máximo combinado teórico sube a ~10 req/s.
+
 ### Estados de cámara
 
 | Estado | Comportamiento |

@@ -2147,3 +2147,52 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   un chequeo informativo no puede romper una corrección ya escrita), nunca para decidir qué se
   escribe. Cubierto por `tests/test_ingreso_correccion_service.py::TestForzarIngreso
   ::test_sobre_grupo_baneado_registra_ingreso_real_y_avisa`.
+
+## 2026-09-23 (cont.) — Tabla `app.servicios_sync_prov`: última sincronización PROV, no una columna en `Servicio`
+
+- **Contexto:** Task 7 del plan "Corrección de ingresos/servicios". Las Tasks 8 y 10 necesitan
+  distinguir qué IDs de servicio están "validados contra PROV" de cuáles no, y hoy eso es
+  literalmente imposible de responder: `app.servicios` tiene 20 columnas y ninguna es de timestamp
+  (medido real contra `lasfocasdev-postgres`). Además, de los servicios alcanzables por cable, el
+  92,5% (8.401 de 9.079) nunca pasó por PROV (`origen_datos <> 'INGEST_PROV'`).
+
+- **Decisión 1 (tabla nueva, no columna en `Servicio`):** migración `20260923_02`, tabla
+  `app.servicios_sync_prov` (`servicio_id` FK única a `app.servicios.id` `ON DELETE CASCADE`,
+  `ultima_sincronizacion_ok` `NOT NULL`, `ultimo_intento`/`ultimo_error`/`nro_servicio_consultado`
+  nullable). Tres razones concretas, no una preferencia de estilo: la fila de `Servicio` la escriben
+  tres ingestas distintas (Excel, PROV, placeholders Cromo) y cada una re-etiqueta `origen_datos`
+  incondicionalmente — una columna ahí heredaría el mismo "pisado por ingesta ajena"; el estado de
+  *fallo* de un intento no es un atributo de dominio del Servicio; y separar ambas escrituras deja
+  la puerta abierta a que un futuro camino de fallo actualice sólo el estado de sincronización sin
+  tocar `Servicio`.
+
+- **Decisión 2 (único embudo de escritura):** el upsert (`ON CONFLICT (servicio_id) DO UPDATE`, vía
+  `pg_insert(...).on_conflict_do_update`, mismo patrón que
+  `core/services/cromo/tracking_cache.py::guardar`) se agregó al final de
+  `ingerir_contexto_prov` (`core/services/prov/ingesta.py`), el único punto por el que pasan los
+  tres consumidores de PROV: el endpoint on-demand, el backfill masivo
+  (`scripts/servicios_backfill_prov.py`) y, desde la Task 9, el comando de Slack. La firma de
+  `ingerir_contexto_prov` no cambió — sólo suma el efecto de escritura, no comitea (eso lo sigue
+  haciendo el caller). Como esta función sólo se invoca con un contexto ya validado como éxito por
+  `ProvClient`, cada fila que escribe representa una sincronización exitosa: `ultimo_error` se limpia
+  en cada escritura para que un error viejo no quede pegado después de un refresco que sí funcionó.
+
+- **Decisión 3 (servicio de frescura en dos versiones, `core/services/prov/frescura.py`):** batch —
+  dado un conjunto de `servicio_id`, cuáles están vencidos
+  (`ultima_sincronizacion_ok IS NULL OR < now() - :horas`), nunca una query por servicio (la Task 8
+  la llama con hasta ~118 servicios, el tamaño real de un cable — ver
+  `servicios_unicos_por_cable`/`_sync`). Async y sync, mismo patrón de gemelas que
+  `verificador.py::servicios_unicos_por_cable_sync`: el comando de Slack corre en un callback
+  síncrono de Slack Bolt. Umbral por `PROV_FRESCURA_HORAS` (default 48 h), mismo criterio tolerante
+  que `tracking_cache.ttl_horas` (valor inválido o <= 0 cae al default con un warning, nunca rompe
+  la consulta). Verificado real contra `lasfocasdev-postgres`: con la tabla todavía vacía (sin
+  backfill corrido), los 118 servicios únicos del cable `FO-FL-1003` (n_id=6610203) dan 118/118
+  vencidos por las dos versiones (async y sync, mismo resultado) — coherente con el 92,5% medido
+  (en realidad peor: 100%, porque la tabla nueva arranca en cero filas hasta que corra el backfill).
+
+- **Prerrequisito operativo, no mejora futura:** sin correr `scripts/servicios_backfill_prov.py`
+  primero, TODOS los servicios cuentan como vencidos y cualquier comando que dependa de esta
+  consulta (Task 8/9) choca contra el tope de refresco durante meses sin alcanzar régimen
+  estacionario. Documentado en `docs/bot.md` — recordatorio ya vigente (Decisión 3, 2026-09-02): no
+  correr el backfill en horario de uso intensivo, el rate limiter no es distribuido y el máximo
+  combinado sube a ~10 req/s.

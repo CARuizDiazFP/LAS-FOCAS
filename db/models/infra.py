@@ -466,6 +466,17 @@ class Servicio(Base):
         order_by="ServicioEquipoUltimaMilla.extremo",
     )
 
+    # Uno-a-uno (Task 7 del plan "Corrección de ingresos/servicios", 2026-09-23): última
+    # sincronización exitosa contra PROV. `uselist=False` porque `servicio_id` es UNIQUE en
+    # `ServicioSyncProv`; `cascade="all, delete-orphan"` es lo mismo que hace el FK a nivel DB
+    # (`ondelete="CASCADE"`) para el caso ORM (borrar el Servicio vía sesión, no vía SQL directo).
+    sync_prov = relationship(
+        "ServicioSyncProv",
+        back_populates="servicio",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
     def __repr__(self) -> str:
         return f"<Servicio id={self.id} servicio_id='{self.servicio_id}'>"
 
@@ -554,6 +565,59 @@ class ServicioEquipoUltimaMilla(Base):
 
     def __repr__(self) -> str:
         return f"<ServicioEquipoUltimaMilla id={self.id} servicio_id={self.servicio_id} extremo={self.extremo}>"
+
+
+class ServicioSyncProv(Base):
+    """Última sincronización exitosa contra PROV de un Servicio — una fila por `Servicio` (Task 7
+    del plan "Corrección de ingresos/servicios", 2026-09-23, migración `20260923_02`).
+
+    Tabla y no una columna en `Servicio`, por tres razones concretas (ver el brief de la Task 7 y
+    `docs/decisiones.md`): `app.servicios` no tiene HOY ni un solo timestamp (ni `created_at` ni
+    `updated_at`), así que agregar uno ahí para este único propósito mezclaría "metadata de
+    sincronización con un sistema externo" con la fila de dominio; a esa misma fila la escriben tres
+    ingestas distintas (Excel, PROV, placeholders Cromo) y cada una re-etiqueta `origen_datos`
+    incondicionalmente (`core/services/prov/ingesta.py::ingerir_contexto_prov`) — exactamente el
+    "pisado por ingesta ajena" que una columna en `Servicio` heredaría sin querer; y el estado de
+    *fallo* de un intento (`ultimo_error`) es una preocupación operativa, no un atributo del
+    Servicio en sí.
+
+    Se escribe en un único embudo: al final de `ingerir_contexto_prov`, que es el único lugar por el
+    que pasan los tres consumidores de PROV (endpoint on-demand `POST /servicios/prov/refrescar`,
+    el backfill masivo `scripts/servicios_backfill_prov.py` y, a partir de la Task 9, el comando de
+    Slack). `ingerir_contexto_prov` sólo se llama con un `contexto_raw` ya validado como éxito por
+    `ProvClient` (nunca con una falla) — por eso `ultima_sincronizacion_ok` es `NOT NULL`: toda fila
+    de esta tabla nace de un intento exitoso, nunca de uno fallido.
+
+    `ultimo_intento`/`ultimo_error`/`nro_servicio_consultado` quedan nullable a propósito, aunque el
+    embudo actual (Task 7) siempre los completa junto con `ultima_sincronizacion_ok`: dejan la puerta
+    abierta a que un futuro camino de *fallo* (fuera de alcance de esta tarea) actualice sólo
+    `ultimo_intento`/`ultimo_error` de una fila ya existente sin tocar la fecha de la última
+    sincronización que sí funcionó — la semántica de "última vez que se intentó" y "última vez que
+    salió bien" son preguntas distintas y no deben pisarse una a la otra.
+    """
+
+    __tablename__ = "servicios_sync_prov"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer,
+        ForeignKey("app.servicios.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    ultima_sincronizacion_ok = Column(DateTime(timezone=True), nullable=False)
+    ultimo_intento = Column(DateTime(timezone=True), nullable=True)
+    ultimo_error = Column(Text, nullable=True)
+    nro_servicio_consultado = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    servicio = relationship("Servicio", back_populates="sync_prov")
+
+    def __repr__(self) -> str:
+        return f"<ServicioSyncProv servicio_id={self.servicio_id} ultima_sincronizacion_ok={self.ultima_sincronizacion_ok}>"
 
 
 class Ingreso(Base):
