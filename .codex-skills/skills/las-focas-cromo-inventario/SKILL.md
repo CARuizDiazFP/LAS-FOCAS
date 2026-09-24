@@ -138,6 +138,20 @@ abajo) como plantilla, no reinventar el estilo:
    corrió sobre `cromo_botellas` — `cromo_cables` todavía no tiene el suyo (fuera de alcance de la
    Etapa 8, pendiente).
 
+4. **Al medir cuántos pares `(eje, servicio)` hay, filtrar `cromo_servicio_match.servicio_id IS NOT
+   NULL`.** Esa tabla guarda el número parseado del pelo (`servicio_numero`) aunque el matching no
+   haya podido resolverlo a una fila de `app.servicios` — 3.162 filas de 136.335 en dev (2026-09-24).
+   Agrupar sin ese filtro crea pares `(cable, NULL)` que no son servicios e infla la métrica. Error
+   real cometido al diseñar el plan del 2026-09-23: se publicaron 30,2% / 24,7% / 41,8% (cable /
+   tubo / botella) de pares con más de un pelo, cuando los valores correctos son **29,6% / 24,2% /
+   41,3%**. Lo detectó una revisión que volvió a correr la consulta en vez de citar el número.
+5. **El índice único de `cromo_servicio_match` es `(pelo_n_id, servicio_numero)`, no
+   `(pelo_n_id, servicio_id)`.** Un mismo pelo puede llegar al mismo servicio por dos números
+   distintos — el ID viejo y el nuevo de la cadena de upgrades, ambos escritos en la descripción del
+   pelo (85 pares reales en dev, 2026-09-24). Cualquier agregación que resuelva la multiplicidad con
+   un CTE y un JOIN de vuelta por un pelo representativo vuelve a multiplicar esas filas; usar un
+   único `GROUP BY` de una sola pasada.
+
 ## Documentación relacionada
 
 - `docs/modulo_ingesta_cromo.md` — contexto estructural público, dónde vive cada pieza de código.

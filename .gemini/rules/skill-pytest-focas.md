@@ -457,6 +457,48 @@ del host**. Eso es gap de entorno (ver "Diagnóstico de Fallas: Heurísticas"), 
 verificarlos de verdad hay que correrlos dentro del contenedor, y ahí aplica el chequeo de imagen
 stale de `dev-workflow`.
 
+## Un test que pasa no prueba nada: mutá la corrección (lección 2026-09-24)
+
+Una suite en verde no distingue "el código funciona" de "el test no mira el código". En el plan del
+2026-09-23 aparecieron **cuatro** huecos de este tipo, todos con la suite entera en verde:
+
+| Hueco | Cómo se veía | Cómo se detectó |
+|---|---|---|
+| Regex no-goloso `.+?` sin guard | Test con un solo `DD-MM-AAAA` en el string | Cambiar `.+?` por `.+` daba el **mismo** resultado |
+| Camino de éxito de un refresco | 6 tests que lo "cubrían" | Todos usaban PKs negativos y salían por un early-return: `ingerir_contexto_prov` no se ejecutaba nunca |
+| Filtro `tipo == INGRESO` de una query | Un stub guardaba los filtros "por si hiciera falta" | Sacar el filtro dejaba **72 tests en verde**; sin él, un `INTENTO_BLOQUEADO` se cerraba como ingreso real |
+| Sufijo "refrescando…" de la respuesta | Sólo había `assertNotIn` (el caso negativo) | Vaciar el sufijo dejaba 227 passed / 0 fallas |
+
+**El método, barato y concluyente:** antes de dar por cubierta una regla que importa, rompela a mano
+en el código, corré el test que debería atraparla, confirmá el fallo real, y restaurá.
+
+```bash
+cp core/services/x.py /tmp/x.py.bak     # backup explícito, no confiar en la memoria
+# ...invertir el operador, vaciar el string, sacar el filtro...
+python -m pytest tests/test_x.py -q -k "<el test que debería fallar>"
+cp /tmp/x.py.bak core/services/x.py
+git diff --stat core/services/x.py      # debe quedar vacío
+```
+
+Si la mutación **no** hace fallar ningún test, el guard no existe: el test recorre el camino feliz
+sin ejercitar la regla. Casos típicos en este repo:
+
+- **Inputs que no discriminan.** Un regex goloso y uno no-goloso sólo divergen si hay una segunda
+  subcadena que compita por el match. Con un input simple, los dos dan igual.
+- **Early-returns que se comen el test.** Si el fixture usa un ID inexistente, el código sale por la
+  rama "no encontrado" y nunca toca la lógica que se quería probar. Mirá qué líneas ejecuta de
+  verdad, no qué función invocaste.
+- **Stubs que ignoran el `WHERE`.** Un fake de sesión que devuelve la lista programada sin mirar los
+  filtros hace que cualquier `filter()` sea mutable sin consecuencia. Para asertar sobre las
+  expresiones SQLAlchemy reales, reusar `_assert_filtro_igualdad`/`_assert_filtro_null_safe` de
+  `tests/test_ingreso_service.py` en vez de inventar un mecanismo nuevo.
+- **Sólo el caso negativo.** `assertNotIn("x", texto)` no protege la rama que **sí** debe producir
+  `"x"`; hacen falta los dos.
+
+Vale también para mocks parciales: si parcheás la función entera que querías probar, el test verifica
+el parche. Parcheá sólo sus dependencias externas.
+
+
 ## Checklist Pre-Commit
 
 - [ ] `pytest` pasa sin errores
