@@ -345,23 +345,39 @@ def _lineas_discrepancias_numero_pelo(servicios: list[ServicioUnico]) -> list[st
     return lineas
 
 
-def _linea_frescura_prov(servicios: list[ServicioUnico], vencidos: set[int]) -> Optional[str]:
-    """Sólo el conteo de vencidos, sin ningún sufijo de refresco (ruling del plan, Task 8): el
-    refresco real todavía no existe (Task 9) y prometerlo acá le mentiría al técnico. `None` si no
-    hay ninguno vencido — no hace falta la línea para decir "0"."""
+def _linea_frescura_prov(
+    servicios: list[ServicioUnico], vencidos: set[int], *, refrescando: bool = False
+) -> Optional[str]:
+    """El conteo de vencidos, con un sufijo de refresco opcional. La Task 8 la dejó
+    deliberadamente sin sufijo ("el refresco real todavía no existe (Task 9) y prometerlo acá le
+    mentiría al técnico") — desde la Task 9 el refresco sí existe
+    (`modules/slack_baneo_notifier/refresco_prov.py`), así que el caller (el listener) puede pasar
+    `refrescando=True` cuando efectivamente encoló el refresco asíncrono para este lote. Default
+    `False` a propósito: no cambia el contrato para ningún caller que no sabe de esto (mismo
+    criterio que `vencidos` en `construir_respuesta_info_buffer`). `None` si no hay ninguno vencido
+    — no hace falta la línea para decir "0"."""
     cantidad = sum(1 for s in servicios if s.servicio_id in vencidos)
     if cantidad == 0:
         return None
-    return f"🕒 {cantidad} con validación PROV vencida"
+    sufijo = " — refrescando…" if refrescando else ""
+    return f"🕒 {cantidad} con validación PROV vencida{sufijo}"
 
 
 def construir_respuesta_servicios_cable(
-    cable: CromoCable, session: Session, resultado: ResultadoServiciosUnicos, vencidos: set[int]
+    cable: CromoCable,
+    session: Session,
+    resultado: ResultadoServiciosUnicos,
+    vencidos: set[int],
+    *,
+    refrescando: bool = False,
 ) -> str:
     """"Servicios <cable>" — un ID por servicio (no uno por pelo, eso es "Verificar cable X BN"),
     agrupados por buffer, con marca de frescura PROV. Con la salida acotada a IDs, un cable entero
     (118 servicios reales, `FO-FL-1003` n_id 6610203) entra cómodo en un solo mensaje (~950
-    caracteres) — no hace falta truncar."""
+    caracteres) — no hace falta truncar.
+
+    `refrescando` (Task 9, default `False` — no rompe ningún caller existente): ver
+    `_linea_frescura_prov`."""
     servicios = resultado.servicios
     encabezado_base = f"🧾 Servicios del cable *{cable.nombre}*"
     if not servicios:
@@ -371,18 +387,26 @@ def construir_respuesta_servicios_cable(
     lineas = [f"{encabezado_base} — {len(servicios)} ID(s) únicos"]
     lineas.extend(_lineas_grupos_por_buffer(grupos))
     lineas.extend(_lineas_discrepancias_numero_pelo(servicios))
-    linea_frescura = _linea_frescura_prov(servicios, vencidos)
+    linea_frescura = _linea_frescura_prov(servicios, vencidos, refrescando=refrescando)
     if linea_frescura:
         lineas.append(linea_frescura)
     return "\n".join(lineas)
 
 
 def construir_respuesta_servicios_buffer(
-    cable: CromoCable, tubo: CromoTubo, resultado: ResultadoServiciosUnicos, vencidos: set[int]
+    cable: CromoCable,
+    tubo: CromoTubo,
+    resultado: ResultadoServiciosUnicos,
+    vencidos: set[int],
+    *,
+    refrescando: bool = False,
 ) -> str:
     """"Servicios <cable> B<N>" — mismo IDs únicos que `construir_respuesta_servicios_cable`,
     acotado a un buffer puntual (mismo par cable/buffer que "Verificar cable X BN", pero por-
-    servicio en vez de por-pelo)."""
+    servicio en vez de por-pelo).
+
+    `refrescando` (Task 9, default `False` — no rompe ningún caller existente): ver
+    `_linea_frescura_prov`."""
     servicios = resultado.servicios
     color = f" ({tubo.nombre_color})" if tubo.nombre_color else ""
     encabezado = f"🧾 Servicios del cable *{cable.nombre}* / Buffer *B{tubo.orden + 1}*{color}"
@@ -391,7 +415,7 @@ def construir_respuesta_servicios_buffer(
 
     lineas = [f"{encabezado} — {len(servicios)} ID(s) únicos", ", ".join(s.servicio_id_externo for s in servicios)]
     lineas.extend(_lineas_discrepancias_numero_pelo(servicios))
-    linea_frescura = _linea_frescura_prov(servicios, vencidos)
+    linea_frescura = _linea_frescura_prov(servicios, vencidos, refrescando=refrescando)
     if linea_frescura:
         lineas.append(linea_frescura)
     return "\n".join(lineas)

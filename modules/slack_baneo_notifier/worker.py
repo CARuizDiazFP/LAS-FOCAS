@@ -317,7 +317,14 @@ async def _main_loop() -> None:
     app_token = settings.slack.app_token
     bot_token = settings.slack.bot_token
     if app_token and bot_token:
-        _listener = IngresoListener(bot_token=bot_token, app_token=app_token)
+        # `asyncio.get_running_loop()` (Task 9 del plan "Corrección de ingresos/servicios",
+        # 2026-09-23): este loop es el mismo que sigue vivo más abajo en
+        # `await asyncio.sleep(3600)` — se lo pasamos al listener para que, corriendo en su propio
+        # daemon thread síncrono, pueda encolar la corrutina de refresco PROV
+        # (`modules/slack_baneo_notifier/refresco_prov.py`) con
+        # `asyncio.run_coroutine_threadsafe(coro, loop)` sin bloquear Socket Mode.
+        loop = asyncio.get_running_loop()
+        _listener = IngresoListener(bot_token=bot_token, app_token=app_token, loop=loop)
         listener_thread = threading.Thread(target=_listener.start, daemon=True, name="ingreso-listener")
         listener_thread.start()
         logger.info("IngresoListener iniciado como daemon thread")

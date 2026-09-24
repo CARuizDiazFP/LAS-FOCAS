@@ -12,7 +12,10 @@ Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack A
 listener de ingresos, sólo un evento distinto de Slack. Implementados: "Info cable <nombre>",
 "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>"; desde la Task 8 del plan "Corrección
 ingresos + Servicios" (2026-09-23) también "Servicios <nombre>" y "Servicios <nombre> B<N>" (IDs de
-servicio únicos con marca de frescura PROV, ver `cable_info.py`).
+servicio únicos con marca de frescura PROV, ver `cable_info.py`) — y desde la Task 9 del mismo plan,
+estos dos últimos comandos disparan además un refresco asíncrono contra PROV de los servicios
+vencidos (`modules/slack_baneo_notifier/refresco_prov.py`), encolado en el loop del worker vía
+`asyncio.run_coroutine_threadsafe` para nunca bloquear este thread síncrono de Socket Mode.
 
 Requiere:
   - SLACK_BOT_TOKEN  (xoxb-...)  — ya existente en .env
@@ -20,11 +23,15 @@ Requiere:
   - Scope adicional para app_mention: `app_mentions:read` en la Slack App (verificar en Slack, no
     asumible desde el código)
 
-Se integra en worker.py como un daemon thread independiente.
+Se integra en worker.py como un daemon thread independiente. Desde la Task 9, `worker.py::_main_loop`
+también le pasa el loop asyncio vivo del proceso (`loop=` del constructor, opcional — ver
+`_disparar_refresco_prov`): sin loop (tests, uso standalone) el refresco se saltea en silencio y la
+respuesta queda idéntica a la de la Task 8 (nunca promete un refresco que no va a ocurrir).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -41,6 +48,7 @@ from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_
 from core.services.cromo.detalle import pelos_de_tubo_sync
 from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
 from core.services.cromo.verificador import (
+    ServicioUnico,
     servicios_por_tubo_sync,
     servicios_unicos_por_cable_sync,
     servicios_unicos_por_tubo_sync,
@@ -50,6 +58,8 @@ from core.services.ingreso_correccion_service import (
     procesar_comando_correccion,
 )
 from core.services.ingreso_service import registrar_intento_bloqueado, registrar_movimiento_ingreso
+from core.services.prov.client import get_prov_client
+from core.services.prov.config import ProvConfigError
 from core.services.prov.frescura import servicios_vencidos_sync
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
@@ -83,6 +93,7 @@ from modules.slack_baneo_notifier.correccion_ingreso import (
     construir_respuesta_momento_invalido,
     extraer_momento_solo,
 )
+from modules.slack_baneo_notifier.refresco_prov import refrescar_servicios_vencidos
 from modules.slack_baneo_notifier.slack_user_resolver import resolver_nombre_tecnico
 
 logger = logging.getLogger("slack_baneo_worker.listener")
@@ -133,12 +144,20 @@ class _ResultadoAccesoCamara:
 class IngresoListener:
     """Escucha mensajes de ingreso técnico en un canal Slack y responde en hilo."""
 
-    def __init__(self, bot_token: str, app_token: str) -> None:
+    def __init__(
+        self, bot_token: str, app_token: str, *, loop: Optional[asyncio.AbstractEventLoop] = None
+    ) -> None:
         self._bot_token = bot_token
         self._app_token = app_token
         self._handler: Any = None
         self._thread: threading.Thread | None = None
         self._running = False
+        # Loop asyncio del worker (Task 9) — SIEMPRE kwarg opcional con default `None`, nunca
+        # posicional obligatorio: los tests de las Tasks 4/6/8 (y cualquier uso standalone) siguen
+        # construyendo `IngresoListener(bot_token=..., app_token=...)` sin loop, y deben seguir
+        # funcionando — ver `_disparar_refresco_prov`, que saltea el refresco en silencio si
+        # `self._loop` es `None`.
+        self._loop = loop
 
     # ── Configuración desde DB ───────────────────────────────────────────
 
@@ -1188,11 +1207,72 @@ class IngresoListener:
         finally:
             session.close()
 
+    def _disparar_refresco_prov(
+        self,
+        cable_n_id: int,
+        servicios_vencidos_lista: list[ServicioUnico],
+        client: Any,
+        channel: str,
+        thread_ts: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Decide si corresponde encolar el refresco asíncrono contra PROV (Task 9) para los
+        servicios vencidos de este comando puntual, y lo encola sin bloquear este thread síncrono
+        de Socket Mode (`asyncio.run_coroutine_threadsafe` sobre el loop del worker).
+
+        Devuelve `(refrescando, nota_prov_no_configurado)`:
+        - `refrescando=True` sólo si efectivamente se encoló trabajo real — hay servicios vencidos
+          Y el worker expone un loop vivo (`self._loop`) Y PROV está configurado en este entorno.
+          El caller lo usa para decidir si la línea de frescura del primer mensaje puede prometer
+          un refresco en curso (`refrescando=True` en `construir_respuesta_servicios_cable`/
+          `_buffer`) — nunca al revés.
+        - Sin `servicios_vencidos_lista` o sin `self._loop` (tests, uso standalone): se saltea en
+          silencio, sin nota — la Task 8 ya cubre ese caso (respuesta sin sufijo) y no hay nada
+          accionable que decirle al técnico sobre un detalle interno del proceso.
+        - `ProvConfigError` (Step 3 del brief): se captura ACÁ, antes de encolar nada — el primer
+          mensaje debe decir "PROV no está configurado en este entorno" y no hay segundo mensaje
+          (mismo criterio que el 503 de `api/app/routes/servicios.py::refrescar_servicio_desde_prov`).
+        """
+        if not servicios_vencidos_lista:
+            return False, None
+        if self._loop is None:
+            logger.info(
+                "action=prov_refresco_slack evento=sin_loop cable_n_id=%s total=%d",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+            )
+            return False, None
+
+        try:
+            get_prov_client()
+        except ProvConfigError as exc:
+            logger.warning(
+                "action=prov_refresco_slack evento=prov_no_configurado cable_n_id=%s total=%d error=%s",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+                exc,
+            )
+            return False, "⚠️ PROV no está configurado en este entorno — no se pudo refrescar automáticamente."
+
+        asyncio.run_coroutine_threadsafe(
+            refrescar_servicios_vencidos(
+                cable_n_id=cable_n_id,
+                servicios=servicios_vencidos_lista,
+                client=client,
+                channel=channel,
+                thread_ts=thread_ts,
+            ),
+            self._loop,
+        )
+        return True, None
+
     def _handle_servicios_cable(self, nombre_cable: str, client: Any, channel: str, thread_ts: str) -> None:
         """"Servicios <nombre>" (Task 8) — IDs de servicio únicos de un cable ENTERO, agrupados por
         buffer, con marca de frescura PROV batch. Complementa (no reemplaza) a "Verificar cable X
         BN": ese comando sigue devolviendo el detalle por-pelo, éste devuelve IDs únicos por-
-        servicio (`servicios_unicos_por_cable_sync`, Task 1)."""
+        servicio (`servicios_unicos_por_cable_sync`, Task 1).
+
+        Desde la Task 9 también dispara el refresco asíncrono de esos vencidos contra PROV — ver
+        `_disparar_refresco_prov`."""
         session = SessionLocal()
         try:
             cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
@@ -1202,7 +1282,15 @@ class IngresoListener:
             resultado = servicios_unicos_por_cable_sync(session, cable.n_id)
             ids_servicio = {s.servicio_id for s in resultado.servicios}
             vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
-            respuesta = construir_respuesta_servicios_cable(cable, session, resultado, vencidos)
+            servicios_a_refrescar = [s for s in resultado.servicios if s.servicio_id in vencidos]
+            refrescando, nota_prov = self._disparar_refresco_prov(
+                cable.n_id, servicios_a_refrescar, client, channel, thread_ts
+            )
+            respuesta = construir_respuesta_servicios_cable(
+                cable, session, resultado, vencidos, refrescando=refrescando
+            )
+            if nota_prov:
+                respuesta = f"{respuesta}\n{nota_prov}"
             client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
         except Exception as exc:
             logger.error("Error procesando 'Servicios %s': %s", nombre_cable, exc, exc_info=True)
@@ -1215,7 +1303,10 @@ class IngresoListener:
         """"Servicios <nombre> B<N>" (Task 8) — mismo IDs únicos que `_handle_servicios_cable`,
         acotado a un buffer puntual (`servicios_unicos_por_tubo_sync`, Task 1). Mismo resolver de
         cable/buffer que "Verificar cable X BN"/"Info cable X BN" (`_resolver_cable_o_responder`,
-        `resolver_tubo_por_numero`)."""
+        `resolver_tubo_por_numero`).
+
+        Desde la Task 9 también dispara el refresco asíncrono de esos vencidos contra PROV — ver
+        `_disparar_refresco_prov`."""
         nombre_cable, numero_buffer = comando
         session = SessionLocal()
         try:
@@ -1233,7 +1324,15 @@ class IngresoListener:
             resultado = servicios_unicos_por_tubo_sync(session, tubo.n_id)
             ids_servicio = {s.servicio_id for s in resultado.servicios}
             vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
-            respuesta = construir_respuesta_servicios_buffer(cable, tubo, resultado, vencidos)
+            servicios_a_refrescar = [s for s in resultado.servicios if s.servicio_id in vencidos]
+            refrescando, nota_prov = self._disparar_refresco_prov(
+                cable.n_id, servicios_a_refrescar, client, channel, thread_ts
+            )
+            respuesta = construir_respuesta_servicios_buffer(
+                cable, tubo, resultado, vencidos, refrescando=refrescando
+            )
+            if nota_prov:
+                respuesta = f"{respuesta}\n{nota_prov}"
             client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
         except Exception as exc:
             logger.error(
