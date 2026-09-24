@@ -1,9 +1,14 @@
 # Nombre de archivo: slack_app_cables.md
 # Ubicación de archivo: docs/slack_app_cables.md
-# Descripción: Bot de Slack de verificación de Cables/Servicios de Cromo — los 3 comandos especificados, implementados y desplegados en dev
+# Descripción: Bot de Slack de verificación de Cables/Servicios de Cromo — los comandos especificados, implementados y desplegados en dev
 
 # Bot de Slack — Verificación de Cables y Servicios
 
+> **Estado (2026-09-23, Task 8 del plan "Corrección ingresos + Servicios"): agregados los comandos
+> `Servicios <cable>` / `Servicios <cable> B<N>` (IDs de servicio únicos, agrupados por buffer, con
+> marca de frescura PROV) + marcador `🕒` en `Info cable X BN`. Ver sección dedicada más abajo — el
+> resto del documento (escrito para los 3 comandos originales) sigue vigente sin cambios.**
+>
 > **Estado (2026-08-13, corregido 2026-08-25): los 3 comandos IMPLEMENTADOS y desplegados en dev.**
 > **Corrección real (2026-08-25, confirmada por el usuario + verificado con `auth.test` de Slack):**
 > son **dos Slack Apps genuinamente distintas**, no una misma app con dos instancias — la nota previa
@@ -30,13 +35,15 @@ distinto del resto del módulo (`app.cromo_cables`/`app.cromo_tubos`/`app.cromo_
 `app.cromo_botellas` en vez de `app.camaras`/`IncidenteBaneo`), pero mismo proceso.
 
 Reusa (en versión síncrona) los servicios de sólo lectura ya existentes de Cromo en vez de duplicar
-lógica de negocio: `core/services/cromo/verificador.py::servicios_por_tubo_sync` (gemela síncrona de
-`servicios_por_tubo`, misma SQL) y `core/services/cromo/detalle.py::pelos_de_tubo_sync` (mismo
-patrón que `obtener_detalle_cable`, acotado a un tubo). Ambas reusan las mismas consultas `text()` que
-ya corren sus gemelas async — `session.execute(text(...))` funciona igual en `Session` que en
-`AsyncSession`, sólo cambia el `await`.
+lógica de negocio: `core/services/cromo/verificador.py::servicios_por_tubo_sync`/
+`servicios_unicos_por_cable_sync`/`servicios_unicos_por_tubo_sync` (gemelas síncronas, misma SQL que
+sus versiones async) y `core/services/cromo/detalle.py::pelos_de_tubo_sync` (mismo patrón que
+`obtener_detalle_cable`, acotado a un tubo). Desde la Task 8 también
+`core/services/prov/frescura.py::servicios_vencidos_sync` (consulta batch de frescura PROV). Todas
+reusan las mismas consultas `text()` que ya corren sus gemelas async — `session.execute(text(...))`
+funciona igual en `Session` que en `AsyncSession`, sólo cambia el `await`.
 
-Tests: `tests/test_slack_cable_info.py` (35 casos: parsers, lookups, resolución de extremos y de
+Tests: `tests/test_slack_cable_info.py` (77 casos: parsers, lookups, resolución de extremos y de
 buffer, formateo de respuestas, handlers completos con mocks). Verificado además contra
 `lasfocasdev-postgres` real (no sólo mocks) con cables y buffers reales conocidos. Desplegado: rebuild
 + `up -d --force-recreate` de `lasfocasdev-slack-baneo-worker` (nunca el de prod) tras cada cambio,
@@ -140,6 +147,75 @@ prefijo (FO/FO-DWDM/DWDM/INT/ISIS/RPV/EWS/TLS/ATI/VID/TDM/ATD/TRUNK — lista ex
 ...
 ```
 
+**Marcador de frescura PROV (Task 8, 2026-09-23)**: cada pelo con servicio matcheado cuya
+sincronización PROV está vencida (`core/services/prov/frescura.py::servicios_vencidos_sync`, batch
+único sobre todos los `servicio_id` del buffer) se marca con un sufijo `🕒`. No cambia la función del
+comando ni dispara ningún refresco — sólo señala. Ejemplo real (F-VFL-IND n_id 6613293, Buffer B1,
+tabla `servicios_sync_prov` sin backfill todavía, por eso el 100%):
+```
+• Pelo 1 (AZ): TLS — 106761 — Fundacion Innova-T — TLS 23856 - Trunk Florida 470 - Chile 460 (Baja) 🕒
+```
+
+## `@bot Servicios <cable>` / `@bot Servicios <cable> B<N>` — implementado (Task 8, 2026-09-23)
+
+IDs de servicio **únicos**, agrupados por buffer, con marca de frescura PROV — complementa a
+"Verificar cable X BN" (arriba), no lo reemplaza: ese comando sigue devolviendo una línea **por
+pelo** (dato físico correcto, varios pelos por servicio es normal); este comando agrega **por
+servicio** (`s.id`, un ID aunque ocupe varios pelos).
+
+**El dato que lo justifica** (medido real contra `lasfocasdev-postgres`, no una mejora especulativa):
+en el **18,9%** de los pares (pelo, servicio) — 25.203 de 133.173 — el `servicio_numero` escrito en
+la descripción del pelo (la etiqueta física que lee el técnico) difiere del `servicio_id_externo`
+vigente del servicio. La línea "En el pelo figura otro número" señala exactamente esos casos,
+comparando `ServicioUnico.servicio_id_externo` contra `ServicioUnico.numeros_en_pelo` (ambos ya
+resueltos por `servicios_unicos_por_cable_sync`/`_por_tubo_sync`, Task 1 — ningún dato nuevo).
+
+**Reutiliza**: `core/services/cromo/verificador.py::servicios_unicos_por_cable_sync`/
+`servicios_unicos_por_tubo_sync` (Task 1, agregado `GROUP BY s.id` con `array_agg`, una sola pasada
+— no un re-join por servicio) y `core/services/prov/frescura.py::servicios_vencidos_sync` (Task 7,
+consulta batch: nunca una query por servicio, un cable real llega a 118).
+
+**Agrupación por buffer sin N+1**: para "Servicios <cable>" (cable entero) hace falta saber a qué
+buffer pertenece cada servicio, pero consultarlo uno por uno no escala (118 servicios = 118
+round-trips). En vez de eso, dos consultas batch sobre TODO el cable —`cromo_pelos` (pelo→tubo) y
+`cromo_tubos` vigentes (tubo→orden/color)— arman los grupos en memoria
+(`cable_info.py::_agrupar_servicios_por_buffer`). El pelo representativo de cada servicio es
+`pelos_n_ids[0]` (ya ordenado ascendente), mismo criterio de "primero como representativo" que ya usa
+`_describir_pelo` con `pelo.servicios[0]`.
+
+**Ejemplo real** (F-VFL-IND n_id 6613293, `Servicios F-VFL-IND`, 28 servicios únicos en 6 buffers —
+verificado además contra el cable de control del plan, `FO-FL-1003` n_id 6610203, 118 servicios
+únicos en 21 buffers, sin ningún ID repetido):
+```
+🧾 Servicios del cable *F-VFL-IND* — 28 ID(s) únicos
+B1 (AZ): 61942, 106595, 108094, 62174, 62175, 67189, 106761
+B2 (NR): 93150, 93154, 107487, 121274, 114228, 116370, 64932, 76923
+B3 (VR): 101332, 102709, 108924, 99353, 115009
+B4 (MR): 108875, 109739, 110093, 121635, 121867
+B5 (GR): 119758
+B6 (BL): 115907, 121489
+⚠️ En el pelo figura otro número: 108875 (el pelo dice 108305)
+⚠️ En el pelo figura otro número: 121274 (el pelo dice 110944)
+⚠️ En el pelo figura otro número: 106761 (el pelo dice 23856)
+🕒 28 con validación PROV vencida
+```
+
+`Servicios <cable> B<N>` es la misma vista acotada a un solo buffer — no necesita la agrupación (el
+buffer ya es conocido), sólo lista los IDs de ese tubo en una línea.
+
+**Sin sufijo "— refrescando…" todavía**: la línea de frescura dice sólo el conteo de vencidos. El
+refresco real contra PROV es la Task 9 del mismo plan — prometerlo acá sin implementarlo le mentiría
+al técnico.
+
+**Sin truncar**: con la salida acotada a IDs (no al detalle completo de pelo), un cable entero (118
+IDs) entra cómodo en un solo mensaje de Slack (~950 caracteres para el listado de IDs solo, más las
+líneas de discrepancia/frescura que sean necesarias).
+
+**Casos manejados**: mismo resolver de cable (`buscar_cable_por_n_id_o_nombre`/
+`_resolver_cable_o_responder`) y de buffer (`resolver_tubo_por_numero`/`contar_buffers_cable`) que el
+resto de los comandos — no encontrado/ambiguo, buffer fuera de rango, negrita de Slack en el nombre.
+Verbo "Servicios" libre: ni `_RE_INFO_CABLE` ni `_RE_CABLE_BUFFER` lo reconocen.
+
 ## Bug real 2026-08-25 — negrita/formato mrkdwn de Slack en el código rompía el parser
 
 Reproducido con el payload crudo real del canal `#baneo-de-camaras-prueba` (mensajes
@@ -168,15 +244,25 @@ los datos de Cromo — root cause completamente distinto de lo investigado antes
 
 ## Parser de comandos
 
-`cable_info.py` tiene dos parsers, probados en ese orden por el listener (`_handle_app_mention`):
+`cable_info.py` tiene cuatro parsers (desde la Task 8), probados en este orden por el listener
+(`_handle_app_mention`):
 1. `extraer_comando_cable_buffer` — `"(Verificar|Info) cable <nombre> (B|Buffer)\s*<N>"`, case
    insensitive, tolera "B1"/"B 1"/"Buffer 1". Si matchea, dispara `_handle_cable_buffer`.
-2. `extraer_comando_info_cable` — `"Info cable <nombre>"` sin sufijo. Deliberadamente "goloso"
-   (toma todo el resto de la línea como nombre) — por eso se intenta **después** del parser de
-   buffer, nunca antes, o se comería el "B<N>" como si fuera parte del nombre del cable.
+2. `extraer_comando_servicios_buffer` — `"Servicios (cable )?<nombre> (B|Buffer)\s*<N>"`. Si
+   matchea, dispara `_handle_servicios_buffer`.
+3. `extraer_comando_servicios_cable` — `"Servicios (cable )?<nombre>"` sin sufijo. Dispara
+   `_handle_servicios_cable`.
+4. `extraer_comando_info_cable` — `"Info cable <nombre>"` sin sufijo.
 
-Una mención que no matchea ninguno de los dos se ignora silenciosamente (no hay todavía un mensaje de
-"comando no reconocido" — evita interferir con otras menciones al mismo bot que no sean estos
+Los parsers "sin buffer" (2 de "servicios", 4 de "info cable") son deliberadamente "golosos" (toman
+todo el resto de la línea como nombre) — por eso cada uno se intenta **después** del parser CON
+buffer de su propia familia de verbo, nunca antes, o se comería el "B<N>" como si fuera parte del
+nombre del cable. Los dos verbos ("info"/"verificar cable" vs. "servicios") no colisionan entre sí —
+cada regex exige su propio prefijo — así que el orden ENTRE familias no importa, sólo el orden
+DENTRO de cada una.
+
+Una mención que no matchea ninguno de los cuatro se ignora silenciosamente (no hay todavía un mensaje
+de "comando no reconocido" — evita interferir con otras menciones al mismo bot que no sean estos
 comandos).
 
 ## Identidad del bot y despliegue (hallazgo operativo, 2026-08-13 — app de dev, `@sandy02`)

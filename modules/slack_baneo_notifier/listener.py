@@ -9,8 +9,10 @@ con uno de los tres estados posibles.
 
 Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
 Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
-listener de ingresos, sólo un evento distinto de Slack. Implementados los 3 comandos: "Info cable
-<nombre>", "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (ver `cable_info.py`).
+listener de ingresos, sólo un evento distinto de Slack. Implementados: "Info cable <nombre>",
+"Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>"; desde la Task 8 del plan "Corrección
+ingresos + Servicios" (2026-09-23) también "Servicios <nombre>" y "Servicios <nombre> B<N>" (IDs de
+servicio únicos con marca de frescura PROV, ver `cable_info.py`).
 
 Requiere:
   - SLACK_BOT_TOKEN  (xoxb-...)  — ya existente en .env
@@ -38,12 +40,17 @@ from core.services.camara_estado_service import (
 from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
 from core.services.cromo.detalle import pelos_de_tubo_sync
 from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
-from core.services.cromo.verificador import servicios_por_tubo_sync
+from core.services.cromo.verificador import (
+    servicios_por_tubo_sync,
+    servicios_unicos_por_cable_sync,
+    servicios_unicos_por_tubo_sync,
+)
 from core.services.ingreso_correccion_service import (
     RESULTADO_PENDIENTE_FECHA,
     procesar_comando_correccion,
 )
 from core.services.ingreso_service import registrar_intento_bloqueado, registrar_movimiento_ingreso
+from core.services.prov.frescura import servicios_vencidos_sync
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
 from modules.slack_baneo_notifier.cable_info import (
@@ -53,10 +60,14 @@ from modules.slack_baneo_notifier.cable_info import (
     construir_respuesta_info_buffer,
     construir_respuesta_info_cable,
     construir_respuesta_no_encontrado,
+    construir_respuesta_servicios_buffer,
+    construir_respuesta_servicios_cable,
     construir_respuesta_verificar_buffer,
     contar_buffers_cable,
     extraer_comando_cable_buffer,
     extraer_comando_info_cable,
+    extraer_comando_servicios_buffer,
+    extraer_comando_servicios_cable,
     resolver_tubo_por_numero,
 )
 from modules.slack_baneo_notifier.camara_search import (
@@ -1090,13 +1101,18 @@ class IngresoListener:
 
     def _handle_app_mention(self, event: dict[str, Any], client: Any) -> None:
         """Procesa una mención directa al bot (`@bot <comando>`) — soporta "Info cable <nombre>",
-        "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (docs/slack_app_cables.md).
-        Mismo canal/config que el listener de ingresos; no se pisan entre sí porque escuchan eventos
-        distintos de Slack (`message` vs `app_mention`).
+        "Verificar cable <nombre> B<N>", "Info cable <nombre> B<N>" (docs/slack_app_cables.md) y,
+        desde la Task 8 del plan "Corrección ingresos + Servicios", "Servicios <nombre>" /
+        "Servicios <nombre> B<N>". Mismo canal/config que el listener de ingresos; no se pisan entre
+        sí porque escuchan eventos distintos de Slack (`message` vs `app_mention`).
 
-        El comando CON buffer se intenta primero: `extraer_comando_info_cable` es "goloso" (toma todo
-        el resto de la línea como nombre de cable) y matchearía de más si un mensaje con sufijo
-        "B<N>" llegara primero acá."""
+        Orden de intento, todos por el mismo motivo (cada parser "sin buffer" es "goloso" — toma
+        todo el resto de la línea como nombre de cable — y matchearía de más si un mensaje CON
+        sufijo "B<N>" cayera ahí primero): comando de cable con buffer, comando de servicios con
+        buffer, comando de servicios sin buffer, comando de cable sin buffer. Los dos verbos
+        ("info"/"verificar cable" vs. "servicios") no colisionan entre sí — cada regex exige su
+        propio prefijo — así que el orden entre familias de verbo no importa, sólo el orden DENTRO
+        de cada familia (con-buffer antes que sin-buffer)."""
         texto = _RE_MENTION_PREFIX.sub("", event.get("text", ""))
         thread_ts = event.get("thread_ts") or event.get("ts")
         channel = event.get("channel", "")
@@ -1104,6 +1120,16 @@ class IngresoListener:
         comando_buffer = extraer_comando_cable_buffer(texto)
         if comando_buffer is not None:
             self._handle_cable_buffer(comando_buffer, client, channel, thread_ts)
+            return
+
+        comando_servicios_buffer = extraer_comando_servicios_buffer(texto)
+        if comando_servicios_buffer is not None:
+            self._handle_servicios_buffer(comando_servicios_buffer, client, channel, thread_ts)
+            return
+
+        nombre_servicios_cable = extraer_comando_servicios_cable(texto)
+        if nombre_servicios_cable is not None:
+            self._handle_servicios_cable(nombre_servicios_cable, client, channel, thread_ts)
             return
 
         nombre_cable = extraer_comando_info_cable(texto)
@@ -1147,12 +1173,71 @@ class IngresoListener:
                 respuesta = construir_respuesta_verificar_buffer(cable, tubo, resultado)
             else:
                 pelos = pelos_de_tubo_sync(session, tubo.n_id)
-                respuesta = construir_respuesta_info_buffer(cable, tubo, pelos)
+                # Marcador de frescura (Task 8, Step 4): sólo pinta el 🕒 en los pelos cuyo
+                # servicio matcheado está vencido — no dispara ningún refresco (Task 9), no cambia
+                # el resto de esta función. Batch único (nunca una query por pelo/servicio).
+                ids_servicio = {s.servicio_id for p in pelos for s in p.servicios}
+                vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
+                respuesta = construir_respuesta_info_buffer(cable, tubo, pelos, vencidos)
 
             client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
         except Exception as exc:
             logger.error(
                 "Error procesando '%s cable %s B%s': %s", verbo, nombre_cable, numero_buffer, exc, exc_info=True
+            )
+        finally:
+            session.close()
+
+    def _handle_servicios_cable(self, nombre_cable: str, client: Any, channel: str, thread_ts: str) -> None:
+        """"Servicios <nombre>" (Task 8) — IDs de servicio únicos de un cable ENTERO, agrupados por
+        buffer, con marca de frescura PROV batch. Complementa (no reemplaza) a "Verificar cable X
+        BN": ese comando sigue devolviendo el detalle por-pelo, éste devuelve IDs únicos por-
+        servicio (`servicios_unicos_por_cable_sync`, Task 1)."""
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+
+            resultado = servicios_unicos_por_cable_sync(session, cable.n_id)
+            ids_servicio = {s.servicio_id for s in resultado.servicios}
+            vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
+            respuesta = construir_respuesta_servicios_cable(cable, session, resultado, vencidos)
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error("Error procesando 'Servicios %s': %s", nombre_cable, exc, exc_info=True)
+        finally:
+            session.close()
+
+    def _handle_servicios_buffer(
+        self, comando: tuple[str, int], client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"Servicios <nombre> B<N>" (Task 8) — mismo IDs únicos que `_handle_servicios_cable`,
+        acotado a un buffer puntual (`servicios_unicos_por_tubo_sync`, Task 1). Mismo resolver de
+        cable/buffer que "Verificar cable X BN"/"Info cable X BN" (`_resolver_cable_o_responder`,
+        `resolver_tubo_por_numero`)."""
+        nombre_cable, numero_buffer = comando
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+
+            tubo = resolver_tubo_por_numero(session, cable.n_id, numero_buffer)
+            if tubo is None:
+                total = contar_buffers_cable(session, cable.n_id)
+                respuesta = construir_respuesta_buffer_no_encontrado(nombre_cable, numero_buffer, total)
+                client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+                return
+
+            resultado = servicios_unicos_por_tubo_sync(session, tubo.n_id)
+            ids_servicio = {s.servicio_id for s in resultado.servicios}
+            vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
+            respuesta = construir_respuesta_servicios_buffer(cable, tubo, resultado, vencidos)
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error(
+                "Error procesando 'Servicios %s B%s': %s", nombre_cable, numero_buffer, exc, exc_info=True
             )
         finally:
             session.close()
