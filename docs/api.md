@@ -365,6 +365,136 @@ devolver 400: un parámetro de listado mal tipeado no debería romper la pantall
 `cantidad_splitters` cuenta por `cromo_splitters.contenedor_n_id`, no por `botella_n_id` — el 88 %
 de los splitters cuelga de una caja PON y no de una Botella (ver `docs/decisiones.md`, 2026-09-19).
 
+## Servicios únicos por cable/buffer + resolución de cable + refresco PROV (2026-09-23)
+
+Cuatro rutas nuevas, aditivas — ninguna toca `/cables/{id}/servicios`/`/tubos/{id}/servicios`
+(las consultas por-pelo del Verificador Cromo, que alimentan su tabla con la columna "Pelo"). Las
+viejas devuelven **una fila por pelo** — el dato físico correcto, porque un servicio puede ocupar
+varios pelos de FO del mismo cable (medido real: en el 30,2% de los pares cable-servicio ocurre, en
+botellas trepa al 41,8%). Las de acá devuelven **IDs de servicio únicos** (uno por servicio, aunque
+ocupe varios pelos) — son **dos vistas legítimas del mismo dato, con propósitos distintos, no una
+reemplaza a la otra**. Detalle de diseño completo en `docs/superpowers/specs/
+2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`; equivalente por Slack en
+`docs/slack_app_cables.md` (comandos `Servicios <cable>`/`Servicios <cable> B<N>`).
+
+### GET `/api/infra/cromo/cables/resolver`
+
+Resuelve un cable por `n_id` o por nombre exacto, para que la SPA pueda anclar las tres rutas de
+abajo sin tener que adivinar el `n_id` de antemano.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/cables/resolver?q=<n_id|nombre>`
+- **Comportamiento:** si `q` es puramente numérico, matchea por `n_id`; si no, por `nombre` exacto
+  case-insensitive, sólo cables vigentes. Hay al menos 2 pares de nombres de cable duplicados reales
+  conocidos (`F-ALV-2335`, `F-LEM-11-A`) sobre ~32.782 cables vigentes — la ambigüedad se hace
+  **explícita** con un 409 en vez de elegir uno arbitrariamente.
+- **Respuesta 200:** `{"n_id": 6613293, "nombre": "F-VFL-IND", "capacidad": "72-BRUG"}`
+- **Respuesta 409 (ambiguo):**
+
+  ```json
+  {
+    "codigo": "AMBIGUO",
+    "candidatos": [
+      {"n_id": 9005904, "nombre": "F-ALV-2335", "capacidad": "72-BRUG"},
+      {"n_id": 9006460, "nombre": "F-ALV-2335", "capacidad": "72-BRUG"}
+    ]
+  }
+  ```
+
+- **Códigos de error:** `401` si no hay sesión; `404` `{"codigo": "NO_ENCONTRADO"}` si `q` no
+  matchea ningún cable vigente; `409` (arriba) si matchea 2+.
+
+### GET `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos`
+
+IDs de servicio únicos de un cable entero, con frescura de sincronización PROV por servicio.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos`
+- **Comportamiento:** sólo lectura — no dispara ningún refresco (eso es el POST de abajo). Agrega
+  por `servicio_id` (`GROUP BY` de una sola pasada, `core/services/cromo/verificador.py::
+  servicios_unicos_por_cable`); `refresco_prov` siempre viaja en `"no_solicitado"`.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "cable_n_id": 6610203,
+    "cable_nombre": "FO-FL-1003",
+    "buffer": null,
+    "datos_al": "2026-09-24T12:00:00+00:00",
+    "servicios": [
+      {
+        "servicio_id": 4521,
+        "servicio_id_externo": "108875",
+        "numero_primer_servicio": "108305",
+        "nombre_cliente": "...",
+        "cliente": "...",
+        "estado_servicio": "Activo",
+        "tipo_servicio": "FO",
+        "pelos_n_ids": [6848900],
+        "cantidad_pelos": 1,
+        "numeros_en_pelo": ["108305"],
+        "metodos": ["descripcion"],
+        "frescura": {"ultima_sincronizacion_prov": null, "antiguedad_horas": null, "vencida": true}
+      }
+    ],
+    "refresco_prov": {"estado": "no_solicitado", "fallidos": []}
+  }
+  ```
+
+  Verificado real contra `lasfocasdev-postgres`: el cable `FO-FL-1003` (n_id 6610203) da
+  **exactamente 118** servicios únicos, 0 `servicio_id` repetidos (la consulta por-pelo da 141
+  filas para el mismo cable).
+
+- **Códigos de error:** `401` si no hay sesión; `404` `{"codigo": "NO_ENCONTRADO", "error": "..."}`
+  si el cable no existe en el inventario ingerido (ni fila propia ni referencia colgada).
+
+### GET `/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos`
+
+Igual que la ruta anterior, acotada a un buffer humano `B<numero>` puntual.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos`
+- **Comportamiento:** `numero` es 1-indexado (como lo cuenta el técnico), mapea a
+  `cromo_tubos.orden = numero - 1`. Un buffer con fila propia pero sin ningún pelo cargado responde
+  `200` con `servicios: []` (no `404`) — el tubo existe de verdad, sólo no tiene nada que reportar.
+- **Respuesta 200:** mismo cuerpo que la ruta anterior, con
+  `"buffer": {"numero": 1, "orden": 0, "nombre_color": "AZ"}`.
+- **Códigos de error:** `401` si no hay sesión; `404`
+  `{"codigo": "NO_ENCONTRADO", "total_buffers": 6}` si el cable no tiene ese buffer — `total_buffers`
+  (conteo real de buffers vigentes del cable) orienta al cliente ("el cable tiene 6, pediste B9").
+
+### POST `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov`
+
+Dispara el refresco contra PROV de los servicios únicos vencidos de este cable, awaiteado dentro
+del propio request (a diferencia del comando de Slack equivalente, que es fire-and-forget y postea
+un segundo mensaje al hilo — acá no hay ningún hilo al que responder).
+
+- **Autenticación:** requiere sesión activa + CSRF.
+- **Ruta:** `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov`
+- **Cuerpo:** `{"csrf_token": "..."}`
+- **Comportamiento:** tope de 25 servicios por invocación (priorizados por antigüedad de
+  `ultimo_intento`), concurrencia 3, deadline global de 120 s — mismos parámetros que el refresco
+  de Slack (`modules/slack_baneo_notifier/refresco_prov.py`), reusados sin duplicar la orquestación.
+  Responde el mismo cuerpo que el GET por cable, con `refresco_prov.estado` reflejando el resultado
+  real (`"sin_vencidos"` si no había nada que refrescar, `"completado"` si todo salió bien,
+  `"parcial"` con `fallidos` poblado si algo no se pudo).
+- **Respuesta 200 (parcial):**
+
+  ```json
+  {
+    "cable_n_id": 6610203,
+    "...": "...",
+    "refresco_prov": {
+      "estado": "parcial",
+      "fallidos": [{"servicio_id_externo": "108305", "motivo": "no encontrado en PROV"}]
+    }
+  }
+  ```
+
+- **Códigos de error:** `401` si no hay sesión; `403` `{"error": "CSRF inválido"}`; `404`
+  `{"codigo": "NO_ENCONTRADO", "error": "..."}` si el cable no existe; `502`
+  `{"error": "PROV no está configurado: ..."}` si faltan `PROV_BASE_URL`/secrets en el entorno.
+
 ### POST `/api/infra/search`
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.
