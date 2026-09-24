@@ -793,39 +793,38 @@ class IngresoListener:
         return True
 
     def _pendiente_fecha_vigente(self, session: Any, thread_ts: str) -> Any:
-        """Última fila `PENDIENTE_FECHA` de `thread_ts`, si sigue vigente para el guard del
-        seguimiento: de menos de `_VENTANA_PENDIENTE_FECHA` y sin ninguna fila posterior del mismo
-        hilo con un `resultado` terminal (cualquier valor distinto de `PENDIENTE_FECHA`).
+        """Última fila de `thread_ts` (por `created_at`), vigente para el guard del seguimiento
+        sólo si es un `PENDIENTE_FECHA` de menos de `_VENTANA_PENDIENTE_FECHA`. Cualquier fila más
+        reciente que ese pendiente, sea cual sea su `resultado`, ya lo superó — alcanza con mirar
+        la ÚLTIMA fila del hilo entero (`ORDER BY created_at DESC LIMIT 1`, resuelto por Postgres,
+        sin ningún loop en Python). Devuelve `None` si no hay ningún pendiente vigente.
 
-        Una sola consulta (todas las filas del hilo, ordenadas por `created_at`) en vez de dos
-        consultas separadas: se recorre una vez llevando el último `PENDIENTE_FECHA` visto — una
-        fila posterior a él que no sea `PENDIENTE_FECHA` invalida ese pendiente (ya fue resuelto);
-        una fila posterior que sí sea `PENDIENTE_FECHA` (un comando nuevo del mismo hilo que también
-        quedó pendiente) simplemente reemplaza cuál es "el último pendiente" a validar. Devuelve
-        `None` si no hay ningún pendiente vigente."""
+        **Fix round 1 (Critical, reproducido por ejecución directa)**: la versión anterior
+        recorría todas las filas del hilo llevando "el último `PENDIENTE_FECHA` visto" y cortaba
+        (`return None`) apenas encontraba una fila terminal posterior a él — sin seguir mirando el
+        resto de la lista. Con el historial `[PENDIENTE_FECHA@-60min, OK_EGRESO_ASENTADO@-55min,
+        PENDIENTE_FECHA@-5min]` (un ciclo previo completo, seguido de un pendiente nuevo y
+        vigente) esa versión devolvía `None` — la fila 3 nunca se llegaba a mirar, aunque no
+        tuviera ninguna fila posterior. El guard quedaba permanentemente roto para cualquier hilo
+        que ya hubiera completado un ciclo. Mirar sólo la última fila del historial completo
+        elimina la clase de bug entera: no hay ningún loop en Python que pueda cortar de más."""
         from db.models.infra import IngresoCorreccion
 
-        filas = (
+        ultima = (
             session.query(IngresoCorreccion)
             .filter(IngresoCorreccion.thread_ts == thread_ts)
-            .order_by(IngresoCorreccion.created_at.asc())
-            .all()
+            .order_by(IngresoCorreccion.created_at.desc())
+            .first()
         )
-        pendiente = None
-        for fila in filas:
-            if fila.resultado == RESULTADO_PENDIENTE_FECHA:
-                pendiente = fila
-            elif pendiente is not None:
-                return None
-        if pendiente is None or pendiente.created_at is None:
+        if ultima is None or ultima.resultado != RESULTADO_PENDIENTE_FECHA or ultima.created_at is None:
             return None
 
-        creado = pendiente.created_at
+        creado = ultima.created_at
         if creado.tzinfo is None:
             creado = creado.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) - creado > _VENTANA_PENDIENTE_FECHA:
             return None
-        return pendiente
+        return ultima
 
     def _responder_error_correccion(
         self, session: Any, client: Any, channel: str, thread_ts_evento: str, exc: Exception
@@ -900,6 +899,26 @@ class IngresoListener:
             # egreso" como la respuesta de seguimiento de "fecha pendiente" (sólo `DD-MM-AAAA HH:MM`)
             # los escribe un operador a mano, nunca un Workflow.
             if event_thread_ts and event_thread_ts != event_ts:
+                # Prioridad (Important 3, revisión Fix round 1): si hay un `PENDIENTE_FECHA`
+                # vigente para este `thread_ts`, la interpretación de fecha tiene que evaluarse
+                # ANTES que el seguimiento de empalme — un texto numérico sin separadores (ej.
+                # "1430") matchea `_RE_SEGUIMIENTO_EMPALME` (dígitos puros, mínimo 3), y la
+                # coexistencia de un `IngresoSinMatch` pendiente (empalme) con un `PENDIENTE_FECHA`
+                # vigente (corrección) en el MISMO hilo es realista: "Forzar ingreso/egreso" está
+                # pensado justamente para hilos donde el match automático falló. Fuera de este
+                # caso puntual, el orden general de la cadena no cambia.
+                if self._pendiente_fecha_vigente(session, event_thread_ts) is not None:
+                    if self._procesar_correccion_ingreso(
+                        texto,
+                        event_thread_ts,
+                        session,
+                        client,
+                        channel,
+                        actor_slack_user_id=event.get("user") or "",
+                        mensaje_ts=event.get("ts") or "",
+                    ):
+                        return
+
                 if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
                     return
                 # Mismo criterio que el seguimiento de empalme (evaluado antes del filtro
@@ -911,7 +930,9 @@ class IngresoListener:
                 # pendiente) — nunca se confunde con los dos anteriores: el regex de empalme exige
                 # dígitos puros y el de "Revalidar ingreso" una frase fija, ninguno matchea ni
                 # "Forzar ingreso/egreso ..." ni una fecha suelta "DD-MM-AAAA HH:MM" (verificado:
-                # el día de 2 dígitos rompe el run de `\d{3,}` del regex de empalme).
+                # el día de 2 dígitos rompe el run de `\d{3,}` del regex de empalme). Se prueba de
+                # nuevo acá (aunque ya se haya intentado arriba cuando había un pendiente vigente)
+                # para el caso normal: comando completo nuevo, sin ningún pendiente todavía.
                 if self._procesar_correccion_ingreso(
                     texto,
                     event_thread_ts,
