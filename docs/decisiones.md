@@ -2350,8 +2350,9 @@ su propia ventana de mantenimiento.
   llama `_require_auth(request)`. Se deja escrito acá para que la decisión quede a la vista, no para
   cambiarla.
 
-- **A favor de que fuera `_require_admin`:** las ~24 rutas mutantes bajo `/api/infra/*` de este mismo
-  archivo son todas `_require_admin` — `botellas/consolidar`, `botellas/eliminar`,
+- **A favor de que fuera `_require_admin`:** en `web/app/main.py` hay 14 rutas mutantes bajo
+  `/api/infra/*` que ya son `_require_admin` (más otras 10 bajo el prefijo separado
+  `/api/admin/infra/*`, 24 en total) — `botellas/consolidar`, `botellas/eliminar`,
   `botellas/eliminar-grupo`, `camaras/merge`, `camaras/merge-grupo`, `camaras/merge-masivo`,
   `botellas/{n_id}/separar-padre`, `camaras/{camara_id}/estado`, entre otras. Esta ruta nueva escribe
   en `app.servicios` y en `app.servicios_sync_prov` (vía `ingerir_contexto_prov`), y un usuario con
@@ -2360,13 +2361,18 @@ su propia ventana de mantenimiento.
   `Semaphore` interno, y sin el candado `_cables_en_refresco` que sí protege el camino de Slack (ver
   entrada siguiente) contra dos refrescos concurrentes del mismo cable.
 
-- **A favor de dejarlo como está:** su análoga ya existente, `POST /servicios/prov/refrescar`
-  (`api/app/routes/servicios.py`), tampoco es admin-only — y hay un precedente ya escrito para
-  exactamente esa asimetría: la Decisión 4 de la entrada "2026-09-02 (cont.)" de este mismo archivo
+- **A favor de dejarlo como está:** hay un precedente ya escrito para exactamente esta asimetría
+  dentro de `web/app/main.py`: la Decisión 4 de la entrada "2026-09-02 (cont.)" de este mismo archivo,
+  sobre el proxy `POST /api/servicios/prov/refrescar` (`web/app/main.py::servicio_prov_refrescar_web`),
   argumenta que un refresco PROV no deja al caller *elegir* ningún valor, sólo resincroniza desde la
   fuente de verdad externa (a diferencia de fijar un Nivel Cliente o una verificabilidad a mano, que
   sí son `_require_admin`). Esta ruta nueva es la misma operación —"resincronizar desde PROV"— sobre
-  un conjunto de servicios en vez de uno solo, así que el mismo argumento aplica sin forzarlo.
+  un conjunto de servicios en vez de uno solo, así que el mismo argumento aplica sin forzarlo. (La
+  ruta homónima `POST /servicios/prov/refrescar` de `api/app/routes/servicios.py` no es un segundo
+  precedente del mismo tipo: vive en la app `api`, contenedor `lasfocasdev-api`, donde **todos** los
+  routers —incluido `servicios_router`— quedan detrás de `Depends(require_api_key)` de forma global
+  (`api/app/main.py:48-54`), un esquema de API-key sin ningún concepto de rol admin/no-admin. No es
+  comparable a la distinción `_require_auth`/`_require_admin` de `web/app/main.py`.)
 
 - **Decisión: no se cambia el nivel de auth en esta rama.** Lo que faltaba era que la asimetría
   quedara documentada para que alguien pueda revisarla a conciencia más adelante, con las dos caras
