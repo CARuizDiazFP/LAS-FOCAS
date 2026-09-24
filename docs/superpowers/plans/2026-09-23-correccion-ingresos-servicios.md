@@ -1,3 +1,7 @@
+# Nombre de archivo: 2026-09-23-correccion-ingresos-servicios.md
+# Ubicación de archivo: docs/superpowers/plans/2026-09-23-correccion-ingresos-servicios.md
+# Descripción: Plan de implementación tarea por tarea de la corrección manual de ingresos/egresos por hilo Slack y los comandos "Servicios <cable>" con frescura PROV
+
 # Corrección manual de ingresos/egresos por hilo Slack + comando `Servicios` con frescura PROV — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: usar `superpowers:subagent-driven-development` para ejecutar este plan tarea por tarea. Los headings `### Task N:` son los que matchea el `task-brief` (`^#+[ \t]+Task[ \t]+[0-9]+`).
@@ -10,7 +14,7 @@ Dos necesidades reales, verificadas contra `lasfocasdev-postgres` y contra el c�
 
 **2. El técnico necesita los IDs de servicio de un cable, únicos y vigentes.** Dos cosas lo impiden hoy:
 
-- *Los IDs se repiten.* Un servicio puede ocupar varios pelos de FO del mismo cable — eso es **normal y esperado**, no un defecto —, así que una consulta por pelo lo devuelve una vez por pelo. Medido en dev: en el 30,2% de los pares (cable, servicio) el servicio ocupa más de un pelo de ese cable; en botellas trepa al 41,8%. El cable `FO-FL-1003` (n_id 6610203) tiene 141 filas pelo↔servicio para **118 IDs distintos**. Para un listado de IDs eso es ruido; para la tabla del Verificador —que tiene una columna "Pelo" por fila— es el dato correcto. De ahí que la consulta nueva sea **nueva**, y las existentes no se toquen.
+- *Los IDs se repiten.* Un servicio puede ocupar varios pelos de FO del mismo cable — eso es **normal y esperado**, no un defecto —, así que una consulta por pelo lo devuelve una vez por pelo. Medido en dev: en el 29,6% de los pares (cable, servicio) el servicio ocupa más de un pelo de ese cable (28.517 de 96.395); en botellas trepa al 41,3% (33.601 de 81.351, extremo A). *(Cifras corregidas en la Task 11, fix round 2: la medición original no filtraba `servicio_id IS NOT NULL` y contaba pares falsos con match sin resolver — sólo cuenta un match con `servicio_id` real.)* El cable `FO-FL-1003` (n_id 6610203) tiene 141 filas pelo↔servicio para **118 IDs distintos**. Para un listado de IDs eso es ruido; para la tabla del Verificador —que tiene una columna "Pelo" por fila— es el dato correcto. De ahí que la consulta nueva sea **nueva**, y las existentes no se toquen.
 
 - *El ID mostrado puede no ser el vigente, y no hay forma de saberlo.* En el 18,9% de los pares (pelo, servicio) el número escrito en el pelo de Cromo difiere del `servicios.servicio_id` vigente (25.203 de 133.173) — la descripción del pelo conserva el ID viejo de la cadena de upgrades. Y `app.servicios` **no tiene ninguna columna de timestamp**: ni `updated_at` ni `created_at` (verificado: 20 columnas, ninguna de fecha). Hoy es literalmente imposible saber si una fila fue validada contra PROV alguna vez. El 92,5% de los servicios alcanzables por cable nunca pasó por PROV (8.401 de 9.079).
 

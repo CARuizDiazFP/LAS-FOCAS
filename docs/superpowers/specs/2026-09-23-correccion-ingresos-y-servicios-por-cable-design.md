@@ -29,8 +29,11 @@ impedían:
 
 - *Los IDs se repetían.* Un servicio puede ocupar varios pelos de FO del mismo cable — eso es
   **normal y esperado**, no un defecto —, así que una consulta por pelo lo devuelve una vez por
-  pelo. Medido en dev: en el 30,2% de los pares (cable, servicio) el servicio ocupa más de un pelo
-  de ese cable; en botellas trepa al 41,8%. El cable `FO-FL-1003` (n_id 6610203) tiene 141 filas
+  pelo. Medido en dev: en el 29,6% de los pares (cable, servicio) el servicio ocupa más de un pelo
+  de ese cable (28.517 de 96.395); en botellas trepa al 41,3% (33.601 de 81.351, extremo A).
+  *(Cifras corregidas en el fix round 2 de esta tarea: la medición original no filtraba
+  `servicio_id IS NOT NULL` y contaba pares con un match sin resolver a un servicio real — un
+  `servicio_id` `NULL` no es un servicio.)* El cable `FO-FL-1003` (n_id 6610203) tiene 141 filas
   pelo↔servicio para **118 IDs distintos**.
 - *El ID mostrado podía no ser el vigente, y no había forma de saberlo.* En el 18,9% de los pares
   (pelo, servicio) el número escrito en el pelo de Cromo difiere del `servicios.servicio_id`

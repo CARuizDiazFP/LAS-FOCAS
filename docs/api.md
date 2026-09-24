@@ -370,8 +370,9 @@ de los splitters cuelga de una caja PON y no de una Botella (ver `docs/decisione
 Cuatro rutas nuevas, aditivas — ninguna toca `/cables/{id}/servicios`/`/tubos/{id}/servicios`
 (las consultas por-pelo del Verificador Cromo, que alimentan su tabla con la columna "Pelo"). Las
 viejas devuelven **una fila por pelo** — el dato físico correcto, porque un servicio puede ocupar
-varios pelos de FO del mismo cable (medido real: en el 30,2% de los pares cable-servicio ocurre, en
-botellas trepa al 41,8%). Las de acá devuelven **IDs de servicio únicos** (uno por servicio, aunque
+varios pelos de FO del mismo cable (medido real: en el 29,6% de los pares cable-servicio ocurre —
+28.517 de 96.395, sólo matches con `servicio_id` resuelto —, en botellas trepa al 41,3%). Las de
+acá devuelven **IDs de servicio únicos** (uno por servicio, aunque
 ocupe varios pelos) — son **dos vistas legítimas del mismo dato, con propósitos distintos, no una
 reemplaza a la otra**. Detalle de diseño completo en `docs/superpowers/specs/
 2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`; equivalente por Slack en

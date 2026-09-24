@@ -2260,8 +2260,11 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   (`ServicioEncontrado`, compartida con `detalle.py` y la interfaz TS `CromoServicioEncontrado`, 4
   respuestas distintas la usan).** La razón no es evitar el trabajo de migrar los consumidores
   existentes: es que **varios pelos por servicio es normal, no un defecto**. Medido real contra
-  `lasfocasdev-postgres`: en el 30,2% de los pares (cable, servicio) el servicio ocupa más de un
-  pelo de ese cable; en botellas trepa al 41,8%. El cable `FO-FL-1003` (n_id 6610203) tiene 141
+  `lasfocasdev-postgres`: en el 29,6% de los pares (cable, servicio) el servicio ocupa más de un
+  pelo de ese cable (28.517 de 96.395); en botellas trepa al 41,3% (33.601 de 81.351, extremo A).
+  *(Corregido en el fix round 2 de la Task 11: la medición original no filtraba
+  `servicio_id IS NOT NULL` y contaba 1.220 pares falsos por `(cable, NULL)` — un match sin resolver
+  a un `servicio_id` real no es un servicio.)* El cable `FO-FL-1003` (n_id 6610203) tiene 141
   filas pelo↔servicio para 118 IDs distintos. La vista por-pelo del Verificador y la vista por-ID
   única del comando de Slack son **dos vistas legítimas del mismo dato, con propósitos distintos**
   — no una vieja y una nueva que la reemplaza. Conviven, y así se documenta en
