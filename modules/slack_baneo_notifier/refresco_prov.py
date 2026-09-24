@@ -28,24 +28,35 @@ corre con su propio presupuesto de reintentos y sin deadline interactivo.
 Orden de prioridad dentro del tope de 25 (Step 2 del brief, "ordenados por antigüedad"): por
 `ultimo_intento` ascendente, nulls primero (nunca intentado antes → máxima prioridad), NO por
 `ultima_sincronizacion_ok`. Es a propósito y es la pieza que hace cumplir la ruling vinculante del
-coordinador: si ordenáramos por `ultima_sincronizacion_ok` (que para un fallo queda fijada en el
-centinela `_EPOCA_NUNCA_SINCRONIZADO`, ver más abajo), un servicio que PROV nunca puede resolver
+coordinador: si ordenáramos por `ultima_sincronizacion_ok`, un servicio que PROV nunca puede
+resolver (que se queda con esa columna en `NULL` para siempre, ver "Escritura de fallo" más abajo)
 volvería a ganar el primer lugar en TODOS los comandos futuros — exactamente el escenario que la
 ruling pide evitar ("desplazando a servicios que sí se podrían refrescar"). Ordenar por
 `ultimo_intento` en cambio hace que, apenas se registra el intento fallido, ese servicio pase al
 FINAL de la cola de prioridad — le da lugar a los demás vencidos antes de reintentarlo.
+`_EPOCA_NUNCA_SINCRONIZADO` sigue existiendo como valor mínimo interno para ordenar el grupo "nunca
+intentado" de `_priorizar_por_antiguedad` — no tiene ninguna relación con lo que se escribe en
+`ultima_sincronizacion_ok` (ver el punto siguiente).
 
-Escritura de fallo (ruling vinculante, no contemplada por la Task 7): `ServicioSyncProv.
-ultima_sincronizacion_ok` es `NOT NULL` (migración `20260923_02`) — no se puede insertar una fila
-nueva para un servicio que nunca sincronizó con éxito sin darle algún valor a esa columna. Se usa
-`_EPOCA_NUNCA_SINCRONIZADO` (1970-01-01 UTC) como centinela: satisface el NOT NULL, mantiene al
-servicio "vencido" para siempre en `servicios_vencidos_sync` (que es exactamente lo correcto:
-nunca tuvo una sincronización real) y el `ON CONFLICT DO UPDATE` nunca la toca si ya existe una fila
-con una `ultima_sincronizacion_ok` real de un éxito anterior — sólo `ultimo_intento`/`ultimo_error`
-se actualizan en el camino de fallo, igual que anticipa el docstring de `ServicioSyncProv`
-("dejan la puerta abierta a que un futuro camino de *fallo* actualice sólo `ultimo_intento`/
-`ultimo_error` de una fila ya existente sin tocar la fecha de la última sincronización que sí
-funcionó").
+Escritura de fallo (ruling vinculante, no contemplada por la Task 7): `_persistir_intento_fallido`
+es un segundo embudo de escritura de `ServicioSyncProv`, además del camino de éxito de
+`ingerir_contexto_prov` — persiste `ultimo_intento`/`ultimo_error` sin haber conseguido nunca un
+contexto exitoso de PROV. `ultima_sincronizacion_ok` es `NULL` (nullable desde la migración
+`20260923_03`, revirtiendo el `NOT NULL` original de `20260923_02`) en ese caso: `NULL` ya es el
+encoding canónico de "nunca sincronizado" que espera la consulta de frescura
+(`core/services/prov/frescura.py`: `IS NULL OR ... < corte`), así que no hace falta ningún
+centinela para mantener al servicio "vencido" — un fallo repetido de PROV nunca produce un valor
+real en esa columna. El `ON CONFLICT DO UPDATE` nunca toca `ultima_sincronizacion_ok` si ya existe
+una fila con un valor real de un éxito anterior — sólo `ultimo_intento`/`ultimo_error` se actualizan
+en el camino de fallo, igual que anticipa el docstring de `ServicioSyncProv` ("dejan la puerta
+abierta a que un futuro camino de *fallo* actualice sólo `ultimo_intento`/`ultimo_error` de una
+fila ya existente sin tocar la fecha de la última sincronización que sí funcionó").
+
+(Nota histórica, revisión de calidad de la Task 9: la primera versión de este módulo usaba un
+centinela `1970-01-01 UTC` en `ultima_sincronizacion_ok` para satisfacer el `NOT NULL` original —
+se descartó porque `NULL` ya era el encoding que la consulta de frescura esperaba, y el centinela
+sólo agregaba un segundo encoding del mismo estado que sostener para siempre. La migración
+`20260923_03` hizo la columna nullable y este módulo escribe `NULL` directamente.)
 """
 
 from __future__ import annotations
@@ -80,7 +91,10 @@ DEADLINE_SEGUNDOS = 120.0
 TOPE_SERVICIOS_POR_COMANDO = 25
 MAX_REINTENTOS_INTERACTIVO = 0  # ver docstring del módulo: más conservador que el 1 del endpoint
 
-# Centinela para el camino de fallo — ver docstring del módulo ("Escritura de fallo").
+# Ya NO se escribe en `ultima_sincronizacion_ok` (esa columna usa `None`/NULL desde la migración
+# `20260923_03` — ver docstring del módulo, "Escritura de fallo"). Sigue existiendo únicamente como
+# valor mínimo interno para el desempate de `_priorizar_por_antiguedad._clave` ("nunca intentado" ->
+# máxima prioridad); cualquier datetime lo bastante viejo serviría, se reusa éste por comodidad.
 _EPOCA_NUNCA_SINCRONIZADO = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 # Cables con un refresco en curso — candado de proceso (Step 2: "para que dos personas no
@@ -135,14 +149,19 @@ async def _priorizar_por_antiguedad(servicios: list[ServicioUnico]) -> list[Serv
 
 
 async def _persistir_intento_fallido(servicio_id: int, nro_servicio_consultado: str, motivo: str) -> None:
-    """Único punto de escritura del camino de FALLO (la Task 7/`ingerir_contexto_prov` sólo
-    escribe el camino de éxito — ver docstring del módulo). Nunca lanza: un fallo al persistir el
-    fallo no debe tumbar el resto del lote ni impedir el mensaje de seguimiento."""
+    """Punto de escritura del camino de FALLO (la Task 7/`ingerir_contexto_prov` escribe el camino
+    de éxito — ver docstring del módulo, "Escritura de fallo"). Nunca lanza: un fallo al persistir
+    el fallo no debe tumbar el resto del lote ni impedir el mensaje de seguimiento.
+
+    `ultima_sincronizacion_ok=None` en el INSERT (no un centinela): la columna es nullable desde la
+    migración `20260923_03` y `NULL` ya es "nunca sincronizado" para la consulta de frescura. El
+    `ON CONFLICT DO UPDATE` de abajo nunca incluye esta columna en el `SET`, así que un fallo
+    posterior a un éxito real jamás le pisa la fecha que sí funcionó."""
     ahora = datetime.now(timezone.utc)
     tabla = ServicioSyncProv.__table__
     upsert = pg_insert(tabla).values(
         servicio_id=servicio_id,
-        ultima_sincronizacion_ok=_EPOCA_NUNCA_SINCRONIZADO,
+        ultima_sincronizacion_ok=None,
         ultimo_intento=ahora,
         ultimo_error=motivo[:2000],
         nro_servicio_consultado=nro_servicio_consultado,
@@ -241,6 +260,17 @@ async def _refrescar_un_servicio(
     return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, True, None)
 
 
+# Tope del motivo dentro del mensaje de Slack (Minor subido a obligatorio de la revisión de
+# calidad): mucho más chico que el `[:2000]` que ya protege la columna `ultimo_error` en
+# `_persistir_intento_fallido` porque acá hay hasta 25 motivos concatenados en un solo mensaje, no
+# uno por fila de DB. Un `exc` de SQLAlchemy en el bucket "error guardando localmente: {exc}" trae
+# sentencia + parámetros (1-3 KB fácil) — sin este tope, 25 de esos superan el límite de 40.000
+# caracteres del campo `text` de Slack, `chat_postMessage` devuelve `msg_too_long` y el `except` de
+# `refrescar_servicios_vencidos` se traga el follow-up entero (ver Important en el reporte de
+# fix). De paso evita volcar SQL y valores de fila a un canal de Slack.
+_TOPE_MOTIVO_EN_MENSAJE = 200
+
+
 def _construir_mensaje_seguimiento(
     exitosos: list[ResultadoServicioRefrescado], fallidos: list[ResultadoServicioRefrescado]
 ) -> str:
@@ -252,7 +282,9 @@ def _construir_mensaje_seguimiento(
         lineas.append(f"✅ {len(exitosos)} actualizado(s): {ids}")
     if fallidos:
         lineas.append(f"⚠️ {len(fallidos)} no se pudo(pudieron) refrescar:")
-        lineas.extend(f"• {r.servicio_id_externo} — {r.motivo_error}" for r in fallidos)
+        lineas.extend(
+            f"• {r.servicio_id_externo} — {(r.motivo_error or '')[:_TOPE_MOTIVO_EN_MENSAJE]}" for r in fallidos
+        )
     if not exitosos and not fallidos:
         lineas.append("Nada para reportar.")
     return "\n".join(lineas)
@@ -282,11 +314,28 @@ async def refrescar_servicios_vencidos(
 
     if cable_n_id in _cables_en_refresco:
         # Candado por cable (Step 2): otra invocación ya está refrescando este mismo cable — se
-        # skipea entero (ni PROV ni un segundo mensaje redundante) en vez de esperar, porque el
-        # refresco en curso ya cubre el mismo conjunto de servicios vencidos.
+        # skipea el lote entero (ni PROV ni un segundo lote redundante), pero SÍ se le avisa a
+        # este segundo hilo (Important 4 de la revisión de calidad): sin este mensaje, el segundo
+        # técnico que dispara el comando se queda esperando indefinidamente un resultado que se
+        # postea en el hilo del PRIMERO, exactamente el escenario para el que existe el candado.
         logger.info(
             "action=prov_refresco_slack evento=candado_activo cable_n_id=%s total=%d", cable_n_id, len(servicios)
         )
+        try:
+            await asyncio.to_thread(
+                client.chat_postMessage,
+                channel=channel,
+                thread_ts=thread_ts,
+                text="🔄 Ya hay un refresco PROV en curso para este cable — el resultado se postea en el hilo que lo disparó primero.",
+                mrkdwn=True,
+            )
+        except Exception as exc:
+            logger.error(
+                "action=prov_refresco_slack evento=error_post_mensaje_candado cable_n_id=%s error=%s",
+                cable_n_id,
+                exc,
+                exc_info=True,
+            )
         return
     _cables_en_refresco.add(cable_n_id)
 
@@ -368,6 +417,36 @@ async def refrescar_servicios_vencidos(
                 "action=prov_refresco_slack evento=error_post_mensaje cable_n_id=%s error=%s",
                 cable_n_id,
                 exc,
+                exc_info=True,
+            )
+    except Exception as exc:
+        # Red de seguridad de nivel superior (Important 1 de la revisión de calidad): sin este
+        # `except`, una excepción de `_priorizar_por_antiguedad` (Postgres caído, pool agotado) u
+        # otro punto del lote escapa al `concurrent.futures.Future` que devuelve
+        # `run_coroutine_threadsafe` en el listener — ese Future se descarta sin que nadie llame
+        # `.result()`, así que ni loguea "exception was never retrieved" (eso sólo lo hace
+        # `asyncio.Future`) ni deja rastro. El primer mensaje con el dato Cromo ya salió; sin este
+        # `except` el segundo mensaje simplemente nunca llega y no queda ni una línea de log.
+        logger.error(
+            "action=prov_refresco_slack evento=error_no_manejado cable_n_id=%s total=%d error=%s",
+            cable_n_id,
+            len(servicios),
+            exc,
+            exc_info=True,
+        )
+        try:
+            await asyncio.to_thread(
+                client.chat_postMessage,
+                channel=channel,
+                thread_ts=thread_ts,
+                text="⚠️ El refresco PROV de este cable se interrumpió por un error interno inesperado — reintentá el comando en unos minutos.",
+                mrkdwn=True,
+            )
+        except Exception as exc_post:
+            logger.error(
+                "action=prov_refresco_slack evento=error_post_mensaje_error cable_n_id=%s error=%s",
+                cable_n_id,
+                exc_post,
                 exc_info=True,
             )
     finally:

@@ -316,11 +316,15 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
             )
         )
 
-    # Task 7 del plan "Corrección de ingresos/servicios" (2026-09-23): único embudo de escritura de
-    # `app.servicios_sync_prov` — por acá pasan los tres consumidores de PROV (endpoint on-demand,
-    # backfill masivo y, desde la Task 9, el comando de Slack). Llegar hasta acá significa que
-    # `contexto_raw` ya fue validado como éxito por `ProvClient` (nunca se invoca esta función con
-    # una falla), así que esta fila siempre representa una sincronización exitosa: se limpia
+    # Task 7 del plan "Corrección de ingresos/servicios" (2026-09-23): embudo de escritura del
+    # camino de ÉXITO de `app.servicios_sync_prov` — por acá pasan los tres consumidores de PROV
+    # (endpoint on-demand, backfill masivo y, desde la Task 9, el comando de Slack). Ya NO es el
+    # único escritor de la tabla (corrección de la revisión de calidad, Important 3): desde la
+    # Task 9, `modules/slack_baneo_notifier/refresco_prov.py::_persistir_intento_fallido` es un
+    # segundo embudo para el camino de FALLO (Postgres/PROV caído, 4xx, timeout), que actualiza
+    # sólo `ultimo_intento`/`ultimo_error` sin pasar por acá. Llegar hasta ACÁ sigue significando
+    # que `contexto_raw` ya fue validado como éxito por `ProvClient` (nunca se invoca esta función
+    # con una falla), así que esta fila siempre representa una sincronización exitosa: se limpia
     # `ultimo_error` en cada escritura para que un error viejo no quede pegado después de un
     # refresco que sí funcionó. `ON CONFLICT DO UPDATE` (no un `SELECT` previo) porque
     # `servicio_id` es UNIQUE y esto es un upsert de una sola fila por Servicio, mismo patrón que

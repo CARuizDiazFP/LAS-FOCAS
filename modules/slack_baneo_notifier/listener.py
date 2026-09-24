@@ -1231,6 +1231,19 @@ class IngresoListener:
         - `ProvConfigError` (Step 3 del brief): se captura ACÁ, antes de encolar nada — el primer
           mensaje debe decir "PROV no está configurado en este entorno" y no hay segundo mensaje
           (mismo criterio que el 503 de `api/app/routes/servicios.py::refrescar_servicio_desde_prov`).
+
+        Nunca propaga una excepción (Important 2 de la revisión de calidad): tanto `get_prov_client`
+        como `asyncio.run_coroutine_threadsafe` están blindados con `except Exception`, no sólo
+        `ProvConfigError`. Antes sólo se capturaba `ProvConfigError`; cualquier otra excepción
+        (`httpx.InvalidURL` si `PROV_BASE_URL` queda malformado, `RuntimeError: Event loop is
+        closed` durante el shutdown del worker) subía sin blindar hasta el `except Exception` del
+        handler (`_handle_servicios_cable`/`_handle_servicios_buffer`), que entonces NO posteaba
+        ni siquiera el primer mensaje con el dato Cromo — justo lo que el brief pide evitar
+        explícitamente ("el primer mensaje con el dato Cromo ya salió, así que un fallo de PROV
+        nunca oculta el resultado local"). Blindar acá en vez de reordenar el caller (mover esta
+        llamada a después del primer `chat_postMessage`) porque el caller arma el texto del primer
+        mensaje usando el `refrescando` que devuelve esta función — reordenar complicaría esa
+        dependencia sin ganar nada que este blindaje no dé ya.
         """
         if not servicios_vencidos_lista:
             return False, None
@@ -1252,17 +1265,36 @@ class IngresoListener:
                 exc,
             )
             return False, "⚠️ PROV no está configurado en este entorno — no se pudo refrescar automáticamente."
+        except Exception as exc:
+            logger.error(
+                "action=prov_refresco_slack evento=error_no_manejado_validando_prov cable_n_id=%s total=%d error=%s",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+                exc,
+                exc_info=True,
+            )
+            return False, "⚠️ No se pudo iniciar el refresco automático contra PROV — ver logs del worker."
 
-        asyncio.run_coroutine_threadsafe(
-            refrescar_servicios_vencidos(
-                cable_n_id=cable_n_id,
-                servicios=servicios_vencidos_lista,
-                client=client,
-                channel=channel,
-                thread_ts=thread_ts,
-            ),
-            self._loop,
-        )
+        try:
+            asyncio.run_coroutine_threadsafe(
+                refrescar_servicios_vencidos(
+                    cable_n_id=cable_n_id,
+                    servicios=servicios_vencidos_lista,
+                    client=client,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                ),
+                self._loop,
+            )
+        except Exception as exc:
+            logger.error(
+                "action=prov_refresco_slack evento=error_no_manejado_encolando cable_n_id=%s total=%d error=%s",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+                exc,
+                exc_info=True,
+            )
+            return False, "⚠️ No se pudo iniciar el refresco automático contra PROV — ver logs del worker."
         return True, None
 
     def _handle_servicios_cable(self, nombre_cable: str, client: Any, channel: str, thread_ts: str) -> None:

@@ -1,6 +1,6 @@
 # Nombre de archivo: test_slack_refresco_prov.py
 # Ubicación de archivo: tests/test_slack_refresco_prov.py
-# Descripción: Tests del refresco asíncrono contra PROV disparado por "Servicios <cable>"/"Servicios <cable> B<N>" de Slack (Task 9): tope de 25, deadline, candado por cable, fallo puntual, persistencia del intento fallido y bypass de reintentos
+# Descripción: Tests del refresco asíncrono contra PROV disparado por "Servicios <cable>"/"Servicios <cable> B<N>" de Slack (Task 9): tope de 25, deadline, candado por cable + segundo mensaje, fallo puntual, persistencia del intento fallido (NULL, no centinela), camino feliz real, priorización por antigüedad y bypass de reintentos
 
 """Task 9 del plan "Corrección de ingresos/servicios" (2026-09-23).
 
@@ -23,22 +23,27 @@ reales de `app.servicios.id` son siempre positivos (columna `SERIAL`), así que 
 puede colisionar jamás con una fila real y no hace falta crear una fila en `app.servicios` para los
 tests que sólo verifican orquestación (tope/deadline/candado/fallo puntual) — cuando el camino de
 éxito busca el `Servicio` por ese PK y no lo encuentra, lo trata como "se borró entre medio" (no
-escribe nada, cuenta como éxito de todas formas, ver `_refrescar_un_servicio`). Sólo los dos tests
-que verifican el contenido real de `app.servicios_sync_prov` (`test_fallo_persiste_ultimo_intento_y_error`,
-`test_timeout_sin_reintentos_se_clasifica_como_timeout`) necesitan una fila real — ahí sí se crea con
-`_crear_servicio`, en el namespace reservado `9003xx` (confirmado libre el 2026-09-24 contra
-`lasfocasdev-postgres`, mismo criterio que `tests/test_prov_frescura.py`).
+escribe nada, cuenta como éxito de todas formas, ver `_refrescar_un_servicio`). Los tests que
+verifican contenido real de `app.servicios`/`app.servicios_sync_prov`
+(`test_fallo_persiste_ultimo_intento_y_error`, `test_timeout_sin_reintentos_se_clasifica_como_timeout`,
+`test_camino_feliz_refresca_de_verdad_y_persiste_el_exito`,
+`test_priorizar_por_antiguedad_nulos_primero_y_ascendente` — agregados en el round de fix de la
+revisión de calidad, Important 5: el camino feliz real y `_priorizar_por_antiguedad` no tenían
+ninguna cobertura antes) sí necesitan una o más filas reales — se crean con `_crear_servicio`, en el
+namespace reservado `9003xx` (confirmado libre el 2026-09-24 contra `lasfocasdev-postgres`, mismo
+criterio que `tests/test_prov_frescura.py`).
 
-`test_prov_no_configurado_no_encola_nada` es el único caso sin `@requiere_postgres_real` ni
-`@pytest.mark.asyncio`: ejercita `IngresoListener._disparar_refresco_prov`, que es síncrono y corta
-ANTES de tocar la DB o el loop (Step 3 del brief) — mismo criterio que la Parte 1 de
-`test_prov_frescura.py` para lo que no necesita Postgres.
+`test_prov_no_configurado_no_encola_nada`, `test_sin_loop_no_encola_y_sin_nota` y
+`test_disparar_refresco_prov_camino_feliz_encola_de_verdad` (agregado en el round de fix, Important
+5) son los únicos casos sin `@requiere_postgres_real` ni `@pytest.mark.asyncio`: los tres ejercitan
+`IngresoListener._disparar_refresco_prov`, que es síncrono y no toca la DB — mismo criterio que la
+Parte 1 de `test_prov_frescura.py` para lo que no necesita Postgres.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from unittest.mock import MagicMock
 
@@ -56,7 +61,7 @@ from core.services.prov.config import ProvConfig, ProvConfigError
 from db.session import SessionLocal, async_engine
 from tests.soporte_postgres_real import requiere_postgres_real
 
-_NUMEROS_DE_TEST = ("900310", "900311")
+_NUMEROS_DE_TEST = ("900310", "900311", "900312", "900313", "900314")
 
 # Motivo (mismo que `tests/test_prov_frescura.py`/`tests/test_prov_ingesta.py`): `pytest-asyncio`
 # crea un event loop NUEVO por cada test async, pero `refresco_prov.AsyncSessionLocal` es el
@@ -232,6 +237,44 @@ async def test_fallo_puntual_no_aborta_el_resto(monkeypatch):
     assert "no encontrado en PROV" in texto
 
 
+# ── Important 1 de la revisión de calidad: una excepción de nivel superior no puede desaparecer ─
+
+
+@requiere_postgres_real
+@pytest.mark.asyncio
+async def test_error_no_manejado_del_lote_se_loguea_y_avisa(monkeypatch):
+    """Antes de este fix, el `try` de `refrescar_servicios_vencidos` sólo tenía `finally` — una
+    excepción de cualquier punto del lote (acá se simula en `_priorizar_por_antiguedad`, el
+    ejemplo real del hallazgo es Postgres caído/pool agotado) escapaba al
+    `concurrent.futures.Future` que descarta `run_coroutine_threadsafe` en el listener: ni un
+    segundo mensaje, ni una línea de log. Después del fix, se loguea `evento=error_no_manejado` Y
+    se postea un segundo mensaje corto de error — nunca desaparece en silencio."""
+    monkeypatch.setattr(refresco_prov, "get_prov_client", lambda: _ClientePROVFalso())
+
+    async def _rompe(servicios: list[ServicioUnico]) -> list[ServicioUnico]:
+        raise RuntimeError("Postgres caído (simulado)")
+
+    monkeypatch.setattr(refresco_prov, "_priorizar_por_antiguedad", _rompe)
+
+    servicio = _servicio_unico(-900_151, "ERRINT")
+    cable_n_id = -5_900_009
+    client_mock = MagicMock()
+    await refresco_prov.refrescar_servicios_vencidos(
+        cable_n_id=cable_n_id,
+        servicios=[servicio],
+        client=client_mock,
+        channel="C1",
+        thread_ts="1.1",
+    )
+
+    client_mock.chat_postMessage.assert_called_once()
+    texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+    assert "error interno inesperado" in texto
+    # El candado se liberó igual (el `finally` externo sigue corriendo) — un segundo intento para
+    # el mismo cable no queda bloqueado para siempre por este error.
+    assert cable_n_id not in refresco_prov._cables_en_refresco
+
+
 # ── Caso obligatorio: PROV no configurado no encola nada ─────────────────────
 
 
@@ -273,6 +316,31 @@ def test_sin_loop_no_encola_y_sin_nota(monkeypatch):
     espia_encolar.assert_not_called()
 
 
+def test_disparar_refresco_prov_excepcion_generica_no_rompe_el_handler(monkeypatch):
+    """Important 2 de la revisión de calidad: antes de este fix, `_disparar_refresco_prov` sólo
+    blindaba `ProvConfigError` — cualquier otra excepción (acá se simula un `RuntimeError`
+    genérico; el caso real del hallazgo es `httpx.InvalidURL` con `PROV_BASE_URL` malformado, o
+    `RuntimeError: Event loop is closed` durante el shutdown del worker) subía sin blindar hasta el
+    `except Exception` del handler (`_handle_servicios_cable`/`_handle_servicios_buffer`), que
+    entonces no posteaba NI SIQUIERA el primer mensaje con el dato Cromo — justo lo que el brief
+    pide evitar. Después del fix, cualquier excepción devuelve `(False, nota)` sin propagar."""
+    listener = listener_module.IngresoListener(bot_token="xoxb-test", app_token="xapp-test", loop=MagicMock())
+
+    def _romper_feo() -> Any:
+        raise RuntimeError("Event loop is closed (simulado)")
+
+    monkeypatch.setattr(listener_module, "get_prov_client", _romper_feo)
+    espia_encolar = MagicMock()
+    monkeypatch.setattr(listener_module.asyncio, "run_coroutine_threadsafe", espia_encolar)
+
+    servicios = [_servicio_unico(-1, "X")]
+    refrescando, nota = listener._disparar_refresco_prov(123, servicios, MagicMock(), "C1", "1.1")
+
+    assert refrescando is False
+    assert nota is not None and "ver logs" in nota
+    espia_encolar.assert_not_called()
+
+
 # ── Caso obligatorio: el candado por cable evita el refresco duplicado ───────
 
 
@@ -296,11 +364,20 @@ async def test_candado_por_cable_evita_refresco_duplicado(monkeypatch):
         ),
     )
 
-    # Sólo UN lote se ejecutó de verdad — la segunda invocación concurrente para el mismo cable se
-    # saltea entera (ni llamadas a PROV ni un segundo mensaje redundante).
+    # Sólo UN lote se ejecutó de verdad contra PROV — la segunda invocación concurrente para el
+    # mismo cable se saltea el lote entero (ni una sola llamada a PROV extra, ni un segundo lote
+    # redundante).
     assert len(cliente_falso.llamadas) == 2
-    total_mensajes = client_mock_1.chat_postMessage.call_count + client_mock_2.chat_postMessage.call_count
-    assert total_mensajes == 1
+    # Pero SÍ hay dos mensajes en total (Important 4 de la revisión de calidad): uno es el
+    # resultado real del lote que sí corrió, el otro es el aviso corto al segundo hilo de que ya
+    # hay un refresco en curso — sin este segundo mensaje, el segundo técnico se queda esperando
+    # indefinidamente un resultado que se postea en el hilo del primero.
+    mensajes_1 = [c.kwargs["text"] for c in client_mock_1.chat_postMessage.call_args_list]
+    mensajes_2 = [c.kwargs["text"] for c in client_mock_2.chat_postMessage.call_args_list]
+    todos_los_mensajes = mensajes_1 + mensajes_2
+    assert len(todos_los_mensajes) == 2
+    assert sum("refresco PROV en curso" in texto for texto in todos_los_mensajes) == 1
+    assert sum("Refresco PROV completado" in texto for texto in todos_los_mensajes) == 1
 
 
 # ── Caso obligatorio: el fallo persiste ultimo_intento/ultimo_error ──────────
@@ -338,10 +415,10 @@ async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servi
         ).one()
 
     ultima_ok, ultimo_intento, ultimo_error, nro_consultado = fila
-    # Centinela de "nunca sincronizado con éxito" (ver docstring de refresco_prov.py) — NO es un
-    # éxito real, pero satisface el NOT NULL de la columna y deja al servicio vencido para siempre
-    # hasta que un éxito real la actualice.
-    assert ultima_ok == refresco_prov._EPOCA_NUNCA_SINCRONIZADO
+    # NULL, no un centinela (Important 3 de la revisión de calidad — la columna es nullable desde
+    # la migración `20260923_03`): "nunca sincronizado con éxito" es exactamente lo que espera la
+    # consulta de frescura (`IS NULL OR ... < corte`), sin necesidad de un segundo encoding.
+    assert ultima_ok is None
     assert antes <= ultimo_intento <= despues
     assert ultimo_error is not None and "PROV respondió 404" in ultimo_error
     assert nro_consultado == numero
@@ -349,6 +426,153 @@ async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servi
     texto = client_mock.chat_postMessage.call_args.kwargs["text"]
     assert numero in texto
     assert "PROV respondió 404" in texto
+
+
+# ── Important 5 de la revisión de calidad: el camino feliz tenía cobertura CERO ──────────────
+#
+# Los 6 tests de arriba que llegan a `_refrescar_un_servicio` usan PKs negativos, así que
+# `select(Servicio)` nunca encuentra fila y salen por el early-return de la línea ~239 ("se borró
+# entre medio"), sin ejecutar nunca `ingerir_contexto_prov` ni el `commit` real. Los dos tests con
+# fila real (`test_fallo_persiste_ultimo_intento_y_error`,
+# `test_timeout_sin_reintentos_se_clasifica_como_timeout`) van ambos por el camino de FALLO. El
+# test de acá abajo es el único que ejercita de punta a punta el propósito entero de la tarea:
+# refrescar de verdad contra PROV y persistir el éxito.
+
+
+@requiere_postgres_real
+@pytest.mark.asyncio
+async def test_camino_feliz_refresca_de_verdad_y_persiste_el_exito(monkeypatch, _limpiar_servicios_de_test):
+    numero = "900312"
+    pk = _crear_servicio(numero)
+    servicio = _servicio_unico(pk, numero)
+
+    # Mismo patrón de contexto mínimo que `tests/test_prov_ingesta.py::_contexto_minimo` — ya
+    # probado ahí contra `ingerir_contexto_prov` real.
+    contexto = {
+        "id_servicio": "EWS",
+        "nro_servicio": numero,
+        "nro_servicio_original": numero,
+        "estado_comercial": "INSTALADO",
+        "Descripcion": "CLIENTE REFRESCO PROV FELIZ",
+    }
+    cliente_falso = _ClientePROVFalso(respuestas={numero: contexto})
+    monkeypatch.setattr(refresco_prov, "get_prov_client", lambda: cliente_falso)
+
+    antes = datetime.now(timezone.utc)
+    client_mock = MagicMock()
+    await refresco_prov.refrescar_servicios_vencidos(
+        cable_n_id=-5_900_008,
+        servicios=[servicio],
+        client=client_mock,
+        channel="C1",
+        thread_ts="1.1",
+    )
+    despues = datetime.now(timezone.utc)
+
+    # Se llamó de verdad a PROV (no el early-return de "se borró entre medio").
+    assert cliente_falso.llamadas == [numero]
+
+    with SessionLocal() as session:
+        fila_servicio = session.execute(
+            text("SELECT nombre_cliente, origen_datos FROM app.servicios WHERE id = :pk"),
+            {"pk": pk},
+        ).one()
+        fila_sync = session.execute(
+            text(
+                "SELECT ultima_sincronizacion_ok, ultimo_error, nro_servicio_consultado "
+                "FROM app.servicios_sync_prov WHERE servicio_id = :pk"
+            ),
+            {"pk": pk},
+        ).one()
+
+    # El Servicio quedó efectivamente actualizado con el contexto de PROV — no sólo "se reportó
+    # como éxito", el `ingerir_contexto_prov` + `commit` reales corrieron.
+    assert fila_servicio.nombre_cliente == "CLIENTE REFRESCO PROV FELIZ"
+    assert fila_servicio.origen_datos == "INGEST_PROV"
+
+    ultima_ok, ultimo_error, nro_consultado = fila_sync
+    assert ultima_ok is not None
+    assert antes <= ultima_ok <= despues  # sincronización real, nunca el NULL del camino de fallo
+    assert ultimo_error is None
+    assert nro_consultado == numero
+
+    texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+    assert numero in texto
+    assert "actualizado" in texto
+
+
+@requiere_postgres_real
+@pytest.mark.asyncio
+async def test_priorizar_por_antiguedad_nulos_primero_y_ascendente(_limpiar_servicios_de_test):
+    """`_priorizar_por_antiguedad` no tenía ningún test propio — sólo se ejercitaba indirecto a
+    través de `refrescar_servicios_vencidos` con servicios que nunca tenían fila previa (todos
+    "nulls"). Este test verifica las dos mitades del orden: nulls (nunca intentado) primero, y
+    entre los ya intentados, ascendente por `ultimo_intento` (el intentado hace más tiempo
+    primero)."""
+    numero_viejo = "900313"  # último intento hace 10h -> más prioridad que el reciente
+    numero_reciente = "900314"  # último intento hace 1h -> menos prioridad que el viejo
+    pk_viejo = _crear_servicio(numero_viejo)
+    pk_reciente = _crear_servicio(numero_reciente)
+
+    ahora = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        for pk, intento in (
+            (pk_viejo, ahora - timedelta(hours=10)),
+            (pk_reciente, ahora - timedelta(hours=1)),
+        ):
+            session.execute(
+                text(
+                    "INSERT INTO app.servicios_sync_prov "
+                    "(servicio_id, ultima_sincronizacion_ok, ultimo_intento, ultimo_error, "
+                    " nro_servicio_consultado, created_at, updated_at) "
+                    "VALUES (:pk, NULL, :intento, 'fallo de prueba', 'x', :ahora, :ahora)"
+                ),
+                {"pk": pk, "intento": intento, "ahora": ahora},
+            )
+        session.commit()
+
+    nunca_intentado = _servicio_unico(-900_141, "NUNCA")
+    intento_viejo = _servicio_unico(pk_viejo, numero_viejo)
+    intento_reciente = _servicio_unico(pk_reciente, numero_reciente)
+
+    # Orden de entrada deliberadamente mezclado — si `_priorizar_por_antiguedad` no ordenara nada,
+    # este orden de entrada ya "pasaría" la aserción por casualidad para el primer elemento.
+    ordenados = await refresco_prov._priorizar_por_antiguedad(
+        [intento_reciente, nunca_intentado, intento_viejo]
+    )
+
+    assert [s.servicio_id_externo for s in ordenados] == ["NUNCA", numero_viejo, numero_reciente]
+
+
+def test_disparar_refresco_prov_camino_feliz_encola_de_verdad(monkeypatch):
+    """Complementa `test_prov_no_configurado_no_encola_nada`/`test_sin_loop_no_encola_y_sin_nota`
+    (los dos caminos donde NO se encola nada): acá hay vencidos, hay loop y PROV está configurado,
+    así que `_disparar_refresco_prov` tiene que devolver `refrescando=True`/`nota=None` Y
+    efectivamente llamar `asyncio.run_coroutine_threadsafe` con la corrutina real y el loop del
+    worker — antes de este test, el camino donde SÍ se encola no tenía ninguna cobertura directa."""
+    loop_falso = MagicMock(name="loop_del_worker")
+    listener = listener_module.IngresoListener(bot_token="xoxb-test", app_token="xapp-test", loop=loop_falso)
+
+    cliente_falso = object()
+    monkeypatch.setattr(listener_module, "get_prov_client", lambda: cliente_falso)
+
+    corrutina_falsa = MagicMock(name="corrutina_refresco")
+    espia_refrescar = MagicMock(return_value=corrutina_falsa)
+    monkeypatch.setattr(listener_module, "refrescar_servicios_vencidos", espia_refrescar)
+
+    espia_encolar = MagicMock()
+    monkeypatch.setattr(listener_module.asyncio, "run_coroutine_threadsafe", espia_encolar)
+
+    servicios = [_servicio_unico(-1, "X")]
+    client_mock = MagicMock()
+    refrescando, nota = listener._disparar_refresco_prov(123, servicios, client_mock, "C1", "1.1")
+
+    assert refrescando is True
+    assert nota is None
+    espia_refrescar.assert_called_once_with(
+        cable_n_id=123, servicios=servicios, client=client_mock, channel="C1", thread_ts="1.1"
+    )
+    espia_encolar.assert_called_once_with(corrutina_falsa, loop_falso)
 
 
 # ── Bonus: cliente PROV real (httpx.MockTransport) — max_reintentos=0 y motivo "timeout" ─────

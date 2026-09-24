@@ -34,10 +34,15 @@ Tasks 8 y 10 para distinguir qué IDs de servicio están "validados contra PROV"
   - `servicio_id` (`INTEGER NOT NULL`, FK a `app.servicios.id` `ON DELETE CASCADE`, `UNIQUE`): una
     fila por Servicio — nunca un historial de intentos, sólo el estado vigente. `CASCADE` porque el
     estado de sincronización de un Servicio borrado no tiene ningún sentido por sí solo.
-  - `ultima_sincronizacion_ok` (`TIMESTAMPTZ NOT NULL`): momento del último refresco EXITOSO contra
-    PROV. `NOT NULL` porque el único punto de escritura de esta migración (el upsert al final de
-    `ingerir_contexto_prov`) sólo corre cuando el contexto de PROV ya fue validado como éxito por
-    `ProvClient` — una fila de esta tabla nace siempre de un intento exitoso.
+  - `ultima_sincronizacion_ok` (`TIMESTAMPTZ NOT NULL` en esta migración): momento del último
+    refresco EXITOSO contra PROV. `NOT NULL` porque, al momento de esta migración, el único punto
+    de escritura (el upsert al final de `ingerir_contexto_prov`) sólo corre cuando el contexto de
+    PROV ya fue validado como éxito por `ProvClient` — una fila de esta tabla nacía siempre de un
+    intento exitoso. **Dejó de ser cierto en la Task 9** (mismo plan, 2026-09-23): el comando de
+    Slack agrega un segundo camino de escritura para el intento FALLIDO
+    (`modules/slack_baneo_notifier/refresco_prov.py::_persistir_intento_fallido`), y la migración
+    `20260923_03` revierte este `NOT NULL` en consecuencia — ver esa migración y el docstring de
+    `ServicioSyncProv` (`db/models/infra.py`) para el estado vigente.
   - `ultimo_intento` (`TIMESTAMPTZ NULL`): momento del último intento, exitoso o no. Nullable a
     propósito: el embudo actual siempre lo completa junto con `ultima_sincronizacion_ok`, pero deja
     la puerta abierta a que un futuro camino de fallo lo actualice solo, sin una sincronización

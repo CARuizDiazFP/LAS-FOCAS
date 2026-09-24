@@ -581,19 +581,27 @@ class ServicioSyncProv(Base):
     *fallo* de un intento (`ultimo_error`) es una preocupación operativa, no un atributo del
     Servicio en sí.
 
-    Se escribe en un único embudo: al final de `ingerir_contexto_prov`, que es el único lugar por el
-    que pasan los tres consumidores de PROV (endpoint on-demand `POST /servicios/prov/refrescar`,
-    el backfill masivo `scripts/servicios_backfill_prov.py` y, a partir de la Task 9, el comando de
-    Slack). `ingerir_contexto_prov` sólo se llama con un `contexto_raw` ya validado como éxito por
-    `ProvClient` (nunca con una falla) — por eso `ultima_sincronizacion_ok` es `NOT NULL`: toda fila
-    de esta tabla nace de un intento exitoso, nunca de uno fallido.
+    Se escribe en DOS embudos desde la Task 9 (revisión de calidad, Important 3 — este docstring
+    decía antes "único embudo" y "toda fila nace de un intento exitoso"; ninguna de las dos cosas es
+    cierta desde que existe el camino de fallo): el camino de ÉXITO sigue siendo exclusivo de
+    `ingerir_contexto_prov`, que es el único lugar por el que pasan los tres consumidores de PROV
+    (endpoint on-demand `POST /servicios/prov/refrescar`, el backfill masivo
+    `scripts/servicios_backfill_prov.py` y, a partir de la Task 9, el comando de Slack) y sólo se
+    llama con un `contexto_raw` ya validado como éxito por `ProvClient`; el camino de FALLO es
+    `modules/slack_baneo_notifier/refresco_prov.py::_persistir_intento_fallido` (sólo desde el
+    comando de Slack), que persiste `ultimo_intento`/`ultimo_error` sin tocar
+    `ultima_sincronizacion_ok` de un éxito previo — por eso esa columna dejó de ser `NOT NULL`
+    (migración `20260923_03`, revierte el `NOT NULL` de `20260923_02`): `NULL` ya era el encoding
+    canónico de "nunca sincronizó con éxito" que espera la consulta de frescura
+    (`core/services/prov/frescura.py`: `IS NULL OR ... < corte`), y una fila puede nacer hoy de un
+    intento fallido sin tener nunca un valor real para esa columna.
 
     `ultimo_intento`/`ultimo_error`/`nro_servicio_consultado` quedan nullable a propósito, aunque el
-    embudo actual (Task 7) siempre los completa junto con `ultima_sincronizacion_ok`: dejan la puerta
-    abierta a que un futuro camino de *fallo* (fuera de alcance de esta tarea) actualice sólo
-    `ultimo_intento`/`ultimo_error` de una fila ya existente sin tocar la fecha de la última
-    sincronización que sí funcionó — la semántica de "última vez que se intentó" y "última vez que
-    salió bien" son preguntas distintas y no deben pisarse una a la otra.
+    embudo de éxito (Task 7) siempre los completa junto con `ultima_sincronizacion_ok`: dejan la
+    puerta abierta a que el camino de *fallo* (Task 9) actualice sólo `ultimo_intento`/`ultimo_error`
+    de una fila ya existente sin tocar la fecha de la última sincronización que sí funcionó — la
+    semántica de "última vez que se intentó" y "última vez que salió bien" son preguntas distintas y
+    no deben pisarse una a la otra.
     """
 
     __tablename__ = "servicios_sync_prov"
@@ -607,7 +615,10 @@ class ServicioSyncProv(Base):
         unique=True,
         index=True,
     )
-    ultima_sincronizacion_ok = Column(DateTime(timezone=True), nullable=False)
+    # Nullable desde `20260923_03` (revierte el `NOT NULL` de `20260923_02`) — ver "Se escribe en
+    # DOS embudos" arriba. `NULL` = "nunca sincronizó con éxito", mismo encoding que ya esperaba
+    # `frescura.py` antes de este cambio.
+    ultima_sincronizacion_ok = Column(DateTime(timezone=True), nullable=True)
     ultimo_intento = Column(DateTime(timezone=True), nullable=True)
     ultimo_error = Column(Text, nullable=True)
     nro_servicio_consultado = Column(String(64), nullable=True)
