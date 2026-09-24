@@ -23,6 +23,7 @@ from core.services.ingreso_correccion_service import (
     RESULTADO_CAMARA_AMBIGUA,
     RESULTADO_CAMARA_NO_ENCONTRADA,
     RESULTADO_EGRESO_ANTERIOR_AL_INGRESO,
+    RESULTADO_ERROR_INTERNO,
     RESULTADO_HILO_SIN_FORMULARIO,
     RESULTADO_INGRESO_NO_ENCONTRADO,
     RESULTADO_INGRESO_YA_CERRADO,
@@ -38,6 +39,7 @@ from core.services.ingreso_correccion_service import (
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
 from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+from tests.test_ingreso_service import _assert_filtro_igualdad, _assert_filtro_null_safe
 
 _MODULO = "core.services.ingreso_correccion_service"
 
@@ -397,6 +399,41 @@ class TestCascadaDelHilo:
         assert "Bot 2 Cra Mitre 302" in resultado.respuesta
         assert _auditoria(session).camara_texto_solicitado == CAMARA_TEXTO_DEL_HILO
 
+    def test_dos_ingresos_de_la_misma_camara_en_el_hilo_no_es_ambigua_cae_en_varios_abiertos(
+        self,
+    ) -> None:
+        """`Forzar ingreso` no tiene guard contra la repetición (decisión de producto deliberada:
+        dos técnicos en la misma cámara es legítimo). Dos ejecuciones en el mismo hilo dejan dos
+        filas `Ingreso` de la MISMA cámara con el mismo `thread_ts` — eso no es una cámara ambigua,
+        es una sola cámara con dos ingresos abiertos, y el `Forzar egreso` siguiente debe
+        resolverla y caer en `VARIOS_INGRESOS_ABIERTOS` (Step 4), nunca en `CAMARA_AMBIGUA` con el
+        mismo nombre listado dos veces.
+
+        Como las dos filas del hilo son de tipo Ingreso, forzar un Egreso sin fecha exige fecha
+        explícita por la regla del momento implícito (Step 3, ortogonal a este bug) — se simula acá
+        la reejecución con `momento_explicito` (Task 6) para aislar exactamente el punto que este
+        test verifica: la resolución de cámara y candidatos. La cámara se resuelve ANTES que el
+        momento en el código real, así que el bug (`CAMARA_AMBIGUA`) se dispara igual si no está
+        arreglado, con o sin `momento_explicito` — lo confirma la mutación de abajo."""
+        camara = _camara()
+        ingreso_a = _ingreso(
+            101, camara=camara, fecha_inicio=datetime(2026, 9, 22, 9, 0, tzinfo=timezone.utc)
+        )
+        ingreso_b = _ingreso(
+            102, camara=camara, fecha_inicio=datetime(2026, 9, 22, 10, 0, tzinfo=timezone.utc)
+        )
+        session = _session(ingresos_hilo=[ingreso_a, ingreso_b], candidatos=[ingreso_a, ingreso_b])
+
+        with _entorno():
+            resultado = _ejecutar(
+                "Forzar egreso", session, _client(), momento_explicito=MOMENTO_EXPLICITO
+            )
+
+        assert resultado.resultado == RESULTADO_VARIOS_INGRESOS_ABIERTOS
+        assert "#101" in resultado.respuesta and "#102" in resultado.respuesta
+        assert _auditoria(session).camara_texto_solicitado == CAMARA_TEXTO_DEL_HILO
+        assert _ingresos_escritos(session) == []
+
 
 # ── Step 3: las cuatro filas de la tabla del momento implícito ──────────────────────────────────
 
@@ -744,6 +781,81 @@ class TestResolucionDelEgresoSinFallbackImplicito:
         assert resultado.resultado == RESULTADO_OK_EGRESO_CERRADO
         assert abierto.fecha_fin == MOMENTO_EXPLICITO
 
+    def test_bare_con_momento_explicito_y_cero_candidatos_no_asienta_huerfana(self) -> None:
+        """Mitad del guard `deliberada` (`cmd.camara_texto is not None and momento.fuente ==
+        FUENTE_MOMENTO_EXPLICITO`) que no tenía cobertura propia: sólo la forma con cámara Y fecha
+        explícitas puede asentar de cero. Se alcanza en producción por el flujo de la Task 6: bare
+        `Forzar egreso` en un hilo de Ingreso → `PENDIENTE_FECHA` → el operador contesta sólo
+        `DD-MM-AAAA HH:MM` → re-ejecución con el `comando_crudo` bare guardado y
+        `fuente="explicito"` — si mientras tanto alguien más ya cerró el ingreso, quedan 0
+        candidatos. Sacar la mitad `cmd.camara_texto is not None` del guard crea acá una fila
+        EGRESO huérfana con el resto de la suite en verde."""
+        camara = _camara()
+        session = _session(
+            ingresos_hilo=[_ingreso(camara=camara, fecha_inicio=MOMENTO_HILO, thread_ts=THREAD_TS)],
+            candidatos=[],
+        )
+        with _entorno(), patch(f"{_MODULO}.registrar_movimiento_ingreso") as mock_registrar:
+            resultado = _ejecutar(
+                "Forzar egreso", session, _client(), momento_explicito=MOMENTO_EXPLICITO
+            )
+
+        assert resultado.resultado == RESULTADO_SIN_INGRESO_ABIERTO
+        mock_registrar.assert_not_called()
+        assert _ingresos_escritos(session) == []
+        assert _auditoria(session).fuente_momento == FUENTE_MOMENTO_EXPLICITO
+
+
+# ── Filtros SQL (Step 1 y Step 4): `_QueryStub` ignora el WHERE, hay que asertarlo a mano ────────
+
+
+class TestFiltrosSQLDeIngresosAbiertos:
+    """`_QueryStub.filter` guarda los filtros pero el stub devuelve las listas programadas
+    ignorando el `WHERE` por completo — sin asertar la EXPRESIÓN que llega a `.filter()`, romper
+    cualquiera de estos filtros no hace fallar ningún test funcional. Mismo idioma que
+    `test_ingreso_service.py` (`_assert_filtro_null_safe`/`_assert_filtro_igualdad`), que ya existe
+    para exactamente este propósito."""
+
+    def _filtros_planos(self, session: MagicMock) -> list:
+        # `session.query(Ingreso)` devuelve el MISMO `_QueryStub` que ya usó el código bajo prueba
+        # (está indexado por modelo en `_session`), así que esto no dispara ninguna consulta nueva.
+        stub = session.query(Ingreso)
+        return [expr for llamada in stub.filtros for expr in llamada]
+
+    def test_ingresos_abiertos_filtra_camara_id_tipo_ingreso_y_fecha_fin_null(self) -> None:
+        """El filtro que más importa: sin `tipo == INGRESO`, un `INTENTO_BLOQUEADO` (que también
+        tiene `fecha_fin IS NULL`) entraría al conjunto de candidatos y se "cerraría" como si fuera
+        un ingreso real."""
+        camara = _camara()
+        abierto = _ingreso(
+            77, camara=camara, fecha_inicio=datetime(2026, 9, 22, 9, 0, tzinfo=timezone.utc)
+        )
+        session = _session(
+            ingresos_hilo=[
+                _ingreso(5, camara=camara, tipo=IngresoTipo.EGRESO, fecha_fin=MOMENTO_HILO)
+            ],
+            candidatos=[abierto],
+        )
+        with _entorno(busqueda=_resultado_busqueda(camara)):
+            _ejecutar("Forzar egreso Cra Mitre 302 CF", session, _client())
+
+        filtros = self._filtros_planos(session)
+        _assert_filtro_igualdad(filtros, "camara_id", camara.id)
+        _assert_filtro_igualdad(filtros, "tipo", IngresoTipo.INGRESO)
+        _assert_filtro_null_safe(filtros, "fecha_fin", None)
+
+    def test_nivel_1_de_la_cascada_filtra_por_thread_ts_exacto(self) -> None:
+        camara = _camara()
+        session = _session(
+            ingresos_hilo=[_ingreso(camara=camara, fecha_inicio=MOMENTO_HILO, thread_ts=THREAD_TS)],
+            candidatos=[],
+        )
+        with _entorno(busqueda=_resultado_busqueda(camara)):
+            _ejecutar("Forzar ingreso Cra Mitre 302 CF", session, _client())
+
+        filtros = self._filtros_planos(session)
+        _assert_filtro_igualdad(filtros, "thread_ts", THREAD_TS)
+
 
 # ── Step 2 y Step 5: técnico, baneo y marcado del caso pendiente ────────────────────────────────
 
@@ -848,6 +960,33 @@ class TestForzarIngreso:
             _ejecutar("Forzar ingreso Cra Mitre 302 CF", session, _client())
 
         assert caso.ingreso_id == 999
+
+
+# ── Step 5: el catch-all ERROR_INTERNO también audita, con la sesión ya rollbackeada ─────────────
+
+
+class TestErrorInterno:
+    def test_excepcion_inesperada_hace_rollback_y_audita_error_interno(self) -> None:
+        """`ERROR_INTERNO` es el catch-all que sostiene la garantía entera de "auditoría en todos
+        los caminos": cualquier excepción inesperada durante el procesamiento (acá, la búsqueda de
+        cámara reventando con algo que no es `AmbiguousSearchError`) tiene que dejar la sesión
+        rollbackeada ANTES de que `_finalizar` intente escribir su propia fila, y esa fila tiene
+        que quedar con el resultado y el detalle del error."""
+        session = _session()
+        with _entorno(error_busqueda=RuntimeError("conexión a Cromo caída")):
+            resultado = _ejecutar(
+                "Forzar ingreso Cra Mitre 302 CF 20-09-2026 10:00", session, _client()
+            )
+
+        assert resultado.resultado == RESULTADO_ERROR_INTERNO
+        assert "error interno" in resultado.respuesta.lower()
+        session.rollback.assert_called_once()
+        fila = _auditoria(session)
+        assert fila.resultado == RESULTADO_ERROR_INTERNO
+        assert "RuntimeError" in fila.error_detalle
+        assert "conexión a Cromo caída" in fila.error_detalle
+        assert fila.camara_texto_solicitado == CAMARA_TEXTO_NO_PARSEADO
+        assert _ingresos_escritos(session) == []
 
 
 # ── Step 5: auditoría en TODAS las ramas ────────────────────────────────────────────────────────

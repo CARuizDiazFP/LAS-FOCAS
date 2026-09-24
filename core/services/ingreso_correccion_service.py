@@ -191,8 +191,11 @@ class ContextoHilo:
 
     `nivel` es `None` cuando ningún nivel respondió (hilo histórico sin filas y sin scope de
     `conversations.replies`, o comando enviado fuera de un hilo). `camaras_del_hilo` sólo se puebla
-    cuando el nivel 1 encontró **varias** filas `Ingreso` para el mismo hilo (mensaje multi-botella):
-    ahí la cámara del hilo es ambigua y las formas implícitas no pueden adivinar cuál.
+    cuando el nivel 1 encontró filas `Ingreso` de **más de una `camara_id` distinta** para el mismo
+    hilo (mensaje multi-botella): ahí sí la cámara del hilo es ambigua y las formas implícitas no
+    pueden adivinar cuál. Dos o más filas de la MISMA cámara (p. ej. `Forzar ingreso` repetido por
+    error, sin guard porque dos técnicos en la misma cámara es legítimo) no cuentan como ambigüedad
+    de cámara — ahí `camara` ya viene resuelta y Step 4 decide con `VARIOS_INGRESOS_ABIERTOS`.
     """
 
     nivel: int | None = None
@@ -324,7 +327,14 @@ def resolver_contexto_hilo(
     )
     if ingresos:
         primero = ingresos[0]
-        unico = len(ingresos) == 1
+        # Dedup por `camara_id`, no por nombre: dos cámaras/botellas distintas pueden compartir
+        # nombre en este inventario, y "Forzar ingreso" repetido (sin guard — dos técnicos en la
+        # misma cámara es un caso legítimo, decisión de producto deliberada) puede dejar dos filas
+        # Ingreso de la MISMA cámara con el mismo thread_ts. Eso no es una cámara ambigua: es una
+        # sola cámara con varios ingresos abiertos, exactamente el caso que Step 4 resuelve con
+        # `VARIOS_INGRESOS_ABIERTOS` — nunca hay que tratarlo como `CAMARA_AMBIGUA`.
+        camaras_ids = {i.camara_id for i in ingresos}
+        unico = len(camaras_ids) == 1
         return ContextoHilo(
             nivel=1,
             tipo_movimiento=_tipo_formulario_de_fila(primero),
@@ -332,7 +342,9 @@ def resolver_contexto_hilo(
             camara=primero.camara if unico else None,
             botella=primero.cromo_botella if unico else None,
             camaras_del_hilo=(
-                [] if unico else [i.camara.nombre for i in ingresos if i.camara is not None]
+                []
+                if unico
+                else list(dict.fromkeys(i.camara.nombre for i in ingresos if i.camara is not None))
             ),
             tecnico_nombre=primero.tecnico_id,
             caso_sin_match=caso,
