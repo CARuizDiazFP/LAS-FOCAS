@@ -2196,3 +2196,106 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
   estacionario. Documentado en `docs/bot.md` — recordatorio ya vigente (Decisión 3, 2026-09-02): no
   correr el backfill en horario de uso intensivo, el rate limiter no es distribuido y el máximo
   combinado sube a ~10 req/s.
+
+## 2026-09-23 (cont. 2) — Comandos de corrección sin allowlist, tabla nueva de auditoría (no extensión de `IngresoSinMatch`), y sólo dentro de un hilo
+
+- **Contexto:** Task 2/4/5/6 del plan "Corrección de ingresos/servicios". `Forzar ingreso`/
+  `Forzar egreso` mutan datos operativos (el estado `OCUPADA`/`LIBRE` de una cámara depende de
+  `app.ingresos`), así que hicieron falta tres decisiones de control/producto antes de cablearlos,
+  además de la ya registrada arriba (INGRESO real sobre grupo baneado).
+
+- **Decisión 1 (sin allowlist, confirmada con el usuario):** cualquier persona del canal puede
+  ejecutar los dos comandos — no hay lista de usuarios autorizados que los condicione. El control
+  es exclusivamente la auditoría: cada invocación, exitosa o rechazada, escribe una fila en
+  `app.ingresos_correcciones` con el `actor_slack_user_id`/`actor_nombre`, y el bot publica en el
+  mismo hilo quién ejecutó qué (`"Ejecutado por *<nombre>*"` en cada respuesta OK). Consecuencia
+  directa: **un operador puede cerrar el ingreso abierto de otro técnico** — con 2+ ingresos
+  abiertos en la cámara resuelta, el bot los lista (`id`/técnico/`fecha_inicio`) y exige
+  `Forzar egreso #<id>`, nunca adivina cuál cerrar. Alternativa descartada: exigir que sólo el
+  técnico que abrió el ingreso pudiera cerrarlo — bloquearía exactamente el caso de uso real (un
+  supervisor corrigiendo un formulario que otro técnico completó mal o nunca completó).
+
+- **Decisión 2 (tabla nueva `app.ingresos_correcciones`, no extensión de `IngresoSinMatch`):**
+  `IngresoSinMatch` modela "el nombre no matcheó ninguna cámara" — un subconjunto de casos — y sus
+  filas **se mutan** en el tiempo (`resuelto_via_empalme`, `resuelto_via_revalidacion`). Una
+  corrección manual puede ocurrir también sobre un hilo cuyo formulario matcheó perfecto la primera
+  vez (el técnico escribió bien el nombre pero se equivocó de cámara, o el egreso nunca llegó), así
+  que agregar columnas de corrección a `IngresoSinMatch` hubiera dejado sin cubrir ese caso — y
+  mezclado dos semánticas opuestas (un registro que se muta vs. un log append-only) en la misma
+  tabla. La tabla nueva lleva además un trigger de inmutabilidad a nivel de Postgres
+  (`BEFORE UPDATE OR DELETE ... RAISE EXCEPTION`, migración `20260923_01`) — verificado real que
+  rechaza tanto `UPDATE` como `DELETE` sobre una fila insertada a mano. Sin este trigger, "append-
+  only" sería sólo una convención de código de aplicación, violable por cualquier script one-off o
+  acceso directo a la DB.
+
+- **Decisión 3 (los comandos sólo funcionan dentro de un hilo, no como mensaje raíz — pedido
+  explícito del usuario):** `Forzar ingreso`/`Forzar egreso` se procesan únicamente cuando el
+  mensaje es una respuesta dentro de un hilo existente (`modules/slack_baneo_notifier/listener.py`,
+  mismo bloque `if event_thread_ts and event_thread_ts != event_ts:` que ya usan
+  `_procesar_seguimiento_empalme`/`_procesar_revalidacion_ingreso`). Un mensaje raíz nuevo con el
+  mismo texto cae al flujo normal de extracción de nombre de cámara y no se reconoce como comando
+  de corrección. La razón no es técnica: es lo que ancla la auditoría al formulario original — un
+  comando de corrección sin hilo no tendría de dónde resolver la cámara/tipo de movimiento sin que
+  el operador tuviera que repetir toda la información a mano en cada invocación (que sigue siendo
+  posible: la forma con cámara y fecha explícitas funciona igual dentro de cualquier hilo, incluido
+  uno sin ningún formulario reconocible — `RESULTADO_HILO_SIN_FORMULARIO`).
+
+- **Impacto:** `db/alembic/versions/20260923_01_ingresos_correcciones.py`,
+  `db/models/infra.py::IngresoCorreccion`, `core/services/ingreso_correccion_service.py`,
+  `modules/slack_baneo_notifier/listener.py::_procesar_correccion_ingreso`. Ver `docs/bot.md` y
+  `docs/db.md` (sección "Tabla `ingresos_correcciones`").
+
+## 2026-09-23 (cont. 3) — Consulta nueva de servicios únicos por cable/tubo, sin modificar las cuatro existentes
+
+- **Contexto:** Task 1 del plan "Corrección de ingresos/servicios". El Verificador Cromo expone
+  cuatro consultas por-pelo (`servicios_por_cable`/`_por_tubo`/`_por_botella`/`_por_odf`,
+  `core/services/cromo/verificador.py`) que alimentan la tabla del panel web (una fila por pelo,
+  con su propia columna "Pelo"). El comando de Slack nuevo (`Servicios <cable>`) necesita, en
+  cambio, IDs de servicio **únicos** — sin esa forma, un servicio que ocupa varios pelos del mismo
+  cable aparece repetido tantas veces como pelos, lo cual es ruido para un listado de IDs (no para
+  la tabla del Verificador, donde es el dato físico correcto).
+
+- **Decisión: agregar `servicios_unicos_por_cable`/`_por_tubo` (+ gemelas `_sync`) como símbolos
+  nuevos, sin tocar ninguna de las cuatro consultas existentes ni sus dataclasses
+  (`ServicioEncontrado`, compartida con `detalle.py` y la interfaz TS `CromoServicioEncontrado`, 4
+  respuestas distintas la usan).** La razón no es evitar el trabajo de migrar los consumidores
+  existentes: es que **varios pelos por servicio es normal, no un defecto**. Medido real contra
+  `lasfocasdev-postgres`: en el 30,2% de los pares (cable, servicio) el servicio ocupa más de un
+  pelo de ese cable; en botellas trepa al 41,8%. El cable `FO-FL-1003` (n_id 6610203) tiene 141
+  filas pelo↔servicio para 118 IDs distintos. La vista por-pelo del Verificador y la vista por-ID
+  única del comando de Slack son **dos vistas legítimas del mismo dato, con propósitos distintos**
+  — no una vieja y una nueva que la reemplaza. Conviven, y así se documenta en
+  `docs/slack_app_cables.md` (`Servicios <cable> B<N>` vs. `Verificar cable <cable> B<N>`).
+
+- **Detalle técnico de la consulta nueva** (no una decisión de producto, sino la implementación que
+  la sostiene): un `GROUP BY s.id` de una sola pasada con `array_agg(DISTINCT ...)`, sin CTE ni
+  re-join. El índice único de `cromo_servicio_match` es `(pelo_n_id, servicio_numero)`, no
+  `(pelo_n_id, servicio_id)` — hay 85 pares (pelo, servicio) con dos filas, porque la descripción
+  del pelo menciona el ID viejo y el nuevo del mismo servicio (ej. pelo `6848348` → servicio
+  `26179` vía `"108013"` y `"66041"`). Un re-join por un pelo representativo multiplicaría esas
+  filas; el `GROUP BY` de una pasada lo evita por construcción.
+
+- **Impacto:** `core/services/cromo/verificador.py` (símbolos `ServicioUnico`,
+  `ResultadoServiciosUnicos`, `servicios_unicos_por_cable`/`_por_tubo` + gemelas `_sync`), consumido
+  por las Tasks 8 (comando de Slack) y 10 (APIs REST). Cero cambios en las cuatro consultas
+  existentes ni en sus consumidores.
+
+## 2026-09-23/24 — Corrección de la nota "No hecho / pendiente" del 2026-09-02 sobre PROV en producción
+
+La entrada del 2026-09-02 ("Integración con la API PROV...", sección "No hecho / pendiente") dice
+que "sólo dev tiene `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` y el bloque
+`secrets:` de `deploy/docker-compose.dev.yml`". **Esa afirmación está desactualizada** — verificado
+real en esta sesión (2026-09-23): `.secrets/api_prov_user_v1.txt` (10 bytes) y
+`.secrets/api_prov_pass_v1.txt` (26 bytes) **existen y no están vacíos**, y `.env` (el de prod, no
+`.env.dev`) tiene `PROV_BASE_URL=https://prov.metrotel.com.ar/api/v1/ADMEQ`. No se investigó cuándo
+ni por qué se agregaron — la entrada original no se borra (queda como registro histórico de que en
+esa fecha no estaban), sólo se corrige acá que el estado descripto ya no es el actual.
+
+**Lo que sigue sin estar hecho, para no sobre-corregir:** el bloque `secrets:` del servicio `api`/
+`slack_baneo_worker` en `deploy/compose.yml` (prod) — la Task 9 de este plan agregó
+`api_prov_user_v1`/`api_prov_pass_v1` a `secrets:` de `slack_baneo_worker` en **ambos** compose
+(`docker-compose.dev.yml` y `compose.yml`), pero eso es el archivo de código, no un despliegue: el
+compose de prod no se corrió (`lasfocas-*` no se reinició en todo este plan, directiva solo-dev
+vigente). Que los secrets y la variable existan en el filesystem/`.env` de prod no implica que el
+contenedor de prod ya los tenga montados — eso exigiría un `docker compose up` real contra prod, con
+su propia ventana de mantenimiento.

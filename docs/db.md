@@ -379,6 +379,55 @@ Ejecuta la acción elegida por el usuario:
 | `tipo`             | Enum `ingreso_tipo` | `INGRESO` \| `EGRESO` \| `INTENTO_BLOQUEADO` (migración `20260904_01`, default `INGRESO` para todo el histórico previo). Distingue un ingreso/egreso real de un intento bloqueado por baneo del grupo — ambos `INGRESO` "en curso" e `INTENTO_BLOQUEADO` comparten `fecha_fin IS NULL`, así que cualquier query de "ingreso activo" debe filtrar `tipo == 'INGRESO'` explícitamente (ver `camara_estado_service.get_camara_estado_contexto`, `ingreso_service.py` y `protection_service.py::_determinar_estado_restauracion`). |
 | `fecha_inicio`     | DateTime(tz)   | Fecha/hora de inicio. `null` en un Egreso huérfano sin Ingreso previo detectado. |
 | `fecha_fin`        | DateTime(tz)   | Fecha/hora de fin. `null` tanto en un `INGRESO` real "en curso" como en un `INTENTO_BLOQUEADO` (nunca se cierra con un Egreso, por diseño) — no alcanza con mirar sólo esta columna para saber si el movimiento sigue "abierto", hay que mirar `tipo`. |
+| `thread_ts`        | `VARCHAR(32)`, nullable, index (2026-09-23, migración `20260923_01`) | `ts` del hilo de Slack donde se originó el movimiento. Hasta esta migración `app.ingresos` no guardaba nada del hilo — sólo `ingresos_sin_match` lo hacía, y sólo para los casos que no matchearon. Filas anteriores a esta fecha quedan con `NULL`; se resuelven por los niveles 2 y 3 de la cascada de `core/services/ingreso_correccion_service.py::resolver_contexto_hilo` (ver más abajo). En el camino "Egreso" que **cierra** una fila `Ingreso` existente, este campo **no se pisa** — conserva el del ingreso original. |
+| `canal_id`         | `VARCHAR(32)`, nullable (2026-09-23) | Canal de Slack del movimiento. Mismo criterio de no-pisado en el camino de cierre. |
+
+### Tabla `ingresos_correcciones` (2026-09-23) — auditoría append-only de `Forzar ingreso`/`Forzar egreso`
+
+Un registro por cada ejecución de los comandos de corrección manual de Slack (ver `docs/bot.md`,
+sección "Actualización 2026-09-23"), exitosa o no — **incluidos los rechazos**. Tabla nueva y no una
+extensión de `ingresos_sin_match`: esa tabla modela "el nombre no matcheó" (subconjunto de casos) y
+sus filas *se mutan* (`resuelto_via_empalme`/`resuelto_via_revalidacion`); una corrección puede
+ocurrir también sobre un hilo que matcheó perfecto la primera vez — semántica opuesta a la de un log
+inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento completo.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | — |
+| `comando` | `String(32)`, `NOT NULL` | `FORZAR_INGRESO` \| `FORZAR_EGRESO`. `String`, no enum de Postgres — sus valores previstos crecen sin exigir `ALTER TYPE`. |
+| `actor_slack_user_id` | `String(32)`, `NOT NULL` | Quién ejecutó el comando — siempre se conoce, no hay allowlist que lo condicione (ver `docs/decisiones.md`). |
+| `actor_nombre` | `String(255)`, nullable | Nombre resuelto del actor; puede no resolverse, mismo criterio que `Ingreso.tecnico_id`. |
+| `canal_id` | `String(32)`, `NOT NULL` | — |
+| `thread_ts` | `String(32)`, nullable, index | `NULL` sólo si el comando no fue una respuesta en un hilo (en la práctica esto no ocurre: los comandos sólo se procesan dentro de un hilo, ver `docs/decisiones.md`). |
+| `mensaje_ts` | `String(32)`, `NOT NULL` | `ts` del mensaje del comando en sí. |
+| `comando_crudo` | `Text`, `NOT NULL` | Texto íntegro del comando — lo re-lee el flujo de "fecha pendiente" para re-ejecutar sin que el operador retipee todo. |
+| `motivo` | `Text`, nullable | Sin palabra clave obligatoria (decisión de producto) — sólo se captura cuando hay un delimitador natural (después de la fecha, después del `#<id>`). |
+| `camara_texto_solicitado` | `String(512)`, `NOT NULL` | Nunca cadena vacía: `"(del hilo)"` en la forma bare, `"#<id>"` (con el id real) en la forma por id, `"(no parseado)"` si el comando murió en el parser antes de tener nombre de cámara. |
+| `camara_id_resuelta` | FK → `app.camaras.id`, `ON DELETE SET NULL`, nullable, index | — |
+| `cromo_botella_id_resuelta` | BigInteger, FK → `app.cromo_botellas.n_id`, `ON DELETE SET NULL`, nullable, index | — |
+| `momento_solicitado` / `momento_efectivo` | DateTime(tz), nullable | `NULL` en el estado `PENDIENTE_FECHA` — todavía no hay una fecha resuelta. |
+| `fuente_momento` | `String(16)`, nullable | `hilo` \| `explicito`. |
+| `ingreso_id` | FK → `app.ingresos.id`, `ON DELETE SET NULL`, nullable, index | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. |
+| `resultado` | `String(64)`, `NOT NULL` | Uno de 14 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
+| `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
+| `created_at` | DateTime(tz), `NOT NULL`, index | — |
+
+FKs con `ON DELETE SET NULL`: el log de auditoría sobrevive aunque la entidad referenciada se borre
+después — perder la fila de auditoría sería peor que perder sólo el vínculo.
+
+**Trigger de inmutabilidad**: función `app.ingresos_correcciones_bloquear_mutacion()` + trigger
+`trg_ingresos_correcciones_inmutable` (`BEFORE UPDATE OR DELETE ON app.ingresos_correcciones FOR
+EACH ROW`), `RAISE EXCEPTION` ante cualquier intento de modificar o borrar una fila ya escrita — es
+la diferencia entre "inmutable" como promesa de código de aplicación (violable por cualquier acceso
+directo a la DB o script one-off) y garantizado por la DB. Verificado real contra
+`lasfocasdev-postgres`: un `UPDATE`/`DELETE` de prueba sobre una fila insertada a mano dieron `exit
+code 1` con el mensaje de error de la función. El `downgrade()` de la migración `20260923_01`
+dropea trigger y función explícitamente, no sólo la tabla.
+
+Escritor único: `core/services/ingreso_correccion_service.py::procesar_comando_correccion`, cableado
+en `modules/slack_baneo_notifier/listener.py` (nunca `UPDATE`/`DELETE` directo desde ningún otro
+punto). Detalle completo de diseño en
+`docs/superpowers/specs/2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`.
 
 ### Tabla `ingresos_sin_match` (2026-08-11)
 
@@ -1005,10 +1054,13 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260919_02` | `20260919_02_cromo_pon_elementos.py` | Tabla `app.cromo_pon_elementos` — cajas PON (7 clases) y rosetas en una sola tabla discriminadas por `clase`, porque el esquema medido es idéntico en las ocho |
 | `20260919_03` | `20260919_03_cromo_splitters_contenedor.py` | Columnas `cromo_splitters.contenedor_n_id/contenedor_clase` — el 88 % de los splitters cuelga de una caja PON y no de una Botella, así que `botella_n_id` sola no alcanzaba |
 | `20260919_04` | `20260919_04_cromo_cables_clase.py` | Columna `cromo_cables.clase` (backfill a 51) — habilita alojar los cables de bajada (66) sin que la fase de reconciliación los marque como referencias colgadas |
+| `20260923_01` | `20260923_01_ingresos_correcciones.py` | Columnas `ingresos.thread_ts`/`canal_id` + tabla append-only `app.ingresos_correcciones` con trigger de inmutabilidad — soporte de datos de los comandos `Forzar ingreso`/`Forzar egreso` (ver sección "Tabla `ingresos_correcciones`" arriba y `docs/decisiones.md`) |
+| `20260923_02` | `20260923_02_servicios_sync_prov.py` | Tabla `app.servicios_sync_prov` (`ultima_sincronizacion_ok NOT NULL` en esta versión) — última sincronización PROV por Servicio (ver sección "Tabla `servicios_sync_prov`" arriba) |
+| `20260923_03` | `20260923_03_servicios_sync_prov_nullable.py` | `ALTER COLUMN servicios_sync_prov.ultima_sincronizacion_ok DROP NOT NULL` — fix de revisión de la Task 9: el camino de intento FALLIDO necesita persistir sin una sincronización exitosa previa; `NULL` reemplaza al centinela `1970-01-01` que se usó primero (ver `docs/decisiones.md`) |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta
-entrada, que sólo documenta las 2 migraciones de este plan.)*
+entrada.)*
 
 ---
 

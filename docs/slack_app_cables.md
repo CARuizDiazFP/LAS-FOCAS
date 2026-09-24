@@ -4,10 +4,12 @@
 
 # Bot de Slack — Verificación de Cables y Servicios
 
-> **Estado (2026-09-23, Task 8 del plan "Corrección ingresos + Servicios"): agregados los comandos
-> `Servicios <cable>` / `Servicios <cable> B<N>` (IDs de servicio únicos, agrupados por buffer, con
-> marca de frescura PROV) + marcador `🕒` en `Info cable X BN`. Ver sección dedicada más abajo — el
-> resto del documento (escrito para los 3 comandos originales) sigue vigente sin cambios.**
+> **Estado (2026-09-23, Tasks 8-10 del plan "Corrección ingresos + Servicios"): agregados los
+> comandos `Servicios <cable>` / `Servicios <cable> B<N>` (IDs de servicio únicos, agrupados por
+> buffer, con marca de frescura PROV y refresco asíncrono real contra PROV, Task 9) + marcador `🕒`
+> en `Info cable X BN` + las 4 rutas REST equivalentes para la SPA (Task 10). Ver secciones
+> dedicadas más abajo — el resto del documento (escrito para los 3 comandos originales) sigue
+> vigente sin cambios.**
 >
 > **Estado (2026-08-13, corregido 2026-08-25): los 3 comandos IMPLEMENTADOS y desplegados en dev.**
 > **Corrección real (2026-08-25, confirmada por el usuario + verificado con `auth.test` de Slack):**
@@ -203,9 +205,27 @@ B6 (BL): 115907, 121489
 `Servicios <cable> B<N>` es la misma vista acotada a un solo buffer — no necesita la agrupación (el
 buffer ya es conocido), sólo lista los IDs de ese tubo en una línea.
 
-**Sin sufijo "— refrescando…" todavía**: la línea de frescura dice sólo el conteo de vencidos. El
-refresco real contra PROV es la Task 9 del mismo plan — prometerlo acá sin implementarlo le mentiría
-al técnico.
+**Refresco PROV real, en segundo plano (Task 9, 2026-09-23)**: si hay servicios vencidos, el bot
+encola `refrescar_servicios_vencidos` (`modules/slack_baneo_notifier/refresco_prov.py`) vía
+`asyncio.run_coroutine_threadsafe` sobre el loop asyncio que `worker.py::_main_loop` le pasa al
+listener — nunca bloquea el hilo del comando ni la conexión Socket Mode. El primer mensaje (arriba)
+sale de inmediato con la línea `🕒 N con validación PROV vencida — refrescando…`; cuando el lote
+termina (tope de 25 por comando, ordenados por `ultimo_intento` — no por `ultima_sincronizacion_ok`,
+para no dejar fijo en el primer lugar a un servicio que PROV nunca puede resolver —, concurrencia 3,
+deadline global de 120 s), el bot postea un **segundo** `chat_postMessage` en el mismo hilo con qué
+IDs se actualizaron y la lista nominal de los que no, con el motivo de cada uno (no encontrado en
+PROV / 4xx / timeout / se agotó el tiempo del lote). Un candado por `cable_n_id` (de proceso, no
+distribuido) evita que dos personas disparen el mismo lote a la vez — el segundo técnico recibe un
+aviso corto ("ya hay un refresco en curso") en vez de duplicar el trabajo. Si PROV no está
+configurado en el entorno, el primer mensaje ya lo dice y no se encola nada.
+
+**Equivalente REST (Task 10, 2026-09-23)**: las mismas 4 operaciones (resolver cable, servicios
+únicos por cable, por buffer, refrescar PROV on-demand) están expuestas en
+`web/app/main.py` bajo `/api/infra/cromo/cables/...` para la SPA — ver
+`docs/superpowers/specs/2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md` (sección de
+contratos, con ejemplos de request/response) y `docs/db.md`. El POST REST **no comparte** el candado
+por-cable de Slack (limitación conocida, documentada en la spec) — awaitea el lote dentro del propio
+request en vez de postear un segundo mensaje, porque no hay ningún hilo de Slack al que responder.
 
 **Sin truncar**: con la salida acotada a IDs (no al detalle completo de pelo), un cable entero (118
 IDs) entra cómodo en un solo mensaje de Slack (~950 caracteres para el listado de IDs solo, más las

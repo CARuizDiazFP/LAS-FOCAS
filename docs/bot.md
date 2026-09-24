@@ -302,6 +302,30 @@ resolución real en `core/services/ingreso_correccion_service.py`.
   `Forzar egreso #<id>`.
 - **`Forzar ingreso` sobre un grupo hoy baneado registra un INGRESO real**, no un
   `INTENTO_BLOQUEADO` — ver `docs/decisiones.md`, entrada 2026-09-23. La respuesta avisa del baneo.
+- **Los comandos sólo funcionan dentro de un hilo** (una respuesta, nunca un mensaje raíz nuevo) —
+  pedido explícito del usuario: es lo que ancla la auditoría al formulario original. Un
+  `Forzar ingreso/egreso ...` enviado como mensaje suelto cae al flujo normal de extracción de
+  nombre de cámara (que no encuentra nada útil en un texto que empieza con "Forzar") y no se
+  procesa como comando de corrección. Ver `docs/decisiones.md`.
+- **Sin guard contra `Forzar ingreso` repetido**: dos técnicos en la misma cámara es legítimo, así
+  que un guard genérico lo bloquearía. Una doble ejecución por error queda visible en la auditoría
+  (dos filas `OK_INGRESO`) y se corrige con `Forzar egreso #<id>`.
+- **Ventana de carrera conocida en la respuesta de fecha pendiente**: dos respuestas de sólo
+  `DD-MM-AAAA HH:MM` casi simultáneas en el mismo hilo pueden ejecutar el forzado dos veces —
+  verificado empíricamente que `SELECT ... FOR UPDATE` no la cierra (Postgres no re-evalúa el
+  `ORDER BY`/`LIMIT` tras esperar el lock). Ventana angosta, y toda doble ejecución queda detectable
+  en la auditoría append-only. Detalle completo en
+  `docs/superpowers/specs/2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`.
+
+### `Servicios <cable>` / `Servicios <cable> B<N>` — IDs de servicio únicos con frescura PROV
+
+Comando de Slack complementario a los de corrección de ingresos (mismo worker, mismo proceso, otro
+dominio de datos). Documentado en detalle en `docs/slack_app_cables.md` (formato de respuesta,
+agrupación por buffer, refresco PROV asíncrono) — acá sólo el resumen operativo: responde con los
+IDs de servicio **únicos** de un cable (o de un buffer puntual), marca cuántos tienen la
+sincronización PROV vencida y, si hace falta, dispara un refresco en segundo plano que postea un
+segundo mensaje en el mismo hilo al terminar. Depende del mismo backfill PROV que la sección
+siguiente.
 
 ### Sincronización con PROV: tabla de frescura y prerrequisito de backfill (desde 2026-09-23)
 
