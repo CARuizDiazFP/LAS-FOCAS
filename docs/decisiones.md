@@ -2417,3 +2417,22 @@ su propia ventana de mantenimiento.
 - **Impacto:** ningún cambio de orquestación. Cambio ya aplicado: `priorizar_por_antiguedad` y
   `refrescar_un_servicio` (antes privadas) ahora están en `__all__` de
   `modules/slack_baneo_notifier/refresco_prov.py`, con un comentario que apunta a esta entrada.
+
+## 2026-09-25 — Despliegue a producción: código y esquema de `dev`, sin reemplazar datos
+
+- **Contexto:** pedido "alinear prod con dev, recrear contenedores y mergear dev a main". El
+  precedente (2026-09-07) había alineado también los datos (restore de `focas_dev` sobre `lasfocas`).
+- **Decisión:** alinear sólo código (`main` = `7055452`, merge `--no-ff` de `dev` `2d0c59b`) y
+  esquema (12 migraciones, `20260907_01` → `20260923_03`), sin tocar datos.
+- **Por qué:** desde el 2026-09-07 prod acumuló escrituras reales propias que dev no tiene: 142
+  ingresos contra 2, 52 Cámaras BANEADA contra 97 (conjuntos distintos), 26 incidentes. Un restore
+  las habría borrado sin forma de recuperarlas salvo desde backup.
+- **Cómo:** merge con `git commit-tree` sobre el árbol de `dev` (válido sólo porque `main` era
+  ancestro estricto), para no sacar el checkout de control de `dev`. Migración desde el venv del
+  host con `ALEMBIC_URL` armado desde el secret. Procedimiento completo en
+  [docs/despliegue_produccion.md](despliegue_produccion.md), registro en `docs/PR/2026-09-25.md`.
+- **Hallazgo:** primera medición real del problema que motivó `Forzar egreso` (2026-09-24): prod
+  tiene 17 ingresos abiertos, 16 con más de un día.
+- **Corrección de doc:** `docs/mantenimiento_redes_produccion.md` seguía marcando
+  `redis_password_v1` como "pendiente de aplicar", cuando está aplicado desde el 2026-09-07.
+  Re-verificado hoy con los tres checks del propio documento.
