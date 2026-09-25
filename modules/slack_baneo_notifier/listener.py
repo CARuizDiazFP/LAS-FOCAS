@@ -9,8 +9,13 @@ con uno de los tres estados posibles.
 
 Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
 Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
-listener de ingresos, sólo un evento distinto de Slack. Implementados los 3 comandos: "Info cable
-<nombre>", "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (ver `cable_info.py`).
+listener de ingresos, sólo un evento distinto de Slack. Implementados: "Info cable <nombre>",
+"Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>"; desde la Task 8 del plan "Corrección
+ingresos + Servicios" (2026-09-23) también "Servicios <nombre>" y "Servicios <nombre> B<N>" (IDs de
+servicio únicos con marca de frescura PROV, ver `cable_info.py`) — y desde la Task 9 del mismo plan,
+estos dos últimos comandos disparan además un refresco asíncrono contra PROV de los servicios
+vencidos (`modules/slack_baneo_notifier/refresco_prov.py`), encolado en el loop del worker vía
+`asyncio.run_coroutine_threadsafe` para nunca bloquear este thread síncrono de Socket Mode.
 
 Requiere:
   - SLACK_BOT_TOKEN  (xoxb-...)  — ya existente en .env
@@ -18,16 +23,20 @@ Requiere:
   - Scope adicional para app_mention: `app_mentions:read` en la Slack App (verificar en Slack, no
     asumible desde el código)
 
-Se integra en worker.py como un daemon thread independiente.
+Se integra en worker.py como un daemon thread independiente. Desde la Task 9, `worker.py::_main_loop`
+también le pasa el loop asyncio vivo del proceso (`loop=` del constructor, opcional — ver
+`_disparar_refresco_prov`): sin loop (tests, uso standalone) el refresco se saltea en silencio y la
+respuesta queda idéntica a la de la Task 8 (nunca promete un refresco que no va a ocurrir).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from core.services.camara_estado_service import (
@@ -38,8 +47,20 @@ from core.services.camara_estado_service import (
 from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
 from core.services.cromo.detalle import pelos_de_tubo_sync
 from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
-from core.services.cromo.verificador import servicios_por_tubo_sync
+from core.services.cromo.verificador import (
+    ServicioUnico,
+    servicios_por_tubo_sync,
+    servicios_unicos_por_cable_sync,
+    servicios_unicos_por_tubo_sync,
+)
+from core.services.ingreso_correccion_service import (
+    RESULTADO_PENDIENTE_FECHA,
+    procesar_comando_correccion,
+)
 from core.services.ingreso_service import registrar_intento_bloqueado, registrar_movimiento_ingreso
+from core.services.prov.client import get_prov_client
+from core.services.prov.config import ProvConfigError
+from core.services.prov.frescura import servicios_vencidos_sync
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
 from modules.slack_baneo_notifier.cable_info import (
@@ -49,10 +70,14 @@ from modules.slack_baneo_notifier.cable_info import (
     construir_respuesta_info_buffer,
     construir_respuesta_info_cable,
     construir_respuesta_no_encontrado,
+    construir_respuesta_servicios_buffer,
+    construir_respuesta_servicios_cable,
     construir_respuesta_verificar_buffer,
     contar_buffers_cable,
     extraer_comando_cable_buffer,
     extraer_comando_info_cable,
+    extraer_comando_servicios_buffer,
+    extraer_comando_servicios_cable,
     resolver_tubo_por_numero,
 )
 from modules.slack_baneo_notifier.camara_search import (
@@ -63,6 +88,12 @@ from modules.slack_baneo_notifier.camara_search import (
     extraer_tipo_movimiento,
     limpiar_ruido_operativo,
 )
+from modules.slack_baneo_notifier.correccion_ingreso import (
+    MomentoInvalidoError,
+    construir_respuesta_momento_invalido,
+    extraer_momento_solo,
+)
+from modules.slack_baneo_notifier.refresco_prov import refrescar_servicios_vencidos
 from modules.slack_baneo_notifier.slack_user_resolver import resolver_nombre_tecnico
 
 logger = logging.getLogger("slack_baneo_worker.listener")
@@ -93,6 +124,12 @@ _RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IG
 # la frase si aparece como parte de otro texto más largo.
 _RE_REVALIDAR_INGRESO = re.compile(r"^\s*revalidar\s+ingreso\s*$", re.IGNORECASE)
 
+# Ventana de vigencia de una fila `PENDIENTE_FECHA` (`core/services/ingreso_correccion_service.py`,
+# Task 5) para que una respuesta de seguimiento con sólo `DD-MM-AAAA HH:MM` se interprete como la
+# fecha que el bot pidió — ver `_pendiente_fecha_vigente`. Pasada la ventana, la fecha suelta no se
+# interpreta (el operador tiene que reenviar el comando completo).
+_VENTANA_PENDIENTE_FECHA = timedelta(minutes=30)
+
 
 @dataclass(slots=True)
 class _ResultadoAccesoCamara:
@@ -107,12 +144,20 @@ class _ResultadoAccesoCamara:
 class IngresoListener:
     """Escucha mensajes de ingreso técnico en un canal Slack y responde en hilo."""
 
-    def __init__(self, bot_token: str, app_token: str) -> None:
+    def __init__(
+        self, bot_token: str, app_token: str, *, loop: Optional[asyncio.AbstractEventLoop] = None
+    ) -> None:
         self._bot_token = bot_token
         self._app_token = app_token
         self._handler: Any = None
         self._thread: threading.Thread | None = None
         self._running = False
+        # Loop asyncio del worker (Task 9) — SIEMPRE kwarg opcional con default `None`, nunca
+        # posicional obligatorio: los tests de las Tasks 4/6/8 (y cualquier uso standalone) siguen
+        # construyendo `IngresoListener(bot_token=..., app_token=...)` sin loop, y deben seguir
+        # funcionando — ver `_disparar_refresco_prov`, que saltea el refresco en silencio si
+        # `self._loop` es `None`.
+        self._loop = loop
 
     # ── Configuración desde DB ───────────────────────────────────────────
 
@@ -197,7 +242,9 @@ class IngresoListener:
         secundario final que nunca condiciona esa respuesta, registra el movimiento de Ingreso/
         Egreso/Intento bloqueado si el mensaje completo del evento (`texto_mensaje` — no
         `nombre_buscado`, que ya viene recortado al nombre de cámara) lo trae — ver
-        `_registrar_movimiento_si_corresponde`.
+        `_registrar_movimiento_si_corresponde`, a quien también se le pasan `thread_ts`/`channel`
+        (Tarea 3, 2026-09-23) para que la fila de `Ingreso` que se registre quede trazable al hilo de
+        Slack que la originó — la Task 5 de este mismo plan la usa para ubicar el mensaje original.
 
         ``texto_mensaje`` es el texto completo del evento de Slack (no recortado como
         `nombre_buscado`) — los campos "Ingreso o Egreso" y "Persona que solicito La Autorizacion"
@@ -244,7 +291,13 @@ class IngresoListener:
 
         resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
         self._registrar_movimiento_si_corresponde(
-            resultado, texto_mensaje, session, client, bloqueado=resultado_acceso.bloqueado
+            resultado,
+            texto_mensaje,
+            session,
+            client,
+            bloqueado=resultado_acceso.bloqueado,
+            thread_ts=thread_ts,
+            canal_id=channel or None,
         )
         return resultado_acceso.texto
 
@@ -257,6 +310,8 @@ class IngresoListener:
         *,
         bloqueado: bool,
         momento: datetime | None = None,
+        thread_ts: str | None = None,
+        canal_id: str | None = None,
     ) -> Any:
         """Escribe Ingreso/Egreso/Intento bloqueado en DB si el mensaje trae el campo 'Ingreso o
         Egreso' parseable. Nunca lanza — cualquier excepción se loguea y se ignora, la respuesta de
@@ -267,6 +322,14 @@ class IngresoListener:
         `momento` (opcional): horario a usar en vez de "ahora" — ver `registrar_movimiento_ingreso`.
         Sólo lo pasa `_procesar_revalidacion_ingreso`; el flujo en vivo normal no lo usa (queda en
         `None`, cada servicio usa `datetime.now(timezone.utc)` como siempre).
+
+        `thread_ts`/`canal_id` (opcionales): hilo y canal de Slack del movimiento — se enhebran tal
+        cual a `registrar_movimiento_ingreso`/`registrar_intento_bloqueado` (Tarea 3, 2026-09-23),
+        que deciden si los escriben o no según si la fila es nueva o cierra una existente (ver
+        docstring de `registrar_movimiento_ingreso`). El caller en vivo (`_construir_respuesta_camara`)
+        pasa el `thread_ts`/`channel` del evento actual; `_procesar_revalidacion_ingreso` pasa los del
+        caso `IngresoSinMatch` que se está revalidando (`caso.thread_ts`/`caso.contexto`), no los del
+        evento "Revalidar ingreso" en sí.
 
         Un movimiento "Ingreso" sobre un grupo bloqueado (`bloqueado=True`, calculado por
         `_evaluar_estado_acceso_camara` vía `get_camara_estado_contexto`) se registra como
@@ -300,6 +363,8 @@ class IngresoListener:
                     botella=resultado.botella,
                     tecnico_nombre=tecnico_nombre,
                     momento=momento,
+                    thread_ts=thread_ts,
+                    canal_id=canal_id,
                 )
             return registrar_movimiento_ingreso(
                 session,
@@ -309,6 +374,8 @@ class IngresoListener:
                 tecnico_nombre=tecnico_nombre,
                 slack_user_id=slack_user_id,
                 momento=momento,
+                thread_ts=thread_ts,
+                canal_id=canal_id,
             )
         except Exception as exc:
             try:
@@ -601,6 +668,8 @@ class IngresoListener:
             client,
             bloqueado=resultado_acceso.bloqueado,
             momento=caso.created_at,
+            thread_ts=caso.thread_ts,
+            canal_id=caso.contexto,
         )
 
         caso.resuelto_via_revalidacion = True
@@ -626,6 +695,185 @@ class IngresoListener:
             channel=channel,
             thread_ts=thread_ts_evento,
             text=respuesta,
+            mrkdwn=True,
+        )
+        return True
+
+    # ── Corrección manual: "Forzar ingreso"/"Forzar egreso" (Task 6) ────────────────────────
+
+    def _procesar_correccion_ingreso(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        actor_slack_user_id: str,
+        mensaje_ts: str,
+    ) -> bool:
+        """Detecta y procesa los comandos `Forzar ingreso`/`Forzar egreso`
+        (`core/services/ingreso_correccion_service.py`, Task 5) como respuesta dentro de un hilo, y
+        el segundo paso del flujo de "fecha pendiente": una respuesta de seguimiento que trae sólo
+        `DD-MM-AAAA HH:MM` cuando el bot ya pidió la fecha explícita (fila `PENDIENTE_FECHA`).
+
+        Devuelve `True` cuando el mensaje fue tratado como corrección (el caller corta, no sigue al
+        flujo normal) y `False` cuando no aplica: ni es un comando completo ni una fecha suelta con
+        un pendiente vigente en este hilo — cualquier otro mensaje del canal.
+
+        Mismo contrato de nunca romper la respuesta por un fallo de DB que
+        `_registrar_movimiento_si_corresponde` (`try/except` con `session.rollback()`): si
+        `procesar_comando_correccion` o el guard de "fecha pendiente" lanzan, se loguea, se sanea la
+        sesión compartida y se responde con un aviso genérico en vez de dejar el hilo sin respuesta
+        o propagar `PendingRollbackError` al resto de `_handle_message`."""
+        try:
+            resultado = procesar_comando_correccion(
+                session,
+                texto=texto,
+                actor_slack_user_id=actor_slack_user_id,
+                canal_id=channel,
+                mensaje_ts=mensaje_ts,
+                thread_ts=thread_ts_evento,
+                client=client,
+            )
+        except Exception as exc:
+            return self._responder_error_correccion(session, client, channel, thread_ts_evento, exc)
+
+        if resultado is not None:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts_evento, text=resultado.respuesta, mrkdwn=True
+            )
+            return True
+
+        # No es un comando completo — ¿es la respuesta de seguimiento del flujo de "fecha
+        # pendiente" (sólo `DD-MM-AAAA HH:MM`)?
+        try:
+            return self._procesar_fecha_pendiente_seguimiento(
+                texto, thread_ts_evento, session, client, channel, actor_slack_user_id, mensaje_ts
+            )
+        except Exception as exc:
+            return self._responder_error_correccion(session, client, channel, thread_ts_evento, exc)
+
+    def _procesar_fecha_pendiente_seguimiento(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        actor_slack_user_id: str,
+        mensaje_ts: str,
+    ) -> bool:
+        """Segundo paso del flujo de "fecha pendiente": el operador respondió en el hilo sólo con
+        `DD-MM-AAAA HH:MM`, en vez de reenviar el comando completo. Reintenta el `comando_crudo`
+        original guardado en la fila `PENDIENTE_FECHA` pasándole la fecha como `momento_explicito` —
+        la tabla `app.ingresos_correcciones` es append-only (trigger que bloquea UPDATE/DELETE), así
+        que esto nunca muta la fila anterior: `procesar_comando_correccion` escribe una fila nueva
+        con la ejecución real.
+
+        Guard (ruling vinculante del coordinador): tiene que existir una fila `PENDIENTE_FECHA`
+        para este `thread_ts` exacto, de menos de 30 minutos, y sin ninguna fila posterior del mismo
+        hilo con un `resultado` terminal (ver `_pendiente_fecha_vigente` — "terminal" es cualquier
+        valor distinto de `PENDIENTE_FECHA`, nunca una allowlist que se desactualice). Si no se
+        cumple, la fecha suelta no se interpreta: puede ser cualquier otro mensaje del canal, o el
+        pendiente ya fue resuelto por una respuesta anterior."""
+        try:
+            momento = extraer_momento_solo(texto)
+        except MomentoInvalidoError as exc:
+            pendiente = self._pendiente_fecha_vigente(session, thread_ts_evento)
+            if pendiente is None:
+                return False
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=construir_respuesta_momento_invalido(exc),
+                mrkdwn=True,
+            )
+            return True
+
+        if momento is None:
+            return False  # No matchea la forma "DD-MM-AAAA HH:MM": cualquier otro mensaje.
+
+        pendiente = self._pendiente_fecha_vigente(session, thread_ts_evento)
+        if pendiente is None:
+            return False  # Sin pendiente vigente — el guard estricto no interpreta la fecha suelta.
+
+        resultado = procesar_comando_correccion(
+            session,
+            texto=pendiente.comando_crudo,
+            actor_slack_user_id=actor_slack_user_id,
+            canal_id=channel,
+            mensaje_ts=mensaje_ts,
+            thread_ts=thread_ts_evento,
+            client=client,
+            momento_explicito=momento,
+        )
+        if resultado is None:
+            # No debería pasar (`comando_crudo` ya matcheó una vez para llegar a PENDIENTE_FECHA),
+            # pero no hay que romper si el parser cambió entre medio — se ignora, no se responde.
+            logger.warning(
+                "comando_crudo de la fila PENDIENTE_FECHA id=%s ya no matchea ningún comando: %r",
+                pendiente.id,
+                pendiente.comando_crudo,
+            )
+            return False
+
+        client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts_evento, text=resultado.respuesta, mrkdwn=True
+        )
+        return True
+
+    def _pendiente_fecha_vigente(self, session: Any, thread_ts: str) -> Any:
+        """Última fila de `thread_ts` (por `created_at`), vigente para el guard del seguimiento
+        sólo si es un `PENDIENTE_FECHA` de menos de `_VENTANA_PENDIENTE_FECHA`. Cualquier fila más
+        reciente que ese pendiente, sea cual sea su `resultado`, ya lo superó — alcanza con mirar
+        la ÚLTIMA fila del hilo entero (`ORDER BY created_at DESC LIMIT 1`, resuelto por Postgres,
+        sin ningún loop en Python). Devuelve `None` si no hay ningún pendiente vigente.
+
+        **Fix round 1 (Critical, reproducido por ejecución directa)**: la versión anterior
+        recorría todas las filas del hilo llevando "el último `PENDIENTE_FECHA` visto" y cortaba
+        (`return None`) apenas encontraba una fila terminal posterior a él — sin seguir mirando el
+        resto de la lista. Con el historial `[PENDIENTE_FECHA@-60min, OK_EGRESO_ASENTADO@-55min,
+        PENDIENTE_FECHA@-5min]` (un ciclo previo completo, seguido de un pendiente nuevo y
+        vigente) esa versión devolvía `None` — la fila 3 nunca se llegaba a mirar, aunque no
+        tuviera ninguna fila posterior. El guard quedaba permanentemente roto para cualquier hilo
+        que ya hubiera completado un ciclo. Mirar sólo la última fila del historial completo
+        elimina la clase de bug entera: no hay ningún loop en Python que pueda cortar de más."""
+        from db.models.infra import IngresoCorreccion
+
+        ultima = (
+            session.query(IngresoCorreccion)
+            .filter(IngresoCorreccion.thread_ts == thread_ts)
+            .order_by(IngresoCorreccion.created_at.desc())
+            .first()
+        )
+        if ultima is None or ultima.resultado != RESULTADO_PENDIENTE_FECHA or ultima.created_at is None:
+            return None
+
+        creado = ultima.created_at
+        if creado.tzinfo is None:
+            creado = creado.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - creado > _VENTANA_PENDIENTE_FECHA:
+            return None
+        return ultima
+
+    def _responder_error_correccion(
+        self, session: Any, client: Any, channel: str, thread_ts_evento: str, exc: Exception
+    ) -> bool:
+        """Sanea la sesión y responde con un aviso genérico ante cualquier fallo inesperado del
+        flujo de corrección — nunca deja el hilo sin respuesta ni la sesión compartida en
+        `PendingRollbackError` (mismo contrato que `_registrar_movimiento_si_corresponde`)."""
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        logger.error("Error procesando comando de corrección de ingreso: %s", exc, exc_info=True)
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=(
+                ":warning: No pude completar la corrección por un error interno — quedó "
+                "registrado en el log. Reintentá en un momento."
+            ),
             mrkdwn=True,
         )
         return True
@@ -676,14 +924,62 @@ class IngresoListener:
             # `_procesar_seguimiento_empalme` (regex numérico + fila `IngresoSinMatch` pendiente para
             # este `thread_ts` exacto) ya es suficientemente estricto para no necesitar el filtro de
             # Workflow como red adicional — cualquier mensaje que no matchee las 3 condiciones sigue
-            # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica.
+            # de largo hacia el flujo normal, donde `solo_workflows` sí se aplica. Mismo criterio para
+            # `_procesar_correccion_ingreso` (Task 6, 2026-09-23): tanto "Forzar ingreso"/"Forzar
+            # egreso" como la respuesta de seguimiento de "fecha pendiente" (sólo `DD-MM-AAAA HH:MM`)
+            # los escribe un operador a mano, nunca un Workflow.
             if event_thread_ts and event_thread_ts != event_ts:
+                # Prioridad (Important 3, revisión Fix round 1): si hay un `PENDIENTE_FECHA`
+                # vigente para este `thread_ts`, la interpretación de fecha tiene que evaluarse
+                # ANTES que el seguimiento de empalme — un texto numérico sin separadores (ej.
+                # "1430") matchea `_RE_SEGUIMIENTO_EMPALME` (dígitos puros, mínimo 3), y la
+                # coexistencia de un `IngresoSinMatch` pendiente (empalme) con un `PENDIENTE_FECHA`
+                # vigente (corrección) en el MISMO hilo es realista: "Forzar ingreso/egreso" está
+                # pensado justamente para hilos donde el match automático falló. Fuera de este
+                # caso puntual, el orden general de la cadena no cambia.
+                # Guard (fix final, Important B): un evento sin `user` (bot/Workflow traen
+                # `bot_id`, no `user`) nunca tiene que ejecutar la corrección — escribiría una fila
+                # de auditoría anónima. El filtro `solo_workflows` no lo ataja porque este bloque se
+                # evalúa antes (deliberado, ver comentario arriba), así que el guard vive acá — el
+                # chequeo de prioridad de `_pendiente_fecha_vigente` en sí sigue siendo incondicional
+                # (decide el ORDEN de la cadena para cualquier evento, no si se ejecuta la corrección).
+                actor_slack_user_id = event.get("user")
+                if self._pendiente_fecha_vigente(session, event_thread_ts) is not None:
+                    if actor_slack_user_id and self._procesar_correccion_ingreso(
+                        texto,
+                        event_thread_ts,
+                        session,
+                        client,
+                        channel,
+                        actor_slack_user_id=actor_slack_user_id,
+                        mensaje_ts=event.get("ts") or "",
+                    ):
+                        return
+
                 if self._procesar_seguimiento_empalme(texto, event_thread_ts, session, client, channel):
                     return
                 # Mismo criterio que el seguimiento de empalme (evaluado antes del filtro
                 # `solo_workflows`, ver comentario arriba): "Revalidar ingreso" es un mensaje
                 # manual de una persona, nunca lo genera el Workflow de Slack.
                 if self._procesar_revalidacion_ingreso(texto, event_thread_ts, session, client, channel):
+                    return
+                # "Forzar ingreso"/"Forzar egreso" (y su respuesta de seguimiento de fecha
+                # pendiente) — nunca se confunde con los dos anteriores: el regex de empalme exige
+                # dígitos puros y el de "Revalidar ingreso" una frase fija, ninguno matchea ni
+                # "Forzar ingreso/egreso ..." ni una fecha suelta "DD-MM-AAAA HH:MM" (verificado:
+                # el día de 2 dígitos rompe el run de `\d{3,}` del regex de empalme). Se prueba de
+                # nuevo acá (aunque ya se haya intentado arriba cuando había un pendiente vigente)
+                # para el caso normal: comando completo nuevo, sin ningún pendiente todavía.
+                # Mismo guard que arriba (Important B): sin `user` no se ejecuta la corrección.
+                if actor_slack_user_id and self._procesar_correccion_ingreso(
+                    texto,
+                    event_thread_ts,
+                    session,
+                    client,
+                    channel,
+                    actor_slack_user_id=actor_slack_user_id,
+                    mensaje_ts=event.get("ts") or "",
+                ):
                     return
 
             # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
@@ -832,13 +1128,18 @@ class IngresoListener:
 
     def _handle_app_mention(self, event: dict[str, Any], client: Any) -> None:
         """Procesa una mención directa al bot (`@bot <comando>`) — soporta "Info cable <nombre>",
-        "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>" (docs/slack_app_cables.md).
-        Mismo canal/config que el listener de ingresos; no se pisan entre sí porque escuchan eventos
-        distintos de Slack (`message` vs `app_mention`).
+        "Verificar cable <nombre> B<N>", "Info cable <nombre> B<N>" (docs/slack_app_cables.md) y,
+        desde la Task 8 del plan "Corrección ingresos + Servicios", "Servicios <nombre>" /
+        "Servicios <nombre> B<N>". Mismo canal/config que el listener de ingresos; no se pisan entre
+        sí porque escuchan eventos distintos de Slack (`message` vs `app_mention`).
 
-        El comando CON buffer se intenta primero: `extraer_comando_info_cable` es "goloso" (toma todo
-        el resto de la línea como nombre de cable) y matchearía de más si un mensaje con sufijo
-        "B<N>" llegara primero acá."""
+        Orden de intento, todos por el mismo motivo (cada parser "sin buffer" es "goloso" — toma
+        todo el resto de la línea como nombre de cable — y matchearía de más si un mensaje CON
+        sufijo "B<N>" cayera ahí primero): comando de cable con buffer, comando de servicios con
+        buffer, comando de servicios sin buffer, comando de cable sin buffer. Los dos verbos
+        ("info"/"verificar cable" vs. "servicios") no colisionan entre sí — cada regex exige su
+        propio prefijo — así que el orden entre familias de verbo no importa, sólo el orden DENTRO
+        de cada familia (con-buffer antes que sin-buffer)."""
         texto = _RE_MENTION_PREFIX.sub("", event.get("text", ""))
         thread_ts = event.get("thread_ts") or event.get("ts")
         channel = event.get("channel", "")
@@ -846,6 +1147,16 @@ class IngresoListener:
         comando_buffer = extraer_comando_cable_buffer(texto)
         if comando_buffer is not None:
             self._handle_cable_buffer(comando_buffer, client, channel, thread_ts)
+            return
+
+        comando_servicios_buffer = extraer_comando_servicios_buffer(texto)
+        if comando_servicios_buffer is not None:
+            self._handle_servicios_buffer(comando_servicios_buffer, client, channel, thread_ts)
+            return
+
+        nombre_servicios_cable = extraer_comando_servicios_cable(texto)
+        if nombre_servicios_cable is not None:
+            self._handle_servicios_cable(nombre_servicios_cable, client, channel, thread_ts)
             return
 
         nombre_cable = extraer_comando_info_cable(texto)
@@ -889,12 +1200,183 @@ class IngresoListener:
                 respuesta = construir_respuesta_verificar_buffer(cable, tubo, resultado)
             else:
                 pelos = pelos_de_tubo_sync(session, tubo.n_id)
-                respuesta = construir_respuesta_info_buffer(cable, tubo, pelos)
+                # Marcador de frescura (Task 8, Step 4): sólo pinta el 🕒 en los pelos cuyo
+                # servicio matcheado está vencido — no dispara ningún refresco (Task 9), no cambia
+                # el resto de esta función. Batch único (nunca una query por pelo/servicio).
+                ids_servicio = {s.servicio_id for p in pelos for s in p.servicios}
+                vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
+                respuesta = construir_respuesta_info_buffer(cable, tubo, pelos, vencidos)
 
             client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
         except Exception as exc:
             logger.error(
                 "Error procesando '%s cable %s B%s': %s", verbo, nombre_cable, numero_buffer, exc, exc_info=True
+            )
+        finally:
+            session.close()
+
+    def _disparar_refresco_prov(
+        self,
+        cable_n_id: int,
+        servicios_vencidos_lista: list[ServicioUnico],
+        client: Any,
+        channel: str,
+        thread_ts: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Decide si corresponde encolar el refresco asíncrono contra PROV (Task 9) para los
+        servicios vencidos de este comando puntual, y lo encola sin bloquear este thread síncrono
+        de Socket Mode (`asyncio.run_coroutine_threadsafe` sobre el loop del worker).
+
+        Devuelve `(refrescando, nota_prov_no_configurado)`:
+        - `refrescando=True` sólo si efectivamente se encoló trabajo real — hay servicios vencidos
+          Y el worker expone un loop vivo (`self._loop`) Y PROV está configurado en este entorno.
+          El caller lo usa para decidir si la línea de frescura del primer mensaje puede prometer
+          un refresco en curso (`refrescando=True` en `construir_respuesta_servicios_cable`/
+          `_buffer`) — nunca al revés.
+        - Sin `servicios_vencidos_lista` o sin `self._loop` (tests, uso standalone): se saltea en
+          silencio, sin nota — la Task 8 ya cubre ese caso (respuesta sin sufijo) y no hay nada
+          accionable que decirle al técnico sobre un detalle interno del proceso.
+        - `ProvConfigError` (Step 3 del brief): se captura ACÁ, antes de encolar nada — el primer
+          mensaje debe decir "PROV no está configurado en este entorno" y no hay segundo mensaje
+          (mismo criterio que el 503 de `api/app/routes/servicios.py::refrescar_servicio_desde_prov`).
+
+        Nunca propaga una excepción (Important 2 de la revisión de calidad): tanto `get_prov_client`
+        como `asyncio.run_coroutine_threadsafe` están blindados con `except Exception`, no sólo
+        `ProvConfigError`. Antes sólo se capturaba `ProvConfigError`; cualquier otra excepción
+        (`httpx.InvalidURL` si `PROV_BASE_URL` queda malformado, `RuntimeError: Event loop is
+        closed` durante el shutdown del worker) subía sin blindar hasta el `except Exception` del
+        handler (`_handle_servicios_cable`/`_handle_servicios_buffer`), que entonces NO posteaba
+        ni siquiera el primer mensaje con el dato Cromo — justo lo que el brief pide evitar
+        explícitamente ("el primer mensaje con el dato Cromo ya salió, así que un fallo de PROV
+        nunca oculta el resultado local"). Blindar acá en vez de reordenar el caller (mover esta
+        llamada a después del primer `chat_postMessage`) porque el caller arma el texto del primer
+        mensaje usando el `refrescando` que devuelve esta función — reordenar complicaría esa
+        dependencia sin ganar nada que este blindaje no dé ya.
+        """
+        if not servicios_vencidos_lista:
+            return False, None
+        if self._loop is None:
+            logger.info(
+                "action=prov_refresco_slack evento=sin_loop cable_n_id=%s total=%d",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+            )
+            return False, None
+
+        try:
+            get_prov_client()
+        except ProvConfigError as exc:
+            logger.warning(
+                "action=prov_refresco_slack evento=prov_no_configurado cable_n_id=%s total=%d error=%s",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+                exc,
+            )
+            return False, "⚠️ PROV no está configurado en este entorno — no se pudo refrescar automáticamente."
+        except Exception as exc:
+            logger.error(
+                "action=prov_refresco_slack evento=error_no_manejado_validando_prov cable_n_id=%s total=%d error=%s",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+                exc,
+                exc_info=True,
+            )
+            return False, "⚠️ No se pudo iniciar el refresco automático contra PROV — ver logs del worker."
+
+        try:
+            asyncio.run_coroutine_threadsafe(
+                refrescar_servicios_vencidos(
+                    cable_n_id=cable_n_id,
+                    servicios=servicios_vencidos_lista,
+                    client=client,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                ),
+                self._loop,
+            )
+        except Exception as exc:
+            logger.error(
+                "action=prov_refresco_slack evento=error_no_manejado_encolando cable_n_id=%s total=%d error=%s",
+                cable_n_id,
+                len(servicios_vencidos_lista),
+                exc,
+                exc_info=True,
+            )
+            return False, "⚠️ No se pudo iniciar el refresco automático contra PROV — ver logs del worker."
+        return True, None
+
+    def _handle_servicios_cable(self, nombre_cable: str, client: Any, channel: str, thread_ts: str) -> None:
+        """"Servicios <nombre>" (Task 8) — IDs de servicio únicos de un cable ENTERO, agrupados por
+        buffer, con marca de frescura PROV batch. Complementa (no reemplaza) a "Verificar cable X
+        BN": ese comando sigue devolviendo el detalle por-pelo, éste devuelve IDs únicos por-
+        servicio (`servicios_unicos_por_cable_sync`, Task 1).
+
+        Desde la Task 9 también dispara el refresco asíncrono de esos vencidos contra PROV — ver
+        `_disparar_refresco_prov`."""
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+
+            resultado = servicios_unicos_por_cable_sync(session, cable.n_id)
+            ids_servicio = {s.servicio_id for s in resultado.servicios}
+            vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
+            servicios_a_refrescar = [s for s in resultado.servicios if s.servicio_id in vencidos]
+            refrescando, nota_prov = self._disparar_refresco_prov(
+                cable.n_id, servicios_a_refrescar, client, channel, thread_ts
+            )
+            respuesta = construir_respuesta_servicios_cable(
+                cable, session, resultado, vencidos, refrescando=refrescando
+            )
+            if nota_prov:
+                respuesta = f"{respuesta}\n{nota_prov}"
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error("Error procesando 'Servicios %s': %s", nombre_cable, exc, exc_info=True)
+        finally:
+            session.close()
+
+    def _handle_servicios_buffer(
+        self, comando: tuple[str, int], client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"Servicios <nombre> B<N>" (Task 8) — mismo IDs únicos que `_handle_servicios_cable`,
+        acotado a un buffer puntual (`servicios_unicos_por_tubo_sync`, Task 1). Mismo resolver de
+        cable/buffer que "Verificar cable X BN"/"Info cable X BN" (`_resolver_cable_o_responder`,
+        `resolver_tubo_por_numero`).
+
+        Desde la Task 9 también dispara el refresco asíncrono de esos vencidos contra PROV — ver
+        `_disparar_refresco_prov`."""
+        nombre_cable, numero_buffer = comando
+        session = SessionLocal()
+        try:
+            cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
+            if cable is None:
+                return
+
+            tubo = resolver_tubo_por_numero(session, cable.n_id, numero_buffer)
+            if tubo is None:
+                total = contar_buffers_cable(session, cable.n_id)
+                respuesta = construir_respuesta_buffer_no_encontrado(nombre_cable, numero_buffer, total)
+                client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+                return
+
+            resultado = servicios_unicos_por_tubo_sync(session, tubo.n_id)
+            ids_servicio = {s.servicio_id for s in resultado.servicios}
+            vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
+            servicios_a_refrescar = [s for s in resultado.servicios if s.servicio_id in vencidos]
+            refrescando, nota_prov = self._disparar_refresco_prov(
+                cable.n_id, servicios_a_refrescar, client, channel, thread_ts
+            )
+            respuesta = construir_respuesta_servicios_buffer(
+                cable, tubo, resultado, vencidos, refrescando=refrescando
+            )
+            if nota_prov:
+                respuesta = f"{respuesta}\n{nota_prov}"
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
+        except Exception as exc:
+            logger.error(
+                "Error procesando 'Servicios %s B%s': %s", nombre_cable, numero_buffer, exc, exc_info=True
             )
         finally:
             session.close()

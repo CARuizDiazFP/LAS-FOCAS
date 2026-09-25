@@ -8,10 +8,15 @@ import operator
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy.sql import operators as sa_operators
 from sqlalchemy.sql.elements import Null
 
-from core.services.ingreso_service import registrar_intento_bloqueado, registrar_movimiento_ingreso
+from core.services.ingreso_service import (
+    cerrar_ingreso_forzado,
+    registrar_intento_bloqueado,
+    registrar_movimiento_ingreso,
+)
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, Ingreso, IngresoTipo
 
@@ -410,3 +415,179 @@ def test_egreso_huerfano_nuevo_escribe_tecnico_id_como_nombre_resuelto() -> None
     )
 
     assert resultado.tecnico_id == "rider.fernandez"
+
+
+# --- (g) thread_ts/canal_id (Tarea 3, 2026-09-23): trazabilidad al hilo de Slack --------------------
+
+
+def test_ingreso_nueva_fila_guarda_thread_ts_y_canal_id() -> None:
+    """"Ingreso" siempre crea fila nueva → thread_ts/canal_id del evento se escriben tal cual."""
+    session = MagicMock()
+    camara = _camara()
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=None,
+        tipo_movimiento="Ingreso",
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000100",
+        canal_id="C0123456789",
+    )
+
+    assert resultado.thread_ts == "1700000000.000100"
+    assert resultado.canal_id == "C0123456789"
+
+
+def test_egreso_huerfano_nueva_fila_guarda_thread_ts_y_canal_id() -> None:
+    """Egreso sin Ingreso abierto matcheando crea fila nueva → también se escriben."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000200",
+        canal_id="C0123456789",
+    )
+
+    assert resultado.thread_ts == "1700000000.000200"
+    assert resultado.canal_id == "C0123456789"
+
+
+def test_egreso_que_cierra_fila_existente_no_pisa_thread_ts_ni_canal_id() -> None:
+    """Bug que este test previene: el Egreso que CIERRA un Ingreso abierto existente NO debe pisar
+    su thread_ts/canal_id con los del evento de Egreso actual — son los del hilo del ingreso
+    ORIGINAL, y la Task 5 de este mismo plan los necesita intactos para ubicar ese hilo."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+    ingreso_abierto = Ingreso(
+        id=1,
+        camara_id=10,
+        cromo_botella_id=555,
+        tecnico_id="Rider Fernández",
+        tipo=IngresoTipo.INGRESO,
+        fecha_inicio=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        fecha_fin=None,
+        thread_ts="1690000000.000001",  # hilo del ingreso ORIGINAL
+        canal_id="C_ORIGINAL",
+    )
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = ingreso_abierto
+
+    resultado = registrar_movimiento_ingreso(
+        session,
+        camara=camara,
+        botella=botella,
+        tipo_movimiento="Egreso",
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000300",  # hilo del evento de Egreso actual — NO debe usarse
+        canal_id="C_EGRESO_ACTUAL",
+    )
+
+    assert resultado is ingreso_abierto
+    assert resultado.thread_ts == "1690000000.000001"
+    assert resultado.canal_id == "C_ORIGINAL"
+
+
+def test_ingreso_sin_thread_ts_ni_canal_id_quedan_en_none() -> None:
+    """Kwargs opcionales, default None — ninguna llamada existente que no los pase debe romperse."""
+    session = MagicMock()
+    camara = _camara()
+
+    resultado = registrar_movimiento_ingreso(
+        session, camara=camara, botella=None, tipo_movimiento="Ingreso", tecnico_nombre="Rider Fernández"
+    )
+
+    assert resultado.thread_ts is None
+    assert resultado.canal_id is None
+
+
+def test_registrar_intento_bloqueado_guarda_thread_ts_y_canal_id() -> None:
+    """`registrar_intento_bloqueado` SIEMPRE crea fila nueva → siempre se escriben."""
+    session = MagicMock()
+    camara = _camara()
+    botella = _botella(n_id=555)
+
+    resultado = registrar_intento_bloqueado(
+        session,
+        camara=camara,
+        botella=botella,
+        tecnico_nombre="Rider Fernández",
+        thread_ts="1700000000.000400",
+        canal_id="C0123456789",
+    )
+
+    assert resultado.thread_ts == "1700000000.000400"
+    assert resultado.canal_id == "C0123456789"
+
+
+# --- (e) cerrar_ingreso_forzado: cierra EXACTAMENTE la fila resuelta por el caller ----------------
+
+
+def test_cerrar_ingreso_forzado_cierra_la_fila_recibida_sin_reseleccionarla() -> None:
+    """A diferencia de `registrar_movimiento_ingreso("Egreso")`, no busca nada: cierra la fila que
+    el caller ya resolvió (`core/services/ingreso_correccion_service.py`, "Forzar egreso #<id>")."""
+    session = MagicMock()
+    momento = datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc)
+    ingreso = Ingreso(
+        id=904,
+        camara_id=10,
+        tecnico_id="Rider Fernández",
+        tipo=IngresoTipo.INGRESO,
+        fecha_inicio=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        fecha_fin=None,
+        thread_ts="1700000000.000100",
+        canal_id="C0123456789",
+    )
+
+    resultado = cerrar_ingreso_forzado(session, ingreso=ingreso, momento=momento)
+
+    assert resultado is ingreso
+    assert ingreso.fecha_fin == momento
+    session.commit.assert_called_once()
+    # Nunca consulta: no re-selecciona la fila por heurística, y nunca crea una fila huérfana.
+    session.query.assert_not_called()
+    session.add.assert_not_called()
+    # No se pisan los del hilo del ingreso original.
+    assert ingreso.thread_ts == "1700000000.000100"
+    assert ingreso.canal_id == "C0123456789"
+
+
+def test_cerrar_ingreso_forzado_rechaza_una_fila_que_no_es_ingreso() -> None:
+    session = MagicMock()
+    intento = Ingreso(
+        id=905, camara_id=10, tipo=IngresoTipo.INTENTO_BLOQUEADO, fecha_inicio=None, fecha_fin=None
+    )
+
+    with pytest.raises(ValueError):
+        cerrar_ingreso_forzado(
+            session, ingreso=intento, momento=datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc)
+        )
+
+    assert intento.fecha_fin is None
+    session.commit.assert_not_called()
+
+
+def test_cerrar_ingreso_forzado_rechaza_una_fila_ya_cerrada() -> None:
+    session = MagicMock()
+    cerrado = Ingreso(
+        id=906,
+        camara_id=10,
+        tipo=IngresoTipo.INGRESO,
+        fecha_inicio=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        fecha_fin=datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError):
+        cerrar_ingreso_forzado(
+            session, ingreso=cerrado, momento=datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc)
+        )
+
+    assert cerrado.fecha_fin == datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc)
+    session.commit.assert_not_called()

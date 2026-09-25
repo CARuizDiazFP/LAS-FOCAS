@@ -1,0 +1,270 @@
+<!--
+  Nombre de archivo: ServicioSinOdfCard.vue
+  Ubicación de archivo: web/frontend/src/components/infra/ServicioSinOdfCard.vue
+  Descripción: Tarjeta de un Servicio Activo sin ODF resuelta — categoría/causa, ambos extremos de última milla (el que ganó la categorización marcado) y botón para abrir el modal de asociación
+-->
+<template>
+  <article class="servicio-sin-odf-card">
+    <div class="servicio-sin-odf-card__row">
+      <span :class="['servicio-sin-odf-card__dot', `is-${categoriaToken}`]" aria-hidden="true"></span>
+      <span class="servicio-sin-odf-card__categoria">{{ categoriaLabel }}</span>
+    </div>
+
+    <h3 class="servicio-sin-odf-card__servicio">
+      <!-- Pestaña nueva: la grilla tiene scroll infinito sobre 2.891 tarjetas y volver atrás lo
+           reinicia desde la primera página. Mismo criterio que el deep-link de CromoPathSecuencia. -->
+      <RouterLink
+        v-if="destinoServicio"
+        class="servicio-sin-odf-card__servicio-link"
+        :to="destinoServicio"
+        target="_blank"
+        rel="noopener"
+        :title="`Abrir el Servicio ${servicio.servicio_id} en una pestaña nueva`"
+      >
+        {{ servicio.servicio_id }}
+        <i class="ph ph-arrow-square-out servicio-sin-odf-card__servicio-icono" aria-hidden="true"></i>
+      </RouterLink>
+      <template v-else>{{ servicio.servicio_id }}</template>
+    </h3>
+    <p class="servicio-sin-odf-card__cliente">{{ servicio.nombre_cliente || 'Sin nombre de cliente' }}</p>
+
+    <div class="servicio-sin-odf-card__hairline"></div>
+
+    <div v-if="servicio.extremos.length > 0" class="servicio-sin-odf-card__extremos">
+      <div
+        v-for="(extremo, index) in servicio.extremos"
+        :key="`${extremo.extremo ?? index}`"
+        :class="['servicio-sin-odf-card__extremo', { 'is-ganador': index === servicio.indice_extremo_categorizado }]"
+      >
+        <span class="servicio-sin-odf-card__extremo-label">
+          Extremo {{ extremo.extremo ?? index + 1 }}
+          <i
+            v-if="index === servicio.indice_extremo_categorizado"
+            class="ph ph-check-circle servicio-sin-odf-card__extremo-icon"
+            title="Extremo que determinó la categoría"
+            aria-hidden="true"
+          ></i>
+        </span>
+        <span class="servicio-sin-odf-card__extremo-valor">{{ extremo.nodo || '—' }} / {{ extremo.equipo || '—' }}</span>
+      </div>
+    </div>
+    <p v-else class="servicio-sin-odf-card__sin-extremos">Sin fila de última milla PROV.</p>
+
+    <!--
+      La tarjeta NO llama a la API: sólo emite. Con 60 tarjetas en pantalla, un botón que dispare
+      una resolución de grafo por click desde la grilla es el peor caso posible.
+
+      Y sin semilla va el microlabel en lugar del botón, no un botón deshabilitado: un control
+      muerto repetido en 2.228 de 2.891 tarjetas entrena al operador a ignorarlo, y cuando
+      aparezca habilitado en el 23% no lo va a ver. El microlabel es información; el botón muerto
+      es ruido.
+    -->
+    <div class="servicio-sin-odf-card__acciones">
+      <button class="btn primary" type="button" @click="$emit('asociar', servicio)">
+        <i class="ph ph-link" aria-hidden="true"></i>
+        Asociar ODF
+      </button>
+      <button
+        v-if="tieneSemilla"
+        class="btn subtle"
+        type="button"
+        :title="`Resolver el camino óptico en Cromo (${servicio.pelos_semilla} pelo(s) disponibles)`"
+        @click="$emit('resolver-path', servicio)"
+      >
+        <i class="ph ph-tree-structure" aria-hidden="true"></i>
+        Resolver camino
+      </button>
+      <p v-else class="servicio-sin-odf-card__sin-semilla">
+        Sin pelo en Cromo · no hay camino que resolver
+      </p>
+    </div>
+  </article>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue';
+import { RouterLink } from 'vue-router';
+
+import {
+  categoriaServicioLabel,
+  categoriaServicioToken,
+  type ServicioSinOdfItem,
+} from '../../api/serviciosOdf';
+
+const props = defineProps<{
+  servicio: ServicioSinOdfItem;
+}>();
+
+defineEmits<{
+  asociar: [servicio: ServicioSinOdfItem];
+  'resolver-path': [servicio: ServicioSinOdfItem];
+}>();
+
+const categoriaLabel = computed(() => categoriaServicioLabel(props.servicio.categoria_causa));
+const categoriaToken = computed(() => categoriaServicioToken(props.servicio.categoria_causa));
+const tieneSemilla = computed(() => (props.servicio.pelos_semilla ?? 0) > 0);
+
+/** Destino del Nº de servicio. Se prefiere `numero_primer_servicio` -el `id_origen` al que el
+ * detalle normaliza con `router.replace`- y `servicio_id` queda de fallback: el backend
+ * (`_buscar_servicio_por_id`) matchea por los dos, pero arrancar por el id_origen ahorra el
+ * replace.
+ *
+ * Sin ninguno de los dos NO hay link, por la misma razón que abajo va un microlabel en vez de un
+ * botón deshabilitado: un control muerto repetido en una grilla de miles entrena a ignorarlo. */
+const destinoServicio = computed<string | null>(() => {
+  const id = (props.servicio.numero_primer_servicio || props.servicio.servicio_id || '').trim();
+  return id ? `/servicios/ID/${encodeURIComponent(id)}` : null;
+});
+</script>
+
+<style scoped>
+.servicio-sin-odf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 13px 11px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.servicio-sin-odf-card__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.servicio-sin-odf-card__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-state-idle);
+}
+
+.servicio-sin-odf-card__dot.is-ok { background: var(--color-state-ok); }
+.servicio-sin-odf-card__dot.is-warn { background: var(--color-state-warn); }
+.servicio-sin-odf-card__dot.is-error { background: var(--color-state-error); }
+.servicio-sin-odf-card__dot.is-idle { background: var(--color-state-idle); }
+
+.servicio-sin-odf-card__categoria {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.servicio-sin-odf-card__servicio {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+.servicio-sin-odf-card__servicio-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.servicio-sin-odf-card__servicio-link:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.servicio-sin-odf-card__servicio-icono {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.servicio-sin-odf-card__servicio-link:hover .servicio-sin-odf-card__servicio-icono {
+  color: var(--color-accent);
+}
+
+.servicio-sin-odf-card__cliente {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.servicio-sin-odf-card__hairline {
+  height: 1px;
+  background: var(--color-divider);
+}
+
+.servicio-sin-odf-card__extremos {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.servicio-sin-odf-card__extremo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.servicio-sin-odf-card__extremo.is-ganador {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.servicio-sin-odf-card__extremo-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.servicio-sin-odf-card__extremo-icon {
+  font-size: 11px;
+  color: var(--color-accent);
+}
+
+.servicio-sin-odf-card__extremo-valor {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.servicio-sin-odf-card__sin-extremos {
+  margin: 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.servicio-sin-odf-card__acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+  /* El `align-self` migra del botón al wrapper: así los dos botones no estiran la tarjeta y la
+     grilla de 4 columnas sigue igual. */
+  align-self: flex-start;
+}
+
+.servicio-sin-odf-card__acciones .btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.servicio-sin-odf-card__sin-semilla {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+</style>

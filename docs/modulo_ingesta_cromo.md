@@ -140,12 +140,32 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   - `ingesta.py`: servicio de ingesta — orquesta las fases de conteo, cables, botellas, fusiones,
     ODFs (clase 69, 2026-08-28, ver más abajo), reconciliación de referencias colgadas y matching de
     servicios. `continuar_corrida(modo=...)`: `"COMPLETA"` (default) corre todas las fases,
-    incluyendo ODFs sin que nadie lo pida; `"SOLO_ODF"` corre únicamente `fase_odfs`, saltando
-    cables/botellas/fusiones/reconciliación/servicios — es el modo exclusivo que pidió el ticket
-    original. Selector "Alcance de la corrida" en `AdminIngestaCromo.vue` desde 2026-08-28 (decisión
-    explícita del usuario), que además inhabilita/ignora la grilla de clases de botella cuando se
-    elige "Sólo ODFs". Primera corrida real verificada el mismo día (ver más abajo, submódulo
-    ODFs). Transacción por página (un
+    incluyendo ODFs sin que nadie lo pida. Los demás modos son **acotados**: corren UNA fase sobre
+    UNA colección y saltan todo lo demás, incluidas reconciliación y servicios.
+
+    Desde 2026-09-19 los modos viven en una tabla de datos (`MODOS_ACOTADOS`) que declara qué fase
+    corre cada uno y qué clases cuenta, en vez de una cadena de `if modo == "..."`; `MODOS_INGESTA`
+    se deriva de ahí y es lo que valida el endpoint web (antes esa lista estaba duplicada en
+    `web/app/main.py`). Los siete modos:
+
+    | Modo | Fase | Objetos | Duración medida |
+    |---|---|---:|---:|
+    | `COMPLETA` | la secuencia de siempre + ODFs | — | — |
+    | `SOLO_ODF` | `fase_odfs` (clase 69) | 7.955 | ~35 min |
+    | `SOLO_SPLITTERS` | `fase_splitters` (133) | 20.238 | ~22 min |
+    | `SOLO_PUERTOS_SPLITTER` | `fase_puertos_splitter` (134) | 154.284 | ~91 min |
+    | `SOLO_CAJAS_PON` | `fase_cajas_pon` (84/126/127/137/138/139/140) | 13.482 | ~75 min |
+    | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~23 min |
+    | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~32 min |
+
+    **Ninguno de los cinco modos de la red de acceso PON entra en `COMPLETA`**, por decisión
+    explícita: sumarlos convertiría una corrida de rutina en una de varias horas. El selector
+    "Alcance de la corrida" de `AdminIngestaCromo.vue` los ofrece uno por uno y el histórico de
+    corridas muestra con cuál corrió cada fila (columna "Alcance", que lee `params.modo`).
+
+    El bucle de paginación de las fases de barrido directo está factorizado en `_barrer_coleccion`
+    desde 2026-09-19: era el mismo cuerpo repetido byte a byte en tres fases, y con las nuevas
+    habrían sido ocho copias. Transacción por página (un
     commit por página, con savepoints por objeto para que uno malformado no aborte el resto) y
     cancelación cooperativa entre páginas. Desde 2026-08-19, las fases de cables/botellas/fusiones
     consultan `alias_service` antes de cada upsert: un `n_id` aliaseado nunca crea/actualiza su
@@ -503,6 +523,54 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     ingeridas antes de que este submódulo existiera (mismo camino que `_procesar_odf_directo`,
     `get_inner()` por ODF). Dry-run por defecto, `--apply` para persistir, `--solo-faltantes` para
     reanudar. Estimación real: varias horas para las ~7.955 ODFs (una llamada de red por objeto).
+
+  - `tracking_cache.py` / `tracking_service.py` (2026-09-17): caché de **salida** del `.txt` de
+    tracking de cada pelo (`app.cromo_tracking_cache`, TTL 24 h) y orquestación de su generación.
+    No es inventario: guarda el artefacto ya renderizado, no el camino. Existe porque un Servicio
+    tiene un tracking por pelo y cada uno cuesta una llamada a `/path` de 4,6-14 s.
+  - `normalizacion_consistencia_service.py` (2026-09-17): **reingesta dirigida** de los objetos que
+    la auditoría del camino marcó como `DIFIERE`/`NO_INGERIDO`, más el relevamiento puntual de una
+    ODF. Trae el objeto real de Cromo y lo persiste por este mismo parser y estos mismos upserts,
+    con corrida sintética auditable — nunca escribe el valor que declara el camino.
+
+    **Tres hallazgos reales que cualquiera que toque reingesta dirigida necesita saber** (ninguno
+    aparece con mocks; salieron de probar contra Cromo el 2026-09-17):
+    1. En un fetch directo `GET /db/objects/{id}`, **`parent` viene como objeto**
+       (`{"id": 10127039, "class": 51, ...}`), no como entero. Durante una corrida normal ese
+       `parent` lo inyecta el recorrido del árbol; pasárselo crudo a `parse_pelo`/`parse_fusion`
+       produce basura en silencio (un `tubo_n_id` que es un diccionario).
+    2. El `parent` de un pelo es el **cable**, no el tubo, y trae el id de **versión**, no el de
+       linaje. Por eso **un pelo no se puede reingerir suelto**: hay que hacerlo por el árbol de su
+       cable (`parse_cable` + `extraer_tubos_y_pelos`), que devuelve exactamente lo que declara el
+       camino y arregla `PELO_CABLE` y `PELO_TUBO` de todos sus pelos de una sola vez. Para la
+       fusión, la botella se resuelve traduciendo su id de versión a linaje con un fetch más.
+    3. La clase **52 (cable de un tercero, ej. Arsat)** también es un cable real del camino, aunque
+       la ingesta no la barra. `cromo_cables` no tiene columna de clase, así que persistirlo no
+       rompe ninguna FK contra `cromo_clases`.
+
+  - **Submódulo Splitters (clases 133 y 134, 2026-09-17):** el splitter y sus puertos viajan en el
+    **mismo `inner[]`** de la botella que las fusiones, así que se ingieren en `fase_botellas` sin
+    una sola llamada extra. Hasta esta fecha `parse_arbol_botella` los descartaba como "clase
+    inesperada" y el ratio que Cromo publica en `at.83` se tiraba en cada corrida, mientras
+    `empalmes.py` lo deducía por fan-out de fusiones.
+
+    Medición que lo motivó (30 botellas reales): la heurística acertó en 18 y falló en 12 — inventó
+    2 splitters donde Cromo tiene 0 (botella 6636551), partió 1 en 6 (botella 8941541) y **nunca**
+    devolvió un ratio cuando el splitter existía. La columna `cromo_botellas.splitters_relevados`
+    es lo que permite apagarla sólo donde ya hay dato real.
+
+    **Dos asimetrías de payload que hay que tener presentes** (verificadas real):
+    1. El barrido de colección (`show=ALL`) trae `parent` en cada hijo; `/db/objects/{id}/inner`
+       **no**. Por eso el vínculo splitter↔botella y puerto↔splitter lo aporta el recorrido del
+       árbol y no el payload.
+    2. El `at.62` del puerto —el id de servicio— **sólo** viaja en `/inner`, nunca en el barrido.
+       Misma asimetría ya documentada para los conectores de ODF. De ahí los tres estados de
+       `servicios_atributo`: NULL "no se preguntó", `[]` "puerto libre", lista "ocupado".
+
+    Dato de dominio que lo explica (aportado por el usuario): en un splitter **sólo el último tramo
+    lleva el ID de servicio**; los pelos intermedios sólo tienen la descripción del láser y la OLT
+    padre. Por eso el vínculo servicio↔splitter está en el **puerto** y no en el pelo: la ENTRADA
+    agrega todos los servicios del splitter y cada SALIDA identifica el suyo.
 
 ## Principios de diseño
 

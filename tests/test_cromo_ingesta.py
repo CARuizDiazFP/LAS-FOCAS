@@ -206,6 +206,7 @@ async def test_upsert_versionado_funciona_igual_para_cable():
         n_id: int
         version_id: int
         vmax: int
+        clase: Optional[int] = None
         nombre: Optional[str] = None
         capacidad: Optional[str] = None
         capacidad_pelos: Optional[int] = None
@@ -277,6 +278,45 @@ async def test_fase_conteo_arma_diccionario_por_clase():
     assert 122 not in totales
 
 
+@pytest.mark.asyncio
+async def test_fase_conteo_cae_al_catalogo_cuando_stats_miente_con_cero():
+    """`stats[].count` devuelve 0 para las clases 133 y 134 aunque la colección pagine perfecto.
+
+    Medido 2026-09-19: los totales reales son 20.238 splitters y 154.284 puertos. Sin este
+    fallback, `total_objetivo` de una corrida de splitters queda en 0 y la barra de progreso no
+    significa nada.
+    """
+    cliente = _ClienteFakeConteo({133: 0, 134: 0})
+    sesion = _SesionFake(
+        respuestas_execute={"FROM app.cromo_clases": [(133, 20238), (134, 154284)]}
+    )
+
+    totales = await ingesta.fase_conteo(cliente, sesion=sesion, clases=(133, 134))
+
+    assert totales == {133: 20238, 134: 154284}
+
+
+@pytest.mark.asyncio
+async def test_fase_conteo_prefiere_la_api_sobre_el_catalogo():
+    """El catálogo es una foto con fecha; la API es el presente. Sólo manda cuando la API dice 0."""
+    cliente = _ClienteFakeConteo({69: 7955})
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_clases": [(69, 1)]})
+
+    totales = await ingesta.fase_conteo(cliente, sesion=sesion, clases=(69,))
+
+    assert totales == {69: 7955}
+
+
+@pytest.mark.asyncio
+async def test_fase_conteo_sin_sesion_se_comporta_como_siempre():
+    """Los llamadores viejos no pasan sesión: no pueden empezar a fallar por esto."""
+    cliente = _ClienteFakeConteo({133: 0})
+
+    totales = await ingesta.fase_conteo(cliente, clases=(133,))
+
+    assert totales == {133: 0}
+
+
 # ── Orquestación de alto nivel (fases mockeadas, sólo se prueba el control de flujo) ──
 
 
@@ -304,7 +344,7 @@ class _SesionFakeCorrida(_SesionFake):
 async def test_ejecutar_ingesta_cierra_ok_sin_errores(monkeypatch):
     sesion = _SesionFakeCorrida()
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {68: 1, 51: 1}
 
     async def _noop(*args, **kwargs):
@@ -328,7 +368,7 @@ async def test_ejecutar_ingesta_cierra_ok_sin_errores(monkeypatch):
 async def test_ejecutar_ingesta_marca_ok_con_errores_si_hubo_errores(monkeypatch):
     sesion = _SesionFakeCorrida()
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     async def _fase_botellas_con_error(cliente, sesion, corrida, contadores, **kwargs):
@@ -354,7 +394,7 @@ async def test_ejecutar_ingesta_marca_ok_con_errores_si_hubo_errores(monkeypatch
 async def test_ejecutar_ingesta_marca_fallida_en_excepcion_inesperada(monkeypatch):
     sesion = _SesionFakeCorrida()
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     async def _fase_cables_rompe(*args, **kwargs):
@@ -535,6 +575,48 @@ async def test_procesar_botella_completa_con_fixture_real():
     assert CromoTubo in tipos_agregados
     assert CromoPelo in tipos_agregados
     assert CromoFusion in tipos_agregados
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_no_marca_relevado_si_el_payload_no_trajo_inner():
+    """La marca es un hecho del payload, no del recorrido.
+
+    `fase_botellas` barre con `show=["SHOW","REL_ATTRIBUTE","TIME"]`, y eso **no** trae `inner[]`
+    (medido 2026-09-17 contra Cromo real: 0 de 10 botellas; sólo `show=["ALL"]` lo trae). Marcar
+    igual equivale a afirmar "Cromo dice que esta botella no tiene splitters", que es justo lo que
+    `empalmes.py` usa para apagar la heurística de fan-out en toda la botella.
+    """
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    sin_arbol = {clave: valor for clave, valor in obj.items() if clave != "inner"}
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=sin_arbol, contadores=contadores
+    )
+
+    botella = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert not botella.splitters_relevados
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_marca_relevado_cuando_el_payload_trajo_el_arbol():
+    """El contrapeso del test anterior: con `inner[]` presente la marca sí corresponde.
+
+    El fixture tiene `inner` con una fusión y ningún splitter — y ese es exactamente el caso que la
+    marca existe para representar: "se miró el árbol y no hay splitters acá".
+    """
+    obj = json.loads((FIXTURES_DIR / "botella_con_arbol.json").read_text())
+    assert obj.get("inner"), "el fixture debe traer el arbol para que este test signifique algo"
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_botella_completa(
+        _ClienteTopologiaFake(), sesion, corrida_id=1, obj=obj, contadores=contadores
+    )
+
+    botella = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert botella.splitters_relevados
 
 
 @pytest.mark.asyncio
@@ -783,6 +865,50 @@ async def test_procesar_botella_completa_usa_objeto_vigente_de_la_cadena_en_vez_
     assert [c.n_id for c in cables] == [7001]
     assert {cables[0].extremo_a_n_id, cables[0].extremo_b_n_id} == {6001, 8001}
     assert cliente.pedidos == [5001, 6001]
+
+
+@pytest.mark.asyncio
+async def test_procesar_botella_completa_marca_relevado_segun_el_payload_del_arbol_procesado():
+    """En la redirección por "ID dual" el árbol viene de OTRO payload que el del barrido.
+
+    El cascarón no trae `inner[]`; el objeto vigente sí. Lo que se relevó es el árbol del vigente,
+    así que la marca corresponde — consultar el cascarón daría la respuesta de un payload que no es
+    el que se procesó. `inner: []` es deliberado: "vino el árbol y está vacío" es exactamente el
+    caso que la marca existe para poder afirmar.
+    """
+    obj = _cascaron_sin_topologia(5001)
+    assert "inner" not in obj, "el cascaron no debe traer arbol, si no el test no discrimina nada"
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+    cliente = _ClienteTopologiaFake(
+        {
+            5001: {
+                "n_id": 5001,
+                "id": 5001,
+                "class": 68,
+                "vmax": 1,
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+            },
+            6001: {
+                "n_id": 6001,
+                "id": 6001,
+                "class": 68,
+                "vmax": 2,
+                "name": "BOT interna Hotel Nuevo fondo Posadas 1557",
+                "hist": [{"id": 5001, "next_id": 6001}, {"id": 6001, "next_id": 0}],
+                # `tp` es lo que marca a un objeto de la cadena como vigente
+                # (`_resolver_posible_id_dual`), sin el la redireccion no dispara.
+                "tp": [_cable_embebido(7001, botella_n_id=6001, otro_extremo=8001)],
+                "inner": [],
+            },
+        }
+    )
+
+    await ingesta._procesar_botella_completa(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    botella = next(o for o in sesion.agregados if isinstance(o, CromoBotella))
+    assert botella.n_id == 6001
+    assert botella.splitters_relevados
 
 
 def _cliente_cadena_5001_a_6001() -> _ClienteTopologiaFake:
@@ -1621,7 +1747,7 @@ async def test_fase_odfs_se_detiene_si_fue_cancelada_externamente():
 async def test_ejecutar_ingesta_marca_cancelada_sin_tratarla_como_falla(monkeypatch):
     sesion = _SesionFakeCorrida()
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     async def _fase_cables_cancela(*args, **kwargs):
@@ -1661,7 +1787,19 @@ def _spies_de_fases(monkeypatch, llamadas: list[str]) -> None:
     incluida `fase_odfs` — el punto central que este task agrega a la orquestación. `__nombre` se
     fija por default-arg (no por closure) para no pisar todas las funciones con el último `nombre`
     de la iteración."""
-    for nombre in ("fase_cables", "fase_botellas", "fase_fusiones", "fase_odfs", "fase_reconciliacion", "fase_servicios"):
+    for nombre in (
+        "fase_cables",
+        "fase_botellas",
+        "fase_fusiones",
+        "fase_odfs",
+        "fase_reconciliacion",
+        "fase_servicios",
+        "fase_splitters",
+        "fase_puertos_splitter",
+        "fase_cajas_pon",
+        "fase_rosetas",
+        "fase_cables_bajada",
+    ):
 
         async def _fn(*args, __nombre=nombre, **kwargs):
             llamadas.append(__nombre)
@@ -1677,7 +1815,7 @@ async def test_continuar_corrida_modo_solo_odf_llama_unicamente_fase_odfs(monkey
     sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
     llamadas: list[str] = []
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
@@ -1713,7 +1851,7 @@ async def test_continuar_corrida_modo_completa_incluye_fase_odfs_ademas_de_las_e
     sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
     llamadas: list[str] = []
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
@@ -1732,7 +1870,7 @@ async def test_continuar_corrida_modo_solo_odf_total_objetivo_solo_suma_clase_od
     sesion = _SesionFakeCorrida()
     sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {68: 100, ingesta.CLASE_CABLE: 50, ingesta.CLASE_FUSION: 10, ingesta.CLASE_ODF: 7}
 
     async def _noop(*args, **kwargs):
@@ -1759,7 +1897,7 @@ async def test_continuar_corrida_modo_completa_total_objetivo_incluye_clase_odf(
     sesion = _SesionFakeCorrida()
     sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {68: 100, ingesta.CLASE_CABLE: 50, ingesta.CLASE_FUSION: 10, ingesta.CLASE_ODF: 7}
 
     async def _noop(*args, **kwargs):
@@ -1787,7 +1925,7 @@ async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
     corrida_existente = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
     sesion._existentes[(CromoIngestaCorrida, 42)] = corrida_existente
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     async def _noop(*args, **kwargs):
@@ -1820,7 +1958,7 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_cuatro_fase
     llamadas_cargar: list[int] = []
     recibidos: dict[str, Any] = {}
 
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     async def _cargar_alias_fake(sesion):
@@ -1867,7 +2005,7 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_cuatro_fase
 
 
 def _monkeypatch_fases_noop(monkeypatch, *, fase_botellas) -> None:
-    async def _fase_conteo_fake(cliente):
+    async def _fase_conteo_fake(cliente, **_kwargs):
         return {}
 
     async def _noop(*args, **kwargs):
@@ -1925,3 +2063,94 @@ async def test_continuar_corrida_no_encola_recalculo_si_todo_sin_cambios(monkeyp
     )
 
     assert motivos == []
+
+
+# ── Modos de la red de acceso PON (2026-09-19) ──
+
+
+@pytest.mark.parametrize(
+    "modo,fase_esperada",
+    [
+        ("SOLO_SPLITTERS", "fase_splitters"),
+        ("SOLO_PUERTOS_SPLITTER", "fase_puertos_splitter"),
+        ("SOLO_CAJAS_PON", "fase_cajas_pon"),
+        ("SOLO_ROSETAS", "fase_rosetas"),
+        ("SOLO_CABLES_BAJADA", "fase_cables_bajada"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cada_modo_acotado_corre_solo_su_fase(monkeypatch, modo, fase_esperada):
+    """Mismo contrato que `SOLO_ODF`, extendido a los cinco modos de la red de acceso.
+
+    El assert es de exclusión total y no de inclusión: lo que hay que impedir es que un modo
+    acotado arrastre `fase_botellas` (horas) o `fase_servicios` (que ya dejó 944 pelos sin match
+    una vez, por correr cuando no debía).
+    """
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(
+        id=42, usuario="tester", estado="EN_CURSO"
+    )
+    llamadas: list[str] = []
+
+    async def _fase_conteo_fake(cliente, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    _spies_de_fases(monkeypatch, llamadas)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(),
+        sesion=sesion,
+        corrida_id=42,
+        psize=5,
+        max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA,
+        modo=modo,
+    )
+
+    assert corrida.estado == "OK"
+    assert llamadas == [fase_esperada]
+
+
+@pytest.mark.asyncio
+async def test_completa_no_arrastra_ninguna_fase_de_la_red_pon(monkeypatch):
+    """Decisión explícita: sumarlas a COMPLETA convertiría una corrida de rutina en una de horas.
+
+    Las cajas PON solas son ~75 minutos y los puertos de splitter ~91.
+    """
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(
+        id=42, usuario="tester", estado="EN_CURSO"
+    )
+    llamadas: list[str] = []
+
+    async def _fase_conteo_fake(cliente, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    _spies_de_fases(monkeypatch, llamadas)
+
+    await ingesta.continuar_corrida(
+        cliente=object(),
+        sesion=sesion,
+        corrida_id=42,
+        psize=5,
+        max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA,
+        modo="COMPLETA",
+    )
+
+    assert llamadas == [
+        "fase_cables",
+        "fase_botellas",
+        "fase_fusiones",
+        "fase_odfs",
+        "fase_reconciliacion",
+        "fase_servicios",
+    ]
+
+
+def test_todos_los_modos_acotados_estan_en_la_lista_que_valida_el_endpoint():
+    """`MODOS_INGESTA` es lo que importa `web/app/main.py`: si se desincronizan, un modo que el
+    frontend ofrece devuelve 400 sin que ningún test lo note."""
+    assert set(ingesta.MODOS_INGESTA) == {"COMPLETA", *ingesta.MODOS_ACOTADOS}

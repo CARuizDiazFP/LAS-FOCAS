@@ -73,11 +73,76 @@ export const CROMO_CLASE_EXCLUIDA = {
   motivo: 'Parcela catastral, no es planta de FO — nunca se ingiere.',
 };
 
-/** Modo de corrida (2026-08-28, submódulo ODFs): `'COMPLETA'` corre la secuencia de siempre +
- * ODFs incondicional; `'SOLO_ODF'` corre únicamente la fase de ODFs, ignorando `clases`. Validado
- * en el backend contra `_MODOS_INGESTA_VALIDOS` — mismo criterio simple que el resto del payload. */
-export const CROMO_MODOS_INGESTA = ['COMPLETA', 'SOLO_ODF'] as const;
-export type CromoModoIngesta = (typeof CROMO_MODOS_INGESTA)[number];
+/** Alcance de una corrida de ingesta.
+ *
+ * Antes eran dos modos y la vista los tenía hardcodeados como `<option>`, con tres comparaciones
+ * literales a `'SOLO_ODF'` dispersas por el template y el script. Con siete, cada modo nuevo sería
+ * otra comparación más que olvidarse de agregar: por eso el catálogo es dato y la vista lo itera.
+ * Agregar un modo pasa a ser una fila acá.
+ *
+ * `usaClasesBotella` es la única condición que la vista necesita: dice si la grilla de clases de
+ * botella aplica a este modo o si hay que ignorarla y mandarla vacía.
+ *
+ * El backend valida contra `core.services.cromo.ingesta.MODOS_INGESTA`, que se deriva de la tabla
+ * que declara qué fase corre cada modo. Esta lista tiene que decir lo mismo.
+ *
+ * Duraciones medidas contra Cromo real el 2026-09-19, para que el operador sepa en qué se mete
+ * antes de apretar el botón: ninguna de las de la red de acceso entra en "Completa".
+ */
+export interface CromoModoInfo {
+  valor: string;
+  etiqueta: string;
+  hint: string;
+  usaClasesBotella: boolean;
+}
+
+export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
+  {
+    valor: 'COMPLETA',
+    etiqueta: 'Completa (cables + botellas + fusiones + ODFs)',
+    hint: 'La secuencia de siempre. No incluye ninguna clase de la red de acceso PON: sumarlas convertiría una corrida de rutina en una de varias horas.',
+    usaClasesBotella: true,
+  },
+  {
+    valor: 'SOLO_ODF',
+    etiqueta: 'Sólo ODFs (clase 69)',
+    hint: 'Corre únicamente la fase de ODFs, sin tocar cables, botellas ni fusiones. ~35 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_SPLITTERS',
+    etiqueta: 'Sólo splitters (clase 133)',
+    hint: '20.238 splitters de toda la red, no sólo los que cuelgan de una botella: el 88 % cuelga de una caja PON y por la vía del árbol de botella eran invisibles. ~22 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_PUERTOS_SPLITTER',
+    etiqueta: 'Sólo puertos de splitter (clase 134)',
+    hint: '154.284 puertos, ~91 min. Aporta nombre, sentido y de qué splitter cuelga cada puerto; la ocupación por servicio NO se releva por esta vía.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_CAJAS_PON',
+    etiqueta: 'Sólo cajas PON (7 clases)',
+    hint: '13.482 cajas PON de las clases 84, 126, 127, 137, 138, 139 y 140 — las cinco últimas no existían en el catálogo hasta ahora. ~75 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_ROSETAS',
+    etiqueta: 'Sólo rosetas (clase 85)',
+    hint: '17.348 rosetas. No aparecen en los recorridos de camino óptico —el recorrido termina en la caja PON— pero la colección existe. ~23 min.',
+    usaClasesBotella: false,
+  },
+  {
+    valor: 'SOLO_CABLES_BAJADA',
+    etiqueta: 'Sólo cables de bajada (clase 66)',
+    hint: '19.030 cables de bajada. Van a la misma tabla que los de FO, distinguidos por clase. ~32 min.',
+    usaClasesBotella: false,
+  },
+];
+
+export const CROMO_MODOS_INGESTA = CROMO_MODOS_INGESTA_INFO.map((m) => m.valor);
+export type CromoModoIngesta = (typeof CROMO_MODOS_INGESTA_INFO)[number]['valor'];
 
 export async function iniciarIngestaCromo(opciones: {
   psize: CromoPsize;
@@ -194,7 +259,10 @@ export interface CromoServicioEncontrado {
   estado_servicio: string | null;
   categoria: number | null;
   tipo_servicio: string | null;
-  pelo_n_id: number;
+  // Puede venir `null`: `/api/infra/cromo/odfs/{odf_n_id}/servicios` ahora incluye también los
+  // servicios asociados por override manual (gestor de Servicios sin ODF), y un override sin
+  // conector puntual no tiene pelo — ver `ServicioOdfAsociarRequestModel` en `web/app/main.py`.
+  pelo_n_id: number | null;
   servicio_numero_match: string;
   metodo: string;
 }
@@ -245,6 +313,99 @@ export async function verificarServiciosPorTubo(tuboNId: number): Promise<CromoV
 
 export async function verificarServiciosPorBotella(botellaNId: number): Promise<CromoVerificacionBotella> {
   return requestJson(`/api/infra/cromo/botellas/${botellaNId}/servicios`);
+}
+
+// ── Servicios ÚNICOS por cable/buffer + resolución de cable + refresco PROV on-demand (Task 10,
+// plan "Corrección ingresos + Servicios", 2026-09-23) ────────────────────────────────────────────
+// Complementario a `verificarServiciosPorCable`/`verificarServiciosPorTubo` de arriba (una fila por
+// PELO, la vista de la tabla del Verificador con su columna "Pelo" — varios pelos por servicio es
+// normal). Estas rutas devuelven IDs de servicio ÚNICOS (agregados por servicio, ver `ServicioUnico`
+// en `core/services/cromo/verificador.py`), con frescura PROV por servicio (Task 7). Dos vistas
+// legítimas del mismo dato que conviven — no reemplazan nada de arriba.
+
+export interface CromoServicioUnicoFrescura {
+  ultima_sincronizacion_prov: string | null;
+  antiguedad_horas: number | null;
+  vencida: boolean;
+}
+
+export interface CromoServicioUnico {
+  servicio_id: number;
+  servicio_id_externo: string;
+  numero_primer_servicio: string | null;
+  nombre_cliente: string | null;
+  cliente: string | null;
+  estado_servicio: string | null;
+  tipo_servicio: string | null;
+  pelos_n_ids: number[];
+  cantidad_pelos: number;
+  numeros_en_pelo: string[];
+  metodos: string[];
+  frescura: CromoServicioUnicoFrescura;
+}
+
+/** `numero` es el buffer 1-indexado que cuenta el técnico (`orden + 1`). */
+export interface CromoBufferIdentidad {
+  numero: number;
+  orden: number;
+  nombre_color: string | null;
+}
+
+export interface CromoRefrescoProvFallido {
+  servicio_id_externo: string;
+  motivo: string | null;
+}
+
+/** `"no_solicitado"` en los dos GET (sólo lectura, no disparan nada); el POST de refresco puede
+ * devolver cualquiera de los otros tres según haya o no servicios vencidos y cómo haya salido el lote. */
+export interface CromoRefrescoProvEstado {
+  estado: 'no_solicitado' | 'sin_vencidos' | 'completado' | 'parcial';
+  fallidos: CromoRefrescoProvFallido[];
+}
+
+export interface CromoServiciosUnicosResultado {
+  cable_n_id: number;
+  cable_nombre: string | null;
+  buffer: CromoBufferIdentidad | null;
+  datos_al: string;
+  servicios: CromoServicioUnico[];
+  refresco_prov: CromoRefrescoProvEstado;
+}
+
+export interface CromoCableIdentidad {
+  n_id: number;
+  nombre: string | null;
+  capacidad: string | null;
+}
+
+export async function obtenerServiciosUnicosPorCable(cableNId: number): Promise<CromoServiciosUnicosResultado> {
+  return requestJson(`/api/infra/cromo/cables/${cableNId}/servicios-unicos`);
+}
+
+export async function obtenerServiciosUnicosPorBuffer(
+  cableNId: number,
+  numero: number,
+): Promise<CromoServiciosUnicosResultado> {
+  return requestJson(`/api/infra/cromo/cables/${cableNId}/buffers/${numero}/servicios-unicos`);
+}
+
+/** Resuelve un cable por `n_id` o por `nombre` exacto (case-insensitive). 404 si no existe; 409
+ * (`ApiError.status === 409`, candidatos en `ApiError.payload`) si hay 2+ cables vigentes con el
+ * mismo nombre — hay al menos 2 pares reales conocidos ("F-ALV-2335", "F-LEM-11-A") sobre ~32.782
+ * cables, la ambigüedad se expone en vez de elegir arbitrariamente. */
+export async function resolverCable(q: string): Promise<CromoCableIdentidad> {
+  return requestJson(`/api/infra/cromo/cables/resolver?q=${encodeURIComponent(q)}`);
+}
+
+/** Dispara el refresco PROV (Task 9) de los servicios únicos vencidos de este cable, awaiteado
+ * dentro del propio request — devuelve el mismo cuerpo que `obtenerServiciosUnicosPorCable`, con
+ * `refresco_prov` reflejando el resultado real del lote en vez de `"no_solicitado"`. */
+export async function refrescarServiciosUnicosProv(cableNId: number): Promise<CromoServiciosUnicosResultado> {
+  return requestJson(`/api/infra/cromo/cables/${cableNId}/servicios-unicos/refrescar-prov`, {
+    method: 'POST',
+    json: {},
+    csrf: true,
+  });
 }
 
 // ── Inventario de cables (Etapa 8b) ──────────────────────────────────────────
@@ -602,6 +763,61 @@ export async function buscarInventarioOdfs(opciones: {
   params.set('limit', String(opciones.limit ?? 50));
   params.set('offset', String(opciones.offset ?? 0));
   return requestJson(`/api/infra/cromo/odfs?${params.toString()}`);
+}
+
+// ── Inventario de la red de acceso PON (2026-09-19) ──────────────────────────
+// Cajas PON y rosetas viven en la misma tabla porque comparten esquema; lo que separa una vista de
+// la otra es la lista de clases que pide. Por eso `clases` es un parámetro y no hay dos funciones.
+
+/** Las siete clases de caja PON, medidas contra Cromo. Hasta 2026-09-19 el sistema sólo conocía la
+ * 84 y la 137; las otras cinco (126, 127, 138, 139, 140) no estaban en ninguna lista y el diagrama
+ * de camino óptico las dibujaba como "CLASE_139". */
+export const CROMO_CLASES_CAJA_PON = [84, 126, 127, 137, 138, 139, 140] as const;
+export const CROMO_CLASE_ROSETA = 85;
+
+export interface CromoPonElementoInventario {
+  n_id: number;
+  clase: number;
+  nombre: string | null;
+  localidad: string | null;
+  calle: string | null;
+  altura: string | null;
+  propietario: string | null;
+  tipo_conector: string | null;
+  capacidad_puertos: number | null;
+  latitud: number | null;
+  longitud: number | null;
+  vigente: boolean;
+  cantidad_splitters: number;
+}
+
+export interface CromoInventarioPonResultado {
+  total: number;
+  limit: number;
+  offset: number;
+  elementos: CromoPonElementoInventario[];
+}
+
+export async function buscarInventarioPon(opciones: {
+  q?: string;
+  nId?: number;
+  clases?: readonly number[];
+  vigente?: boolean;
+  localidad?: string;
+  propietario?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<CromoInventarioPonResultado> {
+  const params = new URLSearchParams();
+  if (opciones.q) params.set('q', opciones.q);
+  if (opciones.nId !== undefined) params.set('n_id', String(opciones.nId));
+  if (opciones.clases && opciones.clases.length > 0) params.set('clases', opciones.clases.join(','));
+  if (opciones.vigente !== undefined) params.set('vigente', String(opciones.vigente));
+  if (opciones.localidad) params.set('localidad', opciones.localidad);
+  if (opciones.propietario) params.set('propietario', opciones.propietario);
+  params.set('limit', String(opciones.limit ?? 50));
+  params.set('offset', String(opciones.offset ?? 0));
+  return requestJson(`/api/infra/cromo/pon?${params.toString()}`);
 }
 
 // ── Detalle jerárquico de un ODF (Tarea 5, plan ODFs) ────────────────────────

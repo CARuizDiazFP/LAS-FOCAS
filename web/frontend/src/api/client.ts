@@ -14,6 +14,8 @@ export interface ApiRequestOptions {
   csrf?: boolean;
   credentials?: RequestCredentials;
   throwOnError?: boolean;
+  /** Permite cancelar el request (cierre de modal, cambio de selección, timeout de cliente). */
+  signal?: AbortSignal;
 }
 
 export class ApiError extends Error {
@@ -110,6 +112,7 @@ export async function request(url: string, options: ApiRequestOptions = {}): Pro
     csrf = false,
     credentials = 'include',
     throwOnError = true,
+    signal,
   } = options;
 
   const nextHeaders = new Headers(headers);
@@ -127,6 +130,7 @@ export async function request(url: string, options: ApiRequestOptions = {}): Pro
     headers: nextHeaders,
     body: nextBody,
     credentials,
+    signal,
   });
 
   if (!response.ok && throwOnError) {
@@ -140,6 +144,49 @@ export async function request(url: string, options: ApiRequestOptions = {}): Pro
 export async function requestJson<T>(url: string, options: ApiRequestOptions = {}): Promise<T> {
   const response = await request(url, options);
   return response.json() as Promise<T>;
+}
+
+/** Dispara la descarga de un blob ya obtenido. Revoca el objectURL para no filtrar memoria. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const blobUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+
+  anchor.href = blobUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(blobUrl);
+}
+
+/**
+ * Descarga un archivo del backend y devuelve el nombre que se usó.
+ *
+ * Hermano de `requestJson`: vive acá y no en un composable porque es TRANSPORTE, no dominio.
+ * Antes de existir había cinco copias del mismo patrón blob+anchor+revoke repartidas por el SPA
+ * (`useTracking`, `useCiena` y tres inline en `InfraTab.vue`); el requisito no es consolidarlas
+ * todas de golpe, es que el código nuevo no agregue la sexta.
+ *
+ * Reusa `request()`, así que hereda credenciales, CSRF, `signal` y el `ApiError` con payload
+ * parseado — incluido el caso "éxito en text/plain, error en application/json".
+ */
+export async function requestDownload(
+  url: string,
+  options: ApiRequestOptions & { fallbackFilename?: string } = {},
+): Promise<string> {
+  const { fallbackFilename = 'descarga.txt', ...resto } = options;
+  const response = await request(url, {
+    ...resto,
+    headers: new Headers({ Accept: 'text/plain, application/octet-stream', ...(resto.headers ?? {}) }),
+  });
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const match = disposition.match(/filename="(.+?)"/);
+  const filename = match ? match[1] : fallbackFilename;
+
+  saveBlob(blob, filename);
+  return filename;
 }
 
 export function createFormData(

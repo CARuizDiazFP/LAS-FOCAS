@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-security-scan.md
 # Ubicación de archivo: .gemini/rules/skill-security-scan.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/security-scan/SKILL.md
+
 ---
 name: "skill-security-scan"
 description: "Usar cuando haya que ejecutar una revisión integral de seguridad, correlacionar secretos, dependencias, SAST y proponer mitigaciones"
@@ -33,7 +34,7 @@ commands:
 
 # Regla Skill: security-scan
 
-> Fuente original: `.github/skills/security-scan/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/security-scan/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Security Scan
 
@@ -47,19 +48,20 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
 
 ## Skills que coordina
 
-- [dependency-audit](../dependency-audit/SKILL.md)
-- [secret-detection](../secret-detection/SKILL.md)
-- [sast-analysis](../sast-analysis/SKILL.md)
+- [dependency-audit](skill-dependency-audit.md)
+- [secret-detection](skill-secret-detection.md)
+- [sast-analysis](skill-sast-analysis.md)
 
 ## Procedimiento
 
 1. Delimitar alcance técnico: carpetas, servicios, manifests y superficies expuestas.
-2. Ejecutar primero [secret-detection](../secret-detection/SKILL.md) sobre `.env`, despliegue, Docker, `Keys/` y scripts.
-3. Continuar con [dependency-audit](../dependency-audit/SKILL.md) sobre `requirements*.txt`, manifests de servicios y `web/frontend/package.json` si aplica.
-4. Ejecutar [sast-analysis](../sast-analysis/SKILL.md) sobre endpoints, validación de entradas, auth, subprocess, SQL y logging sensible.
-5. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
-6. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
-7. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
+2. Ejecutar primero [secret-detection](skill-secret-detection.md) sobre `.env`, despliegue, Docker, `Keys/` y scripts.
+3. Ejecutar `./scripts/check_no_plaintext_secrets.sh` como control preventivo automatizado.
+4. Continuar con [dependency-audit](skill-dependency-audit.md) sobre `requirements*.txt`, manifests de servicios y `web/frontend/package.json` si aplica.
+5. Ejecutar [sast-analysis](skill-sast-analysis.md) sobre endpoints, validación de entradas, auth, subprocess, SQL y logging sensible.
+6. Correlacionar hallazgos por componente, explotación posible e impacto operativo.
+7. Proponer mitigación o parche mínimo por cada hallazgo importante o crítico.
+8. Emitir salida final con severidad, evidencia, fix sugerido y riesgos residuales.
 
 ## Criterios de salida
 
@@ -67,6 +69,7 @@ Workflow reusable para auditorías de seguridad de punta a punta en LAS-FOCAS.
 - Secretos enmascarados; nunca completos.
 - Distinción clara entre hallazgo confirmado, sospecha y recomendación.
 - Cobertura declarada: qué rutas, manifiestos o servicios sí quedaron revisados.
+- Formato alineado al contrato `docs/seguridad_contrato_salida.md`.
 
 ## Guardrails
 

@@ -51,8 +51,8 @@ Este skill revisa y limpia logs del proyecto y de contenedores sin perder inform
 ## Referencias
 
 - [Operación detallada](./references/operacion.md)
-- [disk-analysis](../disk-analysis/SKILL.md)
-- [temp-cleanup](../temp-cleanup/SKILL.md)
+- [disk-analysis](../las-focas-disk-analysis/SKILL.md)
+- [temp-cleanup](../las-focas-temp-cleanup/SKILL.md)
 
 ## Guardrails
 

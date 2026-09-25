@@ -197,7 +197,7 @@ async function handleSubmit() {
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  padding: 22px 26px 0;
+  padding: 22px 0 0;
 }
 
 .chat-tab__kicker {
@@ -237,7 +237,7 @@ async function handleSubmit() {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 18px 26px 22px;
+  padding: 18px 0 22px;
 }
 
 .chat-tab__column {

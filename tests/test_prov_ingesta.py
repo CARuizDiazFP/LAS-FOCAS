@@ -1,20 +1,27 @@
 # Nombre de archivo: test_prov_ingesta.py
 # Ubicación de archivo: tests/test_prov_ingesta.py
-# Descripción: Tests puros del parseo del contexto de PROV (sin DB) — mapeo de campos, cadena de upgrades y fallback sin cadena
+# Descripción: Tests puros del parseo del contexto de PROV (sin DB) + integración real del upsert de app.servicios_sync_prov dentro de ingerir_contexto_prov
 
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from core.services.prov.ingesta import (
     EquipoUltimaMilla,
     _campos_direccion_desde_equipos,
     _traducir_estado_comercial,
+    ingerir_contexto_prov,
     parsear_contexto_prov,
 )
+from db.models.infra import Servicio
+from db.session import SessionLocal, async_engine
+from tests.soporte_postgres_real import requiere_postgres_real
 
 _CONTEXTO_SIN_UPGRADES = {
     "id_servicio": "RPV",
@@ -177,3 +184,153 @@ def test_campos_direccion_no_confunde_el_extremo_2_con_el_principal_si_falta_el_
 
 def test_campos_direccion_con_lista_vacia_devuelve_todo_none() -> None:
     assert _campos_direccion_desde_equipos([]) == (None, None, None)
+
+
+# ── Integración real: upsert de app.servicios_sync_prov dentro de ingerir_contexto_prov ──────────
+#
+# Requiere Postgres real (migración `20260923_02`) — sólo estos tests llevan `@requiere_postgres_real`,
+# el resto del archivo es parseo puro y sigue corriendo sin DB. Namespace de IDs sintéticos
+# reservado para este archivo: `"900211"`/`"900212"` — distinto del `"9001xx"` de
+# `tests/test_servicios_prov_routes.py` y del `"9002xx"` (`"900201"`-`"900206"`) de
+# `tests/test_prov_frescura.py`, mismo criterio de rango fresco sin colisiones.
+
+_engine_test = create_async_engine(async_engine.url.render_as_string(hide_password=False), poolclass=NullPool)
+_AsyncSessionLocalTest = async_sessionmaker(_engine_test, expire_on_commit=False)
+
+_NUMEROS_DE_TEST_SYNC_PROV = ("900211", "900212")
+
+
+@pytest.fixture
+def _limpiar_servicios_sync_prov_de_test():
+    yield
+    with SessionLocal() as session:
+        # `ON DELETE CASCADE` en `servicios_sync_prov.servicio_id` se encarga de esa tabla solo.
+        session.execute(
+            text("DELETE FROM app.servicios WHERE numero_primer_servicio = ANY(:numeros ::varchar[])"),
+            {"numeros": list(_NUMEROS_DE_TEST_SYNC_PROV)},
+        )
+        session.commit()
+
+
+def _crear_servicio_sync_prov_test(numero: str) -> int:
+    with SessionLocal() as session:
+        pk = session.execute(
+            text(
+                "INSERT INTO app.servicios "
+                "(servicio_id, numero_primer_servicio, numero_linea, estado_servicio, tipo_servicio, origen_datos) "
+                "VALUES (:numero, :numero, :numero, 'DESCONOCIDO', 'EWS', 'MANUAL'::app.servicio_origen_datos) "
+                "RETURNING id"
+            ),
+            {"numero": numero},
+        ).scalar_one()
+        session.commit()
+        return int(pk)
+
+
+def _leer_fila_sync_prov(servicio_pk: int) -> tuple[datetime, datetime | None, str | None, str | None] | None:
+    with SessionLocal() as session:
+        fila = session.execute(
+            text(
+                "SELECT ultima_sincronizacion_ok, ultimo_intento, ultimo_error, nro_servicio_consultado "
+                "FROM app.servicios_sync_prov WHERE servicio_id = :servicio_id"
+            ),
+            {"servicio_id": servicio_pk},
+        ).one_or_none()
+        return tuple(fila) if fila is not None else None
+
+
+def _contexto_minimo(numero: str) -> dict:
+    return {
+        "id_servicio": "EWS",
+        "nro_servicio": numero,
+        "nro_servicio_original": numero,
+        "estado_comercial": "INSTALADO",
+        "Descripcion": "CLIENTE SYNC PROV TEST",
+    }
+
+
+@requiere_postgres_real
+@pytest.mark.asyncio
+async def test_ingerir_contexto_prov_crea_la_fila_de_sync_si_no_existia(
+    _limpiar_servicios_sync_prov_de_test,
+) -> None:
+    """El upsert al final de `ingerir_contexto_prov` (Task 7) es el único embudo de escritura de
+    `app.servicios_sync_prov` — este test cubre el caso "nunca sincronizado" (el 92,5% real medido
+    antes de correr el backfill)."""
+    numero = "900211"
+    pk = _crear_servicio_sync_prov_test(numero)
+
+    antes = datetime.now(timezone.utc)
+    async with _AsyncSessionLocalTest() as sesion:
+        servicio = (await sesion.execute(select(Servicio).where(Servicio.id == pk))).scalars().one()
+        await ingerir_contexto_prov(sesion, servicio, _contexto_minimo(numero))
+        await sesion.commit()
+    despues = datetime.now(timezone.utc)
+
+    fila = _leer_fila_sync_prov(pk)
+    assert fila is not None
+    ultima_sincronizacion_ok, ultimo_intento, ultimo_error, nro_consultado = fila
+    assert antes <= ultima_sincronizacion_ok <= despues
+    assert antes <= ultimo_intento <= despues
+    assert ultimo_error is None
+    assert nro_consultado == numero
+
+
+@requiere_postgres_real
+@pytest.mark.asyncio
+async def test_ingerir_contexto_prov_reescribe_la_fila_existente_y_limpia_el_error(
+    _limpiar_servicios_sync_prov_de_test,
+) -> None:
+    """Un refresco exitoso tiene que avanzar `ultima_sincronizacion_ok` y limpiar cualquier
+    `ultimo_error` viejo — no puede quedar un error pegado después de un intento que sí funcionó."""
+    numero = "900212"
+    pk = _crear_servicio_sync_prov_test(numero)
+    vieja = datetime.now(timezone.utc) - timedelta(hours=200)
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.servicios_sync_prov "
+                "(servicio_id, ultima_sincronizacion_ok, ultimo_intento, ultimo_error, nro_servicio_consultado, "
+                " created_at, updated_at) "
+                "VALUES (:servicio_id, :vieja, :vieja, 'timeout de prueba', 'numero-viejo', :vieja, :vieja)"
+            ),
+            {"servicio_id": pk, "vieja": vieja},
+        )
+        session.commit()
+
+    async with _AsyncSessionLocalTest() as sesion:
+        servicio = (await sesion.execute(select(Servicio).where(Servicio.id == pk))).scalars().one()
+        await ingerir_contexto_prov(sesion, servicio, _contexto_minimo(numero))
+        await sesion.commit()
+
+    fila = _leer_fila_sync_prov(pk)
+    assert fila is not None
+    ultima_sincronizacion_ok, _ultimo_intento, ultimo_error, nro_consultado = fila
+    assert ultima_sincronizacion_ok > vieja
+    assert ultimo_error is None
+    assert nro_consultado == numero
+
+
+@requiere_postgres_real
+@pytest.mark.asyncio
+async def test_ingerir_contexto_prov_no_duplica_fila_de_sync_en_dos_llamadas(
+    _limpiar_servicios_sync_prov_de_test,
+) -> None:
+    """`servicio_id` es UNIQUE en `servicios_sync_prov` — dos refrescos del mismo Servicio tienen
+    que resolver en upsert (`ON CONFLICT DO UPDATE`), nunca en una segunda fila ni en un
+    `IntegrityError`."""
+    numero = "900212"
+    pk = _crear_servicio_sync_prov_test(numero)
+
+    for _ in range(2):
+        async with _AsyncSessionLocalTest() as sesion:
+            servicio = (await sesion.execute(select(Servicio).where(Servicio.id == pk))).scalars().one()
+            await ingerir_contexto_prov(sesion, servicio, _contexto_minimo(numero))
+            await sesion.commit()
+
+    with SessionLocal() as session:
+        total = session.execute(
+            text("SELECT count(*) FROM app.servicios_sync_prov WHERE servicio_id = :servicio_id"),
+            {"servicio_id": pk},
+        ).scalar_one()
+    assert total == 1

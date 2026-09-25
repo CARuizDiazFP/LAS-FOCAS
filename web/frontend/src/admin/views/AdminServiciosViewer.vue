@@ -20,6 +20,12 @@
         <span class="card-desc">Listado de Botellas (Cromo + legado) y detección de duplicados dentro de la misma Cámara padre.</span>
       </RouterLink>
 
+      <RouterLink to="/admin/servicios/viewer/ServiciosSinOdf" class="service-card">
+        <span class="card-icon">🔌</span>
+        <span class="card-title">Servicios sin ODF</span>
+        <span class="card-desc">Servicios Activos sin ODF resuelta, con causa probable y sugerencia de ODF para asociar a mano.</span>
+      </RouterLink>
+
       <!-- Futuros dashboards de datos operativos se agregan aquí -->
     </div>
   </section>

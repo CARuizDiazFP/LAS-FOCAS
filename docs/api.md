@@ -174,6 +174,328 @@ Busca cámaras en la base de datos con filtrado por texto y/o estado.
   curl "http://localhost:8001/api/infra/camaras?q=corrientes&estado=OCUPADA&limit=50"
   ```
 
+### GET `/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos`
+
+Lista los pelos de Cromo que sirven como semilla para pedir un camino óptico de un servicio.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos`
+- **Comportamiento:** consulta SQL local y no toca Cromo; devuelve los pelos disponibles para ese servicio y el total de candidatos.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "servicio_id": 93154,
+    "total": 1,
+    "pelos": [
+      {
+        "pelo_n_id": 10006353,
+        "servicio_numero": "93154",
+        "metodo": "REGEX_EXACTO",
+        "confianza": 100,
+        "numero_pelo": "4",
+        "color": "MR",
+        "cable_n_id": 10006296,
+        "cable_nombre": "FD-980-B",
+        "tiene_conector_odf": false,
+        "tracking_en_cache": null,
+        "servicio_raw": "FO 93154 - ODF Guanahani 580"
+      }
+    ]
+  }
+  ```
+
+- **Códigos de error:** `401` si no hay sesión; `404` si el servicio no existe.
+
+### GET `/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt`
+
+Genera el tracking óptico en formato `.txt` legacy a partir del camino real resuelto por Cromo.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt?{pelo_n_id=...}`
+- **Comportamiento:** usa la semilla detectada para resolver el camino y devuelve un archivo de texto plano con `Content-Disposition` para descargar.
+- **Respuesta 200:** archivo `text/plain; charset=utf-8` listo para descarga.
+- **Códigos de error:** `400` si el `pelo_n_id` es ajeno al servicio; `409` si el servicio no tiene camino o no tiene semilla; `502` si Cromo responde con error.
+
+### GET `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico`
+
+Devuelve el camino óptico completo de un servicio, con estadística, consistencia y serialización de nodos para usarlo desde el panel admin.
+
+- **Autenticación:** requiere sesión admin.
+- **Ruta:** `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico?pelo_n_id=...&raw=true`
+- **Comportamiento:** si el servicio no tiene semilla, responde con `estado: "SIN_SEMILLA"` y el resto de campos `null`/vacíos; no falla con 4xx. Si hay camino, serializa nodos, ODFs, lados y consistencia.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "estado": "OK",
+    "motivo": null,
+    "pelo_n_id": 10006353,
+    "servicio_at62": "93154",
+    "raiz": { "n_id": 10006353, "tipo": "PELO", "nombre": "FO 93154 - ODF Guanahani 580" },
+    "lado_a": [],
+    "lado_b": [],
+    "odfs": [],
+    "estadisticas": {
+      "nodos": 883,
+      "pelos": 130,
+      "fusiones": 132,
+      "conectores": 136,
+      "cables": 98,
+      "odfs": 4,
+      "no_resueltos": 9
+    },
+    "consistencia": {
+      "reglas": [],
+      "inconsistencias": [],
+      "total_discrepa": 0,
+      "total_no_ingerido": 0
+    }
+  }
+  ```
+
+- **Códigos de error:** `400` si el `pelo_n_id` es ajeno al servicio; `404` si no existe el servicio; `502` si Cromo falla. En el caso usual del 77% de servicios sin semilla, la respuesta es `200` con un estado explícito.
+
+> **Tracking multipelo (2026-09-17).** Un Servicio tiene tantos trackings como pelos: 1 en PON, 2 o
+> más en FO o con un SW de módulo bifilar. Se descargan como **archivos `.txt` sueltos**, uno por
+> pelo, repitiendo la llamada a `.../tracking.txt?pelo_n_id=N` por cada pelo elegido — no hay un
+> endpoint que devuelva varios a la vez. Con un solo pelo el nombre del archivo es idéntico al
+> histórico; con varios se le intercala el `n_id` para que no se pisen entre sí. El endpoint lee y
+> escribe `app.cromo_tracking_cache` (TTL 24 h), así que la segunda descarga del día de un mismo
+> pelo es instantánea en vez de costar los 4,6-14 s de `/path`. `GET .../pelos` informa por pelo
+> `tracking_en_cache`, y a nivel respuesta `preseleccionados` (las posiciones de ODF del Servicio)
+> y `odf_relevada`.
+>
+> **Query param `priorizar_conector` (2026-09-17).** `GET .../camino-optico/pelos` acepta
+> `?priorizar_conector=true`, que invierte el ranking para poner primero las posiciones de ODF.
+> Hace falta porque la lista viene **truncada en 20** y el orden por defecto —pensado para
+> *descubrir* ODFs nuevas— empuja fuera del tope justamente los pelos que sirven para descargar.
+> Medido real: el Servicio 93154 tiene **227 pelos matcheados** (el número de servicio viaja en el
+> `at.61` de todos los pelos del recorrido, no sólo de los extremos) y sólo **2** que son posición
+> de ODF. La respuesta publica además `total_matcheados` y `total_con_posicion_odf`, sin tope, para
+> que la UI pueda decir "te muestro 20 de 227" en vez de aparentar que el Servicio tiene 20 fibras.
+> El gestor de Servicios sin ODF **no** pasa el flag y conserva su orden de descubrimiento.
+>
+> La pertenencia del `pelo_n_id` se valida con una **consulta directa**
+> (`pelo_pertenece_al_servicio`), no contra esa lista truncada: hacerlo contra la lista rechazaba
+> con HTTP 400 un pelo que el propio selector acababa de ofrecer. Vale para los **dos** endpoints
+> que aceptan `pelo_n_id` — `.../tracking.txt` y `.../camino-optico`.
+>
+> **Corregido en `.../camino-optico` el 2026-09-21.** `resolver_camino_de_servicio()` era el único
+> que seguía validando contra la ventana y arrastraba el bug: `GET /servicios/ID/41579/camino` en el
+> SPA fallaba con `400 El pelo 6754728 no pertenece al Servicio 559`. Medido en dev: ese Servicio
+> tiene **95 pelos matcheados** y 6 posiciones de ODF, y el pelo pedido —que matchea justamente por
+> el ID histórico `41579` y **sí** tiene conector de ODF— cae en el puesto **31** del ranking de
+> descubrimiento, fuera del tope de 20. El mapeo ID histórico → PK nunca fue el problema: lo
+> resuelve `IDENTIDADES_DEL_SERVICIO_SQL` (`servicio_id`, `numero_primer_servicio`, `alias_ids`), y
+> es el que hace que el pelo pertenezca. El guard sigue activo: un pelo realmente ajeno todavía
+> devuelve `400`.
+
+### POST `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar`
+
+Normaliza las discrepancias de la tabla "Consistencia con lo ingerido", tomando Cromo como referencia.
+
+- **Autenticación:** admin + CSRF. Escribe inventario.
+- **Cuerpo:** `{"pelo_n_id": 6823649, "elemento_ids": [10126944], "csrf_token": "..."}`. Sin
+  `elemento_ids` se normaliza todo lo que la auditoría haya encontrado.
+- **Comportamiento:** **reingesta dirigida**, no escritura del valor que declara el camino — vuelve a
+  traer de Cromo el objeto real y lo persiste por el mismo parser y los mismos upserts que la
+  ingesta regular, dejando una corrida sintética (`MANUAL_NORMALIZAR_CONSISTENCIA`) en el histórico
+  de ingesta. Las inconsistencias se **recalculan en el servidor**: la lista que manda el cliente
+  sólo acota, no decide qué está mal. Un pelo se reingiere por el árbol de su cable (es la única
+  forma de obtener `tubo_n_id`/`cable_n_id` correctos, ver `docs/decisiones.md` 2026-09-17). Al
+  terminar invalida el tracking cacheado del pelo.
+- **Costo:** resuelve el camino (4,6-14 s) más una a dos llamadas a Cromo por elemento. Es lento a
+  propósito: no hay vía rápida que no implique escribir inventario a ciegas.
+- **Respuesta 200:** `{"ok": true, "corrida_id": 2129, "creados": 1, "actualizados": 0,
+  "sin_cambios": 0, "errores": 0, "total_discrepa_previo": 2, "total_no_ingerido_previo": 10,
+  "detalle": [{"elemento_id": 7967645, "regla": "PELO_CABLE", "accion": "CREADA", "detalle": null}]}`
+- **Códigos de error:** `403` CSRF o no admin; `404` servicio inexistente; `409` si el camino no
+  resuelve; `502` si Cromo falla.
+
+### POST `/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/relevar-odf`
+
+Releva las ODFs que atraviesa el camino, poblando sus posiciones de patchera.
+
+- **Autenticación:** admin + CSRF.
+- **Cuerpo:** `{"pelo_n_id": 6823649, "odfs_n_id": null, "csrf_token": "..."}`. Sin `odfs_n_id` se
+  relevan todas las ODFs que el camino descubrió.
+- **Comportamiento:** destraba el caso "la ODF de este Servicio no está relevada". Sin conectores
+  ingeridos no hay forma de saber qué posición de patchera le corresponde al Servicio, y por eso la
+  descarga de trackings no puede preseleccionar nada. Siempre pide `/inner` de la ODF: el atributo
+  id=62 (servicio declarado directo sobre el conector) sólo viaja en esa respuesta.
+- **Respuesta 200:** `{"ok": true, "corrida_id": 2130, "relevadas": 4, "errores": 0, "detalle": [...]}`
+
+### GET `/api/infra/cromo/botellas/{botella_n_id}/empalmes`
+
+Empalmes internos de una Botella. Desde 2026-09-17 devuelve además los **splitters declarados por
+Cromo**, que son cosa distinta de `empalmes[].es_splitter`:
+
+- `splitters[]` — clase 133 tal como la publica Cromo: `nombre` (`at.78`), `ratio` (`at.83`, "1x8"),
+  `salidas` (el `N` parseado; `null` si el texto no matchea `1xN`), y `puertos_ocupados` /
+  `puertos_totales` de sus salidas. Es **dato**, no inferencia.
+- `splitters_relevados` — `false` significa "esta Botella todavía no se barrió con el código que lee
+  splitters", **no** "no tiene ninguno". Mientras sea `false`, `empalmes[].es_splitter` sigue siendo
+  la heurística de fan-out y es lo único disponible; cuando pasa a `true`, la heurística deja de
+  afirmar nada y `splitters[]` es la fuente.
+
+Por qué la distinción importa: medida contra 30 botellas reales, la heurística acertó en 18 y falló
+en 12 —inventó 2 splitters donde Cromo tiene 0— y **nunca** devolvió un ratio correcto cuando el
+splitter existía. Ver `docs/decisiones.md` (2026-09-17, seguimiento 3).
+
+### GET `/api/infra/cromo/pon`
+
+Inventario navegable de la **red de acceso PON**: cajas PON y rosetas ya ingeridas. Sólo lectura,
+cualquier usuario autenticado (mismo criterio que los inventarios de cables y ODFs).
+
+- **Query params:** `q` (nombre, ILIKE parcial), `n_id` (exacto), `clases` (lista separada por
+  comas), `vigente` (bool), `localidad` y `propietario` (ILIKE parcial), `limit` (default 50, tope
+  200) y `offset`.
+- **Respuesta:** `{ total, limit, offset, elementos[] }`, donde cada elemento trae `n_id`, `clase`,
+  `nombre`, dirección (`calle`/`altura`/`localidad`), `propietario`, `tipo_conector`,
+  `capacidad_puertos`, `latitud`/`longitud`, `vigente` y `cantidad_splitters`.
+
+`clases` es el parámetro que distingue una vista de la otra: cajas PON y rosetas **comparten tabla**
+porque comparten esquema, así que la vista de Cajas PON pide `?clases=84,126,127,137,138,139,140` y
+la de Rosetas `?clases=85`. Sin el parámetro devuelve las ocho clases mezcladas.
+
+Un valor no numérico dentro de `clases` se **ignora** y el resto sigue filtrando, en vez de
+devolver 400: un parámetro de listado mal tipeado no debería romper la pantalla.
+
+`cantidad_splitters` cuenta por `cromo_splitters.contenedor_n_id`, no por `botella_n_id` — el 88 %
+de los splitters cuelga de una caja PON y no de una Botella (ver `docs/decisiones.md`, 2026-09-19).
+
+## Servicios únicos por cable/buffer + resolución de cable + refresco PROV (2026-09-23)
+
+Cuatro rutas nuevas, aditivas — ninguna toca `/cables/{id}/servicios`/`/tubos/{id}/servicios`
+(las consultas por-pelo del Verificador Cromo, que alimentan su tabla con la columna "Pelo"). Las
+viejas devuelven **una fila por pelo** — el dato físico correcto, porque un servicio puede ocupar
+varios pelos de FO del mismo cable (medido real: en el 29,6% de los pares cable-servicio ocurre —
+28.517 de 96.395, sólo matches con `servicio_id` resuelto —, en botellas trepa al 41,3%). Las de
+acá devuelven **IDs de servicio únicos** (uno por servicio, aunque
+ocupe varios pelos) — son **dos vistas legítimas del mismo dato, con propósitos distintos, no una
+reemplaza a la otra**. Detalle de diseño completo en `docs/superpowers/specs/
+2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`; equivalente por Slack en
+`docs/slack_app_cables.md` (comandos `Servicios <cable>`/`Servicios <cable> B<N>`).
+
+### GET `/api/infra/cromo/cables/resolver`
+
+Resuelve un cable por `n_id` o por nombre exacto, para que la SPA pueda anclar las tres rutas de
+abajo sin tener que adivinar el `n_id` de antemano.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/cables/resolver?q=<n_id|nombre>`
+- **Comportamiento:** si `q` es puramente numérico, matchea por `n_id`; si no, por `nombre` exacto
+  case-insensitive, sólo cables vigentes. Hay al menos 2 pares de nombres de cable duplicados reales
+  conocidos (`F-ALV-2335`, `F-LEM-11-A`) sobre ~32.782 cables vigentes — la ambigüedad se hace
+  **explícita** con un 409 en vez de elegir uno arbitrariamente.
+- **Respuesta 200:** `{"n_id": 6613293, "nombre": "F-VFL-IND", "capacidad": "72-BRUG"}`
+- **Respuesta 409 (ambiguo):**
+
+  ```json
+  {
+    "codigo": "AMBIGUO",
+    "candidatos": [
+      {"n_id": 9005904, "nombre": "F-ALV-2335", "capacidad": "72-BRUG"},
+      {"n_id": 9006460, "nombre": "F-ALV-2335", "capacidad": "72-BRUG"}
+    ]
+  }
+  ```
+
+- **Códigos de error:** `401` si no hay sesión; `404` `{"codigo": "NO_ENCONTRADO"}` si `q` no
+  matchea ningún cable vigente; `409` (arriba) si matchea 2+.
+
+### GET `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos`
+
+IDs de servicio únicos de un cable entero, con frescura de sincronización PROV por servicio.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos`
+- **Comportamiento:** sólo lectura — no dispara ningún refresco (eso es el POST de abajo). Agrega
+  por `servicio_id` (`GROUP BY` de una sola pasada, `core/services/cromo/verificador.py::
+  servicios_unicos_por_cable`); `refresco_prov` siempre viaja en `"no_solicitado"`.
+- **Respuesta 200:**
+
+  ```json
+  {
+    "cable_n_id": 6610203,
+    "cable_nombre": "FO-FL-1003",
+    "buffer": null,
+    "datos_al": "2026-09-24T12:00:00+00:00",
+    "servicios": [
+      {
+        "servicio_id": 4521,
+        "servicio_id_externo": "108875",
+        "numero_primer_servicio": "108305",
+        "nombre_cliente": "...",
+        "cliente": "...",
+        "estado_servicio": "Activo",
+        "tipo_servicio": "FO",
+        "pelos_n_ids": [6848900],
+        "cantidad_pelos": 1,
+        "numeros_en_pelo": ["108305"],
+        "metodos": ["descripcion"],
+        "frescura": {"ultima_sincronizacion_prov": null, "antiguedad_horas": null, "vencida": true}
+      }
+    ],
+    "refresco_prov": {"estado": "no_solicitado", "fallidos": []}
+  }
+  ```
+
+  Verificado real contra `lasfocasdev-postgres`: el cable `FO-FL-1003` (n_id 6610203) da
+  **exactamente 118** servicios únicos, 0 `servicio_id` repetidos (la consulta por-pelo da 141
+  filas para el mismo cable).
+
+- **Códigos de error:** `401` si no hay sesión; `404` `{"codigo": "NO_ENCONTRADO", "error": "..."}`
+  si el cable no existe en el inventario ingerido (ni fila propia ni referencia colgada).
+
+### GET `/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos`
+
+Igual que la ruta anterior, acotada a un buffer humano `B<numero>` puntual.
+
+- **Autenticación:** requiere sesión activa.
+- **Ruta:** `/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos`
+- **Comportamiento:** `numero` es 1-indexado (como lo cuenta el técnico), mapea a
+  `cromo_tubos.orden = numero - 1`. Un buffer con fila propia pero sin ningún pelo cargado responde
+  `200` con `servicios: []` (no `404`) — el tubo existe de verdad, sólo no tiene nada que reportar.
+- **Respuesta 200:** mismo cuerpo que la ruta anterior, con
+  `"buffer": {"numero": 1, "orden": 0, "nombre_color": "AZ"}`.
+- **Códigos de error:** `401` si no hay sesión; `404`
+  `{"codigo": "NO_ENCONTRADO", "total_buffers": 6}` si el cable no tiene ese buffer — `total_buffers`
+  (conteo real de buffers vigentes del cable) orienta al cliente ("el cable tiene 6, pediste B9").
+
+### POST `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov`
+
+Dispara el refresco contra PROV de los servicios únicos vencidos de este cable, awaiteado dentro
+del propio request (a diferencia del comando de Slack equivalente, que es fire-and-forget y postea
+un segundo mensaje al hilo — acá no hay ningún hilo al que responder).
+
+- **Autenticación:** requiere sesión activa + CSRF.
+- **Ruta:** `/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov`
+- **Cuerpo:** `{"csrf_token": "..."}`
+- **Comportamiento:** tope de 25 servicios por invocación (priorizados por antigüedad de
+  `ultimo_intento`), concurrencia 3, deadline global de 120 s — mismos parámetros que el refresco
+  de Slack (`modules/slack_baneo_notifier/refresco_prov.py`), reusados sin duplicar la orquestación.
+  Responde el mismo cuerpo que el GET por cable, con `refresco_prov.estado` reflejando el resultado
+  real (`"sin_vencidos"` si no había nada que refrescar, `"completado"` si todo salió bien,
+  `"parcial"` con `fallidos` poblado si algo no se pudo).
+- **Respuesta 200 (parcial):**
+
+  ```json
+  {
+    "cable_n_id": 6610203,
+    "...": "...",
+    "refresco_prov": {
+      "estado": "parcial",
+      "fallidos": [{"servicio_id_externo": "108305", "motivo": "no encontrado en PROV"}]
+    }
+  }
+  ```
+
+- **Códigos de error:** `401` si no hay sesión; `403` `{"error": "CSRF inválido"}`; `404`
+  `{"codigo": "NO_ENCONTRADO", "error": "..."}` si el cable no existe; `502`
+  `{"error": "PROV no está configurado: ..."}` si faltan `PROV_BASE_URL`/secrets en el entorno.
+
 ### POST `/api/infra/search`
 
 Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite buscar cámaras que cumplan **todos** los criterios especificados simultáneamente.

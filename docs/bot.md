@@ -263,6 +263,109 @@ Este registro **nunca bloquea ni condiciona la respuesta de Slack**: se ejecuta 
   `tiene_ingreso_activo` (`camara_estado_service.py`) como el cierre de Egreso NULL-safe
   (`ingreso_service.py`) filtran explícitamente `tipo == INGRESO`.
 
+**Actualización 2026-09-23 (comandos de corrección `Forzar ingreso` / `Forzar egreso`):**
+
+Un ingreso mal registrado (cámara equivocada, o formulario de egreso que nunca llegó) se corrige
+respondiendo en el hilo del formulario original con uno de estos comandos:
+
+```
+Forzar ingreso <CAMARA>
+Forzar ingreso <CAMARA> DD-MM-AAAA HH:MM
+Forzar egreso
+Forzar egreso <CAMARA> DD-MM-AAAA HH:MM
+Forzar egreso #<ingreso_id>
+```
+
+El parser vive en `modules/slack_baneo_notifier/correccion_ingreso.py` (puro, sin DB ni Slack) y la
+resolución real en `core/services/ingreso_correccion_service.py`.
+
+- **Scope nuevo requerido: `channels:history` (o `groups:history`)** en el panel de la Slack App —
+  no verificable desde código, mismo criterio que `app_mentions:read` y `users:read`. Lo usa el
+  nivel 3 de la cascada de resolución del hilo (`conversations.replies`), que cubre los hilos
+  históricos sin fila `Ingreso.thread_ts` ni `IngresoSinMatch`. **Si el scope falta, nada se rompe**:
+  la llamada degrada con gracia (warning en el log nombrando el scope) y el bot pide la forma con
+  cámara y fecha explícitas.
+- **Sin allowlist:** cualquiera del canal puede ejecutarlos, y un operador puede cerrar el ingreso
+  abierto de otro técnico. La auditoría (`app.ingresos_correcciones`, append-only con trigger que
+  rechaza `UPDATE`/`DELETE`) es el único control: **cada** invocación deja una fila, incluidos todos
+  los rechazos, con su `resultado` y su `error_detalle`.
+- **El momento sale del `ts` del hilo sólo si el tipo del formulario coincide con el tipo forzado.**
+  `Forzar egreso` en un hilo de *Ingreso* (y viceversa) exige fecha explícita: tomar el `ts` del hilo
+  registraría una visita de duración cero. Ese pedido de fecha se audita con
+  `resultado='PENDIENTE_FECHA'` — es un **estado pendiente, no un rechazo**: habilita que el
+  operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute. La
+  respuesta de seguimiento **no muta** la fila anterior (la tabla es append-only): escribe una fila
+  nueva con la ejecución.
+- **Nunca se crea una fila EGRESO huérfana por accidente.** Antes de cerrar, se resuelve el conjunto
+  de ingresos abiertos de la cámara: 0 → sólo la forma con cámara *y* fecha explícitas asienta
+  deliberadamente; 1 → se cierra esa fila (`cerrar_ingreso_forzado`); 2+ → se listan y se exige
+  `Forzar egreso #<id>`.
+- **`Forzar ingreso` sobre un grupo hoy baneado registra un INGRESO real**, no un
+  `INTENTO_BLOQUEADO` — ver `docs/decisiones.md`, entrada 2026-09-23. La respuesta avisa del baneo.
+- **Los comandos sólo funcionan dentro de un hilo** (una respuesta, nunca un mensaje raíz nuevo) —
+  pedido explícito del usuario: es lo que ancla la auditoría al formulario original. Un
+  `Forzar ingreso/egreso ...` enviado como mensaje suelto cae al flujo normal de extracción de
+  nombre de cámara (que no encuentra nada útil en un texto que empieza con "Forzar") y no se
+  procesa como comando de corrección. Ver `docs/decisiones.md`.
+- **Sin guard contra `Forzar ingreso` repetido**: dos técnicos en la misma cámara es legítimo, así
+  que un guard genérico lo bloquearía. Una doble ejecución por error queda visible en la auditoría
+  (dos filas `OK_INGRESO`) y se corrige con `Forzar egreso #<id>`.
+- **Ventana de carrera conocida en la respuesta de fecha pendiente**: dos respuestas de sólo
+  `DD-MM-AAAA HH:MM` casi simultáneas en el mismo hilo pueden ejecutar el forzado dos veces —
+  verificado empíricamente que `SELECT ... FOR UPDATE` no la cierra (Postgres no re-evalúa el
+  `ORDER BY`/`LIMIT` tras esperar el lock). Ventana angosta, y toda doble ejecución queda detectable
+  en la auditoría append-only. Detalle completo en
+  `docs/superpowers/specs/2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`.
+
+### `Servicios <cable>` / `Servicios <cable> B<N>` — IDs de servicio únicos con frescura PROV
+
+Comando de Slack complementario a los de corrección de ingresos (mismo worker, mismo proceso, otro
+dominio de datos). Documentado en detalle en `docs/slack_app_cables.md` (formato de respuesta,
+agrupación por buffer, refresco PROV asíncrono) — acá sólo el resumen operativo: responde con los
+IDs de servicio **únicos** de un cable (o de un buffer puntual), marca cuántos tienen la
+sincronización PROV vencida y, si hace falta, dispara un refresco en segundo plano que postea un
+segundo mensaje en el mismo hilo al terminar. Depende del mismo backfill PROV que la sección
+siguiente.
+
+### Sincronización con PROV: tabla de frescura y prerrequisito de backfill (desde 2026-09-23)
+
+Las Tasks 8 y 10 (comandos de Slack sobre servicios) necesitan distinguir qué IDs de servicio están
+"validados contra PROV" de cuáles no. Esa distinción vive en `app.servicios_sync_prov` (migración
+`20260923_02`, una fila por `Servicio` con `ultima_sincronizacion_ok`) y se escribe en un único
+embudo: el final de `ingerir_contexto_prov` (`core/services/prov/ingesta.py`), por el que pasan los
+tres consumidores de PROV — el endpoint on-demand `POST /servicios/prov/refrescar`, el backfill
+masivo `scripts/servicios_backfill_prov.py` y, desde la Task 9, el comando de Slack nuevo.
+
+La consulta de "¿esto está vencido?" (`core/services/prov/frescura.py`, batch — nunca una query por
+servicio) usa un umbral configurable:
+
+| Variable | Descripción |
+|---|---|
+| `PROV_FRESCURA_HORAS` | Horas de vigencia de una sincronización PROV antes de considerarse vencida. Default `48`. Un valor no numérico o `<= 0` cae al default con un warning en el log — nunca rompe el comando. |
+
+**Prerrequisito operativo, no mejora futura: correr el backfill ANTES de anunciar cualquier comando
+que dependa de esta consulta.** Medido real contra `lasfocasdev-postgres` el 2026-09-23: de los
+servicios alcanzables por cable, el 92,5% (8.401 de 9.079) nunca pasó por PROV, y la tabla
+`servicios_sync_prov` arranca completamente vacía — sin backfill, el 100% de cualquier lote
+consultado vuelve vencido (verificado real: los 118 servicios únicos del cable `FO-FL-1003`,
+n_id=6610203, dan 118/118 vencidos con la tabla en cero filas). Anunciar el comando en ese estado
+significa que cada invocación choca contra el tope de refresco durante meses sin alcanzar régimen
+estacionario. Antes de anunciarlo:
+
+```
+source .venv/bin/activate
+export POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_USER=FOCALBOT POSTGRES_DB=focas_dev
+export POSTGRES_PASSWORD=$(cat .secrets/Dev_db_password_v1.txt)
+export PROV_BASE_URL=https://prov.metrotel.com.ar/api/v1/ADMEQ
+export PROV_USER=$(cat .secrets/Dev_api_prov_user_v1.txt)
+export PROV_PASSWORD=$(cat .secrets/Dev_api_prov_pass_v1.txt)
+python scripts/servicios_backfill_prov.py --apply
+```
+
+**No correrlo en horario de uso intensivo**: el rate limiter de PROV es in-process, no distribuido
+(`docs/decisiones.md`, Decisión 3 del 2026-09-02) — si el backfill masivo corre a la vez que uso
+interactivo del botón "Actualizar desde PROV", el máximo combinado teórico sube a ~10 req/s.
+
 ### Estados de cámara
 
 | Estado | Comportamiento |

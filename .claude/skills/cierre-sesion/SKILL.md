@@ -1,6 +1,6 @@
 # Nombre de archivo: SKILL.md
 # Ubicación de archivo: .claude/skills/cierre-sesion/SKILL.md
-# Descripción: Habilidad para retrospectiva técnica, evolución agéntica y auto-merge de cierre de sesión (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
+# Descripción: Skill de cierre de sesión — retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge autónomo de la rama efímera a dev (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
 
 ---
 name: cierre-sesion
@@ -31,6 +31,17 @@ reservado para cuando se declare explícitamente.
 ## Procedimiento
 
 1. Confirmar el gate de activación. Si no se cumple, no continuar con los pasos siguientes.
+1b. **Identificar al agente y validar su workspace** (ver la skill `agent-worktree`):
+    ```bash
+    python scripts/agent_worktree.py status            # panorama: agentes, leases, handoffs
+    git rev-parse --show-toplevel                      # ¿dónde está parada esta sesión?
+    python scripts/agent_worktree.py doctor            # inconsistencias (sólo diagnostica)
+    ```
+    Confirmar que el `toplevel` actual coincide con el `worktree_path` registrado para este
+    `agent_id` y que la rama activa es la registrada. Si la sesión trabajó **sin** registrarse en el
+    tooling (flujo manual), continuar igual: el paso 14 cubre ambos casos. Si la sesión está parada
+    en el checkout de control con cambios propios sin integrar, decirlo explícitamente en el
+    checklist final — es la situación que el aislamiento por worktree busca evitar.
 2. Leer `AGENTS.md`, el historial disponible de la conversación activa, resultados de tool calls, el
    diff actual (`git status`/`git diff`) y la documentación de dominio afectada. Declarar cualquier
    límite de evidencia detectado (p.ej. contexto truncado por compactación automática).
@@ -72,7 +83,28 @@ reservado para cuando se declare explícitamente.
 13. Crear o anexar `docs/cierres/YYYY-MM-DD.md` sin perder cierres previos del mismo día, con el
     reporte completo (tareas, errores/soluciones, evolución agéntica implementada/propuesta y su
     clasificación de riesgo, archivos de gobernanza tocados) y confirmar la ruta del archivo guardado.
-14. **Flujo de Auto-Merge** — integrar la rama efímera activa de esta sesión a `dev`. Antes de
+14. **Flujo de Auto-Merge** — integrar la rama efímera activa de esta sesión a `dev`.
+
+    **Vía preferida: el tooling de agentes** (si esta sesión tiene un `agent_id` registrado, es
+    decir si el paso 1b lo confirmó). Ya resuelve el orden correcto, la serialización y los
+    guardrails, y deja auditoría en el estado compartido:
+    ```bash
+    python scripts/agent_worktree.py sync      --agent <agent-id>   # trae origin/dev a la rama
+    # resolver conflictos DENTRO del worktree propio y volver a validar (tests, drift de mirrors)
+    python scripts/agent_worktree.py ready     --agent <agent-id>   # exige worktree limpio
+    python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
+    python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
+    python scripts/agent_worktree.py cleanup   --agent <agent-id> --borrar-rama
+    ```
+    `integrate` adquiere `git:integrate-dev`, publica la rama, hace fast-forward de `dev`, actualiza
+    el checkout de control y libera el lease. Si `dev` avanzó mientras tanto, el push es rechazado
+    por Git y el comando lo informa: repetir `sync` y reintentar. Si la integración falla, el agente
+    queda en `blocked` y **el worktree no se elimina**. `cleanup` sólo remueve el worktree si está
+    limpio; si quedó sucio lo informa y lo deja intacto (documentarlo en el checklist final).
+    Verificar además que no queden leases propios abiertos:
+    `python scripts/agent_lock.py list --agent <agent-id>`.
+
+    **Vía manual** (sesión sin agente registrado, o el tooling no aplica). Antes de
     cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea
     `^(feat|fix|docs|chore|refactor|test)/` — si es `dev`, `main`, o no matchea el patrón,
     **DETENERSE inmediatamente** sin ejecutar ningún comando de este flujo (ni merge, ni push,
@@ -129,8 +161,7 @@ reservado para cuando se declare explícitamente.
 
 ## Referencias
 
-- [Prompt asociado](../../../.github/prompts/cierre-sesion.prompt.md)
-- [Comando Claude Code](../../commands/cierre-sesion.md)
+- [Prompt asociado](../../prompts/cierre-sesion.prompt.md)
 - Este flujo reemplaza a `superpowers:finishing-a-development-branch` específicamente para el cierre
   de sesión: el trigger de cierre ya constituye la decisión de integración explícita del usuario, por
   lo que no se invoca ese skill acá (evita volver a preguntar algo ya resuelto). Fuera de este flujo
@@ -157,23 +188,34 @@ reservado para cuando se declare explícitamente.
    resultado final a `dev` al cerrar.
 7. Sin declaración explícita de cierre del usuario, no elaborar ni persistir la retrospectiva ni
    ejecutar el auto-merge.
-8. Ninguna propuesta de evolución agéntica clasificada 🔴 se implementa sin respuesta explícita del
-   usuario — el flujo se detiene en el paso 11 hasta obtenerla.
-9. El auto-merge del paso 14 es autónomo, incluida la resolución de conflictos, salvo instrucción
-   explícita previa de diferir esa rama en la misma sesión.
-10. El commit de fusión del paso 14 documenta en su mensaje los archivos en conflicto y el criterio de
-    resolución aplicado.
+8. Ninguna propuesta de evolución agéntica clasificada 🔴 (muy alto riesgo) se implementa sin respuesta
+   explícita del usuario — el flujo se detiene en el paso 11 hasta obtenerla.
+9. El auto-merge del paso 14 es autónomo, incluida la resolución de conflictos, salvo que el usuario
+   haya indicado explícitamente en la misma sesión que esa rama debe diferirse.
+10. El commit de fusión del paso 14 documenta en su mensaje los archivos en conflicto (si los hubo) y
+    el criterio de resolución aplicado.
 11. Si hubo flujo recursivo SDD/superpowers durante la sesión, registrar métricas de ciclo y alertas
     según `docs/sdd_metricas_ciclo.md`.
 12. El flujo de auto-merge nunca se ejecuta si la rama activa no matchea el patrón de rama efímera
     (`feat|fix|docs|chore|refactor|test`/...) — evita borrar o mutar `dev`/`main` por error si no
     se creó una rama efímera.
+13. Al cerrar, el agente debe quedar en `finished` (integrado) o `handoff`/`blocked` (pendiente),
+    nunca en `active`, y sin leases propios abiertos. Un agente que queda bloqueado deja handoff
+    explícito con `next_action` y `blocked_on`
+    (`agent_worktree.py handoff --from <a> --to <b> --next-action "<paso>"`).
+14. El worktree del agente se elimina **únicamente** si la integración terminó bien y
+    `git status --porcelain` está vacío. Ante cualquier duda, no se elimina: se documenta como
+    pendiente en el checklist. Nunca usar `git worktree remove --force` ni `git branch -D`.
 
 ## Resultado esperado
 
-- Reporte Markdown completo guardado en `docs/cierres/YYYY-MM-DD.md`.
+- Reporte Markdown completo (tareas verificadas contra evidencia, errores/bloqueos, soluciones
+  aplicadas, evolución agéntica con su clasificación de riesgo) guardado en
+  `docs/cierres/YYYY-MM-DD.md`.
 - Propuestas 🟢/🟡 de evolución agéntica implementadas; propuestas 🔴 detenidas hasta respuesta del
   usuario.
-- Rama efímera de la sesión mergeada a `dev` y pusheada (o explícitamente diferida), borrada tras el
-  merge exitoso.
+- Rama efímera de la sesión mergeada a `dev` y pusheada (o explícitamente diferida por pedido del
+  usuario), rama efímera borrada tras el merge exitoso.
+- Agente en `finished` (o `handoff`/`blocked` con continuidad documentada), sin leases propios
+  abiertos, y worktree removido sólo si quedó limpio.
 - Checklist final de 5 líneas mostrado al usuario en el chat.

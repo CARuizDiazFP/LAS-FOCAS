@@ -34,6 +34,7 @@ from modules.slack_baneo_notifier.camara_search import (
     _limpiar_puntuacion,
     _normalizar,
     expandir_abreviaturas_y_sinonimos,
+    limpiar_ruido_operativo,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,8 +112,16 @@ def normalizar_para_agrupar_extendido(nombre: Optional[str]) -> str:
     agresiva para decidir "¿ya existe esta Cámara?" (no sólo para sugerir candidatas a revisión manual)
     puede generar falsos positivos — dos sitios físicos distintos que compartan una abreviatura podrían
     fusionarse automáticamente. Decisión consciente, sin flag ni modo de prueba.
+
+    2026-09-08: se antepone `limpiar_ruido_operativo` — el recorte de sufijos tras separador ya existía
+    (`_RE_RUIDO_OPERATIVO`) pero sólo lo usaba la búsqueda de texto libre de Slack, nunca esta
+    normalización, así que "…Bot 2" y "…Bot 2 - CRITICA" (caso real en prod: legado 1615 y Cromo
+    6631710 bajo la misma Cámara padre) nunca agrupaban. El recorte sigue actuando SÓLO ante una
+    stopword conocida: recortar todo lo que sigue a un guion colapsaría hermanas legítimas, medido
+    contra prod — "B. Candelarias - Bot. 1 …" con "… - Bot. 2 …", y localidades como
+    "Poste Lavalle - Campana", que es el sufijo más frecuente.
     """
-    return expandir_abreviaturas_y_sinonimos(normalizar_para_agrupar(nombre))
+    return expandir_abreviaturas_y_sinonimos(normalizar_para_agrupar(limpiar_ruido_operativo(nombre or "")))
 
 
 def estado_mas_restrictivo(estados: Iterable[CamaraEstado]) -> CamaraEstado:

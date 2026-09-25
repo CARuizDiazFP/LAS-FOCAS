@@ -168,6 +168,8 @@ Este skill proporciona comandos y procedimientos para diagnosticar el uso de dis
 
 ## 📊 Umbrales de Alerta
 
+Perfiles operativos recomendados: `docs/maintenance_profiles.md`.
+
 | Recurso | 🟢 Normal | 🟡 Advertencia | 🔴 Crítico |
 |---------|-----------|----------------|------------|
 | Disco general | <70% | 70-85% | >85% |
@@ -357,6 +359,6 @@ echo -e "\n═══════════════════════
 
 ## 🔗 Skills Relacionados
 
-- [docker-cleanup](../docker-cleanup/SKILL.md) - Limpieza de recursos Docker
-- [logs-cleanup](../logs-cleanup/SKILL.md) - Gestión de archivos de log
-- [temp-cleanup](../temp-cleanup/SKILL.md) - Limpieza de temporales y caché
+- [docker-cleanup](../las-focas-docker-cleanup/SKILL.md) - Limpieza de recursos Docker
+- [logs-cleanup](../las-focas-logs-cleanup/SKILL.md) - Gestión de archivos de log
+- [temp-cleanup](../las-focas-temp-cleanup/SKILL.md) - Limpieza de temporales y caché

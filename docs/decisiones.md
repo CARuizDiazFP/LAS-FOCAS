@@ -217,6 +217,13 @@
 - **Alternativas:** hard delete real de la fila secundaria (descartado — pierde auditoría vía `ON DELETE CASCADE`); un flag "archivada" nuevo (descartado — agrega esquema nuevo sin necesidad, cuando el mecanismo de self-FK ya existente resuelve el mismo problema con menos código y consistencia total con el resto del módulo).
 - **Impacto:** `core/services/camara_merge_service.py` (nuevo), endpoint `POST /api/infra/camaras/merge` (admin, CSRF) + búsqueda liviana `GET /api/infra/camaras/buscar` (deliberadamente no reusa `smart-search`, que tiene N+1 de rutas/servicios/cables pensado para el dashboard). Botón "Unificar Cámara" nuevo en el header del detalle de Cámara. Verificado con tests unitarios (mock de sesión); no se ejecutó ninguna unificación real contra datos de producción/dev en esta sesión — los 47 grupos reales quedan pendientes de que un admin los revise y decida manualmente cuáles unificar.
 
+## 2026-09-11 — Camino óptico de Cromo (`/path`): semilla, parseo y endpoints
+
+- **Contexto:** Se necesitaba resolver la topología de fibra de un servicio desde Cromo sin inventar una base local ni depender de información parcial del Excel legacy. El caso no trivial era que muchos servicios no tienen ODF ni pelo válido, y el sistema no podía pedir `/path` en un 77% de los servicios sin semilla.
+- **Decisión:** Implementar un flujo de dos capas: primero detectar semilla local (`listar_pelos_semilla` con una sola query), y sólo si hay candidato, pedir a Cromo `GET /network/fo/{id}/path` con timeout y limitador propios. El parseo normaliza el dict de Cromo, detecta lado A/B, identifica raíces, ODFs y fusiones, y deja expuestas las discrepancias de consistencia sin bloquear la visualización.
+- **Alternativas:** pedir a Cromo para todos los servicios o intentar reconstruir el camino con la base local sin consultar la API; ambas opciones fallaban por costo, faltantes de datos o falsos positivos. Se opta por el flujo de semilla + auditoría diagnóstica.
+- **Impacto:** Se habilitan 3 endpoints del admin y un camino de descarga `.txt` compatible con el formato legacy. La respuesta `SIN_SEMILLA` se devuelve con `200` en el endpoint admin para que la UI describa un caso legítimo sin contaminar los logs con falsos errores. La validación local actual pasó la batch focalizada (`118 passed`).
+
 ## 2026-08-12 — Fallback de nombre exacto para Cromo, fix de idempotencia real y propagación de estado a CromoBotella
 
 - **Contexto:** Extensión del backfill Cromo→Cámara del 2026-08-11. De las 9.512 Botellas Cromo huérfanas (86%), la muestra real mostraba que casi ninguna era "sin información" — eran direcciones válidas sin el patrón "Bot N"/"Botella N". Por separado, el usuario reportó desde el propio dashboard filas mostrando `OCUPADA` sin ningún `Ingreso` activo real.
@@ -1355,3 +1362,1058 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Pendiente concreto:** las 11 Cámaras sin match requieren revisión manual (¿existen todavía en el
   inventario real de Cromo con otro nombre, o son ubicaciones que ya no corresponden banear?) antes de
   decidir si banearlas manualmente o darlas de baja del seguimiento de "Críticas".
+
+## 2026-09-07 (cont. 2) — Diagnóstico real de Servicios sin ODF asociada (Cromo) + fix del gap de resolución de `fase_servicios`
+
+- **Contexto:** arranque del diseño de un viewer nuevo (análogo a Cámaras/Botellas) para "Servicios
+  Activos sin ODF correctamente asociada", con asociación manual y — a futuro, fuera de esta
+  iteración — reconstrucción del camino físico ODF↔Cable↔Botella↔ODF y descarga de trackings en
+  Detalle de Servicio. Antes de diseñar el viewer se corrió un diagnóstico real contra
+  `lasfocasdev-postgres` (sólo `SELECT`) para las 3 hipótesis de causa raíz planteadas por el usuario.
+- **Universo real (snapshot pre-fix):** de 5731 Servicios Activos verificables, **2939 sin ODF
+  asociada (51%)**. Desglose real de la muestra: **~38%+ por switch/rack compartido** (varios
+  servicios en el mismo `tubo_n_id`/`cable_n_id` Cromo, sólo uno con descripción de pelo que
+  resuelve — hipótesis del usuario confirmada y dominante; ejemplo real: Municipalidad de Pilar, hasta
+  9 servicios en el mismo tubo), **mayoría del resto genuinamente ausente de la red Cromo** (hipótesis
+  1), **667 casos (23%) con pelo matcheado pero sin conector de ODF ingerido** (patrón nuevo, no
+  anticipado — el pelo/tubo/cable resuelve al servicio pero nunca quedó vinculado a una patchera),
+  **77 casos (3.4%) de baja lógica heredada** (hermano en `Baja` con la misma dirección sí tiene pelo
+  — hipótesis 3 confirmada pero minoritaria, y sólo contra bajas reales `INGEST_EXCEL`, nunca
+  placeholders `INFERIDO_CROMO`). Confirmado con el usuario: Cromo (`cromo_pelos`/
+  `cromo_odf_conectores`) es la fuente de verdad para el viewer, el tracking legacy
+  (`core/parsers/tracking_parser.py`) queda fuera de alcance. `tipo_servicio='FO'` se confirma
+  correctamente excluido de `TIPOS_SERVICIO_VERIFICABLES` (no son circuitos de fibra por definición
+  pese a buen ratio de match aparente).
+- **Bug de pipeline real encontrado durante el diagnóstico:** el scheduler de ingesta Cromo está
+  deshabilitado a propósito desde antes del 2026-08-29 (decisión explícita del usuario, se mantiene
+  así). Todas las corridas manuales posteriores usaron `modo="SOLO_ODF"` o
+  `tipo="MANUAL_REPOBLAR_CABLES"` — ambas saltan `fase_servicios` por diseño
+  (`core/services/cromo/ingesta.py::continuar_corrida`). Resultado: **944 pelos con
+  `servicio_numero` ya ingerido (varios con match EXACTO y sin ambigüedad) nunca generaron fila en
+  `app.cromo_servicio_match`** porque esa fase no volvía a correr desde 2026-08-07 — el 100% de los
+  944 casos tienen `ultima_ingesta` posterior a esa fecha, 0 excepciones. No es un bug de lógica de
+  matching (el algoritmo resuelve bien si corre), es puramente operativo/de scheduling.
+- **Remediación aplicada:** por decisión del usuario, sin reactivar el scheduler ni tocar los modos
+  `SOLO_ODF`/`MANUAL_REPOBLAR_CABLES` — catch-up puntual reusando la `fase_servicios()` ya desplegada
+  y probada (`scripts/cromo_backfill_fase_servicios.py`, corrida sintética
+  `tipo="MANUAL_CATCHUP_SERVICIOS"`, mismo patrón que `repoblacion_service.py`). Corre 100% contra
+  datos ya ingeridos, sin llamadas de red a Cromo.
+- **Segundo bug real, encontrado en la primera corrida de la remediación (`systematic-debugging`,
+  root cause antes de fix):** `_SQL_CREAR_PLACEHOLDER_SERVICIO` (creación de Servicio placeholder
+  para `servicio_numero` plausible sin match) usaba `:origen::app.servicio_origen_datos` — el cast
+  `::tipo` pegado sin espacio al bind param hace que SQLAlchemy no reconozca `:origen` como parámetro
+  y lo mande literal al driver; Postgres/asyncpg responde `syntax error at or near ":"`. Mismo patrón
+  ya documentado para psycopg3 síncrono, confirmado ahora también bajo asyncpg async. 199/944 pelos
+  (exactamente los que necesitaban crear un placeholder nuevo, no sólo resolver contra un Servicio
+  existente) fallaron con este error en la primera corrida; los otros 745 resolvieron bien porque no
+  pasan por ese INSERT. Fix de una línea (espacio antes de `::`) + test de regresión contra Postgres
+  real (`tests/test_cromo_ingesta_placeholder_servicio_real_db.py`, TDD: rojo confirmado con el bug,
+  verde tras el fix) + suite completa de `test_cromo_ingesta.py` (75 tests) sin romper nada.
+- **Resultado final verificado en dev:** 944 → **0 pelos pendientes de match**. 745 resueltos contra
+  Servicios reales existentes, 199 resueltos tras el fix (13 Servicios placeholder nuevos,
+  `origen_datos=INFERIDO_CROMO`, deduplicados por número repetido entre pelos). Recuento post-fix:
+  de los 5731 verificables, 3411 tienen ahora al menos un pelo matcheado en `cromo_servicio_match`
+  (antes de este catch-up, ninguno de los 944 lo tenía). El recuento fino de "con ODF asociada" vs.
+  "sin ODF" por categoría (con la query definitiva del viewer) se rehace como parte del diseño del
+  viewer, ya que las categorías "sin conector ODF ingerido" (667) y "switch compartido" (dominante)
+  son independientes de este fix — `fase_servicios` sólo resuelve pelo→servicio, no crea conectores.
+- **Pendiente concreto:** diseño y construcción del viewer de "Servicios sin ODF asociada" (hub
+  `/admin/servicios/viewer`, tabla escudo de asociación manual `cromo_servicio_odf_override`
+  soportando muchos-a-uno, categorización de causa por tarjeta) — próxima fase de esta misma tarea,
+  en la rama efímera `feat/odf-viewer-servicios-sin-odf`.
+
+
+## 2026-09-08 — Duplicados invisibles para los visores: dos bugs de normalización de nombres
+
+- **Contexto:** El usuario reportó Botellas duplicadas en prod que el visor de duplicados **no
+  agrupa** — distintas de los grupos ya conocidos que el visor sí muestra. Su hipótesis era que el
+  sufijo `" - CRITICA"` generaba el mismatch. Se confirmó, y al medir contra la DB real de producción
+  apareció una segunda causa bastante más grande que no estaba en la hipótesis.
+
+- **Bug 1 — el sufijo tras separador sobrevive a la normalización.** `_limpiar_puntuacion`
+  (`modules/slack_baneo_notifier/camara_search.py`) convierte `" - "` en espacio pero conserva la
+  palabra, así que `"…Bot 2 - CRITICA"` normalizaba a `…bot 2 critica` y nunca coincidía con
+  `…bot 2`. Ya existía `_RE_RUIDO_OPERATIVO` / `limpiar_ruido_operativo()`, que sabe recortar sufijos
+  tras separador ante una stopword conocida (cuadrilla, móvil, contratista, ticket…), pero **sólo lo
+  usaba `buscar_camara()`** — la normalización de agrupamiento nunca lo llamaba. Caso real: bajo la
+  Cámara padre 2753, la Botella legado 1615 `"Cra  Diag Norte 902 Esq Suipacha Bot 2"` y la Cromo
+  6631710 `"…Bot 2 - CRITICA"` son la misma botella y jamás se ofrecieron como grupo.
+
+- **Bug 2 — `"C.F."` con puntos no colapsa a `"cf"`.** `_limpiar_puntuacion` hace
+  `re.sub(r"\.(?!\d)", " ")`, con lo que `"C.F."` queda como los dos tokens sueltos `c f` y la regla
+  `\bcf\b -> ""` de `_ABREVIATURAS` deja de alcanzarlo. Medido en prod: **el detector de Cámaras
+  duplicadas informaba 0 grupos cuando en realidad había 96 pares** que sólo difieren en cómo se
+  escribió CF (`"Cra Cerrito 410 CF"` vs `"Cra Cerrito 410 C.F."`, `"Datacenter Tacuari 355 CF"` vs
+  `"… C.F."`). Este es el que mejor explica el síntoma original: el detector de Botellas agrupa **por
+  Cámara padre**, así que con el padre partido en dos, las botellas del mismo sitio nunca se comparan.
+
+- **Decisión:** agregar `r"\bc\s+f\b": ""` a `_ABREVIATURAS`, sumar `cr[ií]tic[ao]` a
+  `_RE_RUIDO_OPERATIVO`, y anteponer `limpiar_ruido_operativo` en
+  `normalizar_para_agrupar_extendido` (`core/services/camara_hierarchy_service.py`).
+
+- **Alternativa descartada (medida, no intuida):** recortar genéricamente **todo** lo que sigue a un
+  guion. Suma 6 grupos de Botellas de los cuales 5 son falsos positivos: se come el `"Bot N"`
+  posterior y colapsa hermanas legítimas (`"B. Candelarias - Bot. 1 …"` con `"… - Bot. 2 …"`,
+  `"…Playa 13 Bot 2"` con `"…Playa 13"`). Además, de las 808 Botellas con sufijo tras separador, el
+  sufijo más frecuente es una **localidad** (FIBRASTAR 55, PILAR 30, MORON 23; CRITICA sólo 7). El
+  recorte queda entonces restringido a stopwords conocidas, y hay tests de no-regresión que fijan
+  esos tres casos.
+
+- **Impacto medido contra la DB de producción (antes → después):** Cámaras raíz 0 → 96 grupos (194
+  Cámaras involucradas); Botellas 52 → 53 grupos (121 → 123 filas). Control de falsos positivos: el
+  grupo más grande queda en 4 miembros en ambos dominios y ninguna clave normaliza a cadena vacía.
+
+- **Riesgo asumido:** `normalizar_para_agrupar_extendido` no la usa sólo la detección — también
+  `resolver_o_crear_padre_desde_base()` (ingesta de Cromo), `cromo/separacion_service.py` y
+  `scripts/cromo_backfill_camara_padre.py`. El cambio, por lo tanto, **también altera escritura**: la
+  ingesta deja de crear un padre nuevo cuando ya existe uno que sólo difería en la escritura de CF.
+  Es el efecto buscado (cierra el punto de alta de estos duplicados), pero es más que un cambio de
+  visor. Continúa la línea del riesgo ya aceptado explícitamente el 2026-08-14 para esta función.
+
+- **Gap de UI resuelto en el mismo trabajo:** para Cámaras existía "Unificar Cámara" desde la ficha,
+  independiente del detector; para Botellas, "Consolidar manualmente" abría el modal con `grupo=null`
+  y la sección "Botellas legado a heredar" estaba detrás de un `v-if` alimentado por el grupo
+  detectado, así que sólo dejaba tipear n_ids Cromo. El backend ya aceptaba `ids_legado` y
+  `force_camera_association` — el gap era exclusivamente de UI. Ahora se pueden sumar Botellas legado
+  por ID con el mismo patrón de chips que los orígenes Cromo.
+
+- **Revisión adversarial posterior (mismo día), 3 hallazgos — 2 aplicados, 1 refutado con datos:**
+  - *Aplicado:* el `.*` greedy de `_RE_RUIDO_OPERATIVO` se come todo lo que sigue a la stopword. Para
+    las stopwords originales es inocuo (siempre son terminales: "- CUADRILLA DE HIDROCONS"), pero
+    "crítica" es un calificador que puede venir seguido de información que identifica el sitio:
+    `"Cra Ruta 9 - Critica Km 45"` y `"… Km 46"` colapsaban al mismo nombre. En prod hoy los 10 casos
+    de "- CRITICA" son todos terminales (0 no terminales), pero como esta normalización también
+    decide si crear o reusar una Cámara padre en la ingesta, el modo de falla sería silencioso. Se
+    separó "crítica" a `_RE_SUFIJO_CRITICA`, **anclada al final** del nombre.
+  - *Aplicado:* el plural "CRITICAS" no estaba cubierto (`s?` faltante). 0 casos en prod hoy, pero el
+    archivo de negocio se llama "Criticas en seguimiento", así que es una forma esperable.
+  - *Refutado con medición:* se objetó que `\bc\s+f\b` no está anclado y podría colapsar iniciales de
+    calle ("Av. C. F. Alvear" con "Avenida Alvear"). En los datos reales hay 89 nombres con "c f" en
+    posición NO terminal, y **ninguno** son iniciales: todos son el código de filial seguido de una
+    aclaración (`"Cra Teodoro García 2402 C.F (INSTALAR)"`, `"Tza Esmeralda 561 C.F. 4 piso frente
+    izq"`), donde recortar es lo correcto. Anclar al final habría roto esos 89. También se objetó que
+    recortar "C F" del medio rompería el ILIKE de substring de `buscar_camara()` (bot de Slack): se
+    ejecutó la búsqueda real contra la DB de prod sobre 238 nombres reales (los 36 con "c f" medio,
+    los 5 con "crítica" y 200 aleatorios) comparando antes/después — **0 regresiones y 1 mejora**
+    (`"Cra. Reconquista 490 C.F."` pasó de ambiguo a resolver). El riesgo está cubierto por diseño:
+    el Intento 2 de la cascada busca por tokens de ≥3 chars (inmune a recortar tokens de 1 char) y el
+    Intento 4 corre explícitamente sin expansión de abreviaturas.
+  - Impacto final tras las correcciones: idéntico (Cámaras 0 → 96, Botellas 52 → 53) — más seguro sin
+    perder detección.
+
+## 2026-09-09 — Gestor "Servicios sin ODF": detección, categorización y asociación manual (cierre del plan iniciado 2026-09-07)
+
+- **Contexto:** cierre del plan de 7 tareas (rama `feat/odf-viewer-servicios-sin-odf`, trabajo real
+  2026-09-08/09, vía `superpowers:subagent-driven-development`) que sigue al diagnóstico de la
+  entrada anterior: de 5731 Servicios Activos verificables, **2891 sin ODF Cromo resuelta** tras el
+  catch-up de `fase_servicios` (bajó de las 2939 del diagnóstico inicial — drift esperado entre
+  corridas de ingesta). El plan construye un gestor dedicado (`AdminServiciosSinOdfViewer.vue`) que
+  lista ese universo, categoriza la causa probable por fila, sugiere la ODF de un "hermano" resuelto
+  cuando es posible, y deja asociar manualmente vía una tabla escudo — sin auto-aplicar nada.
+- **Decisión 1 (taxonomía y prioridad, 4 categorías que particionan exacto el universo):**
+  `categorizar()`/`categorizar_extremos()` en `core/services/cromo/servicios_sin_odf.py` clasifican
+  cada Servicio (o, si tiene 2 extremos de última milla — 364 casos dentro de este universo sin
+  ODF, 204 con categorías divergentes entre extremos; medido sobre TODA
+  `app.servicios_equipos_ultima_milla` son 368/206, y el docstring de `categorizar_extremos()`
+  aclara los dos alcances — el extremo ganador) en orden de prioridad:
+  1. `OLT_PON_COMPARTIDO` (equipo `ILIKE 'OLT%'`) — **1537 servicios (53%)**. Prioridad más alta
+     porque es la ÚNICA categoría con sugerencia asistida accionable: un hermano del mismo (nodo,
+     equipo) que ya tiene ODF resuelta.
+  2. `EQUIPO_DOMICILIO_CLIENTE` (nodo `LIKE 'CLI\_%'`) — **687 (24%)**.
+  3. `SWITCH_COMPARTIDO_REVISAR` (resto con equipo/nodo) — **583 (20%)**. Va después de CLI_ porque
+     es un bucket genérico "revisar a mano", señal menos específica que "equipo en domicilio".
+  4. `SIN_SENAL_PROV` (sin última milla en absoluto) — **84 (3%)**, con subcategoría diagnóstica
+     adicional (`PELO_SIN_CONECTOR_ODF`/`AUSENTE_RED_CROMO`/`BAJA_LOGICA_HEREDADA`) calculada
+     on-demand, nunca en el listado paginado (evita N+1).
+  Total 1537+687+583+84 = 2891, reverificado real hoy vía el endpoint de listado (QA de cierre, ver
+  abajo) tras limpiar la fila de verificación que había dejado la tarea anterior.
+- **Decisión 2 (tabla escudo `app.cromo_servicio_odf_override` sin `UNIQUE`):** cada fila es un
+  EVENTO de asociación manual, no el estado actual de un Servicio — `crear_override` siempre hace
+  INSERT puro, nunca UPDATE. Sin `UNIQUE(servicio_id)` a propósito: permite que un operador corrija
+  una asociación previa (reasociar a otra ODF) sin perder historial. La lectura
+  (`override_vigente_de_servicio`/`overrides_vigentes_por_odf`) siempre toma la fila más reciente por
+  `servicio_id` (`ORDER BY creado_en DESC, id DESC`). Verificado real en el QA de cierre: reasociar el
+  mismo Servicio a una ODF distinta lo deja SOLO bajo la ODF más nueva, nunca duplicado bajo las
+  dos — exactamente el caso que motivó no poner `UNIQUE`. `servicio_id` es FK dura a
+  `app.servicios.id` (`ON DELETE CASCADE`); `odf_n_id`/`pelo_n_id` son referencias blandas (sin FK),
+  mismo criterio que el resto de las referencias cruzadas a Cromo.
+- **Decisión 3 (señal de dirección, ayuda no bloqueante):**
+  `core/services/cromo/direccion_comparacion.py::comparar_direccion_prov_vs_odf` compara la dirección
+  PROV del Servicio contra calle/altura de la ODF candidata (`coincide`/`no_coincide`/
+  `no_se_pudo_comparar`) — nunca bloquea la confirmación de una asociación manual, sólo informa. Gap
+  real cerrado durante el plan: la sugerencia automática sólo existe para `OLT_PON_COMPARTIDO`
+  (1537/2891, 53%), así que para el 47% restante — y para cualquier operador que rechace la
+  sugerencia dentro de OLT y busque otra ODF a mano — el badge de señal quedaba inerte justo donde
+  más se necesitaba. Fix: endpoint de sólo lectura `GET .../{id}/senal-direccion?odf_n_id=` que
+  recalcula la señal para CUALQUIER ODF que el operador busque, sin persistir nada — `POST
+  .../asociar` sigue siendo quien recalcula y persiste server-side contra la ODF REALMENTE elegida,
+  nunca confía en lo que mandó el frontend.
+- **Historia de performance** (medida real contra `lasfocasdev-postgres`, tres cuellos de botella
+  sucesivos, los tres con universo idéntico de 2891 filas — `tests/test_cromo_servicios_sin_odf_real_db.py`
+  tiene una regresión automática que falla si se dropea cualquiera de los 2 índices o se revierte
+  cualquiera de los 2 rewrites):
+  1. Query original: **~23.9s**.
+  2. + índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — el plan pasó de `Seq Scan`
+     a `Index Only Scan` (cost 31923→6736) pero el tiempo total apenas bajó a **~20.8s**: había un
+     segundo cuello de botella no anticipado por el diseño original (self-join anti-ambigüedad de
+     `servicios` contra sí misma, O(n²) en ejecución real pese a que el planner lo estimaba barato).
+  3. + GIN `ix_servicios_alias_ids_gin` + rewrite de `= ANY(alias_ids)` a contención
+     `@> ARRAY[...]` — los dos SÓLO funcionan juntos (el GIN solo no mueve nada, y el rewrite solo
+     empeora a ~39.8s) — **~11.6s**.
+  4. + eliminar la CTE `MATERIALIZED` y desarmar el `NOT EXISTS` en 3 `NOT EXISTS` independientes vía
+     De Morgan — **145.6 ms de Execution Time / ~0.15-0.19s wallclock**, medido el 2026-09-08. Una
+     medición posterior el MISMO día, con el SQL byte-idéntico, dio 262-275ms — confirmado que no es
+     regresión (mismo plan de ejecución, mismos tamaños de tabla): variación de caché/carga de dev,
+     no del código. **Rango honesto a citar: ~145-275ms**, no sólo el mejor número.
+  Total: **~164x** (23.9s → ~150-275ms). Lección técnica para quien vuelva a tocar esta query: **el
+  cost-estimate del planner de Postgres no correlacionó con el tiempo real en NINGUNO de los tres
+  cuellos de botella** — el diseño original descartó el GIN por mirar el cost (~483 de ~37.828) y se
+  equivocó; la CTE `MATERIALIZED` también venía de una estimación de costo. Sólo medir con
+  `EXPLAIN (ANALYZE, TIMING OFF)` contra datos reales lo reveló las tres veces.
+- **Fuera de alcance, explícito (no implementado, no diseñado):**
+  - El trazado físico completo OLT→Caja PON→Splitter→Cable de bajada→Roseta. El usuario confirmó los
+    IDs de clase Cromo reales de esos objetos (84, 66, 85) pero **ninguno está ingerido hoy** en este
+    repo — el gestor llega hasta "qué ODF" (donde el pelo termina en la patchera), no hasta el
+    circuito físico completo hasta la roseta del cliente.
+
+  > **Actualizado 2026-09-17:** medido contra Cromo real, las clases que aparecen en el camino de un servicio OLT son **133** (Splitter, con el ratio en `at.83`), **134** (puerto de splitter), **86** (nodo/sala), **141** (fusión en ODF) y, sembrando desde una **salida** del splitter, **84** (Caja PON), **66** (Cable de bajada) y **137** (caja PON de edificio). La **85 (Roseta) no se observó en ningún camino**. Además, ingerirlas **no** habilitaría el trazado continuo: `/path` corta el recorrido en cada splitter, y las cajas PON y bajadas quedan en el `dict` pero fuera de la ruta `a[]`/`b[]`. Ya están catalogadas y etiquetadas (migración `20260917_02`); ver la entrada del 2026-09-17 en `docs/decisiones.md`.
+  - Descarga de trackings desde el Detalle de Servicio.
+  - Distinción algorítmica entre "SW de frontera" (nodo compartido real) y "SW con FO dedicada al
+    cliente" dentro de `SWITCH_COMPARTIDO_REVISAR` — el usuario no entregó todavía un criterio
+    verificable para separarlos; queda como bucket único "revisar manualmente" con un TODO explícito
+    en `categorizar()`.
+- **Deuda técnica conocida, documentada y NO arreglada** (salió de las reviews del plan):
+  1. **La más sustantiva:** `_SQL_HERMANO_DE_BAJA_CON_PELO` (`servicios_sin_odf.py`, paso 3 de la
+     cascada de `subcategoria_sin_senal_prov`) matchea el pelo del hermano dado de baja sólo por FK
+     (`m.servicio_id = hermano.id`), no por las TRES identidades (`servicio_id`/
+     `numero_primer_servicio`/`ANY(alias_ids)`) que sí se corrigieron en los pasos 1/2 de la misma
+     cascada (ese sí fue un Important real, arreglado). Un hermano cuyo pelo está matcheado sólo vía
+     número o alias podría perder silenciosamente el diagnóstico `BAJA_LOGICA_HEREDADA`.
+  2. Docstring auto-contradictorio en el mismo archivo: una línea dice que la cascada "cuesta 3
+     queries por fila" y otra dice "hasta 2 queries por Servicio" — quedaron desincronizadas en el
+     mismo fix round.
+  3. `overrides_vigentes_por_odf` deduplica TODA la tabla de overrides (`DISTINCT ON` global) antes
+     de filtrar por `odf_n_id` — necesario para la corrección (ver Decisión 2), pero corre un sort
+     sobre la tabla completa en cada llamada. Inofensivo al volumen esperado (unos pocos miles de
+     filas, un evento por asociación/reasociación sobre ~2891 Servicios); mitigación ya identificada
+     si la tabla creciera mucho más (prefiltrar `servicio_id IN (...)` antes del dedup global).
+  4. Ciclo de imports entre `verificador.py` y el módulo nuevo de overrides, resuelto con un import
+     diferido (in-function) en `verificador.py`. El fix arquitectónico (extraer `ObjetoNoEncontrado`
+     a su propio módulo, ej. `core/services/cromo/errores.py`) toca 8 archivos existentes —
+     desproporcionado para este plan.
+  5. El gap de la tecla Escape (backdrop/botón cierran el modal, Escape no) sigue vivo en
+     `ModalUnificarCamara.vue` — mismo defecto que se corrigió en `ModalAsociarOdf.vue` de este plan,
+     pero en un componente preexistente de otra feature, fuera de alcance de esta rama.
+  6. **Una asociación equivocada es irreversible desde la UI** (salió de la revisión final de rama,
+     2026-09-09). `cromo_servicio_odf_override` es append-only y **sin tombstone**: a diferencia de
+     `cromo_botella_alias` (que tiene `accion` `fusionar`|`ignorar`), acá no hay ninguna forma de
+     marcar una fila como anulada. Y el listado del gestor excluye un Servicio por la PRESENCIA de
+     cualquier fila (`con_override AS (SELECT DISTINCT servicio_id FROM
+     app.cromo_servicio_odf_override)`), no por la fila vigente. Consecuencia real: si el operador
+     confirma el Servicio equivocado, ese Servicio desaparece del gestor **para siempre** —
+     reasociarlo a la ODF correcta agrega otra fila (y `overrides_vigentes_por_odf` sí lo mueve a la
+     ODF nueva, ver Decisión 2), pero el Servicio nunca vuelve a aparecer en el listado de
+     pendientes, así que el error no se puede ni encontrar ni deshacer desde la UI. El único remedio
+     hoy es SQL manual: `DELETE FROM app.cromo_servicio_odf_override WHERE servicio_id = (SELECT id
+     FROM app.servicios WHERE servicio_id = '<numero>');` (borra TODOS los eventos de ese Servicio y
+     lo devuelve al listado; para borrar sólo el último, agregar `AND id = (SELECT max(id) FROM
+     app.cromo_servicio_odf_override WHERE servicio_id = ...)`). **No se implementó la anulación**:
+     es una feature nueva (endpoint de borrado/anulación + columna `accion` o `anulado_en` +
+     cambiar el `con_override` del listado a "fila vigente no anulada") y la decide el usuario, no
+     una ronda de fixes de review.
+- **Requisito DURO de orden de despliegue: migraciones primero, SIEMPRE** (documentado en la
+  revisión final de rama, 2026-09-09). `verificador.py::servicios_por_odf` ahora llama
+  `overrides_vigentes_por_odf` **sin condición**, y eso consulta `app.cromo_servicio_odf_override`.
+  Ese servicio alimenta `GET /api/infra/cromo/odfs/{n_id}/servicios`, un endpoint **preexistente**
+  que usa `OdfDetalleCromoView.vue` y que hoy funciona. Y ni `deploy/compose.yml` ni
+  `deploy/docker-compose.dev.yml` ni `web/Dockerfile` corren `alembic upgrade` en ningún
+  `command`/`entrypoint`/`CMD` (verificado por grep, 2026-09-09): las migraciones de este repo son
+  **manuales**. Si alguien reconstruye/levanta `web` antes de correr `alembic upgrade head`, el
+  detalle de ODF pasa a devolver 500 con `relation "app.cromo_servicio_odf_override" does not
+  exist` — una vista que funcionaba se rompe. Orden obligatorio: `alembic upgrade head` (20260908_01
+  y 20260908_02) → recién después rebuild/up de `web`. Aplica igual a prod.
+- **QA E2E real de cierre (2026-09-09):** `lasfocasdev-web` reconstruido y confirmado en HEAD
+  `764e62f` antes de medir nada (build con capas 100% cacheadas — el código ya coincidía). Vía
+  `TestClient` contra Postgres real dentro del contenedor (**sin navegador disponible en este
+  entorno** — declarado explícitamente, no fingido): listado sin filtro (2891) y por categoría
+  (1537/687/583/84, exacto); filtro `q` por número de servicio (`122519`→"LEADING BRANDS SA",
+  `101778`→"MUNICIPALIDAD DE PILAR"); sugerencia real para un Servicio del grupo
+  `ElRincon842_Pilar`/`OLT2_Pilar` (618 servicios, 1 ya resuelto) — trajo la ODF real del hermano
+  (`ODF Frondizi 1413 - Pilar`, n_id 6643800); preview de señal de dirección a mano para un Servicio
+  que NO recibe sugerencia automática; asociación real completa (POST → desaparece del listado →
+  aparece en `GET /api/infra/cromo/odfs/{n_id}/servicios` con `metodo="OVERRIDE_MANUAL"`);
+  reasociación a otra ODF (el Servicio queda SOLO bajo la ODF nueva, nunca duplicado); rechazo real
+  de CSRF inválido (403). Suite completa: 1471 passed / 3 failed (los 3 ya conocidos y ajenos a este
+  plan — 2 en `test_cromo_odf_inventario_real_db.py` por un cast de `asyncpg` sin datos de prueba, 1
+  por orden de ejecución en `test_servicios_prov_routes.py`, ninguno en archivos tocados por esta
+  rama) / 5 skipped. Base dejada limpia: los overrides creados durante el QA se borraron, universo
+  confirmado de vuelta en 2891 con la misma distribución exacta.
+- **Nota de drift real encontrada en el QA:** el ejemplo puntual que el brief de cierre pedía repetir
+  (`LEADING BRANDS SA`, servicio 122519, esperado en `SIN_SENAL_PROV`/`PELO_SIN_CONECTOR_ODF`) ya no
+  cae ahí — hoy su última milla resuelve a `OLT2_Atento` (prefijo `OLT`), así que categoriza como
+  `OLT_PON_COMPARTIDO` con sugerencia real (aunque `no_coincide` en dirección). No es un bug: es el
+  mismo tipo de drift de datos entre corridas de ingesta que ya movió el conteo total de 2939 a 2891.
+  Se usó `ANTENA OESTE` (servicio 118363) como ejemplo vigente de `PELO_SIN_CONECTOR_ODF` para no
+  dejar ese camino sin verificar.
+- **Ola de fixes de la revisión final de rama (2026-09-09), 4 cambios de código:**
+  1. **Sugerencia de ODF determinista + conteo de candidatas.** `_SQL_SUGERENCIA_ODF` era un
+     `SELECT DISTINCT ... LIMIT 1` **sin `ORDER BY`**: no le pedía a Postgres ninguna fila en
+     particular. Medido real: de los 1057 Servicios `OLT_PON_COMPARTIDO` sin ODF que tienen al menos
+     una ODF candidata, **88 tienen más de una** (969 con 1, 35 con 2, 53 con 4), y a esos 88 la UI
+     les presentaba una sola como si fuera la única. Ahora la query agrupa por ODF candidata,
+     ordena por `hermanos_resueltos DESC, odf_n_id` (la más corroborada primero, desempate estable
+     — nunca por `nombre`, ver el punto 2) y devuelve `cantidad_candidatas` en la misma pasada, que
+     el modal muestra cuando es `> 1`. **Honestidad de la medición:** el flapping era un riesgo
+     LATENTE, no un bug observado — la forma vieja resultó estable en dev hoy en 8 repeticiones ×
+     11 variantes de plan forzadas (`enable_hashjoin`/`enable_hashagg`/`enable_nestloop`/
+     paralelismo/`join_collapse_limit`), y con el orden nuevo las 94 sugerencias multi-candidata de
+     dev devuelven la MISMA ODF que antes. Lo que faltaba era la garantía, no un valor distinto.
+  2. **El puente sugerencia→confirmación buscaba por NOMBRE** (`ModalAsociarOdf.vue::usarSugerencia`)
+     y **217 ODFs de dev comparten nombre con otra** (100 grupos de homónimos, hasta 4 por grupo,
+     medido real). Con una sugerencia homónima el operador obtenía 3-4 resultados indistinguibles —
+     el `n_id` ni se mostraba en la línea de sugerencia — y confirmaba creyendo que confirmaba la
+     sugerida: **escribía la ODF equivocada** en `cromo_servicio_odf_override`. Ahora busca por
+     `nId` (el filtro `n_id` de `odf_inventario.py` es igualdad exacta sobre la PK, devuelve
+     exactamente 1) y el `n_id` se muestra en la sugerencia. Verificado real contra el grupo de
+     homónimos `ODF Domingo de Acassuso 3780 OLIVOS` (n_id 6644757/6646045/6646155/6646208):
+     buscar por nombre devuelve `total=4`, buscar por cada `n_id` devuelve `total=1`.
+     **Honestidad de la medición:** hoy, con los datos de dev, **ninguna** de las ODFs que la
+     sugerencia puede llegar a proponer tiene nombre duplicado (medido: 0 de las candidatas de los
+     1057 Servicios con sugerencia caen en un nombre no único), así que por el camino de la
+     sugerencia el error concreto no es alcanzable HOY — el riesgo es de datos, no de código:
+     `cromo_odfs` no tiene ninguna restricción de unicidad de nombre, la ingesta agrega ODFs
+     continuamente y ya hay 217 homónimas en la tabla, cualquiera de las cuales puede volverse
+     candidata mañana. Buscar por PK en vez de por un texto no único es correcto igual y no cuesta
+     nada, y mostrar el `n_id` sirve además en el buscador manual, donde los homónimos SÍ aparecen
+     hoy.
+  3. **Los chips de conteo multiplicaban por 5 la query más cara de la feature.** El viewer hacía
+     `Promise.all` de 4 requests `limit: 0` (uno por categoría) en paralelo con el listado, en cada
+     montaje/búsqueda/refresco/asociación, y cada uno re-corría la detección completa (~2891 filas
+     candidatas categorizadas en Python) para devolver un entero. Como `listar_servicios_sin_odf` ya
+     calcula `categoria_causa` de cada fila antes de filtrar, ahora devuelve
+     `conteos_por_categoria` en la misma pasada (4 claves siempre presentes, calculadas después del
+     filtro `q` y ANTES del filtro `categoria`, que es lo que los chips necesitan) y los 4 requests
+     se borraron: 1 ejecución en vez de 5.
+  4. **Los guards de los 4 endpoints no eran coherentes.** `GET {id}/sugerencia` y
+     `GET {id}/senal-direccion` eran `_require_auth` mientras `listado`/`asociar` eran
+     `_require_admin`, los 4 bajo `/api/admin/`. El guard ancho no habilitaba ningún caso de uso (la
+     ruta de UI ya es `meta: { requiresAdmin: true }`) y `/sugerencia` es el **único** endpoint de la
+     app del SPA que serializa `Servicio.direccion` — el domicilio del cliente; los otros 14 usos de
+     `.direccion` en `web/app/main.py` son de `Camara`, y el precedente que citaba el docstring
+     (`odfs/{id}/conectores`) expone `nombre_cliente` pero no la dirección — más el `nodo`/`equipo`
+     de última milla (topología). Un rol `user` podía iterar `servicio_id` y cosecharlo todo,
+     mientras el listado, que muestra menos, sí exigía admin. Los 2 tests que fijaban el guard ancho
+     quedaron invertidos.
+- **Impacto:** gestor nuevo en `/admin/servicios/viewer` → "Servicios sin ODF" (4 endpoints bajo
+  `/api/admin/infra/servicios-odf/...`, los 4 `_require_admin`), tabla
+  `app.cromo_servicio_odf_override` + 2 índices de performance (migraciones
+  `20260908_01`/`20260908_02`, detalle en `docs/db.md`). A nivel de **comportamiento observable con
+  el esquema ya aplicado** no cambia ningún flujo existente — el override es aditivo sobre
+  `servicios_por_odf` y sin filas de override el resultado es idéntico. A nivel de **despliegue** sí
+  hay un cambio: `servicios_por_odf` pasa a depender de una tabla nueva, así que el detalle de ODF
+  preexistente se rompe si se levanta `web` sin haber migrado (ver el requisito de orden de
+  despliegue más arriba).
+- **No hecho / limitación del entorno:** sin navegador disponible, ningún flujo se verificó clic a
+  clic — la evidencia más fuerte disponible es `TestClient` contra Postgres real dentro del
+  contenedor reconstruido, más lectura de código (revisiones del plan) para los 3 no-negociables de
+  UI (ambos extremos visibles, sugerencia nunca auto-aplicada, señal nunca bloqueante) y el guardrail
+  de paleta de tokens.
+
+## 2026-09-14 — Aislamiento físico multi-agente por Git worktree
+
+- **Contexto:** El aislamiento entre sesiones agénticas concurrentes era sólo histórico (una rama
+  efímera por tarea) sobre un único working tree compartido. Eso ya había producido fricción real y
+  documentada: un commit ajeno aterrizando en la rama efímera de otra tarea (`docs/cierres/2026-09-04.md`)
+  y cinco procesos `claude` compartiendo checkout con cambios de rama que ninguna sesión había
+  iniciado (`docs/cierres/2026-09-07.md`). `AGENTS.md` describía desde el 2026-09-08 una política de
+  ownership, leases y handoff que no tenía implementación.
+- **Decisión:** Implementar **un agente = una tarea = una rama = un Git worktree**
+  (`scripts/agent_worktree.py`), con leases por recurso compartido sobre SQLite
+  (`scripts/agent_lock.py`), estado runtime en `<git-common-dir>/las-focas-agents/` (fuera del
+  historial Git y visible desde todos los linked worktrees) e integración a `dev` serializada por el
+  lease `git:integrate-dev`. El checkout principal pasa a ser **checkout de control/integración**.
+- **Alternativas:** (a) Mantener el lock cooperativo global sobre un worktree único, como hace hoy
+  `Growen` — descartado: serializa toda la tarea, no sólo el recurso en disputa, y no impide que dos
+  agentes se pisen el working tree. (b) Estado en PostgreSQL o Redis — descartado para coordinación
+  local: agrega un servicio y una dependencia para un problema que SQLite con `BEGIN IMMEDIATE`
+  resuelve; queda documentado como backend futuro para agentes en máquinas distintas. (c) Una base
+  de estado por worktree — descartado: dejaría de ser estado compartido.
+- **Impacto:** Varias sesiones pueden trabajar en paralelo sin que un `git switch`, un staging o un
+  commit de una afecte a otra; el desarrollo normal no toma ningún lock; sólo la ventana de escritura
+  sobre `dev` se serializa. Se corrigió además un problema de `.gitignore` que afectaba a todo
+  worktree: los patrones con barra final (`.venv*/`, `.secrets/`, `web/frontend/node_modules/`) no
+  matchean symlinks, así que los enlaces de entorno aparecían como archivos sin trackear; ahora el
+  tooling registra esos patrones en `<git-common-dir>/info/exclude`, que es compartido y no depende
+  de la rama de cada worktree. Referencia: `docs/arquitectura_agentes_worktrees.md`.
+
+## 2026-09-15 — Camino óptico de Cromo visible en el Detalle de Servicio y navegación desde el gestor sin ODF
+
+- **Contexto:** Dos flujos quedaron a medio conectar. (a) Las tarjetas de
+  `/admin/servicios/viewer/ServiciosSinOdf` mostraban el Nº de servicio pero no permitían
+  abrirlo. (b) El Detalle de Servicio descargaba el tracking de Cromo como `.txt` pero no lo
+  mostraba, aunque el bloque que resuelve, audita y dibuja el camino ya existía **embebido**
+  dentro de `ModalAsociarOdf.vue`. El reporte original ("al hacer click en Ver tracking redirige
+  a Infra") resultó ser un **deploy stale**, no un bug: `d88baae` (11-sep) ya había reemplazado
+  ese `RouterLink`, pero la imagen `lasfocasdev-web` servía un bundle sin ese commit.
+- **Decisión:** Extraer el bloque a `CromoCaminoPanel.vue` y usarlo en los dos consumidores. El
+  estado (`useCromoPath`) se queda en el padre y viaja como prop: el modal necesita leer
+  `resultado.pelo_n_id` para persistirlo al asociar, y el detalle para descargar el `.txt` del
+  pelo elegido. La acción por ODF descubierta ("Traer al buscador") es del modal, así que sale
+  por un slot con scope; su regla CSS se queda en el modal, porque el contenido de un slot se
+  compila en el scope del padre y un `<style scoped>` del panel nunca lo alcanzaría. En la
+  tarjeta se linkea sólo el Nº (no la tarjeta entera, que tiene dos botones adentro), en pestaña
+  nueva porque la grilla tiene scroll infinito sobre 2.891 filas, y apuntando a
+  `numero_primer_servicio` con `servicio_id` de fallback: los dos resuelven, pero el primero
+  evita el `router.replace` de normalización del detalle.
+- **Alternativas:** Duplicar el bloque en el detalle (evita tocar un modal crítico, pero condena
+  las dos copias a divergir); mostrar en su lugar el tracking legado `.txt` por ruta
+  (`TrackingDetail.vue`), descartado con el usuario porque la fuente viva es Cromo.
+- **Impacto:** El camino se ve y se valida donde antes sólo se descargaba a ciegas: secuencia de
+  nodos, panel de consistencia (`DISCREPA`/`NO_INGERIDO`) y ODFs descubiertas. `ModalAsociarOdf`
+  pierde 233 líneas sin cambio funcional. El detalle ahora cancela la resolución en
+  `onBeforeUnmount`: antes no hacía falta porque nunca resolvía, ahora puede quedar una request
+  de hasta 30 s en vuelo al salir. Cambio menor deliberado: el selector de pelo pasa a verse
+  también con una sola semilla, que antes quedaba invisible.
+
+## 2026-09-15 — `docker compose` desde un worktree reescribe los bind mounts del stack compartido
+
+- **Contexto:** Al reconstruir `lasfocasdev-web` desde un agent worktree
+  (`docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build web && up -d web`),
+  Compose **recreó también `lasfocasdev-postgres`**, que no era el objetivo. La causa no fue
+  `--env-file` (iba puesto, y los datos quedaron intactos: el volumen `postgres_dev_data`
+  persiste): Compose resuelve los binds relativos contra el directorio del archivo de compose, así
+  que `db/init.sql` y `.secrets/Dev_db_password_v1.txt` pasaron a apuntar **dentro del worktree**.
+  Config distinta ⇒ recreate. Un worktree es efímero: al borrarlo, esos binds apuntarían a rutas
+  inexistentes y el próximo arranque de postgres fallaría.
+- **Decisión:** El `build` puede correrse desde el worktree (es lo que hornea el código de la
+  tarea en la imagen), pero el `up -d` que deja el stack corriendo se hace **desde el checkout de
+  control**, que reusa la imagen ya construida y devuelve los binds a `/home/support-focal-01/LAS-FOCAS`.
+  Verificar siempre después con `docker inspect <contenedor> --format '{{range .Mounts}}...'`.
+- **Alternativas:** Copiar el código al checkout de control antes de construir (pierde el
+  aislamiento del worktree); usar rutas absolutas en el compose (cambio de infraestructura con su
+  propio alcance).
+- **Impacto:** Amplía el guardrail que ya existía sobre `--env-file` y rutas relativas
+  (`docs/arquitectura_agentes_worktrees.md`): el riesgo no es sólo que falten variables, es que el
+  stack compartido quede atado a un directorio que está por desaparecer. La operación sigue
+  requiriendo el lease `env:docker-compose`.
+
+## 2026-09-17 — Tracking multipelo con caché de 24 h y normalización de la consistencia del camino
+
+- **Contexto:** Dos límites reportados desde producción sobre el mismo panel. (a) Un Servicio tiene
+  tantos trackings como pelos —1 en PON, 2 o más en FO o con un SW de módulo bifilar— pero sólo se
+  podía descargar el de uno: `resolver_camino_de_servicio` elegía `semillas[0]` y el frontend
+  espejaba ese sesgo (`useCromoPath.ts`, `lista[0]`). (b) La tabla "Consistencia con lo ingerido"
+  informaba `DIFIERE`/`NO_INGERIDO` sin ninguna acción para corregirlo: era informativa por diseño.
+- **Medición que condicionó el diseño** (real contra Cromo, 2026-09-17): una llamada a
+  `GET /network/fo/{pelo}/path` tarda **4,6-14 s**. `CromoClient.get_camino_optico` acepta varios
+  ids separados por coma, pero **no sirve para esto**: con 3 ids Cromo devolvió **un único** nodo
+  raíz (455 nodos), no tres caminos. N trackings son entonces N llamadas secuenciales — el servicio
+  real 122347, con 6 pelos, costaba 30-85 s en frío.
+- **Decisión 1 (descarga):** un `.txt` **por pelo**, archivos sueltos, no un ZIP. El frontend pide
+  los pelos tildados en serie y muestra progreso. El nombre sólo se distingue con el `n_id` cuando
+  el Servicio tiene más de un pelo, así que el caso PON conserva exactamente el nombre de siempre y
+  nada de lo que consume ese `.txt` aguas abajo se entera.
+- **Decisión 2 (caché):** tabla `app.cromo_tracking_cache` con TTL de 24 h, clave por pelo. Guarda
+  el **artefacto renderizado**, no el camino: las tablas `cromo_*` de inventario siguen sin recibir
+  nada derivado de `/path`. Medido en dev: 5,41 s y 4,31 s en frío, **0,00 s** en caliente.
+- **Decisión 3 (preselección):** vienen tildadas las **posiciones de ODF** del Servicio
+  (`tiene_conector_odf`), que pueden ser varias. No se tocó el orden de `listar_pelos_semilla`, que
+  ordena al revés **a propósito** (`tiene_conector_odf` ASC) porque su fin es *descubrir* ODFs
+  nuevas: el criterio opuesto vive en el consumidor de tracking, no en el ranking. Si ninguna
+  semilla tiene conector, la ODF no fue relevada todavía: se avisa y se ofrece relevarla
+  (`relevar_odfs_del_servicio`), que releva sólo las ODFs que el camino ya descubrió.
+- **Decisión 4 (normalizar):** **reingesta dirigida**, no escritura del valor que declara el camino.
+  Se vuelve a traer de Cromo el objeto real y se lo persiste por el mismo parser y los mismos
+  upserts que la ingesta regular, con corrida sintética auditable. Las inconsistencias se
+  **recalculan en el servidor**: el cliente dice qué quiere normalizar, pero qué está realmente mal
+  lo decide quien va a escribir.
+- **Tres hallazgos reales que cambiaron la implementación** (ninguno visible sin probar contra
+  Cromo; los tests con mocks pasaban igual):
+  1. En un fetch directo `/db/objects/{id}`, **`parent` viene como objeto**
+     (`{"id": 10127039, "class": 51, ...}`), no como entero — durante la ingesta regular lo inyecta
+     el recorrido del árbol. Pasárselo crudo a `parse_pelo` producía un `tubo_n_id` que era un
+     diccionario, en silencio.
+  2. Ese `parent` de un pelo es el **cable**, no el tubo, y trae el id de **versión** (10127039)
+     en vez del de linaje (10126920). Por eso un pelo **no se puede reingerir suelto**: hay que
+     hacerlo por el **árbol de su cable** (`parse_cable` + `extraer_tubos_y_pelos`), que devuelve
+     exactamente lo que declara el camino y resuelve `PELO_CABLE` y `PELO_TUBO` de una sola vez.
+     Lo mismo para la fusión: su botella se resuelve traduciendo el id de versión a linaje.
+  3. La clase **52 (cable de un tercero, ej. Arsat)** también es un cable real del camino, aunque la
+     ingesta no la barra. Rechazarla dejaba sin normalizar al pelo 7967645 del servicio 93154.
+     `cromo_cables` no tiene columna de clase, así que guardarlo no rompe ninguna FK de catálogo.
+- **Alternativas:** un ZIP con todos los `.txt` (descartado por el usuario: quiere los archivos
+  sueltos); escribir directamente el valor que declara `/path` (instantáneo y sin llamadas extra,
+  pero persiste datos derivados del camino en las tablas que sólo escribe la ingesta); sólo marcar
+  la discrepancia para revisión manual (mínimo riesgo, pero no cumple el pedido de normalizar).
+- **Impacto, verificado real en dev** sobre el pelo 6823649 del servicio 93154 (el de la captura del
+  ticket): la auditoría pasó de **2 DIFIEREN / 10 SIN INGERIR** a **0 / 0** — `PELO_CABLE` 98/98,
+  `PELO_TUBO` 98/98, `FUSION_BOTELLA` 96/96, `FUSION_PELOS` 96/96, `CONECTOR_PELO_ODF` 4/4. Los tres
+  pelos creados quedaron con el tubo y el cable exactos que declara el camino (10126944 →
+  tubo 10126934, cable 10126920).
+
+## 2026-09-17 (seguimiento) — Red de acceso PON en el camino óptico: qué se resolvió y qué no
+
+- **Contexto:** El ticket reportaba que "los diagramas de camino óptico para servicios con OLT
+  fallan al toparse con Splitters, Cables de Bajada y Cajas PON debido a clases de infraestructura
+  no ingeridas previamente". `docs/decisiones.md` (2026-09-09) registraba, desde capturas de la UI
+  de Cromo, que esas clases eran Roseta = 85, Caja PON = 84 y Cable de bajada = 66, y que sumarlas
+  era "un proyecto propio del tamaño del submódulo de ODFs".
+- **Diagnóstico real (2026-09-17), sembrando como indicó el usuario:** *"un splitter muestra camino
+  óptico ok siempre y cuando se use la posición de la Roseta o puerto PON asociado al servicio en el
+  extremo cliente; si se releva un splitter de mayor nivel el camino quedará cortado"*. Con esa
+  regla:
+  - Sembrando desde un pelo del **lado de red**, sobre **6 servicios OLT reales**, aparecen
+    **133/134/86/141** y **nunca** 84/66/85. El recorrido se corta en el splitter.
+  - Sembrando desde una **salida** del splitter (`splitter_a.c_out`), aparecen **84** (Caja PON) y
+    **66** (Cable de bajada, ×19), más una clase que no estaba en ninguna lista: **137**, otra caja
+    PON (de edificio) que **contiene** un splitter.
+  - Identificación por atributos reales: 84 → `at.34` "Caja PON Subs Libertador 602" (`at.35` trae
+    potencias ópticas por salida); 66 → `at.27` = **"Bajada"**, `at.26` = "FBJ-31363", `at.20` =
+    "Aereo"; 133 → **`at.83` = "1x8"/"1x4"**, el ratio **publicado**; 134 → `at.80`/`at.82` =
+    "S6"/"SALIDA" más `splitter_a` con `c_in`/`c_out`; 86 → nodo/sala; 141 → fusión dentro de una
+    ODF (la 132 es la de Botella). **La 85 (Roseta) no se observó en ningún camino.**
+- **Decisión:** catalogar las 8 clases en `app.cromo_clases` con `ingerible=false` (migración
+  `20260917_02`) y enriquecer los nodos en `camino_optico_service`. `ingerible=false` es deliberado:
+  **no** se barren en una corrida; sólo se catalogan para que el diagrama muestre qué es cada nodo.
+  La 85 se cataloga igual, con `motivo_exclusion` diciendo que todavía no se observó.
+- **Hallazgo que corrige la premisa del ticket, y que hay que decir sin adornos:** el diagrama
+  **no fallaba sólo por falta de ingesta**. Falla por dos cosas distintas y sólo una era de ingesta:
+  1. *Etiquetado* — los nodos PON se dibujaban como `CLASE_84`, sin nombre ni contexto. **Resuelto**:
+     verificado real, un camino que antes mostraba `CLASE_134` ahora muestra
+     `PUERTO_SPLITTER · E1 · entrada · splitter 1x4`, y **cero** nodos quedan en el genérico.
+  2. *Truncamiento* — `/path` **corta el recorrido en cada splitter**. Verificado en cascada:
+     sembrando en una salida del splitter de primer nivel, la ruta llega hasta la **entrada** del
+     splitter de segundo nivel y ahí termina. Las cajas PON y los 19 cables de bajada **están en el
+     `dict` de la respuesta pero fuera de la ruta `a[]`/`b[]`**. Esto **no se arregla ingiriendo
+     84/66/85**: es cómo responde Cromo, no un hueco de nuestro inventario.
+- **Consecuencia:** el trazado continuo OLT→Caja PON→Splitter→Cable de bajada→Roseta **sigue sin ser
+  alcanzable** por esta vía. Lo que lo haría posible es una vista **multi-tramo** que encadene
+  segmentos sembrando en las salidas de cada splitter (N llamadas de 4,6-14 s por segmento) — es una
+  funcionalidad propia, con su propio alcance, y no se implementó acá.
+- **Efecto colateral valioso:** Cromo **publica** el ratio del splitter en `at.83`. Hoy
+  `core/services/cromo/empalmes.py` lo **infiere** por fan-out de fusiones, con los falsos
+  "Splitter 1-1"/"Splitter 1-3" ya documentados (2026-09-02). Queda disponible el dato autoritativo
+  para reemplazar esa heurística; el reemplazo no se hizo en esta tarea.
+- **Alternativas:** ingerir 84/66/85 con tablas propias (el "proyecto del tamaño del submódulo de
+  ODFs" de 2026-09-09) — descartado por ahora porque, según la medición, **no resolvería el
+  truncamiento**, que es el síntoma de fondo; dejar los nodos como `CLASE_N` — descartado, es
+  justamente lo reportado.
+
+## 2026-09-17 (seguimiento 2) — "El Servicio tiene 2 pelos": el tope de semillas escondía los que importan
+
+- **Contexto:** Con el tracking multipelo ya desplegado, el usuario observó que el Servicio 93154
+  **tiene 2 pelos**, pero el selector ofrecía 20 y preseleccionaba uno solo —y equivocado—.
+- **Diagnóstico real:** `app.cromo_servicio_match` tiene **227 pelos** matcheados al número 93154
+  con `REGEX_EXACTO` y confianza 100. No es basura: el número de servicio viaja en el `at.61` de
+  **todos los pelos del recorrido**, no sólo de los extremos, así que un camino largo etiqueta
+  cientos de pelos. De esos 227, exactamente **2** son posición de patchera del Servicio
+  (`app.cromo_odf_conectores`: conectores 21 y 22 de `O-1239921-1`, y 5 y 6 de `O-1249382-1`). Esos
+  2 son lo que el operador llama "los pelos del Servicio".
+- **Causa raíz:** `listar_pelos_semilla` corta en 20 **y** ordena con `tiene_conector_odf` ASC —a
+  propósito, porque su consumidor original era el gestor de Servicios sin ODF, que quiere
+  *descubrir* ODFs nuevas—. Con 227 candidatos, ese orden empuja los 2 pelos que importan fuera del
+  tope. La decisión previa de "no toco el ranking, el criterio nuevo vive en el consumidor" era
+  **insuficiente**: el consumidor recibía una lista ya truncada y ordenada en su contra.
+- **Decisión 1:** `listar_pelos_semilla(..., priorizar_conector: bool = False)`. El default conserva
+  el orden de descubrimiento para el gestor; la descarga de trackings pide `True` y las posiciones
+  de ODF quedan primeras, dentro del tope. El endpoint `.../camino-optico/pelos` lo expone como
+  query param, así que los dos consumidores comparten endpoint sin compartir criterio.
+- **Decisión 2:** `contar_semillas` devuelve `(total, con_posicion_odf)` **sin tope**, y el endpoint
+  los publica como `total_matcheados` / `total_con_posicion_odf`. Sin eso la UI no puede distinguir
+  "este Servicio tiene 20 pelos" de "tiene 227 y te muestro 20", que es exactamente la confusión
+  reportada. El selector ahora lista **las posiciones de ODF** y colapsa el resto del recorrido en
+  un `<details>`, diciendo cuántos pelos llevan la etiqueta del Servicio.
+- **Segundo bug real, de la misma familia:** el endpoint `.txt` validaba la pertenencia del pelo
+  **contra la lista truncada de semillas**, así que rechazaba con "no pertenece al Servicio" un pelo
+  que el propio selector acababa de ofrecer (verificado: `pelo_n_id=6822061` → HTTP 400). La
+  pertenencia es un hecho del dato, no de la ventana que se listó: se agregó
+  `pelo_pertenece_al_servicio`, una consulta directa sin tope, y el nombre del archivo pasa a
+  distinguir el pelo según `contar_semillas`, no según el largo de la lista.
+- **Alternativas:** subir o quitar el tope de 20 (no resuelve nada: con 227 candidatos la lista
+  sería inusable y el orden seguiría siendo el opuesto al que necesita la descarga); filtrar en el
+  frontend (imposible, la truncación ya ocurrió en el backend).
+- **Impacto, verificado real en dev** sobre el Servicio 93154: `preseleccionados` pasó de
+  `[6823644]` —un pelo que no es posición de ODF— a **`[6822061, 6822062]`**, los dos correctos. Los
+  dos `.txt` bajan con nombres distintos (`93154 CROMO pelo 6822061.txt` / `...6822062.txt`) y
+  contenido genuinamente distinto: "Nombre de Pelo: 21 → conector 5" contra "Pelo: 22 → conector 6"
+  en `O-1249382-1`, que es la misma ODF que muestra la captura del ticket. 14,7 s y 13,9 s en frío,
+  **0,11 s y 0,09 s** en caliente.
+
+## 2026-09-17 (seguimiento 3) — El ratio del splitter lo publica Cromo: se ingiere en vez de deducirlo
+
+- **Contexto:** `core/services/cromo/empalmes.py` deduce los Splitters por **fan-out de fusiones**
+  (un pelo que aparece en 2+ filas de `cromo_fusiones` de la misma botella). Su docstring lo
+  justificaba con una premisa que **hoy es falsa**: *"los Splitter no son una clase Cromo propia
+  homologada"*. Lo son: **clase 133**, con el ratio en `at.83`.
+- **Medición real (2026-09-17, 30 botellas al azar):** la heurística **acertó en 18 y falló en 12** —
+  1 falso positivo (botella 6636551: ve 2 splitters, Cromo tiene **0**), 5 falsos negativos y 6 con
+  la cantidad equivocada. Y en **ningún** caso con splitter real devolvió un ratio: siempre `None`.
+  Ejemplos: botella 8941541 → heurística 6 splitters, Cromo **1 de 1x8**; botella 6630931 →
+  heurística 6, Cromo 1; botella 6630926 → heurística 4, Cromo `['1x2','1x4','1x8']`.
+- **Hallazgo que abarata todo:** el splitter (133) y sus puertos (134) **ya venían en el `inner[]`
+  de cada barrido de botella** y `parse_arbol_botella` los **descartaba como "clase inesperada"**.
+  El ratio se tiraba en cada corrida. Ingerirlos cuesta **cero llamadas extra**.
+- **Hallazgo adicional, aportado por el usuario y confirmado:** *"en un splitter sólo el último
+  tramo tiene el ID de servicio; los pelos intermedios sólo tienen la descripción del láser y OLT
+  padre"*. Verificado: el vínculo servicio↔splitter está en el **puerto** (`at.62`), no en el pelo.
+  Botella 8941541, splitter 1x8: la **ENTRADA** E1 agrega `['99250','99430','100950','106587']` y
+  las salidas S1/S2/S3/S5 tienen uno cada una — S4/S6/S7/S8 libres. Eso da el mapeo
+  **servicio → puerto** y la **ocupación real** del splitter, que el sistema no tenía de ninguna forma.
+- **Decisión:** tablas `app.cromo_splitters` y `app.cromo_splitter_puertos` (migración
+  `20260917_03`), pobladas desde el mismo árbol de botella. `empalmes.py` deja de afirmar qué es un
+  splitter cuando hay dato real, y lo publica aparte.
+- **Decisión clave, el marcador:** columna `cromo_botellas.splitters_relevados`. Cero filas de
+  splitter es **ambiguo** —"no tiene" contra "todavía no se barrió"— y sin resolver esa ambigüedad
+  no se puede apagar la heurística sin romper las botellas aún no barridas. Con el marcador, el
+  comportamiento viejo se conserva exactamente donde todavía no hay dato.
+- **Dos bugs reales encontrados al correr contra la base, invisibles con mocks:**
+  1. **SQLAlchemy serializa `None` como JSON `null`, no como SQL NULL.** Eso hacía que
+     `IS NOT NULL` diera TRUE y que `jsonb_array_length()` abortara la consulta entera con *"cannot
+     get array length of a scalar"*, y además destruía la distinción de tres estados de
+     `servicios_atributo` (NULL = no se preguntó, `[]` = puerto libre, lista = ocupado). Se corrigió
+     con `JSONB(none_as_null=True)` y la query pasó a guardarse con `jsonb_typeof(...) = 'array'`.
+  2. **`/db/objects/{id}/inner` devuelve los hijos SIN `parent`**, mientras el barrido de colección
+     sí lo trae. Confiar en `parent` dejaba el splitter sin botella y los puertos sin splitter según
+     por qué endpoint hubieran llegado. Ahora el vínculo lo aporta el recorrido del árbol, que
+     siempre sabe de quién cuelga; para los puertos sin `parent` sólo se infiere el splitter cuando
+     la botella tiene **uno solo** — con varios se deja en `None` antes que adivinar.
+- **Alternativas:** corregir la heurística (imposible de sostener: no puede distinguir un splitter
+  de dos fusiones que comparten pelo, que es el falso positivo real); pedir `at.83` en vivo por
+  botella (rompe el diseño de `empalmes.py`, que nunca toca la API, y cuesta una llamada por
+  consulta); ingerir sólo el splitter sin sus puertos (perdería el mapeo servicio→puerto, que
+  resultó ser lo más valioso).
+- **Impacto, verificado real en dev** sobre la botella 8941541: de **6 splitters sin ratio** a
+  **1 splitter "SPLITTER1" 1x8 con 4 de 8 salidas ocupadas**, que es exactamente lo que declara
+  Cromo. La heurística deja de marcar splitters en esa botella.
+
+## 2026-09-19 — Ingesta de la red de acceso PON: cinco modos manuales, y tres defectos que sólo se veían midiendo
+
+- **Contexto:** el usuario pidió verificar si la UI de ingesta permitía correr por separado la
+  ingesta de splitters, cajas PON y rosetas. No lo permitía: el selector "Alcance de la corrida"
+  tenía exactamente dos opciones (`COMPLETA` y `SOLO_ODF`), y de las tres clases pedidas sólo los
+  splitters tenían código de persistencia — escrito el 2026-09-17, embebido en `fase_botellas`. El
+  usuario aclaró que el scheduler está apagado a propósito y que **las corridas van a ser sólo
+  manuales**, lo que convierte al selector en el único punto de control real del módulo.
+
+- **Esto revierte parcialmente la decisión del 2026-09-17**, que catalogó estas clases con
+  `ingerible=false`. El argumento de aquella decisión —que ingerirlas **no** arregla el truncamiento
+  de `/path` en cada splitter— **sigue siendo cierto y sigue fuera de alcance**. Lo que cambió es el
+  objetivo: no es el diagrama, es inventario. Y aparecieron mediciones que entonces no existían.
+
+- **Diagnóstico real contra la API de Cromo (todo lo de abajo son hechos medidos, no supuestos):**
+
+  | Hallazgo | Evidencia |
+  |---|---|
+  | `fase_botellas` no trae `inner[]` | Con su `show=["SHOW","REL_ATTRIBUTE","TIME"]`: 0 de 10 botellas. Con `["ALL"]`: 10 de 10 |
+  | El 88 % de los splitters no cuelga de una Botella | Sobre 800 reales: 137→435, 139→176, 68→84, 138→35, 84→32, 140→21, 122→8, 126→4, 125→2, 123/121/127→1 |
+  | Los splitters sí son barribles como colección | `stats[].count` = **0** para 133 y 134, pero `iterar_coleccion` pagina normal. Totales reales, barriendo hasta el final: **20.238** splitters y **154.284** puertos |
+  | Hay **7** clases de caja PON, no 2 | 84→3045, 137→6237, 139→1814, 138→1394, 140→490, 126→391, 127→111. Las cinco últimas **no existían en `cromo_clases`** y el diagrama las dibujaba como `CLASE_139` |
+  | Las rosetas existen y son muchas | Clase 85 → **17.348** objetos, pese al `motivo_exclusion` que decía "no observada todavia en ningun camino real" |
+  | El cable de bajada es un cable normal | Clase 66 → 19.030, con los mismos `at` que la 51, `vmax`, `tp` de dos extremos e `inner` con 1 tubo y 1 pelo |
+
+- **Tres defectos reales, ninguno detectable con mocks:**
+  1. **`splitters_relevados` se marcaba siempre.** Como el barrido no trae `inner[]`, una corrida
+     `COMPLETA` habría dejado las 11.072 botellas declaradas "relevadas sin splitters", y
+     `empalmes.py` lee esa marca para apagar su heurística de fan-out. La primera corrida completa
+     habría apagado la detección de splitters en todo el inventario, sin reemplazo. Corregido en una
+     rama propia y mergeado primero. `docs/cierres/2026-09-17.md` daba por sentado lo contrario.
+  2. **`parse_splitter` guardaba un diccionario en `botella_n_id`.** En el barrido directo `parent`
+     es siempre un dict (60/60 medidos), no el entero que trae el árbol de botella.
+  3. **`parse_puerto_splitter` colgaba el puerto de la caja PON.** En el barrido de la clase 134
+     `parent` es el contenedor (138/137/139 en 60/60); el splitter viaja en `extra.parent`.
+
+  Un cuarto hallazgo, de la misma familia: **`parent.id` es un id de versión, no de linaje** — en 4
+  de 60 objetos `container.id != container.n_id`. La resolución prefiere `extra.container.n_id`.
+
+- **Decisiones de diseño:**
+  - **Una tabla para las ocho clases** (`cromo_pon_elementos`), porque el esquema medido es idéntico;
+    lo que las separa es `cromo_clases.entidad`. Contrapartida asumida: el nombre de la tabla no
+    coincide con ninguno de los dos conceptos que ve el operador.
+  - **Cables de bajada dentro de `cromo_cables`**, con una columna `clase` nueva. Esa columna no es
+    cosmética: sin ella, la fase de reconciliación marcaría las 19.030 bajadas como referencias
+    colgadas, porque sus extremos son cajas PON y rosetas y esa consulta espera botellas.
+  - **Barrido directo de la clase 133**, no la vía embebida: tiene techo del 12 % y hoy ni llega.
+  - **Los puertos de splitter son un modo propio**, no parte de `SOLO_SPLITTERS`: son 91 minutos y
+    154.284 filas para un dato cuyo valor principal —la ocupación servicio↔puerto— necesita `/inner`
+    por objeto y quedó fuera de alcance. Decisión explícita del usuario.
+  - **Ningún modo nuevo entra en `COMPLETA`**: sumarlos convertiría una corrida de rutina en una de
+    varias horas.
+  - **`total_objetivo` sale del catálogo cuando la API miente.** `count_cromo`/`count_fecha` existían
+    desde `20260805_01` sin un solo consumidor; ahora lo tienen. Precedencia: API primero, catálogo
+    después — el catálogo es una foto con fecha, la API es el presente.
+
+- **Alternativas descartadas:** migrar `fase_botellas` a `show=["ALL"]` (paga payload por 11.072
+  botellas para conseguir, como techo, el 12 % de los splitters); tablas separadas por clase (ocho
+  copias del mismo DDL); una fase calcada por modo (con siete modos serían ocho copias del mismo
+  bucle, y cada copia una oportunidad de escribir distinto el chequeo de cancelación).
+
+- **Impacto, verificado real en dev:** los cuatro modos corren OK con `max_paginas=1` y
+  `total_objetivo` correcto en los cuatro; los cinco tipos de nodo de la red de acceso pasan de
+  `vinculo_local=null` a resolver contra filas locales con nombre; el filtro de reconciliación se
+  probó insertando un cable de bajada y uno de FO con extremos que no son botellas, en una
+  transacción revertida: con el filtro sólo se marca el de FO, sin él se marcaban los dos. Suite
+  completa comparada **nombre por nombre** contra `dev`: listas de fallos idénticas, 32 en cada lado.
+
+- **Duraciones medidas, para dimensionar una corrida:** cajas PON ~75 min (13.482), puertos de
+  splitter ~91 min (154.284), cables de bajada ~32 min (19.030), rosetas ~23 min (17.348), splitters
+  ~22 min (20.238).
+
+## 2026-09-21 — Pertenencia de la semilla: el dato, no la ventana listada
+
+- **Contexto:** `GET /servicios/ID/41579/camino` en el SPA devolvía `400 El pelo 6754728 no
+  pertenece al Servicio 559`. El ticket lo atribuía al mapeo entre el ID histórico de la URL y la PK
+  interna. **Es una premisa incorrecta y se descartó midiendo contra la base de dev**: el mapeo lo
+  resuelve `IDENTIDADES_DEL_SERVICIO_SQL` (`m.servicio_id = s.id`, `servicio_numero` contra
+  `s.servicio_id` / `numero_primer_servicio` / `alias_ids`) y funcionaba — el pelo pertenece
+  *precisamente* por el histórico `41579` (`prioridad_identidad = 1`).
+  La causa real: `resolver_camino_de_servicio()` validaba la pertenencia contra
+  `listar_pelos_semilla()`, que viene **truncada en 20** y ordenada para *descubrir* ODFs (primero
+  los pelos SIN conector). Medido: el Servicio 559 tiene **95 pelos matcheados** y 6 posiciones de
+  ODF; el pelo 6754728 tiene conector y cae en el puesto **31** — afuera de la ventana.
+  Es el mismo bug que ya se había corregido en `.../tracking.txt` para el Servicio 93154 (227
+  pelos); quedó vivo en esta función, el único consumidor que no se había migrado.
+
+- **Decisión:** la pertenencia se resuelve siempre con `pelo_pertenece_al_servicio()` —una consulta
+  directa con el mismo predicado de identidades, sin `LIMIT`— y la semilla elegida pasa a ser el
+  `pelo_n_id` pedido, no una fila de la lista. La lista sigue devolviéndose a la UI como catálogo de
+  opciones, que es lo único para lo que sirve estando truncada.
+
+- **Alternativas descartadas:** subir el tope de `listar_pelos_semilla` (mueve el límite pero no lo
+  elimina: con 95 pelos hoy y 227 medidos en otro Servicio, cualquier número es arbitrario);
+  llamarla con `priorizar_conector=True` sólo para validar (arregla este caso porque el pelo tiene
+  conector, y sigue fallando para cualquier pelo legítimo sin conector que caiga fuera del tope);
+  quitar el guard (convertiría el endpoint en un `/path` genérico sobre cualquier pelo de la red).
+
+- **Impacto, verificado real contra `lasfocasdev-postgres`:** `pelo_pertenece_al_servicio(559,
+  6754728)` → `True`, contra `False` del criterio viejo (el pelo no está en la ventana de 20); un
+  pelo de control inexistente (`999999`) sigue dando `False`, así que el guard no se aflojó. Dos
+  tests de regresión nuevos y 1806 de suite en verde. `seleccionar_semillas()` queda intacta: es una
+  función pura cuyo contrato es traducir ids *dentro de la lista que recibe*, y hoy no tiene ningún
+  consumidor en producción.
+
+## 2026-09-21 — La canaleta lateral del SPA vive en el shell, no en cada vista
+
+- **Contexto:** el contenido aparecía pegado al sidebar en las cinco secciones de Servicio
+  (entre ellas `/servicios/ID/:id/camino`), `CienaTab`, `FoTab` y `VlanTab`.
+  `.app-shell__main` iba en `padding: 0` y el espaciado lateral lo repetía cada vista a mano
+  (`padding: Npx 26px M`): 13 vistas lo declaraban en 28 reglas y el resto se lo olvidaba. Al no
+  haber un lugar único, "agregar una vista" y "que quede pegada al sidebar" eran el mismo acto.
+
+- **Decisión (elegida por el usuario entre tres opciones):** centralizar en el shell.
+  `.app-shell__main` declara `padding-inline: var(--layout-shell-gutter)` (token nuevo, `26px`) y
+  **ninguna vista vuelve a declarar padding lateral**. Las 28 reglas se migraron a `padding: Npx 0 M`
+  preservando los verticales, y `.app-shell__main--admin` pasó a declarar sólo `padding-block`.
+
+- **Sólo el eje horizontal se centraliza.** El `padding-block` del `main` queda en `0` a propósito:
+  varias vistas son `height: 100%` con un área de scroll interna, y el `padding-bottom` que le da
+  aire al final de una lista larga tiene que quedar DENTRO del elemento que scrollea — moverlo al
+  contenedor externo degradaría el scroll. Cada vista sigue siendo dueña de su espaciado vertical;
+  las dos que no lo tenían (`ServicioSeccionLayout`, `CienaTab`) recibieron `padding-block`.
+
+- **Alternativas descartadas:** `gap` en el grid de `.app-shell__body` (toca un solo archivo, pero
+  se suma al padding existente y dejaba las 13 vistas en 52px laterales); parchear sólo las cinco
+  vistas pegadas (cero riesgo, pero deja en pie la causa —no hay lugar único— y la próxima vista
+  nueva vuelve a nacer pegada).
+
+- **Impacto:** verificado sobre el bundle compilado — `.app-shell__main[data-v-*]` sale con
+  `padding-inline:var(--layout-shell-gutter)` y **cero** reglas con `26px` lateral en todo el CSS
+  generado. 1806 tests en verde. **La confirmación visual en navegador queda pendiente**: no hay
+  Chromium/Playwright en el entorno y el contenedor `lasfocasdev-web` sirve la imagen de `dev`, no
+  este worktree.
+
+## 2026-09-23 — `Forzar ingreso` sobre un grupo baneado registra un INGRESO real, no un intento bloqueado
+
+- **Contexto:** el flujo en vivo del listener de Slack, desde 2026-09-04, convierte un movimiento
+  "Ingreso" sobre un grupo bloqueado (incidente activo o baneo manual) en
+  `registrar_intento_bloqueado` → fila con `tipo=INTENTO_BLOQUEADO`, que nunca cuenta como ingreso
+  real. El comando nuevo `Forzar ingreso` (corrección manual de un ingreso mal registrado) llega al
+  mismo punto de decisión, pero desde una situación distinta: no es un técnico pidiendo permiso
+  ahora, es un operador afirmando que un técnico **ya entró** en un momento del pasado.
+
+- **Decisión:** `Forzar ingreso` registra siempre un INGRESO real (`registrar_movimiento_ingreso`),
+  aunque el grupo esté baneado en este momento. El estado de baneo de *ahora* no es evidencia sobre
+  el pasado: el baneo puede haberse aplicado después de la visita que se está asentando, y un
+  `INTENTO_BLOQUEADO` afirmaría que el técnico **no** entró, que es justo lo contrario de lo que el
+  operador está declarando. La respuesta del bot sí avisa, en el mismo mensaje de confirmación, que
+  el grupo está baneado en este momento — el aviso es informativo, nunca bloqueante.
+
+- **Alternativas descartadas:** (a) replicar la lógica del flujo en vivo y registrar
+  `INTENTO_BLOQUEADO` — escribiría un dato falso; (b) rechazar el comando sobre un grupo baneado —
+  dejaría sin forma de corregir justamente los casos donde la cámara quedó `OCUPADA` fantasma y por
+  eso se la baneó.
+
+- **Impacto:** `core/services/ingreso_correccion_service.py` consulta
+  `get_camara_estado_contexto` **sólo** para el aviso (fail-open ante cualquier error: un hiccup en
+  un chequeo informativo no puede romper una corrección ya escrita), nunca para decidir qué se
+  escribe. Cubierto por `tests/test_ingreso_correccion_service.py::TestForzarIngreso
+  ::test_sobre_grupo_baneado_registra_ingreso_real_y_avisa`.
+
+## 2026-09-23 (cont.) — Tabla `app.servicios_sync_prov`: última sincronización PROV, no una columna en `Servicio`
+
+- **Contexto:** Task 7 del plan "Corrección de ingresos/servicios". Las Tasks 8 y 10 necesitan
+  distinguir qué IDs de servicio están "validados contra PROV" de cuáles no, y hoy eso es
+  literalmente imposible de responder: `app.servicios` tiene 20 columnas y ninguna es de timestamp
+  (medido real contra `lasfocasdev-postgres`). Además, de los servicios alcanzables por cable, el
+  92,5% (8.401 de 9.079) nunca pasó por PROV (`origen_datos <> 'INGEST_PROV'`).
+
+- **Decisión 1 (tabla nueva, no columna en `Servicio`):** migración `20260923_02`, tabla
+  `app.servicios_sync_prov` (`servicio_id` FK única a `app.servicios.id` `ON DELETE CASCADE`,
+  `ultima_sincronizacion_ok` `NOT NULL`, `ultimo_intento`/`ultimo_error`/`nro_servicio_consultado`
+  nullable). Tres razones concretas, no una preferencia de estilo: la fila de `Servicio` la escriben
+  tres ingestas distintas (Excel, PROV, placeholders Cromo) y cada una re-etiqueta `origen_datos`
+  incondicionalmente — una columna ahí heredaría el mismo "pisado por ingesta ajena"; el estado de
+  *fallo* de un intento no es un atributo de dominio del Servicio; y separar ambas escrituras deja
+  la puerta abierta a que un futuro camino de fallo actualice sólo el estado de sincronización sin
+  tocar `Servicio`.
+
+- **Decisión 2 (único embudo de escritura):** el upsert (`ON CONFLICT (servicio_id) DO UPDATE`, vía
+  `pg_insert(...).on_conflict_do_update`, mismo patrón que
+  `core/services/cromo/tracking_cache.py::guardar`) se agregó al final de
+  `ingerir_contexto_prov` (`core/services/prov/ingesta.py`), el único punto por el que pasan los
+  tres consumidores de PROV: el endpoint on-demand, el backfill masivo
+  (`scripts/servicios_backfill_prov.py`) y, desde la Task 9, el comando de Slack. La firma de
+  `ingerir_contexto_prov` no cambió — sólo suma el efecto de escritura, no comitea (eso lo sigue
+  haciendo el caller). Como esta función sólo se invoca con un contexto ya validado como éxito por
+  `ProvClient`, cada fila que escribe representa una sincronización exitosa: `ultimo_error` se limpia
+  en cada escritura para que un error viejo no quede pegado después de un refresco que sí funcionó.
+
+- **Decisión 3 (servicio de frescura en dos versiones, `core/services/prov/frescura.py`):** batch —
+  dado un conjunto de `servicio_id`, cuáles están vencidos
+  (`ultima_sincronizacion_ok IS NULL OR < now() - :horas`), nunca una query por servicio (la Task 8
+  la llama con hasta ~118 servicios, el tamaño real de un cable — ver
+  `servicios_unicos_por_cable`/`_sync`). Async y sync, mismo patrón de gemelas que
+  `verificador.py::servicios_unicos_por_cable_sync`: el comando de Slack corre en un callback
+  síncrono de Slack Bolt. Umbral por `PROV_FRESCURA_HORAS` (default 48 h), mismo criterio tolerante
+  que `tracking_cache.ttl_horas` (valor inválido o <= 0 cae al default con un warning, nunca rompe
+  la consulta). Verificado real contra `lasfocasdev-postgres`: con la tabla todavía vacía (sin
+  backfill corrido), los 118 servicios únicos del cable `FO-FL-1003` (n_id=6610203) dan 118/118
+  vencidos por las dos versiones (async y sync, mismo resultado) — coherente con el 92,5% medido
+  (en realidad peor: 100%, porque la tabla nueva arranca en cero filas hasta que corra el backfill).
+
+- **Prerrequisito operativo, no mejora futura:** sin correr `scripts/servicios_backfill_prov.py`
+  primero, TODOS los servicios cuentan como vencidos y cualquier comando que dependa de esta
+  consulta (Task 8/9) choca contra el tope de refresco durante meses sin alcanzar régimen
+  estacionario. Documentado en `docs/bot.md` — recordatorio ya vigente (Decisión 3, 2026-09-02): no
+  correr el backfill en horario de uso intensivo, el rate limiter no es distribuido y el máximo
+  combinado sube a ~10 req/s.
+
+## 2026-09-23 (cont. 2) — Comandos de corrección sin allowlist, tabla nueva de auditoría (no extensión de `IngresoSinMatch`), y sólo dentro de un hilo
+
+- **Contexto:** Task 2/4/5/6 del plan "Corrección de ingresos/servicios". `Forzar ingreso`/
+  `Forzar egreso` mutan datos operativos (el estado `OCUPADA`/`LIBRE` de una cámara depende de
+  `app.ingresos`), así que hicieron falta tres decisiones de control/producto antes de cablearlos,
+  además de la ya registrada arriba (INGRESO real sobre grupo baneado).
+
+- **Decisión 1 (sin allowlist, confirmada con el usuario):** cualquier persona del canal puede
+  ejecutar los dos comandos — no hay lista de usuarios autorizados que los condicione. El control
+  es exclusivamente la auditoría: cada invocación, exitosa o rechazada, escribe una fila en
+  `app.ingresos_correcciones` con el `actor_slack_user_id`/`actor_nombre`, y el bot publica en el
+  mismo hilo quién ejecutó qué (`"Ejecutado por *<nombre>*"` en cada respuesta OK). Consecuencia
+  directa: **un operador puede cerrar el ingreso abierto de otro técnico** — con 2+ ingresos
+  abiertos en la cámara resuelta, el bot los lista (`id`/técnico/`fecha_inicio`) y exige
+  `Forzar egreso #<id>`, nunca adivina cuál cerrar. Alternativa descartada: exigir que sólo el
+  técnico que abrió el ingreso pudiera cerrarlo — bloquearía exactamente el caso de uso real (un
+  supervisor corrigiendo un formulario que otro técnico completó mal o nunca completó).
+
+- **Decisión 2 (tabla nueva `app.ingresos_correcciones`, no extensión de `IngresoSinMatch`):**
+  `IngresoSinMatch` modela "el nombre no matcheó ninguna cámara" — un subconjunto de casos — y sus
+  filas **se mutan** en el tiempo (`resuelto_via_empalme`, `resuelto_via_revalidacion`). Una
+  corrección manual puede ocurrir también sobre un hilo cuyo formulario matcheó perfecto la primera
+  vez (el técnico escribió bien el nombre pero se equivocó de cámara, o el egreso nunca llegó), así
+  que agregar columnas de corrección a `IngresoSinMatch` hubiera dejado sin cubrir ese caso — y
+  mezclado dos semánticas opuestas (un registro que se muta vs. un log append-only) en la misma
+  tabla. La tabla nueva lleva además un trigger de inmutabilidad a nivel de Postgres
+  (`BEFORE UPDATE OR DELETE ... RAISE EXCEPTION`, migración `20260923_01`) — verificado real que
+  rechaza tanto `UPDATE` como `DELETE` sobre una fila insertada a mano. Sin este trigger, "append-
+  only" sería sólo una convención de código de aplicación, violable por cualquier script one-off o
+  acceso directo a la DB.
+
+- **Decisión 3 (los comandos sólo funcionan dentro de un hilo, no como mensaje raíz — pedido
+  explícito del usuario):** `Forzar ingreso`/`Forzar egreso` se procesan únicamente cuando el
+  mensaje es una respuesta dentro de un hilo existente (`modules/slack_baneo_notifier/listener.py`,
+  mismo bloque `if event_thread_ts and event_thread_ts != event_ts:` que ya usan
+  `_procesar_seguimiento_empalme`/`_procesar_revalidacion_ingreso`). Un mensaje raíz nuevo con el
+  mismo texto cae al flujo normal de extracción de nombre de cámara y no se reconoce como comando
+  de corrección. La razón no es técnica: es lo que ancla la auditoría al formulario original — un
+  comando de corrección sin hilo no tendría de dónde resolver la cámara/tipo de movimiento sin que
+  el operador tuviera que repetir toda la información a mano en cada invocación (que sigue siendo
+  posible: la forma con cámara y fecha explícitas funciona igual dentro de cualquier hilo, incluido
+  uno sin ningún formulario reconocible — `RESULTADO_HILO_SIN_FORMULARIO`).
+
+- **Impacto:** `db/alembic/versions/20260923_01_ingresos_correcciones.py`,
+  `db/models/infra.py::IngresoCorreccion`, `core/services/ingreso_correccion_service.py`,
+  `modules/slack_baneo_notifier/listener.py::_procesar_correccion_ingreso`. Ver `docs/bot.md` y
+  `docs/db.md` (sección "Tabla `ingresos_correcciones`").
+
+## 2026-09-23 (cont. 3) — Consulta nueva de servicios únicos por cable/tubo, sin modificar las cuatro existentes
+
+- **Contexto:** Task 1 del plan "Corrección de ingresos/servicios". El Verificador Cromo expone
+  cuatro consultas por-pelo (`servicios_por_cable`/`_por_tubo`/`_por_botella`/`_por_odf`,
+  `core/services/cromo/verificador.py`) que alimentan la tabla del panel web (una fila por pelo,
+  con su propia columna "Pelo"). El comando de Slack nuevo (`Servicios <cable>`) necesita, en
+  cambio, IDs de servicio **únicos** — sin esa forma, un servicio que ocupa varios pelos del mismo
+  cable aparece repetido tantas veces como pelos, lo cual es ruido para un listado de IDs (no para
+  la tabla del Verificador, donde es el dato físico correcto).
+
+- **Decisión: agregar `servicios_unicos_por_cable`/`_por_tubo` (+ gemelas `_sync`) como símbolos
+  nuevos, sin tocar ninguna de las cuatro consultas existentes ni sus dataclasses
+  (`ServicioEncontrado`, compartida con `detalle.py` y la interfaz TS `CromoServicioEncontrado`, 4
+  respuestas distintas la usan).** La razón no es evitar el trabajo de migrar los consumidores
+  existentes: es que **varios pelos por servicio es normal, no un defecto**. Medido real contra
+  `lasfocasdev-postgres`: en el 29,6% de los pares (cable, servicio) el servicio ocupa más de un
+  pelo de ese cable (28.517 de 96.395); en botellas trepa al 41,3% (33.601 de 81.351, extremo A).
+  *(Corregido en el fix round 2 de la Task 11: la medición original no filtraba
+  `servicio_id IS NOT NULL` y contaba 1.220 pares falsos por `(cable, NULL)` — un match sin resolver
+  a un `servicio_id` real no es un servicio.)* El cable `FO-FL-1003` (n_id 6610203) tiene 141
+  filas pelo↔servicio para 118 IDs distintos. La vista por-pelo del Verificador y la vista por-ID
+  única del comando de Slack son **dos vistas legítimas del mismo dato, con propósitos distintos**
+  — no una vieja y una nueva que la reemplaza. Conviven, y así se documenta en
+  `docs/slack_app_cables.md` (`Servicios <cable> B<N>` vs. `Verificar cable <cable> B<N>`).
+
+- **Detalle técnico de la consulta nueva** (no una decisión de producto, sino la implementación que
+  la sostiene): un `GROUP BY s.id` de una sola pasada con `array_agg(DISTINCT ...)`, sin CTE ni
+  re-join. El índice único de `cromo_servicio_match` es `(pelo_n_id, servicio_numero)`, no
+  `(pelo_n_id, servicio_id)` — hay 85 pares (pelo, servicio) con dos filas, porque la descripción
+  del pelo menciona el ID viejo y el nuevo del mismo servicio (ej. pelo `6848348` → servicio
+  `26179` vía `"108013"` y `"66041"`). Un re-join por un pelo representativo multiplicaría esas
+  filas; el `GROUP BY` de una pasada lo evita por construcción.
+
+- **Impacto:** `core/services/cromo/verificador.py` (símbolos `ServicioUnico`,
+  `ResultadoServiciosUnicos`, `servicios_unicos_por_cable`/`_por_tubo` + gemelas `_sync`), consumido
+  por las Tasks 8 (comando de Slack) y 10 (APIs REST). Cero cambios en las cuatro consultas
+  existentes ni en sus consumidores.
+
+## 2026-09-23/24 — Corrección de la nota "No hecho / pendiente" del 2026-09-02 sobre PROV en producción
+
+La entrada del 2026-09-02 ("Integración con la API PROV...", sección "No hecho / pendiente") dice
+que "sólo dev tiene `.secrets/Dev_api_prov_user_v1.txt`/`Dev_api_prov_pass_v1.txt` y el bloque
+`secrets:` de `deploy/docker-compose.dev.yml`". **Esa afirmación está desactualizada** — verificado
+real en esta sesión (2026-09-23): `.secrets/api_prov_user_v1.txt` (10 bytes) y
+`.secrets/api_prov_pass_v1.txt` (26 bytes) **existen y no están vacíos**, y `.env` (el de prod, no
+`.env.dev`) tiene `PROV_BASE_URL=https://prov.metrotel.com.ar/api/v1/ADMEQ`. No se investigó cuándo
+ni por qué se agregaron — la entrada original no se borra (queda como registro histórico de que en
+esa fecha no estaban), sólo se corrige acá que el estado descripto ya no es el actual.
+
+**Lo que sigue sin estar hecho, para no sobre-corregir:** el bloque `secrets:` del servicio `api`/
+`slack_baneo_worker` en `deploy/compose.yml` (prod) — la Task 9 de este plan agregó
+`api_prov_user_v1`/`api_prov_pass_v1` a `secrets:` de `slack_baneo_worker` en **ambos** compose
+(`docker-compose.dev.yml` y `compose.yml`), pero eso es el archivo de código, no un despliegue: el
+compose de prod no se corrió (`lasfocas-*` no se reinició en todo este plan, directiva solo-dev
+vigente). Que los secrets y la variable existan en el filesystem/`.env` de prod no implica que el
+contenedor de prod ya los tenga montados — eso exigiría un `docker compose up` real contra prod, con
+su propia ventana de mantenimiento.
+
+## 2026-09-24 — La auditoría de corrección de ingresos no es atómica con el movimiento, y se escribe segunda
+
+- **Contexto:** revisión final de rama del plan "Corrección de ingresos/servicios"
+  (`docs/superpowers/plans/2026-09-23-correccion-ingresos-servicios.md`). `procesar_comando_correccion`
+  (`core/services/ingreso_correccion_service.py`) hace tres commits en secuencia, no uno: primero
+  `registrar_movimiento_ingreso` (`core/services/ingreso_service.py`, "comita la transacción antes de
+  retornar" según su propio docstring) escribe y comitea la fila `Ingreso`/`Egreso` real; después
+  `_marcar_caso_resuelto` comitea, si aplica, el cierre de `IngresoSinMatch`; recién al final
+  `_finalizar` arma y comitea la fila de `IngresoCorreccion` (`db/models/infra.py`). Si ese último
+  `INSERT` falla, `_finalizar` hace `session.rollback()`, loguea con `logger.error` y devuelve
+  igual el `ResultadoCorreccion` con la respuesta `✅` original (`respuesta` ya estaba armada antes
+  de intentar el commit de auditoría) — el operador ve éxito en Slack sin que exista ninguna fila
+  que lo respalde.
+
+- **Consecuencia concreta:** un reinicio del worker (o un pool de conexiones agotado) entre el
+  commit del `Ingreso`/`Egreso` y el commit de `IngresoCorreccion` deja `app.ingresos` mutada —la
+  cámara cambiando de `OCUPADA` a `LIBRE` o al revés, según el comando— y **cero filas** en
+  `app.ingresos_correcciones` que expliquen quién lo hizo ni cuándo.
+
+- **Por qué importa más de lo que parece:** la decisión de producto de esta misma tanda de trabajo
+  (entrada "2026-09-23 (cont. 2)" arriba) fue explícita — **sin allowlist**, cualquier persona del
+  canal puede ejecutar `Forzar ingreso`/`Forzar egreso`, y el único control es que "cada invocación,
+  exitosa o rechazada, escribe una fila en `app.ingresos_correcciones`". Este camino de mutación sin
+  rastro es la única grieta real en esa premisa: no es un caso raro de infraestructura, es el
+  escenario exacto (fallo de escritura entre dos commits) contra el que la auditoría se presentó
+  como la única salvaguarda.
+
+- **Por qué no se arregla en esta rama:** requeriría escribir la fila de auditoría en la misma
+  transacción que el movimiento — es decir, que `registrar_movimiento_ingreso` deje de comitear por
+  su cuenta y reciba (o devuelva) el control del commit al caller. Eso cambia el contrato de una
+  función ya usada por otros callers fuera de este plan, y las Global Constraints del plan
+  prohibieron tocar ese contrato. Queda como limitación conocida, junto a las otras dos que ya
+  documenta el plan/spec: la ventana de carrera del seguimiento de fecha pendiente y el POST de
+  refresco PROV sin candado compartido con el camino de Slack (ver entrada siguiente).
+
+- **Impacto:** ningún cambio de código en esta entrada — es documentación de una limitación
+  encontrada en la revisión final. `core/services/ingreso_correccion_service.py::_finalizar` (commit
+  de auditoría) y `core/services/ingreso_service.py::registrar_movimiento_ingreso` (commit del
+  movimiento) son los puntos exactos de la brecha.
+
+## 2026-09-24 (cont.) — El POST de refresco PROV por cable queda `_require_auth`, no `_require_admin`
+
+- **Contexto:** Task 10 del mismo plan agregó `POST /api/infra/cromo/cables/{cable_n_id}/servicios-
+  unicos/refrescar-prov` (`web/app/main.py::cromo_servicios_unicos_refrescar_prov_web`), que sólo
+  llama `_require_auth(request)`. Se deja escrito acá para que la decisión quede a la vista, no para
+  cambiarla.
+
+- **A favor de que fuera `_require_admin`:** en `web/app/main.py` hay 14 rutas mutantes bajo
+  `/api/infra/*` que ya son `_require_admin` (más otras 10 bajo el prefijo separado
+  `/api/admin/infra/*`, 24 en total) — `botellas/consolidar`, `botellas/eliminar`,
+  `botellas/eliminar-grupo`, `camaras/merge`, `camaras/merge-grupo`, `camaras/merge-masivo`,
+  `botellas/{n_id}/separar-padre`, `camaras/{camara_id}/estado`, entre otras. Esta ruta nueva escribe
+  en `app.servicios` y en `app.servicios_sync_prov` (vía `ingerir_contexto_prov`), y un usuario con
+  `role=user` puede dispararla para hasta 25 servicios por request (`TOPE_SERVICIOS_POR_COMANDO`),
+  cada uno una llamada real a la API externa PROV — sin rate-limit propio de esta ruta más allá del
+  `Semaphore` interno, y sin el candado `_cables_en_refresco` que sí protege el camino de Slack (ver
+  entrada siguiente) contra dos refrescos concurrentes del mismo cable.
+
+- **A favor de dejarlo como está:** hay un precedente ya escrito para exactamente esta asimetría
+  dentro de `web/app/main.py`: la Decisión 4 de la entrada "2026-09-02 (cont.)" de este mismo archivo,
+  sobre el proxy `POST /api/servicios/prov/refrescar` (`web/app/main.py::servicio_prov_refrescar_web`),
+  argumenta que un refresco PROV no deja al caller *elegir* ningún valor, sólo resincroniza desde la
+  fuente de verdad externa (a diferencia de fijar un Nivel Cliente o una verificabilidad a mano, que
+  sí son `_require_admin`). Esta ruta nueva es la misma operación —"resincronizar desde PROV"— sobre
+  un conjunto de servicios en vez de uno solo, así que el mismo argumento aplica sin forzarlo. (La
+  ruta homónima `POST /servicios/prov/refrescar` de `api/app/routes/servicios.py` no es un segundo
+  precedente del mismo tipo: vive en la app `api`, contenedor `lasfocasdev-api`, donde **todos** los
+  routers —incluido `servicios_router`— quedan detrás de `Depends(require_api_key)` de forma global
+  (`api/app/main.py:48-54`), un esquema de API-key sin ningún concepto de rol admin/no-admin. No es
+  comparable a la distinción `_require_auth`/`_require_admin` de `web/app/main.py`.)
+
+- **Decisión: no se cambia el nivel de auth en esta rama.** Lo que faltaba era que la asimetría
+  quedara documentada para que alguien pueda revisarla a conciencia más adelante, con las dos caras
+  puestas una al lado de la otra — en particular si en algún momento el volumen (25 llamadas PROV
+  por click, sin allowlist de quién puede pedirlo) resulta un problema operativo real.
+
+- **Impacto:** ningún cambio de código. `web/app/main.py::cromo_servicios_unicos_refrescar_prov_web`
+  sigue en `_require_auth`.
+
+## 2026-09-24 (cont. 2) — Deuda declarada: duplicación de orquestación entre el refresco PROV REST y el de Slack
+
+- **Contexto:** `web/app/main.py::_ejecutar_refresco_prov_lote` (Task 10, REST) reimplementa
+  alrededor de 45 líneas de `modules/slack_baneo_notifier/refresco_prov.py::refrescar_servicios_vencidos`
+  (Task 9, Slack): mismo tope (`TOPE_SERVICIOS_POR_COMANDO`), mismo `asyncio.Semaphore`, el mismo
+  patrón `create_task` + `wait_for(DEADLINE_SEGUNDOS)` + bucle de cancelación de tareas no
+  terminadas, y el mismo relleno de los servicios que quedaron sin intentar
+  (`ResultadoServicioRefrescado` con motivo "se agotó el tiempo..."). El fix final de esta rama
+  promovió `priorizar_por_antiguedad`/`refrescar_un_servicio` de privadas a públicas (antes
+  `_priorizar_por_antiguedad`/`_refrescar_un_servicio`) puntualmente para que este import funcionara
+  sin un `from ... import` a un nombre privado — no factoriza la duplicación en sí, sólo evita que
+  quedara rota.
+
+- **Y ya divergió, no es una duplicación estática:** la versión REST no toma el candado
+  `_cables_en_refresco` (módulo `refresco_prov.py`) que evita que dos refrescos concurrentes del
+  mismo cable pisen resultados, y no emite el log `action=prov_refresco_slack
+  evento=lote_completado` con las métricas de duración/conteo que sí emite la versión de Slack. Dos
+  caminos que empezaron como "la misma orquestación, dos triggers" ya tienen comportamiento
+  observable distinto.
+
+- **Riesgo concreto de dejarlo así:** alguien corrige o extiende el camino de Slack (por ejemplo,
+  agregando otro guard o cambiando el criterio de prioridad) sin saber que existe una segunda copia
+  en `web/app/main.py`, y las dos rutas quedan con comportamiento distinto de forma silenciosa — la
+  suite de tests pasa en verde en ambos lados porque cada una prueba su propia copia, no la
+  consistencia entre ambas.
+
+- **Por qué no se resuelve en esta rama:** unificar exigiría rediseñar `refrescar_servicios_vencidos`
+  para separar "correr el lote y devolver el resultado" de "postear el resultado a Slack" (hoy están
+  fusionados en una sola función fire-and-forget pensada para `run_coroutine_threadsafe`), lo cual
+  excede el alcance de un fix final de revisión. Se declara acá como deuda explícita, no como
+  hallazgo nuevo a resolver.
+
+- **Impacto:** ningún cambio de orquestación. Cambio ya aplicado: `priorizar_por_antiguedad` y
+  `refrescar_un_servicio` (antes privadas) ahora están en `__all__` de
+  `modules/slack_baneo_notifier/refresco_prov.py`, con un comentario que apunta a esta entrada.

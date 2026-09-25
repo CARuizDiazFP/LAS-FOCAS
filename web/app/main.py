@@ -12,8 +12,9 @@ import secrets
 import time
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 from time import time as now
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
@@ -5168,10 +5169,12 @@ class CromoSchedulerConfigRequest(BaseModel):
     clases: List[int]
 
 
-# Task 3 (submódulo ODFs): valores aceptados de `CromoIngestaIniciarRequest.modo`. `None` (el
-# request no lo mandó) es válido y equivale a "COMPLETA" — sólo se rechaza un string que no sea
-# ninguno de estos dos.
-_MODOS_INGESTA_VALIDOS = ("COMPLETA", "SOLO_ODF")
+# Los valores aceptados de `CromoIngestaIniciarRequest.modo` ya no viven acá: son
+# `core.services.cromo.ingesta.MODOS_INGESTA`, derivados de la tabla `MODOS_ACOTADOS` que declara
+# qué fase corre cada modo. Con siete modos, una lista duplicada es una lista que se desincroniza, y
+# el síntoma sería un 400 sobre un modo que el frontend sí ofrece.
+#
+# El import es local al handler, como el resto de los imports de Cromo en este archivo.
 
 # Etapa 7: la ingesta corre en su propio worker Docker (modules/cromo_worker/), no en este proceso.
 _CROMO_WORKER_BASE_URL = os.getenv("CROMO_WORKER_BASE_URL", "http://cromo_worker:8096")
@@ -5213,7 +5216,7 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
     """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Crea la corrida acá (para devolver
     el `corrida_id` de inmediato) y delega su ejecución al worker dedicado (Etapa 7)."""
     from core.services.cromo.config import CromoConfigError, PSIZE_PERMITIDOS, get_cromo_config
-    from core.services.cromo.ingesta import CLASES_BOTELLA, iniciar_corrida
+    from core.services.cromo.ingesta import CLASES_BOTELLA, MODOS_INGESTA, iniciar_corrida
     from db.session import AsyncSessionLocal
 
     username = _require_admin(request)
@@ -5225,9 +5228,9 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
             {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
         )
 
-    if body.modo is not None and body.modo not in _MODOS_INGESTA_VALIDOS:
+    if body.modo is not None and body.modo not in MODOS_INGESTA:
         return JSONResponse(
-            {"error": f"modo inválido. Valores permitidos: {sorted(_MODOS_INGESTA_VALIDOS)}"}, status_code=400
+            {"error": f"modo inválido. Valores permitidos: {sorted(MODOS_INGESTA)}"}, status_code=400
         )
 
     try:
@@ -5669,6 +5672,540 @@ async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int)
     )
 
 
+# ── Endpoints: servicios ÚNICOS por cable/buffer + resolución de cable + refresco PROV on-demand
+# (Task 10, plan "Corrección ingresos + Servicios", 2026-09-23) ─────────────────────────────────
+# Vista COMPLEMENTARIA a las tres rutas de arriba (`/cables/{id}/servicios`, `/tubos/{id}/servicios`,
+# `/botellas/{id}/servicios`): esas devuelven una fila por PELO (la tabla del Verificador, con su
+# columna "Pelo" — varios pelos por servicio es normal, no un defecto). Estas cuatro rutas devuelven
+# IDs de servicio ÚNICOS (agregados por `s.id`, `servicios_unicos_por_cable`/`_por_tubo` de la
+# Task 1) — dos vistas legítimas del mismo dato que conviven; rutas nuevas, no una extensión de las
+# de arriba (no las tocan).
+
+
+class CromoServicioUnicoFrescuraModel(BaseModel):
+    """Estado de sincronización PROV de un `ServicioUnico` puntual (Task 7:
+    `core/services/prov/frescura.py`). `ultima_sincronizacion_prov` viaja como string ISO 8601 (no
+    `None` salvo que el servicio nunca sincronizó con éxito)."""
+
+    ultima_sincronizacion_prov: Optional[datetime] = Field(default=None)
+    antiguedad_horas: Optional[float] = Field(default=None)
+    vencida: bool
+
+
+class CromoServicioUnicoResponseModel(BaseModel):
+    """Un servicio único (Task 1: `ServicioUnico`) + su frescura PROV — forma que devuelven las
+    tres rutas de servicios únicos (por cable, por buffer, y tras el refresco). `cantidad_pelos`/
+    `pelos_n_ids` no son ruido: el ID es único, pero cuántas fibras ocupa es información real."""
+
+    servicio_id: int
+    servicio_id_externo: str
+    numero_primer_servicio: Optional[str] = None
+    nombre_cliente: Optional[str] = None
+    cliente: Optional[str] = None
+    estado_servicio: Optional[str] = None
+    tipo_servicio: Optional[str] = None
+    pelos_n_ids: list[int]
+    cantidad_pelos: int
+    numeros_en_pelo: list[str]
+    metodos: list[str]
+    frescura: CromoServicioUnicoFrescuraModel
+
+
+class CromoBufferIdentidadModel(BaseModel):
+    """Identidad de un buffer/tubo — `numero` es el 1-indexado que cuenta el técnico (`orden + 1`,
+    mismo criterio que `cable_info.py::resolver_tubo_por_numero`)."""
+
+    numero: int
+    orden: int
+    nombre_color: Optional[str] = None
+
+
+class CromoRefrescoProvFallidoModel(BaseModel):
+    servicio_id_externo: str
+    motivo: Optional[str] = None
+
+
+class CromoRefrescoProvModel(BaseModel):
+    """`estado` en {"no_solicitado", "sin_vencidos", "completado", "parcial"}: sólo el POST
+    `.../refrescar-prov` dispara un refresco de verdad (puede devolver cualquiera de los últimos
+    tres); los dos GET de servicios únicos son de sólo lectura y siempre devuelven
+    "no_solicitado" con `fallidos=[]` — no disparan nada."""
+
+    estado: str
+    fallidos: list[CromoRefrescoProvFallidoModel] = Field(default_factory=list)
+
+
+class CromoServiciosUnicosResponseModel(BaseModel):
+    cable_n_id: int
+    cable_nombre: Optional[str] = None
+    buffer: Optional[CromoBufferIdentidadModel] = None
+    datos_al: datetime
+    servicios: list[CromoServicioUnicoResponseModel]
+    refresco_prov: CromoRefrescoProvModel
+
+
+class CromoCableIdentidadResponseModel(BaseModel):
+    n_id: int
+    nombre: Optional[str] = None
+    capacidad: Optional[str] = None
+
+
+class CromoServiciosUnicosRefrescarRequestModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+# ── Modelos de error, sólo para documentar `/docs` (Fix round 1, Minor: `response_model` cubre el
+# 200 feliz pero `responses=` es la mitad que faltaba de la motivación original — que estas 4 rutas
+# sí documenten en OpenAPI, la única desventaja real de vivir acá y no en `api/app/routes/`). Igual
+# que el resto de esta sección, no se valida en runtime (los handlers siguen devolviendo
+# `JSONResponse` a mano) — sólo alimenta el schema que ve `/docs`.
+
+
+class CromoNoEncontradoModel(BaseModel):
+    """`GET /cables/resolver` cuando `q` no matchea ningún cable vigente — no lleva `error` (a
+    diferencia de las otras dos formas de 404 de acá abajo) porque no hay una excepción de dominio
+    detrás, sólo "0 candidatos"."""
+
+    codigo: Literal["NO_ENCONTRADO"] = "NO_ENCONTRADO"
+
+
+class CromoCableNoEncontradoModel(BaseModel):
+    """404 de los dos GET de servicios únicos por cable y del POST de refresco — el cable no existe
+    ni por fila propia ni por referencia colgada (`ObjetoNoEncontrado`)."""
+
+    codigo: Literal["NO_ENCONTRADO"] = "NO_ENCONTRADO"
+    error: str
+
+
+class CromoBufferNoEncontradoModel(BaseModel):
+    """404 propio del GET por buffer — `total_buffers` en vez de `error`, para que el cliente pueda
+    orientar al técnico ("el cable tiene 6 buffers, pediste B9")."""
+
+    codigo: Literal["NO_ENCONTRADO"] = "NO_ENCONTRADO"
+    total_buffers: int
+
+
+class CromoAmbiguoModel(BaseModel):
+    """409 de `GET /cables/resolver` — 2+ cables vigentes con el mismo nombre (hay al menos 2 pares
+    reales conocidos, "F-ALV-2335"/"F-LEM-11-A"); la ambigüedad se hace explícita en vez de elegir
+    arbitrariamente."""
+
+    codigo: Literal["AMBIGUO"] = "AMBIGUO"
+    candidatos: list[CromoCableIdentidadResponseModel]
+
+
+class CromoErrorModel(BaseModel):
+    """Forma genérica `{"error": "..."}` — CSRF inválido (403) y PROV no configurado (502) del
+    POST de refresco."""
+
+    error: str
+
+
+async def _frescura_por_servicio(sesion: Any, servicio_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Frescura PROV cruda (timestamp + antigüedad + vencida) por `servicio_id`, para el detalle de
+    cada `ServicioUnico` en la respuesta REST — a diferencia de `servicios_vencidos` (Task 7), que
+    sólo devuelve el subconjunto vencido (un `set[int]`) sin el timestamp real. Reusa
+    `horas_frescura()` para el umbral en vez de un segundo valor hardcodeado que se pueda
+    desincronizar del real."""
+    from datetime import timedelta, timezone
+
+    from sqlalchemy import text
+
+    from core.services.prov.frescura import horas_frescura
+
+    if not servicio_ids:
+        return {}
+    ahora = datetime.now(timezone.utc)
+    corte = ahora - timedelta(hours=horas_frescura())
+    filas = (
+        await sesion.execute(
+            text(
+                "SELECT servicio_id, ultima_sincronizacion_ok FROM app.servicios_sync_prov "
+                "WHERE servicio_id = ANY(:ids ::integer[])"
+            ),
+            {"ids": servicio_ids},
+        )
+    ).all()
+    ultimas = {fila[0]: fila[1] for fila in filas}
+    resultado: dict[int, dict[str, Any]] = {}
+    for servicio_id in servicio_ids:
+        ultima = ultimas.get(servicio_id)
+        if ultima is not None and ultima.tzinfo is None:
+            ultima = ultima.replace(tzinfo=timezone.utc)
+        antiguedad = (ahora - ultima).total_seconds() / 3600 if ultima is not None else None
+        vencida = ultima is None or ultima < corte
+        resultado[servicio_id] = {
+            "ultima_sincronizacion_prov": ultima.isoformat() if ultima is not None else None,
+            "antiguedad_horas": antiguedad,
+            "vencida": vencida,
+        }
+    return resultado
+
+
+def _serializar_servicio_unico(servicio: Any, frescura: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "servicio_id": servicio.servicio_id,
+        "servicio_id_externo": servicio.servicio_id_externo,
+        "numero_primer_servicio": servicio.numero_primer_servicio,
+        "nombre_cliente": servicio.nombre_cliente,
+        "cliente": servicio.cliente,
+        "estado_servicio": servicio.estado_servicio,
+        "tipo_servicio": servicio.tipo_servicio,
+        "pelos_n_ids": list(servicio.pelos_n_ids),
+        "cantidad_pelos": servicio.cantidad_pelos,
+        "numeros_en_pelo": list(servicio.numeros_en_pelo),
+        "metodos": list(servicio.metodos),
+        "frescura": frescura,
+    }
+
+
+async def _identidad_cable(sesion: Any, cable_n_id: int) -> Optional[str]:
+    """Nombre del cable para la identidad de la respuesta — `None` si el cable sólo se conoce por
+    referencia colgada (pelos con servicio matcheado sin fila propia en `cromo_cables`, ver
+    docstring de `servicios_unicos_por_cable`)."""
+    from db.models.cromo import CromoCable
+
+    cable = await sesion.get(CromoCable, cable_n_id)
+    return cable.nombre if cable is not None else None
+
+
+async def _resolver_cable_por_texto(sesion: Any, texto: str) -> list[tuple[int, Optional[str], Optional[str]]]:
+    """Gemela async de `modules/slack_baneo_notifier/cable_info.py::buscar_cable_por_n_id_o_nombre`
+    (que usa `Session` síncrona, pensada para el listener de Slack) contra `AsyncSession` — mismo
+    criterio de resolución (n_id exacto si `texto` es puramente numérico, si no match exacto case-
+    insensitive por `nombre`, sólo cables vigentes). Devuelve una lista para que el caller distinga
+    0 (no encontrado) de 2+ (los duplicados reales conocidos, ej. "F-ALV-2335"/"F-LEM-11-A")."""
+    from sqlalchemy import text
+
+    texto_limpio = texto.strip()
+    if texto_limpio.isdigit():
+        filas = (
+            await sesion.execute(
+                text("SELECT n_id, nombre, capacidad FROM app.cromo_cables WHERE vigente = true AND n_id = :n_id"),
+                {"n_id": int(texto_limpio)},
+            )
+        ).all()
+    else:
+        filas = (
+            await sesion.execute(
+                text(
+                    "SELECT n_id, nombre, capacidad FROM app.cromo_cables "
+                    "WHERE vigente = true AND lower(nombre) = lower(:nombre)"
+                ),
+                {"nombre": texto_limpio},
+            )
+        ).all()
+    return [(fila[0], fila[1], fila[2]) for fila in filas]
+
+
+async def _resolver_buffer_por_numero(
+    sesion: Any, cable_n_id: int, numero: int
+) -> tuple[Optional[tuple[int, int, Optional[str]]], int]:
+    """Gemela async de `resolver_tubo_por_numero`/`contar_buffers_cable`
+    (`modules/slack_baneo_notifier/cable_info.py`, síncronas) — `numero` es 1-indexado como lo
+    cuenta el técnico, mapea a `cromo_tubos.orden = numero - 1` (confirmado con el usuario
+    2026-08-13). Devuelve `(tubo_n_id, orden, nombre_color)` o `None` si no existe, más el total de
+    buffers vigentes del cable (para que el 404 pueda orientar con `total_buffers`)."""
+    from sqlalchemy import text
+
+    fila_tubo = (
+        await sesion.execute(
+            text(
+                "SELECT n_id, orden, nombre_color FROM app.cromo_tubos "
+                "WHERE cable_n_id = :cable_n_id AND vigente = true AND orden = :orden"
+            ),
+            {"cable_n_id": cable_n_id, "orden": numero - 1},
+        )
+    ).first()
+    total_buffers = (
+        await sesion.execute(
+            text("SELECT count(*) FROM app.cromo_tubos WHERE cable_n_id = :cable_n_id AND vigente = true"),
+            {"cable_n_id": cable_n_id},
+        )
+    ).scalar_one()
+    tubo = (fila_tubo[0], fila_tubo[1], fila_tubo[2]) if fila_tubo else None
+    return tubo, int(total_buffers)
+
+
+@dataclass(slots=True)
+class _ResultadoRefrescoLote:
+    """Resultado directo de `_ejecutar_refresco_prov_lote` — a diferencia de
+    `refrescar_servicios_vencidos` (Task 9, fire-and-forget pensado para el hilo de Slack: devuelve
+    `None` y postea el resultado a un canal), esta ruta REST corre ya dentro del loop async de
+    FastAPI y puede simplemente awaitear el lote y devolver el resultado en la respuesta HTTP."""
+
+    fallidos: list[dict[str, Optional[str]]]
+
+
+async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefrescoLote:
+    """Corre el refresco PROV de `pendientes` (los `ServicioUnico` ya filtrados a vencidos por el
+    caller) de forma síncrona con la petición HTTP — decisión de diseño de la Task 10 (ver reporte):
+    reusa el tope/concurrencia/deadline/orden de prioridad y el worker por-servicio de la Task 9
+    (`modules/slack_baneo_notifier/refresco_prov.py`: `priorizar_por_antiguedad`/
+    `refrescar_un_servicio`, que no tienen ninguna dependencia de Slack) en vez de reimplementar la
+    orquestación PROV desde cero, pero NO reusa `refrescar_servicios_vencidos` en sí: esa función
+    pública es fire-and-forget, exige `client`/`channel`/`thread_ts` de Slack para postear el
+    resultado, y nunca lo devuelve — pensada para encolarse desde el thread síncrono de Slack Bolt
+    vía `run_coroutine_threadsafe`. Esta ruta ya corre en el loop de FastAPI (sin ese puente de
+    threads) y necesita el resultado directo para la respuesta HTTP, no un canal al que postear."""
+    from modules.slack_baneo_notifier.refresco_prov import (
+        CONCURRENCIA_MAXIMA,
+        DEADLINE_SEGUNDOS,
+        TOPE_SERVICIOS_POR_COMANDO,
+        ResultadoServicioRefrescado,
+        priorizar_por_antiguedad,
+        refrescar_un_servicio,
+    )
+    from core.services.prov.client import get_prov_client
+
+    cliente = get_prov_client()
+    ordenados = await priorizar_por_antiguedad(pendientes)
+    candidatos = ordenados[:TOPE_SERVICIOS_POR_COMANDO]
+
+    semaforo = asyncio.Semaphore(CONCURRENCIA_MAXIMA)
+    resultados: dict[int, Any] = {}
+
+    async def _tarea(servicio: Any) -> None:
+        resultados[servicio.servicio_id] = await refrescar_un_servicio(servicio, semaforo, cliente)
+
+    tareas = [asyncio.create_task(_tarea(s)) for s in candidatos]
+    try:
+        await asyncio.wait_for(asyncio.gather(*tareas, return_exceptions=True), timeout=DEADLINE_SEGUNDOS)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "action=cromo_servicios_unicos_refrescar_prov evento=deadline_alcanzado total=%d", len(candidatos)
+        )
+    finally:
+        for tarea in tareas:
+            if not tarea.done():
+                tarea.cancel()
+
+    for servicio in candidatos:
+        if servicio.servicio_id not in resultados:
+            resultados[servicio.servicio_id] = ResultadoServicioRefrescado(
+                servicio.servicio_id,
+                servicio.servicio_id_externo,
+                False,
+                "se agotó el tiempo del lote antes de poder intentarlo",
+            )
+
+    fallidos = [
+        {"servicio_id_externo": r.servicio_id_externo, "motivo": r.motivo_error}
+        for r in resultados.values()
+        if not r.ok
+    ]
+    return _ResultadoRefrescoLote(fallidos=fallidos)
+
+
+@app.get(
+    "/api/infra/cromo/cables/resolver",
+    response_model=CromoCableIdentidadResponseModel,
+    responses={
+        404: {"model": CromoNoEncontradoModel, "description": "Ningún cable vigente matchea `q`."},
+        409: {
+            "model": CromoAmbiguoModel,
+            "description": "2+ cables vigentes con el mismo nombre — ambigüedad explícita.",
+        },
+    },
+)
+async def cromo_cable_resolver_web(request: Request, q: str) -> JSONResponse:
+    """Resuelve un cable por `n_id` (si `q` es puramente numérico) o por `nombre` exacto case-
+    insensitive (si no) — ver `_resolver_cable_por_texto`. 404 si no hay ningún cable vigente con
+    ese criterio; 409 explícito (nunca elegir arbitrariamente) si hay 2+ — hay al menos 2 pares de
+    nombres duplicados reales conocidos (`F-ALV-2335`, `F-LEM-11-A`) sobre ~32.782 cables."""
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    async with AsyncSessionLocal() as sesion:
+        candidatos = await _resolver_cable_por_texto(sesion, q)
+
+    if not candidatos:
+        return JSONResponse({"codigo": "NO_ENCONTRADO"}, status_code=404)
+    if len(candidatos) > 1:
+        return JSONResponse(
+            {
+                "codigo": "AMBIGUO",
+                "candidatos": [
+                    {"n_id": n_id, "nombre": nombre, "capacidad": capacidad} for n_id, nombre, capacidad in candidatos
+                ],
+            },
+            status_code=409,
+        )
+
+    n_id, nombre, capacidad = candidatos[0]
+    return JSONResponse({"n_id": n_id, "nombre": nombre, "capacidad": capacidad})
+
+
+@app.get(
+    "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos",
+    response_model=CromoServiciosUnicosResponseModel,
+    responses={
+        404: {
+            "model": CromoCableNoEncontradoModel,
+            "description": "El cable no existe en el inventario ingerido (ni fila propia ni referencia colgada).",
+        },
+    },
+)
+async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
+    """IDs de servicio únicos (Task 1: `servicios_unicos_por_cable`) de un cable entero, con
+    frescura PROV por servicio (Task 7) — vista complementaria a
+    `/api/infra/cromo/cables/{id}/servicios` (arriba), que es por-pelo para la tabla del
+    Verificador. Sólo lectura: no dispara ningún refresco (eso es el POST `.../refrescar-prov`, más
+    abajo) — `refresco_prov` siempre viaja en "no_solicitado" acá."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_cable
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_unicos_por_cable(sesion, cable_n_id)
+            cable_nombre = await _identidad_cable(sesion, cable_n_id)
+            frescura = await _frescura_por_servicio(sesion, [s.servicio_id for s in resultado.servicios])
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"codigo": "NO_ENCONTRADO", "error": str(exc)}, status_code=404)
+
+    from datetime import timezone
+
+    return JSONResponse(
+        {
+            "cable_n_id": cable_n_id,
+            "cable_nombre": cable_nombre,
+            "buffer": None,
+            "datos_al": datetime.now(timezone.utc).isoformat(),
+            "servicios": [_serializar_servicio_unico(s, frescura[s.servicio_id]) for s in resultado.servicios],
+            "refresco_prov": {"estado": "no_solicitado", "fallidos": []},
+        }
+    )
+
+
+@app.get(
+    "/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos",
+    response_model=CromoServiciosUnicosResponseModel,
+    responses={
+        404: {
+            "model": CromoBufferNoEncontradoModel,
+            "description": "El cable no tiene ese buffer (`total_buffers` orienta al cliente).",
+        },
+    },
+)
+async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: int, numero: int) -> JSONResponse:
+    """Igual que la ruta anterior, acotado a un buffer humano `B<numero>` puntual (`numero` 1-
+    indexado, mapea a `cromo_tubos.orden = numero - 1`, ver `_resolver_buffer_por_numero`). 404 con
+    `total_buffers` si el cable no tiene ese buffer — para que el cliente pueda orientar al técnico
+    ("el cable tiene 6 buffers, pediste B9")."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_tubo, ResultadoServiciosUnicos
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    async with AsyncSessionLocal() as sesion:
+        tubo, total_buffers = await _resolver_buffer_por_numero(sesion, cable_n_id, numero)
+        if tubo is None:
+            return JSONResponse({"codigo": "NO_ENCONTRADO", "total_buffers": total_buffers}, status_code=404)
+        tubo_n_id, orden, nombre_color = tubo
+        cable_nombre = await _identidad_cable(sesion, cable_n_id)
+        try:
+            resultado = await servicios_unicos_por_tubo(sesion, tubo_n_id)
+        except ObjetoNoEncontrado:
+            # El tubo existe de verdad (recién resuelto por fila propia arriba) — un buffer sin
+            # ningún pelo cargado todavía no es "no encontrado", es un buffer real sin servicios
+            # que reportar (el criterio de "no encontrado" de `servicios_unicos_por_tubo` es
+            # tolerante a la fila de TUBO faltante, no al revés: acá la fila sí existe).
+            resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=tubo_n_id, servicios=[])
+        frescura = await _frescura_por_servicio(sesion, [s.servicio_id for s in resultado.servicios])
+
+    from datetime import timezone
+
+    return JSONResponse(
+        {
+            "cable_n_id": cable_n_id,
+            "cable_nombre": cable_nombre,
+            "buffer": {"numero": numero, "orden": orden, "nombre_color": nombre_color},
+            "datos_al": datetime.now(timezone.utc).isoformat(),
+            "servicios": [_serializar_servicio_unico(s, frescura[s.servicio_id]) for s in resultado.servicios],
+            "refresco_prov": {"estado": "no_solicitado", "fallidos": []},
+        }
+    )
+
+
+@app.post(
+    "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov",
+    response_model=CromoServiciosUnicosResponseModel,
+    responses={
+        403: {"model": CromoErrorModel, "description": "CSRF inválido."},
+        404: {
+            "model": CromoCableNoEncontradoModel,
+            "description": "El cable no existe en el inventario ingerido.",
+        },
+        502: {"model": CromoErrorModel, "description": "PROV no está configurado en este entorno."},
+    },
+)
+async def cromo_servicios_unicos_refrescar_prov_web(
+    request: Request, cable_n_id: int, body: CromoServiciosUnicosRefrescarRequestModel
+) -> JSONResponse:
+    """Dispara el refresco PROV (Task 9) de los servicios únicos vencidos de este cable, awaiteado
+    dentro del propio request (a diferencia del comando de Slack, fire-and-forget) — ver
+    `_ejecutar_refresco_prov_lote`. Responde con el mismo cuerpo que el GET de servicios únicos por
+    cable, con `refresco_prov` reflejando el resultado real del lote en vez de "no_solicitado"."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_cable
+    from core.services.prov.config import ProvConfigError
+    from core.services.prov.frescura import servicios_vencidos
+    from db.session import AsyncSessionLocal
+
+    username, _ = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=cromo_servicios_unicos_refrescar_prov result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await servicios_unicos_por_cable(sesion, cable_n_id)
+            vencidos = await servicios_vencidos(sesion, [s.servicio_id for s in resultado.servicios])
+    except ObjetoNoEncontrado as exc:
+        return JSONResponse({"codigo": "NO_ENCONTRADO", "error": str(exc)}, status_code=404)
+
+    pendientes = [s for s in resultado.servicios if s.servicio_id in vencidos]
+    if not pendientes:
+        refresco_prov: dict[str, Any] = {"estado": "sin_vencidos", "fallidos": []}
+    else:
+        try:
+            lote = await _ejecutar_refresco_prov_lote(pendientes)
+        except ProvConfigError as exc:
+            logger.error(
+                "action=cromo_servicios_unicos_refrescar_prov evento=prov_no_configurado cable_n_id=%s error=%s",
+                cable_n_id,
+                exc,
+            )
+            return JSONResponse({"error": f"PROV no está configurado: {exc}"}, status_code=502)
+        except Exception as exc:
+            logger.exception(
+                "action=cromo_servicios_unicos_refrescar_prov_error cable_n_id=%s error=%s", cable_n_id, exc
+            )
+            return JSONResponse({"error": "No se pudo ejecutar el refresco PROV"}, status_code=500)
+        refresco_prov = {"estado": "completado" if not lote.fallidos else "parcial", "fallidos": lote.fallidos}
+
+    async with AsyncSessionLocal() as sesion:
+        resultado_final = await servicios_unicos_por_cable(sesion, cable_n_id)
+        cable_nombre = await _identidad_cable(sesion, cable_n_id)
+        frescura = await _frescura_por_servicio(sesion, [s.servicio_id for s in resultado_final.servicios])
+
+    from datetime import timezone
+
+    return JSONResponse(
+        {
+            "cable_n_id": cable_n_id,
+            "cable_nombre": cable_nombre,
+            "buffer": None,
+            "datos_al": datetime.now(timezone.utc).isoformat(),
+            "servicios": [
+                _serializar_servicio_unico(s, frescura[s.servicio_id]) for s in resultado_final.servicios
+            ],
+            "refresco_prov": refresco_prov,
+        }
+    )
+
+
 def _serializar_pelo_empalme(pelo: Any) -> Optional[dict[str, Any]]:
     if pelo is None:
         return None
@@ -5723,6 +6260,22 @@ async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> 
                 }
                 for e in resultado.empalmes
             ],
+            # Splitters tal como los declara Cromo (clase 133), con el ratio de `at.83`. Distinto de
+            # `empalmes[].es_splitter`, que es la heurística de fan-out: `splitters_relevados=false`
+            # significa que esta Botella todavía no se barrió con el código que los lee, no que no
+            # tenga ninguno — y mientras tanto la heurística sigue siendo lo único disponible.
+            "splitters": [
+                {
+                    "n_id": s.n_id,
+                    "nombre": s.nombre,
+                    "ratio": s.ratio,
+                    "salidas": s.salidas,
+                    "puertos_totales": s.puertos_totales,
+                    "puertos_ocupados": s.puertos_ocupados,
+                }
+                for s in resultado.splitters
+            ],
+            "splitters_relevados": resultado.splitters_relevados,
         }
     )
 
@@ -5783,6 +6336,79 @@ async def cromo_inventario_cables_web(
                     "cantidad_servicios": c.cantidad_servicios,
                 }
                 for c in resultado.cables
+            ],
+        }
+    )
+
+
+@app.get("/api/infra/cromo/pon")
+async def cromo_inventario_pon_web(
+    request: Request,
+    q: Optional[str] = None,
+    n_id: Optional[int] = None,
+    clases: Optional[str] = None,
+    vigente: Optional[bool] = None,
+    localidad: Optional[str] = None,
+    propietario: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Inventario navegable de la red de acceso PON: cajas PON y rosetas ya ingeridas.
+
+    Sólo lectura, cualquier usuario autenticado — mismo criterio que los inventarios de cables y
+    ODFs.
+
+    `clases` llega como lista separada por comas (`?clases=84,137`) porque cajas PON y rosetas
+    comparten tabla: es el parámetro que distingue una vista de la otra. Se ignoran los valores no
+    numéricos en vez de devolver 400: un filtro de listado mal tipeado no debería romper la
+    pantalla, y el resto de la lista sigue siendo un filtro válido.
+    """
+    from core.services.cromo.pon_inventario import buscar_pon_elementos
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    clases_filtro: Optional[list[int]] = None
+    if clases:
+        clases_filtro = [int(c) for c in clases.split(",") if c.strip().lstrip("-").isdigit()] or None
+
+    async with AsyncSessionLocal() as sesion:
+        resultado = await buscar_pon_elementos(
+            sesion,
+            q=q,
+            n_id=n_id,
+            clases=clases_filtro,
+            vigente=vigente,
+            localidad=localidad,
+            propietario=propietario,
+            limit=limit,
+            offset=offset,
+        )
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            "elementos": [
+                {
+                    "n_id": e.n_id,
+                    "clase": e.clase,
+                    "nombre": e.nombre,
+                    "localidad": e.localidad,
+                    "calle": e.calle,
+                    "altura": e.altura,
+                    "propietario": e.propietario,
+                    "tipo_conector": e.tipo_conector,
+                    "capacidad_puertos": e.capacidad_puertos,
+                    "latitud": e.latitud,
+                    "longitud": e.longitud,
+                    "vigente": e.vigente,
+                    "cantidad_splitters": e.cantidad_splitters,
+                }
+                for e in resultado.elementos
             ],
         }
     )
@@ -5954,6 +6580,363 @@ async def cromo_conectores_de_odf_web(request: Request, odf_n_id: int) -> JSONRe
             ],
         }
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Servicios sin ODF — gestor de asociación manual Servicio→ODF (Tasks 2-4: Cromo)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _serializar_extremos_sin_odf(extremos: Any) -> list[dict[str, Any]]:
+    """`[{extremo, nodo, equipo}, ...]` a partir de una secuencia de `ExtremoUltimaMilla` (listado,
+    dataclass) o de filas `ServicioEquipoUltimaMilla` (detalle, ORM) — ambas exponen los mismos tres
+    atributos, así que sirve para las dos. Serializa TODOS los extremos, nunca sólo el ganador: es
+    requisito de diseño del plan que la prioridad de categorización nunca le oculte información al
+    operador (ver `ServicioSinOdf.extremos` en `core/services/cromo/servicios_sin_odf.py`)."""
+    return [{"extremo": e.extremo, "nodo": e.nodo, "equipo": e.equipo} for e in extremos]
+
+
+async def _obtener_servicio_categorizado(sesion: Any, servicio_id: int) -> Optional[dict[str, Any]]:
+    """Carga el Servicio (PK `app.servicios.id`) + sus extremos de última milla y les aplica la
+    categorización PURA de `core/services/cromo/servicios_sin_odf.py` (`categorizar_extremos`,
+    `subcategoria_sin_senal_prov`) — puro wiring de datos, la decisión de categoría/subcategoría
+    siempre la toma ese módulo, nunca esta función. `None` si el Servicio no existe.
+
+    La usan tanto `GET .../sugerencia` (mostrarle la causa al operador) como `POST .../asociar`
+    (persistir la MISMA `categoria_causa`/`subcategoria` que el operador vio en el detalle, no
+    recalcularla de otra forma en cada endpoint)."""
+    from sqlalchemy import select
+
+    from core.services.cromo.servicios_sin_odf import (
+        CATEGORIA_SIN_SENAL_PROV,
+        categorizar_extremos,
+        subcategoria_sin_senal_prov,
+    )
+    from db.models.infra import Servicio, ServicioEquipoUltimaMilla
+
+    servicio = (
+        await sesion.execute(select(Servicio).where(Servicio.id == servicio_id))
+    ).scalar_one_or_none()
+    if servicio is None:
+        return None
+
+    extremos = list(
+        (
+            await sesion.execute(
+                select(ServicioEquipoUltimaMilla)
+                .where(ServicioEquipoUltimaMilla.servicio_id == servicio_id)
+                .order_by(ServicioEquipoUltimaMilla.extremo)
+            )
+        ).scalars()
+    )
+
+    categoria_causa, _subcategoria_barata, _nodo, _equipo, indice_ganador = categorizar_extremos(
+        [(e.equipo, e.nodo) for e in extremos]
+    )
+    subcategoria = None
+    if categoria_causa == CATEGORIA_SIN_SENAL_PROV:
+        subcategoria = await subcategoria_sin_senal_prov(sesion, servicio_id)
+
+    return {
+        "servicio": servicio,
+        "extremos": extremos,
+        "categoria_causa": categoria_causa,
+        "subcategoria": subcategoria,
+        "indice_extremo_categorizado": indice_ganador,
+    }
+
+
+async def _senal_direccion_contra_odf(sesion: Any, direccion_prov: Optional[str], odf_n_id: int) -> Any:
+    """Devuelve el `SenalDireccion` de comparar `direccion_prov` contra la calle/altura de la ODF
+    `odf_n_id` (`NO_SE_PUDO_COMPARAR` si esa ODF no tiene fila en `cromo_odfs`) — wiring sobre
+    `core/services/cromo/direccion_comparacion.py`, cero lógica de comparación propia acá."""
+    from sqlalchemy import select
+
+    from core.services.cromo.direccion_comparacion import comparar_direccion_prov_vs_odf
+    from db.models.cromo import CromoOdf
+
+    fila = (
+        await sesion.execute(select(CromoOdf.calle, CromoOdf.altura).where(CromoOdf.n_id == odf_n_id))
+    ).first()
+    return comparar_direccion_prov_vs_odf(direccion_prov, fila.calle if fila else None, fila.altura if fila else None)
+
+
+async def _existe_odf(sesion: Any, odf_n_id: int) -> bool:
+    """`True` si `odf_n_id` tiene fila PROPIA en `app.cromo_odfs` — mismo criterio ESTRICTO que ya
+    exige `crear_override` antes de insertar un override (ver `_SQL_EXISTE_ODF` en
+    `core/services/cromo/servicio_odf_override_service.py`). Ese helper es privado de otro módulo,
+    así que acá se repite la misma pregunta vía el ORM en vez de importarlo — usado por
+    `GET .../senal-direccion` (Task 6, fix round 1) para distinguir 404 "ODF no existe" de
+    `NO_SE_PUDO_COMPARAR` "ODF existe pero sin calle/altura cargada", algo que
+    `_senal_direccion_contra_odf` no puede distinguir por sí solo (colapsa las dos situaciones al
+    mismo resultado)."""
+    from sqlalchemy import select
+
+    from db.models.cromo import CromoOdf
+
+    fila = (await sesion.execute(select(CromoOdf.n_id).where(CromoOdf.n_id == odf_n_id))).first()
+    return fila is not None
+
+
+@app.get("/api/admin/infra/servicios-odf/listado")
+async def servicios_sin_odf_listado_web(
+    request: Request,
+    categoria: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Listado paginado de Servicios Activos verificables sin ODF Cromo resuelta, con causa
+    probable ya categorizada por fila — barata (sin sugerencia de ODF ni subcategoría de detalle,
+    eso corre sólo bajo demanda en `GET .../sugerencia`, para no hacer N+1 en el paginado). Ver
+    `core/services/cromo/servicios_sin_odf.py::listar_servicios_sin_odf`.
+
+    Devuelve además `conteos_por_categoria` (las 4 categorías, sobre el mismo conjunto filtrado por
+    `q` y ANTES del filtro `categoria`): son los chips de la UI, calculados en la misma pasada que
+    el listado para que el frontend no tenga que pedir un request `limit=0` por categoría.
+
+    `offset`/`limit` negativos o una `categoria` desconocida levantan `ValueError` en el servicio —
+    se mapean acá a 400, nunca a un 500 ni a una página silenciosamente incorrecta."""
+    from core.services.cromo.camino_optico_service import contar_semillas_por_servicio
+    from core.services.cromo.servicios_sin_odf import listar_servicios_sin_odf
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            resultado = await listar_servicios_sin_odf(
+                sesion, limit=limit, offset=offset, categoria=categoria, q=q
+            )
+            # Una query batcheada para toda la página: le dice a la UI si el botón de camino va
+            # o no, sin un request por tarjeta y sin tocar la query de detección.
+            semillas_por_servicio = await contar_semillas_por_servicio(
+                sesion, [item.id for item in resultado.items]
+            )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return JSONResponse(
+        {
+            "total": resultado.total,
+            "limit": resultado.limit,
+            "offset": resultado.offset,
+            # Los 4 conteos de los chips viajan con el listado: el frontend NO tiene que pedir un
+            # `limit=0` por categoría (eso re-corría la query completa del universo 4 veces más,
+            # en paralelo con el listado, para devolver 4 enteros que esta misma pasada ya calculó).
+            "conteos_por_categoria": resultado.conteos_por_categoria,
+            "items": [
+                {
+                    "id": item.id,
+                    "servicio_id": item.servicio_id,
+                    "numero_primer_servicio": item.numero_primer_servicio,
+                    "nombre_cliente": item.nombre_cliente,
+                    "categoria_causa": item.categoria_causa,
+                    "subcategoria": item.subcategoria,
+                    "nodo": item.nodo,
+                    "equipo": item.equipo,
+                    "extremos": _serializar_extremos_sin_odf(item.extremos),
+                    "indice_extremo_categorizado": item.indice_extremo_categorizado,
+                    # 0 = `/path` no tiene input posible para este Servicio (el 77% del universo).
+                    "pelos_semilla": semillas_por_servicio.get(item.id, 0),
+                }
+                for item in resultado.items
+            ],
+        }
+    )
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/sugerencia")
+async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -> JSONResponse:
+    """Detalle de causa + sugerencia de ODF para UN Servicio sin ODF: categoría/subcategoría
+    completas (incluida la cascada `subcategoria_sin_senal_prov` on-demand), AMBOS extremos de
+    última milla + el índice del que ganó la categorización, dirección PROV cruda del Servicio, y —
+    sólo para `OLT_PON_COMPARTIDO` — la sugerencia de ODF de un hermano resuelto más la
+    `senal_direccion` calculada contra esa ODF sugerida. Sólo lectura e informativo: NADA se
+    auto-aplica acá, el operador confirma vía `POST .../asociar`. 404 si `servicio_id` no existe.
+
+    `_require_admin`, igual que los otros 3 endpoints del gestor. Antes era `_require_auth` "porque
+    es consulta", citando `odfs/{id}/conectores` como precedente, y eso era un guard más ancho que
+    no habilitaba ningún caso de uso: la única ruta de UI que lo consume
+    (`/admin/servicios/viewer/ServiciosSinOdf`) es `meta: { requiresAdmin: true }`, así que sólo
+    ampliaba la superficie. Y no es el mismo caso que el precedente: éste es el ÚNICO endpoint de
+    la app del SPA que serializa `Servicio.direccion` (el domicilio del cliente) —
+    `odfs/{id}/conectores` expone `nombre_cliente` pero no la dirección — y devuelve además el
+    `nodo`/`equipo` de última milla, o sea topología de red. Con `_require_auth`, un usuario con rol
+    `user` podía iterar `servicio_id` y cosechar número + cliente + domicilio + topología de los
+    14.147 Servicios, mientras el listado, que muestra MENOS, sí exigía admin."""
+    from core.services.cromo.servicios_sin_odf import (
+        CATEGORIA_OLT_PON_COMPARTIDO,
+        sugerencia_odf_para_servicio,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+
+    async with AsyncSessionLocal() as sesion:
+        detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
+        if detalle is None:
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+        servicio = detalle["servicio"]
+        sugerencia_payload = None
+        senal_direccion = None
+        if detalle["categoria_causa"] == CATEGORIA_OLT_PON_COMPARTIDO:
+            sugerencia = await sugerencia_odf_para_servicio(sesion, servicio_id)
+            if sugerencia is not None:
+                # `cantidad_candidatas` NO es decorativo: el frontend lo necesita para no
+                # presentar como única una elección entre 2-4 ODFs candidatas (88 de 1057
+                # Servicios OLT con sugerencia tienen más de una, medido real 2026-09-09).
+                sugerencia_payload = {
+                    "odf_n_id": sugerencia.odf_n_id,
+                    "nombre": sugerencia.nombre,
+                    "cantidad_candidatas": sugerencia.cantidad_candidatas,
+                }
+                senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, sugerencia.odf_n_id)
+                senal_direccion = senal.value
+
+    return JSONResponse(
+        {
+            "id": servicio.id,
+            "servicio_id": servicio.servicio_id,
+            "nombre_cliente": servicio.nombre_cliente,
+            "direccion": servicio.direccion,
+            "categoria_causa": detalle["categoria_causa"],
+            "subcategoria": detalle["subcategoria"],
+            "extremos": _serializar_extremos_sin_odf(detalle["extremos"]),
+            "indice_extremo_categorizado": detalle["indice_extremo_categorizado"],
+            "sugerencia": sugerencia_payload,
+            "senal_direccion": senal_direccion,
+        }
+    )
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion")
+async def servicios_sin_odf_senal_direccion_web(
+    request: Request, servicio_id: int, odf_n_id: Optional[int] = None
+) -> JSONResponse:
+    """Preview de `senal_direccion` (Task 2) para una ODF que el operador eligió A MANO en el
+    buscador del modal, ANTES de confirmar — puro read-only, nunca persiste nada. Fix round 1 de
+    Task 6: `GET .../sugerencia` sólo calcula esta señal contra la ODF que la propia API sugirió, y
+    esa sugerencia sólo existe para `OLT_PON_COMPARTIDO` (1537 de 2891 Servicios sin ODF, medido
+    real 2026-09-09) — para el 47% restante, y para cualquier operador que rechace la sugerencia y
+    busque otra ODF, el badge del frontend quedaba inerte justo donde más se necesita. Este
+    endpoint cierra ese hueco sin mover la fuente de verdad: `POST .../asociar` sigue siendo quien
+    recalcula y persiste la señal, contra la ODF REALMENTE elegida en su body — esto es sólo una
+    ayuda visual previa.
+
+    Mismo cálculo que ya usan `/sugerencia` y `POST /asociar`: reusa `_obtener_servicio_categorizado`
+    (misma fuente de la dirección PROV cruda del Servicio) y `_senal_direccion_contra_odf` (wiring
+    sobre `core/services/cromo/direccion_comparacion.py`) — cero lógica de comparación nueva acá.
+
+    `_require_admin`, mismo criterio que los otros 3 endpoints del gestor (ver la justificación en
+    `/sugerencia`: el guard `_require_auth` que tenían los dos GET no habilitaba ningún caso de uso
+    — la ruta de UI que los consume ya exige admin — y sólo ampliaba la superficie). 400 si falta
+    `odf_n_id` (un tipo inválido, ej. `odf_n_id=abc`, ya lo rechaza la validación automática de
+    FastAPI con 422 antes de llegar acá — mismo comportamiento que `limit`/`offset` en el listado).
+    404 si el Servicio no existe, o si `odf_n_id` no tiene fila PROPIA en `app.cromo_odfs` — un
+    `odf_n_id` inventado nunca debe devolver silenciosamente `no_se_pudo_comparar`, eso confundiría
+    "ODF sin dirección cargada" con "ODF que no existe" (ver `_existe_odf`, mismo criterio ESTRICTO
+    que ya exige `crear_override`)."""
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+
+    if odf_n_id is None:
+        return JSONResponse({"error": "odf_n_id es requerido"}, status_code=400)
+
+    async with AsyncSessionLocal() as sesion:
+        detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
+        if detalle is None:
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+        if not await _existe_odf(sesion, odf_n_id):
+            return JSONResponse({"error": "ODF no encontrada"}, status_code=404)
+
+        servicio = detalle["servicio"]
+        senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, odf_n_id)
+
+    return JSONResponse({"senal_direccion": senal.value})
+
+
+class ServicioOdfAsociarRequestModel(BaseModel):
+    """Payload para confirmar la asociación manual Servicio→ODF (`crear_override`, Task 4)."""
+
+    odf_n_id: int
+    pelo_n_id: Optional[int] = None
+    notas: Optional[str] = None
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/asociar")
+async def servicios_sin_odf_asociar_web(
+    request: Request, servicio_id: int, body: ServicioOdfAsociarRequestModel
+) -> JSONResponse:
+    """Confirma la asociación manual Servicio→ODF que el operador eligió (la sugerida, u otra que
+    haya buscado a mano). Recalcula `senal_direccion` (Task 2) en el backend contra la ODF
+    REALMENTE elegida en `body.odf_n_id` — nunca confía en lo que mandó el frontend, que puede
+    haber elegido una ODF distinta a la sugerida — y la persiste vía `crear_override` (Task 4) junto
+    con la MISMA `categoria_causa`/`subcategoria` que ve el operador en el detalle.
+
+    `senal_direccion` es sólo informativa: un `no_coincide` se persiste y se devuelve igual, nunca
+    bloquea la asociación. `ObjetoNoEncontrado` de `crear_override` (la ODF no tiene fila propia en
+    `cromo_odfs`) se mapea a 404, nunca a un 500."""
+    from core.services.cromo.servicio_odf_override_service import ObjetoNoEncontrado, crear_override
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicios_sin_odf_asociar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
+            if detalle is None:
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+            servicio = detalle["servicio"]
+            senal = await _senal_direccion_contra_odf(sesion, servicio.direccion, body.odf_n_id)
+
+            try:
+                await crear_override(
+                    sesion,
+                    servicio_id=servicio_id,
+                    odf_n_id=body.odf_n_id,
+                    pelo_n_id=body.pelo_n_id,
+                    categoria_causa=detalle["categoria_causa"],
+                    subcategoria=detalle["subcategoria"],
+                    usuario=username,
+                    notas=body.notas,
+                    senal_direccion=senal,
+                )
+            except ObjetoNoEncontrado as exc:
+                return JSONResponse({"error": str(exc)}, status_code=404)
+
+            logger.info(
+                "action=servicios_sin_odf_asociar user=%s servicio_id=%s odf_n_id=%s "
+                "categoria_causa=%s senal_direccion=%s",
+                username,
+                servicio_id,
+                body.odf_n_id,
+                detalle["categoria_causa"],
+                senal.value,
+            )
+            return JSONResponse(
+                {"ok": True, "categoria_causa": detalle["categoria_causa"], "senal_direccion": senal.value}
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "action=servicios_sin_odf_asociar_error user=%s servicio_id=%s error=%s",
+            username,
+            servicio_id,
+            exc,
+        )
+        return JSONResponse({"error": "No se pudo asociar el Servicio a la ODF"}, status_code=500)
 
 
 @app.get("/api/infra/botellas/buscar")
@@ -7228,6 +8211,642 @@ async def cromo_elemento_vivo_web(request: Request, n_id: int) -> JSONResponse:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
     return JSONResponse(_serializar_elemento_vivo(elemento))
+
+
+def _serializar_pelo_semilla(semilla: Any) -> dict[str, Any]:
+    return {
+        "pelo_n_id": semilla.pelo_n_id,
+        "servicio_numero": semilla.servicio_numero,
+        "metodo": semilla.metodo,
+        "confianza": semilla.confianza,
+        "numero_pelo": semilla.numero_pelo,
+        "color": semilla.color,
+        "cable_n_id": semilla.cable_n_id,
+        "cable_nombre": semilla.cable_nombre,
+        "tiene_conector_odf": semilla.tiene_conector_odf,
+        "servicio_raw": semilla.servicio_raw,
+    }
+
+
+def _serializar_vinculo_local(vinculo: Any) -> Optional[dict[str, Any]]:
+    if vinculo is None:
+        return None
+    return {
+        "tabla": vinculo.tabla,
+        "n_id": vinculo.n_id,
+        "nombre": vinculo.nombre,
+        "vigente": vinculo.vigente,
+        "coincide_por": vinculo.coincide_por,
+    }
+
+
+def _serializar_nodo_camino(nodo: Any) -> dict[str, Any]:
+    return {
+        "orden": nodo.orden,
+        "lado": nodo.lado,
+        "id_cromo": nodo.id_cromo,
+        "clase": nodo.clase,
+        "tipo": nodo.tipo,
+        "nombre": nodo.nombre,
+        "repetido": nodo.repetido,
+        "numero_pelo": nodo.numero_pelo,
+        "color_pelo": nodo.color_pelo,
+        "tubo_id": nodo.tubo_id,
+        "tubo_color": nodo.tubo_color,
+        "cable_id": nodo.cable_id,
+        "cable_nombre": nodo.cable_nombre,
+        "cable_capacidad": nodo.cable_capacidad,
+        "distancia_geo_m": nodo.distancia_geo_m,
+        "distancia_real_m": nodo.distancia_real_m,
+        "botella_id": nodo.botella_id,
+        "botella_nombre": nodo.botella_nombre,
+        "conector_numero": nodo.conector_numero,
+        "patchera_nombre": nodo.patchera_nombre,
+        "odf_id": nodo.odf_id,
+        "odf_nombre": nodo.odf_nombre,
+        "servicio_at62": nodo.servicio_at62,
+        # Red de acceso PON (clases 133/134/84/137/66). `splitter_ratio` viene de `at.83`: Cromo
+        # publica el ratio, no se infiere por fan-out como en el detalle de empalmes de Botella.
+        "splitter_id": nodo.splitter_id,
+        "splitter_nombre": nodo.splitter_nombre,
+        "splitter_ratio": nodo.splitter_ratio,
+        "splitter_salidas": nodo.splitter_salidas,
+        "puerto_nombre": nodo.puerto_nombre,
+        "puerto_sentido": nodo.puerto_sentido,
+        "tendido": nodo.tendido,
+        # `vinculo_local` en `null` NO es un error: puede ser una clase que la ingesta no barre
+        # o un objeto que Cromo movió después de la última corrida. Es dato de auditoría.
+        "vinculo_local": _serializar_vinculo_local(nodo.vinculo_local),
+    }
+
+
+def _serializar_consistencia(consistencia: Any) -> Optional[dict[str, Any]]:
+    if consistencia is None:
+        return None
+    return {
+        "reglas": [
+            {
+                "regla": r.regla,
+                "descripcion": r.descripcion,
+                "total": r.total,
+                "coincide": r.coincide,
+                "discrepa": r.discrepa,
+                "no_ingerido": r.no_ingerido,
+            }
+            for r in consistencia.reglas
+        ],
+        "inconsistencias": [
+            {
+                "regla": i.regla,
+                "elemento_id": i.elemento_id,
+                "tipo": i.tipo,
+                "valor_path": i.valor_path,
+                "valor_local": i.valor_local,
+            }
+            for i in consistencia.inconsistencias
+        ],
+        "total_discrepa": consistencia.total_discrepa,
+        "total_no_ingerido": consistencia.total_no_ingerido,
+    }
+
+
+def _serializar_camino_optico(camino: Any, semillas: list[Any]) -> dict[str, Any]:
+    return {
+        "estado": camino.estado,
+        "motivo": camino.motivo,
+        "pelo_n_id": camino.pelo_n_id,
+        # `identidad_cromo` instrumenta una incógnita del proveedor: medido real, `/path` acepta el
+        # `n_id` estable y devuelve la raíz bajo ese mismo id. Si algún día respondiera con ids de
+        # versión, se ve acá en vez de fallar en silencio.
+        "identidad_cromo": {
+            "id_pedido": camino.id_pedido,
+            "id_raiz": camino.id_raiz,
+            "raiz_es_mismo_id": camino.raiz_es_mismo_id,
+        },
+        "servicio_at62": camino.servicio_at62,
+        "servicio_at61": camino.servicio_at61,
+        "numero_pelo": camino.numero_pelo,
+        "color_pelo": camino.color_pelo,
+        "cable_id": camino.cable_id,
+        "cable_nombre": camino.cable_nombre,
+        "raiz": _serializar_nodo_camino(camino.raiz) if camino.raiz else None,
+        "lado_a": [_serializar_nodo_camino(n) for n in camino.lado_a],
+        "lado_b": [_serializar_nodo_camino(n) for n in camino.lado_b],
+        "odfs": [
+            {
+                "odf_id": o.odf_id,
+                "nombre": o.nombre,
+                "lado": o.lado,
+                "conector_numero": o.conector_numero,
+                "patchera_nombre": o.patchera_nombre,
+                "servicio_at62": o.servicio_at62,
+                "es_extremo": o.es_extremo,
+                "vinculo_local": _serializar_vinculo_local(o.vinculo_local),
+            }
+            for o in camino.odfs
+        ],
+        "estadisticas": {
+            "nodos": camino.estadisticas.nodos,
+            "pelos": camino.estadisticas.pelos,
+            "fusiones": camino.estadisticas.fusiones,
+            "conectores": camino.estadisticas.conectores,
+            "cables": camino.estadisticas.cables,
+            "splitters": camino.estadisticas.splitters,
+            "cajas_pon": camino.estadisticas.cajas_pon,
+            "cables_bajada": camino.estadisticas.cables_bajada,
+            "odfs": camino.estadisticas.odfs,
+            "no_resueltos": camino.estadisticas.no_resueltos,
+            "longitud_geo_m": camino.estadisticas.longitud_geo_m,
+            "longitud_optica_m": camino.estadisticas.longitud_optica_m,
+        },
+        "consistencia": _serializar_consistencia(camino.consistencia),
+        "discrepancia_at62": (
+            {
+                "at62": camino.discrepancia.at62,
+                "at61": camino.discrepancia.at61,
+                "numero_regex": camino.discrepancia.numero_regex,
+                "veredicto": camino.discrepancia.veredicto,
+            }
+            if camino.discrepancia
+            else None
+        ),
+        "ids_no_resueltos": camino.ids_no_resueltos,
+        "advertencias": camino.advertencias,
+        "duracion_ms": camino.duracion_ms,
+        "semillas_disponibles": len(semillas),
+        "semillas_alternativas": [_serializar_pelo_semilla(s) for s in semillas],
+        "payload_raw": camino.payload_raw,
+    }
+
+
+async def _servicio_existe(sesion: Any, servicio_id: int) -> bool:
+    from sqlalchemy import text as _text
+
+    fila = await sesion.execute(
+        _text("SELECT 1 FROM app.servicios WHERE id = :id"), {"id": servicio_id}
+    )
+    return fila.first() is not None
+
+
+@app.get("/api/servicios/{servicio_id}/baneos")
+async def servicio_baneos_web(request: Request, servicio_id: int, limite: int = 50) -> JSONResponse:
+    """Eventos de baneo en los que participa un Servicio, como protegido o como afectado.
+
+    `app.incidentes_baneo` guarda los dos extremos como **texto** (`varchar(64)`), no como FK, así
+    que el match va por las **tres identidades** del Servicio —`servicio_id`,
+    `numero_primer_servicio` y `alias_ids`— igual que el resto del módulo. Matchear sólo por la PK
+    perdería silenciosamente los baneos registrados bajo un número viejo del mismo Servicio, que es
+    justo el caso que el histórico de IDs existe para contemplar.
+
+    `rol` distingue si el Servicio fue el **protegido** (se baneó a otros para cuidarlo) o el
+    **afectado** (se lo baneó para cuidar a un tercero): son dos lecturas muy distintas de la misma
+    fila y mezclarlas confundiría al operador.
+    """
+    from sqlalchemy import text as _sql
+
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+    limite = max(1, min(limite, 200))
+
+    consulta = _sql(
+        """
+        WITH ident AS (
+            SELECT ARRAY_REMOVE(
+                       ARRAY[s.servicio_id, s.numero_primer_servicio]::varchar[]
+                       || COALESCE(s.alias_ids, ARRAY[]::varchar[]),
+                       NULL
+                   ) AS ids
+            FROM app.servicios s
+            WHERE s.id = :servicio_id
+        )
+        SELECT b.id,
+               b.ticket_asociado,
+               b.servicio_afectado_id,
+               b.servicio_protegido_id,
+               b.usuario_ejecutor,
+               b.motivo,
+               b.fecha_inicio,
+               b.fecha_fin,
+               b.activo,
+               CASE WHEN b.servicio_protegido_id = ANY(ident.ids) THEN 'PROTEGIDO'
+                    ELSE 'AFECTADO' END AS rol
+        FROM app.incidentes_baneo b, ident
+        WHERE b.servicio_protegido_id = ANY(ident.ids)
+           OR b.servicio_afectado_id = ANY(ident.ids)
+        ORDER BY b.fecha_inicio DESC
+        LIMIT :limite
+        """
+    )
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        filas = (
+            await sesion.execute(consulta, {"servicio_id": servicio_id, "limite": limite})
+        ).mappings().all()
+
+    eventos = [
+        {
+            "id": f["id"],
+            "ticket_asociado": f["ticket_asociado"],
+            "servicio_afectado_id": f["servicio_afectado_id"],
+            "servicio_protegido_id": f["servicio_protegido_id"],
+            "usuario_ejecutor": f["usuario_ejecutor"],
+            "motivo": f["motivo"],
+            "fecha_inicio": f["fecha_inicio"].isoformat() if f["fecha_inicio"] else None,
+            "fecha_fin": f["fecha_fin"].isoformat() if f["fecha_fin"] else None,
+            "activo": f["activo"],
+            "rol": f["rol"],
+        }
+        for f in filas
+    ]
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "total": len(eventos),
+            "activos": sum(1 for e in eventos if e["activo"]),
+            "eventos": eventos,
+        }
+    )
+
+
+@app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos")
+async def cromo_camino_pelos_web(
+    request: Request, servicio_id: int, priorizar_conector: bool = False
+) -> JSONResponse:
+    """Pelos de Cromo con los que se puede pedir el camino óptico de un Servicio.
+
+    SQL local barato: **no toca Cromo**. Existe para que el Detalle de Servicio sepa si el botón
+    de descarga va habilitado ANTES del click — de los 2.891 Servicios sin ODF, 2.228 (77%) no
+    tienen ningún pelo y para ellos `/path` no tiene input posible.
+    """
+    from core.services.cromo import tracking_cache
+    from core.services.cromo.camino_optico_service import (
+        contar_semillas,
+        listar_pelos_semilla,
+        semillas_por_defecto,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_auth(request)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        semillas = await listar_pelos_semilla(
+            sesion, servicio_id, priorizar_conector=priorizar_conector
+        )
+        frescura = await tracking_cache.frescura(sesion, [s.pelo_n_id for s in semillas])
+        total_matcheados, total_con_conector = await contar_semillas(sesion, servicio_id)
+
+    preseleccionados = [s.pelo_n_id for s in semillas_por_defecto(semillas)]
+    # Si ninguna semilla tiene conector, la ODF del Servicio todavía no fue relevada y la
+    # preselección cae al comportamiento histórico (el primer pelo del ranking). La UI necesita
+    # distinguir ese caso para explicar por qué el default no son las posiciones de la ODF.
+    odf_relevada = any(s.tiene_conector_odf for s in semillas)
+
+    pelos = []
+    for semilla in semillas:
+        dato = _serializar_pelo_semilla(semilla)
+        generado_at = frescura.get(semilla.pelo_n_id)
+        dato["tracking_en_cache"] = generado_at.isoformat() if generado_at else None
+        pelos.append(dato)
+
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "total": len(semillas),
+            "pelos": pelos,
+            "preseleccionados": preseleccionados,
+            "odf_relevada": odf_relevada,
+            # `total` es la lista ya truncada; estos dos son el universo real. Sin ellos la UI no
+            # puede distinguir "este Servicio tiene 20 pelos" de "tiene 227 y ves 20". El número de
+            # servicio viaja en el `at.61` de TODOS los pelos del recorrido, así que el total es
+            # grande por diseño y los pelos que el operador llama "del Servicio" son los que son
+            # posición de ODF.
+            "total_matcheados": total_matcheados,
+            "total_con_posicion_odf": total_con_conector,
+        }
+    )
+
+
+@app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt")
+async def cromo_camino_tracking_txt_web(
+    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None
+) -> Response:
+    """Tracking óptico de un Servicio, generado desde Cromo, en el formato `.txt` legacy.
+
+    `_require_auth` con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
+    entrega el tracking completo de una ruta a cualquier usuario autenticado.
+
+    `SIN_SEMILLA`/`SIN_CAMINO` responden **409** y no 200: no hay archivo que adjuntar, y un
+    `.txt` que dice "no hay datos" es basura en la carpeta de Descargas de alguien.
+    """
+    from core.services.cromo.camino_optico_service import (
+        ESTADO_SIN_SEMILLA,
+        contar_semillas,
+        listar_pelos_semilla,
+        pelo_pertenece_al_servicio,
+        semillas_por_defecto,
+    )
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.tracking_service import (
+        TrackingNoDisponible,
+        nombre_distinguible,
+        obtener_tracking,
+    )
+    from db.session import AsyncSessionLocal
+
+    usuario, _rol = _require_auth(request)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+
+            # El universo real, sin el tope de `listar_pelos_semilla`. Es lo que decide tanto si
+            # hay camino posible como si el nombre del archivo tiene que distinguir el pelo.
+            total_pelos, _con_odf = await contar_semillas(sesion, servicio_id)
+            if total_pelos == 0:
+                return JSONResponse(
+                    {
+                        "error": (
+                            "El Servicio no tiene ningún pelo en Cromo, así que no hay camino "
+                            "que resolver."
+                        ),
+                        "estado": ESTADO_SIN_SEMILLA,
+                    },
+                    status_code=409,
+                )
+
+            if pelo_n_id is not None:
+                # Pertenencia por consulta directa, NO contra la lista truncada de semillas: con
+                # el tope de 20 sobre cientos de pelos matcheados, un pelo legítimo que el propio
+                # selector acababa de ofrecer se rechazaba como ajeno (bug real, Servicio 93154).
+                if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
+                    return JSONResponse(
+                        {"error": f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."},
+                        status_code=400,
+                    )
+                elegido = pelo_n_id
+            else:
+                # Sin pedido explícito, la posición de ODF del Servicio: mismo criterio que el
+                # default del selector, así que pedir el `.txt` "a secas" baja lo mismo que el
+                # botón de la pantalla.
+                semillas = await listar_pelos_semilla(
+                    sesion, servicio_id, priorizar_conector=True
+                )
+                elegido = semillas_por_defecto(semillas)[0].pelo_n_id
+
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                tracking = await obtener_tracking(
+                    cliente, sesion, servicio_id=servicio_id, pelo_n_id=elegido
+                )
+    except TrackingNoDisponible as exc:
+        return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    # Con un solo pelo (el caso PON) el nombre queda idéntico al de siempre; con varios se
+    # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
+    # carpeta de Descargas y se pierde cuál es cuál.
+    nombre = nombre_distinguible(
+        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1
+    )
+    logger.info(
+        "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s desde_cache=%s duracion_ms=%s",
+        usuario,
+        servicio_id,
+        tracking.pelo_n_id,
+        tracking.desde_cache,
+        tracking.duracion_ms,
+    )
+    return Response(
+        content=tracking.contenido,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
+class CaminoNormalizarRequestModel(BaseModel):
+    """Payload para normalizar las inconsistencias de la auditoría de un camino óptico."""
+
+    pelo_n_id: int = Field(description="Pelo semilla cuyo camino se auditó")
+    elemento_ids: list[int] | None = Field(
+        default=None,
+        description="Elementos puntuales a normalizar. Sin esto se normaliza todo lo inconsistente.",
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class CaminoRelevarOdfRequestModel(BaseModel):
+    """Payload para relevar las ODFs que atraviesa el camino de un pelo."""
+
+    pelo_n_id: int = Field(description="Pelo semilla cuyo camino descubre las ODFs")
+    odfs_n_id: list[int] | None = Field(
+        default=None, description="ODFs puntuales a relevar. Sin esto se relevan todas las del camino."
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+def _validar_csrf(request: Request, token: str | None, accion: str, username: str) -> bool:
+    """CSRF con el mismo criterio que el resto de los POST admin, incluida la excepción de tests."""
+    if os.getenv("TESTING", "false").lower() == "true":
+        return True
+    esperado = request.session.get("csrf")
+    if not token or token != esperado:
+        logger.warning("action=%s result=fail reason=csrf user=%s", accion, username)
+        return False
+    return True
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar")
+async def servicios_sin_odf_camino_normalizar_web(
+    request: Request, servicio_id: int, body: CaminoNormalizarRequestModel
+) -> JSONResponse:
+    """Normaliza las discrepancias de la tabla "Consistencia con lo ingerido", tomando Cromo como
+    referencia.
+
+    **Reingesta dirigida, no escritura del valor declarado por el camino**: se vuelve a traer de
+    Cromo el objeto real y se lo persiste por el mismo parser y los mismos upserts que usa la
+    ingesta regular, con su corrida sintética auditable. Escribe inventario, así que es admin.
+
+    Las inconsistencias se recalculan en el servidor: el cliente dice qué quiere normalizar, pero
+    qué está realmente mal lo decide quien va a escribir.
+    """
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.normalizacion_consistencia_service import (
+        CaminoNoResoluble,
+        normalizar_inconsistencias,
+    )
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "camino_normalizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                resultado = await normalizar_inconsistencias(
+                    cliente,
+                    sesion,
+                    pelo_n_id=body.pelo_n_id,
+                    usuario=username,
+                    elemento_ids=body.elemento_ids,
+                )
+    except CaminoNoResoluble as exc:
+        return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=camino_normalizar_error user=%s servicio_id=%s error=%s", username, servicio_id, exc
+        )
+        return JSONResponse({"error": "No se pudo normalizar la consistencia"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "corrida_id": resultado.corrida_id,
+            "pelo_n_id": resultado.pelo_n_id,
+            "creados": resultado.creados,
+            "actualizados": resultado.actualizados,
+            "sin_cambios": resultado.sin_cambios,
+            "errores": resultado.errores,
+            "total_discrepa_previo": resultado.total_discrepa_previo,
+            "total_no_ingerido_previo": resultado.total_no_ingerido_previo,
+            "detalle": [
+                {"elemento_id": i.elemento_id, "regla": i.regla, "accion": i.accion, "detalle": i.detalle}
+                for i in resultado.detalle
+            ],
+        }
+    )
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/relevar-odf")
+async def servicios_sin_odf_camino_relevar_odf_web(
+    request: Request, servicio_id: int, body: CaminoRelevarOdfRequestModel
+) -> JSONResponse:
+    """Releva las ODFs que atraviesa el camino, para poblar sus posiciones de patchera.
+
+    Es lo que destraba el caso "la ODF de este Servicio no está relevada": sin conectores
+    ingeridos no hay forma de saber qué posición le corresponde al Servicio, y por eso la descarga
+    de trackings no puede preseleccionar nada. Releva sólo lo que el camino ya descubrió, no todo
+    el universo de ODFs.
+    """
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.normalizacion_consistencia_service import (
+        CaminoNoResoluble,
+        relevar_odfs_del_servicio,
+    )
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "camino_relevar_odf", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                resultado = await relevar_odfs_del_servicio(
+                    cliente,
+                    sesion,
+                    pelo_n_id=body.pelo_n_id,
+                    usuario=username,
+                    odfs_n_id=body.odfs_n_id,
+                )
+    except CaminoNoResoluble as exc:
+        return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "action=camino_relevar_odf_error user=%s servicio_id=%s error=%s", username, servicio_id, exc
+        )
+        return JSONResponse({"error": "No se pudo relevar la ODF"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "corrida_id": resultado.corrida_id,
+            "relevadas": resultado.normalizados,
+            "errores": resultado.errores,
+            "detalle": [
+                {"odf_n_id": i.elemento_id, "accion": i.accion, "detalle": i.detalle}
+                for i in resultado.detalle
+            ],
+        }
+    )
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico")
+async def servicios_sin_odf_camino_optico_web(
+    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None, raw: bool = False
+) -> JSONResponse:
+    """Camino óptico completo de un Servicio, con su auditoría de consistencia.
+
+    `_require_admin` por el mismo criterio ya escrito para `/sugerencia`: devuelve MÁS topología
+    que aquél (el recorrido entero, cable por cable) y además gasta recursos del proveedor en cada
+    request. La única UI que lo consume es `/admin/servicios/viewer/ServiciosSinOdf`, que ya es
+    `requiresAdmin`.
+
+    `estado ∈ {OK, SIN_SEMILLA, SIN_CAMINO}` **siempre con HTTP 200**: `SIN_SEMILLA` es el caso
+    del 77% de los Servicios del gestor, y usar un código de error para el caso mayoritario y
+    legítimo llena los logs de falsos incidentes y empuja la lógica de negocio al handler de
+    errores del frontend. Es la misma forma que ya tiene `/sugerencia` (200 con nulls).
+
+    `raw=true` agrega el payload crudo de Cromo. Por omisión no viaja: un camino real son ~880
+    nodos con todos sus atributos, cientos de KB por request.
+    """
+    from core.services.cromo.camino_optico_service import (
+        PeloAjenoAlServicio,
+        resolver_camino_de_servicio,
+    )
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from db.session import AsyncSessionLocal
+
+    usuario = _require_admin(request)
+
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                camino, semillas = await resolver_camino_de_servicio(
+                    cliente, sesion, servicio_id, pelo_n_id=pelo_n_id, incluir_raw=raw
+                )
+    except PeloAjenoAlServicio as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    logger.info(
+        "action=cromo_camino_optico user=%s servicio_id=%s estado=%s pelo_n_id=%s "
+        "nodos=%s discrepa=%s no_ingerido=%s duracion_ms=%s",
+        usuario,
+        servicio_id,
+        camino.estado,
+        camino.pelo_n_id,
+        camino.estadisticas.nodos,
+        camino.consistencia.total_discrepa if camino.consistencia else None,
+        camino.consistencia.total_no_ingerido if camino.consistencia else None,
+        camino.duracion_ms,
+    )
+    return JSONResponse(_serializar_camino_optico(camino, semillas))
 
 
 def _serializar_cable_validacion(cable: Any) -> dict[str, Any]:

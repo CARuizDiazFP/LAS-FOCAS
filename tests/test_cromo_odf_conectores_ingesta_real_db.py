@@ -14,7 +14,6 @@ ya ingeridas por otra fase."""
 
 from __future__ import annotations
 
-import os
 
 import pytest
 from sqlalchemy import text
@@ -22,11 +21,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from db.session import SessionLocal, async_engine
+from tests.soporte_postgres_real import requiere_postgres_real
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("CI") == "true",
-    reason="requiere Postgres real alcanzable; el workflow de CI no tiene ese servicio configurado",
-)
+# Guard compartido (2026-09-19): saltea en CI Y en cualquier máquina sin un Postgres respondiendo,
+# con un motivo que dice cómo habilitarlos. Ver `tests/soporte_postgres_real.py`.
+pytestmark = requiere_postgres_real
 
 _engine_test = create_async_engine(async_engine.url.render_as_string(hide_password=False), poolclass=NullPool)
 AsyncSessionLocal = async_sessionmaker(_engine_test, expire_on_commit=False)

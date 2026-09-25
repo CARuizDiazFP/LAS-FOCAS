@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-baneo-qa-real.md
 # Ubicación de archivo: .gemini/rules/skill-baneo-qa-real.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/baneo-qa-real/SKILL.md
+
 ---
 name: "skill-baneo-qa-real"
 description: "Usar antes de ejecutar create_ban/lift_ban o cualquier prueba de cascada de estado de Camara contra datos reales (lasfocasdev-*) — resuelve el blast radius real y cómo revertir con precisión si algo sale mal"
@@ -28,7 +29,7 @@ commands:
 
 # Regla Skill: baneo-qa-real
 
-> Fuente original: `.github/skills/baneo-qa-real/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/baneo-qa-real/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Skill: QA real del Protocolo de Protección (Baneo)
 
@@ -139,12 +140,15 @@ desbanear.
 
 **Hallazgo real (2026-09-07, reconciliación post-restore en prod — no QA en dev, pero el mismo
 principio aplica):** un script de reconciliación que compara por nombre plano contra una lista fija
-puede mostrar su propio contador de "a revertir" SUBIENDO después de aplicar cambios, en vez de bajar
-a 0 — no es necesariamente un bug. `aplicar_estado_a_grupo()` cascada al grupo físico completo; si el
-modelo de datos vigente agrupa entidades que un snapshot legado nunca había registrado por separado,
-reaplicar el estado a un nombre de la lista banea correctamente también a sus hermanas de grupo, y el
-contador ingenuo las cuenta como "ilegítimas". Verificar contra el estado real de cada nombre
-objetivo, nunca contra el contador de reversión del script.
+(ej. "estos N nombres deben quedar BANEADA, el resto no") puede mostrar su propio contador de
+"a revertir" SUBIENDO después de aplicar cambios, en vez de bajar a 0 — no es necesariamente un bug.
+`aplicar_estado_a_grupo()` cascada al grupo físico completo (padre + hermanas/botellas); si el modelo
+de datos vigente agrupa entidades que un snapshot legado (pre-agrupación) nunca había registrado por
+separado, reaplicar el estado a un nombre de la lista banea correctamente también a sus hermanas de
+grupo — hermanas que el contador ingenuo del script no conoce y cuenta como "ilegítimas". **La
+verificación correcta es contra el estado real de cada nombre objetivo de la lista original
+(¿terminó BANEADA?), nunca contra el contador de reversión del script** — ese contador puede subir
+sin que haya ningún error real.
 
 ## Reglas
 
@@ -169,4 +173,4 @@ objetivo, nunca contra el contador de reversión del script.
 - `core/services/camara_estado_service.py` — `aplicar_estado_a_grupo`, `obtener_ultima_transicion_a_baneada`.
 - `tests/test_protection_service.py` — tests de regresión del bug de restauración y de la resolución
   mixta legacy+Cromo (mocks; no reemplazan la verificación contra datos reales que describe esta skill).
-- `.gemini/rules/skill-db-mcp-postgres.md` — sección "Jerarquía Cámara→Botella y auditoría de estado".
+- `.github/skills/db-mcp-postgres/SKILL.md` — sección "Jerarquía Cámara→Botella y auditoría de estado".

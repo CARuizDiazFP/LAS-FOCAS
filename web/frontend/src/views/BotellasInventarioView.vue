@@ -506,7 +506,7 @@ onBeforeUnmount(() => {
 }
 
 .botellas-view__header {
-  padding: 22px 26px 0;
+  padding: 22px 0 0;
 }
 
 .botellas-view__kicker {
@@ -538,7 +538,7 @@ onBeforeUnmount(() => {
 }
 
 .botellas-view__toolbar {
-  padding: 15px 26px 14px;
+  padding: 15px 0 14px;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -645,7 +645,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 12px 26px 30px;
+  padding: 12px 0 30px;
 }
 
 .botellas-view__grid {
@@ -698,7 +698,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   margin: 4px -26px -14px;
-  padding: 8px 26px;
+  padding: 8px 0;
   font-size: 12.5px;
   color: color-mix(in srgb, var(--color-text) 70%, transparent);
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);

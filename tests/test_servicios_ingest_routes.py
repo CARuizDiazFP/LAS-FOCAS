@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 
 import pandas as pd
 import pytest
@@ -14,7 +13,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from api.app.main import app
-from db.session import SessionLocal
+from db.session import SessionLocal, async_engine
+from tests.soporte_postgres_real import requiere_postgres_real
 
 API_HEADERS = {"Authorization": "Bearer test-api-key"}
 
@@ -24,10 +24,9 @@ API_HEADERS = {"Authorization": "Bearer test-api-key"}
 # estos tests fallarían por conexión, no por regresión. GitHub Actions define `CI=true` en sus
 # runners; localmente hay que apuntar POSTGRES_HOST/PORT al Postgres de dev (el host `postgres` del
 # compose no resuelve desde la máquina, ver la skill docker-rebuild).
-pytestmark = pytest.mark.skipif(
-    os.getenv("CI") == "true",
-    reason="requiere Postgres real alcanzable; el workflow de CI no tiene ese servicio configurado",
-)
+# Guard compartido (2026-09-19): saltea en CI Y en cualquier máquina sin un Postgres respondiendo,
+# con un motivo que dice cómo habilitarlos. Ver `tests/soporte_postgres_real.py`.
+pytestmark = requiere_postgres_real
 
 
 def _excel_bytes(df: pd.DataFrame) -> bytes:
@@ -49,6 +48,20 @@ def client():
     # del primero y volvería a romper — un solo loop para todo el archivo evita la colisión.
     with TestClient(app) as test_client:
         yield test_client
+
+        # El `scope="module"` de arriba da UN loop por archivo, pero el pool asyncpg es un singleton
+        # de proceso (`db.session.async_engine`, `AsyncAdaptedQueuePool`): las conexiones que este
+        # portal deja checkeadas de vuelta sobreviven al archivo y el próximo módulo que abra su
+        # propio TestClient las hereda atadas a un loop ya cerrado -> el mismo
+        # `RuntimeError: ... attached to a different loop` que el comentario de arriba describe, pero
+        # a través del límite entre archivos. Reproducido real: `pytest tests/test_servicios_prov_routes.py
+        # tests/test_servicios_ingest_routes.py` falla el primer test del segundo archivo, en cualquiera
+        # de los dos órdenes; la suite completa lo pega en orden alfabético (ingest antes que prov).
+        # `portal.call` corre el `dispose()` DENTRO del loop que creó esas conexiones, que es la única
+        # forma de cerrarlas limpio: disponer desde afuera las cierra contra un loop muerto y
+        # SQLAlchemy sólo loguea "Exception terminating connection" mientras las deja colgadas del
+        # lado del servidor. El pool se recrea solo en el próximo uso.
+        test_client.portal.call(async_engine.dispose)
 
 
 _NUMEROS_DE_TEST = (

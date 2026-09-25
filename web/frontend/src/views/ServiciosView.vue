@@ -471,7 +471,7 @@ onBeforeUnmount(() => {
 }
 
 .servicios-view__header {
-  padding: 22px 26px 0;
+  padding: 22px 0 0;
 }
 
 .servicios-view__kicker {
@@ -503,7 +503,7 @@ onBeforeUnmount(() => {
 }
 
 .servicios-view__toolbar {
-  padding: 15px 26px 14px;
+  padding: 15px 0 14px;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -643,7 +643,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 12px 26px 30px;
+  padding: 12px 0 30px;
 }
 
 .servicios-view__grid {

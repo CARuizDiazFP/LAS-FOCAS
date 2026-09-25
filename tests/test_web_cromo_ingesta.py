@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import pytest
 from fastapi.testclient import TestClient  # type: ignore
 
 from core.password import hash_password
@@ -672,3 +673,39 @@ def test_config_trigger_proxea_al_worker(monkeypatch):
 
     assert res.status_code == 202
     assert res.json() == {"ok": True, "corrida_id": 5}
+
+
+@pytest.mark.parametrize(
+    "modo",
+    ["SOLO_SPLITTERS", "SOLO_PUERTOS_SPLITTER", "SOLO_CAJAS_PON", "SOLO_ROSETAS", "SOLO_CABLES_BAJADA"],
+)
+def test_iniciar_acepta_los_modos_de_la_red_pon(monkeypatch, modo):
+    """Los cinco modos nuevos tienen que pasar la validación del endpoint y llegar a la corrida.
+
+    Es el contrato que une las tres capas: el catálogo del frontend, `MODOS_INGESTA` y la tabla
+    `MODOS_ACOTADOS` que declara qué fase corre cada uno. Si se desincronizan, el síntoma es un 400
+    sobre un modo que el selector sí ofrece.
+    """
+    from web.app import main as web_main
+    from core.services.cromo import config as cromo_config
+    from core.services.cromo import ingesta as cromo_ingesta
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
+
+    recibido: dict[str, Any] = {}
+
+    async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
+        recibido["params_extra"] = params_extra
+        return _FakeCorrida(id=100, usuario=usuario)
+
+    monkeypatch.setattr(cromo_ingesta, "iniciar_corrida", _iniciar_corrida_fake)
+    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=[]))
+
+    client = TestClient(app)
+    csrf = _login(client, "admin", "admin")
+
+    res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": modo})
+
+    assert res.status_code == 202
+    assert recibido["params_extra"] == {"modo": modo}

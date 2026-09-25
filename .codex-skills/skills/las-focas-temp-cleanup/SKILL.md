@@ -53,8 +53,8 @@ Este skill gestiona la limpieza de cachés y temporales del repo sin mezclarla c
 ## Referencias
 
 - [Operación detallada](./references/operacion.md)
-- [disk-analysis](../disk-analysis/SKILL.md)
-- [logs-cleanup](../logs-cleanup/SKILL.md)
+- [disk-analysis](../las-focas-disk-analysis/SKILL.md)
+- [logs-cleanup](../las-focas-logs-cleanup/SKILL.md)
 
 ## Guardrails
 

@@ -31,6 +31,10 @@ metadata:
 
 # Skill portable: baneo-qa-real
 
+> Fuente original: `.agentes-comunes/skills/baneo-qa-real/SKILL.md`. Copia portable generada porque `.codex/` está montado como solo lectura en esta sesión.
+
+# Skill: QA real del Protocolo de Protección (Baneo)
+
 ## Por qué existe esta skill
 
 Al verificar contra datos reales (no mocks) la cascada de baneo de la jerarquía Cámara→Botella
@@ -54,8 +58,9 @@ blast radius real.
 
 ### 1. Resolver el blast radius COMPLETO antes de mutar nada
 
-`get_camaras_for_servicio` (Refactor baneos, 2026-08-23) resuelve por DOS caminos independientes
-(legacy y Cromo) — el blast radius real es la UNIÓN de ambas queries, no sólo la primera.
+No asumas que un servicio de prueba sólo toca el grupo objetivo. Resolvé la ruta física completa —
+**dos queries, no una**: `get_camaras_for_servicio` (Refactor baneos, 2026-08-23) resuelve por DOS
+caminos independientes (legacy y Cromo), y el blast radius real es la UNIÓN de ambos.
 
 ```sql
 -- 1a. Camino legacy: cámaras vía Servicio→RutaServicio→Empalme.camara_id→Camara
@@ -71,8 +76,9 @@ WHERE s.servicio_id = '<servicio_a_usar>';
 ```sql
 -- 1b. Camino Cromo: cámaras vía Servicio→CromoServicioMatch→CromoPelo→CromoCable→
 -- CromoBotella.camara_id→Camara (mismo join que camara_ids_por_servicio_sync,
--- core/services/cromo/verificador.py) — un servicio cuya infraestructura sólo se conoce por Cromo
--- Red no aparece en 1a, pero create_ban/lift_ban SÍ lo banean desde este fix.
+-- core/services/cromo/verificador.py) — un servicio cuya infraestructura sólo se conoce por la
+-- ingesta de Cromo Red (sin trackings legacy cargados) NO aparece en la query 1a, pero
+-- create_ban/lift_ban SÍ lo banean desde este fix. Omitir esta query subestima el blast radius real.
 SELECT DISTINCT c.id, c.nombre, c.estado, c.camara_padre_id
 FROM app.servicios s
 JOIN app.cromo_servicio_match m ON m.servicio_id = s.id
@@ -83,7 +89,8 @@ JOIN app.camaras c ON c.id = b.camara_id
 WHERE s.servicio_id = '<servicio_a_usar>' AND b.camara_id IS NOT NULL;
 ```
 
-El blast radius completo es la UNIÓN de los `id` de ambas queries. Si el resultado incluye cámaras
+El blast radius completo es la UNIÓN de los `id` de ambas queries (podés correrlas por separado y
+comparar, o combinarlas con `UNION` si preferís un solo resultado). Si el resultado incluye cámaras
 fuera del grupo que querés probar, elegí otro servicio más acotado o documentá explícitamente que la
 prueba va a tocar más de un grupo.
 
@@ -95,60 +102,77 @@ FROM app.camaras
 WHERE id IN (<todos los ids del paso 1>);
 ```
 
+Guardá esto textualmente (no de memoria) — es lo único que te permite confirmar después que revertiste
+bien.
+
 ### 3. Ejecutar contra `lasfocasdev-*` únicamente
 
 Nunca contra `lasfocas-*` (producción). Crear un usuario QA temporal si hace falta autenticación real,
-y borrarlo al final.
+y borrarlo al final (nunca dejar usuarios de prueba en la DB).
 
 ### 4. Si el resultado final no coincide con el estado "antes" del paso 2
 
-No hagas `UPDATE app.camaras SET estado = ...` directo. En cambio:
+No hagas `UPDATE app.camaras SET estado = ...` directo — eso es exactamente el hueco de seguridad que
+`aplicar_estado_a_grupo()` fue creado para cerrar (pierde auditoría y puede desincronizar el grupo).
+En cambio:
 
-1. Buscá la última transición real de cada cámara afectada ANTES de tu prueba:
+1. Para cada cámara con estado incorrecto, buscá su última transición real ANTES de tu prueba:
    ```sql
    SELECT camara_id, estado_anterior, estado_nuevo, created_at, motivo
    FROM app.camaras_estado_auditoria
    WHERE camara_id = <id>
    ORDER BY created_at DESC;
    ```
-2. Reconstruí el estado correcto objetivo a partir de esa fila.
+2. Reconstruí el estado correcto objetivo a partir de esa fila (no de memoria/suposición).
 3. Aplicá la corrección vía `core.services.camara_estado_service.aplicar_estado_a_grupo()` (mismo
-   mecanismo real que usa `create_ban`/`lift_ban`/`override_camara_estado_manual`), con
-   `usuario="qa_fix_revert"` y un `motivo` explícito.
+   mecanismo real que usa `create_ban`/`lift_ban`/`override_camara_estado_manual` — nunca un `UPDATE`
+   directo), con `usuario="qa_fix_revert"` y un `motivo` explícito que diga que es una reversión de
+   prueba QA.
 4. Confirmá con una consulta directa que el estado final coincide con el del paso 2.
 
-### 5. Verificar que la cascada en sí funcionó
+### 5. Verificar que la cascada en sí funcionó (no sólo que revertiste bien)
 
+Para el grupo objetivo específico, confirmar antes/durante/después:
 ```sql
 SELECT id, nombre, estado FROM app.camaras WHERE id = <padre> OR camara_padre_id = <padre>;
 ```
-`estado` debe ser el mismo en TODOS los miembros del grupo durante el baneo, y cada miembro debe
-volver a su propio estado real al desbanear.
+`estado` debe ser el mismo en TODOS los miembros del grupo durante el baneo (cascada bidireccional
+completa), y cada miembro debe volver a su propio estado real (no necesariamente igual entre sí) al
+desbanear.
 
-**Hallazgo real (2026-09-07, reconciliación post-restore en prod):** un script que compara por nombre
-plano contra una lista fija puede mostrar su contador de "a revertir" SUBIENDO tras aplicar cambios —
-no es necesariamente un bug. `aplicar_estado_a_grupo()` cascada al grupo físico completo; si el
-snapshot original (pre-agrupación) no conocía a las hermanas de grupo, reaplicar el estado a un
-nombre de la lista banea correctamente también a ellas, y el contador ingenuo las cuenta como
-"ilegítimas". Verificar contra el estado real de cada nombre objetivo, nunca contra el contador de
-reversión del script.
+**Hallazgo real (2026-09-07, reconciliación post-restore en prod — no QA en dev, pero el mismo
+principio aplica):** un script de reconciliación que compara por nombre plano contra una lista fija
+(ej. "estos N nombres deben quedar BANEADA, el resto no") puede mostrar su propio contador de
+"a revertir" SUBIENDO después de aplicar cambios, en vez de bajar a 0 — no es necesariamente un bug.
+`aplicar_estado_a_grupo()` cascada al grupo físico completo (padre + hermanas/botellas); si el modelo
+de datos vigente agrupa entidades que un snapshot legado (pre-agrupación) nunca había registrado por
+separado, reaplicar el estado a un nombre de la lista banea correctamente también a sus hermanas de
+grupo — hermanas que el contador ingenuo del script no conoce y cuenta como "ilegítimas". **La
+verificación correcta es contra el estado real de cada nombre objetivo de la lista original
+(¿terminó BANEADA?), nunca contra el contador de reversión del script** — ese contador puede subir
+sin que haya ningún error real.
 
 ## Reglas
 
 1. **Nunca correr contra `lasfocas-*`** (producción) — sólo `lasfocasdev-*`.
-2. **Nunca dar por buena una cascada sin resolver el blast radius real primero**.
-3. **Restaurar siempre vía las funciones reales** (`aplicar_estado_a_grupo`), nunca `UPDATE` directo.
-4. **`app.camaras_estado_auditoria` es la única fuente de verdad** del estado previo real.
-5. **Usuarios QA temporales**: crear y borrar siempre al finalizar.
+2. **Nunca dar por buena una cascada sin resolver el blast radius real primero** — un servicio de
+   prueba "cualquiera" puede tocar grupos no relacionados.
+3. **Restaurar siempre vía las funciones reales** (`aplicar_estado_a_grupo`), nunca `UPDATE` directo a
+   `Camara.estado` — se pierde auditoría y se puede desincronizar el grupo.
+4. **`app.camaras_estado_auditoria` es la única fuente de verdad** del estado previo real de una
+   cámara — `camara.estado` ya está sobreescrito en el momento en que hay algo que revertir.
+5. **Usuarios QA temporales**: crear y borrar siempre al finalizar, nunca dejarlos en la DB.
 
 ## Documentación relacionada
 
-- `docs/infra.md` — sección "Jerarquía Cámara → Botellas".
+- `docs/infra.md` — sección "Jerarquía Cámara → Botellas", incluye el hallazgo del bug de
+  restauración y su fix.
 - `core/services/protection_service.py` — `create_ban`/`lift_ban`, `get_camaras_for_servicio` (camino
   legacy + Cromo, Refactor baneos 2026-08-23), `_camara_tiene_otro_baneo_activo`,
   `_determinar_estado_restauracion`.
 - `core/services/cromo/verificador.py` — `camara_ids_por_servicio_sync`/`servicio_ids_por_camaras_sync`,
   el join Cromo que alimenta el paso 1b de arriba.
 - `core/services/camara_estado_service.py` — `aplicar_estado_a_grupo`, `obtener_ultima_transicion_a_baneada`.
-- `tests/test_protection_service.py` — tests de regresión (mocks; no reemplazan la verificación real).
-- `las-focas-db-mcp-postgres` — sección "Jerarquía Cámara→Botella y auditoría de estado".
+- `tests/test_protection_service.py` — tests de regresión del bug de restauración y de la resolución
+  mixta legacy+Cromo (mocks; no reemplazan la verificación contra datos reales que describe esta skill).
+- `.github/skills/db-mcp-postgres/SKILL.md` — sección "Jerarquía Cámara→Botella y auditoría de estado".

@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-repo-updater.md
 # Ubicación de archivo: .gemini/rules/skill-repo-updater.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/repo-updater/SKILL.md
+
 ---
 name: "skill-repo-updater"
 description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a la rama efímera activa (nunca dev/main directo — ver dev-workflow y cierre-sesion)"
@@ -35,7 +36,7 @@ commands:
 
 # Regla Skill: repo-updater
 
-> Fuente original: `.github/skills/repo-updater/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/repo-updater/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Actualizador de Repositorio
 

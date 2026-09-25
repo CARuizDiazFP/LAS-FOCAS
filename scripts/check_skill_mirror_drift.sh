@@ -1,6 +1,6 @@
 # Nombre de archivo: check_skill_mirror_drift.sh
 # Ubicación de archivo: scripts/check_skill_mirror_drift.sh
-# Descripción: Verifica drift semántico entre .agentes-comunes/skills y .github/skills ignorando metadato de ubicación
+# Descripción: Verifica drift entre .agentes-comunes/skills y todos sus mirrors (.github, .claude, .gemini, .codex-skills)
 
 #!/usr/bin/env bash
 
@@ -41,3 +41,17 @@ if ! diff -qr "$TMP_SRC" "$TMP_MIRROR" >/tmp/skills_drift.diff; then
 fi
 
 echo "OK: Sin drift semántico entre $SRC_DIR y $MIRROR_DIR"
+
+# Los mirrors de .claude, .gemini y .codex-skills no son copias literales (cada
+# plataforma tiene su propia estructura de rutas y su frontmatter), así que su drift lo
+# verifica el propagador, que aplica las mismas transformaciones deterministas.
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  if [[ -x ".venv/bin/python" ]]; then
+    PYTHON_BIN=".venv/bin/python"
+  else
+    PYTHON_BIN="$(command -v python3 || command -v python)"
+  fi
+fi
+
+"$PYTHON_BIN" scripts/sync_skill_mirrors.py --check

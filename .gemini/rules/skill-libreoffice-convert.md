@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-libreoffice-convert.md
 # Ubicación de archivo: .gemini/rules/skill-libreoffice-convert.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/libreoffice-convert/SKILL.md
+
 ---
 name: "skill-libreoffice-convert"
 description: "Usar cuando haya que convertir documentos con office_service o depurar flujos DOCX a PDF con LibreOffice headless"
@@ -52,7 +53,7 @@ commands:
 
 # Regla Skill: libreoffice-convert
 
-> Fuente original: `.github/skills/libreoffice-convert/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/libreoffice-convert/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Conversión con LibreOffice
 

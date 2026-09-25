@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Nombre de archivo: pre-commit
+# Ubicación de archivo: scripts/hooks/pre-commit
+# Descripción: Hook que bloquea commits directos en dev/main y advierte si se commitea en el checkout de control
+
+# Guardrail de la política de ramas efímeras de LAS-FOCAS (ver AGENTS.md y la skill
+# dev-workflow). Hasta ahora la regla "prohibido commitear en dev" existía sólo en la
+# documentación: nada lo impedía técnicamente.
+#
+# Instalación: scripts/instalar_hooks.sh (configura core.hooksPath). Los hooks quedan
+# activos para el checkout de control y para todos los worktrees de agentes.
+#
+# Salida de emergencia: git commit --no-verify (deliberada y visible en el comando).
+
+set -uo pipefail
+
+RAMA="$(git branch --show-current 2>/dev/null || true)"
+
+# 1) Commit directo en una rama protegida: se bloquea siempre.
+if [[ "$RAMA" == "dev" || "$RAMA" == "main" ]]; then
+  cat >&2 <<EOF
+[pre-commit] BLOQUEADO: commit directo sobre '$RAMA'.
+
+Toda tarea trabaja en una rama efímera dentro de su propio worktree:
+
+    python scripts/agent_worktree.py start --agent <id> --type <tipo> --task <slug>
+
+'$RAMA' sólo recibe integraciones (agent_worktree.py integrate / cierre-sesion).
+Si este commit es realmente una excepción autorizada: git commit --no-verify
+EOF
+  exit 1
+fi
+
+# 2) Rama que no sigue la convención de ramas efímeras.
+if [[ -n "$RAMA" ]] && ! [[ "$RAMA" =~ ^(feat|fix|docs|chore|refactor|test)/ ]]; then
+  cat >&2 <<EOF
+[pre-commit] BLOQUEADO: la rama '$RAMA' no sigue la convención <tipo>/<slug>.
+
+Tipos válidos: feat, fix, docs, chore, refactor, test.
+Si es deliberado: git commit --no-verify
+EOF
+  exit 1
+fi
+
+# 3) Commit en el checkout de control: se advierte, no se bloquea.
+#    El control se reserva para integración y coordinación, pero el bootstrap del
+#    propio tooling y algunas tareas de mantenimiento ocurren legítimamente ahí.
+COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || git rev-parse --git-common-dir)"
+TOPLEVEL="$(git rev-parse --show-toplevel)"
+CONTROL="$(dirname "$COMMON_DIR")"
+
+if [[ "$TOPLEVEL" == "$CONTROL" ]]; then
+  cat >&2 <<EOF
+[pre-commit] AVISO: estás commiteando en el checkout de control ($CONTROL).
+
+El control se reserva para integrar y coordinar; el trabajo va en el worktree del
+agente. El commit continúa, pero si hay otra sesión activa conviene aislarse:
+
+    python scripts/agent_worktree.py start --agent <id> --type <tipo> --task <slug>
+EOF
+fi
+
+exit 0

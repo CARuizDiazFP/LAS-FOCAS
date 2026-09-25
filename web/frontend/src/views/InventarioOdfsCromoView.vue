@@ -179,7 +179,7 @@ onMounted(() => buscar(0));
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px 26px 30px;
+  padding: 20px 0 30px;
 }
 
 .inventario-odfs__header h1 {

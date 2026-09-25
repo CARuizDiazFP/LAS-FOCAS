@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Optional
 
 from fastapi.testclient import TestClient  # type: ignore
@@ -70,6 +71,14 @@ class _ResultadoFilas:
     def first(self):
         return self._filas[0] if self._filas else None
 
+    def scalars(self):
+        # `overrides_vigentes_por_odf` (Tarea 4 del gestor "Servicios sin ODF") hace
+        # `sesion.execute(select(...)).scalars().all()` sobre un `select()` ORM — acá alcanza con
+        # devolver `self`: ningún test de este archivo configura una respuesta que matchee esa
+        # query (siempre cae al `[]` default de `execute`), así que nunca se itera un elemento como
+        # si fuera una fila cruda con atributos.
+        return self
+
 
 class _SesionFake:
     """Matchea por substring de la consulta compilada, igual que en test_cromo_verificador.py."""
@@ -83,7 +92,12 @@ class _SesionFake:
         self._existentes = existentes or {}
 
     async def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
-        texto = str(stmt)
+        # Silencia el `SADeprecationWarning` de compilar un `DISTINCT ON` (Tarea 4) sin dialect
+        # explícito — mismo motivo y mismo alcance (sólo el `str(stmt)`) que en
+        # test_cromo_verificador.py.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            texto = str(stmt)
         for clave, filas in self._respuestas.items():
             if clave in texto:
                 return _ResultadoFilas(filas)

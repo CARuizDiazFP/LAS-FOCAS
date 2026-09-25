@@ -53,6 +53,14 @@ cromo_ingesta_corridas — historial de corridas (estado, params, eventos SSE)
 cromo_ingesta_config   — fila única, config del scheduler automático (Etapa 7)
 ```
 
+`cromo_odfs` (2026-08-28): sin columna de sitio — el agrupamiento de ODFs en la misma dirección
+física se resuelve en la consulta por `(calle, altura, localidad)`, no por un ID de sitio (un
+diagnóstico real contra Cromo confirmó que ese formato de ID no existe en los nombres reales de
+clase 69). `cables_asociados` (JSONB, lista de `n_id` de cable) viene de `tp[]` — leer siempre
+`item["n_id"]`, nunca `item["id_to"]` (mismo "ID dual" que extremos de cable). `tipo_elemento`
+(ODF/EMPALME/SIN_CLASIFICAR) casi siempre resuelve `ODF` o `SIN_CLASIFICAR` en la práctica —
+`EMPALME` no se observó en datos reales de clase 69.
+
 Relación jerárquica real: cable → tubo → pelo → (match a servicio). Botellas y fusiones son nodos de
 empalme, relacionados por referencia (`n_id`) más que por FK estricta — el verificador (`verificador.py`)
 es **tolerante a referencias colgadas**: un `n_id` referenciado sin fila propia no es un error, es
@@ -96,12 +104,15 @@ abajo) como plantilla, no reinventar el estilo:
   por request (COUNT + SELECT) sobre las filas candidatas *antes* de `LIMIT/OFFSET` — un `EXISTS`
   correlacionado obliga a Postgres a re-ejecutar el join una vez por fila candidata; un `IN` no
   correlacionado permite resolverlo como "hashed subplan" (el join corre una sola vez por statement).
-  Segundo ejemplo real: `odf_inventario.py`'s filtro `servicio` (2026-08-28) se corrigió de `EXISTS`
-  correlacionado a `IN` no correlacionado sobre `jsonb_array_elements_text(cables_asociados)` — una
-  columna JSONB por fila no es excusa para correlacionar.
   Ejemplo real en el repo: filtro `servicio` de `inventario.py::_FILTROS_SQL` (Etapa 9). No es el
   mismo caso que un subselect correlacionado sobre las filas *ya paginadas* (ej. `cantidad_servicios`
   en el `SELECT` de `inventario.py`) — ese sí es correcto tal cual está, corre sobre ≤200 filas.
+  Segundo ejemplo real: `odf_inventario.py`'s filtro `servicio` (2026-08-28) se escribió primero con
+  `EXISTS` correlacionado, justificado por un comentario que subestimaba el volumen real de ODFs
+  (7.955 objetos, no "decenas/centenas") — corregido en revisión final al patrón `IN (subquery no
+  correlacionada)` sobre `jsonb_array_elements_text(cables_asociados)`. Una columna JSONB por fila
+  no es excusa para correlacionar: el `IN`/`EXISTS` no correlacionado sigue aplicando, sólo cambia
+  el origen de la subquery.
 - Conteo de servicios por cable/tubo/pelo: reusar el join ya existente en
   `verificador.servicios_por_cable` (`cromo_pelos` → `cromo_servicio_match`), no reimplementarlo.
 - **Detalle jerárquico de un objeto con hijos (cable→tubos→pelos, o similar) sin N+1**: una query por
@@ -116,7 +127,7 @@ abajo) como plantilla, no reinventar el estilo:
 
 ## Antes de confiar en un dato o construir una vista nueva
 
-1. Verificar contra `lasfocasdev-postgres` real (ver la skill `las-focas-db-mcp-postgres` sección
+1. Verificar contra `lasfocasdev-postgres` real (ver `.github/skills/db-mcp-postgres/SKILL.md` sección
    "Inventario Cromo Red") que el volumen/distribución de datos es el esperado — no asumir a partir
    de la documentación de columnas.
 2. Si el dato depende de una columna derivada (geo, `tipo_asociacion`, capacidad), confirmar que ya
@@ -126,6 +137,20 @@ abajo) como plantilla, no reinventar el estilo:
 3. Para features geográficos (mapas, polilíneas de cable), el backfill de `pts_raw`→lat/lon hoy sólo
    corrió sobre `cromo_botellas` — `cromo_cables` todavía no tiene el suyo (fuera de alcance de la
    Etapa 8, pendiente).
+
+4. **Al medir cuántos pares `(eje, servicio)` hay, filtrar `cromo_servicio_match.servicio_id IS NOT
+   NULL`.** Esa tabla guarda el número parseado del pelo (`servicio_numero`) aunque el matching no
+   haya podido resolverlo a una fila de `app.servicios` — 3.162 filas de 136.335 en dev (2026-09-24).
+   Agrupar sin ese filtro crea pares `(cable, NULL)` que no son servicios e infla la métrica. Error
+   real cometido al diseñar el plan del 2026-09-23: se publicaron 30,2% / 24,7% / 41,8% (cable /
+   tubo / botella) de pares con más de un pelo, cuando los valores correctos son **29,6% / 24,2% /
+   41,3%**. Lo detectó una revisión que volvió a correr la consulta en vez de citar el número.
+5. **El índice único de `cromo_servicio_match` es `(pelo_n_id, servicio_numero)`, no
+   `(pelo_n_id, servicio_id)`.** Un mismo pelo puede llegar al mismo servicio por dos números
+   distintos — el ID viejo y el nuevo de la cadena de upgrades, ambos escritos en la descripción del
+   pelo (85 pares reales en dev, 2026-09-24). Cualquier agregación que resuelva la multiplicidad con
+   un CTE y un JOIN de vuelta por un pelo representativo vuelve a multiplicar esas filas; usar un
+   único `GROUP BY` de una sola pasada.
 
 ## Documentación relacionada
 

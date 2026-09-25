@@ -69,15 +69,16 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 
 1. **Esquema Principal**: Todas las tablas del negocio están bajo el esquema `app`:
    - `app.camaras` - Cámaras de fibra óptica. Desde 2026-08-10 tiene `camara_padre_id` (FK
-     auto-referencial nullable, jerarquía Cámara→Botella de 2 niveles) — ver sección 4b más abajo.
+     auto-referencial nullable, jerarquía Cámara→Botella de 2 niveles: `camara_padre_id IS NULL` =
+     Cámara, seteado = Botella legado) — ver sección 4b más abajo.
    - `app.rutas_servicio` - Rutas de servicios (nombre real en plural, no `app.ruta_servicio`)
    - `app.cables`, `app.empalmes` - Infraestructura de red
    - `app.servicios` - Servicios de clientes
    - `app.users` - Usuarios del sistema
    - `app.chat_sessions`, `app.chat_messages` - Historial de chat
    - `app.incidentes_baneo` - Protocolo de protección
-   - `app.camaras_estado_auditoria` - Auditoría de todo cambio de `Camara.estado` — única fuente de
-     verdad para reconstruir el estado previo real de una cámara, ver sección 4b.
+   - `app.camaras_estado_auditoria` - Auditoría de todo cambio de `Camara.estado` (manual u override) —
+     única fuente de verdad para reconstruir el estado previo real de una cámara, ver sección 4b.
    - `app.reports` - Informes generados
    - `app.cromo_*` - Inventario FO ingerido desde Cromo Red (cables, botellas, tubos, pelos, fusiones,
      corridas de ingesta, config de scheduler) — ver sección 4 más abajo
@@ -88,9 +89,7 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 
 3. **Optimización de Contexto**: Limita resultados con `LIMIT 10` al explorar datos nuevos para no saturar la ventana de contexto del agente.
 
-4. **Stack objetivo**: La base de datos sirve a FastAPI async y a una SPA Vue 3 desacoplada; conserva los contratos del esquema `app`.
-5. **No Exponer Secretos**: Nunca incluir resultados de queries que contengan passwords, tokens o datos sensibles en las respuestas.
-6. **Compatibilidad async**: cuando el resultado sirva para cambios de código, asumir `AsyncSession` y patrones SQLAlchemy 2.0.
+4. **No Exponer Secretos**: Nunca incluir resultados de queries que contengan passwords, tokens o datos sensibles en las respuestas.
 
 ## 🛠️ Flujos de Depuración Específicos
 
@@ -99,14 +98,15 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 Si el usuario reporta que las tarjetas de cámaras perdieron servicios o hay fallos en los correos de protección:
 
 ```sql
--- Ver cámaras baneadas actualmente (Camara no tiene columna "baneada_en" — el momento del baneo vive
--- en incidentes_baneo.fecha_inicio o en camaras_estado_auditoria.created_at, no en la fila misma)
+-- Ver cámaras baneadas actualmente (Camara no tiene columna "baneada_en" — el momento del baneo
+-- vive en incidentes_baneo.fecha_inicio o en camaras_estado_auditoria.created_at, no en la fila misma)
 SELECT id, nombre, estado, camara_padre_id
 FROM app.camaras
 WHERE estado = 'BANEADA'
 LIMIT 20;
 
--- Verificar incidentes de baneo activos (columnas reales: servicio_afectado_id, fecha_inicio)
+-- Verificar incidentes de baneo activos (columnas reales: servicio_afectado_id, fecha_inicio — no
+-- servicio_afectado/creado_en)
 SELECT id, ticket_asociado, servicio_afectado_id, servicio_protegido_id, motivo, fecha_inicio, activo
 FROM app.incidentes_baneo
 WHERE activo = true
@@ -114,7 +114,7 @@ ORDER BY fecha_inicio DESC
 LIMIT 10;
 
 -- Cruzar cámaras con rutas de servicio (no existe app.ruta_servicio.camaras_ids — la relación real es
--- Servicio → RutaServicio → Empalme → Camara)
+-- Servicio → RutaServicio → Empalme → Camara, sin FK/array directo)
 SELECT c.nombre, c.estado, s.servicio_id
 FROM app.camaras c
 JOIN app.empalmes e ON e.camara_id = c.id
@@ -176,8 +176,8 @@ LIMIT 10;
 
 ### 4. Inventario Cromo Red (planta externa FO)
 
-Tablas pobladas por el módulo de ingesta Cromo (ver `docs/modulo_ingesta_cromo.md` y la skill portable
-`las-focas-cromo-inventario` para el detalle completo). Datos reales, no de prueba:
+Tablas pobladas por el módulo de ingesta Cromo (ver `docs/modulo_ingesta_cromo.md` y
+`.github/skills/cromo-inventario/SKILL.md` para el detalle completo). Datos reales, no de prueba:
 
 ```sql
 -- Cables por jerarquía (ojo: jerarquia tiene ~10 valores reales distintos, no sólo
@@ -214,10 +214,17 @@ FROM app.camaras
 WHERE id = 2663 OR camara_padre_id = 2663;
 
 -- Última transición a BANEADA de una cámara — única forma de saber su estado REAL previo
+-- (camara.estado ya está sobreescrito a BANEADA en el momento en que se banea, se pierde el dato
+-- salvo que se consulte la auditoría)
 SELECT camara_id, usuario, motivo, estado_anterior, estado_nuevo, created_at
 FROM app.camaras_estado_auditoria
 WHERE camara_id = 753 AND estado_nuevo = 'BANEADA'
 ORDER BY created_at DESC LIMIT 1;
+
+-- Botellas de app.cromo_botellas con sufijo "Bot N" en el nombre — OJO: `~*` de Postgres da FALSO
+-- NEGATIVO en este patrón (maneja \b distinto a Python re). Para contar de verdad, exportar y validar
+-- con `re` de Python, no confiar en este count:
+SELECT count(*) FROM app.cromo_botellas WHERE nombre ~* '\bbot\.?\s*[1-9]';  -- subestima, no usar para decidir
 ```
 
 **Archivos de código relacionados:**
@@ -225,7 +232,7 @@ ORDER BY created_at DESC LIMIT 1;
 - `core/services/camara_estado_service.py` - `aplicar_estado_a_grupo()`, `obtener_ultima_transicion_a_baneada()`
 - `core/services/protection_service.py` - Protocolo de Protección con cascada de grupo
 - `core/services/botellas_unificadas_service.py` - Listado unificado Cromo + legado
-- `las-focas-baneo-qa-real` - Metodología para probar cascadas de baneo sin causar drift
+- `.github/skills/baneo-qa-real/SKILL.md` - Metodología para probar cascadas de baneo sin causar drift
 
 ### 5. Verificación de Migraciones
 
@@ -253,11 +260,10 @@ ORDER BY ordinal_position;
    - Queries sin `LIMIT` en tablas grandes
    - Queries que expongan `hashed_password` u otros campos sensibles
 
-3. **Siempre**:
+2. **Siempre**:
    - Usar `LIMIT` al explorar datos nuevos
    - Verificar el contexto antes de mostrar resultados al usuario
    - Sugerir migraciones Alembic para cambios de esquema
-  - Mantener alineación con Pydantic/async en la capa API consumidora
 
 ## 🔗 Integración con Agentes
 

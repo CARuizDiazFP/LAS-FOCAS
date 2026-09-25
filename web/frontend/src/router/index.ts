@@ -7,6 +7,11 @@ import { useSession } from '../composables/useSession';
 
 const LoginView = () => import('../views/LoginView.vue');
 const AppShell = () => import('../components/app-shell/AppShell.vue');
+const ServicioHistoricoView = () => import('../views/servicios/ServicioHistoricoView.vue');
+const ServicioIngresosView = () => import('../views/servicios/ServicioIngresosView.vue');
+const ServicioCaminoView = () => import('../views/servicios/ServicioCaminoView.vue');
+const ServicioReclamosView = () => import('../views/servicios/ServicioReclamosView.vue');
+const ServicioBaneosView = () => import('../views/servicios/ServicioBaneosView.vue');
 const PanelView = () => import('../views/PanelView.vue');
 const SlaView = () => import('../views/SlaView.vue');
 const ReportsHistoryView = () => import('../views/ReportsHistoryView.vue');
@@ -20,6 +25,7 @@ const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue')
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
 const InventarioOdfsCromoView = () => import('../views/InventarioOdfsCromoView.vue');
+const InventarioPonCromoView = () => import('../views/InventarioPonCromoView.vue');
 const OdfDetalleCromoView = () => import('../views/OdfDetalleCromoView.vue');
 const BotellasInventarioView = () => import('../views/BotellasInventarioView.vue');
 const BotellaDetalleUnificadaView = () => import('../views/BotellaDetalleUnificadaView.vue');
@@ -34,6 +40,7 @@ const AdminServicios = () => import('../admin/views/AdminServicios.vue');
 const AdminServiciosViewer = () => import('../admin/views/AdminServiciosViewer.vue');
 const AdminCamarasViewer = () => import('../admin/views/AdminCamarasViewer.vue');
 const AdminBotellasViewer = () => import('../admin/views/AdminBotellasViewer.vue');
+const AdminServiciosSinOdfViewer = () => import('../admin/views/AdminServiciosSinOdfViewer.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
@@ -161,6 +168,35 @@ const routes: RouteRecordRaw[] = [
         name: 'servicios-detail',
         component: ServicioDetalleView,
       },
+      // Una ruta por sección: la ficha quedó compacta y cada detalle se abre en su propia vista,
+      // linkeable y compartible. Ojo: la navegación real está hardcodeada en `AppShell.vue`, así
+      // que estas rutas también se mapean en su `resolveCurrentView` para que el módulo
+      // "Servicios" quede marcado activo.
+      {
+        path: 'servicios/ID/:idServicio/historico',
+        name: 'servicios-detail-historico',
+        component: ServicioHistoricoView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/ingresos',
+        name: 'servicios-detail-ingresos',
+        component: ServicioIngresosView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/camino',
+        name: 'servicios-detail-camino',
+        component: ServicioCaminoView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/reclamos',
+        name: 'servicios-detail-reclamos',
+        component: ServicioReclamosView,
+      },
+      {
+        path: 'servicios/ID/:idServicio/baneos',
+        name: 'servicios-detail-baneos',
+        component: ServicioBaneosView,
+      },
       { path: 'infra/Camaras/:id(\\d+)', name: 'camara-detail', component: CamaraDetailView },
       { path: 'infra/cromo/verificador', name: 'infra-cromo-verificador', component: VerificadorCromoView },
       {
@@ -175,6 +211,21 @@ const routes: RouteRecordRaw[] = [
         component: CableDetalleCromoView,
       },
       { path: 'infra/cromo/odfs', name: 'infra-cromo-odfs', component: InventarioOdfsCromoView },
+      // Cajas PON y rosetas comparten vista y endpoint: `ponVariante` es lo que la vista lee para
+      // decidir qué clases pedir y qué columnas mostrar. Dos rutas y un componente, porque son dos
+      // entradas distintas en la navegación pero la misma pantalla.
+      {
+        path: 'infra/cromo/pon',
+        name: 'infra-cromo-pon',
+        component: InventarioPonCromoView,
+        meta: { ponVariante: 'caja' },
+      },
+      {
+        path: 'infra/cromo/rosetas',
+        name: 'infra-cromo-rosetas',
+        component: InventarioPonCromoView,
+        meta: { ponVariante: 'roseta' },
+      },
       {
         path: 'infra/cromo/odfs/ID:nId(\\d+)',
         name: 'infra-cromo-odf-detalle',
@@ -292,6 +343,12 @@ const routes: RouteRecordRaw[] = [
         path: 'servicios/viewer/Botellas',
         name: 'admin-servicios-viewer-botellas',
         component: AdminBotellasViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/ServiciosSinOdf',
+        name: 'admin-servicios-viewer-sin-odf',
+        component: AdminServiciosSinOdfViewer,
         meta: { requiresAdmin: true },
       },
       { path: ':pathMatch(.*)*', redirect: '/admin' },

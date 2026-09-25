@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-alembic-migrations.md
 # Ubicación de archivo: .gemini/rules/skill-alembic-migrations.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/alembic-migrations/SKILL.md
+
 ---
 name: "skill-alembic-migrations"
 description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
@@ -26,7 +27,7 @@ commands:
 
 # Regla Skill: alembic-migrations
 
-> Fuente original: `.github/skills/alembic-migrations/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/alembic-migrations/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Migraciones Alembic
 
@@ -56,6 +57,14 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
 1. Toda migración debe preservar datos salvo advertencia explícita.
 2. Toda migración debe incluir `downgrade()` salvo excepción justificada.
 3. Revisar SQL antes de aplicar cambios delicados en entornos reales.
+3b. **Una columna `JSONB` que deba distinguir "sin dato" de "vacío" necesita `none_as_null=True`
+   explícito en el modelo.** Por defecto SQLAlchemy serializa Python `None` como el **escalar JSON
+   `null`**, no como SQL NULL: entonces `IS NOT NULL` da TRUE, cualquier función de array
+   (`jsonb_array_length`) **aborta la consulta entera** con *"cannot get array length of a scalar"*,
+   y los tres estados que la columna pretendía modelar colapsan en dos. Hallazgo real (2026-09-17,
+   `cromo_splitter_puertos.servicios_atributo`): no lo detecta ningún test con mocks, sólo aparece
+   al correr contra la base. Como cinturón, filtrar por `jsonb_typeof(col) = 'array'` antes de
+   llamar a una función de array, en vez de confiar sólo en `IS NOT NULL`.
 4. Si el cambio de esquema modifica el SIGNIFICADO de un campo/función ya existente y ampliamente
    consumido (no sólo agrega uno nuevo), grep-auditar TODOS los consumidores reales de ese campo/función
    en el repo — no sólo los que la tarea o el plan ya tocan — antes de dar el cambio por completo.

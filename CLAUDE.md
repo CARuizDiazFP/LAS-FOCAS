@@ -10,6 +10,86 @@ Sistema operativo de infraestructura de fibra óptica de Metrotel: informes SLA/
 
 ---
 
+## Cómo debe trabajar Claude Code en este repositorio
+
+**Claude nunca empieza una tarea modificando directamente el checkout `dev`.** El checkout
+principal (`/home/support-focal-01/LAS-FOCAS`) es el **checkout de control/integración**: queda en
+`dev` y se usa para crear worktrees, integrar e inspeccionar. El trabajo ocurre en un worktree
+propio por tarea.
+
+### Al iniciar cualquier tarea
+
+1. **Detectar si ya pertenece a un agent worktree**:
+   ```bash
+   python scripts/agent_worktree.py status
+   git rev-parse --show-toplevel
+   ```
+   Si el `toplevel` coincide con el `worktree_path` de un agente registrado, continuar ahí.
+
+2. **Si no pertenece, pedir su workspace** (comando `/iniciar-tarea-agente`, o directo):
+   ```bash
+   python scripts/agent_worktree.py start \
+     --agent claude-api --type feat --task busqueda-camaras
+   ```
+   ```text
+   Agente:   claude-api
+   Rama:     feat/claude-api-busqueda-camaras
+   Worktree: /home/support-focal-01/LAS-FOCAS-agentes/claude-api-busqueda-camaras
+   Base:     origin/dev@ba1cf5e9b55d
+   Estado:   active
+   ```
+
+3. **Trabajar ahí**: todas las ediciones, tests y commits usan esa ruta como raíz.
+
+4. **Registrar heartbeat** en tareas largas (también renueva los leases propios):
+   ```bash
+   python scripts/agent_worktree.py heartbeat --agent claude-api
+   ```
+
+5. **Adquirir leases sólo cuando corresponde** — nunca para archivos ordinarios:
+   ```bash
+   python scripts/agent_lock.py acquire "db:migrations" \
+     --agent claude-api --reason "migración de inventario"
+   python scripts/agent_lock.py release "db:migrations" --agent claude-api
+   ```
+   Recursos canónicos: `skill:<nombre>`, `agent:<nombre>`, `docs:AGENTS.md`, `governance:claude`,
+   `db:migrations`, `env:python-dependencies`, `env:docker-compose`, `git:worktree-lifecycle`,
+   `git:integrate-dev`.
+
+6. **Cerrar con `/cierre-sesion`**, que ejecuta `sync` → `ready` → `integrate` → `finish` →
+   `cleanup`. La integración a `dev` está serializada por `git:integrate-dev`: mientras Claude
+   integra, las demás sesiones siguen trabajando sin interrupción.
+
+### Ejemplo real: dos sesiones en paralelo
+
+```bash
+# Sesión 1 (API)
+python scripts/agent_worktree.py start --agent claude-api --type feat --task busqueda-camaras
+cd /home/support-focal-01/LAS-FOCAS-agentes/claude-api-busqueda-camaras
+
+# Sesión 2 (frontend), al mismo tiempo y sin coordinación previa
+python scripts/agent_worktree.py start --agent claude-web --type feat --task mapa-camaras
+cd /home/support-focal-01/LAS-FOCAS-agentes/claude-web-mapa-camaras
+
+# Cada una ve sólo lo suyo
+git -C ../claude-api-busqueda-camaras status --porcelain
+git -C ../claude-web-mapa-camaras   status --porcelain
+python scripts/agent_worktree.py list
+```
+
+### Qué está prohibido
+
+- Trabajar en el checkout de control o dejarlo fuera de `dev`.
+- `git reset --hard`, `git clean -fd`, `git checkout -- .`, `git restore .`, `git push --force`,
+  `git worktree remove --force` y `git branch -D` de forma automática.
+- Eliminar un worktree con cambios sin confirmar, o la rama de otro agente con commits no
+  integrados.
+- Tratar un agente `stale` como descartable: conserva rama, worktree y cambios.
+
+Referencia completa: `docs/arquitectura_agentes_worktrees.md`. Skill operativa: `agent-worktree`.
+
+---
+
 ## Comandos Claude Code
 
 Invocar con `/nombre-comando [argumentos opcionales]`.
@@ -18,6 +98,9 @@ Invocar con `/nombre-comando [argumentos opcionales]`.
 |---|---|---|
 > Comandos que invocan Python (pytest, alembic, pip-audit) asumen que el virtualenv `.venv/` está activo. Activar con `source .venv/bin/activate` si no lo está.
 
+| `/iniciar-tarea-agente` | Crea (o confirma) el worktree y la rama efímera propios de esta sesión antes de tocar el repo | `agent-id tipo task-slug` |
+| `/estado-agentes` | Muestra agentes activos, worktrees, leases y handoffs; `doctor` diagnostica inconsistencias | `doctor` o un `agent_id` |
+| `/handoff-agente` | Traspasa la tarea a otro agente conservando rama, worktree, leases y contexto | `origen → destino: siguiente paso` |
 | `/repo-updater` | Audita diff, actualiza docs/PR y docs temáticas, genera commit técnico y hace push a la rama efímera activa | alcance o contexto del cambio |
 | `/generar-pr-diario` | Crea o actualiza `docs/PR/YYYY-MM-DD.md` con cambios, comandos ejecutados, impacto y riesgos | fecha `YYYY-MM-DD` (por defecto hoy) |
 | `/mantenimiento-disco` | Diagnostica uso de disco/Docker/logs y ejecuta limpieza segura con confirmación | umbrales opcionales (disco %, logs MB) |
@@ -59,15 +142,16 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 
 Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejadas en `.github/skills/` y `.codex-skills/skills/` (formato OpenAI Codex).
 
-> **Para que sean invocables por el `Skill` tool de Claude Code hace falta además un mirror en
-> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.agentes-comunes/skills/`. Descubierto
-> 2026-08-14: `Skill(skill="docker-rebuild")` falló con "Unknown skill" pese a estar catalogada acá,
-> porque `.claude/skills/` no existía. `docker-rebuild`, `nocturne-token-compliance`, `cierre-sesion`
-> y `dev-workflow` tienen mirror hoy (2026-09-03: `dev-workflow` se agregó junto con el flujo de rama
-> efímera obligatoria — antes no era invocable vía `Skill`); el resto de la tabla de abajo **todavía
-> no es invocable vía `/nombre-skill` o el tool `Skill` en este entorno** — hay que copiarla a
-> `.claude/skills/` (mismo contenido que `.agentes-comunes/skills/`) antes de poder usarla así. Hasta
-> entonces, seguir sus procedimientos manualmente vía Bash. Ver `docs/cierres/2026-08-14.md`.
+> **Para que sean invocables por el `Skill` tool de Claude Code hace falta un mirror en
+> `.claude/skills/<nombre>/SKILL.md`** — no alcanza con existir en `.agentes-comunes/skills/`.
+> Descubierto 2026-08-14: `Skill(skill="docker-rebuild")` falló con "Unknown skill" pese a estar
+> catalogada acá, porque `.claude/skills/` no existía (ver `docs/cierres/2026-08-14.md`).
+>
+> **Cerrado el 2026-09-14**: `scripts/sync_skill_mirrors.py` genera y mantiene los mirrors de las
+> cuatro plataformas, así que **todas** las skills de la tabla son invocables. No hay que copiar
+> nada a mano: tras editar una skill en `.agentes-comunes/skills/`, correr
+> `scripts/sync_agentes_comunes.sh` (que lo invoca) y verificar con
+> `scripts/check_skill_mirror_drift.sh`.
 
 > El flujo recursivo (SDD/superpowers) se mantiene habilitado para trabajos largos; optimizar evitando re-reviews en cascada cuando el delta no introduce hallazgos nuevos.
 
@@ -75,6 +159,7 @@ Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejada
 
 | Skill | Propósito | Guardrail crítico |
 |---|---|---|
+| `agent-worktree` | Trabajo concurrente aislado: worktree y rama propios por agente, leases por recurso compartido, integración serializada a `dev`, handoff y `doctor` | Nunca borrar un worktree sucio ni la rama de otro agente; el checkout principal se reserva para control/integración |
 | `dev-workflow` | Validación obligatoria antes de cualquier cambio | Rama efímera obligatoria por tarea (prohibido commit directo en dev/main), compose dev, nunca push a `main` |
 | `frontend-spa-architecture` | Verifica entry point, router activo y archivos huérfanos del SPA | Usar antes de agregar rutas o vistas en `src/router/index.ts` |
 | `nocturne-token-compliance` | Audita colores hardcodeados en Vue 3 (vista + árbol de imports) contra `tokens.css`, y cómo verificar sin navegador disponible | Nunca hex/rgba literal para superficie/texto/borde/estado; grepear también los componentes importados, no sólo la vista |
@@ -106,9 +191,9 @@ Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejada
 
 | Entorno | Plataforma | Ubicación |
 |---|---|---|
-| Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` (slash commands) + `.claude/skills/` (skills invocables — `docker-rebuild`, `nocturne-token-compliance`, `cierre-sesion` y `dev-workflow` mirroradas hoy, ver nota arriba) |
+| Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` (slash commands) + `.claude/skills/` (todas las skills de la tabla, mirroradas automáticamente por `scripts/sync_skill_mirrors.py`) |
 | GitHub Copilot / VS Code | Agentes, prompts, skills | `.github/agents/`, `.github/prompts/`, `.github/skills/` |
 | Gemini CLI | Rules flat | `.gemini/rules/` |
 | OpenAI Codex | Skills (formato Codex) | `.codex-skills/skills/` |
 
-**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts) → replicar cambios a `.github/skills/`, `.gemini/`, `.codex-skills/`, `.claude/commands/` y `.claude/skills/` (esta última, agregada 2026-08-14, es la que hace que una skill sea invocable por el tool `Skill` en Claude Code).
+**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts). Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y `.claude/skills/` los regenera `scripts/sync_agentes_comunes.sh` (que delega en `scripts/sync_skill_mirrors.py`); `scripts/check_skill_mirror_drift.sh` verifica los cuatro y falla si hay drift. `.claude/commands/` se mantiene a mano: son comandos, no mirrors de skills.

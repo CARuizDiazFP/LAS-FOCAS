@@ -25,17 +25,17 @@ while IFS= read -r file; do
   sed -i "2s|^# Ubicación de archivo: .*|# Ubicación de archivo: .github/skills/${rel_path}|" "$file"
 done < <(find .github/skills -type f -name '*.md' | sort)
 
-while IFS= read -r file; do
-  sed -i 's#source: "\\.github/skills/#source: ".agentes-comunes/skills/#g' "$file"
-done < <(find .gemini/rules -maxdepth 1 -type f -name 'skill-*.md' | sort)
+# Los mirrors de .claude, .gemini y .codex-skills tienen estructura propia (rutas y
+# frontmatter distintos por plataforma), así que los regenera el propagador dedicado.
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  if [[ -x ".venv/bin/python" ]]; then
+    PYTHON_BIN=".venv/bin/python"
+  else
+    PYTHON_BIN="$(command -v python3 || command -v python)"
+  fi
+fi
 
-while IFS= read -r file; do
-  sed -i 's#source: "\\.github/skills/#source: ".agentes-comunes/skills/#g' "$file"
-  sed -i 's#Fuente original: `\\.github/skills/#Fuente original: `.agentes-comunes/skills/#g' "$file"
-done < <(find .codex-skills/skills -type f -name 'SKILL.md' | sort)
-
-while IFS= read -r file; do
-  sed -i 's#mirror de \\.github/skills/#mirror de .agentes-comunes/skills/#g' "$file"
-done < <(find .claude/skills -type f -name 'SKILL.md' | sort)
+"$PYTHON_BIN" scripts/sync_skill_mirrors.py
 
 echo "OK: mirrors sincronizados desde .agentes-comunes/skills"

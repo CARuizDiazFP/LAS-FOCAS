@@ -263,6 +263,8 @@ services:
       - db_password_v1
       - slack_bot_token_v1
       - slack_app_token_v1
+      - api_prov_user_v1
+      - api_prov_pass_v1
     depends_on:
       postgres:
         condition: service_healthy

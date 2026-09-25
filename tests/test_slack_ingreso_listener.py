@@ -25,6 +25,8 @@ from unittest.mock import MagicMock, patch, call
 os.environ.setdefault("TESTING", "true")
 
 from core.services.cromo.camara_botella_busqueda import ResultadoBusquedaExtendida
+from core.services.ingreso_correccion_service import RESULTADO_PENDIENTE_FECHA
+from tests.soporte_postgres_real import requiere_postgres_real
 
 
 def _resultado_camara(camara: Any, nombre_norm: str = "") -> ResultadoBusquedaExtendida:
@@ -805,6 +807,8 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             tecnico_nombre="Rider Fernández",
             slack_user_id="U0AUB6CRE4A",
             momento=None,
+            thread_ts="1234567890.000001",
+            canal_id="C123",
         )
         # La respuesta de Slack de siempre no debe verse afectada por el registro.
         client_mock.chat_postMessage.assert_called_once()
@@ -870,8 +874,72 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             tecnico_nombre="Rider Fernández",
             slack_user_id="U0AUB6CRE4A",
             momento=None,
+            thread_ts="1234567890.000001",
+            canal_id="C123",
         )
         client_mock.chat_postMessage.assert_called_once()
+
+    def test_registra_movimiento_propaga_thread_ts_y_canal_de_una_respuesta_en_hilo(self) -> None:
+        """El wiring de Tarea 3 (2026-09-23) debe leer `thread_ts`/`channel` del evento REAL, no un
+        valor fijo: acá se usa un canal y un hilo (`thread_ts` de una respuesta dentro de un hilo,
+        distinto del `ts` propio del mensaje) deliberadamente distintos de los defaults de
+        `_make_event`, para que la aserción sólo pase si el valor viaja desde el evento de Slack
+        hasta `registrar_movimiento_ingreso`."""
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        camara_mock = self._make_camara()
+        camara_mock.estado = CamaraEstado.LIBRE
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=camara_mock.id, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False, inconsistente=False,
+            incidentes_activos=[], ticket_baneo=None,
+        )
+        evento = {
+            "text": self.TEXTO_CON_INGRESO,
+            "channel": "C_OTRO_CANAL",
+            "ts": "1111.000111",
+            "thread_ts": "2222.000222",
+        }
+
+        with (
+            patch.object(listener, "_get_config", return_value=("", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_cls,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                return_value="Ruta 8 Km 34 MALVINAS ARGENTINAS",
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                return_value=_resultado_camara(camara_mock, "ruta 8 km 34 malvinas argentinas"),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.get_camara_estado_contexto",
+                return_value=contexto_libre,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_nombre_tecnico",
+                return_value="Rider Fernández",
+            ),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            session_mock = MagicMock()
+            mock_session_cls.return_value = session_mock
+            listener._handle_message(evento, client_mock)
+
+        mock_registrar.assert_called_once_with(
+            session_mock,
+            camara=camara_mock,
+            botella=None,
+            tipo_movimiento="Ingreso",
+            tecnico_nombre="Rider Fernández",
+            slack_user_id="U0AUB6CRE4A",
+            momento=None,
+            thread_ts="2222.000222",
+            canal_id="C_OTRO_CANAL",
+        )
 
     def test_no_registra_movimiento_cuando_texto_no_trae_campo(self) -> None:
         """Hay match de cámara, pero el texto no trae 'Ingreso o Egreso' → no se escribe nada. No
@@ -1145,7 +1213,13 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
             listener._handle_message(self._make_event(text=self.TEXTO_CON_INGRESO), client_mock)
 
         mock_intento.assert_called_once_with(
-            session_mock, camara=camara_mock, botella=None, tecnico_nombre="Rider Fernández", momento=None
+            session_mock,
+            camara=camara_mock,
+            botella=None,
+            tecnico_nombre="Rider Fernández",
+            momento=None,
+            thread_ts="1234567890.000001",
+            canal_id="C123",
         )
         mock_registrar.assert_not_called()
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
@@ -1200,6 +1274,7 @@ class TestRegistrarMovimientoIngreso(unittest.TestCase):
         mock_registrar.assert_called_once_with(
             session_mock, camara=camara_mock, botella=None, tipo_movimiento="Egreso",
             tecnico_nombre="Rider Fernández", slack_user_id="U0AUB6CRE4A", momento=None,
+            thread_ts="1234567890.000001", canal_id="C123",
         )
         mock_intento.assert_not_called()
 
@@ -2634,11 +2709,27 @@ class TestSeguimientoEmpalme(unittest.TestCase):
         session_mock.commit.assert_not_called()
 
     def test_seguimiento_texto_no_numerico_se_ignora(self) -> None:
-        """Texto que no matchea el regex de seguimiento: ni siquiera se consulta si hay un caso
-        pendiente — sigue el flujo normal sin más (puede ser cualquier otro mensaje del canal)."""
+        """Texto que no matchea el regex de seguimiento: `_procesar_seguimiento_empalme` ni
+        siquiera consulta si hay un caso pendiente — sigue el flujo normal sin más (puede ser
+        cualquier otro mensaje del canal).
+
+        Desde el Fix round 1 (Important 3, Task 6, 2026-09-23) `_handle_message` SÍ consulta
+        `IngresoCorreccion` una vez al entrar a cualquier hilo, para decidir si le da prioridad al
+        seguimiento de "fecha pendiente" sobre el de empalme — pero al no haber ningún
+        `PENDIENTE_FECHA` vigente acá, no pasa de esa única consulta."""
+        from db.models.infra import IngresoCorreccion
+
         listener = self._make_listener()
         client_mock = MagicMock()
         session_mock = MagicMock()
+
+        def _query_side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            return q
+
+        session_mock.query.side_effect = _query_side_effect
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -2652,7 +2743,7 @@ class TestSeguimientoEmpalme(unittest.TestCase):
         ):
             listener._handle_message(self._make_event_reply("sí, dale"), client_mock)
 
-        session_mock.query.assert_not_called()
+        session_mock.query.assert_called_once()  # sólo el chequeo de prioridad de fecha pendiente
         mock_resolver.assert_not_called()
         mock_extraer.assert_called_once()
 
@@ -2739,6 +2830,7 @@ class TestRevalidacionIngreso(unittest.TestCase):
     def _make_caso(
         self, *, texto_mensaje: str | None = "*Nombre: ...*\ntexto", resuelto_empalme: bool = False,
         resuelto_revalidacion: bool = False, created_at: Any = None,
+        thread_ts: str | None = "9999.000009", contexto: str | None = "C_ORIGINAL",
     ) -> Any:
         from datetime import datetime, timezone
 
@@ -2749,6 +2841,11 @@ class TestRevalidacionIngreso(unittest.TestCase):
         caso.resuelto_via_revalidacion = resuelto_revalidacion
         caso.ingreso_id = None
         caso.created_at = created_at or datetime(2026, 9, 7, 22, 22, 8, tzinfo=timezone.utc)
+        # thread_ts/contexto (canal) del caso IngresoSinMatch ORIGINAL — deliberadamente distintos
+        # de los del evento "Revalidar ingreso" (`_make_event_reply`: thread_ts="1111.000001",
+        # channel="C123") para que un test pueda distinguir cuál de los dos se propaga.
+        caso.thread_ts = thread_ts
+        caso.contexto = contexto
         return caso
 
     def test_sin_fila_pendiente_responde_y_corta(self) -> None:
@@ -2936,6 +3033,10 @@ class TestRevalidacionIngreso(unittest.TestCase):
             tecnico_nombre="Rider Fernández",
             slack_user_id=None,
             momento=momento_original,
+            # Del caso IngresoSinMatch ORIGINAL (`caso.thread_ts`/`caso.contexto`), no del evento
+            # "Revalidar ingreso" en sí (`_make_event_reply`: thread_ts="1111.000001", channel="C123").
+            thread_ts="9999.000009",
+            canal_id="C_ORIGINAL",
         )
         self.assertTrue(caso_mock.resuelto_via_revalidacion)
         self.assertEqual(caso_mock.ingreso_id, 777)
@@ -2995,6 +3096,775 @@ class TestRevalidacionIngreso(unittest.TestCase):
         cam.id = id_
         cam.nombre = nombre
         return cam
+
+
+# ─── Tests del wiring de "Forzar ingreso"/"Forzar egreso" (Task 6, 2026-09-23) ──
+
+
+class TestCorreccionIngresoWiring(unittest.TestCase):
+    """Prueba `_procesar_correccion_ingreso` / su integración en `_handle_message` (Task 6): cablea
+    `core/services/ingreso_correccion_service.py` (Task 5) al listener. No re-testea las 10 formas
+    de respuesta del servicio (ya cubiertas en `tests/test_ingreso_correccion_service.py`) — sólo el
+    wiring: qué se le pasa al servicio, qué se postea, y que nunca se rompe la respuesta."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event_reply(
+        self, text: str, thread_ts: str = "1111.000001", ts: str = "2222.000002",
+        channel: str = "C123", user: str = "U0OPERADOR",
+    ) -> dict:
+        return {"text": text, "channel": channel, "ts": ts, "thread_ts": thread_ts, "user": user}
+
+    def _resultado(self, resultado: str, respuesta: str, comando: str = "FORZAR_INGRESO") -> Any:
+        from core.services.ingreso_correccion_service import ResultadoCorreccion
+        return ResultadoCorreccion(resultado=resultado, respuesta=respuesta, comando=comando)
+
+    def test_comando_reconocido_responde_en_hilo(self) -> None:
+        """"Forzar ingreso <CAMARA>" dentro de un hilo: se delega en `procesar_comando_correccion`
+        con las coordenadas del evento y `actor_slack_user_id=event['user']` (nunca el técnico del
+        formulario, que resuelve el servicio internamente), se postea `resultado.respuesta` en el
+        hilo, y se corta antes del flujo normal (no llega a `extraer_nombre_camara`)."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        resultado = self._resultado("OK_INGRESO", "✅ Ingreso forzado registrado en *Cra Mitre 300*.")
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=resultado,
+            ) as mock_procesar,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara") as mock_extraer,
+        ):
+            listener._handle_message(
+                self._make_event_reply("Forzar ingreso Cra Mitre 300", user="U0OPERADOR"), client_mock
+            )
+            mock_extraer.assert_not_called()
+
+        mock_procesar.assert_called_once()
+        kwargs = mock_procesar.call_args.kwargs
+        self.assertEqual(kwargs["texto"], "Forzar ingreso Cra Mitre 300")
+        self.assertEqual(kwargs["actor_slack_user_id"], "U0OPERADOR")
+        self.assertEqual(kwargs["canal_id"], "C123")
+        self.assertEqual(kwargs["thread_ts"], "1111.000001")
+        self.assertEqual(kwargs["mensaje_ts"], "2222.000002")
+        self.assertIs(kwargs["client"], client_mock)
+        self.assertIsNone(kwargs.get("momento_explicito"))
+
+        client_mock.chat_postMessage.assert_called_once()
+        post_kwargs = client_mock.chat_postMessage.call_args.kwargs
+        self.assertEqual(post_kwargs["thread_ts"], "1111.000001")
+        self.assertEqual(post_kwargs["text"], resultado.respuesta)
+
+    def test_pedido_fecha_pendiente_responde_en_hilo(self) -> None:
+        """El pedido de fecha explícita (`RESULTADO_PENDIENTE_FECHA`) usa el mismo camino de posteo
+        que un resultado OK — sin casos especiales en el listener para este resultado."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        resultado = self._resultado(
+            "PENDIENTE_FECHA",
+            ":warning: Para forzar un egreso en *Cra Mitre 300* hace falta la fecha y hora...",
+            comando="FORZAR_EGRESO",
+        )
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=resultado,
+            ),
+        ):
+            listener._handle_message(self._make_event_reply("Forzar egreso"), client_mock)
+
+        client_mock.chat_postMessage.assert_called_once()
+        self.assertEqual(client_mock.chat_postMessage.call_args.kwargs["text"], resultado.respuesta)
+
+    def test_texto_no_es_comando_sigue_flujo_normal(self) -> None:
+        """Un mensaje que no matchea ningún comando de corrección (`procesar_comando_correccion`
+        real, sin mockear, devuelve `None` sin tocar la DB) sigue de largo al flujo normal — mismo
+        caso normal que cualquier otro mensaje del canal.
+
+        Desde el Fix round 1 (Important 3) `_handle_message` consulta `IngresoCorreccion` una vez
+        al entrar a cualquier hilo (chequeo de prioridad de "fecha pendiente"); acá no hay ningún
+        pendiente, así que no pasa de esa única consulta."""
+        from db.models.infra import IngresoCorreccion
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        def _query_side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            return q
+
+        session_mock.query.side_effect = _query_side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply("hola, todo bien?"), client_mock)
+
+        mock_extraer.assert_called_once()
+        client_mock.chat_postMessage.assert_not_called()
+        session_mock.query.assert_called_once()
+
+    def test_fallo_db_no_impide_responder(self) -> None:
+        """Si `procesar_comando_correccion` lanza (fallo de DB, p. ej.), se loguea, se hace
+        `session.rollback()` (mismo contrato que `_registrar_movimiento_si_corresponde`) y se
+        responde igual en el hilo — nunca se deja el comando sin respuesta ni la sesión compartida
+        en `PendingRollbackError` para el resto de `_handle_message`."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                side_effect=RuntimeError("DB caída"),
+            ),
+        ):
+            listener._handle_message(
+                self._make_event_reply("Forzar ingreso Cra Mitre 300"), client_mock
+            )
+
+        session_mock.rollback.assert_called_once()
+        client_mock.chat_postMessage.assert_called_once()
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("error interno", texto_respuesta)
+
+    def test_evento_sin_user_no_ejecuta_correccion(self) -> None:
+        """Fix final (Important B) — un evento sin `user` (los mensajes de bot/Workflow traen
+        `bot_id`, no `user`) nunca tiene que llegar a `procesar_comando_correccion`: escribiría una
+        fila de auditoría anónima (`actor_slack_user_id=""`), rompiendo la premisa de producto "sin
+        allowlist, la auditoría es el único control". El filtro `solo_workflows` no lo ataja porque
+        `_procesar_correccion_ingreso` se evalúa antes a propósito (ver comentario en
+        `_handle_message`) — el guard tiene que vivir en el propio call-site."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        event = {
+            "text": "Forzar egreso #42",
+            "channel": "C123",
+            "ts": "2222.000002",
+            "thread_ts": "1111.000001",
+            "bot_id": "B0AV5BDDUJE",
+        }
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion"
+            ) as mock_procesar,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""),
+        ):
+            listener._handle_message(event, client_mock)
+
+        mock_procesar.assert_not_called()
+
+
+# ─── Tests del flujo de "fecha pendiente" (respuesta de seguimiento) ────────────
+
+
+def _assert_order_by_desc(order_by_args: tuple, columna_attr: str) -> None:
+    """Verifica que un `.order_by(...)` haya recibido `<columna_attr>.desc()` — no sólo que el
+    mock ya devuelva la fila "correcta" sin importar qué orden se haya pedido (Important 4,
+    revisión Fix round 1: un mock que ignora el argumento de `order_by` no distingue
+    `created_at.desc()` de `id.asc()`, y una regresión a un orden distinto pasaría inadvertida).
+    Mismo espíritu que `_assert_filtro_igualdad`/`_assert_filtro_null_safe` de
+    `tests/test_ingreso_service.py`, aplicado a la expresión de orden en vez de a un filtro."""
+    from sqlalchemy.sql import operators as sa_operators
+
+    assert len(order_by_args) == 1, "se esperaba un solo criterio de order_by"
+    expr = order_by_args[0]
+    elemento = getattr(expr, "element", None)
+    assert elemento is not None and getattr(elemento, "key", None) == columna_attr, (
+        f"se esperaba ordenar por '{columna_attr}', se ordenó por {elemento!r}"
+    )
+    assert expr.modifier is sa_operators.desc_op, (
+        f"se esperaba DESC (fila más reciente primero) para '{columna_attr}'"
+    )
+
+
+class TestFechaPendienteSeguimiento(unittest.TestCase):
+    """Prueba `_procesar_fecha_pendiente_seguimiento` / `_pendiente_fecha_vigente` (Task 6): el
+    operador responde en el hilo sólo con `DD-MM-AAAA HH:MM` tras el pedido de fecha explícita —
+    guard estricto (ruling del coordinador): fila `PENDIENTE_FECHA` de este `thread_ts`, de menos de
+    30 minutos, sin ninguna fila posterior del mismo hilo con un `resultado` terminal."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _make_event_reply(
+        self, text: str, thread_ts: str = "1111.000001", ts: str = "2222.000002",
+        channel: str = "C123", user: str = "U0OPERADOR",
+    ) -> dict:
+        return {"text": text, "channel": channel, "ts": ts, "thread_ts": thread_ts, "user": user}
+
+    def _fecha_reciente_texto(self, *, horas_atras: int = 2) -> str:
+        """Fecha "DD-MM-AAAA HH:MM" siempre reciente relativa al momento real de ejecución del test
+        (nunca un literal fijo): evita que la suite se rompa por la validación de rango del parser
+        (futuro / más de 90 días) según cuándo se corra."""
+        from datetime import datetime, timedelta
+        from core.utils.tz import TZ_ARG
+        momento = datetime.now(TZ_ARG) - timedelta(hours=horas_atras)
+        return momento.strftime("%d-%m-%Y %H:%M")
+
+    def _make_fila_pendiente(
+        self, *, created_at: Any, comando_crudo: str = "Forzar egreso", id_: int = 77
+    ) -> Any:
+        fila = MagicMock()
+        fila.id = id_
+        fila.resultado = RESULTADO_PENDIENTE_FECHA
+        fila.comando_crudo = comando_crudo
+        fila.created_at = created_at
+        return fila
+
+    def _make_fila_terminal(
+        self, *, created_at: Any, resultado: str = "OK_EGRESO_ASENTADO", id_: int = 78
+    ) -> Any:
+        fila = MagicMock()
+        fila.id = id_
+        fila.resultado = resultado
+        fila.created_at = created_at
+        return fila
+
+    def _query_side_effect(self, ultima_fila: Any) -> tuple:
+        """Arma el `side_effect` de `session.query(...)` para `IngresoCorreccion`: sólo importa la
+        ÚLTIMA fila del hilo (`.order_by(created_at.desc()).first()`) — desde el Fix round 1,
+        `_pendiente_fecha_vigente` dejó de traer todas las filas y recorrerlas en Python (ver el
+        docstring del método: ahí vivía el bug Critical). Devuelve `(side_effect, capturas)`:
+        `capturas` guarda cada mock `q` de `IngresoCorreccion` para poder inspeccionar después cómo
+        se llamó `.order_by(...)` (Important 4 — ver `_assert_order_by_desc`)."""
+        from db.models.infra import IngresoCorreccion
+
+        capturas: list = []
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = ultima_fila
+                capturas.append(q)
+            return q
+
+        return _side_effect, capturas
+
+    def _resultado_ok(self) -> Any:
+        from core.services.ingreso_correccion_service import ResultadoCorreccion
+        return ResultadoCorreccion(
+            resultado="OK_EGRESO_ASENTADO", respuesta="✅ Egreso asentado.", comando="FORZAR_EGRESO"
+        )
+
+    def test_ciclo_completo_fecha_suelta_con_pendiente_vigente_reejecuta_comando_original(self) -> None:
+        """Fila `PENDIENTE_FECHA` reciente y sin fila terminal posterior → se reintenta
+        `comando_crudo` con `momento_explicito` (nunca se muta la fila anterior: se pasa tal cual a
+        `procesar_comando_correccion`, que escribe una fila nueva — la tabla es append-only)."""
+        from datetime import datetime, timedelta, timezone
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        ahora = datetime.now(timezone.utc)
+        fila_pendiente = self._make_fila_pendiente(created_at=ahora - timedelta(minutes=5))
+        side_effect, capturas = self._query_side_effect(fila_pendiente)
+        session_mock.query.side_effect = side_effect
+
+        resultado_final = self._resultado_ok()
+
+        def _procesar_side_effect(
+            session, *, texto, actor_slack_user_id, canal_id, mensaje_ts,
+            thread_ts=None, client=None, momento_explicito=None, ahora=None,
+        ):
+            # La primera llamada (¿el texto crudo del evento es un comando completo?) siempre
+            # devuelve None para una fecha suelta; sólo la segunda (con `momento_explicito`, re-
+            # ejecutando `comando_crudo`) produce el resultado final.
+            if momento_explicito is not None:
+                return resultado_final
+            return None
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                side_effect=_procesar_side_effect,
+            ) as mock_procesar,
+        ):
+            listener._handle_message(
+                self._make_event_reply(self._fecha_reciente_texto()), client_mock
+            )
+
+        self.assertEqual(mock_procesar.call_count, 2)
+        segunda = mock_procesar.call_args_list[1].kwargs
+        self.assertEqual(segunda["texto"], "Forzar egreso")  # comando_crudo de la fila pendiente
+        self.assertIsNotNone(segunda["momento_explicito"])
+        self.assertEqual(segunda["thread_ts"], "1111.000001")
+        self.assertEqual(segunda["actor_slack_user_id"], "U0OPERADOR")
+
+        # El listener nunca escribe directamente sobre la fila pendiente ni la sesión — toda
+        # escritura real la hace el servicio (mockeado acá, ya probado en
+        # test_ingreso_correccion_service.py).
+        session_mock.add.assert_not_called()
+        session_mock.commit.assert_not_called()
+
+        # Important 4: el guard tiene que pedir la ÚLTIMA fila por `created_at DESC`, no confiar
+        # en que el mock ya devuelve la fila correcta sin importar el criterio pedido.
+        self.assertGreaterEqual(len(capturas), 1)
+        for q in capturas:
+            _assert_order_by_desc(q.filter.return_value.order_by.call_args[0], "created_at")
+
+        client_mock.chat_postMessage.assert_called_once()
+        self.assertEqual(
+            client_mock.chat_postMessage.call_args.kwargs["text"], resultado_final.respuesta
+        )
+
+    def test_guard_30_minutos_expirado_no_reejecuta(self) -> None:
+        """Fila `PENDIENTE_FECHA` de más de 30 minutos → la fecha suelta no se interpreta, sigue el
+        flujo normal (no hay una segunda invocación de `procesar_comando_correccion`)."""
+        from datetime import datetime, timedelta, timezone
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        ahora = datetime.now(timezone.utc)
+        fila_pendiente = self._make_fila_pendiente(created_at=ahora - timedelta(minutes=31))
+        side_effect, _capturas = self._query_side_effect(fila_pendiente)
+        session_mock.query.side_effect = side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=None,
+            ) as mock_procesar,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(
+                self._make_event_reply(self._fecha_reciente_texto()), client_mock
+            )
+
+        mock_procesar.assert_called_once()  # sólo el chequeo de "¿es un comando completo?"
+        mock_extraer.assert_called_once()  # cayó al flujo normal
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_guard_ya_resuelto_no_reejecuta(self) -> None:
+        """Fila `PENDIENTE_FECHA` reciente, pero con una fila posterior de `resultado` terminal en
+        el mismo hilo → el pendiente ya fue resuelto (por otra respuesta u otro operador), la fecha
+        suelta no se interpreta ni re-ejecuta el comando por segunda vez.
+
+        La fila terminal es la ÚLTIMA del hilo (`created_at` mayor) — exactamente lo que
+        `ORDER BY created_at DESC LIMIT 1` devolvería en un Postgres real; el mock sólo necesita esa
+        última fila, no la lista completa (ver `_query_side_effect`, reescrito en el Fix round 1)."""
+        from datetime import datetime, timedelta, timezone
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        ahora = datetime.now(timezone.utc)
+        fila_terminal = self._make_fila_terminal(created_at=ahora - timedelta(minutes=8))
+        side_effect, _capturas = self._query_side_effect(fila_terminal)
+        session_mock.query.side_effect = side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=None,
+            ) as mock_procesar,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(
+                self._make_event_reply(self._fecha_reciente_texto()), client_mock
+            )
+
+        mock_procesar.assert_called_once()
+        mock_extraer.assert_called_once()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_fecha_suelta_sin_fila_pendiente_no_hace_nada(self) -> None:
+        """Ninguna fila `PENDIENTE_FECHA` para este hilo (el hilo no tiene ninguna fila en
+        `IngresoCorreccion` todavía) → la fecha suelta no se interpreta, sigue el flujo normal sin
+        postear nada."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        side_effect, _capturas = self._query_side_effect(None)
+        session_mock.query.side_effect = side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=None,
+            ) as mock_procesar,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(
+                self._make_event_reply(self._fecha_reciente_texto()), client_mock
+            )
+
+        mock_procesar.assert_called_once()
+        mock_extraer.assert_called_once()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_texto_que_no_es_fecha_suelta_no_reejecuta_nada(self) -> None:
+        """Un mensaje que no matchea ni un comando completo ni la forma "DD-MM-AAAA HH:MM" (acá,
+        sin ningún `PENDIENTE_FECHA` vigente en el hilo) sigue de largo al flujo normal sin postear
+        nada. Desde la prioridad agregada en el Fix round 1 (Important 3), `_handle_message` SÍ
+        consulta `IngresoCorreccion` una vez al entrar a cualquier hilo (para decidir si le da
+        prioridad al seguimiento de fecha sobre el de empalme) — pero encontrando que no hay
+        ningún pendiente, no pasa de ahí: ni una segunda consulta, ni ningún posteo."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        side_effect, _capturas = self._query_side_effect(None)
+        session_mock.query.side_effect = side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply("sí, dale"), client_mock)
+
+        session_mock.query.assert_called_once()  # sólo el chequeo de prioridad, ningún pendiente
+        client_mock.chat_postMessage.assert_not_called()
+        mock_extraer.assert_called_once()
+
+    def test_fecha_invalida_sin_pendiente_no_responde(self) -> None:
+        """Texto con la forma "DD-MM-AAAA HH:MM" pero valor calendáricamente inválido, sin ningún
+        pendiente en el hilo → no rompe, no responde, sigue el flujo normal."""
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        side_effect, _capturas = self._query_side_effect(None)
+        session_mock.query.side_effect = side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=None,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value=""
+            ) as mock_extraer,
+        ):
+            listener._handle_message(self._make_event_reply("32-13-2026 25:99"), client_mock)
+
+        mock_extraer.assert_called_once()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_fecha_invalida_con_pendiente_vigente_responde_error(self) -> None:
+        """Misma forma inválida, pero con un pendiente vigente en el hilo → sí responde (el
+        operador claramente está contestando el pedido de fecha, sólo que con un valor que no sirve)
+        en vez de dejarlo sin ningún aviso."""
+        from datetime import datetime, timedelta, timezone
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        ahora = datetime.now(timezone.utc)
+        fila_pendiente = self._make_fila_pendiente(created_at=ahora - timedelta(minutes=5))
+        side_effect, _capturas = self._query_side_effect(fila_pendiente)
+        session_mock.query.side_effect = side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                return_value=None,
+            ),
+        ):
+            listener._handle_message(self._make_event_reply("32-13-2026 25:99"), client_mock)
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto_respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("No pude interpretar", texto_respuesta)
+
+
+# ─── Test de orden: la fecha suelta no puede ser capturada por otro handler ────
+
+
+class TestOrdenHandlersCorreccion(unittest.TestCase):
+    """Pin del orden elegido entre los tres handlers de respuesta-en-hilo (Task 6): el regex de
+    seguimiento de empalme exige dígitos puros (mínimo 3) y el de "Revalidar ingreso" una frase
+    fija — ninguno de los dos matchea una fecha suelta "DD-MM-AAAA HH:MM" ni un comando "Forzar
+    ingreso/egreso". No hay ambigüedad real entre los tres handlers, pero queda fijado con un test
+    directo para que un cambio futuro de cualquiera de los dos regex no lo rompa en silencio."""
+
+    def test_fecha_dd_mm_aaaa_hh_mm_no_matchea_regex_empalme(self) -> None:
+        from modules.slack_baneo_notifier.listener import _RE_SEGUIMIENTO_EMPALME
+        self.assertIsNone(_RE_SEGUIMIENTO_EMPALME.match("23-09-2026 14:30"))
+
+    def test_fecha_dd_mm_aaaa_hh_mm_no_matchea_regex_revalidar(self) -> None:
+        from modules.slack_baneo_notifier.listener import _RE_REVALIDAR_INGRESO
+        self.assertIsNone(_RE_REVALIDAR_INGRESO.match("23-09-2026 14:30"))
+
+    def test_comando_forzar_no_matchea_regex_empalme_ni_revalidar(self) -> None:
+        from modules.slack_baneo_notifier.listener import _RE_SEGUIMIENTO_EMPALME, _RE_REVALIDAR_INGRESO
+        self.assertIsNone(_RE_SEGUIMIENTO_EMPALME.match("Forzar ingreso Cra Mitre 300"))
+        self.assertIsNone(_RE_REVALIDAR_INGRESO.match("Forzar ingreso Cra Mitre 300"))
+        self.assertIsNone(_RE_SEGUIMIENTO_EMPALME.match("Forzar egreso"))
+        self.assertIsNone(_RE_REVALIDAR_INGRESO.match("Forzar egreso"))
+
+    def test_orden_real_seguimiento_empalme_se_evalua_antes_que_correccion(self) -> None:
+        """Aunque no hay overlap real de regex, se fija el orden elegido en `_handle_message`: el
+        seguimiento de empalme se evalúa primero — un texto puramente numérico con un
+        `IngresoSinMatch` pendiente en el hilo nunca llega a `_procesar_correccion_ingreso`."""
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        from db.models.infra import IngresoSinMatch
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        caso_mock = MagicMock()
+        caso_mock.id = 5
+        caso_mock.resuelto_via_empalme = False
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso_mock
+            return q
+
+        session_mock.query.side_effect = _side_effect
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync",
+                return_value=None,
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion"
+            ) as mock_procesar,
+        ):
+            listener._handle_message(
+                {
+                    "text": "1234567",
+                    "channel": "C123",
+                    "ts": "2222.000002",
+                    "thread_ts": "1111.000001",
+                },
+                client_mock,
+            )
+
+        mock_procesar.assert_not_called()
+
+    def test_coexistencia_pendiente_fecha_vigente_le_gana_a_empalme(self) -> None:
+        """Important 3 (Fix round 1): coexistencia armada explícitamente — un `IngresoSinMatch`
+        pendiente (empalme) Y un `PENDIENTE_FECHA` vigente (corrección) en el MISMO hilo. Cuando
+        hay un pendiente vigente, la interpretación de fecha se evalúa ANTES que el seguimiento de
+        empalme, así que gana ella: `_procesar_seguimiento_empalme` ni siquiera se invoca (nunca
+        se llama a `resolver_botella_por_fusion_sync`, el `caso_empalme` no se toca).
+
+        Bajo el formato estricto actual (`DD-MM-AAAA HH:MM`) ningún string real matchea a la vez
+        los dos regex (ver `TestOrdenHandlersCorreccion` arriba) — así que acá se mockea
+        `extraer_momento_solo` para forzar el reconocimiento de fecha sobre un texto puramente
+        numérico ("1234567", que también tiene forma de ID de empalme). Esto ejercita el
+        MECANISMO de prioridad en `_handle_message` en sí, no depende de que exista hoy un string
+        ambiguo — la revisión pidió la coexistencia de datos armada, no una colisión de regex."""
+        from datetime import datetime, timedelta, timezone
+
+        from core.services.ingreso_correccion_service import ResultadoCorreccion
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+
+        caso_empalme = MagicMock()
+        caso_empalme.id = 5
+        caso_empalme.resuelto_via_empalme = False
+
+        fila_pendiente = MagicMock()
+        fila_pendiente.id = 77
+        fila_pendiente.resultado = RESULTADO_PENDIENTE_FECHA
+        fila_pendiente.comando_crudo = "Forzar egreso"
+        fila_pendiente.created_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+        def _query_side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso_empalme
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = fila_pendiente
+            return q
+
+        session_mock.query.side_effect = _query_side_effect
+
+        resultado_final = ResultadoCorreccion(
+            resultado="OK_EGRESO_ASENTADO",
+            respuesta="✅ Egreso asentado (ganó la corrección, no el empalme).",
+            comando="FORZAR_EGRESO",
+        )
+
+        def _procesar_side_effect(session, *, momento_explicito=None, **_kwargs: Any) -> Any:
+            # Sólo la reinvocación con `momento_explicito` (el segundo paso del flujo de fecha
+            # pendiente) produce el resultado final — mismo patrón que el resto de la suite.
+            return resultado_final if momento_explicito is not None else None
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync"
+            ) as mock_resolver_empalme,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_momento_solo",
+                return_value=datetime.now(timezone.utc) - timedelta(hours=1),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                side_effect=_procesar_side_effect,
+            ) as mock_procesar,
+        ):
+            listener._handle_message(
+                {
+                    "text": "1234567",
+                    "channel": "C123",
+                    "ts": "2222.000002",
+                    "thread_ts": "1111.000001",
+                    "user": "U0OPERADOR",
+                },
+                client_mock,
+            )
+
+        # La corrección ganó: el seguimiento de empalme nunca llegó a ejecutarse.
+        mock_resolver_empalme.assert_not_called()
+        self.assertFalse(caso_empalme.resuelto_via_empalme)
+
+        mock_procesar.assert_called()
+        client_mock.chat_postMessage.assert_called_once()
+        self.assertEqual(
+            client_mock.chat_postMessage.call_args.kwargs["text"], resultado_final.respuesta
+        )
+
+
+# ─── Test de integración real: Critical del Fix round 1 ────────────────────────
+
+
+def _insertar_correccion_test(session: Any, *, thread_ts: str, resultado: str, created_at: Any, comando_crudo: str) -> Any:
+    """Inserta una fila mínima válida de `IngresoCorreccion` (todas las columnas NOT NULL
+    completas) para el test de integración real de abajo. `session.flush()` la envía a la DB
+    dentro de la transacción abierta, sin comprometerla — nunca se llama `session.commit()`."""
+    from db.models.infra import IngresoCorreccion
+
+    fila = IngresoCorreccion(
+        comando="FORZAR_EGRESO",
+        actor_slack_user_id="U0TEST",
+        canal_id="C_FIXROUND1_TEST",
+        thread_ts=thread_ts,
+        mensaje_ts="1.1",
+        comando_crudo=comando_crudo,
+        camara_texto_solicitado="(test)",
+        resultado=resultado,
+        created_at=created_at,
+    )
+    session.add(fila)
+    session.flush()
+    return fila
+
+
+@requiere_postgres_real
+def test_pendiente_fecha_vigente_ciclo_previo_completo_real_db() -> None:
+    """Reproducción real (Postgres, sin mocks) del bug Critical del Fix round 1
+    (`_pendiente_fecha_vigente`): un hilo con un ciclo previo COMPLETO (`PENDIENTE_FECHA` →
+    resultado terminal) seguido de un `PENDIENTE_FECHA` nuevo y vigente —
+    `[PENDIENTE_FECHA@-60min, OK_EGRESO_ASENTADO@-55min, PENDIENTE_FECHA@-5min]`, el historial
+    exacto que reprodujo el hallazgo.
+
+    La versión vieja de `_pendiente_fecha_vigente` recorría todas las filas del hilo llevando "el
+    último `PENDIENTE_FECHA` visto" y cortaba (`return None`) apenas encontraba una fila terminal
+    posterior a él, sin seguir mirando el resto — devolvía `None` acá, aunque la fila 3 (el
+    pendiente fresco) no tuviera ninguna fila posterior. El guard quedaba permanentemente roto
+    para cualquier hilo que ya hubiera completado un ciclo. La versión nueva
+    (`ORDER BY created_at DESC LIMIT 1`, sin loop en Python) reconoce la fila 3 correctamente.
+
+    Se necesita un Postgres real (no un mock de `session.query`) porque el bug es específicamente
+    sobre CÓMO se arma y se recorre la consulta con 3+ filas reales — un mock de unidad que ya
+    devuelve "la fila correcta" sin importar el criterio no puede reproducirlo de forma honesta
+    (por eso la suite no lo tenía: todos los fixtures mockeados eran de 1 o 2 filas). Ver
+    `task-6-report.md`, sección "Fix round 1", para la corrida fallando contra la implementación
+    vieja y pasando contra la nueva.
+
+    Inserta las 3 filas con `flush()` (nunca `commit()`) y hace `rollback()` en el `finally`: la
+    transacción nunca se comprometió, así que el trigger de inmutabilidad de
+    `app.ingresos_correcciones` (que sólo bloquea UPDATE/DELETE sobre filas ya COMMITEADAS) nunca
+    entra en juego, y no queda ningún rastro en la DB de dev."""
+    from datetime import datetime, timedelta, timezone
+
+    from db.session import SessionLocal
+    from modules.slack_baneo_notifier.listener import IngresoListener
+
+    listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+    # `thread_ts` es VARCHAR(32) — un ts sintético con la misma forma que uno real de Slack
+    # ("<segundos>.<microsegundos>"), fuera de cualquier rango real para no colisionar.
+    thread_ts = "9999999999.999901"
+    ahora = datetime.now(timezone.utc)
+
+    session = SessionLocal()
+    try:
+        _insertar_correccion_test(
+            session, thread_ts=thread_ts, resultado=RESULTADO_PENDIENTE_FECHA,
+            created_at=ahora - timedelta(minutes=60), comando_crudo="Forzar egreso",
+        )
+        _insertar_correccion_test(
+            session, thread_ts=thread_ts, resultado="OK_EGRESO_ASENTADO",
+            created_at=ahora - timedelta(minutes=55), comando_crudo="Forzar egreso 20-09-2026 10:00",
+        )
+        fila_vigente = _insertar_correccion_test(
+            session, thread_ts=thread_ts, resultado=RESULTADO_PENDIENTE_FECHA,
+            created_at=ahora - timedelta(minutes=5), comando_crudo="Forzar ingreso Cra Test 123",
+        )
+
+        resultado = listener._pendiente_fecha_vigente(session, thread_ts)
+
+        assert resultado is not None, (
+            "el guard debería reconocer el PENDIENTE_FECHA fresco (fila 3) como vigente, aunque "
+            "haya un ciclo previo completo antes en el mismo hilo — este es el bug Critical del "
+            "Fix round 1 si falla acá"
+        )
+        assert resultado.id == fila_vigente.id
+        assert resultado.comando_crudo == "Forzar ingreso Cra Test 123"
+    finally:
+        session.rollback()  # nunca commit: ninguna fila queda persistida en la DB de dev
+        session.close()
 
 
 if __name__ == "__main__":

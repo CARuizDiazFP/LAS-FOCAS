@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-cromo-diagnostico-real.md
 # Ubicación de archivo: .gemini/rules/skill-cromo-diagnostico-real.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/cromo-diagnostico-real/SKILL.md
+
 ---
 name: "skill-cromo-diagnostico-real"
 description: "Usar antes de escribir o confiar en código de parseo/ingesta de Cromo Red: valida contra la API o la DB real en vez de asumir que el diseño documentado describe el comportamiento actual"
@@ -26,7 +27,7 @@ commands:
 
 # Regla Skill: cromo-diagnostico-real
 
-> Fuente original: `.github/skills/cromo-diagnostico-real/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/cromo-diagnostico-real/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Skill: Diagnóstico real contra Cromo Red
 
@@ -95,7 +96,7 @@ asyncio.run(main())
 ### 2. Contra datos ya ingeridos: consultar `lasfocasdev-postgres` directo
 
 Si la pregunta es sobre datos **ya guardados** (no sobre el comportamiento de la API), es más rápido
-consultar la DB real de dev directo — ver la regla `skill-db-mcp-postgres` sección "Inventario
+consultar la DB real de dev directo — ver `.github/skills/db-mcp-postgres/SKILL.md` sección "Inventario
 Cromo Red". Ejemplo real usado para descartar el bug de `tipo_asociacion`:
 
 ```sql
@@ -128,6 +129,91 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    reflejar la realidad verificada, no quedar desactualizado silenciosamente.
 4. **Preferir un fetch acotado (`psize` chico, una clase) antes que un barrido completo** para
    diagnosticar — no hace falta correr una ingesta real para confirmar la forma de un payload.
+5. **El mismo objeto tiene forma distinta según el endpoint. Verificar SIEMPRE contra los dos**
+   antes de escribir un parser. Asimetrías reales medidas (2026-09-17, clases 133/134):
+   - El **barrido de colección** (`get_coleccion`, `show=ALL`) trae `parent` como **entero** en cada
+     hijo de `inner[]`; `GET /db/objects/{id}/inner` **no trae `parent` en absoluto**. Un parser que
+     dependa de `parent` deja el objeto huérfano según de dónde haya llegado — el vínculo lo tiene
+     que aportar el recorrido del árbol, que siempre sabe de quién cuelga.
+   - Un **fetch directo** (`get_objeto_con_topologia`) trae `parent` como **diccionario**
+     (`{"id":…, "class":…}`), no como entero. Pasárselo crudo al parser produce basura silenciosa
+     (un `tubo_n_id` que es un dict). Mismo hallazgo, 2026-09-17.
+   - El atributo `at.62` (id de servicio) **sólo** viaja en `/inner`, nunca en el barrido — ya
+     documentado para conectores de ODF (2026-08-28) y confirmado igual para puertos de splitter.
+     Consecuencia: un campo vacío puede significar "no se preguntó" o "está libre", y el parser **no
+     puede distinguirlo**. Que la procedencia la declare el llamador con un flag explícito; si no,
+     los dos estados colapsan y la distinción queda sólo en la documentación.
+6. **Antes de reemplazar una heurística por un dato real, medir cuánto se equivoca.** Receta usada
+   dos veces con resultado accionable: tomar una **muestra al azar** de objetos reales
+   (`ORDER BY random() LIMIT 30`), correr la heurística y el dato de Cromo sobre cada uno, y
+   clasificar en coincide / falso positivo / falso negativo / valor distinto. Sin ese número la
+   discusión es de opinión; con él se decide y queda en el commit. Ejemplo real: la heurística de
+   fan-out de `empalmes.py` acertó en 18 de 30 y **nunca** devolvió el ratio correcto cuando el
+   splitter existía (ver `docs/decisiones.md`, 2026-09-17).
+
+7. **Un barrido truncado NO es un total, y `stats[].count` puede mentir con 0.** Real (2026-09-19):
+   medí la clase 133 con un barrido acotado a 16 páginas y reporté "~800 splitters"; el total real,
+   paginando hasta que el cursor se agota, es **20.238** (405 páginas) y el de la clase 134 es
+   **154.284** (3.086). Un error de 25x que se coló en el plan y en la estimación de duración.
+   La trampa de fondo: para esas dos clases `stats[].count` devuelve **0** aunque la colección
+   pagine perfecto, así que no hay señal que avise que estás mirando una fracción.
+   - Para dimensionar, paginar hasta el final con `show=["BASIC"]` (barato) y contar, o leer
+     `cromo_clases.count_cromo`, que desde 2026-09-19 guarda esa medición con su fecha.
+   - Un `count` de 0 sobre una colección que devuelve filas es la firma de este bug, no un dato:
+     tratarlo como "no sé", nunca como "no hay".
+   - Nunca escribir en el catálogo un número que salga de un barrido acotado.
+
+8. **`parent` no es una referencia confiable: ni su forma ni su id.** Ampliación de la regla 5, con
+   tres defectos reales medidos el 2026-09-19 sobre 60 objetos de cada clase, todos de *basura
+   silenciosa* (nadie falla, la fila se escribe, el dato queda inservible):
+   - **La forma cambia por endpoint.** En el barrido de la colección 133, `parent` es un
+     **diccionario** en 60/60; en el `inner[]` de una botella es un **entero**. Pasarle el dict
+     crudo al modelo deja un `{'class': 138, 'id': …}` dentro de una columna de id.
+   - **Puede apuntar a otra cosa.** En el barrido de la clase 134, `parent` es el **contenedor PON**
+     (138/137/139 en 60/60), no el splitter; el splitter viaja en `extra.parent` (clase 133 en
+     60/60) y su `n_id` coincide con `at.71`.
+   - **Su `id` es de versión, no de linaje.** En 4 de 60 objetos `container.id != container.n_id`, y
+     ahí `parent.id` tampoco coincide — el mismo "ID dual" ya documentado para cables y botellas.
+   Receta: preferir `extra.container.n_id` / `extra.parent.n_id` (presentes en 60/60), caer a
+   `parent` sólo como respaldo, y **normalizar con un helper** que acepte int o dict y devuelva
+   siempre un entero. Antes de escribir el parser, medir la distribución de `type(parent)` y de la
+   clase del padre sobre ≥50 objetos reales del endpoint que se va a usar.
+
+9. **Un "X no pertenece a Y" con ranking truncado se diagnostica replicando el ranking en SQL, no
+   leyendo el validador.** Real (2026-09-21, Servicio 559 / ID histórico 41579): el ticket atribuía
+   un `400 El pelo 6754728 no pertenece al Servicio 559` a un problema de mapeo entre el ID
+   histórico de la URL y la PK interna. **La premisa era falsa y se refutó con una sola query**: el
+   pelo matchea *precisamente* por el histórico (`prioridad_identidad = 1`), o sea que el mapeo que
+   el ticket culpaba era lo que lo hacía pertenecer. La causa era que el validador consultaba una
+   lista truncada en 20 y el pelo caía en el puesto 31 de 95.
+
+   Receta, antes de tocar el validador — reproducir su `ORDER BY` con `row_number()` y ubicar la
+   posición real del elemento rechazado:
+
+   ```sql
+   WITH base AS (  -- copiar el SELECT/JOIN del código, sin el LIMIT
+     SELECT DISTINCT ON (m.pelo_n_id) m.pelo_n_id, m.confianza,
+            EXISTS (SELECT 1 FROM app.cromo_odf_conectores c WHERE c.pelo_n_id = m.pelo_n_id) AS tiene_conector_odf,
+            CASE WHEN m.servicio_numero = s.servicio_id            THEN 0
+                 WHEN m.servicio_numero = s.numero_primer_servicio THEN 1
+                 ELSE 2 END AS prioridad_identidad
+     FROM app.servicios s
+     JOIN app.cromo_servicio_match m ON (/* IDENTIDADES_DEL_SERVICIO_SQL */)
+     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+     WHERE s.id = :servicio_id
+     ORDER BY m.pelo_n_id, prioridad_identidad, tiene_conector_odf, m.confianza DESC NULLS LAST
+   )
+   SELECT pelo_n_id, tiene_conector_odf, prioridad_identidad,
+          row_number() OVER (ORDER BY prioridad_identidad, tiene_conector_odf,
+                             COALESCE(confianza,0) DESC, pelo_n_id) AS pos
+   FROM base WHERE pelo_n_id = :pelo_n_id;
+   ```
+
+   `pos > limite` confirma la causa en una pasada y descarta las hipótesis de mapeo/identidad. Si
+   además `prioridad_identidad` es 1 o 2, el elemento pertenece **por un alias histórico**, lo que
+   suele ser justo lo que el ticket señala como culpable. Cerrar midiendo también el total
+   (`contar_semillas`) y un elemento de control inexistente, para probar que el guard sigue vivo.
+   Ver `[[feedback-lista-truncada-no-es-fuente-de-verdad]]` y `docs/decisiones.md` (2026-09-21).
 
 ## Documentación relacionada
 

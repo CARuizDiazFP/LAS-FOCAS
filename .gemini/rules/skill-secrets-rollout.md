@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-secrets-rollout.md
 # Ubicación de archivo: .gemini/rules/skill-secrets-rollout.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/secrets-rollout/SKILL.md
+
 ---
 name: "skill-secrets-rollout"
 description: "Usar cuando haya que migrar variables sensibles a Docker Secrets, agregar un secret nuevo a un servicio de Compose, o rotar un secret ya en uso (dev o prod) en LAS-FOCAS"
@@ -35,7 +36,7 @@ commands:
 
 # Regla Skill: secrets-rollout
 
-> Fuente original: `.github/skills/secrets-rollout/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/secrets-rollout/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Secrets Rollout
 
@@ -131,7 +132,7 @@ Los servicios propios de LAS-FOCAS no lo notan porque corren como `root` (leen c
 
 ## Referencias
 
-- `docker-rebuild` — comandos de rebuild/gestión de contenedores.
-- `secret-detection` — detección de secretos expuestos (auditoría, no rollout).
+- [docker-rebuild](skill-docker-rebuild.md) — comandos de rebuild/gestión de contenedores.
+- [secret-detection](skill-secret-detection.md) — detección de secretos expuestos (auditoría, no rollout).
 - `docs/Seguridad.md` — estrategia de secretos vigente (sección "Estrategia de secretos en producción").
 - `docs/db.md` — precedencia `ALEMBIC_URL`/`DATABASE_URL` y su interacción con `db_password_v1`.

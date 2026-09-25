@@ -1525,11 +1525,11 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 <style scoped>
 .infra-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--color-bg); }
 .infra-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.infra-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 22px 26px 0; flex-wrap: wrap; }
+.infra-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 22px 0 0; flex-wrap: wrap; }
 .infra-kicker { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-accent); }
 .infra-header h1 { font-size: 27px; margin: 3px 0 0; }
 
-.infra-search-area { padding: 15px 26px 14px; display: flex; flex-direction: column; gap: 11px; }
+.infra-search-area { padding: 15px 0 14px; display: flex; flex-direction: column; gap: 11px; }
 .fop-search-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .fop-search-input { position: relative; flex: 1; min-width: 220px; }
 .fop-search-input i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--color-neutral-500); font-size: 15px; pointer-events: none; }
@@ -1572,7 +1572,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .fop-grid {
   flex: 1; min-height: 0; overflow: auto;
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px;
-  padding: 12px 26px 30px;
+  padding: 12px 0 30px;
 }
 @media (max-width: 1280px) { .fop-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1024px) { .fop-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -1580,7 +1580,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 
 .infra-pagination {
   display: flex; align-items: center; justify-content: center; gap: 14px;
-  padding: 4px 26px 16px; flex-shrink: 0;
+  padding: 4px 0 16px; flex-shrink: 0;
 }
 .infra-pagination-info {
   font-size: 12.5px; font-variant-numeric: tabular-nums;

@@ -403,6 +403,6 @@ docker system df
 
 ## 🔗 Skills Relacionados
 
-- [disk-analysis](../disk-analysis/SKILL.md) - Diagnóstico de uso de disco
-- [logs-cleanup](../logs-cleanup/SKILL.md) - Gestión de archivos de log
-- [temp-cleanup](../temp-cleanup/SKILL.md) - Limpieza de temporales
+- [disk-analysis](../las-focas-disk-analysis/SKILL.md) - Diagnóstico de uso de disco
+- [logs-cleanup](../las-focas-logs-cleanup/SKILL.md) - Gestión de archivos de log
+- [temp-cleanup](../las-focas-temp-cleanup/SKILL.md) - Limpieza de temporales

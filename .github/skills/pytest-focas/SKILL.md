@@ -207,7 +207,7 @@ Antes de "arreglar" un test que falla, distinguir estos 4 casos — confundirlos
 
 1. **Refactor intencional sin actualizar el test**: si el assert choca con el código, correr `git log -L <líneas>:<archivo>` antes de asumir que el código está mal. Puede haber un commit documentado que cambió la regla de negocio a propósito (ej.: cambio de columna de cálculo en un Excel) y el test simplemente no se actualizó.
 2. **Test obsoleto por cambio de arquitectura**: si el test verifica un comportamiento que migró de dominio (server-side → client-side, HTML embebido → API JSON), no alcanza con cambiar la URL/aserción — hay que confirmar dónde vive ahora la responsabilidad (ej.: `window.USER_ROLE` inyectado en HTML → migrado a `GET /api/auth/session`) antes de escribir el reemplazo.
-3. **Gap de entorno, no de código**: un `ModuleNotFoundError` en un test puede ser una dependencia que vive en el `requirements.txt` de un servicio con su propio Dockerfile (worker dedicado), nunca instalada en el `.venv` compartido. Revisar si el módulo tiene su propio `requirements.txt`/contenedor antes de asumir que falta declarar la dependencia.
+3. **Gap de entorno, no de código**: un `ModuleNotFoundError` en un test puede ser una dependencia que vive en el `requirements.txt` de un servicio con su propio Dockerfile (worker dedicado), nunca instalada en el `.venv` compartido. Revisar si el módulo tiene su propio `requirements.txt`/contenedor antes de asumir que falta declarar la dependencia. **Pero un gap de entorno no cierra el diagnóstico**: si las fallas comparten un error de conexión a la DB, eliminá esa variable apuntando al Postgres real antes de clasificarlas — ver "Integración contra Postgres real" más abajo.
 4. **Gap de cobertura real (mocks insuficientes)**: `MagicMock()` no puede validar comportamiento a nivel SQL — `order_by` sobre tablas de asociación con columnas extra, constraints de FK/unicidad, inserts crudos vía `Table.insert()`. Si un modelo depende de eso, un test mockeado da falsa confianza; hace falta el patrón `ENABLE_DB_TESTS=1` contra una DB real (con rollback transaccional por test). **Caso real 2026-08-10**: un `Column(SQLEnum(...))` sin `schema="app"` pasó 500+ tests con sesión fake y sólo rompió contra la DB real, al insertar 2+ filas en el mismo `flush()` (dispara el batching "insertmanyvalues" de SQLAlchemy 2.0, que ningún mock reproduce) — ver `.github/agents/db.agent.md` sección "Gotchas reales".
 
 Los tests `SKIPPED` casi siempre son intencionales y están documentados en `docs/PR/*.md` (buscar la fecha del commit que los introdujo) — no tratarlos como deuda silenciosa sin antes revisar el motivo. Un placeholder con `pass  # TODO` dentro de un test SÍ es deuda real, a diferencia de un `skipif`/`importorskip` bien razonado.
@@ -299,6 +299,167 @@ Para un endpoint que en cambio reusa una capa **sync** existente vía `asyncio.t
 `get_async_db` — alcanza con `@patch("api.app.routes.<modulo>.SessionLocal")` devolviendo un
 `MagicMock()` con el chain `query().filter().all()`/`.update()` ya seteado, igual que los tests de
 `core/services/*_service.py` puros.
+
+## Integración contra Postgres real: el rojo de entorno puede tapar bugs (lección 2026-09-19)
+
+Los archivos `tests/*_real_db.py` y los de rutas de Servicios necesitan un Postgres con el esquema
+`app.*` poblado. El comando documentado en `AGENTS.md` (`pytest` a secas) apunta al host `postgres`
+del compose, que **no resuelve desde fuera de la red de Docker**. Para correrlos de verdad contra el
+Postgres de dev (publicado en `127.0.0.1:5433`; el `5432` es producción):
+
+```bash
+POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev POSTGRES_USER=FOCALBOT \
+POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" pytest
+```
+
+**Guardrail que justifica esta sección**: "es gap de entorno" es una *hipótesis*, no una
+clasificación final, hasta que la suite corrió apuntando a la DB real. El 2026-09-14 se midió
+`32 failed / 65 errors` en el checkout de control, se concluyó "gap de entorno (`host 'postgres'` no
+resuelve)" y se cerró ahí. El 2026-09-19, apuntando esas mismas 32 al Postgres real, quedaron **3
+fallas genuinas con una única causa raíz**: un bug vivo también en producción (escalar JSON `null`
+en `cromo_odfs.cables_asociados`, ver `CABLES_ASOCIADOS_ARRAY_SQL` en
+`core/services/cromo/verificador.py`). Las 97 salidas rojas compartían un mismo mensaje de conexión,
+que es justamente lo que hacía parecer que todas eran lo mismo.
+
+Regla práctica: si todas las fallas comparten un único error de conexión, **primero** eliminá esa
+variable apuntando a la DB real, y recién sobre el resultado limpio clasificá según las heurísticas
+de "Diagnóstico de Fallas".
+
+Desde 2026-09-19 el guard vive en `tests/soporte_postgres_real.py` y saltea en CI **y** en cualquier
+máquina sin Postgres respondiendo, con un motivo que dice cómo habilitarlos. Un archivo de
+integración nuevo usa `pytestmark = requiere_postgres_real` en vez de copiar un
+`skipif(os.getenv("CI") == "true")`. Ojo con el efecto secundario: `pytest` a secas ahora queda en
+verde **sin** haber corrido esos tests — el número de `skipped` es la señal de que falta la corrida
+real (90 skipped sin DB vs 5 con DB).
+
+### El pool asyncpg es un singleton de proceso, el aislamiento por archivo no alcanza
+
+`db.session.async_engine` usa `AsyncAdaptedQueuePool` a nivel de proceso, y cada `TestClient` abre su
+propio blocking portal con su propio event loop. Una fixture con `scope="module"` aísla *dentro* del
+archivo, pero las conexiones que quedan checkeadas de vuelta **sobreviven al archivo**: el módulo
+siguiente las hereda atadas a un loop ya cerrado y revienta con
+`RuntimeError: ... attached to a different loop`, en el primer test que toque la DB. Es dependiente
+del orden de archivos, así que aparece y desaparece según qué subconjunto de la suite se corra —
+fácil de confundir con un flake.
+
+El arreglo es vaciar el pool **dentro del loop que creó esas conexiones**, antes de salir del
+contexto del `TestClient`:
+
+```python
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
+        test_client.portal.call(async_engine.dispose)  # el portal todavía vive acá
+```
+
+Disponer desde afuera (después del `with`) no sirve: cierra contra un loop muerto, SQLAlchemy sólo
+loguea `Exception terminating connection` y las conexiones quedan colgadas del lado del servidor.
+
+## Triage de fallas preexistentes: comparar contra baseline (lección 2026-09-10)
+
+Tras un merge (o cualquier cambio amplio), la suite puede arrojar decenas de fallas que **no son
+tuyas**. Distinguir "regresión que introduje" de "gap preexistente" a ojo no escala y lleva a
+"arreglar" tests que ya fallaban. El método que funcionó (2026-09-10, merge de 3 ramas efímeras a
+`dev`: 1407 pasaron, 97 fallaron):
+
+```bash
+# 1. Capturar los node IDs que fallan en el árbol actual (ya mergeado)
+python -m pytest <archivos-afectados> -q -p no:randomly 2>&1 \
+  | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-merged.txt
+
+# 2. Worktree efímero en el commit ANTERIOR al cambio (no hace falta stashear ni revertir)
+git worktree add /tmp/baseline <sha-base> --detach
+
+# 3. Misma corrida ahí, reusando el venv del checkout principal
+cd /tmp/baseline && source /ruta/al/.venv/bin/activate
+python -m pytest <mismos-archivos> -q -p no:randomly 2>&1 \
+  | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-baseline.txt
+
+# 4. El diff es la respuesta. Vacío = cero regresiones introducidas
+diff /tmp/fallos-baseline.txt /tmp/fallos-merged.txt
+
+git worktree remove /tmp/baseline --force
+```
+
+Claves:
+
+- Comparar **node IDs ordenados**, no el conteo: dos corridas pueden dar el mismo total con fallas
+  distintas. `-p no:randomly` es obligatorio para que el orden no introduzca diferencias espurias.
+- Correr sólo los archivos que fallan, no la suite completa — bajó la verificación de ~3 min a
+  segundos por corrida.
+- El worktree `--detach` evita tocar la rama activa: no hace falta stash, revert ni cambiar de rama.
+- Si el diff es vacío, se puede afirmar "cero regresiones" con evidencia; sin esta comparación, la
+  única afirmación honesta es "hay 97 fallas y no sé de quién son".
+
+**Ampliación 2026-09-14 — el worktree de baseline no hereda los artefactos de build, y eso mete
+falsos positivos en el diff.** Al comparar la suite completa entre el checkout de control y un
+worktree limpio sobre `origin/dev`, el baseline dio **4 fallas de más**
+(`test_web_admin.py::test_admin_paths_*`). No eran regresiones al revés ni ruido aleatorio: esos
+tests sirven el shell SPA y necesitan `web/frontend/dist/index.html`, que está **gitignoreado** y
+vive sólo en el checkout principal. Un worktree recién creado no lo tiene, así que fallan ahí y no
+acá. Lo mismo vale para `web/frontend/node_modules`.
+
+Antes de interpretar el diff, igualar el entorno o descontar esos tests:
+
+```bash
+# Enlazar los artefactos al worktree de baseline (o aceptar la diferencia y justificarla)
+ln -s <checkout-principal>/web/frontend/dist         /tmp/baseline/web/frontend/dist
+ln -s <checkout-principal>/web/frontend/node_modules /tmp/baseline/web/frontend/node_modules
+```
+
+Un worktree creado con `agent_worktree.py start` avisa cuáles faltan, justamente para que esa
+diferencia no se lea como regresión. Corolario general: **un diff de fallas entre dos árboles sólo es
+concluyente si el entorno no versionado de ambos es equivalente** — venv, artefactos de build y
+acceso a servicios.
+
+Causa típica de estas fallas preexistentes en LAS-FOCAS: `failed to resolve host 'postgres'` — los
+tests `*_real_db.py` resuelven el hostname `postgres` de la red Docker y **no corren desde el venv
+del host**. Eso es gap de entorno (ver "Diagnóstico de Fallas: Heurísticas"), no falla de código; para
+verificarlos de verdad hay que correrlos dentro del contenedor, y ahí aplica el chequeo de imagen
+stale de `dev-workflow`.
+
+## Un test que pasa no prueba nada: mutá la corrección (lección 2026-09-24)
+
+Una suite en verde no distingue "el código funciona" de "el test no mira el código". En el plan del
+2026-09-23 aparecieron **cuatro** huecos de este tipo, todos con la suite entera en verde:
+
+| Hueco | Cómo se veía | Cómo se detectó |
+|---|---|---|
+| Regex no-goloso `.+?` sin guard | Test con un solo `DD-MM-AAAA` en el string | Cambiar `.+?` por `.+` daba el **mismo** resultado |
+| Camino de éxito de un refresco | 6 tests que lo "cubrían" | Todos usaban PKs negativos y salían por un early-return: `ingerir_contexto_prov` no se ejecutaba nunca |
+| Filtro `tipo == INGRESO` de una query | Un stub guardaba los filtros "por si hiciera falta" | Sacar el filtro dejaba **72 tests en verde**; sin él, un `INTENTO_BLOQUEADO` se cerraba como ingreso real |
+| Sufijo "refrescando…" de la respuesta | Sólo había `assertNotIn` (el caso negativo) | Vaciar el sufijo dejaba 227 passed / 0 fallas |
+
+**El método, barato y concluyente:** antes de dar por cubierta una regla que importa, rompela a mano
+en el código, corré el test que debería atraparla, confirmá el fallo real, y restaurá.
+
+```bash
+cp core/services/x.py /tmp/x.py.bak     # backup explícito, no confiar en la memoria
+# ...invertir el operador, vaciar el string, sacar el filtro...
+python -m pytest tests/test_x.py -q -k "<el test que debería fallar>"
+cp /tmp/x.py.bak core/services/x.py
+git diff --stat core/services/x.py      # debe quedar vacío
+```
+
+Si la mutación **no** hace fallar ningún test, el guard no existe: el test recorre el camino feliz
+sin ejercitar la regla. Casos típicos en este repo:
+
+- **Inputs que no discriminan.** Un regex goloso y uno no-goloso sólo divergen si hay una segunda
+  subcadena que compita por el match. Con un input simple, los dos dan igual.
+- **Early-returns que se comen el test.** Si el fixture usa un ID inexistente, el código sale por la
+  rama "no encontrado" y nunca toca la lógica que se quería probar. Mirá qué líneas ejecuta de
+  verdad, no qué función invocaste.
+- **Stubs que ignoran el `WHERE`.** Un fake de sesión que devuelve la lista programada sin mirar los
+  filtros hace que cualquier `filter()` sea mutable sin consecuencia. Para asertar sobre las
+  expresiones SQLAlchemy reales, reusar `_assert_filtro_igualdad`/`_assert_filtro_null_safe` de
+  `tests/test_ingreso_service.py` en vez de inventar un mecanismo nuevo.
+- **Sólo el caso negativo.** `assertNotIn("x", texto)` no protege la rama que **sí** debe producir
+  `"x"`; hacen falta los dos.
+
+Vale también para mocks parciales: si parcheás la función entera que querías probar, el test verifica
+el parche. Parcheá sólo sus dependencias externas.
+
 
 ## Checklist Pre-Commit
 

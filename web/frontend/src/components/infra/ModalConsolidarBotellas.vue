@@ -78,12 +78,33 @@
         />
       </section>
 
-      <section v-if="candidatosLegado.length > 0" class="consolidar-section">
+      <section class="consolidar-section">
         <h3>Botellas legado a heredar</h3>
         <label v-for="l in candidatosLegado" :key="l.id" class="consolidar-candidato">
           <input type="checkbox" :value="l.id" v-model="idsLegadoSeleccionados" />
           <span>{{ l.nombre || `Botella ${l.id}` }} (legado, ID {{ l.id }})</span>
         </label>
+        <p class="hint">
+          Agregá acá IDs de Botellas legado que el detector no haya agrupado (ej. cuando el nombre
+          difiere por un sufijo como "- CRITICA"). Es el ID legado que muestra el listado de
+          Botellas, no un n_id de Cromo.
+        </p>
+        <div class="consolidar-add-row">
+          <input
+            v-model="nuevoLegadoTexto"
+            type="text"
+            inputmode="numeric"
+            placeholder="ID Botella legado"
+            @keydown.enter.prevent="agregarLegadoExtra"
+          />
+          <button class="btn subtle" type="button" @click="agregarLegadoExtra">Agregar</button>
+        </div>
+        <ul v-if="legadosExtra.length > 0" class="consolidar-chips">
+          <li v-for="id in legadosExtra" :key="id">
+            {{ id }}
+            <button type="button" @click="quitarLegadoExtra(id)">×</button>
+          </li>
+        </ul>
         <label class="consolidar-candidato">
           <input type="checkbox" v-model="forzarCamara" />
           <span>Forzar asociación a la Cámara — sólo aplica a estas Botellas legado: ignora el
@@ -173,6 +194,8 @@ const destinoListaId = ref<number | null>(null);
 const destinoManualTexto = ref('');
 const nombreDestino = ref('');
 const idsLegadoSeleccionados = ref<number[]>([]);
+const legadosExtra = ref<number[]>([]);
+const nuevoLegadoTexto = ref('');
 const forzarCamara = ref(false);
 const origenesExtra = ref<number[]>([]);
 const nuevoOrigenTexto = ref('');
@@ -198,10 +221,14 @@ const origenesFinal = computed<number[]>(() => {
   return Array.from(new Set([...deGrupo, ...origenesExtra.value]));
 });
 
+const legadosFinal = computed<number[]>(
+  () => Array.from(new Set([...idsLegadoSeleccionados.value, ...legadosExtra.value])),
+);
+
 const puedeConsolidar = computed(
   () =>
     destinoId.value != null &&
-    (origenesFinal.value.length > 0 || idsLegadoSeleccionados.value.length > 0 || nombreDestino.value.trim().length > 0),
+    (origenesFinal.value.length > 0 || legadosFinal.value.length > 0 || nombreDestino.value.trim().length > 0),
 );
 
 function onDestinoListaChange(): void {
@@ -218,6 +245,19 @@ function agregarOrigenExtra(): void {
 
 function quitarOrigenExtra(id: number): void {
   origenesExtra.value = origenesExtra.value.filter((x) => x !== id);
+}
+
+function agregarLegadoExtra(): void {
+  const n = Number(nuevoLegadoTexto.value.trim());
+  if (!Number.isInteger(n) || n <= 0) return;
+  if (!legadosExtra.value.includes(n) && !idsLegadoSeleccionados.value.includes(n)) {
+    legadosExtra.value.push(n);
+  }
+  nuevoLegadoTexto.value = '';
+}
+
+function quitarLegadoExtra(id: number): void {
+  legadosExtra.value = legadosExtra.value.filter((x) => x !== id);
 }
 
 async function verificarOperatividadManual(): Promise<void> {
@@ -250,6 +290,8 @@ function resetState(): void {
   }
   destinoManualTexto.value = '';
   idsLegadoSeleccionados.value = candidatosLegado.value.map((l) => l.id);
+  legadosExtra.value = [];
+  nuevoLegadoTexto.value = '';
   forzarCamara.value = false;
 }
 
@@ -267,7 +309,7 @@ async function handleConsolidar(): Promise<void> {
     const data = await consolidarBotellasCromo({
       idsOrigenCromo: origenes,
       idDestinoCromo: destinoId.value,
-      idsLegado: idsLegadoSeleccionados.value,
+      idsLegado: legadosFinal.value,
       nombreDestino: nombreDestino.value.trim() || null,
       forceCameraAssociation: forzarCamara.value,
     });

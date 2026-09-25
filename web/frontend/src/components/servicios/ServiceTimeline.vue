@@ -1,151 +1,186 @@
 <!--
   Nombre de archivo: ServiceTimeline.vue
   Ubicación de archivo: web/frontend/src/components/servicios/ServiceTimeline.vue
-  Descripción: Línea de tiempo genérica de eventos — historial de upgrades de ID hoy, Reclamos/Ingresos/Mantenimientos a futuro
+  Descripción: Línea de tiempo HORIZONTAL y colapsada de un Servicio — muestra los hitos en una
+  tira que cabe en una tarjeta; el histórico completo vive en su propia vista
 -->
 <template>
-  <ol v-if="events.length > 0" class="service-timeline">
-    <li v-for="event in events" :key="event.id" class="service-timeline__item">
-      <div class="service-timeline__marker" aria-hidden="true"></div>
-      <div class="service-timeline__body">
-        <div class="service-timeline__headline">
-          <strong>{{ event.titulo }}</strong>
-          <span v-if="event.estado" :class="['service-timeline__chip', estadoClase(event.estado)]">
+  <div v-if="events.length > 0" class="tl">
+    <ol class="tl__pista" :aria-label="`Histórico del Servicio, ${events.length} hitos`">
+      <li
+        v-for="(event, indice) in visibles"
+        :key="event.id"
+        class="tl__hito"
+        :class="{ 'is-ultimo': indice === visibles.length - 1 }"
+      >
+        <span class="tl__linea" aria-hidden="true"></span>
+        <span
+          class="tl__punto"
+          :class="event.estado ? estadoClase(event.estado) : 'is-idle'"
+          aria-hidden="true"
+        ></span>
+        <span class="tl__cuerpo">
+          <span class="tl__titulo" :title="event.titulo">{{ event.titulo }}</span>
+          <span v-if="event.fecha" class="tl__fecha">{{ formatearFechaCorta(event.fecha) }}</span>
+          <span
+            v-if="event.estado"
+            class="tl__chip"
+            :class="estadoClase(event.estado)"
+            :title="event.descripcion || event.estado"
+          >
             {{ event.estado }}
           </span>
-        </div>
-        <span v-if="event.fecha" class="service-timeline__fecha">{{ formatearFecha(event.fecha) }}</span>
-        <p v-if="event.descripcion" class="service-timeline__descripcion">{{ event.descripcion }}</p>
-      </div>
-    </li>
-  </ol>
-  <p v-else class="service-timeline__empty">Sin eventos para mostrar.</p>
+        </span>
+      </li>
+    </ol>
+
+    <!-- Colapsada a propósito: la tarjeta muestra los últimos hitos y el resto se ve entero en la
+         vista dedicada, que es linkeable y no compite por espacio con el resto de la ficha. -->
+    <p v-if="ocultos > 0" class="tl__resto">
+      + {{ ocultos }} hito{{ ocultos === 1 ? '' : 's' }} anterior{{ ocultos === 1 ? '' : 'es' }}
+    </p>
+  </div>
+  <p v-else class="tl__empty">Sin eventos para mostrar.</p>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+
 import type { TimelineEvent } from '../../types/timeline';
+import { estadoClase, formatearFechaCorta } from './timelineFormato';
 
-defineProps<{
-  events: TimelineEvent[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    events: TimelineEvent[];
+    /** Cuántos hitos entran en la tira antes de colapsar el resto. */
+    maximo?: number;
+  }>(),
+  { maximo: 4 },
+);
 
-const ESTADOS_OK = new Set(['instalado', 'activo', 'vigente']);
-const ESTADOS_ERROR = new Set(['dado baja', 'baja']);
+/** Se muestran los ÚLTIMOS hitos: el estado actual del Servicio es lo que se consulta a diario. */
+const visibles = computed(() =>
+  props.events.length > props.maximo ? props.events.slice(-props.maximo) : props.events,
+);
 
-function estadoClase(estado: string): string {
-  const valor = estado.trim().toLowerCase();
-  if (ESTADOS_OK.has(valor)) return 'is-ok';
-  if (ESTADOS_ERROR.has(valor)) return 'is-error';
-  return 'is-idle';
-}
-
-const FECHA_SOLO_DIA = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-function formatearFecha(fecha: string): string {
-  // `fecha_instalacion`/`fecha_baja` llegan como fecha pura ("2019-11-01": campo `date` de
-  // Pydantic, sin hora ni offset). `new Date("2019-11-01")` la interpreta como medianoche UTC y,
-  // formateada en Argentina (UTC-3), muestra el día ANTERIOR ("31/10/2019"). Por eso la fecha
-  // pura se parsea a mano y se construye con el constructor de 3 argumentos, que es hora LOCAL
-  // (nunca UTC) — así el día formateado es el mismo en cualquier zona horaria.
-  const soloDia = FECHA_SOLO_DIA.exec(fecha.trim());
-  if (soloDia) {
-    const [, anio, mes, dia] = soloDia;
-    const local = new Date(Number(anio), Number(mes) - 1, Number(dia));
-    const esFechaReal =
-      !Number.isNaN(local.getTime()) &&
-      local.getFullYear() === Number(anio) &&
-      local.getMonth() === Number(mes) - 1 &&
-      local.getDate() === Number(dia);
-    // Una fecha imposible ("2019-13-45") cae al fallback de siempre: se devuelve el string crudo.
-    if (esFechaReal) {
-      return local.toLocaleDateString('es-AR', { year: 'numeric', month: '2-digit', day: '2-digit' });
-    }
-    return fecha;
-  }
-
-  const parsed = new Date(fecha);
-  if (Number.isNaN(parsed.getTime())) return fecha;
-  return parsed.toLocaleDateString('es-AR', { year: 'numeric', month: '2-digit', day: '2-digit' });
-}
+const ocultos = computed(() => Math.max(0, props.events.length - visibles.value.length));
 </script>
 
 <style scoped>
-.service-timeline {
+.tl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tl__pista {
   list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
   margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 4px;
+  padding: 2px 0 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
-.service-timeline__item {
-  display: grid;
-  gap: 4px;
-  padding: 10px 0 10px 16px;
-  margin-left: 5px;
-  border-left: 2px solid var(--color-divider);
+.tl__hito {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 92px;
+  padding-right: 8px;
 }
 
-.service-timeline__item:last-child {
-  border-left-color: transparent;
+.tl__linea {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-divider);
 }
 
-.service-timeline__marker {
+.tl__hito.is-ultimo .tl__linea {
+  right: calc(100% - 12px);
+}
+
+.tl__punto {
+  position: relative;
+  display: block;
   width: 12px;
   height: 12px;
-  border-radius: 50%;
-  background: var(--color-accent-success);
-  margin-left: -23px;
-  margin-bottom: -12px;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 0 0 3px var(--color-surface);
 }
 
-.service-timeline__body {
-  display: grid;
-  gap: 4px;
+.tl__punto.is-ok {
+  background: var(--color-state-ok);
 }
 
-.service-timeline__headline {
+.tl__punto.is-error {
+  background: var(--color-state-error);
+}
+
+.tl__punto.is-idle {
+  background: var(--color-state-idle);
+}
+
+.tl__cuerpo {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 6px;
+  min-width: 0;
 }
 
-.service-timeline__fecha {
-  font-size: 0.8rem;
-  color: var(--muted);
+.tl__titulo {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.service-timeline__descripcion {
+.tl__fecha {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+.tl__chip {
+  align-self: flex-start;
+  margin-top: 1px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl__chip.is-ok {
+  background: color-mix(in srgb, var(--color-state-ok) 18%, transparent);
+  color: var(--color-state-ok);
+}
+
+.tl__chip.is-error {
+  background: color-mix(in srgb, var(--color-state-error) 18%, transparent);
+  color: var(--color-state-error);
+}
+
+.tl__chip.is-idle {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+
+.tl__resto,
+.tl__empty {
   margin: 0;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.service-timeline__chip {
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 0.7rem;
-  font-weight: 700;
-}
-
-.service-timeline__chip.is-ok {
-  background: color-mix(in srgb, var(--success) 18%, transparent);
-  color: var(--success);
-}
-
-.service-timeline__chip.is-error {
-  background: color-mix(in srgb, var(--error) 18%, transparent);
-  color: var(--error);
-}
-
-.service-timeline__chip.is-idle {
-  background: color-mix(in srgb, var(--muted) 18%, transparent);
-  color: var(--muted);
-}
-
-.service-timeline__empty {
-  color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
 }
 </style>

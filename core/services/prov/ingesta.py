@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.servicios_consolidacion_service import (
@@ -17,7 +18,13 @@ from core.services.servicios_consolidacion_service import (
     es_verificable_por_tipo_y_estado,
     resolver_estado_servicio,
 )
-from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
+from db.models.infra import (
+    Servicio,
+    ServicioEquipoUltimaMilla,
+    ServicioHistorialId,
+    ServicioOrigenDatos,
+    ServicioSyncProv,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +313,46 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
                 puerto=equipo.puerto,
                 direccion=equipo.direccion,
                 provincia=equipo.provincia,
+            )
+        )
+
+    # Task 7 del plan "Corrección de ingresos/servicios" (2026-09-23): embudo de escritura del
+    # camino de ÉXITO de `app.servicios_sync_prov` — por acá pasan los tres consumidores de PROV
+    # (endpoint on-demand, backfill masivo y, desde la Task 9, el comando de Slack). Ya NO es el
+    # único escritor de la tabla (corrección de la revisión de calidad, Important 3): desde la
+    # Task 9, `modules/slack_baneo_notifier/refresco_prov.py::_persistir_intento_fallido` es un
+    # segundo embudo para el camino de FALLO (Postgres/PROV caído, 4xx, timeout), que actualiza
+    # sólo `ultimo_intento`/`ultimo_error` sin pasar por acá. Llegar hasta ACÁ sigue significando
+    # que `contexto_raw` ya fue validado como éxito por `ProvClient` (nunca se invoca esta función
+    # con una falla), así que esta fila siempre representa una sincronización exitosa: se limpia
+    # `ultimo_error` en cada escritura para que un error viejo no quede pegado después de un
+    # refresco que sí funcionó. `ON CONFLICT DO UPDATE` (no un `SELECT` previo) porque
+    # `servicio_id` es UNIQUE y esto es un upsert de una sola fila por Servicio, mismo patrón que
+    # `tracking_cache.guardar`. Guardado por `servicio.id is not None`: igual que el filtro de
+    # auto-exclusión más arriba, una fila sin PK persistido no puede tener una fila hija con FK NOT
+    # NULL — caso hoy inexistente en los dos callers reales, pero la función no debe asumirlo.
+    if servicio.id is not None:
+        ahora = datetime.now(timezone.utc)
+        tabla_sync = ServicioSyncProv.__table__
+        upsert_sync = pg_insert(tabla_sync).values(
+            servicio_id=servicio.id,
+            ultima_sincronizacion_ok=ahora,
+            ultimo_intento=ahora,
+            ultimo_error=None,
+            nro_servicio_consultado=parseado.nro_servicio_original,
+            created_at=ahora,
+            updated_at=ahora,
+        )
+        await session.execute(
+            upsert_sync.on_conflict_do_update(
+                index_elements=[tabla_sync.c.servicio_id],
+                set_={
+                    "ultima_sincronizacion_ok": upsert_sync.excluded.ultima_sincronizacion_ok,
+                    "ultimo_intento": upsert_sync.excluded.ultimo_intento,
+                    "ultimo_error": upsert_sync.excluded.ultimo_error,
+                    "nro_servicio_consultado": upsert_sync.excluded.nro_servicio_consultado,
+                    "updated_at": upsert_sync.excluded.updated_at,
+                },
             )
         )
 

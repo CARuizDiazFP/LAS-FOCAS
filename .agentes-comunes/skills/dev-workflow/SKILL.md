@@ -19,11 +19,24 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
 
 ## Procedimiento de validación (ejecutar en orden)
 
+0. **Crear (o confirmar) el worktree propio del agente antes de tocar nada** — ver la skill
+   `agent-worktree`. Desde 2026-09-14 el aislamiento entre sesiones concurrentes es físico, no sólo
+   de rama: un `checkout -b` comparte working tree, index y `HEAD` con cualquier otra sesión parada
+   en el mismo checkout.
+   ```bash
+   python scripts/agent_worktree.py status                    # ¿ya estoy en un worktree de agente?
+   python scripts/agent_worktree.py start \
+     --agent <agent-id> --type <tipo> --task <slug>           # si no, crearlo
+   cd <ruta-del-worktree>                                     # el trabajo ocurre acá
+   ```
+   El checkout principal queda reservado como **checkout de control/integración** y permanece en
+   `dev`. Los pasos siguientes se ejecutan dentro del worktree del agente.
 1. Verificar rama activa (`git branch --show-current`).
    - Si es una rama efímera vigente (prefijo `feat/`, `fix/`, `docs/`, `chore/`, `refactor/` o
-     `test/`): continuar, es la rama de trabajo de esta tarea.
-   - Si es `dev` o `main`: **está prohibido modificar código o commitear ahí**. Crear una rama
-     efímera nueva desde el estado remoto de `dev` antes de cualquier cambio:
+     `test/`): continuar, es la rama de trabajo de esta tarea. `agent_worktree.py start` ya la deja
+     así, con la convención `<tipo>/<agent-id>-<task-slug>`.
+   - Si es `dev` o `main`: **está prohibido modificar código o commitear ahí**. Crear el worktree del
+     paso 0; el fallback manual (sin el tooling) es una rama efímera desde el estado remoto de `dev`:
      ```bash
      git fetch origin
      git checkout -b <tipo>/<slug-kebab-case> origin/dev
@@ -51,6 +64,10 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
 5. Restricciones sobre archivos de producción (`deploy/compose.yml`, `.env`, secretos) — requieren aprobación explícita del Tech Lead; si se necesita, documentar en `docs/decisiones.md` y crear PR formal.
 
 ## Guardrails
+0. **El guardrail 1 es ahora efectivo, no sólo documental**: `scripts/hooks/pre-commit`
+   (instalar una vez con `scripts/instalar_hooks.sh`) bloquea el commit en `dev`/`main` y en
+   ramas fuera de `<tipo>/<slug>`. La salida de emergencia es `git commit --no-verify`, que
+   sólo corresponde ante una excepción autorizada y explicada.
 1. No commitear ni pushear estando parado en `dev` o `main`. Todo trabajo ocurre en una rama efímera
    creada desde `origin/dev` (paso 1). Esta regla es universal — sin excepciones por tipo de tarea.
 2. No hacer push a `origin/main` sin PR revisado que venga de `dev`.
@@ -59,10 +76,15 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
 5. Si detectás que estás en `main`: no cherry-pickees a ciegas — crear la rama efímera desde
    `origin/dev` (paso 1) y evaluar si los cambios locales en `main` corresponden a esa tarea.
 6. `git push origin main` está **prohibida** desde el agente salvo instrucción explícita y confirmación del usuario.
-7. Una rama efímera es un `git checkout -b` dentro del mismo checkout de trabajo — **no** es un
-   worktree nuevo. Para aislamiento real de directorio (ej. trabajo paralelo de subagentes) usar
-   `superpowers:using-git-worktrees`, que es un mecanismo independiente y combinable (un worktree
-   puede tener a su vez su propia rama efímera adentro).
+7. **Rama efímera y worktree son dos cosas distintas, y desde 2026-09-14 se usan siempre juntas.**
+   Un `git checkout -b` a secas aísla el *historial* pero comparte working tree, index y `HEAD` con
+   cualquier otra sesión parada en el mismo checkout. El aislamiento físico lo da un worktree propio
+   por agente: usar `scripts/agent_worktree.py start` (skill `agent-worktree`), que además registra
+   el agente en el estado compartido y habilita la integración serializada a `dev`.
+   `superpowers:using-git-worktrees` sigue siendo el mecanismo genérico equivalente cuando no hace
+   falta coordinación entre agentes.
+   El razonamiento que llevó a esta regla (vale la pena conservarlo, porque explica el costo de
+   no seguirla):
    **Preferir un worktree desde el arranque (no sólo cuando ya hay un problema) siempre que exista
    sospecha de sesión concurrente en el mismo checkout** — verificable con `ListAgents` (sesiones
    Claude Code hermanas en la misma máquina). Hallazgo real (2026-09-04, ver
@@ -97,9 +119,139 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
    rama es — si pasa, separar en 3 llamadas de Bash individuales lo destraba (funcionó dos veces en la
    sesión del 2026-09-07).
 
+9. **Trabajo largo despachado a un subagente: prescribir cortes de commit explícitos, no "commiteá
+   incremental".** Hallazgo real (2026-09-08/09, gestor de Servicios sin ODF): tres subagentes murieron
+   por límite de API (rate limit) en una misma sesión. Los dos que sólo tenían la instrucción genérica
+   "commiteá incremental" perdieron **todo** el trabajo no commiteado (working tree limpio, cero
+   commits, cero reporte, nada que rescatar); el que recibió una lista enumerada de cortes ("1. cliente
+   de API + fix de tipos → commit; 2. tarjeta → commit; 3. modal → commit; 4. viewer + wiring →
+   commit", cada uno exigiendo el build en verde) completó con sus 4 commits, y una ola de fixes
+   posterior con cortes agrupados por hallazgo preservó 3 de 4 al morir. La diferencia no fue el modelo
+   ni la suerte: fue enumerar los cortes. Para cualquier dispatch que vaya a tocar más de 2-3 archivos,
+   listar los cortes concretos y exigir que cada uno deje el build/tests en verde — un commit que no
+   compila no sirve como punto de recuperación.
+
+10. **Calcular "qué falta mergear" contra `origin/dev`, nunca contra el `dev` local.** Hallazgo real
+    (2026-09-10, actualización de repo): el `dev` local estaba **32 commits atrás** de `origin/dev`
+    porque otra sesión había mergeado y pusheado. Calcular ramas pendientes contra el `dev` local daba
+    un resultado falso: dos ramas efímeras (`feat/odf-viewer-servicios-sin-odf`,
+    `fix/ingreso-nombre-multilinea`) figuraban como "sin mergear" cuando su contenido ya estaba
+    integrado en el remoto. Antes de cualquier decisión de merge o borrado:
+    ```bash
+    git fetch origin
+    git merge-base --is-ancestor <rama> origin/dev   # ¿ya está integrada? (0 = sí)
+    git rev-list --count origin/dev..<rama>          # commits propios reales
+    ```
+    Un `git branch -vv` que dice `[origin/dev: behind N]` sobre la rama base es la señal de alarma.
+    Corolario: `git branch -d` (minúscula) es la red de seguridad correcta al borrar — rechaza lo no
+    mergeado; nunca usar `-D` para "limpiar" sin haber hecho este chequeo.
+11. **`git rm --cached` se propaga como borrado del working tree al mergear.** Destrackear un archivo
+    lo conserva en disco **sólo en la rama donde se hizo**; al mergear ese commit a una rama donde el
+    archivo sigue trackeado, el merge materializa la eliminación y **borra el archivo del disco**.
+    Real (2026-09-10): al agregar `docs/handoffs/` al `.gitignore` hubo que destrackear un handoff; en
+    la rama efímera quedó en disco como se esperaba, y al mergear a `dev` desapareció. Si el archivo
+    es un artefacto operativo que sólo existe en esta máquina (handoff, dump, nota de sesión), el
+    borrado es pérdida real de datos. Copiarlo al scratchpad antes y verificar con `md5sum` antes y
+    después del merge, restaurando si hace falta.
+12. **Operaciones masivas e irreversibles sobre el remoto: interpretación estrecha por defecto.** Un
+    pedido de limpieza ambiguo ("que solo quede dev") se resuelve por defecto en su lectura **más
+    acotada** — las ramas efímeras de la tarea en curso — y cualquier ampliación irreversible se
+    trata como pedido separado y explícito, no como una opción más de un menú. Real (2026-09-10): el
+    pedido era sincronizar las ramas efímeras sin mergear; al ofrecer como opción borrar además las
+    ~103 ramas `codex/*`/`dependabot/*` del remoto, el alcance terminó en **113 ramas borradas de
+    GitHub**, de las cuales 85 tenían commits no integrados. El usuario después aclaró que el pedido
+    original era sólo el merge de las efímeras. Ofrecer una ampliación irreversible ya sesga la
+    decisión: si el pedido literal no la incluye, no ponerla en el menú. Si aun así se ejecuta:
+    - Fuente autoritativa de ramas remotas es `git ls-remote --heads origin`, **no** los
+      remote-tracking locales: `git for-each-ref --format='%(refname:short)' refs/remotes/origin/`
+      acorta `refs/remotes/origin/HEAD` a **`origin`** (no a `origin/HEAD`), así que un filtro por
+      nombre lo deja pasar a la lista de borrado apuntando al SHA de `main`.
+    - Imprimir siempre las entradas que **no** matchean el patrón esperado y afirmar explícitamente
+      que `dev`/`main` no están en la lista, antes de ejecutar.
+    - Dejar respaldo recuperable: `refs/backup/<fecha>/<nombre>` **no se pushea ni se clona** (queda
+      fuera del refspec `refs/heads/*`), así que para durabilidad real hace falta además un
+      `git bundle create <archivo> --stdin --not dev main` guardado **fuera** del repo (no commitear
+      binarios, guardrail #4). Verificar con `git bundle verify` que los prerequisitos estén en `dev`.
+
+13. **Verificar el frontend desde un worktree: sin `node_modules` el type-check miente, y el
+    type-check solo no ve errores de plantilla.** Real (2026-09-11): `npx vue-tsc --noEmit` reportó
+    "0 errores" tres veces seguidas desde un worktree que **no tiene `node_modules`** (vive sólo en
+    el checkout principal, está gitignoreado). No podía resolver ni `vue`, así que no verificaba
+    nada y la afirmación "0 errores" era hueca. Con el symlink puesto, el chequeo real devolvió 4
+    errores —todos preexistentes de un archivo ajeno al cambio— y recién ahí sirvió de línea de
+    base. Y además `npx vite build` encontró un bug que el type-check **no ve ni con las
+    dependencias resueltas**: un `v-else` cuyo `v-if` no era su hermano adyacente. Antes de declarar
+    verde cualquier cambio de frontend hecho en un worktree:
+    ```bash
+    ln -s <checkout-principal>/web/frontend/node_modules web/frontend/node_modules
+    npx vue-tsc --noEmit   # tipos
+    npx vite build         # plantillas: encuentra lo que el type-check no ve
+    rm web/frontend/node_modules
+    ```
+    Sobre el symlink al terminar: `.gitignore` tiene `web/frontend/node_modules/` **con barra
+    final**, y una barra final sólo matchea directorios — un symlink es un archivo para git, así que
+    **no** queda ignorado por esa regla. **Resuelto estructuralmente el 2026-09-14**: el tooling de
+    `agent-worktree` registra `web/frontend/node_modules` (y `.venv`, `.env`, `.env.dev`,
+    `.secrets`) en `<git-common-dir>/info/exclude`, que es compartido por todos los linked worktrees,
+    no se versiona y no depende de la rama que cada worktree tenga checkouteada. En un worktree
+    creado con `agent_worktree.py start` el symlink ya no aparece en `git status`. Fuera de ese
+    tooling (worktree creado a mano en un repo sin las exclusiones) sigue valiendo el consejo
+    original: borrarlo al terminar.
+
+    Corolario del mismo día, mismo espíritu: correr la **suite completa** antes de cerrar, no sólo
+    los tests del feature. Los 74 tests nuevos de esa sesión estaban verdes mientras un test
+    **existente** del listado se rompía, porque el endpoint había ganado una llamada nueva que su
+    sesión doble no sabía responder. Los tests propios de un feature no detectan lo que el feature
+    le rompe al resto.
+
+14. **Afirmar que un check pasó exige leer su código de salida real, no el del pipe.** Real
+    (2026-09-14): reporté `scripts/check_no_plaintext_secrets.sh` como "OK" porque lo había corrido
+    como `bash script.sh 2>&1 | tail -5; echo "EXIT=$?"` — eso imprime el exit de `tail`, que es 0
+    casi siempre. El script en realidad salía con **código 1**. Los hallazgos resultaron
+    preexistentes y falsos positivos, pero la afirmación era infundada cuando la hice.
+    ```bash
+    bash scripts/check_no_plaintext_secrets.sh; echo "EXIT REAL=$?"   # sin pipe
+    # o: set -o pipefail   /   ${PIPESTATUS[0]}
+    ```
+    Si el check falla, antes de declarar los hallazgos ajenos al cambio, demostrarlo:
+    ```bash
+    git diff --name-only origin/dev...HEAD | grep -E "<archivos-del-hallazgo>"   # ¿los toqué?
+    git show origin/dev:<archivo> | grep -c "<patrón>"                           # ¿ya estaba?
+    ```
+15. **`sudo` no funciona en una sesión de agente no interactiva.** Real (2026-09-14): un
+    `sudo rm -rf` autorizado por el usuario falló con
+    `sudo: a terminal is required to read the password`. No hay forma de completarlo desde acá y la
+    contraseña **no** se pide por chat. Cuando una tarea requiera privilegios elevados: verificar y
+    dejar preparado todo lo que sí se puede hacer, y entregar al usuario el comando exacto a ejecutar,
+    registrándolo como pendiente explícito en el cierre.
+16. **Un número de verificación no se escribe en el mismo comando que lo produce.** Real
+    (2026-09-19): armé el mensaje de commit y corrí los tests en una sola llamada encadenada, así
+    que el mensaje decía "97 tests en verde" cuando el resultado fue **171**. El commit quedó con un
+    dato inventado sobre su propia verificación, y ya pusheado no se corrige sin `--force`, que está
+    prohibido. Es la misma familia que el guardrail 14: **primero medir, leer el resultado, y recién
+    entonces escribir la afirmación**. Si el mensaje tiene que citar cifras (tests, filas, duración),
+    correr la medición en una llamada aparte y copiar el número real.
+
+17. **Tras una brecha de contexto, verificar el estado del repo ANTES de seguir trabajando.** Real
+    (2026-09-19): después de una compactación retomé escribiendo documentación que **ya estaba
+    escrita y commiteada**, y mientras lo hacía la rama se integró y el worktree se limpió — un
+    comando encontró el directorio y el siguiente falló con "No such file or directory". Parte del
+    trabajo fue redundante y un borrador sin commitear se perdió en el `cleanup`. Al reanudar:
+    ```bash
+    git log --oneline -5 | cat          # ¿qué se commiteó mientras no miraba?
+    git status --porcelain              # ¿hay trabajo sin commitear?
+    python scripts/agent_worktree.py status   # ¿mi worktree sigue existiendo?
+    git rev-parse --show-toplevel       # ¿sigo parado donde creo?
+    ```
+    Un `git status` vacío cuando se acaba de escribir un archivo **no** significa "ya estaba
+    commiteado": puede significar que el árbol de trabajo desapareció debajo. Comprobarlo antes de
+    narrar una explicación.
+
 ## Relación con otras skills
-`repo-updater` (audita/commitea sobre la rama efímera activa), `pytest-focas`, `alembic-migrations`,
-`docker-rebuild`, `cierre-sesion` (único punto que integra la rama efímera a `dev`).
+`agent-worktree` (crea el worktree/rama propios del agente y coordina leases e integración; es el
+paso 0 de este procedimiento), `repo-updater` (audita/commitea sobre la rama efímera activa),
+`pytest-focas`, `alembic-migrations`, `docker-rebuild`, `cierre-sesion` (único punto que integra la
+rama efímera a `dev`).
 
 ## Resultado esperado
 Rama efímera confirmada (nunca `dev`/`main` en el momento de commitear), `.env.dev` presente, stack

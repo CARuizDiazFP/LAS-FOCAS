@@ -8,9 +8,14 @@ Este directorio contiene herramientas auxiliares no incluidas en la ejecución p
 
 ### Lista actual
 
+- `agent_worktree.py`: Ciclo de vida de agentes concurrentes — un worktree y una rama efímera por agente (`start`, `list`, `status`, `heartbeat`, `sync`, `ready`, `integrate`, `handoff`, `accept-handoff`, `finish`, `cleanup`, `doctor`).
+- `agent_lock.py`: Leases por recurso compartido entre agentes (`acquire`, `heartbeat`/`renew`, `release`, `status`, `list`, `stale-cleanup`).
+- `agentes/`: Capas internas del tooling agéntico — `rutas` (descubrimiento del repo y del `git-common-dir`), `estado` (registro SQLite), `gitops` (operaciones Git) y `consola` (salida y logging). Sólo stdlib: funciona sin el venv y desde cualquier worktree.
 - `check_openai.py`: Verifica conectividad y credenciales de OpenAI (`OPENAI_API_KEY`). No se ejecuta en CI por defecto.
 - `setup_local_secrets.sh`: Crea `.secrets/*.txt` para desarrollo local o CI sin imprimir secretos.
 - `check_no_plaintext_secrets.sh`: Bloquea secretos versionados y passwords dev en texto plano.
+- `sync_agentes_comunes.sh` / `check_skill_mirror_drift.sh`: Sincronizan y verifican los mirrors de skills desde `.agentes-comunes/skills/`.
+- `sync_skill_mirrors.py`: Propagador determinista de skills a los mirrors por plataforma (`.claude`, `.gemini`, `.codex-skills`). Preserva el frontmatter de cada mirror y reescribe los enlaces entre skills según la estructura de cada entorno. `--check` verifica drift sin escribir.
 
 ### Convenciones
 
@@ -25,6 +30,12 @@ Este directorio contiene herramientas auxiliares no incluidas en la ejecución p
 ./scripts/setup_local_secrets.sh
 ./scripts/check_no_plaintext_secrets.sh
 python scripts/check_openai.py
+
+# Trabajo concurrente multi-agente (ver docs/arquitectura_agentes_worktrees.md)
+python scripts/agent_worktree.py start --agent claude-api --type feat --task busqueda-camaras
+python scripts/agent_worktree.py list
+python scripts/agent_lock.py acquire "db:migrations" --agent claude-api --reason "migración"
+python scripts/agent_worktree.py doctor
 ```
 
 ### Próximos scripts (ideas)

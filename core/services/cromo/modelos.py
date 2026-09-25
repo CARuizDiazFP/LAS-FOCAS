@@ -1,6 +1,7 @@
 # Nombre de archivo: modelos.py
 # Ubicación de archivo: core/services/cromo/modelos.py
-# Descripción: Dataclasses del dominio de inventario de fibra óptica de Cromo Red (botella, cable, tubo, pelo, fusión)
+# Descripción: Dataclasses del dominio de inventario de fibra óptica de Cromo Red (botella,
+# cable, tubo, pelo, fusión, splitter y puerto de splitter)
 
 from __future__ import annotations
 
@@ -40,6 +41,10 @@ class Cable:
     n_id: int
     version_id: Optional[int]
     vmax: Optional[int]
+    # 51 (cable de FO) o 66 (cable de bajada de la red PON). Comparten esquema y parser —los `at`
+    # son los mismos, medido— pero no se mezclan: un cable de bajada tiene sus extremos en cajas PON
+    # y rosetas, no en botellas, así que la fase de reconciliación tiene que poder excluirlo.
+    clase: Optional[int]
     nombre: Optional[str]
     capacidad: Optional[str]
     capacidad_pelos: Optional[int]
@@ -142,6 +147,86 @@ class ConectorOdf:
 
 
 @dataclass(slots=True)
+class PonElemento:
+    """Elemento raíz de la red de acceso PON: caja PON (84, 126, 127, 137, 138, 139, 140) o roseta
+    (85). Una sola dataclass para las ocho clases porque el esquema medido es idéntico; lo que las
+    distingue es `cromo_clases.entidad`, no la forma del payload.
+
+    `capacidad_puertos` sale de `at.46`, que sobre 81 objetos reales tomó sólo los valores 8, 16 y
+    4; `tipo_conector` de `at.40` ("Fast connect", "Easy Connect", "Conector de campo", "Con
+    casquillo"). Los `at` 45 y 203 no tienen campo: el primero fue constante y el segundo
+    incoherente, así que viajan en `payload_raw` sin que se les invente significado.
+    """
+
+    n_id: int
+    version_id: Optional[int]
+    vmax: Optional[int]
+    clase: Optional[int]
+    nombre: Optional[str]
+    codigo_modelo: Optional[str]
+    id_legacy: Optional[str]
+    notas: Optional[str]
+    calle: Optional[str]
+    altura: Optional[str]
+    localidad: Optional[str]
+    provincia: Optional[str]
+    ubicacion_fisica: Optional[str]
+    tendido: Optional[str]
+    propietario: Optional[str]
+    tipo_conector: Optional[str]
+    capacidad_puertos: Optional[int]
+    latitud: Optional[float]
+    longitud: Optional[float]
+    pts_raw: Optional[list]
+    payload_raw: dict
+
+
+@dataclass(slots=True)
+class Splitter:
+    """Splitter óptico (class 133). Cuelga de `botella.inner[]`, igual que las fusiones.
+
+    **Cromo publica el ratio** en `at.83` ("1x8", "1x4", "1x2"): es dato, no una inferencia. Hasta
+    2026-09-17 el sistema lo deducía por fan-out de fusiones en `empalmes.py`, y medido contra 30
+    botellas reales esa heurística acertaba en 18 y fallaba en 12 — incluyendo inventar splitters
+    donde no hay ninguno y no devolver NUNCA un ratio cuando el splitter existía de verdad.
+
+    `salidas` es el `N` de "1xN" ya parseado, para poder comparar y ordenar sin volver a romper el
+    string; `ratio` conserva el texto crudo porque es lo que el operador reconoce.
+    """
+
+    n_id: int
+    botella_n_id: Optional[int]
+    nombre: Optional[str]
+    ratio: Optional[str]
+    salidas: Optional[int]
+    # De qué objeto cuelga realmente. Medido sobre 800 splitters reales (2026-09-19): sólo el 12%
+    # cuelga de una Botella; el resto cuelga de una caja PON (137, 139, 138, 84, 140, 126, 127).
+    # `botella_n_id` se conserva porque `empalmes.py` consulta por esa columna, pero queda en None
+    # cuando el contenedor no es una Botella — antes se le metía el dict crudo de `parent`.
+    contenedor_n_id: Optional[int] = None
+    contenedor_clase: Optional[int] = None
+
+
+@dataclass(slots=True)
+class PuertoSplitter:
+    """Puerto de un splitter (class 134). `parent` apunta al `n_id` del splitter.
+
+    `sentido` es `at.82` ("ENTRADA"/"SALIDA") y `nombre` es `at.80` ("E1", "S1"…). El atributo de
+    servicio (`at.62`) **no viaja en el barrido de colección**, sólo en la respuesta de
+    `/db/objects/{id}/inner` — misma asimetría ya documentada para los conectores de ODF. Por eso
+    `servicios_atributo` queda en `None` cuando el objeto vino del barrido: `None` significa "no se
+    preguntó", y `[]` significa "se preguntó y el puerto está libre".
+    """
+
+    n_id: int
+    splitter_n_id: Optional[int]
+    botella_n_id: Optional[int]
+    nombre: Optional[str]
+    sentido: Optional[str]
+    servicios_atributo: Optional[list[str]] = None
+
+
+@dataclass(slots=True)
 class Fusion:
     """Fusión (class 132). Cuelga de `botella.inner[]`; `parent` apunta al `n_id` de la botella."""
 
@@ -155,4 +240,15 @@ class Fusion:
     longitud: Optional[float]
 
 
-__all__ = ["Botella", "Cable", "Odf", "ConectorOdf", "Tubo", "Pelo", "Fusion"]
+__all__ = [
+    "Botella",
+    "Cable",
+    "Odf",
+    "ConectorOdf",
+    "Tubo",
+    "Pelo",
+    "Fusion",
+    "PonElemento",
+    "Splitter",
+    "PuertoSplitter",
+]

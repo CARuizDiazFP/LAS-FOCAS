@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-logs-cleanup.md
 # Ubicación de archivo: .gemini/rules/skill-logs-cleanup.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/logs-cleanup/SKILL.md
+
 ---
 name: "skill-logs-cleanup"
 description: "Usar cuando haya que revisar o limpiar logs del proyecto y de contenedores sin perder información necesaria para diagnóstico"
@@ -26,7 +27,7 @@ commands:
 
 # Regla Skill: logs-cleanup
 
-> Fuente original: `.github/skills/logs-cleanup/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/logs-cleanup/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Limpieza de Logs
 
@@ -48,8 +49,8 @@ Este skill revisa y limpia logs del proyecto y de contenedores sin perder inform
 ## Referencias
 
 - [Operación detallada](./references/operacion.md)
-- [disk-analysis](../disk-analysis/SKILL.md)
-- [temp-cleanup](../temp-cleanup/SKILL.md)
+- [disk-analysis](skill-disk-analysis.md)
+- [temp-cleanup](skill-temp-cleanup.md)
 
 ## Guardrails
 

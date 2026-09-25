@@ -126,6 +126,8 @@ type SidebarViewId =
   | 'validarDatosCromo'
   | 'inventarioCablesCromo'
   | 'inventarioOdfsCromo'
+  | 'inventarioPonCromo'
+  | 'inventarioRosetasCromo'
   | 'inventarioBotellas'
   | 'none';
 
@@ -186,6 +188,8 @@ const sidebarModules: SidebarModule[] = [
       { id: 'inventarioCablesCromo', label: 'Cables', to: { path: '/infra/cromo/cables' } },
       { id: 'inventarioBotellas', label: 'Botellas', to: { path: '/infra/Botellas' } },
       { id: 'inventarioOdfsCromo', label: 'ODFs', to: { path: '/infra/cromo/odfs' } },
+      { id: 'inventarioPonCromo', label: 'Cajas PON', to: { path: '/infra/cromo/pon' } },
+      { id: 'inventarioRosetasCromo', label: 'Rosetas', to: { path: '/infra/cromo/rosetas' } },
     ],
   },
   {
@@ -224,6 +228,8 @@ const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
   inventarioCablesCromo: 'infraFo',
   inventarioBotellas: 'infraFo',
   inventarioOdfsCromo: 'infraFo',
+  inventarioPonCromo: 'infraFo',
+  inventarioRosetasCromo: 'infraFo',
   repetitividad: 'reportes',
   sla: 'reportes',
   historial: 'reportes',
@@ -280,6 +286,12 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
   }
   if (currentRoute.path === '/infra/cromo/cables' || currentRoute.path.startsWith('/infra/cromo/cables/ID')) {
     return 'inventarioCablesCromo';
+  }
+  if (currentRoute.path === '/infra/cromo/pon') {
+    return 'inventarioPonCromo';
+  }
+  if (currentRoute.path === '/infra/cromo/rosetas') {
+    return 'inventarioRosetasCromo';
   }
   if (currentRoute.path === '/infra/cromo/odfs' || currentRoute.path.startsWith('/infra/cromo/odfs/ID')) {
     return 'inventarioOdfsCromo';
@@ -600,11 +612,17 @@ watch(
 .app-shell__main {
   min-width: 0;
   min-height: 100vh;
-  padding: 0;
+  /* Sólo el eje horizontal se centraliza acá: es el que separa del sidebar. Los verticales siguen
+     en cada vista a propósito — varias son `height: 100%` con un área de scroll interna, y el
+     `padding-bottom` que le da aire al final de una lista larga tiene que quedar DENTRO del
+     elemento que scrollea, no en este contenedor. */
+  padding-inline: var(--layout-shell-gutter);
+  padding-block: 0;
 }
 
 .app-shell__main--admin {
-  padding: 24px 26px 40px;
+  /* El lateral lo hereda del bloque de arriba; acá sólo los verticales propios del sector. */
+  padding-block: 24px 40px;
 }
 
 .app-shell__module-actions {

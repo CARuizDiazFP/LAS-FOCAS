@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-repo-update.md
 # Ubicación de archivo: .gemini/rules/skill-repo-update.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/repo-update/SKILL.md
+
 ---
 name: "skill-repo-update"
 description: "Usar solo cuando el pedido mencione el nombre legacy repo-update; redirige al workflow vigente repo-updater"
@@ -32,7 +33,7 @@ commands:
 
 # Regla Skill: repo-update
 
-> Fuente original: `.github/skills/repo-update/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/repo-update/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Repo Update (Legado)
 

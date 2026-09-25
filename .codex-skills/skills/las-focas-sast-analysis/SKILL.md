@@ -49,7 +49,6 @@ Checklist de análisis estático orientado a riesgos explotables en el código.
 
 - endpoints REST, WebSocket y handlers de bot expuestos a entrada de usuario
 - autenticación, autorización, sesiones y cookies
-- uso de `v-html`, sanitización de contenido y controles CORS en FastAPI
 - acceso a base de datos, queries dinámicas y repositorios
 - llamadas a `subprocess`, ejecución de shell, parseo de archivos y renderizado de documentos
 - logs que puedan filtrar payloads, secretos o datos personales
@@ -60,7 +59,8 @@ Checklist de análisis estático orientado a riesgos explotables en el código.
 2. Revisar validación y sanitización en rutas, modelos y servicios.
 3. Buscar patrones de riesgo: SQL dinámico, `subprocess`, path traversal, SSRF, deserialización insegura, XSS/HTML injection y bypass de auth.
 4. Verificar permisos en contenedores y acoplamiento con secretos o servicios internos cuando el código despliega o consume infraestructura.
-5. Clasificar impacto y proponer parche mínimo verificable.
+5. Confirmar que nuevos consumidores de credenciales usen `get_secret` o un secret store equivalente.
+6. Clasificar impacto y proponer parche mínimo verificable.
 
 ## Pistas de búsqueda
 
@@ -68,6 +68,7 @@ Checklist de análisis estático orientado a riesgos explotables en el código.
 rg -n '@app\.(get|post|put|delete)|@router\.(get|post|put|delete)' api web
 rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads|text\(' core api web modules bot_telegram
 rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent bot_telegram
+./scripts/check_no_plaintext_secrets.sh
 ```
 
 ## Hallazgos típicos

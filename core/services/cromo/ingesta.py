@@ -8,7 +8,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,9 @@ from db.models.cromo import (
     CromoOdf,
     CromoOdfConector,
     CromoPelo,
+    CromoSplitter,
+    CromoPonElemento,
+    CromoSplitterPuerto,
     CromoServicioMatch,
     CromoTubo,
 )
@@ -51,6 +54,15 @@ CLASE_CABLE = 51
 CLASE_FUSION = 132
 CLASE_ODF = 69
 CLASES_BOTELLA: tuple[int, ...] = (68, 121, 122, 123, 125)
+
+# Red de acceso PON (submódulo 2026-09-19). Las siete clases de caja PON comparten esquema exacto
+# —medido contra Cromo: todas raíz, con `ll`/`pts`/`vmax` y los mismos `at`— y van a una sola tabla
+# discriminadas por `clase`. La roseta comparte esa tabla y se distingue por `cromo_clases.entidad`.
+CLASE_SPLITTER = 133
+CLASE_PUERTO_SPLITTER = 134
+CLASE_ROSETA = 85
+CLASE_CABLE_BAJADA = 66
+CLASES_CAJA_PON: tuple[int, ...] = (84, 126, 127, 137, 138, 139, 140)
 # Clases con colección propia contable vía stats[].count (fase de conteo).
 CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
 
@@ -79,6 +91,7 @@ BOTELLA_CAMPOS = (
 CABLE_CAMPOS = (
     "version_id",
     "vmax",
+    "clase",
     "nombre",
     "capacidad",
     "capacidad_pelos",
@@ -112,6 +125,40 @@ PELO_CAMPOS = (
     "tipo_asociacion",
 )
 _FUSION_CAMPOS = ("botella_n_id", "nombre_par", "tipo", "pelo_a_n_id", "pelo_b_n_id", "latitud", "longitud")
+PON_ELEMENTO_CAMPOS = (
+    "version_id",
+    "vmax",
+    "clase",
+    "nombre",
+    "codigo_modelo",
+    "id_legacy",
+    "notas",
+    "calle",
+    "altura",
+    "localidad",
+    "provincia",
+    "ubicacion_fisica",
+    "tendido",
+    "propietario",
+    "tipo_conector",
+    "capacidad_puertos",
+    "latitud",
+    "longitud",
+    "pts_raw",
+    "payload_raw",
+)
+SPLITTER_CAMPOS = ("botella_n_id", "contenedor_n_id", "contenedor_clase", "nombre", "ratio", "salidas")
+SPLITTER_PUERTO_CAMPOS = (
+    "splitter_n_id",
+    "botella_n_id",
+    "nombre",
+    "sentido",
+    "servicios_atributo",
+)
+# Alias público: la normalización de consistencia (y cualquier reingesta dirigida futura)
+# necesita estos campos, y alcanzar un nombre privado desde otro módulo es peor que
+# publicarlo. El nombre con guion bajo se conserva para no tocar los usos existentes.
+FUSION_CAMPOS = _FUSION_CAMPOS
 ODF_CAMPOS = (
     "version_id",
     "vmax",
@@ -338,16 +385,99 @@ async def iniciar_corrida(
     return corrida
 
 
-async def fase_conteo(cliente: CromoClient) -> dict[int, int]:
-    """FASE 1 · CONTEO: requests baratos (psize=1&show=BASIC) para el `total_objetivo`, uno por clase
-    en `CLASES_CONTEO` (botellas + cables + fusiones + ODFs)."""
+async def _barrer_coleccion(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    fase: str,
+    descripcion: str,
+    filtro: str,
+    show: list[str],
+    psize: int,
+    max_paginas: Optional[int],
+    procesar: Callable[[dict[str, Any]], Awaitable[None]],
+) -> None:
+    """Recorre una colección de Cromo página por página y delega cada objeto en `procesar`.
+
+    Es el cuerpo que `fase_cables`, `fase_fusiones` y `fase_odfs` tenían triplicado byte a byte,
+    variando sólo en cinco valores. Con las fases de la red de acceso PON serían siete copias, y
+    cada copia es una oportunidad de que el chequeo de cancelación o el `commit` por página se
+    escriban distinto en una de ellas. El archivo ya factoriza lo que aparece tres veces
+    (`upsert_versionado`, `_registrar_pagina`, `_registrar_inicio_fase`): esto sigue ese criterio.
+
+    `procesar` llega como closure ya atada a la sesión y a la corrida, para que el helper no tenga
+    que conocer la firma de cada procesador —algunos necesitan el cliente, otros no—.
+
+    Lo que NO se toca: `fase_botellas`, que tiene `clases` variable y es la fase crítica del módulo.
+
+    El orden de los cinco pasos por página es el de las fases originales y es significativo:
+    sincronizar contadores, registrar la página, commitear y recién entonces chequear cancelación
+    —el chequeo lee la fila de la corrida con SQL fresco, así que tiene que ver el commit hecho—.
+    """
+    await _registrar_inicio_fase(sesion, corrida.id, fase, descripcion)
+    numero_pagina = 0
+    async for pagina in cliente.iterar_coleccion(
+        filtro, psize=psize, show=show, max_paginas=max_paginas
+    ):
+        numero_pagina += 1
+        objetos = pagina.get("response") or pagina.get("data") or []
+        for obj in objetos:
+            await procesar(obj)
+        sincronizar_contadores(corrida, contadores)
+        await _registrar_pagina(sesion, corrida.id, fase, numero_pagina, pagina, contadores)
+        await sesion.commit()
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
+
+
+_SQL_CONTEO_CATALOGO = text(
+    "SELECT clase, count_cromo FROM app.cromo_clases "
+    "WHERE clase = ANY(:clases) AND count_cromo IS NOT NULL"
+)
+
+
+async def fase_conteo(
+    cliente: CromoClient,
+    *,
+    sesion: Optional[AsyncSession] = None,
+    clases: Iterable[int] = CLASES_CONTEO,
+) -> dict[int, int]:
+    """FASE 1 · CONTEO: requests baratos (psize=1&show=BASIC) para el `total_objetivo`.
+
+    `clases` permite acotar el conteo a lo que la corrida realmente va a barrer: una corrida de
+    rosetas no tiene por qué pagar ocho requests para contar botellas y cables que no va a tocar.
+
+    **`stats[].count` no siempre dice la verdad.** Para las clases 133 (splitter) y 134 (puerto)
+    devuelve 0 aunque la colección pagine perfectamente: medido el 2026-09-19, los totales reales
+    son 20.238 y 154.284, obtenidos paginando hasta el final. Cuando la API responde 0 o no
+    responde, y hay sesión, manda `cromo_clases.count_cromo`, que guarda esa medición con su fecha.
+
+    El orden de precedencia es deliberado: la API primero, el catálogo después. El catálogo es una
+    foto con fecha y la API es el presente; sólo se usa la foto cuando el presente no contesta. Sin
+    sesión el comportamiento es el de siempre, para no romper a los llamadores que no la pasan.
+    """
+    clases = tuple(clases)
     totales: dict[int, int] = {}
-    for clase in CLASES_CONTEO:
+    sin_dato: list[int] = []
+    for clase in clases:
         respuesta = await cliente.get_coleccion(str(clase), psize=1, show=["BASIC"])
         stats = respuesta.get("stats") or []
         conteo = next((s.get("count") for s in stats if s.get("id") == clase), None)
-        if conteo is not None:
+        if conteo:
             totales[clase] = conteo
+        else:
+            # `0` y `None` se tratan igual a propósito: una colección que existe y pagina nunca
+            # tiene 0 objetos, así que un 0 acá es la firma del `stats` mentiroso, no un dato.
+            sin_dato.append(clase)
+            if conteo is not None:
+                totales[clase] = conteo
+
+    if sin_dato and sesion is not None:
+        filas = (await sesion.execute(_SQL_CONTEO_CATALOGO, {"clases": sin_dato})).all()
+        for clase, count_cromo in filas:
+            totales[int(clase)] = int(count_cromo)
     return totales
 
 
@@ -369,7 +499,9 @@ async def _procesar_cable_directo(
             accion = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
             contadores.leidas += 1
             contadores.contar(accion)
-            await registrar_evento(sesion, corrida_id, cable.n_id, CLASE_CABLE, accion)
+            # La clase real del objeto, no la constante: desde 2026-09-19 esta misma función
+            # procesa también cables de bajada (clase 66) y el evento tiene que decir cuál fue.
+            await registrar_evento(sesion, corrida_id, cable.n_id, cable.clase or CLASE_CABLE, accion)
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
         contadores.errores += 1
         n_id = obj.get("n_id") or obj.get("id")
@@ -388,18 +520,21 @@ async def fase_cables(
     alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
     """FASE 2 · CABLES: maestro de cables (atributos + extremos). No trae tubos/pelos (ver §2, corrección 8)."""
-    await _registrar_inicio_fase(sesion, corrida.id, "CABLES", "Barrido directo de cables (filter=51)")
-    numero_pagina = 0
-    async for pagina in cliente.iterar_coleccion(str(CLASE_CABLE), psize=psize, show=["SHOW", "TIME"], max_paginas=max_paginas):
-        numero_pagina += 1
-        objetos = pagina.get("response") or pagina.get("data") or []
-        for obj in objetos:
-            await _procesar_cable_directo(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
-        sincronizar_contadores(corrida, contadores)
-        await _registrar_pagina(sesion, corrida.id, "CABLES", numero_pagina, pagina, contadores)
-        await sesion.commit()
-        if await _fue_cancelada_externamente(sesion, corrida.id):
-            raise _CorridaCancelada()
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="CABLES",
+        descripcion="Barrido directo de cables (filter=51)",
+        filtro=str(CLASE_CABLE),
+        show=["SHOW", "TIME"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_cable_directo(
+            sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
 
 
 async def _procesar_fusion_directa(
@@ -453,18 +588,298 @@ async def fase_fusiones(
     (migración `20260807_01`): no hay forma de resolver la botella contenedora sin un request por
     fusión a `GET /db/objects/{id}/container`, que no se justifica a esta escala (miles de fusiones).
     """
-    await _registrar_inicio_fase(sesion, corrida.id, "FUSIONES", "Barrido directo de fusiones (filter=132)")
-    numero_pagina = 0
-    async for pagina in cliente.iterar_coleccion(str(CLASE_FUSION), psize=psize, show=["SHOW", "TIME"], max_paginas=max_paginas):
-        numero_pagina += 1
-        objetos = pagina.get("response") or pagina.get("data") or []
-        for obj in objetos:
-            await _procesar_fusion_directa(sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
-        sincronizar_contadores(corrida, contadores)
-        await _registrar_pagina(sesion, corrida.id, "FUSIONES", numero_pagina, pagina, contadores)
-        await sesion.commit()
-        if await _fue_cancelada_externamente(sesion, corrida.id):
-            raise _CorridaCancelada()
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="FUSIONES",
+        descripcion="Barrido directo de fusiones (filter=132)",
+        filtro=str(CLASE_FUSION),
+        show=["SHOW", "TIME"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_fusion_directa(
+            sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
+
+
+async def _procesar_splitter_directo(
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """Procesa un splitter del barrido directo (filter=133), en su propio savepoint.
+
+    Sin `vmax` en la tabla: se sobreescribe siempre y sin evento individual, mismo criterio que
+    fusiones. `leidas` sí incrementa, porque la clase entra en el conteo de la corrida y si no la
+    barra de progreso nunca llegaría al 100%.
+
+    El alias de botella se aplica sólo cuando el contenedor es una Botella: para una caja PON no
+    hay alias que resolver, y pasarle el n_id igual sería pedirle a `resolver_referencia` que opine
+    sobre un id de otro dominio.
+    """
+    alias_por_origen = alias_por_origen or {}
+    try:
+        async with sesion.begin_nested():
+            splitter = cromo_parser.parse_splitter(obj)
+            if splitter.botella_n_id is not None:
+                splitter.botella_n_id = alias_service.resolver_referencia(
+                    splitter.botella_n_id, alias_por_origen
+                )
+                splitter.contenedor_n_id = splitter.botella_n_id
+            await upsert_simple(sesion, CromoSplitter, splitter, SPLITTER_CAMPOS)
+            contadores.leidas += 1
+    except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
+        contadores.errores += 1
+        n_id = obj.get("n_id") or obj.get("id")
+        logger.error("action=cromo_ingesta evento=error_splitter n_id=%s error=%s", n_id, exc)
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+
+
+async def fase_splitters(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · SPLITTERS: barrido directo de la clase 133 (2026-09-19).
+
+    Reemplaza a la vía embebida en `fase_botellas`, que no puede cubrir más del 12% del universo:
+    medido sobre 800 splitters reales, el 88% cuelga de una caja PON (137, 139, 138, 84, 140, 126,
+    127) y no de una Botella. El barrido directo los captura todos — 20.238 según el conteo real.
+
+    `show=["ALL"]` no es negociable acá: es el único que trae el `extra.container` del que sale el
+    `n_id` de linaje del contenedor (ver `parser._contenedor_de`).
+    """
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="SPLITTERS",
+        descripcion="Barrido directo de splitters (filter=133)",
+        filtro=str(CLASE_SPLITTER),
+        show=["ALL"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_splitter_directo(
+            sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
+
+
+async def _procesar_puerto_splitter_directo(
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """Procesa un puerto de splitter del barrido directo (filter=134), en su propio savepoint.
+
+    `trae_servicios=False` (el default) es deliberado y es la verdad: el `at.62` que vincula un
+    puerto con su servicio **sólo** viaja en `/db/objects/{id}/inner`, nunca en el barrido de
+    colección. Dejar `servicios_atributo` en NULL dice "no se preguntó"; escribir `[]` afirmaría que
+    el puerto está libre sin haberlo consultado.
+    """
+    try:
+        async with sesion.begin_nested():
+            puerto = cromo_parser.parse_puerto_splitter(obj)
+            await upsert_simple(sesion, CromoSplitterPuerto, puerto, SPLITTER_PUERTO_CAMPOS)
+            contadores.leidas += 1
+    except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
+        contadores.errores += 1
+        n_id = obj.get("n_id") or obj.get("id")
+        logger.error("action=cromo_ingesta evento=error_puerto_splitter n_id=%s error=%s", n_id, exc)
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+
+
+async def fase_puertos_splitter(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · PUERTOS DE SPLITTER: barrido directo de la clase 134 (2026-09-19).
+
+    Modo propio y **no** parte de `SOLO_SPLITTERS`, por decisión explícita del dueño del producto:
+    son 154.284 objetos y ~91 minutos de barrido, para un dato cuyo valor principal —la ocupación
+    servicio↔puerto— requiere una llamada `/inner` por objeto y quedó fuera de alcance. Sin eso, un
+    puerto aporta su nombre, su sentido y de qué splitter cuelga.
+    """
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="PUERTOS_SPLITTER",
+        descripcion="Barrido directo de puertos de splitter (filter=134)",
+        filtro=str(CLASE_PUERTO_SPLITTER),
+        show=["ALL"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_puerto_splitter_directo(
+            sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
+
+
+async def fase_cables_bajada(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · CABLES DE BAJADA: barrido directo de la clase 66 (2026-09-19).
+
+    Reusa `cromo_cables` y `parse_cable` sin tocarlos: medido contra Cromo, la clase 66 publica
+    exactamente los mismos `at` que la 51 (20 tendido, 26 nombre, 32 capacidad, 27 jerarquía
+    ="Bajada", 28/29 extremos legado, 23/24 distancias, 25 propietario), tiene `vmax` y trae `tp`
+    con dos extremos. Una tabla propia sería duplicar 24 columnas y el parser entero para nada.
+
+    Corrige de paso una afirmación de `camino_optico_service`: el comentario de `_CLASES_CABLE_BAJADA`
+    dice que un cable de bajada "no tiene esa estructura de tubos/pelos", y sí la tiene — su `inner`
+    trae 1 tubo y 1 pelo. Esta fase igual no los ingiere, porque `fase_cables` tampoco lo hace para
+    la clase 51: los tubos y pelos llegan por el árbol de su botella.
+
+    Son 19.030 objetos. **No entra en `COMPLETA`**: sólo corre pedida explícitamente.
+    """
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="CABLES_BAJADA",
+        descripcion="Barrido directo de cables de bajada (filter=66)",
+        filtro=str(CLASE_CABLE_BAJADA),
+        show=["SHOW", "TIME"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_cable_directo(
+            sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
+
+
+async def _procesar_pon_elemento_directo(
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+) -> None:
+    """Procesa una caja PON o una roseta del barrido directo, en su propio savepoint.
+
+    Mismo molde que `_procesar_odf_directo` sin la parte de conectores: estos objetos tienen `vmax`,
+    así que `upsert_versionado` distingue CREADA/ACTUALIZADA/SIN_CAMBIOS y una segunda corrida del
+    mismo modo no reescribe nada. No se les pide `inner[]`: los splitters que contienen se ingieren
+    por su propia colección, que es más barata y los cubre a todos.
+    """
+    try:
+        async with sesion.begin_nested():
+            elemento = cromo_parser.parse_pon_elemento(obj)
+            accion = await upsert_versionado(
+                sesion, CromoPonElemento, elemento, PON_ELEMENTO_CAMPOS
+            )
+            contadores.leidas += 1
+            contadores.contar(accion)
+            await registrar_evento(sesion, corrida_id, elemento.n_id, elemento.clase, accion)
+    except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
+        contadores.errores += 1
+        n_id = obj.get("n_id") or obj.get("id")
+        logger.error("action=cromo_ingesta evento=error_pon_elemento n_id=%s error=%s", n_id, exc)
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+
+
+async def fase_cajas_pon(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · CAJAS PON: barrido directo de las siete clases de caja PON (2026-09-19).
+
+    Son siete clases y no dos: además de la 84 y la 137 ya catalogadas, existen 126, 127, 138, 139
+    y 140, que el sistema no conocía de ninguna forma y el diagrama de camino óptico dibujaba como
+    `CLASE_139`. Suman 13.482 objetos.
+
+    `show=["SHOW","TIME"]` y no `ALL`: no se necesita el `inner[]` —sus splitters se ingieren por su
+    propia colección— y traerlo sólo agrega payload. Medido: `ALL` no cambia la velocidad (el costo
+    es la clase, no el árbol), así que la elección es por corrección, no por rendimiento.
+    """
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="CAJAS_PON",
+        descripcion="Barrido directo de cajas PON (filter=84,126,127,137,138,139,140)",
+        filtro=",".join(str(c) for c in CLASES_CAJA_PON),
+        show=["SHOW", "TIME"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_pon_elemento_directo(
+            sesion, corrida.id, obj, contadores
+        ),
+    )
+
+
+async def fase_rosetas(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · ROSETAS: barrido directo de la clase 85 (2026-09-19).
+
+    `20260917_02` registró la roseta como "no observada todavia en ningun camino real". Sigue siendo
+    cierto que no aparece en los recorridos de `/path` —el recorrido termina en la caja PON— pero la
+    colección existe y tiene **17.348 objetos**. Las dos cosas conviven: una habla del diagrama, la
+    otra del inventario.
+
+    Comparte tabla con las cajas PON (`cromo_pon_elementos`) porque comparte esquema; lo que la
+    distingue es `cromo_clases.entidad`.
+    """
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="ROSETAS",
+        descripcion="Barrido directo de rosetas (filter=85)",
+        filtro=str(CLASE_ROSETA),
+        show=["SHOW", "TIME"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_pon_elemento_directo(
+            sesion, corrida.id, obj, contadores
+        ),
+    )
 
 
 _SQL_SERVICIO_NUMERO_PELOS = text(
@@ -599,20 +1014,21 @@ async def fase_odfs(
     `_procesar_odf_directo` pide el detalle completo por objeto vía `cliente.get_inner()` cuando
     hace falta (ver su docstring).
     """
-    await _registrar_inicio_fase(sesion, corrida.id, "ODFS", "Barrido directo de ODFs (filter=69)")
-    numero_pagina = 0
-    async for pagina in cliente.iterar_coleccion(
-        str(CLASE_ODF), psize=psize, show=["ALL"], max_paginas=max_paginas
-    ):
-        numero_pagina += 1
-        objetos = pagina.get("response") or pagina.get("data") or []
-        for obj in objetos:
-            await _procesar_odf_directo(cliente, sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen)
-        sincronizar_contadores(corrida, contadores)
-        await _registrar_pagina(sesion, corrida.id, "ODFS", numero_pagina, pagina, contadores)
-        await sesion.commit()
-        if await _fue_cancelada_externamente(sesion, corrida.id):
-            raise _CorridaCancelada()
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="ODFS",
+        descripcion="Barrido directo de ODFs (filter=69)",
+        filtro=str(CLASE_ODF),
+        show=["ALL"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_odf_directo(
+            cliente, sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -715,7 +1131,15 @@ async def _procesar_botella_completa(
     alias_por_origen = alias_por_origen or {}
     try:
         async with sesion.begin_nested():
-            arbol = cromo_parser.parse_arbol_botella(obj)
+            # `puertos_traen_servicios=False` (el default) es deliberado: esta fase corre sobre el
+            # barrido de colección, que NUNCA incluye el `at.62` de los puertos de splitter. Dejar
+            # `servicios_atributo` en NULL dice "no se preguntó", que es la verdad; marcarlo como
+            # `[]` afirmaría que los puertos están libres sin haberlo consultado.
+            arbol = cromo_parser.parse_arbol_botella(obj, puertos_traen_servicios=False)
+            # De qué payload salió `arbol`. Normalmente es `obj`, pero la redirección por "ID dual"
+            # de más abajo lo reemplaza por el objeto vigente — y la marca `splitters_relevados`
+            # tiene que hablar del árbol que REALMENTE se procesó, no del cascarón del barrido.
+            payload_arbol = obj
 
             alias_botella = alias_por_origen.get(arbol.botella.n_id)
             if alias_botella is None:
@@ -748,6 +1172,7 @@ async def _procesar_botella_completa(
                         # Cromo hubiera devuelto el objeto vigente en este mismo barrido.
                         n_id_cascaron = arbol.botella.n_id
                         arbol = cromo_parser.parse_arbol_botella(resultado_id_dual.obj_vigente)
+                        payload_arbol = resultado_id_dual.obj_vigente
                         # Traza auditable de la redirección: sin esto el n_id del cascarón desaparece
                         # del histórico (el único evento posterior es el CREADA/ACTUALIZADA bajo el
                         # n_id vigente) y no habría forma de medir cuántas veces disparó esta rama —
@@ -808,6 +1233,40 @@ async def _procesar_botella_completa(
             for pelo in arbol.pelos:
                 await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
 
+            # Splitters y sus puertos: vienen en el MISMO `inner[]` del barrido, sin una sola
+            # llamada extra a Cromo. Hasta 2026-09-17 se descartaban como "clase inesperada"
+            # mientras `empalmes.py` deducía el ratio por fan-out (18 aciertos de 30 botellas
+            # medidas, y nunca un ratio correcto cuando el splitter existía).
+            for splitter in arbol.splitters:
+                splitter.botella_n_id = alias_service.resolver_referencia(
+                    splitter.botella_n_id, alias_por_origen
+                )
+                await upsert_simple(sesion, CromoSplitter, splitter, SPLITTER_CAMPOS)
+            for puerto in arbol.puertos_splitter:
+                puerto.botella_n_id = alias_service.resolver_referencia(
+                    puerto.botella_n_id, alias_por_origen
+                )
+                # `servicios_atributo` en None significa "no se preguntó": el barrido no trae
+                # `at.62`. Escribirlo como NULL preserva esa distinción contra el `[]` de un
+                # puerto realmente libre, que sólo puede venir de `/inner`.
+                await upsert_simple(
+                    sesion, CromoSplitterPuerto, puerto, SPLITTER_PUERTO_CAMPOS
+                )
+
+            # La marca se pone cuando el payload TRAJO el árbol, haya o no splitters adentro: su
+            # valor es poder afirmar "se miró y esta botella no tiene ninguno", que es lo que
+            # `empalmes.py` necesita para dejar de inventarlos con la heurística.
+            #
+            # Condicionarla a `inner` no es defensivo, es la diferencia entre afirmar y no afirmar:
+            # `fase_botellas` barre con `show=["SHOW","REL_ATTRIBUTE","TIME"]`, y eso **no** trae
+            # `inner[]` (medido 2026-09-17 contra Cromo real: 0 de 10 botellas; sólo `ALL` lo trae).
+            # Marcar igual dejaría las ~11.000 botellas declaradas "sin splitters" en la primera
+            # corrida completa, apagando la heurística en todo el inventario sin reemplazo.
+            if payload_arbol.get("inner") is not None:
+                fila_botella = await sesion.get(CromoBotella, arbol.botella.n_id)
+                if fila_botella is not None:
+                    fila_botella.splitters_relevados = True
+
             for error in arbol.errores:
                 contadores.errores += 1
                 await registrar_evento(sesion, corrida_id, error.n_id, error.clase, "ERROR", error.motivo)
@@ -855,18 +1314,28 @@ _RECONCILIACIONES: tuple[tuple[str, int, str], ...] = (
         CLASE_CABLE,
         """
         SELECT n_id FROM app.cromo_cables c
-        WHERE extremo_a_n_id IS NOT NULL
+        WHERE c.clase = 51
+          AND extremo_a_n_id IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM app.cromo_botellas b WHERE b.n_id = c.extremo_a_n_id)
-        """,
+        """
+        # `clase = 51` es obligatorio desde que la tabla aloja también cables de bajada (66): los
+        # extremos de una bajada son una caja PON y una roseta, NUNCA una botella, así que sin este
+        # filtro las 19.030 bajadas aparecerían como referencias colgadas en cada corrida completa.
+        # Va acá y no en la fase: esta consulta lee la tabla entera, no lo que barrió la corrida.,
     ),
     (
         "extremo_b de cable sin botella",
         CLASE_CABLE,
         """
         SELECT n_id FROM app.cromo_cables c
-        WHERE extremo_b_n_id IS NOT NULL
+        WHERE c.clase = 51
+          AND extremo_b_n_id IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM app.cromo_botellas b WHERE b.n_id = c.extremo_b_n_id)
-        """,
+        """
+        # `clase = 51` es obligatorio desde que la tabla aloja también cables de bajada (66): los
+        # extremos de una bajada son una caja PON y una roseta, NUNCA una botella, así que sin este
+        # filtro las 19.030 bajadas aparecerían como referencias colgadas en cada corrida completa.
+        # Va acá y no en la fase: esta consulta lee la tabla entera, no lo que barrió la corrida.,
     ),
     (
         "tubo sin cable",
@@ -965,10 +1434,13 @@ _SQL_BUSCAR_SERVICIO = text(
 # ambas columnas — cualquiera de los dos puede disparar el conflicto (ej. otra sesión/corrida ganó la
 # carrera de creación para el mismo número). Sin `DO NOTHING` sobre un índice puntual, absorbe
 # cualquiera de los dos en vez de acoplarse al nombre de uno.
+# Bug real (2026-09-07): `:origen::tipo` (sin espacio) hace que SQLAlchemy no reconozca `:origen` como
+# bind param y lo mande literal al driver — Postgres/asyncpg responde "syntax error at or near ':'".
+# El espacio antes de `::` es obligatorio, no estético.
 _SQL_CREAR_PLACEHOLDER_SERVICIO = text(
     """
     INSERT INTO app.servicios (servicio_id, numero_primer_servicio, categoria, origen_datos, estado_servicio)
-    VALUES (:numero, :numero, 0, :origen::app.servicio_origen_datos, 'DESCONOCIDO')
+    VALUES (:numero, :numero, 0, :origen ::app.servicio_origen_datos, 'DESCONOCIDO')
     ON CONFLICT DO NOTHING
     RETURNING id
     """
@@ -1093,6 +1565,43 @@ async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, con
     await sesion.commit()
 
 
+@dataclass(frozen=True, slots=True)
+class _ModoAcotado:
+    """Un modo que corre UNA sola fase sobre UNA sola colección.
+
+    `clases_objetivo` es lo que se cuenta para el `total_objetivo`: una corrida de rosetas no tiene
+    por qué pagar ocho requests de conteo por clases que no va a tocar.
+    """
+
+    clases_objetivo: tuple[int, ...]
+    fase: Callable[..., Awaitable[None]]
+
+
+# Los modos acotados viven en una tabla de datos y no en una cadena de `if modo == "..."`. Con dos
+# modos el `if` era razonable; con siete, cada rama nueva es un lugar más donde olvidarse de tocar
+# el `total_objetivo` o el despacho de fase. `SOLO_ODF` es la primera fila de esta tabla y su
+# comportamiento queda cubierto por los tests que ya existían.
+#
+# NINGUNO de los modos de la red de acceso PON entra en `COMPLETA`, por decisión explícita: sumarlos
+# convertiría una corrida de rutina en uno de varios horas (las cajas PON solas son ~75 minutos).
+MODOS_ACOTADOS: dict[str, _ModoAcotado] = {
+    "SOLO_ODF": _ModoAcotado((CLASE_ODF,), lambda *a, **k: fase_odfs(*a, **k)),
+    "SOLO_SPLITTERS": _ModoAcotado((CLASE_SPLITTER,), lambda *a, **k: fase_splitters(*a, **k)),
+    "SOLO_PUERTOS_SPLITTER": _ModoAcotado(
+        (CLASE_PUERTO_SPLITTER,), lambda *a, **k: fase_puertos_splitter(*a, **k)
+    ),
+    "SOLO_CAJAS_PON": _ModoAcotado(CLASES_CAJA_PON, lambda *a, **k: fase_cajas_pon(*a, **k)),
+    "SOLO_ROSETAS": _ModoAcotado((CLASE_ROSETA,), lambda *a, **k: fase_rosetas(*a, **k)),
+    "SOLO_CABLES_BAJADA": _ModoAcotado(
+        (CLASE_CABLE_BAJADA,), lambda *a, **k: fase_cables_bajada(*a, **k)
+    ),
+}
+
+MODO_COMPLETA = "COMPLETA"
+# La lista que valida el endpoint web. Vive acá, con las fases, y no duplicada en `web/app/main.py`.
+MODOS_INGESTA: tuple[str, ...] = (MODO_COMPLETA, *MODOS_ACOTADOS)
+
+
 async def ejecutar_ingesta(
     cliente: CromoClient,
     sesion: AsyncSession,
@@ -1164,13 +1673,16 @@ async def continuar_corrida(
         raise ValueError(f"No existe la corrida {corrida_id}")
 
     try:
-        totales = await fase_conteo(cliente)
-        if modo == "SOLO_ODF":
-            corrida.total_objetivo = totales.get(CLASE_ODF, 0)
-        else:
-            corrida.total_objetivo = sum(
-                totales.get(c, 0) for c in (*clases_final, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
-            )
+        acotado = MODOS_ACOTADOS.get(modo)
+        clases_a_contar = (
+            acotado.clases_objetivo
+            if acotado is not None
+            else (*clases_final, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
+        )
+        # `sesion` habilita el fallback del catálogo, que es lo único que da un total para las
+        # clases 133 y 134: su `stats[].count` devuelve 0 aunque la colección pagine perfecto.
+        totales = await fase_conteo(cliente, sesion=sesion, clases=clases_a_contar)
+        corrida.total_objetivo = sum(totales.get(c, 0) for c in clases_a_contar)
         await registrar_evento(
             sesion,
             corrida.id,
@@ -1194,8 +1706,8 @@ async def continuar_corrida(
         # corrida ya está en curso recién aplica en la corrida siguiente.
         alias_por_origen = await alias_service.cargar_alias_vigentes(sesion)
 
-        if modo == "SOLO_ODF":
-            await fase_odfs(
+        if acotado is not None:
+            await acotado.fase(
                 cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
             )
         else:
@@ -1280,6 +1792,20 @@ async def continuar_corrida(
 
 
 __all__ = [
+    "CLASE_SPLITTER",
+    "CLASE_PUERTO_SPLITTER",
+    "CLASE_ROSETA",
+    "CLASE_CABLE_BAJADA",
+    "CLASES_CAJA_PON",
+    "PON_ELEMENTO_CAMPOS",
+    "MODOS_ACOTADOS",
+    "MODOS_INGESTA",
+    "MODO_COMPLETA",
+    "fase_splitters",
+    "fase_puertos_splitter",
+    "fase_cajas_pon",
+    "fase_rosetas",
+    "fase_cables_bajada",
     "BOTELLA_CAMPOS",
     "CABLE_CAMPOS",
     "CLASE_CABLE",
@@ -1287,7 +1813,10 @@ __all__ = [
     "CLASES_BOTELLA",
     "CLASES_CONTEO",
     "ContadoresCorrida",
+    "FUSION_CAMPOS",
     "ODF_CAMPOS",
+    "SPLITTER_CAMPOS",
+    "SPLITTER_PUERTO_CAMPOS",
     "PELO_CAMPOS",
     "TUBO_CAMPOS",
     "continuar_corrida",

@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-disk-analysis.md
 # Ubicación de archivo: .gemini/rules/skill-disk-analysis.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/disk-analysis/SKILL.md
+
 ---
 name: "skill-disk-analysis"
 description: "Usar cuando haya que diagnosticar uso de disco, espacio consumido por Docker, logs, volúmenes o artefactos del proyecto"
@@ -157,13 +158,15 @@ commands:
 
 # Regla Skill: disk-analysis
 
-> Fuente original: `.github/skills/disk-analysis/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/disk-analysis/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Análisis de Disco
 
 Este skill proporciona comandos y procedimientos para diagnosticar el uso de disco en el entorno LAS-FOCAS.
 
 ## 📊 Umbrales de Alerta
+
+Perfiles operativos recomendados: `docs/maintenance_profiles.md`.
 
 | Recurso | 🟢 Normal | 🟡 Advertencia | 🔴 Crítico |
 |---------|-----------|----------------|------------|
@@ -354,6 +357,6 @@ echo -e "\n═══════════════════════
 
 ## 🔗 Skills Relacionados
 
-- [docker-cleanup](../docker-cleanup/SKILL.md) - Limpieza de recursos Docker
-- [logs-cleanup](../logs-cleanup/SKILL.md) - Gestión de archivos de log
-- [temp-cleanup](../temp-cleanup/SKILL.md) - Limpieza de temporales y caché
+- [docker-cleanup](skill-docker-cleanup.md) - Limpieza de recursos Docker
+- [logs-cleanup](skill-logs-cleanup.md) - Gestión de archivos de log
+- [temp-cleanup](skill-temp-cleanup.md) - Limpieza de temporales y caché

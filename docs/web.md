@@ -55,8 +55,9 @@ web/
 - `web/frontend/src/router/index.ts` carga `Login`, `Panel`, `SLA`, `Reportes`, `Cámara Detail` y vistas admin mediante `import()` dinámico.
 - Los módulos migrados desde las tabs legacy se cargan como rutas dedicadas y conservan lazy loading por componente.
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
-- La administración incorpora `/admin/ingesta` como **hub de navegación** con dos sub-módulos:
+- La administración incorpora `/admin/ingesta` como **hub de navegación** con tres sub-módulos:
   - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
+  - `/admin/ingesta/cromo` → ingesta del inventario de fibra desde Cromo Red, con progreso en vivo por SSE y un selector de alcance de siete modos (ver `docs/modulo_ingesta_cromo.md`).
   - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo. Desde el refactor de baneos (2026-08-24) suma un "Revisor Manual": los alias que no matchearon contra el inventario se listan con selección múltiple, para descartarlos (marcar revisado en lote) o asociarlos a mano a una Cámara/Botella existente vía typeahead — la ingesta ya no crea `Camara` nuevas por su cuenta. Detalle completo en `docs/infra.md`, sección "Ingesta Excel de cámaras baneadas".
 
 > **CRITICAL — Arquitectura del router admin**: Existe el archivo `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts`, pero ambos son **código huérfano**. El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y usa `src/router/index.ts` como router unificado. Las rutas `/admin/*` son **children anidadas** de `{ path: '/admin', component: AppShell }` dentro de ese router. Toda ruta admin nueva debe agregarse en `src/router/index.ts`, no en `src/admin/router/index.ts`.
@@ -66,6 +67,22 @@ web/
 - Los tokens visuales viven en `web/frontend/src/assets/styles/tokens.css`.
 - `panel.css` y `admin.css` consumen estos tokens en lugar de redeclarar su propia paleta base.
 - El objetivo de la capa es concentrar identidad cromática, spacing, radios y layout en variables CSS nativas (`--color-*`, `--space-*`, `--layout-*`).
+
+**Canaleta lateral del contenido (`--layout-shell-gutter`, 2026-09-21).** El espacio entre el
+sidebar y el contenido lo pone **una sola regla**: `.app-shell__main { padding-inline:
+var(--layout-shell-gutter) }` en `AppShell.vue`. Las vistas **no** vuelven a declararlo.
+
+Antes cada vista repetía `padding: Npx 26px M` por su cuenta y el `main` iba en `padding: 0`; las
+13 que se acordaban quedaban bien y las que no —las cinco secciones de Servicio (incluida
+`/servicios/ID/:id/camino`), `CienaTab`, `FoTab` y `VlanTab`— quedaban **pegadas al sidebar**. Se
+migraron las 28 reglas afectadas a `padding: Npx 0 M`, preservando los verticales.
+
+Sólo se centralizó el eje **horizontal**, y el `padding-block` del `main` queda en `0` a propósito:
+varias vistas son `height: 100%` con un área de scroll interna, y el `padding-bottom` que le da aire
+al final de una lista larga tiene que vivir DENTRO del elemento que scrollea. Cada vista sigue
+siendo dueña de su espaciado vertical; `.app-shell__main--admin` sólo declara `padding-block`.
+
+Al agregar una vista nueva: **no** pongas padding lateral propio, ya lo trae el shell.
 
 **Sistema de diseño Nocturne (2026-07-29).** `tokens.css` implementa el sistema Nocturne:
 fondo `#161826`, superficie `#232532`, texto `#e9e9ed`, acento blurple `#9184d9`, rampas
@@ -188,10 +205,13 @@ En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras inte
 
 - **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
 - **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
-- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — sección
-  aparte, agrupada por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran
-  los que son tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de
-  color.
+- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — agrupadas
+  por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran los que son
+  tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de color.
+  **Desde 2026-09-21 no viven en la ficha sino en `/servicios/ID/:id/camino`**
+  (`components/servicios/detalle/OdfsAsociadasPanel.vue`): el refactor a tarjetas de 5d68310 borró
+  la tabla sin darle vista propia, y la ficha quedó contando ODFs que no tenía dónde mostrar. La
+  ficha conserva sólo el total, para el resumen de la tarjeta "Camino óptico".
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
 
@@ -364,24 +384,59 @@ admin/
 
 ### Rutas Vue Router
 
+Tabla regenerada desde `src/router/index.ts` el 2026-09-21: tenía 17 de las 37 rutas reales, y
+faltaban módulos enteros ya en producción (las cinco secciones de Servicio, todo el inventario
+Cromo y los cuatro viewers de admin).
+
 | Ruta | Componente | Auth | Admin |
 |------|------------|------|-------|
 | `/login` | LoginView | No | No |
 | `/` | AppShell + PanelView | Sí | No |
 | `/infra` | AppShell + InfraTab | Sí | No |
 | `/infra/Camaras/:id` | AppShell + CamaraDetailView | Sí | No |
+| `/infra/Botellas` | AppShell + BotellasInventarioView | Sí | No |
+| `/infra/Camaras/Botellas/ID:id` | AppShell + BotellaDetalleUnificadaView | Sí | No |
+| `/infra/cromo/verificador` | AppShell + VerificadorCromoView | Sí | No |
+| `/infra/cromo/verificador/empalmes` | AppShell + EmpalmesBotellaCromoView | Sí | No |
+| `/infra/cromo/verificador/conectores` | AppShell + ConectoresOdfCromoView | Sí | No |
+| `/infra/cromo/cables` | AppShell + InventarioCablesCromoView | Sí | No |
+| `/infra/cromo/cables/ID:nId` | AppShell + CableDetalleCromoView | Sí | No |
+| `/infra/cromo/odfs` | AppShell + InventarioOdfsCromoView | Sí | No |
+| `/infra/cromo/odfs/ID:nId` | AppShell + OdfDetalleCromoView | Sí | No |
+| `/infra/cromo/pon` | AppShell + InventarioPonCromoView | Sí | No |
+| `/infra/cromo/rosetas` | AppShell + InventarioPonCromoView | Sí | No |
 | `/repetitividad` | AppShell + RepetitividadTab | Sí | No |
 | `/toolkit/vlan` | AppShell + VlanTab | Sí | No |
+| `/toolkit/validar-datos-cromo` | AppShell + ValidarDatosCromoView | Sí | No |
 | `/fo` | AppShell + FoTab | Sí | No |
 | `/dwdm/ciena` | AppShell + CienaTab | Sí | No |
 | `/sla` | AppShell + SlaView | Sí | No |
 | `/reports-history` | AppShell + ReportsHistoryView | Sí | No |
 | `/servicios` | AppShell + ServiciosView | Sí | No |
 | `/servicios/ID/:idServicio` | AppShell + ServicioDetalleView | Sí | No |
+| `/servicios/ID/:idServicio/historico` | AppShell + ServicioHistoricoView | Sí | No |
+| `/servicios/ID/:idServicio/ingresos` | AppShell + ServicioIngresosView | Sí | No |
+| `/servicios/ID/:idServicio/camino` | AppShell + ServicioCaminoView | Sí | No |
+| `/servicios/ID/:idServicio/reclamos` | AppShell + ServicioReclamosView | Sí | No |
+| `/servicios/ID/:idServicio/baneos` | AppShell + ServicioBaneosView | Sí | No |
 | `/admin` | AppShell + AdminDashboard | Sí | Sí |
 | `/admin/usuarios` | AppShell + AdminUsuarios | Sí | Sí |
 | `/admin/servicios` | AppShell + AdminServicios | Sí | Sí |
 | `/admin/Servicios/Baneos` | AppShell + AdminBaneos | Sí | Sí |
+| `/admin/ingesta` | AppShell + AdminIngesta | Sí | Sí |
+| `/admin/ingesta/servicios` | AppShell + AdminIngestaServicios | Sí | Sí |
+| `/admin/ingesta/camaras` | AppShell + AdminIngestaCamaras | Sí | Sí |
+| `/admin/ingesta/cromo` | AppShell + AdminIngestaCromo | Sí | Sí |
+| `/admin/servicios/viewer` | AppShell + AdminServiciosViewer | Sí | Sí |
+| `/admin/servicios/viewer/Camaras` | AppShell + AdminCamarasViewer | Sí | Sí |
+| `/admin/servicios/viewer/Botellas` | AppShell + AdminBotellasViewer | Sí | Sí |
+| `/admin/servicios/viewer/ServiciosSinOdf` | AppShell + AdminServiciosSinOdfViewer | Sí | Sí |
+
+> Las cinco rutas `servicios/ID/:idServicio/<sección>` son **hermanas** de la ficha, no hijas: cada
+> una monta su vista directamente en el `<main>` del shell y comparte presentación por
+> `views/servicios/ServicioSeccionLayout.vue`. El `:idServicio` de la URL es el **ID de negocio**
+> (puede ser un ID histórico del Servicio), no la PK de `app.servicios` — la resolución a PK la hace
+> el backend.
 
 > **Nota (2026-08-24):** `AdminBaneos.vue` es hoy un contenedor de 3 tabs — Baneos Activos
 > (`BaneosActivosPanel.vue`, listado agrupado por Cámara padre + liberación/desbaneo masivo),
@@ -396,6 +451,81 @@ Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida pa
 
 Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession()}`.  
 Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con `chat/main.ts` (widget de chat embebible, superficie legacy separada del SPA principal). El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
+
+### Camino óptico de Cromo en el Detalle de Servicio
+
+`CromoCaminoPanel.vue` es el panel reutilizable (lo usan el Detalle de Servicio y el modal de
+asociación del gestor de Servicios sin ODF). El estado vive en el padre, en `useCromoPath`, y viaja
+como prop.
+
+Dos selecciones distintas conviven a propósito, porque tienen costos distintos:
+
+- **`peloElegido`** — el pelo que se **dibuja** en pantalla. Es uno solo: resolver el camino cuesta
+  una llamada a Cromo de 4,6-14 s.
+- **`pelosSeleccionados`** — los pelos cuyo tracking se **descarga**. Son varios: un Servicio tiene
+  un tracking por pelo (1 en PON, 2 o más en FO o con un SW de módulo bifilar), y cada uno baja como
+  su propio `.txt`. `CromoPeloSelector.vue` los expone como checkboxes; el botón "Ver camino" de
+  cada fila es el que cambia `peloElegido`.
+
+La vista muestra **dos fuentes distintas** sobre el mismo recorrido y las rotula como tales: arriba
+el camino que declara Cromo (este panel), abajo las ODFs del archivo de tracking de ruta subido a
+mano (`OdfsAsociadasPanel`, ver arriba). Que difieran es un dato operativo, no un bug de la
+pantalla — confundirlas lleva a "corregir" la que estaba bien.
+
+Por defecto vienen tildadas las **posiciones de ODF** del Servicio (`preseleccionados` de
+`GET .../camino-optico/pelos?priorizar_conector=true`). El selector **lista sólo esas** y colapsa el
+resto del recorrido en un `<details>`: el número de servicio viaja en el `at.61` de todos los pelos
+del camino, así que un Servicio puede tener cientos de pelos matcheados (227 el 93154) y sólo dos
+que sean fibras suyas. Mostrarlos al mismo nivel haría parecer que el Servicio tiene veinte fibras
+cuando tiene dos, y el `priorizar_conector` es lo que evita que esas dos caigan fuera del tope de
+20 que trunca la lista. Si ninguna semilla tiene conector, la ODF no fue relevada todavía:
+el panel lo dice y ofrece "Relevar la ODF" (sólo admin). Cada pelo muestra si su tracking ya está
+**en caché**, para que el operador sepa si la descarga es instantánea o va a tardar.
+
+Las descargas van **en serie**, no en paralelo: el cliente de Cromo ya tiene rate limiter propio, y
+en serie se puede informar progreso (`Generando… 2/6`). Un pelo que falla no corta el resto — se
+juntan y se informan al final.
+
+`CromoConsistenciaPanel.vue` deja de ser sólo informativo: con rol admin muestra "Normalizar" por
+caso y para todos, que dispara la reingesta dirigida contra Cromo y vuelve a resolver el camino
+(invalidando antes la memoización del pelo, si no mostraría las mismas discrepancias recién
+corregidas).
+
+### Detalle de Servicio: ficha compacta + una ruta por sección
+
+`ServicioDetalleView.vue` tenía 1356 líneas y 9 bloques, con tablas enteras de ODFs y de ingresos
+compitiendo por la pantalla. Ahora la ficha conserva identidad, equipos de última milla y la tira de
+métricas, y el resto son **tarjetas de resumen** (`components/servicios/detalle/ServicioSeccionCard.vue`)
+que abren su propia vista:
+
+| Tarjeta | Ruta |
+|---|---|
+| Histórico de IDs (timeline horizontal) | `/servicios/ID/:idServicio/historico` |
+| Camino óptico | `/servicios/ID/:idServicio/camino` |
+| Ingresos | `/servicios/ID/:idServicio/ingresos` |
+| Reclamos | `/servicios/ID/:idServicio/reclamos` |
+| Eventos de baneo *(nuevo)* | `/servicios/ID/:idServicio/baneos` |
+
+Las cinco vistas viven en `views/servicios/` y comparten `ServicioSeccionLayout.vue` (migas,
+cabecera, estados de carga) y el composable `useServicioBase` (identidad del Servicio). Cada una
+carga **sólo lo suyo**: la ficha llegaba a disparar cinco cargas en paralelo para mostrarlo todo
+junto, que es justo la densidad que este rediseño baja.
+
+**Dos trampas del repo que estas rutas tocan:**
+
+- La navegación real está hardcodeada en `AppShell.vue`, no en el `meta` del router. No hizo falta
+  tocarla porque `resolveCurrentView()` ya matchea `path.startsWith('/servicios/ID/')`, así que las
+  sub-rutas marcan "Servicios" activo solas — pero cualquier ruta nueva fuera de ese prefijo sí
+  habría que agregarla a mano ahí.
+- Los tipos y llamadas de cada sección pasaron de estar declarados **inline** en la vista a
+  `api/servicioSecciones.ts`. Con cinco consumidores nuevos, dejarlos en la vista obligaba a
+  duplicarlos. De paso se retiraron los cinco `fetch` crudos y el `parseJsonOrError` local, que
+  duplicaba lo que ya hace `requestJson`.
+
+El timeline pasó a **horizontal y colapsado** (`ServiceTimeline.vue`, últimos 4 hitos con scroll
+propio); el render vertical completo se conserva en `ServiceTimelineDetalle.vue`, que usa la vista
+dedicada. El formato de fecha —incluido el manejo del bug de fecha pura interpretada como UTC— se
+extrajo a `timelineFormato.ts` para que las dos lo compartan.
 
 ## Variables de entorno
 

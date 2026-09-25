@@ -247,6 +247,35 @@ PROV. Se escriben desde `core/services/prov/ingesta.py::ingerir_contexto_prov`, 
 `docs/superpowers/specs/2026-09-02-servicios-prov-integracion-design.md` para los payloads reales
 de PROV que fijaron este mapeo.
 
+### Tabla `servicios_sync_prov` (2026-09-23)
+
+| Columna                    | Tipo                  | Descripción |
+|----------------------------|-----------------------|-------------|
+| `id`                       | Integer (PK)          | ID autoincremental. |
+| `servicio_id`              | FK → `servicios.id`, `ondelete=CASCADE`, **UNIQUE** | Una fila por `Servicio` — nunca un historial de intentos, sólo el estado vigente. |
+| `ultima_sincronizacion_ok` | DateTime(tz), `NOT NULL` | Momento del último refresco EXITOSO contra PROV. `NOT NULL` porque el único punto de escritura (el upsert al final de `ingerir_contexto_prov`) sólo corre con un contexto ya validado como éxito. |
+| `ultimo_intento`           | DateTime(tz), nullable | Momento del último intento, exitoso o no. Hoy siempre coincide con `ultima_sincronizacion_ok` (el embudo actual sólo escribe en éxito); queda separado para que un futuro camino de fallo lo actualice sin tocar la fecha de la última sincronización que sí funcionó. |
+| `ultimo_error`             | Text, nullable        | Detalle del último fallo, si lo hubo. Se limpia (`NULL`) en cada escritura exitosa — un error viejo no queda pegado después de un refresco que sí funcionó. |
+| `nro_servicio_consultado`  | String(64), nullable  | Número efectivamente consultado a PROV (`parseado.nro_servicio_original`) — trazabilidad de auditoría. |
+| `created_at` / `updated_at`| DateTime(tz), `NOT NULL` | Auditoría estándar, calculada en Python por el upsert (mismo criterio que `servicios_historial_id`). |
+
+Tabla nueva y no una columna en `Servicio`, por tres razones (ver `docs/decisiones.md`, entrada
+2026-09-23 "Tabla `app.servicios_sync_prov`"): `Servicio` la escriben tres ingestas distintas (Excel,
+PROV, placeholders Cromo) que re-etiquetan `origen_datos` incondicionalmente en cada una — una
+columna ahí heredaría ese mismo "pisado por ingesta ajena"; el estado de *fallo* no es un atributo de
+dominio del Servicio; y separar la escritura permite que un futuro camino de fallo actualice sólo el
+estado de sincronización.
+
+Se escribe en el mismo único embudo que `servicios_historial_id`/`servicios_equipos_ultima_milla`
+(`ingerir_contexto_prov`, upsert `ON CONFLICT (servicio_id) DO UPDATE`). Se lee en batch — nunca una
+query por servicio — desde `core/services/prov/frescura.py` (`servicios_vencidos`/
+`servicios_vencidos_sync`, versión async y sync), que alimenta las Tasks 8/10 (comandos de Slack
+sobre servicios) con el umbral `PROV_FRESCURA_HORAS` (default 48 h, ver `docs/bot.md`). Arranca
+vacía: hasta que corra `scripts/servicios_backfill_prov.py`, todo `servicio_id` consultado vuelve
+"vencido" por el `LEFT JOIN` con `ultima_sincronizacion_ok IS NULL` — no es un bug de la consulta,
+es el estado real de un 92,5% de los servicios que nunca pasó por PROV (medido real, ver
+`docs/bot.md`).
+
 ### Tabla `servicio_empalme_association` (Legacy)
 
 Tabla intermedia N-a-N entre `servicios` y `empalmes`. Mantenida por retrocompatibilidad.
@@ -350,6 +379,55 @@ Ejecuta la acción elegida por el usuario:
 | `tipo`             | Enum `ingreso_tipo` | `INGRESO` \| `EGRESO` \| `INTENTO_BLOQUEADO` (migración `20260904_01`, default `INGRESO` para todo el histórico previo). Distingue un ingreso/egreso real de un intento bloqueado por baneo del grupo — ambos `INGRESO` "en curso" e `INTENTO_BLOQUEADO` comparten `fecha_fin IS NULL`, así que cualquier query de "ingreso activo" debe filtrar `tipo == 'INGRESO'` explícitamente (ver `camara_estado_service.get_camara_estado_contexto`, `ingreso_service.py` y `protection_service.py::_determinar_estado_restauracion`). |
 | `fecha_inicio`     | DateTime(tz)   | Fecha/hora de inicio. `null` en un Egreso huérfano sin Ingreso previo detectado. |
 | `fecha_fin`        | DateTime(tz)   | Fecha/hora de fin. `null` tanto en un `INGRESO` real "en curso" como en un `INTENTO_BLOQUEADO` (nunca se cierra con un Egreso, por diseño) — no alcanza con mirar sólo esta columna para saber si el movimiento sigue "abierto", hay que mirar `tipo`. |
+| `thread_ts`        | `VARCHAR(32)`, nullable, index (2026-09-23, migración `20260923_01`) | `ts` del hilo de Slack donde se originó el movimiento. Hasta esta migración `app.ingresos` no guardaba nada del hilo — sólo `ingresos_sin_match` lo hacía, y sólo para los casos que no matchearon. Filas anteriores a esta fecha quedan con `NULL`; se resuelven por los niveles 2 y 3 de la cascada de `core/services/ingreso_correccion_service.py::resolver_contexto_hilo` (ver más abajo). En el camino "Egreso" que **cierra** una fila `Ingreso` existente, este campo **no se pisa** — conserva el del ingreso original. |
+| `canal_id`         | `VARCHAR(32)`, nullable (2026-09-23) | Canal de Slack del movimiento. Mismo criterio de no-pisado en el camino de cierre. |
+
+### Tabla `ingresos_correcciones` (2026-09-23) — auditoría append-only de `Forzar ingreso`/`Forzar egreso`
+
+Un registro por cada ejecución de los comandos de corrección manual de Slack (ver `docs/bot.md`,
+sección "Actualización 2026-09-23"), exitosa o no — **incluidos los rechazos**. Tabla nueva y no una
+extensión de `ingresos_sin_match`: esa tabla modela "el nombre no matcheó" (subconjunto de casos) y
+sus filas *se mutan* (`resuelto_via_empalme`/`resuelto_via_revalidacion`); una corrección puede
+ocurrir también sobre un hilo que matcheó perfecto la primera vez — semántica opuesta a la de un log
+inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento completo.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | — |
+| `comando` | `String(32)`, `NOT NULL` | `FORZAR_INGRESO` \| `FORZAR_EGRESO`. `String`, no enum de Postgres — sus valores previstos crecen sin exigir `ALTER TYPE`. |
+| `actor_slack_user_id` | `String(32)`, `NOT NULL` | Quién ejecutó el comando — siempre se conoce, no hay allowlist que lo condicione (ver `docs/decisiones.md`). |
+| `actor_nombre` | `String(255)`, nullable | Nombre resuelto del actor; puede no resolverse, mismo criterio que `Ingreso.tecnico_id`. |
+| `canal_id` | `String(32)`, `NOT NULL` | — |
+| `thread_ts` | `String(32)`, nullable, index | `NULL` sólo si el comando no fue una respuesta en un hilo (en la práctica esto no ocurre: los comandos sólo se procesan dentro de un hilo, ver `docs/decisiones.md`). |
+| `mensaje_ts` | `String(32)`, `NOT NULL` | `ts` del mensaje del comando en sí. |
+| `comando_crudo` | `Text`, `NOT NULL` | Texto íntegro del comando — lo re-lee el flujo de "fecha pendiente" para re-ejecutar sin que el operador retipee todo. |
+| `motivo` | `Text`, nullable | Sin palabra clave obligatoria (decisión de producto) — sólo se captura cuando hay un delimitador natural (después de la fecha, después del `#<id>`). |
+| `camara_texto_solicitado` | `String(512)`, `NOT NULL` | Nunca cadena vacía: `"(del hilo)"` en la forma bare, `"#<id>"` (con el id real) en la forma por id, `"(no parseado)"` si el comando murió en el parser antes de tener nombre de cámara. |
+| `camara_id_resuelta` | FK → `app.camaras.id`, `ON DELETE SET NULL`, nullable, index | — |
+| `cromo_botella_id_resuelta` | BigInteger, FK → `app.cromo_botellas.n_id`, `ON DELETE SET NULL`, nullable, index | — |
+| `momento_solicitado` / `momento_efectivo` | DateTime(tz), nullable | `NULL` en el estado `PENDIENTE_FECHA` — todavía no hay una fecha resuelta. |
+| `fuente_momento` | `String(16)`, nullable | `hilo` \| `explicito`. |
+| `ingreso_id` | FK → `app.ingresos.id`, `ON DELETE SET NULL`, nullable, index | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. |
+| `resultado` | `String(64)`, `NOT NULL` | Uno de 14 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
+| `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
+| `created_at` | DateTime(tz), `NOT NULL`, index | — |
+
+FKs con `ON DELETE SET NULL`: el log de auditoría sobrevive aunque la entidad referenciada se borre
+después — perder la fila de auditoría sería peor que perder sólo el vínculo.
+
+**Trigger de inmutabilidad**: función `app.ingresos_correcciones_bloquear_mutacion()` + trigger
+`trg_ingresos_correcciones_inmutable` (`BEFORE UPDATE OR DELETE ON app.ingresos_correcciones FOR
+EACH ROW`), `RAISE EXCEPTION` ante cualquier intento de modificar o borrar una fila ya escrita — es
+la diferencia entre "inmutable" como promesa de código de aplicación (violable por cualquier acceso
+directo a la DB o script one-off) y garantizado por la DB. Verificado real contra
+`lasfocasdev-postgres`: un `UPDATE`/`DELETE` de prueba sobre una fila insertada a mano dieron `exit
+code 1` con el mensaje de error de la función. El `downgrade()` de la migración `20260923_01`
+dropea trigger y función explícitamente, no sólo la tabla.
+
+Escritor único: `core/services/ingreso_correccion_service.py::procesar_comando_correccion`, cableado
+en `modules/slack_baneo_notifier/listener.py` (nunca `UPDATE`/`DELETE` directo desde ningún otro
+punto). Detalle completo de diseño en
+`docs/superpowers/specs/2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md`.
 
 ### Tabla `ingresos_sin_match` (2026-08-11)
 
@@ -507,11 +585,11 @@ un `INSERT`, no una migración.
 |---|---|---|
 | `clase` (PK) | SmallInteger | Código de clase tal como lo usa Cromo. |
 | `etiqueta` | Text | Etiqueta corta de Cromo (ej. `6-1`), si existe. |
-| `entidad` | Text | `BOTELLA` \| `CABLE` \| `TUBO` \| `PELO` \| `FUSION` \| `ODF` \| `PARCELA`. |
+| `entidad` | Text | `BOTELLA` \| `CABLE` \| `TUBO` \| `PELO` \| `FUSION` \| `ODF` \| `PARCELA` \| `CAJA_PON` \| `ROSETA` \| `SPLITTER` \| `PUERTO_SPLITTER` \| `CABLE_BAJADA` \| `NODO` \| `FUSION_ODF`. |
 | `ingerible` | Boolean | Si la ingesta debe traer objetos de esta clase. |
 | `homologada` | Boolean | `false` para clases estructuralmente válidas pero sin homologar (ej. clase 124, `code: "NO-SABE"`). |
 | `motivo_exclusion` | Text | Motivo si `ingerible = false` (ej. clase 120, parcela catastral). |
-| `count_cromo` | BigInteger | Último count observado en Cromo (`stats[].count`), referencial. |
+| `count_cromo` | BigInteger | Último count observado en Cromo. **Ya no es sólo referencial**: desde 2026-09-19 es la fuente del fallback de `fase_conteo` para las clases cuyo `stats[].count` miente (133 y 134 devuelven 0 aunque la colección pagine perfecto; sus totales reales, 20.238 y 154.284, se midieron paginando hasta el final). |
 | `count_fecha` | DateTime(tz) | Fecha del último count observado. |
 
 Seed inicial (verificado contra Cromo real el 2026-08-05): clases `68/121/122/123/125` (botella,
@@ -528,7 +606,7 @@ Auditoría de una corrida de ingesta completa (Etapa 3, todavía no implementada
 | `id` (PK) | BigInteger | — |
 | `usuario` | String(128) | Quién disparó la corrida. |
 | `estado` | String(32) | `EN_CURSO` \| `OK` \| `OK_CON_ERRORES` \| `FALLIDA` \| `CANCELADA`. Texto libre, no enum: el vocabulario todavía lo termina de fijar la Etapa 3. |
-| `params` | JSONB | Clases, `psize`, `max_paginas`, `show` de la corrida. |
+| `params` | JSONB | Clases, `psize`, `max_paginas` de la corrida, más `modo` cuando difiere de `COMPLETA` (`SOLO_ODF`, `SOLO_SPLITTERS`, `SOLO_PUERTOS_SPLITTER`, `SOLO_CAJAS_PON`, `SOLO_ROSETAS`, `SOLO_CABLES_BAJADA`) o `tipo` en las corridas sintéticas de mantenimiento (`MANUAL_REPOBLAR_CABLES`, `MANUAL_CATCHUP_SERVICIOS`, `MANUAL_NORMALIZAR_CONSISTENCIA`). La UI lo muestra como columna "Alcance" del histórico. |
 | `total_objetivo`, `leidas`, `creadas`, `actualizadas`, `sin_cambios`, `errores`, `refs_colgadas` | Integer | Contadores en vivo. |
 | `iniciada_at`, `finalizada_at` | DateTime(tz) | — |
 
@@ -576,6 +654,19 @@ Botella/empalme/ODF. `n_id` es la PK de linaje de Cromo (estable entre versiones
 
 Cable de FO. Extremos (`extremo_a/b_*`) sin FK dura — apuntan a la botella/ODF de cada punta, que puede
 no haber bajado todavía.
+
+**Columna `clase` (2026-09-19).** La tabla nunca la tuvo: era implícitamente la 51. Desde el modo
+`SOLO_CABLES_BAJADA` aloja además los 19.030 cables de la clase **66** (bajada / drop de la red PON),
+que comparten esquema y parser —medido: publican exactamente los mismos `at`, y tienen `vmax`, `tp`
+con dos extremos e `inner` con 1 tubo y 1 pelo— pero no son lo mismo. Las 32.790 filas existentes se
+backfillearon a 51.
+
+No es cosmética: **`fase_reconciliacion` marca como referencia colgada todo cable cuyo extremo no sea
+una botella**, y los extremos de un cable de bajada son una caja PON y una roseta. Sin el filtro
+`AND c.clase = 51` en esas dos consultas, cada corrida completa reportaría ~38.000 referencias
+colgadas inventadas. El filtro va en la consulta y no en la fase porque esa consulta lee la tabla
+entera, no lo que barrió la corrida. Lo mismo en `inventario.buscar_cables`, para que el listado de
+Cables no pase de 32.790 a 51.820 filas.
 
 | Columna | Tipo | Descripción |
 |---|---|---|
@@ -751,6 +842,166 @@ apuntaba a un id de versión vieja de la botella, así que `upsert_versionado` n
 `SIN_CAMBIOS` y nunca corregiría el extremo. Expuesto vía `GET /api/infra/cromo/botellas/{n_id}/cables-detectados`
 (sólo lectura) y `POST /api/infra/botellas/{n_id}/repoblar-cables` (admin) — ver `docs/infra.md`.
 
+### Tabla `cromo_servicio_odf_override` (2026-09-08)
+
+Escudo de asociación manual Servicio→ODF: cada fila es un EVENTO de asociación que un operador
+confirma cuando el detector automático de "Servicios sin ODF"
+(`core/services/cromo/servicios_sin_odf.py`) no puede resolver la ODF real de un Servicio por sí
+solo. Alimenta el gestor `AdminServiciosSinOdfViewer.vue` (`/admin/servicios/viewer` → "Servicios sin
+ODF").
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` (PK) | Integer | Autoincrement. |
+| `servicio_id` (FK) | Integer | → `app.servicios.id`, `ON DELETE CASCADE`. Única FK **dura** de la tabla — a diferencia del resto de Cromo, `app.servicios` es un maestro propio de este repo, no un objeto de Cromo. |
+| `odf_n_id` | BigInteger | La ODF elegida. **Sin FK dura** — mismo criterio que el resto de las referencias cruzadas a Cromo (`CromoCable.extremo_a_n_id`, `CromoBotellaAlias.id_cromo_destino`, etc.). |
+| `pelo_n_id` (nullable) | BigInteger | Pin opcional a un conector físico concreto de la ODF. `NULL` = asociado a la ODF en general, sin pin a una posición específica (límite de alcance aceptado en esta primera iteración). Sin FK dura. |
+| `categoria_causa` | Text + CHECK | `'OLT_PON_COMPARTIDO'` \| `'EQUIPO_DOMICILIO_CLIENTE'` \| `'SWITCH_COMPARTIDO_REVISAR'` \| `'SIN_SENAL_PROV'` \| `'OTRO'`. Los 4 primeros son exactamente lo que devuelve `categorizar()` (`CATEGORIAS_POR_PRIORIDAD`); **`'OTRO'` está en el CHECK pero hoy es inalcanzable** — ninguna rama de `categorizar()` lo produce y el gestor persiste siempre la categoría que calculó, así que existe sólo como escape para una categoría futura sin migración de constraint. Congelado como CHECK y no como Enum de Postgres (agregar un valor es `DROP`/`ADD CONSTRAINT`, no `ALTER TYPE`). |
+| `subcategoria` (nullable) | Text + CHECK | `NULL` o `'PELO_SIN_CONECTOR_ODF'` \| `'AUSENTE_RED_CROMO'` \| `'BAJA_LOGICA_HEREDADA'` — sólo tiene valor cuando `categoria_causa='SIN_SENAL_PROV'`. |
+| `senal_direccion` (nullable) | Text + CHECK | `NULL` o `'coincide'` \| `'no_coincide'` \| `'no_se_pudo_comparar'` — resultado de `direccion_comparacion.comparar_direccion_prov_vs_odf` recalculado y persistido server-side en el momento de la asociación (nunca confía en lo que mande el frontend). Puramente informativo, nunca bloquea el `INSERT`. |
+| `usuario` | String(128) | Quién confirmó la asociación. |
+| `notas` (nullable) | Text | Texto libre opcional del operador. |
+| `creado_en` | DateTime(tz) | `server_default=CURRENT_TIMESTAMP`. |
+
+Índices: `ix_cromo_servicio_odf_override_servicio_id` (btree, `servicio_id`) e
+`ix_cromo_servicio_odf_override_odf_n_id` (btree, `odf_n_id`).
+
+**Sin `UNIQUE(servicio_id)` a propósito**: permite reasociar (el operador corrige una asociación
+previa) sin perder historial — cada fila es un evento, nunca se pisa con `UPDATE`. La lectura siempre
+toma la fila más reciente por `servicio_id` (`ORDER BY creado_en DESC, id DESC`,
+`core/services/cromo/servicio_odf_override_service.py::override_vigente_de_servicio`/
+`overrides_vigentes_por_odf`) — verificado real que reasociar a otra ODF deja al Servicio sólo bajo
+la ODF más nueva, nunca duplicado bajo las dos.
+
+**Migración:** `20260908_01_cromo_servicio_odf_override.py` — crea esta tabla + los 3 CHECK + los 2
+índices propios, y además un índice btree **parcial** nuevo sobre una tabla preexistente:
+`ix_cromo_odf_conectores_servicio_resuelto` (`cromo_odf_conectores(servicio_resuelto) WHERE
+servicio_resuelto IS NOT NULL`) — sólo 5,36% de esas ~205k filas tiene ese campo no nulo, así que un
+índice completo hubiera desperdiciado espacio sin cambiar el plan. Fix de performance verificado real
+contra `EXPLAIN ANALYZE` (ver `docs/decisiones.md`, entrada 2026-09-09, para la historia completa de
+los tres cuellos de botella medidos).
+
+**Migración `20260908_02_servicios_alias_ids_gin.py`:** índice GIN `ix_servicios_alias_ids_gin`
+sobre `app.servicios.alias_ids` (`character varying(64)[]`, ya existente) — habilita el self-join
+anti-ambigüedad del detector de "Servicios sin ODF" cuando se reescribe a contención (`alias_ids @>
+ARRAY[...]`) en vez de `escalar = ANY(columna_array)` (la opclass default de GIN para arrays no
+acelera esta última forma). Índice completo, no parcial: `alias_ids` es `NULL` en la mayoría de las
+filas y GIN ya no indexa filas nulas por sí mismo.
+
+**Escritura:** `core/services/cromo/servicio_odf_override_service.py::crear_override` — valida que
+`odf_n_id` tenga fila PROPIA en `app.cromo_odfs` (criterio ESTRICTO, mismo que exige
+`verificador.py::servicios_por_odf`) antes de insertar, para no dejar un override "colgado" contra
+una ODF conocida sólo por referencia.
+
+**Lectura:** `core/services/cromo/verificador.py::servicios_por_odf` suma los overrides vigentes de
+una ODF al resultado del match automático por texto, deduplicando por `servicio_id` si el mismo
+Servicio ya resolvía por el camino automático (gana el automático, que trae datos más ricos). Expuesto
+vía `GET /api/infra/cromo/odfs/{n_id}/servicios` (`web/app/main.py`) — cada fila con override manual
+aparece con `metodo="OVERRIDE_MANUAL"`.
+
+### `cromo_tracking_cache` (caché de trackings con vencimiento, 2026-09-17)
+
+Caché de **salida**, no inventario: guarda el `.txt` ya renderizado por
+`core/services/cromo/camino_optico_txt.py::renderizar_tracking_txt`, con vencimiento. Las tablas
+`cromo_*` de inventario siguen sin recibir nada derivado de `/path`.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `pelo_n_id` | BigInteger PK | `n_id` de linaje del pelo, **sin FK dura** (mismo criterio que el resto del namespace). La clave es el pelo y no el Servicio, para que dos Servicios que comparten pelo compartan la entrada. |
+| `servicio_id` | Integer FK → `app.servicios.id` `ON DELETE CASCADE` | FK dura porque apunta a un maestro propio. Informativo: el último Servicio que lo generó. |
+| `nombre_archivo` | String(256) | Nombre base, **sin** el sufijo de desambiguación por pelo: ése lo agrega el endpoint sólo si el Servicio tiene más de una semilla. |
+| `contenido` | Text | El `.txt` completo. |
+| `duracion_ms` | Integer | Lo que costó generarlo, para diagnóstico. |
+| `generado_at` | timestamptz, indexado | Base del TTL. |
+
+**TTL:** 24 h por defecto, ajustable con `CROMO_TRACKING_CACHE_TTL_HORAS`. Vive en la capa de
+servicio, no en el esquema: no hay constraint de frescura, la lectura descarta lo vencido y la
+escritura purga (aprovecha que el caché sólo crece cuando alguien descarga, así que no hace falta
+un job de limpieza). Un valor inválido no rompe la descarga: se registra y se cae al default.
+
+**Motivo medido** (real contra Cromo, 2026-09-17): una llamada a `GET /network/fo/{pelo}/path`
+tarda 4,6-14 s, y pasarle varios ids separados por coma **no** devuelve varios caminos — con 3 ids
+Cromo contestó un único nodo raíz. Bajar los trackings de un Servicio de 6 pelos costaba 30-85 s en
+frío; con el caché, 0,00 s en caliente. Al normalizar una inconsistencia se **invalida** la entrada
+del pelo: el `.txt` previo describe un estado de la base que ya cambió.
+
+### `cromo_splitters` y `cromo_splitter_puertos` (2026-09-17)
+
+Splitter óptico (clase 133) y sus puertos (clase 134). **Los dos ya venían en el `inner[]` de cada
+barrido de botella** y `parse_arbol_botella` los descartaba como "clase inesperada": ingerirlos
+cuesta **cero llamadas extra**.
+
+| `cromo_splitters` | Tipo | Notas |
+|---|---|---|
+| `n_id` | BigInteger PK | Sin FK dura, mismo criterio que el resto del namespace. |
+| `botella_n_id` | BigInteger, indexado | Lo aporta el **recorrido del árbol**, no `parent`: `/inner` devuelve los hijos sin él. |
+| `nombre` | Text | `at.78` ("S-1269002-2", "SPLITTER1"). |
+| `ratio` | Text | `at.83` crudo ("1x8"). **Cromo lo publica**: no se deduce. |
+| `salidas` | Integer | El `N` de "1xN" parseado. NULL si el texto no matchea — no se inventa. |
+
+| `cromo_splitter_puertos` | Tipo | Notas |
+|---|---|---|
+| `n_id` | BigInteger PK | |
+| `splitter_n_id` | BigInteger, indexado | `parent`; con `/inner` se infiere sólo si la botella tiene **un** splitter. |
+| `botella_n_id` | BigInteger, indexado | Desnormalizado desde el árbol. |
+| `nombre` / `sentido` | Text | `at.80` ("E1", "S8") y `at.82` (`ENTRADA`/`SALIDA`, Text + CHECK). |
+| `servicios_atributo` | JSONB **`none_as_null=True`** | `at.62`. **Tres estados**: NULL = no se preguntó (el barrido no trae el atributo, sólo `/inner`), `[]` = puerto libre, lista = servicios que sirve. |
+
+`cromo_botellas.splitters_relevados` (Boolean, default `false`) distingue "no tiene splitters" de
+"todavía no se barrió con el código que los lee". Sin ese marcador, cero filas sería ambiguo y
+`empalmes.py` no podría apagar su heurística sin romper las botellas aún no barridas.
+
+**Por qué existe:** medido sobre 30 botellas reales, la heurística de fan-out de `empalmes.py`
+acertó en 18 y falló en 12 —incluido inventar 2 splitters donde Cromo tiene 0— y **nunca** devolvió
+un ratio cuando el splitter existía. Ver `docs/decisiones.md` (2026-09-17, seguimiento 3).
+
+**Trampa de SQLAlchemy a no repetir:** sin `none_as_null=True`, Python `None` se serializa como JSON
+`null`; entonces `IS NOT NULL` da TRUE, `jsonb_array_length()` aborta la consulta con *"cannot get
+array length of a scalar"* y los tres estados se vuelven dos.
+
+**Ampliación 2026-09-19 — `contenedor_n_id` / `contenedor_clase`.** `botella_n_id` asumía que un
+splitter cuelga de una Botella. Medido sobre **800 splitters reales**, sólo el 12 % lo hace: el
+reparto por clase del contenedor es 137→435, 139→176, 68→84, 138→35, 84→32, 140→21, 122→8, 126→4,
+125→2 y 123/121/127→1. Las dos columnas nuevas guardan el contenedor real, sin FK dura porque apunta
+a dos tablas según la clase. `botella_n_id` se conserva sin tocar —es por donde consulta
+`empalmes.py`— y pasa a poblarse **sólo** cuando el contenedor es de una clase Botella.
+
+### `cromo_pon_elementos` (2026-09-19)
+
+Elementos raíz de la red de acceso PON: **cajas PON** (clases 84, 126, 127, 137, 138, 139, 140) y
+**rosetas** (85), en una sola tabla discriminadas por `clase` (FK contra `cromo_clases`).
+
+Una tabla y no ocho porque el esquema medido contra Cromo es idéntico en las ocho: todas son objetos
+raíz (`parent` ausente), traen `ll`/`pts`/`vmax` y publican los mismos `at` (16, 20, 34, 35, 40, 41,
+45, 46, 47, 67, 68, 69, 91, 203). Lo que separa una caja PON de una roseta es `cromo_clases.entidad`,
+que es de donde `camino_optico_service` ya saca la etiqueta del nodo; cada vista de inventario filtra
+por su lista de clases.
+
+Versionada (`version_id`/`vmax`/`payload_raw`) como `cromo_odfs`, no liviana como `cromo_splitters`:
+`vmax` deja que `upsert_versionado` distinga CREADA/ACTUALIZADA/SIN_CAMBIOS, y `version_id` habilita
+la segunda pasada de `camino_optico_service._vincular_local` —sin él, un nodo de `/path` que llega
+identificado por su id de versión nunca vincula con la fila local—.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `n_id` (PK) | BigInteger | Identidad de linaje. |
+| `version_id` / `vmax` | BigInteger / Integer | Versión vigente y detector de cambios. |
+| `clase` | SmallInteger, FK `cromo_clases` | 84/126/127/137/138/139/140 (caja PON) u 85 (roseta). |
+| `nombre`, `codigo_modelo`, `id_legacy`, `notas` | Text | `at.34`, `at.41`, `at.91`, `at.35`. |
+| `calle`, `altura`, `localidad`, `provincia`, `ubicacion_fisica`, `tendido` | Text | `at.67`, `at.16`, `at.68`, `at.69`, `at.118`, `at.20` — **mismo mapeo que `parse_botella`**, por eso el parser lo reusa. |
+| `propietario` | Text | `at.47` ("Metrotel", "MB", "FANS"). |
+| `tipo_conector` | Text | `at.40` ("Fast connect", "Easy Connect", "Conector de campo", "Con casquillo"). |
+| `capacidad_puertos` | SmallInteger | `at.46`. Sobre 81 objetos reales tomó **sólo** los valores 8, 16 y 4. |
+| `latitud`, `longitud`, `pts_raw` | Float / JSONB | Geo, igual que botellas y ODFs. |
+| `payload_raw` | JSONB | Objeto crudo. |
+| `vigente`, `primera_ingesta`, `ultima_ingesta`, `ultima_modificacion` | — | Auditoría estándar del módulo. |
+
+**Qué NO tiene columna, y por qué:** `at.45` fue constante ("SI" en los 81 objetos medidos) y
+`at.203` devolvió valores incoherentes entre sí ("00000", "0", "115124", "90933"). No se les inventa
+semántica: viajan en `payload_raw` hasta que alguien los entienda.
+
+Volumen esperado: 13.482 cajas PON + 17.348 rosetas ≈ 30.800 filas.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -794,6 +1045,22 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260821_01` | `20260821_01_cromo_botella_nombre_editado_manual.py` | Columna `cromo_botellas.nombre_editado_manual BOOLEAN NOT NULL DEFAULT false` — protege un nombre corregido a mano (Verificador Cromo) de que una corrida futura lo pise (ver sección "Repoblación de cables con historial 'ID dual'" arriba) |
 | `20260822_01` | `20260822_01_cromo_botella_separada_manualmente.py` | Columnas de auditoría `cromo_botellas.separada_manualmente/separada_motivo/separada_por/separada_at` — separación manual de Botella agrupada erróneamente por nombre bajo una Cámara padre compartida |
 | `20260825_02` | `20260825_02_servicios_verificable.py` | Columnas `servicios.es_verificable BOOLEAN NOT NULL` (backfill por `tipo_servicio` sobre las filas existentes) y `servicios.es_verificable_override BOOLEAN` nullable — trazabilidad de IDs y verificabilidad de Servicios SLA (ver sección "Tabla `servicios`" arriba y `docs/decisiones.md`) |
+| `20260908_01` | `20260908_01_cromo_servicio_odf_override.py` | Tabla `app.cromo_servicio_odf_override` (+ 3 CHECK + 2 índices propios) y el índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — gestor "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
+| `20260908_02` | `20260908_02_servicios_alias_ids_gin.py` | Índice GIN `ix_servicios_alias_ids_gin` sobre `app.servicios.alias_ids` — habilita el self-join anti-ambigüedad por contención del detector "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
+| `20260917_01` | `20260917_01_cromo_tracking_cache.py` | Tabla `app.cromo_tracking_cache` — caché de salida con TTL de 24 h del `.txt` de tracking de cada pelo, para que la descarga multipelo no repita la llamada de 4,6-14 s a `/path` por cada archivo (ver sección "`cromo_tracking_cache`" arriba y `docs/decisiones.md` 2026-09-17) |
+| `20260917_02` | `20260917_02_cromo_clases_pon.py` | Catálogo de las clases de la red de acceso PON (66/84/85/86/133/134/137/141) con `ingerible=false` — sólo se etiquetan para que el diagrama de camino muestre qué es cada nodo |
+| `20260917_03` | `20260917_03_cromo_splitters.py` | Tablas `app.cromo_splitters` y `app.cromo_splitter_puertos` + `cromo_botellas.splitters_relevados` — el ratio del splitter lo publica Cromo en `at.83` y venía descartándose en cada barrido |
+| `20260919_01` | `20260919_01_cromo_clases_pon_ingeribles.py` | Alta de las 5 clases de caja PON que faltaban (126/127/138/139/140) y `ingerible=true` para 66/84/85/133/134/137 — revierte parcialmente `20260917_02`; también puebla `count_cromo`/`count_fecha` con los conteos reales, que pasan a ser el fallback de `fase_conteo` |
+| `20260919_02` | `20260919_02_cromo_pon_elementos.py` | Tabla `app.cromo_pon_elementos` — cajas PON (7 clases) y rosetas en una sola tabla discriminadas por `clase`, porque el esquema medido es idéntico en las ocho |
+| `20260919_03` | `20260919_03_cromo_splitters_contenedor.py` | Columnas `cromo_splitters.contenedor_n_id/contenedor_clase` — el 88 % de los splitters cuelga de una caja PON y no de una Botella, así que `botella_n_id` sola no alcanzaba |
+| `20260919_04` | `20260919_04_cromo_cables_clase.py` | Columna `cromo_cables.clase` (backfill a 51) — habilita alojar los cables de bajada (66) sin que la fase de reconciliación los marque como referencias colgadas |
+| `20260923_01` | `20260923_01_ingresos_correcciones.py` | Columnas `ingresos.thread_ts`/`canal_id` + tabla append-only `app.ingresos_correcciones` con trigger de inmutabilidad — soporte de datos de los comandos `Forzar ingreso`/`Forzar egreso` (ver sección "Tabla `ingresos_correcciones`" arriba y `docs/decisiones.md`) |
+| `20260923_02` | `20260923_02_servicios_sync_prov.py` | Tabla `app.servicios_sync_prov` (`ultima_sincronizacion_ok NOT NULL` en esta versión) — última sincronización PROV por Servicio (ver sección "Tabla `servicios_sync_prov`" arriba) |
+| `20260923_03` | `20260923_03_servicios_sync_prov_nullable.py` | `ALTER COLUMN servicios_sync_prov.ultima_sincronizacion_ok DROP NOT NULL` — fix de revisión de la Task 9: el camino de intento FALLIDO necesita persistir sin una sincronización exitosa previa; `NULL` reemplaza al centinela `1970-01-01` que se usó primero (ver `docs/decisiones.md`) |
+
+*(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
+migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta
+entrada.)*
 
 ---
 

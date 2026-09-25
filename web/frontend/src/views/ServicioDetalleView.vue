@@ -72,22 +72,8 @@
     <p v-if="loading" class="servicio-detalle__loading">Cargando detalle del servicio...</p>
 
     <template v-if="servicio">
-      <!-- Dentro del gate `v-if="servicio"` (igual que el resto de los paneles): afuera, el
-           Timeline mostraba "Sin eventos para mostrar" mientras cargaba o cuando el detalle
-           fallaba, y el botón "Actualizar desde PROV" quedaba clickeable sin servicio cargado
-           (`onRefrescarDesdeProv` devuelve temprano si `servicio` es null → click muerto). -->
-      <section class="servicio-detalle__historico" aria-label="Histórico de IDs">
-        <div class="servicio-detalle__historico-header">
-          <span class="servicio-detalle__historico-label">Histórico de IDs</span>
-          <button class="btn subtle" type="button" :disabled="refrescandoProv" @click="onRefrescarDesdeProv">
-            <i :class="['ph', refrescandoProv ? 'ph-spinner' : 'ph-arrow-clockwise']" aria-hidden="true"></i>
-            {{ refrescandoProv ? 'Actualizando…' : 'Actualizar desde PROV' }}
-          </button>
-        </div>
-        <p v-if="errorRefrescoProv" class="servicio-detalle__categoria-error">{{ errorRefrescoProv }}</p>
-        <ServiceTimeline :events="timelineEvents" />
-      </section>
-
+      <!-- Equipos y métricas se quedan en la ficha: son la identidad operativa del Servicio y
+           entran en una línea cada uno. Todo lo demás pasó a tarjetas con vista propia. -->
       <section v-if="equiposUltimaMilla.length > 0" class="servicio-detalle__equipos" aria-label="Equipos de última milla">
         <span class="servicio-detalle__historico-label">Equipos de última milla</span>
         <div class="servicio-detalle__equipos-grid">
@@ -122,182 +108,82 @@
         </div>
       </section>
 
-      <section class="servicio-detalle__panels">
-        <article class="servicio-detalle__panel">
-          <header>
-            <i class="ph ph-warning-octagon" aria-hidden="true"></i>
-            <h2>Reclamos</h2>
-            <small>SLA + Repetitividad</small>
-          </header>
-          <div class="servicio-detalle__hairline"></div>
-
-          <p class="servicio-detalle__kv">
-            <span>Reclamos asociados</span>
-            <span>{{ reclamosCount }}</span>
-          </p>
-          <p v-if="reportesLoading" class="servicio-detalle__kv"><span>Informes</span><span>Cargando...</span></p>
-          <p v-else-if="reportesError" class="servicio-detalle__kv is-error"><span>Informes</span><span>{{ reportesError }}</span></p>
-          <template v-else>
-            <p class="servicio-detalle__kv"><span>SLA</span><span>{{ resumenSla }}</span></p>
-            <p class="servicio-detalle__kv"><span>Repetitividad</span><span>{{ resumenRepetitividad }}</span></p>
-          </template>
-
-          <div class="servicio-detalle__panel-actions">
-            <RouterLink class="servicio-detalle__panel-link" to="/sla">Abrir SLA</RouterLink>
-            <RouterLink class="servicio-detalle__panel-link" to="/repetitividad">Abrir Repetitividad</RouterLink>
-            <RouterLink class="servicio-detalle__panel-link" to="/reports-history">Historial</RouterLink>
-          </div>
-        </article>
-
-        <article class="servicio-detalle__panel">
-          <header>
-            <i class="ph ph-tree-structure" aria-hidden="true"></i>
-            <h2>Camino FO</h2>
-            <small>Infraestructura</small>
-          </header>
-          <div class="servicio-detalle__hairline"></div>
-
-          <p v-if="foLoading" class="servicio-detalle__kv"><span>Rutas FO</span><span>Cargando...</span></p>
-          <p v-else-if="foError" class="servicio-detalle__kv is-error"><span>Rutas FO</span><span>{{ foError }}</span></p>
-          <template v-else>
-            <p class="servicio-detalle__kv"><span>Rutas detectadas</span><span>{{ foRutas.length }}</span></p>
-            <p v-if="rutaPrincipal" class="servicio-detalle__kv">
-              <span>Ruta principal</span><span>{{ rutaPrincipal.nombre }} ({{ rutaPrincipal.tipo }})</span>
+      <!-- La densidad de esta ficha era el problema reportado: 9 bloques, con tablas enteras de
+           ODFs y de ingresos compitiendo por la pantalla. Ahora cada sección resume en una tarjeta
+           y se abre entera en su propia ruta, que además es linkeable. -->
+      <section class="servicio-detalle__secciones" aria-label="Secciones del Servicio">
+        <ServicioSeccionCard
+          titulo="Histórico de IDs"
+          icono="ph-clock-counter-clockwise"
+          :to="rutaSeccion('historico')"
+          :badge="timelineEvents.length || null"
+          accion="Ver histórico completo"
+        >
+          <div class="servicio-detalle__historico-card">
+            <ServiceTimeline :events="timelineEvents" />
+            <p v-if="errorRefrescoProv" class="servicio-detalle__categoria-error">
+              {{ errorRefrescoProv }}
             </p>
-            <p v-if="foTrackingResumen" class="servicio-detalle__kv">
-              <span>Topología</span><span>{{ foTrackingResumen.camaras }} cámaras · {{ foTrackingResumen.cables }} cables</span>
-            </p>
-            <p v-if="foTrackingResumen?.puntaA || foTrackingResumen?.puntaB" class="servicio-detalle__kv">
-              <span>Puntas</span><span>{{ foTrackingResumen?.puntaA || 'N/D' }} → {{ foTrackingResumen?.puntaB || 'N/D' }}</span>
-            </p>
-          </template>
-
-          <p v-if="odfsLoading" class="servicio-detalle__kv"><span>ODFs asociadas</span><span>Cargando...</span></p>
-          <p v-else-if="odfsError" class="servicio-detalle__kv is-error"><span>ODFs asociadas</span><span>{{ odfsError }}</span></p>
-          <p v-else class="servicio-detalle__kv"><span>ODFs asociadas</span><span>{{ totalOdfs }}</span></p>
-
-          <div class="servicio-detalle__panel-actions">
-            <RouterLink class="servicio-detalle__panel-link" to="/infra">Ir a Infra FO</RouterLink>
-            <RouterLink class="servicio-detalle__panel-link" to="/infra">Ver tracking</RouterLink>
+            <button
+              class="btn subtle"
+              type="button"
+              :disabled="refrescandoProv"
+              @click="onRefrescarDesdeProv"
+            >
+              <i :class="['ph', refrescandoProv ? 'ph-spinner' : 'ph-arrow-clockwise']" aria-hidden="true"></i>
+              {{ refrescandoProv ? 'Actualizando…' : 'Actualizar desde PROV' }}
+            </button>
           </div>
-        </article>
+        </ServicioSeccionCard>
 
-        <article class="servicio-detalle__panel">
-          <header>
-            <i class="ph ph-sign-in" aria-hidden="true"></i>
-            <h2>Ingresos</h2>
-            <small>Trazabilidad</small>
-          </header>
-          <div class="servicio-detalle__hairline"></div>
+        <ServicioSeccionCard
+          titulo="Camino óptico"
+          icono="ph-path"
+          :to="rutaSeccion('camino')"
+          :badge="camino.cargandoPelos.value ? null : camino.pelos.value.length || null"
+          :cargando="foLoading || camino.cargandoPelos.value"
+          :error="foError"
+          :resumen="resumenCamino"
+          accion="Ver camino, ODFs y trackings"
+        />
 
-          <p v-if="ingresosLoading" class="servicio-detalle__kv"><span>Ingresos</span><span>Cargando...</span></p>
-          <p v-else-if="ingresosError" class="servicio-detalle__kv is-error"><span>Ingresos</span><span>{{ ingresosError }}</span></p>
-          <p v-else-if="ingresos.length === 0" class="servicio-detalle__kv-text">
-            Sin ingresos registrados para este servicio.
-          </p>
-          <template v-else>
-            <p v-for="ingreso in ingresos" :key="ingreso.id" class="servicio-detalle__kv">
-              <span>{{ ingreso.camara_nombre || `Cámara ${ingreso.camara_id}` }} · {{ ingreso.botella_label }}</span>
-              <span>{{ formatRangoIngreso(ingreso) }} · {{ ingreso.tecnico_id || 'Técnico sin identificar' }}</span>
-            </p>
-          </template>
+        <ServicioSeccionCard
+          titulo="Ingresos"
+          icono="ph-sign-in"
+          :to="rutaSeccion('ingresos')"
+          :badge="ingresosLoading ? null : ingresos.length || null"
+          :cargando="ingresosLoading"
+          :error="ingresosError"
+          :resumen="resumenIngresos"
+        />
 
-          <div class="servicio-detalle__panel-actions">
-            <button class="servicio-detalle__panel-link" type="button" disabled title="Próximamente">Registrar ingreso</button>
-          </div>
-        </article>
+        <ServicioSeccionCard
+          titulo="Reclamos"
+          icono="ph-warning-circle"
+          :to="rutaSeccion('reclamos')"
+          :badge="reclamosCount || null"
+          :resumen="resumenReclamos"
+        />
 
-        <article class="servicio-detalle__panel">
-          <header>
-            <i class="ph ph-sparkle" aria-hidden="true"></i>
-            <h2>Análisis de mejora</h2>
-            <small>Asistencia LLM</small>
-          </header>
-          <div class="servicio-detalle__hairline"></div>
-          <p class="servicio-detalle__kv-text">
-            Contexto listo para análisis: cliente, estado, SLA, histórico de IDs y resumen FO.
-          </p>
-
-          <div class="servicio-detalle__panel-actions">
-            <button class="servicio-detalle__panel-link" type="button" disabled title="Próximamente">Generar análisis</button>
-          </div>
-        </article>
-      </section>
-
-      <section class="servicio-detalle__odfs" aria-label="ODFs asociadas">
-        <header class="servicio-detalle__odfs-header">
-          <h2>ODFs asociadas</h2>
-          <div class="servicio-detalle__odfs-header-right">
-            <label class="servicio-detalle__odfs-toggle">
-              <input v-model="showAllEmpalmes" type="checkbox" />
-              Mostrar todos los empalmes (incl. no-ODF)
-            </label>
-            <span class="servicio-detalle__chip">{{ totalOdfs }} ODF(s)</span>
-          </div>
-        </header>
-
-        <p v-if="odfsLoading" class="servicio-detalle__loading">Cargando ODFs asociadas...</p>
-        <p v-else-if="odfsError" class="servicio-detalle__error">{{ odfsError }}</p>
-        <p v-else-if="odfsFlat.length === 0" class="servicio-detalle__kv-text">
-          Sin ODFs detectadas en el tracking de este servicio.
-        </p>
-
-        <template v-else>
-          <div v-for="grupo in odfsPorRuta" :key="grupo.ruta_id" class="servicio-detalle__odfs-grupo">
-            <h3 class="servicio-detalle__odfs-subtitulo">{{ grupo.ruta_nombre }} ({{ grupo.ruta_tipo }})</h3>
-            <p v-if="grupo.terminal_a && grupo.terminal_b" class="servicio-detalle__odfs-puntas">
-              Puntas ODF: {{ grupo.terminal_a.odf_id }}:{{ grupo.terminal_a.conector }} →
-              {{ grupo.terminal_b.odf_id }}:{{ grupo.terminal_b.conector }}
-            </p>
-
-            <table class="tabla-odfs">
-              <thead>
-                <tr>
-                  <th>Empalme ID</th>
-                  <th>Descripción</th>
-                  <th>Tipo</th>
-                  <th>Cámara</th>
-                  <th>Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="fila in grupo.filas" :key="fila.empalme_id">
-                  <td>{{ fila.empalme_id }}</td>
-                  <td>{{ fila.descripcion }}</td>
-                  <td>
-                    <span :class="['servicio-detalle__chip', { 'is-outline': fila.es_transito }]">
-                      {{ fila.es_transito ? 'ODF' : 'Empalme' }}
-                    </span>
-                  </td>
-                  <td>
-                    <span v-if="fila.camara_nombre">{{ fila.camara_nombre }}</span>
-                    <span v-else class="servicio-detalle__odfs-muted">Sin match</span>
-                  </td>
-                  <td>
-                    <span v-if="fila.camara_estado" class="servicio-detalle__odfs-estado">
-                      <span
-                        :class="['servicio-detalle__odfs-dot', `is-${estadoCamaraToken(fila.camara_estado)}`]"
-                        aria-hidden="true"
-                      ></span>
-                      {{ fila.camara_estado }}
-                    </span>
-                    <span v-else class="servicio-detalle__odfs-muted">—</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </template>
+        <ServicioSeccionCard
+          titulo="Eventos de baneo"
+          icono="ph-shield-warning"
+          :to="rutaSeccion('baneos')"
+          :badge="baneosLoading ? null : baneosTotal || null"
+          :badge-token="baneosActivos > 0 ? 'error' : 'idle'"
+          :cargando="baneosLoading"
+          :error="baneosError"
+          :resumen="resumenBaneos"
+        />
       </section>
     </template>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { estadoCamaraToken } from '../api/camaras';
 import {
   CATEGORIAS_SERVICIO,
   categoriaLabel,
@@ -311,7 +197,20 @@ import {
   type ServicioHistorialIdItem,
   type ServicioItem,
 } from '../api/servicios';
+import {
+  type InfraRutaItem,
+  type InfraServicioIngreso,
+  type ReportHistoryItem,
+  getBaneosServicio,
+  getIngresosServicio,
+  getOdfsServicio,
+  getRutasServicio,
+  getTrackingRuta,
+  getUltimoReporte,
+} from '../api/servicioSecciones';
+import ServicioSeccionCard from '../components/servicios/detalle/ServicioSeccionCard.vue';
 import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
+import { useCromoPath } from '../composables/useCromoPath';
 import { useSession } from '../composables/useSession';
 import type { TimelineEvent } from '../types/timeline';
 
@@ -332,109 +231,34 @@ const errorCategoria = ref('');
 const guardandoVerificable = ref(false);
 const errorVerificable = ref('');
 
-interface InfraRutaItem {
-  id: number;
-  nombre: string;
-  tipo: string;
-  empalmes_count: number;
-  activa: boolean;
-}
-
-interface InfraRutasResponse {
-  status: string;
-  rutas: InfraRutaItem[];
-}
-
-interface TrackingEntry {
-  tipo: string;
-}
-
-interface InfraTrackingResponse {
-  status: string;
-  tracking: TrackingEntry[];
-  punta_a?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null;
-  punta_b?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null;
-}
-
-// ODFs asociadas (fuente: archivo de tracking de la ruta, no Cromo — ver Task 7/8 del plan
-// "snappy-petting-music"). `empalme_id` siempre viene como string (regex del parser); `camara_*`
-// son null cuando no hay match en app.empalmes; `ruta_tipo` nunca llega null desde el backend
-// (default "PRINCIPAL" ya resuelto server-side).
-interface InfraOdfTerminal {
-  odf_id: string;
-  conector: string;
-}
-
-interface InfraOdfEmpalme {
-  empalme_id: string;
-  descripcion: string;
-  es_transito: boolean;
-  camara_id: number | null;
-  camara_nombre: string | null;
-  camara_estado: string | null;
-}
-
-interface InfraOdfRuta {
-  ruta_id: number;
-  ruta_nombre: string;
-  ruta_tipo: string;
-  activa: boolean;
-  sin_tracking: boolean;
-  terminal_a: InfraOdfTerminal | null;
-  terminal_b: InfraOdfTerminal | null;
-  transitos_count: number;
-  empalmes_count: number;
-  empalmes: InfraOdfEmpalme[];
-}
-
-interface InfraOdfsResponse {
-  status: string;
-  servicio_id: string;
-  total_odfs: number;
-  total_empalmes: number;
-  rutas: InfraOdfRuta[];
-}
-
-// Ingresos técnicos (Slack) a las cámaras que atraviesa el servicio. `tecnico_id` guarda el nombre
-// resuelto del técnico (vía Slack `users.info`) para filas creadas desde el fix de 2026-09-04 en
-// adelante — filas anteriores a ese deploy pueden todavía tener el id crudo de Slack (p. ej.
-// "U0AUB6CRE4A") si nunca se cerraron con un Egreso posterior. `botella_label`/`tipo` — mismo
-// patrón que `ModalRegistros.vue`/`CamaraDetailView.vue` (Tarea 6 del fix) — distinguen la Botella
-// resuelta y un `INTENTO_BLOQUEADO` (que también tiene `fecha_fin: null`, igual que un ingreso real
-// "en curso") de un ingreso real.
-interface InfraServicioIngreso {
-  id: number;
-  fecha_inicio: string | null;
-  fecha_fin: string | null;
-  tecnico_id: string | null;
-  cromo_botella_id: number | null;
-  botella_label: string;
-  tipo: string;
-  camara_id: number;
-  camara_nombre: string | null;
-}
-
-interface InfraServicioIngresosResponse {
-  status: string;
-  servicio_id: string;
-  total: number;
-  ingresos: InfraServicioIngreso[];
-}
-
-interface ReportHistoryItem {
-  id: number;
-  status: string;
-  started_at: string | null;
-  report_type: string;
-}
-
-interface ReportsHistoryResponse {
-  items?: ReportHistoryItem[];
-}
+// Los tipos y las llamadas de cada sección viven en `api/servicioSecciones.ts`: esta vista dejó de
+// ser la única consumidora cuando cada sección pasó a tener su propia ruta, y tenerlos declarados
+// acá obligaba a duplicarlos en las cinco vistas nuevas.
 
 const foLoading = ref(false);
 const foError = ref('');
 const foRutas = ref<InfraRutaItem[]>([]);
+
+// Sólo se usan las semillas y la descarga: la resolución completa del camino (con su auditoría)
+// vive en el gestor de Servicios sin ODF, que es admin-only.
+const camino = useCromoPath();
+
+/**
+ * La etiqueta dice cuántos archivos van a bajar, porque no es lo mismo un Servicio PON (1 pelo,
+ * 1 .txt) que uno de FO o con un SW de módulo bifilar (2 o más). Durante la descarga muestra el
+ * avance: en frío cada pelo cuesta entre 4,6 s y 14 s contra Cromo, así que sin progreso el
+ * operador cree que se colgó.
+ */
+const etiquetaDescargaTracking = computed(() => {
+  if (camino.descargando.value) {
+    const total = camino.descargaTotal.value;
+    return total > 1
+      ? `Generando… ${camino.descargadosCount.value}/${total}`
+      : 'Generando…';
+  }
+  const tildados = camino.pelosSeleccionados.value.length;
+  return tildados > 1 ? `Trackings Cromo (${tildados} .txt)` : 'Tracking Cromo (.txt)';
+});
 const foTrackingResumen = ref<{
   camaras: number;
   cables: number;
@@ -442,13 +266,8 @@ const foTrackingResumen = ref<{
   puntaB: string | null;
 } | null>(null);
 
-const odfsLoading = ref(false);
-const odfsError = ref('');
-const odfsRutas = ref<InfraOdfRuta[]>([]);
+// Sólo el total: las ODFs enteras se ven en la vista de Camino óptico (OdfsAsociadasPanel).
 const totalOdfs = ref(0);
-// Por defecto sólo se ven los empalmes que son ODF (es_transito === true); tildar el checkbox
-// revela también los empalmes simples (cámaras de paso, etc.) del tracking.
-const showAllEmpalmes = ref(false);
 
 const ingresosLoading = ref(false);
 const ingresosError = ref('');
@@ -498,6 +317,66 @@ const timelineEvents = computed<TimelineEvent[]>(() => {
 });
 
 const reclamosCount = computed(() => servicio.value?.reclamos?.length ?? 0);
+
+const baneosLoading = ref(false);
+const baneosError = ref('');
+const baneosTotal = ref(0);
+const baneosActivos = ref(0);
+
+/** URL de la vista dedicada de una sección, sobre el ID de origen ya normalizado. */
+function rutaSeccion(seccion: string): string {
+  // `idParam` ya es el ID de origen normalizado: `loadDetalle` hace `router.replace` hacia él
+  // cuando la URL traía otro de los identificadores del Servicio.
+  return `/servicios/ID/${encodeURIComponent(idParam.value)}/${seccion}`;
+}
+
+// Las tarjetas resumen en una línea: el detalle completo vive en la vista de cada sección.
+const resumenCamino = computed(() => {
+  const pelos = camino.pelos.value.length;
+  const rutas = foRutas.value.length;
+  const partes: string[] = [];
+  partes.push(pelos === 1 ? '1 pelo en Cromo' : `${pelos} pelos en Cromo`);
+  if (rutas) partes.push(rutas === 1 ? '1 ruta FO' : `${rutas} rutas FO`);
+  if (totalOdfs.value) partes.push(totalOdfs.value === 1 ? '1 ODF' : `${totalOdfs.value} ODFs`);
+  return partes.join(' · ');
+});
+
+const resumenIngresos = computed(() => {
+  if (ingresos.value.length === 0) return 'Sin ingresos registrados';
+  const abiertos = ingresos.value.filter((i) => !i.fecha_fin).length;
+  return abiertos > 0
+    ? `${ingresos.value.length} ingreso(s) · ${abiertos} sin cierre`
+    : `${ingresos.value.length} ingreso(s)`;
+});
+
+const resumenReclamos = computed(() =>
+  reclamosCount.value === 0
+    ? 'Sin reclamos cargados'
+    : `${reclamosCount.value} reclamo(s) · SLA ${slaEstadoCorto.value}`,
+);
+
+const resumenBaneos = computed(() => {
+  if (baneosTotal.value === 0) return 'Nunca participó en un baneo';
+  return baneosActivos.value > 0
+    ? `${baneosTotal.value} evento(s) · ${baneosActivos.value} activo(s)`
+    : `${baneosTotal.value} evento(s), ninguno activo`;
+});
+
+async function loadBaneos(servicioId: number): Promise<void> {
+  baneosLoading.value = true;
+  baneosError.value = '';
+  try {
+    const respuesta = await getBaneosServicio(servicioId);
+    baneosTotal.value = respuesta.total;
+    baneosActivos.value = respuesta.activos;
+  } catch (err: unknown) {
+    baneosTotal.value = 0;
+    baneosActivos.value = 0;
+    baneosError.value = err instanceof Error ? err.message : 'No se pudieron cargar los baneos';
+  } finally {
+    baneosLoading.value = false;
+  }
+}
 const estadoToken = computed(() => estadoServicioToken(servicio.value?.estado_servicio));
 
 const rutaPrincipal = computed(() => {
@@ -508,52 +387,6 @@ const rutaPrincipal = computed(() => {
   const principal = rutas.find((ruta) => (ruta.tipo ?? '').toUpperCase() === 'PRINCIPAL');
   return principal ?? rutas[0];
 });
-
-// Fila individual aplanada de un empalme, etiquetada con los datos de su ruta padre — filtra a
-// sólo es_transito === true salvo que showAllEmpalmes esté activo. terminal_a/terminal_b viven
-// aparte, a nivel de ruta (ver odfsPorRuta) — nunca se cruzan contra una fila puntual acá.
-interface OdfFlatRow extends InfraOdfEmpalme {
-  ruta_id: number;
-  ruta_nombre: string;
-  ruta_tipo: string;
-}
-
-const odfsFlat = computed<OdfFlatRow[]>(() =>
-  odfsRutas.value.flatMap((ruta) =>
-    ruta.empalmes
-      .filter((empalme) => empalme.es_transito || showAllEmpalmes.value)
-      .map((empalme) => ({
-        ...empalme,
-        ruta_id: ruta.ruta_id,
-        ruta_nombre: ruta.ruta_nombre,
-        ruta_tipo: ruta.ruta_tipo,
-      })),
-  ),
-);
-
-// Reagrupa odfsFlat por ruta para el render (subtítulo + leyenda de puntas + tabla por ruta),
-// omitiendo rutas sin ninguna fila visible bajo el filtro actual.
-interface OdfGrupoRuta {
-  ruta_id: number;
-  ruta_nombre: string;
-  ruta_tipo: string;
-  terminal_a: InfraOdfTerminal | null;
-  terminal_b: InfraOdfTerminal | null;
-  filas: OdfFlatRow[];
-}
-
-const odfsPorRuta = computed<OdfGrupoRuta[]>(() =>
-  odfsRutas.value
-    .map((ruta) => ({
-      ruta_id: ruta.ruta_id,
-      ruta_nombre: ruta.ruta_nombre,
-      ruta_tipo: ruta.ruta_tipo,
-      terminal_a: ruta.terminal_a,
-      terminal_b: ruta.terminal_b,
-      filas: odfsFlat.value.filter((fila) => fila.ruta_id === ruta.ruta_id),
-    }))
-    .filter((grupo) => grupo.filas.length > 0),
-);
 
 const resumenSla = computed(() => formatReporteSummary(reporteSla.value));
 const resumenRepetitividad = computed(() => formatReporteSummary(reporteRepetitividad.value));
@@ -570,6 +403,33 @@ const domicilio = computed(() => {
     .filter((value) => value.length > 0);
   return parts.length > 0 ? parts.join(' · ') : 'Sin dato';
 });
+
+/** Descarga el tracking `.txt` generado desde Cromo para el Servicio abierto. */
+async function descargarTrackingDeCromo(): Promise<void> {
+  const servicioId = servicio.value?.id;
+  if (servicioId == null) return;
+  await camino.descargarTrackings(servicioId);
+}
+
+function formatPunta(
+  punta?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null,
+): string | null {
+  if (!punta) return null;
+  const sitio = (punta.sitio ?? '').trim();
+  const identificador = (punta.identificador ?? '').trim();
+  const conector = (punta.conector ?? '').trim();
+  const texto = [sitio, identificador, conector].filter((part) => part.length > 0).join(':');
+  return texto || null;
+}
+
+function formatReporteSummary(item: ReportHistoryItem | null): string {
+  if (!item) return 'Sin ejecuciones recientes';
+  const estado = item.status === 'success' ? 'correcto' : item.status;
+  const fecha = item.started_at
+    ? new Date(item.started_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })
+    : 'sin fecha';
+  return `${estado} · ${fecha}`;
+}
 
 async function loadDetalle(): Promise<void> {
   const id = idParam.value;
@@ -593,6 +453,12 @@ async function loadDetalle(): Promise<void> {
       loadReportesResumen(),
       loadOdfsAsociadas(response.id_origen),
       loadIngresosAsociados(response.id_origen),
+      // Semillas: SQL local, no toca Cromo. Se piden acá para que el botón sepa si va habilitado
+      // ANTES del click, en vez de hacerle descubrir al operador que no hay camino recién después.
+      // Prioridad por conector: acá los pelos que importan son las posiciones de ODF del
+      // Servicio, al revés que en el gestor de Servicios sin ODF.
+      camino.cargarPelos(response.servicio.id, { priorizarConector: true }),
+      loadBaneos(response.servicio.id),
     ]);
 
     const idOrigen = response.id_origen.trim();
@@ -655,48 +521,6 @@ async function onRefrescarDesdeProv(): Promise<void> {
   }
 }
 
-function formatPunta(
-  punta?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null,
-): string | null {
-  if (!punta) return null;
-  const sitio = (punta.sitio ?? '').trim();
-  const identificador = (punta.identificador ?? '').trim();
-  const conector = (punta.conector ?? '').trim();
-  const texto = [sitio, identificador, conector].filter((part) => part.length > 0).join(':');
-  return texto || null;
-}
-
-function formatReporteSummary(item: ReportHistoryItem | null): string {
-  if (!item) return 'Sin ejecuciones recientes';
-  const estado = item.status === 'success' ? 'correcto' : item.status;
-  const fecha = item.started_at
-    ? new Date(item.started_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })
-    : 'sin fecha';
-  return `${estado} · ${fecha}`;
-}
-
-function formatFechaIngreso(value: string | null): string {
-  if (!value) return 'Sin fecha';
-  return new Date(value).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
-}
-
-function formatRangoIngreso(item: InfraServicioIngreso): string {
-  const inicio = formatFechaIngreso(item.fecha_inicio);
-  if (item.tipo === 'INTENTO_BLOQUEADO') {
-    return `Intento bloqueado - ${inicio}`;
-  }
-  const fin = item.fecha_fin ? formatFechaIngreso(item.fecha_fin) : 'en curso';
-  return `${inicio} → ${fin}`;
-}
-
-async function parseJsonOrError<T>(response: Response): Promise<T> {
-  const data = await response.json() as T & { error?: string };
-  if (!response.ok) {
-    throw new Error(data.error ?? `Error ${response.status}`);
-  }
-  return data;
-}
-
 async function loadFoResumen(idOrigen: string): Promise<void> {
   const clean = idOrigen.trim();
   if (!clean) return;
@@ -707,19 +531,13 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
   foTrackingResumen.value = null;
 
   try {
-    const rutasResponse = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/rutas`, {
-      credentials: 'include',
-    });
-    const rutasData = await parseJsonOrError<InfraRutasResponse>(rutasResponse);
+    const rutasData = await getRutasServicio(clean);
     foRutas.value = rutasData.rutas ?? [];
 
     const principal = rutaPrincipal.value;
     if (!principal) return;
 
-    const trackingResponse = await fetch(`/api/infra/rutas/${principal.id}/tracking`, {
-      credentials: 'include',
-    });
-    const trackingData = await parseJsonOrError<InfraTrackingResponse>(trackingResponse);
+    const trackingData = await getTrackingRuta(principal.id);
     const entries = trackingData.tracking ?? [];
 
     foTrackingResumen.value = {
@@ -735,26 +553,18 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
   }
 }
 
+/** Alimenta el "N ODFs" del resumen de la tarjeta de Camino. Si falla, el resumen omite esa parte
+ * en vez de gritar: el detalle -y su error, con texto- vive en la vista de Camino óptico. */
 async function loadOdfsAsociadas(idOrigen: string): Promise<void> {
   const clean = idOrigen.trim();
+  totalOdfs.value = 0;
   if (!clean) return;
 
-  odfsLoading.value = true;
-  odfsError.value = '';
-  odfsRutas.value = [];
-  totalOdfs.value = 0;
-
   try {
-    const response = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/odfs`, {
-      credentials: 'include',
-    });
-    const data = await parseJsonOrError<InfraOdfsResponse>(response);
-    odfsRutas.value = data.rutas ?? [];
+    const data = await getOdfsServicio(clean);
     totalOdfs.value = data.total_odfs ?? 0;
-  } catch (err: unknown) {
-    odfsError.value = err instanceof Error ? err.message : 'No se pudo cargar ODFs asociadas';
-  } finally {
-    odfsLoading.value = false;
+  } catch {
+    totalOdfs.value = 0;
   }
 }
 
@@ -767,10 +577,7 @@ async function loadIngresosAsociados(idOrigen: string): Promise<void> {
   ingresos.value = [];
 
   try {
-    const response = await fetch(`/api/infra/servicios/${encodeURIComponent(clean)}/ingresos`, {
-      credentials: 'include',
-    });
-    const data = await parseJsonOrError<InfraServicioIngresosResponse>(response);
+    const data = await getIngresosServicio(clean);
     ingresos.value = data.ingresos ?? [];
   } catch (err: unknown) {
     ingresosError.value = err instanceof Error ? err.message : 'No se pudo cargar ingresos asociados';
@@ -786,13 +593,10 @@ async function loadReportesResumen(): Promise<void> {
   reporteRepetitividad.value = null;
 
   try {
-    const [slaResponse, repResponse] = await Promise.all([
-      fetch('/api/reports/history?type=sla&limit=1', { credentials: 'include' }),
-      fetch('/api/reports/history?type=repetitividad&limit=1', { credentials: 'include' }),
+    const [slaData, repData] = await Promise.all([
+      getUltimoReporte('sla'),
+      getUltimoReporte('repetitividad'),
     ]);
-
-    const slaData = await parseJsonOrError<ReportsHistoryResponse>(slaResponse);
-    const repData = await parseJsonOrError<ReportsHistoryResponse>(repResponse);
 
     reporteSla.value = (slaData.items ?? [])[0] ?? null;
     reporteRepetitividad.value = (repData.items ?? [])[0] ?? null;
@@ -810,6 +614,11 @@ watch(
   },
   { immediate: true },
 );
+
+/** Hasta ahora esta vista sólo descargaba el .txt; con el panel puede quedar una resolución de
+ * hasta 30 s en vuelo al navegar a otro Servicio o salir. `cancelar()` aborta la request y limpia
+ * los temporizadores del composable. */
+onBeforeUnmount(() => camino.cancelar());
 </script>
 
 <style scoped>
@@ -821,7 +630,7 @@ watch(
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 16px 26px 0;
+  padding: 16px 0 0;
   font-size: 11.5px;
   color: color-mix(in srgb, var(--color-text) 48%, transparent);
 }
@@ -844,7 +653,7 @@ watch(
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 20px;
-  padding: 14px 26px 18px;
+  padding: 14px 0 18px;
 }
 
 .servicio-detalle__identity {
@@ -975,7 +784,7 @@ watch(
   flex-direction: column;
   align-items: stretch;
   gap: 11px;
-  padding: 16px 26px;
+  padding: 16px 0;
 }
 
 .servicio-detalle__historico-label {
@@ -1175,109 +984,6 @@ watch(
 .servicio-detalle__panel-link:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-.servicio-detalle__odfs {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin: 0 26px 26px;
-  padding: 16px;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.servicio-detalle__odfs-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.servicio-detalle__odfs-header h2 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.servicio-detalle__odfs-header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.servicio-detalle__odfs-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
-  cursor: pointer;
-}
-
-.servicio-detalle__odfs-grupo {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.servicio-detalle__odfs-grupo + .servicio-detalle__odfs-grupo {
-  margin-top: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--color-divider);
-}
-
-.servicio-detalle__odfs-subtitulo {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.servicio-detalle__odfs-puntas {
-  margin: 0;
-  font-size: 11.5px;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
-}
-
-.servicio-detalle__odfs-muted {
-  color: color-mix(in srgb, var(--color-text) 40%, transparent);
-}
-
-.servicio-detalle__odfs-estado {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.servicio-detalle__odfs-dot {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--color-state-idle);
-}
-.servicio-detalle__odfs-dot.is-ok { background: var(--color-state-ok); }
-.servicio-detalle__odfs-dot.is-warn { background: var(--color-state-warn); }
-.servicio-detalle__odfs-dot.is-error { background: var(--color-state-error); }
-.servicio-detalle__odfs-dot.is-idle { background: var(--color-state-idle); }
-
-.tabla-odfs {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-
-.tabla-odfs th,
-.tabla-odfs td {
-  text-align: left;
-  padding: 6px 9px;
-  border-bottom: 1px solid var(--color-divider);
-}
-
-.tabla-odfs th {
-  font-weight: 500;
-  font-size: 11px;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
 @media (max-width: 960px) {

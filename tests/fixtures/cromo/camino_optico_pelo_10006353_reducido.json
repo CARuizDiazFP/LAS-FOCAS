@@ -1,0 +1,859 @@
+{
+  "st": 0,
+  "msg": "",
+  "dict": {
+    "10006353": {
+      "class": 130,
+      "stp": 30,
+      "at": [
+        {
+          "id": 62,
+          "value": "93154"
+        },
+        {
+          "id": 74,
+          "value": "3",
+          "name": "fo.orden"
+        },
+        {
+          "id": 75,
+          "value": "4",
+          "name": "nombre"
+        },
+        {
+          "id": 77,
+          "value": "MR",
+          "name": "fo.color"
+        },
+        {
+          "id": 61,
+          "value": "FO 93154 - ODF Guanahani 580 - X el Bajo X TBA",
+          "name": "fo.id_servicio"
+        }
+      ],
+      "father": 10006349,
+      "gfather": 10006296,
+      "a": [
+        8174859,
+        6973676,
+        8593127
+      ],
+      "tp": [
+        {
+          "id_to": 8174859,
+          "nfrom": -1,
+          "nto": -1
+        },
+        {
+          "id_to": 10006404,
+          "nfrom": -1,
+          "nto": -1
+        }
+      ],
+      "b": [
+        10006404,
+        10006301
+      ]
+    },
+    "8174859": {
+      "class": 132,
+      "at": [
+        {
+          "id": 84,
+          "value": "3-4",
+          "name": "nombre"
+        },
+        {
+          "id": 85,
+          "value": "FUSION",
+          "name": "fo.tipo"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 6973676,
+          "nfrom": -1,
+          "nto": -1
+        },
+        {
+          "id_to": 10006353,
+          "nfrom": -1,
+          "nto": -1
+        }
+      ],
+      "father": 9749277,
+      "stp": 30
+    },
+    "9749277": {
+      "id": 10057277,
+      "class": 121,
+      "at": [
+        {
+          "id": 16,
+          "value": "1810"
+        },
+        {
+          "id": 20,
+          "value": "Canalizado"
+        },
+        {
+          "id": 34,
+          "value": "Cra Av. Montes de Oca 1810 CF",
+          "name": "nombre"
+        },
+        {
+          "id": 67,
+          "value": "MONTES DE OCA, MANUEL AV."
+        },
+        {
+          "id": 68,
+          "value": "Capital Federal"
+        },
+        {
+          "id": 69,
+          "value": "Capital Federal"
+        },
+        {
+          "id": 91,
+          "value": "1227359"
+        },
+        {
+          "id": 41,
+          "value": "FIST-BC16",
+          "name": "fo.tipo"
+        },
+        {
+          "id": 45,
+          "value": "NO"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 10057276,
+          "nfrom": 1,
+          "nto": 0
+        },
+        {
+          "id_to": 10057280,
+          "nfrom": 14,
+          "nto": 1
+        },
+        {
+          "id_to": 10057281,
+          "nfrom": 15,
+          "nto": 1
+        },
+        {
+          "id_to": 10057279,
+          "nfrom": 5,
+          "nto": 1
+        },
+        {
+          "id_to": 10057278,
+          "nfrom": 3,
+          "nto": 1
+        },
+        {
+          "id_to": 10057282,
+          "nfrom": 16,
+          "nto": 1
+        }
+      ],
+      "stp": 30
+    },
+    "6973676": {
+      "class": 130,
+      "at": [
+        {
+          "id": 74,
+          "value": "2",
+          "name": "fo.orden"
+        },
+        {
+          "id": 75,
+          "value": "3",
+          "name": "nombre"
+        },
+        {
+          "id": 77,
+          "value": "VR",
+          "name": "fo.color"
+        },
+        {
+          "id": 62,
+          "value": "93154"
+        },
+        {
+          "id": 61,
+          "value": "FO 93154 - ODF Guanahani 580 - X el Bajo X TBA",
+          "name": "fo.id_servicio"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 8174859,
+          "nfrom": -1,
+          "nto": -1
+        },
+        {
+          "id_to": 9028709,
+          "nfrom": -1,
+          "nto": -1
+        }
+      ],
+      "father": 6973673,
+      "gfather": 6599689,
+      "stp": 30
+    },
+    "6973673": {
+      "id": 6973673,
+      "class": 129,
+      "at": [
+        {
+          "id": 72,
+          "value": "0",
+          "name": "fo.orden"
+        },
+        {
+          "id": 76,
+          "value": "AZ",
+          "name": "fo.color"
+        },
+        {
+          "id": 73,
+          "value": "AZ",
+          "name": "nombre"
+        }
+      ],
+      "tp": [],
+      "father": 6599689,
+      "stp": 30
+    },
+    "6599689": {
+      "id": 10057278,
+      "class": 51,
+      "at": [
+        {
+          "id": 20,
+          "value": "Canalizado"
+        },
+        {
+          "id": 26,
+          "value": "F-VIN-1983",
+          "name": "nombre"
+        },
+        {
+          "id": 32,
+          "value": "72-BRUG"
+        },
+        {
+          "id": 27,
+          "value": "Acceso"
+        },
+        {
+          "id": 25,
+          "value": "Metrotel"
+        },
+        {
+          "id": 91,
+          "value": "33262"
+        },
+        {
+          "id": 28,
+          "value": "1346"
+        },
+        {
+          "id": 29,
+          "value": "1371"
+        },
+        {
+          "id": 30,
+          "value": "10032"
+        },
+        {
+          "id": 23,
+          "value": "25",
+          "name": "fo.distancia_geo"
+        },
+        {
+          "id": 24,
+          "value": "25.62"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 6639103,
+          "nfrom": 0,
+          "nto": 1
+        },
+        {
+          "id_to": 10057277,
+          "nfrom": 1,
+          "nto": 3
+        }
+      ],
+      "stp": 30
+    },
+    "8593127": {
+      "class": 136,
+      "at": [
+        {
+          "id": 81,
+          "value": "5",
+          "name": "nombre"
+        },
+        {
+          "id": 62,
+          "value": "93154"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 7967644,
+          "nfrom": -1,
+          "nto": -1
+        }
+      ],
+      "father": 8593122,
+      "gfather": 6644124,
+      "stp": 30
+    },
+    "8593122": {
+      "id": 8593122,
+      "class": 135,
+      "at": [
+        {
+          "id": 79,
+          "value": "O-1249382-1",
+          "name": "nombre"
+        },
+        {
+          "id": 89,
+          "value": "SC-APCx24"
+        }
+      ],
+      "tp": [],
+      "children": [
+        8593131,
+        8593132,
+        8593133,
+        8593134,
+        8593135,
+        8593136,
+        8593137,
+        8593138,
+        8593128,
+        8593145,
+        8593127,
+        8593144,
+        8593126,
+        8593143,
+        8593125,
+        8593142,
+        8593123,
+        8593140,
+        8593124,
+        8593141,
+        8593129,
+        8593146,
+        8593130,
+        8593139
+      ],
+      "father": 6644124,
+      "stp": 30
+    },
+    "6644124": {
+      "id": 6644124,
+      "class": 69,
+      "at": [
+        {
+          "id": 34,
+          "value": "ODF Frontera Óptica (sala Cross) - Arsat",
+          "name": "nombre"
+        },
+        {
+          "id": 67,
+          "value": "JUAN DOMINGO PERON"
+        },
+        {
+          "id": 16,
+          "value": "7934"
+        },
+        {
+          "id": 68,
+          "value": "BENAVIDEZ"
+        },
+        {
+          "id": 69,
+          "value": "Buenos Aires"
+        },
+        {
+          "id": 91,
+          "value": "1249382"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 6630098,
+          "nfrom": 0,
+          "nto": 0
+        },
+        {
+          "id_to": 6630099,
+          "nfrom": 0,
+          "nto": 0
+        }
+      ],
+      "stp": 30
+    },
+    "10006404": {
+      "class": 132,
+      "at": [
+        {
+          "id": 84,
+          "value": "4-4",
+          "name": "nombre"
+        },
+        {
+          "id": 85,
+          "value": "FUSION",
+          "name": "fo.tipo"
+        },
+        {
+          "id": 120,
+          "value": "null"
+        },
+        {
+          "id": 121,
+          "value": "null"
+        },
+        {
+          "id": 122,
+          "value": "null"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 10006353,
+          "nfrom": -1,
+          "nto": -1
+        },
+        {
+          "id_to": 10006301,
+          "nfrom": -1,
+          "nto": -1
+        }
+      ],
+      "father": 9519745,
+      "stp": 21
+    },
+    "9519745": {
+      "id": 9765774,
+      "class": 121,
+      "at": [
+        {
+          "id": 20,
+          "value": "Canalizado"
+        },
+        {
+          "id": 34,
+          "value": "Cra Montes de Oca 1602 CF Bot 3",
+          "name": "nombre"
+        },
+        {
+          "id": 41,
+          "value": "FIST-BC16",
+          "name": "fo.tipo"
+        },
+        {
+          "id": 45,
+          "value": "NO"
+        },
+        {
+          "id": 67,
+          "value": "MONTES DE OCA, MANUEL AV."
+        },
+        {
+          "id": 16,
+          "value": "1602"
+        },
+        {
+          "id": 68,
+          "value": "Ciudad Autónoma de Buenos Aires"
+        },
+        {
+          "id": 69,
+          "value": "Ciudad Autónoma de Buenos Aires"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 9765778,
+          "nfrom": 13,
+          "nto": 1
+        },
+        {
+          "id_to": 9765782,
+          "nfrom": 2,
+          "nto": 0
+        },
+        {
+          "id_to": 9765783,
+          "nfrom": 14,
+          "nto": 1
+        },
+        {
+          "id_to": 10006295,
+          "nfrom": 15,
+          "nto": 1
+        },
+        {
+          "id_to": 10057282,
+          "nfrom": 11,
+          "nto": 0
+        },
+        {
+          "id_to": 10151498,
+          "nfrom": 9,
+          "nto": 0
+        },
+        {
+          "id_to": 10252987,
+          "nfrom": 1,
+          "nto": 0
+        }
+      ],
+      "stp": 21
+    },
+    "10006301": {
+      "class": 130,
+      "at": [
+        {
+          "id": 62,
+          "value": "93154"
+        },
+        {
+          "id": 74,
+          "value": "3",
+          "name": "fo.orden"
+        },
+        {
+          "id": 75,
+          "value": "4",
+          "name": "nombre"
+        },
+        {
+          "id": 77,
+          "value": "MR",
+          "name": "fo.color"
+        },
+        {
+          "id": 61,
+          "value": "FO 93154 - ODF Guanahani 580 - X el Bajo X TBA",
+          "name": "fo.id_servicio"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 9028707,
+          "nfrom": -1,
+          "nto": -1
+        },
+        {
+          "id_to": 10006404,
+          "nfrom": -1,
+          "nto": -1
+        }
+      ],
+      "father": 10006297,
+      "gfather": 10006295,
+      "stp": 30
+    },
+    "10006297": {
+      "id": 10006297,
+      "class": 129,
+      "at": [
+        {
+          "id": 72,
+          "value": "0",
+          "name": "fo.orden"
+        },
+        {
+          "id": 76,
+          "value": "AZ",
+          "name": "fo.color"
+        },
+        {
+          "id": 73,
+          "value": "AZ",
+          "name": "nombre"
+        }
+      ],
+      "tp": [],
+      "father": 10006295,
+      "stp": 30
+    },
+    "10006295": {
+      "id": 10006295,
+      "class": 51,
+      "at": [
+        {
+          "id": 28,
+          "value": "3966"
+        },
+        {
+          "id": 23,
+          "value": "236",
+          "name": "fo.distancia_geo"
+        },
+        {
+          "id": 24,
+          "value": "241.9"
+        },
+        {
+          "id": 26,
+          "value": "FD-980-B1",
+          "name": "nombre"
+        },
+        {
+          "id": 20,
+          "value": "Canalizado"
+        },
+        {
+          "id": 34,
+          "value": "3667: Cra Montes de Oca 1810 CF  4202: Cra Isabel Catolica 1374 CF"
+        },
+        {
+          "id": 32,
+          "value": "48-SM-ST"
+        },
+        {
+          "id": 27,
+          "value": "Troncal"
+        },
+        {
+          "id": 29,
+          "value": "4202"
+        },
+        {
+          "id": 25,
+          "value": "Metrotel"
+        },
+        {
+          "id": 91,
+          "value": "640"
+        },
+        {
+          "id": 30,
+          "value": "1268"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 6638588,
+          "nfrom": 0,
+          "nto": 2
+        },
+        {
+          "id_to": 9765774,
+          "nfrom": 1,
+          "nto": 15
+        }
+      ],
+      "stp": 30
+    },
+    "10006349": {
+      "id": 10006349,
+      "class": 129,
+      "at": [
+        {
+          "id": 72,
+          "value": "0",
+          "name": "fo.orden"
+        },
+        {
+          "id": 76,
+          "value": "AZ",
+          "name": "fo.color"
+        },
+        {
+          "id": 73,
+          "value": "AZ",
+          "name": "nombre"
+        }
+      ],
+      "tp": [],
+      "father": 10006296,
+      "stp": 30
+    },
+    "10006296": {
+      "id": 10057282,
+      "class": 51,
+      "at": [
+        {
+          "id": 29,
+          "value": "3962"
+        },
+        {
+          "id": 20,
+          "value": "Canalizado"
+        },
+        {
+          "id": 34,
+          "value": "3667: Cra Montes de Oca 1810 CF  4202: Cra Isabel Catolica 1374 CF"
+        },
+        {
+          "id": 32,
+          "value": "48-SM-ST"
+        },
+        {
+          "id": 27,
+          "value": "Troncal"
+        },
+        {
+          "id": 28,
+          "value": "3667"
+        },
+        {
+          "id": 25,
+          "value": "Metrotel"
+        },
+        {
+          "id": 91,
+          "value": "640"
+        },
+        {
+          "id": 23,
+          "value": "295",
+          "name": "fo.distancia_geo"
+        },
+        {
+          "id": 24,
+          "value": "302.38"
+        },
+        {
+          "id": 26,
+          "value": "FD-980-B",
+          "name": "nombre"
+        },
+        {
+          "id": 30,
+          "value": "1268"
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 10057277,
+          "nfrom": 1,
+          "nto": 16
+        },
+        {
+          "id_to": 9765774,
+          "nfrom": 0,
+          "nto": 11
+        }
+      ],
+      "stp": 30
+    },
+    "8546263": {
+      "id": 8546263,
+      "class": 135,
+      "at": [
+        {
+          "id": 79,
+          "value": "O-1239921-1",
+          "name": "nombre"
+        },
+        {
+          "id": 89,
+          "value": "SC-APCx24"
+        }
+      ],
+      "tp": [],
+      "children": [
+        8546276,
+        8546274,
+        8546273,
+        8546271,
+        8546269,
+        8546268,
+        8546267,
+        8546266,
+        8546281,
+        8546264,
+        8546282,
+        8546265,
+        8546283,
+        8546285,
+        8546284,
+        8546286,
+        8546280,
+        8546279,
+        8546275,
+        8546287,
+        8546270,
+        8546277,
+        8546278,
+        8546272
+      ],
+      "father": 6642345,
+      "stp": 30
+    },
+    "6642345": {
+      "id": 10126978,
+      "class": 69,
+      "at": [
+        {
+          "id": 67,
+          "value": "GUANAHANI"
+        },
+        {
+          "id": 16,
+          "value": "580"
+        },
+        {
+          "id": 68,
+          "value": "Capital Federal"
+        },
+        {
+          "id": 69,
+          "value": "Capital Federal"
+        },
+        {
+          "id": 91,
+          "value": "1239921"
+        },
+        {
+          "id": 45,
+          "value": "NO"
+        },
+        {
+          "id": 47,
+          "value": "Metrotel"
+        },
+        {
+          "id": 34,
+          "value": "ODF Guanahani 580 - CF Bco. de la Provincia Bs. As (Sala de Servidores)",
+          "name": "nombre"
+        },
+        {
+          "id": 118,
+          "value": "Sala de Servidores."
+        }
+      ],
+      "tp": [
+        {
+          "id_to": 10126979,
+          "nfrom": 0,
+          "nto": 0
+        },
+        {
+          "id_to": 10126977,
+          "nfrom": 0,
+          "nto": 0
+        }
+      ],
+      "stp": 30
+    }
+  }
+}

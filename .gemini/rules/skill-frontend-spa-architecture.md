@@ -1,6 +1,7 @@
 # Nombre de archivo: skill-frontend-spa-architecture.md
 # Ubicación de archivo: .gemini/rules/skill-frontend-spa-architecture.md
 # Descripción: Regla Gemini portable migrada desde .github/skills/frontend-spa-architecture/SKILL.md
+
 ---
 name: "skill-frontend-spa-architecture"
 description: "Usar SIEMPRE antes de agregar, modificar o mover rutas, vistas o componentes en el frontend SPA de LAS-FOCAS. Valida el entry point activo, el router unificado y advierte sobre archivos huérfanos conocidos."
@@ -46,7 +47,7 @@ commands:
 
 # Regla Skill: frontend-spa-architecture
 
-> Fuente original: `.github/skills/frontend-spa-architecture/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
+> Fuente original: `.agentes-comunes/skills/frontend-spa-architecture/SKILL.md`. Usar esta regla cuando Gemini/Codex IDE detecte los triggers o globs declarados.
 
 # Habilidad: Frontend SPA Architecture — Verificación de Arquitectura Antes de Tocar el Router
 
@@ -148,19 +149,29 @@ const AdminMiVista = () => import('../admin/views/AdminMiVista.vue');
 
 ```typescript
 {
-  path: 'mi-modulo',            // relativo a /admin → resulta en /admin/mi-modulo
-  name: 'admin-mi-modulo',
-  component: AdminMiVista,
-  meta: { requiresAdmin: true },
+  path: '/admin',
+  component: AppShell,
+  meta: { requiresAuth: true, requiresAdmin: true },
+  children: [
+    // ... rutas existentes ...
+    {
+      path: 'mi-modulo',            // relativo a /admin → resulta en /admin/mi-modulo
+      name: 'admin-mi-modulo',
+      component: AdminMiVista,
+      meta: { requiresAdmin: true },
+    },
+    { path: ':pathMatch(.*)*', redirect: '/admin' },  // catch-all SIEMPRE AL FINAL
+  ],
 },
-{ path: ':pathMatch(.*)*', redirect: '/admin' },  // catch-all SIEMPRE AL FINAL
 ```
 
 ### 3. Guard de navegación
 
-El `router.beforeEach` en `src/router/index.ts` usa `useSession()`:
+El `router.beforeEach` en `src/router/index.ts` usa `useSession()` de `src/composables/useSession.ts`:
 - Verifica `state.value.authenticated` — si no, redirige a `/login`.
 - Verifica `state.value.role === 'admin'` para rutas con `meta.requiresAdmin` — si no, redirige a `/`.
+
+No hay guard separado en el router huérfano; toda lógica de sesión vive en `src/router/index.ts`.
 
 ---
 
@@ -170,7 +181,7 @@ Agregar como `children` de la ruta raíz `{ path: '/', component: AppShell }`:
 
 ```typescript
 {
-  path: 'mi-seccion',
+  path: 'mi-seccion',               // relativo a / → resulta en /mi-seccion
   name: 'mi-seccion',
   component: MiVista,
   meta: {
@@ -182,6 +193,8 @@ Agregar como `children` de la ruta raíz `{ path: '/', component: AppShell }`:
   },
 },
 ```
+
+Si el módulo necesita aparecer en la navegación lateral, `navLabel`, `navOrder` y `navSection` son requeridos.
 
 ---
 
