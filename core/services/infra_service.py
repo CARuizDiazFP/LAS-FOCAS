@@ -284,6 +284,7 @@ def _resolve_camara_o_registrar_sin_match(
     # CromoClient/httpx) en cada arranque que sólo necesita `infra_service` — mismo criterio que
     # ya usaba esta función para `camara_hierarchy_service`/`IncidenteBaneo`.
     from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+    from core.services.nodos_catalogo import corresponde_a_nodo
     from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
 
     try:
@@ -294,6 +295,12 @@ def _resolve_camara_o_registrar_sin_match(
 
     if camara is not None:
         return camara
+
+    # Una ubicación de Nodo ("Nodo Escobar Rack 1 de FO") no es una cámara: queda sin `camara_id`
+    # igual que antes, pero ya no se registra como caso sin match (2026-09-28 — mismo criterio
+    # que el listener de Slack, que ignora los Nodos; ver `core/services/nodos_catalogo.py`).
+    if corresponde_a_nodo(nombre, session):
+        return None
 
     session.add(
         IngresoSinMatch(

@@ -769,13 +769,19 @@ class IngresoCorreccion(Base):
 
     id = Column(Integer, primary_key=True)
     comando = Column(String(32), nullable=False)  # "FORZAR_INGRESO" | "FORZAR_EGRESO"
-    actor_slack_user_id = Column(String(32), nullable=False)
+    # Desde la migración `20260928_01`: "slack" (comandos del canal) | "web" (botón "Registrar
+    # egreso" del panel). Las columnas de Slack de abajo pasan a nullable, pero un CHECK de Postgres
+    # (`ck_ingresos_correcciones_origen_actor`) las sigue exigiendo para `origen='slack'` y exige
+    # `actor_web_usuario` para `origen='web'`.
+    origen = Column(String(16), nullable=False, default="slack", server_default="slack")
+    actor_web_usuario = Column(String(64), nullable=True)
+    actor_slack_user_id = Column(String(32), nullable=True)
     # Nombre resuelto del actor (mismo patrón que `Ingreso.tecnico_id`) — nullable porque la
     # resolución de nombre puede fallar.
     actor_nombre = Column(String(255), nullable=True)
-    canal_id = Column(String(32), nullable=False)
+    canal_id = Column(String(32), nullable=True)
     thread_ts = Column(String(32), nullable=True, index=True)
-    mensaje_ts = Column(String(32), nullable=False)
+    mensaje_ts = Column(String(32), nullable=True)
     comando_crudo = Column(Text, nullable=False)
     motivo = Column(Text, nullable=True)
     camara_texto_solicitado = Column(String(512), nullable=False)

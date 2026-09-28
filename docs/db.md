@@ -395,11 +395,13 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 |---|---|---|
 | `id` (PK) | Integer | — |
 | `comando` | `String(32)`, `NOT NULL` | `FORZAR_INGRESO` \| `FORZAR_EGRESO`. `String`, no enum de Postgres — sus valores previstos crecen sin exigir `ALTER TYPE`. |
-| `actor_slack_user_id` | `String(32)`, `NOT NULL` | Quién ejecutó el comando — siempre se conoce, no hay allowlist que lo condicione (ver `docs/decisiones.md`). |
+| `origen` | `String(16)`, `NOT NULL`, default `'slack'` | Desde `20260928_01`: `slack` (comandos del canal) \| `web` (botón "Registrar egreso" de la vista Ingresos del Servicio). |
+| `actor_web_usuario` | `String(64)`, nullable | Desde `20260928_01`: usuario del panel que ejecutó la acción; obligatorio si `origen='web'` (CHECK). |
+| `actor_slack_user_id` | `String(32)`, nullable desde `20260928_01` | Quién ejecutó el comando de Slack — siempre se conoce, no hay allowlist que lo condicione (ver `docs/decisiones.md`). Obligatorio si `origen='slack'` (CHECK). |
 | `actor_nombre` | `String(255)`, nullable | Nombre resuelto del actor; puede no resolverse, mismo criterio que `Ingreso.tecnico_id`. |
-| `canal_id` | `String(32)`, `NOT NULL` | — |
+| `canal_id` | `String(32)`, nullable desde `20260928_01` | Obligatorio si `origen='slack'` (CHECK). |
 | `thread_ts` | `String(32)`, nullable, index | `NULL` sólo si el comando no fue una respuesta en un hilo (en la práctica esto no ocurre: los comandos sólo se procesan dentro de un hilo, ver `docs/decisiones.md`). |
-| `mensaje_ts` | `String(32)`, `NOT NULL` | `ts` del mensaje del comando en sí. |
+| `mensaje_ts` | `String(32)`, nullable desde `20260928_01` | `ts` del mensaje del comando en sí. Obligatorio si `origen='slack'` (CHECK). |
 | `comando_crudo` | `Text`, `NOT NULL` | Texto íntegro del comando — lo re-lee el flujo de "fecha pendiente" para re-ejecutar sin que el operador retipee todo. |
 | `motivo` | `Text`, nullable | Sin palabra clave obligatoria (decisión de producto) — sólo se captura cuando hay un delimitador natural (después de la fecha, después del `#<id>`). |
 | `camara_texto_solicitado` | `String(512)`, `NOT NULL` | Nunca cadena vacía: `"(del hilo)"` en la forma bare, `"#<id>"` (con el id real) en la forma por id, `"(no parseado)"` si el comando murió en el parser antes de tener nombre de cámara. |
@@ -411,6 +413,14 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 | `resultado` | `String(64)`, `NOT NULL` | Uno de 14 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
 | `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
 | `created_at` | DateTime(tz), `NOT NULL`, index | — |
+
+**CHECK `ck_ingresos_correcciones_origen_actor`** (desde `20260928_01`): `origen='slack'` exige
+`actor_slack_user_id`, `canal_id` y `mensaje_ts`; `origen='web'` exige `actor_web_usuario`. Relajar
+el `NOT NULL` de las columnas de Slack sin este CHECK habría permitido una fila de Slack sin actor.
+Verificado real contra `lasfocasdev-postgres` (2026-09-28): una fila web sin actor y una de Slack
+sin canal/mensaje son rechazadas; una web con actor entra. Una fila web usa `comando='FORZAR_EGRESO'`
+(es la misma operación que `Forzar egreso #<id>`), `camara_texto_solicitado='#<id>'` y
+`thread_ts=NULL` — por eso nunca la ve el flujo de "fecha pendiente" del listener, que filtra por hilo.
 
 FKs con `ON DELETE SET NULL`: el log de auditoría sobrevive aunque la entidad referenciada se borre
 después — perder la fila de auditoría sería peor que perder sólo el vínculo.
@@ -1057,6 +1067,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260923_01` | `20260923_01_ingresos_correcciones.py` | Columnas `ingresos.thread_ts`/`canal_id` + tabla append-only `app.ingresos_correcciones` con trigger de inmutabilidad — soporte de datos de los comandos `Forzar ingreso`/`Forzar egreso` (ver sección "Tabla `ingresos_correcciones`" arriba y `docs/decisiones.md`) |
 | `20260923_02` | `20260923_02_servicios_sync_prov.py` | Tabla `app.servicios_sync_prov` (`ultima_sincronizacion_ok NOT NULL` en esta versión) — última sincronización PROV por Servicio (ver sección "Tabla `servicios_sync_prov`" arriba) |
 | `20260923_03` | `20260923_03_servicios_sync_prov_nullable.py` | `ALTER COLUMN servicios_sync_prov.ultima_sincronizacion_ok DROP NOT NULL` — fix de revisión de la Task 9: el camino de intento FALLIDO necesita persistir sin una sincronización exitosa previa; `NULL` reemplaza al centinela `1970-01-01` que se usó primero (ver `docs/decisiones.md`) |
+| `20260928_01` | `20260928_01_ingresos_correcciones_origen_web.py` | Columnas `ingresos_correcciones.origen`/`actor_web_usuario`, columnas de Slack nullable + CHECK por origen — auditoría del botón "Registrar egreso" del panel. El `downgrade()` aborta si ya hay filas `origen='web'` (no se descarta auditoría). Upgrade→downgrade→upgrade verificado en dev |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

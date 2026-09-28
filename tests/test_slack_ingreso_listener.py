@@ -124,9 +124,11 @@ class TestExtraerNombreCamara(unittest.TestCase):
             "*Ingreso o Egreso*\nEgreso\n"
         )
         result = self.extraer(texto)
+        # Desde 2026-09-28 además se descarta la primera línea residual ("e:"/"me:"): antes quedaba
+        # pegada adelante del nombre y el caso real "me: Cra Acevedo 396 CF" no matcheaba.
         self.assertEqual(
             result,
-            "e: Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal",
+            "Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal",
         )
 
 

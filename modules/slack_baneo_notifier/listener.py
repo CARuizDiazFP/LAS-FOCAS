@@ -45,6 +45,8 @@ from core.services.camara_estado_service import (
     obtener_ultimo_motivo_baneo_manual,
 )
 from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+from core.services.camara_sugerencias import sugerir_camaras
+from core.services.nodos_catalogo import corresponde_a_nodo
 from core.services.cromo.detalle import pelos_de_tubo_sync
 from core.services.cromo.empalme_resolucion import resolver_botella_por_fusion_sync
 from core.services.cromo.verificador import (
@@ -105,10 +107,6 @@ _RE_MENTION_PREFIX = re.compile(r"^\s*<@[^>]+>\s*")
 _NOMBRE_SERVICIO_LISTENER = "slack_ingreso_listener"
 _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
 
-# Regex para detectar nombres que corresponden a Nodos (no son cámaras).
-# Se aplica sobre el nombre extraído —no el texto completo— para evitar falsos
-# positivos con el label del Workflow "*Nombre: Nodo/Camara/botella*".
-_RE_NODO = re.compile(r"\bnodos?\b", re.IGNORECASE)
 
 # Detecta una respuesta de seguimiento con el ID de empalme más cercano, en el hilo de un caso
 # `IngresoSinMatch` pendiente (ver el aviso agregado en `_construir_respuesta_camara` cuando no hay
@@ -280,7 +278,7 @@ class IngresoListener:
                 nombre_buscado,
                 caso.id,
             )
-            return (
+            respuesta = (
                 "⚠️ No pude confirmar automáticamente la cámara *{}* contra el inventario — "
                 "quedó registrada para revisión manual (puede ser un error de tipeo o una "
                 "diferencia de formato). *Podés continuar con el ingreso con normalidad.* "
@@ -288,6 +286,18 @@ class IngresoListener:
                 "con el número. Si más adelante se corrige el nombre en el inventario, "
                 "respondé *\"Revalidar ingreso\"* en este hilo para reintentarlo."
             ).format(nombre_buscado)
+            # Desde 2026-09-28: hasta 3 cámaras parecidas (misma altura + algún token de calle).
+            # Sólo se muestran — nunca se registra el ingreso en una sugerida: un typo resuelto solo
+            # podría dejarlo en la cámara equivocada. Ver `core/services/camara_sugerencias.py`.
+            sugerencias = sugerir_camaras(nombre_buscado, session)
+            if sugerencias:
+                vinetas = "\n".join(f"• {nombre}" for nombre in sugerencias)
+                respuesta += (
+                    f"\n\n¿Quisiste decir alguna de éstas?\n{vinetas}\n"
+                    "Si es una de ellas, respondé en este hilo *Forzar ingreso <nombre>* "
+                    "(o *Forzar egreso <nombre>*) con el nombre exacto."
+                )
+            return respuesta
 
         resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
         self._registrar_movimiento_si_corresponde(
@@ -1004,7 +1014,10 @@ class IngresoListener:
             # Exclusión temprana: mensajes de Nodo no corresponden a cámaras.
             # La verificación se hace sobre el nombre extraído (no el texto bruto)
             # para evitar falsos positivos con el label "Nodo/Camara/botella" del Workflow.
-            if _RE_NODO.search(nombre_raw):
+            # Desde 2026-09-28 también reconoce un Nodo escrito SIN la palabra "Nodo" ("Atento",
+            # "Barrio Norte", "Tacuari 1"): catálogo derivado del inventario, comparación por
+            # nombre entero — ver `core/services/nodos_catalogo.py`.
+            if corresponde_a_nodo(nombre_raw, session):
                 logger.info(
                     "Mensaje ignorado: Corresponde a un Nodo ('%s')",
                     nombre_raw,

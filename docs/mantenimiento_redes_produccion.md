@@ -1,11 +1,15 @@
 # Nombre de archivo: mantenimiento_redes_produccion.md
 # Ubicación de archivo: docs/mantenimiento_redes_produccion.md
-# Descripción: Cambio de subred Docker de producción (/16 → /24, ya aplicado) y el pre-requisito de prod aún pendiente (`redis_password_v1`)
+# Descripción: Cambio de subred Docker de producción (/16 → /24) y secret `redis_password_v1` — ambos ya aplicados; queda como referencia histórica y de rollback
 
-> **Antes de cualquier `docker compose -f deploy/compose.yml up` en producción**, revisar el
-> [secret `redis_password_v1`](#pre-requisito-obligatorio-secret-redis_password_v1-2026-08-21) —
-> **bloquea la creación del contenedor `web`** si falta, no degrada: falla duro. El cambio de
-> subred de abajo **ya está aplicado**, no requiere acción.
+> **Ninguno de los dos cambios de este documento requiere acción.** El cambio de subred y el secret
+> `redis_password_v1` ya están aplicados en producción (re-verificado el 2026-09-25 tras el
+> redeploy completo del stack: subred `172.20.0.0/24`, Redis `PONG`, suscriptor
+> `admin-notifications` = 1). El secret sigue siendo **obligatorio** para cualquier `up`: si el
+> archivo `.secrets/redis_password_v1.txt` se perdiera, la creación de `web` falla duro.
+>
+> Para desplegar código y esquema a producción, el procedimiento vigente es
+> [docs/despliegue_produccion.md](despliegue_produccion.md).
 
 # Cambio de subred Docker en producción (/16 → /24)
 
@@ -164,7 +168,7 @@ Volumen de datos intacto en todo momento (nunca se usa `-v`).
 
 ## Estado
 
-- **Preparado en código, pendiente de aplicar.** Misma política que el cambio de subred de arriba: `deploy/compose.yml` ya define los servicios `redis` y `botellas_recalculo_worker` y agrega el secret `redis_password_v1` al servicio `web`, pero **no se recreó ningún contenedor de producción**. Ver [docs/decisiones.md](decisiones.md), entrada 2026-08-21 (cont.), y [docs/infra.md](infra.md), sección "Caché Redis + worker dedicado + WebSocket para el visor de duplicados".
+- **Aplicado el 2026-09-07** (secret generado en la ventana de mantenimiento, ver `docs/PR/2026-09-07.md`, Parte B). **Re-verificado el 2026-09-25** tras recrear los 10 contenedores de prod (`docs/PR/2026-09-25.md`), con los tres checks de la sección "Verificación post-despliegue": Redis `PONG`, `botellas_recalculo_worker` `/health` `status=ok`, `PUBSUB NUMSUB admin-notifications` = 1. El texto de abajo queda como referencia histórica de por qué el secret es obligatorio. Ver [docs/decisiones.md](decisiones.md), entrada 2026-08-21 (cont.), y [docs/infra.md](infra.md), sección "Caché Redis + worker dedicado + WebSocket para el visor de duplicados".
 - Fecha de redacción: 2026-08-21 (pre-requisito documentado acá el 2026-08-22).
 - Alcance: stack `lasfocas` (producción), archivo `deploy/compose.yml`, servicios `web`, `redis` y `botellas_recalculo_worker`.
 

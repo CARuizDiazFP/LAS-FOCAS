@@ -184,6 +184,59 @@ def cerrar_ingreso_forzado(session: Session, *, ingreso: Ingreso, momento: datet
     return ingreso
 
 
+def registrar_egreso_historico(
+    session: Session,
+    *,
+    camara: Camara,
+    botella: CromoBotella | None,
+    tecnico_nombre: str | None,
+    slack_user_id: str | None,
+    momento: datetime,
+    thread_ts: str | None = None,
+    canal_id: str | None = None,
+) -> tuple[Ingreso, bool]:
+    """Egreso de un movimiento PASADO (reproceso por lote de `ingresos_sin_match`,
+    `core/services/ingreso_reproceso_service.py`). Devuelve `(fila, cerro_uno_existente)`.
+
+    Mismas reglas de búsqueda que el camino "Egreso" de `registrar_movimiento_ingreso` (misma
+    cámara/botella NULL-safe, mismo filtro de técnico, sólo `tipo=INGRESO` abierto) con una
+    restricción más: el ingreso a cerrar tiene que haber empezado **antes** de `momento`.
+    `registrar_movimiento_ingreso` toma el abierto más reciente sin mirar la fecha — correcto en vivo,
+    donde "ahora" es posterior a todo, pero en un reproceso histórico un egreso del 10/09 cerraría un
+    ingreso abierto el 20/09. Si no hay ninguno anterior, crea la fila EGRESO huérfana
+    (`fecha_inicio=None`), igual que el flujo en vivo."""
+    cromo_botella_id = botella.n_id if botella is not None else None
+    ingreso_abierto = (
+        session.query(Ingreso)
+        .filter(
+            _tecnico_id_filtro(tecnico_nombre, slack_user_id),
+            Ingreso.camara_id == camara.id,
+            _null_safe(Ingreso.cromo_botella_id, cromo_botella_id),
+            Ingreso.tipo == IngresoTipo.INGRESO,
+            Ingreso.fecha_fin.is_(None),
+            Ingreso.fecha_inicio < momento,
+        )
+        .order_by(Ingreso.fecha_inicio.desc())
+        .first()
+    )
+    if ingreso_abierto is not None:
+        return cerrar_ingreso_forzado(session, ingreso=ingreso_abierto, momento=momento), True
+
+    ingreso = Ingreso(
+        camara_id=camara.id,
+        cromo_botella_id=cromo_botella_id,
+        tecnico_id=tecnico_nombre,
+        tipo=IngresoTipo.EGRESO,
+        fecha_inicio=None,
+        fecha_fin=momento,
+        thread_ts=thread_ts,
+        canal_id=canal_id,
+    )
+    session.add(ingreso)
+    session.commit()
+    return ingreso, False
+
+
 def registrar_intento_bloqueado(
     session: Session,
     *,
@@ -229,4 +282,9 @@ def registrar_intento_bloqueado(
     return intento
 
 
-__all__ = ["cerrar_ingreso_forzado", "registrar_intento_bloqueado", "registrar_movimiento_ingreso"]
+__all__ = [
+    "cerrar_ingreso_forzado",
+    "registrar_egreso_historico",
+    "registrar_intento_bloqueado",
+    "registrar_movimiento_ingreso",
+]

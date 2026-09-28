@@ -4319,6 +4319,90 @@ async def update_camara_estado_web(
 # ── Endpoints admin: gestión de cámaras PENDIENTE_REVISION ───────────────
 
 
+class RegistrarEgresoWebRequestModel(BaseModel):
+    """Payload del botón "Registrar egreso" (vista Ingresos del Servicio). `momento` debe traer zona
+    horaria — el frontend envía ISO 8601 en UTC; un valor naive se rechaza con 422 en vez de
+    adivinar si era hora local o UTC."""
+
+    momento: datetime
+    motivo: str = Field(min_length=3, max_length=500)
+    csrf_token: str | None = None
+
+
+# Resultado de `registrar_egreso_web` → status HTTP. Todo lo que no es OK es un rechazo de negocio
+# ya auditado en `app.ingresos_correcciones`, no un error del servidor.
+_EGRESO_WEB_STATUS = {
+    "OK_EGRESO_CERRADO": 200,
+    "INGRESO_NO_ENCONTRADO": 404,
+    "INGRESO_YA_CERRADO": 409,
+    "MOMENTO_INVALIDO": 422,
+    "EGRESO_ANTERIOR_AL_INGRESO": 422,
+}
+
+
+@app.post("/api/infra/ingresos/{ingreso_id}/egreso")
+async def registrar_egreso_ingreso_web(
+    request: Request, ingreso_id: int, body: RegistrarEgresoWebRequestModel,
+) -> JSONResponse:
+    """Registra el egreso de un `Ingreso` que quedó "en curso" (el formulario de Egreso nunca llegó
+    por Slack). Delegado entero en `ingreso_correccion_service.registrar_egreso_web` — mismas reglas
+    y mismo log de auditoría que el comando Slack `Forzar egreso #<id>`, con `origen='web'`.
+
+    Sin restricción de rol más allá de estar autenticado: mismo criterio que los comandos de Slack
+    (cualquiera del canal puede corregir; la auditoría es el control — ver docstring del servicio)."""
+    username, _ = _require_auth(request)
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != request.session.get("csrf")):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    if body.momento.tzinfo is None:
+        return JSONResponse({"error": "La fecha de egreso debe incluir zona horaria"}, status_code=422)
+    motivo = body.motivo.strip()
+    if len(motivo) < 3:
+        return JSONResponse({"error": "El motivo es obligatorio"}, status_code=422)
+
+    try:
+        from core.services.ingreso_correccion_service import registrar_egreso_web
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = registrar_egreso_web(
+                session,
+                ingreso_id=ingreso_id,
+                momento=body.momento,
+                motivo=motivo,
+                usuario_web=username,
+            )
+            status = _EGRESO_WEB_STATUS.get(resultado.resultado, 500)
+            logger.info(
+                "action=registrar_egreso_web user=%s ingreso_id=%s resultado=%s",
+                username,
+                ingreso_id,
+                resultado.resultado,
+            )
+            if status != 200:
+                return JSONResponse(
+                    {"error": resultado.respuesta, "resultado": resultado.resultado}, status_code=status
+                )
+            ingreso = resultado.ingreso
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "resultado": resultado.resultado,
+                    "mensaje": resultado.respuesta,
+                    "ingreso": {
+                        "id": ingreso.id,
+                        "fecha_inicio": ingreso.fecha_inicio.isoformat() if ingreso.fecha_inicio else None,
+                        "fecha_fin": ingreso.fecha_fin.isoformat() if ingreso.fecha_fin else None,
+                    },
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("action=registrar_egreso_web_error user=%s ingreso_id=%s error=%s", username, ingreso_id, exc)
+        return JSONResponse({"error": "Error al registrar el egreso"}, status_code=500)
+
+
 @app.get("/api/admin/infra/ingresos-sin-match")
 async def admin_ingresos_sin_match(
     request: Request, revisado: Optional[bool] = None, origen: Optional[str] = None,

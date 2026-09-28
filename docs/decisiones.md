@@ -2417,3 +2417,64 @@ su propia ventana de mantenimiento.
 - **Impacto:** ningún cambio de orquestación. Cambio ya aplicado: `priorizar_por_antiguedad` y
   `refrescar_un_servicio` (antes privadas) ahora están en `__all__` de
   `modules/slack_baneo_notifier/refresco_prov.py`, con un comentario que apunta a esta entrada.
+
+## 2026-09-25 — Despliegue a producción: código y esquema de `dev`, sin reemplazar datos
+
+- **Contexto:** pedido "alinear prod con dev, recrear contenedores y mergear dev a main". El
+  precedente (2026-09-07) había alineado también los datos (restore de `focas_dev` sobre `lasfocas`).
+- **Decisión:** alinear sólo código (`main` = `7055452`, merge `--no-ff` de `dev` `2d0c59b`) y
+  esquema (12 migraciones, `20260907_01` → `20260923_03`), sin tocar datos.
+- **Por qué:** desde el 2026-09-07 prod acumuló escrituras reales propias que dev no tiene: 142
+  ingresos contra 2, 52 Cámaras BANEADA contra 97 (conjuntos distintos), 26 incidentes. Un restore
+  las habría borrado sin forma de recuperarlas salvo desde backup.
+- **Cómo:** merge con `git commit-tree` sobre el árbol de `dev` (válido sólo porque `main` era
+  ancestro estricto), para no sacar el checkout de control de `dev`. Migración desde el venv del
+  host con `ALEMBIC_URL` armado desde el secret. Procedimiento completo en
+  [docs/despliegue_produccion.md](despliegue_produccion.md), registro en `docs/PR/2026-09-25.md`.
+- **Hallazgo:** primera medición real del problema que motivó `Forzar egreso` (2026-09-24): prod
+  tiene 17 ingresos abiertos, 16 con más de un día.
+- **Corrección de doc:** `docs/mantenimiento_redes_produccion.md` seguía marcando
+  `redis_password_v1` como "pendiente de aplicar", cuando está aplicado desde el 2026-09-07.
+  Re-verificado hoy con los tres checks del propio documento.
+
+## 2026-09-28 — "Registrar egreso" desde el panel: reusa `Forzar egreso #<id>`, audita con `origen='web'` y queda `_require_auth`
+
+- **Contexto:** la vista Ingresos del Servicio (`/servicios/ID/<id>/ingresos`) mostraba ingresos
+  "En curso" que sólo podían cerrarse con el comando Slack `Forzar egreso`. Se agregó un botón por
+  fila (`tipo=INGRESO` sin `fecha_fin`) → `POST /api/infra/ingresos/{id}/egreso` →
+  `core/services/ingreso_correccion_service.py::registrar_egreso_web`.
+- **Reuso, no lógica nueva:** es la forma `Forzar egreso #<id> <fecha>` sin Slack. Mismas reglas
+  (sólo `INGRESO` abierto, egreso **estrictamente** posterior a `fecha_inicio`, cierre con
+  `cerrar_ingreso_forzado` —nunca `registrar_movimiento_ingreso`, que puede crear un EGRESO
+  huérfano—) y misma auditoría (`_finalizar`, una fila por invocación, rechazos incluidos). Se suma
+  un rechazo que Slack resuelve en el parser: fecha futura (`MOMENTO_INVALIDO`).
+- **Auditoría:** `app.ingresos_correcciones` exigía `actor_slack_user_id`/`canal_id`/`mensaje_ts`.
+  Migración `20260928_01`: `origen` (`slack`|`web`) + `actor_web_usuario`, las tres columnas de Slack
+  nullable, y un CHECK por origen que conserva la garantía original para las filas de Slack. Se
+  descartó una tabla aparte: dos logs para la misma operación obligarían a unir tablas para
+  responder "quién cerró este ingreso".
+- **Permiso: `_require_auth`, no `_require_admin` — decisión a revisar.** A favor de admin: el
+  precedente de la entrada "2026-09-02 (cont.)", Decisión 4 (una ruta que deja al caller *elegir* un
+  valor es `_require_admin`), y acá el operador elige la fecha. A favor de dejarlo así: la decisión
+  de producto del 2026-09-23 para los mismos comandos en Slack ("sin allowlist: cualquiera del canal
+  puede ejecutarlos; la auditoría es el único control"). Hacerlo admin en la web crearía la asimetría
+  de que un `role=user` pueda cerrar el ingreso desde Slack y no desde el panel. Se optó por la
+  paridad con Slack; cambiarlo es una línea (`_require_auth` → `_require_admin`).
+- **Relacionado:** el relevamiento de los 201 casos `ingresos_sin_match` de prod del mismo día está
+  en `docs/relevamiento_ingresos_sin_match_2026-09-28.md` (diagnóstico + propuesta, sin implementar).
+
+## 2026-09-28 (cont.) — Búsqueda de cámaras: catálogo de Nodos del inventario y "error visible antes que silencioso"
+
+- **Catálogo de Nodos derivado, no mantenido a mano.** El usuario indicó que los Nodos figuran como
+  "Nodo …" en el tracking y el Path de Cromo; esos nombres están en `app.cromo_odfs` (racks/ODFs del
+  Nodo). Una lista configurable habría quedado desactualizada en la primera alta de Nodo.
+- **Error visible antes que silencioso.** Un falso positivo de Nodo hace que el listener ignore el
+  mensaje sin rastro; un falso negativo deja un caso sin match, visible y revalidable. Por eso: (a)
+  comparación por nombre entero; (b) no se generan claves de calle ("Nodo Mitre 3821" no produce
+  "mitre"); (c) "Quilmes" y "Santa Fe" quedan fuera aunque aparecieran en el relevamiento.
+- **Sugerencias en vez de auto-match** para typos y palabras de más: un typo resuelto solo puede
+  registrar el ingreso en la cámara equivocada (y dispararle un aviso de baneo que no corresponde).
+- **Criterio de aceptación medido, no opinado, con DOS arneses**: auto-recuperación ("incorrectos ≤
+  `dev`") y transiciones `dev`→rama ("0 entradas nuevas que resuelvan a una cámara incorrecta"). El
+  primero solo no alcanzó: una versión que lo pasaba tenía 8 transiciones a cámara incorrecta que
+  encontró la revisión adversarial. Se aceptó a cambio 1 transición correcta → sin match.

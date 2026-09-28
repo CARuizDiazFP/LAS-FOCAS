@@ -141,6 +141,30 @@ export async function getIngresosServicio(
   );
 }
 
+export interface RegistrarEgresoResponse {
+  ok: boolean;
+  resultado: string;
+  mensaje: string;
+  ingreso: { id: number; fecha_inicio: string | null; fecha_fin: string | null };
+}
+
+/**
+ * Cierra un ingreso que quedó "en curso" (`POST /api/infra/ingresos/{id}/egreso`). `momentoIso` debe
+ * traer zona horaria (el backend rechaza fechas naive); queda auditado en `app.ingresos_correcciones`
+ * con `origen='web'`, igual que el comando Slack "Forzar egreso #<id>".
+ */
+export async function registrarEgresoIngreso(
+  ingresoId: number,
+  momentoIso: string,
+  motivo: string,
+): Promise<RegistrarEgresoResponse> {
+  return requestJson<RegistrarEgresoResponse>(`/api/infra/ingresos/${ingresoId}/egreso`, {
+    method: 'POST',
+    json: { momento: momentoIso, motivo },
+    csrf: true,
+  });
+}
+
 // ── Reportes ──────────────────────────────────────────────────────────────
 
 export interface ReportHistoryItem {
