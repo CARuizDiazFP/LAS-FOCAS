@@ -194,6 +194,23 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    (`contar_semillas`) y un elemento de control inexistente, para probar que el guard sigue vivo.
    Ver `[[feedback-lista-truncada-no-es-fuente-de-verdad]]` y `docs/decisiones.md` (2026-09-21).
 
+10. **Un cambio a la búsqueda de cámaras (`camara_search.py`, `camara_botella_busqueda.py`,
+   `nodos_catalogo.py`) se acepta sólo con DOS arneses read-only contra `lasfocasdev-postgres`**, con
+   el código de `dev` y el de la rama sobre la MISMA muestra:
+   - **Auto-recuperación**: N nombres del inventario (`ORDER BY id` + seed fija) buscados tal cual;
+     criterio "cámara incorrecta ≤ `dev`".
+   - **Transiciones**: entradas derivadas del inventario con verdad conocida (todos los nombres con
+     `-` o "CRITICA" + muestra al azar de Cámaras y Botellas, pasadas por `limpiar_ruido_operativo`
+     como hace el listener), comparando la raíz resuelta contra la verdadera; criterio "**0 entradas
+     que pasen a una cámara INCORRECTA**" (sin match/ambiguo → incorrecta, o correcta → incorrecta).
+   El primero solo **no alcanza**. Real (2026-09-28): una versión que pasaba la auto-recuperación
+   (1444 contra 1341, incorrectos 7 = 7) tenía 8 transiciones a cámara incorrecta —gemelas
+   "CRITICA", el "2" de "Bot 2" satisfecho con "P2", recortes antes del guion que perdían la botella—,
+   que sólo encontró una revisión adversarial con el segundo arnés. Resolver una cámara incorrecta es
+   peor que no resolver: registra el ingreso donde no es y puede disparar avisos de baneo. Sumar los
+   casos reales de `ingresos_sin_match` (dev y prod tienen el inventario casi idéntico: medir en dev).
+   Método y cifras: `docs/relevamiento_ingresos_sin_match_2026-09-28.md`.
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)

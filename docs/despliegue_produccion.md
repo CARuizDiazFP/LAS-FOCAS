@@ -19,6 +19,10 @@ migraciones de `dev`.
   sobre la DB de prod, aunque el usuario lo haya aprobado en el chat (real el 2026-09-07 y el
   2026-09-25). Hacer todo el relevamiento y las etapas sin riesgo primero (pasos 1 a 3) y pedirle
   al usuario que salga de Auto Mode **antes** del paso 4, no a mitad de la ventana.
+  El mismo clasificador **también puede bloquear lecturas** de prod (un `SELECT` de relevamiento,
+  real el 2026-09-28), de forma no uniforme: ese día un `pg_dump` de backup pasó y un `SELECT` de
+  textos no. Si una lectura necesaria se bloquea, pedir la salida de Auto Mode en ese momento, no
+  rodearla.
 - `ListAgents` + `python scripts/agent_worktree.py list`: que no haya sesiones activas integrando a `dev`.
 - El checkout de control debe estar en `dev`, limpio y en `origin/dev`: es el contexto de build
   del compose (`context: ..`).
@@ -110,6 +114,18 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
 ## 7. Pasos de datos pendientes del lote (post-verificación)
 
 Se corren **después** del paso 6, con el código nuevo ya sirviendo, dentro del contenedor de prod.
+
+Patrón para cualquier script de datos de este paso (usado por el reproceso, 2026-09-28):
+
+- **Por stdin**: los contenedores de app no tienen `scripts/` ni `/tmp` escribible
+  (`docker exec -i -w /app -e PYTHONPATH=/app <contenedor> python - [args] < scripts/x.py`); la salida
+  va por stdout y se redirige a un archivo del host.
+- **Dry-run exacto, no estimado**: correr todo dentro de una transacción externa que se revierte
+  (`Session(bind=connection, join_transaction_mode="create_savepoint")` sobre `connection.begin()`):
+  los `commit()` de los servicios existentes sólo liberan savepoints. El reporte del dry-run es lo que
+  hará `--apply`. Ver `scripts/ingresos_reprocesar_sin_match.py::ejecutar`.
+- **Ensayar antes en dev con una copia de los datos de prod** dentro de la misma transacción
+  revertida: el ensayo del 2026-09-28 encontró un bug real del listener antes de tocar prod.
 
 - **Reproceso de ingresos sin match** (desde el despliegue que incluya la mejora de búsqueda del
   2026-09-28, `cc58658`, y `scripts/ingresos_reprocesar_sin_match.py`). Dry-run exacto primero
