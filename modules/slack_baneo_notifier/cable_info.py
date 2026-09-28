@@ -11,7 +11,8 @@
   la descripción cruda si el pelo no está libre pero tampoco se identificó cliente/cable). Desde la
   Task 8 (plan "Corrección ingresos + Servicios", 2026-09-23) marca con `🕒` los pelos cuyo servicio
   matcheado tiene la sincronización PROV vencida (`core/services/prov/frescura.py`).
-- `@bot Servicios <cable>` / `@bot Servicios <cable> B<N>` (Task 8 del mismo plan) — IDs de servicio
+- `@bot Servicios [C<N>] <cable>` / `@bot Servicios [C<N>] <cable> B<N>` (Task 8 del mismo plan;
+  filtro opcional por categoría C1-C6 desde 2026-09-28) — IDs de servicio
   **únicos** (agregados por `s.id`, no uno por pelo) agrupados por buffer, con marca de frescura
   PROV. Complementa a "Verificar cable X BN", no lo reemplaza: el 18,9% de los pares (pelo, servicio)
   medido real contra `lasfocasdev-postgres` tiene un número distinto escrito en la descripción del
@@ -42,6 +43,7 @@ queries SQL, en vez de duplicar lógica de negocio acá.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Optional
 
 from sqlalchemy import func, text
@@ -198,8 +200,39 @@ def extraer_comando_cable_buffer(texto: str) -> Optional[tuple[str, str, int]]:
 # se comería el sufijo "B<N>" como si fuera parte del nombre si se probara antes. Verbo "servicios"
 # libre: ni `_RE_INFO_CABLE` (exige "info cable") ni `_RE_CABLE_BUFFER` (exige "(verificar|info)
 # cable") matchean un texto que empieza con "servicios".
+# Filtro por categoría (2026-09-28): "Servicios C6 F-GRN-598" / "Servicios C6 F-GRN-598 B2". El
+# token va pegado al verbo y se separa ANTES de los dos parsers de abajo (`extraer_filtro_categoria`),
+# así éstos siguen viendo la forma sin filtro y no cambian de contrato. Exige algo después del token
+# para que "Servicios C1" a secas siga siendo un cable llamado "C1".
+_RE_FILTRO_CATEGORIA = re.compile(r"(?i)^(servicios)\s+c(\d+)\s+(.+)$")
+CATEGORIAS_FILTRABLES = range(1, 7)  # C1-C6; C0 es el placeholder sintetizado por Cromo, no se filtra
+
 _RE_SERVICIOS_BUFFER = re.compile(r"(?i)^servicios\s+(?:cable\s+)?(.+?)\s+(?:b|buffer)\s*(\d+)$")
 _RE_SERVICIOS_CABLE = re.compile(r"(?i)^servicios\s+(?:cable\s+)?(.+)$")
+
+
+def extraer_filtro_categoria(texto: str) -> tuple[Optional[int], str]:
+    """Separa el filtro "C<N>" de "Servicios C<N> <cable>[ B<N>]". Devuelve (categoria, resto) con
+    `resto` = "Servicios <cable>[ B<N>]", listo para `extraer_comando_servicios_buffer`/`_cable`.
+    Sin filtro devuelve `(None, texto)` intacto. Una categoría fuera de `CATEGORIAS_FILTRABLES` se
+    devuelve igual — el caller decide avisar en vez de buscar un cable llamado "C7 <cable>"."""
+    texto_normalizado = quitar_formato_slack(re.sub(r"\s+", " ", texto).strip())
+    match = _RE_FILTRO_CATEGORIA.match(texto_normalizado)
+    if not match:
+        return None, texto
+    return int(match.group(2)), f"{match.group(1)} {match.group(3)}"
+
+
+def filtrar_por_categoria(resultado: ResultadoServiciosUnicos, categoria: Optional[int]) -> ResultadoServiciosUnicos:
+    """Filtro en memoria sobre la misma consulta de siempre — un cable real trae decenas de
+    servicios (118 el más grande medido), no justifica una variante SQL por categoría."""
+    if categoria is None:
+        return resultado
+    return replace(resultado, servicios=[s for s in resultado.servicios if s.categoria == categoria])
+
+
+def construir_respuesta_categoria_invalida(categoria: int) -> str:
+    return f":warning: Categoría *C{categoria}* inválida — el filtro acepta C1 a C6 (ej. `Servicios C6 F-GRN-598`)."
 
 
 def extraer_comando_servicios_buffer(texto: str) -> Optional[tuple[str, int]]:
@@ -363,6 +396,16 @@ def _linea_frescura_prov(
     return f"🕒 {cantidad} con validación PROV vencida{sufijo}"
 
 
+def _sufijo_categoria(categoria: Optional[int]) -> str:
+    return f" · Categoría *C{categoria}*" if categoria is not None else ""
+
+
+def _texto_sin_servicios(ambito: str, categoria: Optional[int]) -> str:
+    if categoria is None:
+        return f"Sin servicios matcheados en este {ambito}."
+    return f"Sin servicios de categoría C{categoria} en este {ambito}."
+
+
 def construir_respuesta_servicios_cable(
     cable: CromoCable,
     session: Session,
@@ -370,6 +413,7 @@ def construir_respuesta_servicios_cable(
     vencidos: set[int],
     *,
     refrescando: bool = False,
+    categoria: Optional[int] = None,
 ) -> str:
     """"Servicios <cable>" — un ID por servicio (no uno por pelo, eso es "Verificar cable X BN"),
     agrupados por buffer, con marca de frescura PROV. Con la salida acotada a IDs, un cable entero
@@ -377,11 +421,12 @@ def construir_respuesta_servicios_cable(
     caracteres) — no hace falta truncar.
 
     `refrescando` (Task 9, default `False` — no rompe ningún caller existente): ver
-    `_linea_frescura_prov`."""
+    `_linea_frescura_prov`. `categoria` (2026-09-28): sólo rotula — el filtrado ya lo hizo el
+    caller con `filtrar_por_categoria`."""
     servicios = resultado.servicios
-    encabezado_base = f"🧾 Servicios del cable *{cable.nombre}*"
+    encabezado_base = f"🧾 Servicios del cable *{cable.nombre}*{_sufijo_categoria(categoria)}"
     if not servicios:
-        return f"{encabezado_base}\nSin servicios matcheados en este cable."
+        return f"{encabezado_base}\n{_texto_sin_servicios('cable', categoria)}"
 
     grupos = _agrupar_servicios_por_buffer(session, cable.n_id, servicios)
     lineas = [f"{encabezado_base} — {len(servicios)} ID(s) únicos"]
@@ -400,6 +445,7 @@ def construir_respuesta_servicios_buffer(
     vencidos: set[int],
     *,
     refrescando: bool = False,
+    categoria: Optional[int] = None,
 ) -> str:
     """"Servicios <cable> B<N>" — mismo IDs únicos que `construir_respuesta_servicios_cable`,
     acotado a un buffer puntual (mismo par cable/buffer que "Verificar cable X BN", pero por-
@@ -409,9 +455,11 @@ def construir_respuesta_servicios_buffer(
     `_linea_frescura_prov`."""
     servicios = resultado.servicios
     color = f" ({tubo.nombre_color})" if tubo.nombre_color else ""
-    encabezado = f"🧾 Servicios del cable *{cable.nombre}* / Buffer *B{tubo.orden + 1}*{color}"
+    encabezado = (
+        f"🧾 Servicios del cable *{cable.nombre}* / Buffer *B{tubo.orden + 1}*{color}{_sufijo_categoria(categoria)}"
+    )
     if not servicios:
-        return f"{encabezado}\nSin servicios matcheados en este buffer."
+        return f"{encabezado}\n{_texto_sin_servicios('buffer', categoria)}"
 
     lineas = [f"{encabezado} — {len(servicios)} ID(s) únicos", ", ".join(s.servicio_id_externo for s in servicios)]
     lineas.extend(_lineas_discrepancias_numero_pelo(servicios))
@@ -470,10 +518,12 @@ def construir_respuesta_info_buffer(
 
 
 __all__ = [
+    "CATEGORIAS_FILTRABLES",
     "buscar_cable_por_n_id_o_nombre",
     "buscar_cable_por_nombre",
     "construir_respuesta_ambiguo",
     "construir_respuesta_buffer_no_encontrado",
+    "construir_respuesta_categoria_invalida",
     "construir_respuesta_info_buffer",
     "construir_respuesta_info_cable",
     "construir_respuesta_no_encontrado",
@@ -484,6 +534,8 @@ __all__ = [
     "extraer_comando_cable_buffer",
     "extraer_comando_info_cable",
     "extraer_comando_servicios_buffer",
+    "extraer_filtro_categoria",
+    "filtrar_por_categoria",
     "extraer_comando_servicios_cable",
     "quitar_formato_slack",
     "resolver_tubo_por_numero",

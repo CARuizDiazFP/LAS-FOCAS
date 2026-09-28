@@ -190,6 +190,7 @@ _FILA_SERVICIO_UNICO_TRES_PELOS = (
     3,  # cantidad_pelos
     ["1234"],  # numeros_en_pelo — un solo número, igual en los tres pelos
     ["REGEX_EXACTO"],  # metodos
+    6,  # s.categoria — al final (filtro "Servicios C<N>" de Slack, 2026-09-28)
 )
 
 _FILA_SERVICIO_UNICO_DOS_NUMEROS = (
@@ -204,6 +205,7 @@ _FILA_SERVICIO_UNICO_DOS_NUMEROS = (
     1,  # cantidad_pelos
     ["108013", "66041"],  # numeros_en_pelo — gotcha real de los 85 pares (pelo, servicio) con 2 filas
     ["REGEX_EXACTO"],  # metodos
+    3,  # s.categoria
 )
 
 
@@ -229,6 +231,7 @@ async def test_servicios_unicos_por_cable_tres_pelos_una_sola_fila():
     assert servicio.servicio_id_externo == "SRV-001"
     assert servicio.cantidad_pelos == 3
     assert servicio.pelos_n_ids == [9001, 9002, 9003]
+    assert servicio.categoria == 6
 
 
 @pytest.mark.asyncio

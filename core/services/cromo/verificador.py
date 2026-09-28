@@ -138,6 +138,10 @@ class ServicioUnico:
     cantidad_pelos: int
     numeros_en_pelo: list[str]  # servicio_numero distintos, para contrastar con el vigente
     metodos: list[str]
+    # 0-6 (`app.servicios.categoria`, ver db/models/infra.py). Default `None` para no romper a los
+    # callers que construyen el dataclass a mano (tests); la query siempre la trae. Lo consume el
+    # filtro "Servicios C<N> <cable>" de Slack (2026-09-28).
+    categoria: Optional[int] = None
 
 
 @dataclass(slots=True)
@@ -219,9 +223,10 @@ _SQL_SERVICIOS_POR_TUBO = text(
 )
 
 # Columnas agregadas por servicio (Task 1, plan "Corrección ingresos + Servicios", 2026-09-23), en
-# el mismo orden que espera `_fila_a_servicio_unico`. Subconjunto de `_COLUMNAS_SERVICIO` (sin
-# `s.categoria`: `ServicioUnico` no lo pide) más los cuatro `array_agg`/`count` que resuelven "un
-# servicio, aunque ocupe varios pelos" en una sola pasada de `GROUP BY s.id`.
+# el mismo orden que espera `_fila_a_servicio_unico`. Mismas columnas de `s` que `_COLUMNAS_SERVICIO`
+# más los cuatro `array_agg`/`count` que resuelven "un servicio, aunque ocupe varios pelos" en una
+# sola pasada de `GROUP BY s.id`. `s.categoria` va al final (agregada 2026-09-28 para el filtro
+# "Servicios C<N> <cable>" de Slack) para no correr la posición de las columnas previas.
 #
 # `GROUP BY s.id` a secas alcanza: es la PK de `app.servicios` y Postgres resuelve la dependencia
 # funcional del resto de las columnas de `s`.
@@ -240,7 +245,8 @@ _COLUMNAS_SERVICIO_UNICO = """
     array_agg(DISTINCT p.n_id ORDER BY p.n_id)  AS pelos_n_ids,
     count(DISTINCT p.n_id)                      AS cantidad_pelos,
     array_agg(DISTINCT m.servicio_numero)       AS numeros_en_pelo,
-    array_agg(DISTINCT m.metodo)                AS metodos
+    array_agg(DISTINCT m.metodo)                AS metodos,
+    s.categoria
 """
 
 _SQL_SERVICIOS_UNICOS_POR_CABLE = text(
@@ -476,6 +482,7 @@ def _fila_a_servicio_unico(fila: tuple) -> ServicioUnico:
         cantidad_pelos,
         numeros_en_pelo,
         metodos,
+        categoria,
     ) = fila
     return ServicioUnico(
         servicio_id=servicio_id,
@@ -489,6 +496,7 @@ def _fila_a_servicio_unico(fila: tuple) -> ServicioUnico:
         cantidad_pelos=cantidad_pelos,
         numeros_en_pelo=list(numeros_en_pelo),
         metodos=list(metodos),
+        categoria=categoria,
     )
 
 

@@ -4,6 +4,9 @@
 
 # Bot de Slack — Verificación de Cables y Servicios
 
+> **Estado (2026-09-28): filtro opcional por categoría en `Servicios C<N> <cable>` /
+> `Servicios C<N> <cable> B<N>` (C1 a C6) — ver la sección "Filtro por categoría" más abajo.**
+>
 > **Estado (2026-09-23, Tasks 8-10 del plan "Corrección ingresos + Servicios"): agregados los
 > comandos `Servicios <cable>` / `Servicios <cable> B<N>` (IDs de servicio únicos, agrupados por
 > buffer, con marca de frescura PROV y refresco asíncrono real contra PROV, Task 9) + marcador `🕒`
@@ -231,6 +234,33 @@ request en vez de postear un segundo mensaje, porque no hay ningún hilo de Slac
 IDs) entra cómodo en un solo mensaje de Slack (~950 caracteres para el listado de IDs solo, más las
 líneas de discrepancia/frescura que sean necesarias).
 
+### Filtro por categoría — `@bot Servicios C<N> <cable>` / `@bot Servicios C<N> <cable> B<N>` (2026-09-28)
+
+Mismo comando, acotado a los servicios de una categoría (`app.servicios.categoria`, la que la SPA
+muestra como "Nivel Cliente"). Acepta **C1 a C6**; C0 (placeholder sintetizado por Cromo) y C7+
+responden `:warning: Categoría *C7* inválida — el filtro acepta C1 a C6` sin consultar nada, en vez
+de buscar un cable llamado "C7 F-GRN-598". "Servicios C1" a secas (sin nada después) sigue siendo un
+cable llamado "C1".
+
+- **Parser**: `cable_info.py::extraer_filtro_categoria` separa el token `C<N>` pegado al verbo y
+  devuelve `"Servicios <resto>"`, que los dos parsers de servicios de siempre procesan sin cambiar de
+  contrato (por eso combina gratis con el sufijo `B<N>`).
+- **Filtro**: en memoria (`filtrar_por_categoria`) sobre la misma consulta — `ServicioUnico` ahora
+  trae `categoria` (columna agregada al final de `_COLUMNAS_SERVICIO_UNICO`). Se filtra **antes** de
+  calcular frescura, así el refresco PROV sólo cubre los servicios mostrados.
+- **Respuesta**: encabezado con `· Categoría *C<N>*`; vacío → "Sin servicios de categoría C<N> en
+  este cable/buffer."
+
+**Ejemplo real** (dev, `Servicios C6 F-GRN-598` — el cable tiene 31 servicios: C0:10, C2:1, C3:8,
+C4:5, C5:4, C6:3):
+```
+🧾 Servicios del cable *F-GRN-598* · Categoría *C6* — 3 ID(s) únicos
+B1 (AZ): 113106
+B4 (MR): 96582
+B5 (GR): 112845
+⚠️ En el pelo figura otro número: 113106 (el pelo dice 87864)
+```
+
 **Casos manejados**: mismo resolver de cable (`buscar_cable_por_n_id_o_nombre`/
 `_resolver_cable_o_responder`) y de buffer (`resolver_tubo_por_numero`/`contar_buffers_cable`) que el
 resto de los comandos — no encontrado/ambiguo, buffer fuera de rango, negrita de Slack en el nombre.
@@ -309,7 +339,9 @@ El listener (`_handle_app_mention`) prueba los parsers en este orden:
    línea. Va **primero** por ser el más específico: los parsers de cable son "golosos" y un
    "track 67395" caído ahí terminaría buscando un cable llamado "67395".
 
-Los otros cuatro viven en `cable_info.py` (desde la Task 8):
+Los otros cuatro viven en `cable_info.py` (desde la Task 8). Antes de 2 y 3 se aplica
+`extraer_filtro_categoria` (2026-09-28): si el texto es `Servicios C<N> ...` se quita el token y 2/3
+ven la forma sin filtro; una categoría fuera de C1-C6 corta ahí con un aviso.
 1. `extraer_comando_cable_buffer` — `"(Verificar|Info) cable <nombre> (B|Buffer)\s*<N>"`, case
    insensitive, tolera "B1"/"B 1"/"Buffer 1". Si matchea, dispara `_handle_cable_buffer`.
 2. `extraer_comando_servicios_buffer` — `"Servicios (cable )?<nombre> (B|Buffer)\s*<N>"`. Si

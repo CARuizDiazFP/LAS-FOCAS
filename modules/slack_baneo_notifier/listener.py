@@ -67,9 +67,11 @@ from core.services.prov.frescura import servicios_vencidos_sync
 from db.models.cromo import CromoCable
 from db.session import SessionLocal
 from modules.slack_baneo_notifier.cable_info import (
+    CATEGORIAS_FILTRABLES,
     buscar_cable_por_n_id_o_nombre,
     construir_respuesta_ambiguo,
     construir_respuesta_buffer_no_encontrado,
+    construir_respuesta_categoria_invalida,
     construir_respuesta_info_buffer,
     construir_respuesta_info_cable,
     construir_respuesta_no_encontrado,
@@ -81,6 +83,8 @@ from modules.slack_baneo_notifier.cable_info import (
     extraer_comando_info_cable,
     extraer_comando_servicios_buffer,
     extraer_comando_servicios_cable,
+    extraer_filtro_categoria,
+    filtrar_por_categoria,
     resolver_tubo_por_numero,
 )
 from modules.slack_baneo_notifier.tracking_servicio import extraer_comando_track
@@ -1169,14 +1173,28 @@ class IngresoListener:
             self._handle_cable_buffer(comando_buffer, client, channel, thread_ts)
             return
 
-        comando_servicios_buffer = extraer_comando_servicios_buffer(texto)
-        if comando_servicios_buffer is not None:
-            self._handle_servicios_buffer(comando_servicios_buffer, client, channel, thread_ts)
+        # "Servicios C<N> <cable>[ B<N>]" (2026-09-28): se separa el filtro antes de los dos parsers
+        # de servicios, que siguen viendo la forma sin filtro. Sólo aplica a ese verbo.
+        categoria, texto_servicios = extraer_filtro_categoria(texto)
+        if categoria is not None and categoria not in CATEGORIAS_FILTRABLES:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=construir_respuesta_categoria_invalida(categoria),
+                mrkdwn=True,
+            )
             return
 
-        nombre_servicios_cable = extraer_comando_servicios_cable(texto)
+        comando_servicios_buffer = extraer_comando_servicios_buffer(texto_servicios)
+        if comando_servicios_buffer is not None:
+            self._handle_servicios_buffer(
+                comando_servicios_buffer, client, channel, thread_ts, categoria=categoria
+            )
+            return
+
+        nombre_servicios_cable = extraer_comando_servicios_cable(texto_servicios)
         if nombre_servicios_cable is not None:
-            self._handle_servicios_cable(nombre_servicios_cable, client, channel, thread_ts)
+            self._handle_servicios_cable(nombre_servicios_cable, client, channel, thread_ts, categoria=categoria)
             return
 
         nombre_cable = extraer_comando_info_cable(texto)
@@ -1427,21 +1445,24 @@ class IngresoListener:
             return False, "⚠️ No se pudo iniciar el refresco automático contra PROV — ver logs del worker."
         return True, None
 
-    def _handle_servicios_cable(self, nombre_cable: str, client: Any, channel: str, thread_ts: str) -> None:
+    def _handle_servicios_cable(
+        self, nombre_cable: str, client: Any, channel: str, thread_ts: str, *, categoria: Optional[int] = None
+    ) -> None:
         """"Servicios <nombre>" (Task 8) — IDs de servicio únicos de un cable ENTERO, agrupados por
         buffer, con marca de frescura PROV batch. Complementa (no reemplaza) a "Verificar cable X
         BN": ese comando sigue devolviendo el detalle por-pelo, éste devuelve IDs únicos por-
         servicio (`servicios_unicos_por_cable_sync`, Task 1).
 
         Desde la Task 9 también dispara el refresco asíncrono de esos vencidos contra PROV — ver
-        `_disparar_refresco_prov`."""
+        `_disparar_refresco_prov`. Con `categoria` (filtro "Servicios C<N>", 2026-09-28) se filtra
+        antes de calcular frescura, así el refresco PROV sólo cubre los servicios mostrados."""
         session = SessionLocal()
         try:
             cable = self._resolver_cable_o_responder(session, nombre_cable, client, channel, thread_ts)
             if cable is None:
                 return
 
-            resultado = servicios_unicos_por_cable_sync(session, cable.n_id)
+            resultado = filtrar_por_categoria(servicios_unicos_por_cable_sync(session, cable.n_id), categoria)
             ids_servicio = {s.servicio_id for s in resultado.servicios}
             vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
             servicios_a_refrescar = [s for s in resultado.servicios if s.servicio_id in vencidos]
@@ -1449,7 +1470,7 @@ class IngresoListener:
                 cable.n_id, servicios_a_refrescar, client, channel, thread_ts
             )
             respuesta = construir_respuesta_servicios_cable(
-                cable, session, resultado, vencidos, refrescando=refrescando
+                cable, session, resultado, vencidos, refrescando=refrescando, categoria=categoria
             )
             if nota_prov:
                 respuesta = f"{respuesta}\n{nota_prov}"
@@ -1460,7 +1481,13 @@ class IngresoListener:
             session.close()
 
     def _handle_servicios_buffer(
-        self, comando: tuple[str, int], client: Any, channel: str, thread_ts: str
+        self,
+        comando: tuple[str, int],
+        client: Any,
+        channel: str,
+        thread_ts: str,
+        *,
+        categoria: Optional[int] = None,
     ) -> None:
         """"Servicios <nombre> B<N>" (Task 8) — mismo IDs únicos que `_handle_servicios_cable`,
         acotado a un buffer puntual (`servicios_unicos_por_tubo_sync`, Task 1). Mismo resolver de
@@ -1468,7 +1495,7 @@ class IngresoListener:
         `resolver_tubo_por_numero`).
 
         Desde la Task 9 también dispara el refresco asíncrono de esos vencidos contra PROV — ver
-        `_disparar_refresco_prov`."""
+        `_disparar_refresco_prov`. `categoria`: mismo filtro que `_handle_servicios_cable`."""
         nombre_cable, numero_buffer = comando
         session = SessionLocal()
         try:
@@ -1483,7 +1510,7 @@ class IngresoListener:
                 client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=respuesta, mrkdwn=True)
                 return
 
-            resultado = servicios_unicos_por_tubo_sync(session, tubo.n_id)
+            resultado = filtrar_por_categoria(servicios_unicos_por_tubo_sync(session, tubo.n_id), categoria)
             ids_servicio = {s.servicio_id for s in resultado.servicios}
             vencidos = servicios_vencidos_sync(session, ids_servicio) if ids_servicio else set()
             servicios_a_refrescar = [s for s in resultado.servicios if s.servicio_id in vencidos]
@@ -1491,7 +1518,7 @@ class IngresoListener:
                 cable.n_id, servicios_a_refrescar, client, channel, thread_ts
             )
             respuesta = construir_respuesta_servicios_buffer(
-                cable, tubo, resultado, vencidos, refrescando=refrescando
+                cable, tubo, resultado, vencidos, refrescando=refrescando, categoria=categoria
             )
             if nota_prov:
                 respuesta = f"{respuesta}\n{nota_prov}"
