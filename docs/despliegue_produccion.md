@@ -92,8 +92,35 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
 - Redis: los tres checks de `docs/mantenimiento_redes_produccion.md` ("Verificación post-despliegue").
 - Queda para el usuario: navegador sobre el panel y un mensaje real en Slack prod.
 
+## 7. Pasos de datos pendientes del lote (post-verificación)
+
+Se corren **después** del paso 6, con el código nuevo ya sirviendo, dentro del contenedor de prod.
+
+- **Reproceso de ingresos sin match** (desde el despliegue que incluya la mejora de búsqueda del
+  2026-09-28, `cc58658`, y `scripts/ingresos_reprocesar_sin_match.py`). Dry-run exacto primero
+  (corre todo y revierte), revisar el reporte, recién entonces `--apply`:
+
+  ```bash
+  docker exec -i -w /app -e PYTHONPATH=/app lasfocas-slack-baneo-worker \
+      python - --slack --reporte - < scripts/ingresos_reprocesar_sin_match.py > reproceso_dry.json
+  # revisar reproceso_dry.json (estados REGISTRADO/NODO y cada movimiento); si está bien:
+  docker exec -i -w /app -e PYTHONPATH=/app lasfocas-slack-baneo-worker \
+      python - --slack --apply --reporte - < scripts/ingresos_reprocesar_sin_match.py > reproceso_apply.json
+  ```
+
+  Ensayo contra una copia de los 169 casos de Slack de prod en dev (2026-09-28, revertido): 33
+  registran movimiento (18 ingresos, 13 egresos que cierran, 4 egresos huérfanos), 25 Nodos marcados
+  revisados, 111 sin tocar. En prod los egresos que cierran pueden ser más (ingresos abiertos reales
+  que dev no tiene). Idempotente: una segunda corrida no agrega filas. Detalle:
+  `docs/relevamiento_ingresos_sin_match_2026-09-28.md`, sección "Reproceso por lote".
+
 ## Rollback
 
 - Código: `docker compose ... up -d` desde el commit anterior de `main`.
 - Esquema: `alembic downgrade <revisión previa>` (todas las migraciones tienen `downgrade()`) o
   `pg_restore --clean --if-exists` del backup de ventana.
+- Reproceso de ingresos sin match: cada movimiento queda enlazado desde su caso
+  (`ingresos_sin_match.ingreso_id`, `resuelto_via_revalidacion=true`) y el reporte `--apply` lista
+  cada `ingreso_id` creado o cerrado — revertir es borrar/reabrir esas filas puntuales vía un script
+  que use `core/services/ingreso_service.py`, nunca un `UPDATE` masivo a mano.
+

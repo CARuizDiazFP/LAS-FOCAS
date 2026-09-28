@@ -173,5 +173,34 @@ casos incorrectos de la revisión).
 
 Latencia por búsqueda: mediana 110 → 120 ms, máximo 181 → 222 ms.
 
-**Los 201 casos históricos no se reprocesan solos**: siguen en `ingresos_sin_match` hasta que alguien
-responda "Revalidar ingreso" en cada hilo (o se haga un reproceso por lote, no implementado).
+**Los casos históricos no se reprocesan solos** — ver "Reproceso por lote" abajo.
+
+## Reproceso por lote (2026-09-28)
+
+`scripts/ingresos_reprocesar_sin_match.py` → `core/services/ingreso_reproceso_service.py`. Reglas
+(docstring del servicio): sólo casos de Slack pendientes; mismo pipeline que el listener en vivo;
+Nodo → `revisado=true`; siempre `INGRESO` real (el baneo de hoy no es evidencia del pasado, criterio
+de "Forzar ingreso"); orden cronológico; Egreso acotado en el tiempo (`registrar_egreso_historico`:
+sólo cierra un ingreso que empezó antes); sin duplicar movimientos que el hilo ya tiene; un commit por
+caso; idempotente. Dry-run **exacto**: corre todo dentro de una transacción externa que se revierte.
+
+**Ensayo** (dev, copia de los 202 casos de prod exportada el 2026-09-28 — 169 de Slack —, todo dentro
+de una transacción revertida; se verificó que dev quedó igual):
+
+| Estado | Casos |
+|---|---|
+| REGISTRADO | 33 (18 ingresos creados, 13 egresos que cierran su ingreso, 4 egresos huérfanos) |
+| NODO (marcado revisado) | 25 |
+| AMBIGUO / SIN_MATCH (sin tocar) | 11 / 100 |
+
+Segunda corrida: 111 candidatos (los no resueltos), 0 filas nuevas. Los 4 egresos huérfanos en dev
+corresponden a visitas cuyo Ingreso sí había matcheado en vivo en prod: en prod esos egresos van a
+cerrar el ingreso abierto real (dev no tiene esas filas).
+
+**Bug real encontrado por el ensayo** (y corregido en `detectar_multi_bot`): "Bot monteagudo 202 bot1
+y bot2" dejaba el "Bot" genérico en el nombre de la Botella 1 → resolvía a la Bot 2, y el Egreso de la
+Botella 1 cerraba el ingreso de la Bot 2. Afectaba también al listener en vivo.
+
+**Ejecución en prod: pendiente de la alineación de prod** (paso 7 de `docs/despliegue_produccion.md`):
+tiene que correr con la búsqueda nueva desplegada, dentro del contenedor.
+

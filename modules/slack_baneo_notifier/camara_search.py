@@ -227,6 +227,10 @@ def detectar_multi_bot(nombre_raw: str) -> list[str] | None:
     base = re.sub(r"\s+", " ", base).strip()
 
     base = _RE_BOT_PEGADO.sub(lambda m: f"Bot {m.group(1)}", base)
+    # Un "Bot"/"Botella" SIN número al principio ("Bot monteagudo 202 bot1 y bot2", caso real de prod
+    # 2026-09-28) es la palabra genérica, no una botella: si queda en la base, la Botella 1 se busca
+    # como "Bot monteagudo 202", `tiene_bot` deja pasar las botellas secundarias y resuelve a la Bot 2.
+    base = re.sub(r"(?i)^\s*bot(?:ella)?s?\.?\s+(?![1-9](?!\d))", "", base)
     base = re.sub(r"\s+", " ", base).strip()
 
     nombres: list[str] = []
