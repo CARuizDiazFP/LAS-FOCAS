@@ -4,8 +4,9 @@
 
 # Relevamiento de ingresos sin match — 2026-09-28
 
-**Estado: diagnóstico + propuesta. Ningún cambio de búsqueda está implementado.** El cambio afecta
-cómo el bot de Slack resuelve cámaras en vivo, así que queda pendiente de aprobación.
+**Estado: implementado el mismo día** (rama `fix/claude-busqueda-busqueda-camaras-sin-match`, ver
+"Implementación y medición final" al final). Las secciones de diagnóstico y prototipo quedan como
+registro de cómo se llegó; donde la implementación difiere de la propuesta, manda la sección final.
 
 ## Fuente y método
 
@@ -105,3 +106,52 @@ por id y **re-medir con este mismo arnés antes de mergear**: el criterio de ace
   código (con `created_at` del caso como momento, igual que la revalidación).
 - **Tracking con "Nodo" explícito** (`Nodo Escobar Rack 1 de FO`) también cae como sin match: el
   camino de tracking no aplica la exclusión de Nodos que sí aplica el listener.
+
+## Implementación y medición final (2026-09-28)
+
+Código: `modules/slack_baneo_notifier/camara_search.py` (preprocesamiento, filtro de números,
+multi-bot, desempate exacto, prefijo basura), `core/services/cromo/camara_botella_busqueda.py`
+(intento literal, desempate de botellas, ID de Cromo, reintento sin "Bot 1"),
+`core/services/nodos_catalogo.py` (nuevo), `core/services/camara_sugerencias.py` (nuevo), listener
+de Slack y `infra_service` (tracking). Tests: `tests/test_busqueda_camaras_sin_match.py`.
+
+**Diferencias con la propuesta:**
+
+- **Catálogo de Nodos sin lista a mano.** Sale de los nombres "Nodo …" de `app.cromo_odfs` (vigentes)
+  y `app.camaras` — los mismos que muestran el tracking y el Path de Cromo. 57 claves en dev.
+  "Quilmes" **no** es un Nodo del inventario (los ODFs "… QUILMES" son de clientes), así que sigue
+  cayendo como genérico. Para no convertir una calle en Nodo, "sin número final" sólo aplica a
+  números cortos o nombres con artículo: "Nodo Mitre 3821" no genera la clave "mitre", y "Nodo Sta Fe
+  4965" no genera "santa fe" — por eso "Santa Fe" solo (2 filas) sigue sin resolverse. Se prefirió el
+  error visible (sin match) al silencioso (mensaje ignorado).
+- **El desempate no se aplica al prefijo antes del guion** (hallazgo de la primera medición real, ver
+  abajo): un recorte que coincide exacto con otra cámara no prueba nada.
+- **Sugerencias sólo en la respuesta de Slack**, con la instrucción de usar `Forzar ingreso <nombre>`;
+  no se guardan en `IngresoSinMatch` (no hizo falta migración).
+- **Tracking**: una ubicación de Nodo ya no se registra como sin match (mismo criterio que Slack).
+
+**Medición con el código real** (arnés read-only contra `focas_dev`, mismo pipeline que el listener;
+muestra de regresión = 1.500 Cámaras ordenadas por id, seed 7, idéntica para ambos lados):
+
+| 201 casos de prod | Match | Nodo | Sugerencia | Ambiguo | Sin match |
+|---|---|---|---|---|---|
+| `dev` (antes) | 2 | 6 | — | 48 | 145 |
+| Rama | 51 | 35 | 59 | 8 | 48 |
+
+| Regresión (1.500) | Se encuentra a sí mismo | Ambiguo | Sin match | Cámara incorrecta |
+|---|---|---|---|---|
+| `dev` (antes) | 1341 | 89 | 63 | 7 |
+| Rama, 1ª medición | 1439 | 34 | 15 | **12** |
+| Rama, final | **1444** | 34 | 15 | **7** |
+
+La 1ª medición violó el criterio de aceptación ("incorrectos ≤ actual"): las 5 nuevas venían del
+desempate exacto aplicado al prefijo antes del guion ("terraza Viamonte 898- Piso 4 C.F." → "terraza
+Viamonte 898"). Corregido y cubierto por un test que falla si se reintroduce. Los 7 incorrectos
+finales son **exactamente los mismos 7** que ya tenía `dev` (duplicados del inventario del tipo
+"Cra. Conde 802 C.F." / "Cra Conde 802 CF").
+
+Latencia por búsqueda (6 textos × 3 vueltas contra dev): mediana 110 → 120 ms, máximo 181 → 222 ms.
+
+**Los 201 casos históricos no se reprocesan solos**: siguen en `ingresos_sin_match` hasta que alguien
+responda "Revalidar ingreso" en cada hilo (o se haga un reproceso por lote, no implementado).
+

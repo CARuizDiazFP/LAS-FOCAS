@@ -2462,3 +2462,18 @@ su propia ventana de mantenimiento.
   paridad con Slack; cambiarlo es una línea (`_require_auth` → `_require_admin`).
 - **Relacionado:** el relevamiento de los 201 casos `ingresos_sin_match` de prod del mismo día está
   en `docs/relevamiento_ingresos_sin_match_2026-09-28.md` (diagnóstico + propuesta, sin implementar).
+
+## 2026-09-28 (cont.) — Búsqueda de cámaras: catálogo de Nodos del inventario y "error visible antes que silencioso"
+
+- **Catálogo de Nodos derivado, no mantenido a mano.** El usuario indicó que los Nodos figuran como
+  "Nodo …" en el tracking y el Path de Cromo; esos nombres están en `app.cromo_odfs` (racks/ODFs del
+  Nodo). Una lista configurable habría quedado desactualizada en la primera alta de Nodo.
+- **Error visible antes que silencioso.** Un falso positivo de Nodo hace que el listener ignore el
+  mensaje sin rastro; un falso negativo deja un caso sin match, visible y revalidable. Por eso: (a)
+  comparación por nombre entero; (b) no se generan claves de calle ("Nodo Mitre 3821" no produce
+  "mitre"); (c) "Quilmes" y "Santa Fe" quedan fuera aunque aparecieran en el relevamiento.
+- **Sugerencias en vez de auto-match** para typos y palabras de más: un typo resuelto solo puede
+  registrar el ingreso en la cámara equivocada (y dispararle un aviso de baneo que no corresponde).
+- **Criterio de aceptación medido, no opinado**: mismo arnés de auto-recuperación antes/después; se
+  exigió "incorrectos ≤ `dev`". La primera versión lo violó (7 → 12) y se corrigió antes de integrar.
+
