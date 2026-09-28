@@ -65,6 +65,16 @@ git diff --quiet $C origin/dev && git push origin $C:refs/heads/main
 
 Si `main` tiene commits propios, **no** usar esto: hacer el merge real en un worktree de `main`.
 
+**Excepción verificada (2026-09-28)**: si el único commit propio de `main` es el merge del
+despliegue anterior (`git log origin/dev..origin/main` = 1 commit de merge) y su árbol es idéntico al
+de su segundo padre, que es ancestro de `dev`, `main` no tiene contenido propio y el `commit-tree` de
+arriba sigue siendo seguro — aunque `--is-ancestor` dé falso:
+
+```bash
+P2=$(git log -1 --format=%P origin/main | awk '{print $2}')
+git merge-base --is-ancestor $P2 origin/dev && git diff --quiet origin/main $P2 && echo "main sin contenido propio"
+```
+
 ## 5. Ventana
 
 ```bash
@@ -85,10 +95,15 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
 
 - Todos `healthy` y sin stale: para cada contenedor de app, `docker inspect -f '{{.Image}}'` igual
   a `docker image inspect -f '{{.Id}}' <imagen>`.
-- `/health` de `lasfocas-web` (`:8080`) y `lasfocas-api` (`:8000`, incluye `db`).
+- `/health` de `lasfocas-web` y `lasfocas-api` (incluye `db`). Puertos publicados reales (verificados
+  el 2026-09-28 con `docker port`): web en `172.18.208.162:8080` (no escucha en `127.0.0.1`), api en
+  `:8001` del host (`8000` es el puerto interno del contenedor).
 - `docker logs --since 5m` de cada servicio sin `error|traceback|exception`.
 - Conteos de datos reales iguales a los de antes del deploy.
-- `slack_baneo_worker`: log `IngresoListener iniciado en modo Socket`.
+- `slack_baneo_worker`: log `IngresoListener iniciado en modo Socket`. Los logs del worker están en
+  hora local (UTC-3): un `--since 5m` puede no mostrar la línea de arranque; buscarla con `--since 15m`.
+  El warning `missing_scope ... users:read` es conocido (falta el scope en la Slack App de prod, ver
+  `docs/cierres/2026-09-07.md`): el técnico queda con el ID crudo de Slack.
 - Redis: los tres checks de `docs/mantenimiento_redes_produccion.md` ("Verificación post-despliegue").
 - Queda para el usuario: navegador sobre el panel y un mensaje real en Slack prod.
 
