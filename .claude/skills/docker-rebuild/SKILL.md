@@ -418,3 +418,41 @@ docker exec lasfocasdev-web grep -c '<simbolo-o-fragmento-sql-nuevo>' /app/<ruta
 
 Regla: si no podés mostrar evidencia de que el contenedor tiene tu código, cualquier verificación E2E
 contra él no prueba nada sobre tu cambio.
+
+## Una capacidad nueva en un contenedor viejo puede necesitar config que ese contenedor nunca tuvo
+
+Hallazgo real (2026-09-28, comando `@bot track` de Slack): el código nuevo pasó 25 tests propios y la
+suite completa (2169 passed), se integró a `dev` y el contenedor se reconstruyó correctamente — y la
+primera ejecución real adentro murió igual, con
+`CromoConfigError: Configuración de Cromo incompleta. Definir CROMO_PASSWORD (o secreto
+cromo_password_v1)`. Causa: se le agregó al `slack_baneo_worker` una capacidad que **habla con un
+sistema externo nuevo para ese servicio**, y ese servicio nunca había montado
+`cromo_password_v1` en `deploy/docker-compose.dev.yml` ni en `deploy/compose.yml` (sí lo montaban
+`web` y `cromo_worker`). El resto de la config de Cromo (`CROMO_BASE_URL`, `CROMO_USER`, …) ya le
+llegaba por `env_file`: faltaba **sólo** el secreto.
+
+**Ningún test puede detectarlo.** Los del handler mockean la capa que necesita la credencial; los del
+servicio corren desde el host con el `.venv`, que tiene otro entorno. Sólo aparece ejecutando dentro
+del contenedor real — y el healthcheck sigue en verde, porque el proceso arranca igual: falla recién
+en la primera invocación del comando.
+
+**Regla**: cuando una capacidad nueva hace que un servicio hable con un sistema externo (Cromo, PROV,
+Slack, SMTP…) que ese servicio **no usaba antes**, comparar su bloque `secrets:`/`environment:` en el
+compose contra el de un servicio que sí lo usa, **antes** de dar por cerrado el cambio:
+
+```bash
+# ¿Qué secretos monta cada servicio? Compará el que tocaste contra el que ya habla con ese sistema.
+python3 - <<'PY'
+import re, pathlib
+s = pathlib.Path('deploy/docker-compose.dev.yml').read_text()
+for m in re.finditer(r"\n  ([a-z_-]+):\n(.*?)(?=\n  [a-z_-]+:\n)", s, re.S):
+    secretos = re.findall(r"^\s+- (\w+_v\d+)$", m.group(2), re.M)
+    print(f"{m.group(1):28} {secretos}")
+PY
+
+# Y confirmalo en el contenedor ya recreado, no en el yml:
+docker exec <contenedor> ls /run/secrets/
+```
+
+Aplicar el arreglo a **dev y prod en el mismo cambio**: el faltante es idéntico en los dos composes y
+diferirlo garantiza el mismo error en el despliegue.
