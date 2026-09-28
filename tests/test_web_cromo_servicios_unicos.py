@@ -188,7 +188,7 @@ def _fake_async_session_local_secuencia(sesiones: list[_SesionFake]):
 
 # Fila de `_COLUMNAS_SERVICIO_UNICO` (`core/services/cromo/verificador.py`): s.id, s.servicio_id,
 # s.numero_primer_servicio, s.nombre_cliente, s.cliente, s.estado_servicio, s.tipo_servicio,
-# pelos_n_ids, cantidad_pelos, numeros_en_pelo, metodos, s.categoria.
+# pelos_n_ids, cantidad_pelos, numeros_en_pelo, metodos, s.categoria, s.es_verificable.
 _FILA_SERVICIO_UNICO = (
     501,
     "SRV-001",
@@ -202,6 +202,7 @@ _FILA_SERVICIO_UNICO = (
     ["1234"],
     ["REGEX_EXACTO"],
     6,
+    True,
 )
 
 _SQL_UNICOS_POR_CABLE = "WHERE p.cable_n_id = :cable_n_id\n    GROUP BY s.id"
@@ -278,6 +279,7 @@ def test_por_cable_happy_path_con_frescura(monkeypatch):
         ["5678"],
         ["REGEX_EXACTO"],
         3,
+        False,
     )
     cable = CromoCable(n_id=51, nombre="Cable Troncal", capacidad="72-BRUG", vigente=True)
     sesion = _SesionFake(

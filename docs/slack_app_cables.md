@@ -4,8 +4,9 @@
 
 # Bot de Slack — Verificación de Cables y Servicios
 
-> **Estado (2026-09-28): filtro opcional por categoría en `Servicios C<N> <cable>` /
-> `Servicios C<N> <cable> B<N>` (C1 a C6) — ver la sección "Filtro por categoría" más abajo.**
+> **Estado (2026-09-28): filtros opcionales en `Servicios [C<N>] <cable> [B<N>] [VER|NOVER]` —
+> categoría C1 a C6 y verificables / no verificables. Ver las secciones "Filtro por categoría" y
+> "Filtro VER / NOVER" más abajo.**
 >
 > **Estado (2026-09-23, Tasks 8-10 del plan "Corrección ingresos + Servicios"): agregados los
 > comandos `Servicios <cable>` / `Servicios <cable> B<N>` (IDs de servicio únicos, agrupados por
@@ -245,7 +246,7 @@ cable llamado "C1".
 - **Parser**: `cable_info.py::extraer_filtro_categoria` separa el token `C<N>` pegado al verbo y
   devuelve `"Servicios <resto>"`, que los dos parsers de servicios de siempre procesan sin cambiar de
   contrato (por eso combina gratis con el sufijo `B<N>`).
-- **Filtro**: en memoria (`filtrar_por_categoria`) sobre la misma consulta — `ServicioUnico` ahora
+- **Filtro**: en memoria (`filtrar_servicios`) sobre la misma consulta — `ServicioUnico` ahora
   trae `categoria` (columna agregada al final de `_COLUMNAS_SERVICIO_UNICO`). Se filtra **antes** de
   calcular frescura, así el refresco PROV sólo cubre los servicios mostrados.
 - **Respuesta**: encabezado con `· Categoría *C<N>*`; vacío → "Sin servicios de categoría C<N> en
@@ -259,6 +260,29 @@ B1 (AZ): 113106
 B4 (MR): 96582
 B5 (GR): 112845
 ⚠️ En el pelo figura otro número: 113106 (el pelo dice 87864)
+```
+
+### Filtro VER / NOVER — `@bot Servicios [C<N>] <cable> [B<N>] VER|NOVER` (2026-09-28)
+
+Token **al final** (después del cable y del buffer): `VER` deja sólo los servicios con
+`app.servicios.es_verificable = true`, `NOVER` sólo los `false` (también acepta `NO VER`/`NO-VER`).
+Combina libremente con la categoría y el buffer: `Servicios C6 F-GRN-598 B2 NOVER`.
+"Servicios VER" a secas sigue siendo un cable llamado "VER", y el token tiene que ir separado por un
+espacio (`F-XVER` es un nombre de cable).
+
+- **Parser**: `extraer_filtro_verificable`, aplicado después de `extraer_filtro_categoria` (uno mira
+  el comienzo y el otro el final, así que el orden entre ellos no importa).
+- **Filtro**: `filtrar_servicios(resultado, categoria=..., verificable=...)` reemplaza a
+  `filtrar_por_categoria`; `ServicioUnico` trae `es_verificable` (columna al final de
+  `_COLUMNAS_SERVICIO_UNICO`, después de `categoria`).
+- **Respuesta**: encabezado `· Verificables` / `· No verificables` (después de la categoría si hay);
+  vacío → "Sin servicios de categoría C2 verificables en este buffer."
+
+**Ejemplo real** (dev, F-GRN-598: 13 verificables / 18 no verificables; `Servicios C6 F-GRN-598 VER`):
+```
+🧾 Servicios del cable *F-GRN-598* · Categoría *C6* · Verificables — 2 ID(s) únicos
+B4 (MR): 96582
+B5 (GR): 112845
 ```
 
 **Casos manejados**: mismo resolver de cable (`buscar_cable_por_n_id_o_nombre`/
@@ -339,9 +363,10 @@ El listener (`_handle_app_mention`) prueba los parsers en este orden:
    línea. Va **primero** por ser el más específico: los parsers de cable son "golosos" y un
    "track 67395" caído ahí terminaría buscando un cable llamado "67395".
 
-Los otros cuatro viven en `cable_info.py` (desde la Task 8). Antes de 2 y 3 se aplica
-`extraer_filtro_categoria` (2026-09-28): si el texto es `Servicios C<N> ...` se quita el token y 2/3
-ven la forma sin filtro; una categoría fuera de C1-C6 corta ahí con un aviso.
+Los otros cuatro viven en `cable_info.py` (desde la Task 8). Antes de 2 y 3 se aplican
+`extraer_filtro_categoria` y `extraer_filtro_verificable` (2026-09-28): quitan `C<N>` del comienzo
+y `VER`/`NOVER` del final, y 2/3 ven la forma sin filtro; una categoría fuera de C1-C6 corta ahí con
+un aviso.
 1. `extraer_comando_cable_buffer` — `"(Verificar|Info) cable <nombre> (B|Buffer)\s*<N>"`, case
    insensitive, tolera "B1"/"B 1"/"Buffer 1". Si matchea, dispara `_handle_cable_buffer`.
 2. `extraer_comando_servicios_buffer` — `"Servicios (cable )?<nombre> (B|Buffer)\s*<N>"`. Si

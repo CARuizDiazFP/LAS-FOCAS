@@ -142,6 +142,9 @@ class ServicioUnico:
     # callers que construyen el dataclass a mano (tests); la query siempre la trae. Lo consume el
     # filtro "Servicios C<N> <cable>" de Slack (2026-09-28).
     categoria: Optional[int] = None
+    # `app.servicios.es_verificable` — mismo criterio de default que `categoria`; lo consume el
+    # filtro "Servicios <cable> VER|NOVER" de Slack (2026-09-28).
+    es_verificable: Optional[bool] = None
 
 
 @dataclass(slots=True)
@@ -225,8 +228,9 @@ _SQL_SERVICIOS_POR_TUBO = text(
 # Columnas agregadas por servicio (Task 1, plan "Corrección ingresos + Servicios", 2026-09-23), en
 # el mismo orden que espera `_fila_a_servicio_unico`. Mismas columnas de `s` que `_COLUMNAS_SERVICIO`
 # más los cuatro `array_agg`/`count` que resuelven "un servicio, aunque ocupe varios pelos" en una
-# sola pasada de `GROUP BY s.id`. `s.categoria` va al final (agregada 2026-09-28 para el filtro
-# "Servicios C<N> <cable>" de Slack) para no correr la posición de las columnas previas.
+# sola pasada de `GROUP BY s.id`. `s.categoria` y `s.es_verificable` van al final (agregadas
+# 2026-09-28 para los filtros "Servicios C<N> <cable> VER|NOVER" de Slack) para no correr la posición
+# de las columnas previas.
 #
 # `GROUP BY s.id` a secas alcanza: es la PK de `app.servicios` y Postgres resuelve la dependencia
 # funcional del resto de las columnas de `s`.
@@ -246,7 +250,7 @@ _COLUMNAS_SERVICIO_UNICO = """
     count(DISTINCT p.n_id)                      AS cantidad_pelos,
     array_agg(DISTINCT m.servicio_numero)       AS numeros_en_pelo,
     array_agg(DISTINCT m.metodo)                AS metodos,
-    s.categoria
+    s.categoria, s.es_verificable
 """
 
 _SQL_SERVICIOS_UNICOS_POR_CABLE = text(
@@ -483,6 +487,7 @@ def _fila_a_servicio_unico(fila: tuple) -> ServicioUnico:
         numeros_en_pelo,
         metodos,
         categoria,
+        es_verificable,
     ) = fila
     return ServicioUnico(
         servicio_id=servicio_id,
@@ -497,6 +502,7 @@ def _fila_a_servicio_unico(fila: tuple) -> ServicioUnico:
         numeros_en_pelo=list(numeros_en_pelo),
         metodos=list(metodos),
         categoria=categoria,
+        es_verificable=es_verificable,
     )
 
 
