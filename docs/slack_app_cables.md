@@ -262,10 +262,46 @@ los datos de Cromo — root cause completamente distinto de lo investigado antes
 `obtener_detalle_cable`, acotado a un tubo — nunca N+1, una sola query con `LEFT JOIN` a
 `cromo_servicio_match`/`servicios`).
 
+## `@bot track <id de servicio>` — implementado (2026-09-28)
+
+Sube al hilo los `.txt` de tracking del Servicio, generados desde Cromo. **No** usa el tracking
+manual: sale del camino óptico de Cromo, igual que el botón de descarga del Detalle de Servicio.
+
+- **El ID admite las tres identidades**: el vigente (`servicio_id`), el de primera línea
+  (`numero_primer_servicio`) y los históricos (`alias_ids`). Medido el 2026-09-28: de las 5.435
+  filas de `app.servicios_historial_id`, **cero** tienen un `numero_id` que esas tres no cubran ya,
+  así que no hace falta joinear el histórico.
+- **Un `.txt` por pelo, no por Servicio.** La selección por defecto son las posiciones de ODF del
+  Servicio (mismo criterio que el botón de la pantalla, `semillas_por_defecto`): entre 1 y 4
+  archivos en Servicios reales de dev — el 67395 da 4. Se suben todos, sin tope (decisión explícita
+  del usuario, 2026-09-28). Con más de uno, el nombre lleva el `pelo_n_id` intercalado
+  (`nombre_distinguible`) o los archivos se pisarían entre sí en el hilo.
+- **Demora aceptada.** En frío cuesta entre 4,6 s y 14 s **por pelo** contra Cromo (hasta ~1 minuto
+  con 4 posiciones); sobre el caché de 24 h (`app.cromo_tracking_cache`) es inmediato. Por eso el
+  bot postea un aviso ANTES de empezar, y la sesión de DB se cierra antes de generar para no
+  sostener una conexión del pool todo ese rato.
+- **Un pelo que falla no cancela los demás**: se suben los que salieron y se reporta al final cuáles
+  no, para que el operador no cuente 3 archivos donde esperaba 4 sin saber por qué.
+- Sin ningún pelo en Cromo responde el motivo en texto y **no** sube nada: un `.txt` que dice "no hay
+  datos" es basura.
+
+Vive en `modules/slack_baneo_notifier/tracking_servicio.py` (parser, resolución y generación) y se
+despacha desde `_handle_track` en `listener.py`.
+
+> **El camino async dentro de un callback síncrono de Slack**: la generación corre en un thread
+> propio con su propio event loop y un engine `NullPool` dedicado, **no** el pool singleton de
+> `db.session`. Ese pool queda atado al loop del primer checkout y reusarlo desde un loop nuevo es
+> el `Future attached to a different loop` con el que este repo ya tropezó.
+
 ## Parser de comandos
 
-`cable_info.py` tiene cuatro parsers (desde la Task 8), probados en este orden por el listener
-(`_handle_app_mention`):
+El listener (`_handle_app_mention`) prueba los parsers en este orden:
+
+0. `extraer_comando_track` (`tracking_servicio.py`) — `"track|tracking <dígitos>"`, anclado a fin de
+   línea. Va **primero** por ser el más específico: los parsers de cable son "golosos" y un
+   "track 67395" caído ahí terminaría buscando un cable llamado "67395".
+
+Los otros cuatro viven en `cable_info.py` (desde la Task 8):
 1. `extraer_comando_cable_buffer` — `"(Verificar|Info) cable <nombre> (B|Buffer)\s*<N>"`, case
    insensitive, tolera "B1"/"B 1"/"Buffer 1". Si matchea, dispara `_handle_cable_buffer`.
 2. `extraer_comando_servicios_buffer` — `"Servicios (cable )?<nombre> (B|Buffer)\s*<N>"`. Si
@@ -284,6 +320,29 @@ DENTRO de cada una.
 Una mención que no matchea ninguno de los cuatro se ignora silenciosamente (no hay todavía un mensaje
 de "comando no reconocido" — evita interferir con otras menciones al mismo bot que no sean estos
 comandos).
+
+## Scopes reales de las dos apps (medido 2026-09-28) — prod NO tiene `app_mentions:read`
+
+Prod y dev son **dos Slack Apps distintas** con scopes distintos. Medido con `auth.test` real contra
+cada worker (el header `x-oauth-scopes` de la respuesta, no el panel de Slack):
+
+| | Bot | `bot_id` | Scopes |
+|---|---|---|---|
+| dev (`lasfocasdev-slack-baneo-worker`) | `registrador_de_ingres` | `B0B345MCXF1` | `channels:history`, `groups:history`, `chat:write`, `files:write`, **`app_mentions:read`**, `commands`, `incoming-webhook` |
+| prod (`lasfocas-slack-baneo-worker`) | `lasfocas_cambot` | `B0A9JA3S5V3` | `incoming-webhook`, `commands`, `chat:write`, `files:write`, `channels:history`, `groups:history` |
+
+La única diferencia es **`app_mentions:read`, que prod no tiene**. Todos los comandos de este
+documento se despachan desde `_handle_app_mention`, que está enganchado **sólo** al evento
+`app_mention` (`_handle_message` es el listener de ingresos y filtra por canal/workflow, no despacha
+comandos). Sin ese scope el evento no llega, así que en producción **ningún comando de mención
+funciona hoy** — no es una regresión de `track`, es un gap preexistente que `track` hereda.
+
+`files:write` sí está en las dos, así que la subida de archivos no necesita nada nuevo.
+
+**Antes de habilitar `track` en prod**: agregar `app_mentions:read` a la app de producción,
+reinstalarla en el workspace (un scope nuevo exige reinstalación) y verificar con una mención real
+en el canal, mirando el log del worker — no con la lista de scopes del panel, que ya engañó una vez
+(ver `docs/decisiones.md`, 2026-08-25: app_mention necesita App Token, no sólo scope).
 
 ## Identidad del bot y despliegue (hallazgo operativo, 2026-08-13 — app de dev, `@sandy02`)
 

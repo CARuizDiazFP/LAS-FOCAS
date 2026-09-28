@@ -9,7 +9,8 @@ con uno de los tres estados posibles.
 
 Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
 Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
-listener de ingresos, sólo un evento distinto de Slack. Implementados: "Info cable <nombre>",
+listener de ingresos, sólo un evento distinto de Slack. Implementados: "track <id de servicio>",
+"Info cable <nombre>",
 "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>"; desde la Task 8 del plan "Corrección
 ingresos + Servicios" (2026-09-23) también "Servicios <nombre>" y "Servicios <nombre> B<N>" (IDs de
 servicio únicos con marca de frescura PROV, ver `cable_info.py`) — y desde la Task 9 del mismo plan,
@@ -82,6 +83,7 @@ from modules.slack_baneo_notifier.cable_info import (
     extraer_comando_servicios_cable,
     resolver_tubo_por_numero,
 )
+from modules.slack_baneo_notifier.tracking_servicio import extraer_comando_track
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
     detectar_multi_bot,
@@ -1157,6 +1159,11 @@ class IngresoListener:
         thread_ts = event.get("thread_ts") or event.get("ts")
         channel = event.get("channel", "")
 
+        numero_track = extraer_comando_track(texto)
+        if numero_track is not None:
+            self._handle_track(numero_track, client, channel, thread_ts)
+            return
+
         comando_buffer = extraer_comando_cable_buffer(texto)
         if comando_buffer is not None:
             self._handle_cable_buffer(comando_buffer, client, channel, thread_ts)
@@ -1188,6 +1195,108 @@ class IngresoListener:
             logger.error("Error procesando 'Info cable %s': %s", nombre_cable, exc, exc_info=True)
         finally:
             session.close()
+
+    def _handle_track(
+        self, numero: str, client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"track <id>" — sube al hilo los `.txt` de tracking del Servicio, generados desde Cromo.
+
+        El ID puede ser el vigente, el de primera línea o uno histórico: `resolver_servicio` mira
+        las tres identidades.
+
+        La sesión de DB se cierra ANTES de generar: en frío la generación tarda entre 4,6 s y 14 s
+        por pelo (hasta ~1 minuto con 4 posiciones de ODF) y sostener una conexión del pool todo
+        ese rato, por un comando de chat, no tiene sentido. El aviso previo existe por lo mismo —
+        sin él el operador cree que el bot lo ignoró.
+        """
+        from modules.slack_baneo_notifier.tracking_servicio import (
+            ESTADO_OK,
+            generar_trackings,
+            resolver_servicio,
+        )
+
+        session = SessionLocal()
+        try:
+            servicio = resolver_servicio(session, numero)
+            if servicio is None:
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    text=(
+                        f":mag: No encontré ningún Servicio con el ID `{numero}` "
+                        "(probé ID vigente, de primera línea e históricos)."
+                    ),
+                    mrkdwn=True,
+                )
+                return
+            servicio_pk = servicio.id
+            cliente_nombre = servicio.nombre_cliente or "sin cliente"
+            id_vigente = servicio.servicio_id
+        except Exception as exc:
+            logger.error("Error resolviendo Servicio '%s' para track: %s", numero, exc, exc_info=True)
+            return
+        finally:
+            session.close()
+
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=(
+                f":satellite: Generando el tracking de `{id_vigente}` — {cliente_nombre}. "
+                "Si no está en caché puede tardar un rato."
+            ),
+            mrkdwn=True,
+        )
+
+        try:
+            resultado = generar_trackings(servicio_pk)
+        except Exception as exc:
+            logger.error("Error generando tracking de %s: %s", servicio_pk, exc, exc_info=True)
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=f":x: No se pudo generar el tracking de `{id_vigente}`.",
+                mrkdwn=True,
+            )
+            return
+
+        if resultado.estado != ESTADO_OK:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=f":warning: {resultado.mensaje}",
+                mrkdwn=True,
+            )
+            return
+
+        for archivo in resultado.archivos:
+            try:
+                client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    content=archivo.contenido,
+                    filename=archivo.nombre,
+                    title=archivo.nombre,
+                )
+            except Exception as exc:
+                logger.error("Error subiendo %s: %s", archivo.nombre, exc, exc_info=True)
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    text=f":x: No pude subir `{archivo.nombre}`.",
+                    mrkdwn=True,
+                )
+
+        # Un pelo que falló no cancela los demás, pero tampoco se calla: si no, el operador cuenta
+        # 3 archivos donde esperaba 4 y no sabe si le faltan datos o si el Servicio es así.
+        if resultado.errores:
+            detalle = "\n".join(f"• {e}" for e in resultado.errores)
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=f":warning: Algunos pelos no se pudieron resolver:\n{detalle}",
+                mrkdwn=True,
+            )
 
     def _handle_cable_buffer(
         self, comando: tuple[str, str, int], client: Any, channel: str, thread_ts: str
