@@ -11,6 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from core.services.cromo.servicios_sin_odf import IDENTIDADES_DEL_SERVICIO_SQL
+
 
 class ObjetoNoEncontrado(RuntimeError):
     """El cable/tubo/botella consultado no existe en el inventario ya ingerido."""
@@ -812,7 +814,169 @@ def servicio_ids_por_camaras_sync(session: Session, camara_ids: list[int]) -> se
     return {f[0] for f in filas}
 
 
+# ── ODFs de un Servicio ──────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class OdfDeServicio:
+    """Una ODF de Cromo a la que llega un Servicio — la inversa de `servicios_por_odf`.
+
+    `origen` dice por cuál de las tres vías se resolvió, y no es cosmético: la definición canónica
+    de "este Servicio tiene ODF" que usa el gestor de Servicios sin ODF
+    (`servicios_sin_odf._SQL_NO_TIENE_ODF_RESUELTA`) mira SÓLO `cromo_odf_conectores.
+    servicio_resuelto`. Una ODF alcanzada nada más que por el pelo matcheado es real, pero ese
+    gestor no la ve — mostrarla sin distinguirla haría parecer que las dos pantallas se
+    contradicen. Medido en dev (2026-09-28): 6879 Servicios por la vía canónica, 5759 por pelo,
+    5728 por las dos, y 31 SÓLO por pelo. Esos 31 son los que este campo existe para explicar.
+    """
+
+    odf_n_id: int
+    nombre: Optional[str]
+    calle: Optional[str]
+    altura: Optional[str]
+    localidad: Optional[str]
+    # Conectores de esta ODF que llegan al Servicio, y cuántos de esos cuelgan de un pelo con match.
+    # `pelos` puede ser 0 con `conectores` > 0: un conector puede traer `servicio_resuelto` sin
+    # `pelo_n_id`.
+    conectores: int
+    pelos: int
+    # "servicio_resuelto" | "pelo" | "override_manual"
+    origen: str
+
+
+# Las tres identidades del Servicio se sondean por SEPARADO y se unen, en vez de un `OR` de tres
+# términos: con los tres `OR` juntos el planner no puede usar
+# `ix_cromo_odf_conectores_servicio_resuelto` y arma un anti-join — el mismo hallazgo, con la misma
+# medición real detrás, que documenta `servicios_sin_odf._SQL_NO_TIENE_ODF_RESUELTA`.
+#
+# `UNION` (no `UNION ALL`) entre las tres: un conector cuyo `servicio_resuelto` coincida con más de
+# una identidad del mismo Servicio (pasa cuando `servicio_id` y `numero_primer_servicio` son
+# iguales, que es el caso de la mayoría de los Servicios) aparecería dos veces e inflaría
+# `conectores`.
+_SQL_ODFS_POR_SERVICIO = text(
+    f"""
+    WITH ident AS (
+        SELECT id, servicio_id, numero_primer_servicio, alias_ids
+        FROM app.servicios
+        WHERE id = :servicio_id
+    ),
+    por_resuelto AS (
+        SELECT c.n_id, c.odf_n_id, c.pelo_n_id
+        FROM app.cromo_odf_conectores c
+        JOIN ident i ON c.servicio_resuelto = i.servicio_id
+        UNION
+        SELECT c.n_id, c.odf_n_id, c.pelo_n_id
+        FROM app.cromo_odf_conectores c
+        JOIN ident i ON c.servicio_resuelto = i.numero_primer_servicio
+        UNION
+        SELECT c.n_id, c.odf_n_id, c.pelo_n_id
+        FROM app.cromo_odf_conectores c
+        JOIN ident i ON c.servicio_resuelto = ANY(i.alias_ids)
+    ),
+    por_pelo AS (
+        SELECT c.n_id, c.odf_n_id, c.pelo_n_id
+        FROM app.cromo_servicio_match m
+        JOIN app.servicios s ON s.id = :servicio_id
+        JOIN app.cromo_odf_conectores c ON c.pelo_n_id = m.pelo_n_id
+        WHERE {IDENTIDADES_DEL_SERVICIO_SQL}
+    ),
+    todo AS (
+        SELECT n_id, odf_n_id, pelo_n_id, TRUE AS canonica FROM por_resuelto
+        UNION ALL
+        SELECT n_id, odf_n_id, pelo_n_id, FALSE AS canonica FROM por_pelo
+    ),
+    agregado AS (
+        SELECT
+            odf_n_id,
+            COUNT(DISTINCT n_id) AS conectores,
+            COUNT(DISTINCT pelo_n_id) AS pelos,
+            BOOL_OR(canonica) AS tiene_canonica
+        FROM todo
+        GROUP BY odf_n_id
+    )
+    SELECT
+        a.odf_n_id,
+        o.nombre,
+        o.calle,
+        o.altura,
+        o.localidad,
+        a.conectores,
+        a.pelos,
+        CASE WHEN a.tiene_canonica THEN 'servicio_resuelto' ELSE 'pelo' END AS origen
+    FROM agregado a
+    JOIN app.cromo_odfs o ON o.n_id = a.odf_n_id
+    ORDER BY o.nombre NULLS LAST, a.odf_n_id
+    """
+)
+
+# Identidad de una ODF puntual, para la fila que aporta el override manual (que por definición no
+# pasó por ninguna de las dos vías automáticas y por eso no viene en la query de arriba).
+_SQL_ODF_IDENTIDAD = text(
+    "SELECT n_id, nombre, calle, altura, localidad FROM app.cromo_odfs WHERE n_id = :n_id"
+)
+
+
+async def odfs_por_servicio(sesion: AsyncSession, servicio_id: int) -> list[OdfDeServicio]:
+    """ODFs de Cromo a las que llega un Servicio, por las tres vías, deduplicadas por `odf_n_id`.
+
+    Precedencia de la etiqueta cuando una misma ODF llega por más de una vía:
+    `servicio_resuelto` > `pelo` > `override_manual`. Es el mismo criterio que ya aplica
+    `servicios_por_odf` en la dirección inversa (una fila automática le gana al override, porque
+    el override sólo confirma la conclusión a la que el matching ya había llegado solo).
+
+    Devuelve `[]` para un Servicio que no existe, igual que para uno sin ninguna ODF: acá no hay
+    `ObjetoNoEncontrado`. La diferencia entre "no existe" y "existe y no tiene ODF" ya la resuelve
+    quien llama (la ficha de Servicio sabe que el Servicio existe antes de pedir sus ODFs), y
+    levantar desde acá obligaría a un `SELECT` extra por llamada para distinguir un caso que
+    ningún consumidor necesita distinguir.
+    """
+    filas = (await sesion.execute(_SQL_ODFS_POR_SERVICIO, {"servicio_id": servicio_id})).all()
+    odfs = [
+        OdfDeServicio(
+            odf_n_id=fila[0],
+            nombre=fila[1],
+            calle=fila[2],
+            altura=fila[3],
+            localidad=fila[4],
+            conectores=fila[5],
+            pelos=fila[6],
+            origen=fila[7],
+        )
+        for fila in filas
+    ]
+
+    # Import diferido a propósito, igual que en `servicios_por_odf`: `servicio_odf_override_service`
+    # importa `ObjetoNoEncontrado` DE ESTE módulo a nivel de módulo, así que importarlo acá arriba
+    # cerraría el ciclo.
+    from core.services.cromo.servicio_odf_override_service import override_vigente_de_servicio
+
+    override = await override_vigente_de_servicio(sesion, servicio_id)
+    if override is None or any(odf.odf_n_id == override.odf_n_id for odf in odfs):
+        return odfs
+
+    identidad = (await sesion.execute(_SQL_ODF_IDENTIDAD, {"n_id": override.odf_n_id})).first()
+    # Un override puede apuntar a una ODF que todavía no tiene fila propia en `cromo_odfs` (la
+    # tabla se puebla por ingesta y el operador puede asociar antes). Se lista igual, con los
+    # campos de identidad en `None`: esconderla sería peor —el operador confirmó esa asociación a
+    # mano y no la vería en ningún lado—.
+    odfs.append(
+        OdfDeServicio(
+            odf_n_id=override.odf_n_id,
+            nombre=identidad[1] if identidad else None,
+            calle=identidad[2] if identidad else None,
+            altura=identidad[3] if identidad else None,
+            localidad=identidad[4] if identidad else None,
+            conectores=0,
+            pelos=0,
+            origen="override_manual",
+        )
+    )
+    return odfs
+
+
 __all__ = [
+    "OdfDeServicio",
+    "odfs_por_servicio",
     "ObjetoNoEncontrado",
     "ServicioEncontrado",
     "ResultadoCable",

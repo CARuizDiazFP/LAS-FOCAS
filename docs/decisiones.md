@@ -2478,3 +2478,38 @@ su propia ventana de mantenimiento.
   `dev`") y transiciones `dev`→rama ("0 entradas nuevas que resuelvan a una cámara incorrecta"). El
   primero solo no alcanzó: una versión que lo pasaba tenía 8 transiciones a cámara incorrecta que
   encontró la revisión adversarial. Se aceptó a cambio 1 transición correcta → sin match.
+
+## 2026-09-28 — Cromo es el canal por defecto de las ODFs de un Servicio; el tracking manual baja a tercer canal
+
+- **Contexto:** el rediseño de la ficha de Servicio a tarjetas (`5d68310`, 2026-09-17) borró la
+  sección "ODFs asociadas" sin darle vista propia — quedaron el endpoint, el cliente y la llamada
+  vivos, y la tarjeta "Camino óptico" contando "N ODFs" sin ningún lugar donde mostrarlas. Al
+  reponerla (2026-09-21, `a1b0bd3`) se repuso la fuente equivocada: ese endpoint deriva las ODFs del
+  **archivo de tracking subido a mano** (`RutaServicio.raw_file_content`), no de Cromo. El usuario lo
+  detectó con su propio caso: el Servicio 67395 mostraba "Sin ODFs" en el detalle y sí aparecía en el
+  viewer de Servicios x ODF.
+- **Universo real medido en dev (2026-09-28):** 14.147 Servicios. Con tracking manual cargado: **27
+  (0,19%)**. Con pelo matcheado en Cromo: 9.079 (64%). Resolución a ODF por Cromo: 6.879 por la vía
+  canónica (`cromo_odf_conectores.servicio_resuelto`), 5.759 por pelo matcheado, 5.728 por las dos,
+  **31 sólo por pelo**, 0 overrides manuales vigentes.
+- **Decisión (del usuario, explícita):** los datos se traen **por defecto de lo ingerido en Cromo**
+  (canal 1), **consulta en vivo a Cromo** como canal 2, y el **tracking manual persiste sólo para
+  regularizar los casos que Cromo no resuelve automáticamente** (canal 3). No se borra nada del
+  legacy: ni el endpoint, ni sus tests, ni datos en DB. Ratifica y extiende la entrada del
+  2026-09-09, que ya había fijado a Cromo como fuente de verdad para el viewer.
+- **Implementación:** `verificador.odfs_por_servicio()` (inversa de `servicios_por_odf`) une las tres
+  vías, deduplica por `odf_n_id` y etiqueta el `origen` con precedencia
+  `servicio_resuelto` > `pelo` > `override_manual`. El endpoint
+  `GET /api/infra/cromo/servicios/{servicio_id}/odfs` toma la **PK interna**, como el resto de la
+  familia `/cromo/servicios/...` (el legacy toma el ID de origen: no son intercambiables).
+  En `/servicios/ID/:id/camino`, `OdfsCromoPanel` va primero, el panel de Cromo con "Resolver camino"
+  (canal 2) en el medio, y `OdfsAsociadasPanel` (canal 3) último, colapsado y renderizado sólo si ese
+  Servicio tiene tracking.
+- **Por qué se rotula el `origen` y no se unifica en silencio:** la definición canónica de "tiene ODF
+  resuelta" del gestor de Servicios sin ODF mira SÓLO `servicio_resuelto`. Mostrar las 31 ODFs que
+  llegan nada más que por pelo sin distinguirlas haría parecer que las dos pantallas se contradicen;
+  esconderlas sería peor, porque son reales. El chip "Por pelo" es lo que reconcilia las dos lecturas.
+- **Fuera de alcance, decidido en el mismo turno:** la tira de métricas FO de la ficha ("Cámaras / N
+  cables tributando") también se alimenta del tracking legacy vía `getRutasServicio`/`getTrackingRuta`
+  — está en blanco para 14.120 de 14.147 Servicios. Se deja como está por ahora (opción elegida por el
+  usuario); es su propio ticket.

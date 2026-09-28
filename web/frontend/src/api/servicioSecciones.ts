@@ -104,6 +104,44 @@ export async function getOdfsServicio(idOrigen: string): Promise<InfraOdfsRespon
   );
 }
 
+// ── ODFs del Servicio en Cromo (canal por defecto) ────────────────────────
+
+/**
+ * Fuente: lo ya ingerido de Cromo, que es la fuente de verdad para las ODFs de un Servicio
+ * (`docs/decisiones.md`, 2026-09-09). Distinto de `getOdfsServicio`, que deriva ODFs del archivo
+ * de tracking manual y sólo existe para regularizar lo que Cromo no resuelve solo.
+ *
+ * `origen` dice por cuál vía se resolvió: `servicio_resuelto` es la definición canónica que
+ * también usa el gestor de Servicios sin ODF; `pelo` es real pero ese gestor NO la ve (31 casos
+ * en dev); `override_manual` es una asociación confirmada a mano por un operador.
+ */
+export interface CromoOdfDeServicio {
+  odf_n_id: number;
+  nombre: string | null;
+  calle: string | null;
+  altura: string | null;
+  localidad: string | null;
+  conectores: number;
+  pelos: number;
+  origen: 'servicio_resuelto' | 'pelo' | 'override_manual';
+}
+
+export interface CromoOdfsDeServicioResponse {
+  servicio_id: number;
+  total: number;
+  odfs: CromoOdfDeServicio[];
+}
+
+/** Ojo: toma la PK interna del Servicio, no el ID de origen — igual que el resto de la familia
+ * `/api/infra/cromo/servicios/...`, y al revés que `getOdfsServicio`. */
+export async function getOdfsCromoServicio(
+  servicioId: number,
+): Promise<CromoOdfsDeServicioResponse> {
+  return requestJson<CromoOdfsDeServicioResponse>(
+    `/api/infra/cromo/servicios/${servicioId}/odfs`,
+  );
+}
+
 // ── Ingresos técnicos ─────────────────────────────────────────────────────
 
 /**

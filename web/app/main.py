@@ -8555,6 +8555,57 @@ async def servicio_baneos_web(request: Request, servicio_id: int, limite: int = 
     )
 
 
+@app.get("/api/infra/cromo/servicios/{servicio_id}/odfs")
+async def cromo_odfs_de_servicio_web(request: Request, servicio_id: int) -> JSONResponse:
+    """ODFs de Cromo a las que llega un Servicio — el canal por defecto del Detalle de Servicio.
+
+    SQL local sobre lo ya ingerido: **no toca Cromo en vivo**. La consulta en vivo es el segundo
+    canal y ya existe como el botón "Resolver camino" del mismo panel; el tracking manual es el
+    tercero, sólo para regularizar lo que Cromo no resuelve solo.
+
+    Sistema distinto del endpoint legacy `GET /api/infra/servicios/{servicio_id}/odfs`, que deriva
+    las ODFs del archivo de tracking subido a mano (27 Servicios de 14.147 en dev). Éste toma
+    `servicio_id` como **PK interna**, igual que el resto de la familia `/cromo/servicios/...`;
+    el legacy toma el ID de origen. No son intercambiables.
+    """
+    from core.services.cromo.verificador import odfs_por_servicio
+    from db.session import AsyncSessionLocal
+
+    username, _ = _require_auth(request)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        odfs = await odfs_por_servicio(sesion, servicio_id)
+
+    logger.info(
+        "action=cromo_odfs_de_servicio user=%s servicio_id=%s odfs=%d",
+        username,
+        servicio_id,
+        len(odfs),
+    )
+
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "total": len(odfs),
+            "odfs": [
+                {
+                    "odf_n_id": odf.odf_n_id,
+                    "nombre": odf.nombre,
+                    "calle": odf.calle,
+                    "altura": odf.altura,
+                    "localidad": odf.localidad,
+                    "conectores": odf.conectores,
+                    "pelos": odf.pelos,
+                    "origen": odf.origen,
+                }
+                for odf in odfs
+            ],
+        }
+    )
+
+
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos")
 async def cromo_camino_pelos_web(
     request: Request, servicio_id: int, priorizar_conector: bool = False

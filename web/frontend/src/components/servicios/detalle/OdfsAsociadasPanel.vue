@@ -1,37 +1,36 @@
 <!--
   Nombre de archivo: OdfsAsociadasPanel.vue
   Ubicación de archivo: web/frontend/src/components/servicios/detalle/OdfsAsociadasPanel.vue
-  Descripción: ODFs y empalmes que declara el archivo de tracking de ruta de un Servicio, agrupados
-  por ruta — bloque propio dentro de la vista de Camino óptico
+  Descripción: ODFs y empalmes del archivo de tracking manual de un Servicio — TERCER canal,
+  colapsado y sólo visible en los Servicios que tienen tracking cargado para regularizar
 -->
 <template>
-  <section class="odfs" aria-label="ODFs asociadas">
-    <header class="odfs__head">
-      <h4 class="odfs__titulo">ODFs asociadas (tracking de ruta)</h4>
-      <div class="odfs__head-right">
-        <label class="odfs__toggle">
-          <input v-model="mostrarTodos" type="checkbox" />
-          Mostrar todos los empalmes (incl. no-ODF)
-        </label>
-        <span class="odfs__chip">{{ totalOdfs }} ODF(s)</span>
-      </div>
-    </header>
+  <!-- Tercer canal, y por eso `<details>` cerrado y condicionado: el tracking manual persiste sólo
+       para regularizar los casos que Cromo no resuelve solo. En dev lo tienen 27 Servicios de
+       14.147, así que para el resto este bloque no existe ni como sección vacía. Un error se
+       muestra igual: silenciarlo escondería que el canal de regularización está caído. -->
+  <details v-if="rutas.length > 0 || error" class="odfs">
+    <summary class="odfs__summary">
+      <span class="odfs__titulo">Tracking manual — regularización</span>
+      <span v-if="!error" class="odfs__chip">{{ totalOdfs }} ODF(s)</span>
+    </summary>
 
-    <!-- El aviso de fuente no es decorativo: arriba de este bloque vive el camino que declara
-         Cromo. Son dos sistemas independientes sobre el mismo Servicio y confundirlos lleva a
-         "corregir" el que estaba bien. -->
     <p class="odfs__fuente">
-      Salen del archivo de tracking subido para la ruta, no de la ingesta de Cromo. Que difieran del
-      camino de arriba es un dato, no un error de esta pantalla.
+      Sale del archivo de tracking subido a mano para la ruta, no de Cromo. Se conserva para
+      regularizar lo que Cromo no resuelve automáticamente.
     </p>
 
-    <p v-if="cargando" class="odfs__nota">Cargando ODFs asociadas…</p>
-    <p v-else-if="error" class="odfs__nota is-error">{{ error }}</p>
+    <p v-if="error" class="odfs__nota is-error">{{ error }}</p>
     <p v-else-if="filas.length === 0" class="odfs__nota">
-      Sin ODFs detectadas en el tracking de este Servicio.
+      El tracking cargado no declara ninguna ODF de tránsito.
     </p>
 
     <template v-else>
+      <label class="odfs__toggle">
+        <input v-model="mostrarTodos" type="checkbox" />
+        Mostrar todos los empalmes (incl. no-ODF)
+      </label>
+
       <div v-for="grupo in porRuta" :key="grupo.ruta_id" class="odfs__grupo">
         <h5 class="odfs__subtitulo">{{ grupo.ruta_nombre }} ({{ grupo.ruta_tipo }})</h5>
         <p v-if="grupo.terminal_a && grupo.terminal_b" class="odfs__puntas">
@@ -77,7 +76,7 @@
         </table>
       </div>
     </template>
-  </section>
+  </details>
 </template>
 
 <script setup lang="ts">
@@ -174,18 +173,18 @@ watch(() => props.idOrigen, cargar, { immediate: true });
 </script>
 
 <style scoped>
-.odfs {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.odfs > * + * {
+  margin-top: 8px;
 }
 
-.odfs__head {
+/* `display: flex` sobre el <details> rompe el colapso en varios motores: el contenido queda
+   visible con el summary cerrado. Por eso el espaciado va con margen entre hermanos. */
+.odfs__summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
+  cursor: pointer;
+  list-style-position: outside;
 }
 
 .odfs__titulo {
@@ -195,11 +194,6 @@ watch(() => props.idOrigen, cargar, { immediate: true });
   letter-spacing: 0.02em;
 }
 
-.odfs__head-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
 
 .odfs__toggle {
   display: inline-flex;
@@ -306,9 +300,8 @@ watch(() => props.idOrigen, cargar, { immediate: true });
 }
 
 @media (max-width: 720px) {
-  .odfs__head-right {
-    width: 100%;
-    justify-content: space-between;
+  .odfs__summary {
+    flex-wrap: wrap;
   }
 }
 </style>

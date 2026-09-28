@@ -203,7 +203,7 @@ import {
   type ReportHistoryItem,
   getBaneosServicio,
   getIngresosServicio,
-  getOdfsServicio,
+  getOdfsCromoServicio,
   getRutasServicio,
   getTrackingRuta,
   getUltimoReporte,
@@ -266,7 +266,7 @@ const foTrackingResumen = ref<{
   puntaB: string | null;
 } | null>(null);
 
-// Sólo el total: las ODFs enteras se ven en la vista de Camino óptico (OdfsAsociadasPanel).
+// Sólo el total, y desde Cromo: las ODFs enteras se ven en la vista de Camino óptico.
 const totalOdfs = ref(0);
 
 const ingresosLoading = ref(false);
@@ -451,7 +451,7 @@ async function loadDetalle(): Promise<void> {
     await Promise.all([
       loadFoResumen(response.id_origen),
       loadReportesResumen(),
-      loadOdfsAsociadas(response.id_origen),
+      loadOdfsAsociadas(response.servicio.id),
       loadIngresosAsociados(response.id_origen),
       // Semillas: SQL local, no toca Cromo. Se piden acá para que el botón sepa si va habilitado
       // ANTES del click, en vez de hacerle descubrir al operador que no hay camino recién después.
@@ -553,16 +553,17 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
   }
 }
 
-/** Alimenta el "N ODFs" del resumen de la tarjeta de Camino. Si falla, el resumen omite esa parte
- * en vez de gritar: el detalle -y su error, con texto- vive en la vista de Camino óptico. */
-async function loadOdfsAsociadas(idOrigen: string): Promise<void> {
-  const clean = idOrigen.trim();
+/** Alimenta el "N ODFs" del resumen de la tarjeta de Camino contando lo que resuelve Cromo —
+ * nunca el tracking manual, que es el tercer canal y sólo existe en 27 Servicios de 14.147.
+ *
+ * Toma la PK interna y no el ID de origen: es lo que pide la familia `/cromo/servicios/...`.
+ * Si falla, el resumen omite esa parte en vez de gritar: el detalle -y su error, con texto- vive
+ * en la vista de Camino óptico. */
+async function loadOdfsAsociadas(servicioId: number): Promise<void> {
   totalOdfs.value = 0;
-  if (!clean) return;
-
   try {
-    const data = await getOdfsServicio(clean);
-    totalOdfs.value = data.total_odfs ?? 0;
+    const data = await getOdfsCromoServicio(servicioId);
+    totalOdfs.value = data.total ?? 0;
   } catch {
     totalOdfs.value = 0;
   }
