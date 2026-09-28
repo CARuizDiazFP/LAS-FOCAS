@@ -490,13 +490,14 @@ aceptación en `docs/relevamiento_ingresos_sin_match_2026-09-28.md`:
 - **Nodos**: el listener ignora un mensaje de Nodo también cuando el técnico no escribe "Nodo"
   ("Atento", "Barrio Norte", "Rincón", "Tacuari 1", "Data Tacuari, sala1", "Paraguay 2302"). Catálogo
   derivado de los nombres "Nodo …" de `cromo_odfs`/`camaras` (`core/services/nodos_catalogo.py`),
-  comparación por **nombre entero**: "Cra Congreso 3449 CF" sigue siendo una cámara. Los ODFs de
-  los Nodos no se banean (sin cambios).
+  comparación por **nombre entero** y sólo claves sin números: "Cra Congreso 3449 CF" y "Chacabuco
+  271 CF" siguen siendo cámaras. Los ODFs de los Nodos no se banean (sin cambios).
 - **"bot2" pegado**, **"Bot 1"** (= Cámara principal, reintento sin la mención), **"bot1 y bot2"**,
   **número pegado a letras** ("huergo701", "R197", "99B"), **prefijo basura** de copy/paste ("me:"),
-  **ID de Cromo** escrito a mano ("ID DE BOTELLA : 6631457"), **intento literal en Cromo** ("Av"/"Dr"
-  sin expandir) y **desempate** por coincidencia exacta o por misma Cámara padre (por id, nunca
-  entre dos Cámaras distintas; nunca sobre el recorte antes del guion).
+  **ID de Cromo** escrito a mano ("ID DE BOTELLA : 6631457", sólo vigente y corroborado por el resto
+  del texto), **intento literal en Cromo** ("Av"/"Dr" sin expandir), **"Bot N" exige esa botella** en
+  la candidata, y **desempate** por coincidencia exacta (por id, nunca entre dos Cámaras distintas,
+  nunca sobre el recorte antes del guion, nunca con una gemela "CRITICA").
 - **Sugerencias**: si no hay match, la respuesta agrega "¿Quisiste decir…?" con hasta 3 cámaras de la
   misma altura y algún token de calle, e invita a `Forzar ingreso <nombre>`. Nunca registran solas
   (`core/services/camara_sugerencias.py`).

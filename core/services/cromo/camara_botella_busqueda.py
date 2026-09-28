@@ -35,6 +35,7 @@ from modules.slack_baneo_notifier.camara_search import (
     _aplicar_sinonimos,
     _expandir_abreviaturas,
     _filtrar_bots_secundarios,
+    _filtrar_numero_de_botella,
     _filtrar_por_numeros,
     _limpiar_puntuacion,
     _normalizar,
@@ -42,6 +43,8 @@ from modules.slack_baneo_notifier.camara_search import (
     normalizar_candidato,
     preparar_nombre_busqueda,
     quitar_botella_uno,
+    recorte_pierde_la_botella,
+    tiene_gemela_critica,
 )
 
 if TYPE_CHECKING:
@@ -112,7 +115,7 @@ def _buscar_botella_tokens_lista(tokens: list[str], session: Session) -> list["C
 _RE_TIENE_BOT = re.compile(r"\bbot(ella)?\b", re.IGNORECASE)
 
 
-def _cascada_botella(nombre_raw: str, session: Session) -> list["CromoBotella"]:
+def _cascada_botella(nombre_raw: str, session: Session, *, desempatar: bool = True) -> list["CromoBotella"]:
     """Intenta primero sólo con el texto antes del primer guión (mismo criterio que
     `buscar_camara()` — ver su docstring: cubre el caso real del técnico pegando el título
     completo de Cromo, "Nombre - Calle Altura - Localidad - Provincia"). Si el prefijo no resuelve
@@ -120,16 +123,17 @@ def _cascada_botella(nombre_raw: str, session: Session) -> list["CromoBotella"]:
     preserva casos donde el sufijo es parte legítima del nombre (ej. "Poste Lavalle - Campana")."""
     if "-" in nombre_raw:
         prefijo = nombre_raw.split("-", 1)[0].strip()
-        if prefijo and prefijo != nombre_raw.strip():
-            # Sin desempates sobre el recorte — mismo criterio que `buscar_camara()`.
-            candidatos_prefijo = _cascada_botella_intento(prefijo, session, desempatar=False)
+        if prefijo and prefijo != nombre_raw.strip() and not recorte_pierde_la_botella(prefijo, nombre_raw):
+            # Sobre el recorte, sólo la cascada original (sin desempates ni intento literal) —
+            # mismo criterio que `buscar_camara()`: un recorte que resuelve "de más" no prueba nada.
+            candidatos_prefijo = _cascada_botella_intento(prefijo, session, extendida=False)
             if len(candidatos_prefijo) == 1:
                 return candidatos_prefijo
-    return _cascada_botella_intento(nombre_raw, session)
+    return _cascada_botella_intento(nombre_raw, session, extendida=True, desempatar=desempatar)
 
 
 def _cascada_botella_intento(
-    nombre_raw: str, session: Session, *, desempatar: bool = True
+    nombre_raw: str, session: Session, *, extendida: bool = True, desempatar: bool = True
 ) -> list["CromoBotella"]:
     """Cascada equivalente a los Intentos 1-2 de `buscar_camara()`, pero contra
     `CromoBotella.nombre`: ILIKE con el nombre normalizado completo, y si no reduce a 1 candidato,
@@ -163,8 +167,10 @@ def _cascada_botella_intento(
 
     def _filtrada(candidatos: list["CromoBotella"]) -> list["CromoBotella"]:
         candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
-        return _filtrar_bots_secundarios(candidatos, tiene_bot)
+        candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
+        return _filtrar_numero_de_botella(candidatos, nombre_raw)
 
+    desempatar = desempatar and extendida
     mejor_ambiguo: list["CromoBotella"] = []
 
     def _evaluar(candidatos: list["CromoBotella"]) -> list["CromoBotella"] | None:
@@ -195,7 +201,7 @@ def _cascada_botella_intento(
     # expandida ("avenida"/"doctor") no los encuentra. Caso real: "Cra Av Santa Fe 4276 Bot 2 CF"
     # existe EXACTO en `cromo_botellas` y quedaba sin match (8 filas de `ingresos_sin_match` de prod).
     nombre_literal = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(nombre_raw)))
-    if nombre_literal != nombre_norm:
+    if extendida and nombre_literal != nombre_norm:
         resuelto = _evaluar(_filtrada(_buscar_botella_ilike_lista(nombre_literal, session)))
         if resuelto:
             return resuelto
@@ -212,19 +218,23 @@ def _desempatar_botellas(candidatos: list["CromoBotella"], nombre_norm: str) -> 
     """Reduce 2+ `CromoBotella` candidatas a una cuando la elección no cambia el resultado real:
 
     1. Exactamente una coincide por igualdad con la entrada normalizada → ésa.
-    2. Todas cuelgan de la MISMA Cámara padre (mismo `camara_id` no nulo) → la Cámara resuelta es
-       la misma elija la que elija. Caso real: "Cra A. Frondizi 1413 BOT 2 PILAR" y "… Bot 2 …",
-       dos filas de Cromo que sólo difieren en mayúsculas. Se prefiere la exacta y, si no hay, la de
-       menor `n_id` (determinista).
+    2. Dos o más coinciden exacto y TODAS cuelgan de la misma Cámara padre (mismo `camara_id` no
+       nulo): son la misma botella cargada dos veces — caso real "Cra A. Frondizi 1413 BOT 2 PILAR" y
+       "… Bot 2 …", que sólo difieren en mayúsculas. Se toma la de menor `n_id` (determinista).
 
-    Compara por id, nunca por nombre: dos botellas de nombre igual colgadas de Cámaras distintas
-    (duplicados reales del inventario) siguen siendo ambiguas."""
+    Nunca entre botellas que NO coinciden exacto, aunque compartan padre: pueden ser botellas físicas
+    distintas (Bot 2 y Bot 3), y `registrar_movimiento_ingreso` cierra el Egreso por
+    `cromo_botella_id` exacto — elegir mal deja el ingreso abierto (hallazgo de la revisión de la
+    rama, "Gorriti 386 Lomas botella"). Nunca si hay una gemela "CRITICA" (`tiene_gemela_critica`).
+    Compara por id: dos botellas de nombre igual en Cámaras distintas siguen siendo ambiguas."""
+    if tiene_gemela_critica(candidatos):
+        return None
     exactas = [b for b in candidatos if normalizar_candidato(b.nombre) == nombre_norm]
     if len(exactas) == 1:
         return exactas[0]
-    padres = {b.camara_id for b in candidatos}
-    if len(padres) == 1 and None not in padres:
-        return min(exactas or candidatos, key=lambda b: b.n_id)
+    padres = {b.camara_id for b in exactas}
+    if len(exactas) >= 2 and len(padres) == 1 and None not in padres:
+        return min(exactas, key=lambda b: b.n_id)
     return None
 
 
@@ -251,18 +261,32 @@ _RE_ID_CROMO = re.compile(r"(?i)\bid\b\D{0,20}?(\d{6,9})(?!\d)")
 
 
 def _buscar_por_id_cromo(nombre_raw: str, session: Session) -> "CromoBotella | None":
+    """Botella por `n_id` explícito, sólo si es vigente, tiene Cámara padre y —cuando el texto trae
+    algo más que el ID— ese resto la corrobora (comparte un número o una palabra de 4+ letras con el
+    nombre). Un ID mal tipeado que exista no puede resolver a una cámara que el resto del texto
+    contradice (hallazgo de la revisión de la rama)."""
     from db.models.cromo import CromoBotella
 
     match = _RE_ID_CROMO.search(nombre_raw)
     if not match:
         return None
     botella = session.get(CromoBotella, int(match.group(1)))
-    if botella is None or botella.camara_id is None:
+    if botella is None or botella.camara_id is None or not botella.vigente:
         return None
-    return botella
+    resto = _normalizar(nombre_raw[: match.start()] + " " + nombre_raw[match.end():])
+    resto = re.sub(r"\b(?:id|de|botella|bot|n[°ºo]?)\b", " ", resto)
+    senales = set(re.findall(r"\d+", resto)) | {w for w in re.findall(r"[a-z]{4,}", resto)}
+    if not senales:
+        return botella
+    nombre_botella = _normalizar(botella.nombre or "")
+    if any(re.search(rf"(?<![a-z0-9]){re.escape(x)}(?![a-z0-9])", nombre_botella) for x in senales):
+        return botella
+    return None
 
 
-def buscar_camara_o_botella_cromo(nombre_raw: str, session: Session) -> ResultadoBusquedaExtendida:
+def buscar_camara_o_botella_cromo(
+    nombre_raw: str, session: Session, *, desempatar: bool = True
+) -> ResultadoBusquedaExtendida:
     """Punto de entrada de la búsqueda extendida (ver `_buscar_extendida` para la cascada).
 
     Agregado el 2026-09-28 (`docs/relevamiento_ingresos_sin_match_2026-09-28.md`), en este orden:
@@ -273,6 +297,11 @@ def buscar_camara_o_botella_cromo(nombre_raw: str, session: Session) -> Resultad
        segundo intento sin esa mención (= la Cámara principal). Si el segundo intento tampoco
        resuelve, se devuelve el resultado —o se relanza la ambigüedad— del PRIMERO: la variante
        sólo puede ganar con un match único, nunca empeorar la respuesta original.
+
+    `desempatar=False` apaga los desempates entre candidatas (coincidencia exacta, misma botella
+    cargada dos veces): para callers que nunca deben elegir a ciegas, como el baneo masivo desde
+    Excel (`camara_ingest_service`). El resto de las mejoras sigue activo — resuelven matches
+    únicos, no eligen entre varios.
     """
     botella_id = _buscar_por_id_cromo(nombre_raw, session)
     if botella_id is not None:
@@ -286,31 +315,35 @@ def buscar_camara_o_botella_cromo(nombre_raw: str, session: Session) -> Resultad
     nombre = preparar_nombre_busqueda(nombre_raw)
     variante = quitar_botella_uno(nombre)
     try:
-        resultado = _buscar_extendida(nombre, session)
+        resultado = _buscar_extendida(nombre, session, desempatar=desempatar)
     except AmbiguousSearchError:
         if variante == nombre:
             raise
-        alternativo = _resultado_variante(variante, session)
+        alternativo = _resultado_variante(variante, session, desempatar)
         if alternativo is not None:
             return alternativo
         raise
     if resultado.camara is None and variante != nombre:
-        alternativo = _resultado_variante(variante, session)
+        alternativo = _resultado_variante(variante, session, desempatar)
         if alternativo is not None:
             return alternativo
     return resultado
 
 
-def _resultado_variante(nombre: str, session: Session) -> ResultadoBusquedaExtendida | None:
+def _resultado_variante(
+    nombre: str, session: Session, desempatar: bool
+) -> ResultadoBusquedaExtendida | None:
     """Intento con la variante sin "Bot 1": sólo cuenta si resuelve a una cámara."""
     try:
-        resultado = _buscar_extendida(nombre, session)
+        resultado = _buscar_extendida(nombre, session, desempatar=desempatar)
     except AmbiguousSearchError:
         return None
     return resultado if resultado.camara is not None else None
 
 
-def _buscar_extendida(nombre_raw: str, session: Session) -> ResultadoBusquedaExtendida:
+def _buscar_extendida(
+    nombre_raw: str, session: Session, *, desempatar: bool = True
+) -> ResultadoBusquedaExtendida:
     """Busca una Cámara por nombre libre, ampliando la búsqueda a `CromoBotella` cuando la cascada
     canónica de `buscar_camara()` no encuentra nada en `Camara`.
 
@@ -345,9 +378,9 @@ def _buscar_extendida(nombre_raw: str, session: Session) -> ResultadoBusquedaExt
             reducirse a una sola entre `Camara` y `CromoBotella`.
     """
     try:
-        camara, nombre_norm = buscar_camara(nombre_raw, session)
+        camara, nombre_norm = buscar_camara(nombre_raw, session, desempatar=desempatar)
     except AmbiguousSearchError as exc:
-        candidatos_botella = _cascada_botella(nombre_raw, session)
+        candidatos_botella = _cascada_botella(nombre_raw, session, desempatar=desempatar)
         nombres_botella = [b.nombre for b in candidatos_botella]
         fusionados = _fusionar_nombres_dedup(exc.candidatos, nombres_botella)
         # exc.candidatos ya viene recortado a 3 por AmbiguousSearchError.__init__ — NO es el conteo
@@ -363,7 +396,7 @@ def _buscar_extendida(nombre_raw: str, session: Session) -> ResultadoBusquedaExt
             camara=camara, nombre_norm=nombre_norm, fuente="camara", botella=None
         )
 
-    candidatos_botella = _cascada_botella(nombre_raw, session)
+    candidatos_botella = _cascada_botella(nombre_raw, session, desempatar=desempatar)
 
     if len(candidatos_botella) == 1:
         botella = candidatos_botella[0]

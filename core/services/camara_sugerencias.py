@@ -68,12 +68,14 @@ def _indice(session: Session) -> list[_Entrada]:
     if _cache is not None and ahora - _cache[0] < _TTL_SEGUNDOS:
         return _cache[1]
     try:
-        filas = session.execute(
-            text(
-                "SELECT nombre FROM app.camaras WHERE nombre IS NOT NULL "
-                "UNION SELECT nombre FROM app.cromo_botellas WHERE nombre IS NOT NULL AND vigente"
-            )
-        ).all()
+        # Savepoint: misma sesión que el handler de Slack (ver `nodos_catalogo._cargar`).
+        with session.begin_nested():
+            filas = session.execute(
+                text(
+                    "SELECT nombre FROM app.camaras WHERE nombre IS NOT NULL "
+                    "UNION SELECT nombre FROM app.cromo_botellas WHERE nombre IS NOT NULL AND vigente"
+                )
+            ).all()
     except Exception as exc:  # una sugerencia nunca puede romper la respuesta al técnico
         logger.warning("No se pudo cargar el índice de sugerencias de cámara: %s", exc)
         return []

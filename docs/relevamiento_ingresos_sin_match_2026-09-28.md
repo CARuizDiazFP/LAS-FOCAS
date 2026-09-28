@@ -110,48 +110,68 @@ por id y **re-medir con este mismo arnés antes de mergear**: el criterio de ace
 ## Implementación y medición final (2026-09-28)
 
 Código: `modules/slack_baneo_notifier/camara_search.py` (preprocesamiento, filtro de números,
-multi-bot, desempate exacto, prefijo basura), `core/services/cromo/camara_botella_busqueda.py`
-(intento literal, desempate de botellas, ID de Cromo, reintento sin "Bot 1"),
+número de botella, multi-bot, desempate exacto, prefijo basura), `core/services/cromo/camara_botella_busqueda.py`
+(intento literal, desempate de botellas, ID de Cromo, reintento sin "Bot 1", flag `desempatar`),
 `core/services/nodos_catalogo.py` (nuevo), `core/services/camara_sugerencias.py` (nuevo), listener
-de Slack y `infra_service` (tracking). Tests: `tests/test_busqueda_camaras_sin_match.py`.
+de Slack, `infra_service` (tracking) y `camara_ingest_service` (Excel, `desempatar=False`).
+Tests: `tests/test_busqueda_camaras_sin_match.py`.
 
-**Diferencias con la propuesta:**
+### Diferencias con la propuesta
 
-- **Catálogo de Nodos sin lista a mano.** Sale de los nombres "Nodo …" de `app.cromo_odfs` (vigentes)
-  y `app.camaras` — los mismos que muestran el tracking y el Path de Cromo. 57 claves en dev.
-  "Quilmes" **no** es un Nodo del inventario (los ODFs "… QUILMES" son de clientes), así que sigue
-  cayendo como genérico. Para no convertir una calle en Nodo, "sin número final" sólo aplica a
-  números cortos o nombres con artículo: "Nodo Mitre 3821" no genera la clave "mitre", y "Nodo Sta Fe
-  4965" no genera "santa fe" — por eso "Santa Fe" solo (2 filas) sigue sin resolverse. Se prefirió el
-  error visible (sin match) al silencioso (mensaje ignorado).
-- **El desempate no se aplica al prefijo antes del guion** (hallazgo de la primera medición real, ver
-  abajo): un recorte que coincide exacto con otra cámara no prueba nada.
-- **Sugerencias sólo en la respuesta de Slack**, con la instrucción de usar `Forzar ingreso <nombre>`;
-  no se guardan en `IngresoSinMatch` (no hizo falta migración).
-- **Tracking**: una ubicación de Nodo ya no se registra como sin match (mismo criterio que Slack).
+- **Catálogo de Nodos sin lista a mano**: nombres "Nodo …" de `app.cromo_odfs` (vigentes) y los de
+  `app.camaras` que **empiezan** con "Nodo" — los mismos que muestran el tracking y el Path de Cromo.
+  **Sólo claves sin números**: una clave con altura ("chacabuco 271") es también la dirección de
+  cámaras reales ("Cra Chacabuco 271 CF"). No se quita un dígito final de la entrada ("San Martin 1
+  CF" es una Cámara). Costo aceptado: "Rincón", "Paraguay 2302", "Tacuari 1" y "Santa Fe" siguen sin
+  resolverse; "Quilmes" no es un Nodo del inventario. Se prefiere el error visible (sin match,
+  revalidable) al silencioso (mensaje ignorado).
+- **Desempates**: nunca sobre el recorte antes del guion, nunca con una gemela "CRITICA" entre las
+  candidatas (el listener quita " - CRITICA" antes de buscar), y entre botellas del mismo padre sólo
+  si coinciden exacto (Bot 2 y Bot 3 del mismo padre son botellas distintas y el Egreso se cierra por
+  `cromo_botella_id` exacto). El baneo masivo desde Excel no desempata nunca.
+- **"Bot N" exige esa botella**: la candidata tiene que tener "Bot N"; no alcanza con un "N" en otra
+  parte ("Ed 2", "P2"). Un número de 1-2 dígitos tampoco se satisface con una letra delante (salvo
+  "bot"). Un recorte antes del guion que pierde el "Bot N" del texto completo no se prueba.
+- **ID de Cromo**: sólo botellas vigentes, y si el texto trae algo más que el ID, tiene que
+  corroborarlo (un número o palabra compartida con el nombre).
+- **Sugerencias sólo en la respuesta de Slack** (`Forzar ingreso <nombre>`), sin migración.
+- **Tracking**: una ubicación de Nodo ya no se registra como sin match.
 
-**Medición con el código real** (arnés read-only contra `focas_dev`, mismo pipeline que el listener;
-muestra de regresión = 1.500 Cámaras ordenadas por id, seed 7, idéntica para ambos lados):
+### Ronda de revisión
+
+La primera versión integrable pasó el arnés de auto-recuperación pero **no** una revisión
+adversarial con un arnés distinto: 3.798 entradas derivadas del inventario comparando `dev` contra
+la rama, buscando transiciones "sin match/ambiguo → cámara INCORRECTA". Encontró 8 casos reales de
+ese tipo (gemelas CRITICA, "P2" satisfaciendo "Bot 2", recortes que perdían la botella, desempate
+entre Bot 2/Bot 3) y 5 falsos positivos de Nodo. Todos reproducidos y corregidos; cada uno tiene su
+test. Lección: medir "¿se encuentra a sí mismo?" no detecta "resuelve a OTRA cámara que antes no
+resolvía"; hacen falta los dos arneses.
+
+### Medición final (arneses read-only contra `focas_dev`)
 
 | 201 casos de prod | Match | Nodo | Sugerencia | Ambiguo | Sin match |
 |---|---|---|---|---|---|
 | `dev` (antes) | 2 | 6 | — | 48 | 145 |
-| Rama | 51 | 35 | 59 | 8 | 48 |
+| Rama | 45 | 31 | 66 | 12 | 47 |
 
-| Regresión (1.500) | Se encuentra a sí mismo | Ambiguo | Sin match | Cámara incorrecta |
+Los 45 matches se revisaron uno por uno contra el texto original: todos correctos.
+
+| Auto-recuperación (1.500 Cámaras, seed 7) | Se encuentra a sí mismo | Ambiguo | Sin match | Incorrecta |
 |---|---|---|---|---|
-| `dev` (antes) | 1341 | 89 | 63 | 7 |
-| Rama, 1ª medición | 1439 | 34 | 15 | **12** |
-| Rama, final | **1444** | 34 | 15 | **7** |
+| `dev` | 1341 | 89 | 63 | 7 |
+| Rama | 1410 | 35 | 48 | 7 (los mismos 7) |
 
-La 1ª medición violó el criterio de aceptación ("incorrectos ≤ actual"): las 5 nuevas venían del
-desempate exacto aplicado al prefijo antes del guion ("terraza Viamonte 898- Piso 4 C.F." → "terraza
-Viamonte 898"). Corregido y cubierto por un test que falla si se reintroduce. Los 7 incorrectos
-finales son **exactamente los mismos 7** que ya tenía `dev` (duplicados del inventario del tipo
-"Cra. Conde 802 C.F." / "Cra Conde 802 CF").
+| Transiciones (3.340 entradas del inventario, seed 11) | Correctas | Sin match | Ambiguas | Incorrectas |
+|---|---|---|---|---|
+| `dev` | 2867 | 300 | 145 | 28 |
+| Rama | 3022 | 234 | 59 | 25 |
 
-Latencia por búsqueda (6 textos × 3 vueltas contra dev): mediana 110 → 120 ms, máximo 181 → 222 ms.
+**Nuevas incorrectas: 0.** Transiciones: ambiguo → correcta 86, sin match → correcta 67, incorrecta
+→ correcta 3, correcta → sin match 1 ("Cra FFCC E/ Garay y Belbeze - E1A Bot 2": `dev` la resolvía por
+el recorte que pierde el "Bot 2"; ese recorte ya no se prueba — es la misma regla que evita los 8
+casos incorrectos de la revisión).
+
+Latencia por búsqueda: mediana 110 → 120 ms, máximo 181 → 222 ms.
 
 **Los 201 casos históricos no se reprocesan solos**: siguen en `ingresos_sin_match` hasta que alguien
 responda "Revalidar ingreso" en cada hilo (o se haga un reproceso por lote, no implementado).
-

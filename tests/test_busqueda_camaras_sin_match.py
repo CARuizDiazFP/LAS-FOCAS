@@ -119,13 +119,25 @@ def test_filtro_numeros_acepta_numero_pegado_a_letras_pero_no_otro_numero():
 
 
 def test_desempate_exacto_elige_la_unica_coincidencia_exacta():
-    exacta = _cam(10, "Cra Libertad 991 CF")
-    critica = _cam(11, "BOTELLA CRITICA Cra Libertad 991 CF")
-    with patch(f"{MODULE_CS}._buscar_ilike_lista", return_value=[exacta, critica]), patch(
-        f"{MODULE_CS}._buscar_tokens_lista", return_value=[exacta, critica]
+    exacta = _cam(6531, "Cra Av. Ramos Mejia 1602 CF")
+    otra = _cam(31616, "Cra  Ramos Mejia 1602 Frente Estacion")
+    with patch(f"{MODULE_CS}._buscar_ilike_lista", return_value=[exacta, otra]), patch(
+        f"{MODULE_CS}._buscar_tokens_lista", return_value=[exacta, otra]
     ):
-        camara, _ = cs.buscar_camara("Cra Libertad 991 CF", MagicMock())
+        camara, _ = cs.buscar_camara("Cra av ramos mejia 1602", MagicMock())
     assert camara is exacta
+
+
+def test_desempate_exacto_no_aplica_con_gemela_critica():
+    """El listener quita " - CRITICA" antes de buscar: con una gemela crítica entre las candidatas,
+    elegir la común podría ser justo lo contrario de lo que pidió el técnico (revisión de la rama:
+    "Cra Diag Norte 902 Esq Suipacha - CRITICA" terminaba en la común, BANEADA)."""
+    comun = _cam(2753, "Cra Diag Norte 902 Esq Suipacha")
+    critica = _cam(2754, "Cra Diag Norte 902 Esq Suipacha - CRITICA")
+    with patch(f"{MODULE_CS}._buscar_ilike_lista", return_value=[comun, critica]), patch(
+        f"{MODULE_CS}._buscar_tokens_lista", return_value=[comun, critica]
+    ), pytest.raises(cs.AmbiguousSearchError):
+        cs.buscar_camara("Cra Diag Norte 902 Esq Suipacha", MagicMock())
 
 
 def test_desempate_exacto_no_elige_entre_duplicados_reales():
@@ -236,13 +248,15 @@ _NOMBRES_NODO = [
     "Nodo ODF Mitre 3821(Terraza) - RACK 1  SAN MARTIN",
     "Nodo Retiro - Rack 3 Electronica - ME",
     "Nodo Retiro 2",
+    "Nodo Chacabuco 271 - Rack 2 Electrónica - ME",
+    "Rack 1 Mitre 3358 oficina 36 - NODO San Martin",
 ]
 
 
 @pytest.mark.parametrize(
     "texto",
-    ["Barrio Norte", "Rincón", "Vicente López", "Tacuari 1", "Tacuari Sala1", "Data Tacuari , sala1",
-     "Dc tacuari  sala 1", "Paraguay 2302", "Retiro", "Nodo Escobar Rack 1 de FO"],
+    ["Barrio Norte", "Vicente López", "Tacuari Sala1", "Data Tacuari , sala1", "Dc tacuari  sala 1",
+     "Retiro", "Nodo Escobar Rack 1 de FO"],
 )
 def test_nodo_reconocido(texto):
     assert nodos_catalogo.corresponde_a_nodo(texto, _session_con_filas(_NOMBRES_NODO))
@@ -251,7 +265,10 @@ def test_nodo_reconocido(texto):
 @pytest.mark.parametrize(
     "texto",
     # Nombre entero, nunca contenido; y sin claves genéricas de calle ("Mitre", "Santa Fe").
-    ["Cra Congreso 3449 CF", "Cra Rincon 10", "Mitre", "Santa Fe", "Facebook", "Quilmes", ""],
+    # Hallazgos de la revisión de la rama: claves con altura y dígito final coincidían con Cámaras
+    # reales ("Chacabuco 271 CF", "San Martin 1 CF").
+    ["Cra Congreso 3449 CF", "Cra Rincon 10", "Mitre", "Santa Fe", "Facebook", "Quilmes", "",
+     "Paraguay 2302", "Chacabuco 271 CF", "Retiro 2", "Barrio Norte 1", "Tacuari 1"],
 )
 def test_no_es_nodo(texto):
     assert not nodos_catalogo.corresponde_a_nodo(texto, _session_con_filas(_NOMBRES_NODO))
@@ -312,3 +329,60 @@ def test_tracking_no_registra_sin_match_para_nodos(nombre, registra):
     with patch(f"{MODULE_CB}.buscar_camara_o_botella_cromo", return_value=vacio):
         assert _resolve_camara_o_registrar_sin_match(session, nombre, filename="t.txt") is None
     assert session.add.called is registra
+
+
+# ── Hallazgos de la revisión de la rama (casos reales del inventario de dev) ────────────────────
+
+
+def test_numero_corto_no_se_satisface_con_letra_delante():
+    """El "2" de "Bot 2" no puede venir del "P2" (piso) de otra cámara; "bot2" sí cuenta."""
+    assert not cs._contiene_numero("bot. interiror parana 3745 p2 - unicenter", "2")
+    assert cs._contiene_numero("avalos 2829 bot2 - sala", "2")
+    assert cs._contiene_numero("lizandro de la torre ( r197) y austria", "197")
+
+
+def test_bot_n_exige_esa_botella_en_la_candidata():
+    buena = _cam(1, "Avalos 2829 Bot2 - Sala telefonia Ed 2 Subs")
+    sin_numero = _cam(2, "Bot. Avalos 2829 - Sala telefonia Ed 2 Subs   VICE")
+    assert cs._filtrar_numero_de_botella([buena, sin_numero], "Avalos 2829 Bot 2") == [buena]
+    # "Bot 1" es la Cámara principal: no restringe.
+    assert cs._filtrar_numero_de_botella([sin_numero], "Cra X bot 1") == [sin_numero]
+
+
+def test_recorte_que_pierde_la_botella_no_se_prueba():
+    assert cs.recorte_pierde_la_botella("Cra Av Peron 7964 esq. Jose Maria Paz", "Cra Av Peron 7964 esq. Jose Maria Paz - Bot 2")
+    assert not cs.recorte_pierde_la_botella("Bot 2 Cra X", "Bot 2 Cra X - CABA")
+    assert not cs.recorte_pierde_la_botella("Cra X", "Cra X - Bot1")
+
+
+def test_desempate_botellas_no_elige_entre_botellas_distintas_del_mismo_padre():
+    """"Gorriti 386 Lomas botella": Bot 2 y Bot 3 del mismo padre son botellas físicas distintas."""
+    b2 = _bot(6637567, "Cra Gorriti 386 Bot 2 LOMAS DE ZAMORA", 7332)
+    b3 = _bot(6637568, "Cra Gorriti 386 Bot 3 LOMAS DE ZAMORA", 7332)
+    assert cb._desempatar_botellas([b2, b3], "gorriti 386 lomas bot") is None
+
+
+def test_id_de_cromo_no_vigente_o_contradicho_no_resuelve():
+    session = MagicMock()
+    no_vigente = _bot(6631457, "Tza. Florida 142 C.F.", 25769)
+    no_vigente.vigente = False
+    session.get.return_value = no_vigente
+    assert cb._buscar_por_id_cromo("ID DE BOTELLA : 6631457", session) is None
+
+    otra = _bot(6631457, "Cra Mitre 302 CF", 11)
+    otra.vigente = True
+    session.get.return_value = otra
+    assert cb._buscar_por_id_cromo("ID DE BOTELLA : 6631457 ( TZA. FLORIDA 142)", session) is None
+    assert cb._buscar_por_id_cromo("ID DE BOTELLA : 6631457", session) is otra
+
+
+def test_ingesta_excel_no_desempata():
+    """Baneo masivo desde Excel: nunca elige entre candidatas (`desempatar=False`)."""
+    from core.services import camara_ingest_service
+
+    vacio = cb.ResultadoBusquedaExtendida(camara=None, nombre_norm="x", fuente=None, botella=None)
+    with patch(f"{MODULE_CB}.buscar_camara_o_botella_cromo", return_value=vacio) as buscar, patch.object(
+        camara_ingest_service, "_registrar_sin_match", return_value=MagicMock()
+    ):
+        camara_ingest_service._procesar_ingesta_camaras_en_sesion(MagicMock(), ["Cra X 1"], "motivo", "usuario")
+    assert buscar.call_args.kwargs == {"desempatar": False}

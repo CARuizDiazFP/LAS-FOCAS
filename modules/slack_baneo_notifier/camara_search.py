@@ -35,6 +35,9 @@ __all__ = [
     "_normalizar",
     "_filtrar_por_numeros",
     "_filtrar_bots_secundarios",
+    "_filtrar_numero_de_botella",
+    "tiene_gemela_critica",
+    "recorte_pierde_la_botella",
     "_limpiar_puntuacion",
     "buscar_camara",
     "normalizar_candidato",
@@ -419,7 +422,9 @@ class AmbiguousSearchError(Exception):
         )
 
 
-def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", str]:
+def buscar_camara(
+    nombre_raw: str, session: Session, *, desempatar: bool = True
+) -> tuple["Camara | None", str]:
     """Busca una cámara, intentando primero sólo con el texto antes del primer guión.
 
     Cuando el técnico pega en el Workflow el título completo que muestra Cromo para una Cámara/
@@ -435,7 +440,7 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
     nombre_raw = preparar_nombre_busqueda(nombre_raw)
     if "-" in nombre_raw:
         prefijo = nombre_raw.split("-", 1)[0].strip()
-        if prefijo and prefijo != nombre_raw.strip():
+        if prefijo and prefijo != nombre_raw.strip() and not recorte_pierde_la_botella(prefijo, nombre_raw):
             try:
                 # Sin desempate por coincidencia exacta: el prefijo es un RECORTE, y que una
                 # candidata coincida exacto con el recorte no prueba nada ("terraza Viamonte 898-
@@ -446,7 +451,7 @@ def buscar_camara(nombre_raw: str, session: Session) -> tuple["Camara | None", s
             else:
                 if camara is not None:
                     return camara, nombre_norm
-    return _buscar_camara_intento(nombre_raw, session)
+    return _buscar_camara_intento(nombre_raw, session, desempate_exacto=desempatar)
 
 
 def _buscar_camara_intento(
@@ -520,13 +525,13 @@ def _buscar_camara_intento(
         candidatos = _buscar_ilike_lista(patron, session)
         candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
         candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return candidatos
+        return _filtrar_numero_de_botella(candidatos, nombre_raw)
 
     def _get_candidatos_tokens(tokens: list[str]) -> list["Camara"]:
         candidatos = _buscar_tokens_lista(tokens, session)
         candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
         candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return candidatos
+        return _filtrar_numero_de_botella(candidatos, nombre_raw)
 
     # Seguimiento de ambigüedad: conserva el grupo más acotado (menos candidatos)
     _ambiguos: list["Camara"] = []
@@ -540,7 +545,7 @@ def _buscar_camara_intento(
             # entrada normalizada, es ésa — "Cra Libertad 991 CF" contra "BOTELLA CRITICA Cra
             # Libertad 991 CF". Dos o más exactas (duplicados reales del inventario, "X C.F." y
             # "X CF") siguen siendo ambiguas: nunca se elige entre dos Cámaras distintas.
-            if desempate_exacto:
+            if desempate_exacto and not tiene_gemela_critica(candidatos):
                 exactas = [c for c in candidatos if normalizar_candidato(c.nombre) == nombre_norm]
                 if len(exactas) == 1:
                     return exactas[0]
@@ -613,12 +618,66 @@ def _filtrar_por_numeros(
     resultado: list["Camara"] = []
     for cam in candidatos:
         nombre_norm = _normalizar(cam.nombre or "")
-        # Lookarounds de dígito, no `\b` (2026-09-28): con `\b`, "197" nunca matcheaba "(R197)" ni
-        # "99" matcheaba "99B" — no hay límite de palabra entre letra y dígito — y el nombre EXACTO
-        # del inventario se descartaba a sí mismo. Sigue sin aceptar "440" dentro de "4400".
-        if all(re.search(rf"(?<!\d){re.escape(n)}(?!\d)", nombre_norm) for n in numeros_requeridos):
+        if all(_contiene_numero(nombre_norm, n) for n in numeros_requeridos):
             resultado.append(cam)
     return resultado
+
+
+def _contiene_numero(nombre_norm: str, numero: str) -> bool:
+    """`numero` aparece en `nombre_norm` como número completo.
+
+    Desde 2026-09-28, sin `\b` a la izquierda para números de 3+ dígitos: con `\b`, "197" nunca
+    matcheaba "(R197)" ni "99" matcheaba "99B", y el nombre EXACTO del inventario se descartaba a sí
+    mismo. Un número corto (1-2 dígitos) sí exige que no lo preceda una letra —salvo "bot"— porque ahí
+    la letra delante casi siempre es otro dato: el "2" de "Bot 2" no puede satisfacerse con el "P2"
+    (piso) de otra cámara (hallazgo de la revisión de la rama, caso real "Bot 2 Interiror Parana 3745
+    P2 - Unicenter"). Nunca acepta "440" dentro de "4400"."""
+    for m in re.finditer(rf"(?<!\d){re.escape(numero)}(?!\d)", nombre_norm):
+        if len(numero) >= 3:
+            return True
+        previo = nombre_norm[: m.start()]
+        if not previo or not previo[-1].isalpha() or re.search(r"bot\.?$", previo):
+            return True
+    return False
+
+
+_RE_NUMERO_BOTELLA = re.compile(r"(?i)\bbot(?:ella)?\.?\s*([1-9])(?!\d)")
+
+
+def _filtrar_numero_de_botella(candidatos: list["Camara"], nombre_raw: str) -> list["Camara"]:
+    """Si el texto nombra una botella secundaria concreta ("Bot 2"), la candidata tiene que tener
+    ESA botella — no alcanza con que el número aparezca en otra parte del nombre ("Ed 2", "Piso 2").
+
+    Hallazgo de la revisión de la rama (2026-09-28): "Avalos 2829 Bot2 - Sala telefonia Ed 2 Subs"
+    resolvía a "Bot. Avalos 2829 - Sala telefonia Ed 2 Subs VICE" (una botella sin número, de otra
+    cámara) porque el "2" requerido lo aportaba "Ed 2". "Bot 1" no restringe: es la Cámara principal,
+    cuyo nombre no lo lleva."""
+    pedidos = {n for n in _RE_NUMERO_BOTELLA.findall(nombre_raw or "") if n != "1"}
+    if not pedidos:
+        return candidatos
+    return [c for c in candidatos if pedidos <= set(_RE_NUMERO_BOTELLA.findall(c.nombre or ""))]
+
+
+_RE_CRITICA = re.compile(r"(?i)cr[ií]tic")
+
+
+def recorte_pierde_la_botella(prefijo: str, nombre_completo: str) -> bool:
+    """True si el texto completo nombra una botella secundaria ("… - Bot 2") que el recorte antes
+    del guion ya no incluye. Ese recorte describe OTRA cosa (la cámara, no la botella pedida) y no
+    se prueba: en la revisión de la rama, "Cra Av Peron 7964 esq. Jose Maria Paz - Bot 2" resolvía
+    por el recorte a otra cámara."""
+    pedidos = {n for n in _RE_NUMERO_BOTELLA.findall(nombre_completo or "") if n != "1"}
+    return bool(pedidos) and not pedidos <= set(_RE_NUMERO_BOTELLA.findall(prefijo or ""))
+
+
+def tiene_gemela_critica(candidatos: list) -> bool:
+    """True si alguna candidata es una variante "CRITICA" ("X - CRITICA", "BOTELLA CRITICA X").
+
+    El listener quita el sufijo " - CRITICA" del texto ANTES de buscar (`limpiar_ruido_operativo`),
+    así que la búsqueda no puede saber si el técnico pidió la crítica o la común: con una gemela
+    crítica entre las candidatas, ningún desempate elige (hallazgo de la revisión de la rama: "Cra
+    Diag Norte 902 Esq Suipacha - CRITICA" terminaba en la común, que además estaba BANEADA)."""
+    return any(_RE_CRITICA.search(getattr(c, "nombre", None) or "") for c in candidatos)
 
 
 def _filtrar_bots_secundarios(

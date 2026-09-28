@@ -2474,6 +2474,7 @@ su propia ventana de mantenimiento.
   "mitre"); (c) "Quilmes" y "Santa Fe" quedan fuera aunque aparecieran en el relevamiento.
 - **Sugerencias en vez de auto-match** para typos y palabras de más: un typo resuelto solo puede
   registrar el ingreso en la cámara equivocada (y dispararle un aviso de baneo que no corresponde).
-- **Criterio de aceptación medido, no opinado**: mismo arnés de auto-recuperación antes/después; se
-  exigió "incorrectos ≤ `dev`". La primera versión lo violó (7 → 12) y se corrigió antes de integrar.
-
+- **Criterio de aceptación medido, no opinado, con DOS arneses**: auto-recuperación ("incorrectos ≤
+  `dev`") y transiciones `dev`→rama ("0 entradas nuevas que resuelvan a una cámara incorrecta"). El
+  primero solo no alcanzó: una versión que lo pasaba tenía 8 transiciones a cámara incorrecta que
+  encontró la revisión adversarial. Se aceptó a cambio 1 transición correcta → sin match.

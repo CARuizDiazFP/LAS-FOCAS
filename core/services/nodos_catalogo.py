@@ -19,7 +19,8 @@ ME", "Rack 2 Nodo Llavallol", "NODO El Rincon 842 Rack 1 de Electrónica") — s
 **Regla de comparación: nombre ENTERO, nunca contenido.** "Congreso" es el Nodo Congreso; "Cra
 Congreso 3449 CF" es una cámara y no se toca. Antes de comparar, la entrada se normaliza con el mismo
 pipeline de la búsqueda y se le quitan prefijos/sufijos que no identifican ("data"/"datacenter"/"dc",
-"sala N"/"rack N", un único dígito final — "Tacuari 1" es la sala 1 del Nodo Tacuari).
+"sala N"/"rack N" — "Tacuari Sala1" es la sala 1 del Nodo Tacuari). No se quita un número suelto
+final: "San Martin 1 CF" es una Cámara, no el Nodo San Martin.
 
 El catálogo se cachea por proceso durante `_TTL_SEGUNDOS`. Si la consulta falla, se devuelve vacío
 **sin cachear** — un error transitorio no puede dejar la detección apagada diez minutos.
@@ -51,7 +52,6 @@ _SEGMENTOS_IGNORADOS = {"me", "ld", "olt", "gpon", "dwdm", "meth", "sdh", "otn",
 # Entrada: prefijos que no identifican ("Data Tacuari", "DC tacuari", "Nodo X" ya lo cubre el regex).
 _RE_PREFIJO_ENTRADA = re.compile(r"^(?:data\s*center|datacenter|data|dc|nodo)\s+")
 _RE_SUFIJO_SALA = re.compile(r"\s+(?:sala|rack)\s*\d*$")
-_RE_DIGITO_FINAL = re.compile(r"\s+\d$")
 
 _cache: tuple[float, frozenset[str]] | None = None
 
@@ -63,28 +63,19 @@ def invalidar_cache() -> None:
 
 
 def _limpiar_clave(clave: str) -> set[str]:
-    """Una clave normalizada y sus variantes:
+    """Una clave normalizada, y su variante sin artículo "el" inicial ("el triangulo" → "triangulo").
 
-    - **Sin número final**, pero sólo si el número es corto (índice de Nodo: "retiro 2" → "retiro",
-      "la plata 2") o el nombre empieza con artículo ("el rincon 842" → "el rincon"). Un número
-      largo es una altura de calle: "Nodo Mitre 3821" daría la clave "mitre", y un técnico que
-      escriba sólo "Mitre" quedaría ignorado en silencio como si fuera un Nodo. Se prefiere el error
-      visible (sin match) al silencioso — por eso "santa fe 4965" NO produce "santa fe".
-    - **Sin artículo "el" inicial** ("rincon"): los técnicos escriben "Rincón" para El Rincon.
-    """
+    **Sólo claves sin números.** Una clave con altura ("chacabuco 271", "paraguay 2302", "el rincon
+    842") es también la dirección de cámaras reales en la misma cuadra que el Nodo: "Chacabuco 271
+    CF" existe como Cámara y quedaba ignorado en silencio (revisión de la rama, 2026-09-28). Tampoco
+    se deriva la clave "sin el número" ("Nodo Mitre 3821" → "mitre"): sería el nombre de una calle.
+    Se prefiere el error visible (sin match, revalidable) al silencioso (mensaje ignorado)."""
     clave = clave.strip()
-    if len(clave) < 3:
+    if len(clave) < 3 or re.search(r"\d", clave):
         return set()
     variantes = {clave}
-    match = re.search(r"(?:\s+(\d+))+$", clave)
-    if match:
-        sin_numeros = clave[: match.start()].strip()
-        con_articulo = re.match(r"(?:el|la|los|las)\s", sin_numeros) is not None
-        if len(sin_numeros) >= 3 and (len(match.group(1)) <= 2 or con_articulo):
-            variantes.add(sin_numeros)
-    for v in list(variantes):
-        if v.startswith("el ") and len(v) > 5:
-            variantes.add(v[3:])
+    if clave.startswith("el ") and len(clave) > 5:
+        variantes.add(clave[3:])
     return variantes
 
 
@@ -92,10 +83,10 @@ def _claves_de_nombre(nombre: str) -> set[str]:
     """Claves de Nodo de un nombre del inventario que contiene la palabra "Nodo".
 
     "Nodo Barrio Norte - Rack 3 Electronica - ME"            → {"barrio norte"}
-    "Rack 2 Nodo Libertador 710 - Vicente Lopez"             → {"libertador 710", "vicente lopez"}
-    "NODO La Lucila Rack 1 - Debenedetti 602  VTE LOPEZ"     → {"la lucila", "debenedetti 602 vte lopez"}
-    "Nodo Sta Fe 4965 Rack 1 Electrónica METH"               → {"santa fe 4965"}
-    "NODO El Rincon 842 Rack 1 de Electrónica"               → {"el rincon 842", "el rincon", "rincon 842", "rincon"}
+    "Rack 2 Nodo Libertador 710 - Vicente Lopez"             → {"vicente lopez"}
+    "NODO La Lucila Rack 1 - Debenedetti 602  VTE LOPEZ"     → {"la lucila"}
+    "Nodo Sta Fe 4965 Rack 1 Electrónica METH"               → set()   (sólo altura: no es clave)
+    "Nodo El Triangulo"                                      → {"el triangulo", "triangulo"}
     """
     match = _RE_PALABRA_NODO.search(nombre)
     if not match:
@@ -112,20 +103,23 @@ def _claves_de_nombre(nombre: str) -> set[str]:
         if i == 0:
             claves |= _limpiar_clave(clave)
         elif len(clave.split()) >= 2:
-            # Segmentos siguientes (dirección/localidad del Nodo): tal cual, y sólo de 2+ palabras —
-            # uno suelto ("Facebook", el cliente de un rack) no identifica al Nodo.
-            claves.add(clave)
+            # Segmentos siguientes (localidad del Nodo): sólo de 2+ palabras y sin números — uno
+            # suelto ("Facebook", el cliente de un rack) o una dirección no identifican al Nodo.
+            claves |= {c for c in _limpiar_clave(clave) if c == clave}
     return claves
 
 
 def _cargar(session: Session) -> frozenset[str] | None:
     try:
-        filas = session.execute(
-            text(
-                "SELECT nombre FROM app.camaras WHERE nombre ~* '\\mnodos?\\M' "
-                "UNION SELECT nombre FROM app.cromo_odfs WHERE vigente AND nombre ~* '\\mnodos?\\M'"
-            )
-        ).all()
+        # Savepoint: la sesión es la del handler de Slack; un error acá no puede dejar la
+        # transacción abortada para las consultas que siguen en el mismo mensaje.
+        with session.begin_nested():
+            filas = session.execute(
+                text(
+                    "SELECT nombre FROM app.camaras WHERE nombre ~* '^\\s*nodos?\\M' "
+                    "UNION SELECT nombre FROM app.cromo_odfs WHERE vigente AND nombre ~* '\\mnodos?\\M'"
+                )
+            ).all()
         nombres = [fila[0] for fila in filas if fila[0]]
     except Exception as exc:  # catálogo es una mejora, nunca puede romper el flujo de ingreso
         logger.warning("No se pudo cargar el catálogo de Nodos: %s", exc)
@@ -155,9 +149,7 @@ def _variantes_entrada(nombre: str) -> set[str]:
     sin_prefijo = _RE_PREFIJO_ENTRADA.sub("", base)
     variantes.add(sin_prefijo)
     for v in list(variantes):
-        sin_sala = _RE_SUFIJO_SALA.sub("", v).strip()
-        variantes.add(sin_sala)
-        variantes.add(_RE_DIGITO_FINAL.sub("", sin_sala).strip())
+        variantes.add(_RE_SUFIJO_SALA.sub("", v).strip())
     return {v for v in variantes if v}
 
 
