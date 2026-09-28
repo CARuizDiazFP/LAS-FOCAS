@@ -288,6 +288,14 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
 Vive en `modules/slack_baneo_notifier/tracking_servicio.py` (parser, resolución y generación) y se
 despacha desde `_handle_track` en `listener.py`.
 
+> **El worker necesita el secreto de Cromo.** Hasta el 2026-09-28 `slack_baneo_worker` no montaba
+> `cromo_password_v1` (sí lo hacían `web` y `cromo_worker`), así que la primera generación real
+> dentro del contenedor murió con `CromoConfigError: Configuración de Cromo incompleta`. El resto de
+> la config (`CROMO_BASE_URL`, `CROMO_USER`, …) ya llegaba por `env_file`; faltaba sólo la
+> contraseña. Agregado a los dos composes. **Ningún test lo detecta**: los tests del handler mockean
+> la generación, y los de generación corren desde el host con el entorno del `.venv` — sólo aparece
+> ejecutando dentro del contenedor real.
+
 > **El camino async dentro de un callback síncrono de Slack**: la generación corre en un thread
 > propio con su propio event loop y un engine `NullPool` dedicado, **no** el pool singleton de
 > `db.session`. Ese pool queda atado al loop del primer checkout y reusarlo desde un loop nuevo es

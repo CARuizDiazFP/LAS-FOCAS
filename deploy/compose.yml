@@ -265,6 +265,10 @@ services:
       - slack_app_token_v1
       - api_prov_user_v1
       - api_prov_pass_v1
+      # Necesario desde el comando "@bot track <id>" (2026-09-28): genera el tracking contra Cromo
+      # y sin este secreto levanta CromoConfigError en runtime. El resto de la config de Cromo
+      # (CROMO_BASE_URL, CROMO_USER, ...) ya llegaba por env_file; sólo faltaba la contraseña.
+      - cromo_password_v1
     depends_on:
       postgres:
         condition: service_healthy
