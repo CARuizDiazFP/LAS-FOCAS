@@ -128,6 +128,11 @@ logger = logging.getLogger("slack_baneo_worker.ingreso_correccion")
 COMANDO_FORZAR_INGRESO = "FORZAR_INGRESO"
 COMANDO_FORZAR_EGRESO = "FORZAR_EGRESO"
 
+# ── Valores de `IngresoCorreccion.origen` (String(16), migración `20260928_01`) ─────────────────
+
+ORIGEN_SLACK = "slack"
+ORIGEN_WEB = "web"
+
 # ── Valores de `IngresoCorreccion.fuente_momento` (String(16)) ──────────────────────────────────
 
 FUENTE_MOMENTO_HILO = "hilo"
@@ -408,11 +413,15 @@ class _Invocacion:
 
     comando: str
     comando_crudo: str
-    actor_slack_user_id: str
+    actor_slack_user_id: str | None
     actor_nombre: str | None
-    canal_id: str
+    canal_id: str | None
     thread_ts: str | None
-    mensaje_ts: str
+    mensaje_ts: str | None
+    # "slack" | "web" (migración `20260928_01`). Un CHECK de Postgres exige las tres columnas de
+    # Slack de arriba para "slack" y `actor_web_usuario` para "web".
+    origen: str = ORIGEN_SLACK
+    actor_web_usuario: str | None = None
 
 
 def _finalizar(
@@ -441,6 +450,8 @@ def _finalizar(
     ya se registró y no tiene sentido ocultárselo."""
     fila = IngresoCorreccion(
         comando=inv.comando,
+        origen=inv.origen,
+        actor_web_usuario=inv.actor_web_usuario,
         actor_slack_user_id=inv.actor_slack_user_id,
         actor_nombre=_truncar(inv.actor_nombre, _LARGO_ACTOR_NOMBRE),
         canal_id=inv.canal_id,
@@ -481,7 +492,7 @@ def _finalizar(
         "Corrección %s resultado=%s actor=%s hilo=%s ingreso_id=%s",
         inv.comando,
         resultado,
-        inv.actor_slack_user_id,
+        inv.actor_slack_user_id or inv.actor_web_usuario,
         inv.thread_ts,
         ingreso.id if ingreso is not None else None,
     )
@@ -1133,6 +1144,120 @@ def _procesar_forzar_egreso(
     )
 
 
+# ── Egreso desde el panel web (botón "Registrar egreso", vista Ingresos del Servicio) ──────────
+
+
+def registrar_egreso_web(
+    session: Session,
+    *,
+    ingreso_id: int,
+    momento: datetime,
+    motivo: str,
+    usuario_web: str,
+    ahora: datetime | None = None,
+) -> ResultadoCorreccion:
+    """Cierra desde el panel web un `Ingreso` que quedó "en curso" porque el formulario de Egreso
+    nunca llegó por Slack. Es la forma `Forzar egreso #<id> DD-MM-AAAA HH:MM` sin Slack: el operador
+    elige la fila exacta en la tabla, así que no hay cámara que resolver ni candidatos que desempatar.
+
+    Mismas reglas que ese camino (`_procesar_forzar_egreso`): sólo filas `tipo=INGRESO` abiertas,
+    `momento > fecha_inicio` **estricto**, cierre con `cerrar_ingreso_forzado` (nunca
+    `registrar_movimiento_ingreso`, que podría crear un EGRESO huérfano) y una fila de auditoría en
+    `app.ingresos_correcciones` por cada invocación, incluidos los rechazos — con `origen='web'` y
+    `actor_web_usuario` en lugar de los datos de Slack. Además rechaza un `momento` futuro: el
+    operador está afirmando cuándo salió el técnico, no agendando una salida.
+
+    `momento` debe venir con zona horaria (el endpoint lo exige); `ahora` es inyectable para tests.
+    """
+    ahora = ahora if ahora is not None else datetime.now(timezone.utc)
+    momento_utc = _como_utc(momento)
+    assert momento_utc is not None
+    inv = _Invocacion(
+        comando=COMANDO_FORZAR_EGRESO,
+        comando_crudo=f"[web] Registrar egreso #{ingreso_id} {momento_utc.isoformat()}",
+        actor_slack_user_id=None,
+        actor_nombre=_truncar(usuario_web, _LARGO_ACTOR_NOMBRE),
+        canal_id=None,
+        thread_ts=None,
+        mensaje_ts=None,
+        origen=ORIGEN_WEB,
+        actor_web_usuario=_truncar(usuario_web, 64),
+    )
+    comunes = {
+        "camara_texto_solicitado": f"#{ingreso_id}",
+        "motivo": motivo,
+        "momento_solicitado": momento_utc,
+    }
+
+    objetivo = session.query(Ingreso).filter(Ingreso.id == ingreso_id).first()
+    if objetivo is None or objetivo.tipo != IngresoTipo.INGRESO:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_NO_ENCONTRADO,
+            respuesta=f"No existe un ingreso #{ingreso_id} que se pueda cerrar.",
+            error_detalle=(
+                f"Ingreso id={ingreso_id} inexistente"
+                if objetivo is None
+                else f"Ingreso id={ingreso_id} es de tipo {objetivo.tipo}"
+            ),
+            **comunes,
+        )
+    camara = objetivo.camara
+    botella = objetivo.cromo_botella
+    if objetivo.fecha_fin is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_YA_CERRADO,
+            respuesta=f"El ingreso #{objetivo.id} ya tiene egreso registrado.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"ya cerrado el {objetivo.fecha_fin}",
+            **comunes,
+        )
+    if momento_utc > _como_utc(ahora):
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_MOMENTO_INVALIDO,
+            respuesta="La fecha de egreso no puede ser futura.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"momento futuro (ahora={_como_utc(ahora)})",
+            **comunes,
+        )
+    fecha_inicio = _como_utc(objetivo.fecha_inicio)
+    if fecha_inicio is not None and momento_utc <= fecha_inicio:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_EGRESO_ANTERIOR_AL_INGRESO,
+            respuesta="La fecha de egreso tiene que ser posterior a la de ingreso.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"fecha_inicio real del ingreso #{objetivo.id}: {fecha_inicio}",
+            **comunes,
+        )
+
+    ingreso = cerrar_ingreso_forzado(session, ingreso=objetivo, momento=momento_utc)
+    return _finalizar(
+        session,
+        inv,
+        resultado=RESULTADO_OK_EGRESO_CERRADO,
+        respuesta=f"Egreso registrado para el ingreso #{ingreso.id}.",
+        camara=camara,
+        botella=botella,
+        momento_efectivo=momento_utc,
+        fuente_momento=FUENTE_MOMENTO_EXPLICITO,
+        ingreso=ingreso,
+        **comunes,
+    )
+
+
 __all__ = [
     "CAMARA_TEXTO_DEL_HILO",
     "CAMARA_TEXTO_NO_PARSEADO",
@@ -1141,6 +1266,8 @@ __all__ = [
     "ContextoHilo",
     "FUENTE_MOMENTO_EXPLICITO",
     "FUENTE_MOMENTO_HILO",
+    "ORIGEN_SLACK",
+    "ORIGEN_WEB",
     "RESULTADO_CAMARA_AMBIGUA",
     "RESULTADO_CAMARA_NO_ENCONTRADA",
     "RESULTADO_EGRESO_ANTERIOR_AL_INGRESO",
@@ -1157,5 +1284,6 @@ __all__ = [
     "RESULTADO_VARIOS_INGRESOS_ABIERTOS",
     "ResultadoCorreccion",
     "procesar_comando_correccion",
+    "registrar_egreso_web",
     "resolver_contexto_hilo",
 ]

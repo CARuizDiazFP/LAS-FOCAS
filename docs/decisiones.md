@@ -2436,3 +2436,29 @@ su propia ventana de mantenimiento.
 - **Corrección de doc:** `docs/mantenimiento_redes_produccion.md` seguía marcando
   `redis_password_v1` como "pendiente de aplicar", cuando está aplicado desde el 2026-09-07.
   Re-verificado hoy con los tres checks del propio documento.
+
+## 2026-09-28 — "Registrar egreso" desde el panel: reusa `Forzar egreso #<id>`, audita con `origen='web'` y queda `_require_auth`
+
+- **Contexto:** la vista Ingresos del Servicio (`/servicios/ID/<id>/ingresos`) mostraba ingresos
+  "En curso" que sólo podían cerrarse con el comando Slack `Forzar egreso`. Se agregó un botón por
+  fila (`tipo=INGRESO` sin `fecha_fin`) → `POST /api/infra/ingresos/{id}/egreso` →
+  `core/services/ingreso_correccion_service.py::registrar_egreso_web`.
+- **Reuso, no lógica nueva:** es la forma `Forzar egreso #<id> <fecha>` sin Slack. Mismas reglas
+  (sólo `INGRESO` abierto, egreso **estrictamente** posterior a `fecha_inicio`, cierre con
+  `cerrar_ingreso_forzado` —nunca `registrar_movimiento_ingreso`, que puede crear un EGRESO
+  huérfano—) y misma auditoría (`_finalizar`, una fila por invocación, rechazos incluidos). Se suma
+  un rechazo que Slack resuelve en el parser: fecha futura (`MOMENTO_INVALIDO`).
+- **Auditoría:** `app.ingresos_correcciones` exigía `actor_slack_user_id`/`canal_id`/`mensaje_ts`.
+  Migración `20260928_01`: `origen` (`slack`|`web`) + `actor_web_usuario`, las tres columnas de Slack
+  nullable, y un CHECK por origen que conserva la garantía original para las filas de Slack. Se
+  descartó una tabla aparte: dos logs para la misma operación obligarían a unir tablas para
+  responder "quién cerró este ingreso".
+- **Permiso: `_require_auth`, no `_require_admin` — decisión a revisar.** A favor de admin: el
+  precedente de la entrada "2026-09-02 (cont.)", Decisión 4 (una ruta que deja al caller *elegir* un
+  valor es `_require_admin`), y acá el operador elige la fecha. A favor de dejarlo así: la decisión
+  de producto del 2026-09-23 para los mismos comandos en Slack ("sin allowlist: cualquiera del canal
+  puede ejecutarlos; la auditoría es el único control"). Hacerlo admin en la web crearía la asimetría
+  de que un `role=user` pueda cerrar el ingreso desde Slack y no desde el panel. Se optó por la
+  paridad con Slack; cambiarlo es una línea (`_require_auth` → `_require_admin`).
+- **Relacionado:** el relevamiento de los 201 casos `ingresos_sin_match` de prod del mismo día está
+  en `docs/relevamiento_ingresos_sin_match_2026-09-28.md` (diagnóstico + propuesta, sin implementar).

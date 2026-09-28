@@ -7,7 +7,7 @@
   <ServicioSeccionLayout
     :id-servicio="idServicio"
     titulo="Ingresos"
-    descripcion="Ingresos de técnicos a las cámaras que atraviesa el Servicio, registrados desde Slack."
+    descripcion="Ingresos de técnicos a las cámaras que atraviesa el Servicio, registrados desde Slack. Un ingreso que quedó en curso se puede cerrar desde acá."
     :servicio="base.servicio.value"
     :loading="base.loading.value"
     :error="base.error.value"
@@ -27,6 +27,7 @@
             <th scope="col">Desde</th>
             <th scope="col">Hasta</th>
             <th scope="col">Tipo</th>
+            <th scope="col"><span class="sr-only">Acciones</span></th>
           </tr>
         </thead>
         <tbody>
@@ -39,10 +40,29 @@
                  INTENTO_BLOQUEADO: por eso el tipo se muestra siempre, al lado. -->
             <td>{{ ingreso.fecha_fin ? fecha(ingreso.fecha_fin) : 'En curso' }}</td>
             <td>{{ ingreso.tipo }}</td>
+            <td class="ingresos__accion">
+              <!-- Sólo un INGRESO real sin egreso: un INTENTO_BLOQUEADO también tiene `fecha_fin`
+                   en null, pero no hay salida posible de un ingreso que nunca ocurrió. -->
+              <button
+                v-if="esCerrable(ingreso)"
+                class="btn subtle ingresos__btn"
+                type="button"
+                @click="abrirEgreso(ingreso)"
+              >
+                Registrar egreso
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
+    <p v-if="aviso" class="ingresos__aviso" role="status">{{ aviso }}</p>
+    <ModalRegistrarEgreso
+      :open="ingresoSeleccionado !== null"
+      :ingreso="ingresoSeleccionado"
+      @close="ingresoSeleccionado = null"
+      @registrado="onEgresoRegistrado"
+    />
   </ServicioSeccionLayout>
 </template>
 
@@ -51,6 +71,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { type InfraServicioIngreso, getIngresosServicio } from '../../api/servicioSecciones';
+import ModalRegistrarEgreso from '../../components/servicios/ModalRegistrarEgreso.vue';
 import { useServicioBase } from '../../composables/useServicioBase';
 import ServicioSeccionLayout from './ServicioSeccionLayout.vue';
 
@@ -61,10 +82,34 @@ const idServicio = computed(() => String(route.params.idServicio ?? ''));
 const ingresos = ref<InfraServicioIngreso[]>([]);
 const cargando = ref(false);
 const error = ref('');
+const ingresoSeleccionado = ref<InfraServicioIngreso | null>(null);
+const aviso = ref('');
+
+function esCerrable(ingreso: InfraServicioIngreso): boolean {
+  return ingreso.tipo === 'INGRESO' && !ingreso.fecha_fin;
+}
+
+function abrirEgreso(ingreso: InfraServicioIngreso): void {
+  aviso.value = '';
+  ingresoSeleccionado.value = ingreso;
+}
+
+async function onEgresoRegistrado(): Promise<void> {
+  const cerrado = ingresoSeleccionado.value;
+  ingresoSeleccionado.value = null;
+  aviso.value = cerrado
+    ? `Egreso registrado en ${cerrado.camara_nombre ?? `la cámara ${cerrado.camara_id}`}.`
+    : 'Egreso registrado.';
+  await cargarIngresos();
+}
 
 async function cargar(id: string): Promise<void> {
   const ok = await base.cargar(id);
   if (!ok) return;
+  await cargarIngresos();
+}
+
+async function cargarIngresos(): Promise<void> {
   cargando.value = true;
   error.value = '';
   try {
@@ -113,6 +158,30 @@ watch(idServicio, (id) => cargar(id));
   padding: 6px 10px;
   text-align: left;
   border-bottom: 1px solid var(--color-divider);
+  white-space: nowrap;
+}
+
+.ingresos__accion {
+  text-align: right;
+}
+
+.ingresos__btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
+}
+
+.ingresos__aviso {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--color-state-ok);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
   white-space: nowrap;
 }
 
