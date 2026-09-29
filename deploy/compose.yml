@@ -68,6 +68,7 @@ services:
       - slack_app_token_v1
       - api_prov_user_v1
       - api_prov_pass_v1
+      - oauth_jwt_secret_v1  # Firma HS256 de los JWT OAuth2 M2M (/api/v1)
     depends_on:
       postgres:
         condition: service_healthy
@@ -439,3 +440,5 @@ secrets:
     file: ../.secrets/api_prov_user_v1.txt
   api_prov_pass_v1:
     file: ../.secrets/api_prov_pass_v1.txt
+  oauth_jwt_secret_v1:
+    file: ../.secrets/oauth_jwt_secret_v1.txt

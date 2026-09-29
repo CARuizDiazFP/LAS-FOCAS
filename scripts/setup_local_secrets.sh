@@ -79,6 +79,7 @@ write_secret Dev_smtp_password_v1.txt
 write_secret Dev_slack_bot_token_v1.txt
 write_secret Dev_slack_app_token_v1.txt
 write_secret Dev_cromo_password_v1.txt
+write_secret Dev_oauth_jwt_secret_v1.txt
 write_secret Dev_pgadmin_password_v1.txt 640
 
 echo "Bootstrap de secretos locales completado."

@@ -2513,3 +2513,42 @@ su propia ventana de mantenimiento.
   cables tributando") también se alimenta del tracking legacy vía `getRutasServicio`/`getTrackingRuta`
   — está en blanco para 14.120 de 14.147 Servicios. Se deja como está por ahora (opción elegida por el
   usuario); es su propio ticket.
+
+
+## 2026-09-29 — API v1 para integraciones interáreas: OAuth2 M2M propio y botellas de un servicio
+
+- **Pedido**: exponer a otras áreas `GET /api/v1/servicios/{servicio_id}/botellas`, protegido por
+  OAuth2 `client_credentials` emitido por LAS-FOCAS, y resolviendo si el ID consultado es vigente o
+  histórico.
+- **Auth separada de la API key**: `api_key_v1` es una sola, compartida con la web. Dársela a
+  terceros no permite identificarlos, limitarlos ni revocarlos por separado. Las dos credenciales
+  viajan como `Bearer`, así que el router v1 se monta **sin** `require_api_key` y sólo con
+  `require_oauth_token`: ninguna de las dos credenciales abre la otra superficie. El flujo
+  web → api no cambia.
+- **Revocación con tokens de 7 días**: el TTL lo definió el pedido. Para que desactivar un área no
+  tenga que esperar una semana, el cliente se relee por `client_id` en cada request (una lectura por
+  índice único) y el scope efectivo es la intersección entre el scope del token y el scope actual
+  del cliente.
+- **Fuente de botellas: híbrida sin Cromo en vivo** (opción elegida por el usuario). El `/path` de
+  Cromo cuesta 4,6-14 s por pelo, y un endpoint M2M no puede depender de esa latencia ni de la
+  disponibilidad de Cromo. Hay tres fuentes, reportadas en `orden_fuente`:
+  1. Traza cacheada en `cromo_tracking_cache`, que tiene orden real.
+  2. Ruta legada ordenada, sólo si no hay traza.
+  3. Inventario local (extremos de cable), siempre agregado al final en orden alfabético.
+- **Filtro "sólo `cromo_botellas`"** en las dos fuentes con orden, a partir de lo medido en dev:
+  - El renderer de trackings emite las ODF con la misma línea `Empalme <id>:` que las botellas.
+  - En la ruta legada, el sufijo de `tracking_empalme_id` (`<servicio>_<id>`) coincide con
+    `cromo_botellas.n_id` en 3107 de 3252 empalmes. Los 145 restantes son casi todos ODF/Nodo/Rack:
+    96 están en `cromo_odfs`.
+  - `Empalme.es_transito` está en `false` en **todas** las filas, así que no sirve para filtrar.
+  - La primera versión caía al nombre de la Cámara y devolvía "ODF Guanahani 580…" como primera
+    "botella" del 93154.
+- **Resolución del ID**: `_buscar_servicio_por_id` de `api/app/routes/servicios.py` no mira
+  `alias_ids`, así que no servía para IDs históricos. El resolver nuevo sí los mira, y además aplica
+  el criterio anti-ambigüedad de `_SQL_BUSCAR_SERVICIO` (bug real del 2026-08-31): una fila cuyo
+  `servicio_id` ya fue absorbido como alias por otra no gana. Quedaban 43 filas así en dev. Caso
+  real verificado: `34111` resuelve a la fila vigente `109704` y no a la huérfana.
+- **Alta de clientes por CLI, sin endpoint admin** (opción elegida por el usuario): evita sumar
+  superficie HTTP que administre credenciales.
+- **Pendiente para prod**: crear `.secrets/oauth_jwt_secret_v1.txt` (≥ 32 bytes, **distinto** del de
+  dev), aplicar `20260929_01` y recrear `api`. No desplegado (directiva sólo-dev).

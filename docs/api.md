@@ -81,6 +81,95 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 
   El campo `detail` incluye el mensaje original de la excepción capturada.
 
+## API v1 para integraciones interáreas (OAuth2 M2M, 2026-09-29)
+
+Superficie pensada para **otras áreas de Metrotel** que consultan por sistema. Tiene su propia
+autenticación: OAuth2 `client_credentials` (RFC 6749 §4.4) con JWT emitido por LAS-FOCAS. La API key
+interna **no** sirve en `/api/v1/*` (401), y el JWT **no** sirve en las rutas internas (403): las
+dos viajan como `Bearer`, y mantenerlas separadas evita que una dependencia tenga que adivinar qué
+credencial recibió. Código: `api/app/oauth.py`, `api/app/routes/v1/`.
+
+**Alta de clientes** (uno por área), dentro del contenedor de la API. El secret se imprime una sola
+vez; en la base sólo queda su hash (`app.api_clients`, ver `docs/db.md`):
+
+```bash
+docker exec -it lasfocasdev-api python scripts/api_clients.py crear --area "NOC" --scopes servicios:botellas:read
+docker exec -it lasfocasdev-api python scripts/api_clients.py listar
+docker exec -it lasfocasdev-api python scripts/api_clients.py desactivar --client-id lf_...
+docker exec -it lasfocasdev-api python scripts/api_clients.py rotar-secret --client-id lf_...
+```
+
+`desactivar` corta **de inmediato** los tokens ya emitidos: el cliente se revalida contra la base
+en cada request. `rotar-secret` sólo impide emitir tokens nuevos con el secret viejo; para invalidar
+también los tokens vigentes, desactivar.
+
+### POST `/api/v1/oauth/token`
+
+- **Body** `application/x-www-form-urlencoded`: `grant_type=client_credentials`, `scope` opcional
+  (separado por espacios; por defecto, todos los del cliente).
+- **Credenciales**: HTTP Basic `client_id:client_secret` (recomendado) **o** `client_id` +
+  `client_secret` en el body. Las dos vías a la vez → `400 invalid_request`.
+- **200**, con los headers `Cache-Control: no-store` y `Pragma: no-cache`:
+
+```json
+{"access_token": "eyJhbGciOiJIUzI1NiIs...", "token_type": "bearer", "expires_in": 604800, "scope": "servicios:botellas:read"}
+```
+
+- **Errores** (cuerpo `{"error": "...", "error_description": "..."}` según RFC 6749 §5.2):
+  - `400 invalid_request`: falta `grant_type`, o se usaron dos métodos de autenticación.
+  - `400 unsupported_grant_type`
+  - `400 invalid_scope`: se pidió un scope que el cliente no tiene.
+  - `401 invalid_client`, con `WWW-Authenticate: Basic`: secret incorrecto, cliente inexistente o inactivo.
+  - `503`: secreto de firma no configurado.
+- **Token**: JWT HS256 (algoritmo fijo al validar). Claims: `iss=las-focas`, `aud=las-focas-api-v1`,
+  `sub=<client_id>`, `scope`, `iat`, `exp` (7 días, ajustable con `OAUTH_TOKEN_TTL_SECONDS`) y `jti`.
+  Se firma con el secret `oauth_jwt_secret_v1` (dev: `.secrets/Dev_oauth_jwt_secret_v1.txt`). Si falta
+  o mide menos de 32 bytes, se falla cerrado con 503.
+
+```bash
+curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials http://localhost:8011/api/v1/oauth/token
+```
+
+### GET `/api/v1/servicios/{servicio_id}/botellas`
+
+Botellas de FO por las que pasa un servicio. Scope `servicios:botellas:read`.
+
+- **`servicio_id`**: se busca como ID vigente, alias histórico (`alias_ids`), `numero_primer_servicio`
+  o `numero_linea`. Se admite `[A-Za-z0-9._-]{1,64}`; cualquier otro valor da 422. Si el número
+  matchea varias filas, se descartan primero las filas cuya identidad ya absorbió otra fila como alias
+  (mismo criterio anti-ambigüedad que la ingesta Cromo). Después gana la fila donde es vigente, luego
+  alias, luego primer servicio y por último línea.
+- **`es_id_vigente`**: `true` sólo si el ID consultado es el `servicio_id` actual del servicio.
+- **`orden_fuente`**: qué fuente determinó el orden de la lista. **Nunca se llama a Cromo en vivo.**
+  - `traza_cromo`: trackings de Cromo frescos en `app.cromo_tracking_cache`, en orden de recorrido.
+  - `traza_legada`: ruta activa cargada desde un tracking `.txt`, en orden de empalmes. Se usa sólo si no hay traza de Cromo.
+  - `inventario`: botellas extremo A/B de los cables por los que tiene pelos el servicio, en orden
+    alfabético. Esta fuente siempre se agrega al final de las otras dos.
+  - `sin_datos`: el servicio existe pero no tiene botellas conocidas (200 con lista vacía, no 404).
+- En todas las fuentes, sólo se devuelven nombres de `app.cromo_botellas`: las ODF y los racks de
+  nodo que aparecen como `Empalme <id>:` en los trackings se descartan.
+- **Errores**:
+  - `401`, con `WWW-Authenticate: Bearer error="invalid_token"`: sin token, token mal formado, vencido, firma inválida, cliente desactivado o API key interna.
+  - `403 insufficient_scope`: se chequea contra la intersección del scope del token y el scope actual del cliente.
+  - `404 {"detail": "Servicio no encontrado"}`
+  - `503`: OAuth no configurado.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8011/api/v1/servicios/112763/botellas
+```
+
+```json
+{
+  "status": "ok",
+  "servicio_consultado": "112763",
+  "servicio_id_vigente": "120393",
+  "es_id_vigente": false,
+  "total_botellas": 68,
+  "botellas": ["Bot 1 Velez Sarfield 2551 MARTINEZ", "Cra Velez Sarfield 2402 y Panama MARTINEZ", "..."],
+  "orden_fuente": "traza_cromo"
+}
+```
+
 ## Infraestructura
 
 ### Autenticación de API core
