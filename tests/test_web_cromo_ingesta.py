@@ -677,7 +677,14 @@ def test_config_trigger_proxea_al_worker(monkeypatch):
 
 @pytest.mark.parametrize(
     "modo",
-    ["SOLO_SPLITTERS", "SOLO_PUERTOS_SPLITTER", "SOLO_CAJAS_PON", "SOLO_ROSETAS", "SOLO_CABLES_BAJADA"],
+    [
+        "SOLO_SPLITTERS",
+        "SOLO_PUERTOS_SPLITTER",
+        "SOLO_CAJAS_PON",
+        "SOLO_ROSETAS",
+        "SOLO_CABLES_BAJADA",
+        "SOLO_CABLES_TERCEROS",
+    ],
 )
 def test_iniciar_acepta_los_modos_de_la_red_pon(monkeypatch, modo):
     """Los cinco modos nuevos tienen que pasar la validación del endpoint y llegar a la corrida.

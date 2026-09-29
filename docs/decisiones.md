@@ -2603,3 +2603,26 @@ su propia ventana de mantenimiento.
   una por posición: deduplicarla exige conocer los caminos. (c) En prod faltan la migración y el
   backfill `--solo-multipelo`, y `track` no funciona ahí hasta sumar `app_mentions:read`.
 
+## 2026-09-29 (cont.) — Ingesta de cables de terceros (52, 59, 60) con sus pelos
+
+- **Pedido**: cargar los cables de terceros para que convivan en Infra › Cables con los propios,
+  distinguidos por Propietario. Clases confirmadas por el usuario: **59 = Telefónica, 60 = Telecom**.
+  La **52** se incluye como "terceros varios": medido en at.25, Alterplan, Arsat, Cycsa, Telmex,
+  cooperativas y 332 sin propietario (de 695).
+- **Con tubos y pelos, a diferencia de la 51**: los pelos propios llegan por el árbol de su botella;
+  los de terceros van cámara↔ODF u ODF↔ODF (F-TECO-DC1, F-CRZ-FB) y ningún árbol los trae. Sin pelos
+  no hay posición de ODF que sirva de semilla a `track` ni matching de servicio. El barrido con
+  `show=ALL` ya embebe el `inner[]` (verificado contra Cromo), sin una llamada por cable.
+- **Dos excepciones deliberadas a la tabla de modos**: `fase_cables_terceros` **entra en
+  `COMPLETA`** (~733 objetos, más barata que una página de botellas, y así se refresca con la corrida
+  de rutina), y `SOLO_CABLES_TERCEROS` **corre también `fase_servicios`**.
+- **Catálogo**: `cromo_clases` no tenía 52/59/60 y la FK de `cromo_cables.clase` habría rechazado
+  cada cable (también la reingesta dirigida de un cable 52, cuyo comentario decía que la tabla "no
+  tiene columna de clase" — desactualizado desde el 2026-09-19). `entidad='CABLE'`, lo que ya
+  esperaban el camino óptico y la vinculación local. `CLASES_CABLE` del camino óptico suma 59 y 60.
+- **Posición de ODF**: con los terceros ingeridos existen los dos pelos de una posición; ahora
+  `resolver_servicio_conectores` prefiere el del cable propio (51) y después cualquier ingerido.
+  Caso TASA conector 2 (42351): sin esto volvía a quedar el pelo de F-CRZ-FB.
+- **Carga en dev pedida por el usuario junto con** los modos existentes de cables de bajada, rosetas y
+  cajas PON, que no habían corrido completos nunca.
+
