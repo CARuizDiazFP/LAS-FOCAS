@@ -77,6 +77,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Preferir `expose` sobre `ports`, salvo interfaces públicas necesarias.
 - No usar tags `latest` ni dependencias sin pin.
 - Aplicar mínimos privilegios y healthchecks cuando corresponda.
+- El servicio `api` tiene **dos superficies de autenticación que no se mezclan**: rutas internas con `require_api_key` (`api/app/security.py`, la usa la web) y `/api/v1/*` para otras áreas con OAuth2 `client_credentials` (`require_oauth_token(scope)` de `api/app/oauth.py`, scopes `servicios:read`/`cables:read`). Un endpoint nuevo para terceros va bajo `/api/v1` con su scope, nunca detrás de la API key. Referencia: `docs/api.md`, sección "API v1".
 
 ## Documentación Fuente
 

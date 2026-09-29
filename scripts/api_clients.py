@@ -7,7 +7,7 @@
 Se corre dentro del contenedor de la API, que ya tiene la conexión y el secreto de la base:
 
     docker exec -it lasfocasdev-api python scripts/api_clients.py crear --area "NOC" \\
-        --scopes servicios:botellas:read
+        --scopes servicios:read cables:read
     docker exec -it lasfocasdev-api python scripts/api_clients.py listar
     docker exec -it lasfocasdev-api python scripts/api_clients.py desactivar --client-id lf_...
     docker exec -it lasfocasdev-api python scripts/api_clients.py rotar-secret --client-id lf_...
@@ -34,7 +34,8 @@ from sqlalchemy.orm import Session  # noqa: E402
 from core.password import hash_password  # noqa: E402
 from db.models.api_clients import ApiClient  # noqa: E402
 
-SCOPES_CONOCIDOS = frozenset({"servicios:botellas:read"})
+# Espejo de `api/app/oauth.py::SCOPES_CONOCIDOS`, sin importar ese módulo (arrastra FastAPI).
+SCOPES_CONOCIDOS = frozenset({"servicios:read", "cables:read"})
 
 
 def generar_client_id() -> str:

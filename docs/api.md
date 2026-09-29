@@ -87,21 +87,34 @@ Superficie pensada para **otras áreas de Metrotel** que consultan por sistema. 
 autenticación: OAuth2 `client_credentials` (RFC 6749 §4.4) con JWT emitido por LAS-FOCAS. La API key
 interna **no** sirve en `/api/v1/*` (401), y el JWT **no** sirve en las rutas internas (403): las
 dos viajan como `Bearer`, y mantenerlas separadas evita que una dependencia tenga que adivinar qué
-credencial recibió. Código: `api/app/oauth.py`, `api/app/routes/v1/`.
+credencial recibió. Código: `api/app/oauth.py`, `api/app/routes/v1/`, `core/services/servicio_traza.py`
+y `core/services/cable_consultas.py`. Todo es de sólo lectura, y **nunca se llama a Cromo en vivo**.
+
+| Método y ruta | Scope | Devuelve |
+|---|---|---|
+| `POST /api/v1/oauth/token` | — | access token |
+| `GET /api/v1/servicios/{servicio_id}/botellas` | `servicios:read` | Botellas de la traza |
+| `GET /api/v1/servicios/{servicio_id}/cables` | `servicios:read` | Cables de la traza |
+| `GET /api/v1/servicios/{servicio_id}/odfs` | `servicios:read` | ODF de Cromo con bandeja y conector |
+| `GET /api/v1/cables/servicios?cable=` | `cables:read` | Servicios que pasan por el cable |
+| `GET /api/v1/cables/pelos?cable=&buffer=` | `cables:read` | Pelos del cable por buffer |
+
+Hay un scope por dominio (decisión del 2026-09-29): `servicios:read` y `cables:read`. Tener uno no
+habilita el otro (403).
 
 **Alta de clientes** (uno por área), dentro del contenedor de la API. El secret se imprime una sola
 vez; en la base sólo queda su hash (`app.api_clients`, ver `docs/db.md`):
 
 ```bash
-docker exec -it lasfocasdev-api python scripts/api_clients.py crear --area "NOC" --scopes servicios:botellas:read
+docker exec -it lasfocasdev-api python scripts/api_clients.py crear --area "NOC" --scopes servicios:read cables:read
 docker exec -it lasfocasdev-api python scripts/api_clients.py listar
 docker exec -it lasfocasdev-api python scripts/api_clients.py desactivar --client-id lf_...
 docker exec -it lasfocasdev-api python scripts/api_clients.py rotar-secret --client-id lf_...
 ```
 
-`desactivar` corta **de inmediato** los tokens ya emitidos: el cliente se revalida contra la base
-en cada request. `rotar-secret` sólo impide emitir tokens nuevos con el secret viejo; para invalidar
-también los tokens vigentes, desactivar.
+`desactivar` corta **de inmediato** los tokens ya emitidos: el cliente y sus scopes se revalidan
+contra la base en cada request. `rotar-secret` sólo impide emitir tokens nuevos con el secret viejo;
+para invalidar también los tokens vigentes, desactivar.
 
 ### POST `/api/v1/oauth/token`
 
@@ -110,65 +123,83 @@ también los tokens vigentes, desactivar.
 - **Credenciales**: HTTP Basic `client_id:client_secret` (recomendado) **o** `client_id` +
   `client_secret` en el body. Las dos vías a la vez → `400 invalid_request`.
 - **200**, con los headers `Cache-Control: no-store` y `Pragma: no-cache`:
-
-```json
-{"access_token": "eyJhbGciOiJIUzI1NiIs...", "token_type": "bearer", "expires_in": 604800, "scope": "servicios:botellas:read"}
-```
-
+  `{"access_token": "...", "token_type": "bearer", "expires_in": 604800, "scope": "servicios:read cables:read"}`.
 - **Errores** (cuerpo `{"error": "...", "error_description": "..."}` según RFC 6749 §5.2):
   - `400 invalid_request`: falta `grant_type`, o se usaron dos métodos de autenticación.
   - `400 unsupported_grant_type`
-  - `400 invalid_scope`: se pidió un scope que el cliente no tiene.
-  - `401 invalid_client`, con `WWW-Authenticate: Basic`: secret incorrecto, cliente inexistente o inactivo.
+  - `400 invalid_scope`
+  - `401 invalid_client`, con `WWW-Authenticate: Basic`
   - `503`: secreto de firma no configurado.
 - **Token**: JWT HS256 (algoritmo fijo al validar). Claims: `iss=las-focas`, `aud=las-focas-api-v1`,
   `sub=<client_id>`, `scope`, `iat`, `exp` (7 días, ajustable con `OAUTH_TOKEN_TTL_SECONDS`) y `jti`.
-  Se firma con el secret `oauth_jwt_secret_v1` (dev: `.secrets/Dev_oauth_jwt_secret_v1.txt`). Si falta
-  o mide menos de 32 bytes, se falla cerrado con 503.
+  Se firma con `oauth_jwt_secret_v1` (dev: `.secrets/Dev_oauth_jwt_secret_v1.txt`). Si falta o mide
+  menos de 32 bytes, se falla cerrado con 503.
 
-```bash
-curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials http://localhost:8011/api/v1/oauth/token
-```
+**Errores comunes a las consultas**:
+- `401`, con `WWW-Authenticate: Bearer error="invalid_token"`: sin token, mal formado, vencido, firma
+  inválida, cliente desactivado o API key interna.
+- `403 insufficient_scope`: intersección del scope del token y el scope actual del cliente.
+- `422`: parámetros inválidos.
+- `503`: OAuth no configurado.
 
-### GET `/api/v1/servicios/{servicio_id}/botellas`
+### Consultas por servicio: `/api/v1/servicios/{servicio_id}/...`
 
-Botellas de FO por las que pasa un servicio. Scope `servicios:botellas:read`.
+- **`servicio_id`** (`[A-Za-z0-9._-]{1,64}`): se busca como ID vigente, alias histórico
+  (`alias_ids`), `numero_primer_servicio` o `numero_linea`. Si el número matchea varias filas, se
+  descartan primero las filas cuya identidad ya absorbió otra fila como alias (mismo criterio
+  anti-ambigüedad que la ingesta Cromo). Después gana la fila donde es vigente, luego alias, luego
+  primer servicio y por último línea.
+- **Cabecera común**: `servicio_consultado`, `servicio_id_vigente` y `es_id_vigente` (`true` sólo si
+  el ID consultado es el `servicio_id` actual).
+- **404** `{"detail": "Servicio no encontrado"}`. Un servicio sin datos responde 200 con la lista
+  vacía (`orden_fuente: "sin_datos"`).
 
-- **`servicio_id`**: se busca como ID vigente, alias histórico (`alias_ids`), `numero_primer_servicio`
-  o `numero_linea`. Se admite `[A-Za-z0-9._-]{1,64}`; cualquier otro valor da 422. Si el número
-  matchea varias filas, se descartan primero las filas cuya identidad ya absorbió otra fila como alias
-  (mismo criterio anti-ambigüedad que la ingesta Cromo). Después gana la fila donde es vigente, luego
-  alias, luego primer servicio y por último línea.
-- **`es_id_vigente`**: `true` sólo si el ID consultado es el `servicio_id` actual del servicio.
-- **`orden_fuente`**: qué fuente determinó el orden de la lista. **Nunca se llama a Cromo en vivo.**
-  - `traza_cromo`: trackings de Cromo frescos en `app.cromo_tracking_cache`, en orden de recorrido.
-  - `traza_legada`: ruta activa cargada desde un tracking `.txt`, en orden de empalmes. Se usa sólo si no hay traza de Cromo.
-  - `inventario`: botellas extremo A/B de los cables por los que tiene pelos el servicio, en orden
-    alfabético. Esta fuente siempre se agrega al final de las otras dos.
-  - `sin_datos`: el servicio existe pero no tiene botellas conocidas (200 con lista vacía, no 404).
-- En todas las fuentes, sólo se devuelven nombres de `app.cromo_botellas`: las ODF y los racks de
-  nodo que aparecen como `Empalme <id>:` en los trackings se descartan.
-- **Errores**:
-  - `401`, con `WWW-Authenticate: Bearer error="invalid_token"`: sin token, token mal formado, vencido, firma inválida, cliente desactivado o API key interna.
-  - `403 insufficient_scope`: se chequea contra la intersección del scope del token y el scope actual del cliente.
-  - `404 {"detail": "Servicio no encontrado"}`
-  - `503`: OAuth no configurado.
+**`/botellas` y `/cables`**: listas de nombres deduplicadas. `orden_fuente` dice de dónde salió el
+orden:
+- `traza_cromo`: trackings de Cromo frescos en `app.cromo_tracking_cache`, en orden de recorrido.
+- `traza_legada`: ruta activa cargada desde un tracking `.txt`, en orden. Se usa sólo si no hay traza de Cromo.
+- `inventario`: lo alcanzado por los pelos matcheados al servicio, en orden alfabético. Esta fuente
+  siempre se agrega al final de las otras dos.
 
-```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8011/api/v1/servicios/112763/botellas
-```
+De las trazas sólo se aceptan nombres que existen en `cromo_botellas` / en cables vigentes de
+`cromo_cables`, así que las ODF y los racks que aparecen como `Empalme <id>:` en los trackings no se
+devuelven como botellas. Los cables se leen de las líneas de tramo
+`<cable>: <pelo> (<color> / <buffer> - <pelo>) --> ...` (la misma gramática en los trackings
+generados y en los legacy).
+
+**`/odfs`**: siempre desde Cromo (`fuente: "cromo"`). Una ODF es del servicio si Cromo resolvió uno
+de sus conectores a este servicio (`servicio_resuelto`) o si un conector cuelga de un pelo matcheado.
+Los overrides manuales de LAS-FOCAS **no** se incluyen. Cada ODF trae `odf_id`, `nombre`,
+`direccion`, `localidad` y `posiciones: [{bandeja, conector, pelo}]`.
 
 ```json
-{
-  "status": "ok",
-  "servicio_consultado": "112763",
-  "servicio_id_vigente": "120393",
-  "es_id_vigente": false,
-  "total_botellas": 68,
-  "botellas": ["Bot 1 Velez Sarfield 2551 MARTINEZ", "Cra Velez Sarfield 2402 y Panama MARTINEZ", "..."],
-  "orden_fuente": "traza_cromo"
-}
+{"status": "ok", "servicio_consultado": "93154", "servicio_id_vigente": "93154", "es_id_vigente": true,
+ "fuente": "cromo", "total_odfs": 3,
+ "odfs": [{"odf_id": 6642345, "nombre": "ODF Guanahani 580 - CF Bco. de la Provincia Bs. As (Sala de Servidores)",
+           "direccion": "GUANAHANI 580", "localidad": "Capital Federal",
+           "posiciones": [{"bandeja": "O-1239921-1", "conector": "21", "pelo": "21"}]}]}
 ```
+
+### Consultas por cable: `/api/v1/cables/...?cable=`
+
+- **`cable`** va por query string, no en el path: hay nombres reales con espacios y paréntesis
+  (`F-VIN-JDG (a instalar)`). Se admite 1-128 caracteres, sin caracteres de control. Es el nombre
+  exacto sin distinguir mayúsculas, o el `cable_id` (n_id de Cromo). Un texto numérico se prueba
+  primero como `cable_id` y después como nombre, porque hay cables llamados "5" o "530".
+- Sólo cables vigentes. Cabecera común `cable: {cable_id, nombre, capacidad, extremo_a, extremo_b}`.
+- **404** `{"detail": "Cable no encontrado"}`.
+- **409**: hay dos o más cables vigentes con ese nombre (ej. `F-LEM-11-A`). La respuesta trae
+  `{"status": "error", "detail": "...", "candidatos": [cable...]}`; se repite la consulta con el
+  `cable_id` elegido.
+
+**`/servicios`**: un elemento por servicio aunque ocupe varios pelos. Cada uno trae `servicio_id`
+(vigente), `cliente`, `estado_servicio`, `tipo_servicio`, `cantidad_pelos` y `buffers` (los números
+de buffer que ocupa, 1-indexados). Se ordena por primer buffer y después por ID.
+
+**`/pelos`**: `buffer` opcional (≥ 1; el 1 es el primer buffer, como se cuenta en campo). Si ese
+buffer no existe → 404. Cada buffer trae `numero`, `color`, `total_pelos`, `pelos_ocupados` y
+`pelos: [{numero, color, estado: "ocupado"|"libre", servicio_id, cliente, estado_servicio, descripcion}]`.
+`descripcion` es el texto crudo del pelo en Cromo. Sólo se listan buffers y pelos vigentes.
 
 ## Infraestructura
 

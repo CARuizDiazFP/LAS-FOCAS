@@ -1024,7 +1024,7 @@ Clientes máquina-a-máquina de la API v1 (un área corporativa por fila). Los a
 | `client_secret_hash` | `String(255)`, `NOT NULL` | `core/password.py::hash_password` (SHA-256 + bcrypt). El secreto en claro nunca se guarda. |
 | `nombre_area` | `String(128)`, `NOT NULL` | Área dueña de la integración. |
 | `activo` | `BOOLEAN`, `NOT NULL`, default `true` | Se revalida en cada request: `false` corta los tokens vigentes. |
-| `scopes` | `VARCHAR(64)[]`, `NOT NULL`, default `'{}'` | Scopes autorizados. Hoy existe sólo `servicios:botellas:read`. |
+| `scopes` | `VARCHAR(64)[]`, `NOT NULL`, default `'{}'` | Scopes autorizados: `servicios:read` y/o `cables:read`. |
 | `created_at` | `timestamptz`, default `now()` | |
 | `ultimo_uso_at` | `timestamptz`, nullable | Última emisión de token. |
 

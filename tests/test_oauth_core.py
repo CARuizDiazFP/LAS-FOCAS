@@ -20,7 +20,7 @@ def _claims_validos(**extra) -> dict:
         "iss": oauth.ISSUER,
         "aud": oauth.AUDIENCE,
         "sub": "lf_noc",
-        "scope": "servicios:botellas:read",
+        "scope": "servicios:read",
         "iat": int(ahora.timestamp()),
         "exp": int((ahora + timedelta(hours=1)).timestamp()),
     }
@@ -29,13 +29,13 @@ def _claims_validos(**extra) -> dict:
 
 
 def test_emitir_token_se_decodifica_con_claims_esperados() -> None:
-    token, expires_in = oauth.emitir_token("lf_noc", ["servicios:botellas:read"])
+    token, expires_in = oauth.emitir_token("lf_noc", ["servicios:read"])
 
     claims = oauth.decodificar_token(token)
 
     assert expires_in == 7 * 24 * 3600
     assert claims["sub"] == "lf_noc"
-    assert claims["scope"] == "servicios:botellas:read"
+    assert claims["scope"] == "servicios:read"
     assert claims["exp"] - claims["iat"] == 7 * 24 * 3600
     assert claims["iss"] == "las-focas" and claims["aud"] == "las-focas-api-v1"
     assert claims["jti"]
@@ -52,7 +52,7 @@ def test_ttl_configurable_por_entorno(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_token_vencido_se_rechaza() -> None:
     hace_ocho_dias = datetime.now(timezone.utc) - timedelta(days=8)
-    token, _ = oauth.emitir_token("lf_noc", ["servicios:botellas:read"], ahora=hace_ocho_dias)
+    token, _ = oauth.emitir_token("lf_noc", ["servicios:read"], ahora=hace_ocho_dias)
 
     with pytest.raises(oauth.TokenInvalido, match="vencido"):
         oauth.decodificar_token(token)
@@ -104,7 +104,7 @@ def test_claim_obligatorio_faltante_se_rechaza(faltante: str) -> None:
 
 
 def test_scope_no_string_se_rechaza() -> None:
-    token = jwt.encode(_claims_validos(scope=["servicios:botellas:read"]), SECRETO_TEST, algorithm="HS256")
+    token = jwt.encode(_claims_validos(scope=["servicios:read"]), SECRETO_TEST, algorithm="HS256")
 
     with pytest.raises(oauth.TokenInvalido):
         oauth.decodificar_token(token)

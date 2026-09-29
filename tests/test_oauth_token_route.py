@@ -44,7 +44,7 @@ def test_credenciales_por_form_emiten_token(sesion: SesionFalsa) -> None:
     body = r.json()
     assert body["token_type"] == "bearer"
     assert body["expires_in"] == 7 * 24 * 3600
-    assert body["scope"] == "servicios:botellas:read"
+    assert body["scope"] == "servicios:read"
     assert oauth.decodificar_token(body["access_token"])["sub"] == "lf_noc"
     assert r.headers["cache-control"] == "no-store"
     assert r.headers["pragma"] == "no-cache"
@@ -97,15 +97,15 @@ def test_sin_grant_type_400_invalid_request(sesion: SesionFalsa) -> None:
 
 
 def test_scope_no_autorizado_400(sesion: SesionFalsa) -> None:
-    r = client.post(URL, data=_form(scope="servicios:botellas:read admin:todo"))
+    r = client.post(URL, data=_form(scope="servicios:read admin:todo"))
     assert r.status_code == 400
     assert r.json()["error"] == "invalid_scope"
 
 
 def test_scope_pedido_subconjunto_se_respeta(sesion: SesionFalsa) -> None:
-    r = client.post(URL, data=_form(scope="servicios:botellas:read"))
+    r = client.post(URL, data=_form(scope="servicios:read"))
     assert r.status_code == 200
-    assert r.json()["scope"] == "servicios:botellas:read"
+    assert r.json()["scope"] == "servicios:read"
 
 
 def test_dos_metodos_de_autenticacion_a_la_vez_400(sesion: SesionFalsa) -> None:

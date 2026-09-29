@@ -15,7 +15,7 @@ from scripts import api_clients
 def test_crear_guarda_solo_el_hash_y_devuelve_el_secret() -> None:
     session = MagicMock()
 
-    client_id, secreto = api_clients.crear(session, " NOC ", ["servicios:botellas:read"])
+    client_id, secreto = api_clients.crear(session, " NOC ", ["servicios:read"])
 
     cliente = session.add.call_args.args[0]
     assert client_id.startswith("lf_") and len(client_id) == 19
@@ -23,7 +23,7 @@ def test_crear_guarda_solo_el_hash_y_devuelve_el_secret() -> None:
     assert cliente.client_secret_hash != secreto
     assert verify_password(secreto, cliente.client_secret_hash)
     assert cliente.nombre_area == "NOC"
-    assert cliente.scopes == ["servicios:botellas:read"]
+    assert cliente.scopes == ["servicios:read"]
     session.commit.assert_called_once()
 
 
@@ -34,7 +34,7 @@ def test_crear_rechaza_scope_desconocido() -> None:
 
 def test_rotar_secret_invalida_el_anterior() -> None:
     session = MagicMock()
-    _, viejo = api_clients.crear(session, "NOC", ["servicios:botellas:read"])
+    _, viejo = api_clients.crear(session, "NOC", ["servicios:read"])
     cliente = session.add.call_args.args[0]
     session.execute.return_value.scalar_one_or_none.return_value = cliente
 
@@ -65,7 +65,7 @@ def test_main_crear_y_listar_imprimen_sin_filtrar_hashes(monkeypatch: pytest.Mon
     fabrica.return_value.__enter__.return_value = session
     monkeypatch.setattr(db.session, "SessionLocal", fabrica)
 
-    assert api_clients.main(["crear", "--area", "NOC", "--scopes", "servicios:botellas:read"]) == 0
+    assert api_clients.main(["crear", "--area", "NOC", "--scopes", "servicios:read"]) == 0
     salida = capsys.readouterr().out
     cliente = session.add.call_args.args[0]
     assert f"client_id:     {cliente.client_id}" in salida

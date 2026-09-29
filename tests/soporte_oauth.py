@@ -29,7 +29,7 @@ def hacer_cliente(
     *,
     secreto: str = CLIENT_SECRET,
     activo: bool = True,
-    scopes: Iterable[str] = ("servicios:botellas:read",),
+    scopes: Iterable[str] = ("servicios:read",),
 ) -> ApiClient:
     # rounds=4: el costo real (12) hace lentísima la suite sin cambiar lo que se prueba.
     return ApiClient(

@@ -151,6 +151,7 @@ bash scripts/firewall_hardening.sh
   - Algoritmo fijo al validar (rechaza `alg=none` y otros HMAC). `aud`, `iss`, `exp`, `iat` y `sub` son obligatorios.
   - Secreto de firma `oauth_jwt_secret_v1` de al menos 32 bytes; si no, falla cerrado con 503.
   - Token de 7 días, con revocación inmediata: el cliente (`app.api_clients.activo`) y sus scopes se revalidan contra la base en cada request.
+  - Un scope por dominio (`servicios:read`, `cables:read`); uno no habilita el otro.
   - `client_secret` guardado como hash SHA-256 + bcrypt. Si el `client_id` no existe se verifica igual contra un hash señuelo, para que el tiempo de respuesta no permita enumerar clientes.
   - Nunca se loguean el `client_secret`, el header `Authorization` ni el token (hay un test con `caplog` que lo verifica). La respuesta del token endpoint lleva `Cache-Control: no-store`.
   - **Pendiente**: el token endpoint no tiene rate limit propio (hoy lo frena sólo el costo de bcrypt). Si se expone fuera de la red interna, agregarlo antes.

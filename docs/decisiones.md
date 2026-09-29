@@ -2515,7 +2515,7 @@ su propia ventana de mantenimiento.
   usuario); es su propio ticket.
 
 
-## 2026-09-29 — API v1 para integraciones interáreas: OAuth2 M2M propio y botellas de un servicio
+## 2026-09-29 — API v1 para integraciones interáreas: OAuth2 M2M propio y traza de servicios/cables
 
 - **Pedido**: exponer a otras áreas `GET /api/v1/servicios/{servicio_id}/botellas`, protegido por
   OAuth2 `client_credentials` emitido por LAS-FOCAS, y resolviendo si el ID consultado es vigente o
@@ -2552,3 +2552,22 @@ su propia ventana de mantenimiento.
   superficie HTTP que administre credenciales.
 - **Pendiente para prod**: crear `.secrets/oauth_jwt_secret_v1.txt` (≥ 32 bytes, **distinto** del de
   dev), aplicar `20260929_01` y recrear `api`. No desplegado (directiva sólo-dev).
+- **Ampliación del mismo día** (pedido del usuario): se agregan `/servicios/{id}/cables`,
+  `/servicios/{id}/odfs`, `/cables/servicios` y `/cables/pelos`, antes de publicar la guía de
+  integración. Así la guía documenta sólo endpoints que ya funcionan.
+  - **Scopes por dominio** (opción elegida por el usuario): `servicios:read` y `cables:read`, que
+    reemplazan a `servicios:botellas:read`. Ese scope no llegó a desplegarse en ningún lado.
+  - **Cables de la traza**: mismas tres fuentes que las botellas. Se leen de las líneas de tramo,
+    que tienen la misma gramática en los trackings generados y en los legacy (estos llevan la
+    columna dB al final).
+  - **ODF: sólo Cromo** ("Cromo como fuente de la verdad siempre", pedido explícito). Se excluyen
+    los overrides manuales de LAS-FOCAS (0 vigentes en dev).
+  - **Posiciones de ODF**: no se reusa `odf_conectores.conectores_de_odf`, porque resuelve el
+    servicio de cada conector con un `LATERAL` sobre `app.servicios`. Medido: ~500 ms por ODF, y
+    1,6-1,8 s por servicio. Una sola query filtrada por las dos vías de `odfs_por_servicio` da el
+    mismo resultado en ~100 ms (verificado con 93154, 120393 y 34111).
+  - **Cable por query string**, no en el path: 436 de 32.810 cables vigentes tienen espacios o
+    paréntesis en el nombre.
+  - **Nombres de cable numéricos**: se prueban primero como `cable_id` y después como nombre, porque
+    hay cables vigentes llamados "5", "6" y "530". Los comandos de Slack y el resolver de la web no
+    tienen este respaldo: ahí esos cables siguen siendo inalcanzables por nombre.

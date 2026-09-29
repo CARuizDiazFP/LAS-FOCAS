@@ -51,7 +51,11 @@ AUDIENCE = "las-focas-api-v1"
 TTL_DEFAULT_SEGUNDOS = 7 * 24 * 3600
 LARGO_MINIMO_SECRETO = 32
 
-SCOPE_SERVICIOS_BOTELLAS = "servicios:botellas:read"
+# Un scope por dominio (decisión del usuario, 2026-09-29): cada uno habilita todas las consultas
+# de lectura de ese dominio en /api/v1.
+SCOPE_SERVICIOS = "servicios:read"
+SCOPE_CABLES = "cables:read"
+SCOPES_CONOCIDOS = frozenset({SCOPE_SERVICIOS, SCOPE_CABLES})
 
 _BEARER = HTTPBearer(auto_error=False)
 
@@ -180,7 +184,7 @@ def _no_autorizado(descripcion: str) -> HTTPException:
 def require_oauth_token(*scopes_requeridos: str) -> Callable[..., Awaitable[ClienteAutenticado]]:
     """Factory de dependencia: exige un JWT válido con todos los `scopes_requeridos`.
 
-    Uso: `Depends(require_oauth_token(SCOPE_SERVICIOS_BOTELLAS))`.
+    Uso: `Depends(require_oauth_token(SCOPE_SERVICIOS))`.
     """
 
     requeridos = frozenset(scopes_requeridos)

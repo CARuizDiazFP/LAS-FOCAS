@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from api.app import oauth
 from api.app.main import app
-from core.services.servicio_botellas import ResultadoBotellas, ServicioResuelto
+from core.services.servicio_traza import ResultadoTraza, ServicioResuelto
 from db.session import get_async_db
 from tests.soporte_oauth import SesionFalsa, hacer_cliente, override_con, secreto_firma  # noqa: F401
 
@@ -27,7 +27,7 @@ def _servicio(pk: int = 737, servicio_id: str = "120393") -> MagicMock:
     return svc
 
 
-BOTELLAS = ResultadoBotellas(
+BOTELLAS = ResultadoTraza(
     nombres=["Cra San Martin 201 Bot 2 CF", "Botella 1", "Cra Urquiza 649 y TBA Bot 4 VICENTE LOPEZ"],
     orden_fuente="traza_cromo",
 )
@@ -47,7 +47,7 @@ def sesion():
         app.dependency_overrides.pop(get_async_db, None)
 
 
-def _auth(client_id: str = "lf_noc", scopes=("servicios:botellas:read",), **kw) -> dict:
+def _auth(client_id: str = "lf_noc", scopes=("servicios:read",), **kw) -> dict:
     token, _ = oauth.emitir_token(client_id, scopes, **kw)
     return {"Authorization": f"Bearer {token}"}
 
@@ -98,7 +98,7 @@ def test_servicio_sin_botellas_200_con_cero(sesion: SesionFalsa) -> None:
         "120393",
         _auth(),
         resuelto=ServicioResuelto(_servicio(), es_id_vigente=True),
-        botellas=ResultadoBotellas(nombres=[], orden_fuente="sin_datos"),
+        botellas=ResultadoTraza(nombres=[], orden_fuente="sin_datos"),
     )
 
     assert r.status_code == 200
@@ -148,7 +148,7 @@ def test_token_sin_scope_403(sesion: SesionFalsa) -> None:
 def test_scope_quitado_al_cliente_despues_de_emitir_403(sesion: SesionFalsa) -> None:
     """El token dice tener el scope, pero el cliente ya no lo tiene en la base: gana la base."""
 
-    headers = _auth("lf_sin_scope", scopes=("servicios:botellas:read",))
+    headers = _auth("lf_sin_scope", scopes=("servicios:read",))
     r, _, _ = _get("120393", headers, resuelto=ServicioResuelto(_servicio(), True))
 
     assert r.status_code == 403
