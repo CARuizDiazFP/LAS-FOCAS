@@ -146,7 +146,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     Desde 2026-09-19 los modos viven en una tabla de datos (`MODOS_ACOTADOS`) que declara qué fase
     corre cada uno y qué clases cuenta, en vez de una cadena de `if modo == "..."`; `MODOS_INGESTA`
     se deriva de ahí y es lo que valida el endpoint web (antes esa lista estaba duplicada en
-    `web/app/main.py`). Los siete modos:
+    `web/app/main.py`). Los ocho modos:
 
     | Modo | Fase | Objetos | Duración medida |
     |---|---|---:|---:|
@@ -157,6 +157,20 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     | `SOLO_CAJAS_PON` | `fase_cajas_pon` (84/126/127/137/138/139/140) | 13.482 | ~75 min |
     | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~23 min |
     | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~32 min |
+    | `SOLO_CABLES_TERCEROS` | `fase_cables_terceros` (52/59/60) + `fase_servicios` | ~733 | minutos |
+
+    **Cables de terceros (2026-09-29).** 52 = terceros varios (Arsat, Alterplan, Telmex,
+    cooperativas…), 59 = Telefónica, 60 = Telecom; clases confirmadas por el usuario, propietarios
+    medidos en at.25. Van a `cromo_cables` junto a los propios —el portal Infra › Cables los lista sin
+    cambios y se distinguen por la columna Propietario— y, **a diferencia de la 51, con sus tubos y
+    pelos**: los pelos de la 51 llegan por el árbol de su botella, pero un cable de tercero suele ir
+    cámara↔ODF u ODF↔ODF y ningún árbol lo trae. El barrido pide `show=ALL`, que ya embebe el
+    `inner[]`. Dos excepciones deliberadas a las reglas de esta tabla: **sí entra en `COMPLETA`**
+    (justo después de `fase_cables`, por lo barata) y el modo acotado **sí corre `fase_servicios`**
+    (sin matching, los pelos nuevos no quedan vinculados a ningún Servicio y no sirven de semilla de
+    `track`). Tras la primera carga hay que re-procesar las posiciones de ODF de dos pelos
+    (`scripts/cromo_backfill_conectores_odf.py --apply --solo-multipelo`), para que cada una quede en
+    el pelo del cable propio (`resolver_servicio_conectores` prefiere la clase 51).
 
     **Ninguno de los cinco modos de la red de acceso PON entra en `COMPLETA`**, por decisión
     explícita: sumarlos convertiría una corrida de rutina en una de varias horas. El selector

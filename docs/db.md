@@ -616,7 +616,7 @@ Auditoría de una corrida de ingesta completa (Etapa 3, todavía no implementada
 | `id` (PK) | BigInteger | — |
 | `usuario` | String(128) | Quién disparó la corrida. |
 | `estado` | String(32) | `EN_CURSO` \| `OK` \| `OK_CON_ERRORES` \| `FALLIDA` \| `CANCELADA`. Texto libre, no enum: el vocabulario todavía lo termina de fijar la Etapa 3. |
-| `params` | JSONB | Clases, `psize`, `max_paginas` de la corrida, más `modo` cuando difiere de `COMPLETA` (`SOLO_ODF`, `SOLO_SPLITTERS`, `SOLO_PUERTOS_SPLITTER`, `SOLO_CAJAS_PON`, `SOLO_ROSETAS`, `SOLO_CABLES_BAJADA`) o `tipo` en las corridas sintéticas de mantenimiento (`MANUAL_REPOBLAR_CABLES`, `MANUAL_CATCHUP_SERVICIOS`, `MANUAL_NORMALIZAR_CONSISTENCIA`). La UI lo muestra como columna "Alcance" del histórico. |
+| `params` | JSONB | Clases, `psize`, `max_paginas` de la corrida, más `modo` cuando difiere de `COMPLETA` (`SOLO_ODF`, `SOLO_SPLITTERS`, `SOLO_PUERTOS_SPLITTER`, `SOLO_CAJAS_PON`, `SOLO_ROSETAS`, `SOLO_CABLES_BAJADA`, `SOLO_CABLES_TERCEROS`) o `tipo` en las corridas sintéticas de mantenimiento (`MANUAL_REPOBLAR_CABLES`, `MANUAL_CATCHUP_SERVICIOS`, `MANUAL_NORMALIZAR_CONSISTENCIA`). La UI lo muestra como columna "Alcance" del histórico. |
 | `total_objetivo`, `leidas`, `creadas`, `actualizadas`, `sin_cambios`, `errores`, `refs_colgadas` | Integer | Contadores en vivo. |
 | `iniciada_at`, `finalizada_at` | DateTime(tz) | — |
 
@@ -670,6 +670,12 @@ no haber bajado todavía.
 que comparten esquema y parser —medido: publican exactamente los mismos `at`, y tienen `vmax`, `tp`
 con dos extremos e `inner` con 1 tubo y 1 pelo— pero no son lo mismo. Las 32.790 filas existentes se
 backfillearon a 51.
+
+**Cables de terceros (2026-09-29).** Desde el modo `SOLO_CABLES_TERCEROS` (y dentro de `COMPLETA`)
+la tabla aloja también las clases **52** (terceros varios), **59** (Telefónica) y **60** (Telecom),
+~733 cables, con sus tubos y pelos en `cromo_tubos`/`cromo_pelos`. Catálogo en `cromo_clases` con
+`entidad='CABLE'` (migración `20260929_03`). La reconciliación ya filtraba `clase = 51`, así que sus
+extremos (cámaras, ODFs) no aparecen como referencias colgadas.
 
 No es cosmética: **`fase_reconciliacion` marca como referencia colgada todo cable cuyo extremo no sea
 una botella**, y los extremos de un cable de bajada son una caja PON y una roseta. Sin el filtro
@@ -1085,6 +1091,8 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260923_03` | `20260923_03_servicios_sync_prov_nullable.py` | `ALTER COLUMN servicios_sync_prov.ultima_sincronizacion_ok DROP NOT NULL` — fix de revisión de la Task 9: el camino de intento FALLIDO necesita persistir sin una sincronización exitosa previa; `NULL` reemplaza al centinela `1970-01-01` que se usó primero (ver `docs/decisiones.md`) |
 | `20260928_01` | `20260928_01_ingresos_correcciones_origen_web.py` | Columnas `ingresos_correcciones.origen`/`actor_web_usuario`, columnas de Slack nullable + CHECK por origen — auditoría del botón "Registrar egreso" del panel. El `downgrade()` aborta si ya hay filas `origen='web'` (no se descarta auditoría). Upgrade→downgrade→upgrade verificado en dev |
 | `20260929_01` | `20260929_01_api_clients.py` | Tabla `app.api_clients` (clientes OAuth2 `client_credentials` de `/api/v1`, índice único `ix_api_clients_client_id`). Upgrade→downgrade→upgrade verificado en dev |
+| `20260929_02` | `20260929_02_cromo_tracking_cache_pelos_camino.py` | Columna `cromo_tracking_cache.pelos_camino BIGINT[] NULL`: pelos que recorre cada tracking, para que `track` entregue un `.txt` por camino y no uno por posición de ODF. `NULL` = entrada previa, se regenera. Upgrade→downgrade→upgrade verificado en dev |
+| `20260929_03` | `20260929_03_cromo_clases_cables_terceros.py` | Alta en `cromo_clases` de 52/59/60 (cables de terceros, `entidad='CABLE'`), requisito de la FK `cromo_cables.clase`. El `downgrade()` borra esos cables con sus tubos, pelos y matches. Upgrade→downgrade→upgrade verificado en dev |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

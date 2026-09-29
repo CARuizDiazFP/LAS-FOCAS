@@ -144,8 +144,9 @@ def _procesar_ingesta_camaras_en_sesion(
         try:
             try:
                 # `desempatar=False`: un baneo masivo nunca elige entre varias candidatas, ni por
-                # coincidencia exacta (ver `buscar_camara_o_botella_cromo`, 2026-09-28).
-                match = buscar_camara_o_botella_cromo(alias, session, desempatar=False)
+                # coincidencia exacta (ver `buscar_camara_o_botella_cromo`, 2026-09-28), ni con los
+                # reintentos tolerantes de localidad/tipo (2026-09-29).
+                match = buscar_camara_o_botella_cromo(alias, session, desempatar=False, tolerante=False)
                 camara = match.camara
             except AmbiguousSearchError:
                 # Nombre insuficientemente específico o múltiples candidatas: nunca desambiguamos

@@ -8,9 +8,11 @@ Vive en su propio módulo y no en `cable_info.py` (donde están los otros `extra
 no tiene nada que ver con cables: resuelve un Servicio y le genera los trackings. `listener.py` ya
 pasa las 1.400 líneas, así que la orquestación también viene acá en vez de engordarlo más.
 
-El `.txt` **no es uno por Servicio, es uno por pelo**: la selección por defecto son las posiciones
-de ODF del Servicio, que en servicios reales de dev dan entre 1 y 4 archivos (el 67395 da 4). Se
-suben todos al hilo, decisión explícita del usuario (2026-09-28).
+El `.txt` **no es uno por Servicio, es uno por camino distinto**: las semillas son las posiciones
+de ODF del Servicio, y como un hilo tiene posición en cada ODF que atraviesa (extremos e
+intermedias), las que recorren el mismo camino se colapsan en un solo archivo
+(`trackings_por_camino`). El 42351 da 2: sus dos hilos, cada uno con el camino completo, incluidos
+los cables de terceros. Se suben todos al hilo (decisiones del usuario, 2026-09-28 y 2026-09-29).
 """
 
 from __future__ import annotations
@@ -108,11 +110,7 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
     )
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
-    from core.services.cromo.tracking_service import (
-        TrackingNoDisponible,
-        nombre_distinguible,
-        obtener_tracking,
-    )
+    from core.services.cromo.tracking_service import nombre_distinguible, trackings_por_camino
     from db.session import async_engine
 
     # Engine propio con `NullPool` en vez del pool singleton de `db.session`: ese pool queda atado
@@ -140,44 +138,36 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
             semillas = await listar_pelos_semilla(sesion, servicio_pk, priorizar_conector=True)
             elegidos = semillas_por_defecto(semillas)
 
-            archivos: list[TrackingArchivo] = []
-            errores: list[str] = []
             try:
                 async with CromoClient(config=get_cromo_config()) as cliente:
-                    for semilla in elegidos:
-                        try:
-                            tracking = await obtener_tracking(
-                                cliente,
-                                sesion,
-                                servicio_id=servicio_pk,
-                                pelo_n_id=semilla.pelo_n_id,
-                            )
-                        except TrackingNoDisponible as exc:
-                            errores.append(f"Pelo {semilla.pelo_n_id}: {exc.motivo}")
-                            continue
-                        # `distinguir` mira la cantidad de archivos que se van a subir, no el total
-                        # de pelos matcheados como hace el endpoint web: acá lo que importa es que
-                        # los N archivos del hilo no se pisen entre sí.
-                        archivos.append(
-                            TrackingArchivo(
-                                nombre=nombre_distinguible(
-                                    tracking.nombre_archivo,
-                                    tracking.pelo_n_id,
-                                    distinguir=len(elegidos) > 1,
-                                ),
-                                contenido=tracking.contenido,
-                                desde_cache=tracking.desde_cache,
-                                duracion_ms=tracking.duracion_ms,
-                            )
-                        )
+                    por_camino = await trackings_por_camino(
+                        cliente,
+                        sesion,
+                        servicio_id=servicio_pk,
+                        pelos_n_id=[s.pelo_n_id for s in elegidos],
+                    )
             except CromoClientError as exc:
                 # Cromo caído se lleva puesta la corrida entera, no un pelo: se reporta como tal.
                 return ResultadoTrack(
                     estado=ESTADO_ERROR,
-                    archivos=archivos,
                     mensaje=f"Cromo no respondió: {exc}",
-                    errores=errores,
                 )
+
+            errores = por_camino.errores
+            # `distinguir` mira los archivos que efectivamente se suben, ya sin caminos repetidos:
+            # lo que importa es que los N archivos del hilo no se pisen entre sí.
+            distinguir = len(por_camino.trackings) > 1
+            archivos = [
+                TrackingArchivo(
+                    nombre=nombre_distinguible(
+                        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=distinguir
+                    ),
+                    contenido=tracking.contenido,
+                    desde_cache=tracking.desde_cache,
+                    duracion_ms=tracking.duracion_ms,
+                )
+                for tracking in por_camino.trackings
+            ]
 
             if not archivos:
                 return ResultadoTrack(

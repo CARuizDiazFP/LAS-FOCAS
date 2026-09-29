@@ -139,6 +139,12 @@ export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
     hint: '19.030 cables de bajada. Van a la misma tabla que los de FO, distinguidos por clase. ~32 min.',
     usaClasesBotella: false,
   },
+  {
+    valor: 'SOLO_CABLES_TERCEROS',
+    etiqueta: 'Sólo cables de terceros (clases 52, 59, 60)',
+    hint: '~733 cables de terceros (52 varios, 59 Telefónica, 60 Telecom) con sus tubos y pelos, y después el matching de servicios. También corren dentro de la Completa. Pocos minutos.',
+    usaClasesBotella: false,
+  },
 ];
 
 export const CROMO_MODOS_INGESTA = CROMO_MODOS_INGESTA_INFO.map((m) => m.valor);

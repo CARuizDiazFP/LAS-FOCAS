@@ -47,6 +47,8 @@ _CLASES_FALLBACK: dict[int, str] = {
     2: "CAMARA",
     51: "CABLE",
     52: "CABLE",
+    59: "CABLE",  # tercero Telefónica
+    60: "CABLE",  # tercero Telecom
     68: "BOTELLA",
     69: "ODF",
     121: "BOTELLA",
@@ -100,10 +102,10 @@ _CLASE_PUERTO_SPLITTER = 134
 _CLASE_NODO = 86
 _CLASE_FUSION_ODF = 141
 
-_CLASES_CABLE = frozenset({51, 52})
+_CLASES_CABLE = frozenset({51, 52, 59, 60})
 # Alias público: la reingesta dirigida necesita el mismo criterio de "qué es un cable".
-# La 52 es cable de un tercero (ej. Arsat): no la barre la ingesta, pero es un cable real
-# del camino y sus pelos son tan legítimos como los de un cable propio.
+# 52, 59 y 60 son cables de terceros (varios / Telefónica / Telecom). Desde 2026-09-29 los barre
+# `ingesta.fase_cables_terceros`, con sus pelos: son cables reales del camino.
 CLASES_CABLE = _CLASES_CABLE
 _CLASE_TUBO = 129
 _CLASE_PELO = 130

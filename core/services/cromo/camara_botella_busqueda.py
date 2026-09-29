@@ -285,7 +285,7 @@ def _buscar_por_id_cromo(nombre_raw: str, session: Session) -> "CromoBotella | N
 
 
 def buscar_camara_o_botella_cromo(
-    nombre_raw: str, session: Session, *, desempatar: bool = True
+    nombre_raw: str, session: Session, *, desempatar: bool = True, tolerante: bool = True
 ) -> ResultadoBusquedaExtendida:
     """Punto de entrada de la búsqueda extendida (ver `_buscar_extendida` para la cascada).
 
@@ -302,6 +302,11 @@ def buscar_camara_o_botella_cromo(
     cargada dos veces): para callers que nunca deben elegir a ciegas, como el baneo masivo desde
     Excel (`camara_ingest_service`). El resto de las mejoras sigue activo — resuelven matches
     únicos, no eligen entre varios.
+
+    4. (2026-09-29) Si sigue sin match, `_resultado_tolerante`: sin la localidad final y/o sin el
+       tipo inicial ("Cra" escrito para un "Poste"). `tolerante=False` lo apaga: el baneo masivo
+       desde Excel busca nombres del inventario y banear una cámara por un texto "parecido" es peor
+       que dejarlo sin match.
     """
     botella_id = _buscar_por_id_cromo(nombre_raw, session)
     if botella_id is not None:
@@ -327,7 +332,73 @@ def buscar_camara_o_botella_cromo(
         alternativo = _resultado_variante(variante, session, desempatar)
         if alternativo is not None:
             return alternativo
+    if resultado.camara is None and tolerante:
+        alternativo = _resultado_tolerante(nombre, session, desempatar)
+        if alternativo is not None:
+            return alternativo
     return resultado
+
+
+# Tipo de elemento al inicio del texto que el técnico a veces escribe distinto del inventario: "Cra
+# colectora oeste panamericana 31.500" para el "Poste Colectora Oeste Panamericana Km. 31.500".
+# Sólo tipos de Cámara — nunca "Bot"/"Tza": una botella no es intercambiable con su cámara.
+_RE_TIPO_CAMARA = re.compile(r"(?i)^\s*(?:cra|c[aá]mara|poste)\b\.?\s*")
+
+
+def _resultado_tolerante(
+    nombre: str, session: Session, desempatar: bool
+) -> ResultadoBusquedaExtendida | None:
+    """Reintentos para un texto SIN MATCH (nunca para uno ambiguo), en este orden (2026-09-29, casos
+    #204/#205 de prod):
+
+    1. Sin la localidad final ("… 31.500 EL TALAR" → "… 31.500", ver `localidades_catalogo`).
+    2. Sin el tipo inicial ("Cra"/"Cámara"/"Poste"), con y sin localidad. Sólo si queda un número
+       (altura/km) y la cámara encontrada es también de tipo Cámara ("Cra …"/"Poste …"/"Cámara …"),
+       resuelta por su nombre y no por una Botella de Cromo: el tipo sólo es intercambiable entre
+       cámaras.
+
+    Cada reintento cuenta sólo con un match único (`_resultado_variante`) cuyos números sean
+    exactamente los del texto (`_numeros_coinciden`); si ninguno resuelve, el caller devuelve el
+    resultado original.
+    """
+    from core.services.localidades_catalogo import localidades, quitar_localidad_final
+
+    sin_localidad = quitar_localidad_final(nombre, localidades(session))
+    if sin_localidad != nombre:
+        alternativo = _resultado_variante(sin_localidad, session, desempatar)
+        if alternativo is not None and _numeros_coinciden(sin_localidad, alternativo):
+            return alternativo
+
+    if not _RE_TIPO_CAMARA.match(nombre):
+        return None
+    for texto in dict.fromkeys((nombre, sin_localidad)):
+        sin_tipo = _RE_TIPO_CAMARA.sub("", texto, count=1).strip()
+        if not re.search(r"\d", sin_tipo):
+            continue
+        alternativo = _resultado_variante(sin_tipo, session, desempatar)
+        if (
+            alternativo is not None
+            and alternativo.fuente == "camara"
+            and _RE_TIPO_CAMARA.match(alternativo.camara.nombre or "")
+            and _numeros_coinciden(sin_tipo, alternativo)
+        ):
+            return alternativo
+    return None
+
+
+_RE_NUMERO_COMPLETO = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _numeros_coinciden(texto: str, resultado: ResultadoBusquedaExtendida) -> bool:
+    """Cada número del texto, ENTERO y con sus decimales, está en el nombre encontrado.
+
+    El filtro de números de la cascada acepta "63" dentro de "63.9" y "9" como el decimal de "63.9"
+    — suficiente cuando el texto es el nombre completo, pero no para un reintento que ya le sacó
+    palabras al texto: el arnés de transiciones (2026-09-29) encontró "Poste Ruta 9 Km 63 CAMPANA"
+    resolviendo, sin la localidad, a "Poste Ruta 8 Km 63.9 y Cosme FATIMA"."""
+    nombre = resultado.botella.nombre if resultado.botella is not None else resultado.camara.nombre
+    del_nombre = set(_RE_NUMERO_COMPLETO.findall(nombre or ""))
+    return set(_RE_NUMERO_COMPLETO.findall(texto)) <= del_nombre
 
 
 def _resultado_variante(

@@ -589,6 +589,49 @@ def test_parse_odf_conectores_lee_pelo_n_id_de_tp_id_to():
     assert conectores[8539346].pelo_n_id is None
 
 
+def test_parse_odf_conectores_guarda_todos_los_pelos_de_tp_como_candidatos():
+    """Un conector une DOS pelos, uno de cada cable que llega a la posición. Caso real: ODF TASA
+    (6644198) conector 2, `tp` = [7968239 (F-CRZ-FB, cable de tercero clase 59, no ingerido),
+    6976963 (F-MDO-ILC, cable propio)]. Quedarse sólo con `tp[0]` perdía el pelo del Servicio
+    42351 — `track 42351` daba 1 `.txt` en vez de 2."""
+    conector = {
+        "id": 8595049, "n_id": 8595049, "class": 136, "name": "2", "parent": 8539330, "at": [],
+        "tp": [
+            {"type": 0, "id_to": 7968239, "class": 130},
+            {"type": 0, "id_to": 6976963, "class": 130},
+        ],
+    }
+    obj = {"id": 1, "n_id": 6644198, "class": 69, "at": [], "inner": [_BANDEJA_1, conector]}
+
+    c = parse_odf_conectores(obj)[0]
+
+    assert c.pelos_candidatos == [7968239, 6976963]
+    # Parser puro, sin I/O: el principal sigue siendo el primero hasta que la ingesta sepa cuál
+    # de los dos es un pelo ingerido.
+    assert c.pelo_n_id == 7968239
+
+
+def test_parse_odf_conectores_candidatos_solo_de_clase_pelo():
+    """`tp` también trae otras clases (136 conector-conector, 141 fusión de ODF): no son pelos.
+    Si no hay ningún 130 se conserva el comportamiento histórico (`tp[0]`)."""
+    mixto = {
+        "id": 10, "n_id": 10, "class": 136, "name": "3", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 6703087, "class": 130}, {"id_to": 8479280, "class": 136}],
+    }
+    solo_fusion_odf = {
+        "id": 11, "n_id": 11, "class": 136, "name": "4", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 8882734, "class": 141}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, mixto, solo_fusion_odf]}
+
+    conectores = {c.n_id: c for c in parse_odf_conectores(obj)}
+
+    assert conectores[10].pelos_candidatos == [6703087]
+    assert conectores[10].pelo_n_id == 6703087
+    assert conectores[11].pelos_candidatos == []
+    assert conectores[11].pelo_n_id == 8882734
+
+
 def test_parse_odf_conectores_lee_atributo_servicio_id_62_solo_si_esta_en_uso():
     en_uso = {
         "id": 8539345, "n_id": 8539345, "class": 136, "name": "15", "parent": 8539330,

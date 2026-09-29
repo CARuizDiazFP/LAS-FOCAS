@@ -63,6 +63,10 @@ CLASE_PUERTO_SPLITTER = 134
 CLASE_ROSETA = 85
 CLASE_CABLE_BAJADA = 66
 CLASES_CAJA_PON: tuple[int, ...] = (84, 126, 127, 137, 138, 139, 140)
+# Cables de terceros (2026-09-29, clases confirmadas por el usuario): 52 = terceros varios (Arsat,
+# Alterplan, Telmex, cooperativas…), 59 = Telefónica, 60 = Telecom. Misma tabla y mismos `at` que
+# la 51; el propietario viaja en at.25 como en cualquier cable.
+CLASES_CABLE_TERCEROS: tuple[int, ...] = (52, 59, 60)
 # Clases con colección propia contable vía stats[].count (fase de conteo).
 CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
 
@@ -537,6 +541,104 @@ async def fase_cables(
     )
 
 
+async def _procesar_cable_tercero_directo(
+    sesion: AsyncSession,
+    corrida_id: int,
+    obj: dict[str, Any],
+    contadores: ContadoresCorrida,
+    *,
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """Procesa un cable de tercero (52/59/60) con sus tubos y pelos, en un savepoint propio.
+
+    La diferencia con `_procesar_cable_directo` es deliberada: los pelos de la clase 51 llegan por
+    el árbol de su botella, pero un cable de tercero suele ir cámara↔ODF u ODF↔ODF (F-TECO-DC1,
+    F-CRZ-FB) y ningún árbol de botella lo trae. Si esta fase no guarda sus pelos, no los guarda
+    nadie — y sin pelos una posición de ODF sobre ese cable no es semilla de `track`.
+
+    El barrido pide `show=ALL`, que ya trae el `inner[]` con tubos y pelos (at.61 incluido): no hace
+    falta una llamada por cable.
+    """
+    alias_por_origen = alias_por_origen or {}
+    try:
+        async with sesion.begin_nested():
+            cable = cromo_parser.parse_cable(obj)
+            cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
+            cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
+            accion = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
+            tubos, pelos, errores = cromo_parser.extraer_tubos_y_pelos(obj)
+            for tubo in tubos:
+                await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
+            for pelo in pelos:
+                await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
+            contadores.leidas += 1
+            contadores.contar(accion)
+            await registrar_evento(sesion, corrida_id, cable.n_id, cable.clase, accion)
+            for error in errores:
+                logger.warning(
+                    "action=cromo_ingesta evento=inner_cable_tercero_inesperado cable=%s n_id=%s clase=%s motivo=%s",
+                    cable.n_id,
+                    error.n_id,
+                    error.clase,
+                    error.motivo,
+                )
+    except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
+        contadores.errores += 1
+        n_id = obj.get("n_id") or obj.get("id")
+        logger.error("action=cromo_ingesta evento=error_cable_tercero n_id=%s error=%s", n_id, exc)
+        await registrar_evento(sesion, corrida_id, n_id, obj.get("class"), "ERROR", str(exc))
+
+
+async def fase_cables_terceros(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    psize: int,
+    max_paginas: Optional[int],
+    alias_por_origen: Optional[dict[int, AliasBotella]] = None,
+) -> None:
+    """FASE · CABLES DE TERCEROS: barrido de las clases 52, 59 y 60, con tubos y pelos (2026-09-29).
+
+    Son ~733 objetos (695 + 7 + 31, `stats[].count` del 2026-09-29): corre también dentro de
+    `COMPLETA`, justo después de `fase_cables`, porque cuesta menos de lo que tarda una página de
+    botellas y así los pelos de terceros se refrescan con la corrida de rutina.
+    """
+    await _barrer_coleccion(
+        cliente,
+        sesion,
+        corrida,
+        contadores,
+        fase="CABLES_TERCEROS",
+        descripcion="Barrido de cables de terceros (filter=52,59,60)",
+        filtro=",".join(str(c) for c in CLASES_CABLE_TERCEROS),
+        show=["ALL"],
+        psize=psize,
+        max_paginas=max_paginas,
+        procesar=lambda obj: _procesar_cable_tercero_directo(
+            sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
+        ),
+    )
+
+
+async def _modo_solo_cables_terceros(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    **kwargs: Any,
+) -> None:
+    """`SOLO_CABLES_TERCEROS`: el barrido y después el matching de servicios.
+
+    Es la única excepción al contrato "un modo acotado corre sólo su fase", y es deliberada: los
+    pelos de terceros son nuevos, y sin `fase_servicios` no quedan vinculados a ningún Servicio.
+    `fase_servicios` sólo mira pelos todavía sin match, así que no reprocesa el resto.
+    """
+    await fase_cables_terceros(cliente, sesion, corrida, contadores, **kwargs)
+    await fase_servicios(sesion, corrida, contadores)
+
+
 async def _procesar_fusion_directa(
     sesion: AsyncSession,
     corrida_id: int,
@@ -882,8 +984,15 @@ async def fase_rosetas(
     )
 
 
+# La clase del cable del pelo decide entre los dos pelos de una posición de ODF: ver
+# `resolver_servicio_conectores`. LEFT JOIN: un pelo con cable colgado igual cuenta como ingerido.
 _SQL_SERVICIO_NUMERO_PELOS = text(
-    "SELECT n_id, servicio_numero FROM app.cromo_pelos WHERE n_id = ANY(:pelo_n_ids)"
+    """
+    SELECT p.n_id, p.servicio_numero, cab.clase
+    FROM app.cromo_pelos p
+    LEFT JOIN app.cromo_cables cab ON cab.n_id = p.cable_n_id
+    WHERE p.n_id = ANY(:pelo_n_ids)
+    """
 )
 
 
@@ -906,14 +1015,32 @@ async def resolver_servicio_conectores(sesion: AsyncSession, conectores: list[Co
     conector con atributo id=62="41140" mientras el pelo ya matchea por regex a "61943" (el número
     vigente real tras una renumeración SLA posterior al alta del atributo en Cromo). El mayor
     de los dos gana como `servicio_resuelto`; el menor queda como `servicio_id_historico" sólo si
-    difieren. Una sola query batched para todos los conectores de la ODF (no una por conector)."""
-    pelo_n_ids = [c.pelo_n_id for c in conectores if c.pelo_n_id is not None]
+    difieren. Una sola query batched para todos los conectores de la ODF (no una por conector).
+
+    La misma query elige también el `pelo_n_id` del conector: una posición une dos pelos
+    (`pelos_candidatos`), uno de cada cable que llega a ella, y el primero de `tp[]` puede ser de un
+    cable de tercero (52/59/60). Orden de preferencia: el pelo ingerido de un cable propio (51),
+    después cualquier ingerido, y si ninguno lo está, el que ya traía. Caso real: ODF TASA conector 2
+    del Servicio 42351 (2026-09-29) — con los terceros ingeridos existen los dos pelos, y la
+    posición del Servicio es la del cable propio."""
+    pelo_n_ids = sorted(
+        {c.pelo_n_id for c in conectores if c.pelo_n_id is not None}
+        | {p for c in conectores for p in c.pelos_candidatos}
+    )
     servicio_numero_por_pelo: dict[int, Optional[str]] = {}
+    clase_cable_por_pelo: dict[int, Optional[int]] = {}
     if pelo_n_ids:
         filas = (await sesion.execute(_SQL_SERVICIO_NUMERO_PELOS, {"pelo_n_ids": pelo_n_ids})).all()
-        servicio_numero_por_pelo = {n_id: numero for n_id, numero in filas}
+        for n_id, numero, clase_cable in filas:
+            servicio_numero_por_pelo[n_id] = numero
+            clase_cable_por_pelo[n_id] = clase_cable
 
     for conector in conectores:
+        ingeridos = [p for p in conector.pelos_candidatos if p in servicio_numero_por_pelo]
+        propio = next((p for p in ingeridos if clase_cable_por_pelo.get(p) == CLASE_CABLE), None)
+        elegido = propio if propio is not None else (ingeridos[0] if ingeridos else None)
+        if elegido is not None:
+            conector.pelo_n_id = elegido
         numero_regex = (
             servicio_numero_por_pelo.get(conector.pelo_n_id) if conector.pelo_n_id is not None else None
         )
@@ -1595,6 +1722,9 @@ MODOS_ACOTADOS: dict[str, _ModoAcotado] = {
     "SOLO_CABLES_BAJADA": _ModoAcotado(
         (CLASE_CABLE_BAJADA,), lambda *a, **k: fase_cables_bajada(*a, **k)
     ),
+    "SOLO_CABLES_TERCEROS": _ModoAcotado(
+        CLASES_CABLE_TERCEROS, lambda *a, **k: _modo_solo_cables_terceros(*a, **k)
+    ),
 }
 
 MODO_COMPLETA = "COMPLETA"
@@ -1677,7 +1807,7 @@ async def continuar_corrida(
         clases_a_contar = (
             acotado.clases_objetivo
             if acotado is not None
-            else (*clases_final, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
+            else (*clases_final, CLASE_CABLE, *CLASES_CABLE_TERCEROS, CLASE_FUSION, CLASE_ODF)
         )
         # `sesion` habilita el fallback del catálogo, que es lo único que da un total para las
         # clases 133 y 134: su `stats[].count` devuelve 0 aunque la colección pagine perfecto.
@@ -1712,6 +1842,9 @@ async def continuar_corrida(
             )
         else:
             await fase_cables(
+                cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
+            )
+            await fase_cables_terceros(
                 cliente, sesion, corrida, contadores, psize=psize, max_paginas=max_paginas, alias_por_origen=alias_por_origen
             )
             await fase_botellas(

@@ -172,10 +172,10 @@ async def _normalizar_pelo(
         raise ValueError(f"El pelo {elemento_id} no declara cable padre en Cromo.")
 
     cable_obj = await id_dual_resolver.fetch_objeto(cliente, cable_id_version)
-    # Se acepta también la clase 52 (cable de un tercero, ej. Arsat): la ingesta no la barre, pero
-    # es un cable real del camino y sus pelos son tan legítimos como los de un cable propio.
-    # `cromo_cables` no tiene columna de clase, así que guardarlo no rompe ninguna FK de catálogo.
-    # Caso real que lo destapó: el pelo 7967645 del servicio 93154 cuelga de un cable clase 52.
+    # Se aceptan también los cables de terceros (52, 59, 60): son cables reales del camino y sus
+    # pelos son tan legítimos como los de un cable propio. `cromo_cables.clase` tiene FK a
+    # `cromo_clases` desde 2026-09-19; las tres clases están en el catálogo desde la migración
+    # 20260929_03. Caso real que lo destapó: el pelo 7967645 del servicio 93154 (cable clase 52).
     if cable_obj.get("class") not in CLASES_CABLE:
         raise ValueError(
             f"El padre del pelo {elemento_id} no es un cable (clase {cable_obj.get('class')})."
@@ -191,7 +191,7 @@ async def _normalizar_pelo(
     if await sesion.get(CromoCable, cable.n_id) is None:
         await ingesta.upsert_versionado(sesion, CromoCable, cable, ingesta.CABLE_CAMPOS)
         await ingesta.registrar_evento(
-            sesion, corrida_id, cable.n_id, ingesta.CLASE_CABLE, "CREADA"
+            sesion, corrida_id, cable.n_id, cable.clase or ingesta.CLASE_CABLE, "CREADA"
         )
 
     existia = await sesion.get(CromoPelo, elemento_id) is not None

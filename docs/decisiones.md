@@ -2571,3 +2571,79 @@ su propia ventana de mantenimiento.
   - **Nombres de cable numéricos**: se prueban primero como `cable_id` y después como nombre, porque
     hay cables vigentes llamados "5", "6" y "530". Los comandos de Slack y el resolver de la web no
     tienen este respaldo: ahí esos cables siguen siendo inalcanzables por nombre.
+
+## 2026-09-29 (cont.) — `track <id>`: posición de ODF con dos pelos y un `.txt` por camino
+
+- **Reclamo**: `@Registrador track 42351` (dev) devolvía 1 `.txt` y el Servicio tiene 2 pelos.
+- **Causa raíz** (verificada contra DB de dev y Cromo real): una posición de patchera (clase 136)
+  une **dos** pelos en `tp[]`, uno de cada cable que llega a ella. `parser.parse_odf_conectores`
+  guardaba siempre `tp[0]`. En la ODF TASA (6644198), conector 2, ese primero es 7968239, del cable
+  F-CRZ-FB (clase 59, **cable de tercero Telefónica**), que no se ingiere; el pelo del Servicio,
+  6976963 (F-MDO-ILC, propio), quedó sin posición de ODF y nunca fue semilla. Clases confirmadas
+  por el usuario: **59 = cable de tercero Telefónica, 60 = cable de tercero Telecom**.
+- **Fix 1 — elegir el pelo ingerido**: el parser guarda todos los pelos de `tp[]` en
+  `ConectorOdf.pelos_candidatos` (no se persiste), y `ingesta.resolver_servicio_conectores` fija
+  `pelo_n_id` al primer candidato que está en `cromo_pelos`, en la misma query que ya hacía. Sin
+  ningún ingerido conserva el primero. Remediación en dev:
+  `scripts/cromo_backfill_conectores_odf.py --apply --solo-multipelo` (flag nuevo): 23 ODFs, 67
+  conectores con dos pelos, los vinculados a un pelo ingerido pasaron de 14 a 36.
+- **Fix 2 — un `.txt` por camino** (opción elegida por el usuario: "sólo 2 `.txt` con el camino
+  completo, incluido el paso por cables de terceros u ODF intermedias"). Un hilo tiene posición en
+  cada ODF del recorrido, así que cada posición es una semilla del mismo camino.
+  `tracking_service.trackings_por_camino` descarta la semilla ya recorrida por un camino anterior,
+  sin ir a Cromo; el caché guarda `pelos_camino` (migración `20260929_02`, `BIGINT[] NULL`).
+- **Descartado: ingerir las clases 59/60**. El `.txt` sale del `/path` de Cromo y ya trae esos
+  cables con nombre y metraje (verificado: F-TECO-DC1 187 m). No hacía falta para este reclamo.
+- **Verificado real** (código del worktree dentro de `lasfocasdev-web`): `generar_trackings(567)`
+  → 2 archivos, 6976963 (hilo "g", 157 pelos, pasa por TECO pelo 1) y 6976965 (hilo "gd", 165
+  pelos, TECO pelo 2); ~59 s en frío, 1,4 s desde caché.
+- **Pendiente, no tocado**: (a) el archivo se llama "2351 CROMO…" porque el primer atributo 62 del
+  pelo en Cromo es `2351` (dato de Cromo, visible en la ficha del pelo; `nombre_archivo_tracking`
+  toma el primero). (b) La preselección del Detalle de Servicio (`/camino-optico/pelos`) sigue siendo
+  una por posición: deduplicarla exige conocer los caminos. (c) En prod faltan la migración y el
+  backfill `--solo-multipelo`, y `track` no funciona ahí hasta sumar `app_mentions:read`.
+
+## 2026-09-29 (cont.) — Ingesta de cables de terceros (52, 59, 60) con sus pelos
+
+- **Pedido**: cargar los cables de terceros para que convivan en Infra › Cables con los propios,
+  distinguidos por Propietario. Clases confirmadas por el usuario: **59 = Telefónica, 60 = Telecom**.
+  La **52** se incluye como "terceros varios": medido en at.25, Alterplan, Arsat, Cycsa, Telmex,
+  cooperativas y 332 sin propietario (de 695).
+- **Con tubos y pelos, a diferencia de la 51**: los pelos propios llegan por el árbol de su botella;
+  los de terceros van cámara↔ODF u ODF↔ODF (F-TECO-DC1, F-CRZ-FB) y ningún árbol los trae. Sin pelos
+  no hay posición de ODF que sirva de semilla a `track` ni matching de servicio. El barrido con
+  `show=ALL` ya embebe el `inner[]` (verificado contra Cromo), sin una llamada por cable.
+- **Dos excepciones deliberadas a la tabla de modos**: `fase_cables_terceros` **entra en
+  `COMPLETA`** (~733 objetos, más barata que una página de botellas, y así se refresca con la corrida
+  de rutina), y `SOLO_CABLES_TERCEROS` **corre también `fase_servicios`**.
+- **Catálogo**: `cromo_clases` no tenía 52/59/60 y la FK de `cromo_cables.clase` habría rechazado
+  cada cable (también la reingesta dirigida de un cable 52, cuyo comentario decía que la tabla "no
+  tiene columna de clase" — desactualizado desde el 2026-09-19). `entidad='CABLE'`, lo que ya
+  esperaban el camino óptico y la vinculación local. `CLASES_CABLE` del camino óptico suma 59 y 60.
+- **Posición de ODF**: con los terceros ingeridos existen los dos pelos de una posición; ahora
+  `resolver_servicio_conectores` prefiere el del cable propio (51) y después cualquier ingerido.
+  Caso TASA conector 2 (42351): sin esto volvía a quedar el pelo de F-CRZ-FB.
+- **Carga en dev pedida por el usuario junto con** los modos existentes de cables de bajada, rosetas y
+  cajas PON, que no habían corrido completos nunca.
+
+
+## 2026-09-29 (cont.) — Búsqueda de cámaras: reintento sin localidad final y sin tipo inicial
+
+- **Contexto**: casos #204/#205 de `app.ingresos_sin_match` de prod ("Poste colectora oeste
+  panamericana km 31.500 EL TALAR" y "Cra colectora …", inventario "Poste Colectora Oeste
+  Panamericana Km. 31.500"). La cascada exige todos los tokens y la localidad agregada lo impide.
+- **Decisión**: `buscar_camara_o_botella_cromo` reintenta **sólo si no hubo match** (nunca si fue
+  ambiguo): sin la localidad final (`core/services/localidades_catalogo.py`, catálogo de
+  `cromo_botellas.localidad` + CF/CABA, y sólo si la localidad sigue a un número) y sin el tipo
+  inicial `Cra`/`Cámara`/`Poste`. Cada reintento gana sólo con un match único cuyos números estén
+  **enteros** en el nombre, y el de tipo sólo si el resultado es otra Cámara por nombre (nunca una
+  Botella: no es intercambiable con su cámara).
+- **Excel fuera**: el baneo masivo pasa `tolerante=False`; banear por un texto "parecido" es peor
+  que dejarlo sin match.
+- **Criterio medido** (dos arneses read-only contra dev, código base vs rama): 0 incorrectas nuevas
+  reales. Las 23 transiciones "a otra cámara" del arnés son duplicados del inventario que la base
+  ya resolvía igual con el nombre original, o entradas sintéticas que nombran literalmente otro
+  elemento (detalle en `docs/relevamiento_ingresos_sin_match_2026-09-28.md`). El arnés encontró un
+  caso real ("Ruta 9 Km 63" → "Ruta 8 Km 63.9") que motivó la regla de números enteros.
+- **Altura distinta sigue sin match** (confirmado por el usuario, caso #207 "Cra coronel diaz
+  1847" contra "Cra Coronel Diaz 1846"): se valida a mano, nunca por aproximación.

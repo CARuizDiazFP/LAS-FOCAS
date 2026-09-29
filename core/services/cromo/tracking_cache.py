@@ -86,6 +86,8 @@ class TrackingCacheado:
     contenido: str
     generado_at: datetime
     duracion_ms: Optional[int]
+    # `None` = entrada anterior a la columna `pelos_camino`: no sabe qué pelos recorre.
+    pelos_camino: Optional[list[int]] = None
 
 
 async def leer(sesion: AsyncSession, pelo_n_id: int, *, ahora: Optional[datetime] = None) -> Optional[TrackingCacheado]:
@@ -108,6 +110,7 @@ async def leer(sesion: AsyncSession, pelo_n_id: int, *, ahora: Optional[datetime
         contenido=fila.contenido,
         generado_at=fila.generado_at,
         duracion_ms=fila.duracion_ms,
+        pelos_camino=list(fila.pelos_camino) if fila.pelos_camino is not None else None,
     )
 
 
@@ -145,6 +148,7 @@ async def guardar(
     nombre_archivo: str,
     contenido: str,
     duracion_ms: Optional[int] = None,
+    pelos_camino: Optional[list[int]] = None,
     ahora: Optional[datetime] = None,
 ) -> None:
     """Escribe (o pisa) la entrada del pelo y purga las vencidas en el mismo paso.
@@ -160,6 +164,7 @@ async def guardar(
         nombre_archivo=nombre_archivo,
         contenido=contenido,
         duracion_ms=duracion_ms,
+        pelos_camino=pelos_camino,
         generado_at=ahora,
     )
     await sesion.execute(
@@ -170,6 +175,7 @@ async def guardar(
                 "nombre_archivo": sentencia.excluded.nombre_archivo,
                 "contenido": sentencia.excluded.contenido,
                 "duracion_ms": sentencia.excluded.duracion_ms,
+                "pelos_camino": sentencia.excluded.pelos_camino,
                 "generado_at": sentencia.excluded.generado_at,
             },
         )

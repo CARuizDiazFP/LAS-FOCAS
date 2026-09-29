@@ -23,9 +23,15 @@ from db.models.cromo import (
     CromoIngestaEvento,
     CromoOdf,
     CromoOdfConector,
+    CromoPelo,
+    CromoTubo,
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "cromo"
+
+
+async def _fase_noop(*_args, **_kwargs) -> None:
+    """Fase que no hace nada, para los tests de orquestación que no la ejercitan."""
 
 
 class _NestedCM:
@@ -352,6 +358,7 @@ async def test_ejecutar_ingesta_cierra_ok_sin_errores(monkeypatch):
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_odfs", _noop)
@@ -379,6 +386,7 @@ async def test_ejecutar_ingesta_marca_ok_con_errores_si_hubo_errores(monkeypatch
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _fase_botellas_con_error)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_odfs", _noop)
@@ -402,6 +410,7 @@ async def test_ejecutar_ingesta_marca_fallida_en_excepcion_inesperada(monkeypatc
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _fase_cables_rompe)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
 
     corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
 
@@ -568,7 +577,7 @@ async def test_procesar_botella_completa_con_fixture_real():
     assert contadores.errores == 0
     assert contadores.creadas >= 1  # la botella misma
     tipos_agregados = {type(o) for o in sesion.agregados}
-    from db.models.cromo import CromoFusion, CromoPelo, CromoTubo
+    from db.models.cromo import CromoFusion  # noqa: F401 - CromoPelo/CromoTubo ya importados arriba
 
     assert CromoBotella in tipos_agregados
     assert CromoCable in tipos_agregados
@@ -1212,7 +1221,7 @@ async def test_procesar_odf_directo_guarda_conectores_via_get_inner_completo():
         ]
     }
     cliente = _ClienteGetInnerFake(respuesta=inner_completo)
-    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943")]})
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943", 51)]})
     contadores = ingesta.ContadoresCorrida()
 
     await ingesta._procesar_odf_directo(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
@@ -1295,7 +1304,7 @@ async def test_resolver_servicio_conectores_ambos_presentes_y_distintos():
         n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
         numero_conector="15", pelo_n_id=6777271, servicio_numero_atributo="41140",
     )
-    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943")]})
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777271, "61943", 51)]})
 
     await ingesta.resolver_servicio_conectores(sesion, [conector])
 
@@ -1309,7 +1318,7 @@ async def test_resolver_servicio_conectores_ambos_presentes_y_coinciden_sin_hist
         n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
         numero_conector="5", pelo_n_id=6777260, servicio_numero_atributo="38105",
     )
-    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777260, "38105")]})
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777260, "38105", 51)]})
 
     await ingesta.resolver_servicio_conectores(sesion, [conector])
 
@@ -1337,12 +1346,47 @@ async def test_resolver_servicio_conectores_libre_sin_ninguna_senal():
         n_id=1, odf_n_id=800010, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
         numero_conector="14", pelo_n_id=6777270, servicio_numero_atributo=None,
     )
-    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777270, None)]})
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6777270, None, 51)]})
 
     await ingesta.resolver_servicio_conectores(sesion, [conector])
 
     assert conector.servicio_resuelto is None
     assert conector.servicio_id_historico is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_elige_el_pelo_ingerido_entre_los_candidatos():
+    """Caso real TASA conector 2: el primer pelo de `tp` es de un cable de tercero (clase 59) que
+    no está en `cromo_pelos`; el segundo es el del cable propio. El conector tiene que quedar
+    vinculado al que existe, o el Servicio pierde esa posición de ODF."""
+    conector = ConectorOdf(
+        n_id=8595049, odf_n_id=6644198, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="2", pelo_n_id=7968239, servicio_numero_atributo="42351",
+        pelos_candidatos=[7968239, 6976963],
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6976963, "42351", 51)]})
+
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.pelo_n_id == 6976963
+    assert conector.servicio_resuelto == "42351"
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_ningun_candidato_ingerido_conserva_el_primero():
+    """Si ninguno de los dos pelos está ingerido (ODF TECO, ambos de terceros) no se inventa nada:
+    queda el primero, igual que antes."""
+    conector = ConectorOdf(
+        n_id=1, odf_n_id=6644360, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="3", pelo_n_id=7968250, servicio_numero_atributo="42351",
+        pelos_candidatos=[7968250, 7968010],
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": []})
+
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.pelo_n_id == 7968250
+    assert conector.servicio_resuelto == "42351"
 
 
 @pytest.mark.asyncio
@@ -1758,6 +1802,7 @@ async def test_ejecutar_ingesta_marca_cancelada_sin_tratarla_como_falla(monkeypa
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _fase_cables_cancela)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
     monkeypatch.setattr(ingesta, "fase_reconciliacion", _noop)
     monkeypatch.setattr(ingesta, "fase_servicios", _noop)
@@ -1799,6 +1844,7 @@ def _spies_de_fases(monkeypatch, llamadas: list[str]) -> None:
         "fase_cajas_pon",
         "fase_rosetas",
         "fase_cables_bajada",
+        "fase_cables_terceros",
     ):
 
         async def _fn(*args, __nombre=nombre, **kwargs):
@@ -1862,7 +1908,15 @@ async def test_continuar_corrida_modo_completa_incluye_fase_odfs_ademas_de_las_e
     )  # modo default = "COMPLETA"
 
     assert corrida.estado == "OK"
-    assert llamadas == ["fase_cables", "fase_botellas", "fase_fusiones", "fase_odfs", "fase_reconciliacion", "fase_servicios"]
+    assert llamadas == [
+        "fase_cables",
+        "fase_cables_terceros",
+        "fase_botellas",
+        "fase_fusiones",
+        "fase_odfs",
+        "fase_reconciliacion",
+        "fase_servicios",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1905,6 +1959,7 @@ async def test_continuar_corrida_modo_completa_total_objetivo_incluye_clase_odf(
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_odfs", _noop)
@@ -1933,6 +1988,7 @@ async def test_continuar_corrida_reusa_una_corrida_ya_creada(monkeypatch):
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _noop)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_odfs", _noop)
@@ -1983,6 +2039,7 @@ async def test_continuar_corrida_carga_alias_una_vez_y_lo_pasa_a_las_cuatro_fase
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta.alias_service, "cargar_alias_vigentes", _cargar_alias_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _fase_cables_fake)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", _fase_botellas_fake)
     monkeypatch.setattr(ingesta, "fase_fusiones", _fase_fusiones_fake)
     monkeypatch.setattr(ingesta, "fase_odfs", _fase_odfs_fake)
@@ -2013,6 +2070,7 @@ def _monkeypatch_fases_noop(monkeypatch, *, fase_botellas) -> None:
 
     monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
     monkeypatch.setattr(ingesta, "fase_cables", _noop)
+    monkeypatch.setattr(ingesta, "fase_cables_terceros", _fase_noop)
     monkeypatch.setattr(ingesta, "fase_botellas", fase_botellas)
     monkeypatch.setattr(ingesta, "fase_fusiones", _noop)
     monkeypatch.setattr(ingesta, "fase_odfs", _noop)
@@ -2142,6 +2200,7 @@ async def test_completa_no_arrastra_ninguna_fase_de_la_red_pon(monkeypatch):
 
     assert llamadas == [
         "fase_cables",
+        "fase_cables_terceros",
         "fase_botellas",
         "fase_fusiones",
         "fase_odfs",
@@ -2154,3 +2213,113 @@ def test_todos_los_modos_acotados_estan_en_la_lista_que_valida_el_endpoint():
     """`MODOS_INGESTA` es lo que importa `web/app/main.py`: si se desincronizan, un modo que el
     frontend ofrece devuelve 400 sin que ningún test lo note."""
     assert set(ingesta.MODOS_INGESTA) == {"COMPLETA", *ingesta.MODOS_ACOTADOS}
+
+
+# ── Cables de terceros: clases 52, 59 (Telefónica) y 60 (Telecom) (2026-09-29) ──
+
+
+def _cable_tercero_obj(clase: int = 60) -> dict:
+    """Forma liviana real del barrido con `show=ALL` (F-TECO-DC1, 2026-09-29): el `inner[]` trae
+    tubos y pelos embebidos, y el pelo trae at.61 con la descripción del servicio."""
+    obj = json.loads((FIXTURES_DIR / "cable_barrido_directo.json").read_text())
+    obj["class"] = clase
+    obj["inner"] = [
+        {"id": 7968009, "class": 129, "name": "AZ", "parent": obj.get("n_id") or obj["id"],
+         "at": [{"id": 72, "value": "1"}, {"id": 73, "value": "AZ"}]},
+        {"id": 7968010, "class": 130, "name": "1", "parent": 7968009,
+         "at": [{"id": 74, "value": "0"}, {"id": 75, "value": "1"}, {"id": 77, "value": "AZ"},
+                {"id": 61, "value": "FO 42351- 42352 - ODF Catolica 1324 CF - g"}]},
+    ]
+    return obj
+
+
+def test_clases_de_cable_de_terceros():
+    assert ingesta.CLASES_CABLE_TERCEROS == (52, 59, 60)
+
+
+@pytest.mark.asyncio
+async def test_procesar_cable_tercero_guarda_cable_tubos_y_pelos():
+    """A diferencia de la clase 51 —cuyos pelos llegan por el árbol de su botella—, un cable de
+    tercero suele ir cámara↔ODF u ODF↔ODF: si esta fase no guarda sus pelos, nadie lo hace."""
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_cable_tercero_directo(
+        sesion, corrida_id=1, obj=_cable_tercero_obj(60), contadores=contadores
+    )
+
+    assert contadores.errores == 0
+    assert contadores.creadas == 1
+    cable = next(o for o in sesion.agregados if isinstance(o, CromoCable))
+    assert cable.clase == 60
+    tubos = [o for o in sesion.agregados if isinstance(o, CromoTubo)]
+    pelos = [o for o in sesion.agregados if isinstance(o, CromoPelo)]
+    assert [t.n_id for t in tubos] == [7968009]
+    assert [p.n_id for p in pelos] == [7968010]
+    assert pelos[0].cable_n_id == cable.n_id
+    assert pelos[0].servicio_numero == "42351"
+
+
+@pytest.mark.asyncio
+async def test_procesar_cable_tercero_malformado_no_rompe_registra_error():
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    sesion._existentes[(CromoCable, 1)] = object()  # sin .vmax -> error real al comparar
+
+    await ingesta._procesar_cable_tercero_directo(
+        sesion, corrida_id=1, obj={"class": 60, "id": 1, "n_id": 1}, contadores=contadores
+    )
+
+    assert contadores.errores == 1
+    assert contadores.creadas == 0
+
+
+@pytest.mark.asyncio
+async def test_modo_solo_cables_terceros_corre_su_fase_y_el_matching_de_servicios(monkeypatch):
+    """Excepción deliberada al contrato "un modo acotado corre sólo su fase": sin `fase_servicios`
+    los pelos nuevos quedan sin vincular a ningún Servicio y no sirven de semilla para `track`."""
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(
+        id=42, usuario="tester", estado="EN_CURSO"
+    )
+    llamadas: list[str] = []
+
+    async def _fase_conteo_fake(cliente, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    _spies_de_fases(monkeypatch, llamadas)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(),
+        sesion=sesion,
+        corrida_id=42,
+        psize=5,
+        max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA,
+        modo="SOLO_CABLES_TERCEROS",
+    )
+
+    assert corrida.estado == "OK"
+    assert llamadas == ["fase_cables_terceros", "fase_servicios"]
+    assert ingesta.MODOS_ACOTADOS["SOLO_CABLES_TERCEROS"].clases_objetivo == (52, 59, 60)
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_prefiere_el_pelo_del_cable_propio():
+    """Con los cables de terceros ingeridos, los DOS pelos de la posición existen. Caso real TASA
+    conector 2: 7968239 (F-CRZ-FB, Telefónica, clase 59) y 6976963 (F-MDO-ILC, propio). La
+    posición de ODF del Servicio es la del cable propio, aunque venga segundo en `tp[]`."""
+    conector = ConectorOdf(
+        n_id=8595049, odf_n_id=6644198, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="2", pelo_n_id=7968239, servicio_numero_atributo="42351",
+        pelos_candidatos=[7968239, 6976963],
+    )
+    sesion = _SesionFake(
+        respuestas_execute={"FROM app.cromo_pelos": [(7968239, "42351", 59), (6976963, "42351", 51)]}
+    )
+
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.pelo_n_id == 6976963

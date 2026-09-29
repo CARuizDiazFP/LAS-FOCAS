@@ -325,11 +325,20 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
   (`numero_primer_servicio`) y los históricos (`alias_ids`). Medido el 2026-09-28: de las 5.435
   filas de `app.servicios_historial_id`, **cero** tienen un `numero_id` que esas tres no cubran ya,
   así que no hace falta joinear el histórico.
-- **Un `.txt` por pelo, no por Servicio.** La selección por defecto son las posiciones de ODF del
-  Servicio (mismo criterio que el botón de la pantalla, `semillas_por_defecto`): entre 1 y 4
-  archivos en Servicios reales de dev — el 67395 da 4. Se suben todos, sin tope (decisión explícita
-  del usuario, 2026-09-28). Con más de uno, el nombre lleva el `pelo_n_id` intercalado
-  (`nombre_distinguible`) o los archivos se pisarían entre sí en el hilo.
+- **Un `.txt` por camino distinto, no por posición de ODF** (2026-09-29). Las semillas son las
+  posiciones de ODF del Servicio (`semillas_por_defecto`), pero un hilo tiene posición en **cada**
+  ODF que atraviesa —extremos e intermedias, propias o de terceros—, y todas recorren el mismo
+  camino. `tracking_service.trackings_por_camino` las procesa en orden y descarta, **sin** pedirla a
+  Cromo, la semilla que ya aparece en el camino de una anterior. Para eso el caché guarda los pelos
+  de cada camino (`cromo_tracking_cache.pelos_camino`, migración `20260929_02`); una entrada sin
+  esa lista (anterior a la columna) se regenera una vez. El 42351 da 2 archivos, uno por hilo, cada
+  uno con el camino completo incluidos los cables de terceros (F-TECO-DC1 de Telecom, F-CRZ-FB de
+  Telefónica). Con más de uno, el nombre lleva el `pelo_n_id` intercalado (`nombre_distinguible`) o
+  los archivos se pisarían entre sí en el hilo.
+- **Cables de terceros**: el `.txt` ya los incluye con nombre y metraje, porque sale del `/path` de
+  Cromo y no del inventario ingerido. Lo que se perdía era la **semilla**: una posición de ODF une
+  dos pelos en `tp[]`, y el parser guardaba siempre el primero, que puede ser de un cable de
+  tercero (clase 59 Telefónica, 60 Telecom) no ingerido. Ver `docs/decisiones.md` (2026-09-29).
 - **Demora aceptada.** En frío cuesta entre 4,6 s y 14 s **por pelo** contra Cromo (hasta ~1 minuto
   con 4 posiciones); sobre el caché de 24 h (`app.cromo_tracking_cache`) es inmediato. Por eso el
   bot postea un aviso ANTES de empezar, y la sesión de DB se cierra antes de generar para no
