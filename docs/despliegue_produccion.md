@@ -79,6 +79,19 @@ P2=$(git log -1 --format=%P origin/main | awk '{print $2}')
 git merge-base --is-ancestor $P2 origin/dev && git diff --quiet origin/main $P2 && echo "main sin contenido propio"
 ```
 
+Con cada despliegue se acumula un merge más en `main`: el 2026-09-29 eran **2** (`7055452` y
+`1144e9b`). La condición es la misma para cada uno: el árbol del merge es idéntico al de su segundo
+padre, y ese padre es ancestro de `dev`. Chequearla para **todos** los commits de
+`git log origin/dev..origin/main`, no sólo el último:
+
+```bash
+for c in $(git rev-list origin/dev..origin/main); do
+  P2=$(git log -1 --format=%P $c | awk '{print $2}')
+  { [ -n "$P2" ] && git merge-base --is-ancestor $P2 origin/dev && git diff --quiet $c $P2; } \
+    && echo "$c ok" || echo "$c TIENE CONTENIDO PROPIO: no usar commit-tree"
+done
+```
+
 ## 5. Ventana
 
 ```bash
@@ -117,7 +130,10 @@ Se corren **después** del paso 6, con el código nuevo ya sirviendo, dentro del
 
 Patrón para cualquier script de datos de este paso (usado por el reproceso, 2026-09-28):
 
-- **Por stdin**: los contenedores de app no tienen `scripts/` ni `/tmp` escribible
+- Lo que sigue aplica a los contenedores que no tienen `scripts/`. `lasfocas-api` sí lo tiene desde
+  `a2d055a` (2026-08-26): un script commiteado se corre directo, por ejemplo
+  `docker exec -it lasfocas-api python scripts/api_clients.py listar`.
+- **Por stdin**: los demás contenedores de app no tienen `scripts/` ni `/tmp` escribible
   (`docker exec -i -w /app -e PYTHONPATH=/app <contenedor> python - [args] < scripts/x.py`); la salida
   va por stdout y se redirige a un archivo del host.
 - **Dry-run exacto, no estimado**: correr todo dentro de una transacción externa que se revierte
@@ -144,6 +160,20 @@ Patrón para cualquier script de datos de este paso (usado por el reproceso, 202
   revisados, 111 sin tocar. En prod los egresos que cierran pueden ser más (ingresos abiertos reales
   que dev no tiene). Idempotente: una segunda corrida no agrega filas. Detalle:
   `docs/relevamiento_ingresos_sin_match_2026-09-28.md`, sección "Reproceso por lote".
+
+## Secretos nuevos del lote
+
+Si `git diff origin/main origin/dev -- deploy/compose.yml` agrega un secreto (bloque `secrets:` raíz),
+el archivo `.secrets/<nombre>.txt` tiene que existir **antes** del paso 5. Si falta, el `up` de ese
+servicio falla. Generarlo sin imprimirlo, distinto del `Dev_` y con permisos `600`. Ejemplo real del
+2026-09-29 (`oauth_jwt_secret_v1`):
+
+```bash
+test -e .secrets/oauth_jwt_secret_v1.txt || (umask 077; python3 -c "import secrets;print(secrets.token_urlsafe(48))" > .secrets/oauth_jwt_secret_v1.txt)
+cmp -s .secrets/oauth_jwt_secret_v1.txt .secrets/Dev_oauth_jwt_secret_v1.txt && echo "IGUAL A DEV: regenerar"
+```
+
+Después del `up`, confirmar que el secreto está montado (`docker exec <contenedor> ls /run/secrets/`).
 
 ## Rollback
 
