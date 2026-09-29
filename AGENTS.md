@@ -64,6 +64,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - El informe SLA depende de la columna U (`Horas Netas Reclamo`) en el Excel legacy; no reintroducir fallbacks a otras columnas.
 - La VM y varios defaults asumen la IP `172.18.208.162`; si cambia, revisar configuración y documentación relacionada.
 - La topología operativa actual usa proveedores LLM externos vía API; no asumir disponibilidad de Ollama/local LLM salvo trabajo explícito de compatibilidad heredada.
+- Los headers HTTP son latin-1: un texto en español con tildes dentro de un header (ej. `WWW-Authenticate: Bearer error_description="token inválido"`) rompe la respuesta con `UnicodeDecodeError` en Starlette (real 2026-09-29, lo detectó `TestClient`). Descripciones legibles van en el cuerpo (`detail`); en headers, sólo ASCII.
 - Una columna `JSONB` de SQLAlchemy **sin `none_as_null=True`** guarda el `None` de Python como el
   escalar JSON `'null'`, no como SQL NULL, y `COALESCE(col, '[]'::jsonb)` **no** lo cubre:
   `jsonb_array_elements_text` corta la query entera con `cannot extract elements from a scalar`. El
