@@ -744,7 +744,17 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
         bandeja = bandejas.get(bandeja_n_id)
 
         tp = item.get("tp") or []
-        pelo_n_id = tp[0].get("id_to") if tp else None
+        pelos_candidatos = [
+            int(punto["id_to"])
+            for punto in tp
+            if punto.get("class") == _CLASE_PELO and punto.get("id_to") is not None
+        ]
+        # Sin ningún pelo en `tp` (ej. sólo una fusión de ODF, clase 141) se conserva `tp[0]`,
+        # que es lo que siempre se guardó.
+        if pelos_candidatos:
+            pelo_n_id = pelos_candidatos[0]
+        else:
+            pelo_n_id = tp[0].get("id_to") if tp else None
 
         conectores.append(
             ConectorOdf(
@@ -757,6 +767,7 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
                 pelo_n_id=pelo_n_id,
                 servicio_numero_atributo=atributo(item, 62),
                 payload_raw=dict(item),
+                pelos_candidatos=pelos_candidatos,
             )
         )
     return conectores

@@ -21,14 +21,18 @@ El caché es lo que lo hace viable: en frío cada pelo cuesta entre 4,6 s y 14 s
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.cromo import tracking_cache
-from core.services.cromo.camino_optico_service import ESTADO_OK, resolver_camino_de_pelo
+from core.services.cromo.camino_optico_service import (
+    ESTADO_OK,
+    CaminoOptico,
+    resolver_camino_de_pelo,
+)
 from core.services.cromo.camino_optico_txt import (
     nombre_archivo_tracking,
     renderizar_tracking_txt,
@@ -58,6 +62,23 @@ class TrackingGenerado:
     desde_cache: bool
     generado_at: datetime
     duracion_ms: Optional[int]
+    # Pelos que recorre el camino, incluido el propio. Vacío sólo en fakes de tests viejos.
+    pelos_camino: frozenset[int] = frozenset()
+
+
+_CLASE_PELO = 130
+
+
+def pelos_del_camino(camino: CaminoOptico) -> frozenset[int]:
+    """Pelos (clase 130) que recorre el camino: el consultado más los de `a[]` y `b[]`.
+
+    Es lo que identifica al camino. Dos semillas del mismo hilo —la posición en la ODF de un
+    extremo y la de una ODF intermedia— recorren los mismos pelos, y una aparece en el camino de
+    la otra."""
+    pelos = {n.id_cromo for n in (*camino.lado_a, *camino.lado_b) if n.clase == _CLASE_PELO}
+    if camino.pelo_n_id is not None:
+        pelos.add(camino.pelo_n_id)
+    return frozenset(pelos)
 
 
 async def obtener_tracking(
@@ -78,7 +99,9 @@ async def obtener_tracking(
     """
     if not forzar:
         cacheado = await tracking_cache.leer(sesion, pelo_n_id)
-        if cacheado is not None:
+        # Una entrada sin `pelos_camino` es anterior a esa columna: sin la lista no se pueden
+        # descartar caminos repetidos, así que se regenera (una sola vez, queda guardada).
+        if cacheado is not None and cacheado.pelos_camino is not None:
             logger.info(
                 "action=cromo_tracking origen=cache servicio_id=%s pelo_n_id=%s generado_at=%s",
                 servicio_id,
@@ -92,6 +115,7 @@ async def obtener_tracking(
                 desde_cache=True,
                 generado_at=cacheado.generado_at,
                 duracion_ms=cacheado.duracion_ms,
+                pelos_camino=frozenset(cacheado.pelos_camino),
             )
 
     camino = await resolver_camino_de_pelo(cliente, sesion, pelo_n_id)
@@ -101,6 +125,7 @@ async def obtener_tracking(
     ahora = datetime.now(timezone.utc)
     nombre = nombre_archivo_tracking(camino.servicio_at62, camino.pelo_n_id or pelo_n_id)
     contenido = renderizar_tracking_txt(camino, generado_en=ahora)
+    pelos_camino = pelos_del_camino(camino) | {pelo_n_id}
 
     await tracking_cache.guardar(
         sesion,
@@ -109,6 +134,7 @@ async def obtener_tracking(
         nombre_archivo=nombre,
         contenido=contenido,
         duracion_ms=camino.duracion_ms,
+        pelos_camino=sorted(pelos_camino),
         ahora=ahora,
     )
     await sesion.commit()
@@ -127,7 +153,61 @@ async def obtener_tracking(
         desde_cache=False,
         generado_at=ahora,
         duracion_ms=camino.duracion_ms,
+        pelos_camino=pelos_camino,
     )
+
+
+@dataclass(slots=True)
+class TrackingsPorCamino:
+    """`omitidos` es `{semilla descartada: pelo cuyo camino ya la recorría}`, para el log."""
+
+    trackings: list[TrackingGenerado] = field(default_factory=list)
+    omitidos: dict[int, int] = field(default_factory=dict)
+    errores: list[str] = field(default_factory=list)
+
+
+async def trackings_por_camino(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    *,
+    servicio_id: int,
+    pelos_n_id: Iterable[int],
+) -> TrackingsPorCamino:
+    """Un tracking por camino distinto, no uno por semilla.
+
+    Las semillas por defecto son las posiciones de ODF del Servicio, y un hilo tiene posición en
+    cada ODF que atraviesa —extremos e intermedias, propias o de cables de terceros—. Caso real,
+    Servicio 42351: dos hilos, posiciones en TASA, TECO y Facebook. El operador espera 2 `.txt`
+    con el camino completo, no uno por ODF.
+
+    Se recorren en orden; una semilla que ya aparece en el camino de una anterior se descarta
+    **sin** pedirla a Cromo. Un pelo que falla no cancela los demás. `CromoClientError` no se
+    atrapa: Cromo caído se lleva la corrida entera y lo reporta el llamador.
+    """
+    resultado = TrackingsPorCamino()
+    cubiertos: dict[int, int] = {}
+    for pelo_n_id in dict.fromkeys(pelos_n_id):
+        if pelo_n_id in cubiertos:
+            resultado.omitidos[pelo_n_id] = cubiertos[pelo_n_id]
+            continue
+        try:
+            tracking = await obtener_tracking(
+                cliente, sesion, servicio_id=servicio_id, pelo_n_id=pelo_n_id
+            )
+        except TrackingNoDisponible as exc:
+            resultado.errores.append(f"Pelo {pelo_n_id}: {exc.motivo}")
+            continue
+        resultado.trackings.append(tracking)
+        for pelo in tracking.pelos_camino | {pelo_n_id}:
+            cubiertos.setdefault(pelo, pelo_n_id)
+
+    if resultado.omitidos:
+        logger.info(
+            "action=cromo_tracking evento=caminos_repetidos servicio_id=%s omitidos=%s",
+            servicio_id,
+            resultado.omitidos,
+        )
+    return resultado
 
 
 def nombre_distinguible(nombre: str, pelo_n_id: int, *, distinguir: bool) -> str:

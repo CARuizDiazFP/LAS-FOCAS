@@ -1346,6 +1346,41 @@ async def test_resolver_servicio_conectores_libre_sin_ninguna_senal():
 
 
 @pytest.mark.asyncio
+async def test_resolver_servicio_conectores_elige_el_pelo_ingerido_entre_los_candidatos():
+    """Caso real TASA conector 2: el primer pelo de `tp` es de un cable de tercero (clase 59) que
+    no está en `cromo_pelos`; el segundo es el del cable propio. El conector tiene que quedar
+    vinculado al que existe, o el Servicio pierde esa posición de ODF."""
+    conector = ConectorOdf(
+        n_id=8595049, odf_n_id=6644198, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="2", pelo_n_id=7968239, servicio_numero_atributo="42351",
+        pelos_candidatos=[7968239, 6976963],
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": [(6976963, "42351")]})
+
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.pelo_n_id == 6976963
+    assert conector.servicio_resuelto == "42351"
+
+
+@pytest.mark.asyncio
+async def test_resolver_servicio_conectores_ningun_candidato_ingerido_conserva_el_primero():
+    """Si ninguno de los dos pelos está ingerido (ODF TECO, ambos de terceros) no se inventa nada:
+    queda el primero, igual que antes."""
+    conector = ConectorOdf(
+        n_id=1, odf_n_id=6644360, bandeja_n_id=None, bandeja_nombre=None, bandeja_modelo=None,
+        numero_conector="3", pelo_n_id=7968250, servicio_numero_atributo="42351",
+        pelos_candidatos=[7968250, 7968010],
+    )
+    sesion = _SesionFake(respuestas_execute={"FROM app.cromo_pelos": []})
+
+    await ingesta.resolver_servicio_conectores(sesion, [conector])
+
+    assert conector.pelo_n_id == 7968250
+    assert conector.servicio_resuelto == "42351"
+
+
+@pytest.mark.asyncio
 async def test_procesar_odf_directo_objeto_malformado_no_rompe_registra_error():
     obj = {"class": 69, "id": 1, "n_id": 1}  # sin vmax coherente: fuerza un camino de error real
     sesion = _SesionFake()

@@ -2571,3 +2571,35 @@ su propia ventana de mantenimiento.
   - **Nombres de cable numéricos**: se prueban primero como `cable_id` y después como nombre, porque
     hay cables vigentes llamados "5", "6" y "530". Los comandos de Slack y el resolver de la web no
     tienen este respaldo: ahí esos cables siguen siendo inalcanzables por nombre.
+
+## 2026-09-29 (cont.) — `track <id>`: posición de ODF con dos pelos y un `.txt` por camino
+
+- **Reclamo**: `@Registrador track 42351` (dev) devolvía 1 `.txt` y el Servicio tiene 2 pelos.
+- **Causa raíz** (verificada contra DB de dev y Cromo real): una posición de patchera (clase 136)
+  une **dos** pelos en `tp[]`, uno de cada cable que llega a ella. `parser.parse_odf_conectores`
+  guardaba siempre `tp[0]`. En la ODF TASA (6644198), conector 2, ese primero es 7968239, del cable
+  F-CRZ-FB (clase 59, **cable de tercero Telefónica**), que no se ingiere; el pelo del Servicio,
+  6976963 (F-MDO-ILC, propio), quedó sin posición de ODF y nunca fue semilla. Clases confirmadas
+  por el usuario: **59 = cable de tercero Telefónica, 60 = cable de tercero Telecom**.
+- **Fix 1 — elegir el pelo ingerido**: el parser guarda todos los pelos de `tp[]` en
+  `ConectorOdf.pelos_candidatos` (no se persiste), y `ingesta.resolver_servicio_conectores` fija
+  `pelo_n_id` al primer candidato que está en `cromo_pelos`, en la misma query que ya hacía. Sin
+  ningún ingerido conserva el primero. Remediación en dev:
+  `scripts/cromo_backfill_conectores_odf.py --apply --solo-multipelo` (flag nuevo): 23 ODFs, 67
+  conectores con dos pelos, los vinculados a un pelo ingerido pasaron de 14 a 36.
+- **Fix 2 — un `.txt` por camino** (opción elegida por el usuario: "sólo 2 `.txt` con el camino
+  completo, incluido el paso por cables de terceros u ODF intermedias"). Un hilo tiene posición en
+  cada ODF del recorrido, así que cada posición es una semilla del mismo camino.
+  `tracking_service.trackings_por_camino` descarta la semilla ya recorrida por un camino anterior,
+  sin ir a Cromo; el caché guarda `pelos_camino` (migración `20260929_02`, `BIGINT[] NULL`).
+- **Descartado: ingerir las clases 59/60**. El `.txt` sale del `/path` de Cromo y ya trae esos
+  cables con nombre y metraje (verificado: F-TECO-DC1 187 m). No hacía falta para este reclamo.
+- **Verificado real** (código del worktree dentro de `lasfocasdev-web`): `generar_trackings(567)`
+  → 2 archivos, 6976963 (hilo "g", 157 pelos, pasa por TECO pelo 1) y 6976965 (hilo "gd", 165
+  pelos, TECO pelo 2); ~59 s en frío, 1,4 s desde caché.
+- **Pendiente, no tocado**: (a) el archivo se llama "2351 CROMO…" porque el primer atributo 62 del
+  pelo en Cromo es `2351` (dato de Cromo, visible en la ficha del pelo; `nombre_archivo_tracking`
+  toma el primero). (b) La preselección del Detalle de Servicio (`/camino-optico/pelos`) sigue siendo
+  una por posición: deduplicarla exige conocer los caminos. (c) En prod faltan la migración y el
+  backfill `--solo-multipelo`, y `track` no funciona ahí hasta sumar `app_mentions:read`.
+

@@ -25,7 +25,7 @@ from sqlalchemy import (
     text,
     true,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 
 from db.base import Base
@@ -576,6 +576,10 @@ class CromoTrackingCache(Base):
     nombre_archivo = Column(String(256), nullable=False)
     contenido = Column(Text, nullable=False)
     duracion_ms = Column(Integer, nullable=True)  # lo que costó generarlo, para diagnóstico
+    # Pelos que recorre el camino (incluido el propio). Es lo que permite entregar un `.txt` por
+    # camino y no uno por posición de ODF sin volver a Cromo. NULL = entrada previa a la columna:
+    # se regenera (ver `tracking_service.obtener_tracking`).
+    pelos_camino = Column(ARRAY(BigInteger), nullable=True)
     generado_at = Column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), index=True
     )

@@ -906,14 +906,25 @@ async def resolver_servicio_conectores(sesion: AsyncSession, conectores: list[Co
     conector con atributo id=62="41140" mientras el pelo ya matchea por regex a "61943" (el número
     vigente real tras una renumeración SLA posterior al alta del atributo en Cromo). El mayor
     de los dos gana como `servicio_resuelto`; el menor queda como `servicio_id_historico" sólo si
-    difieren. Una sola query batched para todos los conectores de la ODF (no una por conector)."""
-    pelo_n_ids = [c.pelo_n_id for c in conectores if c.pelo_n_id is not None]
+    difieren. Una sola query batched para todos los conectores de la ODF (no una por conector).
+
+    La misma query elige también el `pelo_n_id` del conector: una posición une dos pelos
+    (`pelos_candidatos`) y el primero de `tp[]` puede ser de un cable de tercero (clases 59/60)
+    que no está en `cromo_pelos`. Se queda con el primer candidato ingerido; si ninguno lo está,
+    con el que ya traía. Caso real: ODF TASA conector 2 del Servicio 42351 (2026-09-29)."""
+    pelo_n_ids = sorted(
+        {c.pelo_n_id for c in conectores if c.pelo_n_id is not None}
+        | {p for c in conectores for p in c.pelos_candidatos}
+    )
     servicio_numero_por_pelo: dict[int, Optional[str]] = {}
     if pelo_n_ids:
         filas = (await sesion.execute(_SQL_SERVICIO_NUMERO_PELOS, {"pelo_n_ids": pelo_n_ids})).all()
         servicio_numero_por_pelo = {n_id: numero for n_id, numero in filas}
 
     for conector in conectores:
+        ingerido = next((p for p in conector.pelos_candidatos if p in servicio_numero_por_pelo), None)
+        if ingerido is not None:
+            conector.pelo_n_id = ingerido
         numero_regex = (
             servicio_numero_por_pelo.get(conector.pelo_n_id) if conector.pelo_n_id is not None else None
         )

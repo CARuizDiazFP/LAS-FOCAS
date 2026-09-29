@@ -144,6 +144,11 @@ class ConectorOdf:
     servicio_resuelto: Optional[str] = None
     servicio_id_historico: Optional[str] = None
     payload_raw: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Todos los pelos (clase 130) de `tp[]`, en orden. Una posición une DOS pelos, uno de cada
+    # cable que llega a ella, y el primero puede ser de un cable de tercero (clases 59/60) que la
+    # ingesta no barre. `ingesta.resolver_servicio_conectores` elige de acá el que está ingerido.
+    # No se persiste: la columna sigue siendo un único `pelo_n_id`.
+    pelos_candidatos: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True)

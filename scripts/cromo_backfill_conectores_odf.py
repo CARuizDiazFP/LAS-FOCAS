@@ -33,6 +33,14 @@ Uso:
 
     # Reanudar después de un corte: sólo las ODFs que todavía no tienen ningún conector guardado
     python scripts/cromo_backfill_conectores_odf.py --apply --solo-faltantes
+
+    # Remediación 2026-09-29: sólo las ODFs con algún conector que une DOS pelos en `tp[]`. Hasta
+    # ese día el parser guardaba siempre el primero, que puede ser de un cable de tercero (clases
+    # 59/60) no ingerido; ahora se queda con el ingerido (ver `resolver_servicio_conectores`).
+    python scripts/cromo_backfill_conectores_odf.py --apply --solo-multipelo
+
+    # ODFs puntuales
+    python scripts/cromo_backfill_conectores_odf.py --apply --odf 6644198 --odf 6644360
 """
 
 from __future__ import annotations
@@ -73,6 +81,20 @@ _SQL_ODFS_SIN_CONECTORES = text(
 )
 
 
+_SQL_ODFS_CON_CONECTOR_MULTIPELO = text(
+    """
+    SELECT DISTINCT c.odf_n_id
+    FROM app.cromo_odf_conectores c
+    WHERE c.vigente = true
+      AND (
+          SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(c.payload_raw->'tp', '[]'::jsonb)) e
+          WHERE e->>'class' = '130'
+      ) >= 2
+    ORDER BY c.odf_n_id
+    """
+)
+
+
 @dataclass(slots=True)
 class ResultadoBackfill:
     candidatas: int = 0
@@ -82,8 +104,20 @@ class ResultadoBackfill:
     errores: int = 0
 
 
-async def _ids_odfs(*, solo_faltantes: bool, limite: Optional[int]) -> list[int]:
-    sql = _SQL_ODFS_SIN_CONECTORES if solo_faltantes else _SQL_TODAS_LAS_ODFS
+async def _ids_odfs(
+    *,
+    solo_faltantes: bool,
+    limite: Optional[int],
+    solo_multipelo: bool = False,
+    odfs: Optional[list[int]] = None,
+) -> list[int]:
+    if odfs:
+        ids = list(dict.fromkeys(odfs))
+        return ids[:limite] if limite is not None else ids
+    if solo_multipelo:
+        sql = _SQL_ODFS_CON_CONECTOR_MULTIPELO
+    else:
+        sql = _SQL_ODFS_SIN_CONECTORES if solo_faltantes else _SQL_TODAS_LAS_ODFS
     async with AsyncSessionLocal() as sesion:
         filas = (await sesion.execute(sql)).all()
     ids = [int(fila[0]) for fila in filas]
@@ -116,7 +150,12 @@ async def _backfill_odf(*, cliente: CromoClient, odf_n_id: int, dry_run: bool) -
 
 
 async def main(args: argparse.Namespace) -> None:
-    ids = await _ids_odfs(solo_faltantes=args.solo_faltantes, limite=args.limite)
+    ids = await _ids_odfs(
+        solo_faltantes=args.solo_faltantes,
+        limite=args.limite,
+        solo_multipelo=args.solo_multipelo,
+        odfs=args.odf,
+    )
     resultado = ResultadoBackfill(candidatas=len(ids))
 
     logger.info(
@@ -173,5 +212,13 @@ if __name__ == "__main__":
         help="Procesa únicamente las ODFs que todavía no tienen ningún conector guardado (para reanudar)",
     )
     parser.add_argument("--limite", type=int, default=None, help="Limita la cantidad de ODFs a procesar")
+    parser.add_argument(
+        "--solo-multipelo",
+        action="store_true",
+        help="Procesa sólo las ODFs con algún conector que une dos pelos en tp[] (remediación 2026-09-29)",
+    )
+    parser.add_argument(
+        "--odf", type=int, action="append", default=None, help="n_id de una ODF puntual (repetible)"
+    )
     argumentos = parser.parse_args()
     asyncio.run(main(argumentos))
