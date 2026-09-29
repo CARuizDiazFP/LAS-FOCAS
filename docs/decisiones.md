@@ -2626,3 +2626,24 @@ su propia ventana de mantenimiento.
 - **Carga en dev pedida por el usuario junto con** los modos existentes de cables de bajada, rosetas y
   cajas PON, que no habían corrido completos nunca.
 
+
+## 2026-09-29 (cont.) — Búsqueda de cámaras: reintento sin localidad final y sin tipo inicial
+
+- **Contexto**: casos #204/#205 de `app.ingresos_sin_match` de prod ("Poste colectora oeste
+  panamericana km 31.500 EL TALAR" y "Cra colectora …", inventario "Poste Colectora Oeste
+  Panamericana Km. 31.500"). La cascada exige todos los tokens y la localidad agregada lo impide.
+- **Decisión**: `buscar_camara_o_botella_cromo` reintenta **sólo si no hubo match** (nunca si fue
+  ambiguo): sin la localidad final (`core/services/localidades_catalogo.py`, catálogo de
+  `cromo_botellas.localidad` + CF/CABA, y sólo si la localidad sigue a un número) y sin el tipo
+  inicial `Cra`/`Cámara`/`Poste`. Cada reintento gana sólo con un match único cuyos números estén
+  **enteros** en el nombre, y el de tipo sólo si el resultado es otra Cámara por nombre (nunca una
+  Botella: no es intercambiable con su cámara).
+- **Excel fuera**: el baneo masivo pasa `tolerante=False`; banear por un texto "parecido" es peor
+  que dejarlo sin match.
+- **Criterio medido** (dos arneses read-only contra dev, código base vs rama): 0 incorrectas nuevas
+  reales. Las 23 transiciones "a otra cámara" del arnés son duplicados del inventario que la base
+  ya resolvía igual con el nombre original, o entradas sintéticas que nombran literalmente otro
+  elemento (detalle en `docs/relevamiento_ingresos_sin_match_2026-09-28.md`). El arnés encontró un
+  caso real ("Ruta 9 Km 63" → "Ruta 8 Km 63.9") que motivó la regla de números enteros.
+- **Altura distinta sigue sin match** (confirmado por el usuario, caso #207 "Cra coronel diaz
+  1847" contra "Cra Coronel Diaz 1846"): se valida a mano, nunca por aproximación.

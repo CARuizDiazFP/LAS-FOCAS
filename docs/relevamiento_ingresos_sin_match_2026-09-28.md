@@ -204,3 +204,35 @@ Botella 1 cerraba el ingreso de la Bot 2. Afectaba también al listener en vivo.
 **Ejecución en prod: pendiente de la alineación de prod** (paso 7 de `docs/despliegue_produccion.md`):
 tiene que correr con la búsqueda nueva desplegada, dentro del contenedor.
 
+
+## Reintento sin localidad y sin tipo (2026-09-29)
+
+Casos nuevos de prod del 29/9 (#204-#208). Diagnóstico con la búsqueda real contra la DB de prod:
+
+| Caso | Causa | Resolución |
+|---|---|---|
+| #206/#208 "Cra Balcarce 520 C.F" | Duplicado: Cromo 31092 "C.F" + legado 2598 "CF" normalizan igual → ambiguo | Fusión 2598 → 31092 en prod (`fusionar_grupo_camaras`, Cromo principal) y reproceso: ingreso 206 creado y cerrado |
+| #207 "Cra coronel diaz 1847" | Sólo existe la 1846 | Sin cambio: la altura nunca se aproxima (validación manual) |
+| #204/#205 Panamericana km 31.500 | Localidad "EL TALAR" agregada; #205 además "Cra" por "Poste" | Reintentos tolerantes (`_resultado_tolerante`, `localidades_catalogo.py`) |
+
+Arneses (read-only, `focas_dev`, `HEAD` del worktree vs rama; scripts no versionados, en el
+scratchpad de la sesión):
+
+| Arnés | Base | Rama |
+|---|---|---|
+| Auto-recuperación (1.500 Cámaras, seed 7): correcta / ambiguo / sin match / incorrecta | 1410 / 35 / 48 / 7 | 1412 / 35 / 46 / 7 (las mismas) |
+| 175 textos de Slack de prod: match / ambiguo / sin match | 28 / 32 / 115 | 38 / 32 / 105 |
+| Transiciones (7.259 entradas derivadas: nombre + localidad propia o al azar, tipo cambiado, tipo + localidad, "Cra" antepuesto; seed 11) | correctas 538 | correctas 2991 |
+
+Los 10 matches nuevos de prod se revisaron uno por uno: todos correctos (incluye "bot3 (tigre)" y
+"bot3 (el jaguel)", que resuelven la Bot 3 exacta de Cromo, y "General Pacheco 485. San Isidro").
+
+Transiciones sin match → "otra cámara": **23, ninguna incorrecta real**. 16 son 8 cámaras legadas
+("Cámara Rawson 2342", "Cámara Maipu 3101", "Tza. Reconquista 134"…) cuyo nombre original la base
+ya resuelve a su gemela de Cromo; 4 son entradas sintéticas con el tipo cambiado que la base, con el
+mismo texto sin localidad, resuelve al elemento que el texto nombra; 3 caen en el duplicado de la
+misma cámara ("Cra Ruta 6 y San Lorenzo" / "… CAMPANA", Madero 1180, Peron 7964). La primera versión
+tenía un caso real ("Poste Ruta 9 Km 63 CAMPANA" → "Poste Ruta 8 Km 63.9"): el filtro de números
+acepta "63" dentro de "63.9"; los reintentos exigen ahora números enteros.
+
+Latencia (sólo afecta textos sin match): mediana de los textos de prod 293 → 370 ms.

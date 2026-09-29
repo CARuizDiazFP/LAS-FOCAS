@@ -377,7 +377,8 @@ def test_id_de_cromo_no_vigente_o_contradicho_no_resuelve():
 
 
 def test_ingesta_excel_no_desempata():
-    """Baneo masivo desde Excel: nunca elige entre candidatas (`desempatar=False`)."""
+    """Baneo masivo desde Excel: nunca elige entre candidatas (`desempatar=False`) ni reintenta sin
+    localidad/tipo (`tolerante=False`)."""
     from core.services import camara_ingest_service
 
     vacio = cb.ResultadoBusquedaExtendida(camara=None, nombre_norm="x", fuente=None, botella=None)
@@ -385,4 +386,94 @@ def test_ingesta_excel_no_desempata():
         camara_ingest_service, "_registrar_sin_match", return_value=MagicMock()
     ):
         camara_ingest_service._procesar_ingesta_camaras_en_sesion(MagicMock(), ["Cra X 1"], "motivo", "usuario")
-    assert buscar.call_args.kwargs == {"desempatar": False}
+    assert buscar.call_args.kwargs == {"desempatar": False, "tolerante": False}
+
+
+# ── Reintentos tolerantes: localidad final y tipo inicial (casos #204/#205 de prod, 2026-09-29) ──
+
+_CATALOGO = frozenset({"el talar", "munro", "san isidro", "moreno", "campana", "cf"})
+
+
+@pytest.mark.parametrize(
+    ("entrada", "esperado"),
+    [
+        ("Poste colectora oeste panamericana km 31.500 EL TALAR", "Poste colectora oeste panamericana km 31.500"),
+        ("Cra capitán bermudez 4551 (munro)", "Cra capitán bermudez 4551"),
+        ("Camara, General Pacheco 485. San Isidro", "Camara, General Pacheco 485."),
+        # La localidad tiene que seguir a un número: si no, es parte del nombre.
+        ("Cra 25 de Mayo y Moreno", "Cra 25 de Mayo y Moreno"),
+        ("Poste Lavalle - Campana", "Poste Lavalle - Campana"),
+        ("EL TALAR", "EL TALAR"),
+    ],
+)
+def test_quitar_localidad_final(entrada, esperado):
+    from core.services.localidades_catalogo import quitar_localidad_final
+
+    assert quitar_localidad_final(entrada, _CATALOGO) == esperado
+
+
+def _res(camara=None, fuente=None):
+    return cb.ResultadoBusquedaExtendida(camara=camara, nombre_norm="x", fuente=fuente, botella=None)
+
+
+def test_sin_match_reintenta_sin_localidad():
+    poste = _cam(28956, "Poste Colectora Oeste Panamericana Km. 31.500")
+    with patch("core.services.localidades_catalogo.localidades", return_value=_CATALOGO), patch(
+        f"{MODULE_CB}._buscar_extendida", side_effect=[_res(), _res(poste, "camara")]
+    ) as cascada:
+        r = cb.buscar_camara_o_botella_cromo("Poste colectora oeste panamericana km 31.500 EL TALAR", MagicMock())
+    assert r.camara is poste
+    assert cascada.call_args_list[1].args[0] == "Poste colectora oeste panamericana km 31.500"
+
+
+def test_tipo_cra_escrito_para_un_poste():
+    poste = _cam(28956, "Poste Colectora Oeste Panamericana Km. 31.500")
+    with patch("core.services.localidades_catalogo.localidades", return_value=_CATALOGO), patch(
+        f"{MODULE_CB}._buscar_extendida",
+        # original, sin localidad, sin tipo (con localidad), sin tipo ni localidad
+        side_effect=[_res(), _res(), _res(), _res(poste, "camara")],
+    ) as cascada:
+        r = cb.buscar_camara_o_botella_cromo("Cra colectora oeste panamericana 31.500 EL TALAR", MagicMock())
+    assert r.camara is poste
+    assert cascada.call_args_list[-1].args[0] == "colectora oeste panamericana 31.500"
+
+
+@pytest.mark.parametrize(
+    ("camara", "fuente"),
+    [
+        (_cam(1, "Bot Colectora Oeste Panamericana 31.500"), "camara"),  # una botella no es un "Cra"
+        (_cam(1, "Poste Colectora Oeste Panamericana 31.500"), "cromo_botella"),  # sólo por nombre de Cámara
+    ],
+)
+def test_sin_tipo_solo_acepta_otra_camara(camara, fuente):
+    with patch("core.services.localidades_catalogo.localidades", return_value=frozenset()), patch(
+        f"{MODULE_CB}._buscar_extendida", side_effect=[_res(), _res(camara, fuente)]
+    ):
+        r = cb.buscar_camara_o_botella_cromo("Cra colectora oeste panamericana 31.500", MagicMock())
+    assert r.camara is None
+
+
+def test_reintento_exige_los_numeros_enteros():
+    """Arnés de transiciones: sin la localidad, "Ruta 9 Km 63" aceptaba "Ruta 8 Km 63.9" (el "9"
+    lo daba el decimal y el "63" la parte entera)."""
+    otra = _cam(33311, "Poste Ruta 8 Km 63.9 y Cosme FATIMA")
+    with patch("core.services.localidades_catalogo.localidades", return_value=frozenset({"campana"})), patch(
+        f"{MODULE_CB}._buscar_extendida", side_effect=[_res(), _res(otra, "camara"), _res(), _res()]
+    ):
+        r = cb.buscar_camara_o_botella_cromo("Poste Ruta 9 Km 63 CAMPANA", MagicMock())
+    assert r.camara is None
+
+
+def test_ambiguo_no_reintenta_tolerante():
+    with patch("core.services.localidades_catalogo.localidades", return_value=_CATALOGO), patch(
+        f"{MODULE_CB}._buscar_extendida", side_effect=cs.AmbiguousSearchError("x", 2, ["a", "b"])
+    ) as cascada:
+        with pytest.raises(cs.AmbiguousSearchError):
+            cb.buscar_camara_o_botella_cromo("Cra Balcarce 520 CF", MagicMock())
+    cascada.assert_called_once()
+
+
+def test_tolerante_false_no_reintenta():
+    with patch(f"{MODULE_CB}._buscar_extendida", return_value=_res()) as cascada:
+        cb.buscar_camara_o_botella_cromo("Poste colectora km 31.500 EL TALAR", MagicMock(), tolerante=False)
+    cascada.assert_called_once()
