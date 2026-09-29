@@ -1,18 +1,22 @@
 <!--
   Nombre de archivo: ServicioCaminoView.vue
   Ubicación de archivo: web/frontend/src/views/servicios/ServicioCaminoView.vue
-  Descripción: Camino óptico de un Servicio en su vista dedicada — lo que declara Cromo
-  (resolución, consistencia, secuencia, descarga de .txt) y las ODFs del archivo de tracking de ruta
+  Descripción: Camino óptico de un Servicio en su vista dedicada, en orden de canal — ODFs de
+  Cromo ingerido, resolución en vivo contra Cromo, y el tracking manual sólo para regularizar
 -->
 <template>
   <ServicioSeccionLayout
     :id-servicio="idServicio"
     titulo="Camino óptico"
-    descripcion="Dos lecturas del recorrido físico: la que declara Cromo y la del archivo de tracking de la ruta."
+    descripcion="Las ODFs del Servicio según Cromo, su recorrido físico resuelto en vivo, y el tracking manual de regularización."
     :servicio="base.servicio.value"
     :loading="base.loading.value"
     :error="base.error.value"
   >
+    <OdfsCromoPanel :servicio-id="base.servicio.value?.id ?? null" />
+
+    <hr class="noc-rule" />
+
     <CromoCaminoPanel :camino="camino" :servicio-id="base.servicio.value?.id ?? null" />
 
     <div class="camino__acciones">
@@ -34,11 +38,8 @@
       </span>
     </div>
 
-    <hr class="noc-rule" />
-
-    <!-- Fuente distinta a todo lo de arriba: el tracking de ruta subido a mano, no Cromo. Vive acá
-         y no en la ficha porque la ficha se compactó a tarjetas, y su tarjeta "Camino óptico" ya
-         contaba estas ODFs sin tener dónde mostrarlas. -->
+    <!-- Tercer canal. Se monta siempre pero se pinta solo si ese Servicio tiene tracking cargado
+         (27 de 14.147 en dev), así que no hace falta condicionarlo desde acá. -->
     <OdfsAsociadasPanel :id-origen="base.idOrigen.value" />
   </ServicioSeccionLayout>
 </template>
@@ -49,6 +50,7 @@ import { useRoute } from 'vue-router';
 
 import CromoCaminoPanel from '../../components/infra/CromoCaminoPanel.vue';
 import OdfsAsociadasPanel from '../../components/servicios/detalle/OdfsAsociadasPanel.vue';
+import OdfsCromoPanel from '../../components/servicios/detalle/OdfsCromoPanel.vue';
 import { useCromoPath } from '../../composables/useCromoPath';
 import { useServicioBase } from '../../composables/useServicioBase';
 import ServicioSeccionLayout from './ServicioSeccionLayout.vue';

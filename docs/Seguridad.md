@@ -147,6 +147,14 @@ bash scripts/firewall_hardening.sh
 ## Autenticación y sesiones
 
 - La API core protege rutas sensibles con API key interna (`api_key_v1` o `LAS_FOCAS_API_KEY`); sólo `/health` y `/health/version` son públicos.
+- **Integraciones interáreas (`/api/v1/*`, 2026-09-29)**: OAuth2 `client_credentials` con JWT HS256 propio, separado de la API key (una no abre la otra). Controles:
+  - Algoritmo fijo al validar (rechaza `alg=none` y otros HMAC). `aud`, `iss`, `exp`, `iat` y `sub` son obligatorios.
+  - Secreto de firma `oauth_jwt_secret_v1` de al menos 32 bytes; si no, falla cerrado con 503.
+  - Token de 7 días, con revocación inmediata: el cliente (`app.api_clients.activo`) y sus scopes se revalidan contra la base en cada request.
+  - Un scope por dominio (`servicios:read`, `cables:read`); uno no habilita el otro.
+  - `client_secret` guardado como hash SHA-256 + bcrypt. Si el `client_id` no existe se verifica igual contra un hash señuelo, para que el tiempo de respuesta no permita enumerar clientes.
+  - Nunca se loguean el `client_secret`, el header `Authorization` ni el token (hay un test con `caplog` que lo verifica). La respuesta del token endpoint lleva `Cache-Control: no-store`.
+  - **Pendiente**: el token endpoint no tiene rate limit propio (hoy lo frena sólo el costo de bcrypt). Si se expone fuera de la red interna, agregarlo antes.
 - El panel web usa sesiones firmadas con `HttpOnly`, `SameSite=Lax`, `max_age` explícito y `Secure` configurable vía `WEB_SESSION_HTTPS_ONLY`.
 - La SPA no debe guardar JWT/tokens sensibles en `localStorage` salvo justificación excepcional y documentada.
 - El login del panel aplica rate limit en memoria por IP + usuario. En producción multiworker o multiinstancia debe migrarse a Redis u otro backend compartido.

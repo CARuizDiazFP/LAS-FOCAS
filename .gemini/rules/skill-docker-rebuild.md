@@ -302,9 +302,11 @@ docker exec lasfocasdev-web curl -s http://localhost:8080/api/infra/...
 
 Si un curl da 404 con `{"detail":"Not Found"}` en vez del 401/403 esperado para un endpoint autenticado real, sospechar primero del contenedor equivocado antes de asumir que la ruta está mal registrada (para el otro patrón real de fallo — 422 por orden de registro de rutas en el mismo archivo — ver `docs/infra.md`, hallazgo de routing 2026-08-11).
 
-## El directorio `scripts/` no está incluido en ninguna imagen
+## El directorio `scripts/`: incluido en la imagen de `api`, no en la de `web`
 
-Ni `api/Dockerfile` ni `web/Dockerfile` copian `scripts/` a la imagen — es intencional (son scripts de mantenimiento/backfill manual, no parte del runtime de la app). Esto significa que **tras cualquier `build` seguido de `up -d`/`up -d --force-recreate`**, el contenedor recreado NO tiene `/app/scripts` — aunque una sesión anterior lo haya copiado ahí a mano con `docker cp`, ese cambio vivía sólo en la capa *writable* del contenedor viejo y se pierde al recrearlo desde la imagen.
+**Actualizado 2026-09-29**: desde `a2d055a` (2026-08-26) `api/Dockerfile` hace `COPY scripts /app/scripts`, así que en `lasfocasdev-api` un script commiteado ya está disponible tras el rebuild (`docker exec lasfocasdev-api python scripts/<script>.py`, verificado con `scripts/api_clients.py`). `web/Dockerfile` sigue sin copiarlo: lo que sigue aplica a `lasfocasdev-web`, y a `api` sólo para un script **sin commitear** o si se lo quisiera correr contra una imagen anterior a esa fecha.
+
+Hasta 2026-08-26 ninguna de las dos imágenes copiaba `scripts/`. Esto significaba que **tras cualquier `build` seguido de `up -d`/`up -d --force-recreate`**, el contenedor recreado NO tenía `/app/scripts` — aunque una sesión anterior lo haya copiado ahí a mano con `docker cp`, ese cambio vivía sólo en la capa *writable* del contenedor viejo y se pierde al recrearlo desde la imagen.
 
 **Síntoma real** (2026-08-12): después de un `build`+`up -d --force-recreate` de `api`, `docker cp scripts/mi_script.py lasfocasdev-api:/app/scripts/mi_script.py` falló con `Could not find the file /app/scripts` — el directorio padre no existía en el contenedor nuevo.
 
@@ -398,7 +400,7 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
 7. **Drift de red antes de `up` incremental**: comparar subred declarada vs. real antes de tocar un solo servicio de un stack ya corriendo (ver sección arriba)
 8. **UID compartido en `base.Dockerfile`**: verificar colisiones con `useradd`/`USER` de los Dockerfiles hijos antes de tocar la imagen base (ver sección arriba)
 9. **Contenedores `api`/`web`, mismo comando distinto `main.py`**: antes de un curl de verificación contra un endpoint de `web/app/main.py`, confirmar que se apunta a `lasfocasdev-web`, no a `lasfocasdev-api` (ver sección arriba)
-10. **`scripts/` no está en ninguna imagen**: tras cualquier rebuild/recreate de `api`/`web`, `docker cp scripts <contenedor>:/app/scripts` antes de intentar correr un script vía `docker exec` (ver sección arriba)
+10. **`scripts/` está en la imagen de `api` (desde 2026-08-26), no en la de `web`**: en `web`, tras cualquier rebuild/recreate, `docker cp scripts <contenedor>:/app/scripts` antes de correr un script vía `docker exec` (ver sección arriba)
 
 
 ## Script contra dev real desde el HOST (fuera de un contenedor)
@@ -437,6 +439,33 @@ cat .secrets/Dev_api_key_v1.txt
 curl -s http://localhost:8011/servicios/detail?id=123 \
   -H "Authorization: Bearer $(cat .secrets/Dev_api_key_v1.txt)"
 ```
+
+## Curl real de verificación E2E contra `/api/v1` (OAuth2): cliente de QA temporal
+
+Las rutas `/api/v1/*` de `lasfocasdev-api` **no** aceptan la API key de arriba (401): piden un JWT de
+OAuth2 `client_credentials` (ver `docs/api.md`, sección "API v1"). Receta usada el 2026-09-29 para
+verificar los 6 endpoints v1. El secret nunca pasa por la terminal ni queda en disco al terminar:
+
+```bash
+SP=<scratchpad>; umask 077
+docker exec lasfocasdev-api python scripts/api_clients.py crear --area "QA E2E <tarea>" \
+  --scopes servicios:read cables:read > $SP/c.txt 2>/dev/null
+CID=$(awk '/^client_id:/{print $2}' $SP/c.txt); CS=$(awk '/^client_secret:/{print $2}' $SP/c.txt)
+T=$(curl -s -u "$CID:$CS" -d grant_type=client_credentials http://localhost:8011/api/v1/oauth/token \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
+curl -s -H "Authorization: Bearer $T" http://localhost:8011/api/v1/servicios/93154/botellas
+curl -s -G -H "Authorization: Bearer $T" --data-urlencode "cable=F-VIN-JDG (a instalar)" \
+  http://localhost:8011/api/v1/cables/servicios              # nombres con espacios: --data-urlencode
+docker logs lasfocasdev-api 2>&1 | grep -c -F -e "$CS" -e "$T"   # debe dar 0: ni secret ni token en logs
+docker exec lasfocasdev-api python scripts/api_clients.py desactivar --client-id $CID
+rm -f $SP/c.txt
+```
+
+- Probar también la revocación: el mismo `$T` tiene que dar 401 después de `desactivar`.
+- Para probar un scope faltante, crear un segundo cliente con un solo scope (`--scopes servicios:read`)
+  y confirmar el 403 en `/api/v1/cables/*`.
+- Los clientes de QA quedan **inactivos** en `app.api_clients` (no se borran). Listarlos con
+  `api_clients.py listar`.
 
 ## Ventana de mantenimiento con restore de datos + rebuild de código: reconstruir el código PRIMERO
 
@@ -508,3 +537,41 @@ docker exec lasfocasdev-web grep -c '<simbolo-o-fragmento-sql-nuevo>' /app/<ruta
 
 Regla: si no podés mostrar evidencia de que el contenedor tiene tu código, cualquier verificación E2E
 contra él no prueba nada sobre tu cambio.
+
+## Una capacidad nueva en un contenedor viejo puede necesitar config que ese contenedor nunca tuvo
+
+Hallazgo real (2026-09-28, comando `@bot track` de Slack): el código nuevo pasó 25 tests propios y la
+suite completa (2169 passed), se integró a `dev` y el contenedor se reconstruyó correctamente — y la
+primera ejecución real adentro murió igual, con
+`CromoConfigError: Configuración de Cromo incompleta. Definir CROMO_PASSWORD (o secreto
+cromo_password_v1)`. Causa: se le agregó al `slack_baneo_worker` una capacidad que **habla con un
+sistema externo nuevo para ese servicio**, y ese servicio nunca había montado
+`cromo_password_v1` en `deploy/docker-compose.dev.yml` ni en `deploy/compose.yml` (sí lo montaban
+`web` y `cromo_worker`). El resto de la config de Cromo (`CROMO_BASE_URL`, `CROMO_USER`, …) ya le
+llegaba por `env_file`: faltaba **sólo** el secreto.
+
+**Ningún test puede detectarlo.** Los del handler mockean la capa que necesita la credencial; los del
+servicio corren desde el host con el `.venv`, que tiene otro entorno. Sólo aparece ejecutando dentro
+del contenedor real — y el healthcheck sigue en verde, porque el proceso arranca igual: falla recién
+en la primera invocación del comando.
+
+**Regla**: cuando una capacidad nueva hace que un servicio hable con un sistema externo (Cromo, PROV,
+Slack, SMTP…) que ese servicio **no usaba antes**, comparar su bloque `secrets:`/`environment:` en el
+compose contra el de un servicio que sí lo usa, **antes** de dar por cerrado el cambio:
+
+```bash
+# ¿Qué secretos monta cada servicio? Compará el que tocaste contra el que ya habla con ese sistema.
+python3 - <<'PY'
+import re, pathlib
+s = pathlib.Path('deploy/docker-compose.dev.yml').read_text()
+for m in re.finditer(r"\n  ([a-z_-]+):\n(.*?)(?=\n  [a-z_-]+:\n)", s, re.S):
+    secretos = re.findall(r"^\s+- (\w+_v\d+)$", m.group(2), re.M)
+    print(f"{m.group(1):28} {secretos}")
+PY
+
+# Y confirmalo en el contenedor ya recreado, no en el yml:
+docker exec <contenedor> ls /run/secrets/
+```
+
+Aplicar el arreglo a **dev y prod en el mismo cambio**: el faltante es idéntico en los dos composes y
+diferirlo garantiza el mismo error en el despliegue.

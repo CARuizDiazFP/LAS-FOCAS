@@ -297,6 +297,35 @@ def test_reusa_camara_con_cromo_hijos(monkeypatch):
 
 Caso real: `core/services/camara_hierarchy_service.py::ids_camaras_con_cromo_hijos` — ver `tests/test_camara_hierarchy_service.py` y `tests/test_cromo_camara_padre_service.py`.
 
+## Columna nueva en una SELECT desempaquetada por posición: fixtures de fila en otros archivos (lección 2026-09-28)
+
+Las consultas `text()` de `core/services/cromo/verificador.py` se mapean con desempaquetado posicional
+(`(a, b, c, ...) = fila` en `_fila_a_servicio_unico` y hermanas). Los tests que las ejercitan no
+mockean el mapper: arman **tuplas de fila crudas** a mano, y viven en **varios archivos**, no sólo en
+el del módulo. Agregar una columna a la SELECT rompe cada tupla con
+`ValueError: not enough values to unpack (expected 12, got 11)`, y lo encontrás de a un archivo por
+corrida de la suite.
+
+Caso real (2026-09-28, `s.categoria` y luego `s.es_verificable` en `_COLUMNAS_SERVICIO_UNICO`): el
+primer `pytest -x` cortó en `tests/test_cromo_verificador.py`; recién la corrida siguiente mostró 7
+fallas más en `tests/test_web_cromo_servicios_unicos.py`. Fue una corrida completa de ~3,5 min que no
+hacía falta.
+
+**Antes de correr la suite**, buscar todas las tuplas de esa consulta de una vez, por la forma de un
+elemento que sólo aparece en la fila cruda — no por el nombre de la constante: en el caso real sólo
+uno de los dos archivos la citaba.
+
+```bash
+# El elemento `metodos` como lista suelta en su propia línea: 4 tuplas en 2 archivos, sin falsos
+# positivos (las construcciones por kwargs dicen `metodos=[...]` y no matchean). No anclar con `$`:
+# en test_cromo_verificador.py la línea termina en un comentario `# metodos`.
+grep -rnE '^\s+\["REGEX_EXACTO"\],' tests/
+```
+
+Dos criterios que evitan romper más de lo necesario: la columna nueva va **al final** de la SELECT
+(no corre la posición de las previas) y el campo nuevo del dataclass lleva **default** (`= None`),
+así los tests que construyen el dataclass con kwargs no se tocan.
+
 ## Tests HTTP de un endpoint async con DB (lección 2026-08-14)
 
 Antes de escribir un test HTTP nuevo contra `api/app/routes/*.py`, revisar si ya hay un archivo real

@@ -247,6 +247,27 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
     commiteado": puede significar que el árbol de trabajo desapareció debajo. Comprobarlo antes de
     narrar una explicación.
 
+18. **Reponer algo que un refactor borró NO es restaurarlo como estaba: verificá primero que su
+    fuente de datos siga siendo la sancionada.** Real (2026-09-21 → 2026-09-28): el commit
+    `5d68310` borró la sección "ODFs asociadas" del Detalle de Servicio. Se la repuso tal cual, con
+    el endpoint legacy que deriva las ODFs del archivo de tracking manual — pero
+    `docs/decisiones.md` (2026-09-09) ya había fijado a **Cromo** como fuente de verdad para ese
+    dominio. Peor: para el Servicio que el usuario usó de ejemplo esa fuente devolvía 0 filas (27 de
+    14.147 Servicios tienen tracking manual cargado), así que la reposición "funcionaba" y no
+    mostraba nada. Costó un ciclo completo de implementación, verificación y despliegue.
+
+    Que el código existiera antes no prueba que fuera correcto: pudo quedar obsoleto por una decisión
+    posterior que nadie aplicó a ese consumidor, y el refactor que lo borró pudo ser justamente la
+    ocasión en que dejó de tener sentido. Antes de restaurar:
+
+    ```bash
+    grep -in "fuente de verdad\|legacy" docs/decisiones.md | grep -i "<dominio>"
+    ```
+
+    y medir la cobertura real de esa fuente contra el universo (`count(*)` de filas con dato vs.
+    total de la tabla). Una fuente que cubre el 0,19% de los casos es la señal de que es legado, no
+    el canal principal. Si el usuario dio un ID de ejemplo, probar contra **ése** antes de entregar.
+
 ## Relación con otras skills
 `agent-worktree` (crea el worktree/rama propios del agente y coordina leases e integración; es el
 paso 0 de este procedimiento), `repo-updater` (audita/commitea sobre la rama efímera activa),

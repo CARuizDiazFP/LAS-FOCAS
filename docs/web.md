@@ -190,6 +190,10 @@ Centralizado vía `core.logging.setup_logging`.
   varios) — siempre re-deriva `es_transito` en vivo parseando el archivo. Enriquecimiento de cámara
   en batch (`Empalme.tracking_empalme_id.in_(...)`, una sola query). Devuelve `terminal_a`/
   `terminal_b` sólo como metadata de ruta, nunca cruzados contra filas de empalme puntuales.
+- `GET /api/infra/cromo/servicios/{servicio_id}/odfs` (2026-09-28) → ODFs del Servicio **según
+  Cromo ingerido**, el canal por defecto. Toma la **PK interna** (el legacy de arriba toma el ID
+  de origen: no son intercambiables). Une las tres vías de resolución y devuelve el `origen` de
+  cada una. SQL local, no toca Cromo en vivo. Ver `docs/decisiones.md`, 2026-09-28.
 - `GET /api/infra/tracking/{rutaId}/download` → descarga de tracking.
 - `POST /api/infra/trackings/analyze` → analiza archivo `.txt` (multipart). Devuelve `AnalyzeResult` con `status`: `NEW`, `IDENTICAL`, `CONFLICT`, `POTENTIAL_UPGRADE`, `NEW_STRAND`, `ERROR`.
 - `POST /api/infra/trackings/resolve` → ejecuta la acción seleccionada. JSON body: `{action, content, filename, target_ruta_id?, new_ruta_name?, new_ruta_tipo?, old_service_id?}`.
@@ -205,13 +209,17 @@ En la iteración actual, la vista `/servicios/ID/:idServicio` hace primeras inte
 
 - **RECLAMOS** consume resumen de ejecuciones recientes desde `GET /api/reports/history` (tipos `sla` y `repetitividad`) y enlaza a módulos de operación.
 - **FO** consume `GET /api/infra/servicios/{servicio_id}/rutas` y `GET /api/infra/rutas/{ruta_id}/tracking` para mostrar conteo real de rutas/cámaras/cables y puntas A/B.
-- **ODFs asociadas** (2026-08-28) consume `GET /api/infra/servicios/{servicio_id}/odfs` — agrupadas
-  por ruta, con toggle "Mostrar todos los empalmes" (por defecto sólo se muestran los que son
-  tránsito/ODF). Sin ninguna función de mapeo de color — este endpoint no trae datos de color.
-  **Desde 2026-09-21 no viven en la ficha sino en `/servicios/ID/:id/camino`**
-  (`components/servicios/detalle/OdfsAsociadasPanel.vue`): el refactor a tarjetas de 5d68310 borró
-  la tabla sin darle vista propia, y la ficha quedó contando ODFs que no tenía dónde mostrar. La
-  ficha conserva sólo el total, para el resumen de la tarjeta "Camino óptico".
+- **ODFs asociadas** — desde 2026-09-28 salen de **Cromo**, no del tracking. Tres canales, en este
+  orden, todos en `/servicios/ID/:id/camino`:
+  1. `GET /api/infra/cromo/servicios/{servicio_id}/odfs` (**PK interna**, no el ID de origen) →
+     `OdfsCromoPanel.vue`. Une las tres vías de resolución de Cromo y etiqueta el `origen`
+     (`servicio_resuelto` / `pelo` / `override_manual`) — ver `docs/decisiones.md`, 2026-09-28.
+  2. "Resolver camino" del `CromoCaminoPanel`, que consulta Cromo en vivo.
+  3. `GET /api/infra/servicios/{servicio_id}/odfs` (ID de origen) → `OdfsAsociadasPanel.vue`,
+     el tracking manual. Colapsado, último, y renderizado **sólo** en los Servicios que tienen ruta
+     cargada (27 de 14.147 en dev). Persiste para regularizar lo que Cromo no resuelve solo.
+
+  El "N ODFs" del resumen de la tarjeta "Camino óptico" de la ficha cuenta el canal 1, nunca el 3.
 
 Los endpoints same-origin de baneos del servicio `web` también disparan el aviso inmediato a Slack y reenvían el reporte actualizado de cámaras baneadas usando la configuración persistida en `app.config_servicios` (`slack_baneo_notifier`).
 

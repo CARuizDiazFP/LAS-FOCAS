@@ -1012,6 +1012,22 @@ semántica: viajan en `payload_raw` hasta que alguien los entienda.
 
 Volumen esperado: 13.482 cajas PON + 17.348 rosetas ≈ 30.800 filas.
 
+### Tabla `api_clients` (OAuth2 M2M, 2026-09-29)
+
+Clientes máquina-a-máquina de la API v1 (un área corporativa por fila). Los administra
+`scripts/api_clients.py`; ver `docs/api.md`, sección "API v1 para integraciones interáreas".
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `SERIAL` PK | |
+| `client_id` | `String(64)`, `NOT NULL`, único (`ix_api_clients_client_id`) | Formato `lf_<16 hex>`. Es el `sub` del JWT. |
+| `client_secret_hash` | `String(255)`, `NOT NULL` | `core/password.py::hash_password` (SHA-256 + bcrypt). El secreto en claro nunca se guarda. |
+| `nombre_area` | `String(128)`, `NOT NULL` | Área dueña de la integración. |
+| `activo` | `BOOLEAN`, `NOT NULL`, default `true` | Se revalida en cada request: `false` corta los tokens vigentes. |
+| `scopes` | `VARCHAR(64)[]`, `NOT NULL`, default `'{}'` | Scopes autorizados: `servicios:read` y/o `cables:read`. |
+| `created_at` | `timestamptz`, default `now()` | |
+| `ultimo_uso_at` | `timestamptz`, nullable | Última emisión de token. |
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -1068,6 +1084,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260923_02` | `20260923_02_servicios_sync_prov.py` | Tabla `app.servicios_sync_prov` (`ultima_sincronizacion_ok NOT NULL` en esta versión) — última sincronización PROV por Servicio (ver sección "Tabla `servicios_sync_prov`" arriba) |
 | `20260923_03` | `20260923_03_servicios_sync_prov_nullable.py` | `ALTER COLUMN servicios_sync_prov.ultima_sincronizacion_ok DROP NOT NULL` — fix de revisión de la Task 9: el camino de intento FALLIDO necesita persistir sin una sincronización exitosa previa; `NULL` reemplaza al centinela `1970-01-01` que se usó primero (ver `docs/decisiones.md`) |
 | `20260928_01` | `20260928_01_ingresos_correcciones_origen_web.py` | Columnas `ingresos_correcciones.origen`/`actor_web_usuario`, columnas de Slack nullable + CHECK por origen — auditoría del botón "Registrar egreso" del panel. El `downgrade()` aborta si ya hay filas `origen='web'` (no se descarta auditoría). Upgrade→downgrade→upgrade verificado en dev |
+| `20260929_01` | `20260929_01_api_clients.py` | Tabla `app.api_clients` (clientes OAuth2 `client_credentials` de `/api/v1`, índice único `ix_api_clients_client_id`). Upgrade→downgrade→upgrade verificado en dev |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

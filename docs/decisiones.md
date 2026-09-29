@@ -2478,3 +2478,96 @@ su propia ventana de mantenimiento.
   `dev`") y transiciones `dev`→rama ("0 entradas nuevas que resuelvan a una cámara incorrecta"). El
   primero solo no alcanzó: una versión que lo pasaba tenía 8 transiciones a cámara incorrecta que
   encontró la revisión adversarial. Se aceptó a cambio 1 transición correcta → sin match.
+
+## 2026-09-28 — Cromo es el canal por defecto de las ODFs de un Servicio; el tracking manual baja a tercer canal
+
+- **Contexto:** el rediseño de la ficha de Servicio a tarjetas (`5d68310`, 2026-09-17) borró la
+  sección "ODFs asociadas" sin darle vista propia — quedaron el endpoint, el cliente y la llamada
+  vivos, y la tarjeta "Camino óptico" contando "N ODFs" sin ningún lugar donde mostrarlas. Al
+  reponerla (2026-09-21, `a1b0bd3`) se repuso la fuente equivocada: ese endpoint deriva las ODFs del
+  **archivo de tracking subido a mano** (`RutaServicio.raw_file_content`), no de Cromo. El usuario lo
+  detectó con su propio caso: el Servicio 67395 mostraba "Sin ODFs" en el detalle y sí aparecía en el
+  viewer de Servicios x ODF.
+- **Universo real medido en dev (2026-09-28):** 14.147 Servicios. Con tracking manual cargado: **27
+  (0,19%)**. Con pelo matcheado en Cromo: 9.079 (64%). Resolución a ODF por Cromo: 6.879 por la vía
+  canónica (`cromo_odf_conectores.servicio_resuelto`), 5.759 por pelo matcheado, 5.728 por las dos,
+  **31 sólo por pelo**, 0 overrides manuales vigentes.
+- **Decisión (del usuario, explícita):** los datos se traen **por defecto de lo ingerido en Cromo**
+  (canal 1), **consulta en vivo a Cromo** como canal 2, y el **tracking manual persiste sólo para
+  regularizar los casos que Cromo no resuelve automáticamente** (canal 3). No se borra nada del
+  legacy: ni el endpoint, ni sus tests, ni datos en DB. Ratifica y extiende la entrada del
+  2026-09-09, que ya había fijado a Cromo como fuente de verdad para el viewer.
+- **Implementación:** `verificador.odfs_por_servicio()` (inversa de `servicios_por_odf`) une las tres
+  vías, deduplica por `odf_n_id` y etiqueta el `origen` con precedencia
+  `servicio_resuelto` > `pelo` > `override_manual`. El endpoint
+  `GET /api/infra/cromo/servicios/{servicio_id}/odfs` toma la **PK interna**, como el resto de la
+  familia `/cromo/servicios/...` (el legacy toma el ID de origen: no son intercambiables).
+  En `/servicios/ID/:id/camino`, `OdfsCromoPanel` va primero, el panel de Cromo con "Resolver camino"
+  (canal 2) en el medio, y `OdfsAsociadasPanel` (canal 3) último, colapsado y renderizado sólo si ese
+  Servicio tiene tracking.
+- **Por qué se rotula el `origen` y no se unifica en silencio:** la definición canónica de "tiene ODF
+  resuelta" del gestor de Servicios sin ODF mira SÓLO `servicio_resuelto`. Mostrar las 31 ODFs que
+  llegan nada más que por pelo sin distinguirlas haría parecer que las dos pantallas se contradicen;
+  esconderlas sería peor, porque son reales. El chip "Por pelo" es lo que reconcilia las dos lecturas.
+- **Fuera de alcance, decidido en el mismo turno:** la tira de métricas FO de la ficha ("Cámaras / N
+  cables tributando") también se alimenta del tracking legacy vía `getRutasServicio`/`getTrackingRuta`
+  — está en blanco para 14.120 de 14.147 Servicios. Se deja como está por ahora (opción elegida por el
+  usuario); es su propio ticket.
+
+
+## 2026-09-29 — API v1 para integraciones interáreas: OAuth2 M2M propio y traza de servicios/cables
+
+- **Pedido**: exponer a otras áreas `GET /api/v1/servicios/{servicio_id}/botellas`, protegido por
+  OAuth2 `client_credentials` emitido por LAS-FOCAS, y resolviendo si el ID consultado es vigente o
+  histórico.
+- **Auth separada de la API key**: `api_key_v1` es una sola, compartida con la web. Dársela a
+  terceros no permite identificarlos, limitarlos ni revocarlos por separado. Las dos credenciales
+  viajan como `Bearer`, así que el router v1 se monta **sin** `require_api_key` y sólo con
+  `require_oauth_token`: ninguna de las dos credenciales abre la otra superficie. El flujo
+  web → api no cambia.
+- **Revocación con tokens de 7 días**: el TTL lo definió el pedido. Para que desactivar un área no
+  tenga que esperar una semana, el cliente se relee por `client_id` en cada request (una lectura por
+  índice único) y el scope efectivo es la intersección entre el scope del token y el scope actual
+  del cliente.
+- **Fuente de botellas: híbrida sin Cromo en vivo** (opción elegida por el usuario). El `/path` de
+  Cromo cuesta 4,6-14 s por pelo, y un endpoint M2M no puede depender de esa latencia ni de la
+  disponibilidad de Cromo. Hay tres fuentes, reportadas en `orden_fuente`:
+  1. Traza cacheada en `cromo_tracking_cache`, que tiene orden real.
+  2. Ruta legada ordenada, sólo si no hay traza.
+  3. Inventario local (extremos de cable), siempre agregado al final en orden alfabético.
+- **Filtro "sólo `cromo_botellas`"** en las dos fuentes con orden, a partir de lo medido en dev:
+  - El renderer de trackings emite las ODF con la misma línea `Empalme <id>:` que las botellas.
+  - En la ruta legada, el sufijo de `tracking_empalme_id` (`<servicio>_<id>`) coincide con
+    `cromo_botellas.n_id` en 3107 de 3252 empalmes. Los 145 restantes son casi todos ODF/Nodo/Rack:
+    96 están en `cromo_odfs`.
+  - `Empalme.es_transito` está en `false` en **todas** las filas, así que no sirve para filtrar.
+  - La primera versión caía al nombre de la Cámara y devolvía "ODF Guanahani 580…" como primera
+    "botella" del 93154.
+- **Resolución del ID**: `_buscar_servicio_por_id` de `api/app/routes/servicios.py` no mira
+  `alias_ids`, así que no servía para IDs históricos. El resolver nuevo sí los mira, y además aplica
+  el criterio anti-ambigüedad de `_SQL_BUSCAR_SERVICIO` (bug real del 2026-08-31): una fila cuyo
+  `servicio_id` ya fue absorbido como alias por otra no gana. Quedaban 43 filas así en dev. Caso
+  real verificado: `34111` resuelve a la fila vigente `109704` y no a la huérfana.
+- **Alta de clientes por CLI, sin endpoint admin** (opción elegida por el usuario): evita sumar
+  superficie HTTP que administre credenciales.
+- **Pendiente para prod**: crear `.secrets/oauth_jwt_secret_v1.txt` (≥ 32 bytes, **distinto** del de
+  dev), aplicar `20260929_01` y recrear `api`. No desplegado (directiva sólo-dev).
+- **Ampliación del mismo día** (pedido del usuario): se agregan `/servicios/{id}/cables`,
+  `/servicios/{id}/odfs`, `/cables/servicios` y `/cables/pelos`, antes de publicar la guía de
+  integración. Así la guía documenta sólo endpoints que ya funcionan.
+  - **Scopes por dominio** (opción elegida por el usuario): `servicios:read` y `cables:read`, que
+    reemplazan a `servicios:botellas:read`. Ese scope no llegó a desplegarse en ningún lado.
+  - **Cables de la traza**: mismas tres fuentes que las botellas. Se leen de las líneas de tramo,
+    que tienen la misma gramática en los trackings generados y en los legacy (estos llevan la
+    columna dB al final).
+  - **ODF: sólo Cromo** ("Cromo como fuente de la verdad siempre", pedido explícito). Se excluyen
+    los overrides manuales de LAS-FOCAS (0 vigentes en dev).
+  - **Posiciones de ODF**: no se reusa `odf_conectores.conectores_de_odf`, porque resuelve el
+    servicio de cada conector con un `LATERAL` sobre `app.servicios`. Medido: ~500 ms por ODF, y
+    1,6-1,8 s por servicio. Una sola query filtrada por las dos vías de `odfs_por_servicio` da el
+    mismo resultado en ~100 ms (verificado con 93154, 120393 y 34111).
+  - **Cable por query string**, no en el path: 436 de 32.810 cables vigentes tienen espacios o
+    paréntesis en el nombre.
+  - **Nombres de cable numéricos**: se prueban primero como `cable_id` y después como nombre, porque
+    hay cables vigentes llamados "5", "6" y "530". Los comandos de Slack y el resolver de la web no
+    tienen este respaldo: ahí esos cables siguen siendo inalcanzables por nombre.

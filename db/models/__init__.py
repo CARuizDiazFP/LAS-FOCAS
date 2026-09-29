@@ -16,3 +16,4 @@ from db.models.cromo import (  # noqa: F401
     CromoTubo,
     TipoAsociacionPelo,
 )
+from db.models.api_clients import ApiClient  # noqa: F401

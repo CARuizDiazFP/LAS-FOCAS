@@ -12,6 +12,7 @@ orjson==3.10.6  # Serializador JSON de alto rendimiento (unificado)
 jinja2==3.1.6  # Motor de plantillas para UI (parche de seguridad, ver pip-audit)
 python-multipart==0.0.9  # Soporte de formularios para FastAPI
 bcrypt==4.1.2  # Hash de contraseñas (uso directo sin Passlib)
+PyJWT==2.15.1  # JWT OAuth2 client_credentials de /api/v1 (también en api/requirements.txt)
 itsdangerous==2.2.0  # Firmas para sesiones (SessionMiddleware)
 pydantic==2.9.2  # Modelos y validación (usado en schemas de módulos)
 pydantic-settings==2.4.0  # Configuración basada en BaseSettings (PYD v2)

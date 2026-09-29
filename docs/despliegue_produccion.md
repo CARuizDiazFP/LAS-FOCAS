@@ -19,6 +19,10 @@ migraciones de `dev`.
   sobre la DB de prod, aunque el usuario lo haya aprobado en el chat (real el 2026-09-07 y el
   2026-09-25). Hacer todo el relevamiento y las etapas sin riesgo primero (pasos 1 a 3) y pedirle
   al usuario que salga de Auto Mode **antes** del paso 4, no a mitad de la ventana.
+  El mismo clasificador **también puede bloquear lecturas** de prod (un `SELECT` de relevamiento,
+  real el 2026-09-28), de forma no uniforme: ese día un `pg_dump` de backup pasó y un `SELECT` de
+  textos no. Si una lectura necesaria se bloquea, pedir la salida de Auto Mode en ese momento, no
+  rodearla.
 - `ListAgents` + `python scripts/agent_worktree.py list`: que no haya sesiones activas integrando a `dev`.
 - El checkout de control debe estar en `dev`, limpio y en `origin/dev`: es el contexto de build
   del compose (`context: ..`).
@@ -65,6 +69,16 @@ git diff --quiet $C origin/dev && git push origin $C:refs/heads/main
 
 Si `main` tiene commits propios, **no** usar esto: hacer el merge real en un worktree de `main`.
 
+**Excepción verificada (2026-09-28)**: si el único commit propio de `main` es el merge del
+despliegue anterior (`git log origin/dev..origin/main` = 1 commit de merge) y su árbol es idéntico al
+de su segundo padre, que es ancestro de `dev`, `main` no tiene contenido propio y el `commit-tree` de
+arriba sigue siendo seguro — aunque `--is-ancestor` dé falso:
+
+```bash
+P2=$(git log -1 --format=%P origin/main | awk '{print $2}')
+git merge-base --is-ancestor $P2 origin/dev && git diff --quiet origin/main $P2 && echo "main sin contenido propio"
+```
+
 ## 5. Ventana
 
 ```bash
@@ -85,16 +99,33 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
 
 - Todos `healthy` y sin stale: para cada contenedor de app, `docker inspect -f '{{.Image}}'` igual
   a `docker image inspect -f '{{.Id}}' <imagen>`.
-- `/health` de `lasfocas-web` (`:8080`) y `lasfocas-api` (`:8000`, incluye `db`).
+- `/health` de `lasfocas-web` y `lasfocas-api` (incluye `db`). Puertos publicados reales (verificados
+  el 2026-09-28 con `docker port`): web en `172.18.208.162:8080` (no escucha en `127.0.0.1`), api en
+  `:8001` del host (`8000` es el puerto interno del contenedor).
 - `docker logs --since 5m` de cada servicio sin `error|traceback|exception`.
 - Conteos de datos reales iguales a los de antes del deploy.
-- `slack_baneo_worker`: log `IngresoListener iniciado en modo Socket`.
+- `slack_baneo_worker`: log `IngresoListener iniciado en modo Socket`. Los logs del worker están en
+  hora local (UTC-3): un `--since 5m` puede no mostrar la línea de arranque; buscarla con `--since 15m`.
+  El warning `missing_scope ... users:read` es conocido (falta el scope en la Slack App de prod, ver
+  `docs/cierres/2026-09-07.md`): el técnico queda con el ID crudo de Slack.
 - Redis: los tres checks de `docs/mantenimiento_redes_produccion.md` ("Verificación post-despliegue").
 - Queda para el usuario: navegador sobre el panel y un mensaje real en Slack prod.
 
 ## 7. Pasos de datos pendientes del lote (post-verificación)
 
 Se corren **después** del paso 6, con el código nuevo ya sirviendo, dentro del contenedor de prod.
+
+Patrón para cualquier script de datos de este paso (usado por el reproceso, 2026-09-28):
+
+- **Por stdin**: los contenedores de app no tienen `scripts/` ni `/tmp` escribible
+  (`docker exec -i -w /app -e PYTHONPATH=/app <contenedor> python - [args] < scripts/x.py`); la salida
+  va por stdout y se redirige a un archivo del host.
+- **Dry-run exacto, no estimado**: correr todo dentro de una transacción externa que se revierte
+  (`Session(bind=connection, join_transaction_mode="create_savepoint")` sobre `connection.begin()`):
+  los `commit()` de los servicios existentes sólo liberan savepoints. El reporte del dry-run es lo que
+  hará `--apply`. Ver `scripts/ingresos_reprocesar_sin_match.py::ejecutar`.
+- **Ensayar antes en dev con una copia de los datos de prod** dentro de la misma transacción
+  revertida: el ensayo del 2026-09-28 encontró un bug real del listener antes de tocar prod.
 
 - **Reproceso de ingresos sin match** (desde el despliegue que incluya la mejora de búsqueda del
   2026-09-28, `cc58658`, y `scripts/ingresos_reprocesar_sin_match.py`). Dry-run exacto primero

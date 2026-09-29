@@ -34,6 +34,9 @@ from modules.slack_baneo_notifier.cable_info import (
     extraer_comando_info_cable,
     extraer_comando_servicios_buffer,
     extraer_comando_servicios_cable,
+    extraer_filtro_categoria,
+    extraer_filtro_verificable,
+    filtrar_servicios,
     resolver_tubo_por_numero,
 )
 
@@ -479,6 +482,8 @@ def _servicio_unico(
     servicio_id_externo: str,
     pelos_n_ids: list[int],
     numeros_en_pelo: list[str] | None = None,
+    categoria: int | None = None,
+    es_verificable: bool | None = None,
 ) -> ServicioUnico:
     return ServicioUnico(
         servicio_id=servicio_id,
@@ -492,6 +497,8 @@ def _servicio_unico(
         cantidad_pelos=len(pelos_n_ids),
         numeros_en_pelo=numeros_en_pelo if numeros_en_pelo is not None else [servicio_id_externo],
         metodos=["EXACTO"],
+        categoria=categoria,
+        es_verificable=es_verificable,
     )
 
 
@@ -1033,3 +1040,328 @@ class TestInfoCableBufferConsultaFrescura(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TestExtraerFiltroCategoria(unittest.TestCase):
+    """"Servicios C<N> <cable>" (2026-09-28): el token de categoría va inmediatamente después del
+    verbo; se separa ANTES de los parsers de servicios para que éstos sigan viendo la forma sin
+    filtro ("Servicios <cable>" / "Servicios <cable> B<N>") y no cambien de contrato."""
+
+    def test_separa_categoria_del_cable(self) -> None:
+        self.assertEqual(extraer_filtro_categoria("Servicios C6 F-GRN-598"), (6, "Servicios F-GRN-598"))
+
+    def test_combina_con_buffer(self) -> None:
+        categoria, resto = extraer_filtro_categoria("Servicios C3 F-GRN-598 B2")
+        self.assertEqual(categoria, 3)
+        self.assertEqual(extraer_comando_servicios_buffer(resto), ("F-GRN-598", 2))
+
+    def test_case_insensitive_y_negrita(self) -> None:
+        self.assertEqual(extraer_filtro_categoria("servicios *c1* F-GRN-598"), (1, "servicios F-GRN-598"))
+
+    def test_sin_filtro_devuelve_none_y_texto_intacto(self) -> None:
+        self.assertEqual(extraer_filtro_categoria("Servicios F-GRN-598"), (None, "Servicios F-GRN-598"))
+
+    def test_fuera_de_rango_se_devuelve_para_que_el_caller_avise(self) -> None:
+        """C0 (placeholder Cromo) y C7+ no son filtrables — se devuelven igual para que el listener
+        responda "categoría inválida" en vez de buscar un cable llamado "C7 F-GRN-598"."""
+        self.assertEqual(extraer_filtro_categoria("Servicios C7 F-GRN-598")[0], 7)
+        self.assertEqual(extraer_filtro_categoria("Servicios C0 F-GRN-598")[0], 0)
+
+    def test_c_sola_sin_cable_es_nombre_de_cable(self) -> None:
+        """"Servicios C1" sin nada más: no hay cable después del token, así que "C1" es el nombre."""
+        self.assertEqual(extraer_filtro_categoria("Servicios C1"), (None, "Servicios C1"))
+
+    def test_no_toca_otros_verbos(self) -> None:
+        self.assertEqual(extraer_filtro_categoria("Info cable C6 X"), (None, "Info cable C6 X"))
+
+
+class TestFiltrarPorCategoria(unittest.TestCase):
+    def test_filtra_y_conserva_identidad(self) -> None:
+        servicios = [
+            _servicio_unico(1, "133345", [10], categoria=6),
+            _servicio_unico(2, "140002", [11], categoria=3),
+        ]
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=servicios)
+
+        filtrado = filtrar_servicios(resultado, categoria=6)
+
+        self.assertEqual([s.servicio_id_externo for s in filtrado.servicios], ["133345"])
+        self.assertEqual(filtrado.cable_n_id, 99)
+
+    def test_none_no_filtra(self) -> None:
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=[_servicio_unico(1, "1", [1])])
+        self.assertIs(filtrar_servicios(resultado), resultado)
+
+
+class TestRespuestaServiciosConCategoria(unittest.TestCase):
+    def test_cable_encabezado_con_categoria(self) -> None:
+        cable = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        resultado = ResultadoServiciosUnicos(
+            cable_n_id=99, tubo_n_id=None, servicios=[_servicio_unico(1, "133345", [10], categoria=6)]
+        )
+        session = MagicMock()
+        session.execute.return_value.all.side_effect = [[(10, 100)], [(100, 0, "AZ")]]
+
+        texto = construir_respuesta_servicios_cable(cable, session, resultado, set(), categoria=6)
+
+        self.assertIn("Categoría *C6*", texto.split("\n")[0])
+        self.assertIn("1 ID(s) únicos", texto)
+
+    def test_cable_vacio_con_categoria(self) -> None:
+        cable = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=[])
+
+        texto = construir_respuesta_servicios_cable(cable, MagicMock(), resultado, set(), categoria=6)
+
+        self.assertIn("Sin servicios de categoría C6 en este cable", texto)
+
+    def test_buffer_vacio_con_categoria(self) -> None:
+        cable = SimpleNamespace(nombre="F-GRN-598")
+        tubo = SimpleNamespace(orden=1, nombre_color="NR")
+        resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=1, servicios=[])
+
+        texto = construir_respuesta_servicios_buffer(cable, tubo, resultado, set(), categoria=2)
+
+        self.assertIn("Buffer *B2*", texto)
+        self.assertIn("Categoría *C2*", texto)
+        self.assertIn("Sin servicios de categoría C2 en este buffer", texto)
+
+
+class TestHandleServiciosConCategoria(unittest.TestCase):
+    def _make_listener(self):
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def test_cable_filtra_y_solo_refresca_los_filtrados(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        cable_fake = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        servicios = [
+            _servicio_unico(1, "133345", [10], categoria=6),
+            _servicio_unico(2, "140002", [11], categoria=3),
+        ]
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=servicios)
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_local,
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]
+            ) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.servicios_unicos_por_cable_sync", return_value=resultado),
+            patch("modules.slack_baneo_notifier.listener.servicios_vencidos_sync", return_value=set()) as mock_venc,
+        ):
+            mock_session_local.return_value.execute.return_value.all.side_effect = [[(10, 100)], [(100, 0, "AZ")]]
+            listener._handle_app_mention({"text": "Servicios C6 F-GRN-598", "channel": "C1", "ts": "1.1"}, client_mock)
+
+        self.assertEqual(mock_buscar.call_args.args[1], "F-GRN-598")
+        mock_venc.assert_called_once_with(mock_session_local.return_value, {1})
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("133345", texto)
+        self.assertNotIn("140002", texto)
+        self.assertIn("Categoría *C6*", texto)
+
+    def test_buffer_con_categoria(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        cable_fake = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        tubo_fake = SimpleNamespace(n_id=1, orden=1, nombre_color="NR")
+        servicios = [
+            _servicio_unico(1, "133345", [10], categoria=3),
+            _servicio_unico(2, "140002", [11], categoria=4),
+        ]
+        resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=1, servicios=servicios)
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero", return_value=tubo_fake) as mock_tubo,
+            patch("modules.slack_baneo_notifier.listener.servicios_unicos_por_tubo_sync", return_value=resultado),
+            patch("modules.slack_baneo_notifier.listener.servicios_vencidos_sync", return_value=set()),
+        ):
+            listener._handle_app_mention({"text": "Servicios C3 F-GRN-598 B2", "channel": "C1", "ts": "1.1"}, client_mock)
+
+        self.assertEqual(mock_tubo.call_args.args[2], 2)
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("133345", texto)
+        self.assertNotIn("140002", texto)
+        self.assertIn("Buffer *B2*", texto)
+
+    def test_categoria_invalida_avisa_sin_consultar(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_local,
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre") as mock_buscar,
+        ):
+            listener._handle_app_mention({"text": "Servicios C7 F-GRN-598", "channel": "C1", "ts": "1.1"}, client_mock)
+
+        mock_buscar.assert_not_called()
+        mock_session_local.assert_not_called()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("C1 a C6", texto)
+
+
+class TestExtraerFiltroVerificable(unittest.TestCase):
+    """"Servicios ... VER|NOVER" (2026-09-28): token al FINAL, después del cable y del buffer."""
+
+    def test_ver_al_final(self) -> None:
+        self.assertEqual(extraer_filtro_verificable("Servicios F-GRN-598 VER"), (True, "Servicios F-GRN-598"))
+
+    def test_nover_al_final(self) -> None:
+        self.assertEqual(extraer_filtro_verificable("Servicios F-GRN-598 NOVER"), (False, "Servicios F-GRN-598"))
+
+    def test_no_ver_con_espacio_o_guion(self) -> None:
+        self.assertEqual(extraer_filtro_verificable("Servicios F-GRN-598 no ver")[0], False)
+        self.assertEqual(extraer_filtro_verificable("Servicios F-GRN-598 NO-VER")[0], False)
+
+    def test_despues_del_buffer(self) -> None:
+        verificable, resto = extraer_filtro_verificable("Servicios F-GRN-598 B2 ver")
+        self.assertIs(verificable, True)
+        self.assertEqual(extraer_comando_servicios_buffer(resto), ("F-GRN-598", 2))
+
+    def test_combinado_con_categoria_y_buffer(self) -> None:
+        categoria, resto = extraer_filtro_categoria("Servicios C6 F-GRN-598 B2 NOVER")
+        verificable, resto = extraer_filtro_verificable(resto)
+        self.assertEqual((categoria, verificable), (6, False))
+        self.assertEqual(extraer_comando_servicios_buffer(resto), ("F-GRN-598", 2))
+
+    def test_negrita(self) -> None:
+        self.assertEqual(extraer_filtro_verificable("Servicios F-GRN-598 *VER*"), (True, "Servicios F-GRN-598"))
+
+    def test_sin_filtro_texto_intacto(self) -> None:
+        self.assertEqual(extraer_filtro_verificable("Servicios F-GRN-598"), (None, "Servicios F-GRN-598"))
+
+    def test_ver_solo_es_nombre_de_cable(self) -> None:
+        """"Servicios VER" a secas: no hay cable antes del token, así que "VER" es el nombre."""
+        self.assertEqual(extraer_filtro_verificable("Servicios VER"), (None, "Servicios VER"))
+
+    def test_cable_que_termina_en_ver_no_se_corta(self) -> None:
+        """El token tiene que ir separado por espacio: "F-XVER" es un nombre de cable."""
+        self.assertEqual(extraer_filtro_verificable("Servicios F-XVER"), (None, "Servicios F-XVER"))
+
+    def test_no_toca_otros_verbos(self) -> None:
+        self.assertEqual(extraer_filtro_verificable("Info cable F-GRN-598 VER"), (None, "Info cable F-GRN-598 VER"))
+
+
+class TestFiltrarServiciosVerificable(unittest.TestCase):
+    def _resultado(self) -> ResultadoServiciosUnicos:
+        return ResultadoServiciosUnicos(
+            cable_n_id=99,
+            tubo_n_id=None,
+            servicios=[
+                _servicio_unico(1, "111", [1], categoria=6, es_verificable=True),
+                _servicio_unico(2, "222", [2], categoria=6, es_verificable=False),
+                _servicio_unico(3, "333", [3], categoria=3, es_verificable=True),
+            ],
+        )
+
+    def test_solo_verificables(self) -> None:
+        filtrado = filtrar_servicios(self._resultado(), verificable=True)
+        self.assertEqual([s.servicio_id_externo for s in filtrado.servicios], ["111", "333"])
+
+    def test_no_verificables(self) -> None:
+        filtrado = filtrar_servicios(self._resultado(), verificable=False)
+        self.assertEqual([s.servicio_id_externo for s in filtrado.servicios], ["222"])
+
+    def test_combinado_con_categoria(self) -> None:
+        filtrado = filtrar_servicios(self._resultado(), categoria=6, verificable=True)
+        self.assertEqual([s.servicio_id_externo for s in filtrado.servicios], ["111"])
+
+
+class TestRespuestaServiciosConVerificable(unittest.TestCase):
+    def test_encabezado_rotula_ambos_filtros(self) -> None:
+        cable = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        resultado = ResultadoServiciosUnicos(
+            cable_n_id=99, tubo_n_id=None, servicios=[_servicio_unico(1, "111", [10], categoria=6, es_verificable=True)]
+        )
+        session = MagicMock()
+        session.execute.return_value.all.side_effect = [[(10, 100)], [(100, 0, "AZ")]]
+
+        texto = construir_respuesta_servicios_cable(cable, session, resultado, set(), categoria=6, verificable=True)
+
+        self.assertIn("Categoría *C6* · Verificables", texto.split("\n")[0])
+
+    def test_vacio_cable_no_verificables(self) -> None:
+        cable = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=[])
+
+        texto = construir_respuesta_servicios_cable(cable, MagicMock(), resultado, set(), verificable=False)
+
+        self.assertIn("No verificables", texto)
+        self.assertIn("Sin servicios no verificables en este cable", texto)
+
+    def test_vacio_buffer_categoria_y_verificables(self) -> None:
+        cable = SimpleNamespace(nombre="F-GRN-598")
+        tubo = SimpleNamespace(orden=1, nombre_color="NR")
+        resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=1, servicios=[])
+
+        texto = construir_respuesta_servicios_buffer(cable, tubo, resultado, set(), categoria=2, verificable=True)
+
+        self.assertIn("Sin servicios de categoría C2 verificables en este buffer", texto)
+
+
+class TestHandleServiciosConVerificable(unittest.TestCase):
+    def _make_listener(self):
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def test_cable_con_categoria_y_ver(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        cable_fake = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        servicios = [
+            _servicio_unico(1, "111", [10], categoria=6, es_verificable=True),
+            _servicio_unico(2, "222", [11], categoria=6, es_verificable=False),
+            _servicio_unico(3, "333", [12], categoria=3, es_verificable=True),
+        ]
+        resultado = ResultadoServiciosUnicos(cable_n_id=99, tubo_n_id=None, servicios=servicios)
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal") as mock_session_local,
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]
+            ) as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.servicios_unicos_por_cable_sync", return_value=resultado),
+            patch("modules.slack_baneo_notifier.listener.servicios_vencidos_sync", return_value=set()) as mock_venc,
+        ):
+            mock_session_local.return_value.execute.return_value.all.side_effect = [[(10, 100)], [(100, 0, "AZ")]]
+            listener._handle_app_mention(
+                {"text": "Servicios C6 F-GRN-598 VER", "channel": "C1", "ts": "1.1"}, client_mock
+            )
+
+        self.assertEqual(mock_buscar.call_args.args[1], "F-GRN-598")
+        mock_venc.assert_called_once_with(mock_session_local.return_value, {1})
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("111", texto)
+        self.assertNotIn("222", texto)
+        self.assertNotIn("333", texto)
+        self.assertIn("Verificables", texto)
+
+    def test_buffer_con_nover(self) -> None:
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        cable_fake = SimpleNamespace(n_id=99, nombre="F-GRN-598")
+        tubo_fake = SimpleNamespace(n_id=1, orden=1, nombre_color="NR")
+        servicios = [
+            _servicio_unico(1, "111", [10], es_verificable=True),
+            _servicio_unico(2, "222", [11], es_verificable=False),
+        ]
+        resultado = ResultadoServiciosUnicos(cable_n_id=None, tubo_n_id=1, servicios=servicios)
+
+        with (
+            patch("modules.slack_baneo_notifier.listener.SessionLocal"),
+            patch("modules.slack_baneo_notifier.listener.buscar_cable_por_n_id_o_nombre", return_value=[cable_fake]),
+            patch("modules.slack_baneo_notifier.listener.resolver_tubo_por_numero", return_value=tubo_fake) as mock_tubo,
+            patch("modules.slack_baneo_notifier.listener.servicios_unicos_por_tubo_sync", return_value=resultado),
+            patch("modules.slack_baneo_notifier.listener.servicios_vencidos_sync", return_value=set()),
+        ):
+            listener._handle_app_mention(
+                {"text": "Servicios F-GRN-598 B2 NOVER", "channel": "C1", "ts": "1.1"}, client_mock
+            )
+
+        self.assertEqual(mock_tubo.call_args.args[2], 2)
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("222", texto)
+        self.assertNotIn("111", texto)
+        self.assertIn("No verificables", texto)

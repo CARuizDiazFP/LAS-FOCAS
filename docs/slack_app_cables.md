@@ -4,6 +4,10 @@
 
 # Bot de Slack — Verificación de Cables y Servicios
 
+> **Estado (2026-09-28): filtros opcionales en `Servicios [C<N>] <cable> [B<N>] [VER|NOVER]` —
+> categoría C1 a C6 y verificables / no verificables. Ver las secciones "Filtro por categoría" y
+> "Filtro VER / NOVER" más abajo.**
+>
 > **Estado (2026-09-23, Tasks 8-10 del plan "Corrección ingresos + Servicios"): agregados los
 > comandos `Servicios <cable>` / `Servicios <cable> B<N>` (IDs de servicio únicos, agrupados por
 > buffer, con marca de frescura PROV y refresco asíncrono real contra PROV, Task 9) + marcador `🕒`
@@ -231,6 +235,56 @@ request en vez de postear un segundo mensaje, porque no hay ningún hilo de Slac
 IDs) entra cómodo en un solo mensaje de Slack (~950 caracteres para el listado de IDs solo, más las
 líneas de discrepancia/frescura que sean necesarias).
 
+### Filtro por categoría — `@bot Servicios C<N> <cable>` / `@bot Servicios C<N> <cable> B<N>` (2026-09-28)
+
+Mismo comando, acotado a los servicios de una categoría (`app.servicios.categoria`, la que la SPA
+muestra como "Nivel Cliente"). Acepta **C1 a C6**; C0 (placeholder sintetizado por Cromo) y C7+
+responden `:warning: Categoría *C7* inválida — el filtro acepta C1 a C6` sin consultar nada, en vez
+de buscar un cable llamado "C7 F-GRN-598". "Servicios C1" a secas (sin nada después) sigue siendo un
+cable llamado "C1".
+
+- **Parser**: `cable_info.py::extraer_filtro_categoria` separa el token `C<N>` pegado al verbo y
+  devuelve `"Servicios <resto>"`, que los dos parsers de servicios de siempre procesan sin cambiar de
+  contrato (por eso combina gratis con el sufijo `B<N>`).
+- **Filtro**: en memoria (`filtrar_servicios`) sobre la misma consulta — `ServicioUnico` ahora
+  trae `categoria` (columna agregada al final de `_COLUMNAS_SERVICIO_UNICO`). Se filtra **antes** de
+  calcular frescura, así el refresco PROV sólo cubre los servicios mostrados.
+- **Respuesta**: encabezado con `· Categoría *C<N>*`; vacío → "Sin servicios de categoría C<N> en
+  este cable/buffer."
+
+**Ejemplo real** (dev, `Servicios C6 F-GRN-598` — el cable tiene 31 servicios: C0:10, C2:1, C3:8,
+C4:5, C5:4, C6:3):
+```
+🧾 Servicios del cable *F-GRN-598* · Categoría *C6* — 3 ID(s) únicos
+B1 (AZ): 113106
+B4 (MR): 96582
+B5 (GR): 112845
+⚠️ En el pelo figura otro número: 113106 (el pelo dice 87864)
+```
+
+### Filtro VER / NOVER — `@bot Servicios [C<N>] <cable> [B<N>] VER|NOVER` (2026-09-28)
+
+Token **al final** (después del cable y del buffer): `VER` deja sólo los servicios con
+`app.servicios.es_verificable = true`, `NOVER` sólo los `false` (también acepta `NO VER`/`NO-VER`).
+Combina libremente con la categoría y el buffer: `Servicios C6 F-GRN-598 B2 NOVER`.
+"Servicios VER" a secas sigue siendo un cable llamado "VER", y el token tiene que ir separado por un
+espacio (`F-XVER` es un nombre de cable).
+
+- **Parser**: `extraer_filtro_verificable`, aplicado después de `extraer_filtro_categoria` (uno mira
+  el comienzo y el otro el final, así que el orden entre ellos no importa).
+- **Filtro**: `filtrar_servicios(resultado, categoria=..., verificable=...)` reemplaza a
+  `filtrar_por_categoria`; `ServicioUnico` trae `es_verificable` (columna al final de
+  `_COLUMNAS_SERVICIO_UNICO`, después de `categoria`).
+- **Respuesta**: encabezado `· Verificables` / `· No verificables` (después de la categoría si hay);
+  vacío → "Sin servicios de categoría C2 verificables en este buffer."
+
+**Ejemplo real** (dev, F-GRN-598: 13 verificables / 18 no verificables; `Servicios C6 F-GRN-598 VER`):
+```
+🧾 Servicios del cable *F-GRN-598* · Categoría *C6* · Verificables — 2 ID(s) únicos
+B4 (MR): 96582
+B5 (GR): 112845
+```
+
 **Casos manejados**: mismo resolver de cable (`buscar_cable_por_n_id_o_nombre`/
 `_resolver_cable_o_responder`) y de buffer (`resolver_tubo_por_numero`/`contar_buffers_cable`) que el
 resto de los comandos — no encontrado/ambiguo, buffer fuera de rango, negrita de Slack en el nombre.
@@ -262,10 +316,57 @@ los datos de Cromo — root cause completamente distinto de lo investigado antes
 `obtener_detalle_cable`, acotado a un tubo — nunca N+1, una sola query con `LEFT JOIN` a
 `cromo_servicio_match`/`servicios`).
 
+## `@bot track <id de servicio>` — implementado (2026-09-28)
+
+Sube al hilo los `.txt` de tracking del Servicio, generados desde Cromo. **No** usa el tracking
+manual: sale del camino óptico de Cromo, igual que el botón de descarga del Detalle de Servicio.
+
+- **El ID admite las tres identidades**: el vigente (`servicio_id`), el de primera línea
+  (`numero_primer_servicio`) y los históricos (`alias_ids`). Medido el 2026-09-28: de las 5.435
+  filas de `app.servicios_historial_id`, **cero** tienen un `numero_id` que esas tres no cubran ya,
+  así que no hace falta joinear el histórico.
+- **Un `.txt` por pelo, no por Servicio.** La selección por defecto son las posiciones de ODF del
+  Servicio (mismo criterio que el botón de la pantalla, `semillas_por_defecto`): entre 1 y 4
+  archivos en Servicios reales de dev — el 67395 da 4. Se suben todos, sin tope (decisión explícita
+  del usuario, 2026-09-28). Con más de uno, el nombre lleva el `pelo_n_id` intercalado
+  (`nombre_distinguible`) o los archivos se pisarían entre sí en el hilo.
+- **Demora aceptada.** En frío cuesta entre 4,6 s y 14 s **por pelo** contra Cromo (hasta ~1 minuto
+  con 4 posiciones); sobre el caché de 24 h (`app.cromo_tracking_cache`) es inmediato. Por eso el
+  bot postea un aviso ANTES de empezar, y la sesión de DB se cierra antes de generar para no
+  sostener una conexión del pool todo ese rato.
+- **Un pelo que falla no cancela los demás**: se suben los que salieron y se reporta al final cuáles
+  no, para que el operador no cuente 3 archivos donde esperaba 4 sin saber por qué.
+- Sin ningún pelo en Cromo responde el motivo en texto y **no** sube nada: un `.txt` que dice "no hay
+  datos" es basura.
+
+Vive en `modules/slack_baneo_notifier/tracking_servicio.py` (parser, resolución y generación) y se
+despacha desde `_handle_track` en `listener.py`.
+
+> **El worker necesita el secreto de Cromo.** Hasta el 2026-09-28 `slack_baneo_worker` no montaba
+> `cromo_password_v1` (sí lo hacían `web` y `cromo_worker`), así que la primera generación real
+> dentro del contenedor murió con `CromoConfigError: Configuración de Cromo incompleta`. El resto de
+> la config (`CROMO_BASE_URL`, `CROMO_USER`, …) ya llegaba por `env_file`; faltaba sólo la
+> contraseña. Agregado a los dos composes. **Ningún test lo detecta**: los tests del handler mockean
+> la generación, y los de generación corren desde el host con el entorno del `.venv` — sólo aparece
+> ejecutando dentro del contenedor real.
+
+> **El camino async dentro de un callback síncrono de Slack**: la generación corre en un thread
+> propio con su propio event loop y un engine `NullPool` dedicado, **no** el pool singleton de
+> `db.session`. Ese pool queda atado al loop del primer checkout y reusarlo desde un loop nuevo es
+> el `Future attached to a different loop` con el que este repo ya tropezó.
+
 ## Parser de comandos
 
-`cable_info.py` tiene cuatro parsers (desde la Task 8), probados en este orden por el listener
-(`_handle_app_mention`):
+El listener (`_handle_app_mention`) prueba los parsers en este orden:
+
+0. `extraer_comando_track` (`tracking_servicio.py`) — `"track|tracking <dígitos>"`, anclado a fin de
+   línea. Va **primero** por ser el más específico: los parsers de cable son "golosos" y un
+   "track 67395" caído ahí terminaría buscando un cable llamado "67395".
+
+Los otros cuatro viven en `cable_info.py` (desde la Task 8). Antes de 2 y 3 se aplican
+`extraer_filtro_categoria` y `extraer_filtro_verificable` (2026-09-28): quitan `C<N>` del comienzo
+y `VER`/`NOVER` del final, y 2/3 ven la forma sin filtro; una categoría fuera de C1-C6 corta ahí con
+un aviso.
 1. `extraer_comando_cable_buffer` — `"(Verificar|Info) cable <nombre> (B|Buffer)\s*<N>"`, case
    insensitive, tolera "B1"/"B 1"/"Buffer 1". Si matchea, dispara `_handle_cable_buffer`.
 2. `extraer_comando_servicios_buffer` — `"Servicios (cable )?<nombre> (B|Buffer)\s*<N>"`. Si
@@ -284,6 +385,29 @@ DENTRO de cada una.
 Una mención que no matchea ninguno de los cuatro se ignora silenciosamente (no hay todavía un mensaje
 de "comando no reconocido" — evita interferir con otras menciones al mismo bot que no sean estos
 comandos).
+
+## Scopes reales de las dos apps (medido 2026-09-28) — prod NO tiene `app_mentions:read`
+
+Prod y dev son **dos Slack Apps distintas** con scopes distintos. Medido con `auth.test` real contra
+cada worker (el header `x-oauth-scopes` de la respuesta, no el panel de Slack):
+
+| | Bot | `bot_id` | Scopes |
+|---|---|---|---|
+| dev (`lasfocasdev-slack-baneo-worker`) | `registrador_de_ingres` | `B0B345MCXF1` | `channels:history`, `groups:history`, `chat:write`, `files:write`, **`app_mentions:read`**, `commands`, `incoming-webhook` |
+| prod (`lasfocas-slack-baneo-worker`) | `lasfocas_cambot` | `B0A9JA3S5V3` | `incoming-webhook`, `commands`, `chat:write`, `files:write`, `channels:history`, `groups:history` |
+
+La única diferencia es **`app_mentions:read`, que prod no tiene**. Todos los comandos de este
+documento se despachan desde `_handle_app_mention`, que está enganchado **sólo** al evento
+`app_mention` (`_handle_message` es el listener de ingresos y filtra por canal/workflow, no despacha
+comandos). Sin ese scope el evento no llega, así que en producción **ningún comando de mención
+funciona hoy** — no es una regresión de `track`, es un gap preexistente que `track` hereda.
+
+`files:write` sí está en las dos, así que la subida de archivos no necesita nada nuevo.
+
+**Antes de habilitar `track` en prod**: agregar `app_mentions:read` a la app de producción,
+reinstalarla en el workspace (un scope nuevo exige reinstalación) y verificar con una mención real
+en el canal, mirando el log del worker — no con la lista de scopes del panel, que ya engañó una vez
+(ver `docs/decisiones.md`, 2026-08-25: app_mention necesita App Token, no sólo scope).
 
 ## Identidad del bot y despliegue (hallazgo operativo, 2026-08-13 — app de dev, `@sandy02`)
 
