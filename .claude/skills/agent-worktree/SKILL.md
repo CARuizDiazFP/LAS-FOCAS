@@ -153,6 +153,23 @@ Invocados por separado, ambos pasaron sin objeción (`READY_EXIT=0`, `INTEGRATE_
 clasificador evalúa el comando completo, así que encadenar un paso de sólo-estado con uno que
 escribe en `dev` hace que el conjunto se lea como más invasivo de lo que es cada parte.
 
+**Si `integrate` responde `control_actualizado: omitido: el checkout de control tiene cambios sin
+confirmar`**, `dev` ya quedó integrado y publicado; lo único que no se hizo es adelantar el checkout
+de control. Real (2026-09-29 y 2026-09-30, tres veces en la misma sesión): la causa era un
+`.claude/settings.json` sin trackear que crea el propio harness cuando el usuario aprueba permisos
+sobre un directorio. El control quedó atrás de `origin/dev`, y el siguiente `build` de producción
+habría tomado código viejo (el compose usa `context: ..`). Qué hacer:
+
+```bash
+git -C /home/support-focal-01/LAS-FOCAS status --porcelain      # ¿sólo archivos sin trackear (??)?
+git -C /home/support-focal-01/LAS-FOCAS merge --ff-only origin/dev  # seguro: Git se niega si pisaría algo
+git -C /home/support-focal-01/LAS-FOCAS rev-parse --short HEAD     # debe coincidir con origin/dev
+```
+
+Si hay archivos **modificados** (no `??`), no adelantar: es trabajo en el control, que se reserva para
+integración. Moverlo a un worktree. El archivo del harness no se borra sin preguntar: es configuración
+del usuario.
+
 ### 6. Cerrar y limpiar
 
 ```bash
