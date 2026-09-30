@@ -42,10 +42,11 @@ _CAMINO_TIMEOUT_DEFAULT = 60.0
 # reales termina en ~11 minutos sin sostenerle a Cromo varias resoluciones de grafo por segundo.
 _CAMINO_RATE_LIMIT_DEFAULT = 1.0
 # Barrido `GET /db/objects/{cable}/inner` (at.62/at.63 de los pelos, `ingesta.fase_pelos_inner`).
-# Medido real 2026-09-30: ~30 ms por pelo (0,2 s un cable de 6, 12,7 s uno de 288); 1.292.280 pelos
-# vigentes son ~11-12 h en serie. Con 2 en vuelo y a lo sumo 4 req/s el barrido inicial baja a ~6 h
-# sin sostenerle a Cromo más de dos cables grandes a la vez.
-_INNER_CONCURRENCIA_DEFAULT = 2
+# Medido real 2026-09-30: ~34 ms por pelo del lado de Cromo, y Cromo SERIALIZA estas llamadas: 40
+# cables tardaron 70,6 s de a 1, 63,9 s de a 2 y 64,1 s de a 4. Paralelizar no acelera el barrido
+# (1.292.280 pelos ≈ 12 h) y sólo carga a Cromo, así que el default es 1. El rate limit queda como
+# techo de seguridad para cables chicos.
+_INNER_CONCURRENCIA_DEFAULT = 1
 _INNER_RATE_LIMIT_DEFAULT = 4.0
 
 

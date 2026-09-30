@@ -2731,7 +2731,13 @@ su propia ventana de mantenimiento.
     o con `at.62` sin Servicio, para que nadie tome como libre un pelo PON o dañado.
 - **Verificado en dev** (F-PE-AL-99, `--apply` puntual): servicios 116548 + 116550; pelos 2, 29, 30 y 32
   `ocupado`; pelo 4 sin servicio.
-- **Pendiente**: barrido completo (dev ~6 h, luego prod con pedido explícito) y activar el semanal.
+- **Costo medido**: ~34 ms por pelo del lado de Cromo, que serializa `/inner` (40 cables: 70,6 s de a
+  1, 63,9 s de a 2, 64,1 s de a 4). El barrido completo es ~12 h y no se acelera paralelizando.
+- **Dry-run de 200 cables** (dev): 8.054 pelos, 876 pelos y 95 tubos que la ingesta nunca trajo, 193
+  vínculos nuevos por `at.62` del pelo, 72 por descripción refrescada, 2 por conector de ODF, 14
+  vínculos viejos retirados, 94 números sin Servicio, 0 errores. Los `at.62` de 1-3 dígitos (8, 14,
+  615…) se descartan por plausibilidad.
+- **Pendiente**: barrido completo (dev ~12 h, luego prod con pedido explícito) y activar el semanal.
 
 ## 2026-09-30 (cont.) — Logs persistidos en `Logs/` para todos los servicios, borrables en uso
 

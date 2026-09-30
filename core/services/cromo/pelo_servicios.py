@@ -28,7 +28,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional
 
-from core.services.cromo.parser import parsear_servicio
+from core.services.cromo.parser import es_numero_servicio_plausible, parsear_servicio
 
 METODO_REGEX = "REGEX_EXACTO"
 METODO_ATRIBUTO_CONECTOR = "ATRIBUTO_CONECTOR_ODF"
@@ -57,8 +57,11 @@ def _normalizar(texto: Optional[str]) -> str:
 
 
 def _numero_de_atributo(valor: Optional[str]) -> Optional[str]:
+    """Un at.62 sólo cuenta si es un número de servicio plausible (4-6 dígitos, mismo criterio que
+    los placeholders de la ingesta). Medido en 200 cables reales (2026-09-30): aparecen "8", "14",
+    "615", "887", que no son servicios y marcarían el pelo como ocupado sin motivo."""
     limpio = (valor or "").strip()
-    if not _REGEX_NUMERO.match(limpio) or int(limpio) == 0:
+    if not _REGEX_NUMERO.match(limpio) or int(limpio) == 0 or not es_numero_servicio_plausible(limpio):
         return None
     return limpio
 

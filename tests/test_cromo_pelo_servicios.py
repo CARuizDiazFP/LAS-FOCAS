@@ -77,6 +77,7 @@ def test_at62_del_pelo_ya_ubicado_en_otro_pelo_por_conector_se_descarta():
     assert r[2] == []
 
 
-def test_at62_no_numerico_se_ignora():
-    r = resolver_servicios_de_cable([_pelo(1, None, "abc"), _pelo(2, None, " ")], conector_at62_por_pelo={})
-    assert r == {1: [], 2: []}
+def test_at62_no_numerico_o_implausible_se_ignora():
+    pelos = [_pelo(1, None, "abc"), _pelo(2, None, " "), _pelo(3, None, "8"), _pelo(4, None, "615"), _pelo(5, None, "1234567")]
+    r = resolver_servicios_de_cable(pelos, conector_at62_por_pelo={6: "14"})
+    assert r == {1: [], 2: [], 3: [], 4: [], 5: []}

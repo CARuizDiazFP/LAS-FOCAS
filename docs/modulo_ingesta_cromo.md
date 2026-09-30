@@ -158,7 +158,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~17 min |
     | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~16 min |
     | `SOLO_CABLES_TERCEROS` | `fase_cables_terceros` (52/59/60) + `fase_servicios` | ~733 | ~4 min |
-    | `SOLO_PELOS_INNER` | `fase_pelos_inner`: `/inner` por cable vigente (at.61/62/63) + conciliación de servicios por pelo | 52.507 cables | ~6 h estimado (concurrencia 2) |
+    | `SOLO_PELOS_INNER` | `fase_pelos_inner`: `/inner` por cable vigente (at.61/62/63) + conciliación de servicios por pelo | 52.507 cables | ~12 h medido (Cromo serializa `/inner`) |
 
     **Pelos por `/inner` (2026-09-30).** El único lugar donde Cromo publica el ID de servicio del pelo
     (`at.62`) y su estado (`at.63`) es `GET /db/objects/{cable}/inner`, una llamada por cable. La fase
@@ -167,7 +167,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     `core/services/cromo/pelo_servicios.py` (descripción > at.62 del conector de ODF > at.62 del pelo).
     Retira los vínculos automáticos que ya no corresponden (evento `MATCH_RETIRADO`) y nunca toca los
     `MANUAL`. Normaliza `n_id ← id` y `parent ← at.71`, porque `/inner` no los trae. Concurrencia y
-    pacing: `CROMO_INNER_CONCURRENCIA` (2) y `CROMO_INNER_RATE_PER_SECOND` (4). **No entra en
+    pacing: `CROMO_INNER_CONCURRENCIA` (1: Cromo serializa las llamadas, medido de a 1, 2 y 4 sin diferencia) y `CROMO_INNER_RATE_PER_SECOND` (4). **No entra en
     `COMPLETA`.** El barrido inicial es manual (`scripts/cromo_barrido_pelos_inner.py`, dry-run por
     defecto, `--reanudar <corrida>`), y el semanal es la fila `id=2` de `cromo_ingesta_config`, sembrada
     deshabilitada.

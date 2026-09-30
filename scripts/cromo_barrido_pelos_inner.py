@@ -25,7 +25,7 @@ Correr DENTRO del contenedor del worker de Cromo del entorno (tiene la config de
     # 2. Una muestra (no escribe nada)
     docker exec -i ... python - --limite 200 < scripts/cromo_barrido_pelos_inner.py
 
-    # 3. Barrido completo real (~6 h con concurrencia 2). Corre en primer plano: usar nohup/tmux.
+    # 3. Barrido completo real (~12 h: Cromo serializa /inner). Corre en primer plano: usar nohup/tmux.
     docker exec -i ... python - --apply --usuario cruizdiaz@metrotel.com.ar < scripts/cromo_barrido_pelos_inner.py
 
     # 4. Si se cortó, continuar la MISMA corrida salteando los cables ya hechos

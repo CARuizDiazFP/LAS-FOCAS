@@ -1892,12 +1892,17 @@ async def _procesar_inner_de_cable(
             cable_n_id, error.n_id, error.clase, error.motivo,
         )
     ahora = datetime.now(timezone.utc)
-    tubos_locales = set(
-        (await sesion.execute(select(CromoTubo.n_id).where(CromoTubo.n_id.in_([t.n_id for t in tubos])))).scalars()
-    )
-    pelos_locales = set(
-        (await sesion.execute(select(CromoPelo.n_id).where(CromoPelo.n_id.in_([p.n_id for p in pelos])))).scalars()
-    )
+    # Se cargan las ENTIDADES (no sólo los ids) en una consulta por tabla: quedan en el identity map y
+    # los `sesion.get` de `upsert_simple` y del update de at.62/63 no vuelven a la base. Medido en 200
+    # cables reales (2026-09-30): pelo por pelo eran ~35 ms/pelo, la escritura en serie era el cuello.
+    tubos_locales = {
+        t.n_id
+        for t in (await sesion.execute(select(CromoTubo).where(CromoTubo.n_id.in_([t.n_id for t in tubos])))).scalars()
+    }
+    pelos_locales = {
+        p.n_id
+        for p in (await sesion.execute(select(CromoPelo).where(CromoPelo.n_id.in_([p.n_id for p in pelos])))).scalars()
+    }
     for tubo in tubos:
         tubo.cable_n_id = tubo.cable_n_id or cable_n_id
         await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)

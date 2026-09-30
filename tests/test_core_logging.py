@@ -130,26 +130,31 @@ def test_close_vuelca_lo_pendiente(tmp_path):
 
 @pytest.fixture
 def root_limpio():
-    root = logging.getLogger()
-    antes = list(root.handlers)
-    uvicorn_antes = {n: list(logging.getLogger(n).handlers) for n in core_logging._LOGGERS_SIN_PROPAGACION}
-    propagate_antes = {n: logging.getLogger(n).propagate for n in core_logging._LOGGERS_SIN_PROPAGACION}
+    """Aísla el logger raíz y los de uvicorn: en la suite completa, módulos importados antes (p.ej.
+    `web/app/main.py`) ya colgaron su handler de archivo, y `setup_logging` reutiliza el existente."""
+    nombres = ("", *core_logging._LOGGERS_SIN_PROPAGACION)
+    guardados = {n: (list(logging.getLogger(n).handlers), logging.getLogger(n).propagate) for n in nombres}
+    for n in nombres:
+        lg = logging.getLogger(n)
+        for h in list(lg.handlers):
+            if isinstance(h, BufferedAppendFileHandler):
+                lg.removeHandler(h)
     # Como los deja uvicorn CLI (`uvicorn app.main:app`) antes de importar la app.
     logging.getLogger("uvicorn").propagate = False
     logging.getLogger("uvicorn.access").propagate = False
     logging.getLogger("uvicorn.error").propagate = True
     yield
-    for nombre, valor in propagate_antes.items():
-        logging.getLogger(nombre).propagate = valor
-    for h in list(root.handlers):
-        if h not in antes:
-            root.removeHandler(h)
-            h.close()
-    for nombre, handlers in uvicorn_antes.items():
-        lg = logging.getLogger(nombre)
+    for n, (handlers, propagate) in guardados.items():
+        lg = logging.getLogger(n)
         for h in list(lg.handlers):
             if h not in handlers:
                 lg.removeHandler(h)
+                if n == "":
+                    h.close()
+        for h in handlers:
+            if h not in lg.handlers:
+                lg.addHandler(h)
+        lg.propagate = propagate
 
 
 def _handlers_de_archivo(logger: logging.Logger) -> list[BufferedAppendFileHandler]:
