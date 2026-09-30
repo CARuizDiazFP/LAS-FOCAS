@@ -74,6 +74,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   (real 2026-09-19: 176 filas de `app.cromo_odfs` en dev y en prod). Antes de confiar en un
   `COALESCE` sobre JSONB, medir con `SELECT jsonb_typeof(col), count(*) ... GROUP BY 1`.
 
+- `Logs/` (y `Logs/dev/`) no se lee por defecto: está fuera del indexado de todos los entornos (`.gitignore`, `.geminiignore`) para no gastar tokens en cientos de MB de logs. Sólo se lee en tareas de diagnóstico o limpieza, vía la skill `logs-cleanup`, y siempre acotado (`tail -n`, `grep -m`, filtro por hora); nunca `cat` completo ni lectura recursiva. Todo servicio Python loguea con `core/logging.py::setup_logging` (archivo `Logs/<servicio>.log` borrable en uso, buffer de ~2 s); tras tocar compose o un entrypoint, verificar con `python scripts/logs_verificar.py --entorno dev`.
+
 ## Seguridad y Operación
 
 - Nunca exponer secretos en código o logs; usar `.env` o secrets de Docker.

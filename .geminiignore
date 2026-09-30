@@ -1,0 +1,5 @@
+# Nombre de archivo: .geminiignore
+# Ubicación de archivo: .geminiignore
+# Descripción: Rutas que Gemini CLI no indexa; Logs/ se lee sólo vía la skill logs-cleanup y de forma acotada
+
+Logs/
