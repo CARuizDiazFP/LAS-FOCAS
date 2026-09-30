@@ -343,7 +343,7 @@ async def run(body: RunRequest):
 
 
 def main() -> None:
-    config = uvicorn.Config(app, host="0.0.0.0", port=HEALTH_PORT, log_level="warning")
+    config = uvicorn.Config(app, host="0.0.0.0", port=HEALTH_PORT, log_level="warning", log_config=None)
     server = uvicorn.Server(config)
     asyncio.run(server.serve())
 

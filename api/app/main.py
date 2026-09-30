@@ -17,7 +17,10 @@ from api.app.routes.v1.cables import router as v1_cables_router
 from api.app.routes.v1.oauth import router as v1_oauth_router
 from api.app.routes.v1.servicios import router as v1_servicios_router
 from api.app.security import require_api_key
+from core.logging import setup_logging
 from core.services.prov.client import cerrar_prov_client
+
+logger = setup_logging("api", os.getenv("LOG_LEVEL", "INFO").upper(), enable_file=True)
 
 
 def create_app() -> FastAPI:
