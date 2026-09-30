@@ -41,9 +41,11 @@ from core.services.cromo.ingesta import continuar_corrida, iniciar_corrida
 from db.models.cromo import CromoIngestaConfig, CromoIngestaCorrida, CromoIngestaEvento
 from db.session import AsyncSessionLocal
 from modules.cromo_worker.config import (
+    CONFIG_ID_PELOS_INNER,
     HEALTH_PORT,
     INTERVALO_HORAS_DEFAULT,
     JOB_ID,
+    JOB_ID_PELOS_INNER,
     NOMBRE_SERVICIO,
     USUARIO_SCHEDULER,
 )
@@ -95,8 +97,39 @@ async def _leer_config() -> Optional[CromoIngestaConfig]:
         return await sesion.get(CromoIngestaConfig, 1)
 
 
+async def _leer_config_semanal() -> Optional[CromoIngestaConfig]:
+    async with AsyncSessionLocal() as sesion:
+        return await sesion.get(CromoIngestaConfig, CONFIG_ID_PELOS_INNER)
+
+
+async def _sincronizar_job_semanal() -> None:
+    """Programa o quita el barrido semanal `SOLO_PELOS_INNER` (fila id=2). Sin fila, no hace nada.
+
+    Independiente del job principal: el panel y "Ejecutar ahora" siguen hablando sólo de la fila 1.
+    El trigger se recrea en cada sincronización (es barata y el job no guarda estado propio).
+    """
+    if _scheduler is None:
+        return
+    config = await _leer_config_semanal()
+    existente = _scheduler.get_job(JOB_ID_PELOS_INNER)
+    if config is not None and config.habilitado:
+        trigger = _build_trigger(max(1, config.intervalo_horas or 168), config.hora_inicio)
+        if existente is None:
+            _scheduler.add_job(_job_semanal_pelos_inner, trigger=trigger, id=JOB_ID_PELOS_INNER, max_instances=1)
+            logger.info("action=cromo_worker evento=job_semanal_agregado intervalo_horas=%s", config.intervalo_horas)
+        else:
+            _scheduler.reschedule_job(JOB_ID_PELOS_INNER, trigger=trigger)
+    elif existente is not None:
+        _scheduler.remove_job(JOB_ID_PELOS_INNER)
+        logger.info("action=cromo_worker evento=job_semanal_removido motivo=deshabilitado")
+
+
 async def _sincronizar_configuracion() -> dict:
     """Relee `cromo_ingesta_config` y agrega/quita/reprograma el job según corresponda."""
+    try:
+        await _sincronizar_job_semanal()
+    except Exception:  # noqa: BLE001 - el job semanal nunca debe impedir programar el principal
+        logger.exception("action=cromo_worker evento=error_sincronizando_job_semanal")
     config = await _leer_config()
     if config is None:
         logger.error("action=cromo_worker evento=config_no_encontrada")
@@ -175,7 +208,7 @@ async def _crear_corrida_desde_config(usuario: str) -> int:
         return corrida.id
 
 
-async def _continuar_en_bg(corrida_id: int) -> None:
+async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
     """Corre las fases de una corrida ya creada, leyendo sus propios params — no depende de que el
     caller (web o el propio worker) los reenvíe: ya quedaron persistidos en `corrida.params`."""
     error: Optional[str] = None
@@ -209,7 +242,7 @@ async def _continuar_en_bg(corrida_id: int) -> None:
         _worker_status["ultimo_error"] = error
         try:
             async with AsyncSessionLocal() as sesion:
-                config = await sesion.get(CromoIngestaConfig, 1)
+                config = await sesion.get(CromoIngestaConfig, config_id)
                 if config is not None:
                     config.ultima_ejecucion = datetime.now(timezone.utc)
                     config.ultimo_error = error
@@ -228,6 +261,27 @@ async def _job_programado() -> None:
     _worker_status["corrida_en_curso"] = corrida_id
     logger.info("action=cromo_worker evento=job_programado_disparado corrida_id=%s", corrida_id)
     await _continuar_en_bg(corrida_id)
+
+
+async def _job_semanal_pelos_inner() -> None:
+    """Callback del barrido semanal. Chequea `habilitado` en vivo, igual que `_job_programado`."""
+    config = await _leer_config_semanal()
+    if config is None or not config.habilitado:
+        logger.info("action=cromo_worker evento=job_semanal_omitido motivo=deshabilitado")
+        return
+    async with AsyncSessionLocal() as sesion:
+        corrida = await iniciar_corrida(
+            sesion,
+            usuario=USUARIO_SCHEDULER,
+            psize=config.psize,
+            max_paginas=config.max_paginas,
+            clases=config.clases,
+            params_extra={"modo": config.modo},
+        )
+        corrida_id = corrida.id
+    _worker_status["corrida_en_curso"] = corrida_id
+    logger.info("action=cromo_worker evento=job_semanal_disparado corrida_id=%s modo=%s", corrida_id, config.modo)
+    await _continuar_en_bg(corrida_id, config_id=CONFIG_ID_PELOS_INNER)
 
 
 @asynccontextmanager
