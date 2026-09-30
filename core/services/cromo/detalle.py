@@ -40,6 +40,11 @@ class PeloDetalle:
     # Normalmente 0 o 1 — `cromo_servicio_match` no tiene restricción de unicidad por pelo (sólo por
     # (pelo_n_id, servicio_numero)), así que en teoría un pelo podría matchear más de un número.
     servicios: list[ServicioEncontrado] = field(default_factory=list)
+    # at.63 de Cromo ("Utilizado"/"Libre"/"Dañado"), sólo si el pelo pasó por `fase_pelos_inner`.
+    estado_cromo: Optional[str] = None
+    # Hay un vínculo por at.62 (`ATRIBUTO_*`) cuyo número no existe en Servicios (id de OLT/red PON):
+    # el pelo está en uso aunque no haya Servicio que mostrar.
+    vinculo_sin_servicio: bool = False
 
 
 @dataclass(slots=True)
@@ -123,7 +128,7 @@ _SQL_PELOS_DE_CABLE = text(
         p.servicio_raw, p.servicio_numero, p.vigente,
         s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
         s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo,
-        p.verificable, p.status, p.fecha_hora_status
+        p.verificable, p.status, p.fecha_hora_status, p.estado_cromo
     FROM app.cromo_pelos p
     LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
@@ -143,7 +148,7 @@ _SQL_PELOS_DE_TUBO = text(
         p.servicio_raw, p.servicio_numero, p.vigente,
         s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
         s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo,
-        p.verificable, p.status, p.fecha_hora_status
+        p.verificable, p.status, p.fecha_hora_status, p.estado_cromo
     FROM app.cromo_pelos p
     LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
@@ -223,12 +228,15 @@ async def obtener_detalle_cable(sesion: AsyncSession, n_id: int) -> DetalleCable
                 verificable=fila[19],
                 status=fila[20],
                 fecha_hora_status=fila[21],
+                estado_cromo=fila[22],
             )
             pelos_index[pelo_n_id] = pelo
             pelos_por_tubo.setdefault(pelo.tubo_n_id, []).append(pelo)
         servicio = _fila_a_servicio_opcional(fila[9:19], pelo_n_id)
         if servicio is not None:
             pelo.servicios.append(servicio)
+        elif fila[9] is None and (fila[18] or "").startswith("ATRIBUTO_"):
+            pelo.vinculo_sin_servicio = True
 
     tubos: list[TuboDetalle] = []
     tubos_vistos: set[int] = set()
@@ -312,12 +320,15 @@ def pelos_de_tubo_sync(session: Session, tubo_n_id: int) -> list[PeloDetalle]:
                 verificable=fila[19],
                 status=fila[20],
                 fecha_hora_status=fila[21],
+                estado_cromo=fila[22],
             )
             pelos_index[pelo_n_id] = pelo
             pelos.append(pelo)
         servicio = _fila_a_servicio_opcional(fila[9:19], pelo_n_id)
         if servicio is not None:
             pelo.servicios.append(servicio)
+        elif fila[9] is None and (fila[18] or "").startswith("ATRIBUTO_"):
+            pelo.vinculo_sin_servicio = True
 
     return pelos
 

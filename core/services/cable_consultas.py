@@ -154,6 +154,17 @@ class BufferDeCable:
     pelos: list[PeloEnBuffer]
 
 
+# at.63 de Cromo que dicen "no disponible" aunque no haya Servicio SLA que mostrar (red PON, OLT,
+# pelo dañado). Normalizado sin tilde: Cromo escribe "Dañado".
+_ESTADOS_CROMO_EN_USO = frozenset({"UTILIZADO", "DANADO", "DAÑADO"})
+
+
+def _en_uso_sin_servicio(pelo) -> bool:
+    """El formato de la API v1 no cambia (`ocupado`/`libre`): estos pelos salen `ocupado` con
+    `servicio_id=None`, así nadie toma como libre un pelo PON o dañado (caso real F-PE-AL-99)."""
+    return pelo.vinculo_sin_servicio or (pelo.estado_cromo or "").strip().upper() in _ESTADOS_CROMO_EN_USO
+
+
 async def pelos_por_buffer(
     session: AsyncSession, cable_n_id: int, *, buffer: Optional[int] = None
 ) -> list[BufferDeCable]:
@@ -176,7 +187,7 @@ async def pelos_por_buffer(
                 PeloEnBuffer(
                     numero=pelo.numero_pelo,
                     color=pelo.color,
-                    estado="ocupado" if s else "libre",
+                    estado="ocupado" if s or _en_uso_sin_servicio(pelo) else "libre",
                     servicio_id=s.servicio_id_externo if s else None,
                     cliente=(s.nombre_cliente or s.cliente) if s else None,
                     estado_servicio=s.estado_servicio if s else None,

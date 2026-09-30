@@ -82,6 +82,7 @@ _FILA_PELO_SIN_SERVICIO = (
     9001, 129001, "1", 1, "AZUL", "LIBRE", None, None, True,  # pelo
     None, None, None, None, None, None, None, None, None, None,  # servicio (todo None)
     None, None, None,  # verificable, status, fecha_hora_status
+    None,  # estado_cromo (at.63)
 )
 
 _FECHA_STATUS = datetime(2026, 8, 20, 10, 30, tzinfo=timezone.utc)
@@ -90,6 +91,16 @@ _FILA_PELO_CON_SERVICIO = (
     9002, 129001, "2", 2, "AZUL", "CLIENTE", "FO 1234 - CLIENTE", "1234", True,  # pelo
     501, "SRV-001", "SRV-001", "Cliente Uno", "Cliente Uno SA", "ACTIVO", 1, "CORPORATIVO", "1234", "REGEX_EXACTO",
     True, "OPERATIVO", _FECHA_STATUS,  # verificable, status, fecha_hora_status
+    "Utilizado",  # estado_cromo (at.63)
+)
+
+# Pelo con vínculo por at.62 cuyo número no existe en Servicios (id de OLT/PON): LEFT JOIN a
+# servicios sin fila, pero el match existe con su método.
+_FILA_PELO_ATRIBUTO_SIN_SERVICIO = (
+    9003, 129001, "3", 3, "AZUL", "INDETERMINADO", "OLT1_Chacabuco-S2-L1", None, True,  # pelo
+    None, None, None, None, None, None, None, None, "120893", "ATRIBUTO_PELO",
+    None, None, None,  # verificable, status, fecha_hora_status
+    "Utilizado",  # estado_cromo (at.63)
 )
 
 
@@ -240,3 +251,20 @@ def test_pelos_de_tubo_sync_expone_verificacion_del_pelo():
     assert pelos[0].status == "OPERATIVO"
     assert pelos[0].fecha_hora_status == _FECHA_STATUS
     assert len(pelos[0].servicios) == 1
+
+
+@pytest.mark.asyncio
+async def test_obtener_detalle_cable_expone_estado_cromo_y_vinculo_sin_servicio():
+    sesion = _SesionFake(
+        respuestas={
+            "FROM app.cromo_cables": [_FILA_CABLE],
+            "FROM app.cromo_tubos": [_FILA_TUBO],
+            "FROM app.cromo_pelos p": [_FILA_PELO_SIN_SERVICIO, _FILA_PELO_CON_SERVICIO, _FILA_PELO_ATRIBUTO_SIN_SERVICIO],
+        }
+    )
+    pelos = {p.n_id: p for p in (await detalle.obtener_detalle_cable(sesion, 51)).tubos[0].pelos}
+
+    assert (pelos[9001].estado_cromo, pelos[9001].vinculo_sin_servicio) == (None, False)
+    assert (pelos[9002].estado_cromo, pelos[9002].vinculo_sin_servicio) == ("Utilizado", False)
+    assert (pelos[9003].estado_cromo, pelos[9003].vinculo_sin_servicio) == ("Utilizado", True)
+    assert pelos[9003].servicios == []
