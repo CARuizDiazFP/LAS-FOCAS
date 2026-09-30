@@ -154,10 +154,10 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     | `SOLO_ODF` | `fase_odfs` (clase 69) | 7.955 | ~35 min |
     | `SOLO_SPLITTERS` | `fase_splitters` (133) | 20.238 | ~22 min |
     | `SOLO_PUERTOS_SPLITTER` | `fase_puertos_splitter` (134) | 154.284 | ~91 min |
-    | `SOLO_CAJAS_PON` | `fase_cajas_pon` (84/126/127/137/138/139/140) | 13.482 | ~75 min |
-    | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~23 min |
-    | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~32 min |
-    | `SOLO_CABLES_TERCEROS` | `fase_cables_terceros` (52/59/60) + `fase_servicios` | ~733 | minutos |
+    | `SOLO_CAJAS_PON` | `fase_cajas_pon` (84/126/127/137/138/139/140) | 13.482 | ~115-120 min |
+    | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~17 min |
+    | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~16 min |
+    | `SOLO_CABLES_TERCEROS` | `fase_cables_terceros` (52/59/60) + `fase_servicios` | ~733 | ~4 min |
 
     **Cables de terceros (2026-09-29).** 52 = terceros varios (Arsat, Alterplan, Telmex,
     cooperativas…), 59 = Telefónica, 60 = Telecom; clases confirmadas por el usuario, propietarios
@@ -171,6 +171,10 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     `track`). Tras la primera carga hay que re-procesar las posiciones de ODF de dos pelos
     (`scripts/cromo_backfill_conectores_odf.py --apply --solo-multipelo`), para que cada una quede en
     el pelo del cable propio (`resolver_servicio_conectores` prefiere la clase 51).
+
+    Duraciones de bajada, rosetas, cajas PON y terceros: **medidas en las primeras cargas completas**
+    (2026-09-29, dev y prod, 0 errores). Cajas PON tardó 120,8 min en dev y 114,1 en prod, no los ~75
+    que se habían estimado con una corrida de una página.
 
     **Ninguno de los cinco modos de la red de acceso PON entra en `COMPLETA`**, por decisión
     explícita: sumarlos convertiría una corrida de rutina en una de varias horas. El selector

@@ -2174,7 +2174,7 @@ async def test_cada_modo_acotado_corre_solo_su_fase(monkeypatch, modo, fase_espe
 async def test_completa_no_arrastra_ninguna_fase_de_la_red_pon(monkeypatch):
     """Decisión explícita: sumarlas a COMPLETA convertiría una corrida de rutina en una de horas.
 
-    Las cajas PON solas son ~75 minutos y los puertos de splitter ~91.
+    Las cajas PON solas son ~2 h (medido 2026-09-29) y los puertos de splitter ~91 min.
     """
     sesion = _SesionFakeCorrida()
     sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(
