@@ -64,7 +64,11 @@ REMOTO = "origin"
 
 # Archivos/directorios locales del checkout de control que el worktree necesita para
 # operar (todos ignorados por Git). Se enlazan, nunca se copian.
-ENLACES_ENTORNO = (".venv", ".env", ".env.dev", ".secrets")
+# `Logs` también: compose monta `../Logs` (prod) y `../Logs/dev` (dev) relativo al checkout desde el
+# que se levanta el stack. Sin el enlace, un `docker compose up` desde un worktree deja a los
+# servicios escribiendo dentro del worktree, y al cerrarlo los logs quedan en una carpeta borrada
+# (real 2026-09-30: web, cromo_worker y slack_baneo_worker de dev).
+ENLACES_ENTORNO = (".venv", ".env", ".env.dev", ".secrets", "Logs")
 
 # Rutas que NO se enlazan automáticamente pero que igual deben quedar excluidas: se
 # enlazan a mano y bajo demanda (ver la skill `agent-worktree`). Son artefactos de
