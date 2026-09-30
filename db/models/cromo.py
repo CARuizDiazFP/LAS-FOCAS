@@ -352,6 +352,12 @@ class CromoPelo(Base):
     verificable = Column(Boolean, nullable=True)
     status = Column(Text, nullable=True)
     fecha_hora_status = Column(DateTime(timezone=True), nullable=True)
+    # at.62 / at.63 del pelo: sólo viajan en `GET /db/objects/{cable}/inner`, nunca en el barrido de
+    # botellas, así que tampoco están en PELO_CAMPOS. Los escribe `ingesta.fase_pelos_inner`;
+    # `atributos_leidos_at` NULL = nunca se preguntó (migración 20260930_01).
+    servicio_atributo = Column(Text, nullable=True)
+    estado_cromo = Column(Text, nullable=True)
+    atributos_leidos_at = Column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<CromoPelo n_id={self.n_id} tubo_n_id={self.tubo_n_id} tipo_asociacion='{self.tipo_asociacion}'>"
@@ -539,6 +545,8 @@ class CromoIngestaConfig(Base):
     clases = Column(JSONB(astext_type=Text()), nullable=False)  # lista de int, ej. [68,121,122,123,125]
     ultima_ejecucion = Column(DateTime(timezone=True), nullable=True)
     ultimo_error = Column(Text, nullable=True)
+    # Una fila por job del worker: id=1 COMPLETA, id=2 SOLO_PELOS_INNER semanal (migración 20260930_01).
+    modo = Column(Text, nullable=False, server_default=text("'COMPLETA'"))
 
     def __repr__(self) -> str:
         return f"<CromoIngestaConfig habilitado={self.habilitado} intervalo_horas={self.intervalo_horas}>"

@@ -55,6 +55,30 @@ def test_atributo_tolera_ausencia_de_at():
     assert atributo({}, 34) is None
 
 
+def test_atributo_con_historial_devuelve_el_de_vfrom_mas_alto():
+    # Payload real de `/inner` del cable F-PE-AL-99 (pelo 1, 2026-09-30): Cromo conserva el valor
+    # viejo `0` y el vigente `116548` como dos entradas del mismo id. La primera es la vieja.
+    obj = {
+        "at": [
+            {"seq": 6, "id": 62, "value": "0", "from": 1651892400, "vfrom": 529},
+            {"seq": 7, "id": 63, "value": "Utilizado", "from": 1651892400, "vfrom": 529},
+            {"seq": 9, "id": 62, "value": "116548", "from": 1757012969, "vfrom": 223602},
+        ]
+    }
+    assert atributo(obj, 62) == "116548"
+    assert atributo(obj, 63) == "Utilizado"
+
+
+def test_atributo_con_historial_desordenado_no_depende_de_la_posicion():
+    obj = {"at": [{"id": 62, "value": "nuevo", "vfrom": 900}, {"id": 62, "value": "viejo", "vfrom": 10}]}
+    assert atributo(obj, 62) == "nuevo"
+
+
+def test_atributo_con_empate_o_sin_vfrom_gana_el_ultimo():
+    assert atributo({"at": [{"id": 62, "value": "a"}, {"id": 62, "value": "b"}]}, 62) == "b"
+    assert atributo({"at": [{"id": 62, "value": "a", "vfrom": 5}, {"id": 62, "value": "b", "vfrom": 5}]}, 62) == "b"
+
+
 # ── ll → latitud/longitud ───────────────────────────────────────────────────
 
 
@@ -174,6 +198,32 @@ def test_pelo_sin_at61_se_parsea_sin_excepcion():
     assert pelo.servicio_numero is None
     assert pelo.tipo_asociacion == "INDETERMINADO"
     assert pelo.servicio_raw is None
+
+
+def test_pelo_sin_at62_ni_at63_los_deja_en_none():
+    pelo = parse_pelo({"id": 1, "n_id": 1, "class": 130, "parent": 60010, "at": [{"id": 75, "value": "9"}]})
+    assert pelo.servicio_atributo is None
+    assert pelo.estado_cromo is None
+
+
+def test_pelo_de_inner_trae_at62_vigente_y_at63():
+    # Pelo 1 real de F-PE-AL-99 tal como lo devuelve `GET /db/objects/6599543/inner`.
+    obj = {
+        "id": 6966803,
+        "class": 130,
+        "parent": 6966802,
+        "at": [
+            {"seq": 6, "id": 62, "value": "0", "vfrom": 529},
+            {"seq": 7, "id": 63, "value": "Utilizado", "vfrom": 529},
+            {"seq": 9, "id": 62, "value": "116548", "vfrom": 223602},
+            {"seq": 12, "id": 61, "value": "TLS 116548 - CREDICOOP", "name": "fo.id_servicio", "vfrom": 225204},
+            {"id": 75, "value": "1"},
+        ],
+    }
+    pelo = parse_pelo(obj)
+    assert pelo.servicio_atributo == "116548"
+    assert pelo.estado_cromo == "Utilizado"
+    assert pelo.servicio_numero == "116548"
 
 
 def test_pelo_con_at61_extrae_numero_de_servicio():

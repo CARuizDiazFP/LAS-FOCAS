@@ -52,7 +52,8 @@ _CLASE_SPLITTER = 133
 _CLASE_PUERTO_SPLITTER = 134
 _CLASE_PATCHERA = 135
 _CLASE_POSICION_PATCHERA = 136
-_AT_SERVICIO_DIRECTO = 62     # id de servicio declarado directo sobre el puerto
+_AT_SERVICIO_DIRECTO = 62     # id de servicio declarado directo sobre el puerto (y sobre el pelo, sólo en `/inner`)
+_AT_ESTADO_PELO = 63          # "Utilizado" / "Libre" / "Dañado", sólo en `/inner`
 _AT_SPLITTER_NOMBRE = 78      # "S-1269002-2", "SPLITTER1"
 _AT_PUERTO_NOMBRE = 80        # "E1", "S8"
 _AT_PUERTO_SENTIDO = 82       # "ENTRADA" / "SALIDA"
@@ -82,6 +83,8 @@ ATRIBUTOS_CONOCIDOS: dict[int, str] = {
     41: "Código de modelo",
     47: "Propietario",
     61: "Servicio (crudo)",
+    62: "ID de servicio",
+    63: "Estado del pelo",
     67: "Calle",
     68: "Localidad",
     69: "Provincia",
@@ -191,11 +194,20 @@ ObjetoDominio = Union[Botella, Cable, Tubo, Pelo, Fusion, Odf]
 
 
 def atributo(obj: Mapping[str, Any], attr_id: int) -> Optional[str]:
-    """Resuelve un atributo dinámico de `at[]` por `id`. Nunca por posición ni por `seq`."""
+    """Resuelve un atributo dinámico de `at[]` por `id`. Nunca por posición ni por `seq`.
+
+    Cromo conserva el historial de un atributo como varias entradas con el mismo `id`: vale la de
+    `vfrom` más alto (a igual `vfrom`, o sin `vfrom`, la última de la lista). Medido real en `/inner`
+    del cable F-PE-AL-99 (2026-09-30): el pelo 1 trae `at.62` = "0" (vfrom 529) y "116548" (vfrom
+    223602); tomar la primera daba el valor viejo.
+    """
+    vigente: Optional[Mapping[str, Any]] = None
     for item in obj.get("at") or []:
-        if item.get("id") == attr_id:
-            return item.get("value")
-    return None
+        if item.get("id") != attr_id:
+            continue
+        if vigente is None or (item.get("vfrom") or 0) >= (vigente.get("vfrom") or 0):
+            vigente = item
+    return vigente.get("value") if vigente is not None else None
 
 
 def _resolver_n_id(obj: Mapping[str, Any]) -> Optional[int]:
@@ -492,6 +504,8 @@ def parse_pelo(obj: Mapping[str, Any]) -> Pelo:
         servicio_raw=servicio_raw,
         servicio_numero=servicio_numero,
         tipo_asociacion=tipo_asociacion,
+        servicio_atributo=atributo(obj, _AT_SERVICIO_DIRECTO),
+        estado_cromo=atributo(obj, _AT_ESTADO_PELO),
     )
 
 
