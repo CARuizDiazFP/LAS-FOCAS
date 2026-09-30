@@ -215,8 +215,9 @@ Casos nuevos de prod del 29/9 (#204-#208). Diagnóstico con la búsqueda real co
 | #207 "Cra coronel diaz 1847" | Sólo existe la 1846 | Sin cambio: la altura nunca se aproxima (validación manual) |
 | #204/#205 Panamericana km 31.500 | Localidad "EL TALAR" agregada; #205 además "Cra" por "Poste" | Reintentos tolerantes (`_resultado_tolerante`, `localidades_catalogo.py`) |
 
-Arneses (read-only, `focas_dev`, `HEAD` del worktree vs rama; scripts no versionados, en el
-scratchpad de la sesión):
+Arneses (read-only, `focas_dev`, `HEAD` del worktree vs rama). Desde el cierre del 2026-09-30 están
+versionados en `scripts/arnes_busqueda_camaras.py` (`generar` / `correr` / `comparar` / `clasificar`,
+uso en su docstring); los del 2026-09-28 se habían perdido y hubo que reescribirlos:
 
 | Arnés | Base | Rama |
 |---|---|---|
