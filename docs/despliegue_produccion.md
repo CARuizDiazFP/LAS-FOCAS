@@ -80,7 +80,7 @@ git merge-base --is-ancestor $P2 origin/dev && git diff --quiet origin/main $P2 
 ```
 
 Con cada despliegue se acumula un merge más en `main`: el 2026-09-29 eran **2** (`7055452` y
-`1144e9b`). La condición es la misma para cada uno: el árbol del merge es idéntico al de su segundo
+`1144e9b`) y, en el segundo despliegue de ese día, **4** (más `40ab75c` y `03bafb6`). La condición es la misma para cada uno: el árbol del merge es idéntico al de su segundo
 padre, y ese padre es ancestro de `dev`. Chequearla para **todos** los commits de
 `git log origin/dev..origin/main`, no sólo el último:
 
@@ -122,6 +122,9 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
   El warning `missing_scope ... users:read` es conocido (falta el scope en la Slack App de prod, ver
   `docs/cierres/2026-09-07.md`): el técnico queda con el ID crudo de Slack.
 - Redis: los tres checks de `docs/mantenimiento_redes_produccion.md` ("Verificación post-despliegue").
+  El `/health` de `botellas_recalculo_worker` escucha en el puerto **8097** dentro del contenedor, no
+  en 8000: `docker exec lasfocas-botellas-recalculo-worker curl -fsS http://localhost:8097/health`
+  (el mismo que usa su `healthcheck`; real el 2026-09-29, un intento a 8000 dio `Connection refused`).
 - Queda para el usuario: navegador sobre el panel y un mensaje real en Slack prod.
 
 ## 7. Pasos de datos pendientes del lote (post-verificación)
@@ -154,6 +157,11 @@ Patrón para cualquier script de datos de este paso (usado por el reproceso, 202
   docker exec -i -w /app -e PYTHONPATH=/app lasfocas-slack-baneo-worker \
       python - --slack --apply --reporte - < scripts/ingresos_reprocesar_sin_match.py > reproceso_apply.json
   ```
+
+  Con `--ids <a>,<b>` se reprocesan sólo esos casos (uso real 2026-09-29: #206/#208 tras fusionar un
+  duplicado, #204/#205 tras el deploy). Los `ingreso_id` del dry-run **no** son los del `--apply`: la
+  transacción revertida igual consume valores de la secuencia (dry-run 211, apply 212). Comparar por
+  caso, cámara y acción, no por id.
 
   Ensayo contra una copia de los 169 casos de Slack de prod en dev (2026-09-28, revertido): 33
   registran movimiento (18 ingresos, 13 egresos que cierran, 4 egresos huérfanos), 25 Nodos marcados

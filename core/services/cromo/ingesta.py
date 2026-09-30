@@ -1551,7 +1551,12 @@ _SQL_BUSCAR_SERVICIO = text(
           SELECT 1 FROM app.servicios vigente
           WHERE vigente.id <> s.id
             AND (s.servicio_id = ANY(vigente.alias_ids) OR s.numero_primer_servicio = ANY(vigente.alias_ids))
+            -- Sólo absorción en un sentido: en un par mutuo (cada fila con la identidad de la otra en
+            -- alias_ids) descartar las dos dejaba el número sin servicio (real 2026-09-30, tras el
+            -- backfill PROV). COALESCE porque `x = ANY(NULL)` es NULL.
+            AND NOT COALESCE(vigente.servicio_id = ANY(s.alias_ids) OR vigente.numero_primer_servicio = ANY(s.alias_ids), false)
       )
+    ORDER BY (s.servicio_id = :numero) DESC, (s.numero_primer_servicio = :numero) DESC, s.id DESC
     LIMIT 1
     """
 )

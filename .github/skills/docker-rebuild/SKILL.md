@@ -156,6 +156,30 @@ docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ps
 
 **No tocar `deploy/compose.yml` ni contenedores `lasfocas-*` (producción) sin instrucción explícita y puntual del usuario en ese momento** — ver `docs/decisiones.md`, directiva post-migración Nocturne (2026-07-29). Todo trabajo nuevo por default va a dev.
 
+## Correr el código de un worktree DENTRO de un contenedor, sin reconstruir la imagen
+
+Para verificar contra Cromo o la base real **antes** de integrar (el host no tiene la config de Cromo:
+`CromoConfigError` desde el `.venv`), copiar los paquetes del worktree a un directorio temporal del
+contenedor y ponerlo primero en `PYTHONPATH`. Usado cuatro veces el 2026-09-29 (dry-run y apply de un
+backfill, generación de trackings de punta a punta) sin tocar la imagen:
+
+```bash
+docker exec lasfocasdev-web sh -c 'rm -rf /tmp/wt && mkdir -p /tmp/wt'
+tar cf - --exclude=__pycache__ core db scripts modules | docker exec -i lasfocasdev-web tar xf - -C /tmp/wt
+docker exec -w /tmp/wt lasfocasdev-web sh -c 'PYTHONPATH=/tmp/wt:/app python scripts/<script>.py --dry-run'
+docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
+```
+
+- **Copiar `modules/` también** si el código toca el bot o los workers: la imagen web no lo tiene en
+  la ruta que espera `modules.slack_baneo_notifier...` (`ModuleNotFoundError` real).
+- `web` no trae `scripts/` en la imagen: para un script ya commiteado alcanza con
+  `docker cp scripts/<script>.py lasfocasdev-web:/tmp/`, y correrlo con `PYTHONPATH=/app`.
+- Es para verificación: el contenedor sigue sirviendo su imagen. Después de integrar, reconstruir
+  igual (ver "Verificar que el contenedor sirve TU código").
+- Para prod, el mismo patrón sirve empaquetado en un script operativo que el usuario lanza con
+  `nohup` desde la VM (precedente: `/home/support-focal-01/ingesta_prod_terceros_pon.sh`, cinco
+  cargas de Cromo encadenadas, ~3 h).
+
 ## Rebuild desde un worktree: `env_file`/`secrets` relativos rotos
 
 `deploy/docker-compose.dev.yml` referencia `env_file: [../.env.dev]` y `secrets: file: ../.secrets/...` **relativos al propio archivo compose**, no a lo que apunta el flag `--env-file` (ese flag sólo resuelve interpolación `${VAR}` dentro del yml, nada más). Un worktree de trabajo (`git worktree add`, ej. para `subagent-driven-development`) no tiene `.env.dev`/`.secrets/` propios — son gitignored, sólo existen en el checkout principal. `docker compose build` funciona igual desde el worktree (no los necesita), pero `docker compose up -d` falla con `env file .../worktree/.env.dev not found`.

@@ -232,6 +232,27 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    casos reales de `ingresos_sin_match` (dev y prod tienen el inventario casi idéntico: medir en dev).
    Método y cifras: `docs/relevamiento_ingresos_sin_match_2026-09-28.md`.
 
+11. **`tp[]` es una lista y casi nunca tiene un solo elemento que importe: nunca `tp[0]` a ciegas.**
+   Real (2026-09-29, `track 42351` daba 1 `.txt` con 2 hilos): una posición de patchera (clase 136)
+   une **dos** pelos, uno de cada cable que llega a ella, y `parse_odf_conectores` guardaba el
+   primero, que era de un cable de tercero no ingerido (F-CRZ-FB, clase 59). Medido en dev: 67
+   conectores con dos pelos, en 53 el guardado no existía localmente. `tp[]` también mezcla clases
+   (130 pelo, 136 conector↔conector, 141 fusión de ODF). Receta antes de leer un id de `tp[]`:
+   - Medir la distribución real: `jsonb_array_elements(payload_raw->'tp')` agrupado por
+     `e->>'class'` y por cantidad de elementos, sobre la tabla ya ingerida.
+   - Filtrar por clase y, si quedan varios, elegir con un criterio de dominio explícito (hoy:
+     `resolver_servicio_conectores` prefiere el pelo de un cable propio, 51), nunca por posición.
+   - Si ningún id de `tp[]` existe localmente, preguntar a Cromo por el objeto
+     (`get_objeto_con_topologia`) y mirar la **clase de su `parent`**: así apareció que el faltante
+     eran cables de clases que la ingesta no barría.
+
+12. **Cables de terceros (52 varios, 59 Telefónica, 60 Telecom): el `/path` los trae, el árbol de
+   botella no.** El tracking `.txt` los incluye porque sale del `/path` en vivo, así que "el `.txt`
+   está bien" no prueba que el inventario local los tenga. Sus pelos llegan sólo por
+   `fase_cables_terceros` (desde 2026-09-29), porque van cámara↔ODF u ODF↔ODF y ningún árbol de
+   botella los contiene. Ante un pelo del camino que no existe en `cromo_pelos`, sospechar primero de
+   una clase de cable no barrida antes que de un bug de parseo.
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)

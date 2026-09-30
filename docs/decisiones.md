@@ -2647,3 +2647,48 @@ su propia ventana de mantenimiento.
   caso real ("Ruta 9 Km 63" → "Ruta 8 Km 63.9") que motivó la regla de números enteros.
 - **Altura distinta sigue sin match** (confirmado por el usuario, caso #207 "Cra coronel diaz
   1847" contra "Cra Coronel Diaz 1846"): se valida a mano, nunca por aproximación.
+
+
+## 2026-09-30 — Una fila por servicio de PROV: ID operativo `INSTALADO` y fusión por cadena
+
+- **Hallazgo** (al revisar el primer backfill PROV completo en prod: 14.173 de 14.178 OK, 509 IDs vigentes
+  cambiados):
+  - **437 pares** de filas de `app.servicios` eran el mismo servicio de PROV, uno con el ID viejo y
+    otro con el nuevo. En **387** de esos pares las dos filas tenían pelos de Cromo.
+  - Efectos: "Servicios por cable/buffer" (Slack, web y API) repetía el servicio; los pelos quedaban
+    repartidos entre dos filas, así que el tracking y las ODF podían salir incompletos; y la regla
+    anti-ambigüedad descartaba las dos filas de un par mutuo. **625 servicios** de prod daban 404 en
+    la API v1 por su propio ID.
+  - Origen: el backfill no puede fusionar filas. Cuando el ID nuevo ya lo tiene otra fila, lo deja
+    como alias (351 choques en el log de prod).
+- **ID operativo** (definición del usuario):
+  - `ANULADO`: ID anulado; el servicio puede seguir activo por el ID anterior.
+  - `SOL BAJA`: baja administrativa, pendiente de la baja técnica.
+  - `PENDIENTE CPS`: upgrade o servicio pendiente de implementación; sigue vigente por el ID activo
+    anterior.
+  - En los tres casos se usa el eslabón `INSTALADO` más reciente de la cadena; sin `INSTALADO`, el que
+    PROV marca vigente.
+  - No hace falta regularizar `estado_servicio`: esos valores quedan guardados tal cual.
+- **Cambios**:
+  - `core/services/servicios_fusion_prov.py` y `scripts/servicios_fusionar_por_cadena_prov.py`:
+    fusionan las filas vinculadas por la cadena de PROV, nunca por un alias a secas, porque hay alias
+    como "C22" que no son IDs.
+    - El sobreviviente es la fila con cliente, con cadena y con más pelos.
+    - Se reasignan las 8 tablas con FK a `app.servicios`.
+    - Después se realinean las filas sueltas que quedaron con un `PENDIENTE CPS` como ID.
+    - Se saltean los grupos con dos `INSTALADO` distintos, que son servicios activos distintos.
+  - `ingerir_contexto_prov`: usa el ID operativo en lugar del "ID más alto". Así un refresco de PROV
+    ya no promueve un upgrade pendiente.
+  - La regla anti-ambigüedad del resolver de la API v1, del match de la ingesta Cromo
+    (`_SQL_BUSCAR_SERVICIO`) y de `odf_conectores` ahora sólo descarta una fila cuando la absorción es
+    en un solo sentido. Además, esas consultas tienen un `ORDER BY` determinístico, porque antes era
+    `LIMIT 1` sin orden.
+- **Ensayo en dev**:
+  - Fusión: 381 grupos, 377 fusionados, 404 filas eliminadas, 4.122 pelos movidos, 4 grupos
+    salteados y 0 errores.
+  - Realineación: 67 filas.
+  - Resultado: **0 servicios con 404** por su propio ID sobre 13.773, 0 servicios duplicados en un
+    mismo cable, y una segunda corrida no encuentra nada.
+- **Pendiente conocido**: la ingesta del Excel SLA (`POST /servicios/ingest`) sigue con la regla del
+  ID más alto. Un Excel con un upgrade pendiente podría volver a promoverlo hasta el próximo refresco
+  de PROV.

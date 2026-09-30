@@ -124,25 +124,25 @@ export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
   {
     valor: 'SOLO_CAJAS_PON',
     etiqueta: 'Sólo cajas PON (7 clases)',
-    hint: '13.482 cajas PON de las clases 84, 126, 127, 137, 138, 139 y 140 — las cinco últimas no existían en el catálogo hasta ahora. ~75 min.',
+    hint: '13.482 cajas PON de las clases 84, 126, 127, 137, 138, 139 y 140 — las cinco últimas no existían en el catálogo hasta ahora. ~2 h.',
     usaClasesBotella: false,
   },
   {
     valor: 'SOLO_ROSETAS',
     etiqueta: 'Sólo rosetas (clase 85)',
-    hint: '17.348 rosetas. No aparecen en los recorridos de camino óptico —el recorrido termina en la caja PON— pero la colección existe. ~23 min.',
+    hint: '17.348 rosetas. No aparecen en los recorridos de camino óptico —el recorrido termina en la caja PON— pero la colección existe. ~17 min.',
     usaClasesBotella: false,
   },
   {
     valor: 'SOLO_CABLES_BAJADA',
     etiqueta: 'Sólo cables de bajada (clase 66)',
-    hint: '19.030 cables de bajada. Van a la misma tabla que los de FO, distinguidos por clase. ~32 min.',
+    hint: '19.030 cables de bajada. Van a la misma tabla que los de FO, distinguidos por clase. ~16 min.',
     usaClasesBotella: false,
   },
   {
     valor: 'SOLO_CABLES_TERCEROS',
     etiqueta: 'Sólo cables de terceros (clases 52, 59, 60)',
-    hint: '~733 cables de terceros (52 varios, 59 Telefónica, 60 Telecom) con sus tubos y pelos, y después el matching de servicios. También corren dentro de la Completa. Pocos minutos.',
+    hint: '~733 cables de terceros (52 varios, 59 Telefónica, 60 Telecom) con sus tubos y pelos, y después el matching de servicios. También corren dentro de la Completa. ~4 min.',
     usaClasesBotella: false,
   },
 ];
