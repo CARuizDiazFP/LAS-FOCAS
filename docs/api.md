@@ -151,6 +151,12 @@ para invalidar también los tokens vigentes, desactivar.
   primer servicio y por último línea.
 - **Cabecera común**: `servicio_consultado`, `servicio_id_vigente` y `es_id_vigente` (`true` sólo si
   el ID consultado es el `servicio_id` actual).
+- **Qué es el ID vigente** (desde 2026-09-30): el ID con el que el servicio funciona hoy según PROV,
+  que es el eslabón `INSTALADO` más reciente de su cadena de upgrades. Un upgrade `PENDIENTE CPS` o un
+  ID `ANULADO` / `SOL BAJA` no lo desplazan: el servicio sigue operando con el `INSTALADO` anterior.
+  Por eso consultar un ID pendiente devuelve `es_id_vigente: false`. Ejemplo real: `120393`
+  (`PENDIENTE CPS`) → `servicio_id_vigente: "112763"`. Las consultas por cable devuelven un servicio
+  por fila con ese mismo ID. Ver `docs/decisiones.md`, 2026-09-30.
 - **404** `{"detail": "Servicio no encontrado"}`. Un servicio sin datos responde 200 con la lista
   vacía (`orden_fuente: "sin_datos"`).
 

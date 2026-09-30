@@ -39,7 +39,7 @@ def servicios_sinteticos():
 
     with SessionLocal() as session:
         ids = []
-        for servicio_id, alias in ((_VIGENTE, [_HISTORICO, _SUPERADA]), (_SUPERADA, [])):
+        for servicio_id, alias in ((_VIGENTE, [_HISTORICO, _SUPERADA]), (_SUPERADA, None)):  # huérfana sin alias: alias_ids NULL
             ids.append(
                 int(
                     session.execute(

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.services.servicios_fusion_prov import Eslabon, id_operativo
 from core.services.servicios_consolidacion_service import (
     consolidar_identidad_servicio,
     es_verificable_por_tipo_y_estado,
@@ -206,6 +207,19 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
         numero_linea_actual=servicio.numero_linea,
         alias_ids_actual=alias_combinados,
     )
+
+    # La consolidación elige el ID numérico más alto, que puede ser un eslabón que todavía no
+    # funciona (`PENDIENTE CPS`: upgrade sin implementar) o que no va a funcionar (`ANULADO`,
+    # `SOL BAJA`). Con la cadena de PROV a mano manda el ID operativo: el `INSTALADO` más reciente
+    # (decisión del usuario, 2026-09-30; ver `core/services/servicios_fusion_prov.py`).
+    operativo = id_operativo(
+        Eslabon(e.numero_id, e.orden, e.estado_comercial, e.es_vigente) for e in parseado.historial
+    )
+    if operativo and operativo != identidad.servicio_id:
+        otros = (set(identidad.alias_ids) | {identidad.servicio_id}) - {operativo}
+        identidad = replace(
+            identidad, servicio_id=operativo, numero_linea=operativo, alias_ids=sorted(a for a in otros if a)
+        )
 
     estado_prov = _traducir_estado_comercial(parseado.estado_comercial)
     servicio.estado_servicio = resolver_estado_servicio(

@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Literal, Optional
 
-from sqlalchemy import any_, case, exists, or_, select, text
+from sqlalchemy import any_, case, exists, false, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -82,6 +82,12 @@ async def resolver_servicio_por_identificador(session: AsyncSession, identificad
        que `_SQL_BUSCAR_SERVICIO` en `core/services/cromo/ingesta.py` (bug real 2026-08-31: una
        fila `MANUAL` huérfana con `servicio_id='61943'` le ganaba a la vigente que tenía `61943` en
        `alias_ids`). En dev quedaban 43 filas así el 2026-09-29.
+       La absorción tiene que ser **en un solo sentido**. Si las dos filas tienen cada una la
+       identidad de la otra en `alias_ids` (par mutuo), no se descarta ninguna: descartar las dos
+       dejaba el servicio inalcanzable (real 2026-09-30, tras el backfill PROV: 625 servicios de
+       prod daban 404 por su propio ID). Los pares mutuos que son el mismo servicio los elimina
+       `scripts/servicios_fusionar_por_cadena_prov.py`; los que quedan son servicios activos
+       distintos que PROV relaciona, y cada uno debe resolver a sí mismo.
     2. Entre las que quedan: ID vigente, alias, `numero_primer_servicio` y por último `numero_linea`.
     """
 
@@ -100,6 +106,16 @@ async def resolver_servicio_por_identificador(session: AsyncSession, identificad
         or_(
             Servicio.servicio_id == any_(absorbente.alias_ids),
             Servicio.numero_primer_servicio == any_(absorbente.alias_ids),
+        ),
+        # Sólo absorción en un sentido: si esta fila también absorbió a la otra, es un par mutuo.
+        # `coalesce`: con `alias_ids` NULL, `x = ANY(NULL)` es NULL y el NOT dejaría de descartar a
+        # las filas huérfanas del bug original, que suelen no tener alias.
+        ~func.coalesce(
+            or_(
+                absorbente.servicio_id == any_(Servicio.alias_ids),
+                absorbente.numero_primer_servicio == any_(Servicio.alias_ids),
+            ),
+            false(),
         ),
     )
     servicio = (

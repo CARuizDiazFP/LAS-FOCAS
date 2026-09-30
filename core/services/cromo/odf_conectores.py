@@ -84,7 +84,13 @@ _SQL_CONECTORES_DE_ODF = text(
                   sv.servicio_id = ANY(vigente.alias_ids)
                   OR sv.numero_primer_servicio = ANY(vigente.alias_ids)
                 )
+                -- Par mutuo: no se descarta ninguna fila (mismo criterio que `_SQL_BUSCAR_SERVICIO`).
+                AND NOT COALESCE(
+                  vigente.servicio_id = ANY(sv.alias_ids) OR vigente.numero_primer_servicio = ANY(sv.alias_ids),
+                  false
+                )
           )
+        ORDER BY (sv.servicio_id = c.servicio_resuelto) DESC, sv.id DESC
         LIMIT 1
     ) s ON true
     WHERE c.odf_n_id = :odf_n_id

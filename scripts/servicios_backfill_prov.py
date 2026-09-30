@@ -27,7 +27,12 @@ publicado 5433):
     python scripts/servicios_backfill_prov.py                                   # sólo reporta (dry-run)
     python scripts/servicios_backfill_prov.py --apply                            # aplica el cambio
     python scripts/servicios_backfill_prov.py --solo-ids 122214,15872 --apply    # subconjunto acotado
-    python scripts/servicios_backfill_prov.py --limit 500 --apply                # corrida en lotes de 500
+    python scripts/servicios_backfill_prov.py --limit 300                        # muestra: los primeros 300 por id
+
+`--limit` toma siempre los primeros N por `id`, sin offset: repetirlo procesa las mismas filas, así que
+no sirve para hacer lotes. La corrida completa va sin `--limit` (~47 min para ~14.200 servicios a 5 req/s).
+Después de una corrida completa, correr `scripts/servicios_fusionar_por_cadena_prov.py`: el backfill no
+puede fusionar dos filas del mismo servicio y deja el ID nuevo como alias cuando otra fila ya lo tiene.
 
 Corriéndolo DENTRO del contenedor `api` (`docker exec lasfocasdev-api python
 scripts/servicios_backfill_prov.py ...`) no hace falta ninguno de esos exports: ahí
