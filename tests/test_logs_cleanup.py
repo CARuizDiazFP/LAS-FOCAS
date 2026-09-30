@@ -107,3 +107,20 @@ def test_rotar_y_truncar_con_el_servicio_escribiendo(tmp_path):
         assert ruta.read_text() == "despues de truncar\n"
     finally:
         h.close()
+
+
+def test_un_archivo_sin_permiso_se_informa_y_no_corta_el_resto(tmp_path, monkeypatch):
+    ajeno = _escribir(tmp_path / "office.log", 0.1)
+    viejo = _escribir(tmp_path / "web.log.3", 0.1, edad_dias=30)
+    plan = _plan(tmp_path, truncar=[ajeno])
+    real_truncate = os.truncate
+
+    def truncate_sin_permiso(ruta, largo):
+        if str(ruta) == str(ajeno):
+            raise PermissionError(13, "Permission denied")
+        return real_truncate(ruta, largo)
+
+    monkeypatch.setattr(lc.os, "truncate", truncate_sin_permiso)
+    fallidos = lc.aplicar(plan)
+    assert [r for r, _ in fallidos] == [ajeno]
+    assert not viejo.exists()  # el borrado siguió igual

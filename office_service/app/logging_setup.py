@@ -106,6 +106,10 @@ def configurar_logging(level: str = "INFO", *, service: str = "office") -> None:
     logs_dir = os.getenv("LOGS_DIR")
     if not logs_dir or any(isinstance(h, BufferedAppendFileHandler) for h in root.handlers):
         return
+    # El usuario `office` de la imagen no es el dueño de Logs/ (1001): escribe por grupo
+    # (`group_add: ["1001"]`). Con umask 002 su archivo queda también escribible por el grupo, así
+    # `scripts/logs_cleanup.py --truncar` lo puede vaciar desde el host.
+    os.umask(0o002)
     fh = BufferedAppendFileHandler(Path(logs_dir) / f"{service}.log")
     fh.setFormatter(logging.Formatter(_FORMAT))
     root.addHandler(fh)

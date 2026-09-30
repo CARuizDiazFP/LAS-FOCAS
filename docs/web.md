@@ -153,8 +153,9 @@ Centralizado vía `core.logging.setup_logging`.
 
 - Formato: `timestamp service=<servicio> level=<nivel> msg=<mensaje>`.
 - Variable `LOG_LEVEL` (ej: DEBUG, INFO, WARNING) controla el nivel base.
-- En `ENV=development` se escribe además a `Logs/web.log` (rotativo 5MB x3). En otros entornos sólo stdout.
-- Archivos ignorados por git (`Logs/`).
+- Siempre se escribe además a `Logs/web.log` (`LOGS_DIR`, montado desde `Logs/` en prod y `Logs/dev/` en dev) con `BufferedAppendFileHandler`: buffer de ~2 s, inmediato ante `ERROR`, y el archivo se puede borrar, truncar o rotar con el servicio corriendo. El handler va en el logger raíz, así que también llegan los módulos (`getLogger(__name__)`) y uvicorn.
+- Rotación y retención: `python scripts/logs_cleanup.py` (reporte; `--apply`). Verificación de la colecta de todos los servicios: `python scripts/logs_verificar.py --entorno dev`.
+- Archivos ignorados por git (`Logs/`) y fuera del indexado de los agentes: leerlos sólo vía la skill `logs-cleanup`.
 - Eventos clave:
   - `action=api_login result=success|fail|error ...`
   - Errores de bcrypt / DB → nivel ERROR / stacktrace con `logger.exception`.

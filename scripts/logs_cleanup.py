@@ -144,15 +144,29 @@ def armar_plan(
     return plan
 
 
-def aplicar(plan: Plan) -> None:
+def aplicar(plan: Plan) -> list[tuple[Path, str]]:
+    """Ejecuta el plan. Devuelve lo que no se pudo hacer, sin cortar el resto.
+
+    Real (2026-09-30): `office.log` lo crea el usuario de la imagen de office (UID 1000), no el dueño de
+    Logs/; si el archivo no es escribible por grupo, truncarlo desde el host da `PermissionError`.
+    Rotar y borrar sólo necesitan permiso sobre la carpeta.
+    """
     sello = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fallidos: list[tuple[Path, str]] = []
+
+    def intentar(ruta: Path, accion) -> None:
+        try:
+            accion()
+        except OSError as exc:
+            fallidos.append((ruta, str(exc)))
+
     for ruta in plan.rotar:
-        ruta.rename(ruta.with_name(f"{ruta.name}.{sello}"))
+        intentar(ruta, lambda r=ruta: r.rename(r.with_name(f"{r.name}.{sello}")))
     for ruta in plan.truncar:
-        with open(ruta, "r+b") as archivo:
-            archivo.truncate(0)
+        intentar(ruta, lambda r=ruta: os.truncate(r, 0))
     for ruta in plan.borrar:
-        ruta.unlink(missing_ok=True)
+        intentar(ruta, lambda r=ruta: r.unlink(missing_ok=True))
+    return fallidos
 
 
 def _mb(ruta: Path) -> str:
@@ -198,7 +212,10 @@ def main() -> int:
     if not (plan.rotar or plan.truncar or plan.borrar):
         print("  nada que hacer")
     if args.apply:
-        aplicar(plan)
+        fallidos = aplicar(plan)
+        for ruta, error in fallidos:
+            print(f"  FALLÓ    {ruta.relative_to(carpeta)}: {error}", file=sys.stderr)
+        return 1 if fallidos else 0
     return 0
 
 
