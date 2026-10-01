@@ -28,6 +28,18 @@ class _ConfigFake:
     clases: list = field(default_factory=lambda: [68, 121, 122, 123, 125])
     ultima_ejecucion: Any = None
     ultimo_error: Any = None
+    modo: str = "COMPLETA"
+
+
+@pytest.fixture(autouse=True)
+def _sin_config_semanal(monkeypatch):
+    """La fila id=2 (barrido semanal de pelos) se lee aparte; por defecto los tests la ven ausente
+    para que ningún test del job principal pegue a la DB real."""
+
+    async def _ninguna():
+        return None
+
+    monkeypatch.setattr(worker, "_leer_config_semanal", _ninguna)
 
 
 @dataclass
@@ -422,3 +434,84 @@ def test_run_sin_corrida_id_503_si_no_hay_config(monkeypatch):
     res = client.post("/run", json={})
 
     assert res.status_code == 503
+
+
+# ── Barrido semanal SOLO_PELOS_INNER (config id=2, deshabilitado por defecto) ─
+
+
+def _mk_config_semanal(config):
+    async def _fake():
+        return config
+
+    return _fake
+
+
+@pytest.mark.asyncio
+async def test_sincronizar_no_programa_el_semanal_si_esta_deshabilitado(monkeypatch):
+    monkeypatch.setattr(worker, "_leer_config", _mk_leer_config(_ConfigFake(habilitado=False)))
+    monkeypatch.setattr(
+        worker, "_leer_config_semanal", _mk_config_semanal(_ConfigFake(id=2, modo="SOLO_PELOS_INNER", intervalo_horas=168))
+    )
+    scheduler = _SchedulerFake()
+    worker._scheduler = scheduler
+    try:
+        await worker._sincronizar_configuracion()
+    finally:
+        worker._scheduler = None
+
+    assert scheduler.added == []
+
+
+@pytest.mark.asyncio
+async def test_sincronizar_programa_y_quita_el_semanal_segun_habilitado(monkeypatch):
+    monkeypatch.setattr(worker, "_leer_config", _mk_leer_config(_ConfigFake(habilitado=False)))
+    semanal = _ConfigFake(id=2, habilitado=True, modo="SOLO_PELOS_INNER", intervalo_horas=168)
+    monkeypatch.setattr(worker, "_leer_config_semanal", _mk_config_semanal(semanal))
+    scheduler = _SchedulerFake()
+    worker._scheduler = scheduler
+    try:
+        await worker._sincronizar_configuracion()
+        assert scheduler.added == [worker.JOB_ID_PELOS_INNER]
+        semanal.habilitado = False
+        await worker._sincronizar_configuracion()
+    finally:
+        worker._scheduler = None
+
+    assert scheduler.removed == [worker.JOB_ID_PELOS_INNER]
+
+
+@pytest.mark.asyncio
+async def test_job_semanal_omite_si_deshabilitado(monkeypatch):
+    monkeypatch.setattr(worker, "_leer_config_semanal", _mk_config_semanal(_ConfigFake(id=2, habilitado=False)))
+
+    async def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("no debía crear corrida")
+
+    monkeypatch.setattr(worker, "iniciar_corrida", _no_deberia_llamarse)
+    await worker._job_semanal_pelos_inner()
+
+
+@pytest.mark.asyncio
+async def test_job_semanal_crea_corrida_con_modo_y_continua_sobre_la_config_2(monkeypatch):
+    semanal = _ConfigFake(id=2, habilitado=True, modo="SOLO_PELOS_INNER", psize=5, clases=[51])
+    monkeypatch.setattr(worker, "_leer_config_semanal", _mk_config_semanal(semanal))
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(_SesionFake()))
+    llamada = {}
+
+    async def _iniciar_fake(sesion_arg, *, usuario, psize, max_paginas, clases, params_extra=None):
+        llamada.update(usuario=usuario, params_extra=params_extra, clases=clases)
+        return _CorridaFake(id=77)
+
+    continuado = {}
+
+    async def _continuar_fake(corrida_id, config_id=1):
+        continuado.update(id=corrida_id, config_id=config_id)
+
+    monkeypatch.setattr(worker, "iniciar_corrida", _iniciar_fake)
+    monkeypatch.setattr(worker, "_continuar_en_bg", _continuar_fake)
+
+    await worker._job_semanal_pelos_inner()
+
+    assert llamada["params_extra"] == {"modo": "SOLO_PELOS_INNER"}
+    assert llamada["usuario"] == worker.USUARIO_SCHEDULER
+    assert continuado == {"id": 77, "config_id": 2}

@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Iterable, Optional
 
@@ -21,6 +22,13 @@ from core.services.cromo.alias_service import AliasBotella
 from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo.config import PSIZE_PERMITIDOS, get_cromo_config
 from core.services.cromo.modelos import ConectorOdf
+from core.services.cromo.pelo_servicios import (
+    METODO_REGEX,
+    METODOS_AUTOMATICOS,
+    PeloAtributos,
+    resolver_servicios_de_cable,
+)
+from core.services.prov.rate_limiter import AsyncRateLimiter
 
 # CromoServicioMatch.servicio_id referencia "app.servicios.id" por nombre de tabla (string FK).
 # SQLAlchemy sólo puede resolverla si el modelo Servicio (db/models/infra.py) ya se registró en
@@ -1697,6 +1705,425 @@ async def fase_servicios(sesion: AsyncSession, corrida: CromoIngestaCorrida, con
     await sesion.commit()
 
 
+# ── FASE · PELOS POR /inner (at.62 / at.63) ─────────────────────────────────
+
+
+@dataclass(slots=True)
+class ResumenPelosInner:
+    """Qué hizo (o haría, en dry-run) `fase_pelos_inner`. Lo imprime `scripts/cromo_barrido_pelos_inner.py`."""
+
+    cables_ok: int = 0
+    cables_error: int = 0
+    pelos_leidos: int = 0
+    pelos_nuevos: int = 0
+    tubos_nuevos: int = 0
+    pelos_con_manual: int = 0
+    vinculos_creados: dict[str, int] = field(default_factory=dict)
+    vinculos_retirados: dict[str, int] = field(default_factory=dict)
+    vinculos_metodo_cambiado: int = 0
+    numeros_sin_servicio: dict[str, int] = field(default_factory=dict)
+    # Sólo con `detallar=True` (el script con `--cable`): una fila por pelo con lo resuelto.
+    detalle: list[dict[str, Any]] = field(default_factory=list)
+
+    def sumar(self, contador: dict[str, int], clave: str) -> None:
+        contador[clave] = contador.get(clave, 0) + 1
+
+
+_SQL_CABLES_VIGENTES = text("SELECT n_id FROM app.cromo_cables WHERE vigente ORDER BY n_id")
+_SQL_CABLES_INNER_OK = text(
+    "SELECT n_id FROM app.cromo_ingesta_eventos WHERE corrida_id = :corrida_id AND accion = 'CABLE_INNER_OK'"
+)
+_SQL_CONECTOR_AT62_POR_PELO = text(
+    """
+    SELECT pelo_n_id, servicio_numero_atributo
+    FROM app.cromo_odf_conectores
+    WHERE vigente AND pelo_n_id = ANY(:ids) AND servicio_numero_atributo IS NOT NULL
+    """
+)
+_SQL_MATCHES_DE_PELOS = text(
+    """
+    SELECT id, pelo_n_id, servicio_numero, servicio_id, metodo
+    FROM app.cromo_servicio_match WHERE pelo_n_id = ANY(:ids)
+    """
+)
+
+
+def _normalizar_items_inner(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`/inner` de un cable no trae `n_id` ni `parent` en sus tubos y pelos (real, 2026-09-30).
+
+    El padre viaja como atributo: `at.71` (tubo del pelo, o cable del tubo) y `at.70` (cable). En 1.957
+    pelos de 40 cables al azar, el `id` coincidió con el `n_id` local en el 100 % de los pelos ya
+    ingeridos, así que se usa como linaje; los 169 restantes eran pelos que la ingesta nunca trajo.
+    """
+    normalizados = []
+    for item in items:
+        copia = dict(item)
+        if copia.get("n_id") is None:
+            copia["n_id"] = copia.get("id")
+        if copia.get("parent") is None:
+            padre = cromo_parser.atributo(copia, 71)
+            if padre and padre.strip().isdigit():
+                copia["parent"] = int(padre)
+        normalizados.append(copia)
+    return normalizados
+
+
+async def _buscar_servicio_sin_crear(sesion: AsyncSession, numero: str, cache: dict[str, Optional[int]]) -> Optional[int]:
+    """Como `_resolver_o_crear_servicio`, pero sin placeholder: un at.62 que no existe en Servicios
+    queda con `servicio_id` NULL y se informa (un id de OLT o de red PON no es un servicio SLA)."""
+    if numero not in cache:
+        fila = (await sesion.execute(_SQL_BUSCAR_SERVICIO, {"numero": numero})).first()
+        cache[numero] = fila[0] if fila else None
+    return cache[numero]
+
+
+async def conciliar_matches_de_cable(
+    sesion: AsyncSession,
+    corrida_id: int,
+    pelos: list[PeloAtributos],
+    conector_at62_por_pelo: dict[int, Optional[str]],
+    resumen: ResumenPelosInner,
+    *,
+    cache_regex: dict[str, Optional[int]],
+    cache_atributo: dict[str, Optional[int]],
+    numero_de_pelo: Optional[dict[int, Optional[str]]] = None,
+) -> None:
+    """Deja `cromo_servicio_match` de los pelos del cable igual a `resolver_servicios_de_cable`.
+
+    - Un pelo con algún vínculo no automático (`MANUAL`) no se toca: lo decidió una persona.
+    - Vínculo automático que ya no corresponde → se borra, con evento `MATCH_RETIRADO`. Sin esto el
+      detalle seguía mostrando el servicio viejo cuando cambiaba el texto del pelo.
+    - Vínculo nuevo → `REGEX_EXACTO` resuelve (y crea placeholder) como siempre; `ATRIBUTO_*` sólo
+      busca. En ambos casos el ID vigente sale de `_SQL_BUSCAR_SERVICIO` (alias + criterio PROV).
+    """
+    if not pelos:
+        return
+    resolucion = resolver_servicios_de_cable(pelos, conector_at62_por_pelo)
+    filas = (await sesion.execute(_SQL_MATCHES_DE_PELOS, {"ids": [p.n_id for p in pelos]})).all()
+    por_pelo: dict[int, list[Any]] = {}
+    for fila in filas:
+        por_pelo.setdefault(fila.pelo_n_id, []).append(fila)
+
+    for pelo_n_id, deseados in resolucion.items():
+        existentes = por_pelo.get(pelo_n_id, [])
+        if any(f.metodo not in METODOS_AUTOMATICOS for f in existentes):
+            resumen.pelos_con_manual += 1
+            continue
+        pendientes = dict(deseados)
+        for fila in existentes:
+            metodo_nuevo = pendientes.pop(fila.servicio_numero, None)
+            if metodo_nuevo is None:
+                await sesion.execute(text("DELETE FROM app.cromo_servicio_match WHERE id = :id"), {"id": fila.id})
+                resumen.sumar(resumen.vinculos_retirados, fila.metodo)
+                await registrar_evento(
+                    sesion,
+                    corrida_id,
+                    pelo_n_id,
+                    130,
+                    "MATCH_RETIRADO",
+                    f"servicio_numero={fila.servicio_numero} servicio_id={fila.servicio_id} metodo={fila.metodo}",
+                )
+                continue
+            cambios: dict[str, Any] = {}
+            if fila.metodo != metodo_nuevo:
+                cambios["metodo"] = metodo_nuevo
+                resumen.vinculos_metodo_cambiado += 1
+            if fila.servicio_id is None:
+                servicio_id = await _buscar_servicio_sin_crear(sesion, fila.servicio_numero, cache_atributo)
+                if servicio_id is not None:
+                    cambios["servicio_id"] = servicio_id
+                    cambios["confianza"] = 100
+            if cambios:
+                asignaciones = ", ".join(f"{k} = :{k}" for k in cambios)
+                await sesion.execute(
+                    text(f"UPDATE app.cromo_servicio_match SET {asignaciones} WHERE id = :id"), {**cambios, "id": fila.id}
+                )
+        for numero, metodo in pendientes.items():
+            if metodo == METODO_REGEX:
+                servicio_id, fue_creado = await _resolver_o_crear_servicio(sesion, numero, cache_regex)
+                if fue_creado:
+                    await registrar_evento(
+                        sesion, corrida_id, pelo_n_id, 130, "PLACEHOLDER_CREADO",
+                        f"servicio_numero={numero} servicio_id={servicio_id}",
+                    )
+            else:
+                servicio_id = await _buscar_servicio_sin_crear(sesion, numero, cache_atributo)
+            if servicio_id is None:
+                resumen.sumar(resumen.numeros_sin_servicio, numero)
+            sesion.add(
+                CromoServicioMatch(
+                    pelo_n_id=pelo_n_id,
+                    servicio_numero=numero,
+                    servicio_id=servicio_id,
+                    metodo=metodo,
+                    confianza=100 if servicio_id else 0,
+                )
+            )
+            resumen.sumar(resumen.vinculos_creados, metodo)
+        if numero_de_pelo is not None:
+            resumen.detalle.append(
+                {
+                    "pelo_n_id": pelo_n_id,
+                    "numero_pelo": numero_de_pelo.get(pelo_n_id),
+                    "resueltos": [{"numero": n, "metodo": m} for n, m in deseados],
+                    "antes": sorted({f.servicio_numero for f in existentes}),
+                }
+            )
+    await sesion.flush()
+
+
+async def _procesar_inner_de_cable(
+    sesion: AsyncSession,
+    corrida_id: int,
+    cable_n_id: int,
+    items: list[dict[str, Any]],
+    resumen: ResumenPelosInner,
+    *,
+    cache_regex: dict[str, Optional[int]],
+    cache_atributo: dict[str, Optional[int]],
+    detallar: bool,
+) -> None:
+    tubos, pelos, errores = cromo_parser.extraer_tubos_y_pelos(
+        {"n_id": cable_n_id, "inner": _normalizar_items_inner(items)}
+    )
+    for error in errores:
+        logger.warning(
+            "action=cromo_ingesta evento=inner_pelos_inesperado cable=%s n_id=%s clase=%s motivo=%s",
+            cable_n_id, error.n_id, error.clase, error.motivo,
+        )
+    ahora = datetime.now(timezone.utc)
+    # Se cargan las ENTIDADES (no sólo los ids) en una consulta por tabla: quedan en el identity map y
+    # los `sesion.get` de `upsert_simple` y del update de at.62/63 no vuelven a la base. Medido en 200
+    # cables reales (2026-09-30): pelo por pelo eran ~35 ms/pelo, la escritura en serie era el cuello.
+    tubos_locales = {
+        t.n_id
+        for t in (await sesion.execute(select(CromoTubo).where(CromoTubo.n_id.in_([t.n_id for t in tubos])))).scalars()
+    }
+    pelos_locales = {
+        p.n_id
+        for p in (await sesion.execute(select(CromoPelo).where(CromoPelo.n_id.in_([p.n_id for p in pelos])))).scalars()
+    }
+    for tubo in tubos:
+        tubo.cable_n_id = tubo.cable_n_id or cable_n_id
+        await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
+    resumen.tubos_nuevos += sum(1 for t in tubos if t.n_id not in tubos_locales)
+    for pelo in pelos:
+        if pelo.tubo_n_id is None:
+            logger.warning("action=cromo_ingesta evento=inner_pelo_sin_tubo cable=%s pelo=%s", cable_n_id, pelo.n_id)
+            continue
+        await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
+        fila = await sesion.get(CromoPelo, pelo.n_id)
+        fila.servicio_atributo = pelo.servicio_atributo
+        fila.estado_cromo = pelo.estado_cromo
+        fila.atributos_leidos_at = ahora
+    await sesion.flush()
+    validos = [p for p in pelos if p.tubo_n_id is not None]
+    resumen.pelos_leidos += len(validos)
+    resumen.pelos_nuevos += sum(1 for p in validos if p.n_id not in pelos_locales)
+    conectores = dict((await sesion.execute(_SQL_CONECTOR_AT62_POR_PELO, {"ids": [p.n_id for p in validos]})).all())
+    await conciliar_matches_de_cable(
+        sesion,
+        corrida_id,
+        [PeloAtributos(p.n_id, p.servicio_raw, p.servicio_atributo, p.estado_cromo) for p in validos],
+        conectores,
+        resumen,
+        cache_regex=cache_regex,
+        cache_atributo=cache_atributo,
+        numero_de_pelo={p.n_id: p.numero_pelo for p in validos} if detallar else None,
+    )
+
+
+async def fase_pelos_inner(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    cables: Optional[list[int]] = None,
+    limite: Optional[int] = None,
+    reanudar: bool = False,
+    concurrencia: Optional[int] = None,
+    rate_per_second: Optional[float] = None,
+    resumen: Optional[ResumenPelosInner] = None,
+    detallar: bool = False,
+    al_avanzar: Optional[Callable[[int, int, ResumenPelosInner], None]] = None,
+    **_: Any,
+) -> ResumenPelosInner:
+    """FASE · PELOS POR `/inner`: at.61/62/63 frescos de cada pelo y conciliación de sus servicios.
+
+    Una llamada `GET /db/objects/{cable}/inner` por cable (el barrido de botellas nunca trae at.62 ni
+    at.63). Las llamadas van de a `concurrencia` en paralelo y con pacing de `rate_per_second`; la
+    escritura es en serie (una `AsyncSession` no se comparte entre corrutinas), un savepoint por
+    cable y un commit por tanda. Cada cable terminado deja un evento `CABLE_INNER_OK`: con
+    `reanudar=True` la misma corrida saltea los que ya lo tienen.
+
+    Los pelos locales que `/inner` ya no trae no se marcan como no vigentes (fuera de alcance).
+    """
+    if concurrencia is None or rate_per_second is None:
+        config = get_cromo_config()
+        concurrencia = concurrencia or config.inner_concurrencia
+        rate_per_second = rate_per_second or config.inner_rate_limit_per_second
+    limiter = AsyncRateLimiter(rate_per_second)
+    resumen = resumen if resumen is not None else ResumenPelosInner()
+    cache_regex: dict[str, Optional[int]] = {}
+    cache_atributo: dict[str, Optional[int]] = {}
+
+    await _registrar_inicio_fase(sesion, corrida.id, "PELOS_INNER", "at.62/at.63 de pelos vía /inner por cable")
+    objetivo = list(cables) if cables is not None else list((await sesion.execute(_SQL_CABLES_VIGENTES)).scalars())
+    if reanudar:
+        hechos = set((await sesion.execute(_SQL_CABLES_INNER_OK, {"corrida_id": corrida.id})).scalars())
+        objetivo = [c for c in objetivo if c not in hechos]
+    if limite is not None:
+        objetivo = objetivo[:limite]
+
+    async def _pedir(cable_n_id: int) -> tuple[int, Any]:
+        await limiter.esperar_turno()
+        try:
+            return cable_n_id, await cliente.get_inner(cable_n_id)
+        except CromoClientError as exc:
+            return cable_n_id, exc
+
+    for inicio in range(0, len(objetivo), concurrencia):
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
+        tanda = await asyncio.gather(*(_pedir(c) for c in objetivo[inicio : inicio + concurrencia]))
+        for cable_n_id, respuesta in tanda:
+            contadores.leidas += 1
+            if isinstance(respuesta, Exception):
+                contadores.errores += 1
+                resumen.cables_error += 1
+                logger.warning("action=cromo_ingesta evento=error_inner_cable cable=%s error=%s", cable_n_id, respuesta)
+                await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "ERROR", f"/inner: {respuesta}")
+                continue
+            try:
+                async with sesion.begin_nested():
+                    await _procesar_inner_de_cable(
+                        sesion,
+                        corrida.id,
+                        cable_n_id,
+                        list(respuesta.get("response") or []),
+                        resumen,
+                        cache_regex=cache_regex,
+                        cache_atributo=cache_atributo,
+                        detallar=detallar,
+                    )
+                    await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "CABLE_INNER_OK")
+                contadores.actualizadas += 1
+                resumen.cables_ok += 1
+            except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un cable no aborta el barrido
+                contadores.errores += 1
+                resumen.cables_error += 1
+                logger.error("action=cromo_ingesta evento=error_pelos_inner cable=%s error=%s", cable_n_id, exc)
+                await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "ERROR", str(exc))
+        sincronizar_contadores(corrida, contadores)
+        await sesion.commit()
+        if al_avanzar is not None:
+            al_avanzar(min(inicio + concurrencia, len(objetivo)), len(objetivo), resumen)
+
+    logger.info(
+        "action=cromo_ingesta evento=pelos_inner_fin corrida_id=%s cables_ok=%s cables_error=%s pelos=%s "
+        "creados=%s retirados=%s sin_servicio=%s",
+        corrida.id, resumen.cables_ok, resumen.cables_error, resumen.pelos_leidos,
+        resumen.vinculos_creados, resumen.vinculos_retirados, len(resumen.numeros_sin_servicio),
+    )
+    return resumen
+
+
+_SQL_CABLES_CON_ATRIBUTOS = text(
+    """
+    SELECT DISTINCT cable_n_id FROM app.cromo_pelos
+    WHERE vigente AND atributos_leidos_at IS NOT NULL
+    ORDER BY cable_n_id
+    """
+)
+_SQL_CABLES_SNAPSHOT_OK = text(
+    "SELECT n_id FROM app.cromo_ingesta_eventos WHERE corrida_id = :corrida_id AND accion = 'CABLE_SNAPSHOT_OK'"
+)
+_SQL_PELOS_CON_ATRIBUTOS_DE_CABLE = text(
+    """
+    SELECT n_id, numero_pelo, servicio_raw, servicio_atributo, estado_cromo
+    FROM app.cromo_pelos
+    WHERE cable_n_id = :cable_n_id AND vigente
+    ORDER BY n_id
+    """
+)
+
+
+async def fase_pelos_desde_inventario(
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    cables: Optional[list[int]] = None,
+    limite: Optional[int] = None,
+    reanudar: bool = False,
+    tanda: int = 200,
+    resumen: Optional[ResumenPelosInner] = None,
+    detallar: bool = False,
+    al_avanzar: Optional[Callable[[int, int, ResumenPelosInner], None]] = None,
+) -> ResumenPelosInner:
+    """Misma conciliación que `fase_pelos_inner`, pero con los at.61/62/63 ya guardados, sin Cromo.
+
+    Para poblar un entorno con los atributos que otro leyó de Cromo (`scripts/cromo_pelos_snapshot.py`
+    importa los pelos de dev en prod y después corre esto). Dev y prod leen el mismo Cromo y los pelos
+    se identifican por `n_id` de Cromo, así que los atributos se copian; los vínculos NO, porque
+    `servicio_id` es el id interno de `app.servicios` de cada base y la conciliación tiene que usar los
+    servicios, conectores de ODF y vínculos `MANUAL` del entorno destino.
+
+    Sólo recorre cables con algún pelo leído por `/inner` (`atributos_leidos_at` no nulo). Un commit por
+    `tanda` de cables, evento `CABLE_SNAPSHOT_OK` por cable para `reanudar`.
+    """
+    resumen = resumen if resumen is not None else ResumenPelosInner()
+    cache_regex: dict[str, Optional[int]] = {}
+    cache_atributo: dict[str, Optional[int]] = {}
+    await _registrar_inicio_fase(
+        sesion, corrida.id, "PELOS_DESDE_INVENTARIO", "Conciliación de servicios por pelo con atributos ya guardados"
+    )
+    objetivo = list(cables) if cables is not None else list((await sesion.execute(_SQL_CABLES_CON_ATRIBUTOS)).scalars())
+    if reanudar:
+        hechos = set((await sesion.execute(_SQL_CABLES_SNAPSHOT_OK, {"corrida_id": corrida.id})).scalars())
+        objetivo = [c for c in objetivo if c not in hechos]
+    if limite is not None:
+        objetivo = objetivo[:limite]
+
+    for inicio in range(0, len(objetivo), tanda):
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
+        for cable_n_id in objetivo[inicio : inicio + tanda]:
+            contadores.leidas += 1
+            try:
+                async with sesion.begin_nested():
+                    filas = (await sesion.execute(_SQL_PELOS_CON_ATRIBUTOS_DE_CABLE, {"cable_n_id": cable_n_id})).all()
+                    pelos = [PeloAtributos(f.n_id, f.servicio_raw, f.servicio_atributo, f.estado_cromo) for f in filas]
+                    conectores = dict(
+                        (await sesion.execute(_SQL_CONECTOR_AT62_POR_PELO, {"ids": [p.n_id for p in pelos]})).all()
+                    )
+                    await conciliar_matches_de_cable(
+                        sesion,
+                        corrida.id,
+                        pelos,
+                        conectores,
+                        resumen,
+                        cache_regex=cache_regex,
+                        cache_atributo=cache_atributo,
+                        numero_de_pelo={f.n_id: f.numero_pelo for f in filas} if detallar else None,
+                    )
+                    await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "CABLE_SNAPSHOT_OK")
+                resumen.pelos_leidos += len(pelos)
+                resumen.cables_ok += 1
+                contadores.actualizadas += 1
+            except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un cable no aborta el resto
+                contadores.errores += 1
+                resumen.cables_error += 1
+                logger.error("action=cromo_ingesta evento=error_pelos_desde_inventario cable=%s error=%s", cable_n_id, exc)
+                await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "ERROR", str(exc))
+        sincronizar_contadores(corrida, contadores)
+        await sesion.commit()
+        if al_avanzar is not None:
+            al_avanzar(min(inicio + tanda, len(objetivo)), len(objetivo), resumen)
+    return resumen
+
+
 @dataclass(frozen=True, slots=True)
 class _ModoAcotado:
     """Un modo que corre UNA sola fase sobre UNA sola colección.
@@ -1729,6 +2156,11 @@ MODOS_ACOTADOS: dict[str, _ModoAcotado] = {
     ),
     "SOLO_CABLES_TERCEROS": _ModoAcotado(
         CLASES_CABLE_TERCEROS, lambda *a, **k: _modo_solo_cables_terceros(*a, **k)
+    ),
+    # Barrido `/inner` por cable (at.62/at.63). Semanal y deshabilitado por defecto (config id=2);
+    # el inicial se corre a mano con `scripts/cromo_barrido_pelos_inner.py`.
+    "SOLO_PELOS_INNER": _ModoAcotado(
+        (CLASE_CABLE, *CLASES_CABLE_TERCEROS), lambda *a, **k: fase_pelos_inner(*a, **k)
     ),
 }
 

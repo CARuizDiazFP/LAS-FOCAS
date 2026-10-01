@@ -65,12 +65,16 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - La VM y varios defaults asumen la IP `172.18.208.162`; si cambia, revisar configuración y documentación relacionada.
 - La topología operativa actual usa proveedores LLM externos vía API; no asumir disponibilidad de Ollama/local LLM salvo trabajo explícito de compatibilidad heredada.
 - Los headers HTTP son latin-1: un texto en español con tildes dentro de un header (ej. `WWW-Authenticate: Bearer error_description="token inválido"`) rompe la respuesta con `UnicodeDecodeError` en Starlette (real 2026-09-29, lo detectó `TestClient`). Descripciones legibles van en el cuerpo (`detail`); en headers, sólo ASCII.
+- Después de un backfill PROV completo (`scripts/servicios_backfill_prov.py`) o de una ingesta del Excel SLA, correr `scripts/servicios_fusionar_por_cadena_prov.py` (dry-run por defecto; `--apply`; idempotente). El backfill no fusiona filas: si otra fila ya tiene el ID nuevo, lo deja como alias. Real (2026-09-30): quedaron 437 pares duplicados y 625 servicios con 404 en la API v1. El ID vigente es el eslabón `INSTALADO` de PROV, no el número más alto (`PENDIENTE CPS`, `ANULADO` y `SOL BAJA` no lo desplazan).
+- `text()` + psycopg3: un mismo bind usado a la vez como `varchar` y como `text` (ej. `SET servicio_id = :op` y `WHERE a <> :op` sobre un `unnest` de `varchar[]`) falla con `AmbiguousParameter: inconsistent types deduced`. Solución: `CAST(:op AS varchar)` en cada uso.
 - Una columna `JSONB` de SQLAlchemy **sin `none_as_null=True`** guarda el `None` de Python como el
   escalar JSON `'null'`, no como SQL NULL, y `COALESCE(col, '[]'::jsonb)` **no** lo cubre:
   `jsonb_array_elements_text` corta la query entera con `cannot extract elements from a scalar`. El
   guard que cubre todos los casos es `CASE WHEN jsonb_typeof(col) = 'array' THEN col ELSE '[]'::jsonb END`
   (real 2026-09-19: 176 filas de `app.cromo_odfs` en dev y en prod). Antes de confiar en un
   `COALESCE` sobre JSONB, medir con `SELECT jsonb_typeof(col), count(*) ... GROUP BY 1`.
+
+- `Logs/` (y `Logs/dev/`) no se lee por defecto: está fuera del indexado de todos los entornos (`.gitignore`, `.geminiignore`) para no gastar tokens en cientos de MB de logs. Sólo se lee en tareas de diagnóstico o limpieza, vía la skill `logs-cleanup`, y siempre acotado (`tail -n`, `grep -m`, filtro por hora); nunca `cat` completo ni lectura recursiva. Todo servicio Python loguea con `core/logging.py::setup_logging` (archivo `Logs/<servicio>.log` borrable en uso, buffer de ~2 s); tras tocar compose o un entrypoint, verificar con `python scripts/logs_verificar.py --entorno dev`.
 
 ## Seguridad y Operación
 

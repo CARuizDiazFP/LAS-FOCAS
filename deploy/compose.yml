@@ -5,8 +5,17 @@
 
 name: lasfocas
 
+# Rotación de los logs de Docker (`docker logs`) en TODOS los servicios: sin esto el driver json-file
+# crece sin límite. Los servicios Python además escriben `Logs/<servicio>.log` (core/logging.py).
+x-logging: &logging-default
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   postgres:
+    logging: *logging-default
     image: postgres:16-alpine
     container_name: lasfocas-postgres
     restart: unless-stopped
@@ -32,6 +41,7 @@ services:
       - lasfocas_net
 
   redis:
+    logging: *logging-default
     image: redis:7.4-alpine
     container_name: lasfocas-redis
     restart: unless-stopped
@@ -49,6 +59,7 @@ services:
       - lasfocas_net
 
   api:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: api/Dockerfile
@@ -58,6 +69,7 @@ services:
     env_file:
       - ../.env
     environment:
+      LOGS_DIR: /app/Logs
       # Aseguramos que el host de DB sea el nombre del servicio de compose
       POSTGRES_HOST: postgres
     secrets:
@@ -81,8 +93,11 @@ services:
       retries: 12
     networks:
       - lasfocas_net
+    volumes:
+      - ../Logs:/app/Logs
 
   docker-socket-proxy:
+    logging: *logging-default
     image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: lasfocas-docker-socket-proxy
     restart: unless-stopped
@@ -122,6 +137,7 @@ services:
       - docker_proxy_net
 
   web:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: web/Dockerfile
@@ -176,6 +192,8 @@ services:
       - docker_proxy_net
 
   nlp_intent:
+    logging: *logging-default
+    user: "1001:1001"  # como el resto: escribe en Logs/ (dueño 1001)
     build:
       context: ..
       dockerfile: deploy/docker/nlp_intent.Dockerfile
@@ -193,8 +211,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    environment:
+      LOGS_DIR: /app/Logs
+    volumes:
+      - ../Logs:/app/Logs
 
   bot:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: deploy/docker/bot.Dockerfile
@@ -208,9 +231,13 @@ services:
       - api
     restart: unless-stopped
     volumes:
+      - ../Logs:/app/Logs
       - bot_data:/app/data
+    environment:
+      LOGS_DIR: /app/Logs
 
   office:
+    logging: *logging-default
     build:
       context: ../office_service
       dockerfile: Dockerfile
@@ -218,6 +245,7 @@ services:
     env_file:
       - ../.env
     environment:
+      LOGS_DIR: /app/Logs
       OFFICE_ENABLE_UNO: ${OFFICE_ENABLE_UNO:-true}
       OFFICE_LOG_LEVEL: ${OFFICE_LOG_LEVEL:-INFO}
     expose:
@@ -231,8 +259,12 @@ services:
       interval: 15s
       timeout: 5s
       retries: 12
+    volumes:
+      - ../Logs:/app/Logs
+    group_add: ["1001"]  # el usuario `office` de la imagen escribe en Logs/ por grupo
 
   repetitividad_worker:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: deploy/docker/repetitividad_worker.Dockerfile
@@ -241,13 +273,16 @@ services:
     env_file:
       - ../.env
     environment:
+      LOGS_DIR: /app/Logs
       TEMPLATES_DIR: /app/Templates
     volumes:
+      - ../Logs:/app/Logs
       - ../Templates:/app/Templates:ro
       - ../Reports:/app/data/reports
     command: ["python", "-m", "modules.informes_repetitividad.worker"]
 
   slack_baneo_worker:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: deploy/docker/slack_baneo_worker.Dockerfile
@@ -287,6 +322,7 @@ services:
       - lasfocas_net
 
   cromo_worker:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: deploy/docker/cromo_worker.Dockerfile
@@ -324,6 +360,7 @@ services:
       - lasfocas_net
 
   botellas_recalculo_worker:
+    logging: *logging-default
     build:
       context: ..
       dockerfile: deploy/docker/botellas_recalculo_worker.Dockerfile
@@ -365,6 +402,7 @@ services:
 
   # (Opcional) pgAdmin. Levantar con: docker compose -f deploy/compose.yml --profile pgadmin up -d
   pgadmin:
+    logging: *logging-default
     image: dpage/pgadmin4:8
     container_name: lasfocas-pgadmin
     profiles: ["pgadmin"]

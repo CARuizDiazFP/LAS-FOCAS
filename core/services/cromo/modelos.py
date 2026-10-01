@@ -120,6 +120,10 @@ class Pelo:
     servicio_raw: Optional[str]
     servicio_numero: Optional[str]
     tipo_asociacion: str
+    # Sólo vienen en `GET /db/objects/{cable}/inner`, nunca en el barrido de botellas: `None` = no se
+    # preguntó (ver `ingesta.fase_pelos_inner`).
+    servicio_atributo: Optional[str] = None  # at.62
+    estado_cromo: Optional[str] = None  # at.63
 
 
 @dataclass(slots=True)

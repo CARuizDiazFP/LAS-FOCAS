@@ -41,6 +41,13 @@ _CAMINO_TIMEOUT_DEFAULT = 60.0
 # nunca espera, dos clicks seguidos cuestan 1 s de pacing, y un futuro batch de las 663 semillas
 # reales termina en ~11 minutos sin sostenerle a Cromo varias resoluciones de grafo por segundo.
 _CAMINO_RATE_LIMIT_DEFAULT = 1.0
+# Barrido `GET /db/objects/{cable}/inner` (at.62/at.63 de los pelos, `ingesta.fase_pelos_inner`).
+# Medido real 2026-09-30: ~34 ms por pelo del lado de Cromo, y Cromo SERIALIZA estas llamadas: 40
+# cables tardaron 70,6 s de a 1, 63,9 s de a 2 y 64,1 s de a 4. Paralelizar no acelera el barrido
+# (1.292.280 pelos ≈ 12 h) y sólo carga a Cromo, así que el default es 1. El rate limit queda como
+# techo de seguridad para cables chicos.
+_INNER_CONCURRENCIA_DEFAULT = 1
+_INNER_RATE_LIMIT_DEFAULT = 4.0
 
 
 class CromoConfigError(RuntimeError):
@@ -62,6 +69,8 @@ class CromoConfig:
     ruta_servidor: str = _RUTA_SERVIDOR_DEFAULT
     camino_rate_limit_per_second: float = _CAMINO_RATE_LIMIT_DEFAULT
     camino_timeout: float = _CAMINO_TIMEOUT_DEFAULT
+    inner_concurrencia: int = _INNER_CONCURRENCIA_DEFAULT
+    inner_rate_limit_per_second: float = _INNER_RATE_LIMIT_DEFAULT
 
     @property
     def url_servidor(self) -> str:
@@ -148,6 +157,16 @@ def _construir_config() -> CromoConfig:
         "CROMO_CAMINO_RATE_LIMIT_PER_SECOND", _CAMINO_RATE_LIMIT_DEFAULT
     )
 
+    inner_rate_limit_per_second = _float_positivo_de_entorno(
+        "CROMO_INNER_RATE_PER_SECOND", _INNER_RATE_LIMIT_DEFAULT
+    )
+    try:
+        inner_concurrencia = int(os.getenv("CROMO_INNER_CONCURRENCIA", str(_INNER_CONCURRENCIA_DEFAULT)))
+    except ValueError as exc:
+        raise CromoConfigError("CROMO_INNER_CONCURRENCIA debe ser entero") from exc
+    if inner_concurrencia < 1:
+        raise CromoConfigError("CROMO_INNER_CONCURRENCIA debe ser mayor o igual a 1")
+
     oauth_url = os.getenv("CROMO_OAUTH_URL", "").strip() or _derivar_oauth_url(base_url)
     client_id = os.getenv("CROMO_CLIENT_ID", "").strip() or _CLIENT_ID_DEFAULT
     client_secret = get_secret("cromo_client_secret_v1", "CROMO_CLIENT_SECRET").strip() or _CLIENT_SECRET_DEFAULT
@@ -169,6 +188,8 @@ def _construir_config() -> CromoConfig:
         client_secret=client_secret,
         camino_rate_limit_per_second=camino_rate_limit_per_second,
         camino_timeout=camino_timeout,
+        inner_concurrencia=inner_concurrencia,
+        inner_rate_limit_per_second=inner_rate_limit_per_second,
     )
 
 

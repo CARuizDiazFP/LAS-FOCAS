@@ -4,10 +4,16 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
+
+from core.logging import setup_logging
 
 from .schemas import IntentRequest, IntentResponse, IntentionResult
 from .service import classify_text, analyze_intention
+
+logger = setup_logging("nlp_intent", os.getenv("LOG_LEVEL", "INFO").upper(), enable_file=True)
 
 app = FastAPI(title="nlp_intent")
 

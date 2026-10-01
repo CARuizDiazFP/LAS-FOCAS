@@ -117,3 +117,35 @@ def test_pelos_por_buffer_filtra_un_buffer() -> None:
     with patch.object(cc, "obtener_detalle_cable", AsyncMock(return_value=_detalle())):
         assert [b.numero for b in asyncio.run(cc.pelos_por_buffer(object(), 9, buffer=2))] == [2]
         assert asyncio.run(cc.pelos_por_buffer(object(), 9, buffer=7)) == []
+
+
+def _detalle_con_estados() -> DetalleCable:
+    def pelo(n_id, orden, estado=None, vinculo=False):
+        p = PeloDetalle(n_id, 1, str(orden + 1), orden, "AZ", "INDETERMINADO", f"desc {n_id}", None, True)
+        p.estado_cromo = estado
+        p.vinculo_sin_servicio = vinculo
+        return p
+
+    tubos = [
+        TuboDetalle(
+            1, 0, "AZ", True, True,
+            [pelo(1, 0, "Utilizado"), pelo(2, 1, "Dañado"), pelo(3, 2, "Libre"), pelo(4, 3), pelo(5, 4, vinculo=True)],
+        )
+    ]
+    campos = {f: None for f in DetalleCable.__dataclass_fields__ if f not in ("n_id", "vigente", "tubos")}
+    return DetalleCable(n_id=9, vigente=True, tubos=tubos, **campos)
+
+
+def test_pelos_por_buffer_ocupado_por_estado_cromo_sin_servicio_mantiene_el_formato() -> None:
+    """Pelos PON/dañados (at.63 Utilizado/Dañado) o con at.62 sin Servicio no están libres: salen
+    `ocupado` con `servicio_id=None`, dentro del mismo `Literal["ocupado","libre"]` de la API v1."""
+    with patch.object(cc, "obtener_detalle_cable", AsyncMock(return_value=_detalle_con_estados())):
+        pelos = asyncio.run(cc.pelos_por_buffer(object(), 9))[0].pelos
+
+    assert [(p.numero, p.estado, p.servicio_id) for p in pelos] == [
+        ("1", "ocupado", None),
+        ("2", "ocupado", None),
+        ("3", "libre", None),
+        ("4", "libre", None),
+        ("5", "ocupado", None),
+    ]

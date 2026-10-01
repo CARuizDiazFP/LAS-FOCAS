@@ -207,6 +207,13 @@ buffer no existe → 404. Cada buffer trae `numero`, `color`, `total_pelos`, `pe
 `pelos: [{numero, color, estado: "ocupado"|"libre", servicio_id, cliente, estado_servicio, descripcion}]`.
 `descripcion` es el texto crudo del pelo en Cromo. Sólo se listan buffers y pelos vigentes.
 
+**De dónde sale el servicio de cada pelo** (2026-09-30): la descripción del pelo (`at.61`), si no el
+ID de servicio del conector de ODF conectado a ese pelo, y si no el ID de servicio que Cromo asigna al
+propio pelo (`at.62`, con resguardos contra pelos dañados o servicios migrados a otro pelo). El ID que
+se devuelve es siempre el vigente según PROV. Todo sale del inventario local: la API no consulta Cromo
+en el request. `estado: "ocupado"` con `servicio_id: null` = el pelo está en uso o no disponible según
+Cromo (red PON, OLT, dañado) sin un Servicio SLA asociado. Detalle en `docs/decisiones.md`.
+
 ## Infraestructura
 
 ### Autenticación de API core

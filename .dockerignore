@@ -1,0 +1,19 @@
+# Nombre de archivo: .dockerignore
+# Ubicación de archivo: .dockerignore
+# Descripción: Excluye del contexto de build (context: .. en deploy/*.yml) logs, secretos, entornos y artefactos locales
+
+# Los builds de deploy/compose.yml y docker-compose.dev.yml usan la raíz del repo como contexto, y
+# repetitividad_worker.Dockerfile hace `COPY . /app`: sin este archivo, Logs/, .env y .secrets/
+# terminaban dentro de la imagen. Ningún Dockerfile copia estas rutas a propósito.
+Logs/
+.env
+.env.*
+.secrets/
+docs/Doc Privada/
+.git/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+web/frontend/node_modules/
+web/frontend/dist/

@@ -614,6 +614,29 @@ def test_start_falla_con_mensaje_util_si_el_directorio_no_es_escribible(
         bloqueado.chmod(0o700)
 
 
+def test_logs_del_worktree_apunta_a_los_del_checkout_de_control(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Un `docker compose up` desde el worktree monta `../Logs/dev` relativo al worktree.
+
+    Regresión real (2026-09-30): el stack dev se levantó desde un worktree que después se cerró, y
+    web, cromo_worker y slack_baneo_worker quedaron escribiendo en `Logs/dev` de una carpeta borrada.
+    Con el enlace, el montaje resuelve al `Logs/` del checkout de control y sobrevive al cleanup.
+    """
+    (control / "Logs" / "dev").mkdir(parents=True)
+    (control / ".gitignore").write_text("Logs/\n", encoding="utf-8")
+    _git(["add", ".gitignore"], control)
+    _git(["commit", "-m", "chore: ignorar logs"], control)
+
+    resultado = _iniciar("claude-api", "tarea-logs", capsys)
+    worktree = Path(resultado["worktree"])
+
+    assert "Logs" in resultado["enlaces"]
+    assert (worktree / "Logs").is_symlink()
+    assert (worktree / "Logs" / "dev").resolve() == (control / "Logs" / "dev").resolve()
+    assert gitops.esta_limpio(worktree), gitops.estado_porcelain(worktree)
+
+
 def test_los_enlaces_de_entorno_no_ensucian_el_worktree(
     control: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

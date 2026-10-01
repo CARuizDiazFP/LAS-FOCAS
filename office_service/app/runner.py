@@ -11,15 +11,30 @@ import logging
 import signal
 import subprocess
 import sys
+import threading
 from contextlib import suppress
 from typing import Sequence
 
 import uvicorn
 
 from .config import Settings, get_settings
+from .logging_setup import configurar_logging
 from .uno_client import UnoUnavailableError, UnoPythonNotInstalledError, uno_client
 
 LOGGER = logging.getLogger(__name__)
+SOFFICE_LOGGER = logging.getLogger("office.soffice")
+
+
+def _reenviar_salida(stream) -> None:
+    """Lee la salida de soffice línea a línea y la pasa al logging (y de ahí a Logs/office.log).
+
+    Antes quedaba en un `PIPE` que nadie leía: con el buffer del pipe lleno, soffice se bloquea al
+    escribir. Un hilo daemon por proceso; termina solo cuando soffice cierra su salida.
+    """
+    for linea in iter(stream.readline, ""):
+        if linea.strip():
+            SOFFICE_LOGGER.info(linea.rstrip())
+    stream.close()
 
 
 class LibreOfficeProcess:
@@ -50,9 +65,10 @@ class LibreOfficeProcess:
         self._process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
         )
+        threading.Thread(target=_reenviar_salida, args=(self._process.stdout,), name="soffice-salida", daemon=True).start()
 
     def stop(self) -> None:
         if not self._process or self._process.poll() is not None:
@@ -93,7 +109,7 @@ def loop_time() -> float:
 
 async def serve() -> None:
     settings = get_settings()
-    logging.basicConfig(level=settings.log_level, format="%(levelname)s|%(name)s|%(message)s")
+    configurar_logging(settings.log_level)
 
     if not settings.enable_uno:
         LOGGER.warning("UNO está deshabilitado; se iniciará solo la API FastAPI")
@@ -121,6 +137,8 @@ async def serve() -> None:
         port=settings.uvicorn_port,
         reload=settings.uvicorn_reload,
         log_level=settings.log_level.lower(),
+        # Sin dictConfig propio: los loggers de uvicorn propagan al raíz y llegan a Logs/office.log.
+        log_config=None,
     )
     server = uvicorn.Server(config=config)
 

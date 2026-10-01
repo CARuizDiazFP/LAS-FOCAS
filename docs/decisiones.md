@@ -2692,3 +2692,74 @@ su propia ventana de mantenimiento.
 - **Pendiente conocido**: la ingesta del Excel SLA (`POST /servicios/ingest`) sigue con la regla del
   ID más alto. Un Excel con un upgrade pendiente podría volver a promoverlo hasta el próximo refresco
   de PROV.
+
+## 2026-09-30 (cont.) — Servicios por pelo desde los atributos de Cromo (`/inner` por cable)
+
+- **Hallazgo** (consulta real de la API v1 por el cable F-PE-AL-99, verificada contra prod y Cromo en
+  vivo):
+  - La API devolvía 1 servicio (116548). Faltaba **116550** (CREDICOOP, TLS, Activo): la descripción
+    del pelo 32 no tiene número, pero Cromo le asigna `at.62=56747`, que es alias del 116550.
+  - `at.62` (ID de servicio del pelo) y `at.63` (estado: Utilizado/Libre/Dañado) **sólo** viajan en
+    `GET /db/objects/{cable}/inner`, nunca en el barrido de botellas.
+  - Los atributos tienen **historial**: vale la entrada con `vfrom` más alto. `parser.atributo()`
+    tomaba la primera; en el pelo 1 daba `0` en vez de 116548.
+  - En `/inner` los tubos y pelos no traen `n_id` ni `parent`: el padre es `at.71`. En 1.957 pelos de
+    40 cables al azar, el `id` coincidió con el `n_id` local en el 100 % de los ya ingeridos; 169 eran
+    pelos que la ingesta nunca había traído.
+  - `cromo_servicio_match` nunca borraba: si cambiaba el texto de un pelo, el servicio viejo seguía
+    en el detalle.
+- **Orden de fuentes** (definido por el usuario): la verdad real es el camino óptico entre ODFs, pero
+  su costo operativo hoy no permite inventariarlo (medido: 0,6–5,3 s por `/path`, 60.073 semillas de
+  ODF). Se usa:
+  1. descripción del pelo (`at.61`), normalmente la más actualizada → `REGEX_EXACTO`;
+  2. `at.62` del conector de ODF conectado al pelo → `ATRIBUTO_CONECTOR_ODF`;
+  3. `at.62` del pelo → `ATRIBUTO_PELO`, descartado si el pelo está fuera de uso (at.63 Dañado/Libre,
+     o descripción con cortado/dañado/atenuado/libre/reserva) o si el número ya quedó en otro pelo
+     del mismo cable por las fuentes 1-2. Caso real: el pelo 4 "ATENUADO" conserva 116548, que migró
+     al pelo 1;
+  4. PROV define el ID vigente (`_SQL_BUSCAR_SERVICIO`, alias y fusión por cadena).
+  - Los atributos no crean placeholders: un `at.62` que no es Servicio (ej. 120893, OLT GPON) queda
+    con `servicio_id` NULL y se informa.
+- **Cambios**:
+  - `core/services/cromo/pelo_servicios.py` (regla pura) y `ingesta.fase_pelos_inner` / modo
+    `SOLO_PELOS_INNER`: refresca at.61/62/63, concilia los vínculos automáticos (evento
+    `MATCH_RETIRADO`; nunca toca `MANUAL`) y es reanudable (`CABLE_INNER_OK`).
+  - Migración `20260930_01`: `cromo_pelos.servicio_atributo/estado_cromo/atributos_leidos_at` (fuera de
+    `PELO_CAMPOS`) y `cromo_ingesta_config.modo` + fila `id=2` semanal **deshabilitada**.
+  - `scripts/cromo_barrido_pelos_inner.py`: barrido inicial manual, dry-run exacto por defecto.
+  - API v1: mismo formato. `/pelos` marca `ocupado` (con `servicio_id` null) un pelo Utilizado/Dañado
+    o con `at.62` sin Servicio, para que nadie tome como libre un pelo PON o dañado.
+- **Verificado en dev** (F-PE-AL-99, `--apply` puntual): servicios 116548 + 116550; pelos 2, 29, 30 y 32
+  `ocupado`; pelo 4 sin servicio.
+- **Costo medido**: ~34 ms por pelo del lado de Cromo, que serializa `/inner` (40 cables: 70,6 s de a
+  1, 63,9 s de a 2, 64,1 s de a 4). El barrido completo es ~12 h y no se acelera paralelizando.
+- **Dry-run de 200 cables** (dev): 8.054 pelos, 876 pelos y 95 tubos que la ingesta nunca trajo, 193
+  vínculos nuevos por `at.62` del pelo, 72 por descripción refrescada, 2 por conector de ODF, 14
+  vínculos viejos retirados, 94 números sin Servicio, 0 errores. Los `at.62` de 1-3 dígitos (8, 14,
+  615…) se descartan por plausibilidad.
+- **Pendiente**: barrido completo (dev ~12 h, luego prod con pedido explícito) y activar el semanal.
+
+## 2026-09-30 (cont.) — Logs persistidos en `Logs/` para todos los servicios, borrables en uso
+
+- **Hallazgo** (`scripts/logs_verificar.py` contra dev antes del cambio: 10 de 10 contenedores fallaban):
+  - Ningún contenedor tenía rotación de `docker logs`: el driver `json-file` crecía sin límite.
+  - `api`, `nlp_intent`, `office`, `bot` y `repetitividad_worker` no escribían archivo.
+  - El `RotatingFileHandler` estaba colgado sólo de `getLogger(service)`: los módulos con
+    `getLogger(__name__)` y uvicorn nunca llegaban al archivo.
+  - `web`, `cromo_worker` y `slack_baneo_worker` de dev se habían levantado desde un worktree ya
+    cerrado: compose monta `../Logs/dev` relativo al checkout, así que escribían en una carpeta borrada.
+  - Sin `.dockerignore` raíz, `repetitividad_worker.Dockerfile` (`COPY . /app`) metía `Logs/`, `.env`
+    y `.secrets/` en la imagen.
+  - La salida de soffice quedaba en un `PIPE` que nadie leía (con el buffer lleno, soffice se traba).
+- **Decisión**:
+  - `core/logging.BufferedAppendFileHandler`: buffer de ~2 s (`LOG_FLUSH_SECONDS`), inmediato ante
+    `ERROR`; cada volcado abre, escribe y cierra. Se puede borrar, truncar o renombrar un log con el
+    servicio corriendo, y es seguro con varios procesos. La rotación pasa a `scripts/logs_cleanup.py`
+    (por renombre, retención por edad y tope total; protege archivos con `ERROR` reciente).
+  - Handler en el logger raíz y en `uvicorn`/`uvicorn.access` cuando no propagan.
+  - Compose dev/prod: anchor `x-logging` (`json-file`, 20 MB × 5) en todos los servicios; `Logs/` +
+    `LOGS_DIR` en los que faltaban.
+  - `agent_worktree.py start` enlaza `Logs/` al checkout de control.
+  - Agentes: `Logs/` fuera del indexado (`.gitignore`, `.geminiignore`); se lee sólo vía la skill
+    `logs-cleanup` y de forma acotada (AGENTS.md, Gotchas). No se comparte `.vscode/settings.json`:
+    el checkout de control tiene uno local y VS Code/Copilot ya respetan `.gitignore`.

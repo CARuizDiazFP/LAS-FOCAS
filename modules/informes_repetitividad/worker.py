@@ -24,5 +24,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    logging.basicConfig(level="INFO", format="%(levelname)s|%(name)s|%(message)s")
+    from core.logging import setup_logging
+
+    setup_logging("repetitividad_worker", enable_file=True)
     main()
