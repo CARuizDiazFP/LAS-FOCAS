@@ -2763,3 +2763,27 @@ su propia ventana de mantenimiento.
   - Agentes: `Logs/` fuera del indexado (`.gitignore`, `.geminiignore`); se lee sólo vía la skill
     `logs-cleanup` y de forma acotada (AGENTS.md, Gotchas). No se comparte `.vscode/settings.json`:
     el checkout de control tiene uno local y VS Code/Copilot ya respetan `.gitignore`.
+
+## 2026-10-01 — Prod poblado con el barrido `/inner` de dev y alta desde PROV de los servicios que Cromo asigna a pelos
+
+- **Atajo dev → prod** (`scripts/cromo_pelos_snapshot.py`): dev y prod consultan el mismo Cromo (misma
+  URL y credencial) y los pelos se identifican por el `n_id` de Cromo, así que se copian los
+  **atributos** (at.61/62/63) y se recalculan los **vínculos** en prod con sus propios servicios,
+  conectores y vínculos `MANUAL`. Los vínculos no se copian: `servicio_id` es el id interno de cada
+  base, y las dos tienen 13.773 servicios pero distintos pares (id, servicio_id). Validación: la
+  conciliación sin Cromo sobre 2.000 cables de dev ya barridos dio 0 cambios. En prod: 1.606.499
+  pelos y 154.644 tubos importados, conciliación en 52.418 cables, en ~15 min en lugar de ~12 h.
+- **Hallazgo**: después de conciliar quedaron **47.437 vínculos con 15.238 números de `at.62` sin
+  Servicio**. En una muestra de 15, todos existían en PROV (ej. 120893, ISI de METROTEL, pelo 2 de
+  F-PE-AL-99): `app.servicios` nació del Excel SLA y no tenía todos los servicios.
+- **Decisión** (`scripts/servicios_alta_prov_desde_cromo.py`): alta desde PROV con
+  `ingerir_contexto_prov` (ID operativo, cliente, tipo, estado y cadena). Si algún ID de la cadena ya
+  es un servicio nuestro, se completa esa fila en lugar de duplicarla. Las bajas se cargan con su
+  estado. **`OST REALIZADA` se omite**: PROV responde sin cliente, subproducto ni cadena (ej. 32200,
+  6886; en Cromo dice "OS 32200 DWDM ARSAT…"), y el usuario confirmó que no son servicios válidos,
+  probablemente IDs de red. Esos pelos quedan `ocupado` sin servicio. El ID que devuelve la API es
+  el último activo según PROV; el formato de la API no cambia.
+- **Resultado en prod**: 10.728 servicios creados y 1.546 completados por cadena; se omitieron 104
+  números `OST REALIZADA` y 17 que PROV no conoce. La fusión por cadena encontró 4 grupos con IDs
+  operativos distintos (servicios distintos) y no fusionó nada. Tras `conciliar` (corrida 2133), los
+  vínculos sin servicio bajaron de 47.437 a 2.972. F-PE-AL-99 devuelve 116548, 120893 y 116550.

@@ -143,6 +143,15 @@ Patrón para cualquier script de datos de este paso (usado por el reproceso, 202
   (`Session(bind=connection, join_transaction_mode="create_savepoint")` sobre `connection.begin()`):
   los `commit()` de los servicios existentes sólo liberan savepoints. El reporte del dry-run es lo que
   hará `--apply`. Ver `scripts/ingresos_reprocesar_sin_match.py::ejecutar`.
+  **Sólo el dry-run**: con `--apply` no hay transacción externa y se commitea por tanda. Si no, una
+  corrida larga queda en una sola transacción que se pierde entera ante un corte y no se puede
+  reanudar (real 2026-10-01: `cromo_barrido_pelos_inner.py`, corrida 2149 de ~16 h en una transacción).
+- **Corridas de más de ~25 min, desacopladas**: `setsid nohup sh -c 'docker exec ... > ~/x.json 2> ~/x.log' &`.
+  Si se corta el cliente `docker exec` (por ejemplo, el límite de una tarea en segundo plano del
+  agente), el proceso **sigue vivo dentro del contenedor**: relanzarlo deja dos corridas en paralelo
+  (real 2026-10-01: alta desde PROV, 796 `UniqueViolation`). Antes de relanzar, confirmar en la base
+  que dejó de escribir (conteo quieto ~30 s y sin sesiones activas en `pg_stat_activity`). Los
+  contenedores de app no tienen `ps`, y en prod los scripts no escriben `Logs/` (`ENV=production`).
 - **Ensayar antes en dev con una copia de los datos de prod** dentro de la misma transacción
   revertida: el ensayo del 2026-09-28 encontró un bug real del listener antes de tocar prod.
 

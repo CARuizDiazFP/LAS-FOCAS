@@ -55,3 +55,23 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 "$PYTHON_BIN" scripts/sync_skill_mirrors.py --check
+
+# `sync_skill_mirrors.py` propaga sólo el SKILL.md: los `references/` del mirror de Codex
+# (`.codex-skills/skills/las-focas-<n>/references/`) se copiaron a mano y quedaban viejos sin que
+# nada lo detectara (real 2026-09-30: logs-cleanup/references/operacion.md con rutas de otra VM).
+# Se compara el cuerpo, sin las 3 líneas de encabezado, que en Codex apuntan a otra ruta.
+DRIFT_REFS=0
+for ref in "$SRC_DIR"/*/references/*; do
+  [[ -f "$ref" ]] || continue
+  skill="$(basename "$(dirname "$(dirname "$ref")")")"
+  codex=".codex-skills/skills/las-focas-$skill/references/$(basename "$ref")"
+  [[ -d ".codex-skills/skills/las-focas-$skill/references" ]] || continue
+  if [[ ! -f "$codex" ]] || ! diff -q <(sed '1,3d' "$ref") <(sed '1,3d' "$codex") >/dev/null; then
+    echo "ERROR: references desactualizado en Codex: $codex (fuente: $ref)" >&2
+    DRIFT_REFS=1
+  fi
+done
+if [[ "$DRIFT_REFS" -ne 0 ]]; then
+  exit 1
+fi
+echo "OK: references/ del mirror de Codex sincronizados"
