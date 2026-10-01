@@ -2029,6 +2029,101 @@ async def fase_pelos_inner(
     return resumen
 
 
+_SQL_CABLES_CON_ATRIBUTOS = text(
+    """
+    SELECT DISTINCT cable_n_id FROM app.cromo_pelos
+    WHERE vigente AND atributos_leidos_at IS NOT NULL
+    ORDER BY cable_n_id
+    """
+)
+_SQL_CABLES_SNAPSHOT_OK = text(
+    "SELECT n_id FROM app.cromo_ingesta_eventos WHERE corrida_id = :corrida_id AND accion = 'CABLE_SNAPSHOT_OK'"
+)
+_SQL_PELOS_CON_ATRIBUTOS_DE_CABLE = text(
+    """
+    SELECT n_id, numero_pelo, servicio_raw, servicio_atributo, estado_cromo
+    FROM app.cromo_pelos
+    WHERE cable_n_id = :cable_n_id AND vigente
+    ORDER BY n_id
+    """
+)
+
+
+async def fase_pelos_desde_inventario(
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    contadores: ContadoresCorrida,
+    *,
+    cables: Optional[list[int]] = None,
+    limite: Optional[int] = None,
+    reanudar: bool = False,
+    tanda: int = 200,
+    resumen: Optional[ResumenPelosInner] = None,
+    detallar: bool = False,
+    al_avanzar: Optional[Callable[[int, int, ResumenPelosInner], None]] = None,
+) -> ResumenPelosInner:
+    """Misma conciliación que `fase_pelos_inner`, pero con los at.61/62/63 ya guardados, sin Cromo.
+
+    Para poblar un entorno con los atributos que otro leyó de Cromo (`scripts/cromo_pelos_snapshot.py`
+    importa los pelos de dev en prod y después corre esto). Dev y prod leen el mismo Cromo y los pelos
+    se identifican por `n_id` de Cromo, así que los atributos se copian; los vínculos NO, porque
+    `servicio_id` es el id interno de `app.servicios` de cada base y la conciliación tiene que usar los
+    servicios, conectores de ODF y vínculos `MANUAL` del entorno destino.
+
+    Sólo recorre cables con algún pelo leído por `/inner` (`atributos_leidos_at` no nulo). Un commit por
+    `tanda` de cables, evento `CABLE_SNAPSHOT_OK` por cable para `reanudar`.
+    """
+    resumen = resumen if resumen is not None else ResumenPelosInner()
+    cache_regex: dict[str, Optional[int]] = {}
+    cache_atributo: dict[str, Optional[int]] = {}
+    await _registrar_inicio_fase(
+        sesion, corrida.id, "PELOS_DESDE_INVENTARIO", "Conciliación de servicios por pelo con atributos ya guardados"
+    )
+    objetivo = list(cables) if cables is not None else list((await sesion.execute(_SQL_CABLES_CON_ATRIBUTOS)).scalars())
+    if reanudar:
+        hechos = set((await sesion.execute(_SQL_CABLES_SNAPSHOT_OK, {"corrida_id": corrida.id})).scalars())
+        objetivo = [c for c in objetivo if c not in hechos]
+    if limite is not None:
+        objetivo = objetivo[:limite]
+
+    for inicio in range(0, len(objetivo), tanda):
+        if await _fue_cancelada_externamente(sesion, corrida.id):
+            raise _CorridaCancelada()
+        for cable_n_id in objetivo[inicio : inicio + tanda]:
+            contadores.leidas += 1
+            try:
+                async with sesion.begin_nested():
+                    filas = (await sesion.execute(_SQL_PELOS_CON_ATRIBUTOS_DE_CABLE, {"cable_n_id": cable_n_id})).all()
+                    pelos = [PeloAtributos(f.n_id, f.servicio_raw, f.servicio_atributo, f.estado_cromo) for f in filas]
+                    conectores = dict(
+                        (await sesion.execute(_SQL_CONECTOR_AT62_POR_PELO, {"ids": [p.n_id for p in pelos]})).all()
+                    )
+                    await conciliar_matches_de_cable(
+                        sesion,
+                        corrida.id,
+                        pelos,
+                        conectores,
+                        resumen,
+                        cache_regex=cache_regex,
+                        cache_atributo=cache_atributo,
+                        numero_de_pelo={f.n_id: f.numero_pelo for f in filas} if detallar else None,
+                    )
+                    await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "CABLE_SNAPSHOT_OK")
+                resumen.pelos_leidos += len(pelos)
+                resumen.cables_ok += 1
+                contadores.actualizadas += 1
+            except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un cable no aborta el resto
+                contadores.errores += 1
+                resumen.cables_error += 1
+                logger.error("action=cromo_ingesta evento=error_pelos_desde_inventario cable=%s error=%s", cable_n_id, exc)
+                await registrar_evento(sesion, corrida.id, cable_n_id, CLASE_CABLE, "ERROR", str(exc))
+        sincronizar_contadores(corrida, contadores)
+        await sesion.commit()
+        if al_avanzar is not None:
+            al_avanzar(min(inicio + tanda, len(objetivo)), len(objetivo), resumen)
+    return resumen
+
+
 @dataclass(frozen=True, slots=True)
 class _ModoAcotado:
     """Un modo que corre UNA sola fase sobre UNA sola colección.
