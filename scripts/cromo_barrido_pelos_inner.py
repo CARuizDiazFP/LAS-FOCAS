@@ -13,7 +13,8 @@ worker (semanal, **deshabilitado** por defecto, config id=2).
 **Dry-run exacto por defecto**: consulta Cromo de verdad y hace TODAS las escrituras dentro de una
 transacción externa que al final se revierte (`join_transaction_mode="create_savepoint"`: los
 `commit()` de la fase sólo liberan savepoints). El resumen es lo que haría `--apply`, no una
-estimación. Sin `--apply` y sin `--cable`, sólo mira los primeros `--limite` cables (default 20).
+estimación. Con `--apply` no hay transacción externa: se commitea por tanda de cables, así un corte
+pierde a lo sumo la tanda en curso y `--reanudar` sigue desde el último cable commiteado. Sin `--apply` y sin `--cable`, sólo mira los primeros `--limite` cables (default 20).
 
 Correr DENTRO del contenedor del worker de Cromo del entorno (tiene la config de Cromo y la
 `DATABASE_URL`). El contenedor no tiene `scripts/`: el script entra por stdin.
@@ -100,7 +101,11 @@ async def _cables_objetivo(sesion: AsyncSession, cable: str | None) -> list[int]
 async def ejecutar(args: argparse.Namespace) -> dict:
     inicio = time.perf_counter()
     async with async_engine.connect() as conn:
-        externa = await conn.begin()
+        # Sólo el dry-run va dentro de una transacción externa que se revierte. Con --apply cada
+        # `commit()` de la fase (uno por tanda de cables) tiene que persistir de verdad: si no, el
+        # barrido entero (~12 h) queda en una sola transacción, se pierde completo si se corta y
+        # `--reanudar` no encuentra ningún `CABLE_INNER_OK` commiteado (real 2026-10-01, corrida 2149).
+        externa = None if args.apply else await conn.begin()
         try:
             async with AsyncSession(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False) as s:
                 cables = await _cables_objetivo(s, args.cable)
@@ -140,11 +145,10 @@ async def ejecutar(args: argparse.Namespace) -> dict:
                 await s.commit()
                 corrida_id = corrida.id
         except BaseException:
-            await externa.rollback()
+            if externa is not None:
+                await externa.rollback()
             raise
-        if args.apply:
-            await externa.commit()
-        else:
+        if externa is not None:
             await externa.rollback()
 
     return {
