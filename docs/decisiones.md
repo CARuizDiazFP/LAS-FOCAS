@@ -2813,6 +2813,25 @@ su propia ventana de mantenimiento.
   - 97 bajas: 6.144 pelos y 876 vínculos automáticos retirados, 0 MANUAL.
   - Queda un solo nombre duplicado, F-ALV-2335, que es real.
   - Detalle en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
-- **Pendiente:** prod (deploy + relevamiento + dry-run + `--apply`, con OK del usuario). Además, en la
-  clase 52 un faltante resultó `SIN_CAMBIOS`: Cromo lo lista con un id distinto del `n_id` local. Se
-  dejó como está.
+- **Validación de la ingesta en dev:** `SOLO_CABLES` (corrida 2169) dio de baja sola un cable que
+  Cromo había borrado ese mismo día (F-MTA-2454).
+- **Prod** (deploy `main` 7ab1cb8 sin migraciones; backup previo
+  `~/lasfocas-prod-sync-20261002/prod_backup_pre_deploy_20261002_160033.dump`). Fix retroactivo,
+  corrida 2136:
+  - 251 cables dados de alta.
+  - 255 cables con `/inner`: 16.836 pelos y 1.626 vínculos.
+  - 100 bajas: 6.360 pelos y 881 vínculos automáticos retirados, 0 MANUAL (prod tampoco tenía
+    ninguna).
+  - Las clases 51 y 66 quedaron iguales a lo que lista Cromo (32.933 y 18.999). El único duplicado
+    vigente es F-ALV-2335.
+- **Cromo se edita mientras tanto:** el mismo 2026-10-02, alrededor de las 16:02 UTC, alguien volvió a
+  editar el tramo en Cromo. Quedaron así:
+  - 10277060 borrado.
+  - F-TIG-003-B vigente: 10293906.
+  - 10277059 renombrado "F-TIG-003B11".
+  
+  Prod lo tomó en su corrida. Dev se volvió a correr para alcanzarlo (corrida 2170: 5 altas y 3 bajas,
+  entre ellas el 10277060; F-TIG-003-B → 10293906 en los dos entornos). Por eso un solo relevamiento no
+  alcanza y la baja tiene que vivir en la ingesta.
+- **Sin resolver:** en la clase 52 de dev, un faltante resultó `SIN_CAMBIOS`: Cromo lo lista con un id
+  distinto del `n_id` local. Se dejó como está.
