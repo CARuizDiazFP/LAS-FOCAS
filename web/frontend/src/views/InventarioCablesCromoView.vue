@@ -141,7 +141,8 @@ const filtros = reactive({
   q: '',
   jerarquia: '',
   propietario: '',
-  vigente: '' as '' | 'true' | 'false',
+  // Por defecto sólo vigentes: los cables que Cromo borró quedan con vigente=false (baja lógica).
+  vigente: 'true' as '' | 'true' | 'false',
   nId: '',
   botella: '',
   servicio: '',

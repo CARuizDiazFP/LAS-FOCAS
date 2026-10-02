@@ -682,6 +682,7 @@ def test_config_trigger_proxea_al_worker(monkeypatch):
         "SOLO_PUERTOS_SPLITTER",
         "SOLO_CAJAS_PON",
         "SOLO_ROSETAS",
+        "SOLO_CABLES",
         "SOLO_CABLES_BAJADA",
         "SOLO_CABLES_TERCEROS",
     ],

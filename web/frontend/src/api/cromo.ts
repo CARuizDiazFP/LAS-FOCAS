@@ -134,6 +134,12 @@ export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
     usaClasesBotella: false,
   },
   {
+    valor: 'SOLO_CABLES',
+    etiqueta: 'Sólo cables FO (clase 51)',
+    hint: '~33.100 cables FO, sin botellas. Al terminar da de baja los cables que Cromo borró (cada uno se confirma contra Cromo) y retira sus asignaciones de servicio. ~10 min.',
+    usaClasesBotella: false,
+  },
+  {
     valor: 'SOLO_CABLES_BAJADA',
     etiqueta: 'Sólo cables de bajada (clase 66)',
     hint: '19.030 cables de bajada. Van a la misma tabla que los de FO, distinguidos por clase. ~16 min.',

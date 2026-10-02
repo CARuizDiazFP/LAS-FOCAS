@@ -2133,6 +2133,7 @@ async def test_continuar_corrida_no_encola_recalculo_si_todo_sin_cambios(monkeyp
         ("SOLO_PUERTOS_SPLITTER", "fase_puertos_splitter"),
         ("SOLO_CAJAS_PON", "fase_cajas_pon"),
         ("SOLO_ROSETAS", "fase_rosetas"),
+        ("SOLO_CABLES", "fase_cables"),
         ("SOLO_CABLES_BAJADA", "fase_cables_bajada"),
     ],
 )
