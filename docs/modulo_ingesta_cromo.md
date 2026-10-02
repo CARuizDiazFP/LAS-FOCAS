@@ -603,6 +603,43 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     padre. Por eso el vínculo servicio↔splitter está en el **puerto** y no en el pelo: la ENTRADA
     agrega todos los servicios del splitter y cada SALIDA identifica el suyo.
 
+## Bajas lógicas de cables (2026-10-02)
+
+Hasta esta fecha ningún código daba de baja cables, tubos ni pelos. Un cable que Cromo borraba
+(por ejemplo, al partirlo con una Botella intermedia) seguía vigente acá con sus pelos y servicios.
+Caso real: F-TIG-003-B 9609095, partido el 2026-09-10 en F-TIG-003-A 10277059 y F-TIG-003-B 10277060.
+Relevamiento completo en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
+
+- **Señal de borrado (medida contra Cromo real):** `GET /db/objects/{id}` de un borrado responde
+  `st=0` (no 404), y `/inner` responde vacío. Se considera borrado cuando la última entrada de
+  `hist[]` (`next_id = 0`) tiene `to ≠ 0`. El `to` del objeto pedido no alcanza, porque puede ser una
+  versión vieja de un linaje vivo. Implementación: `bajas_service.estado_en_cromo`.
+- **Cuándo se aplica:**
+  - Al terminar un barrido directo **completo** (sin `max_paginas`, sin cancelación ni falla) de la
+    51 (`fase_cables`, también en el modo nuevo `SOLO_CABLES`), de 52/59/60 (`fase_cables_terceros`)
+    o de la 66 (`fase_cables_bajada`).
+  - Los candidatos son los vigentes locales que el barrido no listó. Cada uno se confirma contra
+    Cromo y un error de consulta nunca cuenta como borrado.
+  - Si los borrados confirmados superan `TOPE_BAJAS_POR_CLASE` (300), se aborta sin escribir y se
+    registra el evento `BAJAS_ABORTADAS`.
+- **Qué hace la baja** (`aplicar_baja_cable`):
+  - Cable, tubos y pelos pasan a `vigente = false`. Nunca se borra la fila.
+  - Se retiran las asignaciones automáticas (`MATCH_RETIRADO`).
+  - Las `MANUAL` se retiran sólo si un sucesor vigente tiene el mismo servicio
+    (`MATCH_MANUAL_RETIRADO`). Si no, se conservan (`MATCH_MANUAL_CONSERVADO`).
+  - Se borra el tracking cache de esos pelos.
+  - Sucesor: nació en la versión de Cromo en que murió el fantasma (`vfrom = vto`), se llama igual o
+    comparte ambos extremos.
+- **Reactivación:** si un barrido directo vuelve a listar un cable dado de baja, se encienden cable,
+  tubos y pelos (`CABLE_REACTIVADO`). Las asignaciones las recrean la fase SERVICIOS o `/inner`.
+  Desde `botella.tp[]` no se reactiva: es una vista parcial, no prueba de que el objeto exista.
+- **Consumidores:** la fase SERVICIOS, el verificador, los empalmes, el inventario de ODFs, Slack y la
+  API v1 filtran por pelo/cable vigente. El inventario de cables de la SPA muestra "Sólo vigentes"
+  por defecto.
+- **Fix retroactivo:** `scripts/cromo_relevamiento_cables_fantasma.py` (sólo lectura) y
+  `scripts/cromo_bajas_cables_fantasma.py`. Este último sigue el orden alta de faltantes →
+  pelos `/inner` → baja, con dry-run exacto por defecto.
+
 ## Principios de diseño
 
 - **Sólo lectura, siempre.** El cliente no expone ningún método de escritura contra el sistema externo.
