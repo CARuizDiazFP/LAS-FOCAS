@@ -205,8 +205,8 @@ _FILA_SERVICIO_UNICO = (
     True,
 )
 
-_SQL_UNICOS_POR_CABLE = "WHERE p.cable_n_id = :cable_n_id\n    GROUP BY s.id"
-_SQL_UNICOS_POR_TUBO = "WHERE p.tubo_n_id = :tubo_n_id\n    GROUP BY s.id"
+_SQL_UNICOS_POR_CABLE = "WHERE p.cable_n_id = :cable_n_id AND p.vigente\n    GROUP BY s.id"
+_SQL_UNICOS_POR_TUBO = "WHERE p.tubo_n_id = :tubo_n_id AND p.vigente\n    GROUP BY s.id"
 _SQL_FRESCURA_BATCH = "ultima_sincronizacion_ok FROM app.servicios_sync_prov"
 _SQL_VENCIDOS_BATCH = "FROM unnest(:ids ::integer[])"
 _SQL_TUBO_POR_ORDEN = "cromo_tubos WHERE cable_n_id = :cable_n_id AND vigente = true AND orden"

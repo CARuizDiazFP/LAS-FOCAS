@@ -340,7 +340,9 @@ def construir_respuesta_verificar_buffer(cable: CromoCable, tubo: CromoTubo, res
 # servicio (un cable real llega a 118, ver `servicios_unicos_por_cable_sync`): dos consultas batch,
 # una por todos los pelos del cable (pelo_n_id -> tubo_n_id) y otra por todos sus tubos vigentes
 # (tubo_n_id -> orden/color) alcanzan para agrupar los N servicios en memoria.
-_SQL_PELOS_TUBO_DE_CABLE = text("SELECT n_id, tubo_n_id FROM app.cromo_pelos WHERE cable_n_id = :cable_n_id")
+_SQL_PELOS_TUBO_DE_CABLE = text(
+    "SELECT n_id, tubo_n_id FROM app.cromo_pelos WHERE cable_n_id = :cable_n_id AND vigente"
+)
 _SQL_TUBOS_VIGENTES_DE_CABLE = text(
     "SELECT n_id, orden, nombre_color FROM app.cromo_tubos WHERE cable_n_id = :cable_n_id AND vigente = true"
 )

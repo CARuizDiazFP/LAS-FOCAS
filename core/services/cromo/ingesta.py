@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.botella_recompute_queue import encolar_recalculo_duplicados_botellas
 from core.services.cromo import alias_service
+from core.services.cromo import bajas_service
 from core.services.cromo import id_dual_resolver
 from core.services.cromo import parser as cromo_parser
 from core.services.cromo.alias_service import AliasBotella
@@ -493,6 +494,67 @@ async def fase_conteo(
     return totales
 
 
+async def _reactivar_si_estaba_de_baja(sesion: AsyncSession, corrida_id: int, cable: Any) -> None:
+    """Un barrido DIRECTO sólo lista objetos vivos: si el cable estaba dado de baja
+    (`bajas_service.aplicar_baja_cable`), Cromo lo reactivó. Sólo desde los barridos directos, nunca
+    desde `botella.tp[]` (vista parcial de topología, no una afirmación de que el objeto existe)."""
+    fila = await sesion.get(CromoCable, cable.n_id)
+    if fila is not None and fila.vigente is False:
+        await sesion.flush()
+        await bajas_service.reactivar_cable(sesion, corrida_id, cable.n_id, cable.clase)
+        fila.vigente = True
+
+
+def _registrando_vistos(
+    vistos: set[int], procesar: Callable[[dict[str, Any]], Awaitable[None]]
+) -> Callable[[dict[str, Any]], Awaitable[None]]:
+    """Envuelve el procesador de un barrido para juntar los ids que Cromo listó. Se anota ANTES de
+    procesar: un objeto que falla al parsearse igual existe en Cromo y no es candidato a baja."""
+
+    async def _procesar(obj: dict[str, Any]) -> None:
+        for clave in ("n_id", "id"):
+            if obj.get(clave):
+                vistos.add(int(obj[clave]))
+        await procesar(obj)
+
+    return _procesar
+
+
+async def _conciliar_bajas(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    corrida: CromoIngestaCorrida,
+    clases: Iterable[int],
+    vistos: set[int],
+    *,
+    max_paginas: Optional[int],
+    forzar_bajas: bool = False,
+) -> None:
+    """Baja lógica de los cables que el barrido recién terminado ya no vio (2026-10-02, cables
+    fantasma). Sólo con barrido COMPLETO: con `max_paginas` el conjunto de vistos es una muestra y
+    todo lo demás parecería borrado. Una cancelación o una falla de página nunca llegan acá: cortan la
+    fase con excepción antes. Cada candidato se confirma contra Cromo (`bajas_service`)."""
+    if max_paginas is not None:
+        return
+    for clase in clases:
+        await _registrar_inicio_fase(
+            sesion, corrida.id, f"BAJAS_{clase}", f"Baja lógica de cables {clase} que Cromo ya no lista"
+        )
+        resumen = await bajas_service.conciliar_bajas_de_clase(
+            cliente, sesion, corrida.id, clase, vistos, forzar=forzar_bajas
+        )
+        await registrar_evento(
+            sesion, corrida.id, None, clase, "RESUMEN_BAJAS",
+            json.dumps({"candidatos": resumen.candidatos, "bajas": resumen.bajas, "abortado": resumen.abortado,
+                        "vivos_no_listados": resumen.vivos_no_listados,
+                        "errores_confirmacion": resumen.errores_confirmacion, "pelos": resumen.pelos,
+                        "matches_retirados": resumen.matches_retirados,
+                        "manual_retirados": resumen.manual_retirados,
+                        "manual_conservados": resumen.manual_conservados}),
+        )
+        await sesion.commit()
+
+
 async def _procesar_cable_directo(
     sesion: AsyncSession,
     corrida_id: int,
@@ -509,6 +571,7 @@ async def _procesar_cable_directo(
             cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
             cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
             accion = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
+            await _reactivar_si_estaba_de_baja(sesion, corrida_id, cable)
             contadores.leidas += 1
             contadores.contar(accion)
             # La clase real del objeto, no la constante: desde 2026-09-19 esta misma función
@@ -531,7 +594,9 @@ async def fase_cables(
     max_paginas: Optional[int],
     alias_por_origen: Optional[dict[int, AliasBotella]] = None,
 ) -> None:
-    """FASE 2 · CABLES: maestro de cables (atributos + extremos). No trae tubos/pelos (ver §2, corrección 8)."""
+    """FASE 2 · CABLES: maestro de cables (atributos + extremos). No trae tubos/pelos (ver §2, corrección 8).
+    Al terminar el barrido completo, baja lógica de los cables 51 que Cromo ya no lista."""
+    vistos: set[int] = set()
     await _barrer_coleccion(
         cliente,
         sesion,
@@ -543,10 +608,11 @@ async def fase_cables(
         show=["SHOW", "TIME"],
         psize=psize,
         max_paginas=max_paginas,
-        procesar=lambda obj: _procesar_cable_directo(
+        procesar=_registrando_vistos(vistos, lambda obj: _procesar_cable_directo(
             sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
-        ),
+        )),
     )
+    await _conciliar_bajas(cliente, sesion, corrida, (CLASE_CABLE,), vistos, max_paginas=max_paginas)
 
 
 async def _procesar_cable_tercero_directo(
@@ -574,6 +640,7 @@ async def _procesar_cable_tercero_directo(
             cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
             cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
             accion = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
+            await _reactivar_si_estaba_de_baja(sesion, corrida_id, cable)
             tubos, pelos, errores = cromo_parser.extraer_tubos_y_pelos(obj)
             for tubo in tubos:
                 await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
@@ -611,8 +678,10 @@ async def fase_cables_terceros(
 
     Son ~733 objetos (695 + 7 + 31, `stats[].count` del 2026-09-29): corre también dentro de
     `COMPLETA`, justo después de `fase_cables`, porque cuesta menos de lo que tarda una página de
-    botellas y así los pelos de terceros se refrescan con la corrida de rutina.
+    botellas y así los pelos de terceros se refrescan con la corrida de rutina. Al terminar, baja
+    lógica de los que Cromo ya no lista (`_conciliar_bajas`).
     """
+    vistos: set[int] = set()
     await _barrer_coleccion(
         cliente,
         sesion,
@@ -624,10 +693,11 @@ async def fase_cables_terceros(
         show=["ALL"],
         psize=psize,
         max_paginas=max_paginas,
-        procesar=lambda obj: _procesar_cable_tercero_directo(
+        procesar=_registrando_vistos(vistos, lambda obj: _procesar_cable_tercero_directo(
             sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
-        ),
+        )),
     )
+    await _conciliar_bajas(cliente, sesion, corrida, CLASES_CABLE_TERCEROS, vistos, max_paginas=max_paginas)
 
 
 async def _modo_solo_cables_terceros(
@@ -870,8 +940,10 @@ async def fase_cables_bajada(
     trae 1 tubo y 1 pelo. Esta fase igual no los ingiere, porque `fase_cables` tampoco lo hace para
     la clase 51: los tubos y pelos llegan por el árbol de su botella.
 
-    Son 19.030 objetos. **No entra en `COMPLETA`**: sólo corre pedida explícitamente.
+    Son 19.030 objetos. **No entra en `COMPLETA`**: sólo corre pedida explícitamente. Al terminar,
+    baja lógica de los que Cromo ya no lista (`_conciliar_bajas`).
     """
+    vistos: set[int] = set()
     await _barrer_coleccion(
         cliente,
         sesion,
@@ -883,10 +955,11 @@ async def fase_cables_bajada(
         show=["SHOW", "TIME"],
         psize=psize,
         max_paginas=max_paginas,
-        procesar=lambda obj: _procesar_cable_directo(
+        procesar=_registrando_vistos(vistos, lambda obj: _procesar_cable_directo(
             sesion, corrida.id, obj, contadores, alias_por_origen=alias_por_origen
-        ),
+        )),
     )
+    await _conciliar_bajas(cliente, sesion, corrida, (CLASE_CABLE_BAJADA,), vistos, max_paginas=max_paginas)
 
 
 async def _procesar_pon_elemento_directo(
@@ -1531,6 +1604,8 @@ _SQL_PELOS_SIN_MATCH = text(
     SELECT p.n_id, p.servicio_numero
     FROM app.cromo_pelos p
     WHERE p.servicio_numero IS NOT NULL
+      -- Un pelo dado de baja (cable borrado en Cromo, `bajas_service`) no se vuelve a vincular.
+      AND p.vigente
       AND NOT EXISTS (
           SELECT 1 FROM app.cromo_servicio_match m
           WHERE m.pelo_n_id = p.n_id AND m.servicio_numero = p.servicio_numero
@@ -2151,6 +2226,9 @@ MODOS_ACOTADOS: dict[str, _ModoAcotado] = {
     ),
     "SOLO_CAJAS_PON": _ModoAcotado(CLASES_CAJA_PON, lambda *a, **k: fase_cajas_pon(*a, **k)),
     "SOLO_ROSETAS": _ModoAcotado((CLASE_ROSETA,), lambda *a, **k: fase_rosetas(*a, **k)),
+    # Barrido directo de la 51 + baja lógica de los que Cromo ya no lista, sin esperar una COMPLETA
+    # entera (botellas son horas). 2026-10-02, cables fantasma.
+    "SOLO_CABLES": _ModoAcotado((CLASE_CABLE,), lambda *a, **k: fase_cables(*a, **k)),
     "SOLO_CABLES_BAJADA": _ModoAcotado(
         (CLASE_CABLE_BAJADA,), lambda *a, **k: fase_cables_bajada(*a, **k)
     ),

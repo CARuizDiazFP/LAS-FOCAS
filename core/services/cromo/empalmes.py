@@ -159,7 +159,7 @@ _SQL_EMPALMES_DE_BOTELLA = text(
     """
     WITH cables_botella AS (
         SELECT n_id FROM app.cromo_cables
-        WHERE extremo_a_n_id = :botella_n_id OR extremo_b_n_id = :botella_n_id
+        WHERE (extremo_a_n_id = :botella_n_id OR extremo_b_n_id = :botella_n_id) AND vigente
     )
     SELECT
         f.n_id, f.nombre_par,
@@ -172,14 +172,19 @@ _SQL_EMPALMES_DE_BOTELLA = text(
     LEFT JOIN app.cromo_pelos pb ON pb.n_id = f.pelo_b_n_id
     LEFT JOIN app.cromo_cables cb ON cb.n_id = pb.cable_n_id
     LEFT JOIN app.cromo_tubos tb ON tb.n_id = pb.tubo_n_id
-    WHERE f.botella_n_id = :botella_n_id
-       OR (
+    WHERE (
+        f.botella_n_id = :botella_n_id
+        OR (
             f.botella_n_id IS NULL
             AND (
                 pa.cable_n_id IN (SELECT n_id FROM cables_botella)
                 OR pb.cable_n_id IN (SELECT n_id FROM cables_botella)
             )
           )
+    )
+      -- Fusión hacia un pelo de un cable que Cromo borró (`bajas_service`, 2026-10-02): no se
+      -- muestra. Un pelo que nunca bajó a la tabla (LEFT JOIN nulo) sigue mostrándose como antes.
+      AND COALESCE(pa.vigente, true) AND COALESCE(pb.vigente, true)
     ORDER BY f.n_id
     """
 )

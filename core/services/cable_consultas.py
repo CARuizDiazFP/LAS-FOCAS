@@ -108,7 +108,7 @@ _SQL_BUFFER_DE_PELOS = text(
     SELECT p.n_id, t.orden
     FROM app.cromo_pelos p
     LEFT JOIN app.cromo_tubos t ON t.n_id = p.tubo_n_id
-    WHERE p.cable_n_id = :cable_n_id
+    WHERE p.cable_n_id = :cable_n_id AND p.vigente
     """
 )
 
