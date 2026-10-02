@@ -2787,3 +2787,32 @@ su propia ventana de mantenimiento.
   números `OST REALIZADA` y 17 que PROV no conoce. La fusión por cadena encontró 4 grupos con IDs
   operativos distintos (servicios distintos) y no fusionó nada. Tras `conciliar` (corrida 2133), los
   vínculos sin servicio bajaron de 47.437 a 2.972. F-PE-AL-99 devuelve 116548, 120893 y 116550.
+
+## 2026-10-02 — Baja lógica de cables que Cromo borró ("cables fantasma")
+
+- **Contexto:** en Slack, `servicios cable F-TIG-003-B` respondía "2 cables con ese código". El
+  9609095 se había partido en Cromo el 2026-09-10 (F-TIG-003-A 10277059 + F-TIG-003-B 10277060) y acá
+  seguía vigente. Esto **corrige la afirmación del 2026-08-25**: el par F-LEM-11-A no eran dos cables
+  reales, el 9498169 estaba borrado en Cromo. Lo mismo F-ROW-K52JAAA y F-VIN-BERG-CTO2. F-ALV-2335 sí es
+  un duplicado real: dos cables vivos.
+- **Causa:** ningún código ponía `vigente=false` en cables, tubos ni pelos (el diseño lo pedía y
+  nunca se implementó). Además, la única barrida completa de la 51 era la corrida 8 (2026-08-06).
+- **Señal medida contra Cromo real:** un borrado responde `st=0`, no 404, y `/inner` responde vacío.
+  El criterio es la última entrada de `hist[]` con `to ≠ 0`.
+- **Decisiones:**
+  - Baja lógica, nunca `DELETE`, con confirmación doble y tope de 300 por clase.
+  - Se reactiva si Cromo vuelve a listar el cable.
+  - Las `MANUAL` se borran sólo si el sucesor tiene el mismo servicio. Si no, se conservan (decisión
+    del usuario).
+  - Fix retroactivo en este orden: alta de faltantes → `/inner` → baja. Así los servicios pasan al
+    cable nuevo sin quedar sin cable (decisión del usuario, tras ver que 70 faltantes eran los
+    sucesores).
+- **Resultado en dev** (corrida 2165, `scripts/cromo_bajas_cables_fantasma.py --apply`):
+  - 244 cables dados de alta.
+  - 249 cables con `/inner`: 16.332 pelos y 1.599 vínculos.
+  - 97 bajas: 6.144 pelos y 876 vínculos automáticos retirados, 0 MANUAL.
+  - Queda un solo nombre duplicado, F-ALV-2335, que es real.
+  - Detalle en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
+- **Pendiente:** prod (deploy + relevamiento + dry-run + `--apply`, con OK del usuario). Además, en la
+  clase 52 un faltante resultó `SIN_CAMBIOS`: Cromo lo lista con un id distinto del `n_id` local. Se
+  dejó como está.
