@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 import re
 import unicodedata
 
-from core.utils.timefmt import value_to_minutes
+from core.utils.excel_duraciones import TZ_AR, duracion_a_horas, fecha_excel
 try:
     from unidecode import unidecode as _unidecode
 except Exception:  # noqa: BLE001
@@ -103,17 +103,21 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
     df = df[RELEVANT_COLS].copy()
 
     # Limpieza básica
-    for c in ["numero_reclamo", "numero_evento", "numero_linea", "tipo_servicio", "nombre_cliente", "tipo_solucion"]:
+    for c in ["numero_reclamo", "numero_linea", "tipo_servicio", "nombre_cliente", "tipo_solucion"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
+    # "-" o vacío = sin evento asociado
+    df["numero_evento"] = df["numero_evento"].map(
+        lambda v: None if pd.isna(v) or str(v).strip() in ("", "-") else str(v).strip()
+    )
 
     # Fechas
     for c in ["fecha_inicio", "fecha_cierre"]:
-        df[c] = pd.to_datetime(df[c], dayfirst=True, errors="coerce")
+        df[c] = df[c].map(fecha_excel)
+        df[c] = pd.to_datetime(df[c], utc=True).dt.tz_convert(TZ_AR)
 
-    # Horas netas (acepta coma decimal)
-    df["horas_netas"] = df["horas_netas"].map(value_to_minutes)
-    df["horas_netas"] = pd.Series(df["horas_netas"], dtype="Int64")
+    # Horas netas en horas decimales (acepta [h]:mm, serial Excel o coma decimal)
+    df["horas_netas"] = pd.to_numeric(df["horas_netas"].map(duracion_a_horas), errors="coerce")
     df.loc[df["horas_netas"] < 0, "horas_netas"] = pd.NA
 
     # GEO
@@ -129,7 +133,7 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
     valid = has_min & has_any_date
     rows_ok = int(valid.sum())
     rows_bad = int((~valid).sum())
-    df_ok = df[valid].copy()
+    df_ok = df[valid].drop_duplicates(subset="numero_reclamo", keep="last").copy()
 
     # Resumen
     date_min = None

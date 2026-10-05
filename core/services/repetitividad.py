@@ -14,13 +14,11 @@ from urllib.parse import quote
 
 import pandas as pd
 from sqlalchemy import create_engine, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from typing import Optional
 
 from core.config import get_secret
 from core.maps.static_map import build_static_map_png
 
-from db.models.reclamo import Reclamo
 
 
 logger = logging.getLogger(__name__)
@@ -46,31 +44,11 @@ def upsert_reclamos(df: pd.DataFrame) -> Tuple[int, int]:
     """Hace upsert en lote. Devuelve (insertados, actualizados)."""
     if df is None or df.empty:
         return 0, 0
+    from core.sla_consumo.persistencia import upsert_reclamos_df
+
     engine = create_engine(_engine_url())
-    rows = df.to_dict(orient="records")
-    inserted = 0
-    updated = 0
     with engine.begin() as conn:
-        table = Reclamo.__table__
-        stmt = pg_insert(table).values(rows)
-        update_cols = {
-            c.name: stmt.excluded[c.name]
-            for c in table.columns
-            if c.name not in ("numero_reclamo",)
-        }
-        # Evitar sobreescribir con NULL/None: usar COALESCE(excluded.col, table.col)
-        for k in list(update_cols.keys()):
-            update_cols[k] = text(f"COALESCE(excluded.{k}, {table.name}.{k})")
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[table.c.numero_reclamo], set_=update_cols
-        ).returning(text("xmax = 0 as inserted"))
-        result = conn.execute(stmt)
-        for row in result:
-            if row.inserted:
-                inserted += 1
-            else:
-                updated += 1
-    return inserted, updated
+        return upsert_reclamos_df(conn, df, ingesta_id=None)
 
 
 @dataclass

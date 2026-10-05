@@ -72,7 +72,7 @@ def test_parse_reclamos_df_mapea_columnas_y_fechas():
     row2 = df_ok.iloc[1]
     assert pd.isna(row2["latitud"]) and pd.isna(row2["longitud"])  # type: ignore[attr-defined]
 
-    # Horas netas convertidas a minutos y no negativas
-    assert int(df_ok.iloc[0]["horas_netas"]) == 90
-    assert int(df_ok.iloc[1]["horas_netas"]) == 45
+    # Horas netas en horas decimales y no negativas
+    assert float(df_ok.iloc[0]["horas_netas"]) == 1.5
+    assert float(df_ok.iloc[1]["horas_netas"]) == 0.75
 
