@@ -44,6 +44,15 @@ _NUEVAS = [
 
 
 def upgrade() -> None:
+    # Guardia de datos previos: las filas escritas antes de esta migración las generó el parser viejo,
+    # que guardaba "horas netas" en MINUTOS y dejaba "-"/vacío como numero_evento. La tabla estaba vacía
+    # en dev y prod el 2026-10-05, así que normalmente no hace nada; si hubiera filas se convierten acá,
+    # ANTES de crear columnas nuevas, para que luego no se pueda confundir una fila migrada con una
+    # ingerida por el parser nuevo (que ya guarda horas decimales).
+    bind = op.get_bind()
+    if bind.execute(sa.text("SELECT COUNT(*) FROM app.reclamos")).scalar_one() > 0:
+        op.execute("UPDATE app.reclamos SET horas_netas = horas_netas / 60.0")
+        op.execute("UPDATE app.reclamos SET numero_evento = NULL WHERE btrim(numero_evento) IN ('', '-')")
     op.create_table(
         "sla_ingestas",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
