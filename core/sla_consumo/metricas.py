@@ -18,6 +18,8 @@ CAUSA_FO_COD3 = "FO Cod 3"
 CAUSA_CARRIER = "Carrier"
 CAUSA_OTROS = "Otros"
 CAUSAS_ORDEN = (CAUSA_FO_GENERAL, CAUSA_FO_COD3, CAUSA_CARRIER, CAUSA_OTROS)
+COLUMNA_HORAS_POR_CAUSA = {CAUSA_FO_GENERAL: "horas_fo_general", CAUSA_FO_COD3: "horas_fo_cod3",
+                           CAUSA_CARRIER: "horas_carrier", CAUSA_OTROS: "horas_otros"}
 CAUSAS_FO = frozenset({CAUSA_FO_GENERAL, CAUSA_FO_COD3})
 
 ROJO, AMARILLO, VERDE, SIN_COLOR = "Rojo", "Amarillo", "Verde", "Sin color"

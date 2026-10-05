@@ -20,8 +20,6 @@ from core.sla_consumo.metricas import HORAS_ANIO, presupuesto_horas
 # Re-exportados: api/app/routes/servicios.py importa presupuesto_horas desde este módulo.
 __all__ = ["HORAS_ANIO", "ResultadoSlaConsumo", "calcular", "presupuesto_horas"]
 
-_COL_CAUSA = {m.CAUSA_FO_GENERAL: "horas_fo_general", m.CAUSA_FO_COD3: "horas_fo_cod3",
-              m.CAUSA_CARRIER: "horas_carrier", m.CAUSA_OTROS: "horas_otros"}
 _ORDEN_ESTADO = {m.ESTADO_EXCEDIDO: 0, m.ESTADO_AGOTADO: 1, m.ESTADO_DENTRO: 2, m.ESTADO_SIN_CONSUMO: 3,
                  m.ESTADO_NO_EVALUABLE: 4}
 SERVICIOS_COLUMNAS = [
@@ -77,13 +75,13 @@ def _agregados(acum: pd.DataFrame) -> pd.DataFrame:
     causas = (acum[acum["causa"].notna()]
               .pivot_table(index="clave_servicio", columns="causa", values="horas_computables",
                            aggfunc="sum", fill_value=0.0)
-              .reindex(columns=list(_COL_CAUSA), fill_value=0.0).rename(columns=_COL_CAUSA))
+              .reindex(columns=list(m.COLUMNA_HORAS_POR_CAUSA), fill_value=0.0).rename(columns=m.COLUMNA_HORAS_POR_CAUSA))
     return base.join(causas)
 
 
 def _metricas_servicios(unificados: pd.DataFrame, acum: pd.DataFrame) -> pd.DataFrame:
     df = unificados.merge(_agregados(acum), left_on="clave_servicio", right_index=True, how="left")
-    horas = ["horas_netas", "horas_computables", "horas_excluidas", *_COL_CAUSA.values()]
+    horas = ["horas_netas", "horas_computables", "horas_excluidas", *m.COLUMNA_HORAS_POR_CAUSA.values()]
     df[horas] = df[horas].astype(float).fillna(0.0)
     for col in ("reclamos", "eventos_reales", "reclamos_sin_evento"):
         df[col] = df[col].fillna(0).astype(int)

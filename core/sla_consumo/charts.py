@@ -15,8 +15,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 from core.sla_consumo import metricas as m  # noqa: E402
 from core.sla_consumo.presentacion import COLORES_CAUSA, fmt_horas, fmt_pct  # noqa: E402
 
-_COL_CAUSA = {m.CAUSA_FO_GENERAL: "horas_fo_general", m.CAUSA_FO_COD3: "horas_fo_cod3",
-              m.CAUSA_CARRIER: "horas_carrier", m.CAUSA_OTROS: "horas_otros"}
+
+def _servicios_txt(n: int) -> str:
+    return f"{n} servicio" if n == 1 else f"{n} servicios"
 
 
 def _guardar(fig, destino: Path) -> Path:
@@ -61,14 +62,14 @@ def magnitud_eventos(res, destino: Path, top: int = 15) -> Path | None:
               .sort_values("_h", ascending=False, kind="mergesort").head(top)[::-1]
     fig, ax = plt.subplots(figsize=(11, max(3.5, 0.5 * len(datos) + 1.5)))
     base = pd.Series(0.0, index=datos.index)
-    for causa, col in _COL_CAUSA.items():
+    for causa, col in m.COLUMNA_HORAS_POR_CAUSA.items():
         valores = pd.to_numeric(datos[col], errors="coerce").fillna(0.0)
         ax.barh(range(len(datos)), valores, left=base, color=f"#{COLORES_CAUSA[causa]}", label=causa)
         base = base + valores
     maximo = float(datos["_h"].max()) or 1.0
     for i, (_, f) in enumerate(datos.iterrows()):
         ax.text(f["_h"] + maximo * 0.01, i,
-                f"{int(f['servicios_afectados'])} servicios · suficiente {int(f['n_suficiente_solo'])} · "
+                f"{_servicios_txt(int(f['servicios_afectados']))} · suficiente {int(f['n_suficiente_solo'])} · "
                 f"cruza {int(f['n_cruza_umbral'])} · determinante {int(f['n_determinante'])}",
                 va="center", fontsize=8)
     ax.set_yticks(range(len(datos)), [f"{e} ({fmt_horas(h)} h)" for e, h in zip(datos["numero_evento"], datos["_h"])])

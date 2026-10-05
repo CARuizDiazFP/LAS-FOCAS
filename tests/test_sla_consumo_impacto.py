@@ -128,3 +128,11 @@ def test_inconsistencias():
     tipos = inc.groupby("tipo").size().to_dict()
     assert tipos == {INCONS_CARRIER_CON_EVENTO: 1, INCONS_EVENTO_MIXTO: 1, INCONS_NO_VINCULADO: 1,
                      INCONS_NO_EVALUABLE: 1}
+
+
+def test_previos_agotan_y_el_evento_suma_una_hora():
+    """Fallo documentado: P agota solo y es determinante; E cruza el umbral pero no es determinante."""
+    _, df = _ev([_c("1", 26, evento="P", dia=1), _c("2", 1, evento="E", dia=2)])
+    e, p = df.loc[("E", "A")], df.loc[("P", "A")]
+    assert bool(e["cruza_umbral"]) is True and bool(e["determinante_al_excluir"]) is False
+    assert p["suficiente_solo"] == "Agota" and bool(p["determinante_al_excluir"]) is True

@@ -221,9 +221,6 @@ def torta_global(doc, res, graficos: Path) -> None:
 
 # --------------------------------------------------------------------------------------------- eventos
 
-_CAUSAS = ((m.CAUSA_FO_GENERAL, "horas_fo_general"), (m.CAUSA_FO_COD3, "horas_fo_cod3"),
-           (m.CAUSA_CARRIER, "horas_carrier"), (m.CAUSA_OTROS, "horas_otros"))
-
 
 def eventos_ordenados(res) -> pd.DataFrame:
     ev = res.eventos
@@ -239,7 +236,7 @@ def _indicador_evento(n: object, lista: object) -> str:
 
 def _causas_evento(fila) -> str:
     partes = []
-    for causa, col in _CAUSAS:
+    for causa, col in m.COLUMNA_HORAS_POR_CAUSA.items():
         valor = pd.to_numeric(fila[col], errors="coerce")
         if pd.notna(valor) and valor > m.EPS_HORAS:
             partes.append(f"{causa}: {fmt_horas(valor)} h")
