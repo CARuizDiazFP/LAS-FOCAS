@@ -177,3 +177,17 @@ def test_xlsx_y_docx_conservan_texto_infinity(tmp_path):
 def test_xlsx_builder_reusa_faltante_de_presentacion():
     from core.sla_consumo import xlsx_builder
     assert xlsx_builder._faltante is presentacion._faltante
+
+
+@sin_utcnow
+@pytest.mark.parametrize("construir", [construir_docx_ejecutivo, construir_docx_exhaustivo])
+def test_docx_no_muestra_primer_servicio(tmp_path, construir):
+    servicios = [_s("200", primer="98765", sla=99.0), _s("300")]
+    reclamos = [_r("1", "200", 90, FO, evento="E1", dia=1, primer="98765"), _r("2", "300", 2, FO, dia=2),
+                _r("3", "777", 1, FO, dia=3, primer="55555")]
+    r = _calc(servicios, reclamos)
+    doc = Document(str(construir(r, tmp_path / "d.docx")))
+    textos = _textos_celdas(doc)
+    assert "98765" not in textos and not any("98765" in t for t in textos)
+    assert not any(COLUMNAS["numero_primer_servicio"][0] in t or COLUMNAS["clave_servicio"][0] in t for t in textos)
+    assert any(t.startswith("200 — ") for t in textos)

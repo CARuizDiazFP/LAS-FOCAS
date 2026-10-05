@@ -16,6 +16,21 @@ from core.utils.excel_duraciones import TZ_AR
 
 VACIO = "—"
 
+# Identificadores internos que no se exportan: el servicio se identifica sólo por `servicio_id` (el ID más
+# actualizado). `numero_linea` se oculta cuando la hoja ya trae `servicio_id`.
+COLUMNAS_INTERNAS = ("clave_servicio", "numero_primer_servicio")
+
+
+def columnas_visibles(columnas) -> list[str]:
+    """Columnas a exportar, en orden: sin identificadores internos y con `servicio_id` primero."""
+    cols = list(columnas)
+    ocultas = set(COLUMNAS_INTERNAS) | ({"numero_linea"} if "servicio_id" in cols else set())
+    cols = [c for c in cols if c not in ocultas]
+    if "servicio_id" in cols:
+        cols.remove("servicio_id")
+        cols.insert(0, "servicio_id")
+    return cols
+
 # nombre de columna → (etiqueta en español, formato). Formatos: texto, entero, horas, pct, fecha, bool.
 COLUMNAS: dict[str, tuple[str, str]] = {
     # Servicios
@@ -239,8 +254,6 @@ def a_fecha_ar(ts: object) -> dt.datetime | str | None:
     if isinstance(ts, str):
         return ts
     t = pd.Timestamp(ts)
-    if t is pd.NaT:
-        return None
     if t.tzinfo is not None:
         t = t.tz_convert(TZ_AR).tz_localize(None)
     return t.to_pydatetime()

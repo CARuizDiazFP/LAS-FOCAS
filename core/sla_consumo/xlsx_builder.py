@@ -16,7 +16,7 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 from core.sla_consumo.presentacion import (COLORES_ESTADO, COLORES_SEMAFORO, COLORES_SUFICIENTE, COLUMNAS,
                                            COLUMNAS_FRACCION, LEYENDAS, TOTALES, _faltante, _numero,
-                                           a_fecha_ar, fmt_bool)
+                                           a_fecha_ar, columnas_visibles, fmt_bool)
 
 HOJAS = ("Resumen y leyendas", "Servicios", "Servicio x Reclamo", "Eventos", "Evento x Servicio",
          "Reclamos sin evento", "Inconsistencias", "No vinculados", "Codigo de cierre", "Detalle tipo solucion",
@@ -84,6 +84,7 @@ def _formato_condicional(ws, columna: str, letra: str, filas: int) -> None:
 def _hoja_datos(wb: Workbook, nombre: str, df: pd.DataFrame, renombres: dict[str, str] | None = None) -> None:
     ws = wb.create_sheet(nombre)
     renombres = renombres or {}
+    df = df[columnas_visibles(df.columns)]
     claves = [renombres.get(c, c) for c in df.columns]
     desconocidas = [c for c in claves if c not in COLUMNAS]
     if desconocidas:
@@ -156,7 +157,6 @@ def _hoja_resumen(wb: Workbook, res) -> None:
     ws.column_dimensions["A"].width = _MAX_ANCHO
     ws.column_dimensions["B"].width = _MAX_ANCHO
     ws.column_dimensions["C"].width = 18
-    ws.auto_filter.ref = ws.dimensions
     ws.freeze_panes = "A2"
 
 

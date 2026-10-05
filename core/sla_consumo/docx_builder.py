@@ -15,11 +15,11 @@ TOP_EVENTOS_DEFAULT = 20
 _ENV_TOP_EVENTOS = "SLA_CONSUMO_TOP_EVENTOS"
 
 _SIN_RECLAMOS = ["servicio_id", "nombre_cliente", "tipo_servicio", "sla_prometido", "presupuesto_h", "estado"]
-_RECLAMOS_SIN_EVENTO = ["numero_reclamo", "servicio_id", "nombre_cliente", "horas_computables", "pct_aporte_real",
+_RECLAMOS_SIN_EVENTO = ["servicio_id", "numero_reclamo", "nombre_cliente", "horas_computables", "pct_aporte_real",
                         "consumo_total_servicio", "estado_servicio", "suficiente_solo", "cruza_umbral",
                         "determinante_al_excluir", "participa_en_agotado_o_excedido"]
 _INCONSISTENCIAS = ["tipo", "numero_evento", "numero_reclamo", "servicio_id", "detalle"]
-_NO_VINCULADOS = ["numero_reclamo", "numero_evento", "numero_linea", "numero_primer_servicio", "nombre_cliente",
+_NO_VINCULADOS = ["numero_reclamo", "numero_evento", "numero_linea", "nombre_cliente",
                   "fecha_inicio", "horas_netas", "tipo_solucion", "grupo_cierre"]
 
 
@@ -30,10 +30,6 @@ def top_eventos_config() -> int:
     except ValueError:
         return TOP_EVENTOS_DEFAULT
     return valor if valor > 0 else TOP_EVENTOS_DEFAULT
-
-
-def _ficha_servicio(doc, res, fila_servicio) -> None:
-    dc.ficha_servicio(doc, res, fila_servicio)
 
 
 def _inicio(res, destino: Path, titulo: str):
@@ -96,6 +92,6 @@ def construir_docx_exhaustivo(res, destino: Path) -> Path:
     dc.tabla_df(doc, res.inconsistencias, _INCONSISTENCIAS, [2.0, 1.0, 1.0, 1.0, 5.0])
 
     dc.titulo(doc, "Reclamos no vinculados", 1)
-    dc.tabla_df(doc, res.no_vinculados, _NO_VINCULADOS, [1.0, 1.0, 1.0, 1.0, 2.4, 1.4, 1.0, 2.4, 1.4])
+    dc.tabla_df(doc, res.no_vinculados, _NO_VINCULADOS, [1.0, 1.0, 1.0, 2.4, 1.4, 1.0, 2.4, 1.4])
     doc.save(destino)
     return destino

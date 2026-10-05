@@ -14,9 +14,6 @@ INCONS_EVENTO_MIXTO = "Evento con causas FO y no FO"
 INCONS_NO_VINCULADO = "Reclamo no vinculado a un servicio"
 INCONS_NO_EVALUABLE = "Servicio no evaluable (sin presupuesto válido)"
 
-_COL_CAUSA = {m.CAUSA_FO_GENERAL: "horas_fo_general", m.CAUSA_FO_COD3: "horas_fo_cod3",
-              m.CAUSA_CARRIER: "horas_carrier", m.CAUSA_OTROS: "horas_otros"}
-
 
 def _validos(presupuesto: pd.Series) -> pd.Series:
     return presupuesto.map(m.presupuesto_valido).astype(bool)
@@ -102,7 +99,7 @@ def resumen_eventos(acum: pd.DataFrame, ev_srv: pd.DataFrame) -> pd.DataFrame:
     ev = acum[acum["numero_evento"].notna()]
     if ev.empty:
         return pd.DataFrame(columns=["numero_evento", "inicio_observado", "cierre_observado", "reclamos",
-                                     "servicios_afectados", "horas_servicio", *_COL_CAUSA.values(),
+                                     "servicios_afectados", "horas_servicio", *m.COLUMNA_HORAS_POR_CAUSA.values(),
                                      "servicios_agotados_o_excedidos", "n_suficiente_solo",
                                      "servicios_suficiente_solo", "n_cruza_umbral", "servicios_cruza_umbral",
                                      "n_determinante", "servicios_determinante"])
@@ -112,8 +109,8 @@ def resumen_eventos(acum: pd.DataFrame, ev_srv: pd.DataFrame) -> pd.DataFrame:
         horas_servicio=("horas_computables", "sum"))
     causas = (ev[ev["causa"].notna()].pivot_table(index="numero_evento", columns="causa",
                                                    values="horas_computables", aggfunc="sum", fill_value=0.0)
-              .reindex(columns=list(_COL_CAUSA), fill_value=0.0).rename(columns=_COL_CAUSA))
-    base = base.join(causas).fillna({c: 0.0 for c in _COL_CAUSA.values()})
+              .reindex(columns=list(m.COLUMNA_HORAS_POR_CAUSA), fill_value=0.0).rename(columns=m.COLUMNA_HORAS_POR_CAUSA))
+    base = base.join(causas).fillna({c: 0.0 for c in m.COLUMNA_HORAS_POR_CAUSA.values()})
     es = ev_srv.assign(_suf=ev_srv["suficiente_solo"].isin(["Agota", "Excede"]))
     indic = es.groupby("numero_evento").apply(lambda g: pd.Series({
         "servicios_agotados_o_excedidos": int(g["participa_en_agotado_o_excedido"].sum()),
@@ -144,7 +141,7 @@ def inconsistencias(acum: pd.DataFrame, no_vinculados: pd.DataFrame, servicios: 
     for _, r in no_vinculados.iterrows():
         filas.append({"tipo": INCONS_NO_VINCULADO, "numero_evento": r.get("numero_evento"),
                       "numero_reclamo": r["numero_reclamo"], "servicio_id": None,
-                      "detalle": f"Línea {r.get('numero_linea')} / primer servicio {r.get('numero_primer_servicio')} "
+                      "detalle": f"Línea {r.get('numero_linea')} "
                                  "fuera del universo de Servicios: sin presupuesto."})
     for _, s in servicios[servicios["estado"] == m.ESTADO_NO_EVALUABLE].iterrows():
         filas.append({"tipo": INCONS_NO_EVALUABLE, "numero_evento": None, "numero_reclamo": None,

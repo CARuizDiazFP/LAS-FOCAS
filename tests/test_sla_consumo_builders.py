@@ -105,7 +105,7 @@ def test_xlsx_inf_y_nan_quedan_vacios(res, tmp_path):
 def test_xlsx_filtro_y_panel_congelado_en_toda_hoja(res, tmp_path):
     wb = openpyxl.load_workbook(construir_xlsx(res, tmp_path / "x.xlsx"))
     for ws in wb:
-        assert ws.auto_filter.ref, ws.title
+        assert bool(ws.auto_filter.ref) == (ws.title != HOJAS[0]), ws.title  # Resumen mezcla secciones: sin filtro
         assert ws.freeze_panes == ("A2" if ws.title == HOJAS[0] else "B2"), ws.title
         assert all(d.width <= 50 for d in ws.column_dimensions.values()), ws.title
         assert all(c.font.bold for c in ws[1]), ws.title
@@ -158,3 +158,31 @@ def test_columnas_formatos_validos_y_colores():
     assert {f for _, f in COLUMNAS.values()} <= {"texto", "entero", "horas", "pct", "fecha", "bool"}
     assert presentacion.COLORES_SEMAFORO["Sin color"] is None
     assert presentacion.COLORES_CAUSA["Carrier"] == "2980B9"
+
+
+def test_etiqueta_magnitud_singular_y_plural():
+    assert charts._servicios_txt(1) == "1 servicio"
+    assert charts._servicios_txt(0) == "0 servicios" and charts._servicios_txt(3) == "3 servicios"
+
+
+@pytest.fixture
+def res_primer():
+    """Servicio cuyo primer servicio (98765) difiere de su línea/ID vigente (200)."""
+    servicios = [_s("200", primer="98765"), _s("300")]
+    reclamos = [_r("1", "200", 4, FO, evento="E1", dia=1, primer="98765"), _r("2", "300", 2, FO, dia=2)]
+    return _calc(servicios, reclamos)
+
+
+@sin_utcnow
+def test_xlsx_no_exporta_identificadores_internos(res_primer, tmp_path):
+    wb = openpyxl.load_workbook(construir_xlsx(res_primer, tmp_path / "x.xlsx"))
+    internos = {COLUMNAS["clave_servicio"][0], COLUMNAS["numero_primer_servicio"][0]}
+    for ws in wb.worksheets:
+        assert not internos & {c.value for c in ws[1]}, ws.title
+    for hoja in ("Servicios", "Evento x Servicio", "Reclamos sin evento", "Servicio x Reclamo"):
+        ws = wb[hoja]
+        assert ws.cell(1, 1).value == COLUMNAS["servicio_id"][0], hoja
+        assert ws.freeze_panes == "B2", hoja
+    assert wb["Servicios"].cell(2, 1).value == "200"
+    assert wb["Resumen y leyendas"].auto_filter.ref is None
+    assert "98765" not in {c.value for ws in wb.worksheets for fila in ws.iter_rows() for c in fila}
