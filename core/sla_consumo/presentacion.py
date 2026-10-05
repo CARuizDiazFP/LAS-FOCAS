@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 
 from core.sla_consumo import metricas as m
@@ -187,19 +189,36 @@ LEYENDAS: list[tuple[str, str]] = [
 
 
 def _faltante(valor: object) -> bool:
+    """None/NA/NaT y números NaN o ±inf. Un texto nunca es faltante ("nan", "Infinity" son textos válidos)."""
     if valor is None or valor is pd.NA or valor is pd.NaT:
         return True
+    if isinstance(valor, Decimal):
+        return valor.is_nan() or valor.is_infinite()
+    if isinstance(valor, (float, np.floating)):
+        return math.isnan(valor) or math.isinf(valor)
+    if isinstance(valor, np.datetime64):
+        return bool(np.isnat(valor))
+    return False
+
+
+def _numero(valor: object) -> float | None:
+    """Número finito, o None si falta o el valor no es numérico (p. ej. un texto)."""
+    if _faltante(valor) or isinstance(valor, str):
+        return None
     try:
         numero = float(valor)
-    except (TypeError, ValueError):
-        return False
-    return math.isnan(numero) or math.isinf(numero)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numero if math.isfinite(numero) else None
 
 
 def fmt_horas(h: object) -> str:
     if _faltante(h):
         return VACIO
-    minutos = round(float(h) * 60)
+    numero = _numero(h)
+    if numero is None:
+        return str(h)
+    minutos = round(numero * 60)
     signo = "-" if minutos < 0 else ""
     return f"{signo}{abs(minutos) // 60}:{abs(minutos) % 60:02d}"
 
@@ -207,7 +226,10 @@ def fmt_horas(h: object) -> str:
 def fmt_pct(p: object) -> str:
     if _faltante(p):
         return VACIO
-    return f"{float(p):.2f}".replace(".", ",") + " %"
+    numero = _numero(p)
+    if numero is None:
+        return str(p)
+    return f"{numero:.2f}".replace(".", ",") + " %"
 
 
 def a_fecha_ar(ts: object) -> dt.datetime | None:
@@ -229,3 +251,26 @@ def fmt_bool(b: object) -> str:
     if _faltante(b):
         return VACIO
     return "Sí" if bool(b) else "No"
+
+
+def fmt_entero(n: object) -> str:
+    if _faltante(n):
+        return VACIO
+    numero = _numero(n)
+    return str(n) if numero is None else str(int(numero))
+
+
+def fmt(valor: object, formato: str, columna: str = "") -> str:
+    """Texto de presentación según el formato de `COLUMNAS`; los textos se devuelven tal cual."""
+    if formato == "horas":
+        return fmt_horas(valor)
+    if formato == "pct":
+        numero = _numero(valor)
+        return fmt_pct(numero * 100 if numero is not None and columna in COLUMNAS_FRACCION else valor)
+    if formato == "fecha":
+        return fmt_fecha(valor)
+    if formato == "bool":
+        return fmt_bool(valor)
+    if formato == "entero":
+        return fmt_entero(valor)
+    return VACIO if _faltante(valor) else str(valor)

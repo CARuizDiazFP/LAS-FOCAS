@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import math
 from pathlib import Path
 
 import pandas as pd
@@ -16,7 +15,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 from core.sla_consumo.presentacion import (COLORES_ESTADO, COLORES_SEMAFORO, COLORES_SUFICIENTE, COLUMNAS,
-                                           COLUMNAS_FRACCION, LEYENDAS, TOTALES, a_fecha_ar)
+                                           COLUMNAS_FRACCION, LEYENDAS, TOTALES, _faltante, _numero,
+                                           a_fecha_ar)
 
 HOJAS = ("Resumen y leyendas", "Servicios", "Servicio x Reclamo", "Eventos", "Evento x Servicio",
          "Reclamos sin evento", "Inconsistencias", "No vinculados", "Codigo de cierre", "Detalle tipo solucion",
@@ -32,32 +32,28 @@ _ENCABEZADO_FILL = PatternFill(start_color="1F3864", end_color="1F3864", fill_ty
 _ENCABEZADO_FONT = Font(bold=True, color="FFFFFF")
 
 
-def _faltante(v: object) -> bool:
-    if v is None or v is pd.NA or v is pd.NaT:
-        return True
-    try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return False
-    return math.isnan(n) or math.isinf(n)
+def _texto(v: object) -> str:
+    return ILLEGAL_CHARACTERS_RE.sub("", str(v))[:_MAX_TEXTO]
 
 
 def _valor(v: object, formato: str, col: str = ""):
-    """Convierte un valor del resultado al valor de celda; NaN/None/±inf → celda vacía."""
+    """Convierte un valor del resultado al valor de celda; NaN/None/±inf → celda vacía; un texto queda texto."""
     if _faltante(v):
         return None
-    if formato == "horas":
-        return float(v) / 24
-    if formato == "pct":
-        return float(v) if col in COLUMNAS_FRACCION else float(v) / 100
+    if formato in ("horas", "pct", "entero"):
+        n = _numero(v)
+        if n is None:
+            return _texto(v)
+        if formato == "horas":
+            return n / 24
+        if formato == "pct":
+            return n if col in COLUMNAS_FRACCION else n / 100
+        return int(n)
     if formato == "fecha":
         return a_fecha_ar(v)
-    if formato == "entero":
-        return int(v)
     if formato == "bool":
         return "Sí" if bool(v) else "No"
-    texto = ILLEGAL_CHARACTERS_RE.sub("", str(v))
-    return texto[:_MAX_TEXTO]
+    return _texto(v)
 
 
 def _columna_fecha(serie: pd.Series) -> list:
