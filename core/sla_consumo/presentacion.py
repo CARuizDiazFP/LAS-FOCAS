@@ -232,11 +232,15 @@ def fmt_pct(p: object) -> str:
     return f"{numero:.2f}".replace(".", ",") + " %"
 
 
-def a_fecha_ar(ts: object) -> dt.datetime | None:
-    """Datetime naive en hora de Argentina (los naive se asumen ya en AR); None si falta."""
+def a_fecha_ar(ts: object) -> dt.datetime | str | None:
+    """Datetime naive en hora de Argentina (los naive se asumen ya en AR); None si falta; un texto queda texto."""
     if _faltante(ts):
         return None
+    if isinstance(ts, str):
+        return ts
     t = pd.Timestamp(ts)
+    if t is pd.NaT:
+        return None
     if t.tzinfo is not None:
         t = t.tz_convert(TZ_AR).tz_localize(None)
     return t.to_pydatetime()
@@ -244,12 +248,16 @@ def a_fecha_ar(ts: object) -> dt.datetime | None:
 
 def fmt_fecha(ts: object) -> str:
     fecha = a_fecha_ar(ts)
-    return VACIO if fecha is None else fecha.strftime("%d/%m/%Y %H:%M")
+    if fecha is None:
+        return VACIO
+    return fecha if isinstance(fecha, str) else fecha.strftime("%d/%m/%Y %H:%M")
 
 
 def fmt_bool(b: object) -> str:
     if _faltante(b):
         return VACIO
+    if isinstance(b, str):
+        return "No" if b.strip().lower() in ("no", "false", "0") else b
     return "Sí" if bool(b) else "No"
 
 

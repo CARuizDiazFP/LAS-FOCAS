@@ -796,9 +796,12 @@ async def generar_informe_sla_consumo_web(
         logger.exception("action=sla_consumo_web stage=unexpected user=%s", username)
         return _error(500, f"No se pudo generar el informe de SLA consumido: {str(exc) or exc.__class__.__name__}")
 
-    report_paths = {"xlsx": _report_href(informe.xlsx), "docx": _report_href(informe.docx)}
-    if informe.pdf:
-        report_paths["pdf"] = _report_href(informe.pdf)
+    report_paths = {"xlsx": _report_href(informe.xlsx), "docx_ejecutivo": _report_href(informe.docx_ejecutivo),
+                    "docx_exhaustivo": _report_href(informe.docx_exhaustivo)}
+    if informe.pdf_ejecutivo:
+        report_paths["pdf_ejecutivo"] = _report_href(informe.pdf_ejecutivo)
+    if informe.pdf_exhaustivo:
+        report_paths["pdf_exhaustivo"] = _report_href(informe.pdf_exhaustivo)
     ingesta = informe.ingesta
     salida = {
         "fecha_corte": ingesta.fecha_corte.isoformat(), "ya_ingestado": ingesta.ya_ingestado,

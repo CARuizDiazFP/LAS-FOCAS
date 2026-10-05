@@ -36,9 +36,12 @@ def test_sla_consumo_ok(monkeypatch, tmp_path):
         xlsx = Path(reports_dir) / "sla_consumo" / "202610" / "a.xlsx"
         xlsx.parent.mkdir(parents=True, exist_ok=True)
         xlsx.write_bytes(b"x")
-        docx = xlsx.with_suffix(".docx")
-        docx.write_bytes(b"x")
-        return InformeSlaConsumo(xlsx, docx, None, _INGESTA, {"reclamos": 12, "horas": 3.5})
+        ejecutivo = xlsx.with_name("a_ejecutivo.docx")
+        exhaustivo = xlsx.with_name("a_exhaustivo.docx")
+        pdf = xlsx.with_name("a_ejecutivo.pdf")
+        for archivo in (ejecutivo, exhaustivo, pdf):
+            archivo.write_bytes(b"x")
+        return InformeSlaConsumo(xlsx, ejecutivo, exhaustivo, pdf, None, _INGESTA, {"reclamos": 12, "horas": 3.5})
 
     monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
     monkeypatch.setenv("TESTING", "true")
@@ -54,7 +57,10 @@ def test_sla_consumo_ok(monkeypatch, tmp_path):
     assert body["reclamos_insertados"] == 10 and body["reclamos_actualizados"] == 2
     assert body["totales"] == {"reclamos": 12, "horas": 3.5}
     assert body["report_paths"]["xlsx"] == "/reports/sla_consumo/202610/a.xlsx"
-    assert "pdf" not in body["report_paths"]
+    assert body["report_paths"]["docx_ejecutivo"] == "/reports/sla_consumo/202610/a_ejecutivo.docx"
+    assert body["report_paths"]["docx_exhaustivo"] == "/reports/sla_consumo/202610/a_exhaustivo.docx"
+    assert body["report_paths"]["pdf_ejecutivo"] == "/reports/sla_consumo/202610/a_ejecutivo.pdf"
+    assert "pdf_exhaustivo" not in body["report_paths"] and "docx" not in body["report_paths"]
     assert llamado["servicios"] == _servicios_excel_bytes() and llamado["usuario"] == "user"
 
 
@@ -76,9 +82,12 @@ def test_sla_consumo_pasa_history_id_y_reporta_pdf_omitido(monkeypatch, tmp_path
         xlsx = Path(reports_dir) / "sla_consumo" / "202610" / "b.xlsx"
         xlsx.parent.mkdir(parents=True, exist_ok=True)
         xlsx.write_bytes(b"x")
-        docx = xlsx.with_suffix(".docx")
-        docx.write_bytes(b"x")
-        return InformeSlaConsumo(xlsx, docx, None, _INGESTA, {}, pdf_omitido="LibreOffice no configurado")
+        ejecutivo = xlsx.with_name("b_ejecutivo.docx")
+        exhaustivo = xlsx.with_name("b_exhaustivo.docx")
+        ejecutivo.write_bytes(b"x")
+        exhaustivo.write_bytes(b"x")
+        return InformeSlaConsumo(xlsx, ejecutivo, exhaustivo, None, None, _INGESTA, {},
+                                 pdf_omitido="LibreOffice no configurado")
 
     monkeypatch.setattr(web_main, "REPORT_HISTORY", _Historial())
     monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
@@ -126,28 +135,72 @@ def test_sla_consumo_sin_sesion_rechazado():
     assert resp.status_code in (401, 403)
 
 
-@pytest.mark.skip(reason="reescrito en Task 6")
-def test_orquestador_genera_xlsx_docx_sin_pdf(monkeypatch, tmp_path):
-    reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO, evento="E1"),
-                             _r("2", "L2", 20.0, GRUPO_FO, evento="E1")], columns=RECLAMOS_COLS)
-    servicios = pd.DataFrame([_s("L1", 99.7, 13.0), _s("L2", 99.9, 20.0)], columns=SERVICIOS_COLS)
+def _preparar(monkeypatch, reclamos, servicios):
     monkeypatch.setattr(orquestador, "parse_servicios", lambda _b: servicios)
     monkeypatch.setattr(orquestador, "parse_reclamos", lambda _b: reclamos)
     monkeypatch.setattr(orquestador, "ingerir", lambda *a, **k: _INGESTA)
     monkeypatch.setattr(orquestador, "cargar_ventana", lambda fecha, engine=None: (reclamos, servicios))
-    monkeypatch.setenv("SOFFICE_BIN", "/no/existe")
 
+
+def _datos():
+    reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO, evento="E1"),
+                             _r("2", "L2", 20.0, GRUPO_FO, evento="E1", dia=2)], columns=RECLAMOS_COLS)
+    servicios = pd.DataFrame([_s("L1", 99.7), _s("L2", 99.9)], columns=SERVICIOS_COLS)
+    return reclamos, servicios
+
+
+def test_orquestador_genera_xlsx_y_dos_docx_sin_pdf(monkeypatch, tmp_path):
+    _preparar(monkeypatch, *_datos())
+    monkeypatch.setenv("SOFFICE_BIN", "/no/existe")
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="user", incluir_pdf=False,
                                                       reports_dir=tmp_path)
-    assert informe.xlsx.exists() and informe.docx.exists() and informe.pdf is None
-    assert tmp_path in informe.xlsx.parents and informe.ingesta is _INGESTA
-    assert informe.totales["reclamos"] == 2
+    base = informe.xlsx.stem
+    assert base.startswith("SLA_consumido_2026-10-01_")
+    assert informe.xlsx.suffix == ".xlsx" and informe.xlsx.exists()
+    assert informe.docx_ejecutivo.name == f"{base}_ejecutivo.docx" and informe.docx_ejecutivo.exists()
+    assert informe.docx_exhaustivo.name == f"{base}_exhaustivo.docx" and informe.docx_exhaustivo.exists()
+    assert informe.pdf_ejecutivo is None and informe.pdf_exhaustivo is None and informe.pdf_omitido is None
+    assert tmp_path / "sla_consumo" / "202610" == informe.xlsx.parent and informe.ingesta is _INGESTA
+    assert informe.totales["reclamos"] == 2 and informe.totales["servicios_universo"] == 2
 
 
-@pytest.mark.skip(reason="reescrito en Task 6")
+def test_orquestador_pdf_convierte_solo_el_ejecutivo(monkeypatch, tmp_path):
+    _preparar(monkeypatch, *_datos())
+    monkeypatch.setenv("SOFFICE_BIN", "/fake/soffice")
+    convertidos = []
+
+    def falso(docx, soffice):
+        convertidos.append(Path(docx).name)
+        pdf = Path(docx).with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF")
+        return str(pdf)
+
+    import modules.common.libreoffice_export as lo
+    monkeypatch.setattr(lo, "convert_to_pdf", falso)
+    informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True, reports_dir=tmp_path)
+    assert convertidos == [informe.docx_ejecutivo.name]
+    assert informe.pdf_ejecutivo.exists() and informe.pdf_exhaustivo is None
+    assert "exhaustivo" in informe.pdf_omitido and "no se genera en línea" in informe.pdf_omitido
+
+
+def test_orquestador_falla_conversion_ejecutiva_no_rompe(monkeypatch, tmp_path):
+    _preparar(monkeypatch, *_datos())
+    monkeypatch.setenv("SOFFICE_BIN", "/fake/soffice")
+
+    def falso(docx, soffice):
+        raise RuntimeError("timeout")
+
+    import modules.common.libreoffice_export as lo
+    monkeypatch.setattr(lo, "convert_to_pdf", falso)
+    informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True, reports_dir=tmp_path)
+    assert informe.pdf_ejecutivo is None and informe.pdf_exhaustivo is None
+    assert informe.xlsx.exists() and informe.docx_exhaustivo.exists()
+    assert "PDF ejecutivo" in informe.pdf_omitido and "timeout" in informe.pdf_omitido
+
+
 def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypatch, tmp_path):
     reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO)], columns=RECLAMOS_COLS)
-    servicios = pd.DataFrame([_s("L1", 99.7, 13.0)], columns=SERVICIOS_COLS)
+    servicios = pd.DataFrame([_s("L1", 99.7)], columns=SERVICIOS_COLS)
     recibido = {}
 
     def falso_ingerir(*_a, **kw):
@@ -161,7 +214,7 @@ def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypat
     monkeypatch.delenv("SOFFICE_BIN", raising=False)
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True,
                                                       reports_dir=tmp_path, report_history_id=55)
-    assert informe.pdf is None and "LibreOffice" in informe.pdf_omitido
+    assert informe.pdf_ejecutivo is None and "LibreOffice" in informe.pdf_omitido
     assert recibido["report_history_id"] == 55
 
 

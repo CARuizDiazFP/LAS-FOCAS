@@ -61,25 +61,9 @@
           </header>
           <div class="sla-consumo__hairline"></div>
           <div class="sla-consumo__stats">
-            <div class="sla-consumo__stat">
-              <strong>{{ resultado.totales.reclamos ?? 0 }}</strong>
-              <span>reclamos</span>
-            </div>
-            <div class="sla-consumo__stat">
-              <strong>{{ resultado.totales.eventos ?? 0 }}</strong>
-              <span>eventos (+{{ resultado.totales.reclamos_aislados ?? 0 }} reclamos aislados)</span>
-            </div>
-            <div class="sla-consumo__stat">
-              <strong>{{ resultado.totales.servicios ?? 0 }}</strong>
-              <span>servicios</span>
-            </div>
-            <div class="sla-consumo__stat">
-              <strong>{{ resultado.totales.servicios_excedidos ?? 0 }}</strong>
-              <span>servicios excedidos</span>
-            </div>
-            <div class="sla-consumo__stat">
-              <strong>{{ formatHoras(resultado.totales.horas_sla) }}</strong>
-              <span>horas SLA</span>
+            <div v-for="card in cards" :key="card.label" class="sla-consumo__stat">
+              <strong>{{ card.valor }}</strong>
+              <span>{{ card.label }}</span>
             </div>
           </div>
         </div>
@@ -92,14 +76,15 @@
           <div class="sla-consumo__hairline"></div>
           <div class="sla-consumo__outputs">
             <a
-              v-for="[kind, href] in paths"
+              v-for="{ kind, label, href } in paths"
               :key="kind"
               :href="href"
               target="_blank"
               rel="noopener"
               class="sla-consumo__output-link"
-            >{{ kind.toUpperCase() }}</a>
+            >{{ label }}</a>
           </div>
+          <p v-if="resultado?.pdf_omitido" class="sla-consumo__note">{{ resultado.pdf_omitido }}</p>
         </div>
 
         <div class="sla-consumo__status-box" :class="`is-${tono}`" role="status" aria-live="polite">
@@ -113,14 +98,41 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { useSlaConsumo } from '../../composables/useSlaConsumo';
+import { useSlaConsumo, type SlaConsumoReportPaths } from '../../composables/useSlaConsumo';
 
 const pdfEnabled = ref(false);
 const isDrag = ref(false);
 const fileEl = ref<HTMLInputElement | null>(null);
 const { archivos, resultado, loading, mensaje, tono, setArchivos, generar } = useSlaConsumo();
 
-const paths = computed(() => Object.entries(resultado.value?.report_paths ?? {}));
+const ETIQUETAS_SALIDA: [keyof SlaConsumoReportPaths, string][] = [
+  ['xlsx', 'Excel completo (XLSX)'],
+  ['docx_ejecutivo', 'Word ejecutivo (DOCX)'],
+  ['docx_exhaustivo', 'Word exhaustivo (DOCX)'],
+  ['pdf_ejecutivo', 'PDF ejecutivo'],
+  ['pdf_exhaustivo', 'PDF exhaustivo'],
+];
+
+const paths = computed(() => {
+  const rp = resultado.value?.report_paths ?? {};
+  return ETIQUETAS_SALIDA.flatMap(([kind, label]) => (rp[kind] ? [{ kind, label, href: rp[kind] as string }] : []));
+});
+
+const cards = computed(() => {
+  const t = resultado.value?.totales;
+  if (!t) return [];
+  const n = (v: number | undefined) => String(v ?? 0);
+  return [
+    { label: 'Servicios del universo', valor: n(t.servicios_universo) },
+    { label: 'Con reclamos', valor: n(t.servicios_con_reclamos) },
+    { label: 'Presupuesto agotado', valor: n(t.servicios_agotados) },
+    { label: 'SLA excedido', valor: n(t.servicios_excedidos) },
+    { label: 'No evaluables', valor: n(t.servicios_no_evaluables) },
+    { label: `Reclamos (${n(t.reclamos_vinculados)} vinculados / ${n(t.reclamos_no_vinculados)} no vinculados)`, valor: n(t.reclamos) },
+    { label: `Eventos reales (+${n(t.reclamos_sin_evento)} reclamos sin evento)`, valor: n(t.eventos) },
+    { label: 'Horas computables', valor: formatHoras(t.horas_computables) },
+  ];
+});
 
 const dropLabel = computed(() => {
   if (archivos.value.length === 0) return 'Adjuntá los dos archivos Excel';
@@ -368,6 +380,12 @@ function onDrop(e: DragEvent) {
 .sla-consumo__output-link:hover {
   border-color: var(--color-accent);
   color: var(--color-accent);
+}
+
+.sla-consumo__note {
+  margin: 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
 }
 
 .sla-consumo__status-box {

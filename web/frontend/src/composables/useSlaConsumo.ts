@@ -6,13 +6,35 @@ import { ref } from 'vue';
 import { request } from '../api/client';
 
 export interface SlaConsumoTotales {
-  reclamos?: number;
-  eventos?: number;
-  reclamos_aislados?: number;
-  servicios?: number;
+  servicios_universo?: number;
+  servicios_con_reclamos?: number;
+  servicios_dentro?: number;
+  servicios_agotados?: number;
   servicios_excedidos?: number;
-  horas?: number;
-  horas_sla?: number;
+  servicios_sin_consumo?: number;
+  servicios_no_evaluables?: number;
+  reclamos?: number;
+  reclamos_vinculados?: number;
+  reclamos_no_vinculados?: number;
+  eventos?: number;
+  reclamos_sin_evento?: number;
+  horas_netas?: number;
+  horas_computables?: number;
+  horas_excluidas?: number;
+  horas_no_vinculadas?: number;
+  horas_fo_general?: number;
+  horas_fo_cod3?: number;
+  horas_carrier?: number;
+  horas_otros?: number;
+  inconsistencias?: number;
+}
+
+export interface SlaConsumoReportPaths {
+  xlsx?: string;
+  docx_ejecutivo?: string;
+  docx_exhaustivo?: string;
+  pdf_ejecutivo?: string;
+  pdf_exhaustivo?: string;
 }
 
 export interface SlaConsumoResultado {
@@ -27,7 +49,7 @@ export interface SlaConsumoResultado {
   reclamos_sin_cambios?: number;
   pdf_omitido?: string;
   totales?: SlaConsumoTotales;
-  report_paths?: Record<string, string>;
+  report_paths?: SlaConsumoReportPaths;
 }
 
 type Tono = 'muted' | 'info' | 'success' | 'error';

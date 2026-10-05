@@ -16,7 +16,7 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 from core.sla_consumo.presentacion import (COLORES_ESTADO, COLORES_SEMAFORO, COLORES_SUFICIENTE, COLUMNAS,
                                            COLUMNAS_FRACCION, LEYENDAS, TOTALES, _faltante, _numero,
-                                           a_fecha_ar)
+                                           a_fecha_ar, fmt_bool)
 
 HOJAS = ("Resumen y leyendas", "Servicios", "Servicio x Reclamo", "Eventos", "Evento x Servicio",
          "Reclamos sin evento", "Inconsistencias", "No vinculados", "Codigo de cierre", "Detalle tipo solucion",
@@ -52,7 +52,7 @@ def _valor(v: object, formato: str, col: str = ""):
     if formato == "fecha":
         return a_fecha_ar(v)
     if formato == "bool":
-        return "Sí" if bool(v) else "No"
+        return fmt_bool(v)
     return _texto(v)
 
 

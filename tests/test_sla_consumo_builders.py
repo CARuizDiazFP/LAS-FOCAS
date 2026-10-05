@@ -146,6 +146,14 @@ def test_fmt():
     assert fmt_fecha(pd.NaT) == "—" and fmt_fecha(None) == "—"
 
 
+def test_fmt_fecha_y_bool_tolerantes_a_textos():
+    assert presentacion.fmt("sin fecha", "fecha") == "sin fecha" and presentacion.fmt(pd.NaT, "fecha") == "—"
+    assert presentacion.a_fecha_ar("texto") == "texto" and presentacion.a_fecha_ar(pd.NaT) is None
+    for falso in ("No", "no", "false", "0"):
+        assert presentacion.fmt(falso, "bool") == "No"
+    assert presentacion.fmt("Quizás", "bool") == "Quizás" and presentacion.fmt(True, "bool") == "Sí"
+
+
 def test_columnas_formatos_validos_y_colores():
     assert {f for _, f in COLUMNAS.values()} <= {"texto", "entero", "horas", "pct", "fecha", "bool"}
     assert presentacion.COLORES_SEMAFORO["Sin color"] is None

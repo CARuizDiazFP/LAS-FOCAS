@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.sla_consumo.docx_builder import construir_docx
+from core.sla_consumo.docx_builder import construir_docx_ejecutivo, construir_docx_exhaustivo
 from core.sla_consumo.engine import calcular
 from core.sla_consumo.parser import parse_reclamos, parse_servicios
 from core.sla_consumo.persistencia import ResultadoIngesta, cargar_ventana, ingerir, sha256
@@ -18,12 +18,17 @@ from core.sla_consumo.xlsx_builder import construir_xlsx
 
 logger = logging.getLogger(__name__)
 
+PDF_EXHAUSTIVO_OMITIDO = ("PDF del informe exhaustivo no se genera en línea por su tamaño "
+                          "(convertir el DOCX si hace falta)")
+
 
 @dataclass
 class InformeSlaConsumo:
     xlsx: Path
-    docx: Path
-    pdf: Path | None
+    docx_ejecutivo: Path
+    docx_exhaustivo: Path
+    pdf_ejecutivo: Path | None
+    pdf_exhaustivo: Path | None
     ingesta: ResultadoIngesta
     totales: dict
     pdf_omitido: str | None = None   # motivo por el que se pidió PDF y no se generó
@@ -59,15 +64,25 @@ def generar_informe_sla_consumo(servicios_bytes: bytes, reclamos_bytes: bytes, *
 
     sello = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     carpeta = Path(reports_dir) / "sla_consumo" / ingesta.fecha_corte.strftime("%Y%m")
-    xlsx = construir_xlsx(resultado, carpeta / f"SLA_consumido_{ingesta.fecha_corte}_{sello}.xlsx")
-    docx = construir_docx(resultado, carpeta / f"SLA_consumido_{ingesta.fecha_corte}_{sello}.docx")
-    pdf = None
+    base = f"SLA_consumido_{ingesta.fecha_corte}_{sello}"
+    xlsx = construir_xlsx(resultado, carpeta / f"{base}.xlsx")
+    docx_ejecutivo = construir_docx_ejecutivo(resultado, carpeta / f"{base}_ejecutivo.docx")
+    docx_exhaustivo = construir_docx_exhaustivo(resultado, carpeta / f"{base}_exhaustivo.docx")
+    pdf_ejecutivo = None
     pdf_omitido = None
     soffice = os.getenv("SOFFICE_BIN")
     if incluir_pdf and soffice:
         from modules.common.libreoffice_export import convert_to_pdf
 
-        pdf = Path(convert_to_pdf(str(docx), soffice))
+        # El exhaustivo tarda ~6,5 min en LibreOffice: nunca se convierte dentro del request.
+        pdf_omitido = PDF_EXHAUSTIVO_OMITIDO
+        try:
+            pdf_ejecutivo = Path(convert_to_pdf(str(docx_ejecutivo), soffice))
+        except Exception as exc:  # noqa: BLE001 - la ingesta ya se persistió: nunca 500 por el PDF
+            logger.exception("action=sla_consumo stage=pdf_ejecutivo")
+            pdf_omitido = (f"No se pudo generar el PDF ejecutivo ({str(exc) or exc.__class__.__name__}); "
+                           f"{PDF_EXHAUSTIVO_OMITIDO}")
     elif incluir_pdf:
         pdf_omitido = "LibreOffice no configurado"
-    return InformeSlaConsumo(xlsx, docx, pdf, ingesta, _json_safe(resultado.totales), pdf_omitido)
+    return InformeSlaConsumo(xlsx, docx_ejecutivo, docx_exhaustivo, pdf_ejecutivo, None, ingesta,
+                             _json_safe(resultado.totales), pdf_omitido)
