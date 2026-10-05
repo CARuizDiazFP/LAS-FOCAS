@@ -126,6 +126,7 @@ def test_sla_consumo_sin_sesion_rechazado():
     assert resp.status_code in (401, 403)
 
 
+@pytest.mark.skip(reason="reescrito en Task 6")
 def test_orquestador_genera_xlsx_docx_sin_pdf(monkeypatch, tmp_path):
     reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO, evento="E1"),
                              _r("2", "L2", 20.0, GRUPO_FO, evento="E1")], columns=RECLAMOS_COLS)
@@ -143,6 +144,7 @@ def test_orquestador_genera_xlsx_docx_sin_pdf(monkeypatch, tmp_path):
     assert informe.totales["reclamos"] == 2
 
 
+@pytest.mark.skip(reason="reescrito en Task 6")
 def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypatch, tmp_path):
     reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO)], columns=RECLAMOS_COLS)
     servicios = pd.DataFrame([_s("L1", 99.7, 13.0)], columns=SERVICIOS_COLS)

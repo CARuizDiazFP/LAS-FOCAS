@@ -1,6 +1,6 @@
 # Nombre de archivo: test_sla_consumo_engine.py
 # Ubicación de archivo: tests/test_sla_consumo_engine.py
-# Descripción: Cálculo de SLA consumido por evento, servicio, reclamo y código de cierre
+# Descripción: Casos de aceptación del informe SLA consumido sobre el servicio unificado
 
 from __future__ import annotations
 
@@ -9,122 +9,137 @@ import datetime as dt
 import pandas as pd
 import pytest
 
-from core.sla_consumo.clasificador import GRUPO_CARRIER, GRUPO_CLIENTE, GRUPO_FO, GRUPO_FO_COD3
+from core.sla_consumo import metricas as m
 from core.sla_consumo.engine import calcular, presupuesto_horas
 from core.sla_consumo.parser import RECLAMOS_COLS, SERVICIOS_COLS
 from core.utils.excel_duraciones import TZ_AR
 
-
-_TIPO_POR_GRUPO = {GRUPO_FO: "PE-Corte de fibra (1)", GRUPO_FO_COD3: "PE-Corte en bandeja (3)",
-                   GRUPO_CARRIER: "Carrier", GRUPO_CLIENTE: "Falla en sitio del cliente"}
-
-
-@pytest.fixture(autouse=True)
-def _valores_cliente(monkeypatch):
-    monkeypatch.setenv("SLA_CIERRE_CLIENTE_VALORES", "Falla en sitio del cliente")
+SLA_26 = 100 * (1 - 26 / 8760)
+FO, COD3, CARRIER, OTROS = "PE-I-FO Corte/Aten Troncal Can/Subt (7)", "PE-E-FO Corte en Bandeja (3)", "Carrier", "IN - Falla Equipo CPE"
 
 
-def _r(numero, linea, horas, grupo, evento=None, cliente="C1"):
-    fila = {c: None for c in RECLAMOS_COLS}
-    fila.update(numero_reclamo=numero, numero_linea=linea, horas_netas=horas, grupo_cierre=grupo,
-                numero_evento=evento, nombre_cliente=cliente, tipo_solucion=_TIPO_POR_GRUPO.get(grupo),
-                fecha_inicio=pd.Timestamp("2026-09-01", tz=TZ_AR), fecha_cierre=pd.Timestamp("2026-09-02", tz=TZ_AR))
-    return fila
-
-
-def _s(linea, prometido, oficial_h):
+def _s(linea, sla=SLA_26, primer=None, cliente="CLIENTE"):
     fila = {c: None for c in SERVICIOS_COLS}
-    fila.update(numero_linea=linea, nombre_cliente="C1", sla_prometido=prometido,
-                sla_entregado=1 - oficial_h / 8760, horas_reclamos_todos=oficial_h)
+    fila.update(numero_linea=linea, numero_primer_servicio=primer or linea, sla_prometido=sla, nombre_cliente=cliente)
     return fila
 
 
-@pytest.fixture
-def resultado():
-    reclamos = pd.DataFrame([
-        _r("1", "L1", 13.14, GRUPO_FO, evento="E1"),
-        _r("2", "L2", 20.0, GRUPO_FO, evento="E1"),
-        _r("3", "L1", 5.0, GRUPO_CARRIER, cliente="BANCO"),
-        _r("4", "L1", 4.0, GRUPO_FO_COD3),
-        _r("5", "L1", 100.0, GRUPO_CLIENTE),
-        _r("6", "L9", 2.0, GRUPO_FO),  # línea sin foto de servicios
-    ], columns=RECLAMOS_COLS)
-    servicios = pd.DataFrame([_s("L1", 99.7, 22.0), _s("L2", 99.9, 20.0)], columns=SERVICIOS_COLS)
-    return calcular(reclamos, servicios, dt.date(2026, 10, 1))
+def _r(numero, linea, horas, tipo=FO, evento=None, dia=1, primer=None):
+    fila = {c: None for c in RECLAMOS_COLS}
+    fila.update(numero_reclamo=numero, numero_linea=linea, numero_primer_servicio=primer or linea,
+                horas_netas=horas, tipo_solucion=tipo, numero_evento=evento, nombre_cliente="CLIENTE",
+                fecha_inicio=pd.Timestamp(f"2026-09-{dia:02d} 10:00", tz=TZ_AR),
+                fecha_cierre=pd.Timestamp(f"2026-09-{dia:02d} 20:00", tz=TZ_AR))
+    return fila
 
 
-def test_presupuesto():
+def _calc(servicios, reclamos, monkeypatch=None):
+    return calcular(pd.DataFrame(reclamos, columns=RECLAMOS_COLS), pd.DataFrame(servicios, columns=SERVICIOS_COLS),
+                    dt.date(2026, 10, 1))
+
+
+def _svc(res, sid):
+    return res.servicios.set_index("servicio_id").loc[sid]
+
+
+def test_reexporta_presupuesto():
     assert presupuesto_horas(99.7) == pytest.approx(26.28)
-    assert presupuesto_horas(None) is None
 
 
-def test_hechos_metricas(resultado):
-    h = resultado.hechos.set_index("numero_reclamo")
-    assert h.loc["1", "pct_presupuesto"] == pytest.approx(50.0)
-    assert h.loc["1", "pp_disponibilidad"] == pytest.approx(13.14 / 8760 * 100)
-    assert h.loc["5", "horas_sla"] == 0.0 and bool(h.loc["5", "cuenta_sla"]) is False
-    assert bool(h.loc["6", "sin_sla_prometido"]) is True and pd.isna(h.loc["6", "pct_presupuesto"])
+@pytest.mark.parametrize("reclamos, semaforo, estado", [
+    ([("1", 4, FO)], m.ROJO, m.ESTADO_DENTRO),
+    ([("1", 4, FO), ("2", 1, CARRIER)], m.AMARILLO, m.ESTADO_DENTRO),
+    ([("1", 4, OTROS)], m.VERDE, m.ESTADO_DENTRO),
+    ([("1", 0, FO)], m.SIN_COLOR, m.ESTADO_SIN_CONSUMO),
+    ([("1", 26, FO)], m.ROJO, m.ESTADO_AGOTADO),
+    ([("1", 27, FO), ("2", 1, CARRIER)], m.AMARILLO, m.ESTADO_EXCEDIDO),
+])
+def test_semaforo_y_estado(reclamos, semaforo, estado):
+    res = _calc([_s("100")], [_r(n, "100", h, t, dia=i + 1) for i, (n, h, t) in enumerate(reclamos)])
+    fila = _svc(res, "100")
+    assert (fila["semaforo"], fila["estado"]) == (semaforo, estado)
 
 
-def test_por_servicio(resultado):
-    s = resultado.servicios.set_index("numero_linea")
-    assert s.loc["L1", "horas_sla"] == pytest.approx(22.14)
-    assert s.loc["L1", "pct_presupuesto"] == pytest.approx(22.14 / 26.28 * 100)
-    assert s.loc["L1", "sla_calculado"] == pytest.approx(1 - 22.14 / 8760)
-    assert s.loc["L1", "diferencia_horas_oficial"] == pytest.approx(22.14 - 22.0)
-    assert bool(s.loc["L2", "excedido"]) is True   # 20 h > 8.76 h de presupuesto
-    assert "L9" in s.index
+def test_27_fo_mas_1_carrier_visible_100_y_2h_excedidas():
+    fila = _svc(_calc([_s("100")], [_r("1", "100", 27, FO), _r("2", "100", 1, CARRIER, dia=2)]), "100")
+    assert fila["pct_real"] == pytest.approx(28 / 26 * 100)
+    assert fila["pct_visible"] == 100.0 and fila["horas_excedidas"] == pytest.approx(2.0)
+    assert fila["horas_restantes"] == 0.0
+    assert fila["horas_fo"] == 27 and fila["horas_carrier"] == 1
+    assert fila["aporte_fo_pct"] == pytest.approx(27 / 26 * 100)
+    assert fila["participacion_fo_pct"] == pytest.approx(27 / 28 * 100)
 
 
-def test_por_evento(resultado):
-    e = resultado.eventos.set_index("evento_clave")
-    assert e.loc["E1", "servicios_afectados"] == 2
-    assert e.loc["E1", "servicios_excedidos"] == 1
-    assert e.loc["E1", "horas_sla"] == pytest.approx(33.14)
-    assert e.loc["E1", "grupo_predominante"] == GRUPO_FO
-    assert bool(e.loc["R-3", "es_aislado"]) is True   # reclamo sin evento = evento propio
+def test_fo_cod3_cuenta_como_fo_y_se_separa():
+    fila = _svc(_calc([_s("100")], [_r("1", "100", 2, COD3), _r("2", "100", 3, FO, dia=2)]), "100")
+    assert (fila["horas_fo_cod3"], fila["horas_fo_general"], fila["horas_fo"]) == (2, 3, 5)
+    assert fila["semaforo"] == m.ROJO
 
 
-def test_codigo_cierre_y_carrier(resultado):
-    c = resultado.codigo_cierre.set_index("grupo")
-    assert c.loc[GRUPO_FO, "reclamos"] == 3 and c.loc[GRUPO_FO, "eventos"] == 2
-    assert c.loc[GRUPO_CLIENTE, "horas_sla"] == 0.0
-    assert c["horas"].sum() == pytest.approx(resultado.hechos["horas_netas"].sum())
-    assert resultado.carrier_cliente.iloc[0]["nombre_cliente"] == "BANCO"
-    assert resultado.totales["reclamos"] == 6
+def test_reclamo_fo_sin_evento_rojo_y_no_suma_eventos():
+    res = _calc([_s("100")], [_r("1", "100", 4, FO)])
+    rec = res.servicio_reclamo.iloc[0]
+    assert rec["indicador"] == m.ROJO and bool(rec["sin_evento"])
+    assert res.totales["eventos"] == 0 and res.totales["reclamos_sin_evento"] == 1
+    assert _svc(res, "100")["horas_fo"] == 4
 
 
-def test_servicios_vacio():
-    reclamos = pd.DataFrame([_r("1", "L1", 5.0, GRUPO_FO), _r("2", "L1", 3.0, GRUPO_CARRIER, evento="E1")],
-                            columns=RECLAMOS_COLS)
-    vacio = pd.DataFrame(columns=SERVICIOS_COLS)
-    r = calcular(reclamos, vacio, dt.date(2026, 10, 1))
-    assert r.hechos["sin_sla_prometido"].all()
-    assert r.hechos["pct_presupuesto"].isna().all()
-    s = r.servicios.set_index("numero_linea")
-    assert s.loc["L1", "horas_sla"] == pytest.approx(8.0)
-    assert pd.isna(s.loc["L1", "pct_presupuesto"]) and bool(s.loc["L1", "excedido"]) is False
-    assert r.totales["servicios_excedidos"] == 0
-    assert (r.eventos["servicios_excedidos"] == 0).all()
+def test_reclamo_excluido_o_cero_no_altera_semaforo(monkeypatch):
+    monkeypatch.setenv("SLA_CIERRE_CLIENTE_VALORES", "Cierre por cliente")
+    res = _calc([_s("100")], [_r("1", "100", 4, CARRIER), _r("2", "100", 9, "Cierre por cliente", dia=2),
+                              _r("3", "100", 0, FO, dia=3)])
+    fila = _svc(res, "100")
+    assert fila["semaforo"] == m.VERDE and fila["horas_excluidas"] == 9 and fila["horas_computables"] == 4
+    ind = dict(zip(res.servicio_reclamo["numero_reclamo"], res.servicio_reclamo["indicador"]))
+    assert ind == {"1": m.VERDE, "2": m.SIN_COLOR, "3": m.SIN_COLOR}
 
 
-def test_grupos_se_reclasifican_desde_tipo_solucion():
-    """grupo_cierre NULL o desactualizado en BD no puede hacer que Σ grupos != Σ total."""
-    reclamos = pd.DataFrame([
-        _r("1", "L1", 10.0, None),                      # legacy: sin grupo_cierre
-        _r("2", "L1", 5.0, GRUPO_CARRIER),
-        _r("3", "L1", 7.0, GRUPO_FO),
-        _r("4", "L1", 3.0, GRUPO_CLIENTE),
-    ], columns=RECLAMOS_COLS)
-    reclamos.loc[reclamos["numero_reclamo"] == "1", "tipo_solucion"] = "PE-Corte de fibra (1)"
-    reclamos.loc[reclamos["numero_reclamo"] == "3", "grupo_cierre"] = GRUPO_CARRIER   # grupo viejo, stale
-    reclamos["codigo_cierre"] = None
-    servicios = pd.DataFrame([_s("L1", 99.7, 22.0)], columns=SERVICIOS_COLS)
-    r = calcular(reclamos, servicios, dt.date(2026, 10, 1))
-    fila = r.servicios.set_index("numero_linea").loc["L1"]
-    cols = ["horas_fo", "horas_fo_cod3", "horas_carrier", "horas_otros", "horas_cliente"]
-    assert sum(fila[c] for c in cols) == pytest.approx(25.0)
-    assert fila["horas_fo"] == pytest.approx(17.0) and fila["horas_carrier"] == pytest.approx(5.0)
-    assert fila["horas_cliente"] == pytest.approx(3.0)
-    assert r.codigo_cierre["horas"].sum() == pytest.approx(r.totales["horas"])
-    assert r.totales["horas"] == pytest.approx(25.0)
+def test_primer_servicio_con_lineas_9_y_10_una_ficha():
+    res = _calc([_s("9", 99.0, primer="A"), _s("10", SLA_26, primer="A")],
+                [_r("1", "9", 3, FO, primer="A"), _r("2", "10", 4, CARRIER, dia=2, primer="A")])
+    assert list(res.servicios["servicio_id"]) == ["10"]
+    fila = _svc(res, "10")
+    assert fila["reclamos"] == 2 and fila["presupuesto_h"] == pytest.approx(26.0)
+    assert fila["lineas_asociadas"] == "9, 10" and fila["semaforo"] == m.AMARILLO
+    assert set(res.servicio_reclamo["servicio_id"]) == {"10"}
+
+
+def test_servicio_sin_reclamos_incluido_y_no_evaluable_sin_porcentajes():
+    res = _calc([_s("100"), _s("200"), _s("300", sla=None)], [_r("1", "300", 5, FO)])
+    assert set(res.servicios["servicio_id"]) == {"100", "200", "300"}
+    assert _svc(res, "200")["estado"] == m.ESTADO_SIN_CONSUMO and _svc(res, "200")["semaforo"] == m.SIN_COLOR
+    ne = _svc(res, "300")
+    assert ne["estado"] == m.ESTADO_NO_EVALUABLE and pd.isna(ne["pct_real"]) and pd.isna(ne["horas_excedidas"])
+    assert res.totales["servicios_universo"] == 3 and res.totales["servicios_no_evaluables"] == 1
+
+
+def test_reclamo_no_vinculado_aparte():
+    res = _calc([_s("100")], [_r("1", "100", 2, FO), _r("2", "999", 5, FO)])
+    assert list(res.no_vinculados["numero_reclamo"]) == ["2"]
+    assert res.totales["reclamos_no_vinculados"] == 1 and res.totales["horas_no_vinculadas"] == 5
+    assert res.composicion.set_index("causa").loc[m.CAUSA_FO_GENERAL, "horas"] == 2
+    assert "2" not in set(res.servicio_reclamo["numero_reclamo"])
+
+
+def test_evento_en_dos_lineas_mismo_servicio_y_indicadores():
+    res = _calc([_s("9", primer="A"), _s("10", primer="A")],
+                [_r("1", "9", 25, FO, primer="A"), _r("2", "10", 2, FO, evento="E", dia=2, primer="A"),
+                 _r("3", "9", 0.5, FO, evento="E", dia=3, primer="A")])
+    ev = res.eventos.set_index("numero_evento").loc["E"]
+    assert ev["servicios_afectados"] == 1 and ev["n_cruza_umbral"] == 1 and ev["n_determinante"] == 1
+    es = res.evento_servicio.iloc[0]
+    assert es["servicio_id"] == "10" and es["horas_computables"] == pytest.approx(2.5)
+
+
+def test_composicion_global():
+    res = _calc([_s("100"), _s("200")], [_r("1", "100", 3, FO), _r("2", "100", 1, COD3, dia=2),
+                                          _r("3", "200", 4, CARRIER), _r("4", "200", 2, OTROS, dia=2)])
+    comp = res.composicion.set_index("causa")
+    assert comp["horas"].sum() == pytest.approx(10) and comp["pct"].sum() == pytest.approx(100)
+    assert comp.loc[m.CAUSA_FO_COD3, "pct"] == pytest.approx(10)
+
+
+def test_totales_json_safe():
+    res = _calc([_s("100")], [_r("1", "100", 4, FO)])
+    for valor in res.totales.values():
+        assert type(valor) in (int, float)
