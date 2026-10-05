@@ -52,7 +52,9 @@ def _registros(df: pd.DataFrame, columnas: list[str]) -> list[dict]:
     return [{c: _limpio(v) for c, v in fila.items()} for fila in df[columnas].to_dict(orient="records")]
 
 
-def upsert_reclamos_df(conn: Connection, reclamos: pd.DataFrame, ingesta_id: int | None) -> tuple[int, int]:
+def upsert_reclamos_df(conn: Connection, reclamos: pd.DataFrame, ingesta_id: int | None, *,
+                       preservar_no_nulos: bool = False) -> tuple[int, int]:
+    """preservar_no_nulos=True (ruta legacy): un NULL entrante no pisa el valor existente."""
     if reclamos.empty:
         return 0, 0
     reclamos = reclamos.drop_duplicates(subset="numero_reclamo", keep="last")
@@ -61,11 +63,14 @@ def upsert_reclamos_df(conn: Connection, reclamos: pd.DataFrame, ingesta_id: int
     for fila in filas:
         fila["ingesta_id"] = ingesta_id
     insertados = actualizados = 0
+    # Sin ingesta (ruta legacy) se conserva el linaje existente en vez de pisarlo con NULL.
+    cols_update = [c for c in columnas if c != "numero_reclamo"] + (["ingesta_id"] if ingesta_id is not None else [])
     tabla = Reclamo.__table__
     for inicio in range(0, len(filas), 1000):
         stmt = pg_insert(tabla).values(filas[inicio:inicio + 1000])
         # Un reclamo re-exportado trae su estado vigente: se pisa todo menos first_seen_at.
-        cambios = {c: stmt.excluded[c] for c in columnas + ["ingesta_id"] if c != "numero_reclamo"}
+        cambios = {c: (func.coalesce(stmt.excluded[c], tabla.c[c]) if preservar_no_nulos else stmt.excluded[c])
+                   for c in cols_update}
         cambios["last_seen_at"] = func.now()
         stmt = stmt.on_conflict_do_update(index_elements=[tabla.c.numero_reclamo], set_=cambios)
         for fila in conn.execute(stmt.returning(text("(xmax = 0) AS inserted"))):

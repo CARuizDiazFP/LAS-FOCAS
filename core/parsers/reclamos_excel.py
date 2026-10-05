@@ -9,6 +9,7 @@ from typing import Dict, Tuple
 import re
 import unicodedata
 
+from core.sla_consumo.parser import _texto as _texto_parser
 from core.utils.excel_duraciones import TZ_AR, duracion_a_horas, fecha_excel
 try:
     from unidecode import unidecode as _unidecode
@@ -67,6 +68,11 @@ class IngestSummary:
     date_max: pd.Timestamp | None
 
 
+def _texto(valor: object) -> str | None:
+    """Mismo criterio que el parser SLA: None si vacío/NaN/"-"; enteros sin ".0"."""
+    return None if valor is pd.NA else _texto_parser(valor)
+
+
 def _clean_key(s: str) -> str:
     # Normalizar encabezados: Unidecode si está disponible, si no usar unicodedata
     s = str(s)
@@ -103,13 +109,8 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
     df = df[RELEVANT_COLS].copy()
 
     # Limpieza básica
-    for c in ["numero_reclamo", "numero_linea", "tipo_servicio", "nombre_cliente", "tipo_solucion"]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
-    # "-" o vacío = sin evento asociado
-    df["numero_evento"] = df["numero_evento"].map(
-        lambda v: None if pd.isna(v) or str(v).strip() in ("", "-") else str(v).strip()
-    )
+    for c in ["numero_reclamo", "numero_evento", "numero_linea", "tipo_servicio", "nombre_cliente", "tipo_solucion"]:
+        df[c] = df[c].map(_texto).astype(object)
 
     # Fechas
     for c in ["fecha_inicio", "fecha_cierre"]:
@@ -128,7 +129,7 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
     df.loc[(df["longitud"].notna()) & ~df["longitud"].between(-180, 180), "longitud"] = pd.NA
 
     # Filas válidas (mínimo requerido + alguna fecha)
-    has_min = df[MIN_REQUIRED].notna().all(axis=1)
+    has_min = df[MIN_REQUIRED].notna().all(axis=1)  # None = ausente
     has_any_date = df[["fecha_inicio", "fecha_cierre"]].notna().any(axis=1)
     valid = has_min & has_any_date
     rows_ok = int(valid.sum())

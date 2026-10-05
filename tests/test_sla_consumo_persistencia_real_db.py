@@ -73,3 +73,36 @@ def test_par_solapado_actualiza_y_agrega(limpiar):
         fotos = s.execute(text("SELECT COUNT(*) FROM app.servicio_sla_snapshot WHERE numero_linea = :l"),
                           {"l": f"{_PREFIJO}L1"}).scalar_one()
     assert fotos == 2  # una por fecha de corte (2026-09-01 y 2026-09-21)
+
+
+def test_duplicado_en_mismo_df_gana_el_ultimo(limpiar):
+    df = pd.concat([_reclamos(1.0), _reclamos(7.0)], ignore_index=True)
+    r = ingerir(_servicios(), df, hash_servicios=f"{_PREFIJO}s3", hash_reclamos="r3", usuario="t")
+    assert (r.reclamos_insertados, r.reclamos_actualizados) == (1, 0)
+    with SessionLocal() as s:
+        h = s.execute(text("SELECT horas_netas FROM app.reclamos WHERE numero_reclamo = :n"),
+                      {"n": f"{_PREFIJO}1"}).scalar_one()
+    assert float(h) == pytest.approx(7.0)
+
+
+def test_legacy_preserva_no_nulos_y_linaje(limpiar):
+    from sqlalchemy import update
+
+    from core.services.repetitividad import upsert_reclamos
+    from db.models.reclamo import Reclamo
+
+    r = ingerir(_servicios(), _reclamos(10.0), hash_servicios=f"{_PREFIJO}s4", hash_reclamos="r4", usuario="t")
+    with SessionLocal() as s:
+        s.execute(update(Reclamo).where(Reclamo.numero_reclamo == f"{_PREFIJO}1").values(latitud=-34.6, descripcion_solucion="ok"))
+        s.commit()
+    nuevo = _reclamos(11.0)
+    nuevo["latitud"] = pd.NA
+    nuevo["descripcion_solucion"] = pd.NA
+    assert upsert_reclamos(nuevo) == (0, 1)
+    with SessionLocal() as s:
+        fila = s.execute(text("SELECT latitud, descripcion_solucion, horas_netas, ingesta_id FROM app.reclamos "
+                              "WHERE numero_reclamo = :n"), {"n": f"{_PREFIJO}1"}).one()
+    assert float(fila.latitud) == pytest.approx(-34.6)
+    assert fila.descripcion_solucion == "ok"
+    assert float(fila.horas_netas) == pytest.approx(11.0)
+    assert fila.ingesta_id == r.ingesta_id
