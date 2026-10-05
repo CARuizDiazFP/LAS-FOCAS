@@ -256,6 +256,42 @@ export interface PelosCaminoResponse {
   /** Cuántos de esos son posición de patchera: los que el operador llama "los pelos del Servicio"
    * (2 en el Servicio 93154, contra 227 matcheados). */
   total_con_posicion_odf: number;
+  /**
+   * Cuántos caminos (y `.txt`) tiene el Servicio según la regla de operaciones: tantos como pelos
+   * del Servicio en un mismo cable u ODF. Cuáles son los resuelve `resolverCaminosServicio`.
+   */
+  caminos_esperados?: number;
+  /** Pelos que se sacaron del Servicio en local (huérfanos excluidos). */
+  excluidos?: PeloExcluido[];
+}
+
+export interface PeloExcluido {
+  pelo_n_id: number;
+  numero_pelo: string | null;
+  color: string | null;
+  cable_nombre: string | null;
+  motivo: string | null;
+  excluido_por: string | null;
+  created_at: string | null;
+}
+
+export interface CaminoDelServicio {
+  /** Pelo con el que se generó el camino: es el que se pide para bajar su `.txt`. */
+  pelo_n_id: number;
+  nombre_archivo: string;
+  desde_cache: boolean;
+  pelos_en_camino: number;
+}
+
+export interface CaminosServicioResponse {
+  servicio_id: number;
+  esperados: number;
+  /** `false` si se generaron menos caminos que los esperados. */
+  completo: boolean;
+  caminos: CaminoDelServicio[];
+  /** Pelos con la etiqueta del Servicio que no están en ninguno de sus caminos. */
+  huerfanos: PeloSemilla[];
+  errores: string[];
 }
 
 // ── Llamadas ──────────────────────────────────────────────────────────────
@@ -312,6 +348,49 @@ export async function descargarTrackingCromo(
     `/api/infra/cromo/servicios/${servicioId}/camino-optico/tracking.txt${query ? `?${query}` : ''}`,
     { fallbackFilename: `tracking_cromo_servicio_${servicioId}.txt`, signal: opciones.signal },
   );
+}
+
+/**
+ * Resuelve los caminos del Servicio en el backend: un pelo por camino distinto, cortando en los
+ * caminos esperados, más los pelos huérfanos. Mismo criterio que `@bot track` en Slack.
+ *
+ * **Va a Cromo** (4,6-14 s por camino en frío) y deja cacheado cada tracking, así que bajar los
+ * `.txt` después es inmediato. Sin timeout propio del cliente: con 2 caminos en frío puede pasar
+ * los 30 s del camino individual, y cortarlo sólo haría perder lo que ya se resolvió.
+ */
+export async function resolverCaminosServicio(
+  servicioId: number,
+  opciones: { signal?: AbortSignal } = {},
+): Promise<CaminosServicioResponse> {
+  return requestJson<CaminosServicioResponse>(
+    `/api/infra/cromo/servicios/${servicioId}/camino-optico/caminos`,
+    { signal: opciones.signal },
+  );
+}
+
+/** Saca pelos huérfanos del Servicio en local (uno o todos). Cromo no se toca. Admin. */
+export async function excluirPelosServicio(
+  servicioId: number,
+  pelosNId: number[],
+  motivo?: string,
+): Promise<{ ok: boolean; excluidos: number[]; ajenos: number[] }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/pelos-excluidos`, {
+    method: 'POST',
+    json: { pelos_n_id: pelosNId, motivo: motivo ?? null },
+    csrf: true,
+  });
+}
+
+/** Devuelve al Servicio un pelo excluido. Admin. */
+export async function restaurarPeloServicio(
+  servicioId: number,
+  peloNId: number,
+): Promise<{ ok: boolean; pelo_n_id: number }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/pelos-excluidos/restaurar`, {
+    method: 'POST',
+    json: { pelo_n_id: peloNId },
+    csrf: true,
+  });
 }
 
 /**

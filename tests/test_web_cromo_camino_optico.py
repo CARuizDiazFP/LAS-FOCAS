@@ -130,7 +130,7 @@ def _fake_frescura(monkeypatch, frescos: Optional[dict] = None):
     monkeypatch.setattr("core.services.cromo.tracking_cache.frescura", _frescura)
 
 
-def _fake_semillas(monkeypatch, semillas, *, total_matcheados=None):
+def _fake_semillas(monkeypatch, semillas, *, total_matcheados=None, esperados=1, excluidos=None):
     """Stubea la lista de semillas y su conteo sin tope.
 
     `total_matcheados` por defecto iguala al largo de la lista; pasarlo distinto simula el caso
@@ -155,6 +155,15 @@ def _fake_semillas(monkeypatch, semillas, *, total_matcheados=None):
     monkeypatch.setattr(
         "core.services.cromo.camino_optico_service.pelo_pertenece_al_servicio", _pertenece
     )
+
+    async def _esperados(_sesion, _servicio_id):
+        return esperados
+
+    async def _excluidos(_sesion, _servicio_id):
+        return list(excluidos or [])
+
+    monkeypatch.setattr("core.services.cromo.camino_optico_service.caminos_esperados", _esperados)
+    monkeypatch.setattr("core.services.cromo.pelos_excluidos.listar_excluidos", _excluidos)
 
 
 def _fake_tracking(monkeypatch, *, contenido: str = "GENERADO desde Cromo\r\n", nombre: str = "93154 CROMO.txt"):
@@ -324,7 +333,7 @@ def test_pelos_devuelve_lista_vacia_sin_semillas(monkeypatch):
     # Es el 77% de los Servicios del gestor: no es un error, es la respuesta correcta.
     _fake_session(monkeypatch)
     _fake_frescura(monkeypatch)
-    _fake_semillas(monkeypatch, [])
+    _fake_semillas(monkeypatch, [], esperados=0)
     client = _cliente_user(monkeypatch)
 
     res = client.get(_url_pelos())
@@ -338,6 +347,8 @@ def test_pelos_devuelve_lista_vacia_sin_semillas(monkeypatch):
         "odf_relevada": False,
         "total_matcheados": 0,
         "total_con_posicion_odf": 0,
+        "caminos_esperados": 0,
+        "excluidos": [],
     }
 
 
@@ -590,3 +601,156 @@ def test_camino_404_si_el_servicio_no_existe(monkeypatch):
     client = _cliente_admin(monkeypatch)
 
     assert client.get(_url_camino(999999)).status_code == 404
+
+
+
+# ── Caminos del Servicio y exclusión de huérfanos (Servicio 94673, 2026-10-05) ──────────────
+
+
+def test_pelos_informa_caminos_esperados_y_excluidos(monkeypatch):
+    from datetime import datetime, timezone
+
+    from core.services.cromo.pelos_excluidos import PeloExcluido
+
+    _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
+    excluido = PeloExcluido(
+        pelo_n_id=9999999,
+        numero_pelo="23",
+        color="BL",
+        cable_nombre="F-VIN-TEC",
+        motivo="Huérfano",
+        excluido_por="admin",
+        created_at=datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc),
+    )
+    _fake_semillas(
+        monkeypatch, [_semilla(6799772), _semilla(6799773)], esperados=2, excluidos=[excluido]
+    )
+    client = _cliente_user(monkeypatch)
+
+    cuerpo = client.get(_url_pelos()).json()
+
+    assert cuerpo["caminos_esperados"] == 2
+    assert cuerpo["excluidos"][0]["pelo_n_id"] == 9999999
+    assert cuerpo["excluidos"][0]["excluido_por"] == "admin"
+
+
+def _fake_trackings_del_servicio(monkeypatch, resultado):
+    async def _del_servicio(_cliente, _sesion, _servicio_id):
+        return resultado
+
+    monkeypatch.setattr(
+        "core.services.cromo.tracking_service.trackings_del_servicio", _del_servicio
+    )
+
+
+def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
+    from datetime import datetime, timezone
+
+    from core.services.cromo.tracking_service import TrackingGenerado, TrackingsDelServicio
+
+    def _t(pelo: int) -> TrackingGenerado:
+        return TrackingGenerado(
+            pelo_n_id=pelo,
+            nombre_archivo="94673 CROMO.txt",
+            contenido="x",
+            desde_cache=True,
+            generado_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
+            duracion_ms=1,
+            pelos_camino=frozenset({pelo, pelo + 1000}),
+        )
+
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_trackings_del_servicio(
+        monkeypatch,
+        TrackingsDelServicio(
+            trackings=[_t(6799772), _t(6799773)],
+            esperados=2,
+            huerfanos=[_semilla(9999999)],
+            errores=[],
+            completo=True,
+        ),
+    )
+    client = _cliente_user(monkeypatch)
+
+    res = client.get(f"/api/infra/cromo/servicios/{SERVICIO}/camino-optico/caminos")
+
+    assert res.status_code == 200
+    cuerpo = res.json()
+    assert cuerpo["esperados"] == 2 and cuerpo["completo"] is True
+    assert [c["pelo_n_id"] for c in cuerpo["caminos"]] == [6799772, 6799773]
+    assert cuerpo["caminos"][0]["pelos_en_camino"] == 2
+    assert [h["pelo_n_id"] for h in cuerpo["huerfanos"]] == [9999999]
+
+
+def test_caminos_con_cromo_caido_responde_502(monkeypatch):
+    from core.services.cromo.client import CromoClientError
+
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+
+    async def _falla(_cliente, _sesion, _servicio_id):
+        raise CromoClientError("timeout")
+
+    monkeypatch.setattr("core.services.cromo.tracking_service.trackings_del_servicio", _falla)
+    client = _cliente_user(monkeypatch)
+
+    res = client.get(f"/api/infra/cromo/servicios/{SERVICIO}/camino-optico/caminos")
+
+    assert res.status_code == 502
+
+
+def _url_excluir(restaurar: bool = False) -> str:
+    sufijo = "/restaurar" if restaurar else ""
+    return f"/api/admin/infra/servicios-odf/{SERVICIO}/pelos-excluidos{sufijo}"
+
+
+def test_excluir_pelo_exige_admin(monkeypatch):
+    _fake_session(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.post(_url_excluir(), json={"pelos_n_id": [9999999]})
+
+    assert res.status_code == 403
+
+
+def test_excluir_pelos_en_lote_y_todos_ajenos_409(monkeypatch):
+    from core.services.cromo import pelos_excluidos
+
+    _fake_session(monkeypatch)
+    llamadas: list[tuple] = []
+
+    async def _excluir(_sesion, servicio_id, pelos_n_id, *, usuario, motivo=None):
+        if pelos_n_id == [1]:
+            raise pelos_excluidos.PeloNoPerteneceAlServicio("ajeno")
+        llamadas.append((servicio_id, pelos_n_id, usuario, motivo))
+        return [p for p in pelos_n_id if p != 5], [5]
+
+    monkeypatch.setattr(pelos_excluidos, "excluir_pelos", _excluir)
+    client = _cliente_admin(monkeypatch)
+
+    ok = client.post(_url_excluir(), json={"pelos_n_id": [9999999, 9999998, 5], "motivo": "Huérfano"})
+    ajeno = client.post(_url_excluir(), json={"pelos_n_id": [1]})
+    vacio = client.post(_url_excluir(), json={"pelos_n_id": []})
+
+    assert ok.status_code == 200
+    assert ok.json()["excluidos"] == [9999999, 9999998] and ok.json()["ajenos"] == [5]
+    assert llamadas == [(SERVICIO, [9999999, 9999998, 5], "admin", "Huérfano")]
+    assert ajeno.status_code == 409
+    assert vacio.status_code == 422
+
+
+def test_restaurar_pelo_no_excluido_404(monkeypatch):
+    from core.services.cromo import pelos_excluidos
+
+    _fake_session(monkeypatch)
+
+    async def _restaurar(_sesion, _servicio_id, pelo_n_id, *, usuario):
+        return pelo_n_id == 9999999
+
+    monkeypatch.setattr(pelos_excluidos, "restaurar_pelo", _restaurar)
+    client = _cliente_admin(monkeypatch)
+
+    assert client.post(_url_excluir(True), json={"pelo_n_id": 9999999}).status_code == 200
+    assert client.post(_url_excluir(True), json={"pelo_n_id": 5}).status_code == 404

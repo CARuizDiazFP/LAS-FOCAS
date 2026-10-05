@@ -8312,6 +8312,18 @@ def _serializar_pelo_semilla(semilla: Any) -> dict[str, Any]:
     }
 
 
+def _serializar_pelo_excluido(excluido: Any) -> dict[str, Any]:
+    return {
+        "pelo_n_id": excluido.pelo_n_id,
+        "numero_pelo": excluido.numero_pelo,
+        "color": excluido.color,
+        "cable_nombre": excluido.cable_nombre,
+        "motivo": excluido.motivo,
+        "excluido_por": excluido.excluido_por,
+        "created_at": excluido.created_at.isoformat() if excluido.created_at else None,
+    }
+
+
 def _serializar_vinculo_local(vinculo: Any) -> Optional[dict[str, Any]]:
     if vinculo is None:
         return None
@@ -8618,10 +8630,12 @@ async def cromo_camino_pelos_web(
     """
     from core.services.cromo import tracking_cache
     from core.services.cromo.camino_optico_service import (
+        caminos_esperados,
         contar_semillas,
         listar_pelos_semilla,
         semillas_por_defecto,
     )
+    from core.services.cromo.pelos_excluidos import listar_excluidos
     from db.session import AsyncSessionLocal
 
     _require_auth(request)
@@ -8634,6 +8648,8 @@ async def cromo_camino_pelos_web(
         )
         frescura = await tracking_cache.frescura(sesion, [s.pelo_n_id for s in semillas])
         total_matcheados, total_con_conector = await contar_semillas(sesion, servicio_id)
+        esperados = await caminos_esperados(sesion, servicio_id)
+        excluidos = await listar_excluidos(sesion, servicio_id)
 
     preseleccionados = [s.pelo_n_id for s in semillas_por_defecto(semillas)]
     # Si ninguna semilla tiene conector, la ODF del Servicio todavía no fue relevada y la
@@ -8662,6 +8678,10 @@ async def cromo_camino_pelos_web(
             # posición de ODF.
             "total_matcheados": total_matcheados,
             "total_con_posicion_odf": total_con_conector,
+            # Regla de operaciones: tantos caminos (y `.txt`) como pelos del Servicio en un mismo
+            # cable u ODF. Cuáles son esos caminos lo resuelve `/caminos`, que sí va a Cromo.
+            "caminos_esperados": esperados,
+            "excluidos": [_serializar_pelo_excluido(x) for x in excluidos],
         }
     )
 
@@ -8763,6 +8783,127 @@ async def cromo_camino_tracking_txt_web(
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
     )
+
+
+@app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos")
+async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONResponse:
+    """Los caminos del Servicio: un pelo por camino distinto, más los pelos huérfanos.
+
+    Es lo mismo que hace `@bot track` en Slack (`tracking_service.trackings_del_servicio`): recorre
+    todas las semillas —posiciones de ODF primero, después los pelos de los cables— descartando
+    las que ya recorrió un camino, y corta en los caminos esperados. **Va a Cromo**: 4,6-14 s por
+    camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es inmediato.
+
+    Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
+    del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
+    """
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.tracking_service import trackings_del_servicio
+    from db.session import AsyncSessionLocal
+
+    usuario, _rol = _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                resultado = await trackings_del_servicio(cliente, sesion, servicio_id)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    logger.info(
+        "action=cromo_camino_caminos user=%s servicio_id=%s esperados=%s generados=%s huerfanos=%s",
+        usuario,
+        servicio_id,
+        resultado.esperados,
+        len(resultado.trackings),
+        len(resultado.huerfanos),
+    )
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "esperados": resultado.esperados,
+            "completo": resultado.completo,
+            "caminos": [
+                {
+                    "pelo_n_id": t.pelo_n_id,
+                    "nombre_archivo": t.nombre_archivo,
+                    "desde_cache": t.desde_cache,
+                    "pelos_en_camino": len(t.pelos_camino),
+                }
+                for t in resultado.trackings
+            ],
+            "huerfanos": [_serializar_pelo_semilla(s) for s in resultado.huerfanos],
+            "errores": resultado.errores,
+        }
+    )
+
+
+class PelosExcluirRequestModel(BaseModel):
+    """Payload para sacar pelos huérfanos de un Servicio (de a uno o todos juntos)."""
+
+    pelos_n_id: list[int] = Field(min_length=1, max_length=500, description="Pelos a excluir")
+    motivo: str | None = Field(default=None, max_length=500, description="Por qué se excluyen")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class PeloRestaurarRequestModel(BaseModel):
+    """Payload para devolver un pelo excluido a su Servicio."""
+
+    pelo_n_id: int = Field(description="Pelo a restaurar")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos")
+async def servicios_pelo_excluir_web(
+    request: Request, servicio_id: int, body: PelosExcluirRequestModel
+) -> JSONResponse:
+    """Saca pelos del Servicio en local: dejan de ser semilla, de contar y de pesar en los caminos
+    esperados, aunque Cromo conserve la etiqueta. Es para los huérfanos que quedaron con la
+    etiqueta del Servicio fuera de todos sus caminos. Reversible con `/pelos-excluidos/restaurar`.
+    Admin."""
+    from core.services.cromo.pelos_excluidos import PeloNoPerteneceAlServicio, excluir_pelos
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_pelo_excluir", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        try:
+            excluidos, ajenos = await excluir_pelos(
+                sesion, servicio_id, body.pelos_n_id, usuario=username, motivo=body.motivo
+            )
+        except PeloNoPerteneceAlServicio as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+    return JSONResponse({"ok": True, "excluidos": excluidos, "ajenos": ajenos})
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos/restaurar")
+async def servicios_pelo_restaurar_web(
+    request: Request, servicio_id: int, body: PeloRestaurarRequestModel
+) -> JSONResponse:
+    """Devuelve al Servicio un pelo excluido. Admin."""
+    from core.services.cromo.pelos_excluidos import restaurar_pelo
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_pelo_restaurar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        restaurado = await restaurar_pelo(sesion, servicio_id, body.pelo_n_id, usuario=username)
+    if not restaurado:
+        return JSONResponse(
+            {"error": f"El pelo {body.pelo_n_id} no estaba excluido de este Servicio."},
+            status_code=404,
+        )
+    return JSONResponse({"ok": True, "pelo_n_id": body.pelo_n_id})
 
 
 class CaminoNormalizarRequestModel(BaseModel):

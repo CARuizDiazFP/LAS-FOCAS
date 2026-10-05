@@ -250,14 +250,14 @@ const camino = useCromoPath();
  * operador cree que se colgó.
  */
 const etiquetaDescargaTracking = computed(() => {
+  if (camino.resolviendoCaminos.value) return 'Resolviendo caminos en Cromo…';
   if (camino.descargando.value) {
     const total = camino.descargaTotal.value;
-    return total > 1
-      ? `Generando… ${camino.descargadosCount.value}/${total}`
-      : 'Generando…';
+    return total > 1 ? `Generando… ${camino.descargadosCount.value}/${total}` : 'Generando…';
   }
-  const tildados = camino.pelosSeleccionados.value.length;
-  return tildados > 1 ? `Trackings Cromo (${tildados} .txt)` : 'Tracking Cromo (.txt)';
+  // Con la selección automática son los caminos esperados del Servicio, no lo tildado.
+  const cantidad = camino.cantidadDescarga.value;
+  return cantidad > 1 ? `Trackings Cromo (${cantidad} .txt)` : 'Tracking Cromo (.txt)';
 });
 const foTrackingResumen = ref<{
   camaras: number;

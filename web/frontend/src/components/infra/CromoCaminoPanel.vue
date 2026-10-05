@@ -24,16 +24,17 @@
       Este Servicio no tiene ningún pelo en Cromo, así que no hay camino que resolver.
     </p>
 
-    <!-- Sin conectores de ODF ingeridos no se pueden preseleccionar las posiciones del Servicio:
-         primero hay que relevar la ODF. Se avisa acá, que es donde el operador ve el default. -->
+    <!-- Sin conectores de ODF ingeridos no se pueden preseleccionar las posiciones del Servicio.
+         No bloquea el tracking: los caminos se resuelven desde los pelos de los cables (hay
+         Servicios, como el 94673, cuyos extremos no terminan en ninguna ODF). -->
     <p
       v-if="camino.tieneSemilla.value && !camino.odfRelevada.value"
       class="cromo-camino__aviso"
     >
       <i class="ph ph-info" aria-hidden="true"></i>
       <span>
-        La ODF de este Servicio todavía no está relevada, así que no se pueden preseleccionar sus
-        posiciones. Se tildó el primer pelo del ranking.
+        Este Servicio no tiene posiciones de ODF relevadas: sus caminos se resuelven desde los
+        pelos de los cables.
       </span>
       <!-- Resuelve la causa en vez de sólo reportarla: releva las ODFs que el camino descubrió. -->
       <button
@@ -49,6 +50,125 @@
     </p>
     <p v-if="camino.errorRelevarOdf.value" class="cromo-camino__nota is-error">
       {{ camino.errorRelevarOdf.value }}
+    </p>
+
+    <!-- Caminos del Servicio: tantos como pelos suyos en un mismo cable u ODF (regla de
+         operaciones). Cuáles son lo resuelve el backend contra Cromo, igual que `@bot track`. -->
+    <div v-if="camino.tieneSemilla.value" class="cromo-camino__caminos">
+      <p class="cromo-camino__nota">
+        <template v-if="camino.caminosEsperados.value">
+          Caminos esperados: <strong>{{ camino.caminosEsperados.value }}</strong>
+          (pelos del Servicio por cable u ODF)
+        </template>
+        <template v-if="camino.caminosResueltos.value">
+          · resueltos: <strong>{{ camino.caminos.value.length }}</strong>
+        </template>
+      </p>
+      <button
+        v-if="servicioId !== null"
+        class="btn subtle"
+        type="button"
+        :disabled="camino.resolviendoCaminos.value || camino.descargando.value"
+        title="Resuelve en Cromo un camino por hilo del Servicio y detecta los pelos huérfanos"
+        @click="camino.resolverCaminos(servicioId)"
+      >
+        <i class="ph ph-path" aria-hidden="true"></i>
+        {{
+          camino.resolviendoCaminos.value
+            ? 'Resolviendo caminos…'
+            : camino.caminosResueltos.value
+              ? 'Resolver caminos de nuevo'
+              : 'Resolver caminos'
+        }}
+      </button>
+    </div>
+    <p v-if="camino.errorCaminos.value" class="cromo-camino__error">
+      {{ camino.errorCaminos.value }}
+    </p>
+    <ul v-if="camino.caminos.value.length" class="cromo-camino__lista">
+      <li v-for="(c, i) in camino.caminos.value" :key="c.pelo_n_id">
+        <span>
+          Camino {{ i + 1 }} · pelo {{ c.pelo_n_id }}
+          <span class="cromo-camino__odf-meta">
+            {{ c.pelos_en_camino }} pelos recorridos{{ c.desde_cache ? ' · en caché' : '' }}
+          </span>
+        </span>
+      </li>
+    </ul>
+
+    <!-- Huérfanos: tienen la etiqueta del Servicio pero no están en ninguno de sus caminos (un
+         pelo que se movió y quedó con la etiqueta vieja). No generan tracking; un admin los saca
+         del Servicio en local para que no ensucien las próximas consultas. -->
+    <div v-if="camino.huerfanos.value.length" class="cromo-camino__huerfanos">
+      <p class="cromo-camino__aviso">
+        <i class="ph ph-link-break" aria-hidden="true"></i>
+        <span>
+          {{ camino.huerfanos.value.length }} pelo(s) con la etiqueta del Servicio no están en
+          ninguno de sus caminos. No generan tracking.
+          <template v-if="!esAdmin">Un admin puede excluirlos del Servicio.</template>
+        </span>
+        <button
+          v-if="esAdmin && servicioId !== null && camino.huerfanos.value.length > 1"
+          class="btn subtle"
+          type="button"
+          :disabled="camino.peloEnExclusion.value !== null"
+          @click="excluirTodos"
+        >
+          {{ camino.peloEnExclusion.value === -1 ? 'Excluyendo…' : 'Excluir todos' }}
+        </button>
+      </p>
+      <ul class="cromo-camino__lista is-scroll">
+        <li v-for="p in camino.huerfanos.value" :key="p.pelo_n_id">
+          <span>
+            pelo {{ p.pelo_n_id }}
+            <span class="cromo-camino__odf-meta">
+              {{ [p.cable_nombre, [p.numero_pelo, p.color].filter(Boolean).join(' ')]
+                .filter(Boolean)
+                .join(' · ') }}
+            </span>
+          </span>
+          <button
+            v-if="esAdmin && servicioId !== null"
+            class="btn subtle"
+            type="button"
+            :disabled="camino.peloEnExclusion.value !== null"
+            title="Saca el pelo del Servicio en LAS-FOCAS. Cromo no se toca; se puede restaurar."
+            @click="camino.excluirPelos(servicioId, [p.pelo_n_id])"
+          >
+            {{ camino.peloEnExclusion.value === p.pelo_n_id ? 'Excluyendo…' : 'Excluir del Servicio' }}
+          </button>
+        </li>
+      </ul>
+    </div>
+
+    <details v-if="camino.excluidos.value.length" class="cromo-camino__excluidos">
+      <summary class="cromo-camino__nota">
+        {{ camino.excluidos.value.length }} pelo(s) excluidos del Servicio
+      </summary>
+      <ul class="cromo-camino__lista is-scroll">
+        <li v-for="x in camino.excluidos.value" :key="x.pelo_n_id">
+          <span>
+            pelo {{ x.pelo_n_id }}
+            <span class="cromo-camino__odf-meta">
+              {{ [x.cable_nombre, [x.numero_pelo, x.color].filter(Boolean).join(' '), x.excluido_por]
+                .filter(Boolean)
+                .join(' · ') }}
+            </span>
+          </span>
+          <button
+            v-if="esAdmin && servicioId !== null"
+            class="btn subtle"
+            type="button"
+            :disabled="camino.peloEnExclusion.value !== null"
+            @click="camino.restaurarPelo(servicioId, x.pelo_n_id)"
+          >
+            {{ camino.peloEnExclusion.value === x.pelo_n_id ? 'Restaurando…' : 'Restaurar' }}
+          </button>
+        </li>
+      </ul>
+    </details>
+    <p v-if="camino.errorExclusion.value" class="cromo-camino__error">
+      {{ camino.errorExclusion.value }}
     </p>
 
     <CromoPeloSelector
@@ -195,6 +315,18 @@ async function normalizar(elementoIds: number[] | null): Promise<void> {
   await props.camino.normalizar(props.servicioId, elementoIds ?? undefined);
 }
 
+/** Excluir en lote escribe sobre decenas de pelos: se confirma antes. Es reversible (Restaurar). */
+async function excluirTodos(): Promise<void> {
+  if (props.servicioId === null) return;
+  const pelos = props.camino.huerfanos.value.map((p) => p.pelo_n_id);
+  const ok = window.confirm(
+    `Se van a excluir ${pelos.length} pelos huérfanos de este Servicio. Cromo no se toca y se ` +
+      'pueden restaurar de a uno. ¿Continuar?',
+  );
+  if (!ok) return;
+  await props.camino.excluirPelos(props.servicioId, pelos);
+}
+
 /** Releva las ODFs del camino para que aparezcan sus posiciones de patchera. */
 async function relevarOdf(): Promise<void> {
   if (props.servicioId === null) return;
@@ -292,6 +424,50 @@ defineSlots<{
   padding: 6px 8px;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.cromo-camino__caminos {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cromo-camino__lista {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cromo-camino__lista.is-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.cromo-camino__lista li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  font-size: 12px;
+}
+
+.cromo-camino__huerfanos,
+.cromo-camino__excluidos {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cromo-camino__excluidos summary {
+  cursor: pointer;
 }
 
 .cromo-camino__odf-nombre {

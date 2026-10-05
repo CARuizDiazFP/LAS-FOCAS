@@ -31,7 +31,10 @@ from core.services.cromo import tracking_cache
 from core.services.cromo.camino_optico_service import (
     ESTADO_OK,
     CaminoOptico,
+    PeloSemilla,
+    caminos_esperados,
     resolver_camino_de_pelo,
+    semillas_para_tracking,
 )
 from core.services.cromo.camino_optico_txt import (
     nombre_archivo_tracking,
@@ -159,11 +162,18 @@ async def obtener_tracking(
 
 @dataclass(slots=True)
 class TrackingsPorCamino:
-    """`omitidos` es `{semilla descartada: pelo cuyo camino ya la recorría}`, para el log."""
+    """`omitidos` es `{semilla descartada: pelo cuyo camino ya la recorría}`, para el log.
+
+    `no_cubiertos` son las semillas que no quedaron en ningún camino generado (las que fallaron y,
+    con `esperados`, las que no hizo falta pedir). `completo` dice si se llegó a los caminos
+    esperados: sólo entonces las no cubiertas son huérfanas de verdad y no caminos que faltaron.
+    """
 
     trackings: list[TrackingGenerado] = field(default_factory=list)
     omitidos: dict[int, int] = field(default_factory=dict)
     errores: list[str] = field(default_factory=list)
+    no_cubiertos: list[int] = field(default_factory=list)
+    completo: bool = True
 
 
 async def trackings_por_camino(
@@ -172,6 +182,8 @@ async def trackings_por_camino(
     *,
     servicio_id: int,
     pelos_n_id: Iterable[int],
+    esperados: Optional[int] = None,
+    max_fallidos: Optional[int] = None,
 ) -> TrackingsPorCamino:
     """Un tracking por camino distinto, no uno por semilla.
 
@@ -183,10 +195,21 @@ async def trackings_por_camino(
     Se recorren en orden; una semilla que ya aparece en el camino de una anterior se descarta
     **sin** pedirla a Cromo. Un pelo que falla no cancela los demás. `CromoClientError` no se
     atrapa: Cromo caído se lleva la corrida entera y lo reporta el llamador.
+
+    `esperados` corta al llegar a esa cantidad de caminos: un pelo huérfano (etiqueta vieja de un
+    pelo movido) no genera un tracking de más, y no se le pide a Cromo (Servicio 94673,
+    2026-10-05). `max_fallidos` acota cuántas semillas fallidas se toleran antes de rendirse, para
+    que un Servicio con cientos de pelos sin camino no dispare cientos de llamadas.
     """
     resultado = TrackingsPorCamino()
     cubiertos: dict[int, int] = {}
-    for pelo_n_id in dict.fromkeys(pelos_n_id):
+    semillas = list(dict.fromkeys(pelos_n_id))
+    fallidos: set[int] = set()
+    for pelo_n_id in semillas:
+        if esperados is not None and len(resultado.trackings) >= esperados:
+            break
+        if max_fallidos is not None and len(fallidos) >= max_fallidos:
+            break
         if pelo_n_id in cubiertos:
             resultado.omitidos[pelo_n_id] = cubiertos[pelo_n_id]
             continue
@@ -196,18 +219,82 @@ async def trackings_por_camino(
             )
         except TrackingNoDisponible as exc:
             resultado.errores.append(f"Pelo {pelo_n_id}: {exc.motivo}")
+            fallidos.add(pelo_n_id)
             continue
         resultado.trackings.append(tracking)
         for pelo in tracking.pelos_camino | {pelo_n_id}:
             cubiertos.setdefault(pelo, pelo_n_id)
 
+    resultado.no_cubiertos = [p for p in semillas if p not in cubiertos]
+    if esperados is not None:
+        resultado.completo = len(resultado.trackings) >= esperados
+
     if resultado.omitidos:
         logger.info(
             "action=cromo_tracking evento=caminos_repetidos servicio_id=%s omitidos=%s",
             servicio_id,
-            resultado.omitidos,
+            len(resultado.omitidos),
         )
     return resultado
+
+
+@dataclass(slots=True)
+class TrackingsDelServicio:
+    """Los trackings de un Servicio, con lo que hace falta para explicarle el resultado al operador.
+
+    `huerfanos` sólo se llena cuando se generaron todos los caminos esperados: recién ahí un pelo
+    fuera de todo camino es un huérfano y no un camino que no se pudo resolver.
+    """
+
+    trackings: list[TrackingGenerado]
+    esperados: int
+    huerfanos: list[PeloSemilla]
+    errores: list[str]
+    completo: bool
+
+
+async def trackings_del_servicio(
+    cliente: CromoClient, sesion: AsyncSession, servicio_id: int
+) -> TrackingsDelServicio:
+    """Un `.txt` por camino del Servicio, cortando en los caminos esperados. Lo usan Slack y web.
+
+    Semillas: todas, con las posiciones de ODF primero (`semillas_para_tracking`). Esperados: la
+    moda de pelos por cable u ODF (`caminos_esperados`); si no hay ningún grupo, uno.
+    """
+    semillas = await semillas_para_tracking(sesion, servicio_id)
+    if not semillas:
+        return TrackingsDelServicio([], 0, [], [], True)
+    esperados = await caminos_esperados(sesion, servicio_id) or 1
+    por_camino = await trackings_por_camino(
+        cliente,
+        sesion,
+        servicio_id=servicio_id,
+        pelos_n_id=[s.pelo_n_id for s in semillas],
+        esperados=esperados,
+        max_fallidos=max(_MIN_FALLIDOS_TOLERADOS, esperados),
+    )
+    por_id = {s.pelo_n_id: s for s in semillas}
+    huerfanos = (
+        [por_id[p] for p in por_camino.no_cubiertos if p in por_id] if por_camino.completo else []
+    )
+    if huerfanos:
+        logger.info(
+            "action=cromo_tracking evento=pelos_huerfanos servicio_id=%s huerfanos=%s",
+            servicio_id,
+            [s.pelo_n_id for s in huerfanos],
+        )
+    return TrackingsDelServicio(
+        trackings=por_camino.trackings,
+        esperados=esperados,
+        huerfanos=huerfanos,
+        errores=por_camino.errores,
+        completo=por_camino.completo,
+    )
+
+
+# Semillas fallidas toleradas antes de rendirse, como mínimo. Cada una es una llamada de 4,6-14 s a
+# Cromo que no aporta camino.
+_MIN_FALLIDOS_TOLERADOS = 3
 
 
 def nombre_distinguible(nombre: str, pelo_n_id: int, *, distinguir: bool) -> str:

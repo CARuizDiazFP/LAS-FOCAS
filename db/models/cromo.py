@@ -21,6 +21,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     false,
     text,
     true,
@@ -594,6 +595,44 @@ class CromoTrackingCache(Base):
 
     def __repr__(self) -> str:
         return f"<CromoTrackingCache pelo_n_id={self.pelo_n_id} generado_at={self.generado_at}>"
+
+
+class CromoServicioPeloExcluido(Base):
+    """Pelo que Cromo sigue etiquetando con el Servicio pero que el operador sacó de él en local.
+
+    Caso real: un pelo se mueve por un evento o una tarea y la etiqueta vieja queda en Cromo. Ese
+    pelo no está en ningún camino del Servicio (huérfano), y si sigue contando como suyo ensucia
+    las semillas del tracking y la cantidad de caminos esperados.
+
+    Tabla propia y no un flag en `cromo_servicio_match`: la ingesta reescribe esa tabla en cada
+    corrida y se llevaría puesta la decisión. Sin FK dura al pelo (`n_id` de linaje, como en el
+    caché): la exclusión sobrevive a una baja y realta del pelo en Cromo.
+    """
+
+    __tablename__ = "cromo_servicio_pelo_excluido"
+    __table_args__ = (
+        UniqueConstraint("servicio_id", "pelo_n_id", name="uq_cromo_servicio_pelo_excluido"),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer,
+        ForeignKey("app.servicios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    pelo_n_id = Column(BigInteger, nullable=False)
+    motivo = Column(Text, nullable=True)
+    excluido_por = Column(String(128), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CromoServicioPeloExcluido servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id}>"
+        )
 
 
 class CromoSplitter(Base):
