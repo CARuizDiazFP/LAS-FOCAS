@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from core.sla_consumo.clasificador import GRUPO_CARRIER, GRUPO_CLIENTE, GRUPOS_ORDEN
+from core.sla_consumo.clasificador import (GRUPO_CARRIER, GRUPO_CLIENTE, GRUPOS_ORDEN, clasificar_cierre,
+                                         valores_cliente_config)
 
 HORAS_ANIO = 8760.0
 
@@ -43,6 +44,12 @@ class ResultadoSlaConsumo:
 def _hechos(reclamos: pd.DataFrame, servicios: pd.DataFrame) -> pd.DataFrame:
     sla = servicios[["numero_linea", "sla_prometido"]].drop_duplicates("numero_linea")
     h = reclamos.merge(sla, on="numero_linea", how="left")
+    # El grupo se deriva siempre de tipo_solucion al calcular: filas legacy sin grupo, o clasificadas con
+    # una config de Cliente anterior, no pueden dejar horas fuera de los grupos.
+    valores_cliente = valores_cliente_config()
+    cierres = h["tipo_solucion"].map(lambda t: clasificar_cierre(None if pd.isna(t) else t, valores_cliente))
+    h["grupo_cierre"] = cierres.map(lambda c: c.grupo)
+    h["codigo_cierre"] = cierres.map(lambda c: c.codigo).astype("Int64")
     h["horas_netas"] = pd.to_numeric(h["horas_netas"], errors="coerce").fillna(0.0)
     h["presupuesto_h"] = h["sla_prometido"].map(presupuesto_horas).astype(float)
     h["sin_sla_prometido"] = h["presupuesto_h"].isna()

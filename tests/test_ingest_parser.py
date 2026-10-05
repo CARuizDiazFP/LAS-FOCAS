@@ -102,3 +102,18 @@ def test_parse_reclamos_df_excel_real_con_celdas_vacias():
     assert df_ok.iloc[0]["numero_evento"] == "555"
     assert df_ok.iloc[1]["numero_evento"] is None
     assert (summary.rows_ok, summary.rows_bad) == (2, 3)
+
+
+def test_parse_reclamos_df_deriva_grupo_y_codigo_de_cierre():
+    base = {"Numero Línea": "L-100", "Nombre Cliente": "ACME", "Fecha Inicio Problema Reclamo": "01/07/2024"}
+    df = pd.DataFrame([
+        {**base, "Número Reclamo": "R-1", "Tipo Solución Reclamo": "PE-Corte en bandeja (3)"},
+        {**base, "Número Reclamo": "R-2", "Tipo Solución Reclamo": "Carrier"},
+        {**base, "Número Reclamo": "R-3", "Tipo Solución Reclamo": None},
+    ])
+    df_ok, _ = parse_reclamos_df(df)
+    por = df_ok.set_index("numero_reclamo")
+    assert por.loc["R-1", "grupo_cierre"] == "FO Cod 3 (Corte en Bandeja)" and int(por.loc["R-1", "codigo_cierre"]) == 3
+    assert por.loc["R-2", "grupo_cierre"] == "Carrier" and pd.isna(por.loc["R-2", "codigo_cierre"])
+    # sin tipo_solucion no se inventa grupo (el upsert legacy conserva el existente)
+    assert pd.isna(por.loc["R-3", "grupo_cierre"])

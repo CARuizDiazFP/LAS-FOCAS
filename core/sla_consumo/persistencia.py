@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass
 
 import pandas as pd
-from sqlalchemy import Connection, Engine, func, select, text
+from sqlalchemy import Connection, Engine, case, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.sla_consumo.parser import RECLAMOS_COLS, SERVICIOS_COLS, fecha_corte as calcular_fecha_corte
@@ -29,6 +29,7 @@ class ResultadoIngesta:
     reclamos_insertados: int
     reclamos_actualizados: int
     servicios_snapshot: int
+    reclamos_sin_cambios: int = 0   # existentes cuyo último escritor tenía un corte más nuevo
 
 
 def sha256(content: bytes) -> str:
@@ -53,10 +54,17 @@ def _registros(df: pd.DataFrame, columnas: list[str]) -> list[dict]:
 
 
 def upsert_reclamos_df(conn: Connection, reclamos: pd.DataFrame, ingesta_id: int | None, *,
-                       preservar_no_nulos: bool = False) -> tuple[int, int]:
-    """preservar_no_nulos=True (ruta legacy): un NULL entrante no pisa el valor existente."""
+                       preservar_no_nulos: bool = False,
+                       fecha_corte_ingesta: dt.date | None = None) -> tuple[int, int, int]:
+    """Devuelve (insertados, actualizados, sin_cambios).
+
+    preservar_no_nulos=True (ruta legacy): un NULL entrante no pisa el valor existente, salvo
+    grupo/código de cierre, que se derivan de tipo_solucion y se pisan cuando ésta viene informada.
+    fecha_corte_ingesta (ruta SLA): upsert monótono; un reclamo existente sólo se pisa si la ingesta que
+    lo escribió por última vez tiene fecha_corte <= la actual (o no tiene ingesta).
+    """
     if reclamos.empty:
-        return 0, 0
+        return 0, 0, 0
     reclamos = reclamos.drop_duplicates(subset="numero_reclamo", keep="last")
     columnas = [c for c in RECLAMOS_COLS + ["latitud", "longitud"] if c in reclamos.columns and c in Reclamo.__table__.c]
     filas = _registros(reclamos, columnas)
@@ -69,16 +77,29 @@ def upsert_reclamos_df(conn: Connection, reclamos: pd.DataFrame, ingesta_id: int
     for inicio in range(0, len(filas), 1000):
         stmt = pg_insert(tabla).values(filas[inicio:inicio + 1000])
         # Un reclamo re-exportado trae su estado vigente: se pisa todo menos first_seen_at.
-        cambios = {c: (func.coalesce(stmt.excluded[c], tabla.c[c]) if preservar_no_nulos else stmt.excluded[c])
-                   for c in cols_update}
+        cambios = {}
+        for c in cols_update:
+            if not preservar_no_nulos:
+                cambios[c] = stmt.excluded[c]
+            elif c in ("grupo_cierre", "codigo_cierre"):
+                cambios[c] = case((stmt.excluded["tipo_solucion"].is_not(None), stmt.excluded[c]), else_=tabla.c[c])
+            else:
+                cambios[c] = func.coalesce(stmt.excluded[c], tabla.c[c])
         cambios["last_seen_at"] = func.now()
-        stmt = stmt.on_conflict_do_update(index_elements=[tabla.c.numero_reclamo], set_=cambios)
+        donde = None
+        if fecha_corte_ingesta is not None:
+            # SQL explícito: la subconsulta correlacionada con la tabla destino del INSERT no se renderiza
+            # bien desde Core (pierde el esquema y agrega un FROM extra).
+            donde = text("app.reclamos.ingesta_id IS NULL OR (SELECT i.fecha_corte FROM app.sla_ingestas i "
+                         "WHERE i.id = app.reclamos.ingesta_id) <= :corte_ingesta"
+                         ).bindparams(corte_ingesta=fecha_corte_ingesta)
+        stmt = stmt.on_conflict_do_update(index_elements=[tabla.c.numero_reclamo], set_=cambios, where=donde)
         for fila in conn.execute(stmt.returning(text("(xmax = 0) AS inserted"))):
             if fila.inserted:
                 insertados += 1
             else:
                 actualizados += 1
-    return insertados, actualizados
+    return insertados, actualizados, len(filas) - insertados - actualizados
 
 
 def _upsert_snapshot(conn: Connection, servicios: pd.DataFrame, corte: dt.date, ingesta_id: int) -> int:
@@ -99,7 +120,7 @@ def _upsert_snapshot(conn: Connection, servicios: pd.DataFrame, corte: dt.date, 
 
 
 def ingerir(servicios: pd.DataFrame, reclamos: pd.DataFrame, *, hash_servicios: str, hash_reclamos: str,
-            usuario: str | None, engine: Engine | None = None) -> ResultadoIngesta:
+            usuario: str | None, engine: Engine | None = None, report_history_id: int | None = None) -> ResultadoIngesta:
     engine = engine or engine_default
     corte = calcular_fecha_corte(reclamos)
     with engine.begin() as conn:
@@ -111,12 +132,14 @@ def ingerir(servicios: pd.DataFrame, reclamos: pd.DataFrame, *, hash_servicios: 
         ingesta_id = conn.execute(
             pg_insert(SlaIngesta.__table__).values(
                 fecha_corte=corte, hash_servicios=hash_servicios, hash_reclamos=hash_reclamos, usuario=usuario,
+                report_history_id=report_history_id,
             ).returning(SlaIngesta.__table__.c.id)).scalar_one()
-        insertados, actualizados = upsert_reclamos_df(conn, reclamos, ingesta_id)
+        insertados, actualizados, sin_cambios = upsert_reclamos_df(conn, reclamos, ingesta_id,
+                                                                    fecha_corte_ingesta=corte)
         fotos = _upsert_snapshot(conn, servicios, corte, ingesta_id)
         conn.execute(SlaIngesta.__table__.update().where(SlaIngesta.__table__.c.id == ingesta_id).values(
             reclamos_insertados=insertados, reclamos_actualizados=actualizados, servicios_snapshot=fotos))
-    return ResultadoIngesta(ingesta_id, corte, False, insertados, actualizados, fotos)
+    return ResultadoIngesta(ingesta_id, corte, False, insertados, actualizados, fotos, sin_cambios)
 
 
 def cargar_ventana(fecha_corte: dt.date, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -126,7 +149,8 @@ def cargar_ventana(fecha_corte: dt.date, engine: Engine | None = None) -> tuple[
     columnas_r = ", ".join(c for c in RECLAMOS_COLS)
     with engine.connect() as conn:
         reclamos = pd.read_sql(
-            text(f"SELECT {columnas_r} FROM app.reclamos WHERE fecha_inicio >= :desde AND fecha_inicio < :hasta"),
+            text(f"SELECT {columnas_r} FROM app.reclamos WHERE fecha_inicio < :hasta "
+                 "AND (fecha_inicio >= :desde OR fecha_cierre >= :desde)"),  # solapan la ventana: se cuentan completos
             conn, params={"desde": desde.to_pydatetime(), "hasta": hasta.to_pydatetime()})
         servicios = pd.read_sql(
             text(f"SELECT {', '.join(SERVICIOS_COLS)} FROM app.servicio_sla_snapshot WHERE fecha_corte = :c"),

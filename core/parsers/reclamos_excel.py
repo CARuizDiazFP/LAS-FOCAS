@@ -9,6 +9,7 @@ from typing import Dict, Tuple
 import re
 import unicodedata
 
+from core.sla_consumo.clasificador import clasificar_cierre, valores_cliente_config
 from core.sla_consumo.parser import _texto as _texto_parser
 from core.utils.excel_duraciones import TZ_AR, duracion_a_horas, fecha_excel
 try:
@@ -111,6 +112,14 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
     # Limpieza básica
     for c in ["numero_reclamo", "numero_evento", "numero_linea", "tipo_servicio", "nombre_cliente", "tipo_solucion"]:
         df[c] = df[c].map(_texto).astype(object)
+
+    # Grupo/código de cierre derivados de tipo_solucion (sin tipo_solucion no se inventan: el upsert
+    # legacy conserva los existentes).
+    valores_cliente = valores_cliente_config()
+    cierres = df["tipo_solucion"].map(
+        lambda t: None if t is None or pd.isna(t) else clasificar_cierre(t, valores_cliente))
+    df["codigo_cierre"] = cierres.map(lambda c: None if c is None else c.codigo).astype("Int64")
+    df["grupo_cierre"] = cierres.map(lambda c: None if c is None else c.grupo).astype(object)
 
     # Fechas
     for c in ["fecha_inicio", "fecha_cierre"]:

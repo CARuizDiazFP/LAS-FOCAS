@@ -15,10 +15,19 @@ from core.sla_consumo.parser import RECLAMOS_COLS, SERVICIOS_COLS
 from core.utils.excel_duraciones import TZ_AR
 
 
+_TIPO_POR_GRUPO = {GRUPO_FO: "PE-Corte de fibra (1)", GRUPO_FO_COD3: "PE-Corte en bandeja (3)",
+                   GRUPO_CARRIER: "Carrier", GRUPO_CLIENTE: "Falla en sitio del cliente"}
+
+
+@pytest.fixture(autouse=True)
+def _valores_cliente(monkeypatch):
+    monkeypatch.setenv("SLA_CIERRE_CLIENTE_VALORES", "Falla en sitio del cliente")
+
+
 def _r(numero, linea, horas, grupo, evento=None, cliente="C1"):
     fila = {c: None for c in RECLAMOS_COLS}
     fila.update(numero_reclamo=numero, numero_linea=linea, horas_netas=horas, grupo_cierre=grupo,
-                numero_evento=evento, nombre_cliente=cliente, tipo_solucion=grupo,
+                numero_evento=evento, nombre_cliente=cliente, tipo_solucion=_TIPO_POR_GRUPO.get(grupo),
                 fecha_inicio=pd.Timestamp("2026-09-01", tz=TZ_AR), fecha_cierre=pd.Timestamp("2026-09-02", tz=TZ_AR))
     return fila
 
@@ -97,3 +106,25 @@ def test_servicios_vacio():
     assert pd.isna(s.loc["L1", "pct_presupuesto"]) and bool(s.loc["L1", "excedido"]) is False
     assert r.totales["servicios_excedidos"] == 0
     assert (r.eventos["servicios_excedidos"] == 0).all()
+
+
+def test_grupos_se_reclasifican_desde_tipo_solucion():
+    """grupo_cierre NULL o desactualizado en BD no puede hacer que Σ grupos != Σ total."""
+    reclamos = pd.DataFrame([
+        _r("1", "L1", 10.0, None),                      # legacy: sin grupo_cierre
+        _r("2", "L1", 5.0, GRUPO_CARRIER),
+        _r("3", "L1", 7.0, GRUPO_FO),
+        _r("4", "L1", 3.0, GRUPO_CLIENTE),
+    ], columns=RECLAMOS_COLS)
+    reclamos.loc[reclamos["numero_reclamo"] == "1", "tipo_solucion"] = "PE-Corte de fibra (1)"
+    reclamos.loc[reclamos["numero_reclamo"] == "3", "grupo_cierre"] = GRUPO_CARRIER   # grupo viejo, stale
+    reclamos["codigo_cierre"] = None
+    servicios = pd.DataFrame([_s("L1", 99.7, 22.0)], columns=SERVICIOS_COLS)
+    r = calcular(reclamos, servicios, dt.date(2026, 10, 1))
+    fila = r.servicios.set_index("numero_linea").loc["L1"]
+    cols = ["horas_fo", "horas_fo_cod3", "horas_carrier", "horas_otros", "horas_cliente"]
+    assert sum(fila[c] for c in cols) == pytest.approx(25.0)
+    assert fila["horas_fo"] == pytest.approx(17.0) and fila["horas_carrier"] == pytest.approx(5.0)
+    assert fila["horas_cliente"] == pytest.approx(3.0)
+    assert r.codigo_cierre["horas"].sum() == pytest.approx(r.totales["horas"])
+    assert r.totales["horas"] == pytest.approx(25.0)

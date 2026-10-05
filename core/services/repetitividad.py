@@ -48,7 +48,8 @@ def upsert_reclamos(df: pd.DataFrame) -> Tuple[int, int]:
 
     engine = create_engine(_engine_url())
     with engine.begin() as conn:
-        return upsert_reclamos_df(conn, df, ingesta_id=None, preservar_no_nulos=True)
+        insertados, actualizados, _ = upsert_reclamos_df(conn, df, ingesta_id=None, preservar_no_nulos=True)
+        return insertados, actualizados
 
 
 @dataclass
