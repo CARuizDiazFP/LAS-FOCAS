@@ -2861,3 +2861,10 @@ su propia ventana de mantenimiento.
 - **Fuera de alcance:** el nombre del archivo sigue saliendo del primer at.62 del pelo en Cromo
   ("42352 CROMO", "83254 CROMO"). Es un pendiente que ya estaba abierto.
 
+
+## 2026-10-05 — Histórico de SLA consumido: persistir al generar
+
+- Contexto: El informe SLA sólo procesaba los Excel y no dejaba rastro; el detalle de un servicio no podía mostrar sus reclamos ni cómo evolucionó su SLA, y `/ingest/reclamos` guardaba horas mal (minutos, duraciones >24 h cortadas, día/mes invertidos).
+- Decisión: El informe de SLA consumido (`POST /api/reports/sla-consumo`) persiste lo que ingiere: reclamos (upsert por `numero_reclamo`), una foto de SLA por `(numero_linea, fecha_corte)` y un registro de ingesta con el hash del par de archivos, así que re-subir el mismo par responde `ya_ingestado`. La fecha de corte es automática (el máximo de `Fecha Cierre Problema Reclamo`), la ventana es de 365 días y la base son las `Horas Netas Problema Reclamo` en horas. Los cierres se agrupan en FO / FO Cod 3 / Carrier / Otros / Cierre Cliente; sólo Cierre Cliente no cuenta, con lista configurable en `SLA_CIERRE_CLIENTE_VALORES` (vacía hoy). `/ingest/reclamos` se corrigió (horas, >24 h, día/mes, "-" → NULL, IDs float). En `report_history` el período es el mes de la corrida y la fecha de corte va en `output_metadata`.
+- Alternativas: Seguir calculando al vuelo sin persistir; usar el SLA oficial `Horas Reclamos Todos` en vez de la suma de netas (difiere en 99 líneas; el usuario eligió netas el 2026-10-05).
+- Impacto: Migración `20261005_02` (aplicada sólo en dev; prod pendiente). El detalle de servicio devuelve `reclamos` y `sla_historico`. Ver `docs/informes/sla_consumo.md`.
