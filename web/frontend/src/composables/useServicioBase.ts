@@ -19,6 +19,7 @@ import {
   type ServicioEquipoUltimaMillaItem,
   type ServicioHistorialIdItem,
   type ServicioItem,
+  type SlaSnapshot,
   getServicioDetail,
 } from '../api/servicios';
 
@@ -26,6 +27,7 @@ export function useServicioBase() {
   const servicio = ref<ServicioItem | null>(null);
   const historialIds = ref<ServicioHistorialIdItem[]>([]);
   const equiposUltimaMilla = ref<ServicioEquipoUltimaMillaItem[]>([]);
+  const slaHistorico = ref<SlaSnapshot[]>([]);
   /** El ID de origen normalizado que devolvió el backend, que puede no ser el de la URL. */
   const idOrigen = ref('');
   const loading = ref(false);
@@ -43,12 +45,14 @@ export function useServicioBase() {
       servicio.value = respuesta.servicio;
       historialIds.value = respuesta.historial_ids;
       equiposUltimaMilla.value = respuesta.equipos_ultima_milla;
+      slaHistorico.value = respuesta.sla_historico ?? [];
       idOrigen.value = respuesta.id_origen.trim();
       return true;
     } catch (err: unknown) {
       servicio.value = null;
       historialIds.value = [];
       equiposUltimaMilla.value = [];
+      slaHistorico.value = [];
       idOrigen.value = '';
       error.value =
         err instanceof Error ? err.message : 'No se pudo cargar el detalle del servicio';
@@ -58,5 +62,5 @@ export function useServicioBase() {
     }
   }
 
-  return { servicio, historialIds, equiposUltimaMilla, idOrigen, loading, error, cargar };
+  return { servicio, historialIds, equiposUltimaMilla, slaHistorico, idOrigen, loading, error, cargar };
 }

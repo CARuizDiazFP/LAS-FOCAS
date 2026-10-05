@@ -1,13 +1,13 @@
 <!--
   Nombre de archivo: ServicioReclamosView.vue
   Ubicación de archivo: web/frontend/src/views/servicios/ServicioReclamosView.vue
-  Descripción: Reclamos registrados de un Servicio y el último informe de SLA/Repetitividad
+  Descripción: Reclamos registrados de un Servicio y su histórico de fotos de SLA
 -->
 <template>
   <ServicioSeccionLayout
     :id-servicio="idServicio"
     titulo="Reclamos"
-    descripcion="Reclamos registrados del Servicio y estado de los informes que los consolidan."
+    descripcion="Reclamos registrados del Servicio y su histórico de SLA."
     :servicio="base.servicio.value"
     :loading="base.loading.value"
     :error="base.error.value"
@@ -24,72 +24,92 @@
       <table class="reclamos__tabla">
         <thead>
           <tr>
-            <th v-for="columna in columnas" :key="columna" scope="col">{{ columna }}</th>
+            <th scope="col">Reclamo</th>
+            <th scope="col">Evento</th>
+            <th scope="col">Inicio</th>
+            <th scope="col">Cierre</th>
+            <th scope="col">Tipo solución</th>
+            <th scope="col">Grupo</th>
+            <th scope="col">Horas netas</th>
+            <th scope="col">% presupuesto</th>
+            <th scope="col">Carrier</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(reclamo, indice) in reclamos" :key="indice">
-            <td v-for="columna in columnas" :key="columna">{{ celda(reclamo[columna]) }}</td>
+          <tr v-for="reclamo in reclamos" :key="`${reclamo.numero_reclamo}-${reclamo.numero_linea}`">
+            <td>{{ reclamo.numero_reclamo }}</td>
+            <td>{{ reclamo.numero_evento ?? '—' }}</td>
+            <td>{{ fecha(reclamo.fecha_inicio) }}</td>
+            <td>{{ fecha(reclamo.fecha_cierre) }}</td>
+            <td>{{ reclamo.tipo_solucion ?? '—' }}</td>
+            <td>{{ reclamo.grupo_cierre ?? '—' }}</td>
+            <td>{{ numero(reclamo.horas_netas) }}</td>
+            <td>{{ reclamo.cuenta_sla ? numero(reclamo.pct_presupuesto, '%') : 'no cuenta' }}</td>
+            <td>{{ reclamo.carrier ?? '—' }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <p v-if="ultimoInforme" class="reclamos__estado">Último informe: {{ ultimoInforme }}</p>
+    <h2 class="reclamos__subtitulo">Histórico de SLA</h2>
+    <p v-if="slaHistorico.length === 0" class="reclamos__estado">
+      Todavía no hay fotos de SLA para este Servicio.
+    </p>
+    <template v-else>
+      <p class="reclamos__estado">Última foto de SLA: {{ slaHistorico[0].fecha_corte }}</p>
+      <div class="reclamos__tabla-wrap">
+        <table class="reclamos__tabla">
+          <thead>
+            <tr>
+              <th scope="col">Fecha de corte</th>
+              <th scope="col">SLA prometido (%)</th>
+              <th scope="col">SLA entregado (%)</th>
+              <th scope="col">Horas reclamos</th>
+              <th scope="col">Horas restantes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="foto in slaHistorico" :key="foto.fecha_corte">
+              <td>{{ foto.fecha_corte }}</td>
+              <td>{{ numero(foto.sla_prometido) }}</td>
+              <td>{{ foto.sla_entregado === null ? '—' : (foto.sla_entregado * 100).toFixed(3) }}</td>
+              <td>{{ numero(foto.horas_reclamos_todos) }}</td>
+              <td>{{ numero(foto.horas_restantes) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
   </ServicioSeccionLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
-import { getUltimoReporte } from '../../api/servicioSecciones';
 import { useServicioBase } from '../../composables/useServicioBase';
 import ServicioSeccionLayout from './ServicioSeccionLayout.vue';
 
 const route = useRoute();
 const base = useServicioBase();
+const slaHistorico = base.slaHistorico;
 
 const idServicio = computed(() => String(route.params.idServicio ?? ''));
-const ultimoInforme = ref('');
 
 const reclamos = computed(() => base.servicio.value?.reclamos ?? []);
 
-/** Las columnas salen de los propios reclamos: el backend los devuelve como filas sin esquema
- * fijo, así que inventar un set de columnas acá los dejaría truncados. */
-const columnas = computed(() => {
-  const claves = new Set<string>();
-  for (const reclamo of reclamos.value) {
-    Object.keys(reclamo).forEach((clave) => claves.add(clave));
-  }
-  return [...claves];
-});
-
-function celda(valor: unknown): string {
-  if (valor === null || valor === undefined) return '—';
-  return typeof valor === 'object' ? JSON.stringify(valor) : String(valor);
+function fecha(valor: string | null): string {
+  if (!valor) return '—';
+  const d = new Date(valor);
+  return Number.isNaN(d.getTime()) ? valor : d.toLocaleString('es-AR');
 }
 
-async function cargar(id: string): Promise<void> {
-  ultimoInforme.value = '';
-  const ok = await base.cargar(id);
-  if (!ok) return;
-  try {
-    const historial = await getUltimoReporte('sla');
-    const item = historial.items?.[0];
-    if (item) {
-      const cuando = item.started_at ? new Date(item.started_at).toLocaleString('es-AR') : 's/f';
-      ultimoInforme.value = `${item.report_type} · ${item.status} · ${cuando}`;
-    }
-  } catch {
-    // El último informe es contexto, no el dato central de la vista: si falla, no se muestra y
-    // los reclamos se ven igual.
-    ultimoInforme.value = '';
-  }
+function numero(valor: number | null | undefined, sufijo = ''): string {
+  return typeof valor === 'number' ? `${valor.toFixed(2)}${sufijo}` : '—';
 }
 
-onMounted(() => cargar(idServicio.value));
-watch(idServicio, (id) => cargar(id));
+onMounted(() => base.cargar(idServicio.value));
+watch(idServicio, (id) => base.cargar(id));
 </script>
 
 <style scoped>
@@ -123,5 +143,10 @@ watch(idServicio, (id) => cargar(id));
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.reclamos__subtitulo {
+  margin: var(--space-4) 0 0;
+  font-size: 15px;
 }
 </style>

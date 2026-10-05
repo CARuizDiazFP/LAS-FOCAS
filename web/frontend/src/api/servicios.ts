@@ -14,6 +14,31 @@ export interface IngestServiciosResponse {
   unchanged: number;
 }
 
+export interface ReclamoServicio {
+  numero_reclamo: string;
+  numero_evento: string | null;
+  numero_linea: string;
+  fecha_inicio: string | null;
+  fecha_cierre: string | null;
+  tipo_solucion: string | null;
+  grupo_cierre: string | null;
+  codigo_cierre: number | null;
+  horas_netas: number | null;
+  cuenta_sla: boolean;
+  pct_presupuesto: number | null;
+  carrier: string | null;
+  descripcion_solucion: string | null;
+}
+
+export interface SlaSnapshot {
+  fecha_corte: string;
+  sla_prometido: number | null;
+  sla_entregado: number | null;
+  horas_reclamos_todos: number | null;
+  horas_restantes: number | null;
+  cantidad_reclamos_todos: number | null;
+}
+
 export interface ServicioItem {
   id: number;
   numero_primer_servicio: string;
@@ -31,7 +56,7 @@ export interface ServicioItem {
   es_verificable_override: boolean | null;
   alias_ids: string[];
   origen_datos: string;
-  reclamos: Array<Record<string, unknown>> | null;
+  reclamos: ReclamoServicio[] | null;
 }
 
 export interface ServicioHistorialIdItem {
@@ -68,6 +93,7 @@ export interface ServicioDetailResponse {
   servicio: ServicioItem;
   historial_ids: ServicioHistorialIdItem[];
   equipos_ultima_milla: ServicioEquipoUltimaMillaItem[];
+  sla_historico?: SlaSnapshot[];
 }
 
 export interface SearchServiciosParams {

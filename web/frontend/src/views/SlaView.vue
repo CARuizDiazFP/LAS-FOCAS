@@ -5,6 +5,26 @@
 -->
 <template>
   <section class="sla-view">
+    <div class="sla-view__tabs" role="tablist" aria-label="Tipo de informe">
+      <button
+        type="button"
+        role="tab"
+        class="sla-view__tab"
+        :class="{ active: tab === 'sla' }"
+        :aria-selected="tab === 'sla'"
+        @click="tab = 'sla'"
+      >Informe SLA</button>
+      <button
+        type="button"
+        role="tab"
+        class="sla-view__tab"
+        :class="{ active: tab === 'consumo' }"
+        :aria-selected="tab === 'consumo'"
+        @click="tab = 'consumo'"
+      >SLA consumido</button>
+    </div>
+
+    <template v-if="tab === 'sla'">
     <header class="sla-view__header">
       <span class="sla-view__kicker">Reportes</span>
       <h1>Informe SLA</h1>
@@ -96,12 +116,17 @@
         </div>
       </div>
     </div>
+    </template>
+    <SlaConsumoPanel v-else />
   </section>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useSla } from '../composables/useSla';
+import SlaConsumoPanel from '../components/sla/SlaConsumoPanel.vue';
+
+const tab = ref<'sla' | 'consumo'>('sla');
 
 const mes = ref(new Date().getMonth() + 1);
 const anio = ref(new Date().getFullYear());
@@ -153,6 +178,32 @@ async function generate() {
 <style scoped>
 .sla-view {
   padding-bottom: 26px;
+}
+
+.sla-view__tabs {
+  display: flex;
+  gap: 4px;
+  padding-top: 18px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.sla-view__tab {
+  padding: 8px 14px;
+  font-size: 13px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  cursor: pointer;
+}
+
+.sla-view__tab:hover {
+  color: var(--color-text);
+}
+
+.sla-view__tab.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
 }
 
 .sla-view__header {
