@@ -30,6 +30,9 @@ Valores medidos con los archivos reales de `docs/Doc Privada/` (corrida del 2026
   ventana (`fecha_inicio < fin AND (fecha_inicio >= inicio OR fecha_cierre >= inicio)`): un reclamo
   iniciado antes del comienzo de la ventana y cerrado dentro de ella se cuenta **completo**.
 - **Base**: `Horas Netas Problema Reclamo`, en **horas**.
+- **Superposiciones**: las horas netas se suman **por reclamo, sin deduplicar** reclamos o eventos que se
+  superponen en el tiempo, de modo que el mismo tiempo físico puede contarse más de una vez (regla del
+  usuario: "Se suman las horas netas aunque existan superposiciones temporales. No deduplicar intervalos").
 - **Presupuesto** del servicio: `(1 − SLA/100) · 8760` horas.
 - **% del presupuesto** = `horas / ((1 − SLA/100) · 8760)`.
 - **pp** (puntos porcentuales de SLA consumidos) = `horas / 8760 · 100`.
@@ -134,6 +137,9 @@ presupuesto, el consumo total y estado final del servicio, y tres indicadores:
 - **Determinante al excluir**: si se lo excluye, el servicio deja de estar agotado/excedido. Exigir "por
   debajo" del presupuesto: si sin el evento el servicio queda **exactamente** en el presupuesto, el
   evento cruza (`cruza=True`) pero no es determinante (`determinante=False`).
+  Ejemplo: un servicio con presupuesto de 26 h, cuyos reclamos previos suman exactamente 26 h, recibe un
+  evento de +1 h. `cruza_umbral = Sí` y `determinante = No`: al excluir el evento el servicio queda
+  exactamente en el presupuesto (Agotado), no por debajo.
 
 `participa_en_excedido` se informa aparte. **Participación ≠ causa**: haber aportado horas a un servicio
 agotado o excedido no implica haberlo causado ni es una atribución de responsabilidad.
