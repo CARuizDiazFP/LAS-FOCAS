@@ -120,6 +120,7 @@ def parse_servicios(content: bytes) -> pd.DataFrame:
         df[col] = df[col].map(_texto)
     df = df[df["numero_linea"].notna()].copy()
     df["sla_prometido"] = df["sla_prometido"].map(_sla_pct)          # 99.7
+    df.loc[df["sla_prometido"] <= 1, "sla_prometido"] *= 100           # si vino como fracción (0.997)
     df["sla_entregado"] = df["sla_entregado"].map(_sla_pct)
     df.loc[df["sla_entregado"] > 1, "sla_entregado"] /= 100            # siempre fracción 0-1
     for col in _SERVICIOS_HORAS:

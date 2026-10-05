@@ -86,3 +86,15 @@ def test_parse_servicios_convierte_sla_y_horas():
     assert fila["sla_entregado"] == pytest.approx(0.95547, abs=1e-5)
     assert fila["horas_reclamos_todos"] == pytest.approx(390.0589, abs=1e-3)
     assert 1 - fila["horas_reclamos_todos"] / 8760 == pytest.approx(fila["sla_entregado"], abs=1e-5)
+
+
+def test_parse_servicios_sla_prometido_como_fraccion_se_lleva_a_porcentaje():
+    fila_base = [88102, 88102, "RPV", "BANCO MACRO SA", dt.time(0, 0), dt.time(0, 0), 6,
+                 dt.time(1, 0), dt.time(1, 0), dt.time(1, 0)]
+    contenido = _xlsx(SERVICIOS_HEADERS, [
+        fila_base + [0.997, 0.99, 1],
+        [88103, 88103] + fila_base[2:] + ["99,9%", 0.99, 1],
+    ])
+    df = parse_servicios(contenido).set_index("numero_linea")
+    assert df.loc["88102", "sla_prometido"] == pytest.approx(99.7)
+    assert df.loc["88103", "sla_prometido"] == pytest.approx(99.9)
