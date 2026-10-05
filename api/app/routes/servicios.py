@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-from datetime import date
+import re
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -18,6 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.sla_consumo.engine import presupuesto_horas
 from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
 from core.services.prov.config import ProvConfigError
@@ -33,11 +35,38 @@ from core.services.servicios_consolidacion_service import (
     resolver_estado_servicio,
 )
 from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
+from db.models.reclamo import Reclamo
+from db.models.sla_consumo import ServicioSlaSnapshot
 from db.session import AsyncSessionLocal, SessionLocal, get_async_db
 
 
 router = APIRouter(prefix="/servicios", tags=["servicios"])
 logger = logging.getLogger(__name__)
+
+
+class ReclamoServicioResponse(BaseModel):
+    numero_reclamo: str
+    numero_evento: str | None = None
+    numero_linea: str
+    fecha_inicio: datetime | None = None
+    fecha_cierre: datetime | None = None
+    tipo_solucion: str | None = None
+    grupo_cierre: str | None = None
+    codigo_cierre: int | None = None
+    horas_netas: float | None = None
+    cuenta_sla: bool = True
+    pct_presupuesto: float | None = None
+    carrier: str | None = None
+    descripcion_solucion: str | None = None
+
+
+class SlaSnapshotResponse(BaseModel):
+    fecha_corte: date
+    sla_prometido: float | None = None
+    sla_entregado: float | None = None
+    horas_reclamos_todos: float | None = None
+    horas_restantes: float | None = None
+    cantidad_reclamos_todos: int | None = None
 
 
 class ServicioItemResponse(BaseModel):
@@ -57,7 +86,7 @@ class ServicioItemResponse(BaseModel):
     es_verificable: bool
     es_verificable_override: bool | None = None
     alias_ids: list[str] = []
-    reclamos: list[dict[str, Any]] | None = None
+    reclamos: list[ReclamoServicioResponse] | None = None
 
 
 class ServicioHistorialIdItemResponse(BaseModel):
@@ -94,6 +123,7 @@ class ServicioDetailResponse(BaseModel):
     servicio: ServicioItemResponse
     historial_ids: list[ServicioHistorialIdItemResponse] = []
     equipos_ultima_milla: list[ServicioEquipoUltimaMillaItemResponse] = []
+    sla_historico: list[SlaSnapshotResponse] = []
 
 
 class IngestServiciosResponse(BaseModel):
@@ -651,6 +681,83 @@ async def search_servicios(
     return SearchServiciosResponse(total=total, limit=limit, offset=offset, servicios=items)
 
 
+_GRUPO_NO_CUENTA_SLA = "Cierre Cliente"
+
+
+def _lineas_del_servicio(svc: Servicio) -> list[str]:
+    candidatas = {svc.numero_linea, svc.numero_primer_servicio, svc.servicio_id, *(svc.alias_ids or [])}
+    return sorted(c.strip() for c in candidatas if c and c.strip())
+
+
+def _parse_sla_prometido(valor: str | None) -> float | None:
+    """Tolera "99,7", "99.7%", "" y basura: devuelve None si no hay un número utilizable."""
+    if not valor:
+        return None
+    limpio = valor.strip().replace("%", "").replace(",", ".").strip()
+    if not re.fullmatch(r"\d+(\.\d+)?", limpio):
+        return None
+    return float(limpio)
+
+
+def _float_o_none(v: Any) -> float | None:
+    return float(v) if v is not None else None
+
+
+async def _reclamos_del_servicio(db: AsyncSession, svc: Servicio) -> list[ReclamoServicioResponse]:
+    lineas = _lineas_del_servicio(svc)
+    if not lineas:
+        return []
+    desde = datetime.now().astimezone() - timedelta(days=365)
+    filas = (
+        await db.execute(
+            select(Reclamo)
+            .where(
+                or_(Reclamo.numero_linea.in_(lineas), Reclamo.numero_primer_servicio.in_(lineas)),
+                Reclamo.fecha_inicio >= desde,
+            )
+            .order_by(Reclamo.fecha_inicio.desc())
+        )
+    ).scalars().all()
+    presupuesto = presupuesto_horas(_parse_sla_prometido(svc.sla_prometido))
+    salida: list[ReclamoServicioResponse] = []
+    for r in filas:
+        horas = _float_o_none(r.horas_netas)
+        cuenta = r.grupo_cierre != _GRUPO_NO_CUENTA_SLA
+        pct = (horas / presupuesto * 100) if (horas is not None and presupuesto and cuenta) else None
+        salida.append(
+            ReclamoServicioResponse(
+                numero_reclamo=r.numero_reclamo, numero_evento=r.numero_evento, numero_linea=r.numero_linea,
+                fecha_inicio=r.fecha_inicio, fecha_cierre=r.fecha_cierre, tipo_solucion=r.tipo_solucion,
+                grupo_cierre=r.grupo_cierre, codigo_cierre=r.codigo_cierre, horas_netas=horas, cuenta_sla=cuenta,
+                pct_presupuesto=pct, carrier=r.carrier, descripcion_solucion=r.descripcion_solucion,
+            )
+        )
+    return salida
+
+
+async def _sla_historico(db: AsyncSession, svc: Servicio) -> list[SlaSnapshotResponse]:
+    lineas = _lineas_del_servicio(svc)
+    if not lineas:
+        return []
+    filas = (
+        await db.execute(
+            select(ServicioSlaSnapshot)
+            .where(ServicioSlaSnapshot.numero_linea.in_(lineas))
+            .order_by(ServicioSlaSnapshot.fecha_corte)
+        )
+    ).scalars().all()
+    return [
+        SlaSnapshotResponse(
+            fecha_corte=f.fecha_corte, sla_prometido=_float_o_none(f.sla_prometido),
+            sla_entregado=_float_o_none(f.sla_entregado),
+            horas_reclamos_todos=_float_o_none(f.horas_reclamos_todos),
+            horas_restantes=_float_o_none(f.horas_restantes),
+            cantidad_reclamos_todos=f.cantidad_reclamos_todos,
+        )
+        for f in filas
+    ]
+
+
 @router.get("/detail", response_model=ServicioDetailResponse)
 async def detail_servicio(
     id: str = Query(..., description="ID de consulta (origen o línea actual)"),
@@ -666,12 +773,15 @@ async def detail_servicio(
     if item is None:
         raise HTTPException(status_code=404, detail="Servicio sin ID origen")
 
+    item.reclamos = await _reclamos_del_servicio(db, svc)
+
     return ServicioDetailResponse(
         id_consultado=id_consultado,
         id_origen=item.numero_primer_servicio,
         servicio=item,
         historial_ids=_historial_a_response(svc.historial_ids),
         equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
+        sla_historico=await _sla_historico(db, svc),
     )
 
 
@@ -733,12 +843,15 @@ async def refrescar_servicio_desde_prov(
         if item is None:
             raise HTTPException(status_code=404, detail="Servicio sin ID origen")
 
+        item.reclamos = await _reclamos_del_servicio(db_write, svc)
+
         return ServicioDetailResponse(
             id_consultado=id_consultado,
             id_origen=item.numero_primer_servicio,
             servicio=item,
             historial_ids=_historial_a_response(svc.historial_ids),
             equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
+            sla_historico=await _sla_historico(db_write, svc),
         )
 
 
