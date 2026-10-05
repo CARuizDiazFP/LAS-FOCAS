@@ -35,7 +35,6 @@ Valores medidos con los archivos reales de `docs/Doc Privada/` (corrida del 2026
   usuario: "Se suman las horas netas aunque existan superposiciones temporales. No deduplicar intervalos").
 - **Presupuesto** del servicio: `(1 − SLA/100) · 8760` horas.
 - **% del presupuesto** = `horas / ((1 − SLA/100) · 8760)`.
-- **pp** (puntos porcentuales de SLA consumidos) = `horas / 8760 · 100`.
 
 Ejemplo real (línea 88102, SLA 99,7): presupuesto 26,28 h; el reclamo 1277261 con 6,2839 h consume
 23,91 % del presupuesto.
@@ -175,7 +174,8 @@ Archivos en `REPORTS_DIR/sla_consumo/AAAAMM/SLA_consumido_<fecha_corte>_<sello>[
   (FO general / FO Cod 3 / Carrier / Otros; sin torta por servicio ni por reclamo), ranking de eventos por
   horas-servicio con gráfico de magnitud (top **`SLA_CONSUMO_TOP_EVENTOS`**, 20 por defecto) y fichas
   completas de los servicios **agotados o excedidos** con su detalle de reclamos y acumulados.
-- **DOCX exhaustivo**: lo anterior sin límite de eventos, ficha completa de **todos los servicios con
+- **DOCX exhaustivo**: resumen global, leyendas y la torta global de causas, la tabla de **todos** los
+  eventos reales (sin límite; **sin gráfico de magnitud**), ficha completa de **todos los servicios con
   reclamos**, **tabla compacta** de los servicios sin reclamos (todos figuran), reclamos sin evento,
   inconsistencias y no vinculados.
 - **PDF** opcional sólo del ejecutivo (si `SOFFICE_BIN` está disponible). El **exhaustivo nunca se
@@ -205,6 +205,11 @@ Archivos en `REPORTS_DIR/sla_consumo/AAAAMM/SLA_consumido_<fecha_corte>_<sello>[
 - Horas-servicio no es la duración del evento; el rango observado no es la duración oficial.
 - El DOCX ejecutivo mide ~290 páginas y el exhaustivo es mucho mayor (2368 fichas); no hay PDF del
   exhaustivo en línea.
+- Memoria: la generación completa llega a ~1,3 GB de RSS (sobre todo por el DOCX exhaustivo); dos
+  corridas concurrentes necesitan ~2,6 GB. Conviene serializar la generación antes de llevarlo a prod.
+- Identificación: en el XLSX y los DOCX el servicio se identifica sólo por `servicio_id` (el ID vigente,
+  primera columna y panel congelado). La clave interna de unificación (primer servicio) **no se exporta**;
+  sólo "No vinculados" muestra el `numero_linea`, porque esos reclamos no tienen servicio.
 - Carrier con evento no se reasigna: sólo se lista como inconsistencia.
 - `SLA_CIERRE_CLIENTE_VALORES` vacía: ningún reclamo cae hoy en Cierre Cliente.
 - Prod no está migrada ni desplegada con esta versión.
