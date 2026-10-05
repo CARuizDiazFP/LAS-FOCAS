@@ -169,6 +169,14 @@ Verifica estado del servicio.
 2. **No concurrencia excesiva**: LibreOffice es single-threaded
 3. **Limpiar archivos temporales**: El servicio limpia automáticamente
 4. **Límite de tamaño**: Configurar `OFFICE_MAX_FILE_SIZE` (default 50MB)
+5. **Documentos de cientos/miles de páginas no van dentro de un request**: medido el 2026-10-05
+   (informe SLA consumido, `docs/cierres/2026-10-05.md`): DOCX ejecutivo de 291 págs → ~45 s; DOCX
+   exhaustivo de ~1480 págs → **~6,5 min**. Convertir en línea sólo lo acotado e informar la omisión
+   del resto (`pdf_omitido`); el tamaño en bytes del DOCX (1,6 MB) no anticipa este costo, la cantidad
+   de páginas/tablas sí.
+6. **Inspección visual de un PDF generado**: ni el host ni `lasfocasdev-office` traen `poppler`
+   (`pdftoppm`/`pdfinfo`). Renderizar páginas con `pypdfium2` instalado **sólo en el scratchpad**
+   (`pip install --target <scratchpad>/pylib pypdfium2` + `PYTHONPATH`), nunca en el `.venv` compartido.
 
 ## Integración con Informes
 
