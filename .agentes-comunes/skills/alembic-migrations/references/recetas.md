@@ -30,6 +30,26 @@ alembic -c db/alembic.ini upgrade head --sql
 alembic -c db/alembic.ini downgrade -1 --sql
 ```
 
+### Aplicar en dev una migración que todavía vive en un worktree (antes de integrar)
+
+Los contenedores de dev no tienen `DATABASE_URL` en el entorno: la app arma la URL desde los Docker
+Secrets. Por eso `alembic current` dentro del contenedor falla con *"password authentication failed
+for user lasfocas"*. Le pasa también a `docker exec ... alembic` sobre `/app`, aunque la contraseña
+esté bien (real, 2026-10-05). Receta: copiar el código del worktree a `/tmp/wt` del contenedor web de
+dev **sin tocar `/app`**, y derivar la URL de `db.session.async_engine`, sin imprimirla:
+
+```bash
+docker exec lasfocasdev-web sh -c 'rm -rf /tmp/wt && mkdir -p /tmp/wt'
+tar cf - core db modules | docker exec -i lasfocasdev-web tar xf - -C /tmp/wt
+docker exec lasfocasdev-web sh -c 'cd /tmp/wt && export DATABASE_URL="$(python -c "from db.session import async_engine as e; print(e.url.set(drivername=\"postgresql+psycopg\").render_as_string(hide_password=False))")" \
+  && alembic -c db/alembic.ini upgrade head && alembic -c db/alembic.ini downgrade -1 \
+  && alembic -c db/alembic.ini upgrade head && alembic -c db/alembic.ini current'
+docker exec lasfocasdev-web rm -rf /tmp/wt   # al terminar
+```
+
+Sólo para dev. Para prod está el procedimiento de deploy, con backup previo. Tomar el lease
+`db:migrations` mientras se aplica.
+
 ## Estructura mínima
 
 ```python
