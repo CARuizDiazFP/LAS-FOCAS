@@ -211,6 +211,7 @@ from core.services.botella_recompute_queue import (  # noqa: E402
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
+from core.services import sla_consumo as sla_consumo_service  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
     ReportConfig,
     ReportResult,
@@ -732,6 +733,80 @@ def _require_admin(request: Request) -> str:
     if role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
     return username
+
+
+@app.post("/api/reports/sla-consumo")
+async def generar_informe_sla_consumo_web(
+    request: Request,
+    pdf_enabled: bool = Form(False),
+    csrf_token: str | None = Form(None),
+    files: List[UploadFile] = File(default=[]),
+):
+    username, _ = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    if expected_csrf and os.getenv("TESTING", "false").lower() != "true" and csrf_token != expected_csrf:
+        for a_ in files:
+            await a_.close()
+        return JSONResponse({"ok": False, "error": "CSRF inválido"}, status_code=403)
+
+    archivos = [a for a in files if a and a.filename]
+    # period_month/year son NOT NULL en report_history: se usa el mes actual; la fecha de corte real
+    # (derivada de los Excel) se registra en output_metadata.
+    hoy = datetime.now()
+    history_id = REPORT_HISTORY.start(
+        report_type="sla_consumo", username=username, source="excel", period_month=hoy.month, period_year=hoy.year,
+        input_metadata={"archivos": [Path(a.filename or "").name for a in archivos], "pdf_enabled": bool(pdf_enabled)},
+    )
+
+    def _error(status: int, mensaje: str) -> JSONResponse:
+        REPORT_HISTORY.finish_error(history_id, error_code=f"HTTP_{status}", error_message=mensaje,
+                                    output_metadata={"source": "excel"})
+        return JSONResponse({"ok": False, "error": mensaje}, status_code=status)
+
+    if len(archivos) != 2:
+        for a_ in files:
+            await a_.close()
+        return _error(400, "Debés adjuntar dos archivos: servicios y reclamos")
+
+    contenidos: dict[str, bytes] = {}
+    for archivo in archivos:
+        nombre = Path(archivo.filename).name
+        contenido = await archivo.read()
+        await archivo.close()
+        if not nombre.lower().endswith(".xlsx") or not contenido:
+            return _error(415, f"{nombre} debe ser un .xlsx no vacío")
+        try:
+            tipo = sla_service.identify_excel_kind(contenido)
+        except ValueError as exc:
+            return _error(422, str(exc))
+        if tipo in contenidos:
+            return _error(422, f"Se recibió más de un Excel de {tipo}")
+        contenidos[tipo] = contenido
+    if set(contenidos) != {"servicios", "reclamos"}:
+        return _error(400, "Adjuntá los archivos de servicios y reclamos")
+
+    try:
+        informe = await asyncio.to_thread(
+            sla_consumo_service.generar_informe_sla_consumo, contenidos["servicios"], contenidos["reclamos"],
+            usuario=username, incluir_pdf=pdf_enabled, reports_dir=REPORTS_DIR,
+        )
+    except ValueError as exc:
+        return _error(422, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=sla_consumo_web stage=unexpected user=%s", username)
+        return _error(500, f"No se pudo generar el informe de SLA consumido: {exc or exc.__class__.__name__}")
+
+    report_paths = {"xlsx": _report_href(informe.xlsx), "docx": _report_href(informe.docx)}
+    if informe.pdf:
+        report_paths["pdf"] = _report_href(informe.pdf)
+    ingesta = informe.ingesta
+    salida = {
+        "fecha_corte": ingesta.fecha_corte.isoformat(), "ya_ingestado": ingesta.ya_ingestado,
+        "reclamos_insertados": ingesta.reclamos_insertados, "reclamos_actualizados": ingesta.reclamos_actualizados,
+        "totales": informe.totales, "report_paths": report_paths,
+    }
+    REPORT_HISTORY.finish_success(history_id, output_metadata={"source": "excel", **salida})
+    return JSONResponse({"ok": True, "message": "Informe de SLA consumido generado", **salida})
 
 
 @app.get("/api/admin/me")
