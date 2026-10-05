@@ -31,6 +31,11 @@ def datos():
             s.execute(text("""INSERT INTO app.reclamos (numero_reclamo, numero_linea, nombre_cliente, fecha_inicio,
                               horas_netas, grupo_cierre) VALUES (:n, :l, 'TEST', now() - interval '10 days', 13.14, :g)"""),
                       {"n": numero, "l": linea, "g": grupo})
+        # Vinculado sólo por numero_primer_servicio (su línea no tiene relación con el servicio).
+        s.execute(text("""INSERT INTO app.reclamos (numero_reclamo, numero_linea, numero_primer_servicio, nombre_cliente,
+                          fecha_inicio, horas_netas, grupo_cierre)
+                          VALUES ('TSTD5', '000001', :o, 'TEST', now() - interval '10 days', 1, 'Carrier')"""),
+                  {"o": _ORIGEN})
         s.execute(text("""INSERT INTO app.servicio_sla_snapshot (numero_linea, fecha_corte, sla_prometido, sla_entregado)
                           VALUES (:l, CURRENT_DATE, 99.7, 0.997)"""), {"l": _LINEA})
         s.commit()
@@ -67,7 +72,7 @@ def test_detalle_trae_reclamos_y_sla_historico(datos, client):
     body = resp.json()
     reclamos = body["servicio"]["reclamos"]
     numeros = {r["numero_reclamo"] for r in reclamos}
-    assert numeros == {"TSTD1", "TSTD2", "TSTD4"}  # por línea actual y por alias; no el de otra línea
+    assert numeros == {"TSTD1", "TSTD2", "TSTD4", "TSTD5"}  # línea actual, alias y primer servicio; no el de otra línea
     r1 = next(r for r in reclamos if r["numero_reclamo"] == "TSTD1")
     assert r1["pct_presupuesto"] == pytest.approx(50.0)
     assert r1["cuenta_sla"] is True

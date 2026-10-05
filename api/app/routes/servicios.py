@@ -19,7 +19,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.sla_consumo.engine import presupuesto_horas
 from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
 from core.services.prov.config import ProvConfigError
@@ -34,6 +33,8 @@ from core.services.servicios_consolidacion_service import (
     es_verificable_por_tipo_y_estado,
     resolver_estado_servicio,
 )
+from core.sla_consumo.clasificador import GRUPO_CLIENTE
+from core.sla_consumo.engine import presupuesto_horas
 from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
 from db.models.reclamo import Reclamo
 from db.models.sla_consumo import ServicioSlaSnapshot
@@ -681,9 +682,6 @@ async def search_servicios(
     return SearchServiciosResponse(total=total, limit=limit, offset=offset, servicios=items)
 
 
-_GRUPO_NO_CUENTA_SLA = "Cierre Cliente"
-
-
 def _lineas_del_servicio(svc: Servicio) -> list[str]:
     candidatas = {svc.numero_linea, svc.numero_primer_servicio, svc.servicio_id, *(svc.alias_ids or [])}
     return sorted(c.strip() for c in candidatas if c and c.strip())
@@ -722,7 +720,7 @@ async def _reclamos_del_servicio(db: AsyncSession, svc: Servicio) -> list[Reclam
     salida: list[ReclamoServicioResponse] = []
     for r in filas:
         horas = _float_o_none(r.horas_netas)
-        cuenta = r.grupo_cierre != _GRUPO_NO_CUENTA_SLA
+        cuenta = r.grupo_cierre != GRUPO_CLIENTE
         pct = (horas / presupuesto * 100) if (horas is not None and presupuesto and cuenta) else None
         salida.append(
             ReclamoServicioResponse(
