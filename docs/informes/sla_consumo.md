@@ -26,7 +26,9 @@ Valores medidos con los archivos reales de `docs/Doc Privada/` (corrida del 2026
 
 - **Fecha de corte**: automática, es el máximo de `Fecha Cierre Problema Reclamo` del Excel de
   reclamos (en la corrida real: 2026-10-02). No se pide al usuario.
-- **Ventana**: 365 días hacia atrás desde la fecha de corte.
+- **Ventana**: 365 días hacia atrás desde la fecha de corte. Entran los reclamos que **solapan** la
+  ventana (`fecha_inicio < fin AND (fecha_inicio >= inicio OR fecha_cierre >= inicio)`): un reclamo
+  iniciado antes del comienzo de la ventana y cerrado dentro de ella se cuenta **completo**.
 - **Base**: `Horas Netas Problema Reclamo`, en **horas**.
 - **Presupuesto** del servicio: `(1 − SLA/100) · 8760` horas.
 - **% del presupuesto** = `horas / ((1 − SLA/100) · 8760)`.
@@ -37,8 +39,18 @@ Ejemplo real (línea 88102, SLA 99,7): presupuesto 26,28 h; el reclamo 1277261 c
 
 ## Grupos de cierre
 
-El `Tipo Solución Reclamo` se clasifica por el código que va entre paréntesis al final
-(`core/sla_consumo/clasificador.py`):
+El `Tipo Solución Reclamo` se clasifica en `core/sla_consumo/clasificador.py` con esta regla:
+
+- **Carrier**: el texto es exactamente `Carrier`.
+- **FO**: el texto empieza con `PE-`; si el código entre paréntesis al final es 3 es **FO Cod 3**,
+  en cualquier otro caso **FO (excepto Cod 3)**.
+- **Cierre Cliente**: el texto está en la lista configurable (abajo).
+- **Otros**: todo lo demás.
+
+**Reclasificación al calcular**: el grupo y el código se derivan de `tipo_solucion` cada vez que se
+calcula el informe (no se confía en lo guardado), por lo que un cambio en
+`SLA_CIERRE_CLIENTE_VALORES` se aplica **retroactivamente** a todo el histórico y las filas ingeridas
+por la ruta legacy (sin grupo) quedan igualmente clasificadas; Σ de los grupos = Σ del total.
 
 | Grupo | Cuenta para el SLA |
 |---|---|
@@ -62,6 +74,9 @@ FO Cod 3 154, Cierre Cliente 0.
   después).
 - Los reclamos se hacen **upsert por `numero_reclamo`**, de modo que archivos nuevos que se solapan con
   los anteriores actualizan en lugar de duplicar.
+- **Upsert monótono**: un reclamo existente sólo se pisa si la ingesta que lo escribió por última vez
+  tiene `fecha_corte` <= la de la ingesta actual (o si es una fila legacy sin ingesta). Subir un
+  Excel más viejo no sobrescribe reclamos más nuevos; esas filas se informan como `reclamos_sin_cambios`.
 - La foto de SLA es una por `(numero_linea, fecha_corte)` en `app.servicio_sla_snapshot`.
 
 ## Salidas
@@ -80,7 +95,12 @@ FO Cod 3 154, Cierre Cliente 0.
 - `report_history`: `period_month/period_year` es el **mes de la corrida** (la tabla los exige NOT
   NULL); la `fecha_corte` real va en `output_metadata`.
 - El detalle de servicio (`GET /servicios/detail`) ahora devuelve `reclamos` (con `pct_presupuesto` y
-  `cuenta_sla`) y `sla_historico` (una fila por fecha de corte).
+  `cuenta_sla`) y `sla_historico` (una fila por línea y fecha de corte, en orden cronológico; la vista
+  toma la última como "Última foto de SLA"). El detalle usa una ventana propia de **ahora − 365 días**
+  y el `sla_prometido` de `app.servicios`, por lo que puede diferir levemente del informe (que usa la
+  fecha de corte y el SLA prometido del Excel).
+- Si se pide PDF y `SOFFICE_BIN` no está configurado, la respuesta trae `pdf_omitido` y el SPA lo
+  muestra.
 
 ## Corrección de `/ingest/reclamos`
 
