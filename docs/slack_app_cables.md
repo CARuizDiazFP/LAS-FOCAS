@@ -343,8 +343,23 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
   con 4 posiciones); sobre el caché de 24 h (`app.cromo_tracking_cache`) es inmediato. Por eso el
   bot postea un aviso ANTES de empezar, y la sesión de DB se cierra antes de generar para no
   sostener una conexión del pool todo ese rato.
-- **Un pelo que falla no cancela los demás**: se suben los que salieron y se reporta al final cuáles
-  no, para que el operador no cuente 3 archivos donde esperaba 4 sin saber por qué.
+- **Servicios sin ODF en sus extremos y caminos esperados** (2026-10-05). El 94673 no termina en
+  ninguna ODF: ninguno de sus 52 pelos tiene conector, y antes se tomaba sólo la primera semilla del
+  ranking → 1 `.txt` de sus 2 hilos. Ahora las semillas son **todas** (`semillas_para_tracking`:
+  posiciones de ODF primero, después los pelos de los cables, sin el tope de 20), y
+  `trackings_por_camino` corta al llegar a los **caminos esperados**: la moda de pelos del Servicio
+  por cable u ODF (`caminos_esperados`, regla de operaciones "N pelos en el mismo cable u ODF = N
+  caminos"). Moda y no máximo: 42351 y 93154 tienen la mayoría de los cables con 2 pelos pero
+  algunos con 3 y 4 (etiquetas viejas); el máximo daría 4. Para el 94673 son 2 llamadas a Cromo,
+  no 52.
+- **Pelos huérfanos**: con la etiqueta del Servicio pero fuera de todos sus caminos (un pelo movido
+  que quedó con la etiqueta vieja, o un match viejo cuyo pelo ya no la lleva). **No** generan un
+  `.txt` de más ni se le piden a Cromo; el bot los lista (hasta 15) e indica que se excluyen desde
+  el portal. Sólo se declaran huérfanos si se llegó a los caminos esperados. Medido en dev el
+  2026-10-05: 0 en el 94673, 34 en el 42351, 63 en el 93154.
+- **Caminos faltantes**: si se generan menos caminos que los esperados se dice ("se esperaban 2 y se
+  generaron 1") con el motivo de cada pelo que falló, para que el operador no cuente 1 archivo donde
+  esperaba 2 sin saber por qué. Se toleran `max(3, esperados)` semillas fallidas antes de rendirse.
 - Sin ningún pelo en Cromo responde el motivo en texto y **no** sube nada: un `.txt` que dice "no hay
   datos" es basura.
 

@@ -2835,3 +2835,29 @@ su propia ventana de mantenimiento.
   alcanza y la baja tiene que vivir en la ingesta.
 - **Sin resolver:** en la clase 52 de dev, un faltante resultó `SIN_CAMBIOS`: Cromo lo lista con un id
   distinto del `n_id` local. Se dejó como está.
+
+## 2026-10-05 — Tracking: caminos esperados por pelos de cable, sin depender de la ODF, y exclusión local de huérfanos
+
+- **Reclamo:** `@Registrador track 94673` (dev) daba 1 `.txt` y el Servicio tiene 2 hilos. El
+  portal mostraba lo mismo.
+- **Causa (datos reales de dev):** el 94673 tiene 52 pelos, exactamente 2 por cable en 26 cables
+  (`FDF1 C10` y `FDF1 C9`), y ninguno termina en ODF. Sin conectores, `semillas_por_defecto` caía a
+  la primera semilla del ranking → un solo hilo.
+- **Regla de operaciones:** si un Servicio tiene N pelos asignados en un mismo cable u ODF, tiene N
+  caminos y N trackings. Se implementa como la **moda** de pelos por cable u ODF
+  (`camino_optico_service.caminos_esperados`). Se eligió la moda y no el máximo porque, medido, 42351
+  tiene 145 cables con 2 pelos, 12 con 3 y 1 con 4, y 93154 tiene 105 con 2 y 9 con 4.
+- **Semillas:** todas, con las posiciones de ODF primero (`semillas_para_tracking`).
+  `trackings_por_camino` descarta las ya recorridas y corta en los esperados. Slack (`track`) y el
+  portal (`GET .../camino-optico/caminos`) usan la misma función: `trackings_del_servicio`.
+- **Huérfanos** (decisión del usuario): no generan un tercer tracking. Se avisan y un admin puede
+  **excluirlos en local**, en la tabla nueva `app.cromo_servicio_pelo_excluido` (migración
+  `20261005_01`). Es una tabla separada de `cromo_servicio_match` porque la ingesta reescribe esa
+  tabla. Las queries de semillas, conteos, pertenencia y caminos esperados la filtran. Cromo no se
+  toca, y se restauran de a uno.
+- **Resultado en dev:** 94673 → 2 caminos, 0 huérfanos. 42351 → 2 caminos, 34 huérfanos. 93154 → 2
+  caminos, 63 huérfanos, entre ellos matches cuyo pelo ya no lleva la etiqueta del Servicio en Cromo
+  (`None`, `OS 32200 DWDM…`).
+- **Fuera de alcance:** el nombre del archivo sigue saliendo del primer at.62 del pelo en Cromo
+  ("42352 CROMO", "83254 CROMO"). Es un pendiente que ya estaba abierto.
+
