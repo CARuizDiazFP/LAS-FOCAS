@@ -187,3 +187,12 @@ def test_ventana_incluye_reclamos_que_solapan(limpiar):
     reclamos, _ = cargar_ventana(corte)
     mios = set(reclamos[reclamos["numero_reclamo"].str.startswith(_PREFIJO)]["numero_reclamo"])
     assert mios == {f"{_PREFIJO}A", f"{_PREFIJO}C"}
+
+
+def test_ingesta_guarda_report_history_id(limpiar):
+    r = ingerir(_servicios(), _reclamos(1.0), hash_servicios=f"{_PREFIJO}s11", hash_reclamos="r11", usuario="t",
+                report_history_id=4242)
+    with SessionLocal() as s:
+        valor = s.execute(text("SELECT report_history_id FROM app.sla_ingestas WHERE id = :i"),
+                          {"i": r.ingesta_id}).scalar_one()
+    assert valor == 4242

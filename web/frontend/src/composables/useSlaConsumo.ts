@@ -24,6 +24,8 @@ export interface SlaConsumoResultado {
   ya_ingestado?: boolean;
   reclamos_insertados?: number;
   reclamos_actualizados?: number;
+  reclamos_sin_cambios?: number;
+  pdf_omitido?: string;
   totales?: SlaConsumoTotales;
   report_paths?: Record<string, string>;
 }
@@ -67,10 +69,14 @@ export function useSlaConsumo() {
         throw new Error(data.error ?? data.detail ?? data.message ?? `Error ${response.status}`);
       }
       resultado.value = data;
-      mensaje.value = data.ya_ingestado
+      const sinCambios = data.reclamos_sin_cambios
+        ? `, ${data.reclamos_sin_cambios} sin cambios (ya tenían datos de un corte más nuevo)`
+        : '';
+      const base = data.ya_ingestado
         ? `Corte ${data.fecha_corte}: estos archivos ya estaban ingestados; informe regenerado.`
-        : `Corte ${data.fecha_corte}: ${data.reclamos_insertados ?? 0} reclamos nuevos, ${data.reclamos_actualizados ?? 0} actualizados.`;
-      tono.value = 'success';
+        : `Corte ${data.fecha_corte}: ${data.reclamos_insertados ?? 0} reclamos nuevos, ${data.reclamos_actualizados ?? 0} actualizados${sinCambios}.`;
+      mensaje.value = data.pdf_omitido ? `${base} PDF no generado: ${data.pdf_omitido}.` : base;
+      tono.value = data.pdf_omitido ? 'info' : 'success';
     } catch (err) {
       mensaje.value = err instanceof Error ? err.message : 'Error de red';
       tono.value = 'error';

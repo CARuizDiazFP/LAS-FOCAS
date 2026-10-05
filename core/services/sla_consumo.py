@@ -26,6 +26,7 @@ class InformeSlaConsumo:
     pdf: Path | None
     ingesta: ResultadoIngesta
     totales: dict
+    pdf_omitido: str | None = None   # motivo por el que se pidió PDF y no se generó
 
 
 def _json_safe(valor: object) -> object:
@@ -42,13 +43,15 @@ def _json_safe(valor: object) -> object:
 
 
 def generar_informe_sla_consumo(servicios_bytes: bytes, reclamos_bytes: bytes, *, usuario: str | None,
-                                incluir_pdf: bool, reports_dir: Path) -> InformeSlaConsumo:
+                                incluir_pdf: bool, reports_dir: Path,
+                                report_history_id: int | None = None) -> InformeSlaConsumo:
     servicios = parse_servicios(servicios_bytes)
     reclamos = parse_reclamos(reclamos_bytes)
     if reclamos.empty:
         raise ValueError("El Excel de reclamos no tiene filas válidas")
     ingesta = ingerir(servicios, reclamos, hash_servicios=sha256(servicios_bytes),
-                      hash_reclamos=sha256(reclamos_bytes), usuario=usuario)
+                      hash_reclamos=sha256(reclamos_bytes), usuario=usuario,
+                      report_history_id=report_history_id)
     logger.info("action=sla_consumo stage=ingesta id=%s corte=%s ya=%s ins=%s upd=%s", ingesta.ingesta_id,
                 ingesta.fecha_corte, ingesta.ya_ingestado, ingesta.reclamos_insertados, ingesta.reclamos_actualizados)
     reclamos_db, servicios_db = cargar_ventana(ingesta.fecha_corte)
@@ -59,9 +62,12 @@ def generar_informe_sla_consumo(servicios_bytes: bytes, reclamos_bytes: bytes, *
     xlsx = construir_xlsx(resultado, carpeta / f"SLA_consumido_{ingesta.fecha_corte}_{sello}.xlsx")
     docx = construir_docx(resultado, carpeta / f"SLA_consumido_{ingesta.fecha_corte}_{sello}.docx")
     pdf = None
+    pdf_omitido = None
     soffice = os.getenv("SOFFICE_BIN")
     if incluir_pdf and soffice:
         from modules.common.libreoffice_export import convert_to_pdf
 
         pdf = Path(convert_to_pdf(str(docx), soffice))
-    return InformeSlaConsumo(xlsx, docx, pdf, ingesta, _json_safe(resultado.totales))
+    elif incluir_pdf:
+        pdf_omitido = "LibreOffice no configurado"
+    return InformeSlaConsumo(xlsx, docx, pdf, ingesta, _json_safe(resultado.totales), pdf_omitido)

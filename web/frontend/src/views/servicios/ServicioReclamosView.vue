@@ -56,7 +56,7 @@
       Todavía no hay fotos de SLA para este Servicio.
     </p>
     <template v-else>
-      <p class="reclamos__estado">Última foto de SLA: {{ slaHistorico[0].fecha_corte }}</p>
+      <p class="reclamos__estado">Última foto de SLA: {{ ultimaFotoSla?.fecha_corte }}</p>
       <div class="reclamos__tabla-wrap">
         <table class="reclamos__tabla">
           <thead>
@@ -69,7 +69,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="foto in slaHistorico" :key="foto.fecha_corte">
+            <tr v-for="foto in slaHistorico" :key="`${foto.numero_linea}-${foto.fecha_corte}`">
               <td>{{ foto.fecha_corte }}</td>
               <td>{{ numero(foto.sla_prometido) }}</td>
               <td>{{ foto.sla_entregado === null ? '—' : (foto.sla_entregado * 100).toFixed(3) }}</td>
@@ -93,6 +93,8 @@ import ServicioSeccionLayout from './ServicioSeccionLayout.vue';
 const route = useRoute();
 const base = useServicioBase();
 const slaHistorico = base.slaHistorico;
+// La API devuelve las fotos en orden cronológico: la última es la más reciente.
+const ultimaFotoSla = computed(() => slaHistorico.value[slaHistorico.value.length - 1]);
 
 const idServicio = computed(() => String(route.params.idServicio ?? ''));
 

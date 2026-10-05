@@ -788,13 +788,13 @@ async def generar_informe_sla_consumo_web(
     try:
         informe = await asyncio.to_thread(
             sla_consumo_service.generar_informe_sla_consumo, contenidos["servicios"], contenidos["reclamos"],
-            usuario=username, incluir_pdf=pdf_enabled, reports_dir=REPORTS_DIR,
+            usuario=username, incluir_pdf=pdf_enabled, reports_dir=REPORTS_DIR, report_history_id=history_id,
         )
     except ValueError as exc:
         return _error(422, str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=sla_consumo_web stage=unexpected user=%s", username)
-        return _error(500, f"No se pudo generar el informe de SLA consumido: {exc or exc.__class__.__name__}")
+        return _error(500, f"No se pudo generar el informe de SLA consumido: {str(exc) or exc.__class__.__name__}")
 
     report_paths = {"xlsx": _report_href(informe.xlsx), "docx": _report_href(informe.docx)}
     if informe.pdf:
@@ -803,8 +803,11 @@ async def generar_informe_sla_consumo_web(
     salida = {
         "fecha_corte": ingesta.fecha_corte.isoformat(), "ya_ingestado": ingesta.ya_ingestado,
         "reclamos_insertados": ingesta.reclamos_insertados, "reclamos_actualizados": ingesta.reclamos_actualizados,
+        "reclamos_sin_cambios": ingesta.reclamos_sin_cambios,
         "totales": informe.totales, "report_paths": report_paths,
     }
+    if informe.pdf_omitido:
+        salida["pdf_omitido"] = informe.pdf_omitido
     REPORT_HISTORY.finish_success(history_id, output_metadata={"source": "excel", **salida})
     return JSONResponse({"ok": True, "message": "Informe de SLA consumido generado", **salida})
 

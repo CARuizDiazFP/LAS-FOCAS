@@ -31,7 +31,7 @@ _INGESTA = ResultadoIngesta(7, dt.date(2026, 10, 1), False, 10, 2, 5)
 def test_sla_consumo_ok(monkeypatch, tmp_path):
     llamado = {}
 
-    def falso(servicios_bytes, reclamos_bytes, *, usuario, incluir_pdf, reports_dir):
+    def falso(servicios_bytes, reclamos_bytes, *, usuario, incluir_pdf, reports_dir, report_history_id=None):
         llamado.update(servicios=servicios_bytes, reclamos=reclamos_bytes, usuario=usuario, pdf=incluir_pdf)
         xlsx = Path(reports_dir) / "sla_consumo" / "202610" / "a.xlsx"
         xlsx.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +56,59 @@ def test_sla_consumo_ok(monkeypatch, tmp_path):
     assert body["report_paths"]["xlsx"] == "/reports/sla_consumo/202610/a.xlsx"
     assert "pdf" not in body["report_paths"]
     assert llamado["servicios"] == _servicios_excel_bytes() and llamado["usuario"] == "user"
+
+
+def test_sla_consumo_pasa_history_id_y_reporta_pdf_omitido(monkeypatch, tmp_path):
+    llamado = {}
+
+    class _Historial:
+        def start(self, **_kw):
+            return 321
+
+        def finish_success(self, *_a, **_kw):
+            pass
+
+        def finish_error(self, *_a, **_kw):
+            pass
+
+    def falso(servicios_bytes, reclamos_bytes, *, usuario, incluir_pdf, reports_dir, report_history_id=None):
+        llamado["history"] = report_history_id
+        xlsx = Path(reports_dir) / "sla_consumo" / "202610" / "b.xlsx"
+        xlsx.parent.mkdir(parents=True, exist_ok=True)
+        xlsx.write_bytes(b"x")
+        docx = xlsx.with_suffix(".docx")
+        docx.write_bytes(b"x")
+        return InformeSlaConsumo(xlsx, docx, None, _INGESTA, {}, pdf_omitido="LibreOffice no configurado")
+
+    monkeypatch.setattr(web_main, "REPORT_HISTORY", _Historial())
+    monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
+    monkeypatch.setenv("TESTING", "true")
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+    resp = client.post("/api/reports/sla-consumo", data={"csrf_token": csrf, "pdf_enabled": "true"}, files=[
+        ("files", ("servicios.xlsx", io.BytesIO(_servicios_excel_bytes()))),
+        ("files", ("reclamos.xlsx", io.BytesIO(_reclamos_excel_bytes()))),
+    ])
+    assert resp.status_code == 200, resp.text
+    assert llamado["history"] == 321
+    assert resp.json()["pdf_omitido"] == "LibreOffice no configurado"
+    assert resp.json()["reclamos_sin_cambios"] == 0
+
+
+def test_sla_consumo_error_inesperado_sin_mensaje_usa_nombre_de_clase(monkeypatch):
+    def falso(*_a, **_kw):
+        raise RuntimeError()
+
+    monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
+    monkeypatch.setenv("TESTING", "true")
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+    resp = client.post("/api/reports/sla-consumo", data={"csrf_token": csrf}, files=[
+        ("files", ("servicios.xlsx", io.BytesIO(_servicios_excel_bytes()))),
+        ("files", ("reclamos.xlsx", io.BytesIO(_reclamos_excel_bytes()))),
+    ])
+    assert resp.status_code == 500
+    assert "RuntimeError" in resp.json()["error"]
 
 
 def test_sla_consumo_un_solo_archivo_400(monkeypatch):
@@ -88,6 +141,26 @@ def test_orquestador_genera_xlsx_docx_sin_pdf(monkeypatch, tmp_path):
     assert informe.xlsx.exists() and informe.docx.exists() and informe.pdf is None
     assert tmp_path in informe.xlsx.parents and informe.ingesta is _INGESTA
     assert informe.totales["reclamos"] == 2
+
+
+def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypatch, tmp_path):
+    reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO)], columns=RECLAMOS_COLS)
+    servicios = pd.DataFrame([_s("L1", 99.7, 13.0)], columns=SERVICIOS_COLS)
+    recibido = {}
+
+    def falso_ingerir(*_a, **kw):
+        recibido.update(kw)
+        return _INGESTA
+
+    monkeypatch.setattr(orquestador, "parse_servicios", lambda _b: servicios)
+    monkeypatch.setattr(orquestador, "parse_reclamos", lambda _b: reclamos)
+    monkeypatch.setattr(orquestador, "ingerir", falso_ingerir)
+    monkeypatch.setattr(orquestador, "cargar_ventana", lambda fecha, engine=None: (reclamos, servicios))
+    monkeypatch.delenv("SOFFICE_BIN", raising=False)
+    informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True,
+                                                      reports_dir=tmp_path, report_history_id=55)
+    assert informe.pdf is None and "LibreOffice" in informe.pdf_omitido
+    assert recibido["report_history_id"] == 55
 
 
 def test_orquestador_reclamos_vacios_falla(monkeypatch, tmp_path):

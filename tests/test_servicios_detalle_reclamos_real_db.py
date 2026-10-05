@@ -38,13 +38,16 @@ def datos():
                   {"o": _ORIGEN})
         s.execute(text("""INSERT INTO app.servicio_sla_snapshot (numero_linea, fecha_corte, sla_prometido, sla_entregado)
                           VALUES (:l, CURRENT_DATE, 99.7, 0.997)"""), {"l": _LINEA})
+        s.execute(text("""INSERT INTO app.servicio_sla_snapshot (numero_linea, fecha_corte, sla_prometido, sla_entregado)
+                          VALUES (:l, CURRENT_DATE - 30, 99.5, 0.99)"""), {"l": _LINEA_VIEJA})
         s.commit()
     try:
         yield
     finally:
         with SessionLocal() as s:
             s.execute(text("DELETE FROM app.reclamos WHERE numero_reclamo LIKE 'TSTD%'"))
-            s.execute(text("DELETE FROM app.servicio_sla_snapshot WHERE numero_linea = :l"), {"l": _LINEA})
+            s.execute(text("DELETE FROM app.servicio_sla_snapshot WHERE numero_linea IN (:l, :v)"),
+                      {"l": _LINEA, "v": _LINEA_VIEJA})
             s.execute(text("DELETE FROM app.servicios WHERE servicio_id = :o"), {"o": _ORIGEN})
             s.commit()
 
@@ -78,7 +81,10 @@ def test_detalle_trae_reclamos_y_sla_historico(datos, client):
     assert r1["cuenta_sla"] is True
     r4 = next(r for r in reclamos if r["numero_reclamo"] == "TSTD4")
     assert r4["cuenta_sla"] is False and r4["pct_presupuesto"] is None
-    assert body["sla_historico"][0]["sla_prometido"] == pytest.approx(99.7)
+    historico = body["sla_historico"]
+    assert [f["numero_linea"] for f in historico] == [_LINEA_VIEJA, _LINEA]   # cronológico: la última foto es la última
+    assert historico[0]["fecha_corte"] < historico[-1]["fecha_corte"]
+    assert historico[-1]["sla_prometido"] == pytest.approx(99.7)
 
 
 def test_busqueda_no_incluye_reclamos(datos, client):

@@ -62,6 +62,7 @@ class ReclamoServicioResponse(BaseModel):
 
 
 class SlaSnapshotResponse(BaseModel):
+    numero_linea: str
     fecha_corte: date
     sla_prometido: float | None = None
     sla_entregado: float | None = None
@@ -741,12 +742,12 @@ async def _sla_historico(db: AsyncSession, svc: Servicio) -> list[SlaSnapshotRes
         await db.execute(
             select(ServicioSlaSnapshot)
             .where(ServicioSlaSnapshot.numero_linea.in_(lineas))
-            .order_by(ServicioSlaSnapshot.fecha_corte)
+            .order_by(ServicioSlaSnapshot.fecha_corte, ServicioSlaSnapshot.numero_linea)
         )
     ).scalars().all()
     return [
         SlaSnapshotResponse(
-            fecha_corte=f.fecha_corte, sla_prometido=_float_o_none(f.sla_prometido),
+            numero_linea=f.numero_linea, fecha_corte=f.fecha_corte, sla_prometido=_float_o_none(f.sla_prometido),
             sla_entregado=_float_o_none(f.sla_entregado),
             horas_reclamos_todos=_float_o_none(f.horas_reclamos_todos),
             horas_restantes=_float_o_none(f.horas_restantes),

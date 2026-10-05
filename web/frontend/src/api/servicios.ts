@@ -31,6 +31,7 @@ export interface ReclamoServicio {
 }
 
 export interface SlaSnapshot {
+  numero_linea: string;
   fecha_corte: string;
   sla_prometido: number | null;
   sla_entregado: number | null;
