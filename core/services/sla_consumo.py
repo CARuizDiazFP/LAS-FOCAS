@@ -78,10 +78,9 @@ def generar_informe_sla_consumo(servicios_bytes: bytes, reclamos_bytes: bytes, *
         pdf_omitido = PDF_EXHAUSTIVO_OMITIDO
         try:
             pdf_ejecutivo = Path(convert_to_pdf(str(docx_ejecutivo), soffice))
-        except Exception as exc:  # noqa: BLE001 - la ingesta ya se persistió: nunca 500 por el PDF
+        except Exception:  # noqa: BLE001 - la ingesta ya se persistió: nunca 500 por el PDF
             logger.exception("action=sla_consumo stage=pdf_ejecutivo")
-            pdf_omitido = (f"No se pudo generar el PDF ejecutivo ({str(exc) or exc.__class__.__name__}); "
-                           f"{PDF_EXHAUSTIVO_OMITIDO}")
+            pdf_omitido = f"No se pudo generar el PDF ejecutivo; {PDF_EXHAUSTIVO_OMITIDO}"
     elif incluir_pdf:
         pdf_omitido = "LibreOffice no configurado"
     return InformeSlaConsumo(xlsx, docx_ejecutivo, docx_exhaustivo, pdf_ejecutivo, None, ingesta,

@@ -47,9 +47,10 @@ def test_sla_consumo_ok(monkeypatch, tmp_path):
     monkeypatch.setenv("TESTING", "true")
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
+    servicios_bytes, reclamos_bytes = _servicios_excel_bytes(), _reclamos_excel_bytes()  # una sola generación
     resp = client.post("/api/reports/sla-consumo", data={"csrf_token": csrf, "pdf_enabled": "false"}, files=[
-        ("files", ("servicios.xlsx", io.BytesIO(_servicios_excel_bytes()))),
-        ("files", ("reclamos.xlsx", io.BytesIO(_reclamos_excel_bytes()))),
+        ("files", ("servicios.xlsx", io.BytesIO(servicios_bytes))),
+        ("files", ("reclamos.xlsx", io.BytesIO(reclamos_bytes)))
     ])
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -61,7 +62,7 @@ def test_sla_consumo_ok(monkeypatch, tmp_path):
     assert body["report_paths"]["docx_exhaustivo"] == "/reports/sla_consumo/202610/a_exhaustivo.docx"
     assert body["report_paths"]["pdf_ejecutivo"] == "/reports/sla_consumo/202610/a_ejecutivo.pdf"
     assert "pdf_exhaustivo" not in body["report_paths"] and "docx" not in body["report_paths"]
-    assert llamado["servicios"] == _servicios_excel_bytes() and llamado["usuario"] == "user"
+    assert llamado["servicios"] == servicios_bytes and llamado["reclamos"] == reclamos_bytes and llamado["usuario"] == "user"
 
 
 def test_sla_consumo_pasa_history_id_y_reporta_pdf_omitido(monkeypatch, tmp_path):
@@ -188,14 +189,16 @@ def test_orquestador_falla_conversion_ejecutiva_no_rompe(monkeypatch, tmp_path):
     monkeypatch.setenv("SOFFICE_BIN", "/fake/soffice")
 
     def falso(docx, soffice):
-        raise RuntimeError("timeout")
+        raise FileNotFoundError("No se generó el PDF en /app/secreto/x.pdf")
 
     import modules.common.libreoffice_export as lo
     monkeypatch.setattr(lo, "convert_to_pdf", falso)
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True, reports_dir=tmp_path)
     assert informe.pdf_ejecutivo is None and informe.pdf_exhaustivo is None
     assert informe.xlsx.exists() and informe.docx_exhaustivo.exists()
-    assert "PDF ejecutivo" in informe.pdf_omitido and "timeout" in informe.pdf_omitido
+    assert informe.pdf_omitido.startswith("No se pudo generar el PDF ejecutivo")
+    assert "/app" not in informe.pdf_omitido and "FileNotFoundError" not in informe.pdf_omitido
+    assert "secreto" not in informe.pdf_omitido
 
 
 def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypatch, tmp_path):
