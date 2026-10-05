@@ -73,3 +73,12 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
    (badge web, listener de Slack), pero rompió silenciosamente `baneos_grupos_service.py` (panel admin
    de baneos activos), un consumidor preexistente nunca auditado por el plan de esa tarea — sólo lo
    detectó una revisión final de rama completa, no las revisiones acotadas por tarea.
+5. **Correr alembic desde el host contra dev: `-c db/alembic.ini` + `DATABASE_URL`/`ALEMBIC_URL`.**
+   `db/alembic/env.py` toma la URL con precedencia `DATABASE_URL > ALEMBIC_URL > ini` e **ignora
+   `POSTGRES_HOST/PORT/...`** (las que sí usan `db/session.py` y los tests `*_real_db`). Dev está
+   publicado en `127.0.0.1:5433`; prod en `5432`. Antes de `upgrade`, correr `alembic -c
+   db/alembic.ini current` y confirmar el head esperado de **dev** — si no coincide, detenerse.
+   La contraseña se lee de `.secrets/Dev_db_password_v1.txt` dentro de la URL, nunca impresa.
+   Además `target_metadata = None` en `env.py`: `autogenerate`/`alembic check` no detectan drift
+   modelo↔migración, así que nombres de índices y tipos se verifican a mano contra el modelo.
+   Hallazgo real (2026-10-05, `20261005_02_sla_consumo_historico`, ver `docs/cierres/2026-10-05.md`).
