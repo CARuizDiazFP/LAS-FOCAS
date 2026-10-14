@@ -77,6 +77,7 @@ class TestPatchCategoriaIndividual:
         assert response.status_code == 200
         body = response.json()
         assert body["categoria"] == 3
+        assert body["categoria_excepcion"] is True
         assert svc.categoria == 3
         assert svc.categoria_excepcion is True
 
@@ -123,6 +124,7 @@ class TestPatchCategoriaHeredar:
 
         assert response.status_code == 200
         assert response.json()["categoria"] == 5
+        assert response.json()["categoria_excepcion"] is False
         assert svc.categoria_excepcion is False
         mock_sync.assert_called_once_with(session, {"BANCO DE GALICIA Y BUENOS AIRES"})
         session.commit.assert_called_once()

@@ -86,6 +86,8 @@ class ServicioItemResponse(BaseModel):
     direccion_2: str | None = None
     estado_servicio: str
     categoria: int | None = None
+    # True = categoría fijada a mano en el servicio: la propagación desde el cliente no la pisa.
+    categoria_excepcion: bool = False
     origen_datos: str
     es_verificable: bool
     es_verificable_override: bool | None = None
@@ -182,6 +184,7 @@ def _to_servicio_item(svc: Servicio) -> ServicioItemResponse | None:
         direccion_2=svc.direccion_2,
         estado_servicio=svc.estado_servicio,
         categoria=svc.categoria,
+        categoria_excepcion=svc.categoria_excepcion is True,
         origen_datos=svc.origen_datos.value if hasattr(svc.origen_datos, "value") else str(svc.origen_datos),
         es_verificable=svc.es_verificable,
         es_verificable_override=svc.es_verificable_override,
