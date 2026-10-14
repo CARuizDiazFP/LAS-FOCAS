@@ -123,7 +123,9 @@ filas legado — no removibles sin recrear el tipo**:
 | `direccion_2`         | String(255)    | Dirección complementaria. |
 | `estado_servicio`     | String(128), index | Estado informado en la última ingesta SLA que lo tocó — pass-through directo del Excel, salvo la protección contra catch-up histórico descripta abajo (2026-08-31). |
 | `cliente`             | String(255)    | Nombre del cliente (opcional). |
-| `categoria`           | Integer, `NOT NULL DEFAULT 6`, `CHECK BETWEEN 0 AND 6` | **Nivel Cliente del Excel SLA** ("C0" a "C6", columna "Nivel Cliente"), repurpuesto desde 2026-08-26 — antes era una prioridad de reporting manual sin relación con el Excel. Se alimenta en cada `POST /servicios/ingest` (validado contra el mismo rango 0-6 antes del upsert; un valor fuera de rango degrada al valor previo y queda loggeado, no tumba la ingesta) y sigue siendo editable a mano vía `PATCH /servicios/{id}/categoria`/`PATCH /servicios/bulk-categoria` — una edición manual queda pisada por la próxima ingesta real, comportamiento aceptado explícitamente (no tiene mecanismo de override como `es_verificable_override`). Los valores legacy (0 = placeholder Cromo, 6 = sin categorizar) se dejan como están hasta que llegue un Excel real para esa fila — sin backfill retroactivo. El filtro default del listado (`ServiciosView.vue`) es "sin filtro" (antes `categoria=6`), para no ocultar filas tras la primera ingesta real. |
+| `categoria`           | Integer, **nullable, sin default**, `CHECK BETWEEN 0 AND 6` | Categoría efectiva del servicio (C0 a C6). **`NULL` = sin categorizar**; `6` = sólo C6 real (desde la migración `20261014_01` ya no es el default, y el viejo 6 sin cliente pasó a NULL). Es una copia materializada de la categoría de su cliente (`app.clientes.categoria`): la escribe `core/services/clientes_categoria_service.py::sincronizar_categorias` salvo que `categoria_excepcion` sea `true`. Ya no la pisa la planilla SLA: el Excel sólo llena `categoria_sla` y, si `categoria` está en NULL, la completa de forma provisoria hasta la próxima sync. Sigue editable por servicio vía `PATCH /servicios/{id}/categoria` y `PATCH /servicios/bulk-categoria` (marcan `categoria_excepcion = true`). Detalle de reglas en `docs/clientes_categoria.md`. |
+| `categoria_sla`       | SmallInteger, nullable, `CHECK BETWEEN 0 AND 6` | Nivel Cliente que trajo la planilla SLA (columna "Nivel Cliente"), sin interpretar. Es el dato con el que se calcula la moda por cliente. Una celda vacía o fuera de rango conserva el valor previo. Desde `20261014_01`. |
+| `categoria_excepcion` | Boolean, `NOT NULL DEFAULT false` | `true` = un admin fijó la categoría de este servicio a mano y la propagación del cliente no lo pisa. `PATCH /servicios/{id}/categoria/heredar` lo vuelve a `false` y re-sincroniza al cliente. Desde `20261014_01`. |
 | `es_verificable`      | Boolean, `NOT NULL DEFAULT false` | `True` si `tipo_servicio` ∈ {INT, RPV, ISI, ISIS, TLS, EWS} (`core/services/servicios_consolidacion_service.py::TIPOS_SERVICIO_VERIFICABLES`). Recalculado en cada ingesta SLA salvo que `es_verificable_override` no sea NULL. Desde 2026-08-26 (migración `20260825_02`, backfill inicial por `tipo_servicio` sobre las filas existentes). |
 | `es_verificable_override` | Boolean, nullable | Corrección manual de admin vía `PATCH /servicios/{id}/verificable` (mismo patrón sin auditoría que `categoria`) — cuando no es NULL, la ingesta respeta este valor y no recalcula `es_verificable`. No tiene forma de volver a NULL ("automático") desde la UI todavía — un servicio corregido una vez queda fijo. |
 | `origen_datos`        | enum `app.servicio_origen_datos` (`MANUAL`\|`TRACKING`\|`INGEST_EXCEL`\|`INFERIDO_CROMO`), `NOT NULL DEFAULT 'MANUAL'` | Distingue un `Servicio` real de un placeholder sintetizado por el matching Cromo↔Servicio (`INFERIDO_CROMO`, `categoria=0`). Mismo patrón que `CamaraOrigenDatos`. Desde 2026-08-14. |
@@ -275,6 +277,41 @@ vacía: hasta que corra `scripts/servicios_backfill_prov.py`, todo `servicio_id`
 "vencido" por el `LEFT JOIN` con `ultima_sincronizacion_ok IS NULL` — no es un bug de la consulta,
 es el estado real de un 92,5% de los servicios que nunca pasó por PROV (medido real, ver
 `docs/bot.md`).
+
+### Tablas `clientes` y `clientes_alias` (2026-10-14)
+
+Fuente de verdad de la categoría (C0 a C6) por cliente. Reglas completas en `docs/clientes_categoria.md`.
+Migración `20261014_01`. Modelos `Cliente`, `ClienteAlias` y `ClienteOrigenCategoria` en `db/models/infra.py`.
+
+**`app.clientes`**: un registro por `clave` normalizada (mayúsculas, sin sufijos societarios).
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `nombre` | String(255) | Nombre para mostrar: el más frecuente entre sus servicios, o el de la lista. |
+| `clave` | String(255), unique | Salida de `normalizar_clave_cliente`. |
+| `categoria` | SmallInteger, nullable, `CHECK BETWEEN 0 AND 6` | `NULL` = sin categorizar. |
+| `origen_categoria` | enum `app.cliente_origen_categoria` (`LISTA`\|`MANUAL`\|`SLA`\|`AUTO`), `NOT NULL DEFAULT 'AUTO'` | Quién definió la categoría. `LISTA`/`MANUAL` los fija un admin y la sync no los recalcula. `SLA` = moda de `categoria_sla`. `AUTO` = 0 si el cliente sólo tiene placeholders, o NULL sin datos. |
+| `a_revisar` | Boolean, `NOT NULL DEFAULT false` | `true` si sus servicios traen más de una categoría SLA distinta (1 a 6). |
+| `creado_en`, `actualizado_en` | DateTime(tz) | `actualizado_en` tiene `onupdate`. |
+| `actualizado_por` | String(120), nullable | Usuario (`X-Usuario`) del último cambio manual o de lista. |
+
+**`app.clientes_alias`**: variantes del nombre que resuelven a un cliente.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` | Integer (PK) | |
+| `clave` | String(255), unique | Clave normalizada de la variante. |
+| `nombre_original` | String(255) | Texto tal como llegó. |
+| `cliente_id` | FK `app.clientes.id` `ON DELETE CASCADE`, índice `ix_clientes_alias_cliente_id` | |
+| `origen` | String(10), `CHECK IN ('AUTO','MANUAL')` | `AUTO` lo crea la sync; `MANUAL` lo vincula un admin (o el script de regularización). |
+
+**Semántica de `NULL`:** en `servicios.categoria` y en `clientes.categoria`, `NULL` significa "sin categorizar" y
+es un valor válido. Los lectores que arman filtros o textos deben tratarlo (el filtro de `/servicios/search`
+acepta el token `sin`). Nunca usar 6 como reemplazo.
+
+**Sin FK** entre `servicios.nombre_cliente` y `clientes`: el vínculo es por la clave calculada en Python
+(`normalizar_clave_cliente`) y la sync lo resuelve con una tabla temporal, en SQL set-based.
 
 ### Tabla `servicio_empalme_association` (Legacy)
 
@@ -1093,6 +1130,9 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20260929_01` | `20260929_01_api_clients.py` | Tabla `app.api_clients` (clientes OAuth2 `client_credentials` de `/api/v1`, índice único `ix_api_clients_client_id`). Upgrade→downgrade→upgrade verificado en dev |
 | `20260929_02` | `20260929_02_cromo_tracking_cache_pelos_camino.py` | Columna `cromo_tracking_cache.pelos_camino BIGINT[] NULL`: pelos que recorre cada tracking, para que `track` entregue un `.txt` por camino y no uno por posición de ODF. `NULL` = entrada previa, se regenera. Upgrade→downgrade→upgrade verificado en dev |
 | `20260929_03` | `20260929_03_cromo_clases_cables_terceros.py` | Alta en `cromo_clases` de 52/59/60 (cables de terceros, `entidad='CABLE'`), requisito de la FK `cromo_cables.clase`. El `downgrade()` borra esos cables con sus tubos, pelos y matches. Upgrade→downgrade→upgrade verificado en dev |
+| `20261005_01` | `20261005_01_cromo_servicio_pelo_excluido.py` | Tabla `app.cromo_servicio_pelo_excluido`: pelos huérfanos que un admin saca del tracking de un Servicio |
+| `20261005_02` | `20261005_02_sla_consumo_historico.py` | Persistencia del informe SLA consumido (reclamos, foto de SLA por línea y corte). **Fix 2026-10-14:** el `UPDATE app.reclamos SET horas_netas = horas_netas / 60.0` pasó a correr **después** del `alter_column` a `Numeric(12,4)`; antes corría sobre la columna vieja y redondeaba a 2 decimales. Dev ya estaba en esta revisión (no se re-ejecuta); prod la corre por primera vez con el orden correcto. Test: `tests/test_sla_consumo_migracion_orden.py` |
+| `20261014_01` | `20261014_01_clientes_categoria.py` | Enum `app.cliente_origen_categoria`, tablas `app.clientes` y `app.clientes_alias`, columnas `servicios.categoria_sla` y `servicios.categoria_excepcion`, y `servicios.categoria` pasa a nullable sin default. Backfill: `categoria_sla = categoria` (1 a 6, con cliente) y `categoria = NULL` donde era 6 sin cliente. No carga clientes: eso lo hace `scripts/clientes_categoria_regularizar.py`. `downgrade()` devuelve los NULL a 6 (con pérdida). Upgrade→downgrade→upgrade verificado en dev |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

@@ -2875,3 +2875,27 @@ su propia ventana de mantenimiento.
 - Decisión: (1) El ID visible del servicio es la **línea más actualizada** (numéricamente mayor); `numero_primer_servicio` sólo unifica. (2) **No se muestra la línea original** del reclamo. (3) **Una única torta global** de causas; sin tortas por servicio ni por reclamo. (4) El DOCX exhaustivo trae ficha completa de los servicios con reclamos y una **tabla compacta** para los que no tienen. (5) Todo se genera en la **misma solicitud** (XLSX, DOCX ejecutivo, DOCX exhaustivo, PDF del ejecutivo); el PDF del exhaustivo no se genera en línea (~6,5 min en LibreOffice) y la respuesta lo explica con `pdf_omitido`. Tolerancia `EPS_HORAS = 1e-6`; el DOCX ejecutivo lista los `SLA_CONSUMO_TOP_EVENTOS` (20) eventos de mayor horas-servicio. Carrier con evento no se reasigna: se lista como inconsistencia.
 - Alternativas: mostrar la línea original; tortas por servicio (costo alto); generar el PDF exhaustivo en línea o con worker; mostrar el primer servicio como ID.
 - Impacto: Sin migración nueva (prod sigue sin migrar ni desplegar). Ver `docs/informes/sla_consumo.md`.
+
+## 2026-10-14 — Clientes por categoría como fuente de verdad (C0–C6)
+
+- Contexto: `servicios.categoria` lo escribían sin precedencia la planilla SLA (pisaba todo), los placeholders de Cromo/PROV (0) y los cambios manuales por servicio. No había tabla de clientes, el nombre era texto libre con variantes (Galicia "SA"/"S A U", ARSAT x2, Credicoop) y `6` mezclaba el C6 real con "sin categorizar" porque era el default desde `20260814_01`.
+- Decisión (las 8 del usuario, 2026-10-14):
+  1. `6` = sólo C6 real; "sin categorizar" pasa a `NULL`.
+  2. C6: la Lista es la fuente principal y la ingesta SLA la secundaria. Un C6 de la SLA fuera de la Lista entra como "C6 · SLA". Lo que define un admin siempre gana.
+  3. C5…C0 se autocompletan por moda de servicios; C0 se ignora si hay una categoría real; el empate lo gana la más alta.
+  4. El servicio hereda la categoría del cliente salvo una excepción por servicio marcada por un admin; la herencia no pisa excepciones.
+  5. Tabla de clientes + alias, con la categoría materializada en `servicios.categoria` para que los lectores no cambien.
+  6. Regularización retroactiva: los servicios de clientes C6 pasan a 6, placeholders C0 incluidos.
+  7. Lista C6 inicial de 52 nombres (los 50 del usuario + `BANCO DE LA CIUDAD DE BUENOS AIRES` + `BANCO MACRO SA`).
+  8. Despliegue de todo `dev` junto a prod, con el informe SLA consumido pendiente; antes se corrige la migración `20261005_02`.
+- Rulings que cambiaron el comportamiento respecto del plan:
+  - **AUTO sin datos SLA = 0 si el cliente tiene al menos un servicio, `NULL` si no tiene** (en vez de mirar `servicios.categoria = 0`, que la propagación pisa). Es estable ante idas y vueltas MANUAL→AUTO. Los clientes sólo-PROV quedan C0.
+  - **No se mueve el único alias de un cliente `LISTA`/`MANUAL`** (error "usar fusionar"): no se pierden decisiones del admin en silencio. Sólo se borran los clientes AUTO/SLA que quedan sin alias.
+  - **Los servicios con excepción siguen votando en la moda** con su `categoria_sla`: es dato SLA, no decisión del admin.
+  - **La ingesta Excel conserva la `categoria` de las filas existentes**; sólo completa la provisoria cuando es NULL. Evita churn en `updated` y una regresión si la sync falla.
+  - **Una lista sin encabezado reconocible no pierde la primera fila** (caso de uso: adjuntar la lista tal cual). El encabezado se reconoce por "Cliente"/"Nombre Cliente".
+  - **"Sin categorizar" no se puede fijar como excepción de un servicio puntual**: el `PATCH` acepta 0..6 y la opción está deshabilitada en el detalle. Para volver al cliente está "Heredar".
+  - Además de los 3 alias del plan, el archivo inicial trae los renombres societarios evidentes vistos en dev: `CENTURYLINK ARGENTINA SA`→CIRION, `BANCO SANTANDER RIO SA`→BANCO SANTANDER ARGENTINA, `TELEVISION FEDERAL SA (TELEFE)`→TELEVISION FEDERAL S A. Otros C6 de la SLA fuera de la Lista (PRISMA, ITAU, TRANSAMERICAN) no se fuerzan: quedan C6·SLA y se reportan.
+  - La sync post-ingesta es resiliente: una falla se loguea (`clientes_sync_error`) y no tumba la ingesta; "Re-sincronizar" la corrige.
+- Alternativas: sólo normalizar el nombre en la lectura (sin tabla); columna `cliente_id` con FK en `servicios` (más invasivo para los lectores y las ingestas); recalcular la categoría al leer.
+- Impacto: migración `20261014_01`; módulo admin "Clientes por categoría"; la planilla SLA deja de pisar la categoría. Ver `docs/clientes_categoria.md`. Despliegue a dev y prod pendiente al momento de escribir esta entrada.
