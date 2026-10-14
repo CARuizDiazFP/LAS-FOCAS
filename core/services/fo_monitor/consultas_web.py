@@ -242,6 +242,80 @@ def geojson_red(session: Session) -> str:
     return '{"type":"FeatureCollection","features":[' + ",".join(partes) + "]}"
 
 
+TIPOS_BUSQUEDA = ("servicio", "cable", "camara")
+LIMITE_BUSQUEDA = 300
+
+_SQL_BUSCAR_SERVICIO = text(
+    """
+    WITH s AS (
+        SELECT id FROM app.servicios
+        WHERE servicio_id = CAST(:q AS varchar) OR numero_primer_servicio = CAST(:q AS varchar)
+           OR CAST(:q AS varchar) = ANY(alias_ids)
+    )
+    SELECT DISTINCT c.n_id, c.nombre, c.clase
+    FROM app.cromo_servicio_match m
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
+    JOIN app.cromo_cables c ON c.n_id = p.cable_n_id AND c.vigente
+    WHERE m.servicio_id IN (SELECT id FROM s)
+    LIMIT :limite
+    """
+)
+_SQL_BUSCAR_CABLE = text(
+    """
+    SELECT c.n_id, c.nombre, c.clase
+    FROM app.cromo_cables c
+    WHERE c.vigente AND (c.nombre ILIKE :patron OR c.n_id = :nid)
+    ORDER BY (c.nombre ILIKE :exacto) DESC, c.nombre
+    LIMIT :limite
+    """
+)
+_SQL_BUSCAR_CAMARA = text(
+    """
+    WITH cam AS (
+        SELECT id FROM app.camaras WHERE nombre ILIKE :patron OR id = :nid ORDER BY nombre LIMIT 5
+    ), bot AS (
+        SELECT b.n_id FROM app.cromo_botellas b WHERE b.vigente AND b.camara_id IN (SELECT id FROM cam)
+    )
+    SELECT DISTINCT c.n_id, c.nombre, c.clase
+    FROM app.cromo_cables c
+    WHERE c.vigente AND (c.extremo_a_n_id IN (SELECT n_id FROM bot) OR c.extremo_b_n_id IN (SELECT n_id FROM bot))
+    LIMIT :limite
+    """
+)
+
+
+def buscar_en_mapa(session: Session, *, tipo: str, q: str) -> dict:
+    """Cables (con geometría) que coinciden con un servicio, un nombre de cable o una cámara: es la
+    forma de cargar el mapa sin bajar la red completa (~8 MB). Devuelve GeoJSON + metadatos."""
+    tipo = (tipo or "").lower()
+    q = (q or "").strip()
+    if tipo not in TIPOS_BUSQUEDA:
+        raise ValueError(f"tipo debe ser uno de {', '.join(TIPOS_BUSQUEDA)}")
+    if len(q) < 2:
+        raise ValueError("ingresá al menos 2 caracteres")
+    nid = int(q) if q.isdigit() else -1
+    params = {"limite": LIMITE_BUSQUEDA + 1, "patron": f"%{q}%", "exacto": q, "nid": nid, "q": q}
+    sql = {"servicio": _SQL_BUSCAR_SERVICIO, "cable": _SQL_BUSCAR_CABLE, "camara": _SQL_BUSCAR_CAMARA}[tipo]
+    filas = session.execute(sql, params).all()
+    truncado = len(filas) > LIMITE_BUSQUEDA
+    filas = filas[:LIMITE_BUSQUEDA]
+    coords = _coords(session, [int(f.n_id) for f in filas])
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": coords[int(f.n_id)]},
+            "properties": {"cable_n_id": int(f.n_id), "nombre": f.nombre, "clase": f.clase},
+        }
+        for f in filas
+        if int(f.n_id) in coords
+    ]
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "meta": {"tipo": tipo, "q": q, "encontrados": len(filas), "con_geometria": len(features), "truncado": truncado},
+    }
+
+
 def geojson_botellas(session: Session, *, bbox: Optional[str], limit: int = 5000) -> dict:
     caja = _parse_bbox(bbox)
     q = session.query(CromoBotella.n_id, CromoBotella.nombre, CromoBotella.latitud, CromoBotella.longitud,

@@ -196,3 +196,14 @@ export function leerConfigPiloto() {
 export function actualizarConfigPiloto(cambios: Partial<ConfigPiloto>) {
   return requestJson<ConfigPiloto>('/api/admin/fo-monitor/config', { method: 'PUT', json: cambios, csrf: true });
 }
+
+export type TipoBusquedaMapa = 'servicio' | 'cable' | 'camara';
+
+export interface ResultadoBusquedaMapa extends GeoJSON.FeatureCollection {
+  meta: { tipo: TipoBusquedaMapa; q: string; encontrados: number; con_geometria: number; truncado: boolean };
+}
+
+export function buscarEnMapa(tipo: TipoBusquedaMapa, q: string) {
+  const params = new URLSearchParams({ tipo, q });
+  return requestJson<ResultadoBusquedaMapa>(`/api/fo-monitor/mapa/buscar?${params.toString()}`);
+}

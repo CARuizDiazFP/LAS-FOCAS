@@ -6,9 +6,25 @@
 <template>
   <div class="fomon-mapa">
     <div ref="contenedor" class="fomon-mapa__lienzo" role="region" aria-label="Mapa de cables FO"></div>
-    <div class="fomon-mapa__capas card">
-      <label><input v-model="verRed" type="checkbox" /> Red FO completa</label>
+    <div class="fomon-mapa__panel card">
+      <form class="fomon-mapa__buscar" @submit.prevent="buscar">
+        <select v-model="tipoBusqueda" aria-label="Buscar por">
+          <option value="servicio">Servicio</option>
+          <option value="cable">Cable</option>
+          <option value="camara">Cámara</option>
+        </select>
+        <input v-model="textoBusqueda" type="search" :placeholder="placeholderBusqueda" aria-label="Texto a buscar" />
+        <button class="btn primary" type="submit" :disabled="buscando || textoBusqueda.trim().length < 2" aria-label="Buscar">
+          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+        </button>
+        <button v-if="resumenBusqueda" class="btn subtle" type="button" aria-label="Limpiar búsqueda" @click="limpiarBusqueda">
+          <i class="ph ph-x" aria-hidden="true"></i>
+        </button>
+      </form>
+      <small v-if="resumenBusqueda" class="fomon-mapa__resumen">{{ resumenBusqueda }}</small>
+      <label><input v-model="verRed" type="checkbox" /> Red FO completa <small>(≈ 1,5 MB, carga bajo demanda)</small></label>
       <label><input v-model="verBotellas" type="checkbox" /> Botellas (zoom ≥ 15)</label>
+      <small v-if="cargandoRed" class="fomon-mapa__resumen">Cargando red…</small>
     </div>
     <p v-if="avisoBase" class="fomon-mapa__aviso">{{ avisoBase }}</p>
   </div>
@@ -17,11 +33,17 @@
 <script setup lang="ts">
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, StyleSpecification } from 'maplibre-gl';
+// MapLibre v6 calcula la URL de su worker en runtime (`new URL('./maplibre-gl-worker.mjs',
+// import.meta.url)`), así que Vite no lo emite y el mapa nunca termina de cargar (dev 2026-10-14: sólo
+// se pedía el header del PMTiles). `?worker&url` lo empaqueta con su chunk compartido y lo registramos.
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { layers, namedFlavor } from '@protomaps/basemaps';
 import { Protocol } from 'pmtiles';
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { obtenerMapaConfig, type ColorSemaforo, type MapaConfig } from '../../api/foMonitor';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  buscarEnMapa, obtenerMapaConfig, type ColorSemaforo, type MapaConfig, type TipoBusquedaMapa,
+} from '../../api/foMonitor';
 import { requestJson } from '../../api/client';
 import { paletaSemaforo, resolverToken } from './colores';
 
@@ -32,9 +54,19 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'seleccionar', payload: { cableNId: number; intervencionId: number | null }): void }>();
 
 const contenedor = ref<HTMLDivElement | null>(null);
-const verRed = ref(true);
+// La red completa (~34k cables, ~8 MB sin comprimir) no se baja de entrada: se busca por servicio,
+// cable o cámara, o se activa a pedido (feedback del usuario 2026-10-14).
+const verRed = ref(false);
+const cargandoRed = ref(false);
 const verBotellas = ref(false);
 const avisoBase = ref('');
+const tipoBusqueda = ref<TipoBusquedaMapa>('servicio');
+const textoBusqueda = ref('');
+const buscando = ref(false);
+const resumenBusqueda = ref('');
+const placeholderBusqueda = computed(() =>
+  ({ servicio: 'N° de servicio…', cable: 'Nombre o n_id del cable…', camara: 'Nombre o id de cámara…' })[tipoBusqueda.value],
+);
 let mapa: maplibregl.Map | null = null;
 let protocolo: Protocol | null = null;
 const CENTRO_AMBA: [number, number] = [-58.45, -34.62];
@@ -75,7 +107,10 @@ function expresionColor(paleta: Record<ColorSemaforo, string>): maplibregl.Expre
 
 async function cargarRed(): Promise<void> {
   if (!mapa || mapa.getSource('red')) return;
-  const red = await requestJson<GeoJSON.FeatureCollection>('/api/fo-monitor/mapa/red');
+  cargandoRed.value = true;
+  const red = await requestJson<GeoJSON.FeatureCollection>('/api/fo-monitor/mapa/red').finally(() => {
+    cargandoRed.value = false;
+  });
   if (!mapa || mapa.getSource('red')) return;
   mapa.addSource('red', { type: 'geojson', data: red, tolerance: 0.6 });
   mapa.addLayer(
@@ -108,6 +143,7 @@ onMounted(async () => {
   if (cfg.modo === 'osm') {
     avisoBase.value = cfg.pmtiles_disponible ? '' : 'Mapa base externo (OSM): el PMTiles local todavía no está instalado.';
   }
+  maplibregl.setWorkerUrl(workerUrl);
   protocolo = new Protocol();
   maplibregl.addProtocol('pmtiles', protocolo.tile);
   mapa = new maplibregl.Map({ container: contenedor.value, style: estiloBase(cfg), center: CENTRO_AMBA, zoom: 11, attributionControl: { compact: true } });
@@ -136,7 +172,20 @@ onMounted(async () => {
       paint: { 'circle-radius': 4, 'circle-color': resolverToken('--color-bg'), 'circle-stroke-width': 1.5,
         'circle-stroke-color': resolverToken('--color-neutral-300') },
     });
-    void cargarRed();
+    mapa.addSource('busqueda', { type: 'geojson', data: VACIO });
+    mapa.addLayer({
+      id: 'busqueda-linea',
+      type: 'line',
+      source: 'busqueda',
+      paint: { 'line-color': resolverToken('--color-accent'), 'line-width': 4, 'line-opacity': 0.9 },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+    }, 'interv-linea');
+    if (verRed.value) void cargarRed();
+    mapa.on('click', 'busqueda-linea', (ev) => {
+      if (mapa?.queryRenderedFeatures(ev.point, { layers: ['interv-linea'] }).length) return;
+      const p = ev.features?.[0]?.properties;
+      if (p) emit('seleccionar', { cableNId: Number(p.cable_n_id), intervencionId: null });
+    });
     mapa.on('click', 'interv-linea', (ev) => {
       const p = ev.features?.[0]?.properties;
       if (p) emit('seleccionar', { cableNId: Number(p.cable_n_id), intervencionId: Number(p.intervencion_id) });
@@ -146,7 +195,7 @@ onMounted(async () => {
       const p = ev.features?.[0]?.properties;
       if (p) emit('seleccionar', { cableNId: Number(p.id), intervencionId: null });
     });
-    for (const capa of ['interv-linea', 'red-linea']) {
+    for (const capa of ['interv-linea', 'red-linea', 'busqueda-linea']) {
       mapa.on('mouseenter', capa, () => { if (mapa) mapa.getCanvas().style.cursor = 'pointer'; });
       mapa.on('mouseleave', capa, () => { if (mapa) mapa.getCanvas().style.cursor = ''; });
     }
@@ -161,7 +210,33 @@ watch(() => props.cableSeleccionado, (id) => {
 });
 watch(verRed, (v) => {
   if (mapa?.getLayer('red-linea')) mapa.setLayoutProperty('red-linea', 'visibility', v ? 'visible' : 'none');
+  else if (v) void cargarRed();
 });
+
+async function buscar(): Promise<void> {
+  if (!mapa) return;
+  buscando.value = true;
+  try {
+    const r = await buscarEnMapa(tipoBusqueda.value, textoBusqueda.value.trim());
+    (mapa.getSource('busqueda') as GeoJSONSource | undefined)?.setData(r);
+    const m = r.meta;
+    resumenBusqueda.value = m.encontrados === 0
+      ? 'Sin coincidencias.'
+      : `${m.con_geometria} cable(s) en el mapa${m.truncado ? ' (resultado truncado, refiná la búsqueda)' : ''}` +
+        (m.con_geometria < m.encontrados ? ` · ${m.encontrados - m.con_geometria} sin trazado` : '');
+    enfocar(r.features.flatMap((f) => (f.geometry as GeoJSON.LineString).coordinates as [number, number][]));
+  } catch (err) {
+    resumenBusqueda.value = (err as Error).message;
+  } finally {
+    buscando.value = false;
+  }
+}
+
+function limpiarBusqueda(): void {
+  (mapa?.getSource('busqueda') as GeoJSONSource | undefined)?.setData(VACIO);
+  resumenBusqueda.value = '';
+  textoBusqueda.value = '';
+}
 watch(verBotellas, (v) => {
   if (v) void cargarBotellas();
   else (mapa?.getSource('botellas') as GeoJSONSource | undefined)?.setData(VACIO);
@@ -197,15 +272,31 @@ onBeforeUnmount(() => {
   inset: 0;
 }
 
-.fomon-mapa__capas {
+.fomon-mapa__panel {
   position: absolute;
   top: 10px;
   left: 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  max-width: min(420px, calc(100% - 70px));
   padding: 8px 10px;
   font-size: 12px;
+}
+
+.fomon-mapa__buscar {
+  display: flex;
+  gap: 6px;
+}
+
+.fomon-mapa__buscar input {
+  flex: 1;
+  min-width: 0;
+}
+
+.fomon-mapa__panel small,
+.fomon-mapa__resumen {
+  color: var(--color-text-muted);
 }
 
 .fomon-mapa__aviso {

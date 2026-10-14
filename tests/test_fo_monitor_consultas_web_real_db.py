@@ -98,3 +98,34 @@ def test_historial_reconocer_y_config_auditada(session):
     cfg = consultas_web.actualizar_config(session, {"activo": True, "tope_mensajes_diario": 123}, usuario="admin")
     assert cfg["activo"] is True and cfg["tope_mensajes_diario"] == 123
     assert session.query(FomonConfigAuditoria).count() == antes + 1
+
+
+def test_buscar_en_mapa_por_servicio_cable_y_camara(session):
+    from sqlalchemy import text as _t
+
+    fila = session.execute(_t(
+        """
+        SELECT s.servicio_id, c.nombre, b.camara_id
+        FROM app.cromo_servicio_match m
+        JOIN app.servicios s ON s.id = m.servicio_id
+        JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
+        JOIN app.cromo_cables c ON c.n_id = p.cable_n_id AND c.vigente
+        JOIN app.fomon_cable_geo g ON g.cable_n_id = c.n_id
+        JOIN app.cromo_botellas b ON b.n_id = c.extremo_a_n_id AND b.camara_id IS NOT NULL
+        LIMIT 1
+        """
+    )).one()
+
+    por_servicio = consultas_web.buscar_en_mapa(session, tipo="servicio", q=fila.servicio_id)
+    assert fila.nombre in {f["properties"]["nombre"] for f in por_servicio["features"]}
+
+    por_cable = consultas_web.buscar_en_mapa(session, tipo="cable", q=fila.nombre)
+    assert por_cable["features"][0]["properties"]["nombre"] == fila.nombre  # coincidencia exacta primero
+
+    por_camara = consultas_web.buscar_en_mapa(session, tipo="camara", q=str(fila.camara_id))
+    assert fila.nombre in {f["properties"]["nombre"] for f in por_camara["features"]}
+
+    with pytest.raises(ValueError):
+        consultas_web.buscar_en_mapa(session, tipo="pelo", q="123")
+    with pytest.raises(ValueError):
+        consultas_web.buscar_en_mapa(session, tipo="cable", q="F")

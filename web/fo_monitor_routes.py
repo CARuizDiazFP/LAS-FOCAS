@@ -186,6 +186,15 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:
                             headers={**headers, "Content-Encoding": "gzip"})
         return Response(_cache_red["cuerpo"], media_type="application/geo+json", headers=headers)
 
+    @app.get("/api/fo-monitor/mapa/buscar")
+    def fomon_mapa_buscar(request: Request, tipo: str, q: str):
+        _auth(request)
+        with _sesion_local() as s:
+            try:
+                return consultas_web.buscar_en_mapa(s, tipo=tipo, q=q)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
     @app.get("/api/fo-monitor/mapa/botellas")
     def fomon_mapa_botellas(request: Request, bbox: Optional[str] = None, limit: int = 5000):
         _auth(request)
