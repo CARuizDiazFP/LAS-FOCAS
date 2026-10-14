@@ -13,7 +13,9 @@ Cambios:
 - ``app.fomon_config`` (singleton, ``CHECK id = 1``): ventana del piloto, tope diario de mensajes a
   burritoIA (400), lote máximo, timeouts, concurrencia, versión de prompt y la marca de agua
   ``ultimo_ingreso_id_procesado``. Se siembra con el ``max(id)`` actual de ``app.ingresos`` para que
-  el worker NO procese el histórico al arrancar.
+  el worker NO procese el histórico al arrancar. ``canales_ingreso`` limita qué ingresos se verifican
+  por ``app.ingresos.canal_id``: por defecto sólo ``C08UB8ML3LP`` (#baneo-de-camaras-prueba); el canal
+  productivo de ingresos queda en stand-by hasta que se agregue explícitamente.
 - Fila ``fo_monitor`` en ``app.config_servicios`` (kill switch + canal), **inactiva**, canal
   ``C08UB8ML3LP`` (#baneo-de-camaras-prueba). Cada worker filtra ``config_servicios`` por su propio
   ``nombre_servicio``, así que la fila nueva no dispara nada en los demás.
@@ -63,6 +65,7 @@ def upgrade() -> None:
         sa.Column("burrito_user_id", sa.String(32), nullable=False, server_default="U0A2HE3K950"),
         sa.Column("prompt_version", sa.String(8), nullable=False, server_default="v4"),
         sa.Column("ultimo_ingreso_id_procesado", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("canales_ingreso", sa.String(256), nullable=False, server_default="C08UB8ML3LP"),
         sa.Column("actualizado_por", sa.String(128), nullable=True),
         sa.Column("actualizado_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("id = 1", name="ck_fomon_config_singleton"),

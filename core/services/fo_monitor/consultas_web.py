@@ -299,7 +299,7 @@ def reconocer(session: Session, intervencion_id: int, *, usuario: str, motivo: s
 
 
 CAMPOS_CONFIG = ("ventana_desde", "ventana_hasta", "tope_mensajes_diario", "max_ids_por_mensaje",
-                 "timeout_base_s", "timeout_por_servicio_s", "concurrencia", "prompt_version")
+                 "timeout_base_s", "timeout_por_servicio_s", "concurrencia", "prompt_version", "canales_ingreso")
 
 
 def leer_config(session: Session) -> dict:

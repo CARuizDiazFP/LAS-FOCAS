@@ -133,10 +133,15 @@ def _activar(s: Session, *, tope: int = 400, lote: int = 10) -> None:
     s.commit()
 
 
-def _ingreso(s: Session, camara: Camara, tipo: str = "Ingreso", momento: datetime | None = None):
+CANAL_PRUEBA = "C08UB8ML3LP"  # #baneo-de-camaras-prueba: único canal de ingresos habilitado por defecto
+CANAL_PROD = "C015UKWP2MS"
+
+
+def _ingreso(s: Session, camara: Camara, tipo: str = "Ingreso", momento: datetime | None = None,
+             canal: str = CANAL_PRUEBA):
     return registrar_movimiento_ingreso(
         s, camara=camara, botella=None, tipo_movimiento=tipo, tecnico_nombre="TEST-FOMON",
-        momento=momento, thread_ts="1799999999.000100", canal_id="CPROD",
+        momento=momento, thread_ts="1799999999.000100", canal_id=canal,
     )
 
 
@@ -195,6 +200,23 @@ def test_piloto_inactivo_avanza_marca_sin_crear_intervencion(session):
     assert session.query(FomonIntervencion).count() == antes
     assert session.get(FomonConfig, 1).ultimo_ingreso_id_procesado >= ingreso.id
     assert slack.publicados == []
+
+
+def test_ingreso_del_canal_productivo_queda_en_stand_by(session):
+    slack, reloj = FakeSlack(), Reloj()
+    _activar(session)
+    camara = _camara_con_servicios(session)
+    antes = session.query(FomonIntervencion).count()
+    ingreso = _ingreso(session, camara, momento=reloj(), canal=CANAL_PROD)
+    motor.tick(session, slack, reloj)
+    assert session.query(FomonIntervencion).count() == antes
+    assert session.get(FomonConfig, 1).ultimo_ingreso_id_procesado >= ingreso.id
+
+    session.get(FomonConfig, 1).canales_ingreso = f"{CANAL_PRUEBA},{CANAL_PROD}"
+    session.commit()
+    _ingreso(session, camara, momento=reloj(), canal=CANAL_PROD)
+    motor.tick(session, slack, reloj)
+    assert session.query(FomonIntervencion).count() == antes + 1
 
 
 def test_ingreso_tardio_sin_linea_base_y_viejo_ignorado(session):

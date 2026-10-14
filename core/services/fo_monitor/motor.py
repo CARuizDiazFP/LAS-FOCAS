@@ -303,7 +303,12 @@ def detectar_ingresos(session: Session, cfg: Config, slack: SlackGateway, ahora:
     if not cfg.operativo:
         return 0
 
-    candidatos = [i for i in nuevos if i.tipo == IngresoTipo.INGRESO and i.fecha_inicio is not None]
+    permitidos = {c.strip() for c in (cfg.fila.canales_ingreso or "").split(",") if c.strip()}
+    candidatos = [
+        i for i in nuevos
+        if i.tipo == IngresoTipo.INGRESO and i.fecha_inicio is not None
+        and (not permitidos or i.canal_id in permitidos)
+    ]
     creadas = 0
     grupos: list[list[Ingreso]] = []
     for ing in candidatos:

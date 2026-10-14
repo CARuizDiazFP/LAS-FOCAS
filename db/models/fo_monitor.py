@@ -63,6 +63,9 @@ class FomonConfig(Base):
     burrito_user_id = Column(String(32), nullable=False, default="U0A2HE3K950")
     prompt_version = Column(String(8), nullable=False, default="v4")
     ultimo_ingreso_id_procesado = Column(Integer, nullable=False, default=0)
+    # Canales de Slack cuyos ingresos se verifican (coma-separados; vacío = todos). Default: sólo
+    # #baneo-de-camaras-prueba — el canal productivo queda en stand-by hasta nuevo aviso (2026-10-14).
+    canales_ingreso = Column(String(256), nullable=False, default="C08UB8ML3LP")
     actualizado_por = Column(String(128), nullable=True)
     actualizado_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
