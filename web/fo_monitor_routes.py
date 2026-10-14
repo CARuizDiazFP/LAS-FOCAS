@@ -15,6 +15,7 @@ fuera de la imagen.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import logging
 import os
@@ -40,7 +41,7 @@ _TIPOS = {
 }
 _RE_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 _CHUNK = 256 * 1024
-_cache_red: dict[str, Any] = {"huella": None, "cuerpo": None, "etag": None}
+_cache_red: dict[str, Any] = {"huella": None, "cuerpo": None, "gzip": None, "etag": None}
 
 
 def _sesion_local():
@@ -90,6 +91,7 @@ class ConfigBody(BaseModel):
     timeout_por_servicio_s: Optional[int] = Field(default=None, ge=0, le=300)
     concurrencia: Optional[int] = Field(default=None, ge=1, le=10)
     prompt_version: Optional[str] = Field(default=None, pattern=r"^v[1-4]$")
+    canales_ingreso: Optional[str] = Field(default=None, pattern=r"^[A-Z0-9,]*$", max_length=256)
 
 
 def _rango(header: Optional[str], tamano: int) -> Optional[tuple[int, int]]:
@@ -172,13 +174,17 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:
         with _sesion_local() as s:
             huella = consultas_web.huella_red(s)
             if _cache_red["huella"] != huella:
-                cuerpo = consultas_web.geojson_red(s)
-                _cache_red.update(huella=huella, cuerpo=cuerpo.encode(),
+                cuerpo = consultas_web.geojson_red(s).encode()
+                # ~8 MB en crudo, ~1-2 MB comprimido: se comprime una sola vez por versión de la red.
+                _cache_red.update(huella=huella, cuerpo=cuerpo, gzip=gzip.compress(cuerpo, compresslevel=6),
                                   etag='"%s"' % hashlib.md5(huella.encode()).hexdigest())
         if request.headers.get("if-none-match") == _cache_red["etag"]:
             return Response(status_code=304, headers={"ETag": _cache_red["etag"]})
-        return Response(_cache_red["cuerpo"], media_type="application/geo+json",
-                        headers={"ETag": _cache_red["etag"], "Cache-Control": "private, no-cache"})
+        headers = {"ETag": _cache_red["etag"], "Cache-Control": "private, no-cache", "Vary": "Accept-Encoding"}
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(_cache_red["gzip"], media_type="application/geo+json",
+                            headers={**headers, "Content-Encoding": "gzip"})
+        return Response(_cache_red["cuerpo"], media_type="application/geo+json", headers=headers)
 
     @app.get("/api/fo-monitor/mapa/botellas")
     def fomon_mapa_botellas(request: Request, bbox: Optional[str] = None, limit: int = 5000):
@@ -204,7 +210,7 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:
             "modo": modo,
             "pmtiles_url": f"/api/fo-monitor/basemap/{PMTILES_ARCHIVO}",
             "glyphs_url": "/api/fo-monitor/basemap/fonts/{fontstack}/{range}.pbf",
-            "sprite_url": "/api/fo-monitor/basemap/sprites/v4/light",
+            "sprite_url": "/api/fo-monitor/basemap/sprites/v4/dark",
             "pmtiles_disponible": disponible,
         }
 

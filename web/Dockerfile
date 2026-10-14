@@ -27,6 +27,7 @@ COPY web/app /app/app
 COPY web/tools /app/web/tools
 COPY web/chat_ws.py /app/web/chat_ws.py
 COPY web/admin_ws.py /app/web/admin_ws.py
+COPY web/fo_monitor_routes.py /app/web/fo_monitor_routes.py
 # Incluir paquete core para logging centralizado
 COPY core /app/core
 COPY modules /app/modules

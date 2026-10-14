@@ -184,6 +184,8 @@ services:
       - ../Templates:/app/Templates:ro  # Templates compartidos (solo lectura)
       - reports_dev_data:/app/data/reports
       - uploads_dev_data:/app/data/uploads
+      # Mapa base offline de FO Monitor (scripts/fo_monitor_descargar_basemap.sh). Sólo lectura.
+      - ../data/fo_monitor:/app/data/fo_monitor:ro
       # NOTA: el panel admin gestiona contenedores por nombre a través de docker-socket-proxy.
       # En dev, el worker se llama lasfocasdev-slack-baneo-worker; el toggle admin
       # buscará lasfocas-slack-baneo-worker (prod). Limitación documentada en docs/infra.md,
