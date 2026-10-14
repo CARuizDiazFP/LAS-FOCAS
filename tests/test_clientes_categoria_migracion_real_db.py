@@ -147,7 +147,7 @@ def test_clientes_check_categoria_acepta_null_y_rechaza_7(sesion) -> None:
     punto.rollback()
 
 
-def test_borrar_cliente_borra_sus_alias(sesion) -> None:
+def test_alias_rechaza_origen_invalido_y_se_borra_en_cascada_con_su_cliente(sesion) -> None:
     cliente_id = sesion.execute(
         text("INSERT INTO app.clientes (nombre, clave) VALUES ('Test Alias', 'test alias 990002') RETURNING id")
     ).scalar_one()

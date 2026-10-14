@@ -670,7 +670,12 @@ class Cliente(Base):
     )
     a_revisar = Column(Boolean, nullable=False, server_default=text("false"))
     creado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
-    actualizado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
     actualizado_por = Column(String(120), nullable=True)
 
     alias = relationship(

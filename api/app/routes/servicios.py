@@ -83,7 +83,7 @@ class ServicioItemResponse(BaseModel):
     provincia: str | None = None
     direccion_2: str | None = None
     estado_servicio: str
-    categoria: int
+    categoria: int | None = None
     origen_datos: str
     es_verificable: bool
     es_verificable_override: bool | None = None
