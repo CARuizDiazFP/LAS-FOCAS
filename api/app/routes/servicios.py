@@ -23,6 +23,7 @@ from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
 from core.services.prov.config import ProvConfigError
 from core.services.prov.ingesta import ingerir_contexto_prov
+from core.services.clientes_categoria_service import normalizar_clave_cliente, sincronizar_categorias
 from core.services.servicios_categoria_service import (
     CategoriaInvalidaError,
     actualizar_categoria_masiva,
@@ -908,10 +909,38 @@ async def actualizar_categoria_servicio(
         raise HTTPException(status_code=404, detail="Servicio no encontrado")
 
     svc.categoria = body.categoria
+    svc.categoria_excepcion = True  # fijada a mano: la propagación desde el cliente no la pisa
     await db.commit()
     await db.refresh(svc)
 
     item = _to_servicio_item(svc)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+    return item
+
+
+@router.patch("/{id}/categoria/heredar", response_model=ServicioItemResponse)
+async def heredar_categoria_servicio(id: int) -> ServicioItemResponse:
+    """Quita la excepción de categoría del servicio y re-sincroniza su cliente, así vuelve a
+    heredar la categoría del cliente. Sync en un thread aparte (mismo patrón que `bulk-categoria`)."""
+
+    def _heredar() -> tuple[bool, ServicioItemResponse | None]:
+        with SessionLocal() as session:
+            svc = session.get(Servicio, id)
+            if svc is None:
+                return False, None
+            svc.categoria_excepcion = False
+            session.flush()
+            clave = normalizar_clave_cliente(svc.nombre_cliente)
+            if clave is not None:
+                sincronizar_categorias(session, {clave})
+            session.commit()
+            session.refresh(svc)
+            return True, _to_servicio_item(svc)
+
+    encontrado, item = await asyncio.to_thread(_heredar)
+    if not encontrado:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
     if item is None:
         raise HTTPException(status_code=404, detail="Servicio sin ID origen")
     return item

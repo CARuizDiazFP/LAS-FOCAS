@@ -78,6 +78,7 @@ class TestPatchCategoriaIndividual:
         body = response.json()
         assert body["categoria"] == 3
         assert svc.categoria == 3
+        assert svc.categoria_excepcion is True
 
     def test_categoria_fuera_de_rango_devuelve_400_sin_tocar_la_db(self) -> None:
         svc = _make_servicio()
@@ -99,6 +100,57 @@ class TestPatchCategoriaIndividual:
         response = client.patch("/servicios/1/categoria", json={"categoria": 2})
 
         assert response.status_code in (401, 403)
+
+
+class TestPatchCategoriaHeredar:
+    @patch("api.app.routes.servicios.sincronizar_categorias")
+    @patch("api.app.routes.servicios.SessionLocal")
+    def test_quita_excepcion_y_sincroniza_el_cliente(
+        self, mock_session_local: MagicMock, mock_sync: MagicMock
+    ) -> None:
+        svc = _make_servicio(nombre_cliente="Banco de Galicia y Buenos Aires S.A.U.", categoria=2, categoria_excepcion=True)
+        session = MagicMock()
+        session.get.return_value = svc
+        mock_session_local.return_value.__enter__.return_value = session
+
+        def _sync(_session, claves):
+            svc.categoria = 5  # lo que la propagación del cliente dejaría
+            return MagicMock()
+
+        mock_sync.side_effect = _sync
+
+        response = client.patch("/servicios/1/categoria/heredar", headers=API_HEADERS)
+
+        assert response.status_code == 200
+        assert response.json()["categoria"] == 5
+        assert svc.categoria_excepcion is False
+        mock_sync.assert_called_once_with(session, {"BANCO DE GALICIA Y BUENOS AIRES"})
+        session.commit.assert_called_once()
+
+    @patch("api.app.routes.servicios.sincronizar_categorias")
+    @patch("api.app.routes.servicios.SessionLocal")
+    def test_servicio_sin_cliente_no_sincroniza(self, mock_session_local: MagicMock, mock_sync: MagicMock) -> None:
+        svc = _make_servicio(nombre_cliente=None, categoria_excepcion=True)
+        session = MagicMock()
+        session.get.return_value = svc
+        mock_session_local.return_value.__enter__.return_value = session
+
+        response = client.patch("/servicios/1/categoria/heredar", headers=API_HEADERS)
+
+        assert response.status_code == 200
+        assert svc.categoria_excepcion is False
+        mock_sync.assert_not_called()
+
+    @patch("api.app.routes.servicios.SessionLocal")
+    def test_servicio_inexistente_devuelve_404(self, mock_session_local: MagicMock) -> None:
+        session = MagicMock()
+        session.get.return_value = None
+        mock_session_local.return_value.__enter__.return_value = session
+
+        response = client.patch("/servicios/999/categoria/heredar", headers=API_HEADERS)
+
+        assert response.status_code == 404
+        session.commit.assert_not_called()
 
 
 class TestPatchCategoriaMasiva:
