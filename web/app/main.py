@@ -9913,6 +9913,7 @@ async def servicios_categoria_masiva_web(request: Request, body: ServiciosCatego
 # (`{nombres, categoria, modo, csrf_token}`) en la misma ruta, igual que el endpoint interno.
 
 TAMANO_MAXIMO_LISTA_CLIENTES = 5 * 1024 * 1024  # 5 MB, mismo límite que el API interno
+MARGEN_MULTIPART_LISTA_CLIENTES = 64 * 1024  # boundaries y campos del form en el pre-chequeo
 
 
 async def _proxy_clientes(
@@ -9964,13 +9965,13 @@ class ClientesCategoriaRequestModel(_ClientesCsrfModel):
 
 class ClientesListaRequestModel(_ClientesCsrfModel):
     nombres: list[str]
-    categoria: int | None = None
+    categoria: int | None  # obligatoria; `null` = sin categorizar
     modo: Literal["agregar", "reemplazar"] = "agregar"
 
 
 class ClientesFusionarRequestModel(_ClientesCsrfModel):
     destino_id: int
-    origen_ids: list[int]
+    origen_ids: list[int] = Field(min_length=1)
 
 
 class ClientesAliasRequestModel(_ClientesCsrfModel):
@@ -10011,6 +10012,12 @@ async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONRespons
             return JSONResponse({"error": "CSRF inválido"}, status_code=403)
         return await _proxy_clientes("POST", ruta, username, accion, cuerpo=body.model_dump(exclude={"csrf_token"}))
 
+    try:
+        largo_declarado = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        largo_declarado = 0
+    if largo_declarado > TAMANO_MAXIMO_LISTA_CLIENTES + MARGEN_MULTIPART_LISTA_CLIENTES:
+        return JSONResponse({"error": "El archivo supera los 5 MB"}, status_code=413)
     form = await request.form()
     csrf_token = form.get("csrf_token")
     if not _validar_csrf(request, csrf_token if isinstance(csrf_token, str) else None, accion, username):
@@ -10023,6 +10030,8 @@ async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONRespons
     contenido = await archivo.read(TAMANO_MAXIMO_LISTA_CLIENTES + 1)
     if len(contenido) > TAMANO_MAXIMO_LISTA_CLIENTES:
         return JSONResponse({"error": "El archivo supera los 5 MB"}, status_code=413)
+    if form.get("categoria") is None:
+        return JSONResponse({"error": "Falta categoria (use 'sin' para sin categorizar)"}, status_code=400)
     campos = {campo: str(form.get(campo)) for campo in ("categoria", "modo") if form.get(campo) is not None}
     return await _proxy_clientes(
         "POST",

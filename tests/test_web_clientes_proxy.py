@@ -238,3 +238,46 @@ def test_upload_valida_extension_y_tamano_antes_de_reenviar(monkeypatch) -> None
     assert pdf.status_code == 415
     assert grande.status_code == 413
     assert llamadas == []
+
+
+def test_lista_exige_categoria_explicita(monkeypatch) -> None:
+    client, csrf, llamadas = _cliente_logueado(monkeypatch, "admin")
+
+    json_sin = client.post(
+        "/api/admin/clientes/lista/aplicar", json={"nombres": ["BANCO UNO"], "csrf_token": csrf}
+    )
+    form_sin = client.post(
+        "/api/admin/clientes/lista/aplicar",
+        files={"file": ("lista.txt", b"BANCO UNO\n", "text/plain")},
+        data={"modo": "reemplazar", "csrf_token": csrf},
+    )
+    json_null = client.post(
+        "/api/admin/clientes/lista/previsualizar",
+        json={"nombres": ["BANCO UNO"], "categoria": None, "csrf_token": csrf},
+    )
+
+    assert (json_sin.status_code, form_sin.status_code) == (400, 400)
+    assert json_null.status_code == 200
+    assert len(llamadas) == 1 and llamadas[0]["json"]["categoria"] is None
+
+
+def test_upload_content_length_excesivo_devuelve_413_sin_reenviar(monkeypatch) -> None:
+    client, csrf, llamadas = _cliente_logueado(monkeypatch, "admin")
+
+    res = client.post(
+        "/api/admin/clientes/lista/previsualizar",
+        files={"file": ("lista.txt", b"x" * (5 * 1024 * 1024 + 70 * 1024), "text/plain")},
+        data={"categoria": "6", "csrf_token": csrf},
+    )
+
+    assert res.status_code == 413
+    assert llamadas == []
+
+
+def test_fusionar_sin_origenes_falla_en_la_capa_web(monkeypatch) -> None:
+    client, csrf, llamadas = _cliente_logueado(monkeypatch, "admin")
+
+    res = client.post("/api/admin/clientes/fusionar", json={"destino_id": 1, "origen_ids": [], "csrf_token": csrf})
+
+    assert res.status_code == 422
+    assert llamadas == []

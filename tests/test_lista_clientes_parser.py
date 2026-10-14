@@ -47,9 +47,22 @@ class TestExtraerNombresLista:
         df = pd.DataFrame({"Id": ["1", "2"], "Cliente": ["BANCO UNO", "BANCO DOS"]})
         assert extraer_nombres_lista("lista.xlsx", _xlsx(df)) == ["BANCO UNO", "BANCO DOS"]
 
-    def test_sin_encabezado_conocido_usa_la_primera_columna(self) -> None:
+    def test_sin_encabezado_conocido_usa_la_primera_columna_y_la_primera_fila_es_dato(self) -> None:
         df = pd.DataFrame({"Razón social": ["BANCO UNO", "BANCO DOS"], "Otro": ["x", "y"]})
-        assert extraer_nombres_lista("lista.xlsx", _xlsx(df)) == ["BANCO UNO", "BANCO DOS"]
+        assert extraer_nombres_lista("lista.xlsx", _xlsx(df)) == ["Razón social", "BANCO UNO", "BANCO DOS"]
+
+    def test_xlsx_sin_encabezado_no_pierde_el_primer_nombre(self) -> None:
+        buffer = io.BytesIO()
+        pd.DataFrame([["BANCO UNO", "1"], ["BANCO DOS", "2"]]).to_excel(
+            buffer, index=False, header=False, engine="openpyxl"
+        )
+        assert extraer_nombres_lista("lista.xlsx", buffer.getvalue()) == ["BANCO UNO", "BANCO DOS"]
+
+    def test_csv_sin_encabezado_no_pierde_el_primer_nombre(self) -> None:
+        assert extraer_nombres_lista("lista.csv", b"BANCO UNO\nBANCO DOS\n") == ["BANCO UNO", "BANCO DOS"]
+
+    def test_encabezado_cliente_en_otra_columna_se_saltea(self) -> None:
+        assert extraer_nombres_lista("lista.csv", b"Id,Cliente\n1,BANCO UNO\n") == ["BANCO UNO"]
 
     def test_extension_no_soportada(self) -> None:
         with pytest.raises(FormatoNoSoportadoError):

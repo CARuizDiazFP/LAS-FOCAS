@@ -165,6 +165,8 @@ class TestLista:
             {"data": {"categoria": "6"}},  # multipart sin archivo
             {"files": {"file": ("lista.txt", b"X\n", "text/plain")}, "data": {"categoria": "abc"}},
             {"json": {"nombres": "no-es-lista", "categoria": 6}},
+            {"json": {"nombres": ["BANCO UNO"]}},  # categoria obligatoria (null explícito = sin categorizar)
+            {"files": {"file": ("lista.txt", b"X\n", "text/plain")}, "data": {"modo": "agregar"}},
             {"content": b"no-json", "headers": {"Content-Type": "application/json"}},
         ],
     )
@@ -174,6 +176,17 @@ class TestLista:
             kwargs["files"] = {"otro": ("a.txt", b"", "text/plain")}
         respuesta = client.post("/clientes/lista/previsualizar", headers=headers, **kwargs)
         assert respuesta.status_code == 400, respuesta.text
+
+    def test_content_length_excesivo_devuelve_413_sin_parsear(self, sesion: MagicMock) -> None:
+        with patch(f"{MODULO}.extraer_nombres_lista") as extraer:
+            respuesta = client.post(
+                "/clientes/lista/previsualizar",
+                files={"file": ("lista.txt", b"x" * (5 * 1024 * 1024 + 70 * 1024), "text/plain")},
+                data={"categoria": "6"},
+                headers=API_HEADERS,
+            )
+        assert respuesta.status_code == 413
+        extraer.assert_not_called()
 
     def test_error_del_servicio_devuelve_400(self, sesion: MagicMock) -> None:
         with patch(f"{MODULO}.aplicar_lista", side_effect=ClienteCategoriaError("La lista no tiene nombres")):

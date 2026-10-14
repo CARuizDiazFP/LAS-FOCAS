@@ -5,9 +5,10 @@
 """Lista oficial de clientes de una categoría (la carga el admin en "Clientes por categoría").
 
 - `.txt`: un nombre por línea (UTF-8, con o sin BOM; si no decodifica, Latin-1).
-- `.xlsx`/`.xlsm`/`.csv`: la primera fila es el encabezado. La columna de nombres es la que se
-  llama "Cliente" o "Nombre Cliente" (sin distinguir mayúsculas, acentos ni espacios); si ninguna
-  se llama así, la primera columna.
+- `.xlsx`/`.xlsm`/`.csv`: si alguna celda de la primera fila es "Cliente" o "Nombre Cliente" (sin
+  distinguir mayúsculas, acentos ni espacios), esa fila es el encabezado y los nombres salen de
+  esa columna. Si no, el archivo no tiene encabezado reconocible: se usa la primera columna y la
+  primera fila es un nombre más (no se pierde).
 
 Las celdas/líneas vacías se descartan; la deduplicación por clave la hace el servicio de dominio.
 """
@@ -35,11 +36,16 @@ def extraer_nombres_lista(nombre_archivo: str, contenido: bytes) -> list[str]:
         lineas = _decodificar(contenido).splitlines()
         return [linea.strip() for linea in lineas if linea.strip()]
 
-    df = leer_tabla(nombre_archivo, contenido)
-    if df.columns.empty:
+    df = leer_tabla(nombre_archivo, contenido, header=None)
+    if df.empty:
         return []
-    columna = next((c for c in df.columns if limpiar_clave(c) in _ENCABEZADOS_CLIENTE), df.columns[0])
-    return [str(valor).strip() for valor in df[columna] if str(valor).strip()]
+    primera_fila = df.iloc[0]
+    columna = next((c for c in df.columns if limpiar_clave(primera_fila[c]) in _ENCABEZADOS_CLIENTE), None)
+    if columna is None:
+        valores = df[df.columns[0]]
+    else:
+        valores = df[columna].iloc[1:]
+    return [str(valor).strip() for valor in valores if str(valor).strip()]
 
 
 __all__ = ["EXTENSIONES_LISTA", "FormatoNoSoportadoError", "extraer_nombres_lista"]

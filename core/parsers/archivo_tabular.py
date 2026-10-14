@@ -20,14 +20,17 @@ class FormatoNoSoportadoError(ValueError):
     """La extensión del archivo no es una de las soportadas — el endpoint lo traduce a 415."""
 
 
-def leer_tabla(nombre_archivo: str, contenido: bytes) -> pd.DataFrame:
-    """DataFrame (todo texto) de un `.xlsx`/`.xlsm`/`.csv`. Levanta `FormatoNoSoportadoError` con
-    otra extensión; cualquier error de lectura de pandas/openpyxl se propaga tal cual."""
+def leer_tabla(nombre_archivo: str, contenido: bytes, *, header: int | None = 0) -> pd.DataFrame:
+    """DataFrame (todo texto) de un `.xlsx`/`.xlsm`/`.csv`. Con `header=None` la primera fila
+    queda como datos (columnas 0..n). Levanta `FormatoNoSoportadoError` con otra extensión;
+    cualquier error de lectura de pandas/openpyxl se propaga tal cual."""
     nombre = (nombre_archivo or "").lower()
     if nombre.endswith(EXTENSIONES_EXCEL):
-        return pd.read_excel(io.BytesIO(contenido), engine="openpyxl", dtype=str, keep_default_na=False)
+        return pd.read_excel(
+            io.BytesIO(contenido), engine="openpyxl", dtype=str, keep_default_na=False, header=header
+        )
     if nombre.endswith(".csv"):
-        return pd.read_csv(io.BytesIO(contenido), dtype=str, keep_default_na=False)
+        return pd.read_csv(io.BytesIO(contenido), dtype=str, keep_default_na=False, header=header)
     raise FormatoNoSoportadoError(f"Formato no soportado: {nombre_archivo!r}")
 
 

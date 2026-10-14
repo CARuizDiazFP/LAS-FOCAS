@@ -14,8 +14,8 @@ Errores: `ClienteNoEncontradoError` → 404; cualquier otro `CategoriaInvalidaEr
 
 Lista oficial (`/lista/previsualizar` y `/lista/aplicar`): un mismo endpoint acepta
 `multipart/form-data` (`file` .xlsx/.xlsm/.csv/.txt de hasta 5 MB + `categoria` + `modo`) o JSON
-`{nombres, categoria, modo}`; se elige por `Content-Type`. En el form, `categoria` vacía o `sin`
-= sin categorizar. `aplicar` recibe la lista completa y vuelve a resolverla en el servidor: nunca
+`{nombres, categoria, modo}`; se elige por `Content-Type`. `categoria` es obligatoria en ambos: en
+el form, vacía o `sin` = sin categorizar; en JSON, `null`. Si falta → 400. `aplicar` recibe la lista completa y vuelve a resolverla en el servidor: nunca
 aplica un diff armado por el cliente.
 """
 
@@ -49,6 +49,8 @@ router = APIRouter(prefix="/clientes", tags=["clientes"])
 logger = logging.getLogger(__name__)
 
 TAMANO_MAXIMO_LISTA = 5 * 1024 * 1024  # 5 MB
+# Margen del pre-chequeo por `Content-Length`: el cuerpo multipart suma boundaries y campos al archivo.
+MARGEN_MULTIPART = 64 * 1024
 
 T = TypeVar("T")
 
@@ -106,12 +108,16 @@ async def cambiar_categoria_clientes(
 
 class ListaRequest(BaseModel):
     nombres: list[str]
-    categoria: int | None = None
+    # Obligatoria aunque admita `null` (= sin categorizar): un campo olvidado no debe aplicar la
+    # lista como "sin categorizar" (peor con `reemplazar`).
+    categoria: int | None
     modo: Literal["agregar", "reemplazar"] = "agregar"
 
 
 def _categoria_de_form(valor: Any) -> int | None:
-    texto = str(valor or "").strip().lower()
+    if valor is None:
+        raise HTTPException(status_code=400, detail="Falta categoria (use 'sin' para sin categorizar)")
+    texto = str(valor).strip().lower()
     if texto in ("", "sin"):
         return None
     try:
@@ -120,10 +126,19 @@ def _categoria_de_form(valor: Any) -> int | None:
         raise HTTPException(status_code=400, detail="categoria inválida") from exc
 
 
+def _content_length(request: Request) -> int:
+    try:
+        return int(request.headers.get("content-length") or 0)
+    except ValueError:
+        return 0
+
+
 async def _leer_pedido_lista(request: Request) -> ListaRequest:
     """`ListaRequest` desde multipart (archivo) o JSON, según el `Content-Type`."""
     content_type = request.headers.get("content-type", "").lower()
     if content_type.startswith("multipart/form-data"):
+        if _content_length(request) > TAMANO_MAXIMO_LISTA + MARGEN_MULTIPART:
+            raise HTTPException(status_code=413, detail="El archivo supera los 5 MB")
         form = await request.form()
         archivo = form.get("file")
         if not isinstance(archivo, UploadFile) or not archivo.filename:
@@ -138,7 +153,7 @@ async def _leer_pedido_lista(request: Request) -> ListaRequest:
         except FormatoNoSoportadoError as exc:
             raise HTTPException(status_code=415, detail="Formato no soportado (use .xlsx, .csv o .txt)") from exc
         except Exception as exc:  # noqa: BLE001 — planilla corrupta / encoding inválido
-            logger.warning("action=clientes_lista_read_error archivo=%s error=%s", archivo.filename, exc)
+            logger.warning("action=clientes_lista_read_error archivo=%r error=%s", archivo.filename, exc)
             raise HTTPException(status_code=400, detail="No se pudo leer el archivo") from exc
         datos: dict[str, Any] = {"nombres": nombres, "categoria": _categoria_de_form(form.get("categoria"))}
         modo = str(form.get("modo") or "").strip()
