@@ -124,11 +124,11 @@ def test_sync_registra_variantes_moda_sla_y_respeta_excepcion(sesion) -> None:
     assert resumen2.to_dict() == {"clientes_creados": 0, "clientes_recalculados": 0, "servicios_actualizados": 0}
 
 
-def test_empate_toma_la_mas_alta_y_c0_sin_sla_queda_cero(sesion) -> None:
+def test_empate_toma_la_mas_alta_y_sin_sla_con_servicios_queda_cero(sesion) -> None:
     s = sesion
     s.crear_servicio("ZZTEST EMPATE SRL", sla=2)
     s.crear_servicio("ZZTEST EMPATE SRL", sla=4)
-    solo_c0 = s.crear_servicio("ZZTEST PLACEHOLDER", categoria=0)
+    placeholder = s.crear_servicio("ZZTEST PLACEHOLDER", categoria=0)
     sin_datos = s.crear_servicio("ZZTEST SIN DATOS", categoria=None)
     s.commit()
 
@@ -137,12 +137,34 @@ def test_empate_toma_la_mas_alta_y_c0_sin_sla_queda_cero(sesion) -> None:
 
     empate = _cliente(s, "ZZTEST EMPATE SRL")
     assert (empate.categoria, empate.origen_categoria.value, empate.a_revisar) == (4, "SLA", True)
-    placeholder = _cliente(s, "ZZTEST PLACEHOLDER")
-    assert (placeholder.categoria, placeholder.origen_categoria.value) == (0, "AUTO")
-    assert _categoria_servicio(s, solo_c0) == 0
-    vacio = _cliente(s, "ZZTEST SIN DATOS")
-    assert (vacio.categoria, vacio.origen_categoria.value) == (None, "AUTO")
-    assert _categoria_servicio(s, sin_datos) is None
+    for nombre, servicio in (("ZZTEST PLACEHOLDER", placeholder), ("ZZTEST SIN DATOS", sin_datos)):
+        cliente = _cliente(s, nombre)
+        assert (cliente.categoria, cliente.origen_categoria.value) == (0, "AUTO"), nombre
+        assert _categoria_servicio(s, servicio) == 0
+
+    # Ida y vuelta: AUTO 0 → MANUAL 3 → AUTO vuelve a 0 (no depende de servicios.categoria = 0).
+    cliente_id = _cliente(s, "ZZTEST SIN DATOS").id
+    cambiar_categoria(s, [cliente_id], 3, "admin-test")
+    s.commit()
+    assert _categoria_servicio(s, sin_datos) == 3
+    cambiar_categoria(s, [cliente_id], None, "admin-test", automatico=True)
+    s.commit()
+    cliente = s.get(Cliente, cliente_id)
+    assert (cliente.categoria, cliente.origen_categoria.value) == (0, "AUTO")
+    assert _categoria_servicio(s, sin_datos) == 0
+
+
+def test_cliente_sin_servicios_vuelto_a_auto_queda_null(sesion) -> None:
+    s = sesion
+    aplicar_lista(s, ["ZZTEST SOLO EN LISTA"], 5, "agregar", "admin-test")
+    s.commit()
+    cliente = _cliente(s, "ZZTEST SOLO EN LISTA")
+    assert (cliente.categoria, cliente.origen_categoria.value) == (5, "LISTA")
+
+    aplicar_lista(s, ["ZZTEST OTRO DE LA LISTA"], 5, "reemplazar", "admin-test")
+    s.commit()
+    cliente = _cliente(s, "ZZTEST SOLO EN LISTA")
+    assert (cliente.categoria, cliente.origen_categoria.value) == (None, "AUTO")
 
 
 def test_cambiar_categoria_manual_y_volver_a_automatico(sesion) -> None:
@@ -287,6 +309,20 @@ def test_agregar_alias_absorbe_cliente_autocreado_y_quitar_alias(sesion) -> None
     assert s.get(Cliente, autocreado_id) is None
     assert _categoria_servicio(s, variante) == 3
 
+    # El único alias de un cliente LISTA/MANUAL no se mueve: hay que fusionar.
+    s.crear_servicio("ZZTEST FIJADO A MANO", sla=2)
+    s.commit()
+    sincronizar_categorias(s, {"ZZTEST FIJADO A MANO"})
+    s.commit()
+    fijado_id = _cliente(s, "ZZTEST FIJADO A MANO").id
+    cambiar_categoria(s, [fijado_id], 6, "admin-test")
+    s.commit()
+    with pytest.raises(ClienteCategoriaError, match="fusionar"):
+        agregar_alias(s, canonico.id, "ZZTEST FIJADO A MANO")
+    s.rollback()
+    assert s.get(Cliente, fijado_id) is not None
+    assert _cliente(s, "ZZTEST FIJADO A MANO").id == fijado_id
+
     # El alias canónico no se puede quitar.
     canonico_alias = [a for a in s.get(Cliente, canonico.id).alias if a.clave == "ZZTEST CANONICO"][0]
     with pytest.raises(ClienteCategoriaError, match="canónico"):
@@ -309,6 +345,8 @@ def test_listar_clientes_por_categoria(sesion) -> None:
     s.commit()
     sincronizar_categorias(s, claves_de_nombres(["ZZTEST Álamo SA", "ZZTEST alamo bis", "ZZTEST BETA"]))
     s.commit()
+    aplicar_lista(s, ["ZZTEST GAMMA SIN SERVICIOS"], None, "agregar", "admin-test")  # "sin categorizar"
+    s.commit()
 
     grupos = listar_clientes_por_categoria(s)
     s.commit()
@@ -323,8 +361,10 @@ def test_listar_clientes_por_categoria(sesion) -> None:
     ]
     bis = seis[0]
     assert (bis["servicios"], bis["excepciones"]) == (1, 1)
+    cero = [c for c in grupos["0"] if c["nombre"].startswith("ZZTEST")]
+    assert [c["nombre"] for c in cero] == ["ZZTEST BETA"]  # tiene servicios sin dato SLA
     sin = [c for c in grupos["sin"] if c["nombre"].startswith("ZZTEST")]
-    assert [c["nombre"] for c in sin] == ["ZZTEST BETA"]
+    assert [(c["nombre"], c["servicios"]) for c in sin] == [("ZZTEST GAMMA SIN SERVICIOS", 0)]
     assert normalizar_clave_cliente("ZZTEST Álamo SA") == "ZZTEST ALAMO"
 
 

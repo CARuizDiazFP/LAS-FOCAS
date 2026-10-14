@@ -153,6 +153,12 @@ class TestPatchCategoriaHeredar:
         session.commit.assert_not_called()
 
 
+    def test_sin_api_key_devuelve_401_o_403(self) -> None:
+        response = client.patch("/servicios/1/categoria/heredar")
+
+        assert response.status_code in (401, 403)
+
+
 class TestPatchCategoriaMasiva:
     @patch("api.app.routes.servicios.SessionLocal")
     def test_actualiza_lote_y_reporta_no_encontrados(self, mock_session_local: MagicMock) -> None:

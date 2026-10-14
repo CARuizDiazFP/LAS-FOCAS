@@ -11,7 +11,7 @@ variante de nombre que apunta a un cliente es un `ClienteAlias`; el alias cuya c
 
 Precedencia de la categoría de un cliente: `LISTA`/`MANUAL` (fijada por un admin, nunca se
 recalcula) > `SLA` (moda de `servicios.categoria_sla` 1..6, empate → la más alta) > `AUTO` (0 si
-sólo tiene placeholders C0) > `NULL`. Un servicio con `categoria_excepcion = true` nunca es pisado
+tiene servicios pero ninguno con dato SLA) > `NULL` (sin servicios). Un servicio con `categoria_excepcion = true` nunca es pisado
 por la propagación.
 
 Todo es sync con `Session` (se llama desde rutas vía `asyncio.to_thread` + `SessionLocal`) y la
@@ -129,20 +129,21 @@ def nombre_mas_frecuente(frecuencias: dict[str, int]) -> str:
 
 
 def elegir_categoria_automatica(
-    conteos_sla: dict[int, int], *, hay_c0: bool
+    conteos_sla: dict[int, int], *, hay_servicios: bool
 ) -> tuple[int | None, str, bool]:
     """Categoría automática de un cliente `SLA`/`AUTO` → `(categoria, origen, a_revisar)`.
 
     - Moda de `categoria_sla` en 1..6 (empate → la más alta) → origen `SLA`.
-    - Sin datos SLA pero con servicios en C0 (placeholders) → `0`, origen `AUTO`.
-    - Si no, `NULL` con origen `AUTO`.
+    - Sin datos SLA pero con al menos un servicio → `0`, origen `AUTO`.
+    - Sin servicios → `NULL` con origen `AUTO`.
+    No se mira `servicios.categoria`: es el resultado de la propagación (sería circular).
     `a_revisar` = hay más de una categoría SLA distinta en 1..6.
     """
     validos = {cat: n for cat, n in conteos_sla.items() if cat in CATEGORIAS_SLA and n > 0}
     if validos:
         moda = max(validos.items(), key=lambda item: (item[1], item[0]))[0]
         return moda, ClienteOrigenCategoria.SLA.value, len(validos) > 1
-    if hay_c0:
+    if hay_servicios:
         return 0, ClienteOrigenCategoria.AUTO.value, False
     return None, ClienteOrigenCategoria.AUTO.value, False
 
@@ -257,7 +258,11 @@ def _filtro_ids(columna: str, cliente_ids: list[int] | None) -> str:
 
 def _recalcular(session: Session, cliente_ids: list[int] | None) -> int:
     """Recalcula categoría/origen/`a_revisar` de los clientes `SLA`/`AUTO` (todos o `cliente_ids`).
-    Dos agregaciones + un `UPDATE … FROM unnest(...)` con sólo los que cambian."""
+    Dos agregaciones + un `UPDATE … FROM unnest(...)` con sólo los que cambian.
+
+    Los servicios con `categoria_excepcion = true` siguen votando en la moda con su `categoria_sla`:
+    ese dato viene de la planilla SLA, no de una decisión del admin (la excepción sólo protege su
+    `categoria` de la propagación)."""
     params = {"origenes": list(_ORIGENES_RECALCULABLES), "ids": cliente_ids}
     actuales = session.execute(
         text(
@@ -271,29 +276,27 @@ def _recalcular(session: Session, cliente_ids: list[int] | None) -> int:
         return 0
 
     conteos: dict[int, dict[int, int]] = {}
-    con_c0: set[int] = set()
-    for cliente_id, categoria_sla, cantidad, cantidad_c0 in session.execute(
+    con_servicios: set[int] = set()
+    for cliente_id, categoria_sla, cantidad in session.execute(
         text(
-            "SELECT a.cliente_id, s.categoria_sla, count(*), count(*) FILTER (WHERE s.categoria = 0) "
+            "SELECT a.cliente_id, s.categoria_sla, count(*) "
             "FROM app.clientes c "
             "JOIN app.clientes_alias a ON a.cliente_id = c.id "
             f"JOIN {_TABLA_MAPA} t ON t.clave = a.clave "
             "JOIN app.servicios s ON s.nombre_cliente = t.nombre_cliente "
             "WHERE CAST(c.origen_categoria AS text) = ANY(CAST(:origenes AS text[]))"
             + _filtro_ids("c.id", cliente_ids)
-            + " AND (s.categoria_sla BETWEEN 1 AND 6 OR s.categoria = 0) "
-            "GROUP BY a.cliente_id, s.categoria_sla"
+            + " GROUP BY a.cliente_id, s.categoria_sla"
         ),
         params,
     ):
         if categoria_sla is not None:  # (cliente_id, categoria_sla) es único por el GROUP BY
             conteos.setdefault(cliente_id, {})[categoria_sla] = int(cantidad)
-        if cantidad_c0:
-            con_c0.add(cliente_id)
+        con_servicios.add(cliente_id)
 
     cambios: list[tuple[int, int | None, str, bool]] = []
     for cliente_id, categoria, origen, a_revisar in actuales:
-        nuevo = elegir_categoria_automatica(conteos.get(cliente_id, {}), hay_c0=cliente_id in con_c0)
+        nuevo = elegir_categoria_automatica(conteos.get(cliente_id, {}), hay_servicios=cliente_id in con_servicios)
         if (categoria, origen, a_revisar) != nuevo:
             cambios.append((cliente_id, *nuevo))
     if not cambios:
@@ -673,8 +676,9 @@ def agregar_alias(
     """Vincula `nombre` como alias del cliente.
 
     Si esa clave ya es alias de otro cliente, se mueve: cuando era el único alias de aquel cliente
-    (un cliente auto-creado para esa variante), el cliente vacío se borra; si era su alias
-    canónico y tiene otros alias, se rechaza (usar `fusionar_clientes`)."""
+    y es `AUTO`/`SLA` (auto-creado para esa variante), el cliente vacío se borra. Se rechaza (usar
+    `fusionar_clientes`) si era el único alias de un cliente `LISTA`/`MANUAL` (se perdería la
+    categoría fijada por un admin) o el canónico de un cliente con otros alias."""
     if origen not in _ORIGENES_ALIAS:
         raise ClienteCategoriaError("origen de alias debe ser 'AUTO' o 'MANUAL'")
     clave = normalizar_clave_cliente(nombre)
@@ -690,6 +694,12 @@ def agregar_alias(
     if existente is not None:
         otro = _obtener_cliente(session, existente.cliente_id)
         cantidad_otro = len(_claves_de_clientes(session, [otro.id]))
+        fijado_por_admin = otro.origen_categoria in (ClienteOrigenCategoria.LISTA, ClienteOrigenCategoria.MANUAL)
+        if cantidad_otro == 1 and fijado_por_admin:
+            raise ClienteCategoriaError(
+                f"'{nombre_limpio}' es el único nombre de '{otro.nombre}', con categoría fijada por un "
+                "admin: usar fusionar clientes"
+            )
         if existente.clave == otro.clave and cantidad_otro > 1:
             raise ClienteCategoriaError(
                 f"'{nombre_limpio}' es el nombre canónico de '{otro.nombre}', que tiene otros alias: "

@@ -72,20 +72,20 @@ def test_nombre_mas_frecuente_desempata_alfabetico() -> None:
 
 class TestElegirCategoriaAutomatica:
     def test_moda_sla(self) -> None:
-        assert elegir_categoria_automatica({3: 5, 4: 1}, hay_c0=True) == (3, "SLA", True)
+        assert elegir_categoria_automatica({3: 5, 4: 1}, hay_servicios=True) == (3, "SLA", True)
 
     def test_empate_gana_la_mas_alta(self) -> None:
-        assert elegir_categoria_automatica({2: 3, 5: 3}, hay_c0=False) == (5, "SLA", True)
+        assert elegir_categoria_automatica({2: 3, 5: 3}, hay_servicios=False) == (5, "SLA", True)
 
     def test_una_sola_categoria_no_queda_a_revisar(self) -> None:
-        assert elegir_categoria_automatica({6: 10}, hay_c0=False) == (6, "SLA", False)
+        assert elegir_categoria_automatica({6: 10}, hay_servicios=False) == (6, "SLA", False)
 
     def test_ignora_categorias_fuera_de_1_a_6(self) -> None:
-        # categoria_sla 0 no cuenta como dato SLA; sólo hay placeholder C0.
-        assert elegir_categoria_automatica({0: 4}, hay_c0=True) == (0, "AUTO", False)
+        # categoria_sla 0 no cuenta como dato SLA; tiene servicios → 0 AUTO.
+        assert elegir_categoria_automatica({0: 4}, hay_servicios=True) == (0, "AUTO", False)
 
-    def test_sin_sla_con_placeholder_c0(self) -> None:
-        assert elegir_categoria_automatica({}, hay_c0=True) == (0, "AUTO", False)
+    def test_sin_sla_con_servicios_queda_cero(self) -> None:
+        assert elegir_categoria_automatica({}, hay_servicios=True) == (0, "AUTO", False)
 
-    def test_sin_datos_queda_null(self) -> None:
-        assert elegir_categoria_automatica({}, hay_c0=False) == (None, "AUTO", False)
+    def test_sin_servicios_queda_null(self) -> None:
+        assert elegir_categoria_automatica({}, hay_servicios=False) == (None, "AUTO", False)
