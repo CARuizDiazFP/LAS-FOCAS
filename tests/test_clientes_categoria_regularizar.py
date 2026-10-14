@@ -41,7 +41,9 @@ def test_parser_deduplica_por_clave_normalizada():
 def test_archivo_inicial_tiene_52_nombres_y_alias_validos():
     nombres, alias = script.parsear_archivo(script.ARCHIVO_POR_DEFECTO.read_text(encoding="utf-8"))
     assert len(nombres) == 52
-    assert len(alias) == 6
+    assert len(alias) == 8
+    assert ("TEXPERT SA", "PRISMA MEDIOS DE PAGO SA") in alias
+    assert ("BANCO MACRO SA", "BANCO ITAU ARGENTINA SA") in alias
     assert "MEPADIP S.A." in nombres
 
 
@@ -87,7 +89,9 @@ def test_apply_persiste_dentro_de_la_transaccion_del_llamador():
     with engine.connect() as lectura:
         despues = lectura.execute(text("SELECT count(*) FROM app.clientes")).scalar()
     assert resumen["modo"] == "apply"
-    assert visibles >= antes and visibles == sum(
+    # No se exige visibles >= antes: con clientes ya cargados, un alias puede absorber (borrar) un
+    # cliente AUTO/SLA en su canónico.
+    assert visibles == sum(
         sum(v.values()) for v in resumen["clientes_por_categoria_y_origen"]["despues"].values()
     )
     if antes == 0:

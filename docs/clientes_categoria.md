@@ -131,8 +131,9 @@ docker exec lasfocas-api python scripts/clientes_categoria_regularizar.py
 ```
 
 **Dry-run en dev (2026-10-14):** servicios C6 2150 → 2177; 52 de 52 nombres de la Lista con match; 26
-clientes `a_revisar`. C6 por SLA fuera de la Lista, que quedan "C6 · SLA": `BANCO ITAU ARGENTINA SA`,
-`PRISMA MEDIOS DE PAGO SA` y los 3 clientes de prueba "CLIENTE SMOKE".
+clientes `a_revisar`. C6 por SLA fuera de la Lista: `BANCO ITAU ARGENTINA SA` y `PRISMA MEDIOS DE PAGO SA` (después cargados
+como alias de BANCO MACRO SA y TEXPERT SA, renombres confirmados por el usuario) y los 3 clientes de prueba
+"CLIENTE SMOKE".
 
 ## Archivos
 
