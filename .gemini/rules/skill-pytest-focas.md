@@ -423,6 +423,19 @@ def client():
 Disponer desde afuera (después del `with`) no sirve: cierra contra un loop muerto, SQLAlchemy sólo
 loguea `Exception terminating connection` y las conexiones quedan colgadas del lado del servidor.
 
+## Tests real-db: no asumir el estado global de dev (lección 2026-10-14)
+
+Un test contra el Postgres de dev que compara **conteos globales** (`count(*)` de una tabla entera,
+"después >= antes") sólo vale mientras dev está en el estado en que se escribió. **Caso real**:
+`test_apply_persiste_dentro_de_la_transaccion_del_llamador` (`tests/test_clientes_categoria_regularizar.py`)
+asumía `visibles >= antes` sobre `app.clientes`. Pasaba con la tabla vacía. Después de correr la
+regularización real en dev, un alias nuevo absorbió (borró) clientes y el test falló sin bug de código.
+
+- Acotar los asserts a datos sintéticos propios (`ZZTEST ...`, números `9999xxx`), o comparar contra
+  el resumen que devuelve el propio código bajo test, nunca contra una dirección supuesta del conteo global.
+- Si el test necesita correr algo global (un script completo), envolverlo en una transacción externa
+  que se revierte y verificar `despues == antes`.
+
 ## No comparar bytes de XLSX/DOCX regenerados (lección 2026-10-05)
 
 Un `.xlsx`/`.docx` es un ZIP con fecha de modificación por entrada (granularidad de 2 s). Dos llamadas
