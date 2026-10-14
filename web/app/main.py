@@ -20,6 +20,7 @@ import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from core.config import get_secret
@@ -40,6 +41,8 @@ from fastapi import UploadFile, File
 import unicodedata
 import json
 import pandas as pd
+
+from core.parsers.lista_clientes import EXTENSIONES_LISTA as EXTENSIONES_LISTA_CLIENTES
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
@@ -9901,6 +9904,188 @@ async def servicios_categoria_masiva_web(request: Request, body: ServiciosCatego
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=servicios_categoria_masiva_error user=%s error=%s", username, exc)
         return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+
+
+# ─── Clientes por categoría (proxy admin a /clientes del API interno) ────────
+# Todos exigen rol admin; los que escriben, además CSRF (`_validar_csrf`, misma excepción de tests
+# que el resto). El usuario de la sesión viaja en `X-Usuario` para la auditoría (`actualizado_por`).
+# La lista oficial acepta archivo (multipart: `file` + `categoria` + `modo` + `csrf_token`) o JSON
+# (`{nombres, categoria, modo, csrf_token}`) en la misma ruta, igual que el endpoint interno.
+
+TAMANO_MAXIMO_LISTA_CLIENTES = 5 * 1024 * 1024  # 5 MB, mismo límite que el API interno
+
+
+async def _proxy_clientes(
+    method: str,
+    ruta: str,
+    username: str,
+    accion: str,
+    *,
+    cuerpo: dict[str, Any] | None = None,
+    files: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Reenvía al API interno `/clientes{ruta}` con la API key y `X-Usuario`; devuelve su respuesta."""
+    kwargs: dict[str, Any] = {"headers": {**_internal_api_auth_headers(), "X-Usuario": username}}
+    if cuerpo is not None:
+        kwargs["json"] = cuerpo
+    if files is not None:
+        kwargs["files"] = files
+    if data is not None:
+        kwargs["data"] = data
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.request(method, f"{INTERNAL_API_BASE_URL}/clientes{ruta}", **kwargs)
+
+        payload: Any
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error en clientes por categoría"}
+
+        logger.info("action=%s user=%s ruta=%s status=%s", accion, username, ruta, response.status_code)
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=%s_error user=%s ruta=%s error=%s", accion, username, ruta, exc)
+        return JSONResponse({"error": f"Error en clientes por categoría: {exc!s}"}, status_code=500)
+
+
+class _ClientesCsrfModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class ClientesCategoriaRequestModel(_ClientesCsrfModel):
+    cliente_ids: list[int]
+    categoria: int | None = None
+    automatico: bool = False
+
+
+class ClientesListaRequestModel(_ClientesCsrfModel):
+    nombres: list[str]
+    categoria: int | None = None
+    modo: Literal["agregar", "reemplazar"] = "agregar"
+
+
+class ClientesFusionarRequestModel(_ClientesCsrfModel):
+    destino_id: int
+    origen_ids: list[int]
+
+
+class ClientesAliasRequestModel(_ClientesCsrfModel):
+    nombre: str
+
+
+@app.get("/api/admin/clientes/por-categoria")
+async def clientes_por_categoria_web(request: Request) -> JSONResponse:
+    """Clientes agrupados por categoría — sólo admin, lectura (sin CSRF)."""
+    username = _require_admin(request)
+    return await _proxy_clientes("GET", "/por-categoria", username, "clientes_por_categoria")
+
+
+@app.patch("/api/admin/clientes/categoria")
+async def clientes_categoria_web(request: Request, body: ClientesCategoriaRequestModel) -> JSONResponse:
+    """Cambia la categoría de uno o varios clientes (`null` = sin categorizar, `automatico`)."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_categoria", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes(
+        "PATCH", "/categoria", username, "clientes_categoria", cuerpo=body.model_dump(exclude={"csrf_token"})
+    )
+
+
+async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONResponse:
+    """Previsualizar/aplicar la lista oficial, desde archivo (multipart) o JSON."""
+    username = _require_admin(request)
+    accion = f"clientes_lista_{operacion}"
+    ruta = f"/lista/{operacion}"
+    content_type = request.headers.get("content-type", "").lower()
+
+    if not content_type.startswith("multipart/form-data"):
+        try:
+            body = ClientesListaRequestModel.model_validate(await request.json())
+        except Exception:  # noqa: BLE001 — JSON inválido o campos con tipo incorrecto
+            return JSONResponse({"error": "Pedido de lista inválido"}, status_code=400)
+        if not _validar_csrf(request, body.csrf_token, accion, username):
+            return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+        return await _proxy_clientes("POST", ruta, username, accion, cuerpo=body.model_dump(exclude={"csrf_token"}))
+
+    form = await request.form()
+    csrf_token = form.get("csrf_token")
+    if not _validar_csrf(request, csrf_token if isinstance(csrf_token, str) else None, accion, username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    archivo = form.get("file")
+    if not isinstance(archivo, StarletteUploadFile) or not archivo.filename:
+        return JSONResponse({"error": "Falta el archivo de la lista"}, status_code=400)
+    if not archivo.filename.lower().endswith(EXTENSIONES_LISTA_CLIENTES):
+        return JSONResponse({"error": "Formato no soportado (use .xlsx, .csv o .txt)"}, status_code=415)
+    contenido = await archivo.read(TAMANO_MAXIMO_LISTA_CLIENTES + 1)
+    if len(contenido) > TAMANO_MAXIMO_LISTA_CLIENTES:
+        return JSONResponse({"error": "El archivo supera los 5 MB"}, status_code=413)
+    campos = {campo: str(form.get(campo)) for campo in ("categoria", "modo") if form.get(campo) is not None}
+    return await _proxy_clientes(
+        "POST",
+        ruta,
+        username,
+        accion,
+        files={"file": (archivo.filename, contenido, archivo.content_type or "application/octet-stream")},
+        data=campos,
+    )
+
+
+@app.post("/api/admin/clientes/lista/previsualizar")
+async def clientes_lista_previsualizar_web(request: Request) -> JSONResponse:
+    """Diff de aplicar una lista oficial de clientes (no escribe)."""
+    return await _proxy_lista_clientes(request, "previsualizar")
+
+
+@app.post("/api/admin/clientes/lista/aplicar")
+async def clientes_lista_aplicar_web(request: Request) -> JSONResponse:
+    """Aplica una lista oficial de clientes (el API interno la vuelve a resolver)."""
+    return await _proxy_lista_clientes(request, "aplicar")
+
+
+@app.post("/api/admin/clientes/fusionar")
+async def clientes_fusionar_web(request: Request, body: ClientesFusionarRequestModel) -> JSONResponse:
+    """Fusiona clientes: mueve los alias de `origen_ids` al destino."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_fusionar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes(
+        "POST", "/fusionar", username, "clientes_fusionar", cuerpo=body.model_dump(exclude={"csrf_token"})
+    )
+
+
+@app.post("/api/admin/clientes/{cliente_id}/alias")
+async def clientes_agregar_alias_web(
+    request: Request, cliente_id: int, body: ClientesAliasRequestModel
+) -> JSONResponse:
+    """Agrega un alias (nombre alternativo) a un cliente."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_alias_agregar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes(
+        "POST", f"/{cliente_id}/alias", username, "clientes_alias_agregar", cuerpo={"nombre": body.nombre}
+    )
+
+
+@app.delete("/api/admin/clientes/alias/{alias_id}")
+async def clientes_quitar_alias_web(request: Request, alias_id: int, body: _ClientesCsrfModel) -> JSONResponse:
+    """Quita un alias de cliente (el CSRF viaja en el cuerpo JSON del DELETE)."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_alias_quitar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes("DELETE", f"/alias/{alias_id}", username, "clientes_alias_quitar")
+
+
+@app.post("/api/admin/clientes/sincronizar")
+async def clientes_sincronizar_web(request: Request, body: _ClientesCsrfModel) -> JSONResponse:
+    """Sincronización global de categorías de clientes → servicios."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_sincronizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes("POST", "/sincronizar", username, "clientes_sincronizar")
 
 
 @app.post("/api/infra/upload_tracking")

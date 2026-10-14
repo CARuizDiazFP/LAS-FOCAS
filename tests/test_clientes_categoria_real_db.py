@@ -392,3 +392,97 @@ def test_endpoint_heredar_quita_excepcion_y_vuelve_a_la_del_cliente(sesion) -> N
         text("SELECT categoria, categoria_excepcion FROM app.servicios WHERE id = :i"), {"i": excepcion}
     ).one()
     assert tuple(fila) == (4, False)
+
+
+def test_endpoints_lista_por_http_previsualiza_archivo_y_aplica_json(sesion) -> None:
+    import io
+
+    import pandas as pd
+    from fastapi.testclient import TestClient
+
+    from api.app.main import app
+
+    s = sesion
+    sube = s.crear_servicio("ZZTEST HTTP SUBE SA", sla=2)
+    s.commit()
+    sincronizar_categorias(s, {"ZZTEST HTTP SUBE"})
+    s.commit()
+
+    buffer = io.BytesIO()
+    pd.DataFrame({"Id": ["1", "2"], "Nombre Cliente": ["ZZTEST HTTP SUBE S.A.", "ZZTEST HTTP NUEVO"]}).to_excel(
+        buffer, index=False, engine="openpyxl"
+    )
+    http = TestClient(app)
+    headers = {"Authorization": "Bearer test-api-key", "X-Usuario": "admin-http-test"}
+
+    previa = http.post(
+        "/clientes/lista/previsualizar",
+        files={"file": ("lista.xlsx", buffer.getvalue(), "application/octet-stream")},
+        data={"categoria": "5", "modo": "agregar"},
+        headers=headers,
+    )
+
+    assert previa.status_code == 200, previa.text
+    cuerpo = previa.json()
+    assert [x["nombre"] for x in cuerpo["sube"]] == ["ZZTEST HTTP SUBE SA"]
+    assert cuerpo["nuevos"] == ["ZZTEST HTTP NUEVO"]
+    s.expire_all()
+    assert _cliente(s, "ZZTEST HTTP SUBE").categoria == 2  # previsualizar no escribe
+    assert resolver_cliente(s, "ZZTEST HTTP NUEVO") is None
+
+    aplicado = http.post(
+        "/clientes/lista/aplicar",
+        json={"nombres": ["ZZTEST HTTP SUBE S.A.", "ZZTEST HTTP NUEVO"], "categoria": 5},
+        headers=headers,
+    )
+
+    assert aplicado.status_code == 200, aplicado.text
+    assert aplicado.json()["creados"] == 1
+    s.expire_all()
+    cliente = _cliente(s, "ZZTEST HTTP SUBE")
+    assert (cliente.categoria, cliente.origen_categoria.value, cliente.actualizado_por) == (
+        5,
+        "LISTA",
+        "admin-http-test",
+    )
+    assert _categoria_servicio(s, sube) == 5
+
+
+def test_search_servicios_token_sin_filtra_sin_categorizar(sesion) -> None:
+    from fastapi.testclient import TestClient
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from api.app.main import app
+    from db.session import async_engine, get_async_db
+
+    s = sesion
+    sin = s.crear_servicio("ZZTEST SEARCH SIN SA")
+    con = s.crear_servicio("ZZTEST SEARCH SIN SA", categoria=3)
+    s.crear_servicio("ZZTEST SEARCH SIN SA", categoria=5)
+    s.commit()
+
+    # NullPool: TestClient corre cada request en su propio event loop; el pool global no sirve entre loops.
+    engine = create_async_engine(async_engine.url.render_as_string(hide_password=False), poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_db] = _override
+    http = TestClient(app)
+    headers = {"Authorization": "Bearer test-api-key"}
+
+    def _ids(categoria: str) -> set[int]:
+        r = http.get(
+            "/servicios/search", params={"cliente": "ZZTEST SEARCH SIN", "categoria": categoria}, headers=headers
+        )
+        assert r.status_code == 200, r.text
+        return {item["id"] for item in r.json()["servicios"]}
+
+    try:
+        assert _ids("sin") == {sin}
+        assert _ids("sin,3") == {sin, con}
+    finally:
+        app.dependency_overrides.pop(get_async_db, None)

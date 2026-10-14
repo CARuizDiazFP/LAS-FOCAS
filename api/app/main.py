@@ -12,6 +12,7 @@ from api.app.routes.health import router as health_router
 from api.app.routes.reports import router as reports_router
 from api.app.routes.ingest import router as ingest_router, alias_router as ingest_alias_router
 from api.app.routes.infra import router as infra_router
+from api.app.routes.clientes import router as clientes_router
 from api.app.routes.servicios import router as servicios_router
 from api.app.routes.v1.cables import router as v1_cables_router
 from api.app.routes.v1.oauth import router as v1_oauth_router
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest_alias_router, dependencies=protected)
     app.include_router(infra_router, dependencies=protected)
     app.include_router(servicios_router, dependencies=protected)
+    app.include_router(clientes_router, dependencies=protected)
     # API v1 para integraciones interáreas: OAuth2 client_credentials propio, NO la API key interna.
     # Cada endpoint declara su scope con require_oauth_token (ver api/app/oauth.py).
     app.include_router(v1_oauth_router)

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import re
 from datetime import date, datetime, timedelta
@@ -19,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.parsers.archivo_tabular import FormatoNoSoportadoError, leer_tabla
 from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
 from core.services.prov.config import ProvConfigError
@@ -247,20 +247,14 @@ async def ingest_servicios(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Falta nombre de archivo")
 
-    filename = file.filename.lower()
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Archivo vacio")
 
     try:
-        if filename.endswith((".xlsx", ".xlsm")):
-            df = pd.read_excel(io.BytesIO(content), engine="openpyxl", dtype=str, keep_default_na=False)
-        elif filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content), dtype=str, keep_default_na=False)
-        else:
-            raise HTTPException(status_code=415, detail="Formato no soportado (use .xlsx o .csv)")
-    except HTTPException:
-        raise
+        df = leer_tabla(file.filename, content)
+    except FormatoNoSoportadoError as exc:
+        raise HTTPException(status_code=415, detail="Formato no soportado (use .xlsx o .csv)") from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=servicios_ingest_read_error error=%s", exc)
         raise HTTPException(status_code=400, detail="No se pudo leer el archivo") from exc
@@ -650,7 +644,9 @@ async def search_servicios(
     domicilio: str | None = Query(None),
     tipo: str | None = Query(None),
     estado: str | None = Query(None),
-    categoria: str | None = Query(None, description="Categorías separadas por coma, ej. '6' o '0,3,5'"),
+    categoria: str | None = Query(
+        None, description="Categorías separadas por coma, ej. '6' o '0,3,5'; `sin` = sin categorizar"
+    ),
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_async_db),
@@ -690,12 +686,20 @@ async def search_servicios(
     if estado and estado.strip():
         filters.append(Servicio.estado_servicio.ilike(f"%{estado.strip()}%"))
     if categoria and categoria.strip():
+        # Tokens separados por coma: números 0-6 y/o `sin` (= sin categorizar, `categoria IS NULL`).
+        tokens = [valor.strip().lower() for valor in categoria.split(",") if valor.strip()]
+        incluir_sin = "sin" in tokens
         try:
-            categorias = [int(valor.strip()) for valor in categoria.split(",") if valor.strip()]
+            categorias = [int(token) for token in tokens if token != "sin"]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="categoria inválida") from exc
+        condiciones = []
+        if incluir_sin:
+            condiciones.append(Servicio.categoria.is_(None))
         if categorias:
-            filters.append(Servicio.categoria.in_(categorias))
+            condiciones.append(Servicio.categoria.in_(categorias))
+        if condiciones:
+            filters.append(or_(*condiciones))
 
     where_clause = and_(*filters) if filters else None
 

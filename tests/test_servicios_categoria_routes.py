@@ -210,3 +210,37 @@ class TestSearchServiciosCategoriaFiltro:
         response = client.get("/servicios/search", params={"categoria": "no-es-numero"}, headers=API_HEADERS)
 
         assert response.status_code == 400
+
+    def test_token_sin_filtra_is_null_combinable_con_numeros(self) -> None:
+        sentencias: list[str] = []
+
+        class _Resultado:
+            def scalar_one(self) -> int:
+                return 0
+
+            def scalars(self):
+                return self
+
+            def all(self) -> list:
+                return []
+
+        class _Sesion:
+            async def execute(self, stmt):
+                sentencias.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+                return _Resultado()
+
+        async def _dep():
+            yield _Sesion()
+
+        app.dependency_overrides[get_async_db] = _dep
+        try:
+            response = client.get("/servicios/search", params={"categoria": "sin, 6"}, headers=API_HEADERS)
+            solo_sin = client.get("/servicios/search", params={"categoria": "SIN"}, headers=API_HEADERS)
+        finally:
+            app.dependency_overrides.pop(get_async_db, None)
+
+        assert response.status_code == 200
+        assert solo_sin.status_code == 200
+        assert "app.servicios.categoria IS NULL OR app.servicios.categoria IN (6)" in sentencias[0]
+        assert "app.servicios.categoria IS NULL" in sentencias[2]
+        assert "IN (" not in sentencias[2]
