@@ -99,7 +99,13 @@ def estado_intervencion(session: Session, intervencion: FomonIntervencion) -> li
     """Semáforo por cable. Mientras no haya POST, el color refleja el PRE (fase en curso)."""
     por_fase = ultimos_por_fase(session, intervencion.id)
     pre = {pk: m for pk, m in por_fase["PRE"].items() if pre_valido(intervencion, m)}
-    hay_post = bool(por_fase["POST"]) or intervencion.estado in ("POST_EN_CURSO", "CERRADA")
+    # Una MANUAL cierra tras el PRE sin POST: CERRADA sola no implica fase POST (si no, todo quedaría
+    # "sin dato"). Hay POST si hay resultados, si está en curso, o si cerró con egreso.
+    hay_post = (
+        bool(por_fase["POST"])
+        or intervencion.estado == "POST_EN_CURSO"
+        or (intervencion.estado == "CERRADA" and intervencion.fecha_egreso is not None)
+    )
     post = post_efectivo(por_fase) if hay_post else None
     reconocidos = {
         r.servicio_pk
