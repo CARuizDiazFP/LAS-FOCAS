@@ -400,11 +400,18 @@ def listar_clientes_por_categoria(session: Session) -> dict[str, list[dict]]:
         )
     ).all()
     alias_por_cliente: dict[int, list[dict]] = {}
-    for alias_id, cliente_id, nombre_original, origen in session.execute(
-        select(ClienteAlias.id, ClienteAlias.cliente_id, ClienteAlias.nombre_original, ClienteAlias.origen)
+    # `canonico`: el alias cuya clave es la del cliente — no se puede quitar (ver `quitar_alias`).
+    for alias_id, cliente_id, nombre_original, origen, canonico in session.execute(
+        select(
+            ClienteAlias.id,
+            ClienteAlias.cliente_id,
+            ClienteAlias.nombre_original,
+            ClienteAlias.origen,
+            ClienteAlias.clave == Cliente.clave,
+        ).join(Cliente, Cliente.id == ClienteAlias.cliente_id)
     ):
         alias_por_cliente.setdefault(cliente_id, []).append(
-            {"id": alias_id, "nombre_original": nombre_original, "origen": origen}
+            {"id": alias_id, "nombre_original": nombre_original, "origen": origen, "canonico": bool(canonico)}
         )
 
     grupos: dict[str, list[dict]] = {_nombre_grupo(cat): [] for cat in ORDEN_GRUPOS}

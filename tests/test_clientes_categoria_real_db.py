@@ -357,7 +357,7 @@ def test_listar_clientes_por_categoria(sesion) -> None:
     assert alamo["servicios"] == 1
     assert alamo["excepciones"] == 0
     assert alamo["alias"] == [
-        {"id": alamo["alias"][0]["id"], "nombre_original": "ZZTEST Álamo SA", "origen": "AUTO"}
+        {"id": alamo["alias"][0]["id"], "nombre_original": "ZZTEST Álamo SA", "origen": "AUTO", "canonico": True}
     ]
     bis = seis[0]
     assert (bis["servicios"], bis["excepciones"]) == (1, 1)
@@ -366,6 +366,16 @@ def test_listar_clientes_por_categoria(sesion) -> None:
     sin = [c for c in grupos["sin"] if c["nombre"].startswith("ZZTEST")]
     assert [(c["nombre"], c["servicios"]) for c in sin] == [("ZZTEST GAMMA SIN SERVICIOS", 0)]
     assert normalizar_clave_cliente("ZZTEST Álamo SA") == "ZZTEST ALAMO"
+
+    # `canonico` distingue el alias que no se puede quitar (clave == Cliente.clave) del resto.
+    agregar_alias(s, alamo["id"], "ZZTEST Álamo Variante")
+    s.commit()
+    alamo = next(c for c in listar_clientes_por_categoria(s)["6"] if c["id"] == alamo["id"])
+    s.commit()
+    assert {a["nombre_original"]: a["canonico"] for a in alamo["alias"]} == {
+        "ZZTEST Álamo SA": True,
+        "ZZTEST Álamo Variante": False,
+    }
 
 
 def test_endpoint_heredar_quita_excepcion_y_vuelve_a_la_del_cliente(sesion) -> None:
