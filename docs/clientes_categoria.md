@@ -74,6 +74,11 @@ Resiliencia (`core/services/clientes_categoria_hooks.py`): se ejecuta después d
 con sesión propia. Si falla, se loguea `action=clientes_sync_error` y la ingesta sigue. El botón
 Re-sincronizar o la próxima ingesta lo corrige.
 
+Concurrencia: la sync y toda operación del módulo (categoría, lista, fusión, alias, heredar) toman primero
+`pg_advisory_xact_lock(2026101401)` (`bloquear_categorias_clientes`), así una sync concurrente no pisa una
+decisión del admin. Además el `UPDATE` de recálculo sólo toca clientes que siguen en `SLA`/`AUTO`. Efecto
+esperado: mientras corre un Re-sincronizar global, las operaciones del módulo esperan a que termine.
+
 ## Lista oficial adjunta
 
 - Formatos: `.txt` (un nombre por línea, UTF-8 o Latin-1), `.xlsx`, `.xlsm`, `.csv`. Máximo **5 MB**.
