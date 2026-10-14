@@ -316,6 +316,117 @@ def buscar_en_mapa(session: Session, *, tipo: str, q: str) -> dict:
     }
 
 
+MAX_SERVICIOS_RESALTADOS = 8
+
+_SQL_SERVICIO_POR_ID = text(
+    """
+    SELECT id, servicio_id, coalesce(nombre_cliente, cliente) AS cliente, tipo_servicio, estado_servicio,
+           es_verificable, categoria
+    FROM app.servicios
+    WHERE servicio_id = CAST(:q AS varchar) OR numero_primer_servicio = CAST(:q AS varchar)
+       OR CAST(:q AS varchar) = ANY(alias_ids)
+    ORDER BY (servicio_id = CAST(:q AS varchar)) DESC
+    LIMIT 1
+    """
+)
+_SQL_CABLES_DE_SERVICIO = text(
+    """
+    SELECT DISTINCT c.n_id, c.nombre
+    FROM app.cromo_servicio_match m
+    JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
+    JOIN app.cromo_cables c ON c.n_id = p.cable_n_id AND c.vigente
+    WHERE m.servicio_id = :pk
+    """
+)
+
+
+def geojson_servicios(session: Session, ids: list[str]) -> dict:
+    """Cables de 1..8 servicios, una feature por (servicio, cable) con `servicio` e `indice` para que
+    el mapa los pinte con un color por servicio (y desplace las líneas compartidas)."""
+    pedidos = []
+    for crudo in ids:
+        q = crudo.strip()
+        if q and q not in pedidos:
+            pedidos.append(q)
+    if not pedidos:
+        raise ValueError("indicá al menos un servicio")
+    if len(pedidos) > MAX_SERVICIOS_RESALTADOS:
+        raise ValueError(f"se pueden resaltar hasta {MAX_SERVICIOS_RESALTADOS} servicios")
+    servicios, features = [], []
+    for indice, q in enumerate(pedidos):
+        s = session.execute(_SQL_SERVICIO_POR_ID, {"q": q}).first()
+        if s is None:
+            servicios.append({"q": q, "indice": indice, "encontrado": False, "cables": 0})
+            continue
+        cables = session.execute(_SQL_CABLES_DE_SERVICIO, {"pk": s.id}).all()
+        coords = _coords(session, [int(c.n_id) for c in cables])
+        for c in cables:
+            if int(c.n_id) in coords:
+                features.append({
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": coords[int(c.n_id)]},
+                    "properties": {"cable_n_id": int(c.n_id), "nombre": c.nombre, "servicio": q, "indice": indice},
+                })
+        servicios.append({
+            "q": q, "indice": indice, "encontrado": True, "servicio_pk": s.id, "servicio_id": s.servicio_id,
+            "cliente": s.cliente, "tipo": s.tipo_servicio, "estado_servicio": s.estado_servicio,
+            "es_verificable": bool(s.es_verificable), "cables": len(cables),
+            "cables_sin_trazado": sum(1 for c in cables if int(c.n_id) not in coords),
+        })
+    return {"type": "FeatureCollection", "features": features, "servicios": servicios}
+
+
+def ficha_cable(session: Session, cable_n_id: int) -> dict:
+    """Ficha de un cable para el panel lateral: identidad, extremos y servicios con su último estado
+    medido por FO Monitor (los verificables) — independiente de que haya una intervención activa."""
+    from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_cable_sync
+    from db.models.cromo import CromoCable
+    from db.models.fo_monitor import FomonResultado
+
+    cable = session.get(CromoCable, cable_n_id)
+    if cable is None:
+        raise NoEncontrado(f"cable {cable_n_id}")
+    try:
+        servicios = servicios_unicos_por_cable_sync(session, cable_n_id).servicios
+    except ObjetoNoEncontrado:
+        servicios = []
+    pks = [x.servicio_id for x in servicios]
+    ultimos: dict[int, FomonResultado] = {}
+    if pks:
+        for r in (
+            session.query(FomonResultado)
+            .filter(FomonResultado.servicio_pk.in_(pks), FomonResultado.fase.in_(("PRE", "POST", "REVERIF")))
+            .order_by(FomonResultado.medido_at, FomonResultado.id)
+        ):
+            ultimos[r.servicio_pk] = r
+
+    def _ultimo(pk: int) -> Optional[dict]:
+        r = ultimos.get(pk)
+        if r is None:
+            return None
+        return {"estado": r.estado, "medido_at": _iso(r.medido_at), "fase": r.fase, "motivo": r.motivo,
+                "extremo": r.extremo, "intervencion_id": r.intervencion_id}
+
+    items = sorted(
+        (
+            {
+                "servicio_pk": x.servicio_id, "servicio_id": x.servicio_id_externo, "cliente": x.nombre_cliente or x.cliente,
+                "tipo": x.tipo_servicio, "estado_servicio": x.estado_servicio, "categoria": x.categoria,
+                "es_verificable": bool(x.es_verificable), "pelos": x.cantidad_pelos, "ultimo": _ultimo(x.servicio_id),
+            }
+            for x in servicios
+        ),
+        key=lambda i: (not i["es_verificable"], -(i["categoria"] or 0), i["servicio_id"] or ""),
+    )
+    return {
+        "cable_n_id": cable.n_id, "nombre": cable.nombre, "clase": cable.clase, "capacidad": cable.capacidad,
+        "propietario": cable.propietario, "jerarquia": cable.jerarquia, "vigente": cable.vigente,
+        "extremo_a": cable.extremo_a_nombre, "extremo_b": cable.extremo_b_nombre,
+        "servicios": items,
+        "verificables": sum(1 for i in items if i["es_verificable"]),
+    }
+
+
 def geojson_botellas(session: Session, *, bbox: Optional[str], limit: int = 5000) -> dict:
     caja = _parse_bbox(bbox)
     q = session.query(CromoBotella.n_id, CromoBotella.nombre, CromoBotella.latitud, CromoBotella.longitud,

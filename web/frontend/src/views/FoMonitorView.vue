@@ -25,12 +25,25 @@
         class="fomon__mapa"
         :intervenciones="geoIntervenciones"
         :cable-seleccionado="seleccion?.cableNId ?? null"
+        :geo-servicios="geoServicios"
+        :servicios-resaltados="geoServicios?.servicios ?? []"
         @seleccionar="seleccionar"
+        @agregar-servicios="agregarServicios"
+        @quitar-servicio="quitarServicio"
       />
 
       <aside class="fomon__lateral">
+        <CableFichaPanel
+          v-if="seleccion && seleccion.intervencionId === null"
+          :cable-n-id="seleccion.cableNId"
+          :seleccionados="serviciosSeleccionados"
+          :colores="coloresPorServicio"
+          @cerrar="seleccion = null"
+          @abrir-intervencion="abrirIntervencionPorId"
+          @alternar-servicio="alternarServicio"
+        />
         <CableDetailPanel
-          v-if="seleccion"
+          v-else-if="seleccion"
           :cable-n-id="seleccion.cableNId"
           :intervencion-id="seleccion.intervencionId"
           :es-admin="esAdmin"
@@ -81,13 +94,15 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import {
-  actualizarConfigPiloto, crearVerificacionManual, leerConfigPiloto, listarIntervenciones, obtenerMapaIntervenciones,
-  type ConfigPiloto, type FiltrosIntervenciones, type IntervencionResumen, type ListadoIntervenciones,
+  actualizarConfigPiloto, crearVerificacionManual, leerConfigPiloto, listarIntervenciones, obtenerGeoServicios,
+  obtenerMapaIntervenciones, type ConfigPiloto, type FiltrosIntervenciones, type GeoServicios, type IntervencionResumen,
+  type ListadoIntervenciones,
 } from '../api/foMonitor';
 import CableDetailPanel from '../components/fo-monitor/CableDetailPanel.vue';
+import CableFichaPanel from '../components/fo-monitor/CableFichaPanel.vue';
 import FoMonitorMap from '../components/fo-monitor/FoMonitorMap.vue';
 import IntervencionesPanel from '../components/fo-monitor/IntervencionesPanel.vue';
-import { ETIQUETA_COLOR } from '../components/fo-monitor/colores';
+import { ETIQUETA_COLOR, colorServicio } from '../components/fo-monitor/colores';
 import { useFoMonitorPolling } from '../composables/useFoMonitorPolling';
 import { useSession } from '../composables/useSession';
 
@@ -100,6 +115,50 @@ const listado = ref<ListadoIntervenciones | null>(null);
 const filtros = ref<FiltrosIntervenciones>({ estado: 'ACTIVAS', limit: 50 });
 const seleccion = ref<{ cableNId: number; intervencionId: number | null } | null>(null);
 const version = ref(0);
+
+// Servicios resaltados en el mapa (máx. 8), cada uno con su color de PALETA_SERVICIOS por posición.
+const MAX_SERVICIOS = 8;
+const serviciosSeleccionados = ref<string[]>([]);
+const geoServicios = ref<GeoServicios | null>(null);
+const coloresPorServicio = computed<Record<string, string>>(() =>
+  Object.fromEntries(serviciosSeleccionados.value.map((id, i) => [id, colorServicio(i)])),
+);
+let controladorServicios: AbortController | null = null;
+
+async function cargarServicios(enfocarResultado: boolean): Promise<void> {
+  controladorServicios?.abort();
+  if (serviciosSeleccionados.value.length === 0) {
+    geoServicios.value = null;
+    return;
+  }
+  controladorServicios = new AbortController();
+  try {
+    geoServicios.value = await obtenerGeoServicios(serviciosSeleccionados.value, controladorServicios.signal);
+    if (enfocarResultado) {
+      mapaRef.value?.enfocar(
+        geoServicios.value.features.flatMap((f) => (f.geometry as GeoJSON.LineString).coordinates as [number, number][]),
+      );
+    }
+  } catch (err) {
+    if ((err as Error).name !== 'AbortError') console.warn('fo-monitor servicios', err);
+  }
+}
+
+function agregarServicios(ids: string[]): void {
+  const nuevos = ids.filter((id) => !serviciosSeleccionados.value.includes(id));
+  serviciosSeleccionados.value = [...serviciosSeleccionados.value, ...nuevos].slice(0, MAX_SERVICIOS);
+  void cargarServicios(true);
+}
+
+function quitarServicio(id: string): void {
+  serviciosSeleccionados.value = serviciosSeleccionados.value.filter((x) => x !== id);
+  void cargarServicios(false);
+}
+
+function alternarServicio(id: string): void {
+  if (serviciosSeleccionados.value.includes(id)) quitarServicio(id);
+  else agregarServicios([id]);
+}
 
 const config = ref<ConfigPiloto | null>(null);
 const adminError = ref('');

@@ -129,3 +129,32 @@ def test_buscar_en_mapa_por_servicio_cable_y_camara(session):
         consultas_web.buscar_en_mapa(session, tipo="pelo", q="123")
     with pytest.raises(ValueError):
         consultas_web.buscar_en_mapa(session, tipo="cable", q="F")
+
+
+def test_geojson_servicios_un_color_por_servicio_y_ficha_cable(session):
+    from sqlalchemy import text as _t
+
+    filas = session.execute(_t(
+        """
+        SELECT DISTINCT s.servicio_id, c.n_id
+        FROM app.cromo_servicio_match m
+        JOIN app.servicios s ON s.id = m.servicio_id AND s.es_verificable
+        JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
+        JOIN app.cromo_cables c ON c.n_id = p.cable_n_id AND c.vigente
+        JOIN app.fomon_cable_geo g ON g.cable_n_id = c.n_id
+        LIMIT 2
+        """
+    )).all()
+    ids = [f.servicio_id for f in filas] + ["no-existe-999"]
+    fc = consultas_web.geojson_servicios(session, ids)
+    assert {f["properties"]["indice"] for f in fc["features"]} <= {0, 1}
+    assert fc["servicios"][-1] == {"q": "no-existe-999", "indice": len(ids) - 1, "encontrado": False, "cables": 0}
+    with pytest.raises(ValueError):
+        consultas_web.geojson_servicios(session, [str(i) for i in range(9)])
+
+    ficha = consultas_web.ficha_cable(session, int(filas[0].n_id))
+    assert ficha["cable_n_id"] == int(filas[0].n_id)
+    assert filas[0].servicio_id in {s["servicio_id"] for s in ficha["servicios"]}
+    assert ficha["servicios"][0]["es_verificable"]  # verificables primero
+    with pytest.raises(consultas_web.NoEncontrado):
+        consultas_web.ficha_cable(session, -1)

@@ -195,6 +195,24 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
+    @app.get("/api/fo-monitor/mapa/servicios")
+    def fomon_mapa_servicios(request: Request, ids: str):
+        _auth(request)
+        with _sesion_local() as s:
+            try:
+                return consultas_web.geojson_servicios(s, ids.replace(";", ",").replace(" ", ",").split(","))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.get("/api/fo-monitor/cables/{cable_n_id}/ficha")
+    def fomon_ficha_cable(request: Request, cable_n_id: int):
+        _auth(request)
+        with _sesion_local() as s:
+            try:
+                return consultas_web.ficha_cable(s, cable_n_id)
+            except consultas_web.NoEncontrado:
+                return JSONResponse({"error": "Cable inexistente"}, status_code=404)
+
     @app.get("/api/fo-monitor/mapa/botellas")
     def fomon_mapa_botellas(request: Request, bbox: Optional[str] = None, limit: int = 5000):
         _auth(request)

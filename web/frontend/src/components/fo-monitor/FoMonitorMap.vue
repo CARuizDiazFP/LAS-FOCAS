@@ -13,7 +13,7 @@
           <option value="cable">Cable</option>
           <option value="camara">Cámara</option>
         </select>
-        <input v-model="textoBusqueda" type="search" :placeholder="placeholderBusqueda" aria-label="Texto a buscar" />
+        <input v-model="textoBusqueda" class="fomon-mapa__texto" type="search" :placeholder="placeholderBusqueda" aria-label="Texto a buscar" />
         <button class="btn primary" type="submit" :disabled="buscando || textoBusqueda.trim().length < 2" aria-label="Buscar">
           <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
         </button>
@@ -22,6 +22,16 @@
         </button>
       </form>
       <small v-if="resumenBusqueda" class="fomon-mapa__resumen">{{ resumenBusqueda }}</small>
+      <ul v-if="serviciosResaltados.length" class="fomon-mapa__chips" aria-label="Servicios resaltados">
+        <li v-for="sv in serviciosResaltados" :key="sv.q" :class="{ 'is-no-encontrado': !sv.encontrado }">
+          <span class="fomon-mapa__muestra" :style="{ background: PALETA_SERVICIOS[sv.indice % PALETA_SERVICIOS.length] }"></span>
+          <span :title="sv.cliente || ''">{{ sv.q }}</span>
+          <small>{{ sv.encontrado ? `${sv.cables} cable(s)` : 'no encontrado' }}</small>
+          <button type="button" class="fomon-mapa__quitar" :aria-label="`Quitar ${sv.q}`" @click="emit('quitar-servicio', sv.q)">
+            <i class="ph ph-x" aria-hidden="true"></i>
+          </button>
+        </li>
+      </ul>
       <label><input v-model="verRed" type="checkbox" /> Red FO completa <small>(≈ 1,5 MB, carga bajo demanda)</small></label>
       <label><input v-model="verBotellas" type="checkbox" /> Botellas (zoom ≥ 15)</label>
       <small v-if="cargandoRed" class="fomon-mapa__resumen">Cargando red…</small>
@@ -42,16 +52,23 @@ import { layers, namedFlavor } from '@protomaps/basemaps';
 import { Protocol } from 'pmtiles';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
-  buscarEnMapa, obtenerMapaConfig, type ColorSemaforo, type MapaConfig, type TipoBusquedaMapa,
+  buscarEnMapa, obtenerMapaConfig, type ColorSemaforo, type GeoServicios, type MapaConfig, type ServicioResaltado,
+  type TipoBusquedaMapa,
 } from '../../api/foMonitor';
 import { requestJson } from '../../api/client';
-import { paletaSemaforo, resolverToken } from './colores';
+import { PALETA_SERVICIOS, paletaSemaforo, resolverColor, resolverToken } from './colores';
 
 const props = defineProps<{
   intervenciones: GeoJSON.FeatureCollection | null;
   cableSeleccionado: number | null;
+  geoServicios: GeoServicios | null;
+  serviciosResaltados: ServicioResaltado[];
 }>();
-const emit = defineEmits<{ (e: 'seleccionar', payload: { cableNId: number; intervencionId: number | null }): void }>();
+const emit = defineEmits<{
+  (e: 'seleccionar', payload: { cableNId: number; intervencionId: number | null }): void;
+  (e: 'agregar-servicios', ids: string[]): void;
+  (e: 'quitar-servicio', id: string): void;
+}>();
 
 const contenedor = ref<HTMLDivElement | null>(null);
 // La red completa (~34k cables, ~8 MB sin comprimir) no se baja de entrada: se busca por servicio,
@@ -65,7 +82,7 @@ const textoBusqueda = ref('');
 const buscando = ref(false);
 const resumenBusqueda = ref('');
 const placeholderBusqueda = computed(() =>
-  ({ servicio: 'N° de servicio…', cable: 'Nombre o n_id del cable…', camara: 'Nombre o id de cámara…' })[tipoBusqueda.value],
+  ({ servicio: 'N° de servicio (varios: 117995, 113705)…', cable: 'Nombre o n_id del cable…', camara: 'Nombre o id de cámara…' })[tipoBusqueda.value],
 );
 let mapa: maplibregl.Map | null = null;
 let protocolo: Protocol | null = null;
@@ -177,11 +194,31 @@ onMounted(async () => {
       id: 'busqueda-linea',
       type: 'line',
       source: 'busqueda',
-      paint: { 'line-color': resolverToken('--color-accent'), 'line-width': 4, 'line-opacity': 0.9 },
+      paint: { 'line-color': resolverToken('--color-neutral-200'), 'line-width': 4, 'line-opacity': 0.9 },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+    }, 'interv-linea');
+    const paletaRgb = PALETA_SERVICIOS.map((c) => resolverColor(c));
+    mapa.addSource('servicios', { type: 'geojson', data: props.geoServicios ?? VACIO });
+    mapa.addLayer({
+      id: 'servicios-linea',
+      type: 'line',
+      source: 'servicios',
+      paint: {
+        'line-color': ['match', ['get', 'indice'], ...paletaRgb.flatMap((c, i) => [i, c]), paletaRgb[0]] as unknown as maplibregl.ExpressionSpecification,
+        'line-width': 4,
+        // Un cable compartido por varios servicios se dibuja como líneas paralelas, una por servicio.
+        'line-offset': ['*', ['get', 'indice'], 4],
+      },
       layout: { 'line-cap': 'round', 'line-join': 'round' },
     }, 'interv-linea');
     if (verRed.value) void cargarRed();
+    mapa.on('click', 'servicios-linea', (ev) => {
+      if (mapa?.queryRenderedFeatures(ev.point, { layers: ['interv-linea'] }).length) return;
+      const p = ev.features?.[0]?.properties;
+      if (p) emit('seleccionar', { cableNId: Number(p.cable_n_id), intervencionId: null });
+    });
     mapa.on('click', 'busqueda-linea', (ev) => {
+      if (mapa?.queryRenderedFeatures(ev.point, { layers: ['servicios-linea'] }).length) return;
       if (mapa?.queryRenderedFeatures(ev.point, { layers: ['interv-linea'] }).length) return;
       const p = ev.features?.[0]?.properties;
       if (p) emit('seleccionar', { cableNId: Number(p.cable_n_id), intervencionId: null });
@@ -191,11 +228,11 @@ onMounted(async () => {
       if (p) emit('seleccionar', { cableNId: Number(p.cable_n_id), intervencionId: Number(p.intervencion_id) });
     });
     mapa.on('click', 'red-linea', (ev) => {
-      if (mapa?.queryRenderedFeatures(ev.point, { layers: ['interv-linea'] }).length) return;
+      if (mapa?.queryRenderedFeatures(ev.point, { layers: ['interv-linea', 'servicios-linea', 'busqueda-linea'] }).length) return;
       const p = ev.features?.[0]?.properties;
       if (p) emit('seleccionar', { cableNId: Number(p.id), intervencionId: null });
     });
-    for (const capa of ['interv-linea', 'red-linea', 'busqueda-linea']) {
+    for (const capa of ['interv-linea', 'red-linea', 'busqueda-linea', 'servicios-linea']) {
       mapa.on('mouseenter', capa, () => { if (mapa) mapa.getCanvas().style.cursor = 'pointer'; });
       mapa.on('mouseleave', capa, () => { if (mapa) mapa.getCanvas().style.cursor = ''; });
     }
@@ -213,8 +250,18 @@ watch(verRed, (v) => {
   else if (v) void cargarRed();
 });
 
+watch(() => props.geoServicios, (fc) => {
+  (mapa?.getSource('servicios') as GeoJSONSource | undefined)?.setData(fc ?? VACIO);
+});
+
 async function buscar(): Promise<void> {
   if (!mapa) return;
+  if (tipoBusqueda.value === 'servicio') {
+    const ids = textoBusqueda.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    if (ids.length) emit('agregar-servicios', ids);
+    textoBusqueda.value = '';
+    return;
+  }
   buscando.value = true;
   try {
     const r = await buscarEnMapa(tipoBusqueda.value, textoBusqueda.value.trim());
@@ -279,19 +326,60 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-width: min(420px, calc(100% - 70px));
+  width: min(460px, calc(100% - 70px));
+  box-sizing: border-box;
   padding: 8px 10px;
   font-size: 12px;
 }
 
 .fomon-mapa__buscar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 110px minmax(200px, 1fr) auto auto;
   gap: 6px;
+  align-items: stretch;
 }
 
-.fomon-mapa__buscar input {
-  flex: 1;
+.fomon-mapa__buscar select,
+.fomon-mapa__texto {
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
+}
+
+.fomon-mapa__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fomon-mapa__chips li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg-surface-alt);
+}
+
+.fomon-mapa__chips li.is-no-encontrado {
+  opacity: 0.6;
+}
+
+.fomon-mapa__muestra {
+  width: 14px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+}
+
+.fomon-mapa__quitar {
+  border: 0;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0 2px;
 }
 
 .fomon-mapa__panel small,

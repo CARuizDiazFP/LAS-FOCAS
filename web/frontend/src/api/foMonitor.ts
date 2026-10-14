@@ -207,3 +207,55 @@ export function buscarEnMapa(tipo: TipoBusquedaMapa, q: string) {
   const params = new URLSearchParams({ tipo, q });
   return requestJson<ResultadoBusquedaMapa>(`/api/fo-monitor/mapa/buscar?${params.toString()}`);
 }
+
+export interface ServicioResaltado {
+  q: string;
+  indice: number;
+  encontrado: boolean;
+  cables: number;
+  servicio_pk?: number;
+  servicio_id?: string;
+  cliente?: string | null;
+  tipo?: string | null;
+  estado_servicio?: string | null;
+  es_verificable?: boolean;
+  cables_sin_trazado?: number;
+}
+
+export interface GeoServicios extends GeoJSON.FeatureCollection {
+  servicios: ServicioResaltado[];
+}
+
+export function obtenerGeoServicios(ids: string[], signal?: AbortSignal) {
+  return requestJson<GeoServicios>(`/api/fo-monitor/mapa/servicios?ids=${encodeURIComponent(ids.join(','))}`, { signal });
+}
+
+export interface ServicioEnFicha {
+  servicio_pk: number;
+  servicio_id: string | null;
+  cliente: string | null;
+  tipo: string | null;
+  estado_servicio: string | null;
+  categoria: number | null;
+  es_verificable: boolean;
+  pelos: number;
+  ultimo: (Medicion & { fase: string; intervencion_id: number }) | null;
+}
+
+export interface FichaCable {
+  cable_n_id: number;
+  nombre: string | null;
+  clase: number | null;
+  capacidad: string | null;
+  propietario: string | null;
+  jerarquia: string | null;
+  vigente: boolean;
+  extremo_a: string | null;
+  extremo_b: string | null;
+  servicios: ServicioEnFicha[];
+  verificables: number;
+}
+
+export function obtenerFichaCable(cableNId: number) {
+  return requestJson<FichaCable>(`/api/fo-monitor/cables/${cableNId}/ficha`);
+}
