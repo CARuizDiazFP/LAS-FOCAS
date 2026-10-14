@@ -16,6 +16,11 @@
         <strong>{{ servicioIds.length }}</strong> servicio{{ servicioIds.length !== 1 ? 's' : '' }} seleccionado{{ servicioIds.length !== 1 ? 's' : '' }}.
       </p>
 
+      <p class="categoria-aviso">
+        El cambio crea una <strong>excepción</strong> en cada servicio: dejan de heredar la categoría de su
+        cliente hasta que se use "Heredar del cliente" en su detalle.
+      </p>
+
       <div v-if="error" class="categoria-empty error">{{ error }}</div>
 
       <div class="categoria-actions">
@@ -101,12 +106,12 @@ watch(
 }
 
 .modal-content {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(9, 14, 23, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   border-radius: 18px;
   padding: 24px;
   color: var(--text);
-  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
 }
 
 .categoria-title-row {
@@ -137,10 +142,21 @@ watch(
   color: var(--text);
 }
 
+.categoria-aviso {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 33%, transparent);
+  color: var(--color-text);
+}
+
 .categoria-empty {
   padding: 12px;
   border-radius: 10px;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--color-divider);
   color: var(--muted);
   font-size: 0.85rem;
   text-align: center;
@@ -148,8 +164,8 @@ watch(
 }
 
 .categoria-empty.error {
-  border-color: rgba(239, 68, 68, 0.4);
-  color: #fecaca;
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+  color: var(--error);
 }
 
 .categoria-actions {

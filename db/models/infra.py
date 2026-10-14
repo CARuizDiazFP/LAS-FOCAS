@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, List, Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    SmallInteger,
     String,
     Table,
     Text,
@@ -68,6 +70,17 @@ class ServicioOrigenDatos(str, Enum):
     INGEST_EXCEL = "INGEST_EXCEL"
     INFERIDO_CROMO = "INFERIDO_CROMO"  # Placeholder sintetizado por el matching Cromo (nombre, no dato real)
     INGEST_PROV = "INGEST_PROV"  # Servicio enriquecido/actualizado por la integración con la API PROV
+
+
+class ClienteOrigenCategoria(str, Enum):
+    """De dónde sale la categoría de un `Cliente` (migración `20261014_01`). Precedencia:
+    `LISTA`/`MANUAL` (definida por un admin) > `SLA` (moda de `servicios.categoria_sla` 1..6) >
+    `AUTO` (0 si sólo tiene placeholders C0). `categoria NULL` con `AUTO` = "sin datos"."""
+
+    LISTA = "LISTA"  # Cargada desde la lista oficial de clientes por categoría
+    MANUAL = "MANUAL"  # Fijada a mano por un admin
+    SLA = "SLA"  # Derivada de la categoría que trae la planilla SLA en sus servicios
+    AUTO = "AUTO"  # Derivada automáticamente (placeholders C0) o sin datos
 
 
 class RutaTipo(str, Enum):
@@ -417,10 +430,15 @@ class Servicio(Base):
     direccion_2 = Column(String(255), nullable=True)
     estado_servicio = Column(String(128), nullable=False, default="DESCONOCIDO", index=True)
     cliente = Column(String(255), nullable=True)
-    # 0-6, CHECK ck_servicios_categoria_valida (DDL-only, ver migración 20260814_01) — 6 = "sin
-    # categorizar todavía" (default de altas nuevas), 0 = placeholder sintetizado por Cromo (ver
-    # origen_datos), 1-5 asignados manualmente por un admin.
-    categoria = Column(Integer, nullable=False, server_default=text("6"))
+    # 0-6 o NULL, CHECK ck_servicios_categoria_valida (DDL-only, ver migración 20260814_01). Desde
+    # 20261014_01: NULL = "sin categorizar" (ya no hay default 6), 6 = sólo C6 real, 0 = placeholder
+    # sintetizado por Cromo (ver origen_datos), 1-5 asignados por la lista de clientes o un admin.
+    categoria = Column(Integer, nullable=True)
+    # Categoría que trajo la planilla SLA (0-6 o NULL, CHECK ck_servicios_categoria_sla_valida,
+    # DDL-only, migración 20261014_01). Insumo de la categoría `SLA` del cliente.
+    categoria_sla = Column(SmallInteger, nullable=True)
+    # True = la categoría de este servicio fue fijada a mano y la propagación desde su cliente no la pisa.
+    categoria_excepcion = Column(Boolean, nullable=False, server_default=text("false"))
     # True si tipo_servicio está en TIPOS_SERVICIO_VERIFICABLES y estado_servicio no es "Baja" (ver
     # es_verificable_por_tipo_y_estado en core/services/servicios_consolidacion_service.py),
     # recalculado en cada ingesta salvo que es_verificable_override no sea NULL.
@@ -629,6 +647,73 @@ class ServicioSyncProv(Base):
 
     def __repr__(self) -> str:
         return f"<ServicioSyncProv servicio_id={self.servicio_id} ultima_sincronizacion_ok={self.ultima_sincronizacion_ok}>"
+
+
+class Cliente(Base):
+    """Cliente con su categoría (0-6 o NULL) — migración `20261014_01`. `clave` es el nombre
+    normalizado y único; las variantes de nombre que apuntan acá viven en `ClienteAlias`."""
+
+    __tablename__ = "clientes"
+    __table_args__ = (
+        CheckConstraint("categoria BETWEEN 0 AND 6", name="ck_clientes_categoria_valida"),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String(255), nullable=False)
+    clave = Column(String(255), nullable=False, unique=True)
+    categoria = Column(SmallInteger, nullable=True)
+    origen_categoria = Column(
+        SQLEnum(ClienteOrigenCategoria, name="cliente_origen_categoria", create_type=False, schema="app"),
+        nullable=False,
+        server_default="AUTO",
+    )
+    a_revisar = Column(Boolean, nullable=False, server_default=text("false"))
+    creado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    actualizado_por = Column(String(120), nullable=True)
+
+    alias = relationship(
+        "ClienteAlias",
+        back_populates="cliente",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Cliente id={self.id} clave='{self.clave}' categoria={self.categoria}>"
+
+
+class ClienteAlias(Base):
+    """Variante del nombre de un cliente (`clave` normalizada, única) que apunta a un `Cliente`.
+    `origen` = `AUTO` (generado por la carga) o `MANUAL` (asignado por un admin)."""
+
+    __tablename__ = "clientes_alias"
+    __table_args__ = (
+        CheckConstraint("origen IN ('AUTO', 'MANUAL')", name="ck_clientes_alias_origen_valido"),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    clave = Column(String(255), nullable=False, unique=True)
+    nombre_original = Column(String(255), nullable=False)
+    cliente_id = Column(
+        Integer,
+        ForeignKey("app.clientes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    origen = Column(String(10), nullable=False, server_default="AUTO")
+
+    cliente = relationship("Cliente", back_populates="alias")
+
+    def __repr__(self) -> str:
+        return f"<ClienteAlias id={self.id} clave='{self.clave}' cliente_id={self.cliente_id}>"
 
 
 class Ingreso(Base):

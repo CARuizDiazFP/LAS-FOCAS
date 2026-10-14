@@ -9,10 +9,15 @@ no tiene nada que ver con cables: resuelve un Servicio y le genera los trackings
 pasa las 1.400 líneas, así que la orquestación también viene acá en vez de engordarlo más.
 
 El `.txt` **no es uno por Servicio, es uno por camino distinto**: las semillas son las posiciones
-de ODF del Servicio, y como un hilo tiene posición en cada ODF que atraviesa (extremos e
-intermedias), las que recorren el mismo camino se colapsan en un solo archivo
-(`trackings_por_camino`). El 42351 da 2: sus dos hilos, cada uno con el camino completo, incluidos
-los cables de terceros. Se suben todos al hilo (decisiones del usuario, 2026-09-28 y 2026-09-29).
+de ODF del Servicio y después el resto de sus pelos, y las que recorren el mismo camino se colapsan
+en un solo archivo (`trackings_por_camino`). El 42351 da 2: sus dos hilos, cada uno con el camino
+completo, incluidos los cables de terceros. Se suben todos al hilo (decisiones del usuario,
+2026-09-28 y 2026-09-29).
+
+Cuántos caminos hay lo dice la regla de operaciones: tantos como pelos tiene el Servicio en un
+mismo cable u ODF (`caminos_esperados`). El 94673 no termina en ninguna ODF y antes daba 1 `.txt`
+de sus 2 hilos; un pelo huérfano no genera un `.txt` de más, se avisa para excluirlo desde el
+portal (2026-10-05).
 """
 
 from __future__ import annotations
@@ -92,25 +97,69 @@ class ResultadoTrack:
     archivos: list[TrackingArchivo] = field(default_factory=list)
     mensaje: str = ""
     errores: list[str] = field(default_factory=list)
+    esperados: int = 0
+    completo: bool = True
+    # Una línea por pelo huérfano, ya formateada para el hilo ("pelo 6799772 · F-VIN-TEC · 21 AM").
+    huerfanos: list[str] = field(default_factory=list)
 
 
 ESTADO_OK = "ok"
 ESTADO_ERROR = "error"
 
 
+# Un Servicio largo puede tener decenas de huérfanos; el hilo no es el lugar para listarlos todos.
+_MAX_HUERFANOS_LISTADOS = 15
+
+
+def _describir_pelo(semilla: Any) -> str:
+    """"pelo 6799772 · F-VIN-TEC · 21 AM": lo que el operador necesita para ubicarlo en Cromo."""
+    partes = [f"pelo {semilla.pelo_n_id}"]
+    if semilla.cable_nombre:
+        partes.append(semilla.cable_nombre)
+    numero = " ".join(x for x in (semilla.numero_pelo, semilla.color) if x)
+    if numero:
+        partes.append(numero)
+    return " · ".join(partes)
+
+
+def mensaje_resumen(resultado: ResultadoTrack) -> Optional[str]:
+    """Aviso que acompaña a los archivos en el hilo, o `None` si no hay nada que avisar.
+
+    - Faltan caminos: se dice cuántos se esperaban y por qué fallaron. Si no, el operador cuenta 1
+      archivo donde esperaba 2 y no sabe si le faltan datos o si el Servicio es así.
+    - Hay huérfanos: se listan y se indica que se excluyen desde el portal. Sus errores no se
+      repiten aparte: un pelo que falló y quedó fuera de todo camino ya está en esa lista.
+    """
+    if resultado.estado != ESTADO_OK:
+        return None
+    partes: list[str] = []
+    generados = len(resultado.archivos)
+    if not resultado.completo:
+        partes.append(
+            f":warning: Se esperaban {resultado.esperados} caminos y se generaron {generados}."
+        )
+        if resultado.errores:
+            partes.append("\n".join(f"• {e}" for e in resultado.errores))
+    if resultado.huerfanos:
+        partes.append(
+            f":link: {len(resultado.huerfanos)} pelo(s) con la etiqueta del Servicio no están en "
+            "ninguno de sus caminos (huérfanos). No se generó tracking para ellos; se pueden "
+            "excluir del Servicio desde el portal (Detalle de Servicio → Camino):"
+        )
+        partes.append("\n".join(f"• {h}" for h in resultado.huerfanos[:_MAX_HUERFANOS_LISTADOS]))
+        if len(resultado.huerfanos) > _MAX_HUERFANOS_LISTADOS:
+            partes.append(f"… y {len(resultado.huerfanos) - _MAX_HUERFANOS_LISTADOS} más.")
+    return "\n".join(partes) if partes else None
+
+
 async def _generar_async(servicio_pk: int) -> ResultadoTrack:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
 
-    from core.services.cromo.camino_optico_service import (
-        ESTADO_SIN_SEMILLA,
-        contar_semillas,
-        listar_pelos_semilla,
-        semillas_por_defecto,
-    )
+    from core.services.cromo.camino_optico_service import ESTADO_SIN_SEMILLA, contar_semillas
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
-    from core.services.cromo.tracking_service import nombre_distinguible, trackings_por_camino
+    from core.services.cromo.tracking_service import nombre_distinguible, trackings_del_servicio
     from db.session import async_engine
 
     # Engine propio con `NullPool` en vez del pool singleton de `db.session`: ese pool queda atado
@@ -135,17 +184,9 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                     ),
                 )
 
-            semillas = await listar_pelos_semilla(sesion, servicio_pk, priorizar_conector=True)
-            elegidos = semillas_por_defecto(semillas)
-
             try:
                 async with CromoClient(config=get_cromo_config()) as cliente:
-                    por_camino = await trackings_por_camino(
-                        cliente,
-                        sesion,
-                        servicio_id=servicio_pk,
-                        pelos_n_id=[s.pelo_n_id for s in elegidos],
-                    )
+                    del_servicio = await trackings_del_servicio(cliente, sesion, servicio_pk)
             except CromoClientError as exc:
                 # Cromo caído se lleva puesta la corrida entera, no un pelo: se reporta como tal.
                 return ResultadoTrack(
@@ -153,10 +194,10 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                     mensaje=f"Cromo no respondió: {exc}",
                 )
 
-            errores = por_camino.errores
+            errores = del_servicio.errores
             # `distinguir` mira los archivos que efectivamente se suben, ya sin caminos repetidos:
             # lo que importa es que los N archivos del hilo no se pisen entre sí.
-            distinguir = len(por_camino.trackings) > 1
+            distinguir = len(del_servicio.trackings) > 1
             archivos = [
                 TrackingArchivo(
                     nombre=nombre_distinguible(
@@ -166,8 +207,9 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                     desde_cache=tracking.desde_cache,
                     duracion_ms=tracking.duracion_ms,
                 )
-                for tracking in por_camino.trackings
+                for tracking in del_servicio.trackings
             ]
+            huerfanos = [_describir_pelo(s) for s in del_servicio.huerfanos]
 
             if not archivos:
                 return ResultadoTrack(
@@ -175,7 +217,14 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                     mensaje="No se pudo generar ningún tracking para este Servicio.",
                     errores=errores,
                 )
-            return ResultadoTrack(estado=ESTADO_OK, archivos=archivos, errores=errores)
+            return ResultadoTrack(
+                estado=ESTADO_OK,
+                archivos=archivos,
+                errores=errores,
+                esperados=del_servicio.esperados,
+                completo=del_servicio.completo,
+                huerfanos=huerfanos,
+            )
     finally:
         await engine.dispose()
 

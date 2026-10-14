@@ -2813,6 +2813,90 @@ su propia ventana de mantenimiento.
   - 97 bajas: 6.144 pelos y 876 vínculos automáticos retirados, 0 MANUAL.
   - Queda un solo nombre duplicado, F-ALV-2335, que es real.
   - Detalle en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
-- **Pendiente:** prod (deploy + relevamiento + dry-run + `--apply`, con OK del usuario). Además, en la
-  clase 52 un faltante resultó `SIN_CAMBIOS`: Cromo lo lista con un id distinto del `n_id` local. Se
-  dejó como está.
+- **Validación de la ingesta en dev:** `SOLO_CABLES` (corrida 2169) dio de baja sola un cable que
+  Cromo había borrado ese mismo día (F-MTA-2454).
+- **Prod** (deploy `main` 7ab1cb8 sin migraciones; backup previo
+  `~/lasfocas-prod-sync-20261002/prod_backup_pre_deploy_20261002_160033.dump`). Fix retroactivo,
+  corrida 2136:
+  - 251 cables dados de alta.
+  - 255 cables con `/inner`: 16.836 pelos y 1.626 vínculos.
+  - 100 bajas: 6.360 pelos y 881 vínculos automáticos retirados, 0 MANUAL (prod tampoco tenía
+    ninguna).
+  - Las clases 51 y 66 quedaron iguales a lo que lista Cromo (32.933 y 18.999). El único duplicado
+    vigente es F-ALV-2335.
+- **Cromo se edita mientras tanto:** el mismo 2026-10-02, alrededor de las 16:02 UTC, alguien volvió a
+  editar el tramo en Cromo. Quedaron así:
+  - 10277060 borrado.
+  - F-TIG-003-B vigente: 10293906.
+  - 10277059 renombrado "F-TIG-003B11".
+  
+  Prod lo tomó en su corrida. Dev se volvió a correr para alcanzarlo (corrida 2170: 5 altas y 3 bajas,
+  entre ellas el 10277060; F-TIG-003-B → 10293906 en los dos entornos). Por eso un solo relevamiento no
+  alcanza y la baja tiene que vivir en la ingesta.
+- **Sin resolver:** en la clase 52 de dev, un faltante resultó `SIN_CAMBIOS`: Cromo lo lista con un id
+  distinto del `n_id` local. Se dejó como está.
+
+## 2026-10-05 — Tracking: caminos esperados por pelos de cable, sin depender de la ODF, y exclusión local de huérfanos
+
+- **Reclamo:** `@Registrador track 94673` (dev) daba 1 `.txt` y el Servicio tiene 2 hilos. El
+  portal mostraba lo mismo.
+- **Causa (datos reales de dev):** el 94673 tiene 52 pelos, exactamente 2 por cable en 26 cables
+  (`FDF1 C10` y `FDF1 C9`), y ninguno termina en ODF. Sin conectores, `semillas_por_defecto` caía a
+  la primera semilla del ranking → un solo hilo.
+- **Regla de operaciones:** si un Servicio tiene N pelos asignados en un mismo cable u ODF, tiene N
+  caminos y N trackings. Se implementa como la **moda** de pelos por cable u ODF
+  (`camino_optico_service.caminos_esperados`). Se eligió la moda y no el máximo porque, medido, 42351
+  tiene 145 cables con 2 pelos, 12 con 3 y 1 con 4, y 93154 tiene 105 con 2 y 9 con 4.
+- **Semillas:** todas, con las posiciones de ODF primero (`semillas_para_tracking`).
+  `trackings_por_camino` descarta las ya recorridas y corta en los esperados. Slack (`track`) y el
+  portal (`GET .../camino-optico/caminos`) usan la misma función: `trackings_del_servicio`.
+- **Huérfanos** (decisión del usuario): no generan un tercer tracking. Se avisan y un admin puede
+  **excluirlos en local**, en la tabla nueva `app.cromo_servicio_pelo_excluido` (migración
+  `20261005_01`). Es una tabla separada de `cromo_servicio_match` porque la ingesta reescribe esa
+  tabla. Las queries de semillas, conteos, pertenencia y caminos esperados la filtran. Cromo no se
+  toca, y se restauran de a uno.
+- **Resultado en dev:** 94673 → 2 caminos, 0 huérfanos. 42351 → 2 caminos, 34 huérfanos. 93154 → 2
+  caminos, 63 huérfanos, entre ellos matches cuyo pelo ya no lleva la etiqueta del Servicio en Cromo
+  (`None`, `OS 32200 DWDM…`).
+- **Fuera de alcance:** el nombre del archivo sigue saliendo del primer at.62 del pelo en Cromo
+  ("42352 CROMO", "83254 CROMO"). Es un pendiente que ya estaba abierto.
+
+
+## 2026-10-05 — Histórico de SLA consumido: persistir al generar
+
+- Contexto: El informe SLA sólo procesaba los Excel y no dejaba rastro; el detalle de un servicio no podía mostrar sus reclamos ni cómo evolucionó su SLA, y `/ingest/reclamos` guardaba horas mal (minutos, duraciones >24 h cortadas, día/mes invertidos).
+- Decisión: El informe de SLA consumido (`POST /api/reports/sla-consumo`) persiste lo que ingiere: reclamos (upsert por `numero_reclamo`), una foto de SLA por `(numero_linea, fecha_corte)` y un registro de ingesta con el hash del par de archivos, así que re-subir el mismo par responde `ya_ingestado`. La fecha de corte es automática (el máximo de `Fecha Cierre Problema Reclamo`), la ventana es de 365 días y la base son las `Horas Netas Problema Reclamo` en horas. Los cierres se agrupan en FO / FO Cod 3 / Carrier / Otros / Cierre Cliente; sólo Cierre Cliente no cuenta, con lista configurable en `SLA_CIERRE_CLIENTE_VALORES` (vacía hoy). `/ingest/reclamos` se corrigió (horas, >24 h, día/mes, "-" → NULL, IDs float). En `report_history` el período es el mes de la corrida y la fecha de corte va en `output_metadata`.
+- Alternativas: Seguir calculando al vuelo sin persistir; usar el SLA oficial `Horas Reclamos Todos` en vez de la suma de netas (difiere en 99 líneas; el usuario eligió netas el 2026-10-05).
+- Impacto: Migración `20261005_02` (aplicada sólo en dev; prod pendiente). El detalle de servicio devuelve `reclamos` y `sla_historico`. Ver `docs/informes/sla_consumo.md`.
+
+## 2026-10-05 — SLA consumido ampliado: servicio unificado, XLSX completo y dos DOCX
+
+- Contexto: El informe SLA consumido no alcanzaba para analizar el consumo del presupuesto por servicio, reclamo y evento; había que unificar servicios que cambian de línea y distinguir causas FO de Carrier/Otros.
+- Decisión: (1) El ID visible del servicio es la **línea más actualizada** (numéricamente mayor); `numero_primer_servicio` sólo unifica. (2) **No se muestra la línea original** del reclamo. (3) **Una única torta global** de causas; sin tortas por servicio ni por reclamo. (4) El DOCX exhaustivo trae ficha completa de los servicios con reclamos y una **tabla compacta** para los que no tienen. (5) Todo se genera en la **misma solicitud** (XLSX, DOCX ejecutivo, DOCX exhaustivo, PDF del ejecutivo); el PDF del exhaustivo no se genera en línea (~6,5 min en LibreOffice) y la respuesta lo explica con `pdf_omitido`. Tolerancia `EPS_HORAS = 1e-6`; el DOCX ejecutivo lista los `SLA_CONSUMO_TOP_EVENTOS` (20) eventos de mayor horas-servicio. Carrier con evento no se reasigna: se lista como inconsistencia.
+- Alternativas: mostrar la línea original; tortas por servicio (costo alto); generar el PDF exhaustivo en línea o con worker; mostrar el primer servicio como ID.
+- Impacto: Sin migración nueva (prod sigue sin migrar ni desplegar). Ver `docs/informes/sla_consumo.md`.
+
+## 2026-10-14 — Clientes por categoría como fuente de verdad (C0–C6)
+
+- Contexto: `servicios.categoria` lo escribían sin precedencia la planilla SLA (pisaba todo), los placeholders de Cromo/PROV (0) y los cambios manuales por servicio. No había tabla de clientes, el nombre era texto libre con variantes (Galicia "SA"/"S A U", ARSAT x2, Credicoop) y `6` mezclaba el C6 real con "sin categorizar" porque era el default desde `20260814_01`.
+- Decisión (las 8 del usuario, 2026-10-14):
+  1. `6` = sólo C6 real; "sin categorizar" pasa a `NULL`.
+  2. C6: la Lista es la fuente principal y la ingesta SLA la secundaria. Un C6 de la SLA fuera de la Lista entra como "C6 · SLA". Lo que define un admin siempre gana.
+  3. C5…C0 se autocompletan por moda de servicios; C0 se ignora si hay una categoría real; el empate lo gana la más alta.
+  4. El servicio hereda la categoría del cliente salvo una excepción por servicio marcada por un admin; la herencia no pisa excepciones.
+  5. Tabla de clientes + alias, con la categoría materializada en `servicios.categoria` para que los lectores no cambien.
+  6. Regularización retroactiva: los servicios de clientes C6 pasan a 6, placeholders C0 incluidos.
+  7. Lista C6 inicial de 52 nombres (los 50 del usuario + `BANCO DE LA CIUDAD DE BUENOS AIRES` + `BANCO MACRO SA`).
+  8. Despliegue de todo `dev` junto a prod, con el informe SLA consumido pendiente; antes se corrige la migración `20261005_02`.
+- Rulings que cambiaron el comportamiento respecto del plan:
+  - **AUTO sin datos SLA = 0 si el cliente tiene al menos un servicio, `NULL` si no tiene** (en vez de mirar `servicios.categoria = 0`, que la propagación pisa). Es estable ante idas y vueltas MANUAL→AUTO. Los clientes sólo-PROV quedan C0.
+  - **No se mueve el único alias de un cliente `LISTA`/`MANUAL`** (error "usar fusionar"): no se pierden decisiones del admin en silencio. Sólo se borran los clientes AUTO/SLA que quedan sin alias.
+  - **Los servicios con excepción siguen votando en la moda** con su `categoria_sla`: es dato SLA, no decisión del admin.
+  - **La ingesta Excel conserva la `categoria` de las filas existentes**; sólo completa la provisoria cuando es NULL. Evita churn en `updated` y una regresión si la sync falla.
+  - **Una lista sin encabezado reconocible no pierde la primera fila** (caso de uso: adjuntar la lista tal cual). El encabezado se reconoce por "Cliente"/"Nombre Cliente".
+  - **"Sin categorizar" no se puede fijar como excepción de un servicio puntual**: el `PATCH` acepta 0..6 y la opción está deshabilitada en el detalle. Para volver al cliente está "Heredar".
+  - Además de los 3 alias del plan, el archivo inicial trae los renombres societarios evidentes vistos en dev: `CENTURYLINK ARGENTINA SA`→CIRION, `BANCO SANTANDER RIO SA`→BANCO SANTANDER ARGENTINA, `TELEVISION FEDERAL SA (TELEFE)`→TELEVISION FEDERAL S A. Otros C6 de la SLA fuera de la Lista no se fuerzan: quedan C6·SLA y se reportan. El usuario confirmó después dos renombres que también se cargan como alias: `PRISMA MEDIOS DE PAGO SA`→TEXPERT SA y `BANCO ITAU ARGENTINA SA`→BANCO MACRO SA.
+  - La sync post-ingesta es resiliente: una falla se loguea (`clientes_sync_error`) y no tumba la ingesta; "Re-sincronizar" la corrige.
+  - **Sync y operaciones del admin se serializan con un advisory lock transaccional** (review final): sin él, una sync concurrente (ingesta/PROV) podía revertir en silencio un cambio MANUAL/LISTA. La ingesta Excel tampoco pisa una excepción fijada mientras corría.
+- Alternativas: sólo normalizar el nombre en la lectura (sin tabla); columna `cliente_id` con FK en `servicios` (más invasivo para los lectores y las ingestas); recalcular la categoría al leer.
+- Impacto: migración `20261014_01`; módulo admin "Clientes por categoría"; la planilla SLA deja de pisar la categoría. Ver `docs/clientes_categoria.md`. Despliegue a dev y prod pendiente al momento de escribir esta entrada.

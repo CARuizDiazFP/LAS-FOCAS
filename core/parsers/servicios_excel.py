@@ -99,7 +99,10 @@ class IngestServiciosSummary:
     rows_bad: int
 
 
-def _clean_key(value: str) -> str:
+def limpiar_clave(value: str) -> str:
+    """Clave de comparación: sin acentos (unidecode), minúsculas y todo lo no alfanumérico → un
+    espacio. Pública porque también la usa `core/services/clientes_categoria_service.py` como base
+    de `normalizar_clave_cliente`."""
     clean = str(value)
     clean = clean.replace("°", " ").replace("º", " ")
     if _unidecode is not None:
@@ -112,7 +115,7 @@ def _clean_key(value: str) -> str:
     return clean
 
 
-NORMALIZED_MAPPER: Dict[str, str] = {_clean_key(k): v for k, v in MAPPER.items()}
+NORMALIZED_MAPPER: Dict[str, str] = {limpiar_clave(k): v for k, v in MAPPER.items()}
 
 
 def parse_servicios_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestServiciosSummary]:
@@ -128,7 +131,7 @@ def parse_servicios_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestServiciosS
     destinos_usados: Dict[str, str] = {}
     descartados: list[tuple[str, str]] = []
     for col in df.columns:
-        key = _clean_key(col)
+        key = limpiar_clave(col)
         if key not in NORMALIZED_MAPPER:
             continue
         destino = NORMALIZED_MAPPER[key]

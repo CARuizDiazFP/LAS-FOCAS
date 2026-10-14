@@ -14,12 +14,13 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from time import time as now
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from core.config import get_secret
@@ -40,6 +41,8 @@ from fastapi import UploadFile, File
 import unicodedata
 import json
 import pandas as pd
+
+from core.parsers.lista_clientes import EXTENSIONES_LISTA as EXTENSIONES_LISTA_CLIENTES
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
@@ -211,6 +214,7 @@ from core.services.botella_recompute_queue import (  # noqa: E402
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
+from core.services import sla_consumo as sla_consumo_service  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
     ReportConfig,
     ReportResult,
@@ -732,6 +736,86 @@ def _require_admin(request: Request) -> str:
     if role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
     return username
+
+
+@app.post("/api/reports/sla-consumo")
+async def generar_informe_sla_consumo_web(
+    request: Request,
+    pdf_enabled: bool = Form(False),
+    csrf_token: str | None = Form(None),
+    files: List[UploadFile] = File(default=[]),
+):
+    username, _ = _require_auth(request)
+    expected_csrf = request.session.get("csrf")
+    if expected_csrf and os.getenv("TESTING", "false").lower() != "true" and csrf_token != expected_csrf:
+        for a_ in files:
+            await a_.close()
+        return JSONResponse({"ok": False, "error": "CSRF inválido"}, status_code=403)
+
+    archivos = [a for a in files if a and a.filename]
+    # period_month/year son NOT NULL en report_history: se usa el mes actual; la fecha de corte real
+    # (derivada de los Excel) se registra en output_metadata.
+    hoy = datetime.now()
+    history_id = REPORT_HISTORY.start(
+        report_type="sla_consumo", username=username, source="excel", period_month=hoy.month, period_year=hoy.year,
+        input_metadata={"archivos": [Path(a.filename or "").name for a in archivos], "pdf_enabled": bool(pdf_enabled)},
+    )
+
+    def _error(status: int, mensaje: str) -> JSONResponse:
+        REPORT_HISTORY.finish_error(history_id, error_code=f"HTTP_{status}", error_message=mensaje,
+                                    output_metadata={"source": "excel"})
+        return JSONResponse({"ok": False, "error": mensaje}, status_code=status)
+
+    if len(archivos) != 2:
+        for a_ in files:
+            await a_.close()
+        return _error(400, "Debés adjuntar dos archivos: servicios y reclamos")
+
+    contenidos: dict[str, bytes] = {}
+    for archivo in archivos:
+        nombre = Path(archivo.filename).name
+        contenido = await archivo.read()
+        await archivo.close()
+        if not nombre.lower().endswith(".xlsx") or not contenido:
+            return _error(415, f"{nombre} debe ser un .xlsx no vacío")
+        try:
+            tipo = sla_service.identify_excel_kind(contenido)
+        except ValueError as exc:
+            return _error(422, str(exc))
+        if tipo in contenidos:
+            return _error(422, f"Se recibió más de un Excel de {tipo}")
+        contenidos[tipo] = contenido
+    if set(contenidos) != {"servicios", "reclamos"}:
+        return _error(400, "Adjuntá los archivos de servicios y reclamos")
+
+    try:
+        informe = await asyncio.to_thread(
+            sla_consumo_service.generar_informe_sla_consumo, contenidos["servicios"], contenidos["reclamos"],
+            usuario=username, incluir_pdf=pdf_enabled, reports_dir=REPORTS_DIR, report_history_id=history_id,
+        )
+    except ValueError as exc:
+        return _error(422, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=sla_consumo_web stage=unexpected user=%s", username)
+        return _error(500, f"No se pudo generar el informe de SLA consumido: {str(exc) or exc.__class__.__name__}")
+
+    report_paths = {"xlsx": _report_href(informe.xlsx), "docx_ejecutivo": _report_href(informe.docx_ejecutivo),
+                    "docx_exhaustivo": _report_href(informe.docx_exhaustivo)}
+    if informe.pdf_ejecutivo:
+        report_paths["pdf_ejecutivo"] = _report_href(informe.pdf_ejecutivo)
+    if informe.pdf_exhaustivo:
+        report_paths["pdf_exhaustivo"] = _report_href(informe.pdf_exhaustivo)
+    ingesta = informe.ingesta
+    salida = {
+        "fecha_corte": ingesta.fecha_corte.isoformat(), "ya_ingestado": ingesta.ya_ingestado,
+        "reclamos_insertados": ingesta.reclamos_insertados, "reclamos_actualizados": ingesta.reclamos_actualizados,
+        "reclamos_sin_cambios": ingesta.reclamos_sin_cambios,
+        "totales": informe.totales, "report_paths": report_paths,
+    }
+    if informe.pdf_omitido:
+        salida["pdf_omitido"] = informe.pdf_omitido
+    REPORT_HISTORY.finish_success(history_id, output_metadata={"source": "excel", **salida})
+    return JSONResponse({"ok": True, "message": "Informe de SLA consumido generado", **salida})
 
 
 @app.get("/api/admin/me")
@@ -6039,6 +6123,7 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
         ResultadoServicioRefrescado,
         priorizar_por_antiguedad,
         refrescar_un_servicio,
+        sincronizar_clientes_de_resultados,
     )
     from core.services.prov.client import get_prov_client
 
@@ -6072,6 +6157,9 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
                 False,
                 "se agotó el tiempo del lote antes de poder intentarlo",
             )
+
+    # Una sola sync de categorías de clientes para el lote, fuera del deadline. Nunca lanza.
+    await sincronizar_clientes_de_resultados(resultados.values(), origen="cromo_servicios_unicos_refrescar_prov")
 
     fallidos = [
         {"servicio_id_externo": r.servicio_id_externo, "motivo": r.motivo_error}
@@ -8312,6 +8400,18 @@ def _serializar_pelo_semilla(semilla: Any) -> dict[str, Any]:
     }
 
 
+def _serializar_pelo_excluido(excluido: Any) -> dict[str, Any]:
+    return {
+        "pelo_n_id": excluido.pelo_n_id,
+        "numero_pelo": excluido.numero_pelo,
+        "color": excluido.color,
+        "cable_nombre": excluido.cable_nombre,
+        "motivo": excluido.motivo,
+        "excluido_por": excluido.excluido_por,
+        "created_at": excluido.created_at.isoformat() if excluido.created_at else None,
+    }
+
+
 def _serializar_vinculo_local(vinculo: Any) -> Optional[dict[str, Any]]:
     if vinculo is None:
         return None
@@ -8618,10 +8718,12 @@ async def cromo_camino_pelos_web(
     """
     from core.services.cromo import tracking_cache
     from core.services.cromo.camino_optico_service import (
+        caminos_esperados,
         contar_semillas,
         listar_pelos_semilla,
         semillas_por_defecto,
     )
+    from core.services.cromo.pelos_excluidos import listar_excluidos
     from db.session import AsyncSessionLocal
 
     _require_auth(request)
@@ -8634,6 +8736,8 @@ async def cromo_camino_pelos_web(
         )
         frescura = await tracking_cache.frescura(sesion, [s.pelo_n_id for s in semillas])
         total_matcheados, total_con_conector = await contar_semillas(sesion, servicio_id)
+        esperados = await caminos_esperados(sesion, servicio_id)
+        excluidos = await listar_excluidos(sesion, servicio_id)
 
     preseleccionados = [s.pelo_n_id for s in semillas_por_defecto(semillas)]
     # Si ninguna semilla tiene conector, la ODF del Servicio todavía no fue relevada y la
@@ -8662,6 +8766,10 @@ async def cromo_camino_pelos_web(
             # posición de ODF.
             "total_matcheados": total_matcheados,
             "total_con_posicion_odf": total_con_conector,
+            # Regla de operaciones: tantos caminos (y `.txt`) como pelos del Servicio en un mismo
+            # cable u ODF. Cuáles son esos caminos lo resuelve `/caminos`, que sí va a Cromo.
+            "caminos_esperados": esperados,
+            "excluidos": [_serializar_pelo_excluido(x) for x in excluidos],
         }
     )
 
@@ -8763,6 +8871,127 @@ async def cromo_camino_tracking_txt_web(
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
     )
+
+
+@app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos")
+async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONResponse:
+    """Los caminos del Servicio: un pelo por camino distinto, más los pelos huérfanos.
+
+    Es lo mismo que hace `@bot track` en Slack (`tracking_service.trackings_del_servicio`): recorre
+    todas las semillas —posiciones de ODF primero, después los pelos de los cables— descartando
+    las que ya recorrió un camino, y corta en los caminos esperados. **Va a Cromo**: 4,6-14 s por
+    camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es inmediato.
+
+    Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
+    del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
+    """
+    from core.services.cromo.client import CromoClient, CromoClientError
+    from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.tracking_service import trackings_del_servicio
+    from db.session import AsyncSessionLocal
+
+    usuario, _rol = _require_auth(request)
+    try:
+        async with AsyncSessionLocal() as sesion:
+            if not await _servicio_existe(sesion, servicio_id):
+                return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+            async with CromoClient(config=get_cromo_config()) as cliente:
+                resultado = await trackings_del_servicio(cliente, sesion, servicio_id)
+    except CromoClientError as exc:
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+
+    logger.info(
+        "action=cromo_camino_caminos user=%s servicio_id=%s esperados=%s generados=%s huerfanos=%s",
+        usuario,
+        servicio_id,
+        resultado.esperados,
+        len(resultado.trackings),
+        len(resultado.huerfanos),
+    )
+    return JSONResponse(
+        {
+            "servicio_id": servicio_id,
+            "esperados": resultado.esperados,
+            "completo": resultado.completo,
+            "caminos": [
+                {
+                    "pelo_n_id": t.pelo_n_id,
+                    "nombre_archivo": t.nombre_archivo,
+                    "desde_cache": t.desde_cache,
+                    "pelos_en_camino": len(t.pelos_camino),
+                }
+                for t in resultado.trackings
+            ],
+            "huerfanos": [_serializar_pelo_semilla(s) for s in resultado.huerfanos],
+            "errores": resultado.errores,
+        }
+    )
+
+
+class PelosExcluirRequestModel(BaseModel):
+    """Payload para sacar pelos huérfanos de un Servicio (de a uno o todos juntos)."""
+
+    pelos_n_id: list[int] = Field(min_length=1, max_length=500, description="Pelos a excluir")
+    motivo: str | None = Field(default=None, max_length=500, description="Por qué se excluyen")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class PeloRestaurarRequestModel(BaseModel):
+    """Payload para devolver un pelo excluido a su Servicio."""
+
+    pelo_n_id: int = Field(description="Pelo a restaurar")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos")
+async def servicios_pelo_excluir_web(
+    request: Request, servicio_id: int, body: PelosExcluirRequestModel
+) -> JSONResponse:
+    """Saca pelos del Servicio en local: dejan de ser semilla, de contar y de pesar en los caminos
+    esperados, aunque Cromo conserve la etiqueta. Es para los huérfanos que quedaron con la
+    etiqueta del Servicio fuera de todos sus caminos. Reversible con `/pelos-excluidos/restaurar`.
+    Admin."""
+    from core.services.cromo.pelos_excluidos import PeloNoPerteneceAlServicio, excluir_pelos
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_pelo_excluir", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        try:
+            excluidos, ajenos = await excluir_pelos(
+                sesion, servicio_id, body.pelos_n_id, usuario=username, motivo=body.motivo
+            )
+        except PeloNoPerteneceAlServicio as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+    return JSONResponse({"ok": True, "excluidos": excluidos, "ajenos": ajenos})
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos/restaurar")
+async def servicios_pelo_restaurar_web(
+    request: Request, servicio_id: int, body: PeloRestaurarRequestModel
+) -> JSONResponse:
+    """Devuelve al Servicio un pelo excluido. Admin."""
+    from core.services.cromo.pelos_excluidos import restaurar_pelo
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_pelo_restaurar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        restaurado = await restaurar_pelo(sesion, servicio_id, body.pelo_n_id, usuario=username)
+    if not restaurado:
+        return JSONResponse(
+            {"error": f"El pelo {body.pelo_n_id} no estaba excluido de este Servicio."},
+            status_code=404,
+        )
+    return JSONResponse({"ok": True, "pelo_n_id": body.pelo_n_id})
 
 
 class CaminoNormalizarRequestModel(BaseModel):
@@ -9483,6 +9712,50 @@ async def servicio_categoria_web(request: Request, id: int, body: ServicioCatego
         return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
 
 
+class ServicioCategoriaHeredarRequestModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.patch("/api/servicios/{id}/categoria/heredar")
+async def servicio_categoria_heredar_web(
+    request: Request, id: int, body: ServicioCategoriaHeredarRequestModel
+) -> JSONResponse:
+    """Quita la excepción de categoría de un Servicio para que vuelva a heredar la de su cliente —
+    sólo admin. Proxya al endpoint interno, mismo patrón que `servicio_categoria_web`."""
+    username = _require_admin(request)
+    expected_csrf = request.session.get("csrf")
+    testing_mode = os.getenv("TESTING", "false").lower() == "true"
+    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
+        logger.warning("action=servicio_categoria_heredar result=fail reason=csrf user=%s", username)
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria/heredar",
+                headers=_internal_api_auth_headers(),
+            )
+
+        payload: dict[str, Any]
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error restaurando la categoría heredada"}
+
+        logger.info(
+            "action=servicio_categoria_heredar user=%s id=%s status=%s",
+            username,
+            id,
+            response.status_code,
+        )
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=servicio_categoria_heredar_error user=%s id=%s error=%s", username, id, exc)
+        return JSONResponse({"error": f"Error restaurando la categoría heredada: {exc!s}"}, status_code=500)
+
+
 class ServicioVerificableUpdateRequestModel(BaseModel):
     es_verificable: bool
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
@@ -9631,6 +9904,210 @@ async def servicios_categoria_masiva_web(request: Request, body: ServiciosCatego
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=servicios_categoria_masiva_error user=%s error=%s", username, exc)
         return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+
+
+# ─── Clientes por categoría (proxy admin a /clientes del API interno) ────────
+# Todos exigen rol admin; los que escriben, además CSRF (`_validar_csrf`, misma excepción de tests
+# que el resto). El usuario de la sesión viaja en `X-Usuario` para la auditoría (`actualizado_por`).
+# La lista oficial acepta archivo (multipart: `file` + `categoria` + `modo` + `csrf_token`) o JSON
+# (`{nombres, categoria, modo, csrf_token}`) en la misma ruta, igual que el endpoint interno.
+
+TAMANO_MAXIMO_LISTA_CLIENTES = 5 * 1024 * 1024  # 5 MB, mismo límite que el API interno
+MARGEN_MULTIPART_LISTA_CLIENTES = 64 * 1024  # boundaries y campos del form en el pre-chequeo
+
+
+async def _proxy_clientes(
+    method: str,
+    ruta: str,
+    username: str,
+    accion: str,
+    *,
+    cuerpo: dict[str, Any] | None = None,
+    files: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Reenvía al API interno `/clientes{ruta}` con la API key y `X-Usuario`; devuelve su respuesta."""
+    kwargs: dict[str, Any] = {"headers": {**_internal_api_auth_headers(), "X-Usuario": username}}
+    if cuerpo is not None:
+        kwargs["json"] = cuerpo
+    if files is not None:
+        kwargs["files"] = files
+    if data is not None:
+        kwargs["data"] = data
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.request(method, f"{INTERNAL_API_BASE_URL}/clientes{ruta}", **kwargs)
+
+        payload: Any
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            payload = {"error": response.text or "Error en clientes por categoría"}
+
+        logger.info("action=%s user=%s ruta=%s status=%s", accion, username, ruta, response.status_code)
+        return JSONResponse(payload, status_code=response.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("action=%s_error user=%s ruta=%s error=%s", accion, username, ruta, exc)
+        return JSONResponse({"error": f"Error en clientes por categoría: {exc!s}"}, status_code=500)
+
+
+# Mismos límites que `api/app/routes/clientes.py` (lista oficial y alias de cliente).
+MAXIMO_NOMBRES_LISTA_CLIENTES = 2000
+LARGO_MAXIMO_NOMBRE_CLIENTE = 255
+
+
+class _ClientesCsrfModel(BaseModel):
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class ClientesCategoriaRequestModel(_ClientesCsrfModel):
+    cliente_ids: list[int]
+    categoria: int | None = None
+    automatico: bool = False
+
+
+class ClientesListaRequestModel(_ClientesCsrfModel):
+    nombres: list[Annotated[str, Field(max_length=LARGO_MAXIMO_NOMBRE_CLIENTE)]] = Field(
+        max_length=MAXIMO_NOMBRES_LISTA_CLIENTES
+    )
+    categoria: int | None  # obligatoria; `null` = sin categorizar
+    modo: Literal["agregar", "reemplazar"] = "agregar"
+
+
+class ClientesFusionarRequestModel(_ClientesCsrfModel):
+    destino_id: int
+    origen_ids: list[int] = Field(min_length=1)
+
+
+class ClientesAliasRequestModel(_ClientesCsrfModel):
+    nombre: str = Field(max_length=LARGO_MAXIMO_NOMBRE_CLIENTE)
+
+
+@app.get("/api/admin/clientes/por-categoria")
+async def clientes_por_categoria_web(request: Request) -> JSONResponse:
+    """Clientes agrupados por categoría — sólo admin, lectura (sin CSRF)."""
+    username = _require_admin(request)
+    return await _proxy_clientes("GET", "/por-categoria", username, "clientes_por_categoria")
+
+
+@app.patch("/api/admin/clientes/categoria")
+async def clientes_categoria_web(request: Request, body: ClientesCategoriaRequestModel) -> JSONResponse:
+    """Cambia la categoría de uno o varios clientes (`null` = sin categorizar, `automatico`)."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_categoria", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes(
+        "PATCH", "/categoria", username, "clientes_categoria", cuerpo=body.model_dump(exclude={"csrf_token"})
+    )
+
+
+async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONResponse:
+    """Previsualizar/aplicar la lista oficial, desde archivo (multipart) o JSON."""
+    username = _require_admin(request)
+    accion = f"clientes_lista_{operacion}"
+    ruta = f"/lista/{operacion}"
+    content_type = request.headers.get("content-type", "").lower()
+
+    if not content_type.startswith("multipart/form-data"):
+        try:
+            body = ClientesListaRequestModel.model_validate(await request.json())
+        except Exception:  # noqa: BLE001 — JSON inválido, campos con tipo incorrecto o fuera de límite
+            return JSONResponse(
+                {
+                    "error": f"Pedido de lista inválido (máximo {MAXIMO_NOMBRES_LISTA_CLIENTES} nombres de hasta "
+                    f"{LARGO_MAXIMO_NOMBRE_CLIENTE} caracteres)"
+                },
+                status_code=400,
+            )
+        if not _validar_csrf(request, body.csrf_token, accion, username):
+            return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+        return await _proxy_clientes("POST", ruta, username, accion, cuerpo=body.model_dump(exclude={"csrf_token"}))
+
+    try:
+        largo_declarado = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        largo_declarado = 0
+    if largo_declarado > TAMANO_MAXIMO_LISTA_CLIENTES + MARGEN_MULTIPART_LISTA_CLIENTES:
+        return JSONResponse({"error": "El archivo supera los 5 MB"}, status_code=413)
+    form = await request.form()
+    csrf_token = form.get("csrf_token")
+    if not _validar_csrf(request, csrf_token if isinstance(csrf_token, str) else None, accion, username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    archivo = form.get("file")
+    if not isinstance(archivo, StarletteUploadFile) or not archivo.filename:
+        return JSONResponse({"error": "Falta el archivo de la lista"}, status_code=400)
+    if not archivo.filename.lower().endswith(EXTENSIONES_LISTA_CLIENTES):
+        return JSONResponse({"error": "Formato no soportado (use .xlsx, .csv o .txt)"}, status_code=415)
+    contenido = await archivo.read(TAMANO_MAXIMO_LISTA_CLIENTES + 1)
+    if len(contenido) > TAMANO_MAXIMO_LISTA_CLIENTES:
+        return JSONResponse({"error": "El archivo supera los 5 MB"}, status_code=413)
+    if form.get("categoria") is None:
+        return JSONResponse({"error": "Falta categoria (use 'sin' para sin categorizar)"}, status_code=400)
+    campos = {campo: str(form.get(campo)) for campo in ("categoria", "modo") if form.get(campo) is not None}
+    return await _proxy_clientes(
+        "POST",
+        ruta,
+        username,
+        accion,
+        files={"file": (archivo.filename, contenido, archivo.content_type or "application/octet-stream")},
+        data=campos,
+    )
+
+
+@app.post("/api/admin/clientes/lista/previsualizar")
+async def clientes_lista_previsualizar_web(request: Request) -> JSONResponse:
+    """Diff de aplicar una lista oficial de clientes (no escribe)."""
+    return await _proxy_lista_clientes(request, "previsualizar")
+
+
+@app.post("/api/admin/clientes/lista/aplicar")
+async def clientes_lista_aplicar_web(request: Request) -> JSONResponse:
+    """Aplica una lista oficial de clientes (el API interno la vuelve a resolver)."""
+    return await _proxy_lista_clientes(request, "aplicar")
+
+
+@app.post("/api/admin/clientes/fusionar")
+async def clientes_fusionar_web(request: Request, body: ClientesFusionarRequestModel) -> JSONResponse:
+    """Fusiona clientes: mueve los alias de `origen_ids` al destino."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_fusionar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes(
+        "POST", "/fusionar", username, "clientes_fusionar", cuerpo=body.model_dump(exclude={"csrf_token"})
+    )
+
+
+@app.post("/api/admin/clientes/{cliente_id}/alias")
+async def clientes_agregar_alias_web(
+    request: Request, cliente_id: int, body: ClientesAliasRequestModel
+) -> JSONResponse:
+    """Agrega un alias (nombre alternativo) a un cliente."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_alias_agregar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes(
+        "POST", f"/{cliente_id}/alias", username, "clientes_alias_agregar", cuerpo={"nombre": body.nombre}
+    )
+
+
+@app.delete("/api/admin/clientes/alias/{alias_id}")
+async def clientes_quitar_alias_web(request: Request, alias_id: int, body: _ClientesCsrfModel) -> JSONResponse:
+    """Quita un alias de cliente (el CSRF viaja en el cuerpo JSON del DELETE)."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_alias_quitar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes("DELETE", f"/alias/{alias_id}", username, "clientes_alias_quitar")
+
+
+@app.post("/api/admin/clientes/sincronizar")
+async def clientes_sincronizar_web(request: Request, body: _ClientesCsrfModel) -> JSONResponse:
+    """Sincronización global de categorías de clientes → servicios."""
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "clientes_sincronizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    return await _proxy_clientes("POST", "/sincronizar", username, "clientes_sincronizar")
 
 
 @app.post("/api/infra/upload_tracking")

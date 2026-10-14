@@ -14,6 +14,32 @@ export interface IngestServiciosResponse {
   unchanged: number;
 }
 
+export interface ReclamoServicio {
+  numero_reclamo: string;
+  numero_evento: string | null;
+  numero_linea: string;
+  fecha_inicio: string | null;
+  fecha_cierre: string | null;
+  tipo_solucion: string | null;
+  grupo_cierre: string | null;
+  codigo_cierre: number | null;
+  horas_netas: number | null;
+  cuenta_sla: boolean;
+  pct_presupuesto: number | null;
+  carrier: string | null;
+  descripcion_solucion: string | null;
+}
+
+export interface SlaSnapshot {
+  numero_linea: string;
+  fecha_corte: string;
+  sla_prometido: number | null;
+  sla_entregado: number | null;
+  horas_reclamos_todos: number | null;
+  horas_restantes: number | null;
+  cantidad_reclamos_todos: number | null;
+}
+
 export interface ServicioItem {
   id: number;
   numero_primer_servicio: string;
@@ -26,12 +52,15 @@ export interface ServicioItem {
   provincia: string | null;
   direccion_2: string | null;
   estado_servicio: string;
-  categoria: number;
+  /** `null` = sin categorizar (el cliente no tiene categoría). */
+  categoria: number | null;
+  /** `true` = categoría fijada a mano en el servicio: no hereda la del cliente. */
+  categoria_excepcion: boolean;
   es_verificable: boolean;
   es_verificable_override: boolean | null;
   alias_ids: string[];
   origen_datos: string;
-  reclamos: Array<Record<string, unknown>> | null;
+  reclamos: ReclamoServicio[] | null;
 }
 
 export interface ServicioHistorialIdItem {
@@ -68,6 +97,7 @@ export interface ServicioDetailResponse {
   servicio: ServicioItem;
   historial_ids: ServicioHistorialIdItem[];
   equipos_ultima_milla: ServicioEquipoUltimaMillaItem[];
+  sla_historico?: SlaSnapshot[];
 }
 
 export interface SearchServiciosParams {
@@ -82,12 +112,14 @@ export interface SearchServiciosParams {
   offset?: number;
 }
 
-/** Categorías admisibles (C0 = máxima prioridad, C6 = sin clasificar / default). */
+/** Categorías admisibles (C0..C6). "Sin categorizar" es `null`, no una categoría más. */
 export const CATEGORIAS_SERVICIO = [0, 1, 2, 3, 4, 5, 6] as const;
 export type CategoriaServicio = (typeof CATEGORIAS_SERVICIO)[number];
 
-export function categoriaLabel(categoria: number): string {
-  return `C${categoria}`;
+export const SIN_CATEGORIZAR_LABEL = 'Sin categorizar';
+
+export function categoriaLabel(categoria: number | null): string {
+  return categoria === null ? SIN_CATEGORIZAR_LABEL : `C${categoria}`;
 }
 
 export type EstadoServicioToken = 'ok' | 'warn' | 'error' | 'idle';
@@ -203,6 +235,16 @@ export async function updateServicioCategoria(id: number, categoria: number): Pr
   return requestJson<ServicioItem>(`/api/servicios/${id}/categoria`, {
     method: 'PATCH',
     json: { categoria },
+    csrf: true,
+  });
+}
+
+/** Quita la excepción de categoría del Servicio para que vuelva a heredar la de su cliente — sólo
+ * admin. Devuelve el item actualizado. Ver `PATCH /api/servicios/{id}/categoria/heredar`. */
+export async function heredarServicioCategoria(id: number): Promise<ServicioItem> {
+  return requestJson<ServicioItem>(`/api/servicios/${id}/categoria/heredar`, {
+    method: 'PATCH',
+    json: {},
     csrf: true,
   });
 }

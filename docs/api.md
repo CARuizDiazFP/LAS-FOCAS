@@ -859,6 +859,30 @@ Se incorporan endpoints dedicados para ingesta masiva de Excel y búsqueda pagin
   }
   ```
 
+#### Categoría por cliente (2026-10-14)
+
+La categoría de un servicio sigue a la de su cliente (`docs/clientes_categoria.md`).
+
+- `GET /servicios/search`: `categoria` acepta el token `sin` (categoría `NULL`), solo o combinado con 0..6.
+- `ServicioItemResponse`: `categoria` es `int | null` y se suma `categoria_excepcion`.
+- `PATCH /servicios/{id}/categoria` y `PATCH /servicios/bulk-categoria`: fijan la categoría (0..6) y marcan
+  `categoria_excepcion = true`.
+- `PATCH /servicios/{id}/categoria/heredar`: quita la excepción y re-sincroniza al cliente.
+- `POST /servicios/ingest`: escribe `categoria_sla`; en filas existentes conserva `categoria`; sin fallback a 6.
+
+#### Clientes `/clientes/*` (API interna, 2026-10-14)
+
+- **Autenticación:** API key interna. El proxy web los expone como `/api/admin/clientes/...` (admin + CSRF).
+- `GET /clientes/por-categoria`: `{"grupos": ...}` con claves `"6"`…`"0"` y `"sin"`.
+- `PATCH /clientes/categoria`: `{"cliente_ids": [..], "categoria": 6 | null, "automatico": false}`. Header `X-Usuario`.
+- `POST /clientes/lista/previsualizar` y `/clientes/lista/aplicar`: multipart (`file`, `categoria`, `modo`) o JSON
+  (`nombres`, `categoria`, `modo`). `categoria` obligatoria (`sin` o `null` = sin categorizar), `modo` `agregar` o
+  `reemplazar`. Máximo 5 MB. La previsualización no escribe.
+- `POST /clientes/fusionar`: `{"destino_id", "origen_ids"}`.
+- `POST /clientes/{cliente_id}/alias` (`{"nombre"}`) y `DELETE /clientes/alias/{alias_id}`.
+- `POST /clientes/sincronizar`: sync global; devuelve los conteos.
+- Errores: 400 por validación, 404 si el cliente o alias no existe, 413 si la lista supera los 5 MB.
+
 #### GET `/servicios/detail`
 
 - **Autenticación:** API key interna.

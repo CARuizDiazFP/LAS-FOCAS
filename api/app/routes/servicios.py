@@ -5,23 +5,30 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
-from datetime import date
+import re
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.parsers.archivo_tabular import FormatoNoSoportadoError, leer_tabla
 from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
 from core.services.prov.config import ProvConfigError
 from core.services.prov.ingesta import ingerir_contexto_prov
+from core.services.clientes_categoria_hooks import sincronizar_clientes_post_ingesta
+from core.services.clientes_categoria_service import (
+    bloquear_categorias_clientes,
+    normalizar_clave_cliente,
+    sincronizar_categorias,
+)
 from core.services.servicios_categoria_service import (
     CategoriaInvalidaError,
     actualizar_categoria_masiva,
@@ -32,12 +39,42 @@ from core.services.servicios_consolidacion_service import (
     es_verificable_por_tipo_y_estado,
     resolver_estado_servicio,
 )
+from core.sla_consumo.clasificador import GRUPO_CLIENTE
+from core.sla_consumo.engine import presupuesto_horas
 from db.models.infra import Servicio, ServicioEquipoUltimaMilla, ServicioHistorialId, ServicioOrigenDatos
+from db.models.reclamo import Reclamo
+from db.models.sla_consumo import ServicioSlaSnapshot
 from db.session import AsyncSessionLocal, SessionLocal, get_async_db
 
 
 router = APIRouter(prefix="/servicios", tags=["servicios"])
 logger = logging.getLogger(__name__)
+
+
+class ReclamoServicioResponse(BaseModel):
+    numero_reclamo: str
+    numero_evento: str | None = None
+    numero_linea: str
+    fecha_inicio: datetime | None = None
+    fecha_cierre: datetime | None = None
+    tipo_solucion: str | None = None
+    grupo_cierre: str | None = None
+    codigo_cierre: int | None = None
+    horas_netas: float | None = None
+    cuenta_sla: bool = True
+    pct_presupuesto: float | None = None
+    carrier: str | None = None
+    descripcion_solucion: str | None = None
+
+
+class SlaSnapshotResponse(BaseModel):
+    numero_linea: str
+    fecha_corte: date
+    sla_prometido: float | None = None
+    sla_entregado: float | None = None
+    horas_reclamos_todos: float | None = None
+    horas_restantes: float | None = None
+    cantidad_reclamos_todos: int | None = None
 
 
 class ServicioItemResponse(BaseModel):
@@ -52,12 +89,14 @@ class ServicioItemResponse(BaseModel):
     provincia: str | None = None
     direccion_2: str | None = None
     estado_servicio: str
-    categoria: int
+    categoria: int | None = None
+    # True = categoría fijada a mano en el servicio: la propagación desde el cliente no la pisa.
+    categoria_excepcion: bool = False
     origen_datos: str
     es_verificable: bool
     es_verificable_override: bool | None = None
     alias_ids: list[str] = []
-    reclamos: list[dict[str, Any]] | None = None
+    reclamos: list[ReclamoServicioResponse] | None = None
 
 
 class ServicioHistorialIdItemResponse(BaseModel):
@@ -94,6 +133,7 @@ class ServicioDetailResponse(BaseModel):
     servicio: ServicioItemResponse
     historial_ids: list[ServicioHistorialIdItemResponse] = []
     equipos_ultima_milla: list[ServicioEquipoUltimaMillaItemResponse] = []
+    sla_historico: list[SlaSnapshotResponse] = []
 
 
 class IngestServiciosResponse(BaseModel):
@@ -103,6 +143,12 @@ class IngestServiciosResponse(BaseModel):
     inserted: int
     updated: int
     unchanged: int
+    # Resumen de la sincronización de categorías de los clientes del archivo (`ResumenSync`).
+    # `None` si el archivo no trae clientes o si la sync falló (la ingesta igual queda guardada; ver
+    # `action=clientes_sync_error` en el log y "Re-sincronizar" en el módulo de clientes).
+    clientes_sync: dict[str, int] | None = None
+    # True si la sync de clientes falló (distingue "falló" de "el archivo no trae clientes").
+    clientes_sync_error: bool = False
 
 
 def _chunked(items: list[dict[str, Any]], size: int = 500) -> list[list[dict[str, Any]]]:
@@ -142,6 +188,7 @@ def _to_servicio_item(svc: Servicio) -> ServicioItemResponse | None:
         direccion_2=svc.direccion_2,
         estado_servicio=svc.estado_servicio,
         categoria=svc.categoria,
+        categoria_excepcion=svc.categoria_excepcion is True,
         origen_datos=svc.origen_datos.value if hasattr(svc.origen_datos, "value") else str(svc.origen_datos),
         es_verificable=svc.es_verificable,
         es_verificable_override=svc.es_verificable_override,
@@ -207,20 +254,14 @@ async def ingest_servicios(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Falta nombre de archivo")
 
-    filename = file.filename.lower()
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Archivo vacio")
 
     try:
-        if filename.endswith((".xlsx", ".xlsm")):
-            df = pd.read_excel(io.BytesIO(content), engine="openpyxl", dtype=str, keep_default_na=False)
-        elif filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content), dtype=str, keep_default_na=False)
-        else:
-            raise HTTPException(status_code=415, detail="Formato no soportado (use .xlsx o .csv)")
-    except HTTPException:
-        raise
+        df = leer_tabla(file.filename, content)
+    except FormatoNoSoportadoError as exc:
+        raise HTTPException(status_code=415, detail="Formato no soportado (use .xlsx o .csv)") from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=servicios_ingest_read_error error=%s", exc)
         raise HTTPException(status_code=400, detail="No se pudo leer el archivo") from exc
@@ -274,6 +315,9 @@ async def ingest_servicios(
             Servicio.numero_linea,
             Servicio.alias_ids,
             Servicio.categoria,
+            Servicio.categoria_sla,
+            Servicio.categoria_excepcion,
+            Servicio.nombre_cliente,
             Servicio.es_verificable_override,
             Servicio.estado_servicio,
         ).where(Servicio.numero_primer_servicio.in_(numeros))
@@ -309,24 +353,35 @@ async def ingest_servicios(
             avanza_identidad=identidad.avanza_por_excel,
         )
 
-        # `isdigit()` sola no alcanza: "7"/"10" son dígitos pero violan el CHECK
-        # `ck_servicios_categoria_valida` (0-6) y el IntegrityError sin manejar tumbaba el archivo
-        # completo con un 500. Un valor fuera de rango degrada a fallback y queda loggeado.
+        # "Nivel Cliente" de la planilla → `categoria_sla` (insumo de la categoría `SLA` del cliente).
+        # `isdigit()` sola no alcanza: "7"/"10" son dígitos pero violan el CHECK (0-6) y el
+        # IntegrityError sin manejar tumbaba el archivo completo con un 500. Un valor fuera de rango
+        # o una celda vacía conservan el `categoria_sla` previo (NULL en un alta): una planilla sin
+        # el dato no borra lo que trajo una anterior.
         categoria_excel = row.get("categoria")
-        categoria_fallback = existente.categoria if existente else 6
+        nivel_excel: int | None = None
         if categoria_excel is not None and str(categoria_excel).isdigit():
             try:
                 validar_categoria(int(categoria_excel))
-                row["categoria"] = int(categoria_excel)
+                nivel_excel = int(categoria_excel)
             except CategoriaInvalidaError:
                 logger.warning(
                     "action=servicios_ingest evento=categoria_invalida numero_primer_servicio=%s valor=%s",
                     numero,
                     categoria_excel,
                 )
-                row["categoria"] = categoria_fallback
+        categoria_actual = existente.categoria if existente else None
+        row["categoria_sla"] = nivel_excel if nivel_excel is not None else (
+            existente.categoria_sla if existente else None
+        )
+        # `categoria` la define el cliente (sync post-commit). Un servicio existente conserva la
+        # actual —con o sin excepción—, así re-subir la misma planilla no reescribe una categoría
+        # que la sync después revierte (ruling R9). El "Nivel Cliente" sólo es provisional cuando
+        # la actual es NULL (incluye las altas); sin dato válido queda NULL — 6 ya no es default.
+        if categoria_actual is not None or (existente is not None and existente.categoria_excepcion):
+            row["categoria"] = categoria_actual
         else:
-            row["categoria"] = categoria_fallback
+            row["categoria"] = nivel_excel
 
         override_actual = existente.es_verificable_override if existente else None
         row["es_verificable"] = (
@@ -468,7 +523,12 @@ async def ingest_servicios(
             "direccion_2": excluded.direccion_2,
             "estado_servicio": excluded.estado_servicio,
             "origen_datos": excluded.origen_datos,
-            "categoria": excluded.categoria,
+            # Una excepción fijada a mano (`PATCH /{id}/categoria`) mientras corría la ingesta no se
+            # pisa con la categoría de la planilla.
+            "categoria": case(
+                (Servicio.categoria_excepcion, Servicio.categoria), else_=excluded.categoria
+            ),
+            "categoria_sla": excluded.categoria_sla,
             "es_verificable": excluded.es_verificable,
             "alias_ids": excluded.alias_ids,
         }
@@ -485,7 +545,11 @@ async def ingest_servicios(
             Servicio.estado_servicio.is_distinct_from(excluded.estado_servicio),
             Servicio.servicio_id.is_distinct_from(excluded.servicio_id),
             Servicio.origen_datos.is_distinct_from(excluded.origen_datos),
-            Servicio.categoria.is_distinct_from(excluded.categoria),
+            and_(
+                Servicio.categoria.is_distinct_from(excluded.categoria),
+                Servicio.categoria_excepcion.is_(False),
+            ),
+            Servicio.categoria_sla.is_distinct_from(excluded.categoria_sla),
             Servicio.es_verificable.is_distinct_from(excluded.es_verificable),
             Servicio.alias_ids.is_distinct_from(excluded.alias_ids),
         )
@@ -568,6 +632,12 @@ async def ingest_servicios(
 
     await db.commit()
 
+    # Categoría por cliente: sólo los clientes de este archivo (nombre nuevo y, si la planilla
+    # renombró un servicio, también el anterior). Nunca tumba la ingesta ya commiteada.
+    nombres_tocados = [row.get("nombre_cliente") for row in rows]
+    nombres_tocados += [fila.nombre_cliente for fila in existentes_por_id.values()]
+    resultado_sync = await sincronizar_clientes_post_ingesta(nombres_tocados, origen="ingest_excel")
+
     unchanged = max(len(rows) - inserted - updated, 0)
     return IngestServiciosResponse(
         rows_ok=summary.rows_ok,
@@ -575,6 +645,8 @@ async def ingest_servicios(
         inserted=inserted,
         updated=updated,
         unchanged=unchanged,
+        clientes_sync=resultado_sync.resumen,
+        clientes_sync_error=resultado_sync.error,
     )
 
 
@@ -586,7 +658,9 @@ async def search_servicios(
     domicilio: str | None = Query(None),
     tipo: str | None = Query(None),
     estado: str | None = Query(None),
-    categoria: str | None = Query(None, description="Categorías separadas por coma, ej. '6' o '0,3,5'"),
+    categoria: str | None = Query(
+        None, description="Categorías separadas por coma, ej. '6' o '0,3,5'; `sin` = sin categorizar"
+    ),
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_async_db),
@@ -626,12 +700,20 @@ async def search_servicios(
     if estado and estado.strip():
         filters.append(Servicio.estado_servicio.ilike(f"%{estado.strip()}%"))
     if categoria and categoria.strip():
+        # Tokens separados por coma: números 0-6 y/o `sin` (= sin categorizar, `categoria IS NULL`).
+        tokens = [valor.strip().lower() for valor in categoria.split(",") if valor.strip()]
+        incluir_sin = "sin" in tokens
         try:
-            categorias = [int(valor.strip()) for valor in categoria.split(",") if valor.strip()]
+            categorias = [int(token) for token in tokens if token != "sin"]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="categoria inválida") from exc
+        condiciones = []
+        if incluir_sin:
+            condiciones.append(Servicio.categoria.is_(None))
         if categorias:
-            filters.append(Servicio.categoria.in_(categorias))
+            condiciones.append(Servicio.categoria.in_(categorias))
+        if condiciones:
+            filters.append(or_(*condiciones))
 
     where_clause = and_(*filters) if filters else None
 
@@ -651,6 +733,80 @@ async def search_servicios(
     return SearchServiciosResponse(total=total, limit=limit, offset=offset, servicios=items)
 
 
+def _lineas_del_servicio(svc: Servicio) -> list[str]:
+    candidatas = {svc.numero_linea, svc.numero_primer_servicio, svc.servicio_id, *(svc.alias_ids or [])}
+    return sorted(c.strip() for c in candidatas if c and c.strip())
+
+
+def _parse_sla_prometido(valor: str | None) -> float | None:
+    """Tolera "99,7", "99.7%", "" y basura: devuelve None si no hay un número utilizable."""
+    if not valor:
+        return None
+    limpio = valor.strip().replace("%", "").replace(",", ".").strip()
+    if not re.fullmatch(r"\d+(\.\d+)?", limpio):
+        return None
+    return float(limpio)
+
+
+def _float_o_none(v: Any) -> float | None:
+    return float(v) if v is not None else None
+
+
+async def _reclamos_del_servicio(db: AsyncSession, svc: Servicio) -> list[ReclamoServicioResponse]:
+    lineas = _lineas_del_servicio(svc)
+    if not lineas:
+        return []
+    desde = datetime.now().astimezone() - timedelta(days=365)
+    filas = (
+        await db.execute(
+            select(Reclamo)
+            .where(
+                or_(Reclamo.numero_linea.in_(lineas), Reclamo.numero_primer_servicio.in_(lineas)),
+                Reclamo.fecha_inicio >= desde,
+            )
+            .order_by(Reclamo.fecha_inicio.desc())
+        )
+    ).scalars().all()
+    presupuesto = presupuesto_horas(_parse_sla_prometido(svc.sla_prometido))
+    salida: list[ReclamoServicioResponse] = []
+    for r in filas:
+        horas = _float_o_none(r.horas_netas)
+        cuenta = r.grupo_cierre != GRUPO_CLIENTE
+        pct = (horas / presupuesto * 100) if (horas is not None and presupuesto and cuenta) else None
+        salida.append(
+            ReclamoServicioResponse(
+                numero_reclamo=r.numero_reclamo, numero_evento=r.numero_evento, numero_linea=r.numero_linea,
+                fecha_inicio=r.fecha_inicio, fecha_cierre=r.fecha_cierre, tipo_solucion=r.tipo_solucion,
+                grupo_cierre=r.grupo_cierre, codigo_cierre=r.codigo_cierre, horas_netas=horas, cuenta_sla=cuenta,
+                pct_presupuesto=pct, carrier=r.carrier, descripcion_solucion=r.descripcion_solucion,
+            )
+        )
+    return salida
+
+
+async def _sla_historico(db: AsyncSession, svc: Servicio) -> list[SlaSnapshotResponse]:
+    lineas = _lineas_del_servicio(svc)
+    if not lineas:
+        return []
+    filas = (
+        await db.execute(
+            select(ServicioSlaSnapshot)
+            .where(ServicioSlaSnapshot.numero_linea.in_(lineas))
+            .order_by(ServicioSlaSnapshot.fecha_corte, ServicioSlaSnapshot.numero_linea)
+        )
+    ).scalars().all()
+    return [
+        SlaSnapshotResponse(
+            numero_linea=f.numero_linea, fecha_corte=f.fecha_corte, sla_prometido=_float_o_none(f.sla_prometido),
+            sla_entregado=_float_o_none(f.sla_entregado),
+            horas_reclamos_todos=_float_o_none(f.horas_reclamos_todos),
+            horas_restantes=_float_o_none(f.horas_restantes),
+            cantidad_reclamos_todos=f.cantidad_reclamos_todos,
+        )
+        for f in filas
+    ]
+
+
 @router.get("/detail", response_model=ServicioDetailResponse)
 async def detail_servicio(
     id: str = Query(..., description="ID de consulta (origen o línea actual)"),
@@ -666,12 +822,15 @@ async def detail_servicio(
     if item is None:
         raise HTTPException(status_code=404, detail="Servicio sin ID origen")
 
+    item.reclamos = await _reclamos_del_servicio(db, svc)
+
     return ServicioDetailResponse(
         id_consultado=id_consultado,
         id_origen=item.numero_primer_servicio,
         servicio=item,
         historial_ids=_historial_a_response(svc.historial_ids),
         equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
+        sla_historico=await _sla_historico(db, svc),
     )
 
 
@@ -725,13 +884,21 @@ async def refrescar_servicio_desde_prov(
 
     async with AsyncSessionLocal() as db_write:
         svc = await _buscar_servicio_por_id(db_write, id_consultado)
+        nombre_anterior = svc.nombre_cliente
         await ingerir_contexto_prov(db_write, svc, contexto)
+        nombre_nuevo = svc.nombre_cliente
         await db_write.commit()
-        await db_write.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla"])
+        # Categoría por cliente: el (posible) cliente nuevo que trajo PROV y el anterior si PROV lo
+        # renombró. Corre en su propia sesión y nunca tumba el refresco ya commiteado; por eso se
+        # refresca también `categoria`, que la sync puede haber reescrito.
+        await sincronizar_clientes_post_ingesta([nombre_anterior, nombre_nuevo], origen="prov_refrescar")
+        await db_write.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla", "categoria"])
 
         item = _to_servicio_item(svc)
         if item is None:
             raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+
+        item.reclamos = await _reclamos_del_servicio(db_write, svc)
 
         return ServicioDetailResponse(
             id_consultado=id_consultado,
@@ -739,6 +906,7 @@ async def refrescar_servicio_desde_prov(
             servicio=item,
             historial_ids=_historial_a_response(svc.historial_ids),
             equipos_ultima_milla=_equipos_a_response(svc.equipos_ultima_milla),
+            sla_historico=await _sla_historico(db_write, svc),
         )
 
 
@@ -796,10 +964,45 @@ async def actualizar_categoria_servicio(
         raise HTTPException(status_code=404, detail="Servicio no encontrado")
 
     svc.categoria = body.categoria
+    svc.categoria_excepcion = True  # fijada a mano: la propagación desde el cliente no la pisa
     await db.commit()
     await db.refresh(svc)
 
     item = _to_servicio_item(svc)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Servicio sin ID origen")
+    return item
+
+
+@router.patch("/{id}/categoria/heredar", response_model=ServicioItemResponse)
+async def heredar_categoria_servicio(id: int) -> ServicioItemResponse:
+    """Quita la excepción de categoría del servicio y re-sincroniza su cliente, así vuelve a
+    heredar la categoría del cliente. Sync en un thread aparte (mismo patrón que `bulk-categoria`).
+
+    Un servicio sin cliente (`nombre_cliente` vacío) no tiene de quién heredar → 409, y la
+    excepción queda como estaba."""
+
+    def _heredar() -> tuple[int, ServicioItemResponse | None]:
+        with SessionLocal() as session:
+            bloquear_categorias_clientes(session)
+            svc = session.get(Servicio, id)
+            if svc is None:
+                return 404, None
+            clave = normalizar_clave_cliente(svc.nombre_cliente)
+            if clave is None:
+                return 409, None
+            svc.categoria_excepcion = False
+            session.flush()
+            sincronizar_categorias(session, {clave})
+            session.commit()
+            session.refresh(svc)
+            return 200, _to_servicio_item(svc)
+
+    estado, item = await asyncio.to_thread(_heredar)
+    if estado == 404:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    if estado == 409:
+        raise HTTPException(status_code=409, detail="El servicio no tiene cliente: sin cliente para heredar")
     if item is None:
         raise HTTPException(status_code=404, detail="Servicio sin ID origen")
     return item

@@ -255,6 +255,15 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    botella los contiene. Ante un pelo del camino que no existe en `cromo_pelos`, sospechar primero de
    una clase de cable no barrida antes que de un bug de parseo.
 
+13. **Para validar código todavía no integrado contra Cromo y la base real, superponerlo en `/tmp/wt`
+   del contenedor web de dev, nunca en `/app`.** El host no tiene la config de Cromo y los
+   contenedores corren la imagen de `dev`, no la del worktree. Se copia `core db modules` con
+   `tar | docker exec -i lasfocasdev-web tar xf - -C /tmp/wt`, el script de prueba hace
+   `sys.path.insert(0, "/tmp/wt")` y **verifica que importó el código nuevo**
+   (`assert modulo.__file__.startswith("/tmp/wt")`). Si no lo verifica, puede validar la imagen
+   vieja sin darse cuenta. Al terminar, `rm -rf /tmp/wt`. Es lo que mostró, antes de integrar, que el
+   94673 daba 2 caminos y que 42351/93154 tenían 34/63 pelos huérfanos (2026-10-05).
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)

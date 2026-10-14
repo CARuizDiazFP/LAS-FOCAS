@@ -27,7 +27,7 @@
         :title="
           camino.pelos.value.length === 0
             ? 'Cromo no tiene ningún pelo matcheado para este Servicio: no hay camino que trazar'
-            : 'Descarga un .txt por cada pelo tildado, generado desde Cromo'
+            : 'Descarga un .txt por camino del Servicio (o por cada pelo tildado, si cambiaste la selección), generado desde Cromo'
         "
         @click="descargar"
       >
@@ -64,12 +64,14 @@ const idServicio = computed(() => String(route.params.idServicio ?? ''));
 /** Dice cuántos archivos van a bajar y, durante la descarga, cuántos van: en frío cada pelo cuesta
  * entre 4,6 s y 14 s contra Cromo, así que sin progreso el operador cree que se colgó. */
 const etiquetaDescarga = computed(() => {
+  if (camino.resolviendoCaminos.value) return 'Resolviendo caminos en Cromo…';
   if (camino.descargando.value) {
     const total = camino.descargaTotal.value;
     return total > 1 ? `Generando… ${camino.descargadosCount.value}/${total}` : 'Generando…';
   }
-  const tildados = camino.pelosSeleccionados.value.length;
-  return tildados > 1 ? `Trackings Cromo (${tildados} .txt)` : 'Tracking Cromo (.txt)';
+  // Con la selección automática son los caminos esperados del Servicio, no lo tildado.
+  const cantidad = camino.cantidadDescarga.value;
+  return cantidad > 1 ? `Trackings Cromo (${cantidad} .txt)` : 'Tracking Cromo (.txt)';
 });
 
 async function cargar(id: string): Promise<void> {

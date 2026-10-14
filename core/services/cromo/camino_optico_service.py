@@ -923,6 +923,14 @@ async def auditar_consistencia(
 
 # ── Semillas: de un Servicio a los pelos con los que se puede pedir el camino ───────────────
 
+# Pelos que el operador sacó del Servicio en local (`app.cromo_servicio_pelo_excluido`): Cromo los
+# sigue etiquetando, pero ya no son semilla ni cuentan para nada. Va pegado al JOIN de pelos en
+# todas las queries de esta sección para que la lista, los conteos y la pertenencia no diverjan.
+_SIN_EXCLUIDOS_SQL = """AND NOT EXISTS (
+        SELECT 1 FROM app.cromo_servicio_pelo_excluido x
+        WHERE x.servicio_id = s.id AND x.pelo_n_id = m.pelo_n_id
+    )"""
+
 # Ranking deliberado, ver docstring de `listar_pelos_semilla`. `tiene_conector_odf` ASC pone
 # primero el pelo cuya ODF NO conocemos, que es justamente el que aporta información nueva
 # (medido: 124.371 de 132.962 pelos matcheados no tienen conector).
@@ -947,6 +955,7 @@ _SQL_PELOS_SEMILLA = text(
     FROM app.servicios s
     JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    {_SIN_EXCLUIDOS_SQL}
     LEFT JOIN app.cromo_cables cab ON cab.n_id = p.cable_n_id
     WHERE s.id = :servicio_id
     ORDER BY m.pelo_n_id,
@@ -1013,7 +1022,11 @@ class PeloSemilla:
 
 
 async def listar_pelos_semilla(
-    sesion: AsyncSession, servicio_id: int, *, limite: int = 20, priorizar_conector: bool = False
+    sesion: AsyncSession,
+    servicio_id: int,
+    *,
+    limite: Optional[int] = 20,
+    priorizar_conector: bool = False,
 ) -> list[PeloSemilla]:
     """Pelos candidatos a semilla de `/path` para un Servicio, ya rankeados. Una sola query.
 
@@ -1037,6 +1050,9 @@ async def listar_pelos_semilla(
 
     Es determinista hasta el último criterio, para que dos consultas del mismo Servicio elijan la
     misma semilla y el camino sea reproducible sin pagar dos veces la llamada a Cromo.
+
+    `limite=None` devuelve todos: lo usa la generación de trackings, que tiene que poder llegar al
+    segundo hilo aunque el Servicio tenga cientos de pelos matcheados (`semillas_para_tracking`).
     """
     filas = (await sesion.execute(_SQL_PELOS_SEMILLA, {"servicio_id": servicio_id})).mappings().all()
     ordenadas = sorted(
@@ -1061,7 +1077,7 @@ async def listar_pelos_semilla(
             tiene_conector_odf=bool(fila["tiene_conector_odf"]),
             servicio_raw=fila["servicio_raw"],
         )
-        for fila in ordenadas[:limite]
+        for fila in (ordenadas if limite is None else ordenadas[:limite])
     ]
 
 
@@ -1071,6 +1087,7 @@ _SQL_CONTAR_SEMILLAS = text(
     FROM app.servicios s
     JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    {_SIN_EXCLUIDOS_SQL}
     WHERE s.id = ANY(:ids)
     GROUP BY s.id
     """
@@ -1088,6 +1105,7 @@ _SQL_TOTAL_SEMILLAS = text(
     FROM app.servicios s
     JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    {_SIN_EXCLUIDOS_SQL}
     WHERE s.id = :servicio_id
     """
 )
@@ -1099,6 +1117,7 @@ _SQL_PELO_PERTENECE = text(
     FROM app.servicios s
     JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+    {_SIN_EXCLUIDOS_SQL}
     WHERE s.id = :servicio_id AND m.pelo_n_id = :pelo_n_id
     LIMIT 1
     """
@@ -1139,6 +1158,67 @@ async def contar_semillas(sesion: AsyncSession, servicio_id: int) -> tuple[int, 
     if fila is None:
         return 0, 0
     return int(fila["pelos"] or 0), int(fila["con_conector"] or 0)
+
+
+# Cuántos pelos del Servicio hay en cada cable y en cada ODF. Un grupo por fila; la moda la saca
+# `caminos_esperados`, no el SQL, para que el criterio quede testeable sin base.
+_SQL_PELOS_POR_GRUPO = text(
+    f"""
+    WITH pelos AS (
+        SELECT DISTINCT m.pelo_n_id, p.cable_n_id
+        FROM app.servicios s
+        JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+        JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
+        {_SIN_EXCLUIDOS_SQL}
+        WHERE s.id = :servicio_id
+    )
+    SELECT COUNT(*) AS pelos FROM pelos WHERE cable_n_id IS NOT NULL GROUP BY cable_n_id
+    UNION ALL
+    SELECT COUNT(DISTINCT c.pelo_n_id)
+    FROM pelos JOIN app.cromo_odf_conectores c ON c.pelo_n_id = pelos.pelo_n_id
+    GROUP BY c.odf_n_id
+    """
+)
+
+
+def moda_de_pelos_por_grupo(conteos: Iterable[int]) -> int:
+    """Caminos esperados a partir de cuántos pelos del Servicio hay en cada cable u ODF.
+
+    Regla de operaciones: si un Servicio tiene N pelos asignados en un mismo cable u ODF, tiene N
+    caminos. Se toma la **moda** y no el máximo: medido el 2026-10-05, 42351 y 93154 tienen la
+    gran mayoría de sus cables con 2 pelos (145 y 105) pero también algunos con 3 y 4 —pelos que
+    quedaron con la etiqueta vieja tras un movimiento—; el máximo daría 4 caminos donde hay 2.
+    Empate: el mayor, para no quedarse corto. Sin grupos, 0.
+    """
+    frecuencia: dict[int, int] = {}
+    for conteo in conteos:
+        if conteo > 0:
+            frecuencia[conteo] = frecuencia.get(conteo, 0) + 1
+    if not frecuencia:
+        return 0
+    return max(frecuencia, key=lambda n: (frecuencia[n], n))
+
+
+async def caminos_esperados(sesion: AsyncSession, servicio_id: int) -> int:
+    """Cantidad de caminos (y de trackings) que tiene el Servicio. Ver `moda_de_pelos_por_grupo`.
+
+    Cuenta cables **y** ODFs: el 94673 no termina en ninguna ODF y sale sólo de los cables; uno
+    que sí tiene posiciones de patchera suma esos grupos a la misma moda. Excluye los pelos que el
+    operador sacó del Servicio. Una query, sin el tope de `listar_pelos_semilla`.
+    """
+    filas = (await sesion.execute(_SQL_PELOS_POR_GRUPO, {"servicio_id": servicio_id})).all()
+    return moda_de_pelos_por_grupo(int(fila[0]) for fila in filas)
+
+
+async def semillas_para_tracking(sesion: AsyncSession, servicio_id: int) -> list[PeloSemilla]:
+    """Todas las semillas del Servicio en el orden en que conviene pedirle los caminos a Cromo.
+
+    Primero las posiciones de ODF y después el resto de los pelos de los cables. **Sin tope**: el
+    94673 no termina en ODF, así que ningún pelo tiene conector y antes se tomaba sólo el primero
+    del ranking —un único hilo de los dos—. `trackings_por_camino` descarta las que ya recorrió un
+    camino anterior sin ir a Cromo, así que pasar las 52 cuesta 2 llamadas, no 52.
+    """
+    return await listar_pelos_semilla(sesion, servicio_id, limite=None, priorizar_conector=True)
 
 
 async def contar_semillas_por_servicio(
@@ -1522,10 +1602,13 @@ __all__ = [
     "calcular_estadisticas",
     "comparar_at62_vs_regex",
     "CLASES_CABLE",
+    "caminos_esperados",
     "contar_semillas",
+    "moda_de_pelos_por_grupo",
     "pelo_pertenece_al_servicio",
     "listar_pelos_semilla",
     "seleccionar_semillas",
+    "semillas_para_tracking",
     "semillas_por_defecto",
     "odfs_del_camino",
     "resolver_camino_de_pelo",

@@ -55,6 +55,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from core.logging import setup_logging
+from core.services.clientes_categoria_hooks import sincronizar_clientes_en_sesion_propia
 from core.services.cromo.ingesta import _SQL_BUSCAR_SERVICIO
 from core.services.prov.client import ProvClient, ProvClientError, ProvServicioNoEncontradoError
 from core.services.prov.ingesta import ingerir_contexto_prov, parsear_contexto_prov
@@ -188,6 +189,10 @@ async def main(args: argparse.Namespace) -> dict:
                     f"({time.perf_counter() - inicio:.0f}s)",
                     file=sys.stderr, flush=True,
                 )
+    # Categoría por cliente: una única sync global al final, sólo si hubo altas/completados reales
+    # (en dry-run cada número se revierte). Nunca lanza.
+    if args.apply and (resultados["creado"] or resultados["completado_por_cadena"]):
+        await asyncio.to_thread(sincronizar_clientes_en_sesion_propia, None, origen="alta_prov_desde_cromo")
     return {
         "modo": "apply" if args.apply else "dry-run",
         "numeros": len(candidatos),

@@ -1239,6 +1239,7 @@ class IngresoListener:
         from modules.slack_baneo_notifier.tracking_servicio import (
             ESTADO_OK,
             generar_trackings,
+            mensaje_resumen,
             resolver_servicio,
         )
 
@@ -1314,16 +1315,11 @@ class IngresoListener:
                     mrkdwn=True,
                 )
 
-        # Un pelo que falló no cancela los demás, pero tampoco se calla: si no, el operador cuenta
-        # 3 archivos donde esperaba 4 y no sabe si le faltan datos o si el Servicio es así.
-        if resultado.errores:
-            detalle = "\n".join(f"• {e}" for e in resultado.errores)
-            client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text=f":warning: Algunos pelos no se pudieron resolver:\n{detalle}",
-                mrkdwn=True,
-            )
+        # Caminos faltantes y pelos huérfanos no se callan: si no, el operador cuenta 1 archivo
+        # donde esperaba 2 y no sabe si le faltan datos o si el Servicio es así.
+        aviso = mensaje_resumen(resultado)
+        if aviso:
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=aviso, mrkdwn=True)
 
     def _handle_cable_buffer(
         self, comando: tuple[str, str, int], client: Any, channel: str, thread_ts: str

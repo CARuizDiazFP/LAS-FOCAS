@@ -425,6 +425,17 @@ def client():
 Disponer desde afuera (después del `with`) no sirve: cierra contra un loop muerto, SQLAlchemy sólo
 loguea `Exception terminating connection` y las conexiones quedan colgadas del lado del servidor.
 
+## No comparar bytes de XLSX/DOCX regenerados (lección 2026-10-05)
+
+Un `.xlsx`/`.docx` es un ZIP con fecha de modificación por entrada (granularidad de 2 s). Dos llamadas
+al mismo helper (`_excel_bytes()` en el upload y otra vez en el `assert`) producen bytes distintos si
+cruzan un borde de 2 s: el test falla **intermitentemente** (~10-30 %, reproducido 3/10 en
+`test_web_sla_consumo.py::test_sla_consumo_ok`) y un rerun "verde" no prueba nada. Generar los bytes
+**una sola vez**, guardarlos en una variable y usar esa misma variable en el upload y en la aserción
+(o comparar contenido parseado, nunca bytes de dos generaciones). Ante un fallo que "no se reproduce",
+correr el test en loop (`for i in $(seq 10); do pytest -q <test> || break; done`) antes de declararlo
+flake sin causa.
+
 ## Triage de fallas preexistentes: comparar contra baseline (lección 2026-09-10)
 
 Tras un merge (o cualquier cambio amplio), la suite puede arrojar decenas de fallas que **no son

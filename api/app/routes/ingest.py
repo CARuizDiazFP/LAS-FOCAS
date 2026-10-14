@@ -38,7 +38,7 @@ async def ingest_reclamos(
 
     try:
         if name.endswith(".xlsx") or name.endswith(".xlsm"):
-            df = pd.read_excel(io.BytesIO(content), engine="openpyxl", dtype=str, keep_default_na=False)
+            df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
         elif name.endswith(".csv"):
             df = pd.read_csv(io.BytesIO(content), dtype=str, keep_default_na=False)
         else:

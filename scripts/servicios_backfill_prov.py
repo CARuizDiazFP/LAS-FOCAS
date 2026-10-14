@@ -55,6 +55,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from core.logging import setup_logging
+from core.services.clientes_categoria_hooks import sincronizar_clientes_en_sesion_propia
 from core.services.prov.client import ProvClient, ProvClientError, ProvServicioNoEncontradoError
 from core.services.prov.ingesta import ingerir_contexto_prov
 from db.models.infra import Servicio
@@ -146,6 +147,11 @@ async def main(apply: bool, solo_ids: list[str] | None, limit: int | None) -> No
                         errores,
                         errores_ingesta,
                     )
+
+    # Categoría por cliente: PROV puede haber completado/cambiado `nombre_cliente` de muchas filas,
+    # así que al final va una única sync global (sólo si de verdad se escribió algo). Nunca lanza.
+    if apply and exitosos:
+        await asyncio.to_thread(sincronizar_clientes_en_sesion_propia, None, origen="backfill_prov")
 
     elapsed = time.perf_counter() - inicio
     logger.info(

@@ -26,18 +26,38 @@
           <span class="servicio-detalle__chip">{{ (servicio?.tipo_servicio || 'Sin dato').toUpperCase() }}</span>
           <span v-if="servicio?.sla_prometido" class="servicio-detalle__chip is-outline">SLA {{ servicio.sla_prometido }}</span>
           <span class="servicio-detalle__separator" aria-hidden="true"></span>
+          <!-- "Sin categorizar" es sólo un estado mostrable: el servicio la hereda de su cliente y el
+               endpoint individual exige 0..6 (fijar a mano siempre crea una excepción con categoría). -->
           <select
             v-if="isAdmin && servicio"
             class="servicio-detalle__categoria-select"
-            :value="servicio.categoria"
-            :disabled="guardandoCategoria"
-            @change="onCambiarCategoria(Number(($event.target as HTMLSelectElement).value))"
+            :value="servicio.categoria === null ? '' : String(servicio.categoria)"
+            :disabled="guardandoCategoria || heredandoCategoria"
+            title="Fijar la categoría a mano crea una excepción: deja de heredar la del cliente"
+            @change="onSeleccionarCategoria(($event.target as HTMLSelectElement).value)"
           >
-            <option v-for="categoria in CATEGORIAS_SERVICIO" :key="categoria" :value="categoria">
+            <option value="" disabled>{{ SIN_CATEGORIZAR_LABEL }}</option>
+            <option v-for="categoria in CATEGORIAS_SERVICIO" :key="categoria" :value="String(categoria)">
               {{ categoriaLabel(categoria) }}
             </option>
           </select>
           <span v-else-if="servicio" class="servicio-detalle__chip is-outline">{{ categoriaLabel(servicio.categoria) }}</span>
+          <span
+            v-if="servicio?.categoria_excepcion"
+            class="servicio-detalle__chip is-excepcion"
+            title="Categoría fijada a mano en este servicio: no hereda la de su cliente"
+          >
+            Excepción
+          </span>
+          <button
+            v-if="isAdmin && servicio?.categoria_excepcion"
+            class="btn subtle servicio-detalle__heredar"
+            type="button"
+            :disabled="heredandoCategoria || guardandoCategoria"
+            @click="onHeredarCategoria"
+          >
+            {{ heredandoCategoria ? 'Restaurando...' : 'Heredar del cliente' }}
+          </button>
           <select
             v-if="isAdmin && servicio"
             class="servicio-detalle__verificable-select"
@@ -186,9 +206,11 @@ import { useRoute, useRouter } from 'vue-router';
 
 import {
   CATEGORIAS_SERVICIO,
+  SIN_CATEGORIZAR_LABEL,
   categoriaLabel,
   estadoServicioToken,
   getServicioDetail,
+  heredarServicioCategoria,
   historialIdsToTimelineEvents,
   refrescarServicioDesdeProv,
   updateServicioCategoria,
@@ -228,6 +250,7 @@ const loading = ref(false);
 const error = ref('');
 const guardandoCategoria = ref(false);
 const errorCategoria = ref('');
+const heredandoCategoria = ref(false);
 const guardandoVerificable = ref(false);
 const errorVerificable = ref('');
 
@@ -250,14 +273,14 @@ const camino = useCromoPath();
  * operador cree que se colgó.
  */
 const etiquetaDescargaTracking = computed(() => {
+  if (camino.resolviendoCaminos.value) return 'Resolviendo caminos en Cromo…';
   if (camino.descargando.value) {
     const total = camino.descargaTotal.value;
-    return total > 1
-      ? `Generando… ${camino.descargadosCount.value}/${total}`
-      : 'Generando…';
+    return total > 1 ? `Generando… ${camino.descargadosCount.value}/${total}` : 'Generando…';
   }
-  const tildados = camino.pelosSeleccionados.value.length;
-  return tildados > 1 ? `Trackings Cromo (${tildados} .txt)` : 'Tracking Cromo (.txt)';
+  // Con la selección automática son los caminos esperados del Servicio, no lo tildado.
+  const cantidad = camino.cantidadDescarga.value;
+  return cantidad > 1 ? `Trackings Cromo (${cantidad} .txt)` : 'Tracking Cromo (.txt)';
 });
 const foTrackingResumen = ref<{
   camaras: number;
@@ -472,6 +495,25 @@ async function loadDetalle(): Promise<void> {
     error.value = err instanceof Error ? err.message : 'No se pudo cargar el detalle del servicio';
   } finally {
     loading.value = false;
+  }
+}
+
+function onSeleccionarCategoria(valor: string): void {
+  // Guard explícito: `Number('')` es 0 y convertiría "Sin categorizar" en C0.
+  if (valor === '') return;
+  void onCambiarCategoria(Number(valor));
+}
+
+async function onHeredarCategoria(): Promise<void> {
+  if (!servicio.value || heredandoCategoria.value) return;
+  heredandoCategoria.value = true;
+  errorCategoria.value = '';
+  try {
+    servicio.value = await heredarServicioCategoria(servicio.value.id);
+  } catch (err: unknown) {
+    errorCategoria.value = err instanceof Error ? err.message : 'No se pudo restaurar la categoría del cliente';
+  } finally {
+    heredandoCategoria.value = false;
   }
 }
 
@@ -757,6 +799,18 @@ onBeforeUnmount(() => camino.cancelar());
   background: var(--color-surface);
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
+}
+
+.servicio-detalle__chip.is-excepcion {
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 33%, transparent);
+  color: var(--warning);
+}
+
+.servicio-detalle__heredar {
+  min-height: 24px;
+  padding: 2px 10px;
+  font-size: 10.5px;
 }
 
 .servicio-detalle__categoria-error {

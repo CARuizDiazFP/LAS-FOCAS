@@ -25,6 +25,12 @@
       description="Dashboards de datos operativos para mantenimiento — Cámaras y próximos módulos."
       icon="📡"
     />
+    <ServiceCard
+      to="/admin/servicios/clientes-categoria"
+      title="Clientes por categoría"
+      description="Categoría C6–C0 por cliente, lista oficial, alias y fusión. Se propaga a sus servicios."
+      icon="🏷️"
+    />
     <!-- Futuras tarjetas de servicio se agregan aquí -->
   </div>
 </template>

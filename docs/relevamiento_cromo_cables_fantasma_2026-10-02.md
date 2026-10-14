@@ -6,7 +6,7 @@
 
 **Origen:** en Slack, `servicios cable F-TIG-003-B` respondió "2 cables con ese código" (10277060 y 9609095). El 9609095 ya no existe en Cromo: el 2026-09-10 se partió en F-TIG-003-A (10277059) y F-TIG-003-B (10277060), y en LAS-FOCAS seguía vigente porque ningún código daba de baja cables.
 
-**Cómo se midió:** `scripts/cromo_relevamiento_cables_fantasma.py` contra Cromo real y `lasfocasdev-postgres`, en solo lectura: `GET` a Cromo y `SELECT` en una transacción revertida. Duró 456 s. Prod todavía no se relevó.
+**Cómo se midió:** `scripts/cromo_relevamiento_cables_fantasma.py` contra Cromo real y `lasfocasdev-postgres`, en solo lectura: `GET` a Cromo y `SELECT` en una transacción revertida. Duró 456 s. En prod, el dry-run del fix hizo el mismo relevamiento (ver "Resultado del fix").
 
 ## Señal de borrado en Cromo (medida)
 
@@ -41,6 +41,26 @@
 1. alta de los cables faltantes
 2. sus pelos (`/inner`)
 3. la baja de los fantasmas
+
+## Resultado del fix
+
+| | Dev (corrida 2165) | Prod (corrida 2136) |
+|---|---|---|
+| Altas de faltantes | 244 | 251 |
+| Cables con `/inner` | 249 (16.332 pelos) | 255 (16.836 pelos) |
+| Vínculos creados | 1.599 | 1.626 |
+| Bajas | 97 (6.144 pelos) | 100 (6.360 pelos) |
+| Vínculos automáticos retirados | 876 | 881 |
+| MANUAL retirados / conservados | 0 / 0 | 0 / 0 |
+
+**F-TIG-003-B cambió otra vez el mismo día.** Alrededor de las 16:02 UTC alguien editó el tramo en
+Cromo:
+
+- 10277060, el F-TIG-003-B de la consulta original, quedó borrado.
+- El F-TIG-003-B vigente pasó a ser 10293906.
+- 10277059 se renombró "F-TIG-003B11".
+
+Prod lo tomó en su corrida y dev se volvió a correr. La tabla de abajo es la foto de dev de la mañana.
 
 ## Fantasmas confirmados
 

@@ -438,6 +438,7 @@ Cromo y los cuatro viewers de admin).
 | `/admin/ingesta/cromo` | AppShell + AdminIngestaCromo | Sí | Sí |
 | `/admin/servicios/viewer` | AppShell + AdminServiciosViewer | Sí | Sí |
 | `/admin/servicios/viewer/Camaras` | AppShell + AdminCamarasViewer | Sí | Sí |
+| `/admin/servicios/clientes-categoria` | AppShell + AdminClientesCategoria | Sí | Sí |
 | `/admin/servicios/viewer/Botellas` | AppShell + AdminBotellasViewer | Sí | Sí |
 | `/admin/servicios/viewer/ServiciosSinOdf` | AppShell + AdminServiciosSinOdfViewer | Sí | Sí |
 
@@ -499,6 +500,19 @@ juntan y se informan al final.
 caso y para todos, que dispara la reingesta dirigida contra Cromo y vuelve a resolver el camino
 (invalidando antes la memoización del pelo, si no mostraría las mismas discrepancias recién
 corregidas).
+
+### Admin: Clientes por categoría (2026-10-14)
+
+`AdminClientesCategoria.vue` (`/admin/servicios/clientes-categoria`): grupos C6…C0 y "Sin categorizar"
+desplegables y ordenados alfabéticamente, con edición por fila, cambio masivo, "Volver a automático",
+fusión de clientes, alias, **Re-sincronizar** y carga de lista (previsualización y luego aplicar). Los
+clientes con múltiples categorías SLA se marcan "a revisar" y los C6 que vienen de la planilla, "C6 · SLA".
+Cliente HTTP en `admin/api/clientesCategoria.ts`; modales en `admin/components/clientes/`. Consume los
+endpoints `/api/admin/clientes/...` (ver `docs/clientes_categoria.md`).
+
+En el detalle de Servicio y en `ServiciosView` la categoría `NULL` se muestra como "Sin categorizar" (filtro
+`sin`), una excepción por servicio se señala y "Heredar" la quita. "Sin categorizar" no se puede elegir como
+excepción de un servicio.
 
 ### Detalle de Servicio: ficha compacta + una ruta por sección
 

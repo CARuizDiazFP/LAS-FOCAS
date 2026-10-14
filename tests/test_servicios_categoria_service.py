@@ -13,6 +13,7 @@ from core.services.servicios_categoria_service import (
     actualizar_categoria_masiva,
     validar_categoria,
 )
+from db.models.infra import Servicio
 
 
 @pytest.mark.parametrize("categoria", [0, 1, 3, 6])
@@ -24,6 +25,23 @@ def test_validar_categoria_acepta_rango_valido(categoria: int) -> None:
 def test_validar_categoria_rechaza_fuera_de_rango(categoria: int) -> None:
     with pytest.raises(CategoriaInvalidaError, match="entre 0 y 6"):
         validar_categoria(categoria)
+
+
+def test_validar_categoria_none_solo_con_permitir_none() -> None:
+    validar_categoria(None, permitir_none=True)  # "sin categorizar": no debe lanzar
+    with pytest.raises(CategoriaInvalidaError):
+        validar_categoria(None)
+
+
+def test_actualizar_categoria_masiva_marca_excepcion() -> None:
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = [(1,)]
+    session.query.return_value.filter.return_value.update.return_value = 1
+
+    actualizar_categoria_masiva(session, [1], 4)
+
+    valores = session.query.return_value.filter.return_value.update.call_args.args[0]
+    assert valores == {Servicio.categoria: 4, Servicio.categoria_excepcion: True}
 
 
 def test_actualizar_categoria_masiva_falla_sin_items() -> None:

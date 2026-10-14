@@ -9,7 +9,9 @@ from typing import Dict, Tuple
 import re
 import unicodedata
 
-from core.utils.timefmt import value_to_minutes
+from core.sla_consumo.clasificador import clasificar_cierre, valores_cliente_config
+from core.sla_consumo.parser import _texto as _texto_parser
+from core.utils.excel_duraciones import TZ_AR, duracion_a_horas, fecha_excel
 try:
     from unidecode import unidecode as _unidecode
 except Exception:  # noqa: BLE001
@@ -67,6 +69,11 @@ class IngestSummary:
     date_max: pd.Timestamp | None
 
 
+def _texto(valor: object) -> str | None:
+    """Mismo criterio que el parser SLA: None si vacío/NaN/"-"; enteros sin ".0"."""
+    return None if valor is pd.NA else _texto_parser(valor)
+
+
 def _clean_key(s: str) -> str:
     # Normalizar encabezados: Unidecode si está disponible, si no usar unicodedata
     s = str(s)
@@ -104,16 +111,23 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
 
     # Limpieza básica
     for c in ["numero_reclamo", "numero_evento", "numero_linea", "tipo_servicio", "nombre_cliente", "tipo_solucion"]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
+        df[c] = df[c].map(_texto).astype(object)
+
+    # Grupo/código de cierre derivados de tipo_solucion (sin tipo_solucion no se inventan: el upsert
+    # legacy conserva los existentes).
+    valores_cliente = valores_cliente_config()
+    cierres = df["tipo_solucion"].map(
+        lambda t: None if t is None or pd.isna(t) else clasificar_cierre(t, valores_cliente))
+    df["codigo_cierre"] = cierres.map(lambda c: None if c is None else c.codigo).astype("Int64")
+    df["grupo_cierre"] = cierres.map(lambda c: None if c is None else c.grupo).astype(object)
 
     # Fechas
     for c in ["fecha_inicio", "fecha_cierre"]:
-        df[c] = pd.to_datetime(df[c], dayfirst=True, errors="coerce")
+        df[c] = df[c].map(fecha_excel)
+        df[c] = pd.to_datetime(df[c], utc=True).dt.tz_convert(TZ_AR)
 
-    # Horas netas (acepta coma decimal)
-    df["horas_netas"] = df["horas_netas"].map(value_to_minutes)
-    df["horas_netas"] = pd.Series(df["horas_netas"], dtype="Int64")
+    # Horas netas en horas decimales (acepta [h]:mm, serial Excel o coma decimal)
+    df["horas_netas"] = pd.to_numeric(df["horas_netas"].map(duracion_a_horas), errors="coerce")
     df.loc[df["horas_netas"] < 0, "horas_netas"] = pd.NA
 
     # GEO
@@ -124,12 +138,12 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
     df.loc[(df["longitud"].notna()) & ~df["longitud"].between(-180, 180), "longitud"] = pd.NA
 
     # Filas válidas (mínimo requerido + alguna fecha)
-    has_min = df[MIN_REQUIRED].notna().all(axis=1)
+    has_min = df[MIN_REQUIRED].notna().all(axis=1)  # None = ausente
     has_any_date = df[["fecha_inicio", "fecha_cierre"]].notna().any(axis=1)
     valid = has_min & has_any_date
     rows_ok = int(valid.sum())
     rows_bad = int((~valid).sum())
-    df_ok = df[valid].copy()
+    df_ok = df[valid].drop_duplicates(subset="numero_reclamo", keep="last").copy()
 
     # Resumen
     date_min = None

@@ -72,7 +72,48 @@ def test_parse_reclamos_df_mapea_columnas_y_fechas():
     row2 = df_ok.iloc[1]
     assert pd.isna(row2["latitud"]) and pd.isna(row2["longitud"])  # type: ignore[attr-defined]
 
-    # Horas netas convertidas a minutos y no negativas
-    assert int(df_ok.iloc[0]["horas_netas"]) == 90
-    assert int(df_ok.iloc[1]["horas_netas"]) == 45
+    # Horas netas en horas decimales y no negativas
+    assert float(df_ok.iloc[0]["horas_netas"]) == 1.5
+    assert float(df_ok.iloc[1]["horas_netas"]) == 0.75
 
+
+
+def test_parse_reclamos_df_excel_real_con_celdas_vacias():
+    import io
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Número Reclamo", "Número Evento", "Numero Línea", "Nombre Cliente", "Fecha Inicio Problema Reclamo"])
+    ws.append([33001, 555, 7001, "ACME", "01/07/2024"])
+    ws.append([None, 556, 7002, "ACME", "01/07/2024"])      # sin número de reclamo
+    ws.append([33002, None, 7003, "ACME", "02/07/2024"])    # evento vacío
+    ws.append([33003, "-", None, "ACME", "02/07/2024"])     # sin línea
+    ws.append([33004, 557, 7004, None, "02/07/2024"])       # sin cliente
+    buf = io.BytesIO()
+    wb.save(buf)
+    df = pd.read_excel(io.BytesIO(buf.getvalue()), engine="openpyxl")
+
+    df_ok, summary = parse_reclamos_df(df)
+
+    assert list(df_ok["numero_reclamo"]) == ["33001", "33002"]
+    assert list(df_ok["numero_linea"]) == ["7001", "7003"]
+    assert df_ok.iloc[0]["numero_evento"] == "555"
+    assert df_ok.iloc[1]["numero_evento"] is None
+    assert (summary.rows_ok, summary.rows_bad) == (2, 3)
+
+
+def test_parse_reclamos_df_deriva_grupo_y_codigo_de_cierre():
+    base = {"Numero Línea": "L-100", "Nombre Cliente": "ACME", "Fecha Inicio Problema Reclamo": "01/07/2024"}
+    df = pd.DataFrame([
+        {**base, "Número Reclamo": "R-1", "Tipo Solución Reclamo": "PE-Corte en bandeja (3)"},
+        {**base, "Número Reclamo": "R-2", "Tipo Solución Reclamo": "Carrier"},
+        {**base, "Número Reclamo": "R-3", "Tipo Solución Reclamo": None},
+    ])
+    df_ok, _ = parse_reclamos_df(df)
+    por = df_ok.set_index("numero_reclamo")
+    assert por.loc["R-1", "grupo_cierre"] == "FO Cod 3 (Corte en Bandeja)" and int(por.loc["R-1", "codigo_cierre"]) == 3
+    assert por.loc["R-2", "grupo_cierre"] == "Carrier" and pd.isna(por.loc["R-2", "codigo_cierre"])
+    # sin tipo_solucion no se inventa grupo (el upsert legacy conserva el existente)
+    assert pd.isna(por.loc["R-3", "grupo_cierre"])

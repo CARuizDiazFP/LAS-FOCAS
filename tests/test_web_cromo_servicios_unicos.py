@@ -775,3 +775,31 @@ def test_ejecutar_refresco_prov_lote_fallidos_llevan_motivo_por_servicio(monkeyp
         ("SRV-UNO", "no encontrado en PROV"),
         ("SRV-DOS", "PROV respondió 500"),
     }
+
+
+def test_ejecutar_refresco_prov_lote_corre_una_sola_sync_de_clientes(monkeypatch):
+    """Task 5 (fix round 1): una única sync de categorías de clientes por lote, después del gather,
+    con el nombre anterior y nuevo de los refrescos exitosos (los fallidos no aportan)."""
+    from modules.slack_baneo_notifier.refresco_prov import ResultadoServicioRefrescado
+
+    ok = _servicio_unico_lote(801, "SRV-OK")
+    falla = _servicio_unico_lote(802, "SRV-FALLA")
+
+    async def _refrescar_fake(servicio, semaforo, cliente):
+        if servicio.servicio_id == falla.servicio_id:
+            return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, False, "x")
+        return ResultadoServicioRefrescado(
+            servicio.servicio_id, servicio.servicio_id_externo, True, None, nombres_cliente=("VIEJO", "NUEVO")
+        )
+
+    refresco_prov_module = _patch_dependencias_lote(monkeypatch, _refrescar_fake)
+    llamadas: list = []
+
+    async def registrar(nombres, *, origen):
+        llamadas.append((list(nombres), origen))
+
+    monkeypatch.setattr(refresco_prov_module, "sincronizar_clientes_post_ingesta", registrar)
+
+    asyncio.run(web_main._ejecutar_refresco_prov_lote([ok, falla]))
+
+    assert llamadas == [(["VIEJO", "NUEVO"], "cromo_servicios_unicos_refrescar_prov")]

@@ -297,6 +297,8 @@ const estadoChips = [
 const categoriaChips = [
   { label: 'Todas', value: '' },
   ...[0, 1, 2, 3, 4, 5, 6].map((categoria) => ({ label: categoriaLabel(categoria), value: String(categoria) })),
+  // `sin` = servicios sin categorizar (`categoria IS NULL`), filtro soportado por /api/servicios/search.
+  { label: 'Sin cat.', value: 'sin' },
 ];
 
 const selectedItem = computed(() => {

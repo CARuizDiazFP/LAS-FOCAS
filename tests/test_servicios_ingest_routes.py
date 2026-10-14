@@ -12,6 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+import api.app.routes.servicios as servicios_routes
+import core.services.clientes_categoria_hooks as clientes_hooks
 from api.app.main import app
 from db.session import SessionLocal, async_engine
 from tests.soporte_postgres_real import requiere_postgres_real
@@ -128,7 +130,8 @@ def test_ingest_calcula_servicio_id_como_el_id_mas_alto_de_la_cadena(client: Tes
 def test_ingest_degrada_categoria_fuera_de_rango_en_vez_de_reventar(client: TestClient, caplog) -> None:
     """"Nivel Cliente" con un dígito fuera de 0-6 pasaba `isdigit()` y violaba el CHECK
     `ck_servicios_categoria_valida` de la DB -> IntegrityError sin manejar y 500 que se llevaba el
-    archivo completo. Ahora degrada al fallback (6 en un alta nueva) y deja el warning."""
+    archivo completo. Ahora degrada al fallback (NULL = sin categorizar en un alta nueva; 6 ya no
+    es default, ver plan de clientes por categoría) y deja el warning."""
     df = pd.DataFrame(
         {
             "Número Primer Servicio": ["900005"],
@@ -149,7 +152,7 @@ def test_ingest_degrada_categoria_fuera_de_rango_en_vez_de_reventar(client: Test
     assert response.json()["inserted"] == 1
 
     detail = client.get("/servicios/detail", params={"id": "900005"}, headers=API_HEADERS)
-    assert detail.json()["servicio"]["categoria"] == 6
+    assert detail.json()["servicio"]["categoria"] is None
 
     assert any(
         "evento=categoria_invalida" in registro.getMessage()
@@ -598,3 +601,290 @@ def test_ingest_respeta_override_manual_de_verificable_aunque_el_servicio_quede_
     assert body["estado_servicio"] == "Baja"
     assert body["es_verificable"] is True
     assert body["es_verificable_override"] is True
+
+
+# ─── Clientes por categoría: categoria_sla, excepción y sync post-ingesta (Task 5) ──────────────
+# Servicios sintéticos `99994xx` y clientes `ZZTEST …` (verificado 0 filas en dev con ese prefijo).
+# Ningún test corre una sync global: la real (sin mock) se limita a las claves del archivo.
+
+_PREFIJO_CLIENTES = "99994"
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@pytest.fixture
+def limpiar_clientes_zztest():
+    def _limpiar() -> None:
+        with SessionLocal() as session:
+            session.execute(
+                text("DELETE FROM app.servicios WHERE numero_primer_servicio LIKE :p OR servicio_id LIKE :p"),
+                {"p": f"{_PREFIJO_CLIENTES}%"},
+            )
+            session.execute(
+                text(
+                    "DELETE FROM app.clientes WHERE nombre LIKE 'ZZTEST %' "
+                    "OR id IN (SELECT cliente_id FROM app.clientes_alias WHERE clave LIKE 'ZZTEST %')"
+                )
+            )
+            session.commit()
+
+    _limpiar()
+    yield
+    _limpiar()
+
+
+def _subir(client: TestClient, df: pd.DataFrame):
+    return client.post(
+        "/servicios/ingest",
+        files={"file": ("servicios.xlsx", _excel_bytes(df), _XLSX)},
+        headers=API_HEADERS,
+    )
+
+
+def _categorias(numero: str) -> tuple[int | None, int | None, bool]:
+    with SessionLocal() as session:
+        fila = session.execute(
+            text(
+                "SELECT categoria, categoria_sla, categoria_excepcion FROM app.servicios "
+                "WHERE numero_primer_servicio = :n"
+            ),
+            {"n": numero},
+        ).one()
+        return fila[0], fila[1], fila[2]
+
+
+def _insertar_servicio(numero: str, *, nombre: str | None, categoria: int | None, sla: int | None = None,
+                       excepcion: bool = False) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            text(
+                "INSERT INTO app.servicios (servicio_id, numero_primer_servicio, numero_linea, nombre_cliente, "
+                "categoria, categoria_sla, categoria_excepcion, estado_servicio, tipo_servicio, origen_datos) "
+                "VALUES (:n, :n, :n, :nombre, :c, :sla, :e, 'Activo', 'TLS', 'INGEST_EXCEL'::app.servicio_origen_datos)"
+            ),
+            {"n": numero, "nombre": nombre, "c": categoria, "sla": sla, "e": excepcion},
+        )
+        session.commit()
+
+
+def test_ingest_escribe_categoria_sla_y_no_la_borra_si_la_celda_viene_vacia(
+    client: TestClient, limpiar_clientes_zztest
+) -> None:
+    numero = "9999401"
+    df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": ["5"], "Estado Servicio": ["Activo"]})
+    assert _subir(client, df).status_code == 200
+    assert _categorias(numero) == (5, 5, False)
+
+    df_vacio = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": [""], "Estado Servicio": ["Activo"]})
+    assert _subir(client, df_vacio).status_code == 200
+    assert _categorias(numero) == (5, 5, False)
+
+
+def test_ingest_alta_sin_nivel_cliente_queda_sin_categorizar(client: TestClient, limpiar_clientes_zztest) -> None:
+    numero = "9999402"
+    df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": [""], "Estado Servicio": ["Activo"]})
+    response = _subir(client, df)
+    assert response.status_code == 200
+    assert _categorias(numero) == (None, None, False)
+    # Sin clientes en el archivo: ni resumen ni error.
+    assert response.json()["clientes_sync"] is None
+    assert response.json()["clientes_sync_error"] is False
+
+
+def test_ingest_no_pisa_la_categoria_actual_de_un_servicio_existente(
+    client: TestClient, limpiar_clientes_zztest
+) -> None:
+    """Ruling R9: un servicio existente conserva su `categoria` (la define su cliente vía la sync);
+    el "Nivel Cliente" sólo se usa como provisional si la actual es NULL."""
+    _insertar_servicio("9999412", nombre=None, categoria=2)
+    _insertar_servicio("9999413", nombre=None, categoria=None)
+    df = pd.DataFrame(
+        {"Número Primer Servicio": ["9999412", "9999413"], "Nivel Cliente": ["5", "5"],
+         "Estado Servicio": ["Activo", "Activo"]}
+    )
+    assert _subir(client, df).status_code == 200
+    assert _categorias("9999412") == (2, 5, False)
+    assert _categorias("9999413") == (5, 5, False)
+
+
+def test_ingest_real_la_misma_planilla_dos_veces_no_reescribe_nada(client: TestClient, limpiar_clientes_zztest) -> None:
+    """Cliente LISTA (3) con "Nivel Cliente" 5 en la planilla: la segunda subida idéntica no debe
+    volver a escribir la categoría provisional del Excel (que la sync después revierte)."""
+    with SessionLocal() as session:
+        cliente_id = session.execute(
+            text(
+                "INSERT INTO app.clientes (nombre, clave, categoria, origen_categoria) "
+                "VALUES ('ZZTEST LISTA DOBLE', 'ZZTEST LISTA DOBLE', 3, 'LISTA') RETURNING id"
+            )
+        ).scalar_one()
+        session.execute(
+            text(
+                "INSERT INTO app.clientes_alias (clave, nombre_original, cliente_id, origen) "
+                "VALUES ('ZZTEST LISTA DOBLE', 'ZZTEST LISTA DOBLE', :id, 'MANUAL')"
+            ),
+            {"id": cliente_id},
+        )
+        session.commit()
+    df = pd.DataFrame(
+        {"Número Primer Servicio": ["9999411"], "Cliente": ["ZZTEST LISTA DOBLE"], "Nivel Cliente": ["5"],
+         "Estado Servicio": ["Activo"]}
+    )
+
+    primera = _subir(client, df)
+    assert primera.status_code == 200
+    assert primera.json()["inserted"] == 1
+    assert _categorias("9999411") == (3, 5, False)
+
+    segunda = _subir(client, df)
+    assert segunda.status_code == 200
+    assert segunda.json()["updated"] == 0
+    assert segunda.json()["unchanged"] == 1
+    assert segunda.json()["clientes_sync"]["servicios_actualizados"] == 0
+    assert _categorias("9999411") == (3, 5, False)
+
+
+def test_ingest_no_pisa_la_categoria_de_un_servicio_con_excepcion(client: TestClient, limpiar_clientes_zztest) -> None:
+    numero = "9999403"
+    _insertar_servicio(numero, nombre=None, categoria=1, excepcion=True)
+    df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": ["4"], "Estado Servicio": ["Activo"]})
+    assert _subir(client, df).status_code == 200
+    # La categoría fijada a mano se conserva; el dato SLA de la planilla igual se guarda.
+    assert _categorias(numero) == (1, 4, True)
+
+
+def test_ingest_no_pisa_una_excepcion_fijada_mientras_corria(
+    client: TestClient, limpiar_clientes_zztest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Carrera: la ingesta lee el servicio sin categoría y sin excepción; antes de su upsert un admin
+    fija la categoría a mano (`PATCH /{id}/categoria`). El upsert no pisa esa excepción con la
+    categoría provisional de la planilla."""
+    numero = "9999414"
+    _insertar_servicio(numero, nombre=None, categoria=None)
+    original = servicios_routes.es_verificable_por_tipo_y_estado
+
+    def admin_fija_en_el_medio(*args, **kwargs):
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    "UPDATE app.servicios SET categoria = 1, categoria_excepcion = true "
+                    "WHERE numero_primer_servicio = :n"
+                ),
+                {"n": numero},
+            )
+            session.commit()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(servicios_routes, "es_verificable_por_tipo_y_estado", admin_fija_en_el_medio)
+    df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": ["4"], "Estado Servicio": ["Activo"]})
+    assert _subir(client, df).status_code == 200
+    assert _categorias(numero) == (1, 4, True)
+
+
+def test_ingest_sincroniza_los_clientes_del_archivo_despues_del_commit(
+    client: TestClient, limpiar_clientes_zztest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _insertar_servicio("9999406", nombre="ZZTEST VIEJO", categoria=None)
+    llamadas: list[tuple[set, str, int]] = []
+
+    async def registrar(nombres, *, origen):
+        nombres = set(nombres)
+        # Sesión aparte: sólo ve las filas si la ingesta ya hizo commit.
+        with SessionLocal() as session:
+            visibles = session.execute(
+                text("SELECT count(*) FROM app.servicios WHERE numero_primer_servicio LIKE '99994%'")
+            ).scalar_one()
+        llamadas.append((nombres, origen, visibles))
+        return clientes_hooks.ResultadoSyncClientes(
+            resumen={"clientes_creados": 0, "clientes_recalculados": 0, "servicios_actualizados": 7}
+        )
+
+    monkeypatch.setattr(servicios_routes, "sincronizar_clientes_post_ingesta", registrar)
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["9999404", "9999405", "9999406"],
+            "Cliente": ["ZZTEST HOOK A S.A.", "ZZTEST HOOK B", "ZZTEST NUEVO"],
+            "Nivel Cliente": ["3", "", "2"],
+            "Estado Servicio": ["Activo", "Activo", "Activo"],
+        }
+    )
+    response = _subir(client, df)
+
+    assert response.status_code == 200
+    assert len(llamadas) == 1
+    nombres, origen, visibles = llamadas[0]
+    # Incluye el nombre previo del servicio renombrado, así el cliente viejo también se recalcula.
+    assert {"ZZTEST HOOK A S.A.", "ZZTEST HOOK B", "ZZTEST NUEVO", "ZZTEST VIEJO"} <= nombres
+    assert origen == "ingest_excel"
+    assert visibles == 3
+    assert response.json()["clientes_sync"]["servicios_actualizados"] == 7
+    assert response.json()["clientes_sync_error"] is False
+
+
+def test_ingest_no_se_cae_si_la_sync_de_clientes_falla(
+    client: TestClient, limpiar_clientes_zztest, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    def explota(session, claves=None):
+        raise RuntimeError("sync rota")
+
+    monkeypatch.setattr(clientes_hooks, "sincronizar_categorias", explota)
+    df = pd.DataFrame(
+        {"Número Primer Servicio": ["9999407"], "Cliente": ["ZZTEST FALLA"], "Nivel Cliente": ["2"],
+         "Estado Servicio": ["Activo"]}
+    )
+    with caplog.at_level(logging.ERROR, logger=clientes_hooks.logger.name):
+        response = _subir(client, df)
+
+    assert response.status_code == 200
+    assert response.json()["inserted"] == 1
+    assert response.json()["clientes_sync"] is None
+    assert response.json()["clientes_sync_error"] is True
+    assert _categorias("9999407") == (2, 2, False)
+    assert any("action=clientes_sync_error" in r.getMessage() for r in caplog.records)
+
+
+def test_ingest_real_la_categoria_lista_del_cliente_gana_y_la_excepcion_se_conserva(
+    client: TestClient, limpiar_clientes_zztest
+) -> None:
+    with SessionLocal() as session:
+        cliente_id = session.execute(
+            text(
+                "INSERT INTO app.clientes (nombre, clave, categoria, origen_categoria) "
+                "VALUES ('ZZTEST LISTA', 'ZZTEST LISTA', 3, 'LISTA') RETURNING id"
+            )
+        ).scalar_one()
+        session.execute(
+            text(
+                "INSERT INTO app.clientes_alias (clave, nombre_original, cliente_id, origen) "
+                "VALUES ('ZZTEST LISTA', 'ZZTEST LISTA', :id, 'MANUAL')"
+            ),
+            {"id": cliente_id},
+        )
+        session.commit()
+    _insertar_servicio("9999409", nombre="ZZTEST LISTA", categoria=1, excepcion=True)
+
+    df = pd.DataFrame(
+        {
+            "Número Primer Servicio": ["9999408", "9999409", "9999410"],
+            "Cliente": ["ZZTEST LISTA S.A.", "ZZTEST LISTA", "ZZTEST SLA AUTO"],
+            "Nivel Cliente": ["5", "5", "4"],
+            "Estado Servicio": ["Activo", "Activo", "Activo"],
+        }
+    )
+    response = _subir(client, df)
+
+    assert response.status_code == 200
+    # Cliente LISTA (3) gana sobre el "Nivel Cliente" 5 de la planilla, que queda como dato SLA.
+    assert _categorias("9999408") == (3, 5, False)
+    # La excepción conserva su categoría manual.
+    assert _categorias("9999409") == (1, 5, True)
+    # Cliente nuevo sin lista: se crea con categoría SLA = moda de la planilla.
+    assert _categorias("9999410") == (4, 4, False)
+    with SessionLocal() as session:
+        fila = session.execute(
+            text("SELECT categoria, CAST(origen_categoria AS text) FROM app.clientes WHERE clave = 'ZZTEST SLA AUTO'")
+        ).one()
+        lista = session.execute(
+            text("SELECT categoria, CAST(origen_categoria AS text) FROM app.clientes WHERE id = :id"), {"id": cliente_id}
+        ).one()
+    assert tuple(fila) == (4, "SLA")
+    assert tuple(lista) == (3, "LISTA")
+    assert response.json()["clientes_sync"]["clientes_creados"] == 1

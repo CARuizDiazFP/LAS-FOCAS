@@ -1,11 +1,16 @@
 # Nombre de archivo: servicios_categoria_service.py
 # Ubicación de archivo: core/services/servicios_categoria_service.py
-# Descripción: Cambio de categoría (individual y masivo) sobre Servicio — validación de rango 0-6 y reporte de ids inexistentes
+# Descripción: Cambio de categoría (individual y masivo) sobre Servicio — validación de rango 0-6, marca de excepción y reporte de ids inexistentes
 
 """Cambia la `categoria` (0-6) de uno o varios `Servicio`. Más simple que
 `core/services/botellas_estado_masivo_service.py` (patrón de referencia): `Servicio.id` es un único
 espacio de ID (sin distinción de origen legado/Cromo como Botellas), así que no hace falta clave
 compuesta ni cascada de grupo — es un `UPDATE` directo por `id`.
+
+Desde 2026-10-14 la categoría normal de un servicio la hereda de su cliente
+(`core/services/clientes_categoria_service.py`); fijarla a mano acá marca
+`categoria_excepcion = True` para que la propagación no la pise. `PATCH
+/servicios/{id}/categoria/heredar` la vuelve a heredar.
 
 Sin tabla de auditoría dedicada (a diferencia de `Camara.estado`/`camaras_estado_auditoria`):
 `categoria` es una clasificación de prioridad de reporting, no un estado operativo de seguridad de
@@ -29,7 +34,14 @@ class CategoriaInvalidaError(Exception):
     no a un 500."""
 
 
-def validar_categoria(categoria: int) -> None:
+def validar_categoria(categoria: int | None, *, permitir_none: bool = False) -> None:
+    """Valida el rango 0..6. `None` ("sin categorizar") sólo se acepta con `permitir_none=True`:
+    lo usan las operaciones de cliente (`core/services/clientes_categoria_service.py`), no el
+    cambio por servicio."""
+    if categoria is None:
+        if permitir_none:
+            return
+        raise CategoriaInvalidaError(f"categoria debe estar entre {CATEGORIA_MINIMA} y {CATEGORIA_MAXIMA}")
     if not (CATEGORIA_MINIMA <= categoria <= CATEGORIA_MAXIMA):
         raise CategoriaInvalidaError(f"categoria debe estar entre {CATEGORIA_MINIMA} y {CATEGORIA_MAXIMA}")
 
@@ -68,7 +80,10 @@ def actualizar_categoria_masiva(
         actualizados = (
             session.query(Servicio)
             .filter(Servicio.id.in_(encontrados))
-            .update({Servicio.categoria: categoria}, synchronize_session=False)
+            .update(
+                {Servicio.categoria: categoria, Servicio.categoria_excepcion: True},
+                synchronize_session=False,
+            )
         )
 
     session.flush()
