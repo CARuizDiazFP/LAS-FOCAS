@@ -169,7 +169,7 @@ onMounted(async () => {
   mapa.on('load', () => {
     if (!mapa) return;
     const paleta = paletaSemaforo();
-    mapa.addSource('interv', { type: 'geojson', data: props.intervenciones ?? VACIO });
+    mapa.addSource('interv', { type: 'geojson', data: props.intervenciones ?? VACIO, tolerance: 0 });
     mapa.addLayer({
       id: 'interv-linea',
       type: 'line',
@@ -189,25 +189,33 @@ onMounted(async () => {
       paint: { 'circle-radius': 4, 'circle-color': resolverToken('--color-bg'), 'circle-stroke-width': 1.5,
         'circle-stroke-color': resolverToken('--color-neutral-300') },
     });
-    mapa.addSource('busqueda', { type: 'geojson', data: VACIO });
+    mapa.addSource('busqueda', { type: 'geojson', data: VACIO, tolerance: 0 });
     mapa.addLayer({
       id: 'busqueda-linea',
       type: 'line',
       source: 'busqueda',
-      paint: { 'line-color': resolverToken('--color-neutral-200'), 'line-width': 4, 'line-opacity': 0.9 },
+      paint: {
+        'line-color': resolverToken('--color-neutral-200'),
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 2, 13, 3, 16, 4.5],
+        'line-opacity': 0.9,
+      },
       layout: { 'line-cap': 'round', 'line-join': 'round' },
     }, 'interv-linea');
     const paletaRgb = PALETA_SERVICIOS.map((c) => resolverColor(c));
-    mapa.addSource('servicios', { type: 'geojson', data: props.geoServicios ?? VACIO });
+    // tolerance 0: estas capas tienen pocos cables y con la simplificación por defecto (0,375) los
+    // tramos cortos desaparecían al alejar el zoom y el camino se veía cortado (dev 2026-10-14).
+    mapa.addSource('servicios', { type: 'geojson', data: props.geoServicios ?? VACIO, tolerance: 0 });
     mapa.addLayer({
       id: 'servicios-linea',
       type: 'line',
       source: 'servicios',
       paint: {
         'line-color': ['match', ['get', 'indice'], ...paletaRgb.flatMap((c, i) => [i, c]), paletaRgb[0]] as unknown as maplibregl.ExpressionSpecification,
-        'line-width': 4,
-        // Un cable compartido por varios servicios se dibuja como líneas paralelas, una por servicio.
-        'line-offset': ['*', ['get', 'indice'], 4],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 2, 13, 3, 16, 4.5],
+        // Un cable compartido por varios servicios se dibuja como líneas paralelas, una por servicio,
+        // sólo de cerca: de lejos el desplazamiento fijo descentraba los caminos, así que hasta z12 van
+        // centrados (superpuestos) y se separan progresivamente hasta z15.
+        'line-offset': ['interpolate', ['linear'], ['zoom'], 12, 0, 15, ['*', ['get', 'indice'], 4]],
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' },
     }, 'interv-linea');
