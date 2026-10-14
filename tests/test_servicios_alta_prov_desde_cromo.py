@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+
+import pytest
 
 from scripts import servicios_alta_prov_desde_cromo as alta
 
@@ -39,10 +42,6 @@ def test_baja_sin_nro_servicio_usa_el_original_como_vigente():
 
 
 # ─── Sync global de categorías de clientes al final de la corrida (Task 5) ──────────────────────
-
-import argparse  # noqa: E402
-
-import pytest  # noqa: E402
 
 
 class _SesionFalsa:

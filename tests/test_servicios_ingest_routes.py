@@ -682,8 +682,64 @@ def test_ingest_escribe_categoria_sla_y_no_la_borra_si_la_celda_viene_vacia(
 def test_ingest_alta_sin_nivel_cliente_queda_sin_categorizar(client: TestClient, limpiar_clientes_zztest) -> None:
     numero = "9999402"
     df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": [""], "Estado Servicio": ["Activo"]})
-    assert _subir(client, df).status_code == 200
+    response = _subir(client, df)
+    assert response.status_code == 200
     assert _categorias(numero) == (None, None, False)
+    # Sin clientes en el archivo: ni resumen ni error.
+    assert response.json()["clientes_sync"] is None
+    assert response.json()["clientes_sync_error"] is False
+
+
+def test_ingest_no_pisa_la_categoria_actual_de_un_servicio_existente(
+    client: TestClient, limpiar_clientes_zztest
+) -> None:
+    """Ruling R9: un servicio existente conserva su `categoria` (la define su cliente vía la sync);
+    el "Nivel Cliente" sólo se usa como provisional si la actual es NULL."""
+    _insertar_servicio("9999412", nombre=None, categoria=2)
+    _insertar_servicio("9999413", nombre=None, categoria=None)
+    df = pd.DataFrame(
+        {"Número Primer Servicio": ["9999412", "9999413"], "Nivel Cliente": ["5", "5"],
+         "Estado Servicio": ["Activo", "Activo"]}
+    )
+    assert _subir(client, df).status_code == 200
+    assert _categorias("9999412") == (2, 5, False)
+    assert _categorias("9999413") == (5, 5, False)
+
+
+def test_ingest_real_la_misma_planilla_dos_veces_no_reescribe_nada(client: TestClient, limpiar_clientes_zztest) -> None:
+    """Cliente LISTA (3) con "Nivel Cliente" 5 en la planilla: la segunda subida idéntica no debe
+    volver a escribir la categoría provisional del Excel (que la sync después revierte)."""
+    with SessionLocal() as session:
+        cliente_id = session.execute(
+            text(
+                "INSERT INTO app.clientes (nombre, clave, categoria, origen_categoria) "
+                "VALUES ('ZZTEST LISTA DOBLE', 'ZZTEST LISTA DOBLE', 3, 'LISTA') RETURNING id"
+            )
+        ).scalar_one()
+        session.execute(
+            text(
+                "INSERT INTO app.clientes_alias (clave, nombre_original, cliente_id, origen) "
+                "VALUES ('ZZTEST LISTA DOBLE', 'ZZTEST LISTA DOBLE', :id, 'MANUAL')"
+            ),
+            {"id": cliente_id},
+        )
+        session.commit()
+    df = pd.DataFrame(
+        {"Número Primer Servicio": ["9999411"], "Cliente": ["ZZTEST LISTA DOBLE"], "Nivel Cliente": ["5"],
+         "Estado Servicio": ["Activo"]}
+    )
+
+    primera = _subir(client, df)
+    assert primera.status_code == 200
+    assert primera.json()["inserted"] == 1
+    assert _categorias("9999411") == (3, 5, False)
+
+    segunda = _subir(client, df)
+    assert segunda.status_code == 200
+    assert segunda.json()["updated"] == 0
+    assert segunda.json()["unchanged"] == 1
+    assert segunda.json()["clientes_sync"]["servicios_actualizados"] == 0
+    assert _categorias("9999411") == (3, 5, False)
 
 
 def test_ingest_no_pisa_la_categoria_de_un_servicio_con_excepcion(client: TestClient, limpiar_clientes_zztest) -> None:
@@ -709,7 +765,9 @@ def test_ingest_sincroniza_los_clientes_del_archivo_despues_del_commit(
                 text("SELECT count(*) FROM app.servicios WHERE numero_primer_servicio LIKE '99994%'")
             ).scalar_one()
         llamadas.append((nombres, origen, visibles))
-        return {"clientes_creados": 0, "clientes_recalculados": 0, "servicios_actualizados": 7}
+        return clientes_hooks.ResultadoSyncClientes(
+            resumen={"clientes_creados": 0, "clientes_recalculados": 0, "servicios_actualizados": 7}
+        )
 
     monkeypatch.setattr(servicios_routes, "sincronizar_clientes_post_ingesta", registrar)
     df = pd.DataFrame(
@@ -730,6 +788,7 @@ def test_ingest_sincroniza_los_clientes_del_archivo_despues_del_commit(
     assert origen == "ingest_excel"
     assert visibles == 3
     assert response.json()["clientes_sync"]["servicios_actualizados"] == 7
+    assert response.json()["clientes_sync_error"] is False
 
 
 def test_ingest_no_se_cae_si_la_sync_de_clientes_falla(
@@ -749,6 +808,7 @@ def test_ingest_no_se_cae_si_la_sync_de_clientes_falla(
     assert response.status_code == 200
     assert response.json()["inserted"] == 1
     assert response.json()["clientes_sync"] is None
+    assert response.json()["clientes_sync_error"] is True
     assert _categorias("9999407") == (2, 2, False)
     assert any("action=clientes_sync_error" in r.getMessage() for r in caplog.records)
 

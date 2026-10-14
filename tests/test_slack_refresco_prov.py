@@ -542,7 +542,7 @@ async def test_camino_feliz_refresca_de_verdad_y_persiste_el_exito(
     assert fila_servicio.nombre_cliente == "CLIENTE REFRESCO PROV FELIZ"
     assert fila_servicio.origen_datos == "INGEST_PROV"
     # Después del commit se sincroniza la categoría del cliente nuevo (y del anterior, acá NULL).
-    assert sync_clientes == [([None, "CLIENTE REFRESCO PROV FELIZ"], "prov_refresco_slack")]
+    assert sync_clientes == [(["CLIENTE REFRESCO PROV FELIZ"], "prov_refresco_slack")]
 
     ultima_ok, ultimo_error, nro_consultado = fila_sync
     assert ultima_ok is not None
@@ -681,3 +681,40 @@ async def test_timeout_sin_reintentos_se_clasifica_como_timeout(monkeypatch, _li
     texto = client_mock.chat_postMessage.call_args.kwargs["text"]
     assert numero in texto
     assert "timeout" in texto or "error de comunicación con PROV" in texto
+
+
+# ── Categoría por cliente: UNA sync por lote, después del gather (Task 5, fix round 1) ─────────
+
+
+@pytest.mark.asyncio
+async def test_lote_corre_una_sola_sync_de_clientes_con_los_nombres_de_los_exitosos(monkeypatch, sync_clientes):
+    servicios = [_servicio_unico(-(900_400 + i), f"SYNC{i}") for i in range(3)]
+
+    async def priorizar(lista):
+        return list(lista)
+
+    async def refrescar_fake(servicio, semaforo, cliente):
+        if servicio.servicio_id_externo == "SYNC1":
+            return refresco_prov.ResultadoServicioRefrescado(
+                servicio.servicio_id, servicio.servicio_id_externo, False, "no encontrado en PROV"
+            )
+        return refresco_prov.ResultadoServicioRefrescado(
+            servicio.servicio_id,
+            servicio.servicio_id_externo,
+            True,
+            None,
+            nombres_cliente=(f"VIEJO {servicio.servicio_id_externo}", f"NUEVO {servicio.servicio_id_externo}"),
+        )
+
+    monkeypatch.setattr(refresco_prov, "get_prov_client", lambda: object())
+    monkeypatch.setattr(refresco_prov, "priorizar_por_antiguedad", priorizar)
+    monkeypatch.setattr(refresco_prov, "refrescar_un_servicio", refrescar_fake)
+
+    await refresco_prov.refrescar_servicios_vencidos(
+        cable_n_id=-5_900_040, servicios=servicios, client=MagicMock(), channel="C1", thread_ts="1.1"
+    )
+
+    assert len(sync_clientes) == 1
+    nombres, origen = sync_clientes[0]
+    assert sorted(nombres) == ["NUEVO SYNC0", "NUEVO SYNC2", "VIEJO SYNC0", "VIEJO SYNC2"]
+    assert origen == "prov_refresco_slack"

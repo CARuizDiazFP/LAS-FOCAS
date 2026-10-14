@@ -141,6 +141,8 @@ class IngestServiciosResponse(BaseModel):
     # `None` si el archivo no trae clientes o si la sync falló (la ingesta igual queda guardada; ver
     # `action=clientes_sync_error` en el log y "Re-sincronizar" en el módulo de clientes).
     clientes_sync: dict[str, int] | None = None
+    # True si la sync de clientes falló (distingue "falló" de "el archivo no trae clientes").
+    clientes_sync_error: bool = False
 
 
 def _chunked(items: list[dict[str, Any]], size: int = 500) -> list[list[dict[str, Any]]]:
@@ -371,13 +373,14 @@ async def ingest_servicios(
         row["categoria_sla"] = nivel_excel if nivel_excel is not None else (
             existente.categoria_sla if existente else None
         )
-        # `categoria` es provisional: la sync post-commit la reescribe desde el cliente. Un servicio
-        # con excepción conserva la suya; sin dato válido queda la actual (NULL = sin categorizar en
-        # un alta — 6 ya no es default).
-        if existente is not None and existente.categoria_excepcion:
+        # `categoria` la define el cliente (sync post-commit). Un servicio existente conserva la
+        # actual —con o sin excepción—, así re-subir la misma planilla no reescribe una categoría
+        # que la sync después revierte (ruling R9). El "Nivel Cliente" sólo es provisional cuando
+        # la actual es NULL (incluye las altas); sin dato válido queda NULL — 6 ya no es default.
+        if categoria_actual is not None or (existente is not None and existente.categoria_excepcion):
             row["categoria"] = categoria_actual
         else:
-            row["categoria"] = nivel_excel if nivel_excel is not None else categoria_actual
+            row["categoria"] = nivel_excel
 
         override_actual = existente.es_verificable_override if existente else None
         row["es_verificable"] = (
@@ -625,7 +628,7 @@ async def ingest_servicios(
     # renombró un servicio, también el anterior). Nunca tumba la ingesta ya commiteada.
     nombres_tocados = [row.get("nombre_cliente") for row in rows]
     nombres_tocados += [fila.nombre_cliente for fila in existentes_por_id.values()]
-    clientes_sync = await sincronizar_clientes_post_ingesta(nombres_tocados, origen="ingest_excel")
+    resultado_sync = await sincronizar_clientes_post_ingesta(nombres_tocados, origen="ingest_excel")
 
     unchanged = max(len(rows) - inserted - updated, 0)
     return IngestServiciosResponse(
@@ -634,7 +637,8 @@ async def ingest_servicios(
         inserted=inserted,
         updated=updated,
         unchanged=unchanged,
-        clientes_sync=clientes_sync,
+        clientes_sync=resultado_sync.resumen,
+        clientes_sync_error=resultado_sync.error,
     )
 
 

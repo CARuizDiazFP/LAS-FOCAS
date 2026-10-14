@@ -6120,6 +6120,7 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
         ResultadoServicioRefrescado,
         priorizar_por_antiguedad,
         refrescar_un_servicio,
+        sincronizar_clientes_de_resultados,
     )
     from core.services.prov.client import get_prov_client
 
@@ -6153,6 +6154,9 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
                 False,
                 "se agotó el tiempo del lote antes de poder intentarlo",
             )
+
+    # Una sola sync de categorías de clientes para el lote, fuera del deadline. Nunca lanza.
+    await sincronizar_clientes_de_resultados(resultados.values(), origen="cromo_servicios_unicos_refrescar_prov")
 
     fallidos = [
         {"servicio_id_externo": r.servicio_id_externo, "motivo": r.motivo_error}

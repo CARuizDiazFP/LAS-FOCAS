@@ -66,7 +66,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -119,6 +119,9 @@ class ResultadoServicioRefrescado:
     servicio_id_externo: str
     ok: bool
     motivo_error: Optional[str] = None
+    # `nombre_cliente` anterior y nuevo de un refresco exitoso: el lote los junta y corre UNA sola
+    # sync de categorías de clientes al final (`sincronizar_clientes_de_resultados`).
+    nombres_cliente: tuple[Optional[str], ...] = ()
 
 
 def _con_tz(momento: Optional[datetime]) -> Optional[datetime]:
@@ -260,11 +263,25 @@ async def refrescar_un_servicio(
             await _persistir_intento_fallido(servicio.servicio_id, numero_prov, motivo)
             return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, False, motivo)
 
-    # Categoría por cliente (fuera del semáforo de PROV: es DB local): el cliente que trajo PROV y
-    # el anterior si lo renombró. Sesión propia en un thread; nunca lanza, así que un fallo de la
-    # sync no convierte un refresco exitoso en fallido.
-    await sincronizar_clientes_post_ingesta([nombre_anterior, nombre_nuevo], origen="prov_refresco_slack")
-    return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, True, None)
+    return ResultadoServicioRefrescado(
+        servicio.servicio_id,
+        servicio.servicio_id_externo,
+        True,
+        None,
+        nombres_cliente=(nombre_anterior, nombre_nuevo),
+    )
+
+
+async def sincronizar_clientes_de_resultados(
+    resultados: Iterable[ResultadoServicioRefrescado], *, origen: str
+) -> None:
+    """Una sola sync de categorías de clientes para todo el lote, DESPUÉS del gather (fuera del
+    presupuesto de deadline): junta el `nombre_cliente` anterior y nuevo de cada refresco exitoso
+    (el anterior cubre un cliente que PROV renombró). Sesión propia en un thread; nunca lanza, así
+    que un fallo de la sync no convierte refrescos exitosos en fallidos ni corta el mensaje."""
+    nombres = [nombre for r in resultados if r.ok for nombre in r.nombres_cliente if nombre]
+    if nombres:
+        await sincronizar_clientes_post_ingesta(nombres, origen=origen)
 
 
 # Tope del motivo dentro del mensaje de Slack (Minor subido a obligatorio de la revisión de
@@ -412,6 +429,8 @@ async def refrescar_servicios_vencidos(
                     "se agotó el tiempo del lote antes de poder intentarlo",
                 )
 
+        await sincronizar_clientes_de_resultados(resultados.values(), origen="prov_refresco_slack")
+
         exitosos = [r for r in resultados.values() if r.ok]
         fallidos = [r for r in resultados.values() if not r.ok]
         duracion_ms = int((time.monotonic() - inicio) * 1000)
@@ -490,4 +509,5 @@ __all__ = [
     # `refrescar_servicios_vencidos` — eso queda como deuda declarada (ver `docs/decisiones.md`).
     "priorizar_por_antiguedad",
     "refrescar_un_servicio",
+    "sincronizar_clientes_de_resultados",
 ]

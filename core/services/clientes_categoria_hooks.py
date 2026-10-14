@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Iterable
 
 from core.services.clientes_categoria_service import claves_de_nombres, sincronizar_categorias
@@ -26,14 +27,22 @@ from db.session import SessionLocal
 logger = logging.getLogger(__name__)
 
 
-def sincronizar_clientes_en_sesion_propia(claves: set[str] | None, *, origen: str) -> dict | None:
+@dataclass(frozen=True, slots=True)
+class ResultadoSyncClientes:
+    """`resumen` = `ResumenSync.to_dict()` si la sync corrió; `error=True` si falló. Ambos vacíos =
+    no había clientes que sincronizar (así el llamador distingue "sin clientes" de "falló")."""
+
+    resumen: dict | None = None
+    error: bool = False
+
+
+def sincronizar_clientes_en_sesion_propia(claves: set[str] | None, *, origen: str) -> ResultadoSyncClientes:
     """Sincroniza `claves` (o todos los clientes si es `None`) en una sesión propia y hace `commit`.
 
     Un conjunto vacío no hace nada (nunca degrada a una sync global). Nunca lanza: ante cualquier
-    error loguea `action=clientes_sync_error` y devuelve `None`. Devuelve el `ResumenSync` como
-    dict si la sync corrió."""
+    error loguea `action=clientes_sync_error` y devuelve `error=True`."""
     if claves is not None and not claves:
-        return None
+        return ResultadoSyncClientes()
     alcance = "global" if claves is None else str(len(claves))
     try:
         with SessionLocal() as session:
@@ -41,7 +50,7 @@ def sincronizar_clientes_en_sesion_propia(claves: set[str] | None, *, origen: st
             session.commit()
     except Exception:  # noqa: BLE001 - la ingesta que llama ya está commiteada y no debe caerse
         logger.exception("action=clientes_sync_error origen=%s claves=%s", origen, alcance)
-        return None
+        return ResultadoSyncClientes(error=True)
     resultado = resumen.to_dict()
     logger.info(
         "action=clientes_sync origen=%s claves=%s clientes_creados=%d clientes_recalculados=%d "
@@ -52,18 +61,20 @@ def sincronizar_clientes_en_sesion_propia(claves: set[str] | None, *, origen: st
         resultado["clientes_recalculados"],
         resultado["servicios_actualizados"],
     )
-    return resultado
+    return ResultadoSyncClientes(resumen=resultado)
 
 
-async def sincronizar_clientes_post_ingesta(nombres: Iterable[str | None], *, origen: str) -> dict | None:
+async def sincronizar_clientes_post_ingesta(
+    nombres: Iterable[str | None], *, origen: str
+) -> ResultadoSyncClientes:
     """Versión async para rutas/workers: calcula las claves de `nombres` (ignora vacíos) y corre la
     sync en un thread aparte (`asyncio.to_thread`, no bloquea el event loop). Sin claves válidas no
     hace nada. Nunca lanza."""
     claves = claves_de_nombres(nombres)
     if not claves:
-        return None
+        return ResultadoSyncClientes()
     try:
         return await asyncio.to_thread(sincronizar_clientes_en_sesion_propia, claves, origen=origen)
     except Exception:  # noqa: BLE001 - defensa extra: el hook sync ya atrapa todo
         logger.exception("action=clientes_sync_error origen=%s claves=%d", origen, len(claves))
-        return None
+        return ResultadoSyncClientes(error=True)
