@@ -412,6 +412,43 @@ services:
     networks:
       - lasfocas_dev_net
 
+  # FO Monitor: verificación PRE/POST de cables con burritoIA. Sólo WebClient con el bot token
+  # (nunca Socket Mode: le quitaría eventos al listener de ingresos del slack_baneo_worker). El kill
+  # switch es la fila `fo_monitor` de app.config_servicios (inactiva por defecto).
+  fo_monitor_worker:
+    logging: *logging-default
+    build:
+      context: ..
+      dockerfile: deploy/docker/fo_monitor_worker.Dockerfile
+    container_name: lasfocasdev-fo-monitor-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - slack_bot_token_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 256m
+    expose:
+      - "8098"
+    volumes:
+      - ../Logs/dev:/app/Logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8098/health | grep -qv loop_muerto"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_dev_net
+
   # (Opcional) pgAdmin dev. Levantar con: docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d
   pgadmin:
     logging: *logging-default
