@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,7 +24,11 @@ from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoE
 from core.services.prov.config import ProvConfigError
 from core.services.prov.ingesta import ingerir_contexto_prov
 from core.services.clientes_categoria_hooks import sincronizar_clientes_post_ingesta
-from core.services.clientes_categoria_service import normalizar_clave_cliente, sincronizar_categorias
+from core.services.clientes_categoria_service import (
+    bloquear_categorias_clientes,
+    normalizar_clave_cliente,
+    sincronizar_categorias,
+)
 from core.services.servicios_categoria_service import (
     CategoriaInvalidaError,
     actualizar_categoria_masiva,
@@ -519,7 +523,11 @@ async def ingest_servicios(
             "direccion_2": excluded.direccion_2,
             "estado_servicio": excluded.estado_servicio,
             "origen_datos": excluded.origen_datos,
-            "categoria": excluded.categoria,
+            # Una excepción fijada a mano (`PATCH /{id}/categoria`) mientras corría la ingesta no se
+            # pisa con la categoría de la planilla.
+            "categoria": case(
+                (Servicio.categoria_excepcion, Servicio.categoria), else_=excluded.categoria
+            ),
             "categoria_sla": excluded.categoria_sla,
             "es_verificable": excluded.es_verificable,
             "alias_ids": excluded.alias_ids,
@@ -537,7 +545,10 @@ async def ingest_servicios(
             Servicio.estado_servicio.is_distinct_from(excluded.estado_servicio),
             Servicio.servicio_id.is_distinct_from(excluded.servicio_id),
             Servicio.origen_datos.is_distinct_from(excluded.origen_datos),
-            Servicio.categoria.is_distinct_from(excluded.categoria),
+            and_(
+                Servicio.categoria.is_distinct_from(excluded.categoria),
+                Servicio.categoria_excepcion.is_(False),
+            ),
             Servicio.categoria_sla.is_distinct_from(excluded.categoria_sla),
             Servicio.es_verificable.is_distinct_from(excluded.es_verificable),
             Servicio.alias_ids.is_distinct_from(excluded.alias_ids),
@@ -966,25 +977,32 @@ async def actualizar_categoria_servicio(
 @router.patch("/{id}/categoria/heredar", response_model=ServicioItemResponse)
 async def heredar_categoria_servicio(id: int) -> ServicioItemResponse:
     """Quita la excepción de categoría del servicio y re-sincroniza su cliente, así vuelve a
-    heredar la categoría del cliente. Sync en un thread aparte (mismo patrón que `bulk-categoria`)."""
+    heredar la categoría del cliente. Sync en un thread aparte (mismo patrón que `bulk-categoria`).
 
-    def _heredar() -> tuple[bool, ServicioItemResponse | None]:
+    Un servicio sin cliente (`nombre_cliente` vacío) no tiene de quién heredar → 409, y la
+    excepción queda como estaba."""
+
+    def _heredar() -> tuple[int, ServicioItemResponse | None]:
         with SessionLocal() as session:
+            bloquear_categorias_clientes(session)
             svc = session.get(Servicio, id)
             if svc is None:
-                return False, None
+                return 404, None
+            clave = normalizar_clave_cliente(svc.nombre_cliente)
+            if clave is None:
+                return 409, None
             svc.categoria_excepcion = False
             session.flush()
-            clave = normalizar_clave_cliente(svc.nombre_cliente)
-            if clave is not None:
-                sincronizar_categorias(session, {clave})
+            sincronizar_categorias(session, {clave})
             session.commit()
             session.refresh(svc)
-            return True, _to_servicio_item(svc)
+            return 200, _to_servicio_item(svc)
 
-    encontrado, item = await asyncio.to_thread(_heredar)
-    if not encontrado:
+    estado, item = await asyncio.to_thread(_heredar)
+    if estado == 404:
         raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    if estado == 409:
+        raise HTTPException(status_code=409, detail="El servicio no tiene cliente: sin cliente para heredar")
     if item is None:
         raise HTTPException(status_code=404, detail="Servicio sin ID origen")
     return item

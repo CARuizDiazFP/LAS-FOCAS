@@ -751,6 +751,34 @@ def test_ingest_no_pisa_la_categoria_de_un_servicio_con_excepcion(client: TestCl
     assert _categorias(numero) == (1, 4, True)
 
 
+def test_ingest_no_pisa_una_excepcion_fijada_mientras_corria(
+    client: TestClient, limpiar_clientes_zztest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Carrera: la ingesta lee el servicio sin categoría y sin excepción; antes de su upsert un admin
+    fija la categoría a mano (`PATCH /{id}/categoria`). El upsert no pisa esa excepción con la
+    categoría provisional de la planilla."""
+    numero = "9999414"
+    _insertar_servicio(numero, nombre=None, categoria=None)
+    original = servicios_routes.es_verificable_por_tipo_y_estado
+
+    def admin_fija_en_el_medio(*args, **kwargs):
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    "UPDATE app.servicios SET categoria = 1, categoria_excepcion = true "
+                    "WHERE numero_primer_servicio = :n"
+                ),
+                {"n": numero},
+            )
+            session.commit()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(servicios_routes, "es_verificable_por_tipo_y_estado", admin_fija_en_el_medio)
+    df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": ["4"], "Estado Servicio": ["Activo"]})
+    assert _subir(client, df).status_code == 200
+    assert _categorias(numero) == (1, 4, True)
+
+
 def test_ingest_sincroniza_los_clientes_del_archivo_despues_del_commit(
     client: TestClient, limpiar_clientes_zztest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

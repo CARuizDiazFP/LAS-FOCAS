@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Literal, TypeVar
+from typing import Annotated, Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
@@ -51,6 +51,12 @@ logger = logging.getLogger(__name__)
 TAMANO_MAXIMO_LISTA = 5 * 1024 * 1024  # 5 MB
 # Margen del pre-chequeo por `Content-Length`: el cuerpo multipart suma boundaries y campos al archivo.
 MARGEN_MULTIPART = 64 * 1024
+# Límites de entrada: una lista oficial real tiene cientos de nombres; los nombres de cliente se
+# guardan en `varchar(255)`.
+MAXIMO_NOMBRES_LISTA = 2000
+LARGO_MAXIMO_NOMBRE = 255
+
+NombreCliente = Annotated[str, Field(max_length=LARGO_MAXIMO_NOMBRE)]
 
 T = TypeVar("T")
 
@@ -107,7 +113,7 @@ async def cambiar_categoria_clientes(
 
 
 class ListaRequest(BaseModel):
-    nombres: list[str]
+    nombres: list[NombreCliente] = Field(max_length=MAXIMO_NOMBRES_LISTA)
     # Obligatoria aunque admita `null` (= sin categorizar): un campo olvidado no debe aplicar la
     # lista como "sin categorizar" (peor con `reemplazar`).
     categoria: int | None
@@ -124,6 +130,25 @@ def _categoria_de_form(valor: Any) -> int | None:
         return int(texto)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="categoria inválida") from exc
+
+
+def _validar_limites_lista(nombres: Any) -> None:
+    """400 con un mensaje claro si la lista excede los límites (también para listas que salen de
+    un archivo, donde el error de validación genérico no le dice nada al usuario)."""
+    if not isinstance(nombres, list):
+        return  # el tipo incorrecto lo reporta la validación del modelo
+    if len(nombres) > MAXIMO_NOMBRES_LISTA:
+        raise HTTPException(
+            status_code=400,
+            detail=f"La lista tiene {len(nombres)} nombres; el máximo es {MAXIMO_NOMBRES_LISTA}",
+        )
+    largos = [n for n in nombres if isinstance(n, str) and len(n) > LARGO_MAXIMO_NOMBRE]
+    if largos:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hay {len(largos)} nombre(s) de más de {LARGO_MAXIMO_NOMBRE} caracteres "
+            f"(p. ej. '{largos[0][:40]}…')",
+        )
 
 
 def _content_length(request: Request) -> int:
@@ -164,6 +189,8 @@ async def _leer_pedido_lista(request: Request) -> ListaRequest:
             datos = await request.json()
         except Exception as exc:  # noqa: BLE001 — cuerpo vacío o JSON inválido
             raise HTTPException(status_code=400, detail="Cuerpo JSON inválido") from exc
+    if isinstance(datos, dict):
+        _validar_limites_lista(datos.get("nombres"))
     try:
         return ListaRequest.model_validate(datos)
     except ValidationError as exc:
@@ -208,7 +235,7 @@ async def fusionar(body: FusionarRequest) -> dict[str, Any]:
 
 
 class AliasRequest(BaseModel):
-    nombre: str
+    nombre: str = Field(max_length=LARGO_MAXIMO_NOMBRE)
 
 
 @router.post("/{cliente_id}/alias")

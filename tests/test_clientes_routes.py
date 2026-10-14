@@ -188,6 +188,53 @@ class TestLista:
         assert respuesta.status_code == 413
         extraer.assert_not_called()
 
+    def test_json_con_mas_de_2000_nombres_devuelve_400_sin_tocar_la_db(self, sesion: MagicMock) -> None:
+        with patch(f"{MODULO}.previsualizar_lista") as previsualizar:
+            respuesta = client.post(
+                "/clientes/lista/previsualizar",
+                json={"nombres": [f"CLIENTE {i}" for i in range(2001)], "categoria": 6},
+                headers=API_HEADERS,
+            )
+        assert respuesta.status_code == 400
+        assert "2001 nombres" in respuesta.json()["detail"] and "2000" in respuesta.json()["detail"]
+        previsualizar.assert_not_called()
+
+    def test_archivo_con_mas_de_2000_nombres_devuelve_400(self, sesion: MagicMock) -> None:
+        contenido = "".join(f"CLIENTE {i}\n" for i in range(2001)).encode()
+        with patch(f"{MODULO}.aplicar_lista") as aplicar:
+            respuesta = client.post(
+                "/clientes/lista/aplicar",
+                files={"file": ("lista.txt", contenido, "text/plain")},
+                data={"categoria": "6"},
+                headers=API_HEADERS,
+            )
+        assert respuesta.status_code == 400
+        assert "máximo es 2000" in respuesta.json()["detail"]
+        aplicar.assert_not_called()
+        sesion.commit.assert_not_called()
+
+    def test_lista_con_2000_nombres_es_valida(self, sesion: MagicMock) -> None:
+        previa = PrevisualizacionLista(categoria=6, modo="agregar")
+        with patch(f"{MODULO}.previsualizar_lista", return_value=previa):
+            respuesta = client.post(
+                "/clientes/lista/previsualizar",
+                json={"nombres": [f"CLIENTE {i}" for i in range(2000)], "categoria": 6},
+                headers=API_HEADERS,
+            )
+        assert respuesta.status_code == 200
+
+    def test_nombre_de_mas_de_255_caracteres_devuelve_400(self, sesion: MagicMock) -> None:
+        with patch(f"{MODULO}.previsualizar_lista") as previsualizar:
+            respuesta = client.post(
+                "/clientes/lista/previsualizar",
+                files={"file": ("lista.txt", ("X" * 256 + "\nBANCO\n").encode(), "text/plain")},
+                data={"categoria": "6"},
+                headers=API_HEADERS,
+            )
+        assert respuesta.status_code == 400
+        assert "255 caracteres" in respuesta.json()["detail"]
+        previsualizar.assert_not_called()
+
     def test_error_del_servicio_devuelve_400(self, sesion: MagicMock) -> None:
         with patch(f"{MODULO}.aplicar_lista", side_effect=ClienteCategoriaError("La lista no tiene nombres")):
             respuesta = client.post(
@@ -236,6 +283,12 @@ class TestFusionarYAlias:
         with patch(f"{MODULO}.agregar_alias", side_effect=ClienteCategoriaError("usar fusionar clientes")):
             respuesta = client.post("/clientes/1/alias", json={"nombre": "X"}, headers=API_HEADERS)
         assert respuesta.status_code == 400
+
+    def test_agregar_alias_de_mas_de_255_caracteres_se_rechaza(self, sesion: MagicMock) -> None:
+        with patch(f"{MODULO}.agregar_alias") as agregar:
+            respuesta = client.post("/clientes/1/alias", json={"nombre": "X" * 256}, headers=API_HEADERS)
+        assert respuesta.status_code == 422
+        agregar.assert_not_called()
 
     def test_quitar_alias(self, sesion: MagicMock) -> None:
         resultado = {"alias_id": 7, "cliente_id": 1, "sync": {}}

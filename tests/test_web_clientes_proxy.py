@@ -281,3 +281,21 @@ def test_fusionar_sin_origenes_falla_en_la_capa_web(monkeypatch) -> None:
 
     assert res.status_code == 422
     assert llamadas == []
+
+
+def test_limites_de_lista_y_alias_en_la_capa_web(monkeypatch) -> None:
+    client, csrf, llamadas = _cliente_logueado(monkeypatch, "admin")
+
+    muchos = client.post(
+        "/api/admin/clientes/lista/previsualizar",
+        json={"nombres": [f"CLIENTE {i}" for i in range(2001)], "categoria": 6, "csrf_token": csrf},
+    )
+    largo = client.post(
+        "/api/admin/clientes/lista/aplicar",
+        json={"nombres": ["X" * 256], "categoria": 6, "csrf_token": csrf},
+    )
+    alias = client.post("/api/admin/clientes/5/alias", json={"nombre": "X" * 256, "csrf_token": csrf})
+
+    assert (muchos.status_code, largo.status_code, alias.status_code) == (400, 400, 422)
+    assert "2000" in muchos.json()["error"]
+    assert llamadas == []

@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from time import time as now
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import httpx
 from fastapi import FastAPI, Form, Request, status, HTTPException, Response
@@ -9953,6 +9953,11 @@ async def _proxy_clientes(
         return JSONResponse({"error": f"Error en clientes por categoría: {exc!s}"}, status_code=500)
 
 
+# Mismos límites que `api/app/routes/clientes.py` (lista oficial y alias de cliente).
+MAXIMO_NOMBRES_LISTA_CLIENTES = 2000
+LARGO_MAXIMO_NOMBRE_CLIENTE = 255
+
+
 class _ClientesCsrfModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
@@ -9964,7 +9969,9 @@ class ClientesCategoriaRequestModel(_ClientesCsrfModel):
 
 
 class ClientesListaRequestModel(_ClientesCsrfModel):
-    nombres: list[str]
+    nombres: list[Annotated[str, Field(max_length=LARGO_MAXIMO_NOMBRE_CLIENTE)]] = Field(
+        max_length=MAXIMO_NOMBRES_LISTA_CLIENTES
+    )
     categoria: int | None  # obligatoria; `null` = sin categorizar
     modo: Literal["agregar", "reemplazar"] = "agregar"
 
@@ -9975,7 +9982,7 @@ class ClientesFusionarRequestModel(_ClientesCsrfModel):
 
 
 class ClientesAliasRequestModel(_ClientesCsrfModel):
-    nombre: str
+    nombre: str = Field(max_length=LARGO_MAXIMO_NOMBRE_CLIENTE)
 
 
 @app.get("/api/admin/clientes/por-categoria")
@@ -10006,8 +10013,14 @@ async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONRespons
     if not content_type.startswith("multipart/form-data"):
         try:
             body = ClientesListaRequestModel.model_validate(await request.json())
-        except Exception:  # noqa: BLE001 — JSON inválido o campos con tipo incorrecto
-            return JSONResponse({"error": "Pedido de lista inválido"}, status_code=400)
+        except Exception:  # noqa: BLE001 — JSON inválido, campos con tipo incorrecto o fuera de límite
+            return JSONResponse(
+                {
+                    "error": f"Pedido de lista inválido (máximo {MAXIMO_NOMBRES_LISTA_CLIENTES} nombres de hasta "
+                    f"{LARGO_MAXIMO_NOMBRE_CLIENTE} caracteres)"
+                },
+                status_code=400,
+            )
         if not _validar_csrf(request, body.csrf_token, accion, username):
             return JSONResponse({"error": "CSRF inválido"}, status_code=403)
         return await _proxy_clientes("POST", ruta, username, accion, cuerpo=body.model_dump(exclude={"csrf_token"}))

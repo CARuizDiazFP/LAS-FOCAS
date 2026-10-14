@@ -95,7 +95,7 @@
           <select
             class="clientes-fila__select"
             :value="valorSelect(cliente)"
-            :disabled="guardandoFila === cliente.id"
+            :disabled="guardandoFila !== null"
             :aria-label="`Categoría de ${cliente.nombre}`"
             @change="cambiarFila(cliente, ($event.target as HTMLSelectElement).value)"
           >
@@ -186,6 +186,9 @@ const sincronizando = ref(false);
 
 const confirmOpen = ref(false);
 const accionPendiente = ref<'categoria' | 'automatico'>('categoria');
+// Cantidad seleccionada al abrir el modal: tras aplicar se limpia la selección y el mensaje no
+// debe pasar a decir "0 clientes" mientras se muestra el resultado.
+const cantidadConfirmacion = ref(0);
 const confirmando = ref(false);
 const errorConfirmacion = ref('');
 const resultadoConfirmacion = ref<string | null>(null);
@@ -311,7 +314,7 @@ function limpiarSeleccion(): void {
 }
 
 const mensajeConfirmacion = computed(() => {
-  const cantidad = seleccionados.value.size;
+  const cantidad = cantidadConfirmacion.value;
   const clientes = `${cantidad} cliente${cantidad !== 1 ? 's' : ''}`;
   if (accionPendiente.value === 'automatico') {
     return `${clientes} vuelve${cantidad !== 1 ? 'n' : ''} a categoría automática (se recalcula por SLA de sus servicios).`;
@@ -321,6 +324,7 @@ const mensajeConfirmacion = computed(() => {
 
 function abrirConfirmacion(accion: 'categoria' | 'automatico'): void {
   accionPendiente.value = accion;
+  cantidadConfirmacion.value = seleccionados.value.size;
   errorConfirmacion.value = '';
   resultadoConfirmacion.value = null;
   confirmOpen.value = true;

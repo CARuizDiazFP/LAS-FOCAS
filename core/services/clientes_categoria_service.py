@@ -74,6 +74,9 @@ ORDEN_GRUPOS: tuple[int | None, ...] = (6, 5, 4, 3, 2, 1, 0, None)
 _TABLA_MAPA = "tmp_cliente_nombre_clave"
 _ORIGENES_RECALCULABLES = (ClienteOrigenCategoria.SLA.value, ClienteOrigenCategoria.AUTO.value)
 _ORIGENES_ALIAS = ("AUTO", "MANUAL")
+# Clave del advisory lock transaccional que serializa la sync y las operaciones de admin sobre
+# clientes (ver `bloquear_categorias_clientes`). Valor arbitrario pero fijo: la fecha de la migración.
+LOCK_CATEGORIAS_CLIENTES = 2026101401
 
 ModoLista = Literal["agregar", "reemplazar"]
 
@@ -161,6 +164,17 @@ def _validar_categoria(categoria: int | None) -> None:
 
 
 # ─── Soporte SQL ─────────────────────────────────────────────────────────────
+
+
+def bloquear_categorias_clientes(session: Session) -> None:
+    """Toma `pg_advisory_xact_lock(LOCK_CATEGORIAS_CLIENTES)`: serializa `sincronizar_categorias` y
+    las operaciones de admin, así una sync concurrente no recalcula/propaga desde una foto vieja y
+    pisa una decisión `MANUAL`/`LISTA` recién commiteada.
+
+    Es transaccional (se libera en el `commit`/`rollback`) y re-entrante dentro de la misma sesión:
+    una operación de admin que lo toma y después llama a `sincronizar_categorias` no se bloquea a sí
+    misma. Debe ser lo primero que hace cada operación, antes de leer el estado de los clientes."""
+    session.execute(text("SELECT pg_advisory_xact_lock(:clave)"), {"clave": LOCK_CATEGORIAS_CLIENTES})
 
 
 def _cargar_mapa_temporal(session: Session) -> dict[str, dict[str, int]]:
@@ -302,23 +316,26 @@ def _recalcular(session: Session, cliente_ids: list[int] | None) -> int:
     if not cambios:
         return 0
 
-    session.execute(
+    resultado = session.execute(
         text(
             "UPDATE app.clientes c SET categoria = u.categoria, "
             "origen_categoria = CAST(u.origen AS app.cliente_origen_categoria), "
             "a_revisar = u.a_revisar, actualizado_en = now() "
             "FROM unnest(CAST(:ids AS integer[]), CAST(:categorias AS smallint[]), "
             "CAST(:origenes AS text[]), CAST(:revisar AS boolean[])) AS u(id, categoria, origen, a_revisar) "
-            "WHERE c.id = u.id"
+            # Guard: si otra transacción fijó el cliente (`MANUAL`/`LISTA`) entre la lectura y este
+            # UPDATE, no se pisa su decisión.
+            "WHERE c.id = u.id AND CAST(c.origen_categoria AS text) = ANY(CAST(:recalculables AS text[]))"
         ),
         {
+            "recalculables": list(_ORIGENES_RECALCULABLES),
             "ids": [c[0] for c in cambios],
             "categorias": [c[1] for c in cambios],
             "origenes": [c[2] for c in cambios],
             "revisar": [c[3] for c in cambios],
         },
     )
-    return len(cambios)
+    return int(resultado.rowcount or 0)
 
 
 def _propagar(session: Session, cliente_ids: list[int] | None) -> int:
@@ -355,7 +372,9 @@ def sincronizar_categorias(session: Session, claves: set[str] | None = None) -> 
 
     Con `claves` se limita a esas claves y a los clientes que las tienen como alias (todas sus
     variantes se recalculan juntas); sin `claves` recorre todo (lo usa el script de regularización).
+    Toma el lock de `bloquear_categorias_clientes` antes de leer nada.
     """
+    bloquear_categorias_clientes(session)
     session.flush()
     por_clave = _cargar_mapa_temporal(session)
     objetivo = set(por_clave) if claves is None else set(claves) & set(por_clave)
@@ -451,6 +470,7 @@ def cambiar_categoria(
         raise ClienteCategoriaError("No se especificaron clientes")
     if not automatico:
         _validar_categoria(categoria)
+    bloquear_categorias_clientes(session)
 
     pedidos = set(ids)
     encontrados = set(session.execute(select(Cliente.id).where(Cliente.id.in_(pedidos))).scalars())
@@ -593,6 +613,7 @@ def aplicar_lista(
     """Asigna `categoria` con `origen = LISTA` a los clientes de la lista; crea un `Cliente`
     (`LISTA`) por cada nombre sin match. Con `modo="reemplazar"` devuelve a `AUTO` los clientes
     `LISTA` de esa categoría que no vienen en la lista. Termina sincronizando los afectados."""
+    bloquear_categorias_clientes(session)
     previa, coincidentes, sin_match = _resolver_lista(session, nombres, categoria, modo)
 
     if coincidentes:
@@ -656,6 +677,7 @@ def fusionar_clientes(session: Session, destino_id: int, origen_ids: list[int]) 
     origenes = set(origen_ids) - {destino_id}
     if not origenes:
         raise ClienteCategoriaError("No se especificaron clientes a fusionar distintos del destino")
+    bloquear_categorias_clientes(session)
     _obtener_cliente(session, destino_id)
     existentes = set(session.execute(select(Cliente.id).where(Cliente.id.in_(origenes))).scalars())
     faltantes = sorted(origenes - existentes)
@@ -691,6 +713,7 @@ def agregar_alias(
     clave = normalizar_clave_cliente(nombre)
     if clave is None:
         raise ClienteCategoriaError("El nombre del alias está vacío")
+    bloquear_categorias_clientes(session)
     _obtener_cliente(session, cliente_id)
     nombre_limpio = nombre.strip()
 
@@ -739,6 +762,7 @@ agregar_alias_por_nombre = agregar_alias
 def quitar_alias(session: Session, alias_id: int) -> dict:
     """Quita un alias. El canónico (clave == `Cliente.clave`) no se puede quitar. Los servicios
     con esa variante quedan como un cliente propio (`AUTO`) en la sincronización."""
+    bloquear_categorias_clientes(session)
     alias = session.get(ClienteAlias, alias_id)
     if alias is None:
         raise ClienteNoEncontradoError(f"Alias {alias_id} no encontrado")
@@ -755,6 +779,7 @@ def quitar_alias(session: Session, alias_id: int) -> dict:
 __all__ = [
     "ClienteCategoriaError",
     "ClienteNoEncontradoError",
+    "LOCK_CATEGORIAS_CLIENTES",
     "ORDEN_GRUPOS",
     "PrevisualizacionLista",
     "ResumenSync",
@@ -762,6 +787,7 @@ __all__ = [
     "agregar_alias",
     "agregar_alias_por_nombre",
     "aplicar_lista",
+    "bloquear_categorias_clientes",
     "cambiar_categoria",
     "claves_de_nombres",
     "elegir_categoria_automatica",

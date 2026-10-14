@@ -58,7 +58,14 @@ class _Resp:
         return {"id": 1, "categoria": 5}
 
 
-def _fake_async_client(capturar: list):
+class _Resp409:
+    status_code = 409
+
+    def json(self) -> dict:
+        return {"detail": "El servicio no tiene cliente: sin cliente para heredar"}
+
+
+def _fake_async_client(capturar: list, respuesta=None):
     class _AsyncClient:
         def __init__(self, timeout: float | None = None) -> None:
             self.timeout = timeout
@@ -71,7 +78,7 @@ def _fake_async_client(capturar: list):
 
         async def patch(self, url: str, json: Optional[dict] = None, headers: Optional[dict] = None):
             capturar.append((url, json))
-            return _Resp()
+            return respuesta if respuesta is not None else _Resp()
 
     return _AsyncClient
 
@@ -95,6 +102,21 @@ def test_heredar_proxya_al_endpoint_interno(monkeypatch) -> None:
     assert res.json()["categoria"] == 5
     assert len(llamadas) == 1
     assert llamadas[0][0].endswith("/servicios/7/categoria/heredar")
+
+
+def test_heredar_pasa_el_409_sin_cliente_tal_cual(monkeypatch) -> None:
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_con_rol("admin", "admin"))
+    llamadas: list = []
+    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_async_client(llamadas, _Resp409()))
+    client = TestClient(app)
+    csrf = _login(client, "admin", "admin")
+
+    res = client.patch("/api/servicios/7/categoria/heredar", json={"csrf_token": csrf})
+
+    assert res.status_code == 409
+    assert "sin cliente para heredar" in res.json()["detail"]
 
 
 def test_heredar_rechaza_csrf_invalido(monkeypatch) -> None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.app.main import app
@@ -131,17 +132,22 @@ class TestPatchCategoriaHeredar:
 
     @patch("api.app.routes.servicios.sincronizar_categorias")
     @patch("api.app.routes.servicios.SessionLocal")
-    def test_servicio_sin_cliente_no_sincroniza(self, mock_session_local: MagicMock, mock_sync: MagicMock) -> None:
-        svc = _make_servicio(nombre_cliente=None, categoria_excepcion=True)
+    @pytest.mark.parametrize("nombre", [None, "  ", "..."])
+    def test_servicio_sin_cliente_devuelve_409_y_conserva_la_excepcion(
+        self, mock_session_local: MagicMock, mock_sync: MagicMock, nombre: str | None
+    ) -> None:
+        svc = _make_servicio(nombre_cliente=nombre, categoria=2, categoria_excepcion=True)
         session = MagicMock()
         session.get.return_value = svc
         mock_session_local.return_value.__enter__.return_value = session
 
         response = client.patch("/servicios/1/categoria/heredar", headers=API_HEADERS)
 
-        assert response.status_code == 200
-        assert svc.categoria_excepcion is False
+        assert response.status_code == 409
+        assert "sin cliente para heredar" in response.json()["detail"]
+        assert svc.categoria_excepcion is True
         mock_sync.assert_not_called()
+        session.commit.assert_not_called()
 
     @patch("api.app.routes.servicios.SessionLocal")
     def test_servicio_inexistente_devuelve_404(self, mock_session_local: MagicMock) -> None:

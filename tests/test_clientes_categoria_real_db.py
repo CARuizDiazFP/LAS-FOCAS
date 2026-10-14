@@ -496,3 +496,71 @@ def test_search_servicios_token_sin_filtra_sin_categorizar(sesion) -> None:
         assert _ids("sin,3") == {sin, con}
     finally:
         app.dependency_overrides.pop(get_async_db, None)
+
+
+def test_recalcular_no_pisa_un_cliente_fijado_entre_la_lectura_y_el_update(sesion, monkeypatch) -> None:
+    """Simula la carrera: el cliente pasa a `MANUAL` después de que `_recalcular` lo leyó como `SLA`
+    y antes de su `UPDATE`. El guard de origen del `UPDATE` no pisa la decisión del admin."""
+    from core.services import clientes_categoria_service as servicio
+
+    s = sesion
+    svc = s.crear_servicio("ZZTEST CARRERA SA", sla=5)
+    s.commit()
+    sincronizar_categorias(s, {"ZZTEST CARRERA"})
+    s.commit()
+    cliente_id = _cliente(s, "ZZTEST CARRERA").id
+    s.execute(text("UPDATE app.servicios SET categoria_sla = 2 WHERE id = :i"), {"i": svc})
+    s.commit()
+
+    original = servicio.elegir_categoria_automatica
+
+    def con_admin_en_el_medio(conteos, *, hay_servicios):
+        s.execute(
+            text(
+                "UPDATE app.clientes SET categoria = 4, "
+                "origen_categoria = CAST('MANUAL' AS app.cliente_origen_categoria) WHERE id = :i"
+            ),
+            {"i": cliente_id},
+        )
+        return original(conteos, hay_servicios=hay_servicios)
+
+    monkeypatch.setattr(servicio, "elegir_categoria_automatica", con_admin_en_el_medio)
+    resumen = sincronizar_categorias(s, {"ZZTEST CARRERA"})
+    s.commit()
+
+    assert resumen.clientes_recalculados == 0
+    cliente = s.get(Cliente, cliente_id)
+    assert (cliente.categoria, cliente.origen_categoria.value) == (4, "MANUAL")
+    assert _categoria_servicio(s, svc) == 4
+
+
+def test_lock_serializa_la_sync_con_una_operacion_de_admin_en_curso(sesion) -> None:
+    """Mientras otra transacción tiene el advisory lock (p. ej. un admin aplicando una lista), una
+    sync no avanza: con `lock_timeout` corto falla en vez de leer una foto vieja. Al liberarse el
+    lock, la sync corre normalmente."""
+    from sqlalchemy.exc import OperationalError
+
+    from core.services.clientes_categoria_service import bloquear_categorias_clientes
+
+    s = sesion
+    s.crear_servicio("ZZTEST LOCK SA", sla=3)
+    s.commit()
+
+    otra = SessionLocal()
+    try:
+        bloquear_categorias_clientes(otra)
+        bloquear_categorias_clientes(otra)  # re-entrante en la misma transacción
+        s.execute(text("SET lock_timeout = '300ms'"))
+        with pytest.raises(OperationalError, match="lock timeout"):
+            sincronizar_categorias(s, {"ZZTEST LOCK"})
+        s.rollback()
+        assert resolver_cliente(s, "ZZTEST LOCK") is None
+        s.rollback()
+    finally:
+        otra.rollback()  # libera el lock (es transaccional)
+        otra.close()
+
+    s.execute(text("SET lock_timeout = '5s'"))
+    assert sincronizar_categorias(s, {"ZZTEST LOCK"}).clientes_creados == 1
+    s.commit()
+    assert _cliente(s, "ZZTEST LOCK").categoria == 3
