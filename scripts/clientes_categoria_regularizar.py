@@ -31,6 +31,7 @@ El archivo por defecto es `scripts/data/clientes_c6_inicial.txt` (la imagen `api
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -43,6 +44,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from core.logging import setup_logging
+from core.services import clientes_categoria_service as servicio
 from core.services.clientes_categoria_service import (
     ClienteCategoriaError,
     agregar_alias_por_nombre,
@@ -51,7 +53,6 @@ from core.services.clientes_categoria_service import (
     normalizar_clave_cliente,
     previsualizar_lista,
     resolver_cliente,
-    sincronizar_categorias,
 )
 from db.session import engine
 
@@ -112,6 +113,7 @@ def _cargar_alias(session: Session, alias: list[tuple[str, str]]) -> dict:
     omitidos: list[dict] = []
     for canonico, variante in alias:
         cliente = resolver_cliente(session, canonico)
+        creado = cliente is None
         if cliente is None:
             aplicar_lista(session, [canonico], CATEGORIA_LISTA, "agregar", usuario=USUARIO)
             cliente = resolver_cliente(session, canonico)
@@ -127,8 +129,28 @@ def _cargar_alias(session: Session, alias: list[tuple[str, str]]) -> dict:
         except ClienteCategoriaError as exc:
             omitidos.append({"canonico": canonico, "variante": variante, "motivo": str(exc)})
             continue
-        aplicados.append({"canonico": canonico, "variante": variante, "cliente_id": cliente.id})
+        aplicados.append({"canonico": canonico, "variante": variante, "cliente_id": cliente.id,
+                          "canonico_creado": creado})
     return {"aplicados": aplicados, "omitidos": omitidos}
+
+
+@contextlib.contextmanager
+def _acumular_servicios_actualizados():
+    """Suma los `servicios_actualizados` de TODOS los `sincronizar_categorias` que hace el servicio
+    (alias y lista sincronizan por dentro y no devuelven el resumen)."""
+    total = [0]
+    original = servicio.sincronizar_categorias
+
+    def contando(*args, **kwargs):
+        resumen = original(*args, **kwargs)
+        total[0] += resumen.servicios_actualizados
+        return resumen
+
+    servicio.sincronizar_categorias = contando
+    try:
+        yield total
+    finally:
+        servicio.sincronizar_categorias = original
 
 
 def regularizar(session: Session, nombres: list[str], alias: list[tuple[str, str]]) -> dict:
@@ -136,15 +158,18 @@ def regularizar(session: Session, nombres: list[str], alias: list[tuple[str, str
     antes_servicios = _servicios_por_categoria(session)
     antes_clientes = _clientes_por_categoria_y_origen(session)
 
-    sync_inicial = sincronizar_categorias(session)
-    resultado_alias = _cargar_alias(session, alias)
+    with _acumular_servicios_actualizados() as total_servicios:
+        sync_inicial = servicio.sincronizar_categorias(session)
+        # La previsualización va antes de los alias: refleja el match de la lista contra lo que
+        # existe tras el sync inicial (los canónicos creados por el paso de alias se marcan aparte).
+        previa = previsualizar_lista(session, nombres, CATEGORIA_LISTA, "agregar", usuario=USUARIO)
+        sin_match = list(previa.nuevos)
+        sugerencias = dict(previa.sugerencias)
+        resultado_alias = _cargar_alias(session, alias)
+        lista = aplicar_lista(session, nombres, CATEGORIA_LISTA, "agregar", usuario=USUARIO)
+        sync_final = servicio.sincronizar_categorias(session)
 
-    previa = previsualizar_lista(session, nombres, CATEGORIA_LISTA, "agregar", usuario=USUARIO)
-    sin_match = list(previa.nuevos)
-    sugerencias = dict(previa.sugerencias)
-    lista = aplicar_lista(session, nombres, CATEGORIA_LISTA, "agregar", usuario=USUARIO)
-    sync_final = sincronizar_categorias(session)
-
+    lista_nuevos = set(lista["nuevos"])
     grupos = listar_clientes_por_categoria(session)
     claves_lista = {normalizar_clave_cliente(n) for n in nombres}
     claves_lista |= {normalizar_clave_cliente(c) for c, _ in alias}
@@ -165,10 +190,12 @@ def regularizar(session: Session, nombres: list[str], alias: list[tuple[str, str
         "lista_c6": {
             "nombres_en_archivo": len(nombres),
             "con_match": len(nombres) - len(sin_match),
-            "creados_sin_servicios": sin_match,
+            "sin_match_previo_a_alias": sin_match,
+            "creados_sin_servicios": [n for n in sin_match if n in lista_nuevos],
             "sugerencias": sugerencias,
         },
         "alias": resultado_alias,
+        "servicios_actualizados_total": total_servicios[0],
         "a_revisar": {"total": len(a_revisar), "primeros": a_revisar[:MAX_A_REVISAR]},
         "c6_por_sla_fuera_de_la_lista": c6_fuera_de_lista,
         "sync_inicial": sync_inicial.to_dict(),
@@ -179,7 +206,8 @@ def regularizar(session: Session, nombres: list[str], alias: list[tuple[str, str
 
 def ejecutar(connection, nombres: list[str], alias: list[tuple[str, str]], *, aplicar: bool) -> dict:
     """Corre la regularización sobre `connection`. Con `aplicar=False` revierte todo al final."""
-    transaccion = connection.begin()
+    # Con una transacción ya abierta en la conexión (tests) se usa un savepoint, que se libera igual.
+    transaccion = connection.begin_nested() if connection.in_transaction() else connection.begin()
     session = Session(bind=connection, join_transaction_mode="create_savepoint", autoflush=False)
     try:
         resumen = regularizar(session, nombres, alias)
@@ -187,6 +215,8 @@ def ejecutar(connection, nombres: list[str], alias: list[tuple[str, str]], *, ap
         session.close()
         transaccion.rollback()
         raise
+    if aplicar:
+        session.commit()  # libera el savepoint de la sesión; sin esto close() lo revertiría
     session.close()
     if aplicar:
         transaccion.commit()

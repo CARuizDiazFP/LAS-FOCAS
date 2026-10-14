@@ -68,3 +68,28 @@ def test_dry_run_real_no_modifica_la_db():
     assert resumen["modo"] == "dry-run"
     assert resumen["lista_c6"]["nombres_en_archivo"] == 52
     assert antes == despues
+
+
+@requiere_postgres_real
+def test_apply_persiste_dentro_de_la_transaccion_del_llamador():
+    """`aplicar=True` debe dejar las escrituras en la conexión (no revertidas con el savepoint de la
+    sesión). El test envuelve la corrida en una transacción externa que revierte: nada queda en dev."""
+    from db.session import engine
+
+    nombres, alias = script.parsear_archivo(script.ARCHIVO_POR_DEFECTO.read_text(encoding="utf-8"))
+    with engine.connect() as lectura:
+        antes = lectura.execute(text("SELECT count(*) FROM app.clientes")).scalar()
+    with engine.connect() as connection:
+        externa = connection.begin()
+        resumen = script.ejecutar(connection, nombres, alias, aplicar=True)
+        visibles = connection.execute(text("SELECT count(*) FROM app.clientes")).scalar()
+        externa.rollback()
+    with engine.connect() as lectura:
+        despues = lectura.execute(text("SELECT count(*) FROM app.clientes")).scalar()
+    assert resumen["modo"] == "apply"
+    assert visibles >= antes and visibles == sum(
+        sum(v.values()) for v in resumen["clientes_por_categoria_y_origen"]["despues"].values()
+    )
+    if antes == 0:
+        assert visibles > 0
+    assert despues == antes
