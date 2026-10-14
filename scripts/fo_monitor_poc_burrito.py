@@ -45,6 +45,8 @@ ESCENARIOS: dict[str, list[str]] = {
     "S5": ["112731", "9999991"],  # FO (no soportado) + inexistente
     "S6": ["117995", "9999991", "113705"],  # inexistente en medio de válidos
     "S7": ["117995", "112731", "113705"],  # FO (sin datos técnicos en PROV) en medio de válidos
+    "S8": ["121830"],  # SW de última milla sin gestión (E2E dev 2026-10-14)
+    "S9": ["121830", "119813"],  # idem + acceso caído en ambos extremos
 }
 
 
@@ -124,7 +126,7 @@ def main() -> int:
     ap.add_argument("--poll", type=int, default=10)
     ap.add_argument("--silencio", type=int, default=30, help="segundos sin mensajes nuevos tras ver el ref")
     ap.add_argument("--paralelo", action="store_true", help="publica todos los escenarios a la vez")
-    ap.add_argument("--prompt-version", default="v3", choices=["v1", "v2", "v3"])
+    ap.add_argument("--prompt-version", default="v4", choices=["v1", "v2", "v3", "v4"])
     ap.add_argument("--salida", type=Path, default=Path("Logs/fo_monitor_poc"))
     args = ap.parse_args()
 

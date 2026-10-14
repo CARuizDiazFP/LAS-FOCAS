@@ -61,7 +61,7 @@ def upgrade() -> None:
         sa.Column("timeout_por_servicio_s", sa.Integer(), nullable=False, server_default="20"),
         sa.Column("concurrencia", sa.Integer(), nullable=False, server_default="3"),
         sa.Column("burrito_user_id", sa.String(32), nullable=False, server_default="U0A2HE3K950"),
-        sa.Column("prompt_version", sa.String(8), nullable=False, server_default="v3"),
+        sa.Column("prompt_version", sa.String(8), nullable=False, server_default="v4"),
         sa.Column("ultimo_ingreso_id_procesado", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("actualizado_por", sa.String(128), nullable=True),
         sa.Column("actualizado_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),

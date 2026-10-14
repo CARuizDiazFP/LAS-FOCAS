@@ -13,10 +13,10 @@ from core.services.fo_monitor.prompt import construir_prompt, token_consulta
 
 def test_prompt_incluye_mencion_token_e_ids():
     texto = construir_prompt("U0A2HE3K950", 42, ["117995", "113705"])
-    assert texto.startswith("<@U0A2HE3K950> FOMON v2")
+    assert texto.startswith("<@U0A2HE3K950> verificar servicios 117995, 113705")
     assert token_consulta(42) in texto
     assert "117995, 113705" in texto
-    assert "FOMON|<id>|<ESTADO>|<extremo>|<motivo>" in texto
+    assert "FOMON|<número de servicio>|<ESTADO>|<extremo>|<motivo>" in texto
 
 
 def test_prompt_sin_ids_falla():
@@ -99,3 +99,18 @@ def test_real_v2_token_en_lugar_de_id_con_un_solo_servicio():
     r = parsear_respuesta(caso["textos"], caso["ids"])
     assert r.completa
     assert r.resultados["117995"].estado == "UP"
+
+
+def test_linea_sin_campo_extremo_real_v4():
+    linea = "```\nFOMON|121830|UP|inferido por troncal: TwentyFiveGigE1/0/43 up/up (SW_4_Chacabuco271_P1)\n```\n_(ref: #fe81)_"
+    r = parsear_respuesta([linea], ["121830"])
+    assert r.completa
+    assert r.resultados["121830"].estado == "UP"
+    assert r.resultados["121830"].extremo is None
+    assert r.resultados["121830"].motivo.startswith("inferido por troncal")
+
+
+def test_prompt_v4_pide_troncal_si_acceso_sin_gestion():
+    texto = construir_prompt("U0A2HE3K950", 7, ["121830"], version="v4")
+    assert texto.startswith("<@U0A2HE3K950> verificar servicio 121830")
+    assert "troncal" in texto and "FOMON-Q7" in texto

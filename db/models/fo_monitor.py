@@ -61,7 +61,7 @@ class FomonConfig(Base):
     timeout_por_servicio_s = Column(Integer, nullable=False, default=20)
     concurrencia = Column(Integer, nullable=False, default=3)
     burrito_user_id = Column(String(32), nullable=False, default="U0A2HE3K950")
-    prompt_version = Column(String(8), nullable=False, default="v3")
+    prompt_version = Column(String(8), nullable=False, default="v4")
     ultimo_ingreso_id_procesado = Column(Integer, nullable=False, default=0)
     actualizado_por = Column(String(128), nullable=True)
     actualizado_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

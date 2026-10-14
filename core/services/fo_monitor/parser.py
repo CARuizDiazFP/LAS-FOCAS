@@ -21,9 +21,11 @@ from typing import Iterable, Sequence
 
 from core.services.fo_monitor.prompt import ESTADOS_VALIDOS
 
+# `extremo` opcional: burritoIA a veces omite ese campo y deja 4 en lugar de 5
+# (PoC v4 2026-10-14, ref #fe81: "FOMON|121830|UP|inferido por troncal: TwentyFiveGigE1/0/43 up/up").
 _RE_LINEA = re.compile(
     r"FOMON\s*\|\s*(?P<id>[A-Za-z0-9][A-Za-z0-9-]*)\s*\|\s*(?P<estado>[A-Za-z_]+)\s*\|"
-    r"\s*(?P<extremo>[^|\n]*?)\s*\|\s*(?P<motivo>[^\n]*)$",
+    r"(?:\s*(?P<extremo>[^|\n]*?)\s*\|)?\s*(?P<motivo>[^|\n]*)$",
     re.IGNORECASE,
 )
 _RE_REF = re.compile(r"\(ref:\s*#([0-9A-Za-z]+)\)")
@@ -95,7 +97,7 @@ def parsear_respuesta(textos: Iterable[str], ids_solicitados: Sequence[str]) -> 
             if sid not in pedidos or estado not in ESTADOS_VALIDOS:
                 invalidas.append(linea)
                 continue
-            extremo = m.group("extremo").strip().strip(_DECORACION) or None
+            extremo = (m.group("extremo") or "").strip().strip(_DECORACION) or None
             if extremo in ("-", "—", "−", "–"):
                 extremo = None
             encontrados[sid] = ResultadoServicio(

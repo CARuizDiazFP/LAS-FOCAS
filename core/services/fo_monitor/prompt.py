@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v4"
 
 ESTADOS_VALIDOS = ("UP", "DOWN", "ADMIN_DOWN", "DESCONOCIDO", "NO_SOPORTADO")
 
@@ -47,6 +47,30 @@ def construir_prompt(
     if not servicio_ids:
         raise ValueError("servicio_ids no puede estar vacío")
     ids = ", ".join(str(s) for s in servicio_ids)
+    if version == "v4":
+        # v4 = v3 + equipo de acceso sin gestión: validar la interfaz del equipo troncal/uplink que lo
+        # conecta (pedido del usuario 2026-10-14 tras el E2E dev: el 121830 quedó DESCONOCIDO porque
+        # burritoIA no pudo gestionar el SW de última milla, caído, en 3 intentos).
+        verbo = "verificar servicio" if len(servicio_ids) == 1 else "verificar servicios"
+        return (
+            f"<@{burrito_user_id}> {verbo} {ids}\n"
+            "Si el equipo de acceso (última milla) no responde o no se puede gestionar, verificá la "
+            "interfaz del equipo troncal/uplink que lo conecta (el puerto que va hacia ese equipo de "
+            "acceso).\n"
+            "Al final de tu respuesta agregá un bloque de código con exactamente una línea por servicio:\n"
+            "FOMON|<número de servicio>|<ESTADO>|<extremo>|<motivo>\n"
+            "ESTADO según el estado operativo ACTUAL de la última milla (puerto de acceso u ONT) en "
+            "cada extremo: UP (operativo en todos los extremos), DOWN (algún extremo operativamente "
+            "caído), ADMIN_DOWN (apagado administrativamente), DESCONOCIDO (no se pudo verificar ni el "
+            "acceso ni el troncal), NO_SOPORTADO (tipo de servicio no soportado). Si el estado sale de "
+            "la interfaz del troncal porque el acceso no se pudo gestionar: troncal DOWN → DOWN, "
+            "troncal UP → UP, y el motivo debe empezar con \"inferido por troncal\". No uses reclamos, "
+            "historial, alarmas ni tráfico para decidir el ESTADO: sólo el estado de una interfaz.\n"
+            "extremo: el extremo caído (1, 2) o -. motivo: hasta 80 caracteres, sin el carácter |, "
+            "nombrando la interfaz verificada y su estado (ej. \"Gi1/0/1 up/up\" o \"inferido por "
+            "troncal: Te1/0/43 up/up\").\n"
+            f"(ref. interna {token_consulta(consulta_id)}, no la incluyas en el bloque)"
+        )
     if version == "v3":
         # v3: arranca igual que un operador humano ("verificar servicio X"), que es lo que dispara el
         # diagnóstico completo con estado de puertos; v1/v2 terminaban en el perfil "tráfico" (PoC
