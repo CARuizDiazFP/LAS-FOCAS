@@ -71,6 +71,7 @@ from typing import Any, Optional
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from core.services.clientes_categoria_hooks import sincronizar_clientes_post_ingesta
 from core.services.cromo.verificador import ServicioUnico
 from core.services.prov.client import (
     ProvClientError,
@@ -244,7 +245,9 @@ async def refrescar_un_servicio(
                         servicio.servicio_id,
                     )
                     return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, True, None)
+                nombre_anterior = svc.nombre_cliente
                 await ingerir_contexto_prov(session, svc, contexto)
+                nombre_nuevo = svc.nombre_cliente
                 await session.commit()
         except Exception as exc:
             motivo = f"error guardando localmente: {exc}"
@@ -257,6 +260,10 @@ async def refrescar_un_servicio(
             await _persistir_intento_fallido(servicio.servicio_id, numero_prov, motivo)
             return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, False, motivo)
 
+    # Categoría por cliente (fuera del semáforo de PROV: es DB local): el cliente que trajo PROV y
+    # el anterior si lo renombró. Sesión propia en un thread; nunca lanza, así que un fallo de la
+    # sync no convierte un refresco exitoso en fallido.
+    await sincronizar_clientes_post_ingesta([nombre_anterior, nombre_nuevo], origen="prov_refresco_slack")
     return ResultadoServicioRefrescado(servicio.servicio_id, servicio.servicio_id_externo, True, None)
 
 

@@ -67,6 +67,21 @@ def _limpiar_servicios_de_test():
         session.commit()
 
 
+@pytest.fixture(autouse=True)
+def sync_clientes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list, str]]:
+    """Autouse: reemplaza la sync de categorías de clientes post-refresco por un registrador, así
+    ningún test de este archivo crea filas en `app.clientes` de dev (la sync real se prueba en
+    `tests/test_clientes_categoria_real_db.py` y en `tests/test_servicios_ingest_routes.py`)."""
+    llamadas: list[tuple[list, str]] = []
+
+    async def registrar(nombres, *, origen):
+        llamadas.append((list(nombres), origen))
+        return None
+
+    monkeypatch.setattr(servicios_routes, "sincronizar_clientes_post_ingesta", registrar)
+    return llamadas
+
+
 def _crear_servicio(numero: str, servicio_id: str | None = None) -> None:
     """Crea un Servicio de test. `servicio_id` distinto de `numero` sirve para armar una fila que
     ya ocupe un ID que otra fila va a querer reclamar (test de colisión)."""
@@ -288,3 +303,53 @@ def test_detail_incluye_listas_vacias_cuando_no_hay_historial_ni_equipos(client:
     body = detail.json()
     assert body["historial_ids"] == []
     assert body["equipos_ultima_milla"] == []
+
+
+def test_refrescar_sincroniza_el_cliente_nuevo_y_el_anterior_y_devuelve_la_categoria_final(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, sync_clientes
+) -> None:
+    _crear_servicio("900105")
+    with SessionLocal() as session:
+        session.execute(
+            text("UPDATE app.servicios SET nombre_cliente = 'ZZTEST PROV VIEJO' WHERE numero_primer_servicio = '900105'")
+        )
+        session.commit()
+    contexto = {
+        "nro_servicio": "900105",
+        "nro_servicio_original": "900105",
+        "id_servicio": "EWS",
+        "Descripcion": "ZZTEST PROV NUEVO SA",
+        "estado_comercial": "INSTALADO",
+    }
+    monkeypatch.setattr(servicios_routes, "get_prov_client", lambda: _ClientePROVFalso(contexto=contexto))
+
+    async def sync_que_categoriza(nombres, *, origen):
+        sync_clientes.append((list(nombres), origen))
+        # Simula la propagación: la respuesta tiene que reflejar la categoría post-sync.
+        with SessionLocal() as session:
+            session.execute(text("UPDATE app.servicios SET categoria = 2 WHERE numero_primer_servicio = '900105'"))
+            session.commit()
+        return {"clientes_creados": 1, "clientes_recalculados": 0, "servicios_actualizados": 1}
+
+    monkeypatch.setattr(servicios_routes, "sincronizar_clientes_post_ingesta", sync_que_categoriza)
+
+    response = client.post("/servicios/prov/refrescar", params={"id": "900105"}, headers=API_HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert len(sync_clientes) == 1
+    nombres, origen = sync_clientes[0]
+    assert set(nombres) == {"ZZTEST PROV VIEJO", "ZZTEST PROV NUEVO SA"}
+    assert origen == "prov_refrescar"
+    assert response.json()["servicio"]["categoria"] == 2
+
+
+def test_refrescar_no_sincroniza_si_prov_falla(client: TestClient, monkeypatch: pytest.MonkeyPatch, sync_clientes) -> None:
+    _crear_servicio("900102")
+    monkeypatch.setattr(
+        servicios_routes,
+        "get_prov_client",
+        lambda: _ClientePROVFalso(error=ProvServicioNoEncontradoError("900102", "sin contexto")),
+    )
+    response = client.post("/servicios/prov/refrescar", params={"id": "900102"}, headers=API_HEADERS)
+    assert response.status_code == 404
+    assert sync_clientes == []

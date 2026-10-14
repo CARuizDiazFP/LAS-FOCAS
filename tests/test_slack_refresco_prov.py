@@ -83,6 +83,20 @@ def _usar_engine_de_test_sin_pool(monkeypatch):
     monkeypatch.setattr(refresco_prov, "AsyncSessionLocal", _AsyncSessionLocalTest)
 
 
+@pytest.fixture(autouse=True)
+def sync_clientes(monkeypatch) -> list[tuple[list, str]]:
+    """Autouse: la sync de categorías de clientes post-refresco se reemplaza por un registrador,
+    así ningún test de este archivo crea filas en `app.clientes` de dev."""
+    llamadas: list[tuple[list, str]] = []
+
+    async def registrar(nombres, *, origen):
+        llamadas.append((list(nombres), origen))
+        return None
+
+    monkeypatch.setattr(refresco_prov, "sincronizar_clientes_post_ingesta", registrar)
+    return llamadas
+
+
 @pytest.fixture
 def _limpiar_servicios_de_test():
     yield
@@ -419,7 +433,7 @@ async def test_candado_por_cable_evita_refresco_duplicado(monkeypatch):
 
 @requiere_postgres_real
 @pytest.mark.asyncio
-async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servicios_de_test):
+async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servicios_de_test, sync_clientes):
     numero = "900310"
     pk = _crear_servicio(numero)
     servicio = _servicio_unico(pk, numero)
@@ -456,6 +470,8 @@ async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servi
     assert antes <= ultimo_intento <= despues
     assert ultimo_error is not None and "PROV respondió 404" in ultimo_error
     assert nro_consultado == numero
+    # Sin contexto de PROV no cambió ningún cliente: no hay sync de categorías.
+    assert sync_clientes == []
 
     texto = client_mock.chat_postMessage.call_args.kwargs["text"]
     assert numero in texto
@@ -475,7 +491,9 @@ async def test_fallo_persiste_ultimo_intento_y_error(monkeypatch, _limpiar_servi
 
 @requiere_postgres_real
 @pytest.mark.asyncio
-async def test_camino_feliz_refresca_de_verdad_y_persiste_el_exito(monkeypatch, _limpiar_servicios_de_test):
+async def test_camino_feliz_refresca_de_verdad_y_persiste_el_exito(
+    monkeypatch, _limpiar_servicios_de_test, sync_clientes
+):
     numero = "900312"
     pk = _crear_servicio(numero)
     servicio = _servicio_unico(pk, numero)
@@ -523,6 +541,8 @@ async def test_camino_feliz_refresca_de_verdad_y_persiste_el_exito(monkeypatch, 
     # como éxito", el `ingerir_contexto_prov` + `commit` reales corrieron.
     assert fila_servicio.nombre_cliente == "CLIENTE REFRESCO PROV FELIZ"
     assert fila_servicio.origen_datos == "INGEST_PROV"
+    # Después del commit se sincroniza la categoría del cliente nuevo (y del anterior, acá NULL).
+    assert sync_clientes == [([None, "CLIENTE REFRESCO PROV FELIZ"], "prov_refresco_slack")]
 
     ultima_ok, ultimo_error, nro_consultado = fila_sync
     assert ultima_ok is not None

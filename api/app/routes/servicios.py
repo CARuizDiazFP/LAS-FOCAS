@@ -23,6 +23,7 @@ from core.parsers.servicios_excel import parse_servicios_df
 from core.services.prov.client import ProvClientError, ProvServicioNoEncontradoError, get_prov_client
 from core.services.prov.config import ProvConfigError
 from core.services.prov.ingesta import ingerir_contexto_prov
+from core.services.clientes_categoria_hooks import sincronizar_clientes_post_ingesta
 from core.services.clientes_categoria_service import normalizar_clave_cliente, sincronizar_categorias
 from core.services.servicios_categoria_service import (
     CategoriaInvalidaError,
@@ -136,6 +137,10 @@ class IngestServiciosResponse(BaseModel):
     inserted: int
     updated: int
     unchanged: int
+    # Resumen de la sincronización de categorías de los clientes del archivo (`ResumenSync`).
+    # `None` si el archivo no trae clientes o si la sync falló (la ingesta igual queda guardada; ver
+    # `action=clientes_sync_error` en el log y "Re-sincronizar" en el módulo de clientes).
+    clientes_sync: dict[str, int] | None = None
 
 
 def _chunked(items: list[dict[str, Any]], size: int = 500) -> list[list[dict[str, Any]]]:
@@ -307,6 +312,9 @@ async def ingest_servicios(
             Servicio.numero_linea,
             Servicio.alias_ids,
             Servicio.categoria,
+            Servicio.categoria_sla,
+            Servicio.categoria_excepcion,
+            Servicio.nombre_cliente,
             Servicio.es_verificable_override,
             Servicio.estado_servicio,
         ).where(Servicio.numero_primer_servicio.in_(numeros))
@@ -342,24 +350,34 @@ async def ingest_servicios(
             avanza_identidad=identidad.avanza_por_excel,
         )
 
-        # `isdigit()` sola no alcanza: "7"/"10" son dígitos pero violan el CHECK
-        # `ck_servicios_categoria_valida` (0-6) y el IntegrityError sin manejar tumbaba el archivo
-        # completo con un 500. Un valor fuera de rango degrada a fallback y queda loggeado.
+        # "Nivel Cliente" de la planilla → `categoria_sla` (insumo de la categoría `SLA` del cliente).
+        # `isdigit()` sola no alcanza: "7"/"10" son dígitos pero violan el CHECK (0-6) y el
+        # IntegrityError sin manejar tumbaba el archivo completo con un 500. Un valor fuera de rango
+        # o una celda vacía conservan el `categoria_sla` previo (NULL en un alta): una planilla sin
+        # el dato no borra lo que trajo una anterior.
         categoria_excel = row.get("categoria")
-        categoria_fallback = existente.categoria if existente else 6
+        nivel_excel: int | None = None
         if categoria_excel is not None and str(categoria_excel).isdigit():
             try:
                 validar_categoria(int(categoria_excel))
-                row["categoria"] = int(categoria_excel)
+                nivel_excel = int(categoria_excel)
             except CategoriaInvalidaError:
                 logger.warning(
                     "action=servicios_ingest evento=categoria_invalida numero_primer_servicio=%s valor=%s",
                     numero,
                     categoria_excel,
                 )
-                row["categoria"] = categoria_fallback
+        categoria_actual = existente.categoria if existente else None
+        row["categoria_sla"] = nivel_excel if nivel_excel is not None else (
+            existente.categoria_sla if existente else None
+        )
+        # `categoria` es provisional: la sync post-commit la reescribe desde el cliente. Un servicio
+        # con excepción conserva la suya; sin dato válido queda la actual (NULL = sin categorizar en
+        # un alta — 6 ya no es default).
+        if existente is not None and existente.categoria_excepcion:
+            row["categoria"] = categoria_actual
         else:
-            row["categoria"] = categoria_fallback
+            row["categoria"] = nivel_excel if nivel_excel is not None else categoria_actual
 
         override_actual = existente.es_verificable_override if existente else None
         row["es_verificable"] = (
@@ -502,6 +520,7 @@ async def ingest_servicios(
             "estado_servicio": excluded.estado_servicio,
             "origen_datos": excluded.origen_datos,
             "categoria": excluded.categoria,
+            "categoria_sla": excluded.categoria_sla,
             "es_verificable": excluded.es_verificable,
             "alias_ids": excluded.alias_ids,
         }
@@ -519,6 +538,7 @@ async def ingest_servicios(
             Servicio.servicio_id.is_distinct_from(excluded.servicio_id),
             Servicio.origen_datos.is_distinct_from(excluded.origen_datos),
             Servicio.categoria.is_distinct_from(excluded.categoria),
+            Servicio.categoria_sla.is_distinct_from(excluded.categoria_sla),
             Servicio.es_verificable.is_distinct_from(excluded.es_verificable),
             Servicio.alias_ids.is_distinct_from(excluded.alias_ids),
         )
@@ -601,6 +621,12 @@ async def ingest_servicios(
 
     await db.commit()
 
+    # Categoría por cliente: sólo los clientes de este archivo (nombre nuevo y, si la planilla
+    # renombró un servicio, también el anterior). Nunca tumba la ingesta ya commiteada.
+    nombres_tocados = [row.get("nombre_cliente") for row in rows]
+    nombres_tocados += [fila.nombre_cliente for fila in existentes_por_id.values()]
+    clientes_sync = await sincronizar_clientes_post_ingesta(nombres_tocados, origen="ingest_excel")
+
     unchanged = max(len(rows) - inserted - updated, 0)
     return IngestServiciosResponse(
         rows_ok=summary.rows_ok,
@@ -608,6 +634,7 @@ async def ingest_servicios(
         inserted=inserted,
         updated=updated,
         unchanged=unchanged,
+        clientes_sync=clientes_sync,
     )
 
 
@@ -835,9 +862,15 @@ async def refrescar_servicio_desde_prov(
 
     async with AsyncSessionLocal() as db_write:
         svc = await _buscar_servicio_por_id(db_write, id_consultado)
+        nombre_anterior = svc.nombre_cliente
         await ingerir_contexto_prov(db_write, svc, contexto)
+        nombre_nuevo = svc.nombre_cliente
         await db_write.commit()
-        await db_write.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla"])
+        # Categoría por cliente: el (posible) cliente nuevo que trajo PROV y el anterior si PROV lo
+        # renombró. Corre en su propia sesión y nunca tumba el refresco ya commiteado; por eso se
+        # refresca también `categoria`, que la sync puede haber reescrito.
+        await sincronizar_clientes_post_ingesta([nombre_anterior, nombre_nuevo], origen="prov_refrescar")
+        await db_write.refresh(svc, attribute_names=["historial_ids", "equipos_ultima_milla", "categoria"])
 
         item = _to_servicio_item(svc)
         if item is None:
