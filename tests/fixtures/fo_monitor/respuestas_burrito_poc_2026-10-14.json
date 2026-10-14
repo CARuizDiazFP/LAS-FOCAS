@@ -1,0 +1,59 @@
+{
+ "S4_v3_3960": {
+  "ids": [
+   "117995",
+   "113705",
+   "110733",
+   "109692",
+   "109877",
+   "113110",
+   "118638",
+   "122883",
+   "120900",
+   "116548"
+  ],
+  "textos": [
+   "```\nFOMON|117995|UP|-|Port 5 Up/FWD en SW_Balcarce186P1erSub_MECON\nFOMON|113705|UP|-|Te1/3 up/up en SW2_JuanDPeron407P3_BcoGalicia\nFOMON|110733|ADMIN_DOWN|1|gi1/1/1 admin DOWN, descripcion SUSPENDIDO x PROV en SW_Lavalle341_CabalCoop\nFOMON|109692|UP|-|Port 9 enable/up Forward en SW_Sarmiento543_GarantizarSGR\nFOMON|109877|UP|-|Port 9 enable/up Forward en SW_Defensa113_ReservinPatagonia\nFOMON|113110|UP|-|Ambos extremos up/up (Mosconi trunk y Defensa115P5 ge1/0/1)\nFOMON|118638|UP|-|Ambos extremos up/up (JuanDPeron Te1/4 e ITC_MDZA Te0/2)\nFOMON|122883|UP|-|Ambos extremos up/up (Balcarce479 Gi0/8 y AvCorrientes327P3 gi1/1/1)\nFOMON|120900|UP|-|Ambos extremos up/up (Arocena4777 XGi0/0/29 y Mosconi trunk)\nFOMON|116548|UP|-|Ambos extremos admin/oper up (Alsina663 y Reconquista480 ge1/0/1)\n```\n_(ref: #3960)_"
+  ],
+  "latencia_s": 76.27470634318888
+ },
+ "S5_v3_18ee": {
+  "ids": [
+   "112731",
+   "9999991"
+  ],
+  "textos": [
+   "PROV no trae datos técnicos del servicio 112731 (estado comercial: INSTALADO).\n_(ref: #18ee)_"
+  ],
+  "latencia_s": 15.253966633230448
+ },
+ "S7_v3_4ca7": {
+  "ids": [
+   "117995",
+   "112731",
+   "113705"
+  ],
+  "textos": [
+   "```\nFOMON|117995|UP|-|Port 5 Up/Enabled, STP FWD, 10G/FD, 320d uptime, optica OK\nFOMON|112731|NO_SOPORTADO|-|Tipo de servicio FO (fibra oscura), no soportado para diagnostico\nFOMON|113705|UP|-|Te1/3 up/up (connected), full-duplex 1G, 0 errores, trafico activo\n```\n_(ref: #4ca7)_"
+  ],
+  "latencia_s": 61.00233082100749
+ },
+ "S1_v2_ec8a": {
+  "ids": [
+   "117995"
+  ],
+  "textos": [
+   "```\nFOMON|FOMON-QPOC1791998227S1|UP|-|Acceso SH operativo, sin alarmas, tráfico confirmado en PE1_CHACABUCO\n```\n_(ref: #ec8a)_"
+  ],
+  "latencia_s": 20.494228458032012
+ },
+ "S1_v3_eb2f": {
+  "ids": [
+   "117995"
+  ],
+  "textos": [
+   "```\nFOMON|117995|UP|−|Sin alarmas ni cortes; tráfico entrante casi nulo sugiere CE cliente sin actividad\n```\n_(ref: #eb2f)_"
+  ],
+  "latencia_s": 30.748238906264305
+ }
+}
