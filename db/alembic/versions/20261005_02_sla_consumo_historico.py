@@ -47,11 +47,12 @@ def upgrade() -> None:
     # Guardia de datos previos: las filas escritas antes de esta migración las generó el parser viejo,
     # que guardaba "horas netas" en MINUTOS y dejaba "-"/vacío como numero_evento. La tabla estaba vacía
     # en dev y prod el 2026-10-05, así que normalmente no hace nada; si hubiera filas se convierten acá,
-    # ANTES de crear columnas nuevas, para que luego no se pueda confundir una fila migrada con una
-    # ingerida por el parser nuevo (que ya guarda horas decimales).
+    # antes de que exista cualquier ingesta con el parser nuevo (que ya guarda horas decimales).
+    # El numero_evento se limpia ahora; la conversión min→h de horas_netas se hace DESPUÉS del
+    # alter_column a Numeric(12,4): con la columna aún en Numeric(10,2) el UPDATE redondearía a 2 decimales.
     bind = op.get_bind()
-    if bind.execute(sa.text("SELECT COUNT(*) FROM app.reclamos")).scalar_one() > 0:
-        op.execute("UPDATE app.reclamos SET horas_netas = horas_netas / 60.0")
+    tabla_no_vacia = bind.execute(sa.text("SELECT COUNT(*) FROM app.reclamos")).scalar_one() > 0
+    if tabla_no_vacia:
         op.execute("UPDATE app.reclamos SET numero_evento = NULL WHERE btrim(numero_evento) IN ('', '-')")
     op.create_table(
         "sla_ingestas",
@@ -102,6 +103,9 @@ def upgrade() -> None:
     op.add_column("reclamos", sa.Column("last_seen_at", sa.DateTime(timezone=True),
                   server_default=sa.func.now()), schema="app")
     op.alter_column("reclamos", "horas_netas", type_=sa.Numeric(12, 4), schema="app")
+    if tabla_no_vacia:
+        # Filas del parser viejo (minutos) → horas decimales, ya sin pérdida de precisión.
+        op.execute("UPDATE app.reclamos SET horas_netas = horas_netas / 60.0")
     op.alter_column("reclamos", "tipo_solucion", type_=sa.String(160), schema="app")
     op.create_index("ix_reclamos_numero_primer_servicio", "reclamos", ["numero_primer_servicio"], schema="app")
     op.create_index("ix_reclamos_grupo_cierre", "reclamos", ["grupo_cierre"], schema="app")
