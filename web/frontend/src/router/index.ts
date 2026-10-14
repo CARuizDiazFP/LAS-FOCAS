@@ -46,6 +46,7 @@ const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
 const AdminIngestaCromo = () => import('../admin/views/AdminIngestaCromo.vue');
 const AdminBaneos = () => import('../admin/views/AdminBaneos.vue');
+const AdminClientesCategoria = () => import('../admin/views/AdminClientesCategoria.vue');
 
 const routes: RouteRecordRaw[] = [
   {
@@ -349,6 +350,12 @@ const routes: RouteRecordRaw[] = [
         path: 'servicios/viewer/ServiciosSinOdf',
         name: 'admin-servicios-viewer-sin-odf',
         component: AdminServiciosSinOdfViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/clientes-categoria',
+        name: 'admin-clientes-categoria',
+        component: AdminClientesCategoria,
         meta: { requiresAdmin: true },
       },
       { path: ':pathMatch(.*)*', redirect: '/admin' },
