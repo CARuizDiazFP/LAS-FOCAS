@@ -24,7 +24,7 @@ Cambios:
 
 Downgrade: restituye el CHECK y el catálogo y elimina la columna. El backfill de datos no se
 revierte (los ``pelo_n_id`` anulados eran ids que no son pelos; el re-barrido de ODFs los recompone
-con la lógica vigente). Se borran las ODF Nodo ingeridas, porque el CHECK anterior las rechaza.
+con la lógica vigente). Se borran las ODF Nodo ingeridas y sus conectores, porque el CHECK anterior las rechaza.
 """
 
 from __future__ import annotations
@@ -88,8 +88,16 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Sin backfill inverso: ver docstring del módulo.
-    op.drop_column("cromo_odf_conectores", "patch_conector_n_id", schema="app")
+    # Primero los conectores de las ODF Nodo (sin FK dura: si no, quedarían huérfanos), después
+    # las ODF Nodo, y recién entonces se restaura el CHECK.
+    op.execute(
+        """
+        DELETE FROM app.cromo_odf_conectores
+         WHERE odf_n_id IN (SELECT n_id FROM app.cromo_odfs WHERE tipo_elemento = 'ODF_NODO')
+        """
+    )
     op.execute("DELETE FROM app.cromo_odfs WHERE tipo_elemento = 'ODF_NODO'")
+    op.drop_column("cromo_odf_conectores", "patch_conector_n_id", schema="app")
     op.drop_constraint(_CHECK, "cromo_odfs", schema="app", type_="check")
     op.create_check_constraint(
         _CHECK,

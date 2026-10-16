@@ -22,6 +22,16 @@
           <label>Cliente / Servicio asociado</label>
           <input v-model="filtros.servicio" type="text" placeholder="N° de servicio o ID externo…" />
         </div>
+        <div class="inventario-odfs__campo">
+          <label for="filtro-tipo-elemento">Tipo</label>
+          <select id="filtro-tipo-elemento" v-model="filtros.tipoElemento">
+            <option value="">Todos</option>
+            <option value="ODF">ODF</option>
+            <option value="ODF_NODO">ODF Nodo</option>
+            <option value="EMPALME">Empalme</option>
+            <option value="SIN_CLASIFICAR">Sin clasificar</option>
+          </select>
+        </div>
         <button class="btn primary" type="submit" :disabled="cargando">
           <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
           {{ cargando ? 'Buscando…' : 'Buscar' }}
@@ -118,6 +128,7 @@ const router = useRouter();
 const filtros = reactive({
   q: '',
   servicio: '',
+  tipoElemento: '',
 });
 
 const limit = 50;
@@ -137,6 +148,7 @@ async function buscar(nuevoOffset: number): Promise<void> {
     resultado.value = await buscarInventarioOdfs({
       q: filtros.q.trim() || undefined,
       servicio: filtros.servicio.trim() || undefined,
+      tipoElemento: filtros.tipoElemento || undefined,
       limit,
       offset: offset.value,
     });
