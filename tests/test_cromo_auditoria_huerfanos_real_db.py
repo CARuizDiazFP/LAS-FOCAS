@@ -31,18 +31,17 @@ from tests.soporte_postgres_real import requiere_postgres_real
 
 pytestmark = requiere_postgres_real
 
-_MIGRACION = (
-    Path(__file__).resolve().parents[1]
-    / "db"
-    / "alembic"
-    / "versions"
-    / "20261016_04_cromo_auditoria_huerfanos.py"
-)
+_VERSIONES = Path(__file__).resolve().parents[1] / "db" / "alembic" / "versions"
+_MIGRACION = _VERSIONES / "20261016_04_cromo_auditoria_huerfanos.py"
+# `normalizar` relee las ODF confirmadas (Tarea 4): si la DB no tiene esa migración, también se
+# aplica dentro de la transacción.
+_MIGRACION_CONFIRMADAS = _VERSIONES / "20261016_03_servicio_odf_confirmada.py"
 
 # Rango sintético propio (999_915_xxx): no lo usa ningún otro `*_real_db`.
 _SERVICIO_NUMERO = "99991501"
 _CABLE_SIN_USO = 999_915_001
 _CABLE_TRAMO = 999_915_002
+_CABLE_SIN_USO_PROTEGIDO = 999_915_003
 _PELO_DESUSO = 999_915_101
 _PELO_DESUSO_2 = 999_915_102
 _PELO_DANADO = 999_915_103
@@ -52,20 +51,20 @@ _PELO_AJENO = 999_915_106  # recorrido por un residual pero sin la etiqueta del 
 AHORA = datetime(2026, 10, 16, tzinfo=timezone.utc)
 
 
-def _cargar_migracion():
-    spec = importlib.util.spec_from_file_location("mig_20261016_04", _MIGRACION)
+def _cargar_migracion(ruta: Path = _MIGRACION):
+    spec = importlib.util.spec_from_file_location(f"mig_{ruta.stem}", ruta)
     modulo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     return modulo
 
 
-def _correr(sync_conn, funcion: str) -> None:
+def _correr(sync_conn, funcion: str, ruta: Path = _MIGRACION) -> None:
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
     contexto = MigrationContext.configure(sync_conn)
     with Operations.context(contexto):
-        getattr(_cargar_migracion(), funcion)()
+        getattr(_cargar_migracion(ruta), funcion)()
 
 
 async def _insertar_datos(conn) -> int:
@@ -78,7 +77,11 @@ async def _insertar_datos(conn) -> int:
             {"n": _SERVICIO_NUMERO},
         )
     ).scalar_one()
-    for n_id, tendido in ((_CABLE_SIN_USO, "Sin Uso"), (_CABLE_TRAMO, "Canalizado")):
+    for n_id, tendido in (
+        (_CABLE_SIN_USO, "Sin Uso"),
+        (_CABLE_TRAMO, "Canalizado"),
+        (_CABLE_SIN_USO_PROTEGIDO, "Sin Uso"),
+    ):
         await conn.execute(
             text(
                 "INSERT INTO app.cromo_cables (n_id, version_id, vmax, nombre, tendido, payload_raw) "
@@ -90,7 +93,7 @@ async def _insertar_datos(conn) -> int:
         _PELO_DESUSO: _CABLE_SIN_USO,
         _PELO_DESUSO_2: _CABLE_SIN_USO,
         _PELO_DANADO: _CABLE_TRAMO,
-        _PELO_PROTEGIDO: _CABLE_SIN_USO,
+        _PELO_PROTEGIDO: _CABLE_SIN_USO_PROTEGIDO,
         _PELO_TRAMO: _CABLE_TRAMO,
         _PELO_AJENO: _CABLE_SIN_USO,
     }
@@ -121,6 +124,11 @@ async def entorno():
     async with engine.connect() as conn:
         trans = await conn.begin()
         try:
+            confirmadas = (
+                await conn.execute(text("SELECT to_regclass('app.servicio_odf_confirmada')"))
+            ).scalar()
+            if confirmadas is None:
+                await conn.run_sync(_correr, "upgrade", _MIGRACION_CONFIRMADAS)
             existe = (
                 await conn.execute(text("SELECT to_regclass('app.cromo_auditoria_huerfanos')"))
             ).scalar()
@@ -181,7 +189,7 @@ def _escenario():
             inicio=pelo(_PELO_PROTEGIDO),
             fin=ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=9, odf_id=9, odf_clase=86),
             odfs=(9,),
-            cables=(_CABLE_SIN_USO,),
+            cables=(_CABLE_SIN_USO_PROTEGIDO,),
         ),
     )
     return [tramo], [desuso, danado, protegido]
@@ -443,3 +451,89 @@ async def test_servicios_por_pelos_ordena_por_pelos_y_descuenta_excluidos(entorn
 
     assert primeros[0] == (grande, 1999)
     assert [p for _s, p in primeros] == sorted((p for _s, p in primeros), reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_normalizar_rechaza_si_se_confirma_una_odf_del_camino_despues_de_auditar(entorno):
+    """La protección por ODF confirmada se re-chequea al normalizar, no sólo al auditar."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    sesion, servicio_id, conn = entorno
+    tramos, _ = _escenario()
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=_PELO_DESUSO, clase=130)
+    # ODF 999915555 sólo intermedia: el residual no está protegido al auditar.
+    residual = _tracking(
+        _PELO_DESUSO,
+        {_PELO_DESUSO},
+        ResumenCamino(inicio=pelo, fin=pelo, odfs=(999_915_555,), cables=(_CABLE_SIN_USO,)),
+    )
+    await _auditar(sesion, servicio_id, tramos, [residual])
+    fila = (await _filas(conn, servicio_id))[_PELO_DESUSO]
+    assert fila["causa"] == "CABLE_DESUSO" and fila["protegido"] is False
+
+    await conn.execute(
+        text(
+            "INSERT INTO app.servicio_odf_confirmada (servicio_id, odf_n_id, rol, confirmado_por) "
+            "VALUES (:s, 999915555, 'TRANSITO', 'admin')"
+        ),
+        {"s": servicio_id},
+    )
+    rechazo = await auditoria_huerfanos.normalizar(sesion, [fila["id"]], usuario="admin")
+    assert rechazo.aplicados == []
+    assert "ODF confirmada" in rechazo.rechazados[0]["motivo"]
+
+    await conn.execute(
+        text("UPDATE app.servicio_odf_confirmada SET vigente = false WHERE servicio_id = :s"),
+        {"s": servicio_id},
+    )
+    ok = await auditoria_huerfanos.normalizar(sesion, [fila["id"]], usuario="admin")
+    assert ok.aplicados == [fila["id"]]
+
+
+@pytest.mark.parametrize(
+    "evidencia_sql",
+    ["NULL", "'{\"senales\": {}}'::jsonb", "'{\"protegido\": false}'::jsonb"],
+    ids=["evidencia_null", "sin_protegido", "sin_odfs"],
+)
+@pytest.mark.asyncio
+async def test_normalizar_falla_cerrado_sin_evidencia_completa(entorno, evidencia_sql):
+    from core.services.cromo import auditoria_huerfanos
+
+    sesion, servicio_id, conn = entorno
+    tramos, residuales = _escenario()
+    await _auditar(sesion, servicio_id, tramos, residuales)
+    fila = (await _filas(conn, servicio_id))[_PELO_DESUSO]
+    await conn.execute(
+        text(f"UPDATE app.cromo_auditoria_huerfanos SET evidencia = {evidencia_sql} WHERE id = :i"),
+        {"i": fila["id"]},
+    )
+
+    resultado = await auditoria_huerfanos.normalizar(sesion, [fila["id"]], usuario="admin")
+
+    assert resultado.aplicados == []
+    pagina = await auditoria_huerfanos.listar_huerfanos(sesion, servicio_id=servicio_id)
+    assert {i["id"]: i["normalizable"] for i in pagina["items"]}[fila["id"]] is False
+
+
+@pytest.mark.asyncio
+async def test_auditoria_global_no_arranca_dos_veces(entorno):
+    from core.services.cromo.auditoria_huerfanos_global import iniciar_si_no_hay_otra
+
+    sesion, _servicio_id, conn = entorno
+    previa = (
+        await conn.execute(
+            text(
+                "SELECT id FROM app.cromo_ingesta_corridas WHERE estado = 'EN_CURSO' "
+                "AND params ->> 'tipo' = 'AUDITORIA_HUERFANOS'"
+            )
+        )
+    ).first()
+    if previa is not None:
+        pytest.skip("Ya hay una auditoría global EN_CURSO en esta DB")
+
+    primera, en_curso = await iniciar_si_no_hay_otra(sesion, usuario="admin", max_servicios=3)
+    assert primera is not None and en_curso is None
+    primera_id = primera.id
+    segunda, en_curso = await iniciar_si_no_hay_otra(sesion, usuario="admin", max_servicios=3)
+    assert segunda is None and en_curso == primera_id

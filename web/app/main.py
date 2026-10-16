@@ -9162,8 +9162,7 @@ async def huerfanos_auditoria_global_iniciar_web(
     Una sola a la vez: si hay otra EN_CURSO devuelve 409 con su id. Admin + CSRF.
     """
     from core.services.cromo.auditoria_huerfanos_global import (
-        auditoria_en_curso,
-        iniciar_corrida_auditoria,
+        iniciar_si_no_hay_otra,
         max_servicios_configurado,
     )
     from db.session import AsyncSessionLocal
@@ -9173,13 +9172,15 @@ async def huerfanos_auditoria_global_iniciar_web(
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     tope = body.max_servicios or max_servicios_configurado()
     async with AsyncSessionLocal() as sesion:
-        en_curso = await auditoria_en_curso(sesion)
-        if en_curso is not None:
+        # Chequeo + alta bajo advisory lock: dos POST simultáneos no lanzan dos auditorías.
+        corrida, en_curso = await iniciar_si_no_hay_otra(
+            sesion, usuario=username, max_servicios=tope
+        )
+        if corrida is None:
             return JSONResponse(
                 {"error": "Ya hay una auditoría global en curso.", "corrida_id": en_curso},
                 status_code=409,
             )
-        corrida = await iniciar_corrida_auditoria(sesion, usuario=username, max_servicios=tope)
         corrida_id = corrida.id
 
     try:

@@ -146,18 +146,16 @@ def _auditoria_fakes(monkeypatch, *, en_curso=None, falla_worker=False):
     _fake_session(monkeypatch)
     estado: dict[str, Any] = {"enviados": [], "fallidas": [], "iniciadas": []}
 
-    async def _en_curso(_sesion):
-        return en_curso
-
     async def _iniciar(_sesion, *, usuario, max_servicios):
+        if en_curso is not None:
+            return None, en_curso
         estado["iniciadas"].append((usuario, max_servicios))
-        return _Corrida()
+        return _Corrida(), None
 
     async def _fallida(corrida_id, motivo):
         estado["fallidas"].append(corrida_id)
 
-    monkeypatch.setattr(auditoria_huerfanos_global, "auditoria_en_curso", _en_curso)
-    monkeypatch.setattr(auditoria_huerfanos_global, "iniciar_corrida_auditoria", _iniciar)
+    monkeypatch.setattr(auditoria_huerfanos_global, "iniciar_si_no_hay_otra", _iniciar)
     monkeypatch.setattr(web_main, "_marcar_corrida_fallida", _fallida)
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _HttpxFake(falla_worker, estado["enviados"]))
     monkeypatch.setenv("CROMO_AUDITORIA_MAX_SERVICIOS", "30")

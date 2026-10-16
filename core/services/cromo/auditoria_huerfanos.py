@@ -118,11 +118,16 @@ def clasificar_residual(
     *,
     odfs_confirmadas: frozenset[int] = frozenset(),
     cables_sin_uso: frozenset[int] = frozenset(),
+    cables_protegidos: frozenset[int] = frozenset(),
 ) -> ClasificacionHuerfano:
     """Causa sugerida de un camino RESIDUAL a partir de los tramos del mismo Servicio. Pura.
 
     Precedencia: `CABLE_DESUSO` > `PELO_DANADO` > `CAMBIO_CABLE_DANO` > `MIGRACION_SITIO` >
     `SIN_CLASIFICAR`. La protección es independiente de la causa (ver docstring del módulo).
+
+    `cables_protegidos` son los cables de los residuales protegidos del mismo Servicio: un cable
+    que recorre un camino que termina en ODF no se da por "en desuso", así que un residual que lo
+    comparte nunca sale `CABLE_DESUSO`.
     """
     cables = set(residual.cables)
     cables_tramos = {c for t in tramos for c in t.cables}
@@ -131,7 +136,8 @@ def clasificar_residual(
 
     compartidos = cables & cables_tramos
     sin_uso = cables & cables_sin_uso
-    desuso = bool(cables) and sin_uso == cables and not compartidos
+    en_protegidos = cables & cables_protegidos
+    desuso = bool(cables) and sin_uso == cables and not compartidos and not en_protegidos
 
     extremas = [b for b in (residual.botella_inicio, residual.botella_fin) if b is not None]
     paralelo = (
@@ -171,6 +177,7 @@ def clasificar_residual(
         "cables": len(cables),
         "cables_sin_uso": len(sin_uso),
         "cables_compartidos_con_tramos": len(compartidos),
+        "cables_en_residual_protegido": len(en_protegidos),
         "paralelo_a_tramo": paralelo,
         "botellas_extremas": extremas,
         "botellas_fuera_de_tramos": [b for b in extremas if b not in botellas_tramos],
@@ -234,6 +241,94 @@ _SQL_RETIRAR_EN_TRAMOS = text(
 )
 
 
+def _causa_consolidada(causas: set[str]) -> str:
+    """Una causa por pelo cuando sus caminos residuales difieren: la menos normalizable."""
+    if len(causas) == 1:
+        return next(iter(causas))
+    no_normalizables = causas - CAUSAS_NORMALIZABLES
+    if len(no_normalizables) == 1:
+        return next(iter(no_normalizables))
+    return CAUSA_SIN_CLASIFICAR
+
+
+def consolidar_por_pelo(
+    residuales: Sequence[TrackingGenerado],
+    tramos: Sequence[ResumenCamino],
+    *,
+    semillas: frozenset[int],
+    pelos_en_tramos: frozenset[int] = frozenset(),
+    odfs_confirmadas: frozenset[int] = frozenset(),
+    cables_sin_uso: frozenset[int] = frozenset(),
+) -> dict[int, tuple[int, str, dict[str, Any]]]:
+    """`{pelo: (camino semilla, causa, evidencia)}` de los pelos del Servicio en residuales. Pura.
+
+    Un mismo pelo puede estar en varios caminos residuales. Se consolida sin depender del orden:
+    - `protegido` es el OR de todos sus caminos (basta uno que termine en ODF);
+    - si las causas difieren, gana la menos normalizable (o `SIN_CLASIFICAR`);
+    - `odfs` es la unión de las ODFs de todos sus caminos, para que `normalizar` pueda volver a
+      chequear contra las ODF confirmadas vigentes al momento de normalizar.
+    Además, un cable de un residual protegido nunca habilita `CABLE_DESUSO` en otro residual.
+    """
+    resumenes = [r.extremos or ResumenCamino() for r in residuales]
+    previas = [
+        clasificar_residual(
+            res, tramos, odfs_confirmadas=odfs_confirmadas, cables_sin_uso=cables_sin_uso
+        )
+        for res in resumenes
+    ]
+    cables_protegidos = frozenset(
+        c for res, cl in zip(resumenes, previas) if cl.protegido for c in res.cables
+    )
+    # Un residual protegido ya no es normalizable: su causa se calcula sin el veto (si no, sus
+    # propios cables lo sacarían de CABLE_DESUSO y la evidencia perdería información).
+    clasificaciones = [
+        previa
+        if previa.protegido
+        else clasificar_residual(
+            res,
+            tramos,
+            odfs_confirmadas=odfs_confirmadas,
+            cables_sin_uso=cables_sin_uso,
+            cables_protegidos=cables_protegidos,
+        )
+        for res, previa in zip(resumenes, previas)
+    ]
+
+    por_pelo: dict[int, list[int]] = {}
+    for i, residual in enumerate(residuales):
+        for pelo in sorted((residual.pelos_camino | {residual.pelo_n_id}) & semillas):
+            if pelo not in pelos_en_tramos:
+                por_pelo.setdefault(pelo, []).append(i)
+
+    filas: dict[int, tuple[int, str, dict[str, Any]]] = {}
+    for pelo, indices in por_pelo.items():
+        causa = _causa_consolidada({clasificaciones[i].causa for i in indices})
+        protegidos = [i for i in indices if clasificaciones[i].protegido]
+        base = next((i for i in indices if clasificaciones[i].causa == causa), indices[0])
+        evidencia = clasificaciones[base].evidencia()
+        evidencia["protegido"] = bool(protegidos)
+        evidencia["motivo_proteccion"] = (
+            clasificaciones[protegidos[0]].motivo_proteccion if protegidos else None
+        )
+        evidencia["camino"] = {
+            "semilla": residuales[base].pelo_n_id,
+            "pelos": len(residuales[base].pelos_camino),
+            "cables": list(resumenes[base].cables)[:20],
+        }
+        evidencia["odfs"] = sorted({o for i in indices for o in resumenes[i].odfs})
+        if len(indices) > 1:
+            evidencia["caminos"] = [
+                {
+                    "semilla": residuales[i].pelo_n_id,
+                    "causa": clasificaciones[i].causa,
+                    "protegido": clasificaciones[i].protegido,
+                }
+                for i in indices
+            ]
+        filas[pelo] = (residuales[base].pelo_n_id, causa, evidencia)
+    return filas
+
+
 async def cables_sin_uso(sesion: AsyncSession, cable_ids: Iterable[int]) -> frozenset[int]:
     """Ids (n_id o version_id, los dos) de los cables con tendido "Sin Uso". Los caminos de Cromo
     pueden traer el id de versión del cable, así que se devuelven ambos."""
@@ -270,25 +365,14 @@ async def auditar_servicio(
     todos_los_cables = {c for t in residuales for c in (t.extremos or ResumenCamino()).cables}
     sin_uso = await cables_sin_uso(sesion, todos_los_cables)
 
-    filas: dict[int, tuple[int, str, str]] = {}
-    for residual in residuales:
-        clasificacion = clasificar_residual(
-            residual.extremos or ResumenCamino(),
-            resumenes_tramos,
-            odfs_confirmadas=odfs_confirmadas,
-            cables_sin_uso=sin_uso,
-        )
-        evidencia = clasificacion.evidencia()
-        evidencia["camino"] = {
-            "semilla": residual.pelo_n_id,
-            "pelos": len(residual.pelos_camino),
-            "cables": list((residual.extremos or ResumenCamino()).cables)[:20],
-        }
-        payload = json.dumps(evidencia)
-        for pelo in sorted((residual.pelos_camino | {residual.pelo_n_id}) & semillas):
-            if pelo in pelos_en_tramos:
-                continue
-            filas.setdefault(pelo, (residual.pelo_n_id, clasificacion.causa, payload))
+    filas = consolidar_por_pelo(
+        residuales,
+        resumenes_tramos,
+        semillas=semillas,
+        pelos_en_tramos=frozenset(pelos_en_tramos),
+        odfs_confirmadas=odfs_confirmadas,
+        cables_sin_uso=sin_uso,
+    )
 
     if pelos_en_tramos:
         borrado = await sesion.execute(
@@ -307,7 +391,7 @@ async def auditar_servicio(
                 "pelos": pelos,
                 "semillas": [filas[p][0] for p in pelos],
                 "causas": [filas[p][1] for p in pelos],
-                "evidencias": [filas[p][2] for p in pelos],
+                "evidencias": [json.dumps(filas[p][2]) for p in pelos],
             },
         )
         for (nuevo,) in resultado.all():
@@ -315,7 +399,7 @@ async def auditar_servicio(
                 resumen.nuevos += 1
             else:
                 resumen.actualizados += 1
-        for _semilla, causa, _payload in filas.values():
+        for _semilla, causa, _evidencia in filas.values():
             resumen.por_causa[causa] = resumen.por_causa.get(causa, 0) + 1
 
     logger.info(
@@ -384,7 +468,8 @@ class ResultadoRevision:
 _SQL_FILAS_POR_ID = text(
     """
     SELECT id, servicio_id, pelo_n_id, causa, estado,
-           COALESCE((evidencia ->> 'protegido')::boolean, false) AS protegido
+           COALESCE((evidencia ->> 'protegido')::boolean, true) AS protegido,
+           evidencia -> 'odfs' AS odfs
     FROM app.cromo_auditoria_huerfanos
     WHERE id = ANY(:ids)
     ORDER BY id
@@ -411,8 +496,14 @@ async def normalizar(
     filas PENDIENTE, no protegidas y con causa en `CAUSAS_NORMALIZABLES`. La exclusión queda con
     `origen=AUDITORIA`, `auditoria_id` y la causa como motivo. Un pelo que ya no es del Servicio
     (o que ya estaba excluido a mano) se rechaza y su fila queda PENDIENTE.
+
+    Falla cerrado: sin evidencia, sin `protegido` o sin la lista `odfs` la fila no se normaliza. Y
+    la protección por ODF confirmada se vuelve a chequear acá, en la misma transacción, contra las
+    confirmadas vigentes hoy (n_id y version_id): una ODF confirmada después de la auditoría
+    también bloquea.
     """
     from core.services.cromo.pelos_excluidos import PeloNoPerteneceAlServicio, excluir_pelos
+    from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
 
     resultado = ResultadoRevision()
     pedidos = sorted(set(int(i) for i in ids))
@@ -422,14 +513,25 @@ async def normalizar(
         resultado.rechazar(faltante, "No existe.")
 
     grupos: dict[tuple[int, str], dict[int, int]] = {}
+    confirmadas_por_servicio: dict[int, frozenset[int]] = {}
     for fila in filas:
+        odfs = fila["odfs"]
         if fila["estado"] != ESTADO_PENDIENTE:
             resultado.rechazar(fila["id"], f"Ya está {fila['estado']}.")
         elif fila["protegido"]:
             resultado.rechazar(fila["id"], "Protegido: el camino termina en una ODF o toca una ODF confirmada.")
         elif not es_normalizable(fila["causa"], False):
             resultado.rechazar(fila["id"], f"La causa {fila['causa']} todavía es sólo para revisar.")
+        elif not isinstance(odfs, list):
+            resultado.rechazar(fila["id"], "Sin evidencia de ODFs del camino: hay que re-auditar el Servicio.")
         else:
+            servicio_id = fila["servicio_id"]
+            if servicio_id not in confirmadas_por_servicio:
+                declaradas = await declaraciones_del_servicio(sesion, servicio_id)
+                confirmadas_por_servicio[servicio_id] = declaradas.odf_ids
+            if {int(o) for o in odfs} & confirmadas_por_servicio[servicio_id]:
+                resultado.rechazar(fila["id"], "Protegido: el camino toca una ODF confirmada del Servicio.")
+                continue
             grupos.setdefault((fila["servicio_id"], fila["causa"]), {})[fila["pelo_n_id"]] = fila["id"]
 
     for (servicio_id, causa), por_pelo in sorted(grupos.items()):
@@ -549,7 +651,10 @@ async def listar_huerfanos(
     items = []
     for fila in filas:
         evidencia = fila["evidencia"] or {}
-        protegido = bool(evidencia.get("protegido"))
+        # Falla cerrado, igual que `normalizar`: sin el dato, se trata como protegido.
+        protegido = evidencia.get("protegido") is not False or not isinstance(
+            evidencia.get("odfs"), list
+        )
         items.append(
             {
                 "id": fila["id"],

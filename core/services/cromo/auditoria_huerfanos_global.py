@@ -127,6 +127,30 @@ async def auditoria_en_curso(sesion: AsyncSession) -> Optional[int]:
     return int(fila[0]) if fila else None
 
 
+# Clave del advisory lock que serializa "¿hay otra en curso? → crear" entre requests concurrentes.
+_LOCK_AUDITORIA_GLOBAL = 0x41554449_4855  # "AUDI" "HU"
+
+
+async def iniciar_si_no_hay_otra(
+    sesion: AsyncSession, *, usuario: str, max_servicios: int
+) -> tuple[Optional[CromoIngestaCorrida], Optional[int]]:
+    """`(corrida nueva, None)` o `(None, id de la que ya está EN_CURSO)`.
+
+    El chequeo y el alta corren bajo `pg_advisory_xact_lock`: dos POST simultáneos no pueden ver
+    "ninguna en curso" a la vez. El lock se suelta con el commit de `iniciar_corrida` (o el
+    rollback si ya había una).
+    """
+    await sesion.execute(
+        text("SELECT pg_advisory_xact_lock(:clave)"), {"clave": _LOCK_AUDITORIA_GLOBAL}
+    )
+    en_curso = await auditoria_en_curso(sesion)
+    if en_curso is not None:
+        await sesion.rollback()
+        return None, en_curso
+    corrida = await iniciar_corrida_auditoria(sesion, usuario=usuario, max_servicios=max_servicios)
+    return corrida, None
+
+
 async def ultima_auditoria(sesion: AsyncSession) -> Optional[CromoIngestaCorrida]:
     fila = (
         await sesion.execute(
@@ -155,6 +179,7 @@ async def auditar_global(
         raise ValueError(f"No existe la corrida {corrida_id}")
     tope = max_servicios or max_servicios_configurado()
     errores = 0
+    omitidos = 0
     procesados = 0
     pendientes = 0
     estado_final = "OK"
@@ -195,7 +220,11 @@ async def auditar_global(
                 )
                 fallos_cromo_seguidos = 0
                 auditoria = resultado.auditoria
+                omitida = not resultado.completo
                 detalle.update(
+                    auditoria="OMITIDA_INCOMPLETO" if omitida else (
+                        "OK" if auditoria is not None else "ERROR"
+                    ),
                     tramos=len(resultado.tramos),
                     residuales=len(resultado.residuales),
                     completo=resultado.completo,
@@ -206,8 +235,10 @@ async def auditar_global(
                 )
                 if auditoria is not None:
                     pendientes += auditoria.nuevos + auditoria.actualizados
-                else:
+                elif not omitida:
                     errores += 1
+                else:
+                    omitidos += 1
             except Exception as exc:  # noqa: BLE001 - un Servicio no corta la corrida
                 errores += 1
                 await sesion.rollback()
@@ -225,7 +256,9 @@ async def auditar_global(
                 )
                 detalle["error"] = str(exc)[:300]
             procesados = numero
-            detalle.update(leidas=procesados, total=len(servicios), errores=errores)
+            detalle.update(
+                leidas=procesados, total=len(servicios), errores=errores, omitidos=omitidos
+            )
             corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
             # Se reusan los contadores de la corrida: `leidas` = Servicios auditados,
             # `actualizadas` = filas PENDIENTE escritas (nuevas o refrescadas).
@@ -270,6 +303,7 @@ async def auditar_global(
                 "leidas": procesados,
                 "pendientes": pendientes,
                 "errores": errores,
+                "omitidos_incompletos": omitidos,
             }
         ),
     )
@@ -292,6 +326,7 @@ __all__ = [
     "auditar_global",
     "auditoria_en_curso",
     "iniciar_corrida_auditoria",
+    "iniciar_si_no_hay_otra",
     "max_servicios_configurado",
     "servicios_por_pelos",
     "ultima_auditoria",

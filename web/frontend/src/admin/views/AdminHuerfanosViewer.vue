@@ -110,9 +110,13 @@
 
     <div v-if="error" class="huerfanos-viewer__inline-error">{{ error }}</div>
     <div v-if="mensaje" class="huerfanos-viewer__inline-ok">{{ mensaje }}</div>
-    <ul v-if="rechazados.length" class="huerfanos-viewer__rechazados">
-      <li v-for="r in rechazados" :key="r.id">Fila {{ r.id }}: {{ r.motivo }}</li>
-    </ul>
+    <div v-if="rechazados.length" class="huerfanos-viewer__rechazados" role="status">
+      <strong>{{ rechazados.length }} fila(s) no se aplicaron:</strong>
+      <ul>
+        <li v-for="r in rechazados" :key="r.id">Fila {{ r.id }}: {{ r.motivo }}</li>
+      </ul>
+      <button type="button" class="btn subtle" @click="rechazados = []">Cerrar</button>
+    </div>
 
     <div class="huerfanos-viewer__scroll">
       <table v-if="items.length > 0" class="huerfanos-viewer__tabla">
@@ -446,6 +450,12 @@ function conectarStream(corridaId: number): void {
     cerrarStream();
     void reloadFromZero();
   });
+  // Caída de la conexión (no el evento SSE "error" de negocio, que no se escucha acá): se cierra
+  // el stream y se relee el estado real de la corrida; si sigue EN_CURSO, se reconecta.
+  es.onerror = () => {
+    cerrarStream();
+    void cargarAuditoria();
+  };
 }
 
 async function cargarAuditoria(): Promise<void> {
@@ -621,10 +631,14 @@ onBeforeUnmount(() => {
 
 .huerfanos-viewer__rechazados {
   margin: 0 0 10px;
-  padding-left: 18px;
-  font-size: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  background: color-mix(in srgb, var(--color-state-warn) 14%, transparent);
   color: var(--color-state-warn);
 }
+
+.huerfanos-viewer__rechazados ul { margin: 6px 0 8px; padding-left: 18px; }
 
 .huerfanos-viewer__scroll {
   flex: 1;

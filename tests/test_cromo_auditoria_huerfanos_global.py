@@ -85,6 +85,8 @@ def entorno(monkeypatch):
         falla = estado["fallas"].get(servicio_id)
         if falla is not None:
             raise falla
+        if servicio_id in estado.get("incompletos", ()):
+            return _Resultado(tramos=[1], residuales=[3], completo=False)
         return _Resultado(
             tramos=[1, 2],
             residuales=[3],
@@ -173,3 +175,17 @@ async def test_cancelacion_cooperativa_entre_servicios(entorno):
     assert await glob.auditar_global(object(), sesion, 5) == "CANCELADA"
     assert len(llamadas) == 1
     assert sesion.corrida.estado == "CANCELADA"
+
+
+@pytest.mark.asyncio
+async def test_servicio_incompleto_se_registra_omitido_y_no_es_error(entorno):
+    estado, _llamadas = entorno
+    estado["incompletos"] = {22}
+    sesion = _Sesion(_Corrida(id=5))
+
+    assert await glob.auditar_global(object(), sesion, 5) == "OK"
+    paginas = {p["servicio_id"]: p for p in _eventos(sesion, "PAGINA")}
+    assert paginas[22]["auditoria"] == "OMITIDA_INCOMPLETO"
+    assert paginas[11]["auditoria"] == "OK"
+    assert paginas[33]["omitidos"] == 1 and sesion.corrida.errores == 0
+    assert _eventos(sesion, "RESUMEN")[0]["omitidos_incompletos"] == 1

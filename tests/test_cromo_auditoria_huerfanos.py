@@ -225,3 +225,70 @@ def test_solo_cable_desuso_es_normalizable():
     assert es_normalizable(CAUSA_CABLE_DESUSO, False)
     for causa in (CAUSA_PELO_DANADO, CAUSA_CAMBIO_CABLE_DANO, CAUSA_MIGRACION_SITIO, CAUSA_SIN_CLASIFICAR):
         assert not es_normalizable(causa, False)
+
+
+# ── Consolidación por pelo (ronda de fixes 1) ─────────────────────────────────────────────────
+
+
+def _residual(semilla: int, pelos: set[int], resumen: ResumenCamino) -> TrackingGenerado:
+    return TrackingGenerado(
+        pelo_n_id=semilla,
+        nombre_archivo="",
+        contenido="",
+        desde_cache=True,
+        generado_at=AHORA,
+        duracion_ms=None,
+        pelos_camino=frozenset(pelos),
+        extremos=resumen,
+    )
+
+
+PROTEGIDO_A = ResumenCamino(inicio=_pelo(1), fin=_odf(700, 86), odfs=(700,), cables=(9,))
+DESUSO_B = ResumenCamino(inicio=_pelo(1), fin=_pelo(2), cables=(9,))
+
+
+@pytest.mark.parametrize("orden", ["protegido_primero", "desuso_primero"])
+def test_pelo_en_residual_protegido_y_en_otro_queda_protegido_en_cualquier_orden(orden):
+    from core.services.cromo.auditoria_huerfanos import consolidar_por_pelo
+
+    a = _residual(100, {1, 5}, PROTEGIDO_A)
+    b = _residual(200, {1, 6}, DESUSO_B)
+    residuales = [a, b] if orden == "protegido_primero" else [b, a]
+
+    filas = consolidar_por_pelo(
+        residuales, [TRAMO], semillas=frozenset({1, 5, 6}), cables_sin_uso=frozenset({9})
+    )
+
+    _semilla, causa, evidencia = filas[1]
+    assert evidencia["protegido"] is True
+    assert not es_normalizable(causa, evidencia["protegido"])
+    assert evidencia["odfs"] == [700]
+    assert {c["semilla"] for c in evidencia["caminos"]} == {100, 200}
+    # El cable 9 lo recorre un residual protegido: el otro tampoco sale CABLE_DESUSO.
+    assert filas[6][1] != CAUSA_CABLE_DESUSO
+    assert filas[6][2]["senales"]["cables_en_residual_protegido"] == 1
+
+
+def test_causas_distintas_por_pelo_gana_la_menos_normalizable():
+    from core.services.cromo.auditoria_huerfanos import consolidar_por_pelo
+
+    desuso = _residual(100, {1}, ResumenCamino(inicio=_pelo(1), fin=_pelo(2), cables=(9,)))
+    danado = _residual(200, {1}, ResumenCamino(inicio=_pelo(1), fin=_pelo(2), cables=(1,)))
+    for residuales in ([desuso, danado], [danado, desuso]):
+        filas = consolidar_por_pelo(
+            residuales, [TRAMO], semillas=frozenset({1}), cables_sin_uso=frozenset({9})
+        )
+        assert filas[1][1] == CAUSA_PELO_DANADO
+        assert filas[1][2]["protegido"] is False
+
+
+def test_consolidar_solo_pelos_del_servicio_y_fuera_de_tramos():
+    from core.services.cromo.auditoria_huerfanos import consolidar_por_pelo
+
+    r = _residual(100, {1, 2, 3}, DESUSO_B)
+    filas = consolidar_por_pelo(
+        [r], [TRAMO], semillas=frozenset({1, 2}), pelos_en_tramos=frozenset({2}),
+        cables_sin_uso=frozenset({9}),
+    )
+    assert set(filas) == {1}
+    assert filas[1][1] == CAUSA_CABLE_DESUSO and filas[1][2]["odfs"] == []

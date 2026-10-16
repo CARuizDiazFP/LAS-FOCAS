@@ -811,3 +811,36 @@ def test_resumen_del_camino_toma_botellas_extremas_en_orden_del_txt():
     resumen = resumen_del_camino(camino)
     assert (resumen.botella_inicio, resumen.botella_fin) == (10, 40)
     assert resumen.botellas == (10, 20, 30, 40)
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_incompleto_no_audita(monkeypatch, declaraciones):
+    """Con el tope de llamadas tocado quedan semillas sin cubrir: pelos de tramos no resueltos
+    podrían quedar como huérfanos normalizables. No se escribe ni se borra nada."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    llamadas: list = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20, 30)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(
+            _generado(pelo_n_id, {pelo_n_id}),
+            ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, cables=(pelo_n_id,)),
+        )
+
+    async def _auditar(*a, **k):
+        llamadas.append(k)
+
+    monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "1")
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(auditoria_huerfanos, "auditar_sin_romper", _auditar)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.completo is False
+    assert llamadas == [] and resultado.auditoria is None

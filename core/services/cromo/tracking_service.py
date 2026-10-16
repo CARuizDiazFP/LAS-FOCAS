@@ -557,6 +557,7 @@ async def trackings_del_servicio(
     Al final audita los huérfanos con este mismo resultado, sin volver a Cromo
     (`auditoria_huerfanos.auditar_sin_romper`: savepoint propio, nunca levanta). Es el único punto
     de enganche: Slack, el portal y la corrida global (`corrida_id`) pasan por acá.
+    Sólo si el recorrido está `completo`: con un tope tocado no se escribe ni se borra nada.
     """
     declaradas = await declaraciones_del_servicio(sesion, servicio_id)
     confirmadas = declaradas.odf_ids if odfs_confirmadas is None else odfs_confirmadas
@@ -594,7 +595,16 @@ async def trackings_del_servicio(
         for numero, tracking in enumerate(ordenar_tramos(tramos), start=1)
     ]
     auditoria = None
-    if auditar:
+    if auditar and not por_camino.completo:
+        # Con el recorrido cortado por un tope hay semillas sin cubrir: pelos de tramos que no se
+        # llegaron a resolver podrían quedar como huérfanos (y normalizables). No se audita.
+        logger.warning(
+            "action=cromo_auditoria_huerfanos evento=omitida motivo=incompleto servicio_id=%s "
+            "corrida_id=%s",
+            servicio_id,
+            corrida_id,
+        )
+    elif auditar:
         # Import diferido: `auditoria_huerfanos` importa los tipos de este módulo.
         from core.services.cromo.auditoria_huerfanos import auditar_sin_romper
 
