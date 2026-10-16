@@ -529,7 +529,12 @@ async def normalizar(
             if servicio_id not in confirmadas_por_servicio:
                 declaradas = await declaraciones_del_servicio(sesion, servicio_id)
                 confirmadas_por_servicio[servicio_id] = declaradas.odf_ids
-            if {int(o) for o in odfs} & confirmadas_por_servicio[servicio_id]:
+            try:
+                odfs_camino = {int(o) for o in odfs}
+            except (TypeError, ValueError):
+                resultado.rechazar(fila["id"], "Evidencia de ODFs inválida: hay que re-auditar el Servicio.")
+                continue
+            if odfs_camino & confirmadas_por_servicio[servicio_id]:
                 resultado.rechazar(fila["id"], "Protegido: el camino toca una ODF confirmada del Servicio.")
                 continue
             grupos.setdefault((fila["servicio_id"], fila["causa"]), {})[fila["pelo_n_id"]] = fila["id"]
@@ -627,6 +632,18 @@ _SQL_CONTAR = text(
 )
 
 
+def _odfs_validas(odfs: Any) -> bool:
+    """La lista `odfs` de la evidencia es usable: una lista de enteros (o convertibles)."""
+    if not isinstance(odfs, list):
+        return False
+    try:
+        for o in odfs:
+            int(o)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 async def listar_huerfanos(
     sesion: AsyncSession,
     *,
@@ -652,8 +669,8 @@ async def listar_huerfanos(
     for fila in filas:
         evidencia = fila["evidencia"] or {}
         # Falla cerrado, igual que `normalizar`: sin el dato, se trata como protegido.
-        protegido = evidencia.get("protegido") is not False or not isinstance(
-            evidencia.get("odfs"), list
+        protegido = evidencia.get("protegido") is not False or not _odfs_validas(
+            evidencia.get("odfs")
         )
         items.append(
             {

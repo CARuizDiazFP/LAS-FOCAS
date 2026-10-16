@@ -105,6 +105,9 @@
           {{ auditoria.errores }} errores
           <template v-if="ultimoServicio"> · último: servicio {{ ultimoServicio }}</template>
         </span>
+        <ul v-if="erroresAuditoria.length" class="huerfanos-viewer__errores-auditoria">
+          <li v-for="(e, i) in erroresAuditoria" :key="i">{{ e }}</li>
+        </ul>
       </div>
     </div>
 
@@ -268,6 +271,13 @@ const lanzando = ref(false);
 const auditoriaEnCurso = computed(() => auditoria.value?.estado === 'EN_CURSO');
 
 let eventSource: EventSource | null = null;
+const BACKOFF_INICIAL_MS = 2000;
+const BACKOFF_MAXIMO_MS = 30000;
+let backoffMs = BACKOFF_INICIAL_MS;
+let reintentoTimer: ReturnType<typeof setTimeout> | null = null;
+let ultimoEventoId = 0;
+let corridaStream: number | null = null;
+const erroresAuditoria = ref<string[]>([]);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const servicioId = computed<number | undefined>(() => {
@@ -424,15 +434,39 @@ function cerrarStream(): void {
   eventSource = null;
 }
 
+function cancelarReintento(): void {
+  if (reintentoTimer) clearTimeout(reintentoTimer);
+  reintentoTimer = null;
+}
+
+/** Id del último evento visto de esta corrida. Un evento ya visto se ignora (por si el servidor
+ * repite al reconectar) y se reanuda desde ahí con `?desde=`. */
+function eventoNuevo(ev: Event): boolean {
+  const id = Number.parseInt((ev as MessageEvent).lastEventId ?? '', 10);
+  if (!Number.isFinite(id)) return true;
+  if (id <= ultimoEventoId) return false;
+  ultimoEventoId = id;
+  backoffMs = BACKOFF_INICIAL_MS;
+  return true;
+}
+
 function conectarStream(corridaId: number): void {
   cerrarStream();
-  const es = new EventSource(streamUrlAuditoria(corridaId));
+  cancelarReintento();
+  if (corridaStream !== corridaId) {
+    corridaStream = corridaId;
+    ultimoEventoId = 0;
+    erroresAuditoria.value = [];
+  }
+  const es = new EventSource(streamUrlAuditoria(corridaId, ultimoEventoId || undefined));
   eventSource = es;
   es.addEventListener('inicio', (ev) => {
+    if (!eventoNuevo(ev)) return;
     const data = JSON.parse((ev as MessageEvent).data);
     if (auditoria.value) auditoria.value.total_objetivo = data.total_objetivo;
   });
   es.addEventListener('pagina', (ev) => {
+    if (!eventoNuevo(ev)) return;
     const data = JSON.parse((ev as MessageEvent).data);
     if (!auditoria.value) return;
     auditoria.value.leidas = data.leidas;
@@ -441,6 +475,7 @@ function conectarStream(corridaId: number): void {
     ultimoServicio.value = data.servicio_id ?? null;
   });
   es.addEventListener('resumen', (ev) => {
+    if (!eventoNuevo(ev)) return;
     const data = JSON.parse((ev as MessageEvent).data);
     if (auditoria.value) {
       auditoria.value.estado = data.estado;
@@ -450,12 +485,26 @@ function conectarStream(corridaId: number): void {
     cerrarStream();
     void reloadFromZero();
   });
-  // Caída de la conexión (no el evento SSE "error" de negocio, que no se escucha acá): se cierra
-  // el stream y se relee el estado real de la corrida; si sigue EN_CURSO, se reconecta.
-  es.onerror = () => {
+  // El tipo "error" lo usan DOS cosas: el evento SSE de negocio (`event: error`, un Servicio que
+  // falló: MessageEvent con `data`) y la caída de la conexión (Event sin `data`). El de negocio se
+  // muestra y nada más; sólo la caída real cierra y reintenta, con backoff y desde el último id.
+  es.addEventListener('error', (ev) => {
+    if (ev instanceof MessageEvent && ev.data) {
+      if (!eventoNuevo(ev)) return;
+      try {
+        const data = JSON.parse(ev.data);
+        erroresAuditoria.value = [String(data.detalle ?? ev.data), ...erroresAuditoria.value].slice(0, 10);
+      } catch {
+        erroresAuditoria.value = [String(ev.data), ...erroresAuditoria.value].slice(0, 10);
+      }
+      return;
+    }
+    if (es.readyState === EventSource.CONNECTING) return; // el navegador ya reintenta solo
     cerrarStream();
-    void cargarAuditoria();
-  };
+    const espera = backoffMs;
+    backoffMs = Math.min(backoffMs * 2, BACKOFF_MAXIMO_MS);
+    reintentoTimer = setTimeout(() => void cargarAuditoria(), espera);
+  });
 }
 
 async function cargarAuditoria(): Promise<void> {
@@ -501,6 +550,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
+  cancelarReintento();
   cerrarStream();
 });
 </script>
@@ -603,6 +653,14 @@ onBeforeUnmount(() => {
   height: 22px;
   margin: 0 6px;
   background: var(--color-divider);
+}
+
+.huerfanos-viewer__errores-auditoria {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11.5px;
+  color: var(--color-state-error);
 }
 
 .huerfanos-viewer__auditoria {

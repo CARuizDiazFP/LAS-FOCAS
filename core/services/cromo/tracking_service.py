@@ -534,6 +534,9 @@ class TrackingsDelServicio:
     esperados_declarados: Optional[int] = None
     odf_confirmadas: list[dict[str, Any]] = field(default_factory=list)
     auditoria: Optional[Any] = None
+    # Por qué no se auditó (`"INCOMPLETO"`: tope tocado, semillas fallidas o sin cubrir); `None` si
+    # se auditó o si no se pidió auditar.
+    auditoria_omitida: Optional[str] = None
 
 
 async def trackings_del_servicio(
@@ -557,7 +560,8 @@ async def trackings_del_servicio(
     Al final audita los huérfanos con este mismo resultado, sin volver a Cromo
     (`auditoria_huerfanos.auditar_sin_romper`: savepoint propio, nunca levanta). Es el único punto
     de enganche: Slack, el portal y la corrida global (`corrida_id`) pasan por acá.
-    Sólo si el recorrido está `completo`: con un tope tocado no se escribe ni se borra nada.
+    Sólo si el recorrido resolvió todo (`completo`, sin semillas fallidas ni sin cubrir): si no, no
+    se escribe ni se borra nada y `auditoria_omitida = "INCOMPLETO"`.
     """
     declaradas = await declaraciones_del_servicio(sesion, servicio_id)
     confirmadas = declaradas.odf_ids if odfs_confirmadas is None else odfs_confirmadas
@@ -595,14 +599,23 @@ async def trackings_del_servicio(
         for numero, tracking in enumerate(ordenar_tramos(tramos), start=1)
     ]
     auditoria = None
-    if auditar and not por_camino.completo:
-        # Con el recorrido cortado por un tope hay semillas sin cubrir: pelos de tramos que no se
-        # llegaron a resolver podrían quedar como huérfanos (y normalizables). No se audita.
+    auditoria_omitida: Optional[str] = None
+    resuelto_entero = (
+        por_camino.completo and not por_camino.no_cubiertos and not por_camino.errores
+    )
+    if auditar and not resuelto_entero:
+        # Con un tope tocado o con semillas que fallaron (aunque sean menos que el tope de
+        # fallidas) hay pelos sin camino resuelto: los de un tramo cuya semilla falló podrían
+        # quedar como huérfanos (y normalizables). No se escribe ni se borra nada.
+        auditoria_omitida = "INCOMPLETO"
         logger.warning(
             "action=cromo_auditoria_huerfanos evento=omitida motivo=incompleto servicio_id=%s "
-            "corrida_id=%s",
+            "corrida_id=%s completo=%s no_cubiertos=%s errores=%s",
             servicio_id,
             corrida_id,
+            por_camino.completo,
+            len(por_camino.no_cubiertos),
+            len(por_camino.errores),
         )
     elif auditar:
         # Import diferido: `auditoria_huerfanos` importa los tipos de este módulo.
@@ -633,6 +646,7 @@ async def trackings_del_servicio(
         esperados_declarados=declaradas.trackings_esperados,
         odf_confirmadas=declaradas.confirmadas,
         auditoria=auditoria,
+        auditoria_omitida=auditoria_omitida,
     )
 
 

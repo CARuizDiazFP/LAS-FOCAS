@@ -220,7 +220,10 @@ async def auditar_global(
                 )
                 fallos_cromo_seguidos = 0
                 auditoria = resultado.auditoria
-                omitida = not resultado.completo
+                omitida = (
+                    getattr(resultado, "auditoria_omitida", None) is not None
+                    or not resultado.completo
+                )
                 detalle.update(
                     auditoria="OMITIDA_INCOMPLETO" if omitida else (
                         "OK" if auditoria is not None else "ERROR"

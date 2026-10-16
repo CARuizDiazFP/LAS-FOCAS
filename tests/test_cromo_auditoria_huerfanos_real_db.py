@@ -493,8 +493,13 @@ async def test_normalizar_rechaza_si_se_confirma_una_odf_del_camino_despues_de_a
 
 @pytest.mark.parametrize(
     "evidencia_sql",
-    ["NULL", "'{\"senales\": {}}'::jsonb", "'{\"protegido\": false}'::jsonb"],
-    ids=["evidencia_null", "sin_protegido", "sin_odfs"],
+    [
+        "NULL",
+        "'{\"senales\": {}}'::jsonb",
+        "'{\"protegido\": false}'::jsonb",
+        "'{\"protegido\": false, \"odfs\": [\"abc\"]}'::jsonb",
+    ],
+    ids=["evidencia_null", "sin_protegido", "sin_odfs", "odfs_no_numericas"],
 )
 @pytest.mark.asyncio
 async def test_normalizar_falla_cerrado_sin_evidencia_completa(entorno, evidencia_sql):
@@ -512,6 +517,7 @@ async def test_normalizar_falla_cerrado_sin_evidencia_completa(entorno, evidenci
     resultado = await auditoria_huerfanos.normalizar(sesion, [fila["id"]], usuario="admin")
 
     assert resultado.aplicados == []
+    assert resultado.rechazados[0]["id"] == fila["id"] and resultado.rechazados[0]["motivo"]
     pagina = await auditoria_huerfanos.listar_huerfanos(sesion, servicio_id=servicio_id)
     assert {i["id"]: i["normalizable"] for i in pagina["items"]}[fila["id"]] is False
 

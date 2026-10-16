@@ -844,3 +844,38 @@ async def test_trackings_del_servicio_incompleto_no_audita(monkeypatch, declarac
 
     assert resultado.completo is False
     assert llamadas == [] and resultado.auditoria is None
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_con_semilla_fallida_no_audita(monkeypatch, declaraciones):
+    """Una semilla que falla por debajo del tope de fallidas deja `completo=True` pero su pelo no
+    tiene camino: si era de un tramo, auditar lo dejaría como huérfano normalizable."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    llamadas: list = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        if pelo_n_id == 20:
+            raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
+        return _con_resumen(
+            _generado(pelo_n_id, {pelo_n_id}),
+            ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, cables=(1,)),
+        )
+
+    async def _auditar(*a, **k):
+        llamadas.append(k)
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(auditoria_huerfanos, "auditar_sin_romper", _auditar)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.completo is True and resultado.errores
+    assert llamadas == [] and resultado.auditoria is None
+    assert resultado.auditoria_omitida == "INCOMPLETO"

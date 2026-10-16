@@ -5605,17 +5605,23 @@ async def _cromo_eventos_a_sse(corrida_id: int, ultimo_id: int):
 
 
 @app.get("/api/admin/ingesta/cromo/corridas/{corrida_id}/stream")
-async def cromo_ingesta_stream_web(request: Request, corrida_id: int) -> StreamingResponse:
+async def cromo_ingesta_stream_web(
+    request: Request, corrida_id: int, desde: Optional[int] = Query(default=None, ge=0)
+) -> StreamingResponse:
     """SSE de progreso de una corrida. `EventSource` no manda headers custom (salvo `Last-Event-ID`,
     que el browser agrega solo al reconectar) — por eso no hay CSRF acá; la escritura ya quedó
     protegida en el POST que dispara la corrida. Igual requiere cookie de sesión autenticada.
+
+    `desde` (opcional) es el último id de evento ya visto: un `EventSource` NUEVO (reconexión
+    manual del cliente) no puede mandar `Last-Event-ID`, así que lo pasa en la URL para no
+    repetir eventos. Si vienen los dos, gana el mayor.
     """
     _require_admin(request)
 
-    ultimo_id = 0
+    ultimo_id = desde or 0
     last_event_id = request.headers.get("last-event-id")
     if last_event_id and last_event_id.isdigit():
-        ultimo_id = int(last_event_id)
+        ultimo_id = max(ultimo_id, int(last_event_id))
 
     return StreamingResponse(
         _cromo_eventos_a_sse(corrida_id, ultimo_id),
