@@ -430,6 +430,18 @@ def test_tracking_txt_con_varios_pelos_identifica_a_cual_corresponde(monkeypatch
     assert 'filename="93154 CROMO pelo 10006354.txt"' in otro.headers["content-disposition"]
 
 
+def test_tracking_txt_con_tramo_usa_el_nombre_de_tramo(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(10006353), _semilla(10006354)])
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.get(_url_txt(), params={"pelo_n_id": 10006354, "tramo": 2})
+
+    assert 'filename="93154 CROMO T2 pelo 10006354.txt"' in res.headers["content-disposition"]
+
+
 def test_tracking_txt_sin_pelo_explicito_usa_la_posicion_de_odf(monkeypatch):
     """Sin `pelo_n_id`, el default es la posición de ODF del Servicio, no el primero del ranking."""
     _fake_session(monkeypatch)
@@ -647,7 +659,25 @@ def _fake_trackings_del_servicio(monkeypatch, resultado):
 def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
     from datetime import datetime, timezone
 
-    from core.services.cromo.tracking_service import TrackingGenerado, TrackingsDelServicio
+    from core.services.cromo.tracking_service import (
+        ExtremoCamino,
+        ResumenCamino,
+        TrackingGenerado,
+        TrackingsDelServicio,
+    )
+
+    resumen = ResumenCamino(
+        inicio=ExtremoCamino(
+            tipo="CONECTOR_ODF",
+            id_cromo=1,
+            odf_id=10,
+            odf_clase=69,
+            odf_nombre="ODF X",
+            patchera_nombre="P1",
+            conector_numero="39",
+        ),
+        fin=ExtremoCamino(tipo="pelo", id_cromo=77, clase=130),
+    )
 
     def _t(pelo: int, nombre: str, rol: str) -> TrackingGenerado:
         return TrackingGenerado(
@@ -658,6 +688,7 @@ def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
             generado_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
             duracion_ms=1,
             pelos_camino=frozenset({pelo, pelo + 1000}),
+            extremos=resumen,
             rol=rol,
         )
 
@@ -673,6 +704,7 @@ def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
             residuales=[_t(9999999, "94673 CROMO.txt", "RESIDUAL")],
             errores=[],
             completo=True,
+            esperados_declarados=3,
         ),
     )
     client = _cliente_user(monkeypatch)
@@ -681,15 +713,26 @@ def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
 
     assert res.status_code == 200
     cuerpo = res.json()
-    assert cuerpo["esperados"] == 2 and cuerpo["completo"] is True
-    assert cuerpo["esperados_declarados"] is None
-    assert [c["pelo_n_id"] for c in cuerpo["caminos"]] == [6799772, 6799773]
-    assert cuerpo["tramos"] == cuerpo["caminos"]
-    assert cuerpo["caminos"][0]["pelos_en_camino"] == 2
-    assert cuerpo["caminos"][0]["nombre_archivo"] == "94673 CROMO T1 pelo 6799772.txt"
+    assert set(cuerpo) == {"tramos", "residuales", "esperados_declarados", "completo", "errores"}
+    assert cuerpo["esperados_declarados"] == 3 and cuerpo["completo"] is True
+    assert [c["n"] for c in cuerpo["tramos"]] == [1, 2]
+    assert [c["pelo_n_id"] for c in cuerpo["tramos"]] == [6799772, 6799773]
+    assert cuerpo["tramos"][0]["pelos_en_camino"] == 2
+    assert cuerpo["tramos"][0]["desde_cache"] is True
+    assert cuerpo["tramos"][0]["nombre_archivo"] == "94673 CROMO T1 pelo 6799772.txt"
+    assert cuerpo["tramos"][0]["extremos"]["a"] == {
+        "tipo": "CONECTOR_ODF",
+        "odf_n_id": 10,
+        "odf_nombre": "ODF X",
+        "odf_clase": 69,
+        "patchera_nombre": "P1",
+        "conector": "39",
+        "id_cromo": 1,
+    }
+    assert cuerpo["tramos"][0]["extremos"]["b"]["tipo"] == "pelo"
     assert [r["pelo_n_id"] for r in cuerpo["residuales"]] == [9999999]
-    assert cuerpo["residuales"][0]["rol"] == "RESIDUAL"
-    assert cuerpo["huerfanos"] == []
+    assert "n" not in cuerpo["residuales"][0] and "desde_cache" not in cuerpo["residuales"][0]
+    assert "extremos" in cuerpo["residuales"][0]
 
 
 def test_caminos_con_cromo_caido_responde_502(monkeypatch):

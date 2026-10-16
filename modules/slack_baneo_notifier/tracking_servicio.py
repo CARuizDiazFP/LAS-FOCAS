@@ -16,8 +16,10 @@ completo, incluidos los cables de terceros. Se suben todos al hilo (decisiones d
 
 Tracking por tramos (2026-10-16): se pide un camino por cada semilla no cubierta y cada uno se
 clasifica como TRAMO o RESIDUAL (`tracking_service.clasificar_caminos`). Se sube un `.txt` por
-tramo (`{at62} CROMO T{n} pelo {n_id}.txt`); los residuales sólo se avisan. El resumen definitivo
-del hilo es de la Tarea 3.
+tramo (`{at62} CROMO T{n} pelo {n_id}.txt`), uno por `files_upload_v2`. Los residuales NO se
+mencionan en el hilo (van a la auditoría de la web). El resumen es una línea por aviso y sólo
+cuando aplica: segmentación en N tramos, cantidad esperada distinta de la generada, o tope de
+consultas a Cromo alcanzado.
 """
 
 from __future__ import annotations
@@ -97,65 +99,38 @@ class ResultadoTrack:
     archivos: list[TrackingArchivo] = field(default_factory=list)
     mensaje: str = ""
     errores: list[str] = field(default_factory=list)
-    esperados: int = 0
+    # Cantidad de trackings que declara el Servicio en Cromo; `None` si no declara ninguna.
+    esperados_declarados: Optional[int] = None
     completo: bool = True
-    # Una línea por camino residual, ya formateada para el hilo ("pelo 6799772 · 3 pelos").
-    residuales: list[str] = field(default_factory=list)
 
 
 ESTADO_OK = "ok"
 ESTADO_ERROR = "error"
 
 
-# Un Servicio largo puede tener decenas de residuales; el hilo no es el lugar para listarlos todos.
-_MAX_HUERFANOS_LISTADOS = 15
-
-
-def _describir_pelo(semilla: Any) -> str:
-    """"pelo 6799772 · F-VIN-TEC · 21 AM": lo que el operador necesita para ubicarlo en Cromo."""
-    partes = [f"pelo {semilla.pelo_n_id}"]
-    if semilla.cable_nombre:
-        partes.append(semilla.cable_nombre)
-    numero = " ".join(x for x in (semilla.numero_pelo, semilla.color) if x)
-    if numero:
-        partes.append(numero)
-    return " · ".join(partes)
-
-
 def mensaje_resumen(resultado: ResultadoTrack) -> Optional[str]:
     """Aviso que acompaña a los archivos en el hilo, o `None` si no hay nada que avisar.
 
-    - Incompleto: se tocó el tope de llamadas a Cromo (o de pelos fallidos) con semillas sin
-      cubrir; se dice cuántos tramos se generaron y por qué fallaron los que fallaron.
-    - Hay residuales: caminos que no son tramos del Servicio; se listan y no se sube su `.txt`.
+    Sólo las líneas que aplican, en este orden: segmentación en N tramos (N > 1), cantidad
+    esperada distinta de la generada, tracking incompleto por el tope de consultas a Cromo (con
+    los errores). Los residuales nunca se mencionan.
     """
     if resultado.estado != ESTADO_OK:
         return None
     partes: list[str] = []
     generados = len(resultado.archivos)
+    if generados > 1:
+        partes.append(f"Servicio segmentado en {generados} tramos.")
+    declarados = resultado.esperados_declarados
+    if declarados is not None and declarados != generados:
+        partes.append(f"Se esperaban {declarados} trackings y se generaron {generados}.")
     if not resultado.completo:
         partes.append(
-            f":warning: El tracking quedó incompleto (se alcanzó el tope de llamadas a Cromo); "
-            f"se generaron {generados} tramo(s)."
+            ":warning: Tracking incompleto: se alcanzó el tope de consultas a Cromo."
         )
         if resultado.errores:
             partes.append("\n".join(f"• {e}" for e in resultado.errores))
-    if resultado.residuales:
-        partes.append(
-            f":link: {len(resultado.residuales)} camino(s) residual(es): pelos con la etiqueta del "
-            "Servicio cuyo camino no es un tramo del Servicio. No se generó tracking para ellos:"
-        )
-        partes.append(
-            "\n".join(f"• {h}" for h in resultado.residuales[:_MAX_HUERFANOS_LISTADOS])
-        )
-        if len(resultado.residuales) > _MAX_HUERFANOS_LISTADOS:
-            partes.append(f"… y {len(resultado.residuales) - _MAX_HUERFANOS_LISTADOS} más.")
     return "\n".join(partes) if partes else None
-
-
-def _describir_residual(tracking: Any) -> str:
-    """"pelo 6799772 · 3 pelos": la semilla del camino residual y su largo."""
-    return f"pelo {tracking.pelo_n_id} · {len(tracking.pelos_camino)} pelos"
 
 
 async def _generar_async(servicio_pk: int) -> ResultadoTrack:
@@ -202,7 +177,7 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
 
             errores = del_servicio.errores
             # Un `.txt` por tramo, ya con su nombre de tramo (`{at62} CROMO T{n} pelo {n_id}.txt`),
-            # que no se pisan entre sí. Los residuales no se suben: sólo se avisan.
+            # que no se pisan entre sí. Los residuales no se suben ni se mencionan.
             archivos = [
                 TrackingArchivo(
                     nombre=tracking.nombre_archivo,
@@ -212,7 +187,6 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                 )
                 for tracking in del_servicio.tramos
             ]
-            residuales = [_describir_residual(t) for t in del_servicio.residuales]
 
             if not archivos:
                 return ResultadoTrack(
@@ -224,9 +198,8 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                 estado=ESTADO_OK,
                 archivos=archivos,
                 errores=errores,
-                esperados=del_servicio.esperados_declarados or len(archivos),
+                esperados_declarados=del_servicio.esperados_declarados,
                 completo=del_servicio.completo,
-                residuales=residuales,
             )
     finally:
         await engine.dispose()

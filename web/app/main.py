@@ -17,7 +17,7 @@ from time import time as now
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import httpx
-from fastapi import FastAPI, Form, Request, status, HTTPException, Response
+from fastapi import FastAPI, Form, Query, Request, status, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -8776,9 +8776,15 @@ async def cromo_camino_pelos_web(
 
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt")
 async def cromo_camino_tracking_txt_web(
-    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None
+    request: Request,
+    servicio_id: int,
+    pelo_n_id: Optional[int] = None,
+    tramo: Optional[int] = Query(default=None, ge=1),
 ) -> Response:
     """Tracking óptico de un Servicio, generado desde Cromo, en el formato `.txt` legacy.
+
+    `tramo` (opcional, con `pelo_n_id`) es el número de tramo que ya conoce el frontend desde
+    `/caminos`: el archivo se llama `{at62} CROMO T{n} pelo {n_id}.txt`, igual que en Slack.
 
     `_require_auth` con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
     entrega el tracking completo de una ruta a cualquier usuario autenticado.
@@ -8797,6 +8803,7 @@ async def cromo_camino_tracking_txt_web(
     from core.services.cromo.config import get_cromo_config
     from core.services.cromo.tracking_service import (
         TrackingNoDisponible,
+        nombre_archivo_tramo,
         nombre_distinguible,
         obtener_tracking,
     )
@@ -8855,9 +8862,14 @@ async def cromo_camino_tracking_txt_web(
     # Con un solo pelo (el caso PON) el nombre queda idéntico al de siempre; con varios se
     # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
     # carpeta de Descargas y se pierde cuál es cuál.
-    nombre = nombre_distinguible(
-        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1
-    )
+    # El at.62 ya viene en el nombre base (`{at62} CROMO.txt`): de ahí se arma el nombre de tramo.
+    base_at62 = re.match(r"^(\d+) CROMO", tracking.nombre_archivo)
+    if tramo is not None and pelo_n_id is not None and base_at62:
+        nombre = nombre_archivo_tramo(base_at62.group(1), tramo, tracking.pelo_n_id)
+    else:
+        nombre = nombre_distinguible(
+            tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1
+        )
     logger.info(
         "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s desde_cache=%s duracion_ms=%s",
         usuario,
@@ -8884,9 +8896,11 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
     4,6-14 s por camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es
     inmediato.
 
-    Contrato de transición (Tarea 3 lo pule): `caminos` = los tramos, `tramos`/`residuales`
-    explícitos, `esperados` = tramos declarados o generados, y `huerfanos` vacío por compatibilidad
-    con el frontend.
+    Contrato: `tramos[{n, pelo_n_id, nombre_archivo, pelos_en_camino, desde_cache, extremos}]`
+    (ya ordenados; `n` es el número de tramo del nombre del `.txt`), `residuales[...]` sin `n` ni
+    `desde_cache` (no se descargan), `esperados_declarados` (o `null`), `completo` y `errores`.
+    `extremos` es `{a, b}` con `tipo`, `odf_n_id`, `odf_nombre`, `odf_clase`, `patchera_nombre`,
+    `conector` e `id_cromo`.
 
     Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
     del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
@@ -8915,26 +8929,41 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
         resultado.completo,
     )
 
+    def _extremo(e: Any) -> Optional[dict[str, Any]]:
+        if e is None:
+            return None
+        return {
+            "tipo": e.tipo,
+            "id_cromo": e.id_cromo,
+            "odf_n_id": e.odf_id,
+            "odf_nombre": e.odf_nombre,
+            "odf_clase": e.odf_clase,
+            "patchera_nombre": e.patchera_nombre,
+            "conector": e.conector_numero,
+        }
+
     def _camino(t: Any) -> dict[str, Any]:
+        resumen = t.extremos
         return {
             "pelo_n_id": t.pelo_n_id,
             "nombre_archivo": t.nombre_archivo,
-            "desde_cache": t.desde_cache,
             "pelos_en_camino": len(t.pelos_camino),
-            "rol": t.rol,
+            "extremos": {
+                "a": _extremo(resumen.inicio) if resumen else None,
+                "b": _extremo(resumen.fin) if resumen else None,
+            },
         }
 
-    tramos = [_camino(t) for t in resultado.tramos]
+    tramos = [
+        {"n": n, **_camino(t), "desde_cache": t.desde_cache}
+        for n, t in enumerate(resultado.tramos, start=1)
+    ]
     return JSONResponse(
         {
-            "servicio_id": servicio_id,
-            "esperados": resultado.esperados_declarados or len(tramos),
-            "esperados_declarados": resultado.esperados_declarados,
-            "completo": resultado.completo,
-            "caminos": tramos,
             "tramos": tramos,
             "residuales": [_camino(t) for t in resultado.residuales],
-            "huerfanos": [],
+            "esperados_declarados": resultado.esperados_declarados,
+            "completo": resultado.completo,
             "errores": resultado.errores,
         }
     )

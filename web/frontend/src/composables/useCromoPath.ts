@@ -1,18 +1,18 @@
 // Nombre de archivo: useCromoPath.ts
 // Ubicación de archivo: web/frontend/src/composables/useCromoPath.ts
 // Descripción: Estado reutilizable para resolver el camino óptico de Cromo — elección de semilla,
-// espera cancelable, memoización por pelo y descarga de un .txt por cada pelo del Servicio
+// espera cancelable, memoización por pelo y descarga de un .txt por cada tramo del Servicio
 
 import { computed, ref } from 'vue';
 
 import {
-  type CaminoDelServicio,
+  type CaminoResidual,
   type CaminoOpticoResponse,
   type PeloExcluido,
   type PeloSemilla,
   type PelosCaminoResponse,
+  type TramoDelServicio,
   descargarTrackingCromo,
-  excluirPelosServicio,
   listarPelosCamino,
   mensajeErrorCromoPath,
   normalizarConsistencia,
@@ -68,13 +68,13 @@ export function useCromoPath() {
 
   /** Caminos que tiene el Servicio según la regla de operaciones (pelos por cable u ODF). */
   const caminosEsperados = ref(0);
-  /** Un pelo por camino distinto, resuelto en el backend contra Cromo (`/caminos`). */
-  const caminos = ref<CaminoDelServicio[]>([]);
+  /** Tramos del Servicio, uno por `.txt`, resueltos en el backend contra Cromo (`/caminos`). */
+  const tramos = ref<TramoDelServicio[]>([]);
+  /** Caminos que no son tramos del Servicio: no se descargan (la auditoría los trata aparte). */
+  const residuales = ref<CaminoResidual[]>([]);
   const caminosResueltos = ref(false);
   const resolviendoCaminos = ref(false);
   const errorCaminos = ref('');
-  /** Pelos con la etiqueta del Servicio que no están en ninguno de sus caminos. */
-  const huerfanos = ref<PeloSemilla[]>([]);
   /** Pelos ya sacados del Servicio en local. */
   const excluidos = ref<PeloExcluido[]>([]);
   /** Pelo que se está excluyendo o restaurando, para deshabilitar sólo su botón. */
@@ -134,7 +134,7 @@ export function useCromoPath() {
     seleccionManual.value = false;
     // Si los caminos ya se resolvieron, la selección son ellos y no la preselección local.
     if (caminosResueltos.value) {
-      pelosSeleccionados.value = caminos.value.map((c) => c.pelo_n_id);
+      pelosSeleccionados.value = tramos.value.map((t) => t.pelo_n_id);
     }
   }
 
@@ -283,7 +283,13 @@ export function useCromoPath() {
 
       for (const peloNId of elegidos) {
         try {
-          resultado.descargados.push(await descargarTrackingCromo(servicioId, { peloNId }));
+          resultado.descargados.push(
+            await descargarTrackingCromo(servicioId, {
+              peloNId,
+              // Si el pelo es un tramo conocido, el archivo lleva su nombre de tramo.
+              tramo: tramos.value.find((t) => t.pelo_n_id === peloNId)?.n ?? null,
+            }),
+          );
         } catch (error) {
           resultado.fallidos.push({ peloNId, motivo: mensajeErrorCromoPath(error, { peloNId }) });
         } finally {
@@ -308,26 +314,37 @@ export function useCromoPath() {
   }
 
   /**
-   * Resuelve los caminos del Servicio en el backend y deja tildado un pelo por camino. Los pelos
-   * que no cayeron en ningún camino quedan en `huerfanos`, para que un admin los excluya.
+   * Resuelve los caminos del Servicio en el backend y deja tildado el pelo de cada tramo. Los
+   * residuales sólo se cuentan: no se descargan.
    */
   async function resolverCaminos(servicioId: number): Promise<boolean> {
     resolviendoCaminos.value = true;
     errorCaminos.value = '';
     try {
       const respuesta = await resolverCaminosServicio(servicioId);
-      caminos.value = respuesta.caminos;
-      huerfanos.value = respuesta.huerfanos;
-      caminosEsperados.value = respuesta.esperados;
+      tramos.value = respuesta.tramos;
+      residuales.value = respuesta.residuales;
+      caminosEsperados.value = respuesta.esperados_declarados ?? respuesta.tramos.length;
       caminosResueltos.value = true;
       seleccionManual.value = false;
-      pelosSeleccionados.value = respuesta.caminos.map((c) => c.pelo_n_id);
+      pelosSeleccionados.value = respuesta.tramos.map((t) => t.pelo_n_id);
+      const avisos: string[] = [];
       if (!respuesta.completo) {
-        errorCaminos.value =
-          `Se esperaban ${respuesta.esperados} caminos y se resolvieron ${respuesta.caminos.length}.` +
-          (respuesta.errores.length ? ` ${respuesta.errores.join(' · ')}` : '');
+        avisos.push('Tracking incompleto: se alcanzó el tope de consultas a Cromo.');
       }
-      return respuesta.caminos.length > 0;
+      if (
+        respuesta.esperados_declarados != null &&
+        respuesta.esperados_declarados !== respuesta.tramos.length
+      ) {
+        avisos.push(
+          `Se esperaban ${respuesta.esperados_declarados} trackings y se generaron ${respuesta.tramos.length}.`,
+        );
+      }
+      if (!respuesta.completo && respuesta.errores.length) {
+        avisos.push(respuesta.errores.join(' · '));
+      }
+      errorCaminos.value = avisos.join(' ');
+      return respuesta.tramos.length > 0;
     } catch (error) {
       errorCaminos.value = mensajeErrorCromoPath(error);
       return false;
@@ -336,28 +353,18 @@ export function useCromoPath() {
     }
   }
 
-  /** Saca pelos huérfanos del Servicio (uno o todos) y recarga las semillas. Los caminos ya
-   * resueltos siguen valiendo: los huérfanos no estaban en ninguno. */
-  async function excluirPelos(servicioId: number, pelosNId: number[]): Promise<boolean> {
-    if (!pelosNId.length) return false;
-    // Con un lote no hay un pelo puntual que marcar: -1 deshabilita todos los botones.
-    peloEnExclusion.value = pelosNId.length === 1 ? pelosNId[0] : -1;
-    errorExclusion.value = '';
+  /** Baja el `.txt` de un solo tramo (botón "Descargar" de su fila). */
+  async function descargarTramo(servicioId: number, tramo: TramoDelServicio): Promise<boolean> {
+    descargando.value = true;
+    errorDescarga.value = '';
     try {
-      const respuesta = await excluirPelosServicio(
-        servicioId,
-        pelosNId,
-        'Huérfano: fuera de todo camino del Servicio',
-      );
-      const sacados = new Set(respuesta.excluidos);
-      huerfanos.value = huerfanos.value.filter((p) => !sacados.has(p.pelo_n_id));
-      await cargarPelos(servicioId, ultimasOpcionesPelos);
+      await descargarTrackingCromo(servicioId, { peloNId: tramo.pelo_n_id, tramo: tramo.n });
       return true;
     } catch (error) {
-      errorExclusion.value = mensajeErrorCromoPath(error);
+      errorDescarga.value = mensajeErrorCromoPath(error, { peloNId: tramo.pelo_n_id });
       return false;
     } finally {
-      peloEnExclusion.value = null;
+      descargando.value = false;
     }
   }
 
@@ -368,8 +375,8 @@ export function useCromoPath() {
     try {
       await restaurarPeloServicio(servicioId, peloNId);
       caminosResueltos.value = false;
-      caminos.value = [];
-      huerfanos.value = [];
+      tramos.value = [];
+      residuales.value = [];
       await cargarPelos(servicioId, ultimasOpcionesPelos);
       return true;
     } catch (error) {
@@ -453,11 +460,11 @@ export function useCromoPath() {
     segundos.value = 0;
     cache.clear();
     caminosEsperados.value = 0;
-    caminos.value = [];
+    tramos.value = [];
+    residuales.value = [];
     caminosResueltos.value = false;
     resolviendoCaminos.value = false;
     errorCaminos.value = '';
-    huerfanos.value = [];
     excluidos.value = [];
     peloEnExclusion.value = null;
     errorExclusion.value = '';
@@ -500,11 +507,11 @@ export function useCromoPath() {
     relevandoOdf,
     errorRelevarOdf,
     caminosEsperados,
-    caminos,
+    tramos,
+    residuales,
     caminosResueltos,
     resolviendoCaminos,
     errorCaminos,
-    huerfanos,
     excluidos,
     peloEnExclusion,
     errorExclusion,
@@ -522,7 +529,7 @@ export function useCromoPath() {
     normalizar,
     relevarOdf,
     resolverCaminos,
-    excluirPelos,
+    descargarTramo,
     restaurarPelo,
     reset,
     autoResolverSiUnicaSemilla,

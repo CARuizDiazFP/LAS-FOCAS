@@ -27,7 +27,7 @@
         :title="
           camino.pelos.value.length === 0
             ? 'Cromo no tiene ningún pelo matcheado para este Servicio: no hay camino que trazar'
-            : 'Descarga un .txt por camino del Servicio (o por cada pelo tildado, si cambiaste la selección), generado desde Cromo'
+            : 'Descarga un .txt por tramo del Servicio (o por cada pelo tildado, si cambiaste la selección), generado desde Cromo'
         "
         @click="descargar"
       >
@@ -69,9 +69,9 @@ const etiquetaDescarga = computed(() => {
     const total = camino.descargaTotal.value;
     return total > 1 ? `Generando… ${camino.descargadosCount.value}/${total}` : 'Generando…';
   }
-  // Con la selección automática son los caminos esperados del Servicio, no lo tildado.
+  // Con la selección automática son los tramos del Servicio, no lo tildado.
   const cantidad = camino.cantidadDescarga.value;
-  return cantidad > 1 ? `Trackings Cromo (${cantidad} .txt)` : 'Tracking Cromo (.txt)';
+  return cantidad > 1 ? `Descargar todos (${cantidad} tramos .txt)` : 'Tracking Cromo (.txt)';
 });
 
 async function cargar(id: string): Promise<void> {

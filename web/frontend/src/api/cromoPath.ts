@@ -278,23 +278,71 @@ export interface PeloExcluido {
   created_at: string | null;
 }
 
-export interface CaminoDelServicio {
+/** Extremo de un camino: dónde empieza o termina su `.txt` (conector de ODF o un pelo). */
+export interface ExtremoCamino {
+  tipo: string;
+  id_cromo: number;
+  odf_n_id: number | null;
+  odf_nombre: string | null;
+  /** 69 = ODF, 86 = ODF Nodo. */
+  odf_clase: number | null;
+  patchera_nombre: string | null;
+  conector: string | null;
+}
+
+export interface ExtremosCamino {
+  a: ExtremoCamino | null;
+  b: ExtremoCamino | null;
+}
+
+/** Camino que es un tramo del Servicio: tiene su propio `.txt` (`{at62} CROMO T{n} pelo {n_id}.txt`). */
+export interface TramoDelServicio {
+  /** Número de tramo, el mismo que lleva el nombre del archivo. */
+  n: number;
   /** Pelo con el que se generó el camino: es el que se pide para bajar su `.txt`. */
   pelo_n_id: number;
   nombre_archivo: string;
   desde_cache: boolean;
   pelos_en_camino: number;
+  extremos: ExtremosCamino;
+}
+
+/** Camino que no es un tramo del Servicio: no se descarga. */
+export interface CaminoResidual {
+  pelo_n_id: number;
+  nombre_archivo: string;
+  pelos_en_camino: number;
+  extremos: ExtremosCamino;
 }
 
 export interface CaminosServicioResponse {
-  servicio_id: number;
-  esperados: number;
-  /** `false` si se generaron menos caminos que los esperados. */
+  tramos: TramoDelServicio[];
+  residuales: CaminoResidual[];
+  /** Cantidad de trackings que declara el Servicio, o `null` si no declara ninguna. */
+  esperados_declarados: number | null;
+  /** `false` si se alcanzó el tope de consultas a Cromo. */
   completo: boolean;
-  caminos: CaminoDelServicio[];
-  /** Pelos con la etiqueta del Servicio que no están en ninguno de sus caminos. */
-  huerfanos: PeloSemilla[];
   errores: string[];
+}
+
+/** "ODF X P1:39" / "ODF Nodo KORN P1:39" para un conector de ODF; "pelo 123" en cualquier otro caso. */
+export function etiquetaExtremo(extremo: ExtremoCamino | null): string {
+  if (!extremo) return '?';
+  if (extremo.tipo !== 'CONECTOR_ODF' || extremo.odf_n_id == null) {
+    return `pelo ${extremo.id_cromo}`;
+  }
+  const tipoOdf = extremo.odf_clase === 86 ? 'ODF Nodo' : 'ODF';
+  const nombre = extremo.odf_nombre ?? String(extremo.odf_n_id);
+  const posicion = [extremo.patchera_nombre, extremo.conector].filter(Boolean).join(':');
+  return [tipoOdf, nombre, posicion].filter(Boolean).join(' ');
+}
+
+/** "Tramo 1 · ODF X:39 → ODF Nodo KORN O-1259853-1:39 · 24 pelos". */
+export function etiquetaTramo(tramo: TramoDelServicio): string {
+  return (
+    `Tramo ${tramo.n} · ${etiquetaExtremo(tramo.extremos.a)} → ` +
+    `${etiquetaExtremo(tramo.extremos.b)} · ${tramo.pelos_en_camino} pelos`
+  );
 }
 
 // ── Llamadas ──────────────────────────────────────────────────────────────
@@ -340,11 +388,15 @@ export async function resolverCaminoOptico(
 /** Descarga el tracking `.txt` generado desde Cromo. Devuelve el nombre del archivo. */
 export async function descargarTrackingCromo(
   servicioId: number,
-  opciones: { peloNId?: number | null; signal?: AbortSignal } = {},
+  opciones: { peloNId?: number | null; tramo?: number | null; signal?: AbortSignal } = {},
 ): Promise<string> {
   const params = new URLSearchParams();
   if (opciones.peloNId != null) {
     params.set('pelo_n_id', String(opciones.peloNId));
+  }
+  // El número de tramo hace que el archivo se llame igual que el que sube Slack.
+  if (opciones.tramo != null) {
+    params.set('tramo', String(opciones.tramo));
   }
   const query = params.toString();
   return requestDownload(
@@ -354,8 +406,8 @@ export async function descargarTrackingCromo(
 }
 
 /**
- * Resuelve los caminos del Servicio en el backend: un pelo por camino distinto, cortando en los
- * caminos esperados, más los pelos huérfanos. Mismo criterio que `@bot track` en Slack.
+ * Resuelve los caminos del Servicio en el backend: los caminos del Servicio separados en tramos (con
+ * su `.txt`) y residuales (sin él). Mismo criterio que `@bot track` en Slack.
  *
  * **Va a Cromo** (4,6-14 s por camino en frío) y deja cacheado cada tracking, así que bajar los
  * `.txt` después es inmediato. Sin timeout propio del cliente: con 2 caminos en frío puede pasar

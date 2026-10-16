@@ -57,11 +57,10 @@
     <div v-if="camino.tieneSemilla.value" class="cromo-camino__caminos">
       <p class="cromo-camino__nota">
         <template v-if="camino.caminosEsperados.value">
-          Caminos esperados: <strong>{{ camino.caminosEsperados.value }}</strong>
-          (pelos del Servicio por cable u ODF)
+          Tramos esperados: <strong>{{ camino.caminosEsperados.value }}</strong>
         </template>
         <template v-if="camino.caminosResueltos.value">
-          · resueltos: <strong>{{ camino.caminos.value.length }}</strong>
+          · resueltos: <strong>{{ camino.tramos.value.length }}</strong>
         </template>
       </p>
       <button
@@ -69,7 +68,7 @@
         class="btn subtle"
         type="button"
         :disabled="camino.resolviendoCaminos.value || camino.descargando.value"
-        title="Resuelve en Cromo un camino por hilo del Servicio y detecta los pelos huérfanos"
+        title="Resuelve en Cromo los tramos del Servicio"
         @click="camino.resolverCaminos(servicioId)"
       >
         <i class="ph ph-path" aria-hidden="true"></i>
@@ -85,61 +84,31 @@
     <p v-if="camino.errorCaminos.value" class="cromo-camino__error">
       {{ camino.errorCaminos.value }}
     </p>
-    <ul v-if="camino.caminos.value.length" class="cromo-camino__lista">
-      <li v-for="(c, i) in camino.caminos.value" :key="c.pelo_n_id">
+    <!-- Un tramo por `.txt`: cada fila baja el suyo; "Descargar todos" baja uno por tramo en
+         serie desde el botón de la vista. -->
+    <ul v-if="camino.tramos.value.length" class="cromo-camino__lista">
+      <li v-for="t in camino.tramos.value" :key="t.pelo_n_id">
         <span>
-          Camino {{ i + 1 }} · pelo {{ c.pelo_n_id }}
-          <span class="cromo-camino__odf-meta">
-            {{ c.pelos_en_camino }} pelos recorridos{{ c.desde_cache ? ' · en caché' : '' }}
-          </span>
-        </span>
-      </li>
-    </ul>
-
-    <!-- Huérfanos: tienen la etiqueta del Servicio pero no están en ninguno de sus caminos (un
-         pelo que se movió y quedó con la etiqueta vieja). No generan tracking; un admin los saca
-         del Servicio en local para que no ensucien las próximas consultas. -->
-    <div v-if="camino.huerfanos.value.length" class="cromo-camino__huerfanos">
-      <p class="cromo-camino__aviso">
-        <i class="ph ph-link-break" aria-hidden="true"></i>
-        <span>
-          {{ camino.huerfanos.value.length }} pelo(s) con la etiqueta del Servicio no están en
-          ninguno de sus caminos. No generan tracking.
-          <template v-if="!esAdmin">Un admin puede excluirlos del Servicio.</template>
+          {{ etiquetaTramo(t) }}
+          <span v-if="t.desde_cache" class="cromo-camino__odf-meta">· en caché</span>
         </span>
         <button
-          v-if="esAdmin && servicioId !== null && camino.huerfanos.value.length > 1"
+          v-if="servicioId !== null"
           class="btn subtle"
           type="button"
-          :disabled="camino.peloEnExclusion.value !== null"
-          @click="excluirTodos"
+          :disabled="camino.descargando.value || camino.resolviendoCaminos.value"
+          :title="t.nombre_archivo"
+          @click="camino.descargarTramo(servicioId, t)"
         >
-          {{ camino.peloEnExclusion.value === -1 ? 'Excluyendo…' : 'Excluir todos' }}
+          Descargar
         </button>
-      </p>
-      <ul class="cromo-camino__lista is-scroll">
-        <li v-for="p in camino.huerfanos.value" :key="p.pelo_n_id">
-          <span>
-            pelo {{ p.pelo_n_id }}
-            <span class="cromo-camino__odf-meta">
-              {{ [p.cable_nombre, [p.numero_pelo, p.color].filter(Boolean).join(' ')]
-                .filter(Boolean)
-                .join(' · ') }}
-            </span>
-          </span>
-          <button
-            v-if="esAdmin && servicioId !== null"
-            class="btn subtle"
-            type="button"
-            :disabled="camino.peloEnExclusion.value !== null"
-            title="Saca el pelo del Servicio en LAS-FOCAS. Cromo no se toca; se puede restaurar."
-            @click="camino.excluirPelos(servicioId, [p.pelo_n_id])"
-          >
-            {{ camino.peloEnExclusion.value === p.pelo_n_id ? 'Excluyendo…' : 'Excluir del Servicio' }}
-          </button>
-        </li>
-      </ul>
-    </div>
+      </li>
+    </ul>
+    <!-- Residuales: caminos de pelos con la etiqueta del Servicio que no son un tramo suyo. No
+         se descargan; la auditoría los revisa. -->
+    <p v-if="camino.residuales.value.length" class="cromo-camino__nota">
+      {{ camino.residuales.value.length }} caminos residuales (no se descargan)
+    </p>
 
     <details v-if="camino.excluidos.value.length" class="cromo-camino__excluidos">
       <summary class="cromo-camino__nota">
@@ -293,7 +262,7 @@
 // .txt del pelo elegido) necesitan leerlo. El panel dibuja y dispara; no es dueño de nada.
 import { computed } from 'vue';
 
-import type { OdfDelCamino } from '../../api/cromoPath';
+import { type OdfDelCamino, etiquetaTramo } from '../../api/cromoPath';
 import type { useCromoPath } from '../../composables/useCromoPath';
 import { useSession } from '../../composables/useSession';
 import CromoConsistenciaPanel from './CromoConsistenciaPanel.vue';
@@ -313,18 +282,6 @@ const esAdmin = computed(() => (sesion.value.role ?? '').toLowerCase() === 'admi
 async function normalizar(elementoIds: number[] | null): Promise<void> {
   if (props.servicioId === null) return;
   await props.camino.normalizar(props.servicioId, elementoIds ?? undefined);
-}
-
-/** Excluir en lote escribe sobre decenas de pelos: se confirma antes. Es reversible (Restaurar). */
-async function excluirTodos(): Promise<void> {
-  if (props.servicioId === null) return;
-  const pelos = props.camino.huerfanos.value.map((p) => p.pelo_n_id);
-  const ok = window.confirm(
-    `Se van a excluir ${pelos.length} pelos huérfanos de este Servicio. Cromo no se toca y se ` +
-      'pueden restaurar de a uno. ¿Continuar?',
-  );
-  if (!ok) return;
-  await props.camino.excluirPelos(props.servicioId, pelos);
 }
 
 /** Releva las ODFs del camino para que aparezcan sus posiciones de patchera. */
@@ -459,7 +416,6 @@ defineSlots<{
   font-size: 12px;
 }
 
-.cromo-camino__huerfanos,
 .cromo-camino__excluidos {
   display: flex;
   flex-direction: column;

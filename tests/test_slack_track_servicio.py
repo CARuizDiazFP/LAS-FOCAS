@@ -209,7 +209,7 @@ def test_un_pelo_fallado_no_cancela_los_demas_pero_se_reporta():
         estado=ts_mod.ESTADO_OK,
         archivos=[ts_mod.TrackingArchivo("ok.txt", "x", True, 1)],
         errores=["Pelo 42: Cromo no devolvió camino"],
-        esperados=2,
+        esperados_declarados=2,
         completo=False,
     )
     with patch.object(ts_mod, "resolver_servicio", return_value=servicio), patch.object(
@@ -221,53 +221,52 @@ def test_un_pelo_fallado_no_cancela_los_demas_pero_se_reporta():
     assert "Pelo 42" in client.chat_postMessage.call_args_list[-1][1]["text"]
 
 
-def test_residuales_se_listan_y_no_suben_un_txt_de_mas():
-    """Tracking por tramos: 2 `.txt` (los 2 tramos) y el camino residual sólo se avisa."""
+def _ok(n: int, **kw):
+    return ts_mod.ResultadoTrack(
+        estado=ts_mod.ESTADO_OK,
+        archivos=[
+            ts_mod.TrackingArchivo(f"94673 CROMO T{i} pelo {i}.txt", "a", False, 1)
+            for i in range(1, n + 1)
+        ],
+        **kw,
+    )
+
+
+def test_dos_tramos_suben_dos_archivos_y_avisan_la_segmentacion():
     listener = _listener()
     client = MagicMock()
     servicio = SimpleNamespace(id=1066, servicio_id="94673", nombre_cliente="X")
-    resultado = ts_mod.ResultadoTrack(
-        estado=ts_mod.ESTADO_OK,
-        archivos=[
-            ts_mod.TrackingArchivo("94673 CROMO T1 pelo 6799772.txt", "a", False, 1),
-            ts_mod.TrackingArchivo("94673 CROMO T2 pelo 6799773.txt", "b", False, 1),
-        ],
-        esperados=2,
-        residuales=["pelo 9999999 · 3 pelos"],
-    )
+    resultado = _ok(2)
     with patch.object(ts_mod, "resolver_servicio", return_value=servicio), patch.object(
         ts_mod, "generar_trackings", return_value=resultado
     ):
         listener._handle_track("94673", client, "C123", "1.1")
 
     assert client.files_upload_v2.call_count == 2
-    aviso = client.chat_postMessage.call_args_list[-1][1]["text"]
-    assert "pelo 9999999" in aviso and "residual" in aviso
+    assert "Servicio segmentado en 2 tramos." in client.chat_postMessage.call_args_list[-1][1]["text"]
 
 
-def test_completo_y_sin_residuales_no_avisa_nada():
-    resultado = ts_mod.ResultadoTrack(
-        estado=ts_mod.ESTADO_OK,
-        archivos=[ts_mod.TrackingArchivo("a.txt", "a", False, 1)],
-        esperados=1,
-    )
-    assert ts_mod.mensaje_resumen(resultado) is None
+def test_un_tramo_completo_no_avisa_nada():
+    assert ts_mod.mensaje_resumen(_ok(1)) is None
 
 
-def test_describir_pelo_arma_la_linea_para_ubicarlo_en_cromo():
-    semilla = SimpleNamespace(
-        pelo_n_id=6799772, cable_nombre="F-VIN-TEC", numero_pelo="21", color="AM"
-    )
-    assert ts_mod._describir_pelo(semilla) == "pelo 6799772 · F-VIN-TEC · 21 AM"
+def test_esperados_distintos_de_generados_se_avisa():
+    aviso = ts_mod.mensaje_resumen(_ok(2, esperados_declarados=3))
+    assert "Servicio segmentado en 2 tramos." in aviso
+    assert "Se esperaban 3 trackings y se generaron 2." in aviso
 
 
-def test_muchos_residuales_se_acotan_en_el_hilo():
-    resultado = ts_mod.ResultadoTrack(
-        estado=ts_mod.ESTADO_OK,
-        archivos=[ts_mod.TrackingArchivo("a.txt", "a", False, 1)],
-        esperados=1,
-        residuales=[f"pelo {i}" for i in range(40)],
-    )
-    aviso = ts_mod.mensaje_resumen(resultado)
-    assert "pelo 14" in aviso and "pelo 15\n" not in aviso
-    assert "… y 25 más." in aviso
+def test_esperados_iguales_a_generados_no_se_avisa():
+    assert ts_mod.mensaje_resumen(_ok(1, esperados_declarados=1)) is None
+
+
+def test_incompleto_avisa_el_tope_y_lista_errores():
+    aviso = ts_mod.mensaje_resumen(_ok(1, completo=False, errores=["Pelo 42: sin camino"]))
+    assert ":warning: Tracking incompleto: se alcanzó el tope de consultas a Cromo." in aviso
+    assert "• Pelo 42: sin camino" in aviso
+
+
+def test_los_residuales_no_se_mencionan_en_slack():
+    assert not hasattr(ts_mod, "_describir_pelo")
+    assert not hasattr(ts_mod, "_MAX_HUERFANOS_LISTADOS")
+    assert "residual" not in (ts_mod.mensaje_resumen(_ok(2)) or "").lower()
