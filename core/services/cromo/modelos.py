@@ -145,6 +145,8 @@ class ConectorOdf:
     numero_conector: Optional[str]
     pelo_n_id: Optional[int]
     servicio_numero_atributo: Optional[str]
+    # `tp[]` de clase 136: patch de este conector a otro conector (típico de ODF Nodo). No es un pelo.
+    patch_conector_n_id: Optional[int] = None
     servicio_resuelto: Optional[str] = None
     servicio_id_historico: Optional[str] = None
     payload_raw: dict[str, Any] = field(default_factory=dict, repr=False)

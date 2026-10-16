@@ -23,6 +23,7 @@ export type TipoNodoCamino =
   | 'CAJA_PON'
   | 'CABLE_BAJADA'
   | 'NODO'
+  | 'ODF_NODO'
   | 'FUSION_ODF'
   | string;
 
@@ -45,6 +46,7 @@ const TIPO_NODO_LABELS: Record<string, string> = {
   CAJA_PON: 'Caja PON',
   CABLE_BAJADA: 'Cable de bajada',
   NODO: 'Nodo',
+  ODF_NODO: 'ODF Nodo',
   FUSION_ODF: 'Fusión en ODF',
   ROSETA: 'Roseta',
 };
@@ -65,6 +67,7 @@ const TIPO_NODO_ICONOS: Record<string, string> = {
   CAJA_PON: 'ph-package',
   CABLE_BAJADA: 'ph-line-segment',
   NODO: 'ph-buildings',
+  ODF_NODO: 'ph-buildings',
   FUSION_ODF: 'ph-arrows-merge',
   ROSETA: 'ph-house-line',
 };

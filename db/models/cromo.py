@@ -425,6 +425,7 @@ class CromoOdfConector(Base):
     bandeja_modelo = Column(Text, nullable=True)  # at.89, ej. "SC-APCx24"
     numero_conector = Column(Text, nullable=True)  # at.81 / name, ej. "15"
     pelo_n_id = Column(BigInteger, nullable=True, index=True)  # tp[].id_to (clase 130), sin FK dura
+    patch_conector_n_id = Column(BigInteger, nullable=True)  # tp[].id_to de clase 136 (patch a otro conector)
     servicio_numero_atributo = Column(Text, nullable=True)  # at.62 crudo, sólo si está en uso
     servicio_resuelto = Column(Text, nullable=True)  # MAX(atributo, regex del pelo)
     servicio_id_historico = Column(Text, nullable=True)  # MIN(...), sólo si difieren

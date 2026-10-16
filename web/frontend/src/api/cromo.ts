@@ -105,8 +105,8 @@ export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
   },
   {
     valor: 'SOLO_ODF',
-    etiqueta: 'Sólo ODFs (clase 69)',
-    hint: 'Corre únicamente la fase de ODFs, sin tocar cables, botellas ni fusiones. ~35 min.',
+    etiqueta: 'ODFs y ODF Nodo (clases 69 y 86)',
+    hint: 'Corre únicamente la fase de ODFs y ODF Nodo, sin tocar cables, botellas ni fusiones. ~35 min.',
     usaClasesBotella: false,
   },
   {

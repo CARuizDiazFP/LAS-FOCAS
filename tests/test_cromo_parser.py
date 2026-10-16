@@ -663,7 +663,8 @@ def test_parse_odf_conectores_guarda_todos_los_pelos_de_tp_como_candidatos():
 
 def test_parse_odf_conectores_candidatos_solo_de_clase_pelo():
     """`tp` también trae otras clases (136 conector-conector, 141 fusión de ODF): no son pelos.
-    Si no hay ningún 130 se conserva el comportamiento histórico (`tp[0]`)."""
+    `pelo_n_id` sale únicamente de un `tp` de clase 130; sin pelo queda NULL (antes se guardaba
+    `tp[0]`, que podía ser un conector o una fusión y quedaba como "pelo" inexistente)."""
     mixto = {
         "id": 10, "n_id": 10, "class": 136, "name": "3", "parent": 8539330, "at": [],
         "tp": [{"id_to": 6703087, "class": 130}, {"id_to": 8479280, "class": 136}],
@@ -679,7 +680,57 @@ def test_parse_odf_conectores_candidatos_solo_de_clase_pelo():
     assert conectores[10].pelos_candidatos == [6703087]
     assert conectores[10].pelo_n_id == 6703087
     assert conectores[11].pelos_candidatos == []
-    assert conectores[11].pelo_n_id == 8882734
+    assert conectores[11].pelo_n_id is None
+    assert conectores[11].patch_conector_n_id is None
+
+
+def test_parse_odf_conectores_tp_de_clase_136_va_a_patch_conector_n_id():
+    """Un `tp` de clase 136 es un patch a otro conector (típico de un ODF Nodo): no es un pelo."""
+    patch = {
+        "id": 12, "n_id": 12, "class": 136, "name": "5", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 8479280, "class": 136}],
+    }
+    otros = {
+        "id": 13, "n_id": 13, "class": 136, "name": "6", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 777, "class": 134}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, patch, otros]}
+
+    conectores = {c.n_id: c for c in parse_odf_conectores(obj)}
+
+    assert conectores[12].pelo_n_id is None
+    assert conectores[12].patch_conector_n_id == 8479280
+    assert conectores[13].pelo_n_id is None
+    assert conectores[13].patch_conector_n_id is None
+
+
+def test_parse_odf_conectores_pelo_y_patch_conviven():
+    ambos = {
+        "id": 14, "n_id": 14, "class": 136, "name": "7", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 8479280, "class": 136}, {"id_to": 6703087, "class": 130}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, ambos]}
+
+    c = parse_odf_conectores(obj)[0]
+
+    assert c.pelo_n_id == 6703087
+    assert c.patch_conector_n_id == 8479280
+
+
+def test_parse_odf_clase_86_es_odf_nodo_sin_pasar_por_el_regex_de_nombre():
+    obj = {
+        "id": 9295436, "n_id": 6646686, "class": 86,
+        "at": [{"id": 34, "value": "NODO Alejandro KORN"}],
+    }
+    odf = parse_objeto(obj)
+
+    assert odf.clase == 86
+    assert odf.tipo_elemento == "ODF_NODO"
+
+
+def test_parse_odf_clase_69_sigue_usando_el_regex_de_nombre():
+    obj = {"id": 1, "n_id": 2, "class": 69, "at": [{"id": 34, "value": "ODF Ciudadela"}]}
+    assert parse_odf(obj).tipo_elemento == "ODF"
 
 
 def test_parse_odf_conectores_lee_atributo_servicio_id_62_solo_si_esta_en_uso():

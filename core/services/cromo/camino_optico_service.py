@@ -36,6 +36,7 @@ TIPO_CAJA_PON = "CAJA_PON"
 TIPO_ROSETA = "ROSETA"
 TIPO_CABLE_BAJADA = "CABLE_BAJADA"
 TIPO_NODO = "NODO"
+TIPO_ODF_NODO = "ODF_NODO"
 TIPO_FUSION_ODF = "FUSION_ODF"
 
 # Clases medidas en un camino real (2026-09-10, pelo 10006353, 883 nodos). El catálogo de
@@ -73,7 +74,7 @@ _CLASES_FALLBACK: dict[int, str] = {
     66: TIPO_CABLE_BAJADA,
     84: TIPO_CAJA_PON,
     85: TIPO_ROSETA,
-    86: TIPO_NODO,
+    86: TIPO_ODF_NODO,
     126: TIPO_CAJA_PON,
     127: TIPO_CAJA_PON,
     133: TIPO_SPLITTER,
@@ -981,6 +982,7 @@ _SQL_CATALOGO_CLASES = text(
 # en todas revienta con `column "nombre" does not exist`.
 _TABLAS_VINCULABLES: tuple[tuple[str, str, str, bool], ...] = (
     ("cromo_odfs", "ODF", "nombre", True),
+    ("cromo_odfs", TIPO_ODF_NODO, "nombre", True),
     ("cromo_cables", "CABLE", "nombre", True),
     ("cromo_botellas", "BOTELLA", "nombre", True),
     ("cromo_pelos", TIPO_PELO, "numero_pelo", False),

@@ -152,17 +152,18 @@ function calleAltura(o: CromoOdfInventario): string {
   return partes.length > 0 ? partes.join(' ') : '—';
 }
 
-/** "ODF" → verde, "EMPALME" → ámbar, "SIN_CLASIFICAR" (u otro valor) → gris — mismo patrón de badge
+/** "ODF" y "ODF_NODO" → verde, "EMPALME" → ámbar, "SIN_CLASIFICAR" (u otro valor) → gris — mismo patrón de badge
  * de estado ya usado en `CableDetalleCromoView.vue` (`color-mix()` sobre tokens.css), sin crear una
  * utilidad de mapeo de colores compartida nueva. */
 function tipoElementoClase(tipo: string): 'ok' | 'warn' | 'idle' {
-  if (tipo === 'ODF') return 'ok';
+  if (tipo === 'ODF' || tipo === 'ODF_NODO') return 'ok';
   if (tipo === 'EMPALME') return 'warn';
   return 'idle';
 }
 
 function tipoElementoLabel(tipo: string): string {
   if (tipo === 'ODF') return 'ODF';
+  if (tipo === 'ODF_NODO') return 'ODF Nodo';
   if (tipo === 'EMPALME') return 'Empalme';
   return 'Sin clasificar';
 }

@@ -35,6 +35,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.cromo import alias_service, id_dual_resolver, ingesta, tracking_cache
@@ -245,12 +246,12 @@ async def relevar_odf(
     permite preseleccionar las posiciones de ODF de un Servicio.
     """
     obj = await id_dual_resolver.fetch_objeto(cliente, odf_n_id)
-    if obj.get("class") != ingesta.CLASE_ODF:
+    if obj.get("class") not in ingesta.CLASES_ODF:
         raise ValueError(f"El elemento {odf_n_id} no es una ODF en Cromo (clase {obj.get('class')}).")
 
     odf = cromo_parser.parse_odf(obj)
     accion = await ingesta.upsert_forzado(sesion, CromoOdf, odf, ingesta.ODF_CAMPOS)
-    await ingesta.registrar_evento(sesion, corrida_id, odf.n_id, ingesta.CLASE_ODF, accion)
+    await ingesta.registrar_evento(sesion, corrida_id, odf.n_id, odf.clase, accion)
 
     conectores = []
     try:
@@ -323,8 +324,14 @@ async def relevar_odfs_del_servicio(
             logger.error(
                 "action=cromo_relevar_odf evento=error odf_n_id=%s error=%s", odf_n_id, exc
             )
+            # La clase real sale de lo ya ingerido (69 o 86); si la ODF nunca se ingirió, 69.
+            clase_odf = (
+                await sesion.execute(
+                    text("SELECT clase FROM app.cromo_odfs WHERE n_id = :n_id"), {"n_id": odf_n_id}
+                )
+            ).scalar() or ingesta.CLASE_ODF
             await ingesta.registrar_evento(
-                sesion, corrida.id, odf_n_id, ingesta.CLASE_ODF, "ERROR", str(exc)
+                sesion, corrida.id, odf_n_id, clase_odf, "ERROR", str(exc)
             )
             resultado.detalle.append(
                 ItemNormalizado(elemento_id=odf_n_id, regla=REGLA_CONECTOR, accion="ERROR", detalle=str(exc))

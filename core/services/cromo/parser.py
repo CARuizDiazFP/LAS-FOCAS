@@ -48,6 +48,7 @@ _CLASE_TUBO = 129
 _CLASE_PELO = 130
 _CLASE_FUSION = 132
 _CLASE_ODF = 69
+_CLASE_ODF_NODO = 86
 _CLASE_SPLITTER = 133
 _CLASE_PUERTO_SPLITTER = 134
 _CLASE_PATCHERA = 135
@@ -707,7 +708,9 @@ def parse_odf(obj: Mapping[str, Any]) -> Odf:
         longitud=longitud,
         pts_raw=obj.get("pts"),
         propietario=atributo(obj, 47),
-        tipo_elemento=clasificar_tipo_elemento_odf(nombre),
+        tipo_elemento=(
+            "ODF_NODO" if obj.get("class") == _CLASE_ODF_NODO else clasificar_tipo_elemento_odf(nombre)
+        ),
         cables_asociados=cables_asociados,
         payload_raw=dict(obj),
     )
@@ -763,12 +766,18 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
             for punto in tp
             if punto.get("class") == _CLASE_PELO and punto.get("id_to") is not None
         ]
-        # Sin ningún pelo en `tp` (ej. sólo una fusión de ODF, clase 141) se conserva `tp[0]`,
-        # que es lo que siempre se guardó.
-        if pelos_candidatos:
-            pelo_n_id = pelos_candidatos[0]
-        else:
-            pelo_n_id = tp[0].get("id_to") if tp else None
+        # `pelo_n_id` sólo sale de un `tp` de clase 130. Antes se caía a `tp[0]`, que podía ser un
+        # conector (136), una fusión de ODF (141) o un puerto: quedaba guardado como "pelo" sin
+        # serlo. Un `tp` de clase 136 es un patch a otro conector y va a su propia columna.
+        pelo_n_id = pelos_candidatos[0] if pelos_candidatos else None
+        patch_conector_n_id = next(
+            (
+                int(punto["id_to"])
+                for punto in tp
+                if punto.get("class") == _CLASE_POSICION_PATCHERA and punto.get("id_to") is not None
+            ),
+            None,
+        )
 
         conectores.append(
             ConectorOdf(
@@ -779,6 +788,7 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
                 bandeja_modelo=atributo(bandeja, 89) if bandeja else None,
                 numero_conector=atributo(item, 81) or item.get("name"),
                 pelo_n_id=pelo_n_id,
+                patch_conector_n_id=patch_conector_n_id,
                 servicio_numero_atributo=atributo(item, 62),
                 payload_raw=dict(item),
                 pelos_candidatos=pelos_candidatos,
@@ -799,6 +809,7 @@ _DISPATCH: dict[int, Callable[[Mapping[str, Any]], ObjetoDominio]] = {
     _CLASE_PELO: parse_pelo,
     _CLASE_FUSION: parse_fusion,
     _CLASE_ODF: parse_odf,
+    _CLASE_ODF_NODO: parse_odf,
 }
 
 
