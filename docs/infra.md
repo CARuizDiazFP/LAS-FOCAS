@@ -934,6 +934,78 @@ mejora del regex de búsqueda, sin crear ninguna entidad de infraestructura.
   no matchear: el bot de Slack, `upload_tracking_web`, y las acciones de `InfraService` recién
   listadas.
 
+### ODF Nodo (clase 86), tracking por tramos y auditoría de huérfanos (2026-10-16)
+
+**ODF Nodo (clase 86).** Cromo tiene una segunda clase de ODF, "ODF Nodo", que se ingiere junto con
+la 69 (`CLASES_ODF = (69, 86)`; la fase `ODFs` y `SOLO_ODF` piden `"69,86"`). Va a `app.cromo_odfs` con
+`tipo_elemento='ODF_NODO'` (154 en dev). En la UI es el badge "ODF Nodo" y un selector "Tipo" en el
+Inventario de ODFs. Migración `20261016_01`. Además `cromo_odf_conectores` suma
+`patch_conector_n_id`: el `tp[]` de un conector puede traer un pelo (clase 130, `pelo_n_id`) o un
+patch (clase 136, `patch_conector_n_id`); 141 y otros dejan ambos NULL. Antes se guardaba cualquier
+`tp` como pelo y la migración corrige 10.255 `pelo_n_id` erróneos (quedan 731 de pelos de cables de
+terceros no ingeridos, legítimos). Tras migrar hay que reingerir `SOLO_ODF` y correr
+`scripts/cromo_backfill_conectores_odf.py --apply` dentro del contenedor.
+
+**Tracking por tramos.** El tracking del Servicio ya no corta en un número "esperado" (moda). Se
+pide un `/path` por semilla no cubierta (tope `CROMO_TRACKING_MAX_LLAMADAS`, default 80) y
+`tracking_service.clasificar_caminos` clasifica cada camino:
+
+1. Si toca una ODF confirmada del Servicio, es TRAMO siempre.
+2. Candidatos: caminos con al menos un extremo en un conector de ODF (69) u ODF Nodo (86); un
+   conector sin clase cuenta como ODF. Si ninguno termina en ODF, todos los no confirmados.
+3. Se exige a los candidatos tener al menos el 25% de los pelos del más largo; entre ellos, si
+   alguno tiene par (otro con Jaccard de cables >= 0,8) sólo cuentan los que tienen par. Si ninguno
+   tiene par (monofilar o PON) no se exige.
+4. El resto es RESIDUAL.
+
+La regla se derivó midiendo contra Cromo real (la propuesta original "un extremo en ODF alcanza"
+daba 10/3/7/2 tramos): 102452 = 6, 42351 = 2, 93154 = 2, 94673 = 2 (fixtures en
+`tests/test_cromo_tracking_clasificacion.py`). Cada camino lleva sus extremos (`cromo_tracking_cache.extremos
+JSONB`, migración `20261016_02`; una entrada sin extremos se regenera). `GET
+/api/infra/cromo/servicios/{id}/camino-optico/caminos` devuelve `tramos` y `residuales` (con `rol`),
+`esperados_declarados`, `odf_confirmadas`, y mantiene `caminos` (= tramos) y `huerfanos: []` por
+compatibilidad. `tracking.txt?tramo=N` nombra `{at62} CROMO T{n} pelo {n_id}.txt`. Los residuales no
+se descargan: `CromoCaminoPanel` muestra "N caminos residuales" con enlace al Viewer de huérfanos.
+
+**ODF confirmadas y trackings esperados** (migración `20261016_03`). El operador confirma por
+Servicio las ODF del recorrido (tabla `app.servicio_odf_confirmada`, rol `EXTREMO` o `TRANSITO`) y
+puede declarar cuántos trackings espera (`servicios.trackings_esperados`; sólo sirve para avisar
+diferencias, no corta nada). Endpoints admin con CSRF bajo `/api/admin/infra/servicios-odf/{id}/`:
+`GET|POST odf-confirmadas`, `POST odf-confirmadas/desconfirmar`, `POST trackings-esperados`. Acepta
+`n_id` o `version_id` y guarda `n_id`. Desconfirmar pone `vigente=false`.
+
+**Auditoría de huérfanos** (migración `20261016_04`, `core/services/cromo/auditoria_huerfanos.py`).
+Los residuales que son semillas del Servicio (pelos con su etiqueta fuera de todo tramo) se
+registran en `app.cromo_auditoria_huerfanos` (único por servicio+pelo) con una causa sugerida y
+`estado` PENDIENTE / NORMALIZADO / DESCARTADO. Se audita al final de `trackings_del_servicio`
+(Slack, portal y corrida global), sólo si el recorrido fue completo (sin tope tocado, semillas sin
+cubrir ni errores); si no, se omite sin escribir ni borrar. Re-auditar nunca pisa NORMALIZADO ni
+DESCARTADO y retira los PENDIENTE que pasaron a tramo.
+
+| Causa | Señal | ¿Normalizable? |
+|---|---|---|
+| `CABLE_DESUSO` | todos los cables del residual tienen `cromo_cables.tendido` (at.20) = "Sin Uso" y ningún tramo los recorre | **Sí** (única) |
+| `PELO_DANADO`, `CAMBIO_CABLE_DANO`, `MIGRACION_SITIO` | comparación estructural de cables y botellas extremas contra los tramos; sin verdad de campo | No, sólo revisar |
+| `SIN_CLASIFICAR` | ninguna señal | No |
+
+Precedencia: desuso, dañado, paralelo, migración, sin clasificar. Un residual es **protegido** si un
+extremo es conector de ODF (69, 86 o clase desconocida) o su camino toca una ODF confirmada: la
+causa se guarda pero no se normaliza. Un cable compartido con un residual protegido veta el desuso.
+Medido en dev (2026-10-16): CABLE_DESUSO sólo en 42351 (9 residuales); campos descartados por no
+tener respaldo: `estado_cromo` de baja, `status`, `vigente`, `stp` y "sin pelos de servicios activos".
+`normalizar` decide en el servidor, falla cerrado (evidencia incompleta o ODF confirmada posterior =
+rechazo) y excluye el pelo con `cromo_servicio_pelo_excluido.origen='AUDITORIA'`. Restaurar un
+excluido de auditoría devuelve la fila a PENDIENTE.
+
+**Auditoría global.** Corrida sintética del `cromo_worker` (`params.tipo=AUDITORIA_HUERFANOS`):
+recorre los Servicios Activos de más a menos pelos, hasta `CROMO_AUDITORIA_MAX_SERVICIOS` (default
+50), con un evento `PAGINA` por Servicio. Cada Servicio puede costar hasta
+`CROMO_TRACKING_MAX_LLAMADAS` llamadas de 4,6-14 s: 50 Servicios pueden ser horas. Una sola a la vez
+(advisory lock, 409 si hay otra), cancelable entre Servicios, FALLIDA tras 3 errores seguidos de
+Cromo. Endpoints admin (`/api/admin/infra/huerfanos`, `.../normalizar`, `.../descartar`,
+`.../auditoria-global` GET/POST); el progreso usa el SSE de corridas (`?desde=<id>` para reanudar).
+Viewer: `/admin/servicios/viewer/Huerfanos` (`AdminHuerfanosViewer.vue`).
+
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
 - **Vista dedicada por cámara**: `GET /infra/Camaras/:id` dentro de la SPA Vue 3.

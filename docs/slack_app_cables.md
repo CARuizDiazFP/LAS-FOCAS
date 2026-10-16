@@ -325,7 +325,7 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
   (`numero_primer_servicio`) y los históricos (`alias_ids`). Medido el 2026-09-28: de las 5.435
   filas de `app.servicios_historial_id`, **cero** tienen un `numero_id` que esas tres no cubran ya,
   así que no hace falta joinear el histórico.
-- **Un `.txt` por camino distinto, no por posición de ODF** (2026-09-29). Las semillas son las
+- **Un `.txt` por camino, no por posición de ODF** (2026-09-29; desde 2026-10-16 por tramo, ver abajo). Las semillas son las
   posiciones de ODF del Servicio (`semillas_por_defecto`), pero un hilo tiene posición en **cada**
   ODF que atraviesa —extremos e intermedias, propias o de terceros—, y todas recorren el mismo
   camino. `tracking_service.trackings_por_camino` las procesa en orden y descarta, **sin** pedirla a
@@ -333,8 +333,8 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
   de cada camino (`cromo_tracking_cache.pelos_camino`, migración `20260929_02`); una entrada sin
   esa lista (anterior a la columna) se regenera una vez. El 42351 da 2 archivos, uno por hilo, cada
   uno con el camino completo incluidos los cables de terceros (F-TECO-DC1 de Telecom, F-CRZ-FB de
-  Telefónica). Con más de uno, el nombre lleva el `pelo_n_id` intercalado (`nombre_distinguible`) o
-  los archivos se pisarían entre sí en el hilo.
+  Telefónica). Con más de uno el nombre es distinto por tramo (ver abajo), o los archivos se pisarían entre sí
+  en el hilo.
 - **Cables de terceros**: el `.txt` ya los incluye con nombre y metraje, porque sale del `/path` de
   Cromo y no del inventario ingerido. Lo que se perdía era la **semilla**: una posición de ODF une
   dos pelos en `tp[]`, y el parser guardaba siempre el primero, que puede ser de un cable de
@@ -343,23 +343,22 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
   con 4 posiciones); sobre el caché de 24 h (`app.cromo_tracking_cache`) es inmediato. Por eso el
   bot postea un aviso ANTES de empezar, y la sesión de DB se cierra antes de generar para no
   sostener una conexión del pool todo ese rato.
-- **Servicios sin ODF en sus extremos y caminos esperados** (2026-10-05). El 94673 no termina en
-  ninguna ODF: ninguno de sus 52 pelos tiene conector, y antes se tomaba sólo la primera semilla del
-  ranking → 1 `.txt` de sus 2 hilos. Ahora las semillas son **todas** (`semillas_para_tracking`:
-  posiciones de ODF primero, después los pelos de los cables, sin el tope de 20), y
-  `trackings_por_camino` corta al llegar a los **caminos esperados**: la moda de pelos del Servicio
-  por cable u ODF (`caminos_esperados`, regla de operaciones "N pelos en el mismo cable u ODF = N
-  caminos"). Moda y no máximo: 42351 y 93154 tienen la mayoría de los cables con 2 pelos pero
-  algunos con 3 y 4 (etiquetas viejas); el máximo daría 4. Para el 94673 son 2 llamadas a Cromo,
-  no 52.
-- **Pelos huérfanos**: con la etiqueta del Servicio pero fuera de todos sus caminos (un pelo movido
-  que quedó con la etiqueta vieja, o un match viejo cuyo pelo ya no la lleva). **No** generan un
-  `.txt` de más ni se le piden a Cromo; el bot los lista (hasta 15) e indica que se excluyen desde
-  el portal. Sólo se declaran huérfanos si se llegó a los caminos esperados. Medido en dev el
-  2026-10-05: 0 en el 94673, 34 en el 42351, 63 en el 93154.
-- **Caminos faltantes**: si se generan menos caminos que los esperados se dice ("se esperaban 2 y se
-  generaron 1") con el motivo de cada pelo que falló, para que el operador no cuente 1 archivo donde
-  esperaba 2 sin saber por qué. Se toleran `max(3, esperados)` semillas fallidas antes de rendirse.
+- **Un `.txt` por TRAMO, no por camino distinto** (2026-10-16, reemplaza la regla de "caminos
+  esperados" por moda del 2026-10-05). `trackings_por_camino` ya no corta en un número esperado:
+  pide a Cromo un `/path` por cada semilla no cubierta (tope `CROMO_TRACKING_MAX_LLAMADAS`, default
+  80; lo servido del caché no cuenta) y `clasificar_caminos` marca cada camino como **TRAMO** o
+  **RESIDUAL**. Sólo los tramos se suben al hilo, ordenados por más pelos y después `pelo_n_id`.
+  Los nombres son `{at62} CROMO T{n} pelo {n_id}.txt`. La regla de clasificación y su medición
+  están en `docs/infra.md` ("Tracking por tramos"). Medido contra Cromo real el 2026-10-16:
+  102452 = 6 tramos, 42351 = 2, 93154 = 2, 94673 = 2.
+- **Sin lista de huérfanos** (2026-10-16). Los residuales **no** se suben ni se listan en el hilo
+  (antes se listaban hasta 15). Se gestionan en el Viewer admin `/admin/servicios/viewer/Huerfanos`.
+- **Línea de resumen** (`mensaje_resumen`): sólo las líneas que aplican, en este orden. (1) con más
+  de un tramo, "Servicio segmentado en N tramos."; (2) si el operador declaró una cantidad
+  (`servicios.trackings_esperados`) distinta de la generada, "Se esperaban X trackings y se
+  generaron Y."; (3) si se tocó el tope de llamadas con semillas sin cubrir, ":warning: Tracking
+  incompleto: se alcanzó el tope de consultas a Cromo." más el motivo de cada pelo fallido. Si no
+  aplica ninguna, no se publica resumen. Se toleran hasta 10 semillas fallidas antes de rendirse.
 - Sin ningún pelo en Cromo responde el motivo en texto y **no** sube nada: un `.txt` que dice "no hay
   datos" es basura.
 
