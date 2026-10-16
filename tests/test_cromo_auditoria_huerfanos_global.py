@@ -108,8 +108,8 @@ async def test_un_evento_por_servicio_en_orden_y_cierra_ok(entorno):
     estado_final = await glob.auditar_global(object(), sesion, 5)
 
     assert estado_final == "OK"
-    assert [l["servicio_id"] for l in llamadas] == [11, 22, 33]
-    assert all(l["corrida_id"] == 5 for l in llamadas)
+    assert [x["servicio_id"] for x in llamadas] == [11, 22, 33]
+    assert all(x["corrida_id"] == 5 for x in llamadas)
     paginas = _eventos(sesion, "PAGINA")
     assert [p["servicio_id"] for p in paginas] == [11, 22, 33]
     assert paginas[-1]["leidas"] == 3 and paginas[-1]["total"] == 3
@@ -148,7 +148,7 @@ async def test_un_servicio_que_falla_no_corta_la_corrida(entorno):
     sesion = _Sesion(_Corrida(id=5))
 
     assert await glob.auditar_global(object(), sesion, 5) == "OK_CON_ERRORES"
-    assert [l["servicio_id"] for l in llamadas] == [11, 22, 33]
+    assert [x["servicio_id"] for x in llamadas] == [11, 22, 33]
     assert sesion.corrida.errores == 1 and sesion.rollbacks == 1
     assert any("Servicio 22" in e["texto"] for e in _eventos(sesion, "ERROR"))
 
