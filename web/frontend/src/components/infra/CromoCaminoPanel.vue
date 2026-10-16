@@ -104,6 +104,78 @@
         </button>
       </li>
     </ul>
+    <!-- Lo que declara el operador sobre el tracking: cuántos espera y qué ODF son del recorrido.
+         Un camino que toca una ODF confirmada es siempre tramo. Sólo un admin escribe. -->
+    <div v-if="camino.caminosResueltos.value" class="cromo-camino__declaracion">
+      <label class="cromo-camino__esperados">
+        <span class="cromo-camino__nota">Trackings esperados</span>
+        <input
+          v-model="esperadosEditado"
+          class="cromo-camino__input"
+          type="number"
+          min="1"
+          max="32767"
+          inputmode="numeric"
+          placeholder="sin declarar"
+          :disabled="!esAdmin || camino.guardandoDeclaracion.value"
+          @change="guardarEsperados"
+        />
+      </label>
+
+      <template v-if="camino.odfsDelCamino.value.length || camino.odfConfirmadas.value.length">
+        <p class="cromo-camino__nota">ODF del camino</p>
+        <ul class="cromo-camino__lista">
+          <li v-for="o in camino.odfsDelCamino.value" :key="o.odf_n_id">
+            <span>
+              {{ o.clase === 86 ? 'ODF Nodo' : 'ODF' }} {{ o.nombre ?? o.odf_n_id }}
+              <span v-if="confirmadaDe(o.odf_n_id)" class="cromo-camino__confirmada">
+                <i class="ph ph-check-circle" aria-hidden="true"></i>
+                confirmada ({{ rolLabel(confirmadaDe(o.odf_n_id)!.rol) }})
+              </span>
+            </span>
+            <span v-if="esAdmin && servicioId !== null" class="cromo-camino__acciones">
+              <template v-if="confirmadaDe(o.odf_n_id)">
+                <button
+                  class="btn subtle"
+                  type="button"
+                  :disabled="camino.guardandoDeclaracion.value"
+                  @click="camino.quitarOdf(servicioId, confirmadaDe(o.odf_n_id)!.odf_n_id)"
+                >
+                  Quitar
+                </button>
+              </template>
+              <template v-else>
+                <select
+                  class="cromo-camino__input"
+                  :value="rolDe(o)"
+                  :disabled="camino.guardandoDeclaracion.value"
+                  :aria-label="`Rol de la ODF ${o.nombre ?? o.odf_n_id}`"
+                  @change="rolesElegidos[o.odf_n_id] = ($event.target as HTMLSelectElement).value as RolOdfConfirmada"
+                >
+                  <option value="EXTREMO">Extremo</option>
+                  <option value="TRANSITO">Tránsito</option>
+                </select>
+                <button
+                  class="btn subtle"
+                  type="button"
+                  :disabled="camino.guardandoDeclaracion.value"
+                  @click="camino.confirmarOdf(servicioId, o.odf_n_id, rolDe(o))"
+                >
+                  Confirmar
+                </button>
+              </template>
+            </span>
+          </li>
+        </ul>
+      </template>
+      <p v-if="camino.declaracionCambio.value" class="cromo-camino__nota">
+        Lo declarado se aplica al volver a resolver los caminos.
+      </p>
+      <p v-if="camino.errorDeclaracion.value" class="cromo-camino__error">
+        {{ camino.errorDeclaracion.value }}
+      </p>
+    </div>
+
     <!-- Residuales: caminos de pelos con la etiqueta del Servicio que no son un tramo suyo. No
          se descargan; la auditoría los revisa. -->
     <p v-if="camino.residuales.value.length" class="cromo-camino__nota">
@@ -260,10 +332,15 @@
 // El estado vive en el PADRE, no acá: tanto el modal de asociación (que persiste el
 // `pelo_n_id` del camino resuelto al confirmar) como el detalle del Servicio (que descarga el
 // .txt del pelo elegido) necesitan leerlo. El panel dibuja y dispara; no es dueño de nada.
-import { computed } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 
-import { type OdfDelCamino, etiquetaTramo } from '../../api/cromoPath';
-import type { useCromoPath } from '../../composables/useCromoPath';
+import {
+  type OdfConfirmada,
+  type OdfDelCamino,
+  type RolOdfConfirmada,
+  etiquetaTramo,
+} from '../../api/cromoPath';
+import type { OdfDelTramo, useCromoPath } from '../../composables/useCromoPath';
 import { useSession } from '../../composables/useSession';
 import CromoConsistenciaPanel from './CromoConsistenciaPanel.vue';
 import CromoPathSecuencia from './CromoPathSecuencia.vue';
@@ -277,6 +354,39 @@ const props = defineProps<{
 const { state: sesion } = useSession();
 // Mismo criterio que el resto del SPA: el rol viaja en la sesión, no hay un `isAdmin` propio.
 const esAdmin = computed(() => (sesion.value.role ?? '').toLowerCase() === 'admin');
+
+// Rol elegido a mano por ODF antes de confirmar; sin elección vale el sugerido (ODF Nodo → tránsito).
+const rolesElegidos = reactive<Record<number, RolOdfConfirmada>>({});
+function rolDe(odf: OdfDelTramo): RolOdfConfirmada {
+  return rolesElegidos[odf.odf_n_id] ?? odf.rolSugerido;
+}
+function rolLabel(rol: RolOdfConfirmada): string {
+  return rol === 'TRANSITO' ? 'tránsito' : 'extremo';
+}
+/** La confirmación vigente de la ODF; el id del camino puede ser el de versión, no el de linaje. */
+function confirmadaDe(odfNId: number): OdfConfirmada | undefined {
+  return props.camino.odfConfirmadas.value.find((c) => c.odf_n_id === odfNId);
+}
+
+// Campo "Trackings esperados": vacío = sin declarar. Se re-sincroniza con lo que declara el Servicio.
+const esperadosEditado = ref<string | number>('');
+watch(
+  () => props.camino.esperadosDeclarados.value,
+  (valor) => {
+    esperadosEditado.value = valor ?? '';
+  },
+  { immediate: true },
+);
+async function guardarEsperados(): Promise<void> {
+  if (props.servicioId === null || !esAdmin.value) return;
+  const texto = String(esperadosEditado.value).trim();
+  const cantidad = texto === '' ? null : Number(texto);
+  if (cantidad !== null && (!Number.isInteger(cantidad) || cantidad <= 0)) {
+    esperadosEditado.value = props.camino.esperadosDeclarados.value ?? '';
+    return;
+  }
+  await props.camino.declararEsperados(props.servicioId, cantidad);
+}
 
 /** Normalizar escribe inventario, así que el panel sólo dispara: el servicio decide qué corregir. */
 async function normalizar(elementoIds: number[] | null): Promise<void> {
@@ -389,6 +499,40 @@ defineSlots<{
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.cromo-camino__declaracion {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cromo-camino__esperados {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cromo-camino__input {
+  width: 110px;
+  padding: 3px 6px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.cromo-camino__acciones {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cromo-camino__confirmada {
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--color-state-ok);
 }
 
 .cromo-camino__lista {

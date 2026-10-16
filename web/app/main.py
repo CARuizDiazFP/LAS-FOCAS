@@ -8899,7 +8899,8 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
     Contrato: `tramos[{n, pelo_n_id, nombre_archivo, pelos_en_camino, desde_cache, extremos}]`
     (ya ordenados; `n` es el número de tramo del nombre del `.txt`), `residuales[...]` sin `n` ni
     `desde_cache` (no se descargan), `esperados_declarados` (o `null`), `completo` y `errores`.
-    `extremos` es `{a, b}` con `tipo`, `odf_n_id`, `odf_nombre`, `odf_clase`, `patchera_nombre`,
+    `odf_confirmadas` son las ODF que un admin confirmó para el Servicio (`odf_n_id`, `rol`,
+    `odf_nombre`, `odf_tipo`, ...). `extremos` es `{a, b}` con `tipo`, `odf_n_id`, `odf_nombre`, `odf_clase`, `patchera_nombre`,
     `conector` e `id_cromo`.
 
     Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
@@ -8963,6 +8964,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
             "tramos": tramos,
             "residuales": [_camino(t) for t in resultado.residuales],
             "esperados_declarados": resultado.esperados_declarados,
+            "odf_confirmadas": resultado.odf_confirmadas,
             "completo": resultado.completo,
             "errores": resultado.errores,
         }
@@ -9033,6 +9035,118 @@ async def servicios_pelo_restaurar_web(
             status_code=404,
         )
     return JSONResponse({"ok": True, "pelo_n_id": body.pelo_n_id})
+
+
+class OdfConfirmadaItemModel(BaseModel):
+    """Una ODF a confirmar para un Servicio, con su rol en el recorrido."""
+
+    odf_n_id: int = Field(description="n_id de la ODF en cromo_odfs")
+    rol: Literal["EXTREMO", "TRANSITO"] = Field(description="Extremo del servicio o ODF de tránsito")
+
+
+class OdfConfirmarRequestModel(BaseModel):
+    """Payload para confirmar ODF de un Servicio en lote."""
+
+    odfs: list[OdfConfirmadaItemModel] = Field(min_length=1, max_length=50)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class OdfDesconfirmarRequestModel(BaseModel):
+    """Payload para quitar la confirmación de una ODF."""
+
+    odf_n_id: int = Field(description="n_id de la ODF a des-confirmar")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class TrackingsEsperadosRequestModel(BaseModel):
+    """Payload para declarar cuántos trackings espera el Servicio (`null` borra la declaración)."""
+
+    cantidad: int | None = Field(default=None, gt=0, le=32767)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas")
+async def servicios_odf_confirmadas_listar_web(request: Request, servicio_id: int) -> JSONResponse:
+    """ODF confirmadas vigentes del Servicio y los trackings que se esperan. Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        declaradas = await declaraciones_del_servicio(sesion, servicio_id)
+    return JSONResponse(
+        {"odf_confirmadas": declaradas.confirmadas, "trackings_esperados": declaradas.trackings_esperados}
+    )
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas")
+async def servicios_odf_confirmar_web(
+    request: Request, servicio_id: int, body: OdfConfirmarRequestModel
+) -> JSONResponse:
+    """Confirma ODF del Servicio en lote (todo o nada). Un camino que toca una ODF confirmada es
+    siempre TRAMO. Idempotente. 404 si alguna ODF no existe en el inventario. Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import confirmar
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_odf_confirmar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        try:
+            lista = await confirmar(
+                sesion, servicio_id, [(o.odf_n_id, o.rol) for o in body.odfs], usuario=username
+            )
+        except ObjetoNoEncontrado as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+    return JSONResponse({"ok": True, "odf_confirmadas": lista})
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas/desconfirmar")
+async def servicios_odf_desconfirmar_web(
+    request: Request, servicio_id: int, body: OdfDesconfirmarRequestModel
+) -> JSONResponse:
+    """Quita la confirmación de una ODF (queda el historial). Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import desconfirmar, listar
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_odf_desconfirmar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        if not await desconfirmar(sesion, servicio_id, body.odf_n_id):
+            return JSONResponse(
+                {"error": f"La ODF {body.odf_n_id} no estaba confirmada para este Servicio."},
+                status_code=404,
+            )
+        lista = await listar(sesion, servicio_id)
+    return JSONResponse({"ok": True, "odf_confirmadas": lista})
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/trackings-esperados")
+async def servicios_trackings_esperados_web(
+    request: Request, servicio_id: int, body: TrackingsEsperadosRequestModel
+) -> JSONResponse:
+    """Declara cuántos trackings espera el Servicio; `cantidad: null` borra la declaración. Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import declarar_trackings_esperados
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_trackings_esperados", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await declarar_trackings_esperados(sesion, servicio_id, body.cantidad):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+    return JSONResponse({"ok": True, "trackings_esperados": body.cantidad})
 
 
 class CaminoNormalizarRequestModel(BaseModel):

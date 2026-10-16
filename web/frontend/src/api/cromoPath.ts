@@ -315,11 +315,26 @@ export interface CaminoResidual {
   extremos: ExtremosCamino;
 }
 
+export type RolOdfConfirmada = 'EXTREMO' | 'TRANSITO';
+
+/** ODF que un admin confirmó como parte del recorrido del Servicio. */
+export interface OdfConfirmada {
+  odf_n_id: number;
+  rol: RolOdfConfirmada;
+  odf_nombre: string | null;
+  /** `ODF` u `ODF_NODO` (`cromo_odfs.tipo_elemento`); `null` si la ODF no está ingerida. */
+  odf_tipo: string | null;
+  confirmado_por?: string;
+  confirmado_en?: string | null;
+}
+
 export interface CaminosServicioResponse {
   tramos: TramoDelServicio[];
   residuales: CaminoResidual[];
   /** Cantidad de trackings que declara el Servicio, o `null` si no declara ninguna. */
   esperados_declarados: number | null;
+  /** ODF confirmadas vigentes del Servicio. */
+  odf_confirmadas: OdfConfirmada[];
   /** `false` si se alcanzó el tope de consultas a Cromo. */
   completo: boolean;
   errores: string[];
@@ -444,6 +459,41 @@ export async function restaurarPeloServicio(
   return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/pelos-excluidos/restaurar`, {
     method: 'POST',
     json: { pelo_n_id: peloNId },
+    csrf: true,
+  });
+}
+
+/** Confirma ODF del Servicio en lote (un camino que toca una ODF confirmada es siempre tramo). Admin. */
+export async function confirmarOdfsServicio(
+  servicioId: number,
+  odfs: { odf_n_id: number; rol: RolOdfConfirmada }[],
+): Promise<{ ok: boolean; odf_confirmadas: OdfConfirmada[] }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/odf-confirmadas`, {
+    method: 'POST',
+    json: { odfs },
+    csrf: true,
+  });
+}
+
+/** Quita la confirmación de una ODF (el historial queda). Admin. */
+export async function desconfirmarOdfServicio(
+  servicioId: number,
+  odfNId: number,
+): Promise<{ ok: boolean; odf_confirmadas: OdfConfirmada[] }> {
+  return requestJson(
+    `/api/admin/infra/servicios-odf/${servicioId}/odf-confirmadas/desconfirmar`,
+    { method: 'POST', json: { odf_n_id: odfNId }, csrf: true },
+  );
+}
+
+/** Declara cuántos trackings espera el Servicio; `null` borra la declaración. Admin. */
+export async function declararTrackingsEsperados(
+  servicioId: number,
+  cantidad: number | null,
+): Promise<{ ok: boolean; trackings_esperados: number | null }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/trackings-esperados`, {
+    method: 'POST',
+    json: { cantidad },
     csrf: true,
   });
 }

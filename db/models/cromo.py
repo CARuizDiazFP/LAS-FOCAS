@@ -514,6 +514,42 @@ class CromoServicioOdfOverride(Base):
         return f"<CromoServicioOdfOverride servicio_id={self.servicio_id} odf_n_id={self.odf_n_id}>"
 
 
+class ServicioOdfConfirmada(Base):
+    """ODF que un operador confirma como parte del recorrido de un Servicio (migración 20261016_03).
+
+    Un camino que toca una ODF confirmada es siempre `TRAMO` en el tracking por tramos. `rol` es
+    `EXTREMO` o `TRANSITO` (Text + CHECK en la migración). `odf_n_id` es referencia blanda a
+    `cromo_odfs.n_id`. Des-confirmar es `vigente=False`, nunca un DELETE: conserva el historial. Hay
+    a lo sumo una fila vigente por (`servicio_id`, `odf_n_id`) (índice único parcial). No reemplaza
+    a `CromoServicioOdfOverride` (escudo de "servicios sin ODF"): admite varias ODF por servicio.
+    """
+
+    __tablename__ = "servicio_odf_confirmada"
+    __table_args__ = (
+        Index(
+            "ux_servicio_odf_confirmada_vigente",
+            "servicio_id",
+            "odf_n_id",
+            unique=True,
+            postgresql_where=text("vigente"),
+        ),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    odf_n_id = Column(BigInteger, nullable=False)  # referencia blanda a cromo_odfs.n_id
+    rol = Column(Text, nullable=False)  # EXTREMO | TRANSITO — CHECK en la migración
+    confirmado_por = Column(String(128), nullable=False)
+    confirmado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    vigente = Column(Boolean, nullable=False, server_default=text("true"))
+
+    def __repr__(self) -> str:
+        return f"<ServicioOdfConfirmada servicio_id={self.servicio_id} odf_n_id={self.odf_n_id} rol={self.rol}>"
+
+
 class CromoServicioMatch(Base):
     """Puente entre un pelo con servicio parseado (`at.61`) y el maestro `app.servicios`."""
 

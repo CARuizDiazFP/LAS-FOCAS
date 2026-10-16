@@ -486,8 +486,81 @@ def _con_resumen(tracking: TrackingGenerado, resumen) -> TrackingGenerado:
     return tracking
 
 
+@pytest.fixture
+def declaraciones(monkeypatch):
+    """Sin nada declarado por defecto: la sesión de estos tests es un `object()`, sin DB."""
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+
+    estado = {"valor": Declaraciones()}
+
+    async def _leer(_sesion, _servicio_id):
+        return estado["valor"]
+
+    monkeypatch.setattr(tracking_service, "declaraciones_del_servicio", _leer)
+    return estado
+
+
 @pytest.mark.asyncio
-async def test_trackings_del_servicio_separa_tramos_y_residuales_y_los_nombra(monkeypatch):
+async def test_trackings_del_servicio_lee_confirmadas_y_esperados_de_la_db(monkeypatch, declaraciones):
+    """Un camino sin extremo en ODF que toca una ODF confirmada (por version_id) pasa a TRAMO, y
+    los esperados declarados y la lista de confirmadas viajan en el resultado."""
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    resumenes = {
+        10: ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, odfs=(9295436,), cables=(1,)),
+        20: ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, odfs=(), cables=(2,)),
+    }
+    # El 10 tiene 1 pelo y el 20 tiene 10: sin confirmación el 10 quedaría fuera por proporción.
+    pelos = {10: {10}, 20: set(range(100, 110))}
+    declaraciones["valor"] = Declaraciones(
+        odf_ids=frozenset({6646686, 9295436}),
+        confirmadas=[{"odf_n_id": 6646686, "rol": "TRANSITO"}],
+        trackings_esperados=3,
+    )
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567)
+
+    assert sorted(t.pelo_n_id for t in resultado.tramos) == [10, 20]
+    assert resultado.esperados_declarados == 3
+    assert resultado.odf_confirmadas == [{"odf_n_id": 6646686, "rol": "TRANSITO"}]
+
+    # El parámetro explícito pisa a las de la DB: sin confirmadas el 10 es residual.
+    sin = await tracking_service.trackings_del_servicio(
+        object(), object(), 567, odfs_confirmadas=frozenset()
+    )
+    assert [t.pelo_n_id for t in sin.tramos] == [20]
+    assert sin.esperados_declarados == 3
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_sin_semillas_conserva_lo_declarado(monkeypatch, declaraciones):
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+
+    declaraciones["valor"] = Declaraciones(trackings_esperados=2)
+
+    async def _semillas(_sesion, _servicio_id):
+        return []
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.esperados_declarados == 2
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_separa_tramos_y_residuales_y_los_nombra(monkeypatch, declaraciones):
     """Dos caminos que terminan en conector de ODF son TRAMO; uno chico que no toca ODF es
     RESIDUAL. Los tramos se numeran por cantidad de pelos descendente y llevan el nombre
     `{at62} CROMO T{n} pelo {n_id}.txt`."""
@@ -531,7 +604,7 @@ async def test_trackings_del_servicio_separa_tramos_y_residuales_y_los_nombra(mo
 
 
 @pytest.mark.asyncio
-async def test_trackings_del_servicio_sin_semillas_devuelve_vacio(monkeypatch):
+async def test_trackings_del_servicio_sin_semillas_devuelve_vacio(monkeypatch, declaraciones):
     async def _semillas(_sesion, _servicio_id):
         return []
 
@@ -544,7 +617,7 @@ async def test_trackings_del_servicio_sin_semillas_devuelve_vacio(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_trackings_del_servicio_respeta_el_tope_del_entorno(monkeypatch):
+async def test_trackings_del_servicio_respeta_el_tope_del_entorno(monkeypatch, declaraciones):
     monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "2")
     pedidos: list[int] = []
 

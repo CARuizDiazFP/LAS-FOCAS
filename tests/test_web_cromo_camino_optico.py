@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from typing import Optional
 
 from fastapi.testclient import TestClient  # type: ignore
@@ -713,7 +715,9 @@ def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
 
     assert res.status_code == 200
     cuerpo = res.json()
-    assert set(cuerpo) == {"tramos", "residuales", "esperados_declarados", "completo", "errores"}
+    assert set(cuerpo) == {
+        "tramos", "residuales", "esperados_declarados", "odf_confirmadas", "completo", "errores"
+    }
     assert cuerpo["esperados_declarados"] == 3 and cuerpo["completo"] is True
     assert [c["n"] for c in cuerpo["tramos"]] == [1, 2]
     assert [c["pelo_n_id"] for c in cuerpo["tramos"]] == [6799772, 6799773]
@@ -805,3 +809,126 @@ def test_restaurar_pelo_no_excluido_404(monkeypatch):
 
     assert client.post(_url_excluir(True), json={"pelo_n_id": 9999999}).status_code == 200
     assert client.post(_url_excluir(True), json={"pelo_n_id": 5}).status_code == 404
+
+
+# ── ODF confirmadas y trackings esperados (Tarea 4) ─────────────────────────────────────────
+
+
+@pytest.fixture(autouse=False)
+def _testing(monkeypatch):
+    """`_validar_csrf` se saltea con TESTING=true; sin esto estos tests dependen del orden."""
+    monkeypatch.setenv("TESTING", "true")
+
+
+def _url_odf(sufijo: str = "") -> str:
+    return f"/api/admin/infra/servicios-odf/{SERVICIO}/odf-confirmadas{sufijo}"
+
+
+def test_confirmar_odf_exige_admin(monkeypatch, _testing):
+    _fake_session(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}]})
+
+    assert res.status_code == 403
+
+
+def test_confirmar_odf_en_lote_valida_rol_y_mapea_inexistente_a_404(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+
+    _fake_session(monkeypatch)
+    llamadas: list[tuple] = []
+
+    async def _confirmar(_sesion, servicio_id, odfs, *, usuario):
+        if any(n == 99 for n, _ in odfs):
+            raise ObjetoNoEncontrado("no existe")
+        llamadas.append((servicio_id, odfs, usuario))
+        return [{"odf_n_id": n, "rol": r} for n, r in odfs]
+
+    monkeypatch.setattr(svc, "confirmar", _confirmar)
+    client = _cliente_admin(monkeypatch)
+
+    ok = client.post(
+        _url_odf(),
+        json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}, {"odf_n_id": 2, "rol": "TRANSITO"}]},
+    )
+    inexistente = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 99, "rol": "EXTREMO"}]})
+    rol_malo = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "OTRO"}]})
+    vacio = client.post(_url_odf(), json={"odfs": []})
+
+    assert ok.status_code == 200
+    assert ok.json()["odf_confirmadas"] == [
+        {"odf_n_id": 1, "rol": "EXTREMO"},
+        {"odf_n_id": 2, "rol": "TRANSITO"},
+    ]
+    assert llamadas == [(SERVICIO, [(1, "EXTREMO"), (2, "TRANSITO")], "admin")]
+    assert inexistente.status_code == 404
+    assert rol_malo.status_code == 422 and vacio.status_code == 422
+
+
+def test_confirmar_odf_servicio_inexistente_404(monkeypatch, _testing):
+    _fake_session(monkeypatch, existe=False)
+    client = _cliente_admin(monkeypatch)
+
+    res = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}]})
+
+    assert res.status_code == 404
+
+
+def test_desconfirmar_odf_404_si_no_estaba_vigente(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+
+    _fake_session(monkeypatch)
+
+    async def _desconfirmar(_sesion, _servicio_id, odf_n_id):
+        return odf_n_id == 1
+
+    async def _listar(_sesion, _servicio_id):
+        return []
+
+    monkeypatch.setattr(svc, "desconfirmar", _desconfirmar)
+    monkeypatch.setattr(svc, "listar", _listar)
+    client = _cliente_admin(monkeypatch)
+
+    assert client.post(_url_odf("/desconfirmar"), json={"odf_n_id": 1}).status_code == 200
+    assert client.post(_url_odf("/desconfirmar"), json={"odf_n_id": 2}).status_code == 404
+    assert _cliente_user(monkeypatch).post(
+        _url_odf("/desconfirmar"), json={"odf_n_id": 1}
+    ).status_code == 403
+
+
+def test_declarar_trackings_esperados_valida_y_permite_null(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+
+    _fake_session(monkeypatch)
+    declaradas: list = []
+
+    async def _declarar(_sesion, servicio_id, cantidad):
+        declaradas.append((servicio_id, cantidad))
+        return True
+
+    monkeypatch.setattr(svc, "declarar_trackings_esperados", _declarar)
+    client = _cliente_admin(monkeypatch)
+    url = f"/api/admin/infra/servicios-odf/{SERVICIO}/trackings-esperados"
+
+    assert client.post(url, json={"cantidad": 6}).status_code == 200
+    assert client.post(url, json={"cantidad": None}).status_code == 200
+    assert client.post(url, json={"cantidad": 0}).status_code == 422
+    assert declaradas == [(SERVICIO, 6), (SERVICIO, None)]
+    assert _cliente_user(monkeypatch).post(url, json={"cantidad": 2}).status_code == 403
+
+
+def test_listar_odf_confirmadas_exige_admin_y_devuelve_lo_declarado(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+
+    _fake_session(monkeypatch)
+
+    async def _decl(_sesion, _servicio_id):
+        return svc.Declaraciones(confirmadas=[{"odf_n_id": 1, "rol": "EXTREMO"}], trackings_esperados=4)
+
+    monkeypatch.setattr(svc, "declaraciones_del_servicio", _decl)
+
+    assert _cliente_user(monkeypatch).get(_url_odf()).status_code == 403
+    cuerpo = _cliente_admin(monkeypatch).get(_url_odf()).json()
+    assert cuerpo == {"odf_confirmadas": [{"odf_n_id": 1, "rol": "EXTREMO"}], "trackings_esperados": 4}

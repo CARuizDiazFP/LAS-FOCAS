@@ -8,10 +8,15 @@ import { computed, ref } from 'vue';
 import {
   type CaminoResidual,
   type CaminoOpticoResponse,
+  type OdfConfirmada,
+  type RolOdfConfirmada,
   type PeloExcluido,
   type PeloSemilla,
   type PelosCaminoResponse,
   type TramoDelServicio,
+  confirmarOdfsServicio,
+  declararTrackingsEsperados,
+  desconfirmarOdfServicio,
   descargarTrackingCromo,
   listarPelosCamino,
   mensajeErrorCromoPath,
@@ -26,6 +31,16 @@ import {
 export interface ResultadoDescargaTrackings {
   descargados: string[];
   fallidos: { peloNId: number; motivo: string }[];
+}
+
+/** ODF que aparece en los extremos de los tramos resueltos, candidata a confirmarse. */
+export interface OdfDelTramo {
+  odf_n_id: number;
+  nombre: string | null;
+  /** 86 = ODF Nodo, 69 = ODF. */
+  clase: number | null;
+  /** Rol sugerido: ODF Nodo → tránsito, ODF → extremo. El operador lo puede cambiar. */
+  rolSugerido: RolOdfConfirmada;
 }
 
 /** 30 s: seis veces el peor caso medido por objeto contra Cromo, sobre un endpoint documentado
@@ -76,6 +91,32 @@ export function useCromoPath() {
   const resolviendoCaminos = ref(false);
   const errorCaminos = ref('');
   /** Pelos ya sacados del Servicio en local. */
+  /** ODF confirmadas vigentes del Servicio (vienen con `/caminos`; los POST las refrescan). */
+  const odfConfirmadas = ref<OdfConfirmada[]>([]);
+  /** Trackings que declara el Servicio (`null` = sin declarar). */
+  const esperadosDeclarados = ref<number | null>(null);
+  const guardandoDeclaracion = ref(false);
+  const errorDeclaracion = ref('');
+  /** Se confirmó/quitó una ODF o se cambió lo esperado: hay que volver a resolver los caminos. */
+  const declaracionCambio = ref(false);
+
+  /** ODF de los extremos de los tramos resueltos, sin repetir (por `odf_n_id`). */
+  const odfsDelCamino = computed<OdfDelTramo[]>(() => {
+    const vistas = new Map<number, OdfDelTramo>();
+    for (const tramo of tramos.value) {
+      for (const extremo of [tramo.extremos.a, tramo.extremos.b]) {
+        if (!extremo || extremo.odf_n_id == null || vistas.has(extremo.odf_n_id)) continue;
+        vistas.set(extremo.odf_n_id, {
+          odf_n_id: extremo.odf_n_id,
+          nombre: extremo.odf_nombre,
+          clase: extremo.odf_clase,
+          rolSugerido: extremo.odf_clase === 86 ? 'TRANSITO' : 'EXTREMO',
+        });
+      }
+    }
+    return [...vistas.values()];
+  });
+
   const excluidos = ref<PeloExcluido[]>([]);
   /** Pelo que se está excluyendo o restaurando, para deshabilitar sólo su botón. */
   const peloEnExclusion = ref<number | null>(null);
@@ -326,6 +367,9 @@ export function useCromoPath() {
       residuales.value = respuesta.residuales;
       caminosEsperados.value = respuesta.esperados_declarados ?? respuesta.tramos.length;
       caminosResueltos.value = true;
+      odfConfirmadas.value = respuesta.odf_confirmadas ?? [];
+      esperadosDeclarados.value = respuesta.esperados_declarados;
+      declaracionCambio.value = false;
       seleccionManual.value = false;
       pelosSeleccionados.value = respuesta.tramos.map((t) => t.pelo_n_id);
       const avisos: string[] = [];
@@ -351,6 +395,46 @@ export function useCromoPath() {
     } finally {
       resolviendoCaminos.value = false;
     }
+  }
+
+  /** Corre una escritura de lo declarado (ODF o esperados) con su estado de carga y su error. */
+  async function guardarDeclaracion(accion: () => Promise<void>): Promise<boolean> {
+    guardandoDeclaracion.value = true;
+    errorDeclaracion.value = '';
+    try {
+      await accion();
+      declaracionCambio.value = true;
+      return true;
+    } catch (error) {
+      errorDeclaracion.value = mensajeErrorCromoPath(error);
+      return false;
+    } finally {
+      guardandoDeclaracion.value = false;
+    }
+  }
+
+  /** Confirma una ODF del camino con el rol elegido. Admin. */
+  function confirmarOdf(servicioId: number, odfNId: number, rol: RolOdfConfirmada): Promise<boolean> {
+    return guardarDeclaracion(async () => {
+      const r = await confirmarOdfsServicio(servicioId, [{ odf_n_id: odfNId, rol }]);
+      odfConfirmadas.value = r.odf_confirmadas;
+    });
+  }
+
+  /** Quita la confirmación de una ODF. Admin. */
+  function quitarOdf(servicioId: number, odfNId: number): Promise<boolean> {
+    return guardarDeclaracion(async () => {
+      const r = await desconfirmarOdfServicio(servicioId, odfNId);
+      odfConfirmadas.value = r.odf_confirmadas;
+    });
+  }
+
+  /** Declara cuántos trackings espera el Servicio (`null` borra la declaración). Admin. */
+  function declararEsperados(servicioId: number, cantidad: number | null): Promise<boolean> {
+    return guardarDeclaracion(async () => {
+      const r = await declararTrackingsEsperados(servicioId, cantidad);
+      esperadosDeclarados.value = r.trackings_esperados;
+    });
   }
 
   /** Baja el `.txt` de un solo tramo (botón "Descargar" de su fila). */
@@ -465,6 +549,10 @@ export function useCromoPath() {
     caminosResueltos.value = false;
     resolviendoCaminos.value = false;
     errorCaminos.value = '';
+    odfConfirmadas.value = [];
+    esperadosDeclarados.value = null;
+    errorDeclaracion.value = '';
+    declaracionCambio.value = false;
     excluidos.value = [];
     peloEnExclusion.value = null;
     errorExclusion.value = '';
@@ -512,6 +600,12 @@ export function useCromoPath() {
     caminosResueltos,
     resolviendoCaminos,
     errorCaminos,
+    odfConfirmadas,
+    esperadosDeclarados,
+    guardandoDeclaracion,
+    errorDeclaracion,
+    declaracionCambio,
+    odfsDelCamino,
     excluidos,
     peloEnExclusion,
     errorExclusion,
@@ -530,6 +624,9 @@ export function useCromoPath() {
     relevarOdf,
     resolverCaminos,
     descargarTramo,
+    confirmarOdf,
+    quitarOdf,
+    declararEsperados,
     restaurarPelo,
     reset,
     autoResolverSiUnicaSemilla,

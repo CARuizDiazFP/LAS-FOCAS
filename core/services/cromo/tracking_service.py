@@ -44,6 +44,7 @@ from core.services.cromo.camino_optico_txt import (
 )
 from core.services.cromo.client import CromoClient
 from core.services.cromo.config import tracking_max_llamadas
+from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
 
 logger = logging.getLogger(__name__)
 
@@ -496,7 +497,8 @@ class TrackingsDelServicio:
 
     `tramos` ya vienen ordenados (`ordenar_tramos`) y con su nombre de archivo de tramo;
     `residuales` conservan el nombre de siempre. `esperados_declarados` es la cantidad de tramos
-    que declaró el operador (Tarea 4; hoy `None`). `completo` = no se tocó el tope de llamadas ni
+    que declaró el operador (`servicios.trackings_esperados`, `None` si no declaró); `odf_confirmadas`
+    son las ODF confirmadas vigentes del Servicio. `completo` = no se tocó el tope de llamadas ni
     el de fallidos.
     """
 
@@ -505,6 +507,7 @@ class TrackingsDelServicio:
     errores: list[str]
     completo: bool
     esperados_declarados: Optional[int] = None
+    odf_confirmadas: list[dict[str, Any]] = field(default_factory=list)
 
 
 async def trackings_del_servicio(
@@ -512,16 +515,29 @@ async def trackings_del_servicio(
     sesion: AsyncSession,
     servicio_id: int,
     *,
-    odfs_confirmadas: frozenset[int] = frozenset(),
+    odfs_confirmadas: Optional[frozenset[int]] = None,
 ) -> TrackingsDelServicio:
     """Un camino por semilla no cubierta, clasificado en tramos y residuales. Lo usan Slack y web.
 
     Semillas: todas, con las posiciones de ODF primero (`semillas_para_tracking`). Tope de
     llamadas: `CROMO_TRACKING_MAX_LLAMADAS` (default 80).
+
+    Lo declarado por el operador (ODF confirmadas y trackings esperados) se lee de la DB. Si
+    `odfs_confirmadas` se pasa explícito, pisa a las de la DB (tests); los esperados siempre salen
+    de la DB.
     """
+    declaradas = await declaraciones_del_servicio(sesion, servicio_id)
+    confirmadas = declaradas.odf_ids if odfs_confirmadas is None else odfs_confirmadas
     semillas = await semillas_para_tracking(sesion, servicio_id)
     if not semillas:
-        return TrackingsDelServicio(tramos=[], residuales=[], errores=[], completo=True)
+        return TrackingsDelServicio(
+            tramos=[],
+            residuales=[],
+            errores=[],
+            completo=True,
+            esperados_declarados=declaradas.trackings_esperados,
+            odf_confirmadas=declaradas.confirmadas,
+        )
     por_camino = await trackings_por_camino(
         cliente,
         sesion,
@@ -530,7 +546,7 @@ async def trackings_del_servicio(
         max_fallidos=_MAX_FALLIDOS_TOLERADOS,
         max_llamadas=tracking_max_llamadas(),
     )
-    roles = clasificar_caminos(por_camino.trackings, odfs_confirmadas)
+    roles = clasificar_caminos(por_camino.trackings, confirmadas)
     tramos: list[TrackingGenerado] = []
     residuales: list[TrackingGenerado] = []
     for tracking, rol in zip(por_camino.trackings, roles):
@@ -558,6 +574,8 @@ async def trackings_del_servicio(
         residuales=residuales,
         errores=por_camino.errores,
         completo=por_camino.completo,
+        esperados_declarados=declaradas.trackings_esperados,
+        odf_confirmadas=declaradas.confirmadas,
     )
 
 
