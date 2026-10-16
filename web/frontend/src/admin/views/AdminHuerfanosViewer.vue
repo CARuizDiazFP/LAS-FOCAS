@@ -499,7 +499,11 @@ function conectarStream(corridaId: number): void {
       }
       return;
     }
-    if (es.readyState === EventSource.CONNECTING) return; // el navegador ya reintenta solo
+    // Cualquier error de conexión (también CONNECTING): se cierra y se relee el estado. Si la
+    // corrida terminó sin RESUMEN (p.ej. el worker la reconcilió a FALLIDA al reiniciar), el
+    // servidor cierra el stream en cada reconexión y el navegador reintentaría para siempre;
+    // `cargarAuditoria` ve el estado terminal y no reconecta. Si sigue EN_CURSO, reanuda con
+    // `?desde=` tras el backoff.
     cerrarStream();
     const espera = backoffMs;
     backoffMs = Math.min(backoffMs * 2, BACKOFF_MAXIMO_MS);
