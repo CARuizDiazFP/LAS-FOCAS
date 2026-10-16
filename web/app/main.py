@@ -8875,12 +8875,18 @@ async def cromo_camino_tracking_txt_web(
 
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos")
 async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONResponse:
-    """Los caminos del Servicio: un pelo por camino distinto, más los pelos huérfanos.
+    """Los caminos del Servicio, separados en tramos y residuales.
 
     Es lo mismo que hace `@bot track` en Slack (`tracking_service.trackings_del_servicio`): recorre
     todas las semillas —posiciones de ODF primero, después los pelos de los cables— descartando
-    las que ya recorrió un camino, y corta en los caminos esperados. **Va a Cromo**: 4,6-14 s por
-    camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es inmediato.
+    las que ya recorrió un camino, sin cortar en los caminos esperados (tope de llamadas
+    `CROMO_TRACKING_MAX_LLAMADAS`), y clasifica cada camino como TRAMO o RESIDUAL. **Va a Cromo**:
+    4,6-14 s por camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es
+    inmediato.
+
+    Contrato de transición (Tarea 3 lo pule): `caminos` = los tramos, `tramos`/`residuales`
+    explícitos, `esperados` = tramos declarados o generados, y `huerfanos` vacío por compatibilidad
+    con el frontend.
 
     Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
     del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
@@ -8901,28 +8907,34 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
     logger.info(
-        "action=cromo_camino_caminos user=%s servicio_id=%s esperados=%s generados=%s huerfanos=%s",
+        "action=cromo_camino_caminos user=%s servicio_id=%s tramos=%s residuales=%s completo=%s",
         usuario,
         servicio_id,
-        resultado.esperados,
-        len(resultado.trackings),
-        len(resultado.huerfanos),
+        len(resultado.tramos),
+        len(resultado.residuales),
+        resultado.completo,
     )
+
+    def _camino(t: Any) -> dict[str, Any]:
+        return {
+            "pelo_n_id": t.pelo_n_id,
+            "nombre_archivo": t.nombre_archivo,
+            "desde_cache": t.desde_cache,
+            "pelos_en_camino": len(t.pelos_camino),
+            "rol": t.rol,
+        }
+
+    tramos = [_camino(t) for t in resultado.tramos]
     return JSONResponse(
         {
             "servicio_id": servicio_id,
-            "esperados": resultado.esperados,
+            "esperados": resultado.esperados_declarados or len(tramos),
+            "esperados_declarados": resultado.esperados_declarados,
             "completo": resultado.completo,
-            "caminos": [
-                {
-                    "pelo_n_id": t.pelo_n_id,
-                    "nombre_archivo": t.nombre_archivo,
-                    "desde_cache": t.desde_cache,
-                    "pelos_en_camino": len(t.pelos_camino),
-                }
-                for t in resultado.trackings
-            ],
-            "huerfanos": [_serializar_pelo_semilla(s) for s in resultado.huerfanos],
+            "caminos": tramos,
+            "tramos": tramos,
+            "residuales": [_camino(t) for t in resultado.residuales],
+            "huerfanos": [],
             "errores": resultado.errores,
         }
     )

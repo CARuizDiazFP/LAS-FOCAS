@@ -193,10 +193,55 @@ def _construir_config() -> CromoConfig:
     )
 
 
+# Tope de llamadas a `/path` por corrida del tracking por tramos (`tracking_service`). Ya no se corta
+# en los caminos esperados: se pide un camino por cada semilla no cubierta, y este tope es el
+# freno de seguridad. Medido real 2026-10-16: el Servicio 102452 (217 pelos) cubre todas sus
+# semillas con 27 llamadas; 80 deja margen sin permitir cientos de llamadas de 4,6-14 s.
+TRACKING_MAX_LLAMADAS_DEFAULT = 80
+_VARIABLE_TRACKING_MAX_LLAMADAS = "CROMO_TRACKING_MAX_LLAMADAS"
+
+
+def tracking_max_llamadas() -> int:
+    """Tope de llamadas a Cromo del tracking por tramos (`CROMO_TRACKING_MAX_LLAMADAS`, default 80).
+
+    Se lee aparte de `get_cromo_config` para no exigir credenciales de Cromo a quien sólo necesita
+    el tope (tests, cálculo de completitud). Un valor no entero o <= 0 no rompe el tracking: se
+    registra y se cae al default, igual que el TTL del caché.
+    """
+    crudo = os.getenv(_VARIABLE_TRACKING_MAX_LLAMADAS, "").strip()
+    if not crudo:
+        return TRACKING_MAX_LLAMADAS_DEFAULT
+    try:
+        valor = int(crudo)
+    except ValueError:
+        logger.warning(
+            "action=cromo_config evento=tracking_max_llamadas_invalido valor=%r usando=%s",
+            crudo,
+            TRACKING_MAX_LLAMADAS_DEFAULT,
+        )
+        return TRACKING_MAX_LLAMADAS_DEFAULT
+    if valor <= 0:
+        logger.warning(
+            "action=cromo_config evento=tracking_max_llamadas_no_positivo valor=%s usando=%s",
+            valor,
+            TRACKING_MAX_LLAMADAS_DEFAULT,
+        )
+        return TRACKING_MAX_LLAMADAS_DEFAULT
+    return valor
+
+
 @lru_cache(maxsize=1)
 def get_cromo_config() -> CromoConfig:
     """Lee y valida la configuración de Cromo desde variables de entorno (cacheada)."""
     return _construir_config()
 
 
-__all__ = ["CromoConfig", "CromoConfigError", "get_cromo_config", "enmascarar", "PSIZE_PERMITIDOS"]
+__all__ = [
+    "CromoConfig",
+    "CromoConfigError",
+    "get_cromo_config",
+    "enmascarar",
+    "PSIZE_PERMITIDOS",
+    "TRACKING_MAX_LLAMADAS_DEFAULT",
+    "tracking_max_llamadas",
+]

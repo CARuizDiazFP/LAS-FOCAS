@@ -644,20 +644,21 @@ def _fake_trackings_del_servicio(monkeypatch, resultado):
     )
 
 
-def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
+def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
     from datetime import datetime, timezone
 
     from core.services.cromo.tracking_service import TrackingGenerado, TrackingsDelServicio
 
-    def _t(pelo: int) -> TrackingGenerado:
+    def _t(pelo: int, nombre: str, rol: str) -> TrackingGenerado:
         return TrackingGenerado(
             pelo_n_id=pelo,
-            nombre_archivo="94673 CROMO.txt",
+            nombre_archivo=nombre,
             contenido="x",
             desde_cache=True,
             generado_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
             duracion_ms=1,
             pelos_camino=frozenset({pelo, pelo + 1000}),
+            rol=rol,
         )
 
     _fake_session(monkeypatch)
@@ -665,9 +666,11 @@ def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
     _fake_trackings_del_servicio(
         monkeypatch,
         TrackingsDelServicio(
-            trackings=[_t(6799772), _t(6799773)],
-            esperados=2,
-            huerfanos=[_semilla(9999999)],
+            tramos=[
+                _t(6799772, "94673 CROMO T1 pelo 6799772.txt", "TRAMO"),
+                _t(6799773, "94673 CROMO T2 pelo 6799773.txt", "TRAMO"),
+            ],
+            residuales=[_t(9999999, "94673 CROMO.txt", "RESIDUAL")],
             errores=[],
             completo=True,
         ),
@@ -679,9 +682,14 @@ def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
     assert res.status_code == 200
     cuerpo = res.json()
     assert cuerpo["esperados"] == 2 and cuerpo["completo"] is True
+    assert cuerpo["esperados_declarados"] is None
     assert [c["pelo_n_id"] for c in cuerpo["caminos"]] == [6799772, 6799773]
+    assert cuerpo["tramos"] == cuerpo["caminos"]
     assert cuerpo["caminos"][0]["pelos_en_camino"] == 2
-    assert [h["pelo_n_id"] for h in cuerpo["huerfanos"]] == [9999999]
+    assert cuerpo["caminos"][0]["nombre_archivo"] == "94673 CROMO T1 pelo 6799772.txt"
+    assert [r["pelo_n_id"] for r in cuerpo["residuales"]] == [9999999]
+    assert cuerpo["residuales"][0]["rol"] == "RESIDUAL"
+    assert cuerpo["huerfanos"] == []
 
 
 def test_caminos_con_cromo_caido_responde_502(monkeypatch):

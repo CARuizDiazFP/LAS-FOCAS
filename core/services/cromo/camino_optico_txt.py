@@ -64,8 +64,26 @@ def nombre_archivo_tracking(servicio_numero: Optional[str], pelo_n_id: int) -> s
     archivo no finge ser uno de los trackings numerados a mano — pero el número de servicio sí se
     recupera.
     """
-    if servicio_numero and servicio_numero.isdigit() and len(servicio_numero) >= 4:
+    if _at62_plausible(servicio_numero):
         return f"{servicio_numero} CROMO.txt"
+    return f"tracking_cromo_pelo_{pelo_n_id}.txt"
+
+
+def _at62_plausible(servicio_numero: Optional[str]) -> bool:
+    """Un at.62 sirve como número de servicio si son al menos 4 dígitos (Cromo trae `0`, `2351`…)."""
+    return bool(servicio_numero and servicio_numero.isdigit() and len(servicio_numero) >= 4)
+
+
+def nombre_archivo_tramo(servicio_numero: Optional[str], numero_tramo: int, pelo_n_id: int) -> str:
+    """Nombre del `.txt` de un tramo: `"{at62} CROMO T{n} pelo {n_id}.txt"`.
+
+    Conserva el sufijo `CROMO` de `nombre_archivo_tracking` (el parser de alias no lo reconoce, así
+    que el archivo no finge ser un tracking numerado a mano) y suma el número de tramo y el pelo,
+    para que los N tramos de un Servicio no se pisen al bajarlos. Sin at.62 plausible cae al mismo
+    `tracking_cromo_pelo_<n_id>.txt` de siempre, que ya identifica al pelo.
+    """
+    if _at62_plausible(servicio_numero):
+        return f"{servicio_numero} CROMO T{numero_tramo} pelo {pelo_n_id}.txt"
     return f"tracking_cromo_pelo_{pelo_n_id}.txt"
 
 
@@ -182,4 +200,9 @@ def renderizar_tracking_txt(camino: CaminoOptico, *, generado_en: datetime) -> s
     return _EOL.join(lineas) + _EOL
 
 
-__all__ = ["nombre_archivo_tracking", "renderizar_tracking_txt", "secuencia_para_tracking"]
+__all__ = [
+    "nombre_archivo_tracking",
+    "nombre_archivo_tramo",
+    "renderizar_tracking_txt",
+    "secuencia_para_tracking",
+]

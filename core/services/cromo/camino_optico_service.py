@@ -192,6 +192,10 @@ class NodoCamino:
     patchera_nombre: Optional[str] = None
     odf_id: Optional[int] = None
     odf_nombre: Optional[str] = None
+    # Clase de la ODF (`class` del `gfather` en el mismo payload): 69 = ODF, 86 = ODF Nodo.
+    # Verificado real 2026-10-16 sobre 102452, 42351, 93154 y 94673: el `gfather` de todo conector
+    # de extremo trae su `class`.
+    odf_clase: Optional[int] = None
     servicio_at62: Optional[str] = None
     # Contexto de la red de acceso PON (clases 133/134/84/137/66). `splitter_ratio` sale de `at.83`
     # de Cromo: el ratio está PUBLICADO, no hay que inferirlo por fan-out como hace `empalmes.py`.
@@ -438,6 +442,8 @@ def _completar_contexto_conector(
     if odf is not None:
         nodo.odf_id = odf_id
         nodo.odf_nombre = atributo(odf, _AT_NOMBRE_GENERICO)
+        clase_odf = odf.get("class")
+        nodo.odf_clase = int(clase_odf) if isinstance(clase_odf, int) else None
     nodo.nombre = nodo.nombre or nodo.patchera_nombre
 
 

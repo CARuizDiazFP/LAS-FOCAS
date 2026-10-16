@@ -590,6 +590,11 @@ class CromoTrackingCache(Base):
     # camino y no uno por posición de ODF sin volver a Cromo. NULL = entrada previa a la columna:
     # se regenera (ver `tracking_service.obtener_tracking`).
     pelos_camino = Column(ARRAY(BigInteger), nullable=True)
+    # Resumen del camino para clasificarlo como TRAMO o RESIDUAL sin volver a Cromo: sus dos
+    # extremos (tipo, ODF, clase de la ODF, patchera, conector), las ODFs que toca y los cables que
+    # recorre. NULL = entrada previa a la columna: se regenera, igual que `pelos_camino`.
+    # `none_as_null=True` para que un `None` de Python sea SQL NULL y no el JSON `null`.
+    extremos = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
     generado_at = Column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), index=True
     )

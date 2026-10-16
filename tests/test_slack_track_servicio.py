@@ -221,19 +221,19 @@ def test_un_pelo_fallado_no_cancela_los_demas_pero_se_reporta():
     assert "Pelo 42" in client.chat_postMessage.call_args_list[-1][1]["text"]
 
 
-def test_huerfanos_se_listan_y_no_suben_un_txt_de_mas():
-    """94673 con un pelo movido: 2 `.txt` (sus 2 hilos) y el huérfano sólo se avisa."""
+def test_residuales_se_listan_y_no_suben_un_txt_de_mas():
+    """Tracking por tramos: 2 `.txt` (los 2 tramos) y el camino residual sólo se avisa."""
     listener = _listener()
     client = MagicMock()
     servicio = SimpleNamespace(id=1066, servicio_id="94673", nombre_cliente="X")
     resultado = ts_mod.ResultadoTrack(
         estado=ts_mod.ESTADO_OK,
         archivos=[
-            ts_mod.TrackingArchivo("94673 CROMO pelo 6799772.txt", "a", False, 1),
-            ts_mod.TrackingArchivo("94673 CROMO pelo 6799773.txt", "b", False, 1),
+            ts_mod.TrackingArchivo("94673 CROMO T1 pelo 6799772.txt", "a", False, 1),
+            ts_mod.TrackingArchivo("94673 CROMO T2 pelo 6799773.txt", "b", False, 1),
         ],
         esperados=2,
-        huerfanos=["pelo 9999999 · F-VIN-TEC · 23 BL"],
+        residuales=["pelo 9999999 · 3 pelos"],
     )
     with patch.object(ts_mod, "resolver_servicio", return_value=servicio), patch.object(
         ts_mod, "generar_trackings", return_value=resultado
@@ -242,10 +242,10 @@ def test_huerfanos_se_listan_y_no_suben_un_txt_de_mas():
 
     assert client.files_upload_v2.call_count == 2
     aviso = client.chat_postMessage.call_args_list[-1][1]["text"]
-    assert "pelo 9999999" in aviso and "huérfanos" in aviso and "portal" in aviso
+    assert "pelo 9999999" in aviso and "residual" in aviso
 
 
-def test_completo_y_sin_huerfanos_no_avisa_nada():
+def test_completo_y_sin_residuales_no_avisa_nada():
     resultado = ts_mod.ResultadoTrack(
         estado=ts_mod.ESTADO_OK,
         archivos=[ts_mod.TrackingArchivo("a.txt", "a", False, 1)],
@@ -261,12 +261,12 @@ def test_describir_pelo_arma_la_linea_para_ubicarlo_en_cromo():
     assert ts_mod._describir_pelo(semilla) == "pelo 6799772 · F-VIN-TEC · 21 AM"
 
 
-def test_muchos_huerfanos_se_acotan_en_el_hilo():
+def test_muchos_residuales_se_acotan_en_el_hilo():
     resultado = ts_mod.ResultadoTrack(
         estado=ts_mod.ESTADO_OK,
         archivos=[ts_mod.TrackingArchivo("a.txt", "a", False, 1)],
         esperados=1,
-        huerfanos=[f"pelo {i}" for i in range(40)],
+        residuales=[f"pelo {i}" for i in range(40)],
     )
     aviso = ts_mod.mensaje_resumen(resultado)
     assert "pelo 14" in aviso and "pelo 15\n" not in aviso
