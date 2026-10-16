@@ -111,7 +111,8 @@ MEDIDO = {
     "94673": [
         (6799772, 27, None, None, (), 0, 27),
         (6799773, 27, None, None, (), 0, 27),
-    ],}
+    ],
+}
 
 TRAMOS_ESPERADOS = {
     "102452": {6799794, 6799795, 7655082, 7655083, 7722344, 7722345},
@@ -231,4 +232,37 @@ def test_odf_de_clase_desconocida_cuenta_como_odf():
             inicio=ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=3, clase=136, odf_id=77),
             fin=c.extremos.fin, odfs=(77,), cables=c.extremos.cables,
         )
+    assert clasificar_caminos(caminos) == [ROL_TRAMO, ROL_TRAMO]
+
+
+def _camino(semilla, pelos, *, ini=None, fin=None, odfs=(), cables=()):
+    return TrackingGenerado(
+        pelo_n_id=semilla, nombre_archivo="x.txt", contenido="", desde_cache=True,
+        generado_at=AHORA, duracion_ms=None, pelos_camino=frozenset(range(semilla, semilla + pelos)),
+        extremos=ResumenCamino(
+            inicio=_extremo(ini, odfs[0] if odfs else None),
+            fin=_extremo(fin, odfs[-1] if odfs else None),
+            odfs=tuple(odfs), cables=tuple(cables),
+        ),
+    )
+
+
+def test_monofilar_con_un_par_de_ruido_no_pierde_el_hilo_real():
+    """Un hilo de 100 pelos de ODF a ODF sin par, más un par de ruido de 1 pelo con extremo en
+    ODF (como 93154/6776439-40): el ruido no puede volver obligatorio el par."""
+    caminos = [
+        _camino(1000, 100, ini=69, fin=69, odfs=(5, 6), cables=range(100)),
+        _camino(1, 1, fin=69, odfs=(7,), cables=(5000,)),
+        _camino(2, 1, fin=69, odfs=(7,), cables=(5000,)),
+    ]
+    assert clasificar_caminos(caminos) == [ROL_TRAMO, ROL_RESIDUAL, ROL_RESIDUAL]
+
+
+def test_odfs_solo_intermedias_no_dejan_al_servicio_sin_tramos():
+    """Si ningún camino termina en ODF, una ODF intermedia no excluye a nadie: todos son
+    candidatos y el par decide."""
+    caminos = [
+        _camino(1, 50, odfs=(5,), cables=range(50)),
+        _camino(100, 50, odfs=(5,), cables=range(50)),
+    ]
     assert clasificar_caminos(caminos) == [ROL_TRAMO, ROL_TRAMO]

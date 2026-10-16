@@ -248,6 +248,46 @@ async def test_cache_con_lista_de_pelos_se_sirve_sin_ir_a_cromo(monkeypatch):
     assert tracking.extremos.servicio_at62 == "42351"
 
 
+@pytest.mark.parametrize(
+    "extremos",
+    [
+        {**_RESUMEN_JSON, "odfs": ["no-es-un-id"]},
+        {**_RESUMEN_JSON, "cables": [None]},
+        {**_RESUMEN_JSON, "inicio": {"tipo": "CONECTOR_ODF", "id_cromo": "x"}},
+        ["no", "es", "un", "dict"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_cache_con_extremos_corruptos_es_un_miss(monkeypatch, extremos):
+    """Una fila de caché con `extremos` ilegibles no rompe la descarga: se regenera."""
+    from core.services.cromo.tracking_service import ResumenCamino
+
+    assert ResumenCamino.desde_json(extremos) is None
+
+    async def _leer(_sesion, pelo_n_id):
+        return TrackingCacheado(
+            pelo_n_id=pelo_n_id, nombre_archivo="42351 CROMO.txt", contenido="viejo",
+            generado_at=AHORA, duracion_ms=1, pelos_camino=[10, 77], extremos=extremos,
+        )
+
+    async def _guardar(_sesion, **_kwargs):
+        return None
+
+    async def _resolver(_cliente, _sesion, pelo_n_id):
+        return CaminoOptico(estado=ESTADO_OK, pelo_n_id=pelo_n_id, lado_a=[_nodo(0, 77, 130)])
+
+    monkeypatch.setattr(tracking_service.tracking_cache, "leer", _leer)
+    monkeypatch.setattr(tracking_service.tracking_cache, "guardar", _guardar)
+    monkeypatch.setattr(tracking_service, "resolver_camino_de_pelo", _resolver)
+    monkeypatch.setattr(tracking_service, "renderizar_tracking_txt", lambda _c, generado_en: "nuevo")
+
+    tracking = await tracking_service.obtener_tracking(
+        object(), _SesionNula(), servicio_id=1, pelo_n_id=10
+    )
+
+    assert tracking.desde_cache is False and tracking.contenido == "nuevo"
+
+
 # ── Sin corte en esperados: cubrir todas las semillas (tracking por tramos, 2026-10-16) ─────
 
 

@@ -114,13 +114,28 @@ class ResumenCamino:
         }
 
     @classmethod
-    def desde_json(cls, datos: Mapping[str, Any]) -> "ResumenCamino":
+    def desde_json(cls, datos: Any) -> Optional["ResumenCamino"]:
+        """Reconstruye el resumen cacheado, o `None` si la fila está corrupta (se trata como miss)."""
+        if not isinstance(datos, Mapping):
+            return None
+        try:
+            return cls._desde_json(datos)
+        except (TypeError, ValueError):
+            logger.warning("action=cromo_tracking evento=extremos_corruptos datos=%r", datos)
+            return None
+
+    @classmethod
+    def _desde_json(cls, datos: Mapping[str, Any]) -> "ResumenCamino":
         def _extremo(crudo: Any) -> Optional[ExtremoCamino]:
             if not isinstance(crudo, Mapping):
                 return None
             campos = {k: crudo.get(k) for k in ExtremoCamino.__dataclass_fields__}
             if campos["tipo"] is None or campos["id_cromo"] is None:
                 return None
+            campos["id_cromo"] = int(campos["id_cromo"])
+            for clave in ("clase", "odf_id", "odf_clase"):
+                if campos[clave] is not None:
+                    campos[clave] = int(campos[clave])
             return ExtremoCamino(**campos)
 
         return cls(
@@ -214,10 +229,16 @@ async def obtener_tracking(
         # Una entrada sin `pelos_camino` o sin `extremos` es anterior a esas columnas: sin la lista
         # no se pueden descartar caminos repetidos y sin los extremos no se puede clasificar el
         # camino como TRAMO o RESIDUAL, así que se regenera (una sola vez, queda guardada).
+        # Una fila con `extremos` corruptos (`desde_json` → `None`) también es un miss.
+        resumen_cacheado = (
+            ResumenCamino.desde_json(cacheado.extremos)
+            if cacheado is not None and cacheado.extremos is not None
+            else None
+        )
         if (
             cacheado is not None
             and cacheado.pelos_camino is not None
-            and cacheado.extremos is not None
+            and resumen_cacheado is not None
         ):
             logger.info(
                 "action=cromo_tracking origen=cache servicio_id=%s pelo_n_id=%s generado_at=%s",
@@ -233,7 +254,7 @@ async def obtener_tracking(
                 generado_at=cacheado.generado_at,
                 duracion_ms=cacheado.duracion_ms,
                 pelos_camino=frozenset(cacheado.pelos_camino),
-                extremos=ResumenCamino.desde_json(cacheado.extremos),
+                extremos=resumen_cacheado,
             )
 
     camino = await resolver_camino_de_pelo(cliente, sesion, pelo_n_id)
@@ -420,11 +441,13 @@ def clasificar_caminos(
     1. Un camino que toca una ODF confirmada del Servicio es `TRAMO`, siempre.
     2. Candidatos: los caminos con al menos un extremo en un conector de ODF u ODF Nodo — así
        quedan protegidas las FO que salen de una ODF Nodo y no terminan en otra ODF (102452). Si
-       el Servicio no toca ninguna ODF (94673), todos los caminos son candidatos.
-    3. Si algún candidato tiene par (otro candidato con los mismos cables, Jaccard >= 0,8), el
-       servicio es bifilar y sólo cuentan los candidatos con par. Si ninguno tiene par (servicio
-       monofilar, PON), no se exige.
-    4. De esos, son `TRAMO` los que tienen al menos el 25% de los pelos del más largo.
+       ningún camino termina en ODF (94673, o un servicio cuyas ODFs son sólo intermedias),
+       todos los caminos no confirmados son candidatos.
+    3. Primero la proporción: pasan los candidatos con al menos el 25% de los pelos del más
+       largo. Así el ruido chico (pares de 1-8 pelos) no decide nada.
+    4. Después el par, sólo entre los que pasaron: si alguno tiene par (otro con los mismos
+       cables, Jaccard >= 0,8), el servicio es bifilar y sólo son `TRAMO` los que tienen par. Si
+       ninguno tiene par (servicio monofilar, PON), todos los que pasaron son `TRAMO`.
     5. El resto es `RESIDUAL`.
 
     Medido real (2026-10-16): da 6 tramos en 102452 (3 pares), 2 en 42351, 2 en 93154 y 2 en
@@ -441,23 +464,24 @@ def clasificar_caminos(
     for i in confirmados:
         roles[i] = ROL_TRAMO
 
-    hay_odf = any(r.odfs or _termina_en_odf(r) for r in resumenes)
-    candidatos = [
-        i for i, r in enumerate(resumenes) if i not in confirmados and (not hay_odf or _termina_en_odf(r))
+    libres = [i for i in range(len(caminos)) if i not in confirmados]
+    # Si ningún camino TERMINA en ODF (las ODFs intermedias no cuentan), todos son candidatos.
+    candidatos = [i for i in libres if _termina_en_odf(resumenes[i])] or libres
+    if not candidatos:
+        return roles
+
+    maximo = max(len(caminos[i].pelos_camino) for i in candidatos)
+    largos = [
+        i for i in candidatos if len(caminos[i].pelos_camino) >= maximo * _PROPORCION_PELOS_MINIMA
     ]
-    cables = {i: frozenset(resumenes[i].cables) for i in candidatos}
+    cables = {i: frozenset(resumenes[i].cables) for i in largos}
     con_par = [
         i
-        for i in candidatos
-        if any(j != i and _jaccard(cables[i], cables[j]) >= _JACCARD_PAR_MINIMO for j in candidatos)
+        for i in largos
+        if any(j != i and _jaccard(cables[i], cables[j]) >= _JACCARD_PAR_MINIMO for j in largos)
     ]
-    elegibles = con_par if con_par else candidatos
-    if not elegibles:
-        return roles
-    maximo = max(len(caminos[i].pelos_camino) for i in elegibles)
-    for i in elegibles:
-        if len(caminos[i].pelos_camino) >= maximo * _PROPORCION_PELOS_MINIMA:
-            roles[i] = ROL_TRAMO
+    for i in con_par or largos:
+        roles[i] = ROL_TRAMO
     return roles
 
 
