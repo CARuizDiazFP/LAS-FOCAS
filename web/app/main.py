@@ -8908,6 +8908,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
     """
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.servicio_odf_confirmacion import n_ids_de_odfs
     from core.services.cromo.tracking_service import trackings_del_servicio
     from db.session import AsyncSessionLocal
 
@@ -8918,6 +8919,15 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
                 return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
             async with CromoClient(config=get_cromo_config()) as cliente:
                 resultado = await trackings_del_servicio(cliente, sesion, servicio_id)
+            # Los extremos pueden traer el id de versión de la ODF: se expone siempre el n_id.
+            ids_odf = [
+                e.odf_id
+                for t in (*resultado.tramos, *resultado.residuales)
+                if t.extremos
+                for e in t.extremos.extremos
+                if e.odf_id is not None
+            ]
+            n_ids_odf = await n_ids_de_odfs(sesion, ids_odf)
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
@@ -8936,7 +8946,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
         return {
             "tipo": e.tipo,
             "id_cromo": e.id_cromo,
-            "odf_n_id": e.odf_id,
+            "odf_n_id": n_ids_odf.get(e.odf_id, e.odf_id) if e.odf_id is not None else None,
             "odf_nombre": e.odf_nombre,
             "odf_clase": e.odf_clase,
             "patchera_nombre": e.patchera_nombre,

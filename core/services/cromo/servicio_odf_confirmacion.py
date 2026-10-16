@@ -36,6 +36,7 @@ __all__ = [
     "declaraciones_del_servicio",
     "desconfirmar",
     "listar",
+    "n_ids_de_odfs",
 ]
 
 ROL_EXTREMO = "EXTREMO"
@@ -52,6 +53,10 @@ _SQL_RESOLVER_ODF = text(
 
 # `ON CONFLICT` sobre el índice único parcial: re-confirmar una ODF ya vigente es idempotente (sólo
 # actualiza el rol).
+_SQL_N_IDS_DE_ODFS = text(
+    "SELECT n_id, version_id FROM app.cromo_odfs WHERE n_id = ANY(:ids) OR version_id = ANY(:ids)"
+)
+
 _SQL_CONFIRMAR = text(
     """
     INSERT INTO app.servicio_odf_confirmada (servicio_id, odf_n_id, rol, confirmado_por)
@@ -106,6 +111,25 @@ def _fila_a_dict(fila: Any) -> dict[str, Any]:
         "confirmado_por": fila.confirmado_por,
         "confirmado_en": fila.confirmado_en.isoformat() if fila.confirmado_en else None,
     }
+
+
+async def n_ids_de_odfs(sesion: AsyncSession, ids: Sequence[int]) -> dict[int, int]:
+    """Mapa `id de camino -> n_id de linaje` de las ODF que están ingeridas.
+
+    Los ids de los extremos de un camino pueden ser el `n_id` o el `version_id`; la API expone
+    siempre el `n_id`. Mismo criterio que `_SQL_RESOLVER_ODF`: si un valor es `n_id` de una fila,
+    gana sobre ser `version_id` de otra. Los ids sin fila propia no aparecen en el mapa.
+    """
+    if not ids:
+        return {}
+    filas = (await sesion.execute(_SQL_N_IDS_DE_ODFS, {"ids": list(set(ids))})).all()
+    mapa: dict[int, int] = {}
+    for n_id, version_id in filas:
+        if version_id is not None:
+            mapa.setdefault(int(version_id), int(n_id))
+    for n_id, _version_id in filas:
+        mapa[int(n_id)] = int(n_id)
+    return mapa
 
 
 async def listar(sesion: AsyncSession, servicio_id: int) -> list[dict[str, Any]]:

@@ -385,7 +385,8 @@ async function guardarEsperados(): Promise<void> {
     esperadosEditado.value = props.camino.esperadosDeclarados.value ?? '';
     return;
   }
-  await props.camino.declararEsperados(props.servicioId, cantidad);
+  const ok = await props.camino.declararEsperados(props.servicioId, cantidad);
+  if (!ok) esperadosEditado.value = props.camino.esperadosDeclarados.value ?? '';
 }
 
 /** Normalizar escribe inventario, así que el panel sólo dispara: el servicio decide qué corregir. */

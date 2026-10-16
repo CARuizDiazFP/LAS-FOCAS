@@ -90,7 +90,6 @@ export function useCromoPath() {
   const caminosResueltos = ref(false);
   const resolviendoCaminos = ref(false);
   const errorCaminos = ref('');
-  /** Pelos ya sacados del Servicio en local. */
   /** ODF confirmadas vigentes del Servicio (vienen con `/caminos`; los POST las refrescan). */
   const odfConfirmadas = ref<OdfConfirmada[]>([]);
   /** Trackings que declara el Servicio (`null` = sin declarar). */
@@ -117,6 +116,7 @@ export function useCromoPath() {
     return [...vistas.values()];
   });
 
+  /** Pelos ya sacados del Servicio en local. */
   const excluidos = ref<PeloExcluido[]>([]);
   /** Pelo que se está excluyendo o restaurando, para deshabilitar sólo su botón. */
   const peloEnExclusion = ref<number | null>(null);

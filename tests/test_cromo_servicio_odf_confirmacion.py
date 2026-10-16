@@ -35,6 +35,7 @@ class _Sesion:
     def __init__(self, *, odfs_existentes=(), versiones=None, vigentes=(), rowcount=1, esperados=None):
         self.odfs_existentes = set(odfs_existentes)
         self.versiones = dict(versiones or {})  # version_id -> n_id
+        self.filas_ids: list[tuple] = []
         self.vigentes = list(vigentes)
         self.rowcount = rowcount
         self.esperados = esperados
@@ -44,6 +45,8 @@ class _Sesion:
     async def execute(self, stmt, params=None):
         sql = str(stmt)
         self.ejecuciones.append((sql, params or {}))
+        if "WHERE n_id = ANY(:ids)" in sql:
+            return _Resultado(self.filas_ids)
         if "FROM app.cromo_odfs" in sql and "SELECT n_id" in sql:
             ident = params["id"]
             n_id = ident if ident in self.odfs_existentes else self.versiones.get(ident)
@@ -152,3 +155,16 @@ async def test_declaraciones_sin_nada_es_como_hoy():
     decl = await svc.declaraciones_del_servicio(_Sesion(), 7)
 
     assert decl.odf_ids == frozenset() and decl.confirmadas == [] and decl.trackings_esperados is None
+
+
+@pytest.mark.asyncio
+async def test_n_ids_de_odfs_mapea_version_y_n_id_y_el_n_id_gana():
+    sesion = _Sesion()
+    # 100 es n_id de una fila y version_id de otra: debe resolverse a sí mismo.
+    sesion.filas_ids = [(6646686, 9295436), (100, 100), (7, 100)]
+
+    mapa = await svc.n_ids_de_odfs(sesion, [9295436, 100])
+
+    assert mapa[9295436] == 6646686
+    assert mapa[100] == 100
+    assert await svc.n_ids_de_odfs(_Sesion(), []) == {}
