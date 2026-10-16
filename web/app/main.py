@@ -9048,6 +9048,164 @@ async def servicios_pelo_restaurar_web(
     return JSONResponse({"ok": True, "pelo_n_id": body.pelo_n_id})
 
 
+class HuerfanosRevisarRequestModel(BaseModel):
+    """Payload para normalizar o descartar filas de la auditoría de huérfanos, en lote."""
+
+    ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_auditoria_huerfanos")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class HuerfanosAuditoriaGlobalRequestModel(BaseModel):
+    """Payload para lanzar la auditoría global de huérfanos (corrida en el cromo_worker)."""
+
+    max_servicios: int | None = Field(
+        default=None, ge=1, le=2000, description="Tope de Servicios; default CROMO_AUDITORIA_MAX_SERVICIOS"
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/huerfanos")
+async def huerfanos_listar_web(
+    request: Request,
+    servicio_id: Optional[int] = None,
+    causa: Optional[str] = None,
+    estado: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Viewer de huérfanos: pelos de caminos RESIDUALES con causa sugerida, evidencia y estado.
+
+    Filtros `servicio_id` (PK de `app.servicios`), `causa` y `estado`. `conteos_por_causa` sale con
+    los filtros de servicio y estado, antes del de causa (chips). Admin.
+    """
+    from core.services.cromo.auditoria_huerfanos import CAUSAS, ESTADOS, listar_huerfanos
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    if causa is not None and causa not in CAUSAS:
+        return JSONResponse({"error": f"causa inválida. Valores: {list(CAUSAS)}"}, status_code=400)
+    if estado is not None and estado not in ESTADOS:
+        return JSONResponse({"error": f"estado inválido. Valores: {list(ESTADOS)}"}, status_code=400)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    async with AsyncSessionLocal() as sesion:
+        pagina = await listar_huerfanos(
+            sesion, servicio_id=servicio_id, causa=causa, estado=estado, limit=limit, offset=offset
+        )
+    return JSONResponse(pagina)
+
+
+@app.post("/api/admin/infra/huerfanos/normalizar")
+async def huerfanos_normalizar_web(request: Request, body: HuerfanosRevisarRequestModel) -> JSONResponse:
+    """Normaliza en lote: excluye del Servicio el pelo de cada fila (`origen=AUDITORIA`).
+
+    Qué se puede normalizar lo decide el servidor con la fila guardada: sólo PENDIENTE, no
+    protegida y con causa habilitada (hoy sólo `CABLE_DESUSO`). Lo demás vuelve en `rechazados`
+    con su motivo. Reversible con "Restaurar" del panel del camino. Admin + CSRF.
+    """
+    from core.services.cromo.auditoria_huerfanos import normalizar
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_normalizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await normalizar(sesion, body.ids, usuario=username)
+    return JSONResponse(
+        {"ok": True, "aplicados": resultado.aplicados, "rechazados": resultado.rechazados}
+    )
+
+
+@app.post("/api/admin/infra/huerfanos/descartar")
+async def huerfanos_descartar_web(request: Request, body: HuerfanosRevisarRequestModel) -> JSONResponse:
+    """Marca DESCARTADO las filas PENDIENTE elegidas (revisadas, no son huérfanos). Admin + CSRF."""
+    from core.services.cromo.auditoria_huerfanos import descartar
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_descartar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await descartar(sesion, body.ids, usuario=username)
+    return JSONResponse(
+        {"ok": True, "aplicados": resultado.aplicados, "rechazados": resultado.rechazados}
+    )
+
+
+@app.get("/api/admin/infra/huerfanos/auditoria-global")
+async def huerfanos_auditoria_global_estado_web(request: Request) -> JSONResponse:
+    """Última auditoría global (o `null`), para que el Viewer muestre su estado al abrir. Admin."""
+    from core.services.cromo.auditoria_huerfanos_global import (
+        max_servicios_configurado,
+        ultima_auditoria,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        corrida = await ultima_auditoria(sesion)
+    return JSONResponse(
+        {
+            "corrida": _serializar_cromo_corrida(corrida) if corrida is not None else None,
+            "max_servicios_default": max_servicios_configurado(),
+        }
+    )
+
+
+@app.post("/api/admin/infra/huerfanos/auditoria-global")
+async def huerfanos_auditoria_global_iniciar_web(
+    request: Request, body: HuerfanosAuditoriaGlobalRequestModel
+) -> JSONResponse:
+    """Lanza la auditoría global: corrida sintética que ejecuta el `cromo_worker` (tiene las
+    credenciales de Cromo). Recorre los Servicios Activos con más pelos hasta el tope. El progreso
+    se sigue con el SSE de corridas (`/api/admin/ingesta/cromo/corridas/{id}/stream`).
+    Una sola a la vez: si hay otra EN_CURSO devuelve 409 con su id. Admin + CSRF.
+    """
+    from core.services.cromo.auditoria_huerfanos_global import (
+        auditoria_en_curso,
+        iniciar_corrida_auditoria,
+        max_servicios_configurado,
+    )
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_auditoria_global", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    tope = body.max_servicios or max_servicios_configurado()
+    async with AsyncSessionLocal() as sesion:
+        en_curso = await auditoria_en_curso(sesion)
+        if en_curso is not None:
+            return JSONResponse(
+                {"error": "Ya hay una auditoría global en curso.", "corrida_id": en_curso},
+                status_code=409,
+            )
+        corrida = await iniciar_corrida_auditoria(sesion, usuario=username, max_servicios=tope)
+        corrida_id = corrida.id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                _CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username}
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        logger.error("action=cromo_huerfanos_auditoria_global_error corrida_id=%s error=%s", corrida_id, exc)
+        await _marcar_corrida_fallida(
+            corrida_id, f"No se pudo delegar la auditoría al worker de Cromo: {exc}"
+        )
+        return JSONResponse(
+            {"error": "El worker de Cromo no está disponible. Intentá nuevamente en unos segundos."},
+            status_code=503,
+        )
+    logger.info(
+        "action=cromo_huerfanos_auditoria_global user=%s corrida_id=%s max_servicios=%s",
+        username,
+        corrida_id,
+        tope,
+    )
+    return JSONResponse({"corrida_id": corrida_id, "max_servicios": tope}, status_code=202)
+
+
 class OdfConfirmadaItemModel(BaseModel):
     """Una ODF a confirmar para un Servicio, con su rol en el recorrido."""
 

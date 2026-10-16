@@ -401,3 +401,45 @@ async def test_downgrade_quita_tabla_y_columnas(entorno):
         )
     ).scalars().all()
     assert "origen" not in columnas and "auditoria_id" not in columnas
+
+
+@pytest.mark.asyncio
+async def test_servicios_por_pelos_ordena_por_pelos_y_descuenta_excluidos(entorno):
+    """La query de la corrida global (arms de igualdad en vez del OR) sobre la DB real: un Servicio
+    sintético con 2000 pelos —por alias— queda primero, y un pelo excluido no cuenta."""
+    from core.services.cromo.auditoria_huerfanos_global import servicios_por_pelos
+
+    sesion, _servicio_id, conn = entorno
+    grande = (
+        await conn.execute(
+            text(
+                "INSERT INTO app.servicios (servicio_id, estado_servicio, alias_ids) "
+                "VALUES ('99991502', 'Activo', ARRAY['99991503']) RETURNING id"
+            )
+        )
+    ).scalar_one()
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_pelos (n_id, tubo_n_id, cable_n_id) "
+            "SELECT g, 1, :c FROM generate_series(999916000, 999917999) g"
+        ),
+        {"c": _CABLE_TRAMO},
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, metodo) "
+            "SELECT g, '99991503', 'REGEX_EXACTO' FROM generate_series(999916000, 999917999) g"
+        )
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_servicio_pelo_excluido (servicio_id, pelo_n_id) "
+            "VALUES (:s, 999916000)"
+        ),
+        {"s": grande},
+    )
+
+    primeros = await servicios_por_pelos(sesion, 3)
+
+    assert primeros[0] == (grande, 1999)
+    assert [p for _s, p in primeros] == sorted((p for _s, p in primeros), reverse=True)
