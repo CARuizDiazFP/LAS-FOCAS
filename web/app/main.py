@@ -8409,6 +8409,7 @@ def _serializar_pelo_excluido(excluido: Any) -> dict[str, Any]:
         "motivo": excluido.motivo,
         "excluido_por": excluido.excluido_por,
         "created_at": excluido.created_at.isoformat() if excluido.created_at else None,
+        "origen": getattr(excluido, "origen", "MANUAL"),
     }
 
 

@@ -674,3 +674,140 @@ async def test_excluir_pelos_separa_ajenos_y_no_escribe_si_todos_lo_son(monkeypa
     with pytest.raises(pelos_excluidos.PeloNoPerteneceAlServicio):
         await pelos_excluidos.excluir_pelos(sesion, 17, [5], usuario="admin")
     assert sesion.inserts == [] and sesion.commits == 0
+
+
+# ── Auditoría de huérfanos enganchada en trackings_del_servicio ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_audita_residuales_con_el_mismo_resultado(monkeypatch, declaraciones):
+    """Un solo punto de enganche: recibe tramos, residuales, semillas, confirmadas y la corrida."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    odf = ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=501, clase=136, odf_id=500, odf_clase=69)
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    resumenes = {
+        10: ResumenCamino(servicio_at62="1", inicio=odf, fin=odf, odfs=(500,), cables=(1,)),
+        30: ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, cables=(7,)),
+    }
+    pelos = {10: set(range(10, 20)), 30: {30}}
+    declaraciones["valor"] = Declaraciones(odf_ids=frozenset({777}))
+    llamadas: list[dict] = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 30)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
+
+    async def _auditar(sesion, servicio_id, **kw):
+        llamadas.append({"servicio_id": servicio_id, **kw})
+        return auditoria_huerfanos.ResumenAuditoria(nuevos=1)
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(auditoria_huerfanos, "auditar_sin_romper", _auditar)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567, corrida_id=9)
+
+    assert len(llamadas) == 1
+    llamada = llamadas[0]
+    assert llamada["servicio_id"] == 567 and llamada["corrida_id"] == 9
+    assert [t.pelo_n_id for t in llamada["tramos"]] == [10]
+    assert [t.pelo_n_id for t in llamada["residuales"]] == [30]
+    assert llamada["semillas"] == frozenset({10, 30})
+    assert llamada["odfs_confirmadas"] == frozenset({777})
+    assert resultado.auditoria.nuevos == 1
+
+    llamadas.clear()
+    await tracking_service.trackings_del_servicio(object(), object(), 567, auditar=False)
+    assert llamadas == []
+
+
+class _SesionQueFalla:
+    """Sesión mínima: el savepoint abre, la query revienta, el rollback se registra."""
+
+    def __init__(self) -> None:
+        self.rollbacks = 0
+        self.commits = 0
+
+    def begin_nested(self):
+        sesion = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                return sesion
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+    async def execute(self, *_a, **_k):
+        raise RuntimeError("relation app.cromo_auditoria_huerfanos does not exist")
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+@pytest.mark.asyncio
+async def test_auditar_sin_romper_nunca_levanta():
+    """La auditoría es accesoria: si falla (tabla sin migrar, DB caída), Slack y el portal siguen."""
+    from core.services.cromo.auditoria_huerfanos import auditar_sin_romper
+    from core.services.cromo.tracking_service import ResumenCamino
+
+    residual = _con_resumen(_generado(30, {30}), ResumenCamino(cables=(7,)))
+    sesion = _SesionQueFalla()
+
+    resultado = await auditar_sin_romper(
+        sesion, 1, tramos=[], residuales=[residual], semillas=frozenset({30})
+    )
+
+    assert resultado is None
+    assert sesion.rollbacks == 1 and sesion.commits == 0
+
+
+def test_resumen_camino_conserva_botellas_y_tolera_cache_sin_ellas():
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    resumen = ResumenCamino(
+        inicio=ExtremoCamino(tipo="PELO", id_cromo=1, clase=130),
+        cables=(5,),
+        botellas=(10, 20, 30),
+        botella_inicio=10,
+        botella_fin=30,
+    )
+    assert ResumenCamino.desde_json(resumen.a_json()) == resumen
+
+    viejo = resumen.a_json()
+    for clave in ("botellas", "botella_inicio", "botella_fin"):
+        viejo.pop(clave)
+    leido = ResumenCamino.desde_json(viejo)
+    assert leido.botellas == () and leido.botella_inicio is None and leido.cables == (5,)
+
+
+def test_resumen_del_camino_toma_botellas_extremas_en_orden_del_txt():
+    """Orden del `.txt`: reversed(lado_b) → raíz → lado_a. La primera y la última fusión son los
+    empalmes extremos."""
+    from core.services.cromo.camino_optico_service import CaminoOptico, NodoCamino
+    from core.services.cromo.tracking_service import resumen_del_camino
+
+    def _fusion(orden, lado, botella):
+        return NodoCamino(orden=orden, lado=lado, id_cromo=1000 + botella, clase=131, tipo="FUSION",
+                          botella_id=botella)
+
+    camino = CaminoOptico(
+        estado="OK",
+        pelo_n_id=1,
+        raiz=NodoCamino(orden=0, lado="raiz", id_cromo=1, clase=130, tipo="PELO", cable_id=5),
+        lado_a=[_fusion(1, "a", 30), _fusion(2, "a", 40)],
+        lado_b=[_fusion(1, "b", 20), _fusion(2, "b", 10)],
+    )
+    resumen = resumen_del_camino(camino)
+    assert (resumen.botella_inicio, resumen.botella_fin) == (10, 40)
+    assert resumen.botellas == (10, 20, 30, 40)

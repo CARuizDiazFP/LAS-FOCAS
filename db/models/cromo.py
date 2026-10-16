@@ -670,10 +670,66 @@ class CromoServicioPeloExcluido(Base):
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+    # MANUAL (un admin desde el panel del camino) | AUDITORIA (Normalizar desde el Viewer de
+    # huérfanos). Con AUDITORIA, `auditoria_id` apunta a la fila que lo originó: restaurar el pelo
+    # la devuelve a PENDIENTE.
+    origen = Column(Text, nullable=False, server_default=text("'MANUAL'"))
+    auditoria_id = Column(
+        BigInteger,
+        ForeignKey("app.cromo_auditoria_huerfanos.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     def __repr__(self) -> str:
         return (
             f"<CromoServicioPeloExcluido servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id}>"
+        )
+
+
+class CromoAuditoriaHuerfano(Base):
+    """Pelo de un camino RESIDUAL de un Servicio (huérfano), con causa sugerida y estado de revisión.
+
+    Lo escribe `core/services/cromo/auditoria_huerfanos.py` cada vez que se resuelven los caminos
+    de un Servicio (Slack, portal o la corrida global). Una fila por `(servicio_id, pelo_n_id)`:
+    re-auditar actualiza las PENDIENTE y nunca toca las NORMALIZADO/DESCARTADO. Normalizar es
+    manual, desde el Viewer admin, y reusa la exclusión de pelos (`cromo_servicio_pelo_excluido`).
+    """
+
+    __tablename__ = "cromo_auditoria_huerfanos"
+    __table_args__ = (
+        UniqueConstraint(
+            "servicio_id", "pelo_n_id", name="uq_cromo_auditoria_huerfanos_servicio_pelo"
+        ),
+        Index("ix_cromo_auditoria_huerfanos_estado_causa", "estado", "causa"),
+        {"schema": "app"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    corrida_id = Column(
+        BigInteger, ForeignKey("app.cromo_ingesta_corridas.id", ondelete="SET NULL"), nullable=True
+    )
+    servicio_id = Column(
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False
+    )
+    pelo_n_id = Column(BigInteger, nullable=False)
+    camino_semilla = Column(BigInteger, nullable=True)
+    # PELO_DANADO | CAMBIO_CABLE_DANO | CABLE_DESUSO | MIGRACION_SITIO | SIN_CLASIFICAR
+    causa = Column(Text, nullable=False, server_default=text("'SIN_CLASIFICAR'"))
+    evidencia = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    # PENDIENTE | NORMALIZADO | DESCARTADO
+    estado = Column(Text, nullable=False, server_default=text("'PENDIENTE'"))
+    revisado_por = Column(String(128), nullable=True)
+    detectado_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    actualizado_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CromoAuditoriaHuerfano servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id} "
+            f"estado={self.estado}>"
         )
 
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Mapping, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,12 +43,14 @@ class PeloExcluido:
     motivo: Optional[str]
     excluido_por: Optional[str]
     created_at: datetime
+    # MANUAL | AUDITORIA (Normalizar desde el Viewer de huérfanos)
+    origen: str = "MANUAL"
 
 
 _SQL_LISTAR = text(
     """
     SELECT x.pelo_n_id, p.numero_pelo, p.color, cab.nombre AS cable_nombre,
-           x.motivo, x.excluido_por, x.created_at
+           x.motivo, x.excluido_por, x.created_at, x.origen
     FROM app.cromo_servicio_pelo_excluido x
     LEFT JOIN app.cromo_pelos p ON p.n_id = x.pelo_n_id
     LEFT JOIN app.cromo_cables cab ON cab.n_id = p.cable_n_id
@@ -59,8 +61,9 @@ _SQL_LISTAR = text(
 
 _SQL_INSERTAR = text(
     """
-    INSERT INTO app.cromo_servicio_pelo_excluido (servicio_id, pelo_n_id, motivo, excluido_por)
-    VALUES (:servicio_id, :pelo_n_id, :motivo, :excluido_por)
+    INSERT INTO app.cromo_servicio_pelo_excluido
+        (servicio_id, pelo_n_id, motivo, excluido_por, origen, auditoria_id)
+    VALUES (:servicio_id, :pelo_n_id, :motivo, :excluido_por, :origen, :auditoria_id)
     ON CONFLICT (servicio_id, pelo_n_id) DO NOTHING
     """
 )
@@ -69,6 +72,16 @@ _SQL_BORRAR = text(
     """
     DELETE FROM app.cromo_servicio_pelo_excluido
     WHERE servicio_id = :servicio_id AND pelo_n_id = :pelo_n_id
+    RETURNING origen, auditoria_id
+    """
+)
+
+# Restaurar un pelo que salió de la auditoría lo vuelve a poner en revisión.
+_SQL_AUDITORIA_A_PENDIENTE = text(
+    """
+    UPDATE app.cromo_auditoria_huerfanos
+       SET estado = 'PENDIENTE', revisado_por = :usuario, actualizado_at = CURRENT_TIMESTAMP
+     WHERE id = :auditoria_id AND estado = 'NORMALIZADO'
     """
 )
 
@@ -85,8 +98,15 @@ async def excluir_pelos(
     *,
     usuario: Optional[str],
     motivo: Optional[str] = None,
+    origen: str = "MANUAL",
+    auditoria_ids: Optional[Mapping[int, int]] = None,
+    confirmar: bool = True,
 ) -> tuple[list[int], list[int]]:
     """Saca los pelos del Servicio. Devuelve `(excluidos, ajenos)`.
+
+    `origen="AUDITORIA"` + `auditoria_ids` (`{pelo: id de cromo_auditoria_huerfanos}`) deja la
+    traza cuando la exclusión sale de Normalizar en el Viewer de huérfanos; con `confirmar=False`
+    no commitea, para que ese flujo marque la fila de auditoría en la misma transacción.
 
     Exige que cada pelo hoy sea del Servicio: excluir uno ajeno no significa nada y dejaría una
     fila que nadie ve. Un pelo ya excluido tampoco pertenece, así que vuelve en `ajenos`. Si todos
@@ -116,15 +136,19 @@ async def excluir_pelos(
                 "pelo_n_id": pelo_n_id,
                 "motivo": motivo_limpio,
                 "excluido_por": usuario,
+                "origen": origen,
+                "auditoria_id": (auditoria_ids or {}).get(pelo_n_id),
             },
         )
-    await sesion.commit()
+    if confirmar:
+        await sesion.commit()
     logger.info(
-        "action=cromo_pelo_excluido servicio_id=%s excluidos=%s ajenos=%s user=%s",
+        "action=cromo_pelo_excluido servicio_id=%s excluidos=%s ajenos=%s user=%s origen=%s",
         servicio_id,
         excluidos,
         ajenos,
         usuario,
+        origen,
     )
     return excluidos, ajenos
 
@@ -132,12 +156,22 @@ async def excluir_pelos(
 async def restaurar_pelo(
     sesion: AsyncSession, servicio_id: int, pelo_n_id: int, *, usuario: Optional[str]
 ) -> bool:
-    """Devuelve el pelo al Servicio. `False` si no estaba excluido."""
+    """Devuelve el pelo al Servicio. `False` si no estaba excluido.
+
+    Si la exclusión salió de la auditoría de huérfanos, su fila vuelve a PENDIENTE: el admin
+    deshizo la normalización y el pelo queda otra vez para revisar.
+    """
     resultado = await sesion.execute(
         _SQL_BORRAR, {"servicio_id": servicio_id, "pelo_n_id": pelo_n_id}
     )
+    borradas = resultado.all()
+    for origen, auditoria_id in borradas:
+        if origen == "AUDITORIA" and auditoria_id is not None:
+            await sesion.execute(
+                _SQL_AUDITORIA_A_PENDIENTE, {"auditoria_id": auditoria_id, "usuario": usuario}
+            )
     await sesion.commit()
-    restaurado = (resultado.rowcount or 0) > 0
+    restaurado = bool(borradas)
     logger.info(
         "action=cromo_pelo_restaurado servicio_id=%s pelo_n_id=%s user=%s restaurado=%s",
         servicio_id,

@@ -93,6 +93,11 @@ class ResumenCamino:
 
     `odfs` son todas las ODFs que toca (extremos e intermedias) y `cables` los cables que recorren
     sus pelos: dos hilos del mismo servicio recorren (casi) los mismos cables.
+
+    `botellas` son las botellas de sus fusiones y `botella_inicio`/`botella_fin` la primera y la
+    última en el orden del `.txt` (los empalmes extremos). Las usa la auditoría de huérfanos para
+    ver si un residual va en paralelo a un tramo. Una entrada de caché anterior a estos campos los
+    trae vacíos: la auditoría sólo pierde esas dos señales, nada se rompe.
     """
 
     inicio: Optional[ExtremoCamino] = None
@@ -100,6 +105,9 @@ class ResumenCamino:
     odfs: tuple[int, ...] = ()
     cables: tuple[int, ...] = ()
     servicio_at62: Optional[str] = None
+    botellas: tuple[int, ...] = ()
+    botella_inicio: Optional[int] = None
+    botella_fin: Optional[int] = None
 
     @property
     def extremos(self) -> tuple[ExtremoCamino, ...]:
@@ -112,6 +120,9 @@ class ResumenCamino:
             "fin": asdict(self.fin) if self.fin else None,
             "odfs": list(self.odfs),
             "cables": list(self.cables),
+            "botellas": list(self.botellas),
+            "botella_inicio": self.botella_inicio,
+            "botella_fin": self.botella_fin,
         }
 
     @classmethod
@@ -145,7 +156,14 @@ class ResumenCamino:
             odfs=tuple(int(x) for x in datos.get("odfs") or ()),
             cables=tuple(int(x) for x in datos.get("cables") or ()),
             servicio_at62=datos.get("servicio_at62"),
+            botellas=tuple(int(x) for x in datos.get("botellas") or ()),
+            botella_inicio=_entero_o_none(datos.get("botella_inicio")),
+            botella_fin=_entero_o_none(datos.get("botella_fin")),
         )
+
+
+def _entero_o_none(valor: Any) -> Optional[int]:
+    return None if valor is None else int(valor)
 
 
 @dataclass(slots=True)
@@ -188,12 +206,18 @@ def resumen_del_camino(camino: CaminoOptico) -> ResumenCamino:
         nodos.append(camino.raiz)
     odfs = sorted({n.odf_id for n in nodos if n.tipo == TIPO_CONECTOR_ODF and n.odf_id})
     cables = sorted({n.cable_id for n in nodos if n.clase == _CLASE_PELO and n.cable_id})
+    # Botellas de las fusiones en el orden del `.txt`: la primera y la última son los empalmes
+    # extremos del camino.
+    botellas_en_orden = [n.botella_id for n in secuencia if n.botella_id]
     return ResumenCamino(
         inicio=_extremo_de_nodo(secuencia[0]) if secuencia else None,
         fin=_extremo_de_nodo(secuencia[-1]) if secuencia else None,
         odfs=tuple(odfs),
         cables=tuple(cables),
         servicio_at62=camino.servicio_at62,
+        botellas=tuple(sorted(set(botellas_en_orden))),
+        botella_inicio=botellas_en_orden[0] if botellas_en_orden else None,
+        botella_fin=botellas_en_orden[-1] if botellas_en_orden else None,
     )
 
 
@@ -499,7 +523,8 @@ class TrackingsDelServicio:
     `residuales` conservan el nombre de siempre. `esperados_declarados` es la cantidad de tramos
     que declaró el operador (`servicios.trackings_esperados`, `None` si no declaró); `odf_confirmadas`
     son las ODF confirmadas vigentes del Servicio. `completo` = no se tocó el tope de llamadas ni
-    el de fallidos.
+    el de fallidos. `auditoria` es el resumen de la auditoría de huérfanos que corre al final
+    (`None` si no corrió o falló).
     """
 
     tramos: list[TrackingGenerado]
@@ -508,6 +533,7 @@ class TrackingsDelServicio:
     completo: bool
     esperados_declarados: Optional[int] = None
     odf_confirmadas: list[dict[str, Any]] = field(default_factory=list)
+    auditoria: Optional[Any] = None
 
 
 async def trackings_del_servicio(
@@ -516,6 +542,8 @@ async def trackings_del_servicio(
     servicio_id: int,
     *,
     odfs_confirmadas: Optional[frozenset[int]] = None,
+    auditar: bool = True,
+    corrida_id: Optional[int] = None,
 ) -> TrackingsDelServicio:
     """Un camino por semilla no cubierta, clasificado en tramos y residuales. Lo usan Slack y web.
 
@@ -525,6 +553,10 @@ async def trackings_del_servicio(
     Lo declarado por el operador (ODF confirmadas y trackings esperados) se lee de la DB. Si
     `odfs_confirmadas` se pasa explícito, pisa a las de la DB (tests); los esperados siempre salen
     de la DB.
+
+    Al final audita los huérfanos con este mismo resultado, sin volver a Cromo
+    (`auditoria_huerfanos.auditar_sin_romper`: savepoint propio, nunca levanta). Es el único punto
+    de enganche: Slack, el portal y la corrida global (`corrida_id`) pasan por acá.
     """
     declaradas = await declaraciones_del_servicio(sesion, servicio_id)
     confirmadas = declaradas.odf_ids if odfs_confirmadas is None else odfs_confirmadas
@@ -561,6 +593,20 @@ async def trackings_del_servicio(
         )
         for numero, tracking in enumerate(ordenar_tramos(tramos), start=1)
     ]
+    auditoria = None
+    if auditar:
+        # Import diferido: `auditoria_huerfanos` importa los tipos de este módulo.
+        from core.services.cromo.auditoria_huerfanos import auditar_sin_romper
+
+        auditoria = await auditar_sin_romper(
+            sesion,
+            servicio_id,
+            tramos=tramos,
+            residuales=residuales,
+            semillas=frozenset(s.pelo_n_id for s in semillas),
+            odfs_confirmadas=frozenset(confirmadas),
+            corrida_id=corrida_id,
+        )
     logger.info(
         "action=cromo_tracking evento=clasificacion servicio_id=%s tramos=%s residuales=%s "
         "completo=%s",
@@ -576,6 +622,7 @@ async def trackings_del_servicio(
         completo=por_camino.completo,
         esperados_declarados=declaradas.trackings_esperados,
         odf_confirmadas=declaradas.confirmadas,
+        auditoria=auditoria,
     )
 
 
