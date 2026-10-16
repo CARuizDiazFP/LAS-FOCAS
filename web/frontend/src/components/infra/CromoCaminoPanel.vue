@@ -180,6 +180,15 @@
          se descargan; la auditoría los revisa. -->
     <p v-if="camino.residuales.value.length" class="cromo-camino__nota">
       {{ camino.residuales.value.length }} caminos residuales (no se descargan)
+      <template v-if="esAdmin && servicioId !== null">
+        ·
+        <RouterLink
+          class="cromo-camino__link"
+          :to="{ path: '/admin/servicios/viewer/Huerfanos', query: { servicio: String(servicioId) } }"
+        >
+          revisar en Huérfanos
+        </RouterLink>
+      </template>
     </p>
 
     <details v-if="camino.excluidos.value.length" class="cromo-camino__excluidos">
@@ -191,7 +200,12 @@
           <span>
             pelo {{ x.pelo_n_id }}
             <span class="cromo-camino__odf-meta">
-              {{ [x.cable_nombre, [x.numero_pelo, x.color].filter(Boolean).join(' '), x.excluido_por]
+              {{ [
+                x.cable_nombre,
+                [x.numero_pelo, x.color].filter(Boolean).join(' '),
+                x.excluido_por,
+                x.origen === 'AUDITORIA' ? `auditoría: ${x.motivo ?? ''}` : null,
+              ]
                 .filter(Boolean)
                 .join(' · ') }}
             </span>
@@ -333,6 +347,7 @@
 // `pelo_n_id` del camino resuelto al confirmar) como el detalle del Servicio (que descarga el
 // .txt del pelo elegido) necesitan leerlo. El panel dibuja y dispara; no es dueño de nada.
 import { computed, reactive, ref, watch } from 'vue';
+import { RouterLink } from 'vue-router';
 
 import {
   type OdfConfirmada,
@@ -433,6 +448,13 @@ defineSlots<{
   line-height: 1.45;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
+
+.cromo-camino__link {
+  color: var(--color-accent-200);
+  text-decoration: none;
+}
+
+.cromo-camino__link:hover { text-decoration: underline; }
 
 .cromo-camino__error {
   margin: 0;

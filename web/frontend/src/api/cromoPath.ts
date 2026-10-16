@@ -276,6 +276,8 @@ export interface PeloExcluido {
   motivo: string | null;
   excluido_por: string | null;
   created_at: string | null;
+  /** MANUAL (desde este panel) | AUDITORIA (Normalizar en el Viewer de huérfanos). */
+  origen?: string;
 }
 
 /** Extremo de un camino: dónde empieza o termina su `.txt` (conector de ODF o un pelo). */

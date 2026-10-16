@@ -26,6 +26,12 @@
         <span class="card-desc">Servicios Activos sin ODF resuelta, con causa probable y sugerencia de ODF para asociar a mano.</span>
       </RouterLink>
 
+      <RouterLink to="/admin/servicios/viewer/Huerfanos" class="service-card">
+        <span class="card-icon">🧵</span>
+        <span class="card-title">Huérfanos</span>
+        <span class="card-desc">Pelos de caminos residuales con causa sugerida; normalizar en lote y auditoría global.</span>
+      </RouterLink>
+
       <!-- Futuros dashboards de datos operativos se agregan aquí -->
     </div>
   </section>
