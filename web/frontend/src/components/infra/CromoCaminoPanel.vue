@@ -7,16 +7,52 @@
   <section class="cromo-camino">
     <header class="cromo-camino__head">
       <h4 class="cromo-camino__titulo">Camino óptico en Cromo</h4>
-      <button
-        v-if="camino.tieneSemilla.value"
-        class="btn subtle"
-        type="button"
-        :disabled="camino.resolviendo.value"
-        @click="servicioId != null && camino.resolver(servicioId)"
+      <!-- Un solo botón con dos acciones: la principal resuelve los tramos del Servicio (lo que
+           se descarga y lo que hace `@bot track`); el menú abre el detalle nodo a nodo del pelo
+           elegido (secuencia, estadísticas y consistencia). Antes eran dos botones sueltos con
+           nombres casi iguales ("Resolver camino" / "Resolver caminos"). -->
+      <div
+        v-if="camino.tieneSemilla.value && servicioId !== null"
+        ref="menuEl"
+        class="cromo-camino__accion"
       >
-        <i class="ph ph-tree-structure" aria-hidden="true"></i>
-        {{ camino.resultado.value ? 'Resolver de nuevo' : 'Resolver camino' }}
-      </button>
+        <button
+          class="btn subtle cromo-camino__accion-principal"
+          type="button"
+          :disabled="ocupado"
+          title="Resuelve en Cromo los tramos del Servicio"
+          @click="camino.resolverCaminos(servicioId)"
+        >
+          <i class="ph ph-path" aria-hidden="true"></i>
+          {{
+            camino.resolviendoCaminos.value
+              ? 'Resolviendo caminos…'
+              : camino.caminosResueltos.value
+                ? 'Resolver caminos de nuevo'
+                : 'Resolver caminos'
+          }}
+        </button>
+        <button
+          class="btn subtle cromo-camino__accion-menu"
+          type="button"
+          :disabled="ocupado"
+          aria-haspopup="menu"
+          :aria-expanded="menuAbierto"
+          aria-label="Más acciones del camino"
+          title="Más acciones"
+          @click="menuAbierto = !menuAbierto"
+        >
+          <i class="ph ph-caret-down" aria-hidden="true"></i>
+        </button>
+        <ul v-if="menuAbierto" class="cromo-camino__menu" role="menu">
+          <li role="none">
+            <button type="button" role="menuitem" @click="detallePelo(null)">
+              <i class="ph ph-tree-structure" aria-hidden="true"></i>
+              Ver detalle del pelo elegido
+            </button>
+          </li>
+        </ul>
+      </div>
     </header>
 
     <p v-if="camino.cargandoPelos.value" class="cromo-camino__nota">Buscando pelos…</p>
@@ -70,23 +106,6 @@
           ({{ camino.tramos.value.length }} trackings).
         </template>
       </p>
-      <button
-        v-if="servicioId !== null"
-        class="btn subtle"
-        type="button"
-        :disabled="camino.resolviendoCaminos.value || camino.descargando.value"
-        title="Resuelve en Cromo los tramos del Servicio"
-        @click="camino.resolverCaminos(servicioId)"
-      >
-        <i class="ph ph-path" aria-hidden="true"></i>
-        {{
-          camino.resolviendoCaminos.value
-            ? 'Resolviendo caminos…'
-            : camino.caminosResueltos.value
-              ? 'Resolver caminos de nuevo'
-              : 'Resolver caminos'
-        }}
-      </button>
     </div>
     <p v-if="camino.errorCaminos.value" class="cromo-camino__error">
       {{ camino.errorCaminos.value }}
@@ -99,16 +118,26 @@
           {{ etiquetaTramo(t) }}
           <span v-if="t.desde_cache" class="cromo-camino__odf-meta">· en caché</span>
         </span>
-        <button
-          v-if="servicioId !== null"
-          class="btn subtle"
-          type="button"
-          :disabled="camino.descargando.value || camino.resolviendoCaminos.value"
-          :title="t.nombre_archivo"
-          @click="camino.descargarTramo(servicioId, t)"
-        >
-          Descargar
-        </button>
+        <span v-if="servicioId !== null" class="cromo-camino__acciones">
+          <button
+            class="btn subtle"
+            type="button"
+            :disabled="ocupado"
+            title="Detalle nodo a nodo de este tramo"
+            @click="detallePelo(t.pelo_n_id)"
+          >
+            Detalle
+          </button>
+          <button
+            class="btn subtle"
+            type="button"
+            :disabled="camino.descargando.value || camino.resolviendoCaminos.value"
+            :title="t.nombre_archivo"
+            @click="camino.descargarTramo(servicioId, t)"
+          >
+            Descargar
+          </button>
+        </span>
       </li>
     </ul>
     <!-- Lo que declara el operador sobre el tracking: cuántos espera y qué ODF son del recorrido.
@@ -355,7 +384,7 @@
 // El estado vive en el PADRE, no acá: tanto el modal de asociación (que persiste el
 // `pelo_n_id` del camino resuelto al confirmar) como el detalle del Servicio (que descarga el
 // .txt del pelo elegido) necesitan leerlo. El panel dibuja y dispara; no es dueño de nada.
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import {
@@ -378,6 +407,32 @@ const props = defineProps<{
 const { state: sesion } = useSession();
 // Mismo criterio que el resto del SPA: el rol viaja en la sesión, no hay un `isAdmin` propio.
 const esAdmin = computed(() => (sesion.value.role ?? '').toLowerCase() === 'admin');
+
+// --- Botón único "Resolver caminos" con menú de acciones ---
+const menuAbierto = ref(false);
+const menuEl = ref<HTMLElement | null>(null);
+const ocupado = computed(
+  () =>
+    props.camino.resolviendo.value ||
+    props.camino.resolviendoCaminos.value ||
+    props.camino.descargando.value,
+);
+
+/** Detalle nodo a nodo de un pelo: el de la fila del tramo, o el elegido en el selector. */
+function detallePelo(peloNId: number | null): void {
+  menuAbierto.value = false;
+  if (props.servicioId === null) return;
+  if (peloNId !== null) props.camino.peloElegido.value = peloNId;
+  void props.camino.resolver(props.servicioId);
+}
+
+function cerrarMenuFuera(ev: MouseEvent): void {
+  if (menuAbierto.value && menuEl.value && !menuEl.value.contains(ev.target as Node)) {
+    menuAbierto.value = false;
+  }
+}
+onMounted(() => document.addEventListener('click', cerrarMenuFuera));
+onBeforeUnmount(() => document.removeEventListener('click', cerrarMenuFuera));
 
 // Rol elegido a mano por ODF antes de confirmar; sin elección vale el sugerido (ODF en un extremo
 // de camino → extremo; ODF Nodo o intermedia → tránsito).
@@ -443,6 +498,57 @@ defineSlots<{
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.cromo-camino__accion {
+  position: relative;
+  display: inline-flex;
+}
+
+.cromo-camino__accion-principal {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.cromo-camino__accion-menu {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid var(--color-divider);
+  padding-inline: 6px;
+}
+
+.cromo-camino__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.cromo-camino__menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cromo-camino__menu button:hover,
+.cromo-camino__menu button:focus-visible {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
 }
 
 .cromo-camino__titulo {
