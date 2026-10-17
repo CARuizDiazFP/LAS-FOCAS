@@ -8,6 +8,7 @@ import { computed, ref } from 'vue';
 import {
   type CaminoResidual,
   type CaminoOpticoResponse,
+  type CaminosServicioResponse,
   type OdfConfirmada,
   type RolOdfConfirmada,
   type PeloExcluido,
@@ -33,14 +34,95 @@ export interface ResultadoDescargaTrackings {
   fallidos: { peloNId: number; motivo: string }[];
 }
 
-/** ODF que aparece en los extremos de los tramos resueltos, candidata a confirmarse. */
+/** ODF que toca algún camino resuelto (tramo o residual) o que ya está confirmada. */
 export interface OdfDelTramo {
   odf_n_id: number;
   nombre: string | null;
   /** 86 = ODF Nodo, 69 = ODF. */
   clase: number | null;
-  /** Rol sugerido: ODF Nodo → tránsito, ODF → extremo. El operador lo puede cambiar. */
+  /** Rol sugerido: ODF (69) en un extremo de camino → extremo; cualquier otra → tránsito. */
   rolSugerido: RolOdfConfirmada;
+}
+
+/**
+ * ODF que el operador puede confirmar o quitar: todas las que tocan los tramos y los residuales
+ * (extremos e intermedias) y, siempre, las confirmadas vigentes —aunque ya no aparezcan en ningún
+ * camino, para poder quitarlas—. Un residual puede ser la única vía a una ODF del Servicio.
+ */
+export function odfsConfirmables(
+  caminos: (TramoDelServicio | CaminoResidual)[],
+  confirmadas: OdfConfirmada[],
+): OdfDelTramo[] {
+  const vistas = new Map<number, OdfDelTramo>();
+  const agregar = (odf: OdfDelTramo) => {
+    const previa = vistas.get(odf.odf_n_id);
+    if (!previa) {
+      vistas.set(odf.odf_n_id, odf);
+      return;
+    }
+    // Una ODF que es extremo en un camino e intermedia en otro se sugiere como extremo.
+    vistas.set(odf.odf_n_id, {
+      odf_n_id: odf.odf_n_id,
+      nombre: previa.nombre ?? odf.nombre,
+      clase: previa.clase ?? odf.clase,
+      rolSugerido:
+        previa.rolSugerido === 'EXTREMO' || odf.rolSugerido === 'EXTREMO' ? 'EXTREMO' : 'TRANSITO',
+    });
+  };
+  for (const camino of caminos) {
+    const extremos = [camino.extremos.a, camino.extremos.b].filter(
+      (e): e is NonNullable<typeof e> => e != null && e.odf_n_id != null,
+    );
+    const enExtremo = new Set(extremos.map((e) => e.odf_n_id));
+    for (const e of extremos) {
+      agregar({
+        odf_n_id: e.odf_n_id as number,
+        nombre: e.odf_nombre,
+        clase: e.odf_clase,
+        rolSugerido: e.odf_clase === 69 ? 'EXTREMO' : 'TRANSITO',
+      });
+    }
+    for (const o of camino.odfs ?? []) {
+      agregar({
+        odf_n_id: o.odf_n_id,
+        nombre: o.odf_nombre,
+        clase: o.odf_clase,
+        rolSugerido: enExtremo.has(o.odf_n_id) && o.odf_clase === 69 ? 'EXTREMO' : 'TRANSITO',
+      });
+    }
+  }
+  for (const c of confirmadas) {
+    if (vistas.has(c.odf_n_id)) continue;
+    vistas.set(c.odf_n_id, {
+      odf_n_id: c.odf_n_id,
+      nombre: c.odf_nombre,
+      clase: c.odf_tipo === 'ODF_NODO' ? 86 : c.odf_tipo === 'ODF' ? 69 : null,
+      rolSugerido: c.rol,
+    });
+  }
+  return [...vistas.values()];
+}
+
+/** Avisos de una resolución de caminos: semillas sin resolver, tope tocado, esperados distintos. */
+export function avisosDeCaminos(respuesta: CaminosServicioResponse): string[] {
+  const avisos: string[] = [];
+  const sinResolver = Math.max(respuesta.no_cubiertos ?? 0, respuesta.errores.length);
+  if (sinResolver > 0 || !respuesta.completo) {
+    avisos.push(`Tracking incompleto: ${sinResolver} semilla(s) no resolvieron.`);
+    if (respuesta.errores.length) avisos.push(respuesta.errores.join(' · '));
+  }
+  if (respuesta.tope_llamadas) {
+    avisos.push('Se alcanzó el tope de consultas a Cromo.');
+  }
+  if (
+    respuesta.esperados_declarados != null &&
+    respuesta.esperados_declarados !== respuesta.tramos.length
+  ) {
+    avisos.push(
+      `Se esperaban ${respuesta.esperados_declarados} trackings y se generaron ${respuesta.tramos.length}.`,
+    );
+  }
+  return avisos;
 }
 
 /** 30 s: seis veces el peor caso medido por objeto contra Cromo, sobre un endpoint documentado
@@ -92,29 +174,19 @@ export function useCromoPath() {
   const errorCaminos = ref('');
   /** ODF confirmadas vigentes del Servicio (vienen con `/caminos`; los POST las refrescan). */
   const odfConfirmadas = ref<OdfConfirmada[]>([]);
-  /** Trackings que declara el Servicio (`null` = sin declarar). */
+  /** Trackings esperados que declaró el operador en LAS-FOCAS (`null` = sin declarar). */
   const esperadosDeclarados = ref<number | null>(null);
+  /** Segmentos físicos de los tramos (grupos que comparten cables); 0 = sin resolver. */
+  const segmentos = ref(0);
   const guardandoDeclaracion = ref(false);
   const errorDeclaracion = ref('');
   /** Se confirmó/quitó una ODF o se cambió lo esperado: hay que volver a resolver los caminos. */
   const declaracionCambio = ref(false);
 
-  /** ODF de los extremos de los tramos resueltos, sin repetir (por `odf_n_id`). */
-  const odfsDelCamino = computed<OdfDelTramo[]>(() => {
-    const vistas = new Map<number, OdfDelTramo>();
-    for (const tramo of tramos.value) {
-      for (const extremo of [tramo.extremos.a, tramo.extremos.b]) {
-        if (!extremo || extremo.odf_n_id == null || vistas.has(extremo.odf_n_id)) continue;
-        vistas.set(extremo.odf_n_id, {
-          odf_n_id: extremo.odf_n_id,
-          nombre: extremo.odf_nombre,
-          clase: extremo.odf_clase,
-          rolSugerido: extremo.odf_clase === 86 ? 'TRANSITO' : 'EXTREMO',
-        });
-      }
-    }
-    return [...vistas.values()];
-  });
+  /** ODF confirmables: las de tramos y residuales (extremos e intermedias) más las confirmadas. */
+  const odfsDelCamino = computed<OdfDelTramo[]>(() =>
+    odfsConfirmables([...tramos.value, ...residuales.value], odfConfirmadas.value),
+  );
 
   /** Pelos ya sacados del Servicio en local. */
   const excluidos = ref<PeloExcluido[]>([]);
@@ -369,25 +441,13 @@ export function useCromoPath() {
       caminosResueltos.value = true;
       odfConfirmadas.value = respuesta.odf_confirmadas ?? [];
       esperadosDeclarados.value = respuesta.esperados_declarados;
+      segmentos.value = respuesta.segmentos ?? 0;
       declaracionCambio.value = false;
       seleccionManual.value = false;
       pelosSeleccionados.value = respuesta.tramos.map((t) => t.pelo_n_id);
-      const avisos: string[] = [];
-      if (!respuesta.completo) {
-        avisos.push('Tracking incompleto: se alcanzó el tope de consultas a Cromo.');
-      }
-      if (
-        respuesta.esperados_declarados != null &&
-        respuesta.esperados_declarados !== respuesta.tramos.length
-      ) {
-        avisos.push(
-          `Se esperaban ${respuesta.esperados_declarados} trackings y se generaron ${respuesta.tramos.length}.`,
-        );
-      }
-      if (!respuesta.completo && respuesta.errores.length) {
-        avisos.push(respuesta.errores.join(' · '));
-      }
-      errorCaminos.value = avisos.join(' ');
+      // Con semillas que no resolvieron se avisa aunque el recorrido haya terminado: puede faltar
+      // un tramo entero. El tope de consultas se menciona sólo si de verdad se tocó.
+      errorCaminos.value = avisosDeCaminos(respuesta).join(' ');
       return respuesta.tramos.length > 0;
     } catch (error) {
       errorCaminos.value = mensajeErrorCromoPath(error);
@@ -551,6 +611,7 @@ export function useCromoPath() {
     errorCaminos.value = '';
     odfConfirmadas.value = [];
     esperadosDeclarados.value = null;
+    segmentos.value = 0;
     errorDeclaracion.value = '';
     declaracionCambio.value = false;
     excluidos.value = [];
@@ -602,6 +663,7 @@ export function useCromoPath() {
     errorCaminos,
     odfConfirmadas,
     esperadosDeclarados,
+    segmentos,
     guardandoDeclaracion,
     errorDeclaracion,
     declaracionCambio,

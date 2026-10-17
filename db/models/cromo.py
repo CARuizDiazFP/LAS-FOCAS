@@ -533,12 +533,15 @@ class ServicioOdfConfirmada(Base):
             unique=True,
             postgresql_where=text("vigente"),
         ),
+        # Nombre explícito, el mismo de la migración 20261016_03: con `index=True` el modelo
+        # generaba `ix_app_servicio_odf_confirmada_servicio_id` y autogenerate veía drift.
+        Index("ix_servicio_odf_confirmada_servicio", "servicio_id"),
         {"schema": "app"},
     )
 
     id = Column(Integer, primary_key=True)
     servicio_id = Column(
-        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False
     )
     odf_n_id = Column(BigInteger, nullable=False)  # referencia blanda a cromo_odfs.n_id
     rol = Column(Text, nullable=False)  # EXTREMO | TRANSITO — CHECK en la migración
@@ -676,7 +679,12 @@ class CromoServicioPeloExcluido(Base):
     origen = Column(Text, nullable=False, server_default=text("'MANUAL'"))
     auditoria_id = Column(
         BigInteger,
-        ForeignKey("app.cromo_auditoria_huerfanos.id", ondelete="SET NULL"),
+        # Nombre explícito, el mismo de la migración 20261016_04.
+        ForeignKey(
+            "app.cromo_auditoria_huerfanos.id",
+            ondelete="SET NULL",
+            name="fk_cromo_servicio_pelo_excluido_auditoria",
+        ),
         nullable=True,
     )
 

@@ -354,11 +354,15 @@ manual: sale del camino óptico de Cromo, igual que el botón de descarga del De
 - **Sin lista de huérfanos** (2026-10-16). Los residuales **no** se suben ni se listan en el hilo
   (antes se listaban hasta 15). Se gestionan en el Viewer admin `/admin/servicios/viewer/Huerfanos`.
 - **Línea de resumen** (`mensaje_resumen`): sólo las líneas que aplican, en este orden. (1) con más
-  de un tramo, "Servicio segmentado en N tramos."; (2) si el operador declaró una cantidad
-  (`servicios.trackings_esperados`) distinta de la generada, "Se esperaban X trackings y se
-  generaron Y."; (3) si se tocó el tope de llamadas con semillas sin cubrir, ":warning: Tracking
-  incompleto: se alcanzó el tope de consultas a Cromo." más el motivo de cada pelo fallido. Si no
-  aplica ninguna, no se publica resumen. Se toleran hasta 10 semillas fallidas antes de rendirse.
+  de un segmento físico (grupos de tramos que comparten cables, `contar_segmentos`; un par de hilos
+  del mismo recorrido como 42351 es UN segmento), "Servicio segmentado en K tramos (N trackings).";
+  (2) si el operador declaró una cantidad (`servicios.trackings_esperados`) distinta de la
+  generada, "Se esperaban X trackings y se generaron Y."; (3) si hay semillas sin camino
+  (`no_cubiertos`) o errores —aunque el recorrido haya terminado: puede faltar un tramo entero—,
+  ":warning: Tracking incompleto: N semilla(s) no resolvieron." más el motivo de cada pelo
+  fallido; (4) aparte, "Se alcanzó el tope de consultas a Cromo." sólo si el corte fue por
+  `CROMO_TRACKING_MAX_LLAMADAS` (no por las 10 semillas fallidas toleradas). Si no aplica ninguna,
+  no se publica resumen.
 - Sin ningún pelo en Cromo responde el motivo en texto y **no** sube nada: un `.txt` que dice "no hay
   datos" es basura.
 

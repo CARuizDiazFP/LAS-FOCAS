@@ -963,8 +963,14 @@ daba 10/3/7/2 tramos): 102452 = 6, 42351 = 2, 93154 = 2, 94673 = 2 (fixtures en
 `tests/test_cromo_tracking_clasificacion.py`). Cada camino lleva sus extremos (`cromo_tracking_cache.extremos
 JSONB`, migración `20261016_02`; una entrada sin extremos se regenera). `GET
 /api/infra/cromo/servicios/{id}/camino-optico/caminos` devuelve `tramos` y `residuales` (con `rol`),
-`esperados_declarados`, `odf_confirmadas`, y mantiene `caminos` (= tramos) y `huerfanos: []` por
-compatibilidad. `tracking.txt?tramo=N` nombra `{at62} CROMO T{n} pelo {n_id}.txt`. Los residuales no
+`esperados_declarados`, `odf_confirmadas`, `completo`, `errores`, `no_cubiertos` (semillas sin
+camino), `tope_llamadas` (sólo si se tocó `CROMO_TRACKING_MAX_LLAMADAS`) y `segmentos`, y mantiene
+`caminos` (= tramos) y `huerfanos: []` por compatibilidad. "Incompleto" no es sólo el tope: también
+el corte por 10 semillas fallidas y cualquier semilla sin camino aun con `completo=true` (el panel
+avisa "Tracking incompleto: N semilla(s) no resolvieron." y menciona el tope sólo si se tocó). Cada
+camino trae además `odfs` (todas las ODF que toca, extremos e intermedias, con `n_id` de linaje,
+nombre y clase): "ODF del camino" lista las de tramos y residuales más las confirmadas vigentes, con
+rol sugerido EXTREMO sólo para una ODF (69) en un extremo de camino. `tracking.txt?tramo=N` nombra `{at62} CROMO T{n} pelo {n_id}.txt`. Los residuales no
 se descargan: `CromoCaminoPanel` muestra "N caminos residuales" con enlace al Viewer de huérfanos.
 
 **ODF confirmadas y trackings esperados** (migración `20261016_03`). El operador confirma por

@@ -168,3 +168,36 @@ async def test_n_ids_de_odfs_mapea_version_y_n_id_y_el_n_id_gana():
     assert mapa[9295436] == 6646686
     assert mapa[100] == 100
     assert await svc.n_ids_de_odfs(_Sesion(), []) == {}
+
+
+@pytest.mark.asyncio
+async def test_datos_de_odfs_devuelve_nombre_y_clase_por_n_id_en_una_query():
+    class _SesionDatos:
+        def __init__(self):
+            self.sql: list[str] = []
+
+        async def execute(self, stmt, params=None):
+            self.sql.append(str(stmt))
+            assert sorted(params["n_ids"]) == [5, 6646686]
+            return _Resultado([(6646686, "NODO KORN", 86), (5, None, 69)])
+
+    sesion = _SesionDatos()
+    datos = await svc.datos_de_odfs(sesion, [6646686, 5, 5])
+
+    assert datos == {6646686: ("NODO KORN", 86), 5: (None, 69)}
+    assert len(sesion.sql) == 1 and "app.cromo_odfs" in sesion.sql[0]
+    assert await svc.datos_de_odfs(_SesionDatos(), []) == {}
+
+
+def test_modelos_usan_los_nombres_de_indice_y_fk_de_las_migraciones():
+    """M4: sin nombres explícitos, autogenerate ve drift contra 20261016_03/04."""
+    from db.models.cromo import CromoServicioPeloExcluido, ServicioOdfConfirmada
+
+    indices = {i.name for i in ServicioOdfConfirmada.__table__.indexes}
+    assert indices == {"ux_servicio_odf_confirmada_vigente", "ix_servicio_odf_confirmada_servicio"}
+    fks = {
+        fk.name
+        for fk in CromoServicioPeloExcluido.__table__.foreign_keys
+        if fk.parent.name == "auditoria_id"
+    }
+    assert fks == {"fk_cromo_servicio_pelo_excluido_auditoria"}

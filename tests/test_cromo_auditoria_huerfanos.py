@@ -292,3 +292,32 @@ def test_consolidar_solo_pelos_del_servicio_y_fuera_de_tramos():
     )
     assert set(filas) == {1}
     assert filas[1][1] == CAUSA_CABLE_DESUSO and filas[1][2]["odfs"] == []
+
+
+# ── M1: un extremo CONECTOR_ODF sin `gfather` resuelto sigue siendo extremo en ODF ─────────────
+
+
+def test_extremo_conector_odf_sin_odf_id_cuenta_como_odf():
+    """Un conector de ODF cuyo `gfather` no vino en el payload (odf_id None) está igual en una ODF:
+    la protección no puede fallar abierta por un dato faltante."""
+    extremo = ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=5, clase=136)
+    assert extremo.es_conector_odf
+
+
+def test_residual_con_extremo_conector_sin_odf_id_queda_protegido():
+    residual = ResumenCamino(
+        inicio=_pelo(1), fin=ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=5, clase=136), cables=(9,)
+    )
+    c = clasificar_residual(residual, [TRAMO], cables_sin_uso=frozenset({9}))
+    assert c.protegido
+    assert c.evidencia()["motivo_proteccion"] == "extremo en ODF u ODF Nodo"
+    assert not es_normalizable(c.causa, c.protegido)
+
+
+def test_extremo_conector_sin_odf_id_no_cuenta_como_odf_ajena_para_migracion():
+    """Sin id de ODF no hay ODF que comparar con las de los tramos: no inventa una migración."""
+    residual = ResumenCamino(
+        inicio=ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=5, clase=136),
+        fin=_pelo(2), cables=(7,), botellas=(10, 30), botella_inicio=10, botella_fin=30,
+    )
+    assert clasificar_residual(residual, [TRAMO]).causa != CAUSA_MIGRACION_SITIO

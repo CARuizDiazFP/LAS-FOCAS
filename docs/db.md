@@ -984,7 +984,8 @@ del pelo: el `.txt` previo describe un estado de la base que ya cambió.
   y el CHECK de `tipo_elemento` suma `ODF_NODO`.
 - **`cromo_odf_conectores.patch_conector_n_id`** (`20261016_01`, BigInteger NULL): `tp[]` de clase 136.
   `pelo_n_id` pasa a llenarse sólo con `tp` de clase 130; el backfill SQL de la migración anula los
-  erróneos (no se revierte en el downgrade).
+  erróneos (no se revierte en el downgrade). El downgrade de `20261016_01` **borra** las filas
+  `ODF_NODO` de `cromo_odfs` y sus conectores de `cromo_odf_conectores`.
 - **`cromo_tracking_cache.extremos`** (`20261016_02`, JSONB NULL, `none_as_null`): extremos del camino
   (ODF, clase, patchera, conector, `servicio_at62`) y botellas extremas. `NULL` = entrada previa, se regenera.
 - **`servicio_odf_confirmada`** (`20261016_03`): `id`, `servicio_id` FK `servicios.id` CASCADE,

@@ -84,7 +84,9 @@ class ExtremoCamino:
 
     @property
     def es_conector_odf(self) -> bool:
-        return self.tipo == TIPO_CONECTOR_ODF and self.odf_id is not None
+        # Un conector de ODF está en una ODF aunque su `gfather` no haya venido en el payload
+        # (`odf_id` None): exigir el id hacía fallar abierta la protección de extremos en ODF.
+        return self.tipo == TIPO_CONECTOR_ODF
 
 
 @dataclass(slots=True, frozen=True)
@@ -330,8 +332,9 @@ class TrackingsPorCamino:
 
     `no_cubiertos` son las semillas que no quedaron en ningún camino generado: las que fallaron y,
     si se tocó un tope, las que no se llegaron a pedir. `completo` dice si el recorrido terminó sin
-    tocar `max_llamadas` ni `max_fallidos`. `llamadas` cuenta las que fueron a Cromo (lo servido
-    del caché no cuenta).
+    tocar `max_llamadas` ni `max_fallidos`; `tope_llamadas` dice si el que se tocó fue el de
+    llamadas (para no culpar al tope cuando el corte fue por semillas fallidas). `llamadas` cuenta
+    las que fueron a Cromo (lo servido del caché no cuenta).
     """
 
     trackings: list[TrackingGenerado] = field(default_factory=list)
@@ -339,6 +342,7 @@ class TrackingsPorCamino:
     errores: list[str] = field(default_factory=list)
     no_cubiertos: list[int] = field(default_factory=list)
     completo: bool = True
+    tope_llamadas: bool = False
     llamadas: int = 0
 
 
@@ -382,6 +386,7 @@ async def trackings_por_camino(
             break
         if max_llamadas is not None and resultado.llamadas >= max_llamadas:
             resultado.completo = False
+            resultado.tope_llamadas = True
             break
         try:
             tracking = await obtener_tracking(
@@ -439,6 +444,34 @@ def _jaccard(a: frozenset[int], b: frozenset[int]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+def _son_par(a: frozenset[int], b: frozenset[int]) -> bool:
+    """Dos caminos son par (hilos del mismo recorrido) si recorren (casi) los mismos cables."""
+    return _jaccard(a, b) >= _JACCARD_PAR_MINIMO
+
+
+def contar_segmentos(tramos: Sequence[TrackingGenerado]) -> int:
+    """Cuántos segmentos físicos cubren los tramos: grupos de tramos que son par entre sí. Pura.
+
+    Los dos hilos de un mismo recorrido (42351: 2 trackings) son UN segmento; un servicio cortado
+    por una ODF Nodo sin patch (102452: 3 pares, 6 trackings) son 3. El par es el mismo de
+    `clasificar_caminos` (Jaccard de cables >= 0,8), con cierre transitivo.
+    """
+    cables = [frozenset(_resumen(t).cables) for t in tramos]
+    grupo = list(range(len(tramos)))
+
+    def _raiz(i: int) -> int:
+        while grupo[i] != i:
+            grupo[i] = grupo[grupo[i]]
+            i = grupo[i]
+        return i
+
+    for i in range(len(tramos)):
+        for j in range(i + 1, len(tramos)):
+            if _son_par(cables[i], cables[j]):
+                grupo[_raiz(i)] = _raiz(j)
+    return len({_raiz(i) for i in range(len(tramos))})
 
 
 def _resumen(tracking: TrackingGenerado) -> ResumenCamino:
@@ -503,7 +536,7 @@ def clasificar_caminos(
     con_par = [
         i
         for i in largos
-        if any(j != i and _jaccard(cables[i], cables[j]) >= _JACCARD_PAR_MINIMO for j in largos)
+        if any(j != i and _son_par(cables[i], cables[j]) for j in largos)
     ]
     for i in con_par or largos:
         roles[i] = ROL_TRAMO
@@ -523,8 +556,11 @@ class TrackingsDelServicio:
     `residuales` conservan el nombre de siempre. `esperados_declarados` es la cantidad de tramos
     que declaró el operador (`servicios.trackings_esperados`, `None` si no declaró); `odf_confirmadas`
     son las ODF confirmadas vigentes del Servicio. `completo` = no se tocó el tope de llamadas ni
-    el de fallidos. `auditoria` es el resumen de la auditoría de huérfanos que corre al final
-    (`None` si no corrió o falló).
+    el de fallidos; `tope_llamadas` = se tocó el de llamadas. `no_cubiertos` son las semillas que
+    no quedaron en ningún camino (fallaron o no se llegaron a pedir): con `completo=True` también
+    puede haberlas, y ahí puede faltar un tramo entero. `segmentos` son los grupos de tramos que
+    comparten cables (`contar_segmentos`). `auditoria` es el resumen de la auditoría de huérfanos
+    que corre al final (`None` si no corrió o falló).
     """
 
     tramos: list[TrackingGenerado]
@@ -534,6 +570,9 @@ class TrackingsDelServicio:
     esperados_declarados: Optional[int] = None
     odf_confirmadas: list[dict[str, Any]] = field(default_factory=list)
     auditoria: Optional[Any] = None
+    no_cubiertos: list[int] = field(default_factory=list)
+    tope_llamadas: bool = False
+    segmentos: int = 0
     # Por qué no se auditó (`"INCOMPLETO"`: tope tocado, semillas fallidas o sin cubrir); `None` si
     # se auditó o si no se pidió auditar.
     auditoria_omitida: Optional[str] = None
@@ -647,6 +686,9 @@ async def trackings_del_servicio(
         odf_confirmadas=declaradas.confirmadas,
         auditoria=auditoria,
         auditoria_omitida=auditoria_omitida,
+        no_cubiertos=por_camino.no_cubiertos,
+        tope_llamadas=por_camino.tope_llamadas,
+        segmentos=contar_segmentos(tramos),
     )
 
 

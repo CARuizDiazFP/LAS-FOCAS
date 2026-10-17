@@ -879,3 +879,78 @@ async def test_trackings_del_servicio_con_semilla_fallida_no_audita(monkeypatch,
     assert resultado.completo is True and resultado.errores
     assert llamadas == [] and resultado.auditoria is None
     assert resultado.auditoria_omitida == "INCOMPLETO"
+
+
+# ── I3: fallas parciales y tope de llamadas, por separado ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tope_de_llamadas_se_distingue_del_tope_de_fallidas(monkeypatch):
+    async def _ok(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _generado(pelo_n_id, {pelo_n_id})
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _ok)
+    por_tope = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3], max_llamadas=1
+    )
+    assert por_tope.completo is False and por_tope.tope_llamadas is True
+
+    async def _falla(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _falla)
+    por_fallidas = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3], max_fallidos=1
+    )
+    assert por_fallidas.completo is False and por_fallidas.tope_llamadas is False
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_expone_no_cubiertos_y_tope(monkeypatch, declaraciones):
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        if pelo_n_id == 20:
+            raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
+        return _generado(pelo_n_id, {pelo_n_id})
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1, auditar=False)
+
+    assert resultado.completo is True
+    assert resultado.no_cubiertos == [20]
+    assert resultado.tope_llamadas is False
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_cuenta_segmentos_por_pares_de_cables(monkeypatch, declaraciones):
+    """I4: dos hilos del mismo camino (mismos cables) son UN segmento; dos pares sobre cables
+    distintos son dos."""
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=69)
+
+    cables = {10: (1, 2, 3), 11: (1, 2, 3), 20: (7, 8, 9), 21: (7, 8, 9)}
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in cables]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(
+            _generado(pelo_n_id, {pelo_n_id, pelo_n_id + 100}),
+            ResumenCamino(servicio_at62="1", inicio=_odf(5), fin=_odf(6), odfs=(5, 6),
+                          cables=cables[pelo_n_id]),
+        )
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1, auditar=False)
+
+    assert len(resultado.tramos) == 4
+    assert resultado.segmentos == 2

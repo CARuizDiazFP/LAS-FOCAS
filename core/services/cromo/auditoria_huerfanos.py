@@ -150,7 +150,10 @@ def clasificar_residual(
             for t in tramos
         )
     )
-    odfs_extremas = [e.odf_id for e in residual.extremos if e.es_conector_odf]
+    # Sin id de ODF (conector sin `gfather` resuelto) no hay ODF que comparar con la de los tramos.
+    odfs_extremas = [
+        e.odf_id for e in residual.extremos if e.es_conector_odf and e.odf_id is not None
+    ]
     migracion = bool(tramos) and (
         any(b not in botellas_tramos for b in extremas)
         or any(o not in odfs_tramos and o not in odfs_confirmadas for o in odfs_extremas)

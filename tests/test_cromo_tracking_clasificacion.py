@@ -266,3 +266,36 @@ def test_odfs_solo_intermedias_no_dejan_al_servicio_sin_tramos():
         _camino(100, 50, odfs=(5,), cables=range(50)),
     ]
     assert clasificar_caminos(caminos) == [ROL_TRAMO, ROL_TRAMO]
+
+
+def test_extremo_conector_odf_sin_odf_id_es_candidato_a_tramo():
+    """M1: un camino que termina en un conector de ODF sin `gfather` resuelto termina en ODF: no
+    puede perder contra un camino sin ODF por un dato faltante."""
+    sin_gfather = ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=3, clase=136)
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    caminos = [
+        TrackingGenerado(
+            pelo_n_id=1, nombre_archivo="x.txt", contenido="", desde_cache=True, generado_at=AHORA,
+            duracion_ms=None, pelos_camino=frozenset(range(1, 40)),
+            extremos=ResumenCamino(inicio=sin_gfather, fin=pelo, cables=tuple(range(40))),
+        ),
+        _camino(1000, 100, cables=range(1000, 1100)),
+    ]
+    assert clasificar_caminos(caminos) == [ROL_TRAMO, ROL_RESIDUAL]
+
+
+def test_contar_segmentos_agrupa_los_tramos_que_comparten_cables():
+    """I4: mismo corte que el par de `clasificar_caminos` (Jaccard >= 0,8)."""
+    from core.services.cromo.tracking_service import contar_segmentos
+
+    par_42351 = [_camino(1, 50, cables=range(155)), _camino(100, 50, cables=range(10, 165))]
+    assert contar_segmentos(par_42351) == 1
+
+    tres_pares = [
+        _camino(i * 1000 + j, 20, cables=range(i * 100, i * 100 + 30))
+        for i in range(3)
+        for j in range(2)
+    ]
+    assert contar_segmentos(tres_pares) == 3
+    assert contar_segmentos([_camino(1, 5, cables=(1,))]) == 1
+    assert contar_segmentos([]) == 0

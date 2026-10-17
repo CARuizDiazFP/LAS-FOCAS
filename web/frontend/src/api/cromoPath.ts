@@ -297,6 +297,14 @@ export interface ExtremosCamino {
   b: ExtremoCamino | null;
 }
 
+/** ODF que toca un camino (extremo o intermedia), ya con el `n_id` de linaje. */
+export interface OdfDeCamino {
+  odf_n_id: number;
+  odf_nombre: string | null;
+  /** 69 = ODF, 86 = ODF Nodo; `null` si no está ingerida y no es extremo. */
+  odf_clase: number | null;
+}
+
 /** Camino que es un tramo del Servicio: tiene su propio `.txt` (`{at62} CROMO T{n} pelo {n_id}.txt`). */
 export interface TramoDelServicio {
   /** Número de tramo, el mismo que lleva el nombre del archivo. */
@@ -307,6 +315,8 @@ export interface TramoDelServicio {
   desde_cache: boolean;
   pelos_en_camino: number;
   extremos: ExtremosCamino;
+  /** Todas las ODF que toca el camino, extremos e intermedias. */
+  odfs: OdfDeCamino[];
 }
 
 /** Camino que no es un tramo del Servicio: no se descarga. */
@@ -315,6 +325,8 @@ export interface CaminoResidual {
   nombre_archivo: string;
   pelos_en_camino: number;
   extremos: ExtremosCamino;
+  /** Todas las ODF que toca el camino: un residual puede ser la única vía a una ODF del Servicio. */
+  odfs: OdfDeCamino[];
 }
 
 export type RolOdfConfirmada = 'EXTREMO' | 'TRANSITO';
@@ -333,13 +345,19 @@ export interface OdfConfirmada {
 export interface CaminosServicioResponse {
   tramos: TramoDelServicio[];
   residuales: CaminoResidual[];
-  /** Cantidad de trackings que declara el Servicio, o `null` si no declara ninguna. */
+  /** Trackings esperados que declaró el operador en LAS-FOCAS (no es un dato de Cromo), o `null`. */
   esperados_declarados: number | null;
   /** ODF confirmadas vigentes del Servicio. */
   odf_confirmadas: OdfConfirmada[];
-  /** `false` si se alcanzó el tope de consultas a Cromo. */
+  /** `false` si se cortó el recorrido: por el tope de consultas o por demasiadas semillas fallidas. */
   completo: boolean;
   errores: string[];
+  /** Semillas que no quedaron en ningún camino (fallaron o no se llegaron a pedir). */
+  no_cubiertos: number;
+  /** `true` sólo si el corte fue por el tope de consultas a Cromo. */
+  tope_llamadas: boolean;
+  /** Segmentos físicos: grupos de tramos que comparten cables (un par de hilos es uno). */
+  segmentos: number;
 }
 
 /** "ODF X P1:39" / "ODF Nodo KORN P1:39" para un conector de ODF; "pelo 123" en cualquier otro caso. */

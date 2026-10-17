@@ -55,12 +55,19 @@
     <!-- Caminos del Servicio: tantos como pelos suyos en un mismo cable u ODF (regla de
          operaciones). Cuáles son lo resuelve el backend contra Cromo, igual que `@bot track`. -->
     <div v-if="camino.tieneSemilla.value" class="cromo-camino__caminos">
+      <!-- Sólo lo que declaró el operador: la moda de pelos por cable de `/pelos` no es una
+           expectativa (un servicio segmentado tiene más trackings que esa moda). -->
       <p class="cromo-camino__nota">
-        <template v-if="camino.caminosEsperados.value">
-          Tramos esperados: <strong>{{ camino.caminosEsperados.value }}</strong>
+        <template v-if="camino.esperadosDeclarados.value != null">
+          Trackings esperados: <strong>{{ camino.esperadosDeclarados.value }}</strong>
         </template>
         <template v-if="camino.caminosResueltos.value">
-          · resueltos: <strong>{{ camino.tramos.value.length }}</strong>
+          <template v-if="camino.esperadosDeclarados.value != null"> · </template>
+          resueltos: <strong>{{ camino.tramos.value.length }}</strong>
+        </template>
+        <template v-if="camino.caminosResueltos.value && camino.segmentos.value > 1">
+          · Servicio segmentado en {{ camino.segmentos.value }} tramos
+          ({{ camino.tramos.value.length }} trackings).
         </template>
       </p>
       <button
@@ -122,7 +129,9 @@
         />
       </label>
 
-      <template v-if="camino.odfsDelCamino.value.length || camino.odfConfirmadas.value.length">
+      <!-- Todas las ODF de tramos y residuales (extremos e intermedias) más las confirmadas, que
+           siempre aparecen para poder quitarlas. -->
+      <template v-if="camino.odfsDelCamino.value.length">
         <p class="cromo-camino__nota">ODF del camino</p>
         <ul class="cromo-camino__lista">
           <li v-for="o in camino.odfsDelCamino.value" :key="o.odf_n_id">
@@ -370,7 +379,8 @@ const { state: sesion } = useSession();
 // Mismo criterio que el resto del SPA: el rol viaja en la sesión, no hay un `isAdmin` propio.
 const esAdmin = computed(() => (sesion.value.role ?? '').toLowerCase() === 'admin');
 
-// Rol elegido a mano por ODF antes de confirmar; sin elección vale el sugerido (ODF Nodo → tránsito).
+// Rol elegido a mano por ODF antes de confirmar; sin elección vale el sugerido (ODF en un extremo
+// de camino → extremo; ODF Nodo o intermedia → tránsito).
 const rolesElegidos = reactive<Record<number, RolOdfConfirmada>>({});
 function rolDe(odf: OdfDelTramo): RolOdfConfirmada {
   return rolesElegidos[odf.odf_n_id] ?? odf.rolSugerido;

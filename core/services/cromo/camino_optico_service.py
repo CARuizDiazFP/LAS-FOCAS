@@ -185,8 +185,13 @@ class NodoCamino:
     botella_id: Optional[int] = None
     botella_nombre: Optional[str] = None
     pelos_fusionados: list[int] = field(default_factory=list)
-    # Contexto del conector de ODF (`father` = patchera, `gfather` = ODF, `tp[0]` el pelo)
+    # Contexto del conector de ODF (`father` = patchera, `gfather` = ODF). `pelo_conectado` es el
+    # `tp` de clase 130 —mismo criterio que `parser.parse_odf` para `cromo_odf_conectores.pelo_n_id`—
+    # y `tp_sin_clase` los `tp` cuya clase no viene en el payload: `/path` no la trae en `tp[]`
+    # (verificado real 2026-10-16) y el destino casi nunca está en el mismo payload. La auditoría
+    # los resuelve contra la base (`auditar_consistencia`).
     pelo_conectado: Optional[int] = None
+    tp_sin_clase: list[int] = field(default_factory=list)
     conector_numero: Optional[str] = None
     patchera_id: Optional[int] = None
     patchera_nombre: Optional[str] = None
@@ -415,6 +420,33 @@ def _completar_contexto_fusion(
         nodo.botella_nombre = atributo(botella, _AT_NOMBRE_GENERICO) or botella.get("name")
 
 
+def _pelo_del_conector(
+    crudo: Mapping[str, Any], dic: Mapping[int, Any]
+) -> tuple[Optional[int], list[int]]:
+    """`(pelo, tp_sin_clase)` de un conector: el pelo es el primer `tp` de clase 130.
+
+    Mismo criterio que la ingesta (`parser.parse_odf`): un `tp` de clase 136 es un patch a otro
+    conector y uno de clase 141 una fusión de ODF, ninguno es el pelo. La clase sale del propio
+    punto o, si no la trae, del destino dentro del mismo payload. Los `tp` sin clase conocida no
+    se dan por pelo: vuelven como candidatos para que la auditoría los resuelva contra la base.
+    """
+    pelo: Optional[int] = None
+    sin_clase: list[int] = []
+    for punto in crudo.get("tp") or []:
+        if not isinstance(punto, Mapping) or not punto.get("id_to"):
+            continue
+        destino = int(punto["id_to"])
+        clase = punto.get("class")
+        if clase is None:
+            objeto = dic.get(destino)
+            clase = objeto.get("class") if isinstance(objeto, Mapping) else None
+        if clase is None:
+            sin_clase.append(destino)
+        elif clase == _CLASE_PELO and pelo is None:
+            pelo = destino
+    return pelo, ([] if pelo is not None else sin_clase)
+
+
 def _completar_contexto_conector(
     nodo: NodoCamino, crudo: Mapping[str, Any], dic: Mapping[int, Any]
 ) -> None:
@@ -426,8 +458,7 @@ def _completar_contexto_conector(
     """
     nodo.conector_numero = atributo(crudo, _AT_CONECTOR_NUMERO)
     nodo.servicio_at62 = atributo(crudo, _AT_SERVICIO_NUMERO)
-    pelos = _ids_de_tp(crudo)
-    nodo.pelo_conectado = pelos[0] if pelos else None
+    nodo.pelo_conectado, nodo.tp_sin_clase = _pelo_del_conector(crudo, dic)
 
     patchera_id = crudo.get("father")
     patchera = dic.get(patchera_id) if patchera_id else None
@@ -899,6 +930,33 @@ async def auditar_consistencia(
                 )
             ).all()
         }
+        # El `tp` sin clase (forma real de `/path`) es el pelo sólo si la base lo conoce como pelo:
+        # está en `cromo_pelos`, o es el mismo `pelo_n_id` que guardó la ingesta, que sólo sale de
+        # un `tp` de clase 130 (pelos de cables de terceros no ingeridos). Si no, es un patch o
+        # una fusión de ODF y el camino no declara pelo, igual que la base.
+        candidatos = {
+            n.id_cromo: n.tp_sin_clase
+            for n in nodos
+            if n.tipo == TIPO_CONECTOR_ODF and not n.repetido and n.tp_sin_clase
+            and n.id_cromo in pares_conector and pares_conector[n.id_cromo]["pelo"] is None
+        }
+        ids_candidatos = sorted({c for lista in candidatos.values() for c in lista})
+        pelos_ingeridos: set[int] = set()
+        if ids_candidatos:
+            pelos_ingeridos = {
+                int(fila[0])
+                for fila in (
+                    await sesion.execute(
+                        text("SELECT n_id FROM app.cromo_pelos WHERE n_id = ANY(:ids)"),
+                        {"ids": ids_candidatos},
+                    )
+                ).all()
+            }
+        for elemento, lista in candidatos.items():
+            pelo_local = filas.get(elemento, {}).get("pelo")
+            pelo = next((c for c in lista if c in pelos_ingeridos or c == pelo_local), None)
+            pares_conector[elemento] = {**pares_conector[elemento], "pelo": pelo}
+
         for elemento, vinculos_path in pares_conector.items():
             if elemento not in filas:
                 resultado.no_ingerido += 1

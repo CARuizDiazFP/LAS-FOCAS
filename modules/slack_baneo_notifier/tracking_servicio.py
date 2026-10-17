@@ -18,8 +18,9 @@ Tracking por tramos (2026-10-16): se pide un camino por cada semilla no cubierta
 clasifica como TRAMO o RESIDUAL (`tracking_service.clasificar_caminos`). Se sube un `.txt` por
 tramo (`{at62} CROMO T{n} pelo {n_id}.txt`), uno por `files_upload_v2`. Los residuales NO se
 mencionan en el hilo (van a la auditoría de la web). El resumen es una línea por aviso y sólo
-cuando aplica: segmentación en N tramos, cantidad esperada distinta de la generada, o tope de
-consultas a Cromo alcanzado.
+cuando aplica: segmentación (más de un segmento físico), cantidad esperada distinta de la
+generada, semillas que no resolvieron (con sus errores) y, aparte, tope de consultas a Cromo sólo
+si de verdad se tocó.
 """
 
 from __future__ import annotations
@@ -99,9 +100,17 @@ class ResultadoTrack:
     archivos: list[TrackingArchivo] = field(default_factory=list)
     mensaje: str = ""
     errores: list[str] = field(default_factory=list)
-    # Cantidad de trackings que declara el Servicio en Cromo; `None` si no declara ninguna.
+    # Cantidad de trackings esperados que declaró el operador en LAS-FOCAS
+    # (`servicios.trackings_esperados`, no es un dato de Cromo); `None` si no declaró.
     esperados_declarados: Optional[int] = None
     completo: bool = True
+    # Semillas que no quedaron en ningún camino (fallaron o no se llegaron a pedir).
+    no_cubiertos: int = 0
+    # Se cortó por el tope de consultas a Cromo (`CROMO_TRACKING_MAX_LLAMADAS`).
+    tope_llamadas: bool = False
+    # Segmentos físicos: grupos de tramos que comparten cables. Dos hilos del mismo recorrido son
+    # uno solo (`tracking_service.contar_segmentos`).
+    segmentos: int = 1
 
 
 ESTADO_OK = "ok"
@@ -111,25 +120,31 @@ ESTADO_ERROR = "error"
 def mensaje_resumen(resultado: ResultadoTrack) -> Optional[str]:
     """Aviso que acompaña a los archivos en el hilo, o `None` si no hay nada que avisar.
 
-    Sólo las líneas que aplican, en este orden: segmentación en N tramos (N > 1), cantidad
-    esperada distinta de la generada, tracking incompleto por el tope de consultas a Cromo (con
-    los errores). Los residuales nunca se mencionan.
+    Sólo las líneas que aplican, en este orden: segmentación (más de un segmento físico; un par
+    de hilos del mismo recorrido no lo es), cantidad esperada distinta de la generada, semillas
+    que no resolvieron con sus errores —aunque el recorrido haya terminado: puede faltar un tramo
+    entero— y el tope de consultas a Cromo sólo si se tocó. Los residuales nunca se mencionan.
     """
     if resultado.estado != ESTADO_OK:
         return None
     partes: list[str] = []
     generados = len(resultado.archivos)
-    if generados > 1:
-        partes.append(f"Servicio segmentado en {generados} tramos.")
+    if resultado.segmentos > 1:
+        partes.append(
+            f"Servicio segmentado en {resultado.segmentos} tramos ({generados} trackings)."
+        )
     declarados = resultado.esperados_declarados
     if declarados is not None and declarados != generados:
         partes.append(f"Se esperaban {declarados} trackings y se generaron {generados}.")
-    if not resultado.completo:
+    sin_resolver = max(resultado.no_cubiertos, len(resultado.errores))
+    if sin_resolver or not resultado.completo:
         partes.append(
-            ":warning: Tracking incompleto: se alcanzó el tope de consultas a Cromo."
+            f":warning: Tracking incompleto: {sin_resolver} semilla(s) no resolvieron."
         )
         if resultado.errores:
             partes.append("\n".join(f"• {e}" for e in resultado.errores))
+    if resultado.tope_llamadas:
+        partes.append("Se alcanzó el tope de consultas a Cromo.")
     return "\n".join(partes) if partes else None
 
 
@@ -200,6 +215,9 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                 errores=errores,
                 esperados_declarados=del_servicio.esperados_declarados,
                 completo=del_servicio.completo,
+                no_cubiertos=len(del_servicio.no_cubiertos),
+                tope_llamadas=del_servicio.tope_llamadas,
+                segmentos=del_servicio.segmentos,
             )
     finally:
         await engine.dispose()

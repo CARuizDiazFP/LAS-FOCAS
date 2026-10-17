@@ -37,6 +37,7 @@ __all__ = [
     "desconfirmar",
     "listar",
     "n_ids_de_odfs",
+    "datos_de_odfs",
 ]
 
 ROL_EXTREMO = "EXTREMO"
@@ -55,6 +56,10 @@ _SQL_RESOLVER_ODF = text(
 # actualiza el rol).
 _SQL_N_IDS_DE_ODFS = text(
     "SELECT n_id, version_id FROM app.cromo_odfs WHERE n_id = ANY(:ids) OR version_id = ANY(:ids)"
+)
+
+_SQL_DATOS_DE_ODFS = text(
+    "SELECT n_id, nombre, clase FROM app.cromo_odfs WHERE n_id = ANY(:n_ids)"
 )
 
 _SQL_CONFIRMAR = text(
@@ -130,6 +135,23 @@ async def n_ids_de_odfs(sesion: AsyncSession, ids: Sequence[int]) -> dict[int, i
     for n_id, _version_id in filas:
         mapa[int(n_id)] = int(n_id)
     return mapa
+
+
+async def datos_de_odfs(
+    sesion: AsyncSession, n_ids: Sequence[int]
+) -> dict[int, tuple[Optional[str], Optional[int]]]:
+    """`n_id -> (nombre, clase)` de las ODF ingeridas, en una sola query.
+
+    Lo usa `/caminos` para nombrar las ODF intermedias de un camino (el payload sólo trae nombre y
+    clase de las de los extremos). Las que no están ingeridas no aparecen en el mapa.
+    """
+    if not n_ids:
+        return {}
+    filas = (await sesion.execute(_SQL_DATOS_DE_ODFS, {"n_ids": sorted(set(n_ids))})).all()
+    return {
+        int(n_id): (nombre, int(clase) if clase is not None else None)
+        for n_id, nombre, clase in filas
+    }
 
 
 async def listar(sesion: AsyncSession, servicio_id: int) -> list[dict[str, Any]]:

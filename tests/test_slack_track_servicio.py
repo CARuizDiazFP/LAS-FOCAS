@@ -232,18 +232,27 @@ def _ok(n: int, **kw):
     )
 
 
-def test_dos_tramos_suben_dos_archivos_y_avisan_la_segmentacion():
+def test_segmentado_sube_un_archivo_por_tramo_y_avisa_segmentos_y_trackings():
+    """102452: 3 pares de hilos (6 trackings) sobre 3 segmentos físicos."""
     listener = _listener()
     client = MagicMock()
-    servicio = SimpleNamespace(id=1066, servicio_id="94673", nombre_cliente="X")
-    resultado = _ok(2)
+    servicio = SimpleNamespace(id=1168, servicio_id="102452", nombre_cliente="X")
+    resultado = _ok(6, segmentos=3)
     with patch.object(ts_mod, "resolver_servicio", return_value=servicio), patch.object(
         ts_mod, "generar_trackings", return_value=resultado
     ):
-        listener._handle_track("94673", client, "C123", "1.1")
+        listener._handle_track("102452", client, "C123", "1.1")
 
-    assert client.files_upload_v2.call_count == 2
-    assert "Servicio segmentado en 2 tramos." in client.chat_postMessage.call_args_list[-1][1]["text"]
+    assert client.files_upload_v2.call_count == 6
+    assert (
+        "Servicio segmentado en 3 tramos (6 trackings)."
+        in client.chat_postMessage.call_args_list[-1][1]["text"]
+    )
+
+
+def test_un_par_de_hilos_no_es_segmentacion():
+    """42351: dos hilos del mismo recorrido son UN segmento: no hay nada que avisar (I4)."""
+    assert ts_mod.mensaje_resumen(_ok(2, segmentos=1)) is None
 
 
 def test_un_tramo_completo_no_avisa_nada():
@@ -251,8 +260,8 @@ def test_un_tramo_completo_no_avisa_nada():
 
 
 def test_esperados_distintos_de_generados_se_avisa():
-    aviso = ts_mod.mensaje_resumen(_ok(2, esperados_declarados=3))
-    assert "Servicio segmentado en 2 tramos." in aviso
+    aviso = ts_mod.mensaje_resumen(_ok(2, segmentos=1, esperados_declarados=3))
+    assert "segmentado" not in aviso
     assert "Se esperaban 3 trackings y se generaron 2." in aviso
 
 
@@ -260,10 +269,31 @@ def test_esperados_iguales_a_generados_no_se_avisa():
     assert ts_mod.mensaje_resumen(_ok(1, esperados_declarados=1)) is None
 
 
-def test_incompleto_avisa_el_tope_y_lista_errores():
-    aviso = ts_mod.mensaje_resumen(_ok(1, completo=False, errores=["Pelo 42: sin camino"]))
-    assert ":warning: Tracking incompleto: se alcanzó el tope de consultas a Cromo." in aviso
+def test_incompleto_por_tope_avisa_semillas_errores_y_tope():
+    aviso = ts_mod.mensaje_resumen(
+        _ok(1, completo=False, errores=["Pelo 42: sin camino"], no_cubiertos=5, tope_llamadas=True)
+    )
+    assert ":warning: Tracking incompleto: 5 semilla(s) no resolvieron." in aviso
     assert "• Pelo 42: sin camino" in aviso
+    assert "Se alcanzó el tope de consultas a Cromo." in aviso
+
+
+def test_semillas_fallidas_sin_tope_avisan_sin_culpar_al_tope():
+    """I3: con `completo=True` y semillas fallidas (menos que el tope de fallidas) puede faltar un
+    tramo entero: se avisa, y no se menciona el tope porque no se tocó."""
+    aviso = ts_mod.mensaje_resumen(
+        _ok(1, completo=True, errores=["Pelo 42: sin camino"], no_cubiertos=1)
+    )
+    assert ":warning: Tracking incompleto: 1 semilla(s) no resolvieron." in aviso
+    assert "• Pelo 42: sin camino" in aviso
+    assert "tope" not in aviso
+
+
+def test_corte_por_fallidas_no_menciona_el_tope_de_consultas():
+    errores = [f"Pelo {i}: sin camino" for i in range(10)]
+    aviso = ts_mod.mensaje_resumen(_ok(1, completo=False, errores=errores, no_cubiertos=40))
+    assert ":warning: Tracking incompleto: 40 semilla(s) no resolvieron." in aviso
+    assert "tope" not in aviso
 
 
 def test_los_residuales_no_se_mencionan_en_slack():

@@ -8903,19 +8903,23 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
     4,6-14 s por camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es
     inmediato.
 
-    Contrato: `tramos[{n, pelo_n_id, nombre_archivo, pelos_en_camino, desde_cache, extremos}]`
-    (ya ordenados; `n` es el número de tramo del nombre del `.txt`), `residuales[...]` sin `n` ni
-    `desde_cache` (no se descargan), `esperados_declarados` (o `null`), `completo` y `errores`.
-    `odf_confirmadas` son las ODF que un admin confirmó para el Servicio (`odf_n_id`, `rol`,
-    `odf_nombre`, `odf_tipo`, ...). `extremos` es `{a, b}` con `tipo`, `odf_n_id`, `odf_nombre`, `odf_clase`, `patchera_nombre`,
-    `conector` e `id_cromo`.
+    Contrato: `tramos[{n, pelo_n_id, nombre_archivo, pelos_en_camino, desde_cache, extremos,
+    odfs}]` (ya ordenados; `n` es el número de tramo del nombre del `.txt`), `residuales[...]` sin
+    `n` ni `desde_cache` (no se descargan), `esperados_declarados` (o `null`, lo declara el
+    operador), `completo`, `errores`, `no_cubiertos` (cantidad de semillas sin camino: fallaron o no
+    se llegaron a pedir), `tope_llamadas` (se tocó `CROMO_TRACKING_MAX_LLAMADAS`) y `segmentos`
+    (grupos de tramos que comparten cables). `odf_confirmadas` son las ODF que un admin confirmó
+    para el Servicio (`odf_n_id`, `rol`, `odf_nombre`, `odf_tipo`, ...). `extremos` es `{a, b}`
+    con `tipo`, `odf_n_id`, `odf_nombre`, `odf_clase`, `patchera_nombre`, `conector` e `id_cromo`.
+    `odfs` son TODAS las ODF que toca el camino (extremos e intermedias) con `odf_n_id` de linaje,
+    `odf_nombre` y `odf_clase`: la UI ofrece confirmar cualquiera, también las de un residual.
 
     Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
     del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
     """
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
-    from core.services.cromo.servicio_odf_confirmacion import n_ids_de_odfs
+    from core.services.cromo.servicio_odf_confirmacion import datos_de_odfs, n_ids_de_odfs
     from core.services.cromo.tracking_service import trackings_del_servicio
     from db.session import AsyncSessionLocal
 
@@ -8926,15 +8930,20 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
                 return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
             async with CromoClient(config=get_cromo_config()) as cliente:
                 resultado = await trackings_del_servicio(cliente, sesion, servicio_id)
-            # Los extremos pueden traer el id de versión de la ODF: se expone siempre el n_id.
-            ids_odf = [
-                e.odf_id
-                for t in (*resultado.tramos, *resultado.residuales)
-                if t.extremos
-                for e in t.extremos.extremos
-                if e.odf_id is not None
-            ]
+            # Los caminos pueden traer el id de versión de la ODF: se expone siempre el n_id. Entran
+            # las de los extremos y las intermedias (`odfs`), de tramos y de residuales.
+            ids_odf: list[int] = []
+            for t in (*resultado.tramos, *resultado.residuales):
+                if not t.extremos:
+                    continue
+                ids_odf.extend(e.odf_id for e in t.extremos.extremos if e.odf_id is not None)
+                ids_odf.extend(t.extremos.odfs)
+            ids_odf = list(dict.fromkeys(ids_odf))
             n_ids_odf = await n_ids_de_odfs(sesion, ids_odf)
+            # Nombre y clase de cada ODF, también de las intermedias: una sola query.
+            datos_odf = await datos_de_odfs(
+                sesion, list(dict.fromkeys(n_ids_odf.get(i, i) for i in ids_odf))
+            )
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
@@ -8960,6 +8969,25 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
             "conector": e.conector_numero,
         }
 
+    def _odfs(resumen: Any) -> list[dict[str, Any]]:
+        """Todas las ODF del camino, por n_id y sin repetir. Si la ODF no está ingerida, el nombre y
+        la clase salen del extremo del payload (cuando es uno)."""
+        if resumen is None:
+            return []
+        del_payload = {
+            n_ids_odf.get(e.odf_id, e.odf_id): (e.odf_nombre, e.odf_clase)
+            for e in resumen.extremos
+            if e.odf_id is not None
+        }
+        salida: dict[int, dict[str, Any]] = {}
+        for odf_id in (*resumen.odfs, *del_payload):
+            n_id = n_ids_odf.get(odf_id, odf_id)
+            if n_id in salida:
+                continue
+            nombre, clase = datos_odf.get(n_id) or del_payload.get(n_id) or (None, None)
+            salida[n_id] = {"odf_n_id": n_id, "odf_nombre": nombre, "odf_clase": clase}
+        return list(salida.values())
+
     def _camino(t: Any) -> dict[str, Any]:
         resumen = t.extremos
         return {
@@ -8970,6 +8998,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
                 "a": _extremo(resumen.inicio) if resumen else None,
                 "b": _extremo(resumen.fin) if resumen else None,
             },
+            "odfs": _odfs(resumen),
         }
 
     tramos = [
@@ -8984,6 +9013,9 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
             "odf_confirmadas": resultado.odf_confirmadas,
             "completo": resultado.completo,
             "errores": resultado.errores,
+            "no_cubiertos": len(resultado.no_cubiertos),
+            "tope_llamadas": resultado.tope_llamadas,
+            "segmentos": resultado.segmentos,
         }
     )
 
