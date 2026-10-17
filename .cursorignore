@@ -1,0 +1,30 @@
+# Nombre de archivo: .cursorignore
+# Ubicación de archivo: .cursorignore
+# Descripción: Rutas que Cursor no indexa (matriz unificada de exclusión; mantener idéntica en .geminiignore, .copilotignore, .cursorignore y .aiderignore)
+
+# Entornos y dependencias
+.venv/
+venv/
+__pycache__/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+
+# Logs: lectura puntual bajo demanda (tail -n / rangos de líneas), nunca indexados
+Logs/
+*.log
+
+# Secretos y entornos locales (los samples versionados de deploy/ no matchean .env*)
+.secrets/
+.env*
+!deploy/env*.sample
+
+# Binarios y datos de prueba voluminosos
+Templates/*.docx
+tests/fixtures/
+
+# Historial documental de alto volumen (leer un archivo puntual sólo si la tarea lo pide)
+docs/cierres/
+docs/PR/
+docs/superpowers/plans/
+docs/superpowers/specs/

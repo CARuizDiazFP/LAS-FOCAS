@@ -1,0 +1,98 @@
+{
+  "_comment": "Nombre de archivo: repository-map.json | Ubicación de archivo: config/repository-map.json | Descripción: Manifiesto de dominios del repositorio; fuente de docs/REPOSITORY_MAP.md (regenerar con scripts/generate_repository_map.py --write)",
+  "version": 1,
+  "title": "Mapa canónico del repositorio LAS-FOCAS",
+  "output": "docs/REPOSITORY_MAP.md",
+  "max_output_bytes": 8192,
+  "global_exclusions": [
+    ".venv/",
+    "web/frontend/node_modules/",
+    "web/frontend/dist/",
+    "Logs/",
+    ".secrets/",
+    ".env*",
+    "docs/cierres/",
+    "docs/PR/",
+    "docs/superpowers/plans/",
+    "docs/superpowers/specs/"
+  ],
+  "domains": [
+    {
+      "id": "governance",
+      "title": "Gobernanza agéntica",
+      "summary": "Reglas, skills, agentes, worktrees por agente, leases y auditoría del entorno.",
+      "roots": ["AGENTS.md", "CLAUDE.md", "GEMINI.md", ".agentes-comunes/skills/", ".github/agents/", ".github/prompts/", ".claude/commands/", "scripts/agentes/", "config/"],
+      "entrypoints": ["scripts/agent_worktree.py", "scripts/agent_lock.py", "scripts/sync_skill_mirrors.py", "scripts/generate_repository_map.py", "scripts/audit_agentic_environment.py"],
+      "docs": ["docs/arquitectura_agentes_worktrees.md", "docs/politica_recursion_sdd.md", "docs/superpowers/CATALOG.md"],
+      "tests": ["tests/test_agent_worktree.py", "tests/test_agent_lock.py", "tests/test_sync_skill_mirrors.py", "tests/test_generate_repository_map.py", "tests/test_audit_agentic_environment.py"],
+      "commands": ["python scripts/audit_agentic_environment.py", "bash scripts/check_skill_mirror_drift.sh", "python scripts/agent_worktree.py status"],
+      "exclusions": [".github/skills/", ".claude/skills/", ".agents/skills/", ".gemini/rules/", ".codex-skills/"]
+    },
+    {
+      "id": "api",
+      "title": "API FastAPI",
+      "summary": "API REST (puerto dev 8011), OAuth2 M2M /api/v1, healthchecks.",
+      "roots": ["api/"],
+      "entrypoints": ["api/app/main.py", "api/app/routes/", "api/app/oauth.py"],
+      "docs": ["docs/api.md"],
+      "tests": ["tests/test_api_*.py"],
+      "commands": ["pytest tests/test_api_auth.py -q"],
+      "exclusions": []
+    },
+    {
+      "id": "cromo-infra",
+      "title": "Infraestructura FO y Cromo Red",
+      "summary": "Ingesta Cromo, cámaras, botellas, cables, ODFs, tracking de caminos ópticos.",
+      "roots": ["core/services/cromo/", "core/services/", "modules/cromo_worker/", "modules/botellas_recalculo_worker/"],
+      "entrypoints": ["core/services/cromo/ingesta.py", "core/services/cromo/tracking_service.py", "core/services/infra_service.py"],
+      "docs": ["docs/modulo_ingesta_cromo.md", "docs/infra.md"],
+      "tests": ["tests/test_cromo_*.py", "tests/test_botella*.py"],
+      "commands": ["pytest tests/test_cromo_ingesta.py -q"],
+      "exclusions": ["tests/*_real_db.py"]
+    },
+    {
+      "id": "sla-reports",
+      "title": "Informes SLA y Repetitividad",
+      "summary": "Motor SLA, consumo histórico, repetitividad, plantillas DOCX y conversión PDF.",
+      "roots": ["core/sla/", "core/sla_consumo/", "modules/informes_sla/", "modules/informes_repetitividad/", "office_service/", "Templates/"],
+      "entrypoints": ["core/sla/engine.py", "core/sla/report.py", "office_service/app/"],
+      "docs": ["docs/informes/", "docs/office_service.md"],
+      "tests": ["tests/test_sla*.py", "tests/test_*repetitividad*.py", "tests/test_office*.py"],
+      "commands": ["pytest tests/test_sla_processor.py -q"],
+      "exclusions": ["Templates/*.docx"]
+    },
+    {
+      "id": "web-spa",
+      "title": "Panel web y SPA Vue 3",
+      "summary": "Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.",
+      "roots": ["web/app/", "web/frontend/src/", "web/tools/"],
+      "entrypoints": ["web/app/main.py", "web/frontend/src/main.ts", "web/frontend/src/router/index.ts"],
+      "docs": ["docs/web.md"],
+      "tests": ["tests/test_web*.py"],
+      "commands": ["pytest tests/test_web_*.py -q", "cd web/frontend && npm run build  # sólo deploy"],
+      "exclusions": ["web/frontend/node_modules/", "web/frontend/dist/"]
+    },
+    {
+      "id": "bots-workers",
+      "title": "Bots, NLP y workers",
+      "summary": "Bot Telegram, notificador/app de Slack, clasificador de intención y FO Monitor.",
+      "roots": ["bot_telegram/", "modules/slack_baneo_notifier/", "nlp_intent/", "modules/fo_monitor_worker/"],
+      "entrypoints": ["bot_telegram/app.py", "nlp_intent/app/"],
+      "docs": ["docs/bot.md", "docs/slack_app_cables.md", "docs/nlp/", "docs/fo_monitor.md"],
+      "tests": ["tests/test_bot*.py", "tests/test_slack*.py", "tests/test_fo_monitor*.py", "nlp_intent/tests/"],
+      "commands": ["LLM_PROVIDER=heuristic pytest tests/test_slack*.py -q"],
+      "exclusions": []
+    },
+    {
+      "id": "database",
+      "title": "Base de datos",
+      "summary": "PostgreSQL async, modelos SQLAlchemy del esquema app.* y migraciones Alembic.",
+      "roots": ["db/"],
+      "entrypoints": ["db/models/", "db/session.py", "db/alembic/versions/"],
+      "docs": ["docs/db.md"],
+      "tests": ["tests/test_*migra*.py"],
+      "commands": ["alembic -c db/alembic.ini heads"],
+      "exclusions": []
+    }
+  ]
+}
