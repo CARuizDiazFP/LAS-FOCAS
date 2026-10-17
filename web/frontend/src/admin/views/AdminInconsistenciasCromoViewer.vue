@@ -123,6 +123,21 @@
       </div>
     </div>
 
+    <details class="inconsistencias-viewer__aviso">
+      <summary>Aviso de casos nuevos a Slack</summary>
+      <form class="inconsistencias-viewer__aviso-form" @submit.prevent="guardarAviso">
+        <label>
+          Canales (separados por coma, ej. #cromo-alertas)
+          <input v-model="avisoCanales" type="text" maxlength="512" placeholder="#canal,C0123456789" />
+        </label>
+        <label class="inconsistencias-viewer__aviso-check">
+          <input v-model="avisoActivo" type="checkbox" />
+          Activo
+        </label>
+        <button class="btn" type="submit" :disabled="guardandoAviso">Guardar</button>
+      </form>
+    </details>
+
     <div v-if="error" class="inconsistencias-viewer__inline-error">{{ error }}</div>
     <div v-if="mensaje" class="inconsistencias-viewer__inline-ok">{{ mensaje }}</div>
     <div v-if="rechazados.length" class="inconsistencias-viewer__rechazados" role="status">
@@ -263,8 +278,10 @@ import {
   TIPOS_INCONSISTENCIA,
   cambiarEstadoInconsistencias,
   exportarInconsistencias,
+  guardarAvisoSlack,
   lanzarDeteccion,
   listarInconsistencias,
+  obtenerAvisoSlack,
   obtenerDeteccion,
   tipoInconsistenciaLabel,
   type CorridaDeteccion,
@@ -435,6 +452,36 @@ function setRevision(valor: string): void {
 
 const exportando = ref(false);
 
+const avisoCanales = ref('');
+const avisoActivo = ref(false);
+const guardandoAviso = ref(false);
+
+async function cargarAviso(): Promise<void> {
+  try {
+    const cfg = await obtenerAvisoSlack();
+    avisoCanales.value = cfg.slack_channels;
+    avisoActivo.value = cfg.activo;
+  } catch {
+    // Opcional: si no carga, el panel queda vacío y el guardado muestra el error real.
+  }
+}
+
+async function guardarAviso(): Promise<void> {
+  if (guardandoAviso.value) return;
+  guardandoAviso.value = true;
+  error.value = '';
+  try {
+    const cfg = await guardarAvisoSlack({ slack_channels: avisoCanales.value, activo: avisoActivo.value });
+    avisoCanales.value = cfg.slack_channels;
+    avisoActivo.value = cfg.activo;
+    mensaje.value = 'Aviso a Slack guardado.';
+  } catch (err: unknown) {
+    error.value = err instanceof Error ? err.message : 'No se pudo guardar el aviso a Slack';
+  } finally {
+    guardandoAviso.value = false;
+  }
+}
+
 /** XLSX con los filtros activos; sin filtro de estado exporta sólo lo accionable. */
 async function exportarXlsx(): Promise<void> {
   if (exportando.value) return;
@@ -563,7 +610,7 @@ async function lanzarDeteccionManual(): Promise<void> {
 }
 
 onMounted(async () => {
-  await Promise.all([reloadFromZero(), cargarDeteccion()]);
+  await Promise.all([reloadFromZero(), cargarDeteccion(), cargarAviso()]);
 });
 
 onBeforeUnmount(() => {
@@ -577,6 +624,45 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+}
+
+.inconsistencias-viewer__aviso {
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--color-neutral-500);
+}
+
+.inconsistencias-viewer__aviso-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+
+.inconsistencias-viewer__aviso-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.inconsistencias-viewer__aviso-form input[type='text'] {
+  min-height: 34px;
+  width: 320px;
+  padding: 5px 10px;
+  font-size: 13px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+}
+
+.inconsistencias-viewer__aviso-form .inconsistencias-viewer__aviso-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
 }
 
 .inconsistencias-viewer__toolbar {

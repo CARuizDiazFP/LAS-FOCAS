@@ -97,6 +97,11 @@ def test_generar_xlsx_vacio_tiene_encabezados():
 
 
 @pytest.fixture
+def sin_testing(monkeypatch):
+    monkeypatch.delenv("TESTING", raising=False)
+
+
+@pytest.fixture
 def aviso(monkeypatch):
     """Instrumenta WS, config y envío a Slack; devuelve el registro de llamadas."""
     reg: dict[str, Any] = {"ws": [], "slack": [], "config": ([], False), "token": "xoxb-test"}
@@ -122,8 +127,13 @@ def aviso(monkeypatch):
     return reg
 
 
-def _resumen(nuevos=3, auto=1):
-    return SimpleNamespace(nuevos=nuevos, cuarentena_auto=auto, nuevos_claves=[("ISLA_FUSION", 1)])
+def _resumen(nuevos=3, auto=1, previos=10, claves=None):
+    return SimpleNamespace(
+        nuevos=nuevos,
+        cuarentena_auto=auto,
+        casos_previos=previos,
+        nuevos_claves=claves if claves is not None else [("ISLA_FUSION", 1)],
+    )
 
 
 @pytest.mark.asyncio
@@ -147,11 +157,60 @@ async def test_slack_inactivo_o_sin_canales_solo_ws(aviso):
 @pytest.mark.asyncio
 async def test_slack_activo_envia_xlsx_a_los_canales(aviso):
     aviso["config"] = (["C1", "C2"], True)
-    assert await rep.avisar_casos_nuevos(object(), _resumen()) == {"ws": True, "slack": True}
+    assert await rep.avisar_casos_nuevos(object(), _resumen(nuevos=1, auto=0)) == {"ws": True, "slack": True}
     canales, token, texto, xlsx, archivo = aviso["slack"][0]
     assert canales == ["C1", "C2"] and token == "xoxb-test"
-    assert "*3*" in texto and archivo.endswith(".xlsx")
+    assert "*1*" in texto and archivo.endswith(".xlsx")
     assert load_workbook(io.BytesIO(xlsx)).sheetnames == ["Korn"]
+
+
+@pytest.mark.asyncio
+async def test_primera_deteccion_solo_resumen_sin_adjunto(aviso):
+    aviso["config"] = (["C1"], True)
+    res = await rep.avisar_casos_nuevos(object(), _resumen(nuevos=5000, auto=100, previos=0))
+    assert res == {"ws": True, "slack": True}
+    assert aviso["ws"][0]["nuevos"] == 5000
+    _canales, _token, texto, xlsx, _archivo = aviso["slack"][0]
+    assert xlsx is None
+    assert "*5000*" in texto and "primera detección" in texto and "viewer" in texto
+
+
+@pytest.mark.asyncio
+async def test_adjunto_cortado_al_tope_con_nota(aviso, monkeypatch):
+    aviso["config"] = (["C1"], True)
+    monkeypatch.setenv("CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO", "2")
+    pedidas: list[int] = []
+
+    async def _filas(_sesion, claves):
+        pedidas.append(len(claves))
+        return [rep.fila_reporte(_item(objeto_n_id=i)) for i, _ in enumerate(claves)]
+
+    monkeypatch.setattr(rep, "filas_de_casos", _filas)
+    claves = [("ISLA_FUSION", i) for i in range(5)]
+    await rep.avisar_casos_nuevos(object(), _resumen(nuevos=5, auto=0, claves=claves))
+    assert pedidas == [2]
+    _c, _t, texto, xlsx, _a = aviso["slack"][0]
+    assert "y 3 más" in texto
+    wb = load_workbook(io.BytesIO(xlsx))
+    assert wb["Korn"].max_row == 3
+    assert wb["Aviso"]["A2"].value == "y 3 más — ver el viewer"
+
+
+def test_tope_de_filas_por_env(monkeypatch):
+    monkeypatch.delenv("CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO", raising=False)
+    assert rep.max_filas_aviso() == 500
+    monkeypatch.setenv("CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO", "x")
+    assert rep.max_filas_aviso() == 500
+
+
+def test_servicios_parciales_se_marcan():
+    ev = {"servicios": [str(i) for i in range(20)]}
+    f = rep.fila_reporte(_item(evidencia=ev, servicios=25))
+    assert f["Servicios afectados"].endswith("(+5)")
+    f = rep.fila_reporte(_item(evidencia=ev))
+    assert "≥20" in f["Servicios afectados"]
+    f = rep.fila_reporte(_item(evidencia={"servicios": ["1"]}, servicios=1))
+    assert f["Servicios afectados"] == "1"
 
 
 @pytest.mark.asyncio
@@ -227,6 +286,46 @@ async def test_ejecutar_corrida_llama_al_aviso_solo_si_ok_y_aplicado(monkeypatch
     assert llamadas == []
 
 
+@pytest.mark.asyncio
+async def test_ejecutar_corrida_ok_pero_no_aplicado_no_avisa(monkeypatch):
+    llamadas: list[Any] = []
+
+    async def _aviso(*_a, **_k):
+        llamadas.append(1)
+
+    monkeypatch.setattr(inc, "avisar_casos_nuevos", _aviso)
+
+    class _Corrida:
+        total_objetivo = None
+        estado = None
+        finalizada_at = None
+        leidas = 0
+        creadas = actualizadas = errores = 0
+
+    class _Sesion:
+        async def get(self, *_a):
+            return _Corrida()
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            pass
+
+    async def _evento(*_a, **_k):
+        pass
+
+    async def _detectar(*_a, **_k):
+        return inc.ResumenDeteccion(
+            por_tipo_revision={}, total=0, confirmaciones=inc.ResumenConfirmaciones(), aplicado=False, nuevos=2
+        )
+
+    monkeypatch.setattr(inc.ingesta, "registrar_evento", _evento)
+    monkeypatch.setattr(inc, "detectar", _detectar)
+    assert await inc._ejecutar_corrida(None, _Sesion(), 9) == "OK"
+    assert llamadas == []
+
+
 # ── Endpoint ─────────────────────────────────────────────────────────────────
 
 
@@ -272,3 +371,69 @@ def test_exportar_pasa_filtros_y_devuelve_xlsx(monkeypatch):
     recibido.clear()
     assert client.get(URL).status_code == 200
     assert set(recibido.values()) == {None}
+
+
+# ── Config del aviso a Slack ─────────────────────────────────────────────────
+
+URL_AVISO = "/api/admin/infra/inconsistencias-cromo/aviso-slack"
+
+
+def test_aviso_slack_solo_admin(monkeypatch):
+    _fake_session(monkeypatch)
+    client = _cliente_user(monkeypatch)
+    assert client.get(URL_AVISO).status_code == 403
+    assert client.post(URL_AVISO, json={"slack_channels": "#a", "activo": True}).status_code == 403
+
+
+def test_aviso_slack_get(monkeypatch):
+    _fake_session(monkeypatch)
+
+    async def _leer(_s):
+        return {"slack_channels": "#a", "activo": True, "existe": True}
+
+    monkeypatch.setattr(rep, "leer_config_aviso", _leer)
+    res = _cliente_admin(monkeypatch).get(URL_AVISO)
+    assert res.status_code == 200 and res.json()["slack_channels"] == "#a"
+
+
+def test_aviso_slack_post_valida_y_guarda(monkeypatch):
+    _fake_session(monkeypatch)
+    guardado: list[tuple] = []
+
+    async def _guardar(_s, canales, activo):
+        guardado.append((canales, activo))
+
+    class _Sesion:
+        async def commit(self):
+            pass
+
+    class _CM:
+        async def __aenter__(self):
+            return _Sesion()
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr("db.session.AsyncSessionLocal", lambda: _CM())
+    monkeypatch.setattr(rep, "guardar_config_aviso", _guardar)
+    monkeypatch.setenv("TESTING", "true")
+    client = _cliente_admin(monkeypatch)
+
+    ok = client.post(URL_AVISO, json={"slack_channels": " #cromo-alertas , C0123456789 ", "activo": True})
+    assert ok.status_code == 200
+    assert guardado == [("#cromo-alertas,C0123456789", True)]
+    # formato inválido, activar sin canal, demasiado largo
+    assert client.post(URL_AVISO, json={"slack_channels": "canal sin numeral", "activo": False}).status_code == 400
+    assert client.post(URL_AVISO, json={"slack_channels": "", "activo": True}).status_code == 400
+    assert client.post(URL_AVISO, json={"slack_channels": ",".join(["#a"] * 400), "activo": False}).status_code == 400
+    # desactivar sin canales es válido
+    assert client.post(URL_AVISO, json={"slack_channels": "", "activo": False}).status_code == 200
+    assert len(guardado) == 2
+
+
+def test_aviso_slack_post_sin_csrf_403(monkeypatch, sin_testing):
+    _fake_session(monkeypatch)
+    res = _cliente_admin(monkeypatch).post(
+        URL_AVISO, json={"slack_channels": "#a", "activo": False, "csrf_token": "otro"}
+    )
+    assert res.status_code == 403

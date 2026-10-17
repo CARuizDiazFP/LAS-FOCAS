@@ -145,3 +145,23 @@ export async function exportarInconsistencias(
     fallbackFilename: 'inconsistencias_cromo.xlsx',
   });
 }
+
+// ── Aviso de casos nuevos a Slack (fila "Cromo Inconsistencias" de config_servicios) ──
+
+export interface ConfigAvisoSlack {
+  slack_channels: string;
+  activo: boolean;
+  existe?: boolean;
+}
+
+export async function obtenerAvisoSlack(): Promise<ConfigAvisoSlack> {
+  return requestJson<ConfigAvisoSlack>(`${BASE}/aviso-slack`);
+}
+
+export async function guardarAvisoSlack(config: ConfigAvisoSlack): Promise<ConfigAvisoSlack> {
+  return requestJson<ConfigAvisoSlack>(`${BASE}/aviso-slack`, {
+    method: 'POST',
+    json: { slack_channels: config.slack_channels, activo: config.activo },
+    csrf: true,
+  });
+}

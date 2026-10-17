@@ -14,6 +14,11 @@
   mensaje a Slack con el XLSX de los casos nuevos. Es best-effort: loguea y nunca levanta, para no
   hacer fallar la detección.
 
+Guardas contra el aviso masivo: si no había ningún caso antes de la corrida (primera detección) a
+Slack sólo va el resumen con los conteos, sin adjunto; si no, el XLSX se corta en
+`CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO` filas (default 500) con una hoja "Aviso" ("y N más").
+El canal y el interruptor se editan desde el viewer (`/aviso-slack`, admin + CSRF).
+
 El `cromo_worker` necesita `slack_sdk` y el secret `slack_bot_token_v1` para el envío a Slack (se
 agregaron a su requirements y a ambos compose); si faltan, el aviso a Slack se omite con un warning.
 """
@@ -24,6 +29,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -59,6 +65,9 @@ _REVISION_LABELS = {"AUTO": "Automática", "MANUAL": "Manual"}
 _MAX_HOJA = 31
 _INVALIDOS_HOJA = re.compile(r"[\[\]:*?/\\]")
 _PAGINA = 500
+MAX_FILAS_AVISO_DEFAULT = 500
+_MAX_SERVICIOS_EVIDENCIA = 20  # tope con que el detector guarda `evidencia.servicios`
+_MAX_CANALES_CHARS = 512
 
 
 def que_falta(tipo: str, evidencia: Optional[Mapping[str, Any]]) -> str:
@@ -113,6 +122,14 @@ def fila_reporte(item: Mapping[str, Any]) -> dict[str, Any]:
     """Una fila del reporte desde un caso (tal como lo devuelve `listar`)."""
     evidencia = item.get("evidencia") or {}
     servicios = [str(s) for s in (evidencia.get("servicios") or [])]
+    # La evidencia guarda a lo sumo 20: si hay más se marca para que no parezca la lista completa.
+    total = item.get("servicios")
+    if isinstance(total, int) and total > len(servicios):
+        parcial = f" (+{total - len(servicios)})"
+    elif len(servicios) >= _MAX_SERVICIOS_EVIDENCIA:
+        parcial = f" (≥{_MAX_SERVICIOS_EVIDENCIA}, puede haber más)"
+    else:
+        parcial = ""
     return {
         "Tipo": _TIPO_LABELS.get(item.get("tipo"), item.get("tipo")),
         "Revisión": _REVISION_LABELS.get(item.get("revision"), item.get("revision")),
@@ -121,15 +138,16 @@ def fila_reporte(item: Mapping[str, Any]) -> dict[str, Any]:
         "ID Cromo": item.get("objeto_n_id"),
         "Localidad": item.get("localidad") or "",
         "Qué falta": que_falta(str(item.get("tipo")), evidencia),
-        "Servicios afectados": ", ".join(servicios),
+        "Servicios afectados": ", ".join(servicios) + parcial,
         "Primera vez": _fecha(item.get("primera_vez")),
         "Última vez": _fecha(item.get("ultima_vez")),
         "_localidad": item.get("localidad"),
     }
 
 
-def generar_xlsx(filas: Iterable[Mapping[str, Any]]) -> bytes:
-    """XLSX con una hoja por localidad. Sin filas, una hoja vacía con los encabezados."""
+def generar_xlsx(filas: Iterable[Mapping[str, Any]], nota: Optional[str] = None) -> bytes:
+    """XLSX con una hoja por localidad. Sin filas, una hoja vacía con los encabezados. Con `nota`
+    agrega una última hoja "Aviso" con ese texto (p.ej. "y N más — ver el viewer")."""
     import pandas as pd
 
     por_localidad: dict[str, list[Mapping[str, Any]]] = {}
@@ -148,6 +166,10 @@ def generar_xlsx(filas: Iterable[Mapping[str, Any]]) -> bytes:
                 columns=list(COLUMNAS),
             )
             df.to_excel(writer, sheet_name=nombre_hoja(localidad, usadas), index=False)
+        if nota:
+            pd.DataFrame({"Aviso": [nota]}).to_excel(
+                writer, sheet_name=nombre_hoja("Aviso", usadas), index=False
+            )
     return salida.getvalue()
 
 
@@ -236,20 +258,72 @@ async def _leer_config_slack(sesion: AsyncSession) -> tuple[list[str], bool]:
     return canales, bool(fila[1])
 
 
+def max_filas_aviso() -> int:
+    """Tope de filas del XLSX del aviso (`CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO`, default 500)."""
+    try:
+        return max(1, int(os.getenv("CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO", MAX_FILAS_AVISO_DEFAULT)))
+    except ValueError:
+        return MAX_FILAS_AVISO_DEFAULT
+
+
+def normalizar_canales(crudo: str) -> str:
+    """Lista de canales separada por comas, sin espacios ni vacíos."""
+    return ",".join(c.strip() for c in (crudo or "").split(",") if c.strip())
+
+
+async def leer_config_aviso(sesion: AsyncSession) -> dict[str, Any]:
+    """Config del aviso para el admin: `{slack_channels, activo, existe}`."""
+    canales, activo = await _leer_config_slack(sesion)
+    fila = (
+        await sesion.execute(
+            text("SELECT 1 FROM app.config_servicios WHERE nombre_servicio = :n"),
+            {"n": NOMBRE_SERVICIO_CONFIG},
+        )
+    ).first()
+    return {"slack_channels": ",".join(canales), "activo": activo, "existe": fila is not None}
+
+
+async def guardar_config_aviso(sesion: AsyncSession, canales: str, activo: bool) -> None:
+    """Upsert de la fila "Cromo Inconsistencias". No hace commit."""
+    params = {"n": NOMBRE_SERVICIO_CONFIG, "c": canales, "a": activo}
+    actualizadas = await sesion.execute(
+        text(
+            "UPDATE app.config_servicios SET slack_channels = :c, activo = :a "
+            "WHERE nombre_servicio = :n"
+        ),
+        params,
+    )
+    if actualizadas.rowcount == 0:
+        await sesion.execute(
+            text(
+                "INSERT INTO app.config_servicios (nombre_servicio, intervalo_horas, slack_channels, activo) "
+                "VALUES (:n, 0, :c, :a)"
+            ),
+            params,
+        )
+
+
 def _token_slack() -> str:
     from core.config import get_secret
 
     return get_secret("slack_bot_token_v1", "SLACK_BOT_TOKEN")
 
 
-def _enviar_slack_sync(canales: Sequence[str], token: str, texto: str, xlsx: bytes, archivo: str) -> int:
-    """Sube el XLSX con el mensaje a cada canal. Devuelve cuántos envíos salieron bien."""
+def _enviar_slack_sync(
+    canales: Sequence[str], token: str, texto: str, xlsx: Optional[bytes], archivo: str
+) -> int:
+    """Manda el mensaje a cada canal, con el XLSX adjunto si hay (sin XLSX, mensaje solo).
+    Devuelve cuántos envíos salieron bien."""
     from slack_sdk import WebClient
 
     cliente = WebClient(token=token, timeout=60)
     enviados = 0
     for canal in canales:
         try:
+            if xlsx is None:
+                cliente.chat_postMessage(channel=canal, text=texto, mrkdwn=True)
+                enviados += 1
+                continue
             cliente.files_upload_v2(
                 channel=canal,
                 file=io.BytesIO(xlsx),
@@ -265,14 +339,23 @@ def _enviar_slack_sync(canales: Sequence[str], token: str, texto: str, xlsx: byt
     return enviados
 
 
-def _mensaje_slack(nuevos: int, cuarentena_auto: int) -> str:
-    return (
+def _mensaje_slack(nuevos: int, cuarentena_auto: int, *, primera: bool = False, mostrados: int = 0) -> str:
+    base = (
         ":warning: *Cromo: inconsistencias nuevas detectadas*\n"
         f"• Casos nuevos: *{nuevos}*\n"
         f"• En cuarentena automática: *{cuarentena_auto}*\n"
         f"• A revisar a mano: *{nuevos - cuarentena_auto}*\n"
-        "_Se adjunta el detalle con lo que falta corregir en Cromo, una hoja por localidad._"
     )
+    if primera:
+        return base + (
+            "_Es la primera detección: no se adjunta el detalle. "
+            "Exportalo desde el viewer de Inconsistencias Cromo (Infra > Servicios)._"
+        )
+    if mostrados < nuevos:
+        return base + (
+            f"_Se adjuntan los primeros {mostrados}; y {nuevos - mostrados} más — ver el viewer._"
+        )
+    return base + "_Se adjunta el detalle con lo que falta corregir en Cromo, una hoja por localidad._"
 
 
 async def avisar_casos_nuevos(
@@ -308,14 +391,24 @@ async def avisar_casos_nuevos(
                     "action=cromo_inconsistencias evento=aviso_slack_omitido motivo=sin_token"
                 )
                 return avisado
-            filas = await filas_de_casos(sesion, list(getattr(resumen, "nuevos_claves", ()) or ()))
-            xlsx = await asyncio.to_thread(generar_xlsx, filas)
+            # Primera detección (no había ningún caso antes): todo es "nuevo", sólo un resumen.
+            primera = getattr(resumen, "casos_previos", None) == 0
+            xlsx: Optional[bytes] = None
+            mostrados = 0
+            if not primera:
+                claves = sorted(getattr(resumen, "nuevos_claves", ()) or ())
+                tope = max_filas_aviso()
+                filas = await filas_de_casos(sesion, claves[:tope])
+                mostrados = len(filas)
+                resto = max(0, nuevos - mostrados)
+                nota = f"y {resto} más — ver el viewer" if resto else None
+                xlsx = await asyncio.to_thread(generar_xlsx, filas, nota)
             sello = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             enviados = await asyncio.to_thread(
                 _enviar_slack_sync,
                 canales,
                 token,
-                _mensaje_slack(nuevos, cuarentena_auto),
+                _mensaje_slack(nuevos, cuarentena_auto, primera=primera, mostrados=mostrados),
                 xlsx,
                 f"cromo_inconsistencias_nuevas_{sello}.xlsx",
             )

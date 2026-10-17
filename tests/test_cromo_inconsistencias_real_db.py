@@ -562,6 +562,7 @@ async def test_aplicar_informa_nuevos_y_reporte_los_recupera(entorno):
     ]
     r1 = await inc.aplicar_casos(sesion, casos, ahora=AHORA)
     assert r1.nuevos == 2 and r1.cuarentena_auto == 1
+    assert r1.casos_previos >= 0
     assert sorted(r1.nuevos_claves) == [("ELEMENTO_ISLA", 999_917_802), ("ISLA_FUSION", 999_917_801)]
     r2 = await inc.aplicar_casos(sesion, casos, ahora=AHORA + timedelta(hours=1))
     assert r2.nuevos == 0 and r2.nuevos_claves == []
@@ -586,3 +587,23 @@ async def _id_de(sesion, objeto: int) -> int:
             text("SELECT id FROM app.cromo_inconsistencia WHERE objeto_n_id = :o"), {"o": objeto}
         )
     ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_config_aviso_guardar_y_leer(entorno):
+    from core.services.cromo import inconsistencias_reporte as rep
+
+    sesion, conn = entorno
+    await conn.run_sync(_correr, "upgrade", _MIG_04, "mig_20261017_04")
+    assert await rep.leer_config_aviso(sesion) == {"slack_channels": "", "activo": False, "existe": True}
+    await rep.guardar_config_aviso(sesion, "#a,C0123456789", True)
+    assert await rep.leer_config_aviso(sesion) == {
+        "slack_channels": "#a,C0123456789",
+        "activo": True,
+        "existe": True,
+    }
+    assert await rep._leer_config_slack(sesion) == (["#a", "C0123456789"], True)
+    await conn.run_sync(_correr, "downgrade", _MIG_04, "mig_20261017_04")
+    assert (await rep.leer_config_aviso(sesion))["existe"] is False
+    await rep.guardar_config_aviso(sesion, "#b", False)  # inserta si no existe
+    assert (await rep.leer_config_aviso(sesion))["slack_channels"] == "#b"

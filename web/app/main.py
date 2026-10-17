@@ -9391,6 +9391,56 @@ async def inconsistencias_cromo_exportar_web(
     )
 
 
+class InconsistenciasAvisoSlackRequestModel(BaseModel):
+    """Payload para configurar el aviso de casos nuevos a Slack."""
+
+    slack_channels: str = Field(default="", description="Canales (#nombre o ID C/G/D...) separados por coma")
+    activo: bool = Field(default=False, description="Si el aviso a Slack está encendido")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo/aviso-slack")
+async def inconsistencias_cromo_aviso_slack_get_web(request: Request) -> JSONResponse:
+    """Config del aviso de casos nuevos a Slack (fila "Cromo Inconsistencias"). Admin."""
+    from core.services.cromo.inconsistencias_reporte import leer_config_aviso
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        return JSONResponse(await leer_config_aviso(sesion))
+
+
+@app.post("/api/admin/infra/inconsistencias-cromo/aviso-slack")
+async def inconsistencias_cromo_aviso_slack_post_web(
+    request: Request, body: InconsistenciasAvisoSlackRequestModel
+) -> JSONResponse:
+    """Guarda canales y activación del aviso a Slack. Mismas reglas de formato de canal que el
+    resto de los servicios de Slack. Admin + CSRF."""
+    from core.services.cromo.inconsistencias_reporte import guardar_config_aviso, normalizar_canales
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_aviso_slack", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    canales = normalizar_canales(body.slack_channels)
+    if len(canales) > 512:
+        return JSONResponse({"error": "Los canales no deben superar 512 caracteres"}, status_code=400)
+    if any(not _es_destino_slack_valido(c) for c in canales.split(",") if c):
+        return JSONResponse(
+            {"error": "Cada destino debe ser un nombre de canal con # o un ID de Slack tipo C/G/D..."},
+            status_code=400,
+        )
+    if body.activo and not canales:
+        return JSONResponse({"error": "Para activar el aviso hay que indicar al menos un canal"}, status_code=400)
+    async with AsyncSessionLocal() as sesion:
+        await guardar_config_aviso(sesion, canales, body.activo)
+        await sesion.commit()
+    logger.info(
+        "action=cromo_inconsistencias_aviso_slack user=%s activo=%s canales=%s", username, body.activo, canales
+    )
+    return JSONResponse({"ok": True, "slack_channels": canales, "activo": body.activo})
+
+
 @app.post("/api/admin/infra/inconsistencias-cromo/estado")
 async def inconsistencias_cromo_estado_web(
     request: Request, body: InconsistenciasEstadoRequestModel

@@ -11,7 +11,8 @@ Create Date: 2026-10-17
 Cambios:
 - Fila ``Cromo Inconsistencias`` en ``app.config_servicios``, **inactiva** y con ``slack_channels``
   vacío. El ``cromo_worker`` sólo manda el mensaje a Slack (con el XLSX de los casos nuevos) si la
-  fila está activa y tiene canales: para activarlo hay que cargarle el canal desde el admin.
+  fila está activa y tiene canales: para activarlo se carga el canal y se enciende desde el viewer de Inconsistencias Cromo
+  (``GET/POST /api/admin/infra/inconsistencias-cromo/aviso-slack``).
   Sin fila o inactiva, el aviso por WebSocket admin se publica igual.
 - Idempotente (``WHERE NOT EXISTS``). El ``downgrade()`` borra la fila.
 """

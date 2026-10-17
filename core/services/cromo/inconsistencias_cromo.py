@@ -292,6 +292,8 @@ class ResumenAplicacion:
     # Casos creados en esta corrida y cuántos de ellos entraron directo en CUARENTENA (para el aviso).
     nuevos_claves: list[tuple[str, int]] = field(default_factory=list)
     cuarentena_auto: int = 0
+    # Casos que ya había antes de esta corrida (0 = primera detección: todo sale como "nuevo").
+    casos_previos: int = 0
 
 
 @dataclass(slots=True)
@@ -312,6 +314,7 @@ class ResumenDeteccion:
     casos: list[Caso] = field(default_factory=list, repr=False)
     nuevos_claves: list[tuple[str, int]] = field(default_factory=list, repr=False)
     cuarentena_auto: int = 0
+    casos_previos: int = 0
 
     def a_dict(self) -> dict[str, Any]:
         return {
@@ -1021,6 +1024,7 @@ async def aplicar_casos(
             )
         ).all()
     }
+    resumen.casos_previos = len(existentes)
     unicos: dict[tuple[str, int], Caso] = {}
     for caso in casos:
         unicos[(caso.tipo, caso.objeto_n_id)] = caso
@@ -1190,6 +1194,7 @@ async def detectar(
         resumen.por_estado = aplicacion.por_estado
         resumen.nuevos_claves = aplicacion.nuevos_claves
         resumen.cuarentena_auto = aplicacion.cuarentena_auto
+        resumen.casos_previos = aplicacion.casos_previos
         if al_avanzar is not None:
             await al_avanzar(
                 "APLICACION",
