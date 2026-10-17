@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.cromo import ingesta
 from core.services.cromo.client import CromoClient, CromoClientError
+from core.services.cromo.inconsistencias_reporte import avisar_casos_nuevos
 from db.models.cromo import CromoIngestaCorrida
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,9 @@ class ResumenAplicacion:
     reabiertos: int = 0
     cerrados: int = 0
     por_estado: dict[str, int] = field(default_factory=dict)
+    # Casos creados en esta corrida y cuántos de ellos entraron directo en CUARENTENA (para el aviso).
+    nuevos_claves: list[tuple[str, int]] = field(default_factory=list)
+    cuarentena_auto: int = 0
 
 
 @dataclass(slots=True)
@@ -306,6 +310,8 @@ class ResumenDeteccion:
     duracion_ms: int = 0
     duracion_sql_ms: int = 0
     casos: list[Caso] = field(default_factory=list, repr=False)
+    nuevos_claves: list[tuple[str, int]] = field(default_factory=list, repr=False)
+    cuarentena_auto: int = 0
 
     def a_dict(self) -> dict[str, Any]:
         return {
@@ -1031,6 +1037,9 @@ async def aplicar_casos(
         estado, reabierto = decidir_estado(existente, caso.revision)
         if existente is None:
             resumen.nuevos += 1
+            resumen.nuevos_claves.append(clave)
+            if estado == ESTADO_CUARENTENA:
+                resumen.cuarentena_auto += 1
         else:
             resumen.actualizados += 1
             if reabierto:
@@ -1179,6 +1188,8 @@ async def detectar(
         resumen.reabiertos = aplicacion.reabiertos
         resumen.cerrados = aplicacion.cerrados
         resumen.por_estado = aplicacion.por_estado
+        resumen.nuevos_claves = aplicacion.nuevos_claves
+        resumen.cuarentena_auto = aplicacion.cuarentena_auto
         if al_avanzar is not None:
             await al_avanzar(
                 "APLICACION",
@@ -1214,6 +1225,7 @@ async def listar(
     *,
     tipo: Optional[str] = None,
     estado: Optional[str] = None,
+    estados: Optional[Sequence[str]] = None,
     revision: Optional[str] = None,
     localidad: Optional[str] = None,
     servicio: Optional[str] = None,
@@ -1225,6 +1237,7 @@ async def listar(
     """Casos paginados, filtrables por tipo/estado/revisión/localidad (ILIKE) y servicio (número
     exacto de `cromo_servicio_match`, o PK de `app.servicios`, de alguno de sus pelos).
 
+    `estados` (varios) se suma a `estado` (uno) con AND; el reporte lo usa para excluir los cerrados.
     `desplazamiento` (offset) pisa a `pagina` cuando se pasa. Además de los casos devuelve
     `conteos_por_tipo`, con todos los filtros salvo el de tipo (chips del Viewer). Cada ítem lleva
     `pelos` y `servicios` (cantidad de números de servicio distintos de sus pelos)."""
@@ -1236,6 +1249,9 @@ async def listar(
     if estado:
         condiciones.append("i.estado = :estado")
         params["estado"] = estado
+    if estados:
+        condiciones.append("i.estado = ANY(:estados)")
+        params["estados"] = [str(e) for e in estados]
     if revision:
         condiciones.append("i.revision = :revision")
         params["revision"] = revision
@@ -1610,6 +1626,9 @@ async def _ejecutar_corrida(
         sesion, corrida_id, None, None, "RESUMEN", json.dumps(detalle_resumen, default=str)
     )
     await sesion.commit()
+    if estado_final == "OK" and resumen is not None and resumen.aplicado:
+        # Cubre la corrida manual y la post-ingesta (ambas pasan por acá). Nunca levanta.
+        await avisar_casos_nuevos(sesion, resumen, corrida_id=corrida_id)
     return estado_final
 
 
@@ -1672,6 +1691,7 @@ __all__ = [
     "TIPO_CORRIDA_INCONSISTENCIAS",
     "USUARIO_DETECTOR",
     "aplicar_casos",
+    "avisar_casos_nuevos",
     "cambiar_estado",
     "caso_isla_fusion",
     "clasificar_isla_fusion",

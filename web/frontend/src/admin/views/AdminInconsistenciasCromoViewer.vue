@@ -102,6 +102,11 @@
 
         <span class="inconsistencias-viewer__separador" aria-hidden="true"></span>
 
+        <button class="btn" type="button" :disabled="exportando" @click="exportarXlsx">
+          <i class="ph ph-file-xls" aria-hidden="true"></i>
+          Exportar XLSX
+        </button>
+
         <button class="btn" type="button" :disabled="deteccionEnCurso || lanzando" @click="lanzarDeteccionManual">
           <i class="ph ph-magnifying-glass-plus" aria-hidden="true"></i>
           Detectar ahora
@@ -257,6 +262,7 @@ import AdminPageHeader from '../components/AdminPageHeader.vue';
 import {
   TIPOS_INCONSISTENCIA,
   cambiarEstadoInconsistencias,
+  exportarInconsistencias,
   lanzarDeteccion,
   listarInconsistencias,
   obtenerDeteccion,
@@ -265,6 +271,7 @@ import {
   type EstadoDestinoInconsistencia,
   type InconsistenciaItem,
 } from '../../api/inconsistenciasCromo';
+import { useAdminNotifications } from '../../composables/useAdminNotifications';
 import { useCorridaSse } from '../../composables/useCorridaSse';
 
 const LIMIT = 100;
@@ -425,6 +432,36 @@ function setRevision(valor: string): void {
   filtroRevision.value = valor;
   void reloadFromZero();
 }
+
+const exportando = ref(false);
+
+/** XLSX con los filtros activos; sin filtro de estado exporta sólo lo accionable. */
+async function exportarXlsx(): Promise<void> {
+  if (exportando.value) return;
+  exportando.value = true;
+  error.value = '';
+  try {
+    await exportarInconsistencias({
+      tipo: filtroTipo.value || undefined,
+      estado: filtroEstado.value || undefined,
+      revision: filtroRevision.value || undefined,
+      localidad: localidadTexto.value.trim() || undefined,
+      servicio_id: servicioId.value,
+    });
+  } catch (err: unknown) {
+    error.value = err instanceof Error ? err.message : 'No se pudo exportar el reporte';
+  } finally {
+    exportando.value = false;
+  }
+}
+
+// El detector avisa por WebSocket admin cuando encontró casos nuevos: se recarga la lista.
+const { on } = useAdminNotifications();
+on('cromo_inconsistencias_nuevas', (mensajeWs) => {
+  const nuevos = Number(mensajeWs.nuevos ?? 0);
+  mensaje.value = `El detector encontró ${nuevos} caso(s) nuevo(s).`;
+  void reloadFromZero();
+});
 
 function refrescar(): void {
   void reloadFromZero();

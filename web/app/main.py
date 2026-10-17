@@ -12,7 +12,7 @@ import secrets
 import time
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from time import time as now
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
@@ -9339,6 +9339,56 @@ async def inconsistencias_cromo_listar_web(
             desplazamiento=offset,
         )
     return JSONResponse(jsonable_encoder(pagina))
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo/exportar.xlsx")
+async def inconsistencias_cromo_exportar_web(
+    request: Request,
+    tipo: Optional[str] = None,
+    estado: Optional[str] = None,
+    revision: Optional[str] = None,
+    localidad: Optional[str] = None,
+    servicio: Optional[str] = None,
+    servicio_id: Optional[int] = None,
+) -> Response:
+    """XLSX "para corregir en Cromo": una hoja por localidad, con tipo, revisión, estado, objeto,
+    ID Cromo, qué falta, servicios afectados y fechas. Mismos filtros que el listado; sin `estado`
+    exporta sólo lo accionable (PENDIENTE, CUARENTENA, REPORTADA). Admin."""
+    from core.services.cromo import inconsistencias_reporte as reporte
+    from core.services.cromo.inconsistencias_cromo import ESTADOS, REVISIONES, TIPOS
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if tipo is not None and tipo not in TIPOS:
+        return JSONResponse({"error": f"tipo inválido. Valores: {list(TIPOS)}"}, status_code=400)
+    if estado is not None and estado not in ESTADOS:
+        return JSONResponse({"error": f"estado inválido. Valores: {list(ESTADOS)}"}, status_code=400)
+    if revision is not None and revision not in REVISIONES:
+        return JSONResponse(
+            {"error": f"revision inválida. Valores: {list(REVISIONES)}"}, status_code=400
+        )
+    try:
+        async with AsyncSessionLocal() as sesion:
+            filas = await reporte.filas_reporte(
+                sesion,
+                tipo=tipo,
+                estado=estado,
+                revision=revision,
+                localidad=localidad or None,
+                servicio=servicio or None,
+                servicio_id=servicio_id,
+            )
+        contenido = await asyncio.to_thread(reporte.generar_xlsx, filas)
+    except Exception as exc:
+        logger.exception("action=inconsistencias_cromo_exportar_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
+    logger.info("action=inconsistencias_cromo_exportar user=%s filas=%d", username, len(filas))
+    sello = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=contenido,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="inconsistencias_cromo_{sello}.xlsx"'},
+    )
 
 
 @app.post("/api/admin/infra/inconsistencias-cromo/estado")

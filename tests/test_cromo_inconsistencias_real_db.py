@@ -529,3 +529,60 @@ async def test_no_inicia_deteccion_con_una_ingesta_en_curso(entorno):
     assert await inc.ingesta_en_curso(sesion) is not None
     corrida, en_curso = await inc.iniciar_si_no_hay_otra(sesion, usuario="test")
     assert corrida is None and en_curso is not None and en_curso >= ingesta_id
+
+
+# ── Tarea 5: reporte y config del aviso ──────────────────────────────────────
+
+_MIG_04 = _MIGRACION.with_name("20261017_04_config_cromo_inconsistencias.py")
+
+
+@pytest.mark.asyncio
+async def test_migracion_04_siembra_fila_inactiva_idempotente_y_reversible(entorno):
+    _sesion, conn = entorno
+    consulta = text(
+        "SELECT slack_channels, activo FROM app.config_servicios "
+        "WHERE nombre_servicio = 'Cromo Inconsistencias'"
+    )
+    await conn.run_sync(_correr, "upgrade", _MIG_04, "mig_20261017_04")
+    await conn.run_sync(_correr, "upgrade", _MIG_04, "mig_20261017_04")
+    filas = (await conn.execute(consulta)).all()
+    assert [(c, a) for c, a in filas] == [("", False)]
+    await conn.run_sync(_correr, "downgrade", _MIG_04, "mig_20261017_04")
+    assert (await conn.execute(consulta)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_aplicar_informa_nuevos_y_reporte_los_recupera(entorno):
+    from core.services.cromo import inconsistencias_reporte as rep
+
+    sesion, _conn = entorno
+    casos = [
+        _caso("ISLA_FUSION", 999_917_801, "AUTO"),
+        _caso("ELEMENTO_ISLA", 999_917_802, "MANUAL"),
+    ]
+    r1 = await inc.aplicar_casos(sesion, casos, ahora=AHORA)
+    assert r1.nuevos == 2 and r1.cuarentena_auto == 1
+    assert sorted(r1.nuevos_claves) == [("ELEMENTO_ISLA", 999_917_802), ("ISLA_FUSION", 999_917_801)]
+    r2 = await inc.aplicar_casos(sesion, casos, ahora=AHORA + timedelta(hours=1))
+    assert r2.nuevos == 0 and r2.nuevos_claves == []
+
+    filas = await rep.filas_de_casos(sesion, r1.nuevos_claves)
+    assert {f["ID Cromo"] for f in filas} == {999_917_801, 999_917_802}
+    assert {f["Estado"] for f in filas} == {"CUARENTENA", "PENDIENTE"}
+
+    # El reporte por defecto excluye lo cerrado y lo aceptado.
+    await inc.cambiar_estado(sesion, [(await _id_de(sesion, 999_917_802))], "ACEPTADA", "tester")
+    visibles = {
+        f["ID Cromo"]
+        for f in await rep.filas_reporte(sesion, localidad="Localidad Test")
+        if 999_917_000 <= f["ID Cromo"] <= 999_917_999
+    }
+    assert visibles == {999_917_801}
+
+
+async def _id_de(sesion, objeto: int) -> int:
+    return (
+        await sesion.execute(
+            text("SELECT id FROM app.cromo_inconsistencia WHERE objeto_n_id = :o"), {"o": objeto}
+        )
+    ).scalar_one()

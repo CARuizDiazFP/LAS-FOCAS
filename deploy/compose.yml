@@ -343,6 +343,8 @@ services:
       - db_password_v1
       - cromo_password_v1
       - redis_password_v1
+      # Aviso de inconsistencias nuevas de Cromo a Slack (core/services/cromo/inconsistencias_reporte.py).
+      - slack_bot_token_v1
     depends_on:
       postgres:
         condition: service_healthy

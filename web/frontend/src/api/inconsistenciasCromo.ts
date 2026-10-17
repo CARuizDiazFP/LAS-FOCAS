@@ -2,7 +2,7 @@
 // Ubicación de archivo: web/frontend/src/api/inconsistenciasCromo.ts
 // Descripción: Cliente frontend de las inconsistencias de Cromo — listado paginado con filtros, cambio de estado en lote (cuarentena, aceptar, reportar, liberar) y detección manual (corrida del cromo_worker)
 
-import { requestJson } from './client';
+import { requestDownload, requestJson } from './client';
 
 // Mismos literales que `core/services/cromo/inconsistencias_cromo.py` y los CHECK de
 // `app.cromo_inconsistencia`.
@@ -135,4 +135,13 @@ export async function obtenerDeteccion(): Promise<EstadoDeteccion> {
 
 export async function lanzarDeteccion(): Promise<{ corrida_id: number }> {
   return requestJson(`${BASE}/deteccion`, { method: 'POST', json: {}, csrf: true });
+}
+
+/** Descarga el XLSX "para corregir en Cromo" (una hoja por localidad) con los mismos filtros del listado. */
+export async function exportarInconsistencias(
+  params: Omit<ListarInconsistenciasParams, 'limit' | 'offset'>,
+): Promise<string> {
+  return requestDownload(`${BASE}/exportar.xlsx${toQuery({ ...params })}`, {
+    fallbackFilename: 'inconsistencias_cromo.xlsx',
+  });
 }
