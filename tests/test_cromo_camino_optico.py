@@ -424,7 +424,7 @@ def test_el_conector_declara_el_pelo_al_que_esta_cableado():
 
 # Mismo criterio que el parser de la ingesta (`cromo_odf_conectores.pelo_n_id` sólo sale de un `tp`
 # de clase 130): un patch a otro conector (136) o una fusión de ODF (141) NO es el pelo conectado.
-@pytest.mark.parametrize("clase_tp", [136, 141, 134])
+@pytest.mark.parametrize("clase_tp", [136, 134])
 def test_el_conector_con_tp_que_no_es_pelo_no_declara_pelo(clase_tp):
     dic = {
         1: {"class": 136, "gfather": 20, "tp": [{"id_to": 888, "class": clase_tp}]},
@@ -481,7 +481,10 @@ class _SesionConectores:
         texto = str(sql)
         ids = params["ids"]
         if "cromo_odf_conectores" in texto:
-            return _Resultado([(i, *self.conectores[i]) for i in ids if i in self.conectores])
+            # Filas (pelo, odf[, fusion_odf_n_id]): sin fusión explícita, NULL.
+            return _Resultado(
+                [(i, *(tuple(self.conectores[i]) + (None,))[:3]) for i in ids if i in self.conectores]
+            )
         if "FROM app.cromo_pelos" in texto:
             return _Resultado([(i,) for i in ids if i in self.pelos])
         raise AssertionError(f"query inesperada: {texto}")
@@ -606,6 +609,48 @@ async def test_conector_via_fusion_de_odf_coincide_con_el_pelo_ingerido():
 
     regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
     assert (regla.coincide, regla.discrepa) == (2, 0)
+
+
+def test_fusion_de_odf_fuera_del_payload_queda_como_candidato_sin_declarar_pelo():
+    """Una 141 que no vino en el `/path` no da pelo, pero queda como candidato: la auditoría la
+    compara con la `fusion_odf_n_id` que guardó la ingesta."""
+    dic = {1: {"class": 136, "gfather": 20, "tp": [{"id_to": 888, "class": 141}]}, 20: {"class": 69, "at": []}}
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == [888]
+
+
+class _SesionConectoresConFusion(_SesionConectores):
+    """Como `_SesionConectores`, pero la fila del conector trae también `fusion_odf_n_id`."""
+
+    async def execute(self, sql, params):
+        texto = str(sql)
+        if "cromo_odf_conectores" in texto:
+            assert "fusion_odf_n_id" in texto
+        return await super().execute(sql, params)
+
+
+@pytest.mark.asyncio
+async def test_conector_via_fusion_de_odf_ausente_del_path_coincide_por_fusion_guardada():
+    """El `/path` trae el conector apuntando a una 141 que no está en el payload: el camino no
+    puede ver el pelo, pero si la 141 es la misma `fusion_odf_n_id` de la base, el pelo local es
+    el de esa 141 → coincide (sin esto sería un DISCREPA nuevo por cada conector así)."""
+    from core.services.cromo.camino_optico_service import auditar_consistencia
+
+    dic = {
+        1: _conector(1, [{"id_to": 141001}]),  # misma 141 que la base → coincide
+        2: _conector(2, [{"id_to": 141009}]),  # 141 distinta a la de la base → discrepa
+        20: {"class": 69, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 2], "A", {})
+    sesion = _SesionConectoresConFusion({1: (777, 20, 141001), 2: (778, 20, 141002)}, pelos=set())
+
+    consistencia = await auditar_consistencia(sesion, nodos)
+
+    regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
+    assert (regla.coincide, regla.discrepa) == (1, 1)
 
 
 def test_un_nodo_repetido_no_se_audita_dos_veces():

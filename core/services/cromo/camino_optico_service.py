@@ -186,7 +186,8 @@ class NodoCamino:
     botella_nombre: Optional[str] = None
     pelos_fusionados: list[int] = field(default_factory=list)
     # Contexto del conector de ODF (`father` = patchera, `gfather` = ODF). `pelo_conectado` es el
-    # `tp` de clase 130 —mismo criterio que `parser.parse_odf` para `cromo_odf_conectores.pelo_n_id`—
+    # `tp` de clase 130, o el pelo del otro extremo de una fusión de ODF (141) del mismo payload
+    # —mismo criterio que `parser.parse_odf_conectores` para `cromo_odf_conectores.pelo_n_id`—
     # y `tp_sin_clase` los `tp` cuya clase no viene en el payload: `/path` no la trae en `tp[]`
     # (verificado real 2026-10-16) y el destino casi nunca está en el mismo payload. La auditoría
     # los resuelve contra la base (`auditar_consistencia`).
@@ -439,7 +440,7 @@ def _pelo_del_conector(
     a otro conector, no el pelo. Uno de clase 141 es una fusión de ODF: desde 20261017_01 la
     ingesta guarda como pelo el del otro extremo de la 141, así que acá se resuelve igual con la
     141 que viaja en el mismo payload (`propio_id` excluye al conector de los `tp` de la 141). Si la
-    141 no está en el payload no se declara pelo. Los `tp` sin clase conocida no se dan por pelo:
+    141 no está en el payload no se declara pelo: queda como candidato. Los `tp` sin clase conocida no se dan por pelo:
     vuelven como candidatos para que la auditoría los resuelva contra la base.
     """
     pelo: Optional[int] = None
@@ -456,6 +457,8 @@ def _pelo_del_conector(
         elif clase == _CLASE_FUSION_ODF:
             fusion = dic.get(destino)
             if not isinstance(fusion, Mapping):
+                # 141 fuera del payload: candidato, la auditoría la compara con `fusion_odf_n_id`.
+                sin_clase.append(destino)
                 continue
             for punto_fusion in fusion.get("tp") or []:
                 if not isinstance(punto_fusion, Mapping) or not punto_fusion.get("id_to"):
@@ -942,22 +945,26 @@ async def auditar_consistencia(
         regla=REGLA_CONECTOR, descripcion=DESCRIPCION_REGLAS[REGLA_CONECTOR], total=len(pares_conector)
     )
     if pares_conector:
-        filas = {
-            fila[0]: {"pelo": fila[1], "odf": fila[2]}
-            for fila in (
-                await sesion.execute(
-                    text(
-                        "SELECT n_id, pelo_n_id, odf_n_id FROM app.cromo_odf_conectores "
-                        "WHERE n_id = ANY(:ids)"
-                    ),
-                    {"ids": sorted(pares_conector)},
-                )
-            ).all()
-        }
+        filas: dict[int, dict[str, Any]] = {}
+        fusion_local: dict[int, Optional[int]] = {}
+        for fila in (
+            await sesion.execute(
+                text(
+                    "SELECT n_id, pelo_n_id, odf_n_id, fusion_odf_n_id FROM app.cromo_odf_conectores "
+                    "WHERE n_id = ANY(:ids)"
+                ),
+                {"ids": sorted(pares_conector)},
+            )
+        ).all():
+            filas[fila[0]] = {"pelo": fila[1], "odf": fila[2]}
+            fusion_local[fila[0]] = fila[3]
         # El `tp` sin clase (forma real de `/path`) es el pelo sólo si la base lo conoce como pelo:
-        # está en `cromo_pelos`, o es el mismo `pelo_n_id` que guardó la ingesta, que sólo sale de
-        # un `tp` de clase 130 (pelos de cables de terceros no ingeridos). Si no, es un patch o
-        # una fusión de ODF y el camino no declara pelo, igual que la base.
+        # está en `cromo_pelos`, o es el mismo `pelo_n_id` que guardó la ingesta (de un `tp` de
+        # clase 130, p. ej. pelos de cables de terceros no ingeridos, o del otro extremo de una
+        # fusión de ODF 141). Si el candidato es la misma 141 que guardó la ingesta
+        # (`fusion_odf_n_id`) pero la 141 no vino en el payload, el camino no ve su pelo: se toma
+        # el pelo local de esa 141. Si no, es un patch o una fusión de ODF distinta y el camino no
+        # declara pelo.
         candidatos = {
             n.id_cromo: n.tp_sin_clase
             for n in nodos
@@ -978,7 +985,10 @@ async def auditar_consistencia(
             }
         for elemento, lista in candidatos.items():
             pelo_local = filas.get(elemento, {}).get("pelo")
+            fusion = fusion_local.get(elemento)
             pelo = next((c for c in lista if c in pelos_ingeridos or c == pelo_local), None)
+            if pelo is None and fusion is not None and fusion in lista:
+                pelo = pelo_local
             pares_conector[elemento] = {**pares_conector[elemento], "pelo": pelo}
 
         for elemento, vinculos_path in pares_conector.items():

@@ -767,6 +767,7 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
 
     conectores: list[ConectorOdf] = []
     fusiones_ausentes = 0
+    fusiones_sin_tp = 0
     for item in inner:
         if item.get("class") != _CLASE_POSICION_PATCHERA:
             continue
@@ -797,6 +798,8 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
         )
 
         conector_n_id = item.get("n_id") or item.get("id")
+        # La 141 puede referir al conector por `id` o por `n_id` (la forma liviana trae los dos).
+        ids_propios = {int(v) for v in (item.get("id"), item.get("n_id")) if v is not None}
         fusion_odf_n_id: Optional[int] = None
         fusion_ids = [
             int(punto["id_to"])
@@ -808,9 +811,10 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
             if fusion is None:
                 fusiones_ausentes += 1
                 continue
-            pelo_fusion, conector_fusion = _otro_extremo_fusion_odf(fusion, conector_n_id)
+            pelo_fusion, conector_fusion = _otro_extremo_fusion_odf(fusion, ids_propios)
             if pelo_fusion is None and conector_fusion is None:
                 # 141 sin `tp` (9 casos reales): no se afirma nada, ni siquiera la fusión.
+                fusiones_sin_tp += 1
                 continue
             fusion_odf_n_id = fusion_odf_n_id or fusion_id
             if pelo_fusion is not None and pelo_fusion not in pelos_candidatos:
@@ -836,21 +840,25 @@ def parse_odf_conectores(obj: Mapping[str, Any]) -> list[ConectorOdf]:
                 pelos_candidatos=pelos_candidatos,
             )
         )
-    if fusiones_ausentes:
-        # No es un error de la ODF: el conector apunta a una 141 que no vino en el payload. El
-        # conector queda sin pelo/fusión (NULL), igual que antes de reconocer la clase 141.
+    if fusiones_ausentes or fusiones_sin_tp:
+        # No es un error de la ODF: el conector apunta a una 141 que no vino en el payload
+        # (`referencias`, una por cada `tp` de clase 141 sin su objeto) o a una 141 sin `tp` que
+        # no une nada (`fusiones_sin_tp`). El conector queda sin pelo/fusión (NULL).
         logger.warning(
-            "action=cromo_parser evento=fusion_odf_ausente odf_n_id=%s conectores=%s",
+            "action=cromo_parser evento=fusion_odf_sin_resolver odf_n_id=%s referencias=%s "
+            "fusiones_sin_tp=%s",
             odf_n_id,
             fusiones_ausentes,
+            fusiones_sin_tp,
         )
     return conectores
 
 
 def _otro_extremo_fusion_odf(
-    fusion: Mapping[str, Any], conector_n_id: Any
+    fusion: Mapping[str, Any], ids_propios: set[int]
 ) -> tuple[Optional[int], Optional[int]]:
-    """`(pelo, otro_conector)` del lado opuesto de una fusión de ODF (141) respecto del conector.
+    """`(pelo, otro_conector)` del lado opuesto de una fusión de ODF (141) respecto del conector
+    (`ids_propios` = su `id` y su `n_id`, cualquiera de los dos puede venir en el `tp` de la 141).
 
     Medido en `payload_raw` (2026-10-17): 8.732 fusiones 141 unen un conector con un pelo
     (`tp` {136,130}), 262 unen dos conectores ({136,136}) y 9 no traen `tp` (→ `(None, None)`)."""
@@ -864,7 +872,7 @@ def _otro_extremo_fusion_odf(
         clase = punto.get("class")
         if clase == _CLASE_PELO and pelo is None:
             pelo = destino
-        elif clase == _CLASE_POSICION_PATCHERA and otro is None and destino != conector_n_id:
+        elif clase == _CLASE_POSICION_PATCHERA and otro is None and destino not in ids_propios:
             otro = destino
     return pelo, otro
 

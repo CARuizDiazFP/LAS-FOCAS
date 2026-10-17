@@ -782,6 +782,33 @@ def test_parse_odf_conectores_141_ausente_del_inner_deja_todo_null_sin_romper():
     assert (c.pelo_n_id, c.patch_conector_n_id, c.fusion_odf_n_id) == (None, None, None)
 
 
+def test_parse_odf_conectores_141_entre_conectores_excluye_al_propio_por_id_o_n_id():
+    """Si el conector trae `n_id` distinto de `id`, la 141 puede referirlo por cualquiera de los
+    dos: ninguno es "el otro conector"."""
+    a = {"id": 30, "n_id": 3030, "class": 136, "name": "1", "parent": 8539330, "at": [],
+         "tp": [{"id_to": 902, "class": 141}]}
+    fusion = _fusion_odf(902, [{"id_to": 30, "class": 136}, {"id_to": 31, "class": 136}])
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, a, fusion]}
+
+    [c] = parse_odf_conectores(obj)
+
+    assert (c.patch_conector_n_id, c.fusion_odf_n_id) == (31, 902)
+
+
+def test_parse_odf_conectores_loguea_141_ausentes_y_sin_tp(caplog):
+    ausente = {"id": 40, "class": 136, "name": "1", "parent": 8539330, "at": [], "tp": [{"id_to": 998, "class": 141}]}
+    sin_tp = {"id": 41, "class": 136, "name": "2", "parent": 8539330, "at": [], "tp": [{"id_to": 903, "class": 141}]}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [],
+           "inner": [_BANDEJA_1, ausente, sin_tp, _fusion_odf(903, None)]}
+
+    with caplog.at_level("WARNING"):
+        parse_odf_conectores(obj)
+
+    [mensaje] = [r.getMessage() for r in caplog.records if "fusion_odf" in r.getMessage()]
+    assert "referencias=1" in mensaje
+    assert "fusiones_sin_tp=1" in mensaje
+
+
 def test_parse_odf_conectores_141_forma_liviana_con_n_id():
     """La forma liviana trae `n_id` además de `id` en la 141: el mapa se indexa por cualquiera."""
     conector = {"id": 24, "n_id": 24, "class": 136, "name": "5", "parent": 8539330, "at": [],
