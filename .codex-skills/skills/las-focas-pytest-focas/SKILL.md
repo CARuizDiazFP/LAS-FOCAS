@@ -64,6 +64,18 @@ pythonpath = .
 
 ## Ejecutar Tests
 
+### Pruebas focales (integración a `dev`) vs. suite regresiva (despliegue)
+
+| Momento | Qué se corre | Por qué |
+|---|---|---|
+| Durante la tarea y al cerrar hacia `dev` (`ready`/`integrate` de `cierre-sesion`) | **Sólo pruebas focales**: los archivos de test de los módulos que la sesión modificó (`pytest tests/test_<modulo>.py -q`, o `-k` acotado) + `bash scripts/check_skill_mirror_drift.sh` si se tocaron skills | Mantiene mínima la ventana del lease `git:integrate-dev` y no bloquea a las otras sesiones |
+| Despliegue productivo | Suite regresiva completa (`pytest`), `npm run build`, builds de imágenes | Es el único punto donde se valida el conjunto integrado |
+
+Elegir los focales por el diff de la sesión (`git diff --name-only origin/dev...HEAD`): por cada
+módulo tocado, su `tests/test_<módulo>*.py` y los tests que lo importan
+(`grep -rln "<módulo>" tests/`). Reportar qué se corrió y el resultado real; un fallo focal
+bloquea la integración, un fallo ajeno al diff se documenta (ver "Diagnóstico de Fallas").
+
 ### Todos los tests
 
 ```bash

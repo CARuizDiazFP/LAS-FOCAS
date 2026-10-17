@@ -6,7 +6,7 @@
 name: "skill-cierre-sesion"
 description: "Usar al finalizar una sesión de trabajo, sólo con declaración explícita de cierre, para generar una retrospectiva técnica, evaluar evolución agéntica del entorno y mergear automáticamente la rama efímera activa a dev"
 source: ".agentes-comunes/skills/cierre-sesion/SKILL.md"
-triggers: ["cierre-sesion", "cierre", "sesion", "cierre de sesion", "cerrar sesion", "cerremos sesion", "cierre chat", "retrospectiva", "habilidad", "tareas", "errores", "bloqueos", "soluciones", "propuestas", "prevencion", "aceleracion", "evolucion agentica", "auto-merge", "riesgo", "skills", "agentes", "prompts"]
+triggers: ["/cierre-sesion", "cierre-sesion", "Cerrar sesión", "Cerremos sesión", "cerrar sesion", "cerremos sesion"]
 globs: ["docs/cierres/**", "docs/**", ".github/**", ".codex-skills/**", ".gemini/**"]
 ---
 
