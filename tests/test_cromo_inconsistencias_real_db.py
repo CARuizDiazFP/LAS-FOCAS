@@ -237,6 +237,7 @@ async def test_detectar_sobre_inventario_sintetico(entorno):
     pura = islas[_FUSION_PURA]
     assert pura.uso_a and not pura.uso_b and pura.servicios == (_SERVICIO,)
     assert inc.motivo_no_candidato_auto(pura) is None
+    assert pura.contenedor_version_id == _BOTELLA  # version_id de la botella sintética
     assert inc.clasificar_isla_fusion(pura, {})[0] == "MANUAL"
     confs = {
         c: inc.ConfirmacionVivo(c, c, c, 1, (_BOTELLA,), False, AHORA.isoformat())
@@ -450,3 +451,20 @@ async def test_detectar_aplicado_de_punta_a_punta_sin_cliente(entorno):
     segundo = await inc.detectar(sesion, cliente=None, ahora=AHORA + timedelta(hours=1))
     assert segundo.confirmaciones.reutilizados >= 2
     assert (await _estados(conn))[_FUSION_PURA] == "CUARENTENA"
+
+
+@pytest.mark.asyncio
+async def test_no_inicia_deteccion_con_una_ingesta_en_curso(entorno):
+    """Una ingesta EN_CURSO (sin `params.tipo`) impide arrancar: el SQL real de `ingesta_en_curso`."""
+    sesion, conn = entorno
+    ingesta_id = (
+        await conn.execute(
+            text(
+                "INSERT INTO app.cromo_ingesta_corridas (usuario, estado, params) "
+                "VALUES ('test-inconsistencias', 'EN_CURSO', '{\"modo\": \"SOLO_ODF\"}'::jsonb) RETURNING id"
+            )
+        )
+    ).scalar_one()
+    assert await inc.ingesta_en_curso(sesion) is not None
+    corrida, en_curso = await inc.iniciar_si_no_hay_otra(sesion, usuario="test")
+    assert corrida is None and en_curso is not None and en_curso >= ingesta_id

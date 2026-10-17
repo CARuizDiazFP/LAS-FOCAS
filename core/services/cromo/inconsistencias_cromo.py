@@ -167,6 +167,12 @@ class FilaIslaFusion:
     cable_a: Optional[CableLocal]
     cable_b: Optional[CableLocal]
     servicios: tuple[str, ...] = ()
+    # Versión vigente local del contenedor: Cromo publica el extremo del cable (`tp[].id_to`) con el
+    # id de versión de la botella, no con el n_id de linaje que guarda la base local.
+    contenedor_version_id: Optional[int] = None
+
+    def ids_contenedor(self) -> frozenset[int]:
+        return frozenset(i for i in (self.contenedor_n_id, self.contenedor_version_id) if i is not None)
 
     def cables(self) -> list[Optional[CableLocal]]:
         """Los cables distintos de la fusión (uno solo si los dos pelos son del mismo cable)."""
@@ -358,8 +364,17 @@ def motivo_no_candidato_auto(fila: FilaIslaFusion) -> Optional[str]:
 def clasificar_isla_fusion(
     fila: FilaIslaFusion, confirmaciones: Mapping[int, ConfirmacionVivo]
 ) -> tuple[str, str]:
-    """`(revision, motivo)`. AUTO sólo con todos los cables confirmados en vivo con un solo
-    extremo; cualquier falta de confirmación deja el caso MANUAL (falla cerrada)."""
+    """`(revision, motivo)`. AUTO sólo si, para cada cable, Cromo en vivo confirma:
+
+    - que la versión vigente es la misma que tiene la base local (`version_local_desactualizada`
+      si no: la regla local se evaluó sobre datos viejos);
+    - que no está borrado y tiene un solo extremo (`cromo_vivo_con_otro_extremo`,
+      `cable_borrado_en_cromo`);
+    - que ese único extremo ES el contenedor de la fusión, por n_id o id de versión
+      (`extremo_vivo_distinto`: podría ser hoy un ODF/ODF Nodo).
+
+    Vale igual para una confirmación reutilizada. Cualquier falta deja el caso MANUAL (falla
+    cerrada)."""
     motivo = motivo_no_candidato_auto(fila)
     if motivo is not None:
         return REVISION_MANUAL, motivo
@@ -368,10 +383,17 @@ def clasificar_isla_fusion(
         confirmacion = confirmaciones.get(cable.n_id)
         if confirmacion is None:
             return REVISION_MANUAL, "sin_confirmacion_en_vivo"
+        if confirmacion.borrado:
+            return REVISION_MANUAL, "cable_borrado_en_cromo"
+        if (
+            confirmacion.version_vigente is None
+            or confirmacion.version_vigente != cable.version_id
+        ):
+            return REVISION_MANUAL, "version_local_desactualizada"
         if not confirmacion.un_solo_extremo:
-            return REVISION_MANUAL, (
-                "cable_borrado_en_cromo" if confirmacion.borrado else "cromo_vivo_con_otro_extremo"
-            )
+            return REVISION_MANUAL, "cromo_vivo_con_otro_extremo"
+        if confirmacion.ids_extremos[0] not in fila.ids_contenedor():
+            return REVISION_MANUAL, "extremo_vivo_distinto"
     return REVISION_AUTO, "isla_pura_confirmada"
 
 
@@ -446,7 +468,10 @@ async def confirmar_cable_en_vivo(
     cliente: CromoClient, cable: CableLocal, *, ahora: datetime
 ) -> ConfirmacionVivo:
     """Una llamada (dos si la versión local quedó vieja) a `GET /db/objects/{id}`. Levanta
-    `CromoClientError` si Cromo falla: el llamador decide (falla cerrada)."""
+    `CromoClientError` si Cromo falla: el llamador decide (falla cerrada).
+
+    Si la versión local quedó vieja, sigue a la vigente sólo para dejar evidencia de lo que hay hoy:
+    `clasificar_isla_fusion` no acepta una confirmación cuya `version_vigente` difiera de la local."""
     pedido = cable.version_id or cable.n_id
     objeto = (await cliente.get_objeto(pedido)).get("response") or {}
     llamadas = 1
@@ -470,7 +495,14 @@ async def confirmar_cable_en_vivo(
 def _previa_vigente(
     previa: Optional[ConfirmacionVivo], cable: CableLocal, ahora: datetime
 ) -> bool:
-    if previa is None or previa.version_local != cable.version_id:
+    """Una confirmación guardada se reutiliza sólo si se pidió sobre la misma versión local, si Cromo
+    dijo entonces que esa versión era la vigente y si tiene menos de `TTL_CONFIRMACION`. Si no, se
+    vuelve a preguntar. Igual pasa después por las mismas reglas de `clasificar_isla_fusion`."""
+    if (
+        previa is None
+        or previa.version_local != cable.version_id
+        or previa.version_vigente != cable.version_id
+    ):
         return False
     try:
         cuando = datetime.fromisoformat(previa.confirmado_at)
@@ -606,6 +638,7 @@ _SQL_ISLAS_FUSION = text(
     )
     SELECT i.n_id, i.nombre_par, i.botella_n_id, i.pelo_a, i.pelo_b, i.uso_a, i.uso_b, i.servicios,
            b.clase AS b_clase, b.nombre AS b_nombre, b.localidad AS b_localidad,
+           b.version_id AS b_version,
            o.clase AS o_clase, o.nombre AS o_nombre, o.localidad AS o_localidad,
            c1.n_id AS c1_n_id, c1.nombre AS c1_nombre, c1.clase AS c1_clase,
            c1.version_id AS c1_version, c1.extremo_a_n_id AS c1_ea, c1.extremo_a_clase AS c1_eac,
@@ -730,6 +763,7 @@ async def _leer_islas_fusion(sesion: AsyncSession) -> list[FilaIslaFusion]:
                 contenedor_clase=fila.o_clase if es_odf else fila.b_clase,
                 contenedor_nombre=fila.o_nombre if es_odf else fila.b_nombre,
                 contenedor_es_odf=es_odf,
+                contenedor_version_id=None if es_odf else fila.b_version,
                 localidad=fila.o_localidad if es_odf else fila.b_localidad,
                 pelo_a_n_id=int(fila.pelo_a),
                 pelo_b_n_id=int(fila.pelo_b),
@@ -820,6 +854,7 @@ def caso_isla_fusion(
             "clase": fila.contenedor_clase,
             "nombre": fila.contenedor_nombre,
             "es_odf": fila.contenedor_es_odf,
+            "version_id": fila.contenedor_version_id,
         },
         "nombre_par": fila.nombre_par,
         "pelos": [
@@ -857,27 +892,27 @@ class LecturaDeteccion:
 async def leer_deteccion(sesion: AsyncSession) -> LecturaDeteccion:
     """Corre el SQL de los tres tipos (sólo lectura + dos tablas temporales que se borran)."""
     inicio = time.monotonic()
+    # Sin `finally`: si algo falla la transacción queda abortada y un DROP ahí taparía el error
+    # original. El rollback del llamador ya descarta las temporales (su CREATE es transaccional).
     for sql in _SQL_TEMPORALES:
         await sesion.execute(text(sql))
-    try:
-        islas = await _leer_islas_fusion(sesion)
-        filas_cables = (
-            await sesion.execute(
-                _SQL_CABLES_SIN_EXTREMO,
-                {"clases": list(CLASES_CABLE_DETECCION), "clases_odf": sorted(CLASES_ODF)},
-            )
-        ).all()
-        filas_elementos = (await sesion.execute(_SQL_ELEMENTOS_ISLA)).all()
-        ids_cables = sorted({int(c) for f in filas_elementos for c in (f.cables or ())})
-        nombres: dict[int, Optional[str]] = {}
-        if ids_cables:
-            nombres = {
-                int(n): nom
-                for n, nom in (await sesion.execute(_SQL_NOMBRES_CABLES, {"ids": ids_cables})).all()
-            }
-    finally:
-        for sql in _SQL_BORRAR_TEMPORALES:
-            await sesion.execute(text(sql))
+    islas = await _leer_islas_fusion(sesion)
+    filas_cables = (
+        await sesion.execute(
+            _SQL_CABLES_SIN_EXTREMO,
+            {"clases": list(CLASES_CABLE_DETECCION), "clases_odf": sorted(CLASES_ODF)},
+        )
+    ).all()
+    filas_elementos = (await sesion.execute(_SQL_ELEMENTOS_ISLA)).all()
+    ids_cables = sorted({int(c) for f in filas_elementos for c in (f.cables or ())})
+    nombres: dict[int, Optional[str]] = {}
+    if ids_cables:
+        nombres = {
+            int(n): nom
+            for n, nom in (await sesion.execute(_SQL_NOMBRES_CABLES, {"ids": ids_cables})).all()
+        }
+    for sql in _SQL_BORRAR_TEMPORALES:
+        await sesion.execute(text(sql))
     return LecturaDeteccion(
         islas=islas,
         cables_sin_extremo=_casos_cables_sin_extremo(filas_cables),
@@ -1305,6 +1340,27 @@ async def deteccion_en_curso(sesion: AsyncSession) -> Optional[int]:
     return int(fila[0]) if fila else None
 
 
+# Corridas que reescriben el inventario en masa: las ingestas (sin `params.tipo`) y el barrido
+# manual de `/inner`. Las sintéticas chicas (repoblar una botella, normalizar...) no bloquean.
+_TIPOS_INGESTA_MASIVA: tuple[str, ...] = ("MANUAL_BARRIDO_PELOS_INNER",)
+
+
+async def ingesta_en_curso(sesion: AsyncSession) -> Optional[int]:
+    """Id de una ingesta EN_CURSO, si hay. Detectar sobre un inventario a medio actualizar cerraría
+    en masa casos que siguen vivos (CORREGIDA) y los reabriría en la corrida siguiente."""
+    fila = (
+        await sesion.execute(
+            text(
+                "SELECT id FROM app.cromo_ingesta_corridas WHERE estado = 'EN_CURSO' "
+                "AND (params ->> 'tipo' IS NULL OR params ->> 'tipo' = ANY(:tipos)) "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            {"tipos": list(_TIPOS_INGESTA_MASIVA)},
+        )
+    ).first()
+    return int(fila[0]) if fila else None
+
+
 async def iniciar_si_no_hay_otra(
     sesion: AsyncSession,
     *,
@@ -1312,11 +1368,26 @@ async def iniciar_si_no_hay_otra(
     origen: str = "MANUAL",
     corrida_origen_id: Optional[int] = None,
 ) -> tuple[Optional[CromoIngestaCorrida], Optional[int]]:
-    """`(corrida nueva, None)` o `(None, id de la que ya está EN_CURSO)`, bajo advisory lock."""
+    """`(corrida nueva, None)` o `(None, id de la corrida que lo impide)`, bajo advisory lock.
+
+    Lo impide otra detección EN_CURSO o una ingesta EN_CURSO (`ingesta_en_curso`). El hook
+    post-ingesta corre después del commit que cerró su propia ingesta, así que ésa ya no cuenta; si
+    hay OTRA ingesta corriendo se omite, y esa otra dispara su propia detección al terminar.
+    """
     await sesion.execute(text("SELECT pg_advisory_xact_lock(:clave)"), {"clave": _LOCK_CORRIDA})
     en_curso = await deteccion_en_curso(sesion)
+    motivo = "deteccion_en_curso"
+    if en_curso is None:
+        en_curso = await ingesta_en_curso(sesion)
+        motivo = "ingesta_en_curso"
     if en_curso is not None:
         await sesion.rollback()
+        logger.info(
+            "action=cromo_inconsistencias evento=inicio_rechazado motivo=%s corrida=%s origen=%s",
+            motivo,
+            en_curso,
+            origen,
+        )
         return None, en_curso
     params: dict[str, Any] = {"tipo": TIPO_CORRIDA_INCONSISTENCIAS, "origen": origen}
     if corrida_origen_id is not None:
@@ -1331,12 +1402,60 @@ class _Cancelada(Exception):
     pass
 
 
+def _sesion_nueva() -> AsyncSession:
+    """Sesión independiente para cerrar una corrida cuando la de trabajo quedó inservible."""
+    from db.session import AsyncSessionLocal
+
+    return AsyncSessionLocal()
+
+
+async def cerrar_corrida_fallida(corrida_id: int, motivo: str) -> None:
+    """Cierra como FALLIDA una corrida de detección que sigue EN_CURSO, con una sesión nueva (la de
+    trabajo pudo perder la conexión). Si quedara EN_CURSO bloquearía toda detección futura hasta
+    reiniciar el worker. Best-effort: nunca levanta."""
+    try:
+        async with _sesion_nueva() as sesion:
+            corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+            if corrida is None or corrida.estado != "EN_CURSO":
+                return
+            corrida.estado = "FALLIDA"
+            corrida.finalizada_at = datetime.now(timezone.utc)
+            await ingesta.registrar_evento(sesion, corrida_id, None, None, "ERROR", motivo[:500])
+            await sesion.commit()
+    except Exception:  # noqa: BLE001
+        logger.error(
+            "action=cromo_inconsistencias evento=cierre_fallida_imposible corrida_id=%s",
+            corrida_id,
+            exc_info=True,
+        )
+
+
 async def ejecutar_corrida(
     cliente: Optional[CromoClient], sesion: AsyncSession, corrida_id: int
 ) -> str:
     """Corre la detección como corrida sintética. Nunca levanta: la cierra OK, CANCELADA o
     FALLIDA. Un evento `PAGINA` por fase (LECTURA, CONFIRMACION, APLICACION) con `leidas`/`total`
-    para el SSE de corridas; la cancelación se chequea entre fases."""
+    para el SSE de corridas; la cancelación se chequea entre fases. Si hasta el cierre falla (p.ej.
+    se cortó la conexión), la cierra FALLIDA con una sesión nueva."""
+    try:
+        return await _ejecutar_corrida(cliente, sesion, corrida_id)
+    except Exception as exc:  # noqa: BLE001 - incluido el propio camino de error
+        logger.error(
+            "action=cromo_inconsistencias evento=corrida_sin_cierre corrida_id=%s error=%s",
+            corrida_id,
+            exc,
+        )
+        try:
+            await sesion.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        await cerrar_corrida_fallida(corrida_id, f"Detección interrumpida: {exc}")
+        return "FALLIDA"
+
+
+async def _ejecutar_corrida(
+    cliente: Optional[CromoClient], sesion: AsyncSession, corrida_id: int
+) -> str:
     corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
     if corrida is None:
         raise ValueError(f"No existe la corrida {corrida_id}")
@@ -1427,6 +1546,7 @@ async def detectar_post_ingesta(
     o `None` si no corrió (modo no aplica, otra detección en curso o error)."""
     if modo not in MODOS_POST_INGESTA:
         return None
+    corrida_id: Optional[int] = None
     try:
         corrida, en_curso = await iniciar_si_no_hay_otra(
             sesion,
@@ -1436,14 +1556,15 @@ async def detectar_post_ingesta(
         )
         if corrida is None:
             logger.info(
-                "action=cromo_inconsistencias evento=post_ingesta_omitida motivo=en_curso "
+                "action=cromo_inconsistencias evento=post_ingesta_omitida motivo=otra_corrida "
                 "corrida_origen=%s en_curso=%s",
                 corrida_origen_id,
                 en_curso,
             )
             return None
-        return await ejecutar_corrida(cliente, sesion, corrida.id)
-    except Exception:  # noqa: BLE001 - nunca hace fallar la ingesta
+        corrida_id = corrida.id
+        return await ejecutar_corrida(cliente, sesion, corrida_id)
+    except Exception as exc:  # noqa: BLE001 - nunca hace fallar la ingesta
         logger.warning(
             "action=cromo_inconsistencias evento=post_ingesta_fallida corrida_origen=%s",
             corrida_origen_id,
@@ -1453,10 +1574,14 @@ async def detectar_post_ingesta(
             await sesion.rollback()
         except Exception:  # noqa: BLE001
             pass
+        if corrida_id is not None:
+            await cerrar_corrida_fallida(corrida_id, f"Detección post-ingesta interrumpida: {exc}")
         return None
 
 
 __all__ = [
+    "cerrar_corrida_fallida",
+    "ingesta_en_curso",
     "Caso",
     "CableLocal",
     "ConfirmacionVivo",

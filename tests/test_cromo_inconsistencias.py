@@ -58,13 +58,16 @@ def _isla(**kw) -> inc.FilaIslaFusion:
 
 
 def _conf(n_id: int, extremos: int = 1, *, borrado: bool = False, version: Optional[int] = None,
-          cuando: datetime = AHORA) -> inc.ConfirmacionVivo:
+          cuando: datetime = AHORA, vigente: Optional[int] = None,
+          ids: Optional[tuple[int, ...]] = None) -> inc.ConfirmacionVivo:
+    """Por defecto: Cromo confirma la versión local (n_id + 1) y su(s) extremo(s) arrancan por la
+    botella contenedora."""
     return inc.ConfirmacionVivo(
         cable_n_id=n_id,
         version_local=version if version is not None else n_id + 1,
-        version_vigente=n_id + 1,
+        version_vigente=vigente if vigente is not None else n_id + 1,
         extremos=extremos,
-        ids_extremos=tuple(range(extremos)),
+        ids_extremos=ids if ids is not None else (BOTELLA, 555, 556)[:extremos],
         borrado=borrado,
         confirmado_at=cuando.isoformat(),
     )
@@ -109,6 +112,15 @@ def test_todo_lo_que_no_es_isla_pura_queda_manual(cambios, motivo):
     assert inc.clasificar_isla_fusion(fila, confs) == ("MANUAL", motivo)
 
 
+def test_el_extremo_vivo_puede_venir_con_el_id_de_version_del_contenedor():
+    """Cromo publica `tp[].id_to` = 10238011 (versión) para la botella de linaje 10234797."""
+    fila = _isla(contenedor_version_id=10238011)
+    confs = {c.n_id: _conf(c.n_id, ids=(10238011,)) for c in fila.cables()}
+    assert inc.clasificar_isla_fusion(fila, confs) == ("AUTO", "isla_pura_confirmada")
+    sin_version = _isla()
+    assert inc.clasificar_isla_fusion(sin_version, confs) == ("MANUAL", "extremo_vivo_distinto")
+
+
 def test_dos_pelos_del_mismo_cable_cuentan_un_solo_cable():
     cable = _cable(10236997)
     fila = _isla(cable_a=cable, cable_b=cable)
@@ -124,6 +136,10 @@ def test_dos_pelos_del_mismo_cable_cuentan_un_solo_cable():
         ({10237317: _conf(10237317), 10236997: _conf(10236997, 2)}, "cromo_vivo_con_otro_extremo"),
         ({10237317: _conf(10237317), 10236997: _conf(10236997, 0)}, "cromo_vivo_con_otro_extremo"),
         ({10237317: _conf(10237317), 10236997: _conf(10236997, 1, borrado=True)}, "cable_borrado_en_cromo"),
+        # La versión vigente en Cromo no es la local: la regla local se evaluó sobre datos viejos.
+        ({10237317: _conf(10237317), 10236997: _conf(10236997, vigente=1)}, "version_local_desactualizada"),
+        # Un solo extremo vivo, pero ya no es la botella: hoy es un ODF.
+        ({10237317: _conf(10237317), 10236997: _conf(10236997, ids=(6645267,))}, "extremo_vivo_distinto"),
     ],
 )
 def test_falla_cerrada_sin_confirmacion_en_vivo_completa(confs, motivo):
@@ -198,12 +214,39 @@ async def test_confirmar_cable_una_llamada_si_la_version_local_es_la_vigente():
 
 
 @pytest.mark.asyncio
-async def test_confirmar_cable_sigue_a_la_vigente_si_la_local_quedo_vieja():
+async def test_version_local_vieja_sigue_a_la_vigente_pero_queda_manual():
+    """Con la versión local vieja se pide la vigente sólo como evidencia: aunque hoy tenga un solo
+    extremo y sea la botella, la regla local se evaluó sobre datos viejos → MANUAL."""
     vieja = {"id": 10237317, "to": 1783413343, "hist": _VIGENTE["hist"]}
     cliente = _ClienteFake({10237317: vieja, 10238010: _VIGENTE})
-    conf = await inc.confirmar_cable_en_vivo(cliente, _cable(10237317, version_id=10237317), ahora=AHORA)
+    cable = _cable(10237317, a=None, b=BOTELLA, version_id=10237317)
+    conf = await inc.confirmar_cable_en_vivo(cliente, cable, ahora=AHORA)
     assert cliente.pedidos == [10237317, 10238010]
     assert conf.llamadas == 2 and conf.version_vigente == 10238010 and conf.extremos == 1
+    fila = _isla(contenedor_version_id=10238011, cable_a=cable, cable_b=cable)
+    assert inc.clasificar_isla_fusion(fila, {cable.n_id: conf}) == (
+        "MANUAL", "version_local_desactualizada"
+    )
+
+
+@pytest.mark.asyncio
+async def test_un_solo_extremo_vivo_que_es_un_odf_queda_manual():
+    """La versión local es la vigente, pero su único extremo en Cromo es un ODF (no la botella)."""
+    vigente_odf = {**_VIGENTE, "tp": [{"nfrom": 1, "id_to": 6645267, "class": 69}]}
+    cliente = _ClienteFake({10238010: vigente_odf})
+    cable = _cable(10237317, a=None, b=BOTELLA, version_id=10238010)
+    conf = await inc.confirmar_cable_en_vivo(cliente, cable, ahora=AHORA)
+    fila = _isla(contenedor_version_id=10238011, cable_a=cable, cable_b=cable)
+    assert inc.clasificar_isla_fusion(fila, {cable.n_id: conf}) == ("MANUAL", "extremo_vivo_distinto")
+
+
+@pytest.mark.asyncio
+async def test_no_reutiliza_una_previa_que_no_era_la_version_vigente():
+    fila = _isla()
+    previas = {c.n_id: _conf(c.n_id, vigente=1) for c in fila.cables()}
+    cliente = _ClienteFake({})
+    _confs, resumen = await inc.confirmar_candidatos(cliente, [fila], previas=previas, tope=300, ahora=AHORA)
+    assert resumen.reutilizados == 0 and len(cliente.pedidos) == 2
 
 
 # ── Confirmación de candidatos: tope, reutilización y falla cerrada ─────────
@@ -502,3 +545,155 @@ async def test_post_ingesta_nunca_levanta(monkeypatch):
     monkeypatch.setattr(inc, "iniciar_si_no_hay_otra", _iniciar)
     assert await inc.detectar_post_ingesta(None, sesion, 1, "SOLO_PELOS_INNER") is None
     assert sesion.rollbacks == 1
+
+
+# ── Ronda de fixes 1: robustez de la corrida y del arranque ─────────────────
+
+
+class _SesionRota(_Sesion):
+    """Conexión cortada: después del primer rollback, todo commit falla."""
+
+    async def commit(self) -> None:
+        if self.rollbacks:
+            raise ConnectionError("conexión perdida")
+        self.commits += 1
+
+
+def _sesion_nueva_fake(corridas: dict[int, _Corrida], eventos: list):
+    class _CM:
+        async def __aenter__(self):
+            sesion = _Sesion(corridas[next(iter(corridas))], eventos=eventos)
+            return sesion
+
+        async def __aexit__(self, *a):
+            return False
+
+    return lambda: _CM()
+
+
+@pytest.mark.asyncio
+async def test_corrida_con_conexion_rota_se_cierra_fallida_con_sesion_nueva(monkeypatch):
+    """Si hasta el camino de error falla, la corrida no puede quedar EN_CURSO: bloquearía toda
+    detección futura. Se cierra con una sesión nueva y `ejecutar_corrida` no levanta."""
+    trabajo = _SesionRota(_Corrida(id=9))
+    persistida = _Corrida(id=9)  # lo que ve una sesión nueva: sigue EN_CURSO
+    eventos_nuevos: list = []
+
+    async def _detectar(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(inc, "detectar", _detectar)
+    monkeypatch.setattr(inc, "_sesion_nueva", _sesion_nueva_fake({9: persistida}, eventos_nuevos))
+
+    assert await inc.ejecutar_corrida(None, trabajo, 9) == "FALLIDA"
+    assert persistida.estado == "FALLIDA" and persistida.finalizada_at is not None
+    assert [e.accion for e in eventos_nuevos] == ["ERROR"]
+
+
+@pytest.mark.asyncio
+async def test_cerrar_corrida_fallida_no_toca_una_ya_cerrada_y_nunca_levanta(monkeypatch):
+    cerrada = _Corrida(id=9, estado="OK")
+    monkeypatch.setattr(inc, "_sesion_nueva", _sesion_nueva_fake({9: cerrada}, []))
+    await inc.cerrar_corrida_fallida(9, "x")
+    assert cerrada.estado == "OK"
+
+    def _rota():
+        raise ConnectionError("sin DB")
+
+    monkeypatch.setattr(inc, "_sesion_nueva", _rota)
+    await inc.cerrar_corrida_fallida(9, "x")  # no levanta
+
+
+@pytest.mark.asyncio
+async def test_post_ingesta_cierra_su_corrida_si_la_ejecucion_levanta(monkeypatch):
+    cerradas: list = []
+
+    async def _iniciar(*a, **k):
+        return _Corrida(id=44), None
+
+    async def _ejecutar(*a, **k):
+        raise RuntimeError("inesperado")
+
+    async def _cerrar(corrida_id, motivo):
+        cerradas.append(corrida_id)
+
+    monkeypatch.setattr(inc, "iniciar_si_no_hay_otra", _iniciar)
+    monkeypatch.setattr(inc, "ejecutar_corrida", _ejecutar)
+    monkeypatch.setattr(inc, "cerrar_corrida_fallida", _cerrar)
+
+    assert await inc.detectar_post_ingesta(None, _Sesion(_Corrida(id=1)), 1, "COMPLETA") is None
+    assert cerradas == [44]
+
+
+class _ResultadoFila:
+    def __init__(self, fila):
+        self._fila = fila
+
+    def first(self):
+        return self._fila
+
+
+class _SesionSql:
+    """Responde según el SQL: registra todo lo ejecutado."""
+
+    def __init__(self, respuestas: dict[str, Any], falla_en: Optional[str] = None) -> None:
+        self.respuestas = respuestas
+        self.falla_en = falla_en
+        self.ejecutado: list[str] = []
+        self.rollbacks = 0
+        self.agregados: list = []
+
+    async def execute(self, stmt, params=None):
+        sql = str(stmt)
+        self.ejecutado.append(sql)
+        if self.falla_en and self.falla_en in sql:
+            raise RuntimeError("error original del SQL")
+        for clave, valor in self.respuestas.items():
+            if clave in sql:
+                return _ResultadoFila(valor)
+        return _ResultadoFila(None)
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+    def add(self, obj) -> None:
+        self.agregados.append(obj)
+
+
+@pytest.mark.asyncio
+async def test_leer_deteccion_propaga_el_error_original_sin_drop_posterior():
+    sesion = _SesionSql({}, falla_en="WITH islas AS")
+    with pytest.raises(RuntimeError, match="error original"):
+        await inc.leer_deteccion(sesion)
+    ultimo = sesion.ejecutado[-1]
+    assert "WITH islas AS" in ultimo  # nada después del fallo (un DROP taparía el error)
+
+
+@pytest.mark.asyncio
+async def test_no_inicia_una_deteccion_con_una_ingesta_en_curso(monkeypatch):
+    sesion = _SesionSql({"params ->> 'tipo' IS NULL": (2221,)})
+
+    async def _no_deberia(*a, **k):
+        raise AssertionError("no debería crear la corrida")
+
+    monkeypatch.setattr(inc.ingesta, "iniciar_corrida", _no_deberia)
+    corrida, en_curso = await inc.iniciar_si_no_hay_otra(sesion, usuario="ana")
+    assert (corrida, en_curso) == (None, 2221) and sesion.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_inicia_si_no_hay_deteccion_ni_ingesta_en_curso(monkeypatch):
+    sesion = _SesionSql({})
+    creada = _Corrida(id=50)
+    recibido: dict = {}
+
+    async def _iniciar(sesion_arg, **k):
+        recibido.update(k["params_extra"])
+        return creada
+
+    monkeypatch.setattr(inc.ingesta, "iniciar_corrida", _iniciar)
+    corrida, en_curso = await inc.iniciar_si_no_hay_otra(
+        sesion, usuario="x", origen="POST_INGESTA", corrida_origen_id=7
+    )
+    assert corrida is creada and en_curso is None
+    assert recibido == {"tipo": inc.TIPO_CORRIDA_INCONSISTENCIAS, "origen": "POST_INGESTA", "corrida_origen_id": 7}
