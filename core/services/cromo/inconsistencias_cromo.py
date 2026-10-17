@@ -392,7 +392,10 @@ def clasificar_isla_fusion(
             return REVISION_MANUAL, "version_local_desactualizada"
         if not confirmacion.un_solo_extremo:
             return REVISION_MANUAL, "cromo_vivo_con_otro_extremo"
-        if confirmacion.ids_extremos[0] not in fila.ids_contenedor():
+        # `ids_extremos` puede venir vacío aunque `extremos == 1` (evidencia guardada corrupta o
+        # reutilizada de una corrida vieja): sin el id no hay cómo confirmar el contenedor, falla
+        # cerrada a MANUAL en vez de tirar IndexError y voltear toda la detección.
+        if not confirmacion.ids_extremos or confirmacion.ids_extremos[0] not in fila.ids_contenedor():
             return REVISION_MANUAL, "extremo_vivo_distinto"
     return REVISION_AUTO, "isla_pura_confirmada"
 

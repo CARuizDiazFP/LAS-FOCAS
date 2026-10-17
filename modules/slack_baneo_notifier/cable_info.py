@@ -529,8 +529,8 @@ def _describir_pelo(pelo: PeloDetalle, vencidos: Optional[set[int]] = None) -> s
     etiqueta = pelo.numero_pelo or f"n_id {pelo.n_id}"
     color = pelo.color or "—"
     # Antes que "Libre": un pelo en cuarentena no tiene servicio visible (su uso se lee de la vista
-    # que lo excluye) pero no está libre. `getattr`: los tests arman pelos con `SimpleNamespace`.
-    if getattr(pelo, "en_cuarentena", False):
+    # que lo excluye) pero no está libre.
+    if pelo.en_cuarentena:
         sufijo = f" — {pelo.servicio_raw}" if pelo.servicio_raw else ""
         return f"• Pelo {etiqueta} ({color}): {MARCA_CUARENTENA}{sufijo}"
     if pelo.servicios:

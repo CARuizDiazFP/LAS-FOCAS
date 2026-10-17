@@ -145,6 +145,9 @@ class PeloEnBuffer:
     cliente: Optional[str]
     estado_servicio: Optional[str]
     descripcion: Optional[str]  # texto crudo de Cromo del pelo
+    # Pelo de un caso de inconsistencia de Cromo en CUARENTENA (Tarea 3, 2026-10-17): su uso no
+    # cuenta, así que llega sin servicio, pero sale `ocupado` — nunca se ofrece como libre.
+    en_cuarentena: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,8 +164,13 @@ _ESTADOS_CROMO_EN_USO = frozenset({"UTILIZADO", "DANADO", "DAÑADO"})
 
 def _en_uso_sin_servicio(pelo) -> bool:
     """El formato de la API v1 no cambia (`ocupado`/`libre`): estos pelos salen `ocupado` con
-    `servicio_id=None`, así nadie toma como libre un pelo PON o dañado (caso real F-PE-AL-99)."""
-    return pelo.vinculo_sin_servicio or (pelo.estado_cromo or "").strip().upper() in _ESTADOS_CROMO_EN_USO
+    `servicio_id=None`, así nadie toma como libre un pelo PON o dañado (caso real F-PE-AL-99), ni
+    uno en cuarentena por inconsistencia de Cromo (la vista de uso le oculta el servicio)."""
+    return (
+        pelo.en_cuarentena
+        or pelo.vinculo_sin_servicio
+        or (pelo.estado_cromo or "").strip().upper() in _ESTADOS_CROMO_EN_USO
+    )
 
 
 async def pelos_por_buffer(
@@ -192,6 +200,7 @@ async def pelos_por_buffer(
                     cliente=(s.nombre_cliente or s.cliente) if s else None,
                     estado_servicio=s.estado_servicio if s else None,
                     descripcion=pelo.servicio_raw,
+                    en_cuarentena=pelo.en_cuarentena,
                 )
             )
         buffers.append(BufferDeCable(numero=numero, color=tubo.nombre_color, pelos=pelos))

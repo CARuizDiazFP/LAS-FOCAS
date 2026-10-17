@@ -421,6 +421,12 @@ _SQL_TIENE_CABLES_BATCH = text(
 # trackings legacy cargados) — antes de esto, esos servicios devolvían `[]` y no se podían banear.
 # Filtra `b.camara_id IS NOT NULL` porque una `CromoBotella` puede no tener todavía resuelto su
 # vínculo a la jerarquía Cámara/Botella (`core/services/cromo/camara_padre_service.py`).
+#
+# Cuarentena (Tarea 3, 2026-10-17): esta consulta y `_SQL_SERVICIO_IDS_POR_CAMARAS` leen la vista
+# `v_cromo_servicio_match_vigente`, así que la protección de baneos IGNORA los pelos de casos de
+# inconsistencia de Cromo en CUARENTENA: un servicio que sólo llega a una cámara por un pelo en
+# cuarentena no aporta esa cámara ni la protege. Es deliberado (el uso de ese pelo no cuenta en
+# ningún lado mientras dure la cuarentena); se revierte solo cuando el caso sale de CUARENTENA.
 _SQL_CAMARA_IDS_POR_SERVICIO = text(
     """
     SELECT DISTINCT b.camara_id

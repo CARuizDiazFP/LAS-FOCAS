@@ -81,6 +81,9 @@ class PeloModel(BaseModel):
     cliente: Optional[str]
     estado_servicio: Optional[str]
     descripcion: Optional[str]
+    # Campo agregado (2026-10-17, aditivo): el pelo es de un caso de inconsistencia de Cromo en
+    # cuarentena — sale `ocupado` sin servicio, no está libre.
+    en_cuarentena: bool = False
 
 
 class BufferModel(BaseModel):

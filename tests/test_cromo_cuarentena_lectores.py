@@ -39,6 +39,10 @@ ESCRITORES_PERMITIDOS: dict[str, str] = {
 }
 
 _LECTURA_DIRECTA = re.compile(r"\b(FROM|JOIN)\s+app\.cromo_servicio_match\b", re.IGNORECASE)
+# Lecturas por ORM del modelo de la tabla: `select(CromoServicioMatch)`, `select(CromoServicioMatch.x)`,
+# `session.query(CromoServicioMatch)`, `session.get(CromoServicioMatch, ...)`, `.join(CromoServicioMatch`.
+# Construir filas (`CromoServicioMatch(...)`) es escritura y no matchea.
+_LECTURA_ORM = re.compile(r"\b(select|query|get|join|outerjoin)\(\s*[^)]*?\bCromoServicioMatch\b")
 
 
 def _archivos_python() -> list[Path]:
@@ -60,13 +64,28 @@ def test_ningun_consumidor_lee_la_tabla_de_matches_directo() -> None:
         texto = ruta.read_text(encoding="utf-8", errors="replace")
         # Sobre el texto entero, no por línea: `\s+` también cubre un `FROM` y la tabla en líneas
         # distintas.
-        for hallazgo in _LECTURA_DIRECTA.finditer(texto):
-            numero = texto.count("\n", 0, hallazgo.start()) + 1
-            infractores.append(f"{relativa}:{numero}: {' '.join(hallazgo.group(0).split())}")
+        for patron in (_LECTURA_DIRECTA, _LECTURA_ORM):
+            for hallazgo in patron.finditer(texto):
+                numero = texto.count("\n", 0, hallazgo.start()) + 1
+                infractores.append(f"{relativa}:{numero}: {' '.join(hallazgo.group(0).split())}")
     assert not infractores, (
         "Estos lectores ignoran la cuarentena de inconsistencias; usar "
         "app.v_cromo_servicio_match_vigente:\n" + "\n".join(infractores)
     )
+
+
+def test_el_patron_orm_detecta_lecturas_y_no_escrituras() -> None:
+    for lectura in (
+        "select(CromoServicioMatch)",
+        "select(CromoServicioMatch.servicio_id).where(x)",
+        "session.query(CromoServicioMatch).filter(y)",
+        "session.query(CromoPelo, CromoServicioMatch)",
+        "session.get(CromoServicioMatch, 1)",
+        "stmt.join(CromoServicioMatch, CromoServicioMatch.pelo_n_id == CromoPelo.n_id)",
+    ):
+        assert _LECTURA_ORM.search(lectura), lectura
+    for escritura in ("sesion.add(CromoServicioMatch(pelo_n_id=1))", "class CromoServicioMatch(Base):"):
+        assert not _LECTURA_ORM.search(escritura), escritura
 
 
 def test_la_lista_de_escritores_no_tiene_entradas_viejas() -> None:
@@ -74,7 +93,8 @@ def test_la_lista_de_escritores_no_tiene_entradas_viejas() -> None:
     for relativa in ESCRITORES_PERMITIDOS:
         ruta = RAIZ / relativa
         assert ruta.exists(), f"{relativa} ya no existe"
-        assert _LECTURA_DIRECTA.search(ruta.read_text(encoding="utf-8")), (
+        texto = ruta.read_text(encoding="utf-8")
+        assert _LECTURA_DIRECTA.search(texto) or _LECTURA_ORM.search(texto), (
             f"{relativa} ya no lee app.cromo_servicio_match: sacarlo de ESCRITORES_PERMITIDOS"
         )
 

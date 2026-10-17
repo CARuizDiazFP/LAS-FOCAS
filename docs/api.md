@@ -204,8 +204,9 @@ de buffer que ocupa, 1-indexados). Se ordena por primer buffer y después por ID
 
 **`/pelos`**: `buffer` opcional (≥ 1; el 1 es el primer buffer, como se cuenta en campo). Si ese
 buffer no existe → 404. Cada buffer trae `numero`, `color`, `total_pelos`, `pelos_ocupados` y
-`pelos: [{numero, color, estado: "ocupado"|"libre", servicio_id, cliente, estado_servicio, descripcion}]`.
-`descripcion` es el texto crudo del pelo en Cromo. Sólo se listan buffers y pelos vigentes.
+`pelos: [{numero, color, estado: "ocupado"|"libre", servicio_id, cliente, estado_servicio, descripcion, en_cuarentena}]`.
+`descripcion` es el texto crudo del pelo en Cromo. `en_cuarentena` (agregado 2026-10-17) marca un
+pelo de un caso de inconsistencia de Cromo en cuarentena: sale `ocupado` con `servicio_id: null`. Sólo se listan buffers y pelos vigentes.
 
 **De dónde sale el servicio de cada pelo** (2026-09-30): la descripción del pelo (`at.61`), si no el
 ID de servicio del conector de ODF conectado a ese pelo, y si no el ID de servicio que Cromo asigna al

@@ -121,6 +121,18 @@ def test_el_extremo_vivo_puede_venir_con_el_id_de_version_del_contenedor():
     assert inc.clasificar_isla_fusion(sin_version, confs) == ("MANUAL", "extremo_vivo_distinto")
 
 
+def test_confirmacion_con_un_extremo_sin_ids_falla_cerrada_a_manual():
+    """Evidencia corrupta (`extremos=1`, `ids_extremos` vacío, p. ej. reutilizada de un JSONB
+    viejo): MANUAL con `extremo_vivo_distinto`, nunca IndexError."""
+    fila = _isla()
+    confs = {c.n_id: _conf(c.n_id, ids=()) for c in fila.cables()}
+    assert inc.clasificar_isla_fusion(fila, confs) == ("MANUAL", "extremo_vivo_distinto")
+    reutilizada = inc.ConfirmacionVivo.desde_dict({**_conf(10237317).a_dict(), "ids_extremos": None})
+    assert reutilizada is not None and reutilizada.ids_extremos == ()
+    confs[10237317] = reutilizada
+    assert inc.clasificar_isla_fusion(fila, confs) == ("MANUAL", "extremo_vivo_distinto")
+
+
 def test_dos_pelos_del_mismo_cable_cuentan_un_solo_cable():
     cable = _cable(10236997)
     fila = _isla(cable_a=cable, cable_b=cable)
