@@ -539,6 +539,75 @@ async def test_conector_con_tp_sin_clase_se_resuelve_contra_los_pelos_ingeridos(
     assert discrepa.valor_path == {"pelo": 604, "odf": 20}
 
 
+# ── Conector → fusión de ODF (141) → pelo ───────────────────────────────────────────────────
+# Desde 20261017_01 la ingesta guarda en `pelo_n_id` el pelo al que llega el conector a través de
+# una 141. El camino tiene que resolver lo mismo con la 141 que viaja en su propio payload, o la
+# regla del conector marcaría DISCREPA en miles de conectores.
+
+
+def test_el_conector_resuelve_el_pelo_a_traves_de_la_fusion_de_odf():
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 777}]},
+        777: {"class": 130},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado == 777
+    assert nodos[0].tp_sin_clase == []
+
+
+def test_fusion_de_odf_entre_conectores_no_da_pelo():
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        2: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 2}]},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == []
+
+
+def test_fusion_de_odf_con_destino_fuera_del_payload_queda_como_candidato():
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 777}]},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == [777]
+
+
+@pytest.mark.asyncio
+async def test_conector_via_fusion_de_odf_coincide_con_el_pelo_ingerido():
+    """La base tiene el pelo que la ingesta sacó de la 141: el camino declara el mismo → coincide."""
+    from core.services.cromo.camino_optico_service import auditar_consistencia
+
+    dic = {
+        1: _conector(1, [{"id_to": 141001}]),  # pelo en el payload
+        2: _conector(2, [{"id_to": 141002}]),  # pelo fuera del payload, ingerido
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 777}]},
+        141002: {"class": 141, "tp": [{"id_to": 2}, {"id_to": 778}]},
+        777: {"class": 130},
+        20: {"class": 69, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 2], "A", {})
+    sesion = _SesionConectores({1: (777, 20), 2: (778, 20)}, pelos={777, 778})
+
+    consistencia = await auditar_consistencia(sesion, nodos)
+
+    regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
+    assert (regla.coincide, regla.discrepa) == (2, 0)
+
+
 def test_un_nodo_repetido_no_se_audita_dos_veces():
     dic = {
         1: {"class": 130, "father": 10, "gfather": 20},

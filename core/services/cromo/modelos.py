@@ -147,6 +147,9 @@ class ConectorOdf:
     servicio_numero_atributo: Optional[str]
     # `tp[]` de clase 136: patch de este conector a otro conector (típico de ODF Nodo). No es un pelo.
     patch_conector_n_id: Optional[int] = None
+    # Fusión de ODF (clase 141) por la que el conector llega a su pelo (o a otro conector). El
+    # conector sólo apunta a la 141; el pelo/conector del otro lado sale del `tp` de la 141.
+    fusion_odf_n_id: Optional[int] = None
     servicio_resuelto: Optional[str] = None
     servicio_id_historico: Optional[str] = None
     payload_raw: dict[str, Any] = field(default_factory=dict, repr=False)

@@ -205,6 +205,7 @@ CONECTOR_ODF_CAMPOS = (
     "numero_conector",
     "pelo_n_id",
     "patch_conector_n_id",
+    "fusion_odf_n_id",
     "servicio_numero_atributo",
     "servicio_resuelto",
     "servicio_id_historico",

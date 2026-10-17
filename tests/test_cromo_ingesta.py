@@ -1242,6 +1242,78 @@ async def test_procesar_odf_directo_guarda_conectores_via_get_inner_completo():
     assert c.servicio_id_historico == "41140"
 
 
+_INNER_KORN_CON_FUSION_ODF = [
+    {"id": 8539330, "class": 135, "name": "O-1259853-3"},
+    {
+        "id": 8685667, "class": 136, "name": "39", "at": [{"id": 71, "value": "8539330"}],
+        "tp": [{"id_to": 8884671, "class": 141}],
+    },
+    {
+        "id": 8884671, "class": 141, "name": "39-39",
+        "tp": [{"id_to": 8685667, "class": 136}, {"id_to": 7914406, "class": 130}],
+    },
+]
+
+
+@pytest.mark.asyncio
+async def test_procesar_odf_directo_guarda_pelo_y_fusion_de_odf_141():
+    """Conector cuyo `tp` apunta a una fusión de ODF (141): el pelo sale de la 141 y la 141 queda
+    en `fusion_odf_n_id` (caso real KORN O-1259853-3:39 → 8884671 → pelo 7914406)."""
+    obj = {
+        "id": 6646686, "n_id": 6646686, "class": 69, "vmax": 1,
+        "at": [{"id": 34, "value": "NODO Alejandro KORN"}],
+        "inner": [{"id": 8685667, "class": 136}],
+    }
+    cliente = _ClienteGetInnerFake(respuesta={"response": _INNER_KORN_CON_FUSION_ODF})
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_odf_directo(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    [c] = [o for o in sesion.agregados if isinstance(o, CromoOdfConector)]
+    assert c.n_id == 8685667
+    assert c.pelo_n_id == 7914406
+    assert c.fusion_odf_n_id == 8884671
+
+
+@pytest.mark.asyncio
+async def test_relevar_odf_guarda_pelo_y_fusion_de_odf_141(monkeypatch):
+    from core.services.cromo import normalizacion_consistencia_service as norm
+
+    obj = {"id": 6646686, "n_id": 6646686, "class": 69, "at": [{"id": 34, "value": "NODO Alejandro KORN"}]}
+    guardados = []
+
+    async def _fetch(cliente, n_id):
+        return obj
+
+    async def _upsert(sesion, modelo, dom, campos):
+        return "ACTUALIZADA"
+
+    async def _evento(*args, **kwargs):
+        return None
+
+    async def _upsert_simple(sesion, modelo, dom, campos):
+        guardados.append((dom, campos))
+
+    async def _resolver(sesion, conectores):
+        return None
+
+    monkeypatch.setattr(norm.id_dual_resolver, "fetch_objeto", _fetch)
+    monkeypatch.setattr(norm.ingesta, "upsert_forzado", _upsert)
+    monkeypatch.setattr(norm.ingesta, "registrar_evento", _evento)
+    monkeypatch.setattr(norm.ingesta, "upsert_simple", _upsert_simple)
+    monkeypatch.setattr(norm.ingesta, "resolver_servicio_conectores", _resolver)
+
+    await norm.relevar_odf(
+        _ClienteGetInnerFake(respuesta={"response": _INNER_KORN_CON_FUSION_ODF}), _SesionFake(), 1, 6646686
+    )
+
+    [(conector, campos)] = guardados
+    assert (conector.pelo_n_id, conector.fusion_odf_n_id) == (7914406, 8884671)
+    assert "fusion_odf_n_id" in campos
+
+
 @pytest.mark.asyncio
 async def test_procesar_odf_directo_get_inner_falla_no_pierde_el_odf():
     """Un fallo de red en `get_inner` (segunda llamada, sólo enriquece conectores) no debe hacer

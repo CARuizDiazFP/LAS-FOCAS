@@ -420,15 +420,27 @@ def _completar_contexto_fusion(
         nodo.botella_nombre = atributo(botella, _AT_NOMBRE_GENERICO) or botella.get("name")
 
 
+def _clase_de_punto(punto: Mapping[str, Any], dic: Mapping[int, Any]) -> Optional[int]:
+    """Clase del destino de un `tp`: la del propio punto o, si no la trae (forma real de `/path`),
+    la del destino dentro del mismo payload. `None` si no se puede saber."""
+    clase = punto.get("class")
+    if clase is None:
+        objeto = dic.get(int(punto["id_to"]))
+        clase = objeto.get("class") if isinstance(objeto, Mapping) else None
+    return clase
+
+
 def _pelo_del_conector(
-    crudo: Mapping[str, Any], dic: Mapping[int, Any]
+    crudo: Mapping[str, Any], dic: Mapping[int, Any], propio_id: Optional[int] = None
 ) -> tuple[Optional[int], list[int]]:
     """`(pelo, tp_sin_clase)` de un conector: el pelo es el primer `tp` de clase 130.
 
-    Mismo criterio que la ingesta (`parser.parse_odf`): un `tp` de clase 136 es un patch a otro
-    conector y uno de clase 141 una fusión de ODF, ninguno es el pelo. La clase sale del propio
-    punto o, si no la trae, del destino dentro del mismo payload. Los `tp` sin clase conocida no
-    se dan por pelo: vuelven como candidatos para que la auditoría los resuelva contra la base.
+    Mismo criterio que la ingesta (`parser.parse_odf_conectores`): un `tp` de clase 136 es un patch
+    a otro conector, no el pelo. Uno de clase 141 es una fusión de ODF: desde 20261017_01 la
+    ingesta guarda como pelo el del otro extremo de la 141, así que acá se resuelve igual con la
+    141 que viaja en el mismo payload (`propio_id` excluye al conector de los `tp` de la 141). Si la
+    141 no está en el payload no se declara pelo. Los `tp` sin clase conocida no se dan por pelo:
+    vuelven como candidatos para que la auditoría los resuelva contra la base.
     """
     pelo: Optional[int] = None
     sin_clase: list[int] = []
@@ -436,14 +448,26 @@ def _pelo_del_conector(
         if not isinstance(punto, Mapping) or not punto.get("id_to"):
             continue
         destino = int(punto["id_to"])
-        clase = punto.get("class")
-        if clase is None:
-            objeto = dic.get(destino)
-            clase = objeto.get("class") if isinstance(objeto, Mapping) else None
+        clase = _clase_de_punto(punto, dic)
         if clase is None:
             sin_clase.append(destino)
         elif clase == _CLASE_PELO and pelo is None:
             pelo = destino
+        elif clase == _CLASE_FUSION_ODF:
+            fusion = dic.get(destino)
+            if not isinstance(fusion, Mapping):
+                continue
+            for punto_fusion in fusion.get("tp") or []:
+                if not isinstance(punto_fusion, Mapping) or not punto_fusion.get("id_to"):
+                    continue
+                otro = int(punto_fusion["id_to"])
+                if otro == propio_id:
+                    continue
+                clase_otro = _clase_de_punto(punto_fusion, dic)
+                if clase_otro is None:
+                    sin_clase.append(otro)
+                elif clase_otro == _CLASE_PELO and pelo is None:
+                    pelo = otro
     return pelo, ([] if pelo is not None else sin_clase)
 
 
@@ -458,7 +482,7 @@ def _completar_contexto_conector(
     """
     nodo.conector_numero = atributo(crudo, _AT_CONECTOR_NUMERO)
     nodo.servicio_at62 = atributo(crudo, _AT_SERVICIO_NUMERO)
-    nodo.pelo_conectado, nodo.tp_sin_clase = _pelo_del_conector(crudo, dic)
+    nodo.pelo_conectado, nodo.tp_sin_clase = _pelo_del_conector(crudo, dic, nodo.id_cromo)
 
     patchera_id = crudo.get("father")
     patchera = dic.get(patchera_id) if patchera_id else None
