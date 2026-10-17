@@ -8810,6 +8810,7 @@ async def cromo_camino_tracking_txt_web(
     )
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
+    from core.services.cromo import tracking_service
     from core.services.cromo.tracking_service import (
         TrackingNoDisponible,
         nombre_archivo_tramo,
@@ -8863,6 +8864,11 @@ async def cromo_camino_tracking_txt_web(
                 tracking = await obtener_tracking(
                     cliente, sesion, servicio_id=servicio_id, pelo_n_id=elegido
                 )
+            numero_servicio = (
+                await tracking_service.numero_del_servicio(sesion, servicio_id)
+                if tramo is not None and pelo_n_id is not None
+                else None
+            )
     except TrackingNoDisponible as exc:
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
@@ -8871,10 +8877,13 @@ async def cromo_camino_tracking_txt_web(
     # Con un solo pelo (el caso PON) el nombre queda idéntico al de siempre; con varios se
     # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
     # carpeta de Descargas y se pierde cuál es cuál.
-    # El at.62 ya viene en el nombre base (`{at62} CROMO.txt`): de ahí se arma el nombre de tramo.
+    # El nombre de tramo lleva el número del Servicio en LAS-FOCAS, no el at.62 del pelo (que Cromo
+    # a veces trae mal); el at.62 del nombre base queda sólo como respaldo.
     base_at62 = re.match(r"^(\d+) CROMO", tracking.nombre_archivo)
-    if tramo is not None and pelo_n_id is not None and base_at62:
-        nombre = nombre_archivo_tramo(base_at62.group(1), tramo, tracking.pelo_n_id)
+    if tramo is not None and pelo_n_id is not None:
+        nombre = nombre_archivo_tramo(
+            numero_servicio or (base_at62.group(1) if base_at62 else None), tramo, tracking.pelo_n_id
+        )
     else:
         nombre = nombre_distinguible(
             tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1

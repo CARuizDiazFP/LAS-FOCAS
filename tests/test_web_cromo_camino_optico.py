@@ -451,9 +451,36 @@ def test_tracking_txt_con_tramo_usa_el_nombre_de_tramo(monkeypatch):
     _fake_tracking(monkeypatch)
     client = _cliente_user(monkeypatch)
 
+    from core.services.cromo import tracking_service
+
+    async def _numero(_sesion, _servicio_id):
+        return "93154"
+
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
+
     res = client.get(_url_txt(), params={"pelo_n_id": 10006354, "tramo": 2})
 
     assert 'filename="93154 CROMO T2 pelo 10006354.txt"' in res.headers["content-disposition"]
+
+
+def test_tracking_txt_con_tramo_usa_el_numero_del_servicio_y_no_el_at62(monkeypatch):
+    """El at.62 del pelo puede venir mal cargado en Cromo (medido: "83254" en un hilo del 93154).
+    El nombre del tramo sale del número del Servicio en LAS-FOCAS."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(10006353), _semilla(10006354)])
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+    from core.services.cromo import tracking_service
+
+    async def _numero(_sesion, _servicio_id):
+        return "77777"
+
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
+
+    res = client.get(_url_txt(), params={"pelo_n_id": 10006354, "tramo": 2})
+
+    assert 'filename="77777 CROMO T2 pelo 10006354.txt"' in res.headers["content-disposition"]
 
 
 def test_tracking_txt_sin_pelo_explicito_usa_la_posicion_de_odf(monkeypatch):

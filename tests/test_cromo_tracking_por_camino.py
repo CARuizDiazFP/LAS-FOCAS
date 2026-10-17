@@ -496,7 +496,11 @@ def declaraciones(monkeypatch):
     async def _leer(_sesion, _servicio_id):
         return estado["valor"]
 
+    async def _numero(_sesion, _servicio_id):
+        return estado.get("numero")
+
     monkeypatch.setattr(tracking_service, "declaraciones_del_servicio", _leer)
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
     return estado
 
 
@@ -954,3 +958,40 @@ async def test_trackings_del_servicio_cuenta_segmentos_por_pares_de_cables(monke
 
     assert len(resultado.tramos) == 4
     assert resultado.segmentos == 2
+
+
+@pytest.mark.asyncio
+async def test_los_tramos_se_nombran_con_el_numero_del_servicio_y_no_con_el_at62(monkeypatch, declaraciones):
+    """Medido en dev (2026-10-17): el at.62 de los pelos no es confiable como nombre: el 42351 salía
+    "42352 CROMO", un hilo del 93154 "83254 CROMO" y 4 tramos del 102452 sin número. El parser de
+    trackings legacy toma el servicio del NOMBRE del archivo, así que tiene que ser el de LAS-FOCAS."""
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=69, patchera_nombre="O-1", conector_numero="1")
+
+    resumenes = {
+        10: ResumenCamino(servicio_at62="42352", inicio=_odf(500), fin=_odf(600),
+                          odfs=(500, 600), cables=(1, 2)),
+        20: ResumenCamino(servicio_at62="0", inicio=_odf(500), fin=_odf(600),
+                          odfs=(500, 600), cables=(1, 2)),
+    }
+    pelos = {10: {10, 11}, 20: {20, 21, 22}}
+    declaraciones["numero"] = "42351"
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567)
+
+    assert [t.nombre_archivo for t in resultado.tramos] == [
+        "42351 CROMO T1 pelo 20.txt",
+        "42351 CROMO T2 pelo 10.txt",
+    ]

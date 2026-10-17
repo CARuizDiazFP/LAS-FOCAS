@@ -72,8 +72,10 @@ class TestNombreArchivoTramo:
         assert nombre.startswith("93154 CROMO ")
 
     @pytest.mark.parametrize("at62", [None, "", "12", "ABC123"])
-    def test_sin_at62_plausible_cae_al_nombre_por_pelo(self, at62):
-        assert nombre_archivo_tramo(at62, 2, 7554378) == "tracking_cromo_pelo_7554378.txt"
+    def test_sin_numero_plausible_conserva_el_numero_de_tramo(self, at62):
+        """Medido en dev (2026-10-17, servicio 102452): 4 de sus 6 tramos tenían un at.62 no
+        plausible y salían todos como `tracking_cromo_pelo_<n_id>.txt`, sin decir qué tramo eran."""
+        assert nombre_archivo_tramo(at62, 2, 7554378) == "tracking_cromo T2 pelo 7554378.txt"
 
 
 def _tracking(pelo, cantidad):

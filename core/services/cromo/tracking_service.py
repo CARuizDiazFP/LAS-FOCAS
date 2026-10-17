@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.services.cromo import tracking_cache
@@ -578,6 +579,20 @@ class TrackingsDelServicio:
     auditoria_omitida: Optional[str] = None
 
 
+_SQL_NUMERO_SERVICIO = text("SELECT servicio_id FROM app.servicios WHERE id = :servicio_id")
+
+
+async def numero_del_servicio(sesion: AsyncSession, servicio_id: int) -> Optional[str]:
+    """El número vigente del Servicio en LAS-FOCAS, para nombrar los `.txt` de tramo.
+
+    No se usa el at.62 del pelo: medido en dev (2026-10-17) el 42351 salía "42352 CROMO" y un hilo
+    del 93154 "83254 CROMO". El parser de trackings legacy toma el servicio del NOMBRE del archivo,
+    así que un at.62 mal cargado en Cromo asignaría el tracking a otro Servicio.
+    """
+    valor = (await sesion.execute(_SQL_NUMERO_SERVICIO, {"servicio_id": servicio_id})).scalar_one_or_none()
+    return str(valor).strip() if valor is not None else None
+
+
 async def trackings_del_servicio(
     cliente: CromoClient,
     sesion: AsyncSession,
@@ -628,11 +643,12 @@ async def trackings_del_servicio(
     for tracking, rol in zip(por_camino.trackings, roles):
         (tramos if rol == ROL_TRAMO else residuales).append(replace(tracking, rol=rol))
 
+    numero_servicio = await numero_del_servicio(sesion, servicio_id)
     tramos = [
         replace(
             tracking,
             nombre_archivo=nombre_archivo_tramo(
-                _resumen(tracking).servicio_at62, numero, tracking.pelo_n_id
+                numero_servicio or _resumen(tracking).servicio_at62, numero, tracking.pelo_n_id
             ),
         )
         for numero, tracking in enumerate(ordenar_tramos(tramos), start=1)

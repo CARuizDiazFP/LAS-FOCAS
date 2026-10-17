@@ -79,12 +79,15 @@ def nombre_archivo_tramo(servicio_numero: Optional[str], numero_tramo: int, pelo
 
     Conserva el sufijo `CROMO` de `nombre_archivo_tracking` (el parser de alias no lo reconoce, así
     que el archivo no finge ser un tracking numerado a mano) y suma el número de tramo y el pelo,
-    para que los N tramos de un Servicio no se pisen al bajarlos. Sin at.62 plausible cae al mismo
-    `tracking_cromo_pelo_<n_id>.txt` de siempre, que ya identifica al pelo.
+    para que los N tramos de un Servicio no se pisen al bajarlos. `servicio_numero` es el número
+    del Servicio en LAS-FOCAS (no el at.62 del pelo, que Cromo a veces trae mal); sin un número
+    plausible cae a `tracking_cromo T{n} pelo <n_id>.txt`.
     """
     if _at62_plausible(servicio_numero):
         return f"{servicio_numero} CROMO T{numero_tramo} pelo {pelo_n_id}.txt"
-    return f"tracking_cromo_pelo_{pelo_n_id}.txt"
+    # Sin número plausible igual se conserva el tramo: medido en dev (2026-10-17), 4 de los 6
+    # tramos del 102452 caían acá y salían indistinguibles salvo por el pelo.
+    return f"tracking_cromo T{numero_tramo} pelo {pelo_n_id}.txt"
 
 
 def _linea_tramo(nodo: NodoCamino, acum_geo: float, acum_real: float) -> str:
