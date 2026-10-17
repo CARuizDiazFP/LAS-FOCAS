@@ -11,7 +11,7 @@ son artefactos derivados, y cada plataforma tiene su propia estructura de direct
 | Plataforma | Ruta del mirror | Estructura |
 |---|---|---|
 | GitHub Copilot | `.github/skills/<n>/SKILL.md`            | igual a la fuente |
-| Claude Code    | `.claude/skills/<n>/SKILL.md`            | igual a la fuente |
+| Claude Code    | `.claude/skills/<n>/SKILL.md`            | frontmatter primero |
 | Agent Skills   | `.agents/skills/<n>/SKILL.md`            | frontmatter primero (estándar abierto; Gemini CLI/Antigravity/Codex lo cargan bajo demanda) |
 | Gemini CLI     | `.gemini/rules/skill-<n>.md`             | **adaptador liviano** (<= 15 líneas), sin cuerpo |
 | OpenAI Codex   | `.codex-skills/skills/las-focas-<n>/SKILL.md` | prefijo `las-focas-` |
@@ -36,6 +36,11 @@ En las plataformas con cuerpo, éste no se copia crudo: se aplican transformacio
 Las menciones en prosa a rutas de otro entorno (por ejemplo `` `.github/skills/x/SKILL.md` ``
 dentro de un párrafo) se dejan literales: son informativas, no navegación. Si están mal,
 se corrigen en la fuente.
+
+En Claude Code, Codex y Agent Skills el frontmatter va **antes** del encabezado de 3
+líneas: esos clientes sólo leen `name`/`description` si el archivo empieza con `---`. Con el
+encabezado primero, Claude Code mostraba "Nombre de archivo: SKILL.md" como descripción de
+todas las skills y no podía activarlas por contexto.
 
 El frontmatter de cada mirror se **preserva** (cada plataforma tiene el suyo: `triggers`,
 `globs`, `commands`, `metadata`). Si el mirror no existe, se genera uno mínimo derivado
@@ -136,6 +141,7 @@ PLATAFORMAS = (
         ruta=lambda n: Path(f".claude/skills/{n}/SKILL.md"),
         enlace=lambda n: f"](../{n}/SKILL.md)",
         cabecera=_cabecera_claude,
+        frontmatter_primero=True,
     ),
     Plataforma(
         clave="agents",

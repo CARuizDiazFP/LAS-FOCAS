@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/sast-analysis/SKILL.md
-# Descripción: Skill para análisis estático de código y superficie de ataque en LAS-FOCAS (mirror de .agentes-comunes/skills/sast-analysis/SKILL.md — fuente de verdad)
-
 ---
 name: sast-analysis
 description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensible o superficie de ataque"
 argument-hint: "Describe el componente, por ejemplo: analizar rutas FastAPI y websocket por sanitización, auth y logging"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/sast-analysis/SKILL.md
+# Descripción: Skill para análisis estático de código y superficie de ataque en LAS-FOCAS (mirror de .agentes-comunes/skills/sast-analysis/SKILL.md — fuente de verdad)
 
 # Habilidad: SAST Analysis
 

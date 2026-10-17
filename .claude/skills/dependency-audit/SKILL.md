@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/dependency-audit/SKILL.md
-# Descripción: Skill para auditar dependencias Python y frontend en LAS-FOCAS (mirror de .agentes-comunes/skills/dependency-audit/SKILL.md — fuente de verdad)
-
 ---
 name: dependency-audit
 description: "Usar cuando haya que revisar requirements, package.json, pip-audit, npm audit y versiones expuestas a vulnerabilidades conocidas"
 argument-hint: "Describe manifests o servicios, por ejemplo: auditar requirements del repo y frontend antes de release"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/dependency-audit/SKILL.md
+# Descripción: Skill para auditar dependencias Python y frontend en LAS-FOCAS (mirror de .agentes-comunes/skills/dependency-audit/SKILL.md — fuente de verdad)
 
 # Habilidad: Dependency Audit
 

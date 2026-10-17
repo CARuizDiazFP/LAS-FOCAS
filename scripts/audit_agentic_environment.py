@@ -149,6 +149,14 @@ def triggers_cierre(texto: str) -> set[str]:
 
 def chequear_mirrors(raiz: Path) -> list[str]:
     hallazgos = [f"error:mirror_drift:{ruta}" for ruta in sync_skill_mirrors.procesar(raiz, verificar=True)]
+    # Claude Code, Codex y Agent Skills sólo leen name/description si el archivo empieza con `---`.
+    for plataforma in sync_skill_mirrors.PLATAFORMAS:
+        if not plataforma.frontmatter_primero:
+            continue
+        for fuente in sync_skill_mirrors.skills(raiz):
+            mirror = raiz / plataforma.ruta(fuente.parent.name)
+            if mirror.is_file() and not mirror.read_text(encoding="utf-8").startswith("---\n"):
+                hallazgos.append(f"error:mirror_frontmatter_not_first:{plataforma.ruta(fuente.parent.name)}")
     for ruta in sorted((raiz / ".gemini/rules").glob("skill-*.md")):
         lineas = len(ruta.read_text(encoding="utf-8").splitlines())
         if lineas > sync_skill_mirrors.MAX_LINEAS_ADAPTADOR:

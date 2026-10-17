@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/libreoffice-convert/SKILL.md
-# Descripción: Habilidad para conversión de documentos con LibreOffice/office_service (mirror de .agentes-comunes/skills/libreoffice-convert/SKILL.md — fuente de verdad)
-
 ---
 name: libreoffice-convert
 description: "Usar cuando haya que convertir documentos con office_service o depurar flujos DOCX a PDF con LibreOffice headless"
 argument-hint: "Describe archivo o flujo, por ejemplo: convertir DOCX de SLA a PDF desde office_service"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/libreoffice-convert/SKILL.md
+# Descripción: Habilidad para conversión de documentos con LibreOffice/office_service (mirror de .agentes-comunes/skills/libreoffice-convert/SKILL.md — fuente de verdad)
 
 # Habilidad: Conversión con LibreOffice
 

@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/skill-generator/SKILL.md
-# Descripción: Meta-skill para crear y estandarizar nuevas skills y customizations del ecosistema agéntico (mirror de .agentes-comunes/skills/skill-generator/SKILL.md — fuente de verdad)
-
 ---
 name: skill-generator
 description: "Usar cuando haya que crear o evolucionar skills meta-agénticas con stack SPA/API moderno, seguridad obligatoria y reglas anti-legacy"
 argument-hint: "Describe la nueva skill o tríada y sus restricciones, por ejemplo: skill web SPA con criterios XSS/CORS/Pydantic"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/skill-generator/SKILL.md
+# Descripción: Meta-skill para crear y estandarizar nuevas skills y customizations del ecosistema agéntico (mirror de .agentes-comunes/skills/skill-generator/SKILL.md — fuente de verdad)
 
 # Habilidad: Generador de Skills
 

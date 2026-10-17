@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/agent-worktree/SKILL.md
-# Descripción: Skill de trabajo concurrente multi-agente — worktree y rama propios por agente, leases por recurso compartido e integración serializada a dev (mirror de .agentes-comunes/skills/agent-worktree/SKILL.md — fuente de verdad)
-
 ---
 name: agent-worktree
 description: "Usar al INICIAR cualquier tarea y ante cualquier señal de concurrencia (otra sesión activa, trabajo largo, subagentes). Crea el worktree y la rama propios del agente, define cuándo tomar un lease de recurso compartido y cómo integrar a dev sin pisar a nadie."
 argument-hint: "agent-id y tarea, por ejemplo: claude-api / busqueda-camaras"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/agent-worktree/SKILL.md
+# Descripción: Skill de trabajo concurrente multi-agente — worktree y rama propios por agente, leases por recurso compartido e integración serializada a dev (mirror de .agentes-comunes/skills/agent-worktree/SKILL.md — fuente de verdad)
 
 # Habilidad: Agent Worktree — trabajo concurrente aislado
 

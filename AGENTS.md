@@ -264,7 +264,10 @@ capas distintas y complementarias; la referencia completa es
 - Los mirrors de `.github/skills/`, `.claude/skills/`, `.agents/skills/`, `.gemini/rules/` y
   `.codex-skills/skills/` se consideran artefactos derivados y deben sincronizarse tras cada
   cambio relevante. `.gemini/rules/skill-*.md` es un adaptador liviano (≤ 15 líneas, sin cuerpo):
-  sus `triggers`/`globs` se editan ahí y el propagador los preserva.
+  sus `triggers`/`globs` se editan ahí y el propagador los preserva. En `.claude/skills/`,
+  `.agents/skills/` y `.codex-skills/skills/` el frontmatter va **antes** del encabezado de 3
+  líneas (excepción a la convención de encabezados): esos clientes sólo leen `name`/`description`
+  si el archivo empieza con `---`. El auditor lo verifica.
 - La ejecución de `scripts/sync_agentes_comunes.sh` es obligatoria en cambios de skills,
   prompts o agentes que impacten a cualquiera de los mirrors. Regenera `.github/skills/` y delega en
   `scripts/sync_skill_mirrors.py`, que mantiene `.claude/skills/`, `.agents/skills/`,

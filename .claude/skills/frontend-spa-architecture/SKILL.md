@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/frontend-spa-architecture/SKILL.md
-# Descripción: Skill para verificar la arquitectura SPA unificada antes de agregar rutas, vistas o componentes en el frontend de LAS-FOCAS (mirror de .agentes-comunes/skills/frontend-spa-architecture/SKILL.md — fuente de verdad)
-
 ---
 name: frontend-spa-architecture
 description: "Usar SIEMPRE antes de agregar, modificar o mover rutas, vistas o componentes en el frontend SPA de LAS-FOCAS. Valida el entry point activo, el router unificado y advierte sobre archivos huérfanos conocidos."
 argument-hint: "Tarea frontend a realizar, por ejemplo: agregar ruta /admin/mi-modulo o crear vista AdminMiVista.vue"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/frontend-spa-architecture/SKILL.md
+# Descripción: Skill para verificar la arquitectura SPA unificada antes de agregar rutas, vistas o componentes en el frontend de LAS-FOCAS (mirror de .agentes-comunes/skills/frontend-spa-architecture/SKILL.md — fuente de verdad)
 
 # Habilidad: Frontend SPA Architecture — Verificación de Arquitectura Antes de Tocar el Router
 

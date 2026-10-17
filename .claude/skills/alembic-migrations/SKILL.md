@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/alembic-migrations/SKILL.md
-# Descripción: Habilidad para gestionar migraciones Alembic en LAS-FOCAS (mirror de .agentes-comunes/skills/alembic-migrations/SKILL.md — fuente de verdad)
-
 ---
 name: alembic-migrations
 description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
 argument-hint: "Describe cambio de esquema, por ejemplo: agregar columna email_subject a incidentes_baneo"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/alembic-migrations/SKILL.md
+# Descripción: Habilidad para gestionar migraciones Alembic en LAS-FOCAS (mirror de .agentes-comunes/skills/alembic-migrations/SKILL.md — fuente de verdad)
 
 # Habilidad: Migraciones Alembic
 

@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/baneo-qa-real/SKILL.md
-# Descripción: Skill para probar el Protocolo de Protección (baneo/cascada de estado) contra datos reales sin causar drift no controlado (mirror de .agentes-comunes/skills/baneo-qa-real/SKILL.md — fuente de verdad)
-
 ---
 name: baneo-qa-real
 description: "Usar antes de ejecutar create_ban/lift_ban o cualquier prueba de cascada de estado de Camara contra datos reales (lasfocasdev-*) — resuelve el blast radius real y cómo revertir con precisión si algo sale mal"
 argument-hint: "Describe qué cascada de estado querés probar, por ejemplo: verificar que banear una Botella propaga a toda la Cámara"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/baneo-qa-real/SKILL.md
+# Descripción: Skill para probar el Protocolo de Protección (baneo/cascada de estado) contra datos reales sin causar drift no controlado (mirror de .agentes-comunes/skills/baneo-qa-real/SKILL.md — fuente de verdad)
 
 # Skill: QA real del Protocolo de Protección (Baneo)
 

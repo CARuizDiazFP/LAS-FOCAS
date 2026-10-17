@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/secret-detection/SKILL.md
-# Descripción: Skill para detectar secretos y credenciales expuestas en LAS-FOCAS (mirror de .agentes-comunes/skills/secret-detection/SKILL.md — fuente de verdad)
-
 ---
 name: secret-detection
 description: "Usar cuando haya que buscar credenciales expuestas, secretos en .env, llaves, tokens, compose, scripts o configuraciones sensibles"
 argument-hint: "Describe el objetivo, por ejemplo: revisar .env, compose, Keys y workflows por exposición de credenciales"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/secret-detection/SKILL.md
+# Descripción: Skill para detectar secretos y credenciales expuestas en LAS-FOCAS (mirror de .agentes-comunes/skills/secret-detection/SKILL.md — fuente de verdad)
 
 # Habilidad: Secret Detection
 

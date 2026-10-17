@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/docker-cleanup/SKILL.md
-# Descripción: Skill para limpieza segura de recursos Docker (imágenes, contenedores, cache) sin afectar volúmenes (mirror de .agentes-comunes/skills/docker-cleanup/SKILL.md — fuente de verdad)
-
 ---
 name: docker-cleanup
 description: "Usar cuando haya que limpiar imágenes, contenedores o build cache de Docker sin tocar volúmenes persistentes"
 argument-hint: "Describe alcance, por ejemplo: limpiar imágenes colgantes y builder cache"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/docker-cleanup/SKILL.md
+# Descripción: Skill para limpieza segura de recursos Docker (imágenes, contenedores, cache) sin afectar volúmenes (mirror de .agentes-comunes/skills/docker-cleanup/SKILL.md — fuente de verdad)
 
 # Habilidad: Limpieza Docker
 

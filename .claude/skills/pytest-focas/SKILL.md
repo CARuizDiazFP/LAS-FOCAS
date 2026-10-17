@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/pytest-focas/SKILL.md
-# Descripción: Habilidad para ejecutar tests con pytest en LAS-FOCAS (mirror de .agentes-comunes/skills/pytest-focas/SKILL.md — fuente de verdad)
-
 ---
 name: pytest-focas
 description: "Usar cuando haya que ejecutar pytest, escribir tests, preparar fixtures o revisar cobertura en LAS-FOCAS"
 argument-hint: "Describe suite o módulo, por ejemplo: correr tests de SLA y revisar mocks de OpenAI"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/pytest-focas/SKILL.md
+# Descripción: Habilidad para ejecutar tests con pytest en LAS-FOCAS (mirror de .agentes-comunes/skills/pytest-focas/SKILL.md — fuente de verdad)
 
 # Habilidad: Pytest FOCAS
 

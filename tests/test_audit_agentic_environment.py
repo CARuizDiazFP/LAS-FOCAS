@@ -142,6 +142,13 @@ def test_drift_de_mirror_falla(raiz: Path) -> None:
     assert "error:mirror_drift:.claude/skills/ejemplo/SKILL.md" in _errores(raiz)
 
 
+def test_mirror_de_claude_con_encabezado_antes_del_frontmatter_falla(raiz: Path) -> None:
+    mirror = raiz / ".claude/skills/ejemplo/SKILL.md"
+    mirror.write_text("# Nombre de archivo: SKILL.md\n" + mirror.read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert "error:mirror_frontmatter_not_first:.claude/skills/ejemplo/SKILL.md" in _errores(raiz)
+
+
 def test_adaptador_de_gemini_demasiado_largo_falla(raiz: Path) -> None:
     adaptador = raiz / ".gemini/rules/skill-extra.md"
     adaptador.write_text("línea\n" * 40, encoding="utf-8")

@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/docker-rebuild/SKILL.md
-# Descripción: Habilidad para reconstruir contenedores Docker de LAS-FOCAS (mirror de .agentes-comunes/skills/docker-rebuild/SKILL.md — fuente de verdad)
-
 ---
 name: docker-rebuild
 description: "Usar cuando haya que reconstruir servicios Docker, refrescar imágenes o verificar un rebuild selectivo de LAS-FOCAS"
 argument-hint: "Describe servicio o cambio, por ejemplo: rebuild de api y web sin bajar toda la stack"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/docker-rebuild/SKILL.md
+# Descripción: Habilidad para reconstruir contenedores Docker de LAS-FOCAS (mirror de .agentes-comunes/skills/docker-rebuild/SKILL.md — fuente de verdad)
 
 # Habilidad: Docker Rebuild
 

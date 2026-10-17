@@ -116,6 +116,16 @@ def test_render_apunta_el_encabezado_a_la_ubicacion_real_del_mirror(raiz: Path) 
     assert "mirror de .agentes-comunes/skills/ejemplo/SKILL.md" in contenido
 
 
+def test_render_claude_lleva_el_frontmatter_primero(raiz: Path) -> None:
+    """Claude Code sólo lee name/description si el archivo empieza con el frontmatter."""
+    contenido = render(
+        _plataforma("claude"), "ejemplo", raiz / ".agentes-comunes/skills/ejemplo/SKILL.md", raiz
+    )
+
+    assert contenido.startswith("---\nname: ejemplo\n")
+    assert 'description: "Usar para probar el propagador."' in contenido.split("\n---\n", 1)[0]
+
+
 def test_render_preserva_triggers_y_globs_en_el_adaptador_de_gemini(raiz: Path, monkeypatch) -> None:
     """Cada plataforma tiene sus propios triggers/globs; el cuerpo ya no se copia a Gemini."""
     monkeypatch.chdir(raiz)

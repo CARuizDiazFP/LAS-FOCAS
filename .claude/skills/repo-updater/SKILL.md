@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/repo-updater/SKILL.md
-# Descripción: Skill para sincronizar el repositorio con validación documental, commit técnico y push a la rama efímera activa (la integración a dev es automática al cierre de sesión) (mirror de .agentes-comunes/skills/repo-updater/SKILL.md — fuente de verdad)
-
 ---
 name: repo-updater
 description: "Usar cuando haya que auditar docs/PR y docs temáticas, preparar commit técnico con git y subir cambios a la rama efímera activa (nunca dev/main directo — ver dev-workflow y cierre-sesion)"
 argument-hint: "Describe alcance o contexto, por ejemplo: sincronizar cambios de web y docs en la rama efímera activa"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/repo-updater/SKILL.md
+# Descripción: Skill para sincronizar el repositorio con validación documental, commit técnico y push a la rama efímera activa (la integración a dev es automática al cierre de sesión) (mirror de .agentes-comunes/skills/repo-updater/SKILL.md — fuente de verdad)
 
 # Habilidad: Actualizador de Repositorio
 

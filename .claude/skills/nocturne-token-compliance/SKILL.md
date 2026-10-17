@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/nocturne-token-compliance/SKILL.md
-# Descripción: Habilidad para auditar y corregir espaciado/color hardcodeado en el frontend Vue 3 contra el tema Nocturne (mirror de .agentes-comunes/skills/nocturne-token-compliance/SKILL.md — fuente de verdad)
-
 ---
 name: nocturne-token-compliance
 description: "Usar antes de dar por cerrada cualquier tarea de UI/CSS en el SPA: audita colores hardcodeados fuera de tokens.css (vista + todo su árbol de imports) y define cómo verificar el resultado real cuando no hay navegador disponible en la sesión"
 argument-hint: "Vista o módulo de UI a auditar/corregir, por ejemplo: CamaraDetailView y sus modales"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/nocturne-token-compliance/SKILL.md
+# Descripción: Habilidad para auditar y corregir espaciado/color hardcodeado en el frontend Vue 3 contra el tema Nocturne (mirror de .agentes-comunes/skills/nocturne-token-compliance/SKILL.md — fuente de verdad)
 
 # Habilidad: Nocturne Token Compliance
 

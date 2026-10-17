@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/cierre-sesion/SKILL.md
-# Descripción: Skill de cierre de sesión — retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge autónomo de la rama efímera a dev (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
-
 ---
 name: cierre-sesion
 description: "Usar al finalizar una sesión de trabajo, sólo con declaración explícita de cierre, para generar una retrospectiva técnica, evaluar evolución agéntica del entorno y mergear automáticamente la rama efímera activa a dev"
 argument-hint: "Palabra clave de cierre (ej. 'Cerrar sesión') o alcance/fecha"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/cierre-sesion/SKILL.md
+# Descripción: Skill de cierre de sesión — retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge autónomo de la rama efímera a dev (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
 
 # Habilidad: Cierre de Sesión
 

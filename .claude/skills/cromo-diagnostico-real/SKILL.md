@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/cromo-diagnostico-real/SKILL.md
-# Descripción: Skill para validar contra la API/DB real de Cromo antes de confiar en el diseño documentado (mirror de .agentes-comunes/skills/cromo-diagnostico-real/SKILL.md — fuente de verdad)
-
 ---
 name: cromo-diagnostico-real
 description: "Usar antes de escribir o confiar en código de parseo/ingesta de Cromo Red: valida contra la API o la DB real en vez de asumir que el diseño documentado describe el comportamiento actual"
 argument-hint: "Describe qué supuesto del diseño querés confirmar, por ejemplo: si filter=132 trae fusiones como colección propia"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/cromo-diagnostico-real/SKILL.md
+# Descripción: Skill para validar contra la API/DB real de Cromo antes de confiar en el diseño documentado (mirror de .agentes-comunes/skills/cromo-diagnostico-real/SKILL.md — fuente de verdad)
 
 # Skill: Diagnóstico real contra Cromo Red
 

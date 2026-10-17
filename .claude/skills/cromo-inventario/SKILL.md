@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/cromo-inventario/SKILL.md
-# Descripción: Skill para trabajar sobre los datos de planta externa FO ya ingeridos desde Cromo Red (mirror de .agentes-comunes/skills/cromo-inventario/SKILL.md — fuente de verdad)
-
 ---
 name: cromo-inventario
 description: "Usar para consultar, explotar o construir features sobre los datos de infraestructura FO ya ingeridos desde Cromo Red (app.cromo_*) — no para tocar la ingesta en sí"
 argument-hint: "Describe qué querés consultar o construir sobre el inventario, por ejemplo: listar cables sin ningún servicio matcheado"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/cromo-inventario/SKILL.md
+# Descripción: Skill para trabajar sobre los datos de planta externa FO ya ingeridos desde Cromo Red (mirror de .agentes-comunes/skills/cromo-inventario/SKILL.md — fuente de verdad)
 
 # Skill: Inventario Cromo Red (datos ya ingeridos)
 
