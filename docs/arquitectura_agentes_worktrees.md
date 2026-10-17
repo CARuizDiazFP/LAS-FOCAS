@@ -263,8 +263,56 @@ se duplica espacio ni se produce deriva de versiones) y correr tests en paralelo
 leyendo el mismo venv es seguro. **Instalar o cambiar dependencias** muta un recurso
 compartido y requiere `env:python-dependencies`.
 
-También se enlazan `.env`, `.env.dev` y `.secrets`, que resuelve el problema conocido
-de `--env-file` y rutas relativas al levantar compose desde un worktree.
+También se enlazan `.env`, `.secrets` y `Logs`, que resuelve el problema conocido de
+`--env-file` y rutas relativas al levantar compose desde un worktree.
+
+### `.env.dev` privada y puertos por agente (2026-10-17)
+
+`.env.dev` **dejó de ser symlink**: con el enlace, un agente que la editaba para una
+prueba contaminaba al control y a todos los worktrees. Ahora `start` la copia (modo 0600,
+sólo si el destino está ignorado por Git, sin imprimir su contenido) y agrega o
+sobrescribe:
+
+| Variable | Valor |
+|---|---|
+| `LAS_FOCAS_AGENT_WORKTREE` | `1` |
+| `LAS_FOCAS_PORT_OFFSET` | offset del agente (1..90) |
+| `API_PORT` / `WEB_PORT` / `VITE_PORT` / `OFFICE_PORT` / `NLP_PORT` | `8011` / `8090` / `5173` / `8020` / `8030` + offset |
+| `VITE_API_BASE_URL` | `http://127.0.0.1:<API_PORT>` |
+
+El offset se guarda en la columna `agentes.port_offset` (migración `ALTER TABLE`
+idempotente al abrir la base) y en `.agent-worktree.json` del worktree. `start --offset N`
+lo fija; sin él se toma el menor libre. Se elige **antes** de crear el worktree y dentro
+del lease `git:worktree-lifecycle`, comparando el conjunto de puertos de cada agente vivo
+(no sólo el número: `api` 8011+10 coincide con `office` 8020+1) y probando `bind` en
+`127.0.0.1`. Un agente `finished`/`failed` libera su offset. En un handoff, el agente
+destino hereda el offset del origen (mismo worktree, misma `.env.dev`).
+
+Los puertos aíslan procesos **locales** (uvicorn, vite). No parametrizan el stack compose
+dev, que sigue siendo compartido (ver "Docker Compose" abajo).
+
+> **Transición de esquema**: el código previo a `port_offset` construía `Agente(**fila)` y
+> falla con `TypeError` en cuanto la base tiene la columna nueva. Al integrar este cambio,
+> cualquier worktree con código anterior debe hacer `sync` antes de volver a usar la CLI.
+> Desde esta versión las filas se cargan ignorando columnas desconocidas, así que una
+> futura columna ya no rompe a las versiones anteriores.
+
+### Limpieza segura del worktree
+
+`cleanup` (y `finish --cleanup`) sólo remueve un worktree que, además de estar limpio:
+
+1. **no tiene procesos vivos dentro**: se recorre `/proc/*/cwd` y se reporta todo proceso
+   con `cwd` en el worktree (excluida la propia CLI y sus ancestros). Sólo se muestra el
+   nombre del ejecutable (`/proc/<pid>/comm`), nunca la línea de comandos, que puede
+   llevar credenciales. Procesos de otros usuarios y de contenedores no son visibles.
+2. **no tiene ignorados fuera del runtime conocido**: `git ls-files --others --ignored
+   --exclude-standard` se compara contra la lista de runtime (enlaces y copia de entorno,
+   `.agent-worktree.json`, `web/frontend/node_modules`, `web/frontend/dist`,
+   `__pycache__`, `.pytest_cache`, `.ruff_cache`). Un `.docx`, `.xlsx`, dump `.sql` o
+   backup generado en la sesión aborta la limpieza: `git worktree remove` (sin
+   `--force`) lo borraría sin aviso, porque Git no lo considera un cambio.
+
+En ambos casos `cleanup` sale con código 1 con la lista de lo encontrado.
 
 > **Trampa real (2026-09-14)**: `.gitignore` tenía `.venv*/` y `.secrets/` **con barra
 > final**, y una barra final matchea sólo directorios. Un symlink es un archivo para

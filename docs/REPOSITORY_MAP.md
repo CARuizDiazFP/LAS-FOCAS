@@ -1,4 +1,4 @@
-<!-- repository-map: {"source_commit": "13127143ab5a", "generated_at_utc": "2026-10-17T15:46:25Z", "manifest_sha256": "78f97d1c15d903b2d3e46075ca0571022d0bd325eacd0d56647a2831c422d33f"} -->
+<!-- repository-map: {"source_commit": "685a3b3fc8ab", "generated_at_utc": "2026-10-17T15:48:55Z", "manifest_sha256": "78f97d1c15d903b2d3e46075ca0571022d0bd325eacd0d56647a2831c422d33f"} -->
 # Nombre de archivo: REPOSITORY_MAP.md
 # Ubicación de archivo: docs/REPOSITORY_MAP.md
 # Descripción: Mapa canónico del repositorio por dominio (generado; no editar a mano)

@@ -8,6 +8,11 @@ Sistema operativo de infraestructura de fibra óptica de Metrotel: informes SLA/
 
 > Las convenciones de código, arquitectura, build/test, gotchas, seguridad y documentación fuente están en `AGENTS.md`. Este archivo agrega lo exclusivo de Claude Code: comandos slash, catálogo de agentes y catálogo de skills.
 
+> **Punto de entrada obligatorio antes de búsquedas globales**: `docs/REPOSITORY_MAP.md` (mapa por
+> dominio, ≤ 8 KiB, generado desde `config/repository-map.json`). Buscar sólo en las raíces del
+> dominio de la tarea; reglas de contexto (logs bajo demanda, context-splitting) en `AGENTS.md` →
+> "Contexto y tokens". Superpowers: índice de una línea en `docs/superpowers/CATALOG.md`.
+
 ---
 
 ## Cómo debe trabajar Claude Code en este repositorio
@@ -25,6 +30,8 @@ propio por tarea.
    git rev-parse --show-toplevel
    ```
    Si el `toplevel` coincide con el `worktree_path` de un agente registrado, continuar ahí.
+   `start` también reserva puertos locales propios (`--offset 1..90`) y deja una `.env.dev`
+   privada en el worktree; ver `agent-worktree`.
 
 2. **Si no pertenece, pedir su workspace** (comando `/iniciar-tarea-agente`, o directo):
    ```bash
@@ -108,7 +115,7 @@ Invocar con `/nombre-comando [argumentos opcionales]`.
 | `/nuevo-modulo` | Andamia módulo SPA Vue 3 completo: vista, componentes, composable, API client y ruta | nombre del módulo y objetivo funcional |
 | `/revisar-seguridad` | Auditoría integral: secretos, CVEs de dependencias, SAST, red/contenedores | alcance (`full`, `secrets`, `dependencies`, etc.) |
 | `/crear-skill` | Crea o evoluciona skills/agentes/prompts del ecosistema agéntico con stack y seguridad obligatorios | objetivo y alcance de la skill |
-| `/cierre-sesion` | Retrospectiva técnica + evolución agéntica con compuerta de riesgo + auto-merge autónomo de la rama efímera a `dev`, guardada en `docs/cierres/YYYY-MM-DD.md` | palabra clave "Cerrar sesión"/"Cerremos sesión"/"Cierre chat" o alcance/fecha |
+| `/cierre-sesion` | Retrospectiva técnica + evolución agéntica con compuerta de riesgo + auto-merge autónomo de la rama efímera a `dev`, guardada en `docs/cierres/YYYY-MM-DD.md` | únicos triggers: `/cierre-sesion`, "Cerrar sesión", "Cerremos sesión"; o alcance/fecha |
 
 ---
 
@@ -183,7 +190,7 @@ Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejada
 | `repo-updater` | Commits técnicos a la rama efímera activa con auditoría de docs | Nunca `git push origin main` ni `git push origin dev` directo |
 | `repo-update` | Legacy — redirige a `repo-updater` | — |
 | `skill-generator` | Crea nuevas skills con stack Vue 3 + FastAPI | Inyección obligatoria de stack y seguridad |
-| `cierre-sesion` | Retrospectiva técnica + evolución agéntica con compuerta de riesgo (🔴 detiene y pregunta) + auto-merge autónomo de la rama efímera a `dev` (incluida resolución de conflictos) | Requiere declaración explícita de cierre; sin evidencia no se inventa; ninguna propuesta 🔴 se implementa sin respuesta del usuario |
+| `cierre-sesion` | Retrospectiva técnica + evolución agéntica con compuerta de riesgo (🔴 detiene y pregunta) + auto-merge autónomo de la rama efímera a `dev` (incluida resolución de conflictos) | Sólo `/cierre-sesion`, "Cerrar sesión" o "Cerremos sesión"; validación con pruebas focales; ninguna propuesta 🔴 se implementa sin respuesta del usuario |
 
 ---
 
@@ -193,7 +200,7 @@ Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejada
 |---|---|---|
 | Claude Code | **Este entorno** | `CLAUDE.md` + `.claude/commands/` (slash commands) + `.claude/skills/` (todas las skills de la tabla, mirroradas automáticamente por `scripts/sync_skill_mirrors.py`) |
 | GitHub Copilot / VS Code | Agentes, prompts, skills | `.github/agents/`, `.github/prompts/`, `.github/skills/` |
-| Gemini CLI | Rules flat | `.gemini/rules/` |
+| Gemini CLI / Antigravity | Rules flat (adaptadores ≤ 15 líneas, lazy loading) + Agent Skills | `.gemini/rules/`, `.agents/skills/` |
 | OpenAI Codex | Skills (formato Codex) | `.codex-skills/skills/` |
 
-**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts). Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y `.claude/skills/` los regenera `scripts/sync_agentes_comunes.sh` (que delega en `scripts/sync_skill_mirrors.py`); `scripts/check_skill_mirror_drift.sh` verifica los cuatro y falla si hay drift. `.claude/commands/` se mantiene a mano: son comandos, no mirrors de skills.
+**Fuente de verdad para sincronización:** `.agentes-comunes/skills/` (skills) + `.github/agents/` y `.github/prompts/` (agentes/prompts). Los mirrors de `.github/skills/`, `.claude/skills/`, `.agents/skills/`, `.gemini/rules/` (adaptadores livianos) y `.codex-skills/skills/` los regenera `scripts/sync_agentes_comunes.sh` (que delega en `scripts/sync_skill_mirrors.py`); `scripts/check_skill_mirror_drift.sh` verifica todos y falla si hay drift. `python scripts/audit_agentic_environment.py` audita además los contratos de gobernanza (mapa, exclusiones, frontmatter, cierre-sesion). `.claude/commands/` se mantiene a mano: son comandos, no mirrors de skills.

@@ -74,9 +74,25 @@ nada. Un `agent_id` sostiene **una sola tarea activa**.
 Elegir un `agent_id` que identifique plataforma y dominio (`claude-api`, `codex-web`,
 `gemini-docs`). Ambos argumentos son slugs kebab-case.
 
-El worktree recibe symlinks a `.venv`, `.env`, `.env.dev` y `.secrets` del checkout de
+El worktree recibe symlinks a `.venv`, `.env`, `.secrets` y `Logs` del checkout de
 control (no se copian), y el tooling registra los patrones en
 `<git-common-dir>/info/exclude` para que esos enlaces no ensucien `git status`.
+
+**Puertos y `.env.dev` propios.** `start` reserva un `--offset` entre 1 y 90 (o el menor
+libre si se omite) y lo registra en el estado compartido. Los puertos locales del agente
+son `base + offset`: `api` 8011, `web` 8090, `vite` 5173, `office` 8020, `nlp_intent`
+8030. La asignación descarta offsets cuyos puertos se solapen con los de otro agente vivo
+(las bases se pisan entre servicios: `api` 8011+10 == `office` 8020+1) o que ya estén
+escuchando en `127.0.0.1`. `.env.dev` **no** es symlink: es una copia privada (modo 0600)
+del control con `LAS_FOCAS_AGENT_WORKTREE=1`, `LAS_FOCAS_PORT_OFFSET`, `API_PORT`,
+`WEB_PORT`, `VITE_PORT`, `OFFICE_PORT`, `NLP_PORT` y `VITE_API_BASE_URL`; editarla no
+afecta a otros worktrees. `.agent-worktree.json` (ignorado) resume agente, tarea, rama,
+offset y puertos. `status`/`list` muestran el offset.
+
+> **Alcance**: los puertos sirven para procesos locales del agente (`uvicorn --port
+> $API_PORT`, `npm run dev -- --port $VITE_PORT`). El stack `docker compose` dev sigue
+> siendo único y compartido (`name: lasfocasdev`, `container_name` y puertos fijos): el
+> offset no lo parametriza y operarlo sigue requiriendo `env:docker-compose`.
 
 Después: `cd <ruta-del-worktree>` y trabajar ahí.
 
@@ -232,6 +248,15 @@ y un checkout de control sucio o fuera de `dev`. **Sólo diagnostica: no corrige
     cruzado rompería a otro agente). Para verificar el frontend desde un worktree,
     enlazarlo a mano según el guardrail 13 de `dev-workflow`; el patrón ya está en
     `info/exclude`, así que el symlink no ensucia `git status`.
+11. `cleanup` no remueve un worktree con procesos corriendo dentro (servidores, shells con
+    `cwd` en el worktree) ni con archivos ignorados que no sean runtime conocido (enlaces de
+    entorno, `.env.dev`, `.agent-worktree.json`, `node_modules`, `dist`, `__pycache__`,
+    `.pytest_cache`, `.ruff_cache`): sale con código 1 y lista lo encontrado. Mover los
+    reportes/dumps generados fuera del worktree antes de reintentar; nunca forzar.
+12. Al agregar una columna al estado compartido, las sesiones con código anterior fallan al
+    leer la tabla (pasó con `port_offset`: el código previo construía `Agente(**fila)`).
+    Sincronizar con `dev` antes de volver a usar la CLI; desde `port_offset` la carga de
+    filas ignora columnas desconocidas.
 
 ## Relación con otras skills
 
