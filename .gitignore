@@ -66,6 +66,8 @@ docker-data/
 # Datos de informes
 data/uploads/
 data/reports/
+# Mapa base offline de FO Monitor (PMTiles + fuentes/sprites; ~70 MB, se descarga con scripts/fo_monitor_descargar_basemap.sh)
+data/fo_monitor
 Reports/
 web/data/reports/
 devs/

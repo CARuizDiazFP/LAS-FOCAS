@@ -23,6 +23,7 @@ const EmpalmesBotellaCromoView = () => import('../views/EmpalmesBotellaCromoView
 const ConectoresOdfCromoView = () => import('../views/ConectoresOdfCromoView.vue');
 const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
+const FoMonitorView = () => import('../views/FoMonitorView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
 const InventarioOdfsCromoView = () => import('../views/InventarioOdfsCromoView.vue');
 const InventarioPonCromoView = () => import('../views/InventarioPonCromoView.vue');
@@ -206,6 +207,7 @@ const routes: RouteRecordRaw[] = [
         name: 'infra-cromo-verificador-empalmes',
         component: EmpalmesBotellaCromoView,
       },
+      { path: 'infra/fo-monitor', name: 'infra-fo-monitor', component: FoMonitorView },
       { path: 'infra/cromo/cables', name: 'infra-cromo-cables', component: InventarioCablesCromoView },
       {
         path: 'infra/cromo/cables/ID:nId(\\d+)',

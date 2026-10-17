@@ -182,6 +182,8 @@ services:
       - ../Templates:/app/Templates:ro
       - reports_data:/app/data/reports
       - uploads_data:/app/data/uploads
+      # Mapa base offline de FO Monitor (scripts/fo_monitor_descargar_basemap.sh). Sólo lectura.
+      - ../data/fo_monitor:/app/data/fo_monitor:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || curl -fsS http://172.18.208.162:8080/health || exit 1"]
       interval: 10s
@@ -394,6 +396,44 @@ services:
       # de una sola línea da 1 (unhealthy) tanto si dice loop_muerto como si curl falla y no
       # imprime nada, y 0 sólo con un loop realmente vivo.
       test: ["CMD-SHELL", "curl -fsS http://localhost:8097/health | grep -qv loop_muerto"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lasfocas_net
+
+  # FO Monitor: verificación PRE/POST de cables con burritoIA. Sólo WebClient con el bot token
+  # (nunca Socket Mode: le quitaría eventos al listener de ingresos del slack_baneo_worker).
+  # Stand-by en prod (2026-10-14): la fila `fo_monitor` de app.config_servicios queda inactiva y
+  # fomon_config.canales_ingreso sólo habilita #baneo-de-camaras-prueba hasta nuevo aviso.
+  fo_monitor_worker:
+    logging: *logging-default
+    build:
+      context: ..
+      dockerfile: deploy/docker/fo_monitor_worker.Dockerfile
+    container_name: lasfocas-fo-monitor-worker
+    user: "1001:1001"
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      LOGS_DIR: /app/Logs
+      TZ: America/Argentina/Buenos_Aires
+      APP_TIMEZONE: America/Argentina/Buenos_Aires
+    secrets:
+      - db_password_v1
+      - slack_bot_token_v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 256m
+    expose:
+      - "8098"
+    volumes:
+      - ../Logs:/app/Logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8098/health | grep -qv loop_muerto"]
       interval: 30s
       timeout: 5s
       retries: 3

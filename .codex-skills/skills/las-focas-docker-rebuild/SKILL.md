@@ -344,6 +344,20 @@ docker cp scripts lasfocasdev-api:/app/scripts
 
 Después de eso, los `docker cp` de archivos individuales dentro de `scripts/` vuelven a funcionar hasta la próxima recreación del contenedor.
 
+## Módulo Python nuevo en `web/` o worker nuevo: agregar su `COPY` al Dockerfile
+
+`web/Dockerfile` **no copia `web/` entero**: copia `web/app`, `web/tools` y cada módulo suelto por
+nombre (`web/chat_ws.py`, `web/admin_ws.py`, `web/fo_monitor_routes.py`). Un archivo nuevo en `web/`
+importado desde `web/app/main.py` pasa todos los tests en el host (el venv ve el repo completo) y
+rompe el contenedor: `ModuleNotFoundError: No module named 'web.<modulo>'` en el arranque, el web
+queda en restart loop y `/health` cae. Lo mismo con los Dockerfiles de workers en `deploy/docker/`,
+que copian sólo los submódulos de `modules/` que necesitan.
+
+**Antes de rebuild**: si el cambio agregó un `.py` fuera de `web/app`/`core`/`db`/`modules`, revisar
+los `COPY` del Dockerfile del servicio; **después del rebuild**, esperar `healthy` (no sólo
+`Started`) y mirar `docker logs --tail 30` antes de dar el rebuild por bueno. Hallazgo real
+(2026-10-14, FO Monitor, ver `docs/cierres/2026-10-17.md`): el web de dev estuvo caído unos minutos.
+
 ## Antes de una verificación E2E real de cierre: reconstruir, no asumir que el contenedor está al día
 
 Un `curl`/prueba real de cierre contra un contenedor ya corriendo puede fallar (o peor, "funcionar"

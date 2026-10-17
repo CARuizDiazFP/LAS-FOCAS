@@ -205,6 +205,15 @@ Si el módulo necesita aparecer en la navegación lateral, `navLabel`, `navOrder
 3. **No importar** el router huérfano desde ningún componente nuevo.
 4. **Siempre** colocar el catch-all `':pathMatch(.*)*'` como último elemento de los `children` de `/admin`.
 5. **Siempre** usar lazy imports (`() => import(...)`) para componentes de ruta en el router unificado.
+6. **Librerías con Web Worker resuelto en runtime (MapLibre GL ≥ 6, y cualquiera que haga
+   `new URL('./x-worker.mjs', import.meta.url)` con el nombre calculado): Vite no emite el worker** y
+   la librería falla en silencio (MapLibre: el mapa nunca dispara `load`; sólo se ve el header del
+   PMTiles en los logs, ni teselas ni glyphs). Importarlo explícito con
+   `import workerUrl from '<pkg>/dist/<worker>.mjs?worker&url'`, registrarlo (`maplibregl.setWorkerUrl`)
+   antes de crear la instancia, y `worker: { format: 'es' }` en `vite.config.ts`. Verificar que
+   `dist/assets/` contenga el `*-worker-*.js`. MapLibre 6 tampoco tiene export default (`import * as
+   maplibregl`) y sus tipos (`kdbush`) requieren TS ≥ 5.7 → `skipLibCheck: true` con TS 5.5.
+   Hallazgo real (2026-10-14, `FoMonitorMap.vue`, ver `docs/cierres/2026-10-17.md`).
 
 ## Relación con otras skills
 
