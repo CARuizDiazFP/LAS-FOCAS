@@ -162,6 +162,18 @@ tabla `servicios_sync_prov` sin backfill todavía, por eso el 100%):
 • Pelo 1 (AZ): TLS — 106761 — Fundacion Innova-T — TLS 23856 - Trunk Florida 470 - Chile 460 (Baja) 🕒
 ```
 
+**Pelo en cuarentena (2026-10-17)**: un pelo que pertenece a un caso de inconsistencia de Cromo en
+`CUARENTENA` sale como `• Pelo N (Color): en cuarentena (inconsistencia Cromo) — <texto crudo del pelo>`
+en vez de "Libre" o del servicio, porque su uso no es confiable hasta que se corrija en Cromo. Lo
+decide `PeloDetalle.en_cuarentena` (la consulta de pelos lee `app.v_cromo_servicio_match_vigente`).
+"Info cable X" a secas no lista pelos y no lleva la marca.
+
+**Aviso de inconsistencias nuevas (2026-10-17)**: el `cromo_worker` puede publicar en Slack un mensaje
+("Cromo: inconsistencias nuevas detectadas") con el XLSX de los casos nuevos. Sólo si la fila
+`Cromo Inconsistencias` de `app.config_servicios` está activa y con canales (nace inactiva; se
+configura desde el viewer de Inconsistencias Cromo). Usa el secret `slack_bot_token_v1`. Ver
+`docs/infra.md`.
+
 ## `@bot Servicios <cable>` / `@bot Servicios <cable> B<N>` — implementado (Task 8, 2026-09-23)
 
 IDs de servicio **únicos**, agrupados por buffer, con marca de frescura PROV — complementa a
