@@ -6,7 +6,7 @@
 """cromo_odf_nodo: clase 86 ingerible, tipo_elemento ODF_NODO y patch_conector_n_id
 
 Revision ID: 20261016_01
-Revises: 20261014_01
+Revises: 20261014_02
 Create Date: 2026-10-16
 
 Cambios:
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261016_01"
-down_revision = "20261014_01"
+down_revision = "20261014_02"
 branch_labels = None
 depends_on = None
 
