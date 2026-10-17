@@ -358,6 +358,14 @@ export interface CaminosServicioResponse {
   tope_llamadas: boolean;
   /** Segmentos físicos: grupos de tramos que comparten cables (un par de hilos es uno). */
   segmentos: number;
+  /** Casos de inconsistencias de Cromo que tocan al Servicio (aviso del panel). */
+  inconsistencias?: ResumenInconsistenciasServicio;
+}
+
+/** Casos de inconsistencias de Cromo del Servicio: en cuarentena (no cuentan como uso) y en revisión. */
+export interface ResumenInconsistenciasServicio {
+  cuarentena: number;
+  en_revision: number;
 }
 
 /** "ODF X P1:39" / "ODF Nodo KORN P1:39" para un conector de ODF; "pelo 123" en cualquier otro caso. */

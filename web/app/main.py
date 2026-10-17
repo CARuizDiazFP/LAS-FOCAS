@@ -8906,6 +8906,20 @@ async def cromo_camino_tracking_txt_web(
     )
 
 
+async def _inconsistencias_del_servicio(sesion: Any, servicio_id: int) -> dict[str, int]:
+    """Casos de inconsistencias de Cromo que tocan al Servicio, para el aviso del panel Camino.
+    Es accesorio: si falla (tabla sin migrar, DB caída) los caminos se devuelven igual."""
+    from core.services.cromo.inconsistencias_cromo import resumen_de_servicio
+
+    try:
+        return await resumen_de_servicio(sesion, servicio_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "action=cromo_camino_inconsistencias_error servicio_id=%s error=%s", servicio_id, exc
+        )
+        return {"cuarentena": 0, "en_revision": 0}
+
+
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos")
 async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONResponse:
     """Los caminos del Servicio, separados en tramos y residuales.
@@ -8958,6 +8972,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
             datos_odf = await datos_de_odfs(
                 sesion, list(dict.fromkeys(n_ids_odf.get(i, i) for i in ids_odf))
             )
+            inconsistencias = await _inconsistencias_del_servicio(sesion, servicio_id)
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
@@ -9030,6 +9045,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
             "no_cubiertos": len(resultado.no_cubiertos),
             "tope_llamadas": resultado.tope_llamadas,
             "segmentos": resultado.segmentos,
+            "inconsistencias": inconsistencias,
         }
     )
 
@@ -9257,6 +9273,160 @@ async def huerfanos_auditoria_global_iniciar_web(
         tope,
     )
     return JSONResponse({"corrida_id": corrida_id, "max_servicios": tope}, status_code=202)
+
+
+class InconsistenciasEstadoRequestModel(BaseModel):
+    """Payload para cambiar el estado de casos de inconsistencias, en lote."""
+
+    ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_inconsistencia")
+    estado: str = Field(description="CUARENTENA | ACEPTADA | REPORTADA | PENDIENTE (liberar)")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class InconsistenciasDeteccionRequestModel(BaseModel):
+    """Payload para lanzar la detección manual de inconsistencias."""
+
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo")
+async def inconsistencias_cromo_listar_web(
+    request: Request,
+    tipo: Optional[str] = None,
+    estado: Optional[str] = None,
+    revision: Optional[str] = None,
+    localidad: Optional[str] = None,
+    servicio: Optional[str] = None,
+    servicio_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Viewer de inconsistencias de Cromo: casos detectados (isla de fusiones, cable sin extremo,
+    elemento isla) con revisión, estado y evidencia. Filtros `tipo`, `estado`, `revision`,
+    `localidad` (ILIKE), `servicio` (número) y `servicio_id` (PK de `app.servicios`).
+    `conteos_por_tipo` sale con todos los filtros salvo el de tipo (chips). Admin."""
+    from fastapi.encoders import jsonable_encoder
+
+    from core.services.cromo.inconsistencias_cromo import (
+        ESTADOS,
+        REVISIONES,
+        TIPOS,
+        listar,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    if tipo is not None and tipo not in TIPOS:
+        return JSONResponse({"error": f"tipo inválido. Valores: {list(TIPOS)}"}, status_code=400)
+    if estado is not None and estado not in ESTADOS:
+        return JSONResponse({"error": f"estado inválido. Valores: {list(ESTADOS)}"}, status_code=400)
+    if revision is not None and revision not in REVISIONES:
+        return JSONResponse(
+            {"error": f"revision inválida. Valores: {list(REVISIONES)}"}, status_code=400
+        )
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    async with AsyncSessionLocal() as sesion:
+        pagina = await listar(
+            sesion,
+            tipo=tipo,
+            estado=estado,
+            revision=revision,
+            localidad=localidad or None,
+            servicio=servicio or None,
+            servicio_id=servicio_id,
+            por_pagina=limit,
+            desplazamiento=offset,
+        )
+    return JSONResponse(jsonable_encoder(pagina))
+
+
+@app.post("/api/admin/infra/inconsistencias-cromo/estado")
+async def inconsistencias_cromo_estado_web(
+    request: Request, body: InconsistenciasEstadoRequestModel
+) -> JSONResponse:
+    """Cambia el estado de los casos elegidos (cuarentena, aceptar, reportar o liberar a
+    PENDIENTE). Las transiciones válidas las decide el servidor (`cambiar_estado`): lo que no se
+    puede vuelve en `rechazados` con su motivo. Admin + CSRF."""
+    from core.services.cromo.inconsistencias_cromo import ESTADOS_DESTINO_MANUAL, cambiar_estado
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_estado", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    if body.estado not in ESTADOS_DESTINO_MANUAL:
+        return JSONResponse(
+            {"error": f"estado inválido. Valores: {sorted(ESTADOS_DESTINO_MANUAL)}"}, status_code=400
+        )
+    async with AsyncSessionLocal() as sesion:
+        resultado = await cambiar_estado(sesion, body.ids, body.estado, username)
+        await sesion.commit()
+    logger.info(
+        "action=cromo_inconsistencias_estado user=%s estado=%s aplicados=%s rechazados=%s",
+        username,
+        body.estado,
+        len(resultado["actualizados"]),
+        len(resultado["rechazados"]),
+    )
+    return JSONResponse(
+        {"ok": True, "aplicados": resultado["actualizados"], "rechazados": resultado["rechazados"]}
+    )
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo/deteccion")
+async def inconsistencias_cromo_deteccion_estado_web(request: Request) -> JSONResponse:
+    """Última corrida del detector (o `null`), para que el Viewer muestre su estado al abrir. Admin."""
+    from core.services.cromo.inconsistencias_cromo import ultima_deteccion
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        corrida = await ultima_deteccion(sesion)
+    return JSONResponse(
+        {"corrida": _serializar_cromo_corrida(corrida) if corrida is not None else None}
+    )
+
+
+@app.post("/api/admin/infra/inconsistencias-cromo/deteccion")
+async def inconsistencias_cromo_deteccion_iniciar_web(
+    request: Request, body: InconsistenciasDeteccionRequestModel
+) -> JSONResponse:
+    """Lanza el detector a mano: corrida sintética que ejecuta el `cromo_worker` (tiene las
+    credenciales de Cromo para confirmar cables en vivo). El progreso se sigue con el SSE de
+    corridas. Una sola a la vez: si hay otra detección o una ingesta EN_CURSO devuelve 409 con su
+    id. Admin + CSRF."""
+    from core.services.cromo.inconsistencias_cromo import iniciar_si_no_hay_otra
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_deteccion", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        corrida, en_curso = await iniciar_si_no_hay_otra(sesion, usuario=username, origen="MANUAL")
+        if corrida is None:
+            return JSONResponse(
+                {"error": "Hay una detección o una ingesta en curso.", "corrida_id": en_curso},
+                status_code=409,
+            )
+        corrida_id = corrida.id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                _CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username}
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        logger.error("action=cromo_inconsistencias_deteccion_error corrida_id=%s error=%s", corrida_id, exc)
+        await _marcar_corrida_fallida(
+            corrida_id, f"No se pudo delegar la detección al worker de Cromo: {exc}"
+        )
+        return JSONResponse(
+            {"error": "El worker de Cromo no está disponible. Intentá nuevamente en unos segundos."},
+            status_code=503,
+        )
+    logger.info("action=cromo_inconsistencias_deteccion user=%s corrida_id=%s", username, corrida_id)
+    return JSONResponse({"corrida_id": corrida_id}, status_code=202)
 
 
 class OdfConfirmadaItemModel(BaseModel):

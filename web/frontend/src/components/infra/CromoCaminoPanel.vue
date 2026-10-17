@@ -229,6 +229,33 @@
       </template>
     </p>
 
+    <!-- Pelos del Servicio en casos de inconsistencias de Cromo: en cuarentena no cuentan como uso;
+         en revisión siguen contando hasta que un admin decida. -->
+    <p
+      v-if="camino.inconsistencias.value.cuarentena || camino.inconsistencias.value.en_revision"
+      class="cromo-camino__nota cromo-camino__aviso"
+    >
+      <i class="ph ph-warning" aria-hidden="true"></i>
+      <template v-if="camino.inconsistencias.value.cuarentena">
+        {{ camino.inconsistencias.value.cuarentena }} caso(s) de inconsistencias de Cromo en
+        cuarentena: esos pelos no cuentan como uso del Servicio.
+      </template>
+      <template v-if="camino.inconsistencias.value.en_revision">
+        {{ camino.inconsistencias.value.en_revision }} caso(s) en revisión.
+      </template>
+      <template v-if="esAdmin && servicioId !== null">
+        <RouterLink
+          class="cromo-camino__link"
+          :to="{
+            path: '/admin/servicios/viewer/InconsistenciasCromo',
+            query: { servicio_id: String(servicioId) },
+          }"
+        >
+          revisar en Inconsistencias
+        </RouterLink>
+      </template>
+    </p>
+
     <details v-if="camino.excluidos.value.length" class="cromo-camino__excluidos">
       <summary class="cromo-camino__nota">
         {{ camino.excluidos.value.length }} pelo(s) excluidos del Servicio
@@ -563,6 +590,10 @@ defineSlots<{
   font-size: 11.5px;
   line-height: 1.45;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+
+.cromo-camino__aviso {
+  color: var(--color-state-warn);
 }
 
 .cromo-camino__link {

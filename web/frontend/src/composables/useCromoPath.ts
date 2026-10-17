@@ -14,6 +14,7 @@ import {
   type PeloExcluido,
   type PeloSemilla,
   type PelosCaminoResponse,
+  type ResumenInconsistenciasServicio,
   type TramoDelServicio,
   confirmarOdfsServicio,
   declararTrackingsEsperados,
@@ -178,6 +179,8 @@ export function useCromoPath() {
   const esperadosDeclarados = ref<number | null>(null);
   /** Segmentos físicos de los tramos (grupos que comparten cables); 0 = sin resolver. */
   const segmentos = ref(0);
+  /** Casos de inconsistencias de Cromo del Servicio (cuarentena / en revisión), con `/caminos`. */
+  const inconsistencias = ref<ResumenInconsistenciasServicio>({ cuarentena: 0, en_revision: 0 });
   const guardandoDeclaracion = ref(false);
   const errorDeclaracion = ref('');
   /** Se confirmó/quitó una ODF o se cambió lo esperado: hay que volver a resolver los caminos. */
@@ -442,6 +445,7 @@ export function useCromoPath() {
       odfConfirmadas.value = respuesta.odf_confirmadas ?? [];
       esperadosDeclarados.value = respuesta.esperados_declarados;
       segmentos.value = respuesta.segmentos ?? 0;
+      inconsistencias.value = respuesta.inconsistencias ?? { cuarentena: 0, en_revision: 0 };
       declaracionCambio.value = false;
       seleccionManual.value = false;
       pelosSeleccionados.value = respuesta.tramos.map((t) => t.pelo_n_id);
@@ -612,6 +616,7 @@ export function useCromoPath() {
     odfConfirmadas.value = [];
     esperadosDeclarados.value = null;
     segmentos.value = 0;
+    inconsistencias.value = { cuarentena: 0, en_revision: 0 };
     errorDeclaracion.value = '';
     declaracionCambio.value = false;
     excluidos.value = [];
@@ -664,6 +669,7 @@ export function useCromoPath() {
     odfConfirmadas,
     esperadosDeclarados,
     segmentos,
+    inconsistencias,
     guardandoDeclaracion,
     errorDeclaracion,
     declaracionCambio,

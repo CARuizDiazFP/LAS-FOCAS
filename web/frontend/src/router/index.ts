@@ -43,6 +43,7 @@ const AdminCamarasViewer = () => import('../admin/views/AdminCamarasViewer.vue')
 const AdminBotellasViewer = () => import('../admin/views/AdminBotellasViewer.vue');
 const AdminServiciosSinOdfViewer = () => import('../admin/views/AdminServiciosSinOdfViewer.vue');
 const AdminHuerfanosViewer = () => import('../admin/views/AdminHuerfanosViewer.vue');
+const AdminInconsistenciasCromoViewer = () => import('../admin/views/AdminInconsistenciasCromoViewer.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
@@ -359,6 +360,12 @@ const routes: RouteRecordRaw[] = [
         path: 'servicios/viewer/Huerfanos',
         name: 'admin-servicios-viewer-huerfanos',
         component: AdminHuerfanosViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/InconsistenciasCromo',
+        name: 'admin-servicios-viewer-inconsistencias-cromo',
+        component: AdminInconsistenciasCromoViewer,
         meta: { requiresAdmin: true },
       },
       {

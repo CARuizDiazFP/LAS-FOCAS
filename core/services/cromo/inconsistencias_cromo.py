@@ -1217,18 +1217,22 @@ async def listar(
     revision: Optional[str] = None,
     localidad: Optional[str] = None,
     servicio: Optional[str] = None,
+    servicio_id: Optional[int] = None,
     pagina: int = 1,
     por_pagina: int = 50,
+    desplazamiento: Optional[int] = None,
 ) -> dict[str, Any]:
     """Casos paginados, filtrables por tipo/estado/revisión/localidad (ILIKE) y servicio (número
-    exacto de `cromo_servicio_match` de alguno de sus pelos)."""
+    exacto de `cromo_servicio_match`, o PK de `app.servicios`, de alguno de sus pelos).
+
+    `desplazamiento` (offset) pisa a `pagina` cuando se pasa. Además de los casos devuelve
+    `conteos_por_tipo`, con todos los filtros salvo el de tipo (chips del Viewer). Cada ítem lleva
+    `pelos` y `servicios` (cantidad de números de servicio distintos de sus pelos)."""
     pagina = max(1, int(pagina))
     por_pagina = min(max(1, int(por_pagina)), 500)
+    desde = max(0, int(desplazamiento)) if desplazamiento is not None else (pagina - 1) * por_pagina
     condiciones = ["true"]
     params: dict[str, Any] = {}
-    if tipo:
-        condiciones.append("i.tipo = :tipo")
-        params["tipo"] = tipo
     if estado:
         condiciones.append("i.estado = :estado")
         params["estado"] = estado
@@ -1245,6 +1249,29 @@ async def listar(
             "WHERE ip.inconsistencia_id = i.id AND m.servicio_numero = :servicio)"
         )
         params["servicio"] = servicio.strip()
+    if servicio_id is not None:
+        condiciones.append(
+            "EXISTS (SELECT 1 FROM app.cromo_inconsistencia_pelo ip "
+            "JOIN app.cromo_servicio_match m ON m.pelo_n_id = ip.pelo_n_id "
+            "WHERE ip.inconsistencia_id = i.id AND m.servicio_id = :servicio_id)"
+        )
+        params["servicio_id"] = int(servicio_id)
+    sin_tipo = " AND ".join(condiciones)
+    conteos_por_tipo = {
+        str(t): int(n)
+        for t, n in (
+            await sesion.execute(
+                text(
+                    "SELECT i.tipo, count(*) FROM app.cromo_inconsistencia i "
+                    f"WHERE {sin_tipo} GROUP BY i.tipo"
+                ),
+                params,
+            )
+        ).all()
+    }
+    if tipo:
+        condiciones.append("i.tipo = :tipo")
+        params["tipo"] = tipo
     donde = " AND ".join(condiciones)
     total = (
         await sesion.execute(
@@ -1258,19 +1285,64 @@ async def listar(
                 "i.revision, i.estado, i.evidencia, i.primera_vez, i.ultima_vez, "
                 "i.actualizado_por, i.actualizado_en, "
                 "(SELECT count(*) FROM app.cromo_inconsistencia_pelo ip "
-                " WHERE ip.inconsistencia_id = i.id) AS pelos "
+                " WHERE ip.inconsistencia_id = i.id) AS pelos, "
+                "(SELECT count(DISTINCT m.servicio_numero) "
+                " FROM app.cromo_inconsistencia_pelo ip "
+                " JOIN app.cromo_servicio_match m ON m.pelo_n_id = ip.pelo_n_id "
+                " WHERE ip.inconsistencia_id = i.id) AS servicios "
                 f"FROM app.cromo_inconsistencia i WHERE {donde} "
                 f"ORDER BY {_ORDEN_LISTADO} LIMIT :limite OFFSET :desde"
             ),
-            {**params, "limite": por_pagina, "desde": (pagina - 1) * por_pagina},
+            {**params, "limite": por_pagina, "desde": desde},
         )
     ).mappings().all()
     return {
         "total": int(total),
         "pagina": pagina,
         "por_pagina": por_pagina,
+        "desplazamiento": desde,
+        "conteos_por_tipo": conteos_por_tipo,
         "items": [dict(f) for f in filas],
     }
+
+
+async def resumen_de_servicio(sesion: AsyncSession, servicio_id: int) -> dict[str, Any]:
+    """Casos que tocan a un servicio (PK de `app.servicios`), para el aviso del panel Camino.
+
+    `cuarentena`: casos en CUARENTENA (sus pelos no cuentan como uso). `en_revision`: casos
+    PENDIENTE o REPORTADA. Cuenta casos, no pelos; sólo lee el uso crudo de `cromo_servicio_match`
+    (por eso vive acá, en el módulo permitido)."""
+    filas = (
+        await sesion.execute(
+            text(
+                "SELECT i.estado, count(DISTINCT i.id) FROM app.cromo_inconsistencia i "
+                "JOIN app.cromo_inconsistencia_pelo ip ON ip.inconsistencia_id = i.id "
+                "JOIN app.cromo_servicio_match m ON m.pelo_n_id = ip.pelo_n_id "
+                "WHERE m.servicio_id = :servicio_id "
+                "AND i.estado IN ('CUARENTENA', 'PENDIENTE', 'REPORTADA') GROUP BY i.estado"
+            ),
+            {"servicio_id": int(servicio_id)},
+        )
+    ).all()
+    por_estado = {str(e): int(n) for e, n in filas}
+    return {
+        "cuarentena": por_estado.get(ESTADO_CUARENTENA, 0),
+        "en_revision": por_estado.get(ESTADO_PENDIENTE, 0) + por_estado.get(ESTADO_REPORTADA, 0),
+    }
+
+
+async def ultima_deteccion(sesion: AsyncSession) -> Optional[CromoIngestaCorrida]:
+    """Última corrida sintética del detector (la que muestra el Viewer al abrir)."""
+    fila = (
+        await sesion.execute(
+            text(
+                "SELECT id FROM app.cromo_ingesta_corridas WHERE params ->> 'tipo' = :tipo "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            {"tipo": TIPO_CORRIDA_INCONSISTENCIAS},
+        )
+    ).first()
+    return await sesion.get(CromoIngestaCorrida, int(fila[0])) if fila else None
 
 
 async def cambiar_estado(

@@ -756,7 +756,7 @@ def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
     cuerpo = res.json()
     assert set(cuerpo) == {
         "tramos", "residuales", "esperados_declarados", "odf_confirmadas", "completo", "errores",
-        "no_cubiertos", "tope_llamadas", "segmentos",
+        "no_cubiertos", "tope_llamadas", "segmentos", "inconsistencias",
     }
     assert cuerpo["esperados_declarados"] == 3 and cuerpo["completo"] is True
     assert [c["n"] for c in cuerpo["tramos"]] == [1, 2]

@@ -429,6 +429,61 @@ async def test_listar_filtra_por_tipo_estado_localidad_y_servicio(entorno):
 
 
 @pytest.mark.asyncio
+async def test_listar_desplazamiento_conteos_por_tipo_y_servicios(entorno):
+    sesion, conn = entorno
+    await _insertar_inventario(conn)
+    await inc.aplicar_casos(
+        sesion,
+        [
+            _caso("ISLA_FUSION", 999917801, "AUTO", pelos=(_PELO_A,)),
+            _caso("CABLE_SIN_EXTREMO", 999917802, "MANUAL", pelos=(_PELO_A,)),
+            _caso("CABLE_SIN_EXTREMO", 999917803, "MANUAL", pelos=(_PELO_A,)),
+        ],
+        ahora=AHORA,
+    )
+    todo = await inc.listar(sesion, servicio=_SERVICIO)
+    assert todo["conteos_por_tipo"] == {"ISLA_FUSION": 1, "CABLE_SIN_EXTREMO": 2}
+    assert all(i["servicios"] == 1 for i in todo["items"])
+    # Los conteos ignoran el filtro de tipo; la lista y el total, no.
+    filtrado = await inc.listar(sesion, servicio=_SERVICIO, tipo="ISLA_FUSION")
+    assert filtrado["total"] == 1 and filtrado["conteos_por_tipo"] == todo["conteos_por_tipo"]
+    # offset explícito, independiente de la página.
+    segunda = await inc.listar(sesion, servicio=_SERVICIO, por_pagina=2, desplazamiento=2)
+    assert len(segunda["items"]) == 1 and segunda["desplazamiento"] == 2
+
+
+@pytest.mark.asyncio
+async def test_listar_por_servicio_id_y_resumen_de_servicio(entorno):
+    sesion, conn = entorno
+    await _insertar_inventario(conn)
+    sid = (await conn.execute(text("SELECT min(id) FROM app.servicios"))).scalar()
+    if sid is None:
+        pytest.skip("la DB no tiene servicios")
+    await conn.execute(
+        text("UPDATE app.cromo_servicio_match SET servicio_id = :sid WHERE servicio_numero = :n"),
+        {"sid": sid, "n": _SERVICIO},
+    )
+    await inc.aplicar_casos(
+        sesion,
+        [
+            _caso("ISLA_FUSION", 999917801, "AUTO", pelos=(_PELO_A,)),
+            _caso("CABLE_SIN_EXTREMO", 999917802, "MANUAL", pelos=(_PELO_A,)),
+        ],
+        ahora=AHORA,
+    )
+    por_id = await inc.listar(sesion, servicio_id=sid)
+    assert {999917801, 999917802} <= {i["objeto_n_id"] for i in por_id["items"]}
+    base = await inc.resumen_de_servicio(sesion, sid)
+    assert base["cuarentena"] >= 1 and base["en_revision"] >= 1
+    # Aceptar el caso de cuarentena lo saca del conteo de cuarentena.
+    caso = (await inc.listar(sesion, servicio_id=sid, tipo="ISLA_FUSION"))["items"][0]
+    await inc.cambiar_estado(sesion, [caso["id"]], "ACEPTADA", "test")
+    despues = await inc.resumen_de_servicio(sesion, sid)
+    assert despues["cuarentena"] == base["cuarentena"] - 1
+    assert (await inc.resumen_de_servicio(sesion, -1)) == {"cuarentena": 0, "en_revision": 0}
+
+
+@pytest.mark.asyncio
 async def test_detectar_aplicado_de_punta_a_punta_sin_cliente(entorno):
     """`detectar` real sobre la DB (sin Cromo): la isla pura sintética queda MANUAL/PENDIENTE por
     falla cerrada, y la confirmación previa guardada se reutiliza en la corrida siguiente."""
