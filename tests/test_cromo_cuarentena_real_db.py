@@ -256,6 +256,40 @@ async def test_servicio_traza_deja_de_listar_el_cable_en_cuarentena(entorno):
     assert await servicio_traza._cables_inventario(sesion, pk) == [f"F-TEST-CUARENTENA-{_CABLE_MIXTO}"]
 
 
+@pytest.mark.asyncio
+async def test_servicio_traza_no_sirve_trackings_cacheados_de_pelos_en_cuarentena(entorno):
+    """La rama `tc.servicio_id = :sid` del caché no debe saltear la cuarentena de su pelo semilla."""
+    from datetime import datetime, timezone
+
+    sesion, conn, pk = entorno
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_tracking_cache (pelo_n_id, servicio_id, nombre_archivo, contenido) "
+            "VALUES (:p, :sid, 'x.txt', 'contenido')"
+        ),
+        {"p": _PELO_CUARENTENA, "sid": pk},
+    )
+    ahora = datetime.now(timezone.utc)
+    assert await servicio_traza._trackings_frescos(sesion, pk, ahora=ahora) == ["contenido"]
+
+    await _cuarentena(conn)
+
+    assert await servicio_traza._trackings_frescos(sesion, pk, ahora=ahora) == []
+
+
+@pytest.mark.asyncio
+async def test_resumen_y_listado_por_servicio_matchean_por_todas_las_identidades(entorno):
+    """El match se hizo bajo otra numeración (servicio_id NULL): igual debe contar para el Servicio."""
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion, conn, pk = entorno
+    await conn.execute(text("UPDATE app.cromo_servicio_match SET servicio_id = NULL WHERE pelo_n_id BETWEEN 999918000 AND 999918999"))
+
+    assert (await inconsistencias_cromo.resumen_de_servicio(sesion, pk))["en_revision"] == 1
+    listado = await inconsistencias_cromo.listar(sesion, servicio_id=pk)
+    assert listado["total"] == 1
+
+
 # ── Servicios sin ODF ────────────────────────────────────────────────────────
 
 

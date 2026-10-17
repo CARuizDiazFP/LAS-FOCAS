@@ -166,7 +166,15 @@ _SQL_TRACKINGS_DEL_SERVICIO = text(
     f"""
     SELECT tc.pelo_n_id, tc.contenido, tc.generado_at
     FROM app.cromo_tracking_cache tc
-    WHERE tc.servicio_id = :sid
+    WHERE (tc.servicio_id = :sid
+           -- Misma regla que `v_cromo_servicio_match_vigente`: un pelo semilla en un caso en
+           -- CUARENTENA no sirve su tracking cacheado como uso del Servicio.
+           AND NOT EXISTS (
+                SELECT 1
+                FROM app.cromo_inconsistencia_pelo ip
+                JOIN app.cromo_inconsistencia i ON i.id = ip.inconsistencia_id
+                WHERE ip.pelo_n_id = tc.pelo_n_id AND i.estado = 'CUARENTENA'
+           ))
        OR tc.pelo_n_id IN (
             SELECT m.pelo_n_id
             FROM app.servicios s

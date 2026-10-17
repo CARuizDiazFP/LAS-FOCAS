@@ -1058,7 +1058,8 @@ confirmación previa se reutiliza mientras la versión local del cable no cambie
 - Una `CUARENTENA` puesta por el detector que pasa a `MANUAL` se levanta a `PENDIENTE`; una `PENDIENTE`
   que pasa a `AUTO` entra en `CUARENTENA`. Si el estado lo puso una persona, no se pisa.
 - Una persona puede mover un caso a `CUARENTENA`, `ACEPTADA`, `REPORTADA` o `PENDIENTE` (nunca a
-  `CORREGIDA`, y no desde `CORREGIDA`); lo valida `cambiar_estado`.
+  `CORREGIDA`, y no desde `CORREGIDA`); lo valida `cambiar_estado`. Mover un caso al estado en el que
+  ya está también se rechaza ("el caso ya está en X").
 
 **Cuarentena.** La migración `20261017_03` crea la vista `app.v_cromo_servicio_match_vigente`: las
 mismas columnas que `cromo_servicio_match`, sin las filas cuyo pelo pertenece a un caso en

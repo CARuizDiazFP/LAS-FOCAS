@@ -1023,7 +1023,15 @@ Ver `docs/infra.md` ("ODF Nodo, tracking por tramos y auditoría de huérfanos")
 
 **Orden de despliegue:** `20261017_02` y `20261017_03` deben estar aplicadas **antes** de arrancar el
 código nuevo: los lectores consultan la vista, y sin ella fallan con `UndefinedTable`.
+Orden completo: 1) `alembic upgrade head`; 2) rebuild + recreate de `cromo_worker` (necesita
+`slack_sdk` y el secret de Slack, y conoce los tipos de corrida nuevos: un worker viejo trataría una
+corrida de detección como una ingesta); 3) recién después `web`, `api`, `slack_baneo_worker` y
+`fo_monitor_worker`.
 Ver `docs/infra.md` ("Inconsistencias de Cromo y cuarentena").
+
+**Vista y columnas:** `v_cromo_servicio_match_vigente` usa `SELECT m.*`, y Postgres congela la lista de
+columnas al crear la vista. Toda migración que agregue o quite columnas de `cromo_servicio_match` debe
+hacer `DROP VIEW` antes y recrearla después.
 
 ### `cromo_splitters` y `cromo_splitter_puertos` (2026-09-17)
 

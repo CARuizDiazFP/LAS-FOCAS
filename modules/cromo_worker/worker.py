@@ -245,6 +245,14 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
                 if estado == "FALLIDA":
                     error = "La detección de inconsistencias terminó FALLIDA (ver eventos de la corrida)."
                 return
+            tipo = params.get("tipo")
+            if tipo is not None:
+                # Un tipo sintético que este worker no conoce (p.ej. un web más nuevo que el worker)
+                # NUNCA debe caer en la ingesta: se cierra FALLIDA sin ingerir nada.
+                es_sintetica = True
+                error = f"tipo de corrida desconocido: {tipo}"
+                await _cerrar_corrida_fallida(corrida_id, error)
+                return
             async with CromoClient(config=get_cromo_config()) as cliente:
                 await continuar_corrida(
                     cliente,
@@ -295,6 +303,20 @@ async def _cerrar_corrida_fallida(corrida_id: int, motivo: str) -> None:
             await sesion.commit()
     except Exception:  # noqa: BLE001
         logger.exception("action=cromo_worker evento=error_cerrando_corrida corrida_id=%s", corrida_id)
+
+
+TIPOS_CORRIDA_CONOCIDOS = frozenset({TIPO_CORRIDA_AUDITORIA, TIPO_CORRIDA_INCONSISTENCIAS})
+
+
+async def _tipo_de_corrida(corrida_id: int) -> Optional[str]:
+    """Devuelve `params.tipo` de la corrida, o None si no tiene tipo / no se pudo leer (best-effort)."""
+    try:
+        async with AsyncSessionLocal() as sesion:
+            corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+            return ((corrida.params or {}).get("tipo")) if corrida is not None else None
+    except Exception:  # noqa: BLE001 - si no se puede leer, decide `_continuar_en_bg`
+        logger.exception("action=cromo_worker evento=error_leyendo_tipo_corrida corrida_id=%s", corrida_id)
+        return None
 
 
 async def _job_programado() -> None:
@@ -374,6 +396,11 @@ async def reload_config():
 @app.post("/run")
 async def run(body: RunRequest):
     if body.corrida_id is not None:
+        tipo = await _tipo_de_corrida(body.corrida_id)
+        if tipo is not None and tipo not in TIPOS_CORRIDA_CONOCIDOS:
+            motivo = f"tipo de corrida desconocido: {tipo}"
+            await _cerrar_corrida_fallida(body.corrida_id, motivo)
+            return JSONResponse({"ok": False, "error": motivo}, status_code=422)
         _worker_status["corrida_en_curso"] = body.corrida_id
         asyncio.create_task(_continuar_en_bg(body.corrida_id))
         return JSONResponse({"ok": True, "corrida_id": body.corrida_id}, status_code=202)

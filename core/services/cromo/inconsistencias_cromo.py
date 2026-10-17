@@ -49,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.services.cromo import ingesta
 from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo.inconsistencias_reporte import avisar_casos_nuevos
+from core.services.cromo.servicios_sin_odf import IDENTIDADES_DEL_SERVICIO_SQL
 from db.models.cromo import CromoIngestaCorrida
 
 logger = logging.getLogger(__name__)
@@ -1274,7 +1275,8 @@ async def listar(
         condiciones.append(
             "EXISTS (SELECT 1 FROM app.cromo_inconsistencia_pelo ip "
             "JOIN app.cromo_servicio_match m ON m.pelo_n_id = ip.pelo_n_id "
-            "WHERE ip.inconsistencia_id = i.id AND m.servicio_id = :servicio_id)"
+            "JOIN app.servicios s ON s.id = :servicio_id AND (" + IDENTIDADES_DEL_SERVICIO_SQL + ") "
+            "WHERE ip.inconsistencia_id = i.id)"
         )
         params["servicio_id"] = int(servicio_id)
     sin_tipo = " AND ".join(condiciones)
@@ -1339,8 +1341,8 @@ async def resumen_de_servicio(sesion: AsyncSession, servicio_id: int) -> dict[st
                 "SELECT i.estado, count(DISTINCT i.id) FROM app.cromo_inconsistencia i "
                 "JOIN app.cromo_inconsistencia_pelo ip ON ip.inconsistencia_id = i.id "
                 "JOIN app.cromo_servicio_match m ON m.pelo_n_id = ip.pelo_n_id "
-                "WHERE m.servicio_id = :servicio_id "
-                "AND i.estado IN ('CUARENTENA', 'PENDIENTE', 'REPORTADA') GROUP BY i.estado"
+                "JOIN app.servicios s ON s.id = :servicio_id AND (" + IDENTIDADES_DEL_SERVICIO_SQL + ") "
+                "WHERE i.estado IN ('CUARENTENA', 'PENDIENTE', 'REPORTADA') GROUP BY i.estado"
             ),
             {"servicio_id": int(servicio_id)},
         )

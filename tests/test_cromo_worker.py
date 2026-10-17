@@ -453,6 +453,50 @@ async def test_continuar_en_bg_deteccion_que_falla_al_arrancar_cierra_la_corrida
     assert corrida.estado == "FALLIDA"
 
 
+@pytest.mark.asyncio
+async def test_continuar_en_bg_tipo_desconocido_no_ingiere_y_cierra_fallida(monkeypatch):
+    """Un `params.tipo` que el worker no conoce jamás cae en `continuar_corrida` (ingesta)."""
+    corrida = _CorridaFake(id=81, params={"tipo": "TIPO_DEL_FUTURO", "clases": [68]})
+    sesion = _SesionFake(corridas={81: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+
+    async def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("un tipo desconocido no es una ingesta")
+
+    monkeypatch.setattr(worker, "continuar_corrida", _no_deberia_llamarse)
+
+    await worker._continuar_en_bg(81)
+
+    assert corrida.estado == "FALLIDA"
+    assert worker._worker_status["ultimo_error"] == "tipo de corrida desconocido: TIPO_DEL_FUTURO"
+
+
+def test_run_con_corrida_id_de_tipo_desconocido_responde_422(monkeypatch):
+    llamados = []
+
+    async def _continuar_fake(corrida_id):
+        llamados.append(corrida_id)
+
+    async def _tipo(corrida_id):
+        return "TIPO_DEL_FUTURO"
+
+    cerradas = []
+
+    async def _cerrar(corrida_id, motivo):
+        cerradas.append((corrida_id, motivo))
+
+    monkeypatch.setattr(worker, "_continuar_en_bg", _continuar_fake)
+    monkeypatch.setattr(worker, "_tipo_de_corrida", _tipo)
+    monkeypatch.setattr(worker, "_cerrar_corrida_fallida", _cerrar)
+    res = TestClient(worker.app).post("/run", json={"corrida_id": 9})
+
+    assert res.status_code == 422
+    assert llamados == []
+    assert cerradas == [(9, "tipo de corrida desconocido: TIPO_DEL_FUTURO")]
+
+
 # ── Endpoints HTTP (FastAPI TestClient) ──────────────────────────────────────
 
 
@@ -489,6 +533,11 @@ def test_run_con_corrida_id_dispara_continuar_en_bg(monkeypatch):
         llamados.append(corrida_id)
 
     monkeypatch.setattr(worker, "_continuar_en_bg", _continuar_fake)
+
+    async def _sin_tipo(corrida_id):
+        return None
+
+    monkeypatch.setattr(worker, "_tipo_de_corrida", _sin_tipo)
     client = TestClient(worker.app)
 
     res = client.post("/run", json={"corrida_id": 7})
