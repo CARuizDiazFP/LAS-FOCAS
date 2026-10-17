@@ -448,6 +448,97 @@ async def test_ejecutar_ingesta_propaga_modo_a_continuar_corrida(monkeypatch):
     assert corrida.params.get("modo") == "SOLO_ODF"
 
 
+def _fases_noop(monkeypatch, conteo=None) -> None:
+    async def _fase_conteo_fake(cliente, **_kwargs):
+        return conteo or {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    for nombre in (
+        "fase_cables", "fase_cables_terceros", "fase_botellas", "fase_fusiones", "fase_odfs",
+        "fase_reconciliacion", "fase_servicios",
+    ):
+        monkeypatch.setattr(ingesta, nombre, _fase_noop)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modo", ["COMPLETA", "SOLO_ODF", "SOLO_PELOS_INNER"])
+async def test_continuar_corrida_dispara_el_detector_de_inconsistencias_despues_del_commit(
+    monkeypatch, modo
+):
+    """Paso posterior al commit (patrón `encolar_recalculo_duplicados_botellas`): la corrida ya
+    quedó cerrada y commiteada cuando corre el detector."""
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+    monkeypatch.setattr(ingesta, "MODOS_ACOTADOS", {
+        **ingesta.MODOS_ACOTADOS,
+        **{m: ingesta._ModoAcotado((51,), _fase_noop) for m in ("SOLO_ODF", "SOLO_PELOS_INNER")},
+    })
+    recibido: dict[str, Any] = {}
+
+    async def _detector(cliente, sesion_arg, corrida_id, modo_arg):
+        corrida = await sesion_arg.get(CromoIngestaCorrida, corrida_id)
+        recibido.update(
+            corrida_id=corrida_id, modo=modo_arg, estado_al_detectar=corrida.estado,
+            commits_al_detectar=sesion_arg.commits,
+        )
+        return "OK"
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(
+        cliente=object(), sesion=sesion, usuario="tester", psize=5, modo=modo
+    )
+
+    assert corrida.estado == "OK"
+    assert recibido["modo"] == modo and recibido["corrida_id"] == corrida.id
+    assert recibido["estado_al_detectar"] == "OK" and recibido["commits_al_detectar"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_no_dispara_el_detector_si_la_corrida_fallo(monkeypatch):
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+
+    async def _rompe(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ingesta, "fase_cables", _rompe)
+    llamadas: list = []
+
+    async def _detector(*a, **k):
+        llamadas.append(a)
+        return "OK"
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
+
+    assert corrida.estado == "FALLIDA" and llamadas == []
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_un_detector_que_rompe_no_hace_fallar_la_ingesta(monkeypatch):
+    """Best-effort: aunque el detector levante (no debería: `detectar_post_ingesta` atrapa todo),
+    la ingesta ya cerrada sigue OK."""
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+
+    async def _detector(*a, **k):
+        raise RuntimeError("detector roto")
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
+
+    assert corrida.estado == "OK"
+
+
 # ── Procesamiento de un objeto (savepoint real, tolerancia a errores) ──────
 
 

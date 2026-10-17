@@ -18,6 +18,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Text,
@@ -742,6 +743,67 @@ class CromoAuditoriaHuerfano(Base):
             f"<CromoAuditoriaHuerfano servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id} "
             f"estado={self.estado}>"
         )
+
+
+class CromoInconsistencia(Base):
+    """Caso del detector de inconsistencias de Cromo (`core/services/cromo/inconsistencias_cromo.py`).
+
+    Un caso por `(tipo, objeto_n_id)`: `ISLA_FUSION` (objeto = fusión 132), `CABLE_SIN_EXTREMO`
+    (objeto = cable) o `ELEMENTO_ISLA` (objeto = botella u ODF). `revision` AUTO sólo para la isla
+    pura confirmada contra Cromo en vivo (entra en `CUARENTENA`); MANUAL para todo lo demás (entra en
+    `PENDIENTE`). Re-detectar actualiza `ultima_vez`/evidencia y nunca toca ACEPTADA ni REPORTADA;
+    un caso que deja de detectarse pasa a CORREGIDA.
+    """
+
+    __tablename__ = "cromo_inconsistencia"
+    __table_args__ = (
+        UniqueConstraint("tipo", "objeto_n_id", name="uq_cromo_inconsistencia_tipo_objeto"),
+        Index("ix_cromo_inconsistencia_estado_tipo", "estado", "tipo"),
+        {"schema": "app"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tipo = Column(Text, nullable=False)  # ISLA_FUSION | CABLE_SIN_EXTREMO | ELEMENTO_ISLA (CHECK)
+    objeto_n_id = Column(BigInteger, nullable=False)  # referencia blanda, n_id de linaje
+    objeto_clase = Column(SmallInteger, nullable=True)
+    nombre = Column(Text, nullable=True)
+    localidad = Column(Text, nullable=True)
+    revision = Column(Text, nullable=False)  # AUTO | MANUAL (CHECK)
+    # PENDIENTE | CUARENTENA | REPORTADA | CORREGIDA | ACEPTADA (CHECK)
+    estado = Column(Text, nullable=False)
+    evidencia = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    primera_vez = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    ultima_vez = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    actualizado_por = Column(String(128), nullable=True)
+    actualizado_en = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CromoInconsistencia tipo={self.tipo} objeto_n_id={self.objeto_n_id} "
+            f"estado={self.estado}>"
+        )
+
+
+class CromoInconsistenciaPelo(Base):
+    """Pelo en uso afectado por un caso de `cromo_inconsistencia` (la cuarentena se arma por pelo)."""
+
+    __tablename__ = "cromo_inconsistencia_pelo"
+    __table_args__ = (
+        PrimaryKeyConstraint("inconsistencia_id", "pelo_n_id", name="pk_cromo_inconsistencia_pelo"),
+        Index("ix_cromo_inconsistencia_pelo_pelo", "pelo_n_id"),
+        {"schema": "app"},
+    )
+
+    inconsistencia_id = Column(
+        BigInteger, ForeignKey("app.cromo_inconsistencia.id", ondelete="CASCADE"), nullable=False
+    )
+    pelo_n_id = Column(BigInteger, nullable=False)
 
 
 class CromoSplitter(Base):

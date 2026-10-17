@@ -2430,6 +2430,28 @@ async def continuar_corrida(
     if contadores.creadas or contadores.actualizadas:
         await encolar_recalculo_duplicados_botellas(motivo=f"ingesta corrida_id={corrida.id}")
 
+    # Detector de inconsistencias (corrida sintética propia) tras COMPLETA/SOLO_ODF/SOLO_PELOS_INNER
+    # cerradas OK: mismo criterio post-commit y best-effort. `detectar_post_ingesta` filtra el modo
+    # y atrapa sus excepciones; el try de acá es la segunda red, una falla nunca tumba la ingesta.
+    # Si el detector hizo rollback, la sesión expiró `corrida`: se recarga para que el llamador
+    # pueda leerla sin lazy-load async.
+    if estado_final in ("OK", "OK_CON_ERRORES"):
+        corrida_id_final = corrida.id
+        try:
+            from core.services.cromo import inconsistencias_cromo  # import diferido: ciclo
+
+            await inconsistencias_cromo.detectar_post_ingesta(cliente, sesion, corrida_id_final, modo)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "action=cromo_ingesta evento=detector_inconsistencias_fallido corrida_id=%s",
+                corrida_id_final,
+                exc_info=True,
+            )
+        try:
+            await sesion.refresh(corrida)
+        except Exception:  # noqa: BLE001
+            logger.debug("action=cromo_ingesta evento=refresh_post_detector_omitido", exc_info=True)
+
     logger.info(
         "action=cromo_ingesta evento=corrida_finalizada corrida_id=%s estado=%s leidas=%d creadas=%d actualizadas=%d sin_cambios=%d errores=%d refs_colgadas=%d",
         corrida.id,

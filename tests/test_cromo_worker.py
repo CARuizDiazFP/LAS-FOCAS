@@ -407,6 +407,52 @@ async def test_continuar_en_bg_auditoria_que_falla_al_arrancar_cierra_la_corrida
     assert corrida.finalizada_at is not None
 
 
+@pytest.mark.asyncio
+async def test_continuar_en_bg_corre_la_deteccion_de_inconsistencias_sin_tocar_la_config(monkeypatch):
+    """Corrida sintética `tipo=INCONSISTENCIAS_CROMO`: va a `ejecutar_deteccion_inconsistencias`,
+    nunca a `continuar_corrida` ni a la auditoría, y no pisa la config del scheduler."""
+    config = _ConfigFake()
+    corrida = _CorridaFake(id=79, params={"tipo": "INCONSISTENCIAS_CROMO"})
+    sesion = _SesionFake(config=config, corridas={79: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+    recibido: dict[str, Any] = {}
+
+    async def _detectar(cliente, sesion_arg, corrida_id):
+        recibido.update(corrida_id=corrida_id, cliente=cliente is not None)
+        return "OK"
+
+    async def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("una detección no es una ingesta ni una auditoría")
+
+    monkeypatch.setattr(worker, "ejecutar_deteccion_inconsistencias", _detectar)
+    monkeypatch.setattr(worker, "continuar_corrida", _no_deberia_llamarse)
+    monkeypatch.setattr(worker, "auditar_global", _no_deberia_llamarse)
+
+    await worker._continuar_en_bg(79)
+
+    assert recibido == {"corrida_id": 79, "cliente": True}
+    assert config.ultima_ejecucion is None
+    assert worker._worker_status["ultimo_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_deteccion_que_falla_al_arrancar_cierra_la_corrida(monkeypatch):
+    corrida = _CorridaFake(id=80, params={"tipo": "INCONSISTENCIAS_CROMO"})
+    sesion = _SesionFake(corridas={80: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+
+    def _sin_config():
+        raise RuntimeError("Cromo no está configurado")
+
+    monkeypatch.setattr(worker, "get_cromo_config", _sin_config)
+
+    await worker._continuar_en_bg(80)
+
+    assert corrida.estado == "FALLIDA"
+
+
 # ── Endpoints HTTP (FastAPI TestClient) ──────────────────────────────────────
 
 

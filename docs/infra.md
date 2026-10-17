@@ -1012,6 +1012,40 @@ Cromo. Endpoints admin (`/api/admin/infra/huerfanos`, `.../normalizar`, `.../des
 `.../auditoria-global` GET/POST); el progreso usa el SSE de corridas (`?desde=<id>` para reanudar).
 Viewer: `/admin/servicios/viewer/Huerfanos` (`AdminHuerfanosViewer.vue`).
 
+### Detector de inconsistencias de Cromo (2026-10-17)
+
+`core/services/cromo/inconsistencias_cromo.py` registra casos en `app.cromo_inconsistencia`
+(migración `20261017_02`, `UNIQUE(tipo, objeto_n_id)`) y sus pelos en uso en
+`app.cromo_inconsistencia_pelo`. Hay tres tipos:
+
+- `ISLA_FUSION`: una fusión 132 en la que ninguno de los dos pelos tiene otra unión (fusiones +
+  conectores de ODF, incluidos los que llegan por una 141), con al menos uno en uso.
+- `CABLE_SIN_EXTREMO`: un cable 51/52/59/60 vigente con algún extremo NULL y pelos en uso.
+- `ELEMENTO_ISLA`: una botella u ODF/ODF Nodo cuyos cables incidentes terminan todos sin otro
+  extremo, con pelos en uso.
+
+"En uso" quiere decir que el pelo tiene fila en `cromo_servicio_match`.
+
+Revisión `AUTO` (entra en `CUARENTENA`) sólo para la isla pura: la fusión está dentro de una
+botella, cada cable llega a esa botella por un extremo y tiene el otro NULL, y eso se confirma
+contra Cromo en vivo (`GET /db/objects/{versión}`). El tope de confirmaciones es
+`CROMO_INCONSISTENCIAS_MAX_CONFIRMACIONES` (default 300). Una confirmación previa se reutiliza
+mientras la versión local del cable no cambie, por hasta 7 días. Todo lo demás es `MANUAL` y entra
+en `PENDIENTE`, incluidos Cromo caído y el tope agotado.
+
+Re-detectar es idempotente: nunca toca `ACEPTADA` ni `REPORTADA`, ni un estado que haya puesto una
+persona. Un caso que deja de detectarse pasa a `CORREGIDA` y se reabre si vuelve a aparecer.
+
+Corre como corrida sintética (`params.tipo=INCONSISTENCIAS_CROMO`) en dos momentos:
+
+- Al final de cada ingesta COMPLETA, SOLO_ODF o SOLO_PELOS_INNER cerrada OK, después del commit y
+  en modo best-effort: nunca hace fallar la ingesta.
+- A mano, desde el `cromo_worker`.
+
+La corrida emite un evento `PAGINA` por fase (LECTURA, CONFIRMACION, APLICACION). En dev el SQL
+tarda ~6-10 s gracias a dos tablas temporales indexadas; con CTEs no terminaba en 2 minutos. La
+medición en modo reporte se hace con `scripts/cromo_inconsistencias_medicion.py`.
+
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
 - **Vista dedicada por cámara**: `GET /infra/Camaras/:id` dentro de la SPA Vue 3.

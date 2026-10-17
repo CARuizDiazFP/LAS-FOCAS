@@ -38,6 +38,10 @@ from core.logging import setup_logging
 from core.services.cromo.auditoria_huerfanos_global import TIPO_CORRIDA_AUDITORIA, auditar_global
 from core.services.cromo.client import CromoClient
 from core.services.cromo.config import get_cromo_config
+from core.services.cromo.inconsistencias_cromo import (
+    TIPO_CORRIDA_INCONSISTENCIAS,
+    ejecutar_corrida as ejecutar_deteccion_inconsistencias,
+)
 from core.services.cromo.ingesta import continuar_corrida, iniciar_corrida
 from db.models.cromo import CromoIngestaConfig, CromoIngestaCorrida, CromoIngestaEvento
 from db.session import AsyncSessionLocal
@@ -213,7 +217,7 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
     """Corre las fases de una corrida ya creada, leyendo sus propios params — no depende de que el
     caller (web o el propio worker) los reenvíe: ya quedaron persistidos en `corrida.params`."""
     error: Optional[str] = None
-    es_auditoria = False
+    es_sintetica = False
     try:
         async with AsyncSessionLocal() as sesion:
             corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
@@ -224,13 +228,22 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
             if params.get("tipo") == TIPO_CORRIDA_AUDITORIA:
                 # Corrida sintética de auditoría de huérfanos (Viewer admin): no es una ingesta,
                 # así que no toca `ultima_ejecucion`/`ultimo_error` de la config del scheduler.
-                es_auditoria = True
+                es_sintetica = True
                 async with CromoClient(config=get_cromo_config()) as cliente:
                     estado = await auditar_global(
                         cliente, sesion, corrida_id, max_servicios=params.get("max_servicios")
                     )
                 if estado == "FALLIDA":
                     error = "La auditoría de huérfanos terminó FALLIDA (ver eventos de la corrida)."
+                return
+            if params.get("tipo") == TIPO_CORRIDA_INCONSISTENCIAS:
+                # Corrida sintética del detector de inconsistencias (manual): tampoco es una
+                # ingesta. Las post-ingesta no pasan por acá: las dispara `continuar_corrida`.
+                es_sintetica = True
+                async with CromoClient(config=get_cromo_config()) as cliente:
+                    estado = await ejecutar_deteccion_inconsistencias(cliente, sesion, corrida_id)
+                if estado == "FALLIDA":
+                    error = "La detección de inconsistencias terminó FALLIDA (ver eventos de la corrida)."
                 return
             async with CromoClient(config=get_cromo_config()) as cliente:
                 await continuar_corrida(
@@ -249,15 +262,15 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
     except Exception as exc:  # noqa: BLE001 - tarea de background: no hay nadie a quien propagar
         error = str(exc)
         logger.exception("action=cromo_worker evento=error_continuar_corrida corrida_id=%s", corrida_id)
-        if es_auditoria:
-            # `auditar_global` cierra su corrida; si falló antes (p.ej. Cromo sin configurar) la
+        if es_sintetica:
+            # Las corridas sintéticas se cierran solas; si fallaron antes (p.ej. Cromo sin configurar) la
             # corrida quedaría EN_CURSO hasta el próximo reinicio del worker.
             await _cerrar_corrida_fallida(corrida_id, error)
     finally:
         _worker_status["corrida_en_curso"] = None
         _worker_status["ultima_ejecucion"] = datetime.now(timezone.utc).isoformat()
         _worker_status["ultimo_error"] = error
-        if not es_auditoria:
+        if not es_sintetica:
             try:
                 async with AsyncSessionLocal() as sesion:
                     config = await sesion.get(CromoIngestaConfig, config_id)
