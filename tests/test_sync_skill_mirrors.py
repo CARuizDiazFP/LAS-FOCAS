@@ -1,6 +1,6 @@
 # Nombre de archivo: test_sync_skill_mirrors.py
 # Ubicación de archivo: tests/test_sync_skill_mirrors.py
-# Descripción: Pruebas del propagador de skills a los mirrors por plataforma (transformaciones, preservación de frontmatter, detección de drift e idempotencia)
+# Descripción: Pruebas del propagador de skills a los mirrors por plataforma (transformaciones, adaptadores livianos de Gemini, mirror .agents, preservación de frontmatter, drift e idempotencia)
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 from scripts.sync_skill_mirrors import (
+    MAX_LINEAS_ADAPTADOR,
     PLATAFORMAS,
     frontmatter_de,
+    lista_frontmatter,
     partes_fuente,
     procesar,
     render,
@@ -31,6 +33,7 @@ argument-hint: "contexto"
 
 Cuerpo con espacios al final.\x20\x20
 Y una referencia a [docker-rebuild](../docker-rebuild/SKILL.md) que debe reescribirse.
+Detalle en [recetas](./references/recetas.md).
 
 ## Guardrails
 
@@ -113,8 +116,8 @@ def test_render_apunta_el_encabezado_a_la_ubicacion_real_del_mirror(raiz: Path) 
     assert "mirror de .agentes-comunes/skills/ejemplo/SKILL.md" in contenido
 
 
-def test_render_preserva_el_frontmatter_existente_del_mirror(raiz: Path, monkeypatch) -> None:
-    """Cada plataforma tiene su propio frontmatter (triggers, globs, commands)."""
+def test_render_preserva_triggers_y_globs_en_el_adaptador_de_gemini(raiz: Path, monkeypatch) -> None:
+    """Cada plataforma tiene sus propios triggers/globs; el cuerpo ya no se copia a Gemini."""
     monkeypatch.chdir(raiz)
     mirror = raiz / ".gemini/rules/skill-ejemplo.md"
     mirror.parent.mkdir(parents=True)
@@ -131,13 +134,49 @@ def test_render_preserva_el_frontmatter_existente_del_mirror(raiz: Path, monkeyp
 
     assert "disparador-propio-de-gemini" in contenido
     assert "contenido viejo" not in contenido
+    assert "Cuerpo con espacios al final." not in contenido
+    assert "Usar para probar el propagador." in contenido  # description sale de la fuente
+    assert "`.agentes-comunes/skills/ejemplo/SKILL.md`" in contenido
+    assert len(contenido.splitlines()) <= MAX_LINEAS_ADAPTADOR
+
+
+def test_el_adaptador_de_gemini_es_estable_al_regenerarse(raiz: Path) -> None:
+    """El adaptador usa listas en estilo flujo y se vuelve a leer igual (idempotencia)."""
+    procesar(raiz, verificar=False)
+    mirror = raiz / ".gemini/rules/skill-ejemplo.md"
+    primero = mirror.read_text(encoding="utf-8")
+
+    procesar(raiz, verificar=False)
+
+    assert mirror.read_text(encoding="utf-8") == primero
+    assert lista_frontmatter(frontmatter_de(mirror) or "", "triggers") == ["ejemplo"]
+
+
+def test_lista_frontmatter_lee_bloque_y_flujo() -> None:
+    bloque = 'name: "x"\ntriggers:\n  - "a"\n  - b\nglobs:\n  - "**/*"\n'
+    flujo = 'triggers: ["a", "b"]\nglobs: ["**/*"]'
+
+    assert lista_frontmatter(bloque, "triggers") == ["a", "b"]
+    assert lista_frontmatter(flujo, "triggers") == ["a", "b"]
+    assert lista_frontmatter(flujo, "commands") == []
+
+
+def test_render_agents_lleva_frontmatter_primero_y_references_a_la_fuente(raiz: Path) -> None:
+    contenido = render(
+        _plataforma("agents"), "ejemplo", raiz / ".agentes-comunes/skills/ejemplo/SKILL.md", raiz
+    )
+
+    assert contenido.startswith("---\nname: ejemplo\n")
     assert "Cuerpo con espacios al final." in contenido
+    assert "](../docker-rebuild/SKILL.md)" in contenido
+    assert "](../../../.agentes-comunes/skills/ejemplo/references/recetas.md)" in contenido
 
 
 def test_render_genera_frontmatter_si_el_mirror_no_existe(raiz: Path, monkeypatch) -> None:
     monkeypatch.chdir(raiz)
 
     gemini = render(_plataforma("gemini"), "ejemplo", raiz / ".agentes-comunes/skills/ejemplo/SKILL.md")
+    assert 'triggers: ["ejemplo"]' in gemini
     codex = render(_plataforma("codex"), "ejemplo", raiz / ".agentes-comunes/skills/ejemplo/SKILL.md")
 
     assert 'name: "skill-ejemplo"' in gemini
@@ -150,10 +189,11 @@ def test_render_genera_frontmatter_si_el_mirror_no_existe(raiz: Path, monkeypatc
 # ---------------------------------------------------------------- propagación
 
 
-def test_procesar_crea_los_tres_mirrors(raiz: Path) -> None:
+def test_procesar_crea_los_cuatro_mirrors(raiz: Path) -> None:
     diferencias = procesar(raiz, verificar=False)
 
-    assert len(diferencias) == 3
+    assert len(diferencias) == 4
+    assert (raiz / ".agents/skills/ejemplo/SKILL.md").is_file()
     assert (raiz / ".claude/skills/ejemplo/SKILL.md").is_file()
     assert (raiz / ".gemini/rules/skill-ejemplo.md").is_file()
     assert (raiz / ".codex-skills/skills/las-focas-ejemplo/SKILL.md").is_file()
@@ -169,7 +209,7 @@ def test_procesar_es_idempotente(raiz: Path) -> None:
 def test_procesar_en_modo_check_no_escribe(raiz: Path) -> None:
     diferencias = procesar(raiz, verificar=True)
 
-    assert len(diferencias) == 3
+    assert len(diferencias) == 4
     assert not (raiz / ".claude/skills/ejemplo/SKILL.md").exists()
 
 
@@ -194,10 +234,12 @@ def test_procesar_propaga_un_cambio_de_la_fuente(raiz: Path) -> None:
 
     for mirror in (
         raiz / ".claude/skills/ejemplo/SKILL.md",
-        raiz / ".gemini/rules/skill-ejemplo.md",
+        raiz / ".agents/skills/ejemplo/SKILL.md",
         raiz / ".codex-skills/skills/las-focas-ejemplo/SKILL.md",
     ):
         assert "Guardrail nuevo de la fuente." in mirror.read_text(encoding="utf-8")
+    # Gemini sólo apunta a la fuente: el cambio llega sin tocar el adaptador.
+    assert "Guardrail nuevo" not in (raiz / ".gemini/rules/skill-ejemplo.md").read_text(encoding="utf-8")
 
 
 def test_procesar_acota_a_una_skill(raiz: Path) -> None:
