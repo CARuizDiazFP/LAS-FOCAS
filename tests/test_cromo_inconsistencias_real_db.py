@@ -59,20 +59,20 @@ _FUSION_ODF = 999_917_202
 AHORA = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
 
 
-def _cargar_migracion():
-    spec = importlib.util.spec_from_file_location("mig_20261017_02", _MIGRACION)
+def _cargar_migracion(ruta: Path | None = None, nombre: str = "mig_20261017_02"):
+    spec = importlib.util.spec_from_file_location(nombre, ruta or _MIGRACION)
     modulo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     return modulo
 
 
-def _correr(sync_conn, funcion: str) -> None:
+def _correr(sync_conn, funcion: str, ruta: Path | None = None, nombre: str = "mig_20261017_02") -> None:
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
     contexto = MigrationContext.configure(sync_conn)
     with Operations.context(contexto):
-        getattr(_cargar_migracion(), funcion)()
+        getattr(_cargar_migracion(ruta, nombre), funcion)()
 
 
 async def _insertar_inventario(conn) -> None:
@@ -214,6 +214,12 @@ async def test_migracion_check_y_unique(entorno):
 @pytest.mark.asyncio
 async def test_downgrade_quita_las_dos_tablas(entorno):
     _sesion, conn = entorno
+    # La vista de 20261017_03 depende de las tablas: si está aplicada, se baja primero
+    # (misma transacción revertida, así que no queda residuo).
+    vista = (await conn.execute(text("SELECT to_regclass('app.v_cromo_servicio_match_vigente')"))).scalar()
+    if vista is not None:
+        mig_03 = _MIGRACION.with_name("20261017_03_cromo_servicio_match_vigente.py")
+        await conn.run_sync(_correr, "downgrade", mig_03, "mig_20261017_03")
     await conn.run_sync(_correr, "downgrade")
     for tabla in ("cromo_inconsistencia", "cromo_inconsistencia_pelo"):
         assert (await conn.execute(text(f"SELECT to_regclass('app.{tabla}')"))).scalar() is None
