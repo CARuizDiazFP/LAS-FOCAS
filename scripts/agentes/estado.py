@@ -32,7 +32,7 @@ import socket
 import sqlite3
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS agentes (
     last_activity_at REAL NOT NULL,
     host             TEXT NOT NULL DEFAULT '',
     pid              INTEGER NOT NULL DEFAULT 0,
-    notas            TEXT NOT NULL DEFAULT ''
+    notas            TEXT NOT NULL DEFAULT '',
+    port_offset      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS leases (
@@ -119,6 +120,18 @@ CREATE INDEX IF NOT EXISTS idx_eventos_ts ON eventos(ts);
 CREATE INDEX IF NOT EXISTS idx_handoffs_to ON handoffs(to_agent, state);
 """
 
+# Columnas agregadas después de la primera versión del esquema. ``CREATE TABLE IF NOT
+# EXISTS`` no altera una tabla ya creada, así que una base existente las recibe con
+# ``ALTER TABLE`` al abrirse (migración idempotente).
+#
+# Transición: el código anterior a ``port_offset`` construía ``Agente(**fila)`` y falla con
+# ``TypeError`` ante la columna nueva. Por eso las filas se cargan con ``_desde_fila`` (que
+# ignora columnas desconocidas) y, al introducir una columna, las sesiones con código viejo
+# deben sincronizar con ``dev`` antes de volver a usar la CLI.
+COLUMNAS_AGREGADAS = {
+    "agentes": (("port_offset", "INTEGER NOT NULL DEFAULT 0"),),
+}
+
 
 class ErrorEstado(RuntimeError):
     """Error genérico del registro de estado."""
@@ -130,6 +143,12 @@ class ConflictoLease(ErrorEstado):
 
 class AgenteDesconocido(ErrorEstado):
     """El agente no está registrado en el estado compartido."""
+
+
+def _desde_fila(clase: type, fila: sqlite3.Row) -> Any:
+    """Instancia ``clase`` con las columnas que conoce; ignora las agregadas después."""
+    conocidas = {campo.name for campo in fields(clase)}
+    return clase(**{clave: valor for clave, valor in dict(fila).items() if clave in conocidas})
 
 
 def ahora() -> float:
@@ -172,6 +191,8 @@ class Agente:
     host: str
     pid: int
     notas: str
+    #: Desplazamiento de puertos locales reservado por el agente (0 = sin reserva).
+    port_offset: int = 0
 
     def inactivo(self, *, ttl_minutos: int = TTL_AGENTE_MINUTOS, momento: float | None = None) -> bool:
         limite = (momento if momento is not None else ahora()) - ttl_minutos * 60
@@ -219,6 +240,11 @@ class Registro:
     def _inicializar(self) -> None:
         with self._conectar() as conexion:
             conexion.executescript(ESQUEMA)
+            for tabla, columnas in COLUMNAS_AGREGADAS.items():
+                existentes = {fila["name"] for fila in conexion.execute(f"PRAGMA table_info({tabla})")}
+                for nombre, definicion in columnas:
+                    if nombre not in existentes:
+                        conexion.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {definicion}")
 
     @contextmanager
     def _escritura(self) -> Iterator[sqlite3.Connection]:
@@ -286,6 +312,7 @@ class Registro:
         base_sha: str = "",
         status: str = "active",
         notas: str = "",
+        port_offset: int = 0,
     ) -> Agente:
         """Alta o actualización idempotente de un agente.
 
@@ -303,8 +330,9 @@ class Registro:
             conexion.execute(
                 """
                 INSERT INTO agentes (agent_id, task_id, status, branch, worktree_path, base_ref,
-                                     base_sha, started_at, heartbeat_at, last_activity_at, host, pid, notas)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     base_sha, started_at, heartbeat_at, last_activity_at, host, pid, notas,
+                                     port_offset)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(agent_id) DO UPDATE SET
                     task_id = excluded.task_id,
                     status = excluded.status,
@@ -316,7 +344,8 @@ class Registro:
                     last_activity_at = excluded.last_activity_at,
                     host = excluded.host,
                     pid = excluded.pid,
-                    notas = excluded.notas
+                    notas = excluded.notas,
+                    port_offset = excluded.port_offset
                 """,
                 (
                     agent_id,
@@ -332,6 +361,7 @@ class Registro:
                     socket.gethostname(),
                     os.getpid(),
                     notas,
+                    port_offset,
                 ),
             )
             self.registrar_evento(
@@ -347,7 +377,7 @@ class Registro:
     def agente(self, agent_id: str) -> Agente | None:
         with self._lectura() as conexion:
             fila = conexion.execute("SELECT * FROM agentes WHERE agent_id = ?", (agent_id,)).fetchone()
-        return Agente(**dict(fila)) if fila else None
+        return _desde_fila(Agente, fila) if fila else None
 
     def agentes(self, *, estados: tuple[str, ...] | None = None) -> list[Agente]:
         consulta = "SELECT * FROM agentes"
@@ -358,7 +388,7 @@ class Registro:
             parametros.extend(estados)
         consulta += " ORDER BY started_at ASC"
         with self._lectura() as conexion:
-            return [Agente(**dict(fila)) for fila in conexion.execute(consulta, parametros)]
+            return [_desde_fila(Agente, fila) for fila in conexion.execute(consulta, parametros)]
 
     def agente_por_worktree(self, worktree_path: str | Path) -> Agente | None:
         objetivo = str(Path(worktree_path).resolve())
@@ -421,7 +451,7 @@ class Registro:
 
     @staticmethod
     def _lease(fila: sqlite3.Row) -> Lease:
-        return Lease(**dict(fila))
+        return _desde_fila(Lease, fila)
 
     def lease(self, resource: str) -> Lease | None:
         with self._lectura() as conexion:
@@ -713,7 +743,7 @@ class Registro:
     def handoff(self, handoff_id: int) -> Handoff | None:
         with self._lectura() as conexion:
             fila = conexion.execute("SELECT * FROM handoffs WHERE id = ?", (handoff_id,)).fetchone()
-        return Handoff(**dict(fila)) if fila else None
+        return _desde_fila(Handoff, fila) if fila else None
 
     def handoffs(self, *, to_agent: str | None = None, pendientes: bool = False) -> list[Handoff]:
         consulta = "SELECT * FROM handoffs"
@@ -728,7 +758,7 @@ class Registro:
             consulta += " WHERE " + " AND ".join(condiciones)
         consulta += " ORDER BY id DESC"
         with self._lectura() as conexion:
-            return [Handoff(**dict(fila)) for fila in conexion.execute(consulta, parametros)]
+            return [_desde_fila(Handoff, fila) for fila in conexion.execute(consulta, parametros)]
 
     def aceptar_handoff(self, handoff_id: int, to_agent: str) -> Handoff:
         """El agente destino acepta el handoff y toma la propiedad de los leases transferidos."""
@@ -741,7 +771,7 @@ class Registro:
                     f"el handoff {handoff_id} está dirigido a {fila['to_agent']!r}, no a {to_agent!r}"
                 )
             if fila["state"] == "aceptado":
-                return Handoff(**dict(fila))
+                return _desde_fila(Handoff, fila)
             conexion.execute(
                 "UPDATE handoffs SET state = 'aceptado', accepted_at = ? WHERE id = ?",
                 (ahora(), handoff_id),

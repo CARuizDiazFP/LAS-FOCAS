@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Nombre de archivo: agent_worktree.py
 # Ubicación de archivo: scripts/agent_worktree.py
-# Descripción: CLI de ciclo de vida de agentes con worktree y rama propios (start/list/status/sync/ready/integrate/handoff/finish/cleanup/doctor)
+# Descripción: CLI de ciclo de vida de agentes con worktree, rama y puertos propios (start/list/status/sync/ready/integrate/handoff/finish/cleanup/doctor)
 
 """Un agente = una tarea = una rama = un Git worktree.
 
@@ -19,6 +19,7 @@ linked worktrees y fuera del historial de Git.
 
 Uso típico:
     python scripts/agent_worktree.py start --agent claude-api --type feat --task busqueda-camaras
+    python scripts/agent_worktree.py start --agent claude-web --type feat --task mapa --offset 3
     python scripts/agent_worktree.py list
     python scripts/agent_worktree.py sync --agent claude-api
     python scripts/agent_worktree.py ready --agent claude-api
@@ -33,6 +34,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import socket
 import sys
 from pathlib import Path
 
@@ -68,7 +71,46 @@ REMOTO = "origin"
 # que se levanta el stack. Sin el enlace, un `docker compose up` desde un worktree deja a los
 # servicios escribiendo dentro del worktree, y al cerrarlo los logs quedan en una carpeta borrada
 # (real 2026-09-30: web, cromo_worker y slack_baneo_worker de dev).
-ENLACES_ENTORNO = (".venv", ".env", ".env.dev", ".secrets", "Logs")
+# `.env.dev` ya NO se enlaza: cada worktree recibe una copia privada (ver COPIAS_PRIVADAS).
+ENLACES_ENTORNO = (".venv", ".env", ".secrets", "Logs")
+
+# Archivos de entorno que se copian (no se enlazan) al worktree. Con un symlink, un agente
+# que editaba `.env.dev` para una prueba contaminaba a todos los demás worktrees y al
+# control; la copia privada además lleva los puertos propios del agente (ver
+# `variables_entorno_agente`). Se escribe con modo 0600 y nunca se imprime su contenido.
+COPIAS_PRIVADAS = (".env.dev",)
+
+# Metadata del worktree (agente, tarea, rama, offset y puertos). Ignorada vía info/exclude.
+ARCHIVO_METADATA = ".agent-worktree.json"
+
+# Puertos locales por agente: base + offset. El offset 0 queda para el stack dev compartido
+# del checkout de control; cada agente nuevo recibe uno en [OFFSET_MIN, OFFSET_MAX].
+# Las bases se solapan entre servicios (p. ej. api 8011+10 == office 8020+1), por eso la
+# asignación compara el CONJUNTO de puertos de cada agente vivo, no sólo el offset.
+PUERTOS_BASE = {"api": 8011, "web": 8090, "vite": 5173, "office": 8020, "nlp_intent": 8030}
+VARIABLES_PUERTO = {
+    "api": "API_PORT",
+    "web": "WEB_PORT",
+    "vite": "VITE_PORT",
+    "office": "OFFICE_PORT",
+    "nlp_intent": "NLP_PORT",
+}
+OFFSET_MIN = 1
+OFFSET_MAX = 90
+MARCA_ENV_AGENTE = "# --- LAS-FOCAS agent worktree: generado por scripts/agent_worktree.py (no editar a mano) ---"
+
+# Ignorados por Git que `cleanup` puede descartar sin preguntar: enlaces/copias de entorno,
+# metadata, artefactos de build y caches de herramientas. Cualquier OTRO archivo ignorado
+# (un .docx/.xlsx generado, un dump .sql, un backup) aborta la limpieza: `git worktree
+# remove` lo borraría sin aviso porque Git no lo considera "cambio".
+RUNTIME_IGNORADO_RAIZ = (
+    *ENLACES_ENTORNO,
+    *COPIAS_PRIVADAS,
+    ARCHIVO_METADATA,
+    "web/frontend/node_modules",
+    "web/frontend/dist",
+)
+RUNTIME_IGNORADO_CUALQUIER_NIVEL = ("__pycache__", ".pytest_cache", ".ruff_cache")
 
 # Rutas que NO se enlazan automáticamente pero que igual deben quedar excluidas: se
 # enlazan a mano y bajo demanda (ver la skill `agent-worktree`). Son artefactos de
@@ -145,16 +187,146 @@ def _resolver_base(entorno: Entorno, base_pedida: str | None, *, fetch: bool) ->
     )
 
 
-def _enlazar_entorno(entorno: Entorno, destino: Path) -> list[str]:
-    """Enlaza el venv y los archivos de entorno del checkout de control.
+# ------------------------------------------------------------------ puertos
 
-    Se usan symlinks y no copias: el venv no se duplica (espacio y deriva de versiones)
-    y los secretos no se replican en disco. Todas las rutas enlazadas están ignoradas
-    por Git, así que el symlink nunca se versiona.
+
+def puertos_agente(offset: int) -> dict[str, int]:
+    """Puertos locales deterministas de un agente: ``base + offset`` por servicio."""
+    return {servicio: base + offset for servicio, base in PUERTOS_BASE.items()}
+
+
+def puerto_libre(puerto: int) -> bool:
+    """``True`` si se puede abrir ``127.0.0.1:<puerto>`` (nadie lo está escuchando)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", puerto))
+        except OSError:
+            return False
+    return True
+
+
+def _puertos_reservados(entorno: Entorno, excluir: str) -> dict[int, str]:
+    """Puerto → agente, para todo agente no finalizado con offset asignado."""
+    reservados: dict[int, str] = {}
+    for agente in entorno.registro.agentes():
+        if agente.agent_id == excluir or agente.status in ("finished", "failed"):
+            continue
+        if agente.port_offset <= 0:
+            continue
+        for puerto in puertos_agente(agente.port_offset).values():
+            reservados[puerto] = agente.agent_id
+    return reservados
+
+
+def asignar_offset(entorno: Entorno, agent_id: str, pedido: int | None) -> int:
+    """Devuelve un offset cuyos puertos no choquen con otro agente vivo ni con el host.
+
+    Sin ``pedido`` se elige el menor offset libre en ``[OFFSET_MIN, OFFSET_MAX]``.
+    """
+    if pedido is not None and not OFFSET_MIN <= pedido <= OFFSET_MAX:
+        raise ErrorCLI(f"--offset debe estar entre {OFFSET_MIN} y {OFFSET_MAX} (recibido {pedido})")
+    reservados = _puertos_reservados(entorno, agent_id)
+    candidatos = [pedido] if pedido is not None else list(range(OFFSET_MIN, OFFSET_MAX + 1))
+    for offset in candidatos:
+        puertos = puertos_agente(offset)
+        choques = sorted({reservados[p] for p in puertos.values() if p in reservados})
+        ocupados = [p for p in puertos.values() if p not in reservados and not puerto_libre(p)]
+        if not choques and not ocupados:
+            return offset
+        if pedido is not None:
+            motivo = (
+                f"sus puertos se solapan con los del agente {', '.join(choques)}"
+                if choques
+                else f"hay puertos ya escuchando en 127.0.0.1: {', '.join(map(str, ocupados))}"
+            )
+            raise ErrorCLI(
+                f"el offset {pedido} no está disponible: {motivo}. Omitir --offset para que se "
+                "asigne el menor libre."
+            )
+    raise ErrorCLI(
+        f"no queda ningún offset libre entre {OFFSET_MIN} y {OFFSET_MAX}. Cerrar agentes "
+        "finalizados con 'finish' o liberar puertos locales."
+    )
+
+
+def variables_entorno_agente(offset: int) -> dict[str, str]:
+    """Variables que la copia privada de ``.env.dev`` agrega o sobrescribe."""
+    puertos = puertos_agente(offset)
+    variables = {"LAS_FOCAS_AGENT_WORKTREE": "1", "LAS_FOCAS_PORT_OFFSET": str(offset)}
+    variables.update({VARIABLES_PUERTO[servicio]: str(p) for servicio, p in puertos.items()})
+    variables["VITE_API_BASE_URL"] = f"http://127.0.0.1:{puertos['api']}"
+    return variables
+
+
+def _clave_env(linea: str) -> str:
+    texto = linea.strip()
+    if not texto or texto.startswith("#") or "=" not in texto:
+        return ""
+    if texto.startswith("export "):
+        texto = texto[len("export ") :]
+    return texto.split("=", 1)[0].strip()
+
+
+def _copiar_env_privado(origen: Path, destino: Path, offset: int) -> bool:
+    """Copia ``origen`` a ``destino`` (0600) sobrescribiendo las variables del agente.
+
+    No pisa un destino existente (worktree ya preparado o legado con symlink) y exige que
+    el destino esté ignorado por Git: una copia con secretos nunca debe poder versionarse.
+    El contenido jamás se imprime ni se registra.
+    """
+    if not origen.is_file() or destino.exists() or destino.is_symlink():
+        return False
+    ignorado = gitops.ejecutar(["check-ignore", "-q", destino.name], destino.parent, check=False)
+    if ignorado.returncode != 0:
+        logger.warning("%s no está ignorado por Git en el worktree: no se copia", destino.name)
+        return False
+    variables = variables_entorno_agente(offset)
+    conservadas = [
+        linea
+        for linea in origen.read_text(encoding="utf-8").splitlines()
+        if _clave_env(linea) not in variables and linea.strip() != MARCA_ENV_AGENTE
+    ]
+    while conservadas and not conservadas[-1].strip():
+        conservadas.pop()
+    contenido = "\n".join(
+        [*conservadas, "", MARCA_ENV_AGENTE, *(f"{k}={v}" for k, v in variables.items())]
+    )
+    descriptor = os.open(destino, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as archivo:
+        archivo.write(contenido + "\n")
+    return True
+
+
+def _escribir_metadata(destino: Path, agente: Agente) -> None:
+    datos = {
+        "agent_id": agente.agent_id,
+        "task_id": agente.task_id,
+        "branch": agente.branch,
+        "offset": agente.port_offset,
+        "ports": puertos_agente(agente.port_offset) if agente.port_offset else {},
+    }
+    (destino / ARCHIVO_METADATA).write_text(
+        json.dumps(datos, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _enlazar_entorno(entorno: Entorno, destino: Path, offset: int = 0) -> tuple[list[str], list[str]]:
+    """Prepara el entorno local del worktree. Devuelve ``(enlazados, copiados)``.
+
+    El venv, ``.env`` (prod), los secretos y ``Logs`` se enlazan con symlinks: el venv no
+    se duplica (espacio y deriva de versiones) y los secretos no se replican en disco.
+    ``.env.dev`` se copia en privado con los puertos del ``offset`` (si es > 0). Todas las
+    rutas están ignoradas por Git (vía ``info/exclude``), así que nada se versiona.
     """
     gitops.asegurar_exclusiones(
-        entorno.ctx.git_common_dir, ENLACES_ENTORNO + EXCLUSIONES_ADICIONALES
+        entorno.ctx.git_common_dir,
+        ENLACES_ENTORNO + COPIAS_PRIVADAS + (ARCHIVO_METADATA,) + EXCLUSIONES_ADICIONALES,
     )
+    copiados: list[str] = []
+    if offset > 0:
+        for nombre in COPIAS_PRIVADAS:
+            if _copiar_env_privado(entorno.control / nombre, destino / nombre, offset):
+                copiados.append(nombre)
     enlazados: list[str] = []
     for nombre in ENLACES_ENTORNO:
         origen = entorno.control / nombre
@@ -166,7 +338,7 @@ def _enlazar_entorno(entorno: Entorno, destino: Path) -> list[str]:
             enlazados.append(nombre)
         except OSError as exc:  # pragma: no cover - depende del SO/permisos
             logger.warning("no se pudo enlazar %s: %s", nombre, exc)
-    return enlazados
+    return enlazados, copiados
 
 
 def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, object]:
@@ -187,7 +359,7 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
             )
         worktree = gitops.worktree_de(Path(existente.worktree_path), control)
         if worktree is not None and Path(existente.worktree_path).is_dir():
-            # Idempotente: mismo agente, misma tarea, worktree válido.
+            # Idempotente: mismo agente, misma tarea, worktree válido. Conserva su offset.
             entorno.registro.heartbeat_agente(agent_id, detalle="start idempotente")
             return {
                 "agente": agent_id,
@@ -195,6 +367,8 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
                 "worktree": existente.worktree_path,
                 "base": f"{existente.base_ref}@{existente.base_sha[:12]}" if existente.base_sha else "-",
                 "estado": existente.status,
+                "offset": existente.port_offset,
+                "puertos": puertos_agente(existente.port_offset) if existente.port_offset else {},
                 "idempotente": True,
             }
 
@@ -209,6 +383,10 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
         ttl_minutos=TTL_LIFECYCLE_MINUTOS,
     )
     try:
+        # El offset se elige ANTES de crear nada (un offset inválido no deja un worktree
+        # huérfano) y se registra dentro de la misma ventana de lifecycle: dos `start`
+        # simultáneos no pueden quedarse con el mismo juego de puertos.
+        offset = asignar_offset(entorno, agent_id, args.offset)
         if destino.exists() and any(destino.iterdir()):
             registrado = gitops.worktree_de(destino, control)
             if registrado is None:
@@ -233,24 +411,29 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
             logger.info("rama %s preexistente: se adjuntó un worktree nuevo sin recrearla", rama)
         else:
             gitops.crear_worktree(destino, rama, base_ref, control)
+        agente = entorno.registro.registrar_agente(
+            agent_id,
+            task_id=task,
+            branch=rama,
+            worktree_path=str(destino),
+            base_ref=base_ref,
+            base_sha=base_sha,
+            status="active",
+            notas=args.notas or "",
+            port_offset=offset,
+        )
     finally:
         entorno.registro.liberar(RECURSO_LIFECYCLE, agent_id)
 
-    enlazados = _enlazar_entorno(entorno, destino)
-    entorno.registro.registrar_agente(
-        agent_id,
-        task_id=task,
-        branch=rama,
-        worktree_path=str(destino),
-        base_ref=base_ref,
-        base_sha=base_sha,
-        status="active",
-        notas=args.notas or "",
-    )
+    enlazados, copiados = _enlazar_entorno(entorno, destino, offset)
+    _escribir_metadata(destino, agente)
     entorno.registro.registrar_evento(
         "worktree_created",
         agent_id=agent_id,
-        detalle=f"ruta={destino} rama={rama} base={base_ref}@{base_sha[:12]} enlaces={','.join(enlazados) or '-'}",
+        detalle=(
+            f"ruta={destino} rama={rama} base={base_ref}@{base_sha[:12]} "
+            f"enlaces={','.join(enlazados) or '-'} copias={','.join(copiados) or '-'} offset={offset}"
+        ),
     )
     faltantes = [
         ruta
@@ -263,7 +446,10 @@ def comando_start(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
         "worktree": str(destino),
         "base": f"{base_ref}@{base_sha[:12]}",
         "estado": "active",
+        "offset": offset,
+        "puertos": puertos_agente(offset),
         "enlaces": enlazados,
+        "copias_privadas": copiados,
         "artefactos_build_faltantes": faltantes,
         "idempotente": False,
     }
@@ -295,6 +481,8 @@ def _fila_agente(entorno: Entorno, agente: Agente) -> dict[str, object]:
         "started_at": formatear_instante(agente.started_at),
         "heartbeat_at": formatear_instante(agente.heartbeat_at),
         "inactivo": agente.inactivo(),
+        "port_offset": agente.port_offset,
+        "puertos": puertos_agente(agente.port_offset) if agente.port_offset else {},
         "leases": [lease.resource for lease in entorno.registro.leases_de(agente.agent_id)],
     }
 
@@ -569,6 +757,7 @@ def comando_accept_handoff(entorno: Entorno, args: argparse.Namespace) -> dict[s
 
     handoff = entorno.registro.aceptar_handoff(elegido.id, args.agent)
     origen = entorno.registro.agente(handoff.from_agent)
+    offset_heredado = origen.port_offset if origen is not None else 0
     # El ownership se transfiere explícitamente: el agente origen deja de ser dueño.
     if origen is not None:
         entorno.registro.olvidar_agente(
@@ -581,6 +770,7 @@ def comando_accept_handoff(entorno: Entorno, args: argparse.Namespace) -> dict[s
         worktree_path=handoff.worktree_path,
         status="active",
         notas=f"continúa handoff #{handoff.id}: {handoff.next_action}",
+        port_offset=offset_heredado,
     )
     for recurso in _lista_json(handoff.leases):
         try:
@@ -648,7 +838,79 @@ def comando_cleanup(entorno: Entorno, args: argparse.Namespace) -> dict[str, obj
         detalle["registro_retirado"] = entorno.registro.olvidar_agente(
             agente.agent_id, detalle="cleanup --olvidar"
         )
+    if not detalle["worktree_removido"]:
+        # `cleanup` pidió explícitamente remover: si no se pudo, es un error accionable.
+        raise ErrorCLI(str(detalle.get("nota") or f"no se removió el worktree de {args.agent!r}"))
     return {"agent_id": args.agent, **detalle}
+
+
+def _ancestros(pid: int) -> set[int]:
+    """``pid`` y toda su cadena de padres (la shell que invocó a esta CLI no cuenta)."""
+    vistos: set[int] = set()
+    while pid > 1 and pid not in vistos:
+        vistos.add(pid)
+        try:
+            estado = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            # El campo 2 (comm) va entre paréntesis y puede tener espacios.
+            pid = int(estado.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return vistos
+
+
+def procesos_en_worktree(ruta: Path, *, pid_registrado: int = 0) -> list[dict[str, object]]:
+    """Procesos visibles cuyo directorio de trabajo está dentro de ``ruta``.
+
+    Se excluye esta misma CLI y sus ancestros. Sólo se reporta el nombre del ejecutable
+    (``/proc/<pid>/comm``), nunca la línea de comandos: puede llevar credenciales. Los
+    procesos de otros usuarios o de contenedores no son visibles y no se detectan.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():  # pragma: no cover - sólo Linux expone /proc
+        return []
+    propios = _ancestros(os.getpid())
+    raiz = ruta.resolve()
+    hallados: list[dict[str, object]] = []
+    for entrada in proc.iterdir():
+        if not entrada.name.isdigit() or int(entrada.name) in propios:
+            continue
+        try:
+            cwd = Path(os.readlink(entrada / "cwd"))
+            nombre = (entrada / "comm").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if cwd != raiz and raiz not in cwd.parents:
+            continue
+        pid = int(entrada.name)
+        hallados.append(
+            {"pid": pid, "comando": nombre, "cwd": str(cwd), "pid_registrado": pid == pid_registrado}
+        )
+    return sorted(hallados, key=lambda p: int(p["pid"]))  # type: ignore[arg-type]
+
+
+def ignorados_no_runtime(ruta: Path) -> list[str]:
+    """Archivos ignorados por Git que NO son runtime conocido (se perderían al remover)."""
+    base = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"]
+
+    def es_runtime(relativa: str) -> bool:
+        return relativa in RUNTIME_IGNORADO_RAIZ or any(
+            parte in RUNTIME_IGNORADO_CUALQUIER_NIVEL for parte in relativa.split("/")
+        )
+
+    hallados: list[str] = []
+    # `--directory` evita enumerar node_modules archivo por archivo, pero colapsa a un único
+    # `dir/` cualquier directorio sin versionar que sólo tenga ignorados (p. ej. `x/` con
+    # sólo `x/__pycache__/`). Esos directorios se vuelven a listar archivo por archivo.
+    for entrada in gitops.ejecutar([*base, "--directory"], ruta).stdout.split("\0"):
+        relativa = entrada.rstrip("/")
+        if not relativa or es_runtime(relativa):
+            continue
+        if not entrada.endswith("/"):
+            hallados.append(entrada)
+            continue
+        detalle = gitops.ejecutar([*base, "--", entrada], ruta).stdout.split("\0")
+        hallados.extend(archivo for archivo in detalle if archivo and not es_runtime(archivo))
+    return hallados
 
 
 def _limpiar(entorno: Entorno, agente: Agente, *, borrar_rama: bool) -> dict[str, object]:
@@ -667,6 +929,27 @@ def _limpiar(entorno: Entorno, agente: Agente, *, borrar_rama: bool) -> dict[str
         detalle["nota"] = (
             f"el worktree {ruta} tiene cambios sin confirmar: NO se elimina. "
             "Confirmar o descartar manualmente y reintentar."
+        )
+        return detalle
+
+    procesos = procesos_en_worktree(ruta, pid_registrado=agente.pid)
+    if procesos:
+        detalle["procesos_activos"] = procesos
+        listado = ", ".join(f"{p['comando']}[{p['pid']}]" for p in procesos)
+        detalle["nota"] = (
+            f"hay procesos corriendo dentro de {ruta}: {listado}. NO se elimina. "
+            "Detener esos servidores/shells (o salir del directorio) y reintentar."
+        )
+        return detalle
+
+    ignorados = ignorados_no_runtime(ruta)
+    if ignorados:
+        detalle["ignorados_no_runtime"] = ignorados
+        muestra = ", ".join(ignorados[:10]) + (" …" if len(ignorados) > 10 else "")
+        detalle["nota"] = (
+            f"el worktree {ruta} tiene archivos ignorados por Git que no son runtime conocido "
+            f"({muestra}). NO se elimina: 'git worktree remove' los borraría sin aviso. "
+            "Moverlos fuera del worktree (o borrarlos a mano si son descartables) y reintentar."
         )
         return detalle
 
@@ -888,6 +1171,12 @@ def construir_parser() -> argparse.ArgumentParser:
     inicio.add_argument("--base", default=None, help="Referencia base (por defecto origin/dev)")
     inicio.add_argument("--no-fetch", action="store_true", help="No sincronizar la base con el remoto")
     inicio.add_argument("--notas", default="", help="Nota libre para el registro")
+    inicio.add_argument(
+        "--offset",
+        type=int,
+        default=None,
+        help=f"Desplazamiento de puertos locales ({OFFSET_MIN}..{OFFSET_MAX}); por defecto el menor libre",
+    )
 
     listar = sub.add_parser("list", help="Listar agentes registrados", **sub_kwargs)
     listar.add_argument("--activos", action="store_true", help="Sólo agentes no finalizados")
@@ -951,10 +1240,22 @@ def _imprimir(comando: str, resultado: object) -> None:
         emitir(f"Worktree: {resultado['worktree']}")
         emitir(f"Base:     {resultado['base']}")
         emitir(f"Estado:   {resultado['estado']}")
+        if resultado.get("offset"):
+            puertos = resultado.get("puertos") or {}
+            emitir(
+                f"Puertos:  offset {resultado['offset']} → "
+                + " ".join(f"{servicio}={puerto}" for servicio, puerto in puertos.items())  # type: ignore[union-attr]
+            )
         if resultado.get("idempotente"):
             emitir("Nota:     el agente ya existía con esta tarea; no se recreó nada.")
-        elif resultado.get("enlaces"):
-            emitir(f"Enlaces:  {', '.join(resultado['enlaces'])} (del checkout de control)")
+        else:
+            if resultado.get("enlaces"):
+                emitir(f"Enlaces:  {', '.join(resultado['enlaces'])} (del checkout de control)")
+            if resultado.get("copias_privadas"):
+                emitir(
+                    f"Privado:  {', '.join(resultado['copias_privadas'])} "
+                    "(copia propia con los puertos del agente; no afecta a otros worktrees)"
+                )
         if resultado.get("artefactos_build_faltantes"):
             emitir("")
             emitir(
@@ -976,11 +1277,13 @@ def _imprimir(comando: str, resultado: object) -> None:
         if not resultado:
             emitir("Sin agentes registrados")
             return
-        emitir(f"{'AGENTE':<20} {'ESTADO':<14} {'RAMA':<44} {'WT':<4} LATIDO")
+        emitir(f"{'AGENTE':<20} {'ESTADO':<14} {'RAMA':<44} {'WT':<4} {'OFF':<4} LATIDO")
         for fila in resultado:
             marca = "ok" if fila["worktree_existe"] else "NO"
+            offset = fila.get("port_offset") or "-"
             emitir(
-                f"{fila['agent_id']:<20} {fila['status']:<14} {fila['branch']:<44} {marca:<4} {fila['heartbeat_at']}"
+                f"{fila['agent_id']:<20} {fila['status']:<14} {fila['branch']:<44} {marca:<4} "
+                f"{offset!s:<4} {fila['heartbeat_at']}"
             )
         return
 
