@@ -12,11 +12,11 @@ las respuestas.
 
 Relevamiento y decisiones: cuestionario de 80 preguntas + aclaraciones A1–A10 (2026-10-13/14).
 
-## Estado (2026-10-14)
+## Estado (2026-10-17)
 
 | Pieza | Estado |
 |---|---|
-| Fases 0–4 (PoC, modelo, worker, API, SPA + mapa base) | En la rama `feat/claude-fomon-fo-monitor`, desplegado en **dev** |
+| Fases 0–4 (PoC, modelo, worker, API, SPA + mapa base) | Integrado a `dev` y desplegado en **dev** (cierre 2026-10-17) |
 | Piloto en dev | **Inactivo**. Sólo procesaría ingresos de `#baneo-de-camaras-prueba` (`C08UB8ML3LP`) |
 | Producción | **Stand-by hasta nuevo aviso** (sin migrar ni desplegar). El canal productivo `C015UKWP2MS` no está habilitado |
 
@@ -72,6 +72,19 @@ Resultados de la PoC real (2026-10-14, `scripts/fo_monitor_poc_burrito.py`, regi
   infirió por tráfico — variabilidad del LLM, a conversar con el dueño de burritoIA).
 - Lotes mixtos (inexistente/FO entre válidos) responden línea por línea; un lote 100 % inválido
   corta sin bloque → el worker reintenta de a uno los IDs sin línea o DESCONOCIDO (hasta 3).
+
+## Mapa (SPA)
+
+- La red completa (~34k cables) **no se carga de entrada**: checkbox "Red FO completa" a pedido
+  (1,4 MB gzip, ETag). La carga inicial es por buscador **Servicio / Cable / Cámara**.
+- **Servicio**: 1 a 8 IDs (separados por coma, o tildando en la ficha del cable); un color por
+  servicio (paleta OKLCH lejos de los tonos del semáforo) y líneas paralelas sólo de cerca
+  (`line-offset` 0 hasta z12, `indice × 4 px` a z15). Fuentes GeoJSON con `tolerance: 0` (con la
+  simplificación por defecto los tramos cortos desaparecían al alejar).
+- **Clic en un cable** fuera de una intervención → ficha lateral: ID, nombre, extremos y servicios
+  con estado comercial, verificable y último estado medido por FO Monitor.
+- MapLibre 6 necesita su worker importado con `?worker&url` + `setWorkerUrl` (si no, Vite no lo
+  emite y el mapa queda vacío): ver guardrail en `frontend-spa-architecture`.
 
 ## Configuración y operación
 
