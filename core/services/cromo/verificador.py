@@ -159,6 +159,11 @@ class ResultadoServiciosUnicos:
     servicios: list[ServicioUnico]
 
 
+# Todas las lecturas del uso de este módulo van contra `app.v_cromo_servicio_match_vigente`
+# (migración 20261017_03), no contra la tabla `cromo_servicio_match`: la vista excluye los pelos de
+# casos de inconsistencia de Cromo en CUARENTENA, que así dejan de contar como uso en Slack, web,
+# FO Monitor, API v1 y protección de baneos. `tests/test_cromo_cuarentena_lectores.py` lo vigila.
+#
 # Columnas de `app.servicios` + `cromo_pelos`/`cromo_servicio_match` comunes a las tres consultas,
 # en el mismo orden que espera `_fila_a_servicio` — evita repetir el SELECT completo tres veces.
 _COLUMNAS_SERVICIO = """
@@ -203,7 +208,7 @@ _SQL_SERVICIOS_POR_CABLE = text(
     f"""
     SELECT DISTINCT {_COLUMNAS_SERVICIO}
     FROM app.cromo_pelos p
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.cable_n_id = :cable_n_id AND p.vigente
     ORDER BY s.id
@@ -218,7 +223,7 @@ _SQL_SERVICIOS_POR_TUBO = text(
     f"""
     SELECT DISTINCT {_COLUMNAS_SERVICIO}
     FROM app.cromo_pelos p
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.tubo_n_id = :tubo_n_id AND p.vigente
     ORDER BY s.id
@@ -257,7 +262,7 @@ _SQL_SERVICIOS_UNICOS_POR_CABLE = text(
     f"""
     SELECT {_COLUMNAS_SERVICIO_UNICO}
     FROM app.cromo_pelos p
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.cable_n_id = :cable_n_id AND p.vigente
     GROUP BY s.id
@@ -269,7 +274,7 @@ _SQL_SERVICIOS_UNICOS_POR_TUBO = text(
     f"""
     SELECT {_COLUMNAS_SERVICIO_UNICO}
     FROM app.cromo_pelos p
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.tubo_n_id = :tubo_n_id AND p.vigente
     GROUP BY s.id
@@ -292,7 +297,7 @@ _SQL_CABLES_DE_BOTELLA = text(
         (
             SELECT count(DISTINCT m.servicio_id)
             FROM app.cromo_pelos p
-            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
             WHERE p.cable_n_id = c.n_id AND p.vigente AND m.servicio_id IS NOT NULL
         ) AS cantidad_servicios
     FROM app.cromo_cables c
@@ -306,7 +311,7 @@ _SQL_SERVICIOS_POR_BOTELLA = text(
     SELECT DISTINCT {_COLUMNAS_SERVICIO}
     FROM app.cromo_cables c
     JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE (c.extremo_a_n_id = :botella_n_id OR c.extremo_b_n_id = :botella_n_id) AND c.vigente AND p.vigente
     ORDER BY s.id
@@ -349,7 +354,7 @@ _SQL_SERVICIOS_POR_ODF = text(
     f"""
     SELECT DISTINCT {_COLUMNAS_SERVICIO}
     FROM app.cromo_pelos p
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.cable_n_id IN (
         SELECT (jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}))::bigint
@@ -369,7 +374,7 @@ _SQL_CABLES_DE_ODF = text(
         (
             SELECT count(DISTINCT m.servicio_id)
             FROM app.cromo_pelos p
-            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
             WHERE p.cable_n_id = c.n_id AND p.vigente AND m.servicio_id IS NOT NULL
         ) AS cantidad_servicios
     FROM app.cromo_cables c
@@ -419,7 +424,7 @@ _SQL_TIENE_CABLES_BATCH = text(
 _SQL_CAMARA_IDS_POR_SERVICIO = text(
     """
     SELECT DISTINCT b.camara_id
-    FROM app.cromo_servicio_match m
+    FROM app.v_cromo_servicio_match_vigente m
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id
     JOIN app.cromo_cables c ON c.n_id = p.cable_n_id
     JOIN app.cromo_botellas b ON b.n_id = c.extremo_a_n_id OR b.n_id = c.extremo_b_n_id
@@ -437,7 +442,7 @@ _SQL_SERVICIO_IDS_POR_CAMARAS = text(
     FROM app.cromo_botellas b
     JOIN app.cromo_cables c ON c.extremo_a_n_id = b.n_id OR c.extremo_b_n_id = b.n_id
     JOIN app.cromo_pelos p ON p.cable_n_id = c.n_id
-    JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     JOIN app.servicios s ON s.id = m.servicio_id
     WHERE b.camara_id = ANY(:camara_ids ::integer[]) AND c.vigente AND p.vigente
     """
@@ -889,7 +894,7 @@ _SQL_ODFS_POR_SERVICIO = text(
     ),
     por_pelo AS (
         SELECT c.n_id, c.odf_n_id, c.pelo_n_id
-        FROM app.cromo_servicio_match m
+        FROM app.v_cromo_servicio_match_vigente m
         JOIN app.servicios s ON s.id = :servicio_id
         JOIN app.cromo_odf_conectores c ON c.pelo_n_id = m.pelo_n_id
         WHERE {IDENTIDADES_DEL_SERVICIO_SQL}

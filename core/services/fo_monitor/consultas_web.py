@@ -253,7 +253,7 @@ _SQL_BUSCAR_SERVICIO = text(
            OR CAST(:q AS varchar) = ANY(alias_ids)
     )
     SELECT DISTINCT c.n_id, c.nombre, c.clase
-    FROM app.cromo_servicio_match m
+    FROM app.v_cromo_servicio_match_vigente m
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
     JOIN app.cromo_cables c ON c.n_id = p.cable_n_id AND c.vigente
     WHERE m.servicio_id IN (SELECT id FROM s)
@@ -332,7 +332,7 @@ _SQL_SERVICIO_POR_ID = text(
 _SQL_CABLES_DE_SERVICIO = text(
     """
     SELECT DISTINCT c.n_id, c.nombre
-    FROM app.cromo_servicio_match m
+    FROM app.v_cromo_servicio_match_vigente m
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
     JOIN app.cromo_cables c ON c.n_id = p.cable_n_id AND c.vigente
     WHERE m.servicio_id = :pk

@@ -500,6 +500,9 @@ export interface CromoPeloDetalle {
   verificable: boolean | null;
   status: string | null;
   fecha_hora_status: string | null;
+  /** El pelo es de un caso de inconsistencia de Cromo en CUARENTENA: `servicios` viene vacío
+   * porque su uso no cuenta, pero no está libre — se muestra "en cuarentena (inconsistencia Cromo)". */
+  en_cuarentena: boolean;
 }
 
 export interface CromoTuboDetalle {

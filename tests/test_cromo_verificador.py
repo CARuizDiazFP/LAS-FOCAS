@@ -96,7 +96,7 @@ async def test_servicios_por_cable_referencia_colgada_con_matches():
     """El cable no tiene fila propia (todavía no bajó en su página de la Fase 2) pero sus pelos sí
     tienen servicio matcheado — caso real encontrado al validar contra `lasfocasdev-postgres`: no debe
     tratarse como "no encontrado", sólo la metadata del cable queda en None."""
-    sesion = _SesionFake(respuestas={"cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO]})
+    sesion = _SesionFake(respuestas={"cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO]})
     resultado = await verificador.servicios_por_cable(sesion, 10191706)
 
     assert resultado.cable_n_id == 10191706
@@ -109,7 +109,7 @@ async def test_servicios_por_cable_con_matches():
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_cables": [(51, "Cable Troncal 1", "72-BRUG", "Botella A", "Botella B")],
-            "cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO],
+            "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO],
         }
     )
     resultado = await verificador.servicios_por_cable(sesion, 51)
@@ -149,7 +149,7 @@ async def test_servicios_por_tubo_con_matches():
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_tubos": [(129001, 51, 3, "AZUL")],
-            "cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO],
+            "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO],
         }
     )
     resultado = await verificador.servicios_por_tubo(sesion, 129001)
@@ -163,7 +163,7 @@ async def test_servicios_por_tubo_con_matches():
 @pytest.mark.asyncio
 async def test_servicios_por_tubo_referencia_colgada_con_matches():
     """Mismo hallazgo real que en cable: el tubo puede tener servicio matcheado sin fila propia."""
-    sesion = _SesionFake(respuestas={"cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO]})
+    sesion = _SesionFake(respuestas={"cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO]})
     resultado = await verificador.servicios_por_tubo(sesion, 10191747)
 
     assert resultado.tubo_n_id == 10191747
@@ -175,7 +175,7 @@ async def test_servicios_por_tubo_referencia_colgada_con_matches():
 #
 # `_SesionFake` matchea por substring del SQL compilado (ver docstring de la clase) — las claves acá
 # usan "GROUP BY s.id" (exclusivo de las consultas nuevas, ninguna consulta vieja del archivo agrupa)
-# para no pisarse con las claves "cromo_pelos p\n    JOIN app.cromo_servicio_match" que usan los
+# para no pisarse con las claves "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente" que usan los
 # tests de `servicios_por_cable`/`_por_tubo` de más arriba.
 
 _FILA_SERVICIO_UNICO_TRES_PELOS = (
@@ -453,14 +453,14 @@ def test_camara_ids_por_servicio_sync_sin_matches():
 
 
 def test_camara_ids_por_servicio_sync_un_camara_id():
-    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_servicio_match m": [(42,)]})
+    sesion = _SesionSyncFake(respuestas={"FROM app.v_cromo_servicio_match_vigente m": [(42,)]})
     resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
 
     assert resultado == {42}
 
 
 def test_camara_ids_por_servicio_sync_multiples_camara_ids():
-    sesion = _SesionSyncFake(respuestas={"FROM app.cromo_servicio_match m": [(42,), (43,), (42,)]})
+    sesion = _SesionSyncFake(respuestas={"FROM app.v_cromo_servicio_match_vigente m": [(42,), (43,), (42,)]})
     resultado = verificador.camara_ids_por_servicio_sync(sesion, 501)
 
     assert resultado == {42, 43}

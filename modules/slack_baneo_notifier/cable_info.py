@@ -49,7 +49,7 @@ from typing import Optional
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from core.services.cromo.detalle import PeloDetalle, pelos_de_tubo_sync
+from core.services.cromo.detalle import MARCA_CUARENTENA, PeloDetalle, pelos_de_tubo_sync
 from core.services.cromo.parser import extraer_tipo_servicio_display
 from core.services.cromo.verificador import (
     ResultadoServiciosUnicos,
@@ -516,6 +516,8 @@ def construir_respuesta_servicios_buffer(
 def _describir_pelo(pelo: PeloDetalle, vencidos: Optional[set[int]] = None) -> str:
     """Formato (ticket 2026-08-25):
     - Con servicio: "Pelo N (Color): Tipo — Línea — Cliente — Descripción (Estado)".
+    - En cuarentena (Tarea 3, 2026-10-17): "Pelo N (Color): en cuarentena (inconsistencia Cromo) —
+      Descripción" — el pelo es de un caso de inconsistencia en CUARENTENA, no está libre.
     - Libre/sin match: "Pelo N (Color): Libre — Descripción" (sin el segundo tramo si no hay
       `servicio_raw` — antes esta rama distinguía "Libre" de "No se identifica cliente/cable", el
       ticket la unifica en una sola forma).
@@ -526,6 +528,11 @@ def _describir_pelo(pelo: PeloDetalle, vencidos: Optional[set[int]] = None) -> s
     hoy) no tiene que pasar nada. Sólo marca, no dispara refresco — eso es la Task 9."""
     etiqueta = pelo.numero_pelo or f"n_id {pelo.n_id}"
     color = pelo.color or "—"
+    # Antes que "Libre": un pelo en cuarentena no tiene servicio visible (su uso se lee de la vista
+    # que lo excluye) pero no está libre. `getattr`: los tests arman pelos con `SimpleNamespace`.
+    if getattr(pelo, "en_cuarentena", False):
+        sufijo = f" — {pelo.servicio_raw}" if pelo.servicio_raw else ""
+        return f"• Pelo {etiqueta} ({color}): {MARCA_CUARENTENA}{sufijo}"
     if pelo.servicios:
         s = pelo.servicios[0]
         cliente = s.nombre_cliente or s.cliente or "—"

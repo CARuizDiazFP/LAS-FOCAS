@@ -1365,3 +1365,32 @@ class TestHandleServiciosConVerificable(unittest.TestCase):
         self.assertIn("222", texto)
         self.assertNotIn("111", texto)
         self.assertIn("No verificables", texto)
+
+
+class TestInfoBufferPeloEnCuarentena(unittest.TestCase):
+    """Tarea 3 (2026-10-17): un pelo de un caso de inconsistencia en CUARENTENA no muestra su
+    servicio (la vista lo excluye) pero tampoco aparece como "Libre"."""
+
+    def test_pelo_en_cuarentena_no_aparece_libre(self) -> None:
+        cable = SimpleNamespace(nombre="F-VFL-IND")
+        tubo = SimpleNamespace(orden=0, nombre_color="AZ")
+        pelo = SimpleNamespace(
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[],
+            en_cuarentena=True,
+        )
+
+        texto = construir_respuesta_info_buffer(cable, tubo, [pelo])
+
+        self.assertIn("• Pelo 1 (AZ): en cuarentena (inconsistencia Cromo) — FO 2001 - Cliente Real", texto)
+        self.assertNotIn("Libre", texto)
+
+    def test_pelo_en_cuarentena_sin_descripcion(self) -> None:
+        cable = SimpleNamespace(nombre="F-VFL-IND")
+        tubo = SimpleNamespace(orden=0, nombre_color="AZ")
+        pelo = SimpleNamespace(
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw=None, servicios=[], en_cuarentena=True
+        )
+
+        texto = construir_respuesta_info_buffer(cable, tubo, [pelo])
+
+        self.assertTrue(texto.endswith("• Pelo 1 (AZ): en cuarentena (inconsistencia Cromo)"))

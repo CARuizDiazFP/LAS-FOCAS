@@ -8278,7 +8278,7 @@ def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
     from core.services.cromo.parser import extraer_tipo_servicio_display
 
     # "Línea"/"Cliente" reciclan el match ya resuelto por `obtener_detalle_cable`/`pelos_de_tubo_sync`
-    # (`cromo_servicio_match` → `app.servicios`, sin JOIN nuevo) — el primero de `pelo.servicios` si
+    # (`v_cromo_servicio_match_vigente` → `app.servicios`, sin JOIN nuevo) — el primero de `pelo.servicios` si
     # existe alguno (ver PeloDetalle.servicios). "-"/None si no hay match, ningún JOIN nuevo por
     # `Servicio.numero_linea`.
     primer_match = pelo.servicios[0] if pelo.servicios else None
@@ -8298,6 +8298,9 @@ def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
         "verificable": pelo.verificable,
         "status": pelo.status,
         "fecha_hora_status": pelo.fecha_hora_status.isoformat() if pelo.fecha_hora_status else None,
+        # Pelo de un caso de inconsistencia de Cromo en CUARENTENA: `servicios` viene vacío pero el
+        # pelo no está libre; el SPA lo marca "en cuarentena (inconsistencia Cromo)".
+        "en_cuarentena": pelo.en_cuarentena,
     }
 
 

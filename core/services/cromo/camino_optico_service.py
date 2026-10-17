@@ -1052,7 +1052,7 @@ _SQL_PELOS_SEMILLA = text(
                 ELSE 2 END AS prioridad_identidad,
            p.servicio_raw
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
     {_SIN_EXCLUIDOS_SQL}
     LEFT JOIN app.cromo_cables cab ON cab.n_id = p.cable_n_id
@@ -1185,7 +1185,7 @@ _SQL_CONTAR_SEMILLAS = text(
     f"""
     SELECT s.id, COUNT(DISTINCT m.pelo_n_id) AS pelos
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
     {_SIN_EXCLUIDOS_SQL}
     WHERE s.id = ANY(:ids)
@@ -1203,7 +1203,7 @@ _SQL_TOTAL_SEMILLAS = text(
                )
            ) AS con_conector
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
     {_SIN_EXCLUIDOS_SQL}
     WHERE s.id = :servicio_id
@@ -1215,7 +1215,7 @@ _SQL_PELO_PERTENECE = text(
     f"""
     SELECT 1
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
     {_SIN_EXCLUIDOS_SQL}
     WHERE s.id = :servicio_id AND m.pelo_n_id = :pelo_n_id
@@ -1267,7 +1267,7 @@ _SQL_PELOS_POR_GRUPO = text(
     WITH pelos AS (
         SELECT DISTINCT m.pelo_n_id, p.cable_n_id
         FROM app.servicios s
-        JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+        JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
         JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente = true
         {_SIN_EXCLUIDOS_SQL}
         WHERE s.id = :servicio_id

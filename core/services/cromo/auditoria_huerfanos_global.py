@@ -73,10 +73,10 @@ _SQL_SERVICIOS_POR_PELOS = text(
         UNION SELECT id, unnest(alias_ids) FROM activos
     ), pares AS (
         SELECT i.id, m.pelo_n_id
-        FROM identidades i JOIN app.cromo_servicio_match m ON m.servicio_numero = i.numero
+        FROM identidades i JOIN app.v_cromo_servicio_match_vigente m ON m.servicio_numero = i.numero
         UNION
         SELECT a.id, m.pelo_n_id
-        FROM activos a JOIN app.cromo_servicio_match m ON m.servicio_id = a.id
+        FROM activos a JOIN app.v_cromo_servicio_match_vigente m ON m.servicio_id = a.id
     )
     SELECT pr.id, COUNT(*) AS pelos
     FROM pares pr

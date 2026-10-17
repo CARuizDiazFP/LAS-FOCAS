@@ -170,7 +170,7 @@ _SQL_TRACKINGS_DEL_SERVICIO = text(
        OR tc.pelo_n_id IN (
             SELECT m.pelo_n_id
             FROM app.servicios s
-            JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+            JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
             WHERE s.id = :sid
        )
     ORDER BY tc.pelo_n_id
@@ -202,7 +202,7 @@ _SQL_INVENTARIO = text(
     f"""
     SELECT DISTINCT b.nombre
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
     JOIN app.cromo_cables cb ON cb.n_id = p.cable_n_id AND cb.vigente
     JOIN app.cromo_botellas b
@@ -290,7 +290,7 @@ _SQL_CABLES_INVENTARIO = text(
     f"""
     SELECT DISTINCT cb.nombre
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
     JOIN app.cromo_cables cb ON cb.n_id = p.cable_n_id AND cb.vigente
     WHERE s.id = :sid
@@ -360,7 +360,7 @@ _SQL_PELOS_DEL_SERVICIO = text(
     f"""
     SELECT DISTINCT m.pelo_n_id
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     WHERE s.id = :sid
     """
 )

@@ -327,3 +327,45 @@ def test_detalle_cable_serializa_tipo_servicio_linea_cliente_y_verificacion(monk
     assert sin_match["verificable"] is None
     assert sin_match["status"] is None
     assert sin_match["fecha_hora_status"] is None
+
+
+def test_detalle_cable_expone_en_cuarentena_por_pelo(monkeypatch):
+    """Tarea 3 (2026-10-17): el pelo de un caso de inconsistencia en CUARENTENA llega sin servicios
+    (la vista lo excluye) y con `en_cuarentena=True`, para que el SPA no lo muestre libre."""
+    from web.app import main as web_main
+    from core.services.cromo import detalle as cromo_detalle
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+
+    def _pelo(n_id: int, en_cuarentena: bool):
+        return cromo_detalle.PeloDetalle(
+            n_id=n_id, tubo_n_id=129001, numero_pelo=str(n_id), orden=n_id, color="AZUL",
+            tipo_asociacion="CLIENTE", servicio_raw="FO 1234 - CLIENTE", servicio_numero="1234",
+            vigente=True, en_cuarentena=en_cuarentena,
+        )
+
+    async def _obtener_detalle_cable_fake(sesion, n_id):
+        tubo = cromo_detalle.TuboDetalle(
+            n_id=129001, orden=1, nombre_color="AZUL", vigente=True, tiene_fila_propia=True,
+            pelos=[_pelo(1, True), _pelo(2, False)],
+        )
+        return cromo_detalle.DetalleCable(
+            n_id=n_id, nombre="Cable", capacidad=None, capacidad_pelos=None, jerarquia=None,
+            propietario=None, tendido=None, distancia_geo=None, distancia_real=None, id_legacy=None,
+            notas=None, extremo_a_n_id=None, extremo_a_clase=None, extremo_a_legacy=None,
+            extremo_a_nombre=None, extremo_b_n_id=None, extremo_b_clase=None, extremo_b_legacy=None,
+            extremo_b_nombre=None, vigente=True, tubos=[tubo],
+        )
+
+    monkeypatch.setattr(cromo_detalle, "obtener_detalle_cable", _obtener_detalle_cable_fake)
+
+    client = TestClient(app)
+    _login(client, "user", "userpass")
+
+    res = client.get("/api/infra/cromo/cables/51/detalle")
+    assert res.status_code == 200
+    pelos = res.json()["tubos"][0]["pelos"]
+    assert [(p["n_id"], p["en_cuarentena"], p["servicios"], p["linea"]) for p in pelos] == [
+        (1, True, [], None),
+        (2, False, [], None),
+    ]
