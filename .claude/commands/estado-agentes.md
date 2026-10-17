@@ -1,3 +1,8 @@
+---
+description: "Ver agentes activos, worktrees, leases y handoffs; 'doctor' diagnostica inconsistencias sin corregir"
+argument-hint: "doctor | <agent_id> | vacío"
+---
+
 # Nombre de archivo: estado-agentes.md
 # Ubicación de archivo: .claude/commands/estado-agentes.md
 # Descripción: Comando Claude Code para inspeccionar agentes activos, worktrees, leases y handoffs, y diagnosticar inconsistencias

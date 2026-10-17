@@ -1,3 +1,8 @@
+---
+description: "Auditoría de seguridad: secretos, CVEs de dependencias, SAST y red/contenedores"
+argument-hint: "full | secrets | dependencies | sast | foco libre"
+---
+
 # Nombre de archivo: revisar-seguridad.md
 # Ubicación de archivo: .claude/commands/revisar-seguridad.md
 # Descripción: Comando Claude Code para auditoría proactiva de seguridad

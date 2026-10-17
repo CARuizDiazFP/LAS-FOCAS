@@ -1,3 +1,8 @@
+---
+description: "Andamiar un módulo SPA Vue 3 completo: vista, componentes, composable, API client y ruta"
+argument-hint: "nombre del módulo, objetivo funcional y alcance"
+---
+
 # Nombre de archivo: nuevo-modulo.md
 # Ubicación de archivo: .claude/commands/nuevo-modulo.md
 # Descripción: Comando Claude Code para andamiar módulos frontend SPA Vue 3

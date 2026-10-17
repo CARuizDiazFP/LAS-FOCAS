@@ -1,3 +1,8 @@
+---
+description: "Cierre de sesión: retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge de la rama efímera a dev. Sólo con /cierre-sesion, 'Cerrar sesión' o 'Cerremos sesión'"
+argument-hint: "alcance o fecha YYYY-MM-DD (opcional)"
+---
+
 # Nombre de archivo: cierre-sesion.md
 # Ubicación de archivo: .claude/commands/cierre-sesion.md
 # Descripción: Comando Claude Code para cierre de sesión: retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge de la rama efímera a dev

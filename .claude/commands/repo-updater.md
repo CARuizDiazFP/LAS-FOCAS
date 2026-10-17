@@ -1,3 +1,8 @@
+---
+description: "Auditar el diff, actualizar docs/PR y docs temáticas, generar un commit técnico y hacer push a la rama efímera activa"
+argument-hint: "alcance o contexto del cambio (opcional)"
+---
+
 # Nombre de archivo: repo-updater.md
 # Ubicación de archivo: .claude/commands/repo-updater.md
 # Descripción: Comando Claude Code para auditar trazabilidad, documentar cambios y hacer push a la rama efímera activa

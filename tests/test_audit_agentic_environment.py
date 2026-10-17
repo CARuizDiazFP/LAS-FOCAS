@@ -216,3 +216,15 @@ def test_el_repositorio_real_cumple_los_contratos() -> None:
     errores = [h for h in auditor.auditar(REPO, db=Path("/no/existe")) if h.startswith("error:")]
 
     assert errores == []
+
+
+def test_comando_sin_description_falla(raiz: Path) -> None:
+    comandos = raiz / ".claude" / "commands"
+    comandos.mkdir(parents=True, exist_ok=True)
+    (comandos / "ok.md").write_text('---\ndescription: "Hace algo"\n---\n\n# Nombre de archivo: ok.md\n', encoding="utf-8")
+    (comandos / "viejo.md").write_text("# Nombre de archivo: viejo.md\n\nCuerpo\n", encoding="utf-8")
+
+    errores = _errores(raiz)
+
+    assert "error:command_description_missing:.claude/commands/viejo.md" in errores
+    assert not any("commands/ok.md" in h for h in errores)

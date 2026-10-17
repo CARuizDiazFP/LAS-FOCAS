@@ -210,8 +210,21 @@ def chequear_estado(db: Path | None, *, momento: float | None = None) -> list[st
     return hallazgos
 
 
+def chequear_comandos_claude(raiz: Path) -> list[str]:
+    """Los comandos slash necesitan frontmatter primero con `description` (si no, Claude Code
+    muestra la primera línea, "# Nombre de archivo: ...", como descripción)."""
+    hallazgos: list[str] = []
+    for ruta in sorted((raiz / ".claude/commands").glob("*.md")):
+        texto = ruta.read_text(encoding="utf-8")
+        frontmatter = texto.split("\n---\n", 1)[0] if texto.startswith("---\n") else ""
+        if not sync_skill_mirrors.valor_escalar(frontmatter.removeprefix("---\n"), "description"):
+            hallazgos.append(f"error:command_description_missing:{ruta.relative_to(raiz)}")
+    return hallazgos
+
+
 CHEQUEOS = (
     chequear_archivos,
+    chequear_comandos_claude,
     chequear_ignores,
     chequear_mapa,
     chequear_frontmatter_skills,
