@@ -18,6 +18,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Text,
@@ -425,6 +426,10 @@ class CromoOdfConector(Base):
     bandeja_modelo = Column(Text, nullable=True)  # at.89, ej. "SC-APCx24"
     numero_conector = Column(Text, nullable=True)  # at.81 / name, ej. "15"
     pelo_n_id = Column(BigInteger, nullable=True, index=True)  # tp[].id_to (clase 130), sin FK dura
+    patch_conector_n_id = Column(BigInteger, nullable=True)  # tp[].id_to de clase 136 (patch a otro conector)
+    # Fusión de ODF (clase 141) por la que el conector llega al pelo/otro conector. Guarda el id de la
+    # 141 tal como lo refiere el `tp[].id_to` del conector (igual al n_id en las ODF validadas).
+    fusion_odf_n_id = Column(BigInteger, nullable=True)
     servicio_numero_atributo = Column(Text, nullable=True)  # at.62 crudo, sólo si está en uso
     servicio_resuelto = Column(Text, nullable=True)  # MAX(atributo, regex del pelo)
     servicio_id_historico = Column(Text, nullable=True)  # MIN(...), sólo si difieren
@@ -513,6 +518,45 @@ class CromoServicioOdfOverride(Base):
         return f"<CromoServicioOdfOverride servicio_id={self.servicio_id} odf_n_id={self.odf_n_id}>"
 
 
+class ServicioOdfConfirmada(Base):
+    """ODF que un operador confirma como parte del recorrido de un Servicio (migración 20261016_03).
+
+    Un camino que toca una ODF confirmada es siempre `TRAMO` en el tracking por tramos. `rol` es
+    `EXTREMO` o `TRANSITO` (Text + CHECK en la migración). `odf_n_id` es referencia blanda a
+    `cromo_odfs.n_id`. Des-confirmar es `vigente=False`, nunca un DELETE: conserva el historial. Hay
+    a lo sumo una fila vigente por (`servicio_id`, `odf_n_id`) (índice único parcial). No reemplaza
+    a `CromoServicioOdfOverride` (escudo de "servicios sin ODF"): admite varias ODF por servicio.
+    """
+
+    __tablename__ = "servicio_odf_confirmada"
+    __table_args__ = (
+        Index(
+            "ux_servicio_odf_confirmada_vigente",
+            "servicio_id",
+            "odf_n_id",
+            unique=True,
+            postgresql_where=text("vigente"),
+        ),
+        # Nombre explícito, el mismo de la migración 20261016_03: con `index=True` el modelo
+        # generaba `ix_app_servicio_odf_confirmada_servicio_id` y autogenerate veía drift.
+        Index("ix_servicio_odf_confirmada_servicio", "servicio_id"),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False
+    )
+    odf_n_id = Column(BigInteger, nullable=False)  # referencia blanda a cromo_odfs.n_id
+    rol = Column(Text, nullable=False)  # EXTREMO | TRANSITO — CHECK en la migración
+    confirmado_por = Column(String(128), nullable=False)
+    confirmado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    vigente = Column(Boolean, nullable=False, server_default=text("true"))
+
+    def __repr__(self) -> str:
+        return f"<ServicioOdfConfirmada servicio_id={self.servicio_id} odf_n_id={self.odf_n_id} rol={self.rol}>"
+
+
 class CromoServicioMatch(Base):
     """Puente entre un pelo con servicio parseado (`at.61`) y el maestro `app.servicios`."""
 
@@ -589,6 +633,11 @@ class CromoTrackingCache(Base):
     # camino y no uno por posición de ODF sin volver a Cromo. NULL = entrada previa a la columna:
     # se regenera (ver `tracking_service.obtener_tracking`).
     pelos_camino = Column(ARRAY(BigInteger), nullable=True)
+    # Resumen del camino para clasificarlo como TRAMO o RESIDUAL sin volver a Cromo: sus dos
+    # extremos (tipo, ODF, clase de la ODF, patchera, conector), las ODFs que toca y los cables que
+    # recorre. NULL = entrada previa a la columna: se regenera, igual que `pelos_camino`.
+    # `none_as_null=True` para que un `None` de Python sea SQL NULL y no el JSON `null`.
+    extremos = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
     generado_at = Column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), index=True
     )
@@ -628,11 +677,133 @@ class CromoServicioPeloExcluido(Base):
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+    # MANUAL (un admin desde el panel del camino) | AUDITORIA (Normalizar desde el Viewer de
+    # huérfanos). Con AUDITORIA, `auditoria_id` apunta a la fila que lo originó: restaurar el pelo
+    # la devuelve a PENDIENTE.
+    origen = Column(Text, nullable=False, server_default=text("'MANUAL'"))
+    auditoria_id = Column(
+        BigInteger,
+        # Nombre explícito, el mismo de la migración 20261016_04.
+        ForeignKey(
+            "app.cromo_auditoria_huerfanos.id",
+            ondelete="SET NULL",
+            name="fk_cromo_servicio_pelo_excluido_auditoria",
+        ),
+        nullable=True,
+    )
 
     def __repr__(self) -> str:
         return (
             f"<CromoServicioPeloExcluido servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id}>"
         )
+
+
+class CromoAuditoriaHuerfano(Base):
+    """Pelo de un camino RESIDUAL de un Servicio (huérfano), con causa sugerida y estado de revisión.
+
+    Lo escribe `core/services/cromo/auditoria_huerfanos.py` cada vez que se resuelven los caminos
+    de un Servicio (Slack, portal o la corrida global). Una fila por `(servicio_id, pelo_n_id)`:
+    re-auditar actualiza las PENDIENTE y nunca toca las NORMALIZADO/DESCARTADO. Normalizar es
+    manual, desde el Viewer admin, y reusa la exclusión de pelos (`cromo_servicio_pelo_excluido`).
+    """
+
+    __tablename__ = "cromo_auditoria_huerfanos"
+    __table_args__ = (
+        UniqueConstraint(
+            "servicio_id", "pelo_n_id", name="uq_cromo_auditoria_huerfanos_servicio_pelo"
+        ),
+        Index("ix_cromo_auditoria_huerfanos_estado_causa", "estado", "causa"),
+        {"schema": "app"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    corrida_id = Column(
+        BigInteger, ForeignKey("app.cromo_ingesta_corridas.id", ondelete="SET NULL"), nullable=True
+    )
+    servicio_id = Column(
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False
+    )
+    pelo_n_id = Column(BigInteger, nullable=False)
+    camino_semilla = Column(BigInteger, nullable=True)
+    # PELO_DANADO | CAMBIO_CABLE_DANO | CABLE_DESUSO | MIGRACION_SITIO | SIN_CLASIFICAR
+    causa = Column(Text, nullable=False, server_default=text("'SIN_CLASIFICAR'"))
+    evidencia = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    # PENDIENTE | NORMALIZADO | DESCARTADO
+    estado = Column(Text, nullable=False, server_default=text("'PENDIENTE'"))
+    revisado_por = Column(String(128), nullable=True)
+    detectado_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    actualizado_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CromoAuditoriaHuerfano servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id} "
+            f"estado={self.estado}>"
+        )
+
+
+class CromoInconsistencia(Base):
+    """Caso del detector de inconsistencias de Cromo (`core/services/cromo/inconsistencias_cromo.py`).
+
+    Un caso por `(tipo, objeto_n_id)`: `ISLA_FUSION` (objeto = fusión 132), `CABLE_SIN_EXTREMO`
+    (objeto = cable) o `ELEMENTO_ISLA` (objeto = botella u ODF). `revision` AUTO sólo para la isla
+    pura confirmada contra Cromo en vivo (entra en `CUARENTENA`); MANUAL para todo lo demás (entra en
+    `PENDIENTE`). Re-detectar actualiza `ultima_vez`/evidencia y nunca toca ACEPTADA ni REPORTADA;
+    un caso que deja de detectarse pasa a CORREGIDA.
+    """
+
+    __tablename__ = "cromo_inconsistencia"
+    __table_args__ = (
+        UniqueConstraint("tipo", "objeto_n_id", name="uq_cromo_inconsistencia_tipo_objeto"),
+        Index("ix_cromo_inconsistencia_estado_tipo", "estado", "tipo"),
+        {"schema": "app"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tipo = Column(Text, nullable=False)  # ISLA_FUSION | CABLE_SIN_EXTREMO | ELEMENTO_ISLA (CHECK)
+    objeto_n_id = Column(BigInteger, nullable=False)  # referencia blanda, n_id de linaje
+    objeto_clase = Column(SmallInteger, nullable=True)
+    nombre = Column(Text, nullable=True)
+    localidad = Column(Text, nullable=True)
+    revision = Column(Text, nullable=False)  # AUTO | MANUAL (CHECK)
+    # PENDIENTE | CUARENTENA | REPORTADA | CORREGIDA | ACEPTADA (CHECK)
+    estado = Column(Text, nullable=False)
+    evidencia = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    primera_vez = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    ultima_vez = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    actualizado_por = Column(String(128), nullable=True)
+    actualizado_en = Column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CromoInconsistencia tipo={self.tipo} objeto_n_id={self.objeto_n_id} "
+            f"estado={self.estado}>"
+        )
+
+
+class CromoInconsistenciaPelo(Base):
+    """Pelo en uso afectado por un caso de `cromo_inconsistencia` (la cuarentena se arma por pelo)."""
+
+    __tablename__ = "cromo_inconsistencia_pelo"
+    __table_args__ = (
+        PrimaryKeyConstraint("inconsistencia_id", "pelo_n_id", name="pk_cromo_inconsistencia_pelo"),
+        Index("ix_cromo_inconsistencia_pelo_pelo", "pelo_n_id"),
+        {"schema": "app"},
+    )
+
+    inconsistencia_id = Column(
+        BigInteger, ForeignKey("app.cromo_inconsistencia.id", ondelete="CASCADE"), nullable=False
+    )
+    pelo_n_id = Column(BigInteger, nullable=False)
 
 
 class CromoSplitter(Base):

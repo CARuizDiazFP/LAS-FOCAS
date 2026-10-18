@@ -368,11 +368,16 @@ class TestRespuestasBuffer(unittest.TestCase):
             tipo_servicio="FO", pelo_n_id=1, servicio_numero_match="2001", metodo="EXACTO",
         )
         pelo_matcheado = SimpleNamespace(
-            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio]
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio],
+            en_cuarentena=False,
         )
-        pelo_libre = SimpleNamespace(n_id=2, numero_pelo="2", color="AZ", servicio_raw=None, servicios=[])
+        pelo_libre = SimpleNamespace(
+            n_id=2, numero_pelo="2", color="AZ", servicio_raw=None, servicios=[],
+            en_cuarentena=False,
+        )
         pelo_indeterminado = SimpleNamespace(
-            n_id=3, numero_pelo="3", color="AZ", servicio_raw="algo sin parsear", servicios=[]
+            n_id=3, numero_pelo="3", color="AZ", servicio_raw="algo sin parsear", servicios=[],
+            en_cuarentena=False,
         )
 
         texto = construir_respuesta_info_buffer(cable, tubo, [pelo_matcheado, pelo_libre, pelo_indeterminado])
@@ -428,7 +433,10 @@ class TestHandleCableBuffer(unittest.TestCase):
         event = self._make_event("Info cable F-VFL-IND B1")
         cable_fake = SimpleNamespace(n_id=99, nombre="F-VFL-IND")
         tubo_fake = SimpleNamespace(n_id=1, orden=0, nombre_color="AZ")
-        pelo_fake = SimpleNamespace(n_id=1, numero_pelo="1", color="AZ", servicio_raw=None, servicios=[])
+        pelo_fake = SimpleNamespace(
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw=None, servicios=[],
+            en_cuarentena=False,
+        )
 
         with (
             patch("modules.slack_baneo_notifier.listener.SessionLocal"),
@@ -714,7 +722,8 @@ class TestMarcadorFrescuraInfoBuffer(unittest.TestCase):
             tipo_servicio="FO", pelo_n_id=1, servicio_numero_match="2001", metodo="EXACTO",
         )
         return SimpleNamespace(
-            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio]
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio],
+            en_cuarentena=False,
         )
 
     def test_marca_con_reloj_el_pelo_vencido(self) -> None:
@@ -749,7 +758,10 @@ class TestMarcadorFrescuraInfoBuffer(unittest.TestCase):
     def test_no_marca_pelos_libres(self) -> None:
         cable = SimpleNamespace(nombre="F-VFL-IND")
         tubo = SimpleNamespace(orden=0, nombre_color="AZ")
-        pelo_libre = SimpleNamespace(n_id=2, numero_pelo="2", color="AZ", servicio_raw=None, servicios=[])
+        pelo_libre = SimpleNamespace(
+            n_id=2, numero_pelo="2", color="AZ", servicio_raw=None, servicios=[],
+            en_cuarentena=False,
+        )
 
         texto = construir_respuesta_info_buffer(cable, tubo, [pelo_libre], vencidos={999})
 
@@ -999,7 +1011,8 @@ class TestInfoCableBufferConsultaFrescura(unittest.TestCase):
             tipo_servicio="FO", pelo_n_id=1, servicio_numero_match="2001", metodo="EXACTO",
         )
         pelo_fake = SimpleNamespace(
-            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio]
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[servicio],
+            en_cuarentena=False,
         )
 
         with (
@@ -1365,3 +1378,32 @@ class TestHandleServiciosConVerificable(unittest.TestCase):
         self.assertIn("222", texto)
         self.assertNotIn("111", texto)
         self.assertIn("No verificables", texto)
+
+
+class TestInfoBufferPeloEnCuarentena(unittest.TestCase):
+    """Tarea 3 (2026-10-17): un pelo de un caso de inconsistencia en CUARENTENA no muestra su
+    servicio (la vista lo excluye) pero tampoco aparece como "Libre"."""
+
+    def test_pelo_en_cuarentena_no_aparece_libre(self) -> None:
+        cable = SimpleNamespace(nombre="F-VFL-IND")
+        tubo = SimpleNamespace(orden=0, nombre_color="AZ")
+        pelo = SimpleNamespace(
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw="FO 2001 - Cliente Real", servicios=[],
+            en_cuarentena=True,
+        )
+
+        texto = construir_respuesta_info_buffer(cable, tubo, [pelo])
+
+        self.assertIn("• Pelo 1 (AZ): en cuarentena (inconsistencia Cromo) — FO 2001 - Cliente Real", texto)
+        self.assertNotIn("Libre", texto)
+
+    def test_pelo_en_cuarentena_sin_descripcion(self) -> None:
+        cable = SimpleNamespace(nombre="F-VFL-IND")
+        tubo = SimpleNamespace(orden=0, nombre_color="AZ")
+        pelo = SimpleNamespace(
+            n_id=1, numero_pelo="1", color="AZ", servicio_raw=None, servicios=[], en_cuarentena=True
+        )
+
+        texto = construir_respuesta_info_buffer(cable, tubo, [pelo])
+
+        self.assertTrue(texto.endswith("• Pelo 1 (AZ): en cuarentena (inconsistencia Cromo)"))

@@ -1,3 +1,8 @@
+---
+description: "Diagnosticar uso de disco, Docker y logs, y ejecutar una limpieza segura con confirmación"
+argument-hint: "umbrales, p. ej. 'disco 85%, logs 500MB'"
+---
+
 # Nombre de archivo: mantenimiento-disco.md
 # Ubicación de archivo: .claude/commands/mantenimiento-disco.md
 # Descripción: Comando Claude Code para diagnóstico y limpieza segura de espacio en disco

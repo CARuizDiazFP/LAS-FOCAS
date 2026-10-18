@@ -663,7 +663,8 @@ def test_parse_odf_conectores_guarda_todos_los_pelos_de_tp_como_candidatos():
 
 def test_parse_odf_conectores_candidatos_solo_de_clase_pelo():
     """`tp` también trae otras clases (136 conector-conector, 141 fusión de ODF): no son pelos.
-    Si no hay ningún 130 se conserva el comportamiento histórico (`tp[0]`)."""
+    `pelo_n_id` sale únicamente de un `tp` de clase 130; sin pelo queda NULL (antes se guardaba
+    `tp[0]`, que podía ser un conector o una fusión y quedaba como "pelo" inexistente)."""
     mixto = {
         "id": 10, "n_id": 10, "class": 136, "name": "3", "parent": 8539330, "at": [],
         "tp": [{"id_to": 6703087, "class": 130}, {"id_to": 8479280, "class": 136}],
@@ -679,7 +680,162 @@ def test_parse_odf_conectores_candidatos_solo_de_clase_pelo():
     assert conectores[10].pelos_candidatos == [6703087]
     assert conectores[10].pelo_n_id == 6703087
     assert conectores[11].pelos_candidatos == []
-    assert conectores[11].pelo_n_id == 8882734
+    assert conectores[11].pelo_n_id is None
+    assert conectores[11].patch_conector_n_id is None
+
+
+def test_parse_odf_conectores_tp_de_clase_136_va_a_patch_conector_n_id():
+    """Un `tp` de clase 136 es un patch a otro conector (típico de un ODF Nodo): no es un pelo."""
+    patch = {
+        "id": 12, "n_id": 12, "class": 136, "name": "5", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 8479280, "class": 136}],
+    }
+    otros = {
+        "id": 13, "n_id": 13, "class": 136, "name": "6", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 777, "class": 134}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, patch, otros]}
+
+    conectores = {c.n_id: c for c in parse_odf_conectores(obj)}
+
+    assert conectores[12].pelo_n_id is None
+    assert conectores[12].patch_conector_n_id == 8479280
+    assert conectores[13].pelo_n_id is None
+    assert conectores[13].patch_conector_n_id is None
+
+
+def test_parse_odf_conectores_pelo_y_patch_conviven():
+    ambos = {
+        "id": 14, "n_id": 14, "class": 136, "name": "7", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 8479280, "class": 136}, {"id_to": 6703087, "class": 130}],
+    }
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, ambos]}
+
+    c = parse_odf_conectores(obj)[0]
+
+    assert c.pelo_n_id == 6703087
+    assert c.patch_conector_n_id == 8479280
+
+
+# ── Fusiones de ODF (clase 141): conector → 141 → pelo/conector ─────────────────────────────
+# Hallazgo real (2026-10-17, KORN 6646686): una 141 viaja en el mismo `inner[]` que los conectores
+# (tanto en la forma liviana como en la completa de `get_inner`), con `tp` hacia el conector y hacia
+# el pelo (o hacia otro conector). El conector sólo apunta a la 141.
+
+
+def _fusion_odf(n_id: int, tp: list[dict] | None) -> dict:
+    item = {"id": n_id, "class": 141, "name": "39-39", "at": [{"id": 84, "value": "39-39"}]}
+    if tp is not None:
+        item["tp"] = tp
+    return item
+
+
+def test_parse_odf_conectores_141_con_pelo_da_pelo_y_fusion():
+    """Caso real KORN: conector 8685667 (O-1259853-3:39) → 141 8884671 → pelo 7914406."""
+    conector = {
+        "id": 8685667, "class": 136, "name": "39", "parent": 8539330, "at": [],
+        "tp": [{"id_to": 8884671, "class": 141}],
+    }
+    fusion = _fusion_odf(8884671, [{"id_to": 8685667, "class": 136}, {"id_to": 7914406, "class": 130}])
+    obj = {"id": 1, "n_id": 6646686, "class": 69, "at": [], "inner": [_BANDEJA_1, fusion, conector]}
+
+    [c] = parse_odf_conectores(obj)
+
+    assert c.pelo_n_id == 7914406
+    assert c.fusion_odf_n_id == 8884671
+    assert c.patch_conector_n_id is None
+    assert c.pelos_candidatos == [7914406]
+
+
+def test_parse_odf_conectores_141_entre_dos_conectores_da_patch_y_fusion():
+    a = {"id": 20, "class": 136, "name": "1", "parent": 8539330, "at": [], "tp": [{"id_to": 900, "class": 141}]}
+    b = {"id": 21, "class": 136, "name": "2", "parent": 8539330, "at": [], "tp": [{"id_to": 900, "class": 141}]}
+    fusion = _fusion_odf(900, [{"id_to": 20, "class": 136}, {"id_to": 21, "class": 136}])
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, a, b, fusion]}
+
+    conectores = {c.n_id: c for c in parse_odf_conectores(obj)}
+
+    assert conectores[20].patch_conector_n_id == 21
+    assert conectores[21].patch_conector_n_id == 20
+    for c in conectores.values():
+        assert c.pelo_n_id is None
+        assert c.fusion_odf_n_id == 900
+        assert c.pelos_candidatos == []
+
+
+@pytest.mark.parametrize("fusion", [_fusion_odf(901, None), _fusion_odf(901, [])])
+def test_parse_odf_conectores_141_sin_tp_deja_todo_null(fusion):
+    conector = {"id": 22, "class": 136, "name": "3", "parent": 8539330, "at": [], "tp": [{"id_to": 901, "class": 141}]}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, fusion, conector]}
+
+    [c] = parse_odf_conectores(obj)
+
+    assert (c.pelo_n_id, c.patch_conector_n_id, c.fusion_odf_n_id) == (None, None, None)
+
+
+def test_parse_odf_conectores_141_ausente_del_inner_deja_todo_null_sin_romper():
+    conector = {"id": 23, "class": 136, "name": "4", "parent": 8539330, "at": [], "tp": [{"id_to": 999, "class": 141}]}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, conector]}
+
+    [c] = parse_odf_conectores(obj)
+
+    assert (c.pelo_n_id, c.patch_conector_n_id, c.fusion_odf_n_id) == (None, None, None)
+
+
+def test_parse_odf_conectores_141_entre_conectores_excluye_al_propio_por_id_o_n_id():
+    """Si el conector trae `n_id` distinto de `id`, la 141 puede referirlo por cualquiera de los
+    dos: ninguno es "el otro conector"."""
+    a = {"id": 30, "n_id": 3030, "class": 136, "name": "1", "parent": 8539330, "at": [],
+         "tp": [{"id_to": 902, "class": 141}]}
+    fusion = _fusion_odf(902, [{"id_to": 30, "class": 136}, {"id_to": 31, "class": 136}])
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [], "inner": [_BANDEJA_1, a, fusion]}
+
+    [c] = parse_odf_conectores(obj)
+
+    assert (c.patch_conector_n_id, c.fusion_odf_n_id) == (31, 902)
+
+
+def test_parse_odf_conectores_loguea_141_ausentes_y_sin_tp(caplog):
+    ausente = {"id": 40, "class": 136, "name": "1", "parent": 8539330, "at": [], "tp": [{"id_to": 998, "class": 141}]}
+    sin_tp = {"id": 41, "class": 136, "name": "2", "parent": 8539330, "at": [], "tp": [{"id_to": 903, "class": 141}]}
+    obj = {"id": 1, "n_id": 800010, "class": 69, "at": [],
+           "inner": [_BANDEJA_1, ausente, sin_tp, _fusion_odf(903, None)]}
+
+    with caplog.at_level("WARNING"):
+        parse_odf_conectores(obj)
+
+    [mensaje] = [r.getMessage() for r in caplog.records if "fusion_odf" in r.getMessage()]
+    assert "referencias=1" in mensaje
+    assert "fusiones_sin_tp=1" in mensaje
+
+
+def test_parse_odf_conectores_141_forma_liviana_con_n_id():
+    """La forma liviana trae `n_id` además de `id` en la 141: el mapa se indexa por cualquiera."""
+    conector = {"id": 24, "n_id": 24, "class": 136, "name": "5", "parent": 8539330, "at": [],
+                "tp": [{"id_to": 8884704, "class": 141}]}
+    fusion = {"id": 8884704, "n_id": 8884704, "class": 141, "parent": 6646686,
+              "tp": [{"class": 130, "id_to": 7914441}, {"class": 136, "id_to": 24}]}
+    obj = {"id": 1, "n_id": 6646686, "class": 69, "at": [], "inner": [_BANDEJA_1, conector, fusion]}
+
+    [c] = parse_odf_conectores(obj)
+
+    assert (c.pelo_n_id, c.fusion_odf_n_id) == (7914441, 8884704)
+
+
+def test_parse_odf_clase_86_es_odf_nodo_sin_pasar_por_el_regex_de_nombre():
+    obj = {
+        "id": 9295436, "n_id": 6646686, "class": 86,
+        "at": [{"id": 34, "value": "NODO Alejandro KORN"}],
+    }
+    odf = parse_objeto(obj)
+
+    assert odf.clase == 86
+    assert odf.tipo_elemento == "ODF_NODO"
+
+
+def test_parse_odf_clase_69_sigue_usando_el_regex_de_nombre():
+    obj = {"id": 1, "n_id": 2, "class": 69, "at": [{"id": 34, "value": "ODF Ciudadela"}]}
+    assert parse_odf(obj).tipo_elemento == "ODF"
 
 
 def test_parse_odf_conectores_lee_atributo_servicio_id_62_solo_si_esta_en_uso():

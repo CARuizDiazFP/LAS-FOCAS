@@ -1,0 +1,6 @@
+# Nombre de archivo: requirements.txt
+# Ubicación de archivo: modules/fo_monitor_worker/requirements.txt
+# Descripción: Dependencias específicas del worker de FO Monitor (las comunes están en focas-base vía common-requirements.txt)
+
+# Mismo rango que modules/slack_baneo_notifier/requirements.txt (una sola versión de slack_sdk en el repo)
+slack_sdk>=3.27.0,<4

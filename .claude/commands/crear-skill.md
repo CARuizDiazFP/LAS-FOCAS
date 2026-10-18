@@ -1,3 +1,8 @@
+---
+description: "Crear o evolucionar skills, agentes y prompts del ecosistema agéntico con stack y seguridad obligatorios (sin código de aplicación)"
+argument-hint: "objetivo, alcance y restricciones de la skill"
+---
+
 # Nombre de archivo: crear-skill.md
 # Ubicación de archivo: .claude/commands/crear-skill.md
 # Descripción: Comando Claude Code para crear skills y tríadas de customizations en LAS-FOCAS

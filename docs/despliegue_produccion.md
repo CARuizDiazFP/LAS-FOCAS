@@ -143,6 +143,11 @@ Patrón para cualquier script de datos de este paso (usado por el reproceso, 202
   (`Session(bind=connection, join_transaction_mode="create_savepoint")` sobre `connection.begin()`):
   los `commit()` de los servicios existentes sólo liberan savepoints. El reporte del dry-run es lo que
   hará `--apply`. Ver `scripts/ingresos_reprocesar_sin_match.py::ejecutar`.
+  **Ojo con el apply**: ese patrón persiste sólo porque los servicios llamados hacen `commit()`. Si las
+  funciones de dominio no commitean (convención "lo hace el llamador", p. ej.
+  `core/services/clientes_categoria_service.py`), el script tiene que llamar `session.commit()` antes
+  de `close()` en el camino de apply. Si no, `close()` revierte el savepoint y el apply reporta éxito
+  sin escribir nada (real 2026-10-14, `scripts/clientes_categoria_regularizar.py`, lo atrapó la review).
   **Sólo el dry-run**: con `--apply` no hay transacción externa y se commitea por tanda. Si no, una
   corrida larga queda en una sola transacción que se pierde entera ante un corte y no se puede
   reanudar (real 2026-10-01: `cromo_barrido_pelos_inner.py`, corrida 2149 de ~16 h en una transacción).

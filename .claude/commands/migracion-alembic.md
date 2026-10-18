@@ -1,3 +1,8 @@
+---
+description: "Crear una migración Alembic reversible (autogenerate o manual), validarla y aplicarla"
+argument-hint: "descripción del cambio de esquema [autogenerate|manual]"
+---
+
 # Nombre de archivo: migracion-alembic.md
 # Ubicación de archivo: .claude/commands/migracion-alembic.md
 # Descripción: Comando Claude Code para crear migraciones Alembic de base de datos

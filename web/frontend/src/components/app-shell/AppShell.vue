@@ -115,6 +115,7 @@ import { useSession } from '../../composables/useSession';
 type SidebarViewId =
   | 'home'
   | 'infraFoDashboard'
+  | 'foMonitor'
   | 'servicios'
   | 'repetitividad'
   | 'sla'
@@ -185,6 +186,7 @@ const sidebarModules: SidebarModule[] = [
     icon: 'ph-tree-structure',
     items: [
       { id: 'infraFoDashboard', label: 'Dashboard', to: { path: '/infra' } },
+      { id: 'foMonitor', label: 'FO Monitor', to: { path: '/infra/fo-monitor' } },
       { id: 'inventarioCablesCromo', label: 'Cables', to: { path: '/infra/cromo/cables' } },
       { id: 'inventarioBotellas', label: 'Botellas', to: { path: '/infra/Botellas' } },
       { id: 'inventarioOdfsCromo', label: 'ODFs', to: { path: '/infra/cromo/odfs' } },
@@ -225,6 +227,7 @@ const sidebarModules: SidebarModule[] = [
 
 const moduleByView: Partial<Record<SidebarViewId, ExpandableModuleId>> = {
   infraFoDashboard: 'infraFo',
+  foMonitor: 'infraFo',
   inventarioCablesCromo: 'infraFo',
   inventarioBotellas: 'infraFo',
   inventarioOdfsCromo: 'infraFo',
@@ -247,6 +250,9 @@ function resolveCurrentView(currentRoute: RouteLocationNormalizedLoaded): Sideba
 
   if (currentRoute.path === '/infra') {
     return 'infraFoDashboard';
+  }
+  if (currentRoute.path === '/infra/fo-monitor') {
+    return 'foMonitor';
   }
   if (currentRoute.path === '/servicios') {
     return 'servicios';

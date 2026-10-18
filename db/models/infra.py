@@ -452,6 +452,9 @@ class Servicio(Base):
         nullable=False,
         server_default="MANUAL",
     )
+    # Cantidad de trackings que declara el operador (NULL = sin declarar; CHECK > 0 en la migración
+    # 20261016_03). El tracking por tramos la compara contra los tramos que genera.
+    trackings_esperados = Column(SmallInteger, nullable=True)
     nombre_archivo_origen = Column(String(255), nullable=True)  # DEPRECATED: Mover a RutaServicio
     raw_tracking_data = Column(JSON, nullable=True)  # DEPRECATED: Mover a RutaServicio
 

@@ -96,6 +96,7 @@ def test_pelos_contrato_con_filtro_de_buffer(sesion) -> None:
         "cliente": None,
         "estado_servicio": None,
         "descripcion": None,
+        "en_cuarentena": False,
     }
     assert m.await_args.kwargs == {"buffer": 2}
 

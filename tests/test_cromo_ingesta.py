@@ -448,6 +448,97 @@ async def test_ejecutar_ingesta_propaga_modo_a_continuar_corrida(monkeypatch):
     assert corrida.params.get("modo") == "SOLO_ODF"
 
 
+def _fases_noop(monkeypatch, conteo=None) -> None:
+    async def _fase_conteo_fake(cliente, **_kwargs):
+        return conteo or {}
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    for nombre in (
+        "fase_cables", "fase_cables_terceros", "fase_botellas", "fase_fusiones", "fase_odfs",
+        "fase_reconciliacion", "fase_servicios",
+    ):
+        monkeypatch.setattr(ingesta, nombre, _fase_noop)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modo", ["COMPLETA", "SOLO_ODF", "SOLO_PELOS_INNER"])
+async def test_continuar_corrida_dispara_el_detector_de_inconsistencias_despues_del_commit(
+    monkeypatch, modo
+):
+    """Paso posterior al commit (patrón `encolar_recalculo_duplicados_botellas`): la corrida ya
+    quedó cerrada y commiteada cuando corre el detector."""
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+    monkeypatch.setattr(ingesta, "MODOS_ACOTADOS", {
+        **ingesta.MODOS_ACOTADOS,
+        **{m: ingesta._ModoAcotado((51,), _fase_noop) for m in ("SOLO_ODF", "SOLO_PELOS_INNER")},
+    })
+    recibido: dict[str, Any] = {}
+
+    async def _detector(cliente, sesion_arg, corrida_id, modo_arg):
+        corrida = await sesion_arg.get(CromoIngestaCorrida, corrida_id)
+        recibido.update(
+            corrida_id=corrida_id, modo=modo_arg, estado_al_detectar=corrida.estado,
+            commits_al_detectar=sesion_arg.commits,
+        )
+        return "OK"
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(
+        cliente=object(), sesion=sesion, usuario="tester", psize=5, modo=modo
+    )
+
+    assert corrida.estado == "OK"
+    assert recibido["modo"] == modo and recibido["corrida_id"] == corrida.id
+    assert recibido["estado_al_detectar"] == "OK" and recibido["commits_al_detectar"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_no_dispara_el_detector_si_la_corrida_fallo(monkeypatch):
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+
+    async def _rompe(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ingesta, "fase_cables", _rompe)
+    llamadas: list = []
+
+    async def _detector(*a, **k):
+        llamadas.append(a)
+        return "OK"
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
+
+    assert corrida.estado == "FALLIDA" and llamadas == []
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_un_detector_que_rompe_no_hace_fallar_la_ingesta(monkeypatch):
+    """Best-effort: aunque el detector levante (no debería: `detectar_post_ingesta` atrapa todo),
+    la ingesta ya cerrada sigue OK."""
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+
+    async def _detector(*a, **k):
+        raise RuntimeError("detector roto")
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
+
+    assert corrida.estado == "OK"
+
+
 # ── Procesamiento de un objeto (savepoint real, tolerancia a errores) ──────
 
 
@@ -1242,6 +1333,78 @@ async def test_procesar_odf_directo_guarda_conectores_via_get_inner_completo():
     assert c.servicio_id_historico == "41140"
 
 
+_INNER_KORN_CON_FUSION_ODF = [
+    {"id": 8539330, "class": 135, "name": "O-1259853-3"},
+    {
+        "id": 8685667, "class": 136, "name": "39", "at": [{"id": 71, "value": "8539330"}],
+        "tp": [{"id_to": 8884671, "class": 141}],
+    },
+    {
+        "id": 8884671, "class": 141, "name": "39-39",
+        "tp": [{"id_to": 8685667, "class": 136}, {"id_to": 7914406, "class": 130}],
+    },
+]
+
+
+@pytest.mark.asyncio
+async def test_procesar_odf_directo_guarda_pelo_y_fusion_de_odf_141():
+    """Conector cuyo `tp` apunta a una fusión de ODF (141): el pelo sale de la 141 y la 141 queda
+    en `fusion_odf_n_id` (caso real KORN O-1259853-3:39 → 8884671 → pelo 7914406)."""
+    obj = {
+        "id": 6646686, "n_id": 6646686, "class": 69, "vmax": 1,
+        "at": [{"id": 34, "value": "NODO Alejandro KORN"}],
+        "inner": [{"id": 8685667, "class": 136}],
+    }
+    cliente = _ClienteGetInnerFake(respuesta={"response": _INNER_KORN_CON_FUSION_ODF})
+    sesion = _SesionFake()
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_odf_directo(cliente, sesion, corrida_id=1, obj=obj, contadores=contadores)
+
+    assert contadores.errores == 0
+    [c] = [o for o in sesion.agregados if isinstance(o, CromoOdfConector)]
+    assert c.n_id == 8685667
+    assert c.pelo_n_id == 7914406
+    assert c.fusion_odf_n_id == 8884671
+
+
+@pytest.mark.asyncio
+async def test_relevar_odf_guarda_pelo_y_fusion_de_odf_141(monkeypatch):
+    from core.services.cromo import normalizacion_consistencia_service as norm
+
+    obj = {"id": 6646686, "n_id": 6646686, "class": 69, "at": [{"id": 34, "value": "NODO Alejandro KORN"}]}
+    guardados = []
+
+    async def _fetch(cliente, n_id):
+        return obj
+
+    async def _upsert(sesion, modelo, dom, campos):
+        return "ACTUALIZADA"
+
+    async def _evento(*args, **kwargs):
+        return None
+
+    async def _upsert_simple(sesion, modelo, dom, campos):
+        guardados.append((dom, campos))
+
+    async def _resolver(sesion, conectores):
+        return None
+
+    monkeypatch.setattr(norm.id_dual_resolver, "fetch_objeto", _fetch)
+    monkeypatch.setattr(norm.ingesta, "upsert_forzado", _upsert)
+    monkeypatch.setattr(norm.ingesta, "registrar_evento", _evento)
+    monkeypatch.setattr(norm.ingesta, "upsert_simple", _upsert_simple)
+    monkeypatch.setattr(norm.ingesta, "resolver_servicio_conectores", _resolver)
+
+    await norm.relevar_odf(
+        _ClienteGetInnerFake(respuesta={"response": _INNER_KORN_CON_FUSION_ODF}), _SesionFake(), 1, 6646686
+    )
+
+    [(conector, campos)] = guardados
+    assert (conector.pelo_n_id, conector.fusion_odf_n_id) == (7914406, 8884671)
+    assert "fusion_odf_n_id" in campos
+
+
 @pytest.mark.asyncio
 async def test_procesar_odf_directo_get_inner_falla_no_pierde_el_odf():
     """Un fallo de red en `get_inner` (segunda llamada, sólo enriquece conectores) no debe hacer
@@ -1473,7 +1636,9 @@ async def test_fase_odfs_pide_show_all_desde_el_arranque(monkeypatch):
 
     await ingesta.fase_odfs(_ClienteCaptura(), sesion, corrida, contadores, psize=5, max_paginas=None)
 
-    assert recibido["filtro"] == str(ingesta.CLASE_ODF) == "69"
+    assert recibido["filtro"] == "69,86"
+    assert ingesta.CLASES_ODF == (69, 86)
+    assert ingesta.CLASE_ODF == 69
     assert recibido["show"] == ["ALL"]
 
 
@@ -2324,3 +2489,74 @@ async def test_resolver_servicio_conectores_prefiere_el_pelo_del_cable_propio():
     await ingesta.resolver_servicio_conectores(sesion, [conector])
 
     assert conector.pelo_n_id == 6976963
+
+
+def test_solo_odf_apunta_a_las_clases_69_y_86():
+    assert ingesta.MODOS_ACOTADOS["SOLO_ODF"].clases_objetivo == (69, 86)
+    assert 86 in ingesta.CLASES_CONTEO
+
+
+@pytest.mark.asyncio
+async def test_continuar_corrida_solo_odf_suma_odf_y_odf_nodo_en_total_objetivo(monkeypatch):
+    sesion = _SesionFakeCorrida()
+    sesion._existentes[(CromoIngestaCorrida, 42)] = CromoIngestaCorrida(id=42, usuario="tester", estado="EN_CURSO")
+
+    async def _fase_conteo_fake(cliente, **_kwargs):
+        return {68: 100, 69: 7, 86: 3}
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ingesta, "fase_conteo", _fase_conteo_fake)
+    monkeypatch.setattr(ingesta, "fase_odfs", _noop)
+
+    corrida = await ingesta.continuar_corrida(
+        cliente=object(), sesion=sesion, corrida_id=42, psize=5, max_paginas=None,
+        clases=ingesta.CLASES_BOTELLA, modo="SOLO_ODF",
+    )
+
+    assert corrida.total_objetivo == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clase", [69, 86])
+async def test_relevar_odf_acepta_odf_y_odf_nodo_y_registra_la_clase_real(monkeypatch, clase):
+    from core.services.cromo import normalizacion_consistencia_service as norm
+
+    obj = {"id": 5, "n_id": 5, "class": clase, "at": [{"id": 34, "value": "NODO X"}], "inner": []}
+    eventos = []
+
+    async def _fetch(cliente, n_id):
+        return obj
+
+    async def _upsert(sesion, modelo, dom, campos):
+        return "CREADA"
+
+    async def _evento(sesion, corrida_id, n_id, cls, accion, detalle=None):
+        eventos.append((n_id, cls, accion))
+
+    class _Cliente:
+        async def get_inner(self, n_id):
+            return {"response": []}
+
+    monkeypatch.setattr(norm.id_dual_resolver, "fetch_objeto", _fetch)
+    monkeypatch.setattr(norm.ingesta, "upsert_forzado", _upsert)
+    monkeypatch.setattr(norm.ingesta, "registrar_evento", _evento)
+
+    accion = await norm.relevar_odf(_Cliente(), _SesionFake(), 1, 5)
+
+    assert accion == "CREADA"
+    assert eventos == [(5, clase, "CREADA")]
+
+
+@pytest.mark.asyncio
+async def test_relevar_odf_rechaza_una_clase_que_no_es_odf(monkeypatch):
+    from core.services.cromo import normalizacion_consistencia_service as norm
+
+    async def _fetch(cliente, n_id):
+        return {"id": 5, "n_id": 5, "class": 51}
+
+    monkeypatch.setattr(norm.id_dual_resolver, "fetch_objeto", _fetch)
+
+    with pytest.raises(ValueError, match="no es una ODF"):
+        await norm.relevar_odf(object(), _SesionFake(), 1, 5)

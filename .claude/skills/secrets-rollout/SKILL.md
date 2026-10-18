@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/secrets-rollout/SKILL.md
-# Descripción: Skill para migrar, agregar o rotar Docker Secrets file-based en dev y producción de LAS-FOCAS (mirror de .agentes-comunes/skills/secrets-rollout/SKILL.md — fuente de verdad)
-
 ---
 name: secrets-rollout
 description: "Usar cuando haya que migrar variables sensibles a Docker Secrets, agregar un secret nuevo a un servicio de Compose, o rotar un secret ya en uso (dev o prod) en LAS-FOCAS"
 argument-hint: "Describe el secret y el alcance, por ejemplo: rotar db_password_v1 en prod, o agregar smtp_password_v1 al servicio bot"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/secrets-rollout/SKILL.md
+# Descripción: Skill para migrar, agregar o rotar Docker Secrets file-based en dev y producción de LAS-FOCAS (mirror de .agentes-comunes/skills/secrets-rollout/SKILL.md — fuente de verdad)
 
 # Habilidad: Secrets Rollout
 

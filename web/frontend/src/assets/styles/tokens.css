@@ -43,6 +43,8 @@
   --color-state-warn:  oklch(0.66 0.125 75);
   --color-state-error: oklch(0.66 0.125 25);
   --color-state-idle:  var(--color-neutral-500);
+  /* Naranja "degradado" del semáforo de FO Monitor (1–79 % UP): misma L/C, tono entre warn y error. */
+  --color-state-degraded: oklch(0.66 0.125 50);
 
   /* ── Tipografía ───────────────────────────────────────────────── */
   --font-heading: "Inter", system-ui, sans-serif;

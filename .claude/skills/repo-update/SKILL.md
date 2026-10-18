@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/repo-update/SKILL.md
-# Descripción: Alias legacy para redirigir solicitudes antiguas de actualización de repositorio hacia repo-updater (mirror de .agentes-comunes/skills/repo-update/SKILL.md — fuente de verdad)
-
 ---
 name: repo-update
 description: "Usar solo cuando el pedido mencione el nombre legacy repo-update; redirige al workflow vigente repo-updater"
 argument-hint: "Pedido legacy de actualización del repositorio"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/repo-update/SKILL.md
+# Descripción: Alias legacy para redirigir solicitudes antiguas de actualización de repositorio hacia repo-updater (mirror de .agentes-comunes/skills/repo-update/SKILL.md — fuente de verdad)
 
 # Habilidad: Repo Update (Legado)
 

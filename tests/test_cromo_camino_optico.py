@@ -408,7 +408,10 @@ def test_la_fusion_resuelve_su_botella_y_los_pelos_que_une():
 
 def test_el_conector_declara_el_pelo_al_que_esta_cableado():
     dic = {
-        1: {"class": 136, "father": 10, "gfather": 20, "at": [{"id": 81, "value": "5"}], "tp": [{"id_to": 777}]},
+        1: {
+            "class": 136, "father": 10, "gfather": 20, "at": [{"id": 81, "value": "5"}],
+            "tp": [{"id_to": 777, "class": 130}],
+        },
         10: {"class": 135, "at": [{"id": 79, "value": "O-1-1"}]},
         20: {"class": 69, "at": [{"id": 34, "value": "ODF X"}]},
     }
@@ -416,6 +419,238 @@ def test_el_conector_declara_el_pelo_al_que_esta_cableado():
     nodos, _ = _construir_lado(dic, [1], "A", {})
 
     assert nodos[0].pelo_conectado == 777
+    assert nodos[0].tp_sin_clase == []
+
+
+# Mismo criterio que el parser de la ingesta (`cromo_odf_conectores.pelo_n_id` sólo sale de un `tp`
+# de clase 130): un patch a otro conector (136) o una fusión de ODF (141) NO es el pelo conectado.
+@pytest.mark.parametrize("clase_tp", [136, 134])
+def test_el_conector_con_tp_que_no_es_pelo_no_declara_pelo(clase_tp):
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 888, "class": clase_tp}]},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == []
+
+
+def test_la_clase_del_tp_se_toma_del_payload_si_el_punto_no_la_trae():
+    # `/path` real (verificado 2026-10-16): los `tp[]` no traen `class`; si el destino viene en el
+    # mismo payload, su clase decide.
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 888}, {"id_to": 999}]},
+        20: {"class": 69, "at": []},
+        888: {"class": 136},
+        999: {"class": 130},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado == 999
+    assert nodos[0].tp_sin_clase == []
+
+
+def test_el_tp_sin_clase_conocida_queda_como_candidato_y_no_como_pelo():
+    dic = {1: {"class": 136, "gfather": 20, "tp": [{"id_to": 777}]}, 20: {"class": 69, "at": []}}
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == [777]
+
+
+class _Resultado:
+    def __init__(self, filas):
+        self._filas = filas
+
+    def all(self):
+        return list(self._filas)
+
+
+class _SesionConectores:
+    """Sesión fake: filas de `cromo_odf_conectores` y el conjunto de pelos ingeridos."""
+
+    def __init__(self, conectores: dict[int, tuple], pelos: set[int]):
+        self.conectores = conectores
+        self.pelos = pelos
+
+    async def execute(self, sql, params):
+        texto = str(sql)
+        ids = params["ids"]
+        if "cromo_odf_conectores" in texto:
+            # Filas (pelo, odf[, fusion_odf_n_id]): sin fusión explícita, NULL.
+            return _Resultado(
+                [(i, *(tuple(self.conectores[i]) + (None,))[:3]) for i in ids if i in self.conectores]
+            )
+        if "FROM app.cromo_pelos" in texto:
+            return _Resultado([(i,) for i in ids if i in self.pelos])
+        raise AssertionError(f"query inesperada: {texto}")
+
+
+def _conector(id_cromo: int, tp: list[dict]) -> dict:
+    return {"class": 136, "gfather": 20, "tp": tp}
+
+
+@pytest.mark.asyncio
+async def test_conector_con_tp_136_o_141_es_consistente_con_pelo_null_ingerido():
+    """Regresión I1: desde el backfill de 20261016_01 la base guarda `pelo_n_id = NULL` para un
+    conector cuyo `tp` es un patch (136) o una fusión de ODF (141). El camino no puede declararlo
+    como pelo: serían ~10k DISCREPA permanentes."""
+    from core.services.cromo.camino_optico_service import auditar_consistencia
+
+    dic = {
+        1: _conector(1, [{"id_to": 501, "class": 136}]),
+        2: _conector(2, [{"id_to": 502, "class": 141}]),
+        20: {"class": 69, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 2], "A", {})
+    sesion = _SesionConectores({1: (None, 20), 2: (None, 20)}, pelos=set())
+
+    consistencia = await auditar_consistencia(sesion, nodos)
+
+    regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
+    assert (regla.coincide, regla.discrepa) == (2, 0)
+
+
+@pytest.mark.asyncio
+async def test_conector_con_tp_sin_clase_se_resuelve_contra_los_pelos_ingeridos():
+    """Forma real de `/path`: `tp` sin `class`. Es pelo si está en `cromo_pelos` o si es el mismo
+    `pelo_n_id` que la ingesta ya guardó (que sólo sale de un `tp` de clase 130)."""
+    from core.services.cromo.camino_optico_service import TIPO_DISCREPA, auditar_consistencia
+
+    dic = {
+        1: _conector(1, [{"id_to": 601}]),  # tp = otro conector: no es pelo, base NULL
+        2: _conector(2, [{"id_to": 602}]),  # tp = pelo ingerido, base lo tiene
+        3: _conector(3, [{"id_to": 603}]),  # pelo de tercero no ingerido, base lo tiene (clase 130)
+        4: _conector(4, [{"id_to": 604}]),  # pelo ingerido pero la base dice NULL: discrepa
+        20: {"class": 69, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 2, 3, 4], "A", {})
+    sesion = _SesionConectores(
+        {1: (None, 20), 2: (602, 20), 3: (603, 20), 4: (None, 20)}, pelos={602, 604}
+    )
+
+    consistencia = await auditar_consistencia(sesion, nodos)
+
+    regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
+    assert (regla.coincide, regla.discrepa) == (3, 1)
+    [discrepa] = [i for i in consistencia.inconsistencias if i.regla == REGLA_CONECTOR]
+    assert discrepa.elemento_id == 4 and discrepa.tipo == TIPO_DISCREPA
+    assert discrepa.valor_path == {"pelo": 604, "odf": 20}
+
+
+# ── Conector → fusión de ODF (141) → pelo ───────────────────────────────────────────────────
+# Desde 20261017_01 la ingesta guarda en `pelo_n_id` el pelo al que llega el conector a través de
+# una 141. El camino tiene que resolver lo mismo con la 141 que viaja en su propio payload, o la
+# regla del conector marcaría DISCREPA en miles de conectores.
+
+
+def test_el_conector_resuelve_el_pelo_a_traves_de_la_fusion_de_odf():
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 777}]},
+        777: {"class": 130},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado == 777
+    assert nodos[0].tp_sin_clase == []
+
+
+def test_fusion_de_odf_entre_conectores_no_da_pelo():
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        2: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 2}]},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == []
+
+
+def test_fusion_de_odf_con_destino_fuera_del_payload_queda_como_candidato():
+    dic = {
+        1: {"class": 136, "gfather": 20, "tp": [{"id_to": 141001}]},
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 777}]},
+        20: {"class": 69, "at": []},
+    }
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == [777]
+
+
+@pytest.mark.asyncio
+async def test_conector_via_fusion_de_odf_coincide_con_el_pelo_ingerido():
+    """La base tiene el pelo que la ingesta sacó de la 141: el camino declara el mismo → coincide."""
+    from core.services.cromo.camino_optico_service import auditar_consistencia
+
+    dic = {
+        1: _conector(1, [{"id_to": 141001}]),  # pelo en el payload
+        2: _conector(2, [{"id_to": 141002}]),  # pelo fuera del payload, ingerido
+        141001: {"class": 141, "tp": [{"id_to": 1}, {"id_to": 777}]},
+        141002: {"class": 141, "tp": [{"id_to": 2}, {"id_to": 778}]},
+        777: {"class": 130},
+        20: {"class": 69, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 2], "A", {})
+    sesion = _SesionConectores({1: (777, 20), 2: (778, 20)}, pelos={777, 778})
+
+    consistencia = await auditar_consistencia(sesion, nodos)
+
+    regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
+    assert (regla.coincide, regla.discrepa) == (2, 0)
+
+
+def test_fusion_de_odf_fuera_del_payload_queda_como_candidato_sin_declarar_pelo():
+    """Una 141 que no vino en el `/path` no da pelo, pero queda como candidato: la auditoría la
+    compara con la `fusion_odf_n_id` que guardó la ingesta."""
+    dic = {1: {"class": 136, "gfather": 20, "tp": [{"id_to": 888, "class": 141}]}, 20: {"class": 69, "at": []}}
+
+    nodos, _ = _construir_lado(dic, [1], "A", {})
+
+    assert nodos[0].pelo_conectado is None
+    assert nodos[0].tp_sin_clase == [888]
+
+
+class _SesionConectoresConFusion(_SesionConectores):
+    """Como `_SesionConectores`, pero la fila del conector trae también `fusion_odf_n_id`."""
+
+    async def execute(self, sql, params):
+        texto = str(sql)
+        if "cromo_odf_conectores" in texto:
+            assert "fusion_odf_n_id" in texto
+        return await super().execute(sql, params)
+
+
+@pytest.mark.asyncio
+async def test_conector_via_fusion_de_odf_ausente_del_path_coincide_por_fusion_guardada():
+    """El `/path` trae el conector apuntando a una 141 que no está en el payload: el camino no
+    puede ver el pelo, pero si la 141 es la misma `fusion_odf_n_id` de la base, el pelo local es
+    el de esa 141 → coincide (sin esto sería un DISCREPA nuevo por cada conector así)."""
+    from core.services.cromo.camino_optico_service import auditar_consistencia
+
+    dic = {
+        1: _conector(1, [{"id_to": 141001}]),  # misma 141 que la base → coincide
+        2: _conector(2, [{"id_to": 141009}]),  # 141 distinta a la de la base → discrepa
+        20: {"class": 69, "at": []},
+    }
+    nodos, _ = _construir_lado(dic, [1, 2], "A", {})
+    sesion = _SesionConectoresConFusion({1: (777, 20, 141001), 2: (778, 20, 141002)}, pelos=set())
+
+    consistencia = await auditar_consistencia(sesion, nodos)
+
+    regla = next(r for r in consistencia.reglas if r.regla == REGLA_CONECTOR)
+    assert (regla.coincide, regla.discrepa) == (1, 1)
 
 
 def test_un_nodo_repetido_no_se_audita_dos_veces():

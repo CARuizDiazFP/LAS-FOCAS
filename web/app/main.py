@@ -12,12 +12,12 @@ import secrets
 import time
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from time import time as now
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import httpx
-from fastapi import FastAPI, Form, Request, status, HTTPException, Response
+from fastapi import FastAPI, Form, Query, Request, status, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -31,6 +31,7 @@ from core.repositories.conversations import get_or_create_conversation_for_web_u
 from core.repositories.messages import insert_message, get_last_messages
 from core.chatbot import ChatMessage
 from web.admin_ws import mount_admin_websocket
+from web.fo_monitor_routes import mount_fo_monitor_routes
 from web.chat_ws import ChatWebSocketSettings, mount_chat_websocket
 from web.tools.vlan_comparator import compare_vlan_sets, parse_cisco_vlans
 import psycopg
@@ -258,6 +259,7 @@ mount_chat_websocket(
     logger=logger,
 )
 mount_admin_websocket(app, allowed_origins=CHAT_ALLOWED_ORIGINS, logger=logger)
+mount_fo_monitor_routes(app)
 
 
 @dataclass
@@ -5605,17 +5607,23 @@ async def _cromo_eventos_a_sse(corrida_id: int, ultimo_id: int):
 
 
 @app.get("/api/admin/ingesta/cromo/corridas/{corrida_id}/stream")
-async def cromo_ingesta_stream_web(request: Request, corrida_id: int) -> StreamingResponse:
+async def cromo_ingesta_stream_web(
+    request: Request, corrida_id: int, desde: Optional[int] = Query(default=None, ge=0)
+) -> StreamingResponse:
     """SSE de progreso de una corrida. `EventSource` no manda headers custom (salvo `Last-Event-ID`,
     que el browser agrega solo al reconectar) — por eso no hay CSRF acá; la escritura ya quedó
     protegida en el POST que dispara la corrida. Igual requiere cookie de sesión autenticada.
+
+    `desde` (opcional) es el último id de evento ya visto: un `EventSource` NUEVO (reconexión
+    manual del cliente) no puede mandar `Last-Event-ID`, así que lo pasa en la URL para no
+    repetir eventos. Si vienen los dos, gana el mayor.
     """
     _require_admin(request)
 
-    ultimo_id = 0
+    ultimo_id = desde or 0
     last_event_id = request.headers.get("last-event-id")
     if last_event_id and last_event_id.isdigit():
-        ultimo_id = int(last_event_id)
+        ultimo_id = max(ultimo_id, int(last_event_id))
 
     return StreamingResponse(
         _cromo_eventos_a_sse(corrida_id, ultimo_id),
@@ -8270,7 +8278,7 @@ def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
     from core.services.cromo.parser import extraer_tipo_servicio_display
 
     # "Línea"/"Cliente" reciclan el match ya resuelto por `obtener_detalle_cable`/`pelos_de_tubo_sync`
-    # (`cromo_servicio_match` → `app.servicios`, sin JOIN nuevo) — el primero de `pelo.servicios` si
+    # (`v_cromo_servicio_match_vigente` → `app.servicios`, sin JOIN nuevo) — el primero de `pelo.servicios` si
     # existe alguno (ver PeloDetalle.servicios). "-"/None si no hay match, ningún JOIN nuevo por
     # `Servicio.numero_linea`.
     primer_match = pelo.servicios[0] if pelo.servicios else None
@@ -8290,6 +8298,9 @@ def _serializar_pelo_detalle(pelo: Any) -> dict[str, Any]:
         "verificable": pelo.verificable,
         "status": pelo.status,
         "fecha_hora_status": pelo.fecha_hora_status.isoformat() if pelo.fecha_hora_status else None,
+        # Pelo de un caso de inconsistencia de Cromo en CUARENTENA: `servicios` viene vacío pero el
+        # pelo no está libre; el SPA lo marca "en cuarentena (inconsistencia Cromo)".
+        "en_cuarentena": pelo.en_cuarentena,
     }
 
 
@@ -8409,6 +8420,7 @@ def _serializar_pelo_excluido(excluido: Any) -> dict[str, Any]:
         "motivo": excluido.motivo,
         "excluido_por": excluido.excluido_por,
         "created_at": excluido.created_at.isoformat() if excluido.created_at else None,
+        "origen": getattr(excluido, "origen", "MANUAL"),
     }
 
 
@@ -8776,9 +8788,15 @@ async def cromo_camino_pelos_web(
 
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt")
 async def cromo_camino_tracking_txt_web(
-    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None
+    request: Request,
+    servicio_id: int,
+    pelo_n_id: Optional[int] = None,
+    tramo: Optional[int] = Query(default=None, ge=1),
 ) -> Response:
     """Tracking óptico de un Servicio, generado desde Cromo, en el formato `.txt` legacy.
+
+    `tramo` (opcional, con `pelo_n_id`) es el número de tramo que ya conoce el frontend desde
+    `/caminos`: el archivo se llama `{at62} CROMO T{n} pelo {n_id}.txt`, igual que en Slack.
 
     `_require_auth` con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
     entrega el tracking completo de una ruta a cualquier usuario autenticado.
@@ -8795,8 +8813,10 @@ async def cromo_camino_tracking_txt_web(
     )
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
+    from core.services.cromo import tracking_service
     from core.services.cromo.tracking_service import (
         TrackingNoDisponible,
+        nombre_archivo_tramo,
         nombre_distinguible,
         obtener_tracking,
     )
@@ -8847,6 +8867,11 @@ async def cromo_camino_tracking_txt_web(
                 tracking = await obtener_tracking(
                     cliente, sesion, servicio_id=servicio_id, pelo_n_id=elegido
                 )
+            numero_servicio = (
+                await tracking_service.numero_del_servicio(sesion, servicio_id)
+                if tramo is not None and pelo_n_id is not None
+                else None
+            )
     except TrackingNoDisponible as exc:
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
@@ -8855,9 +8880,17 @@ async def cromo_camino_tracking_txt_web(
     # Con un solo pelo (el caso PON) el nombre queda idéntico al de siempre; con varios se
     # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
     # carpeta de Descargas y se pierde cuál es cuál.
-    nombre = nombre_distinguible(
-        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1
-    )
+    # El nombre de tramo lleva el número del Servicio en LAS-FOCAS, no el at.62 del pelo (que Cromo
+    # a veces trae mal); el at.62 del nombre base queda sólo como respaldo.
+    base_at62 = re.match(r"^(\d+) CROMO", tracking.nombre_archivo)
+    if tramo is not None and pelo_n_id is not None:
+        nombre = nombre_archivo_tramo(
+            numero_servicio or (base_at62.group(1) if base_at62 else None), tramo, tracking.pelo_n_id
+        )
+    else:
+        nombre = nombre_distinguible(
+            tracking.nombre_archivo, tracking.pelo_n_id, distinguir=total_pelos > 1
+        )
     logger.info(
         "action=cromo_camino_tracking user=%s servicio_id=%s pelo_n_id=%s desde_cache=%s duracion_ms=%s",
         usuario,
@@ -8873,20 +8906,48 @@ async def cromo_camino_tracking_txt_web(
     )
 
 
+async def _inconsistencias_del_servicio(sesion: Any, servicio_id: int) -> dict[str, int]:
+    """Casos de inconsistencias de Cromo que tocan al Servicio, para el aviso del panel Camino.
+    Es accesorio: si falla (tabla sin migrar, DB caída) los caminos se devuelven igual."""
+    from core.services.cromo.inconsistencias_cromo import resumen_de_servicio
+
+    try:
+        return await resumen_de_servicio(sesion, servicio_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "action=cromo_camino_inconsistencias_error servicio_id=%s error=%s", servicio_id, exc
+        )
+        return {"cuarentena": 0, "en_revision": 0}
+
+
 @app.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos")
 async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONResponse:
-    """Los caminos del Servicio: un pelo por camino distinto, más los pelos huérfanos.
+    """Los caminos del Servicio, separados en tramos y residuales.
 
     Es lo mismo que hace `@bot track` en Slack (`tracking_service.trackings_del_servicio`): recorre
     todas las semillas —posiciones de ODF primero, después los pelos de los cables— descartando
-    las que ya recorrió un camino, y corta en los caminos esperados. **Va a Cromo**: 4,6-14 s por
-    camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es inmediato.
+    las que ya recorrió un camino, sin cortar en los caminos esperados (tope de llamadas
+    `CROMO_TRACKING_MAX_LLAMADAS`), y clasifica cada camino como TRAMO o RESIDUAL. **Va a Cromo**:
+    4,6-14 s por camino en frío; deja cacheado cada tracking, así que bajar los `.txt` después es
+    inmediato.
+
+    Contrato: `tramos[{n, pelo_n_id, nombre_archivo, pelos_en_camino, desde_cache, extremos,
+    odfs}]` (ya ordenados; `n` es el número de tramo del nombre del `.txt`), `residuales[...]` sin
+    `n` ni `desde_cache` (no se descargan), `esperados_declarados` (o `null`, lo declara el
+    operador), `completo`, `errores`, `no_cubiertos` (cantidad de semillas sin camino: fallaron o no
+    se llegaron a pedir), `tope_llamadas` (se tocó `CROMO_TRACKING_MAX_LLAMADAS`) y `segmentos`
+    (grupos de tramos que comparten cables). `odf_confirmadas` son las ODF que un admin confirmó
+    para el Servicio (`odf_n_id`, `rol`, `odf_nombre`, `odf_tipo`, ...). `extremos` es `{a, b}`
+    con `tipo`, `odf_n_id`, `odf_nombre`, `odf_clase`, `patchera_nombre`, `conector` e `id_cromo`.
+    `odfs` son TODAS las ODF que toca el camino (extremos e intermedias) con `odf_n_id` de linaje,
+    `odf_nombre` y `odf_clase`: la UI ofrece confirmar cualquiera, también las de un residual.
 
     Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
     del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
     """
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
+    from core.services.cromo.servicio_odf_confirmacion import datos_de_odfs, n_ids_de_odfs
     from core.services.cromo.tracking_service import trackings_del_servicio
     from db.session import AsyncSessionLocal
 
@@ -8897,33 +8958,94 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
                 return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
             async with CromoClient(config=get_cromo_config()) as cliente:
                 resultado = await trackings_del_servicio(cliente, sesion, servicio_id)
+            # Los caminos pueden traer el id de versión de la ODF: se expone siempre el n_id. Entran
+            # las de los extremos y las intermedias (`odfs`), de tramos y de residuales.
+            ids_odf: list[int] = []
+            for t in (*resultado.tramos, *resultado.residuales):
+                if not t.extremos:
+                    continue
+                ids_odf.extend(e.odf_id for e in t.extremos.extremos if e.odf_id is not None)
+                ids_odf.extend(t.extremos.odfs)
+            ids_odf = list(dict.fromkeys(ids_odf))
+            n_ids_odf = await n_ids_de_odfs(sesion, ids_odf)
+            # Nombre y clase de cada ODF, también de las intermedias: una sola query.
+            datos_odf = await datos_de_odfs(
+                sesion, list(dict.fromkeys(n_ids_odf.get(i, i) for i in ids_odf))
+            )
+            inconsistencias = await _inconsistencias_del_servicio(sesion, servicio_id)
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
     logger.info(
-        "action=cromo_camino_caminos user=%s servicio_id=%s esperados=%s generados=%s huerfanos=%s",
+        "action=cromo_camino_caminos user=%s servicio_id=%s tramos=%s residuales=%s completo=%s",
         usuario,
         servicio_id,
-        resultado.esperados,
-        len(resultado.trackings),
-        len(resultado.huerfanos),
+        len(resultado.tramos),
+        len(resultado.residuales),
+        resultado.completo,
     )
+
+    def _extremo(e: Any) -> Optional[dict[str, Any]]:
+        if e is None:
+            return None
+        return {
+            "tipo": e.tipo,
+            "id_cromo": e.id_cromo,
+            "odf_n_id": n_ids_odf.get(e.odf_id, e.odf_id) if e.odf_id is not None else None,
+            "odf_nombre": e.odf_nombre,
+            "odf_clase": e.odf_clase,
+            "patchera_nombre": e.patchera_nombre,
+            "conector": e.conector_numero,
+        }
+
+    def _odfs(resumen: Any) -> list[dict[str, Any]]:
+        """Todas las ODF del camino, por n_id y sin repetir. Si la ODF no está ingerida, el nombre y
+        la clase salen del extremo del payload (cuando es uno)."""
+        if resumen is None:
+            return []
+        del_payload = {
+            n_ids_odf.get(e.odf_id, e.odf_id): (e.odf_nombre, e.odf_clase)
+            for e in resumen.extremos
+            if e.odf_id is not None
+        }
+        salida: dict[int, dict[str, Any]] = {}
+        for odf_id in (*resumen.odfs, *del_payload):
+            n_id = n_ids_odf.get(odf_id, odf_id)
+            if n_id in salida:
+                continue
+            nombre, clase = datos_odf.get(n_id) or del_payload.get(n_id) or (None, None)
+            salida[n_id] = {"odf_n_id": n_id, "odf_nombre": nombre, "odf_clase": clase}
+        return list(salida.values())
+
+    def _camino(t: Any) -> dict[str, Any]:
+        resumen = t.extremos
+        return {
+            "pelo_n_id": t.pelo_n_id,
+            "nombre_archivo": t.nombre_archivo,
+            "pelos_en_camino": len(t.pelos_camino),
+            "extremos": {
+                "a": _extremo(resumen.inicio) if resumen else None,
+                "b": _extremo(resumen.fin) if resumen else None,
+            },
+            "odfs": _odfs(resumen),
+        }
+
+    tramos = [
+        {"n": n, **_camino(t), "desde_cache": t.desde_cache}
+        for n, t in enumerate(resultado.tramos, start=1)
+    ]
     return JSONResponse(
         {
-            "servicio_id": servicio_id,
-            "esperados": resultado.esperados,
+            "tramos": tramos,
+            "residuales": [_camino(t) for t in resultado.residuales],
+            "esperados_declarados": resultado.esperados_declarados,
+            "odf_confirmadas": resultado.odf_confirmadas,
             "completo": resultado.completo,
-            "caminos": [
-                {
-                    "pelo_n_id": t.pelo_n_id,
-                    "nombre_archivo": t.nombre_archivo,
-                    "desde_cache": t.desde_cache,
-                    "pelos_en_camino": len(t.pelos_camino),
-                }
-                for t in resultado.trackings
-            ],
-            "huerfanos": [_serializar_pelo_semilla(s) for s in resultado.huerfanos],
             "errores": resultado.errores,
+            "no_cubiertos": len(resultado.no_cubiertos),
+            "tope_llamadas": resultado.tope_llamadas,
+            "segmentos": resultado.segmentos,
+            "inconsistencias": inconsistencias,
         }
     )
 
@@ -8992,6 +9114,531 @@ async def servicios_pelo_restaurar_web(
             status_code=404,
         )
     return JSONResponse({"ok": True, "pelo_n_id": body.pelo_n_id})
+
+
+class HuerfanosRevisarRequestModel(BaseModel):
+    """Payload para normalizar o descartar filas de la auditoría de huérfanos, en lote."""
+
+    ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_auditoria_huerfanos")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class HuerfanosAuditoriaGlobalRequestModel(BaseModel):
+    """Payload para lanzar la auditoría global de huérfanos (corrida en el cromo_worker)."""
+
+    max_servicios: int | None = Field(
+        default=None, ge=1, le=2000, description="Tope de Servicios; default CROMO_AUDITORIA_MAX_SERVICIOS"
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/huerfanos")
+async def huerfanos_listar_web(
+    request: Request,
+    servicio_id: Optional[int] = None,
+    causa: Optional[str] = None,
+    estado: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Viewer de huérfanos: pelos de caminos RESIDUALES con causa sugerida, evidencia y estado.
+
+    Filtros `servicio_id` (PK de `app.servicios`), `causa` y `estado`. `conteos_por_causa` sale con
+    los filtros de servicio y estado, antes del de causa (chips). Admin.
+    """
+    from core.services.cromo.auditoria_huerfanos import CAUSAS, ESTADOS, listar_huerfanos
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    if causa is not None and causa not in CAUSAS:
+        return JSONResponse({"error": f"causa inválida. Valores: {list(CAUSAS)}"}, status_code=400)
+    if estado is not None and estado not in ESTADOS:
+        return JSONResponse({"error": f"estado inválido. Valores: {list(ESTADOS)}"}, status_code=400)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    async with AsyncSessionLocal() as sesion:
+        pagina = await listar_huerfanos(
+            sesion, servicio_id=servicio_id, causa=causa, estado=estado, limit=limit, offset=offset
+        )
+    return JSONResponse(pagina)
+
+
+@app.post("/api/admin/infra/huerfanos/normalizar")
+async def huerfanos_normalizar_web(request: Request, body: HuerfanosRevisarRequestModel) -> JSONResponse:
+    """Normaliza en lote: excluye del Servicio el pelo de cada fila (`origen=AUDITORIA`).
+
+    Qué se puede normalizar lo decide el servidor con la fila guardada: sólo PENDIENTE, no
+    protegida y con causa habilitada (hoy sólo `CABLE_DESUSO`). Lo demás vuelve en `rechazados`
+    con su motivo. Reversible con "Restaurar" del panel del camino. Admin + CSRF.
+    """
+    from core.services.cromo.auditoria_huerfanos import normalizar
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_normalizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await normalizar(sesion, body.ids, usuario=username)
+    return JSONResponse(
+        {"ok": True, "aplicados": resultado.aplicados, "rechazados": resultado.rechazados}
+    )
+
+
+@app.post("/api/admin/infra/huerfanos/descartar")
+async def huerfanos_descartar_web(request: Request, body: HuerfanosRevisarRequestModel) -> JSONResponse:
+    """Marca DESCARTADO las filas PENDIENTE elegidas (revisadas, no son huérfanos). Admin + CSRF."""
+    from core.services.cromo.auditoria_huerfanos import descartar
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_descartar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await descartar(sesion, body.ids, usuario=username)
+    return JSONResponse(
+        {"ok": True, "aplicados": resultado.aplicados, "rechazados": resultado.rechazados}
+    )
+
+
+@app.get("/api/admin/infra/huerfanos/auditoria-global")
+async def huerfanos_auditoria_global_estado_web(request: Request) -> JSONResponse:
+    """Última auditoría global (o `null`), para que el Viewer muestre su estado al abrir. Admin."""
+    from core.services.cromo.auditoria_huerfanos_global import (
+        max_servicios_configurado,
+        ultima_auditoria,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        corrida = await ultima_auditoria(sesion)
+    return JSONResponse(
+        {
+            "corrida": _serializar_cromo_corrida(corrida) if corrida is not None else None,
+            "max_servicios_default": max_servicios_configurado(),
+        }
+    )
+
+
+@app.post("/api/admin/infra/huerfanos/auditoria-global")
+async def huerfanos_auditoria_global_iniciar_web(
+    request: Request, body: HuerfanosAuditoriaGlobalRequestModel
+) -> JSONResponse:
+    """Lanza la auditoría global: corrida sintética que ejecuta el `cromo_worker` (tiene las
+    credenciales de Cromo). Recorre los Servicios Activos con más pelos hasta el tope. El progreso
+    se sigue con el SSE de corridas (`/api/admin/ingesta/cromo/corridas/{id}/stream`).
+    Una sola a la vez: si hay otra EN_CURSO devuelve 409 con su id. Admin + CSRF.
+    """
+    from core.services.cromo.auditoria_huerfanos_global import (
+        iniciar_si_no_hay_otra,
+        max_servicios_configurado,
+    )
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_auditoria_global", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    tope = body.max_servicios or max_servicios_configurado()
+    async with AsyncSessionLocal() as sesion:
+        # Chequeo + alta bajo advisory lock: dos POST simultáneos no lanzan dos auditorías.
+        corrida, en_curso = await iniciar_si_no_hay_otra(
+            sesion, usuario=username, max_servicios=tope
+        )
+        if corrida is None:
+            return JSONResponse(
+                {"error": "Ya hay una auditoría global en curso.", "corrida_id": en_curso},
+                status_code=409,
+            )
+        corrida_id = corrida.id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                _CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username}
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        logger.error("action=cromo_huerfanos_auditoria_global_error corrida_id=%s error=%s", corrida_id, exc)
+        await _marcar_corrida_fallida(
+            corrida_id, f"No se pudo delegar la auditoría al worker de Cromo: {exc}"
+        )
+        return JSONResponse(
+            {"error": "El worker de Cromo no está disponible. Intentá nuevamente en unos segundos."},
+            status_code=503,
+        )
+    logger.info(
+        "action=cromo_huerfanos_auditoria_global user=%s corrida_id=%s max_servicios=%s",
+        username,
+        corrida_id,
+        tope,
+    )
+    return JSONResponse({"corrida_id": corrida_id, "max_servicios": tope}, status_code=202)
+
+
+class InconsistenciasEstadoRequestModel(BaseModel):
+    """Payload para cambiar el estado de casos de inconsistencias, en lote."""
+
+    ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_inconsistencia")
+    estado: str = Field(description="CUARENTENA | ACEPTADA | REPORTADA | PENDIENTE (liberar)")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class InconsistenciasDeteccionRequestModel(BaseModel):
+    """Payload para lanzar la detección manual de inconsistencias."""
+
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo")
+async def inconsistencias_cromo_listar_web(
+    request: Request,
+    tipo: Optional[str] = None,
+    estado: Optional[str] = None,
+    revision: Optional[str] = None,
+    localidad: Optional[str] = None,
+    servicio: Optional[str] = None,
+    servicio_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JSONResponse:
+    """Viewer de inconsistencias de Cromo: casos detectados (isla de fusiones, cable sin extremo,
+    elemento isla) con revisión, estado y evidencia. Filtros `tipo`, `estado`, `revision`,
+    `localidad` (ILIKE), `servicio` (número) y `servicio_id` (PK de `app.servicios`).
+    `conteos_por_tipo` sale con todos los filtros salvo el de tipo (chips). Admin."""
+    from fastapi.encoders import jsonable_encoder
+
+    from core.services.cromo.inconsistencias_cromo import (
+        ESTADOS,
+        REVISIONES,
+        TIPOS,
+        listar,
+    )
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    if tipo is not None and tipo not in TIPOS:
+        return JSONResponse({"error": f"tipo inválido. Valores: {list(TIPOS)}"}, status_code=400)
+    if estado is not None and estado not in ESTADOS:
+        return JSONResponse({"error": f"estado inválido. Valores: {list(ESTADOS)}"}, status_code=400)
+    if revision is not None and revision not in REVISIONES:
+        return JSONResponse(
+            {"error": f"revision inválida. Valores: {list(REVISIONES)}"}, status_code=400
+        )
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    async with AsyncSessionLocal() as sesion:
+        pagina = await listar(
+            sesion,
+            tipo=tipo,
+            estado=estado,
+            revision=revision,
+            localidad=localidad or None,
+            servicio=servicio or None,
+            servicio_id=servicio_id,
+            por_pagina=limit,
+            desplazamiento=offset,
+        )
+    return JSONResponse(jsonable_encoder(pagina))
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo/exportar.xlsx")
+async def inconsistencias_cromo_exportar_web(
+    request: Request,
+    tipo: Optional[str] = None,
+    estado: Optional[str] = None,
+    revision: Optional[str] = None,
+    localidad: Optional[str] = None,
+    servicio: Optional[str] = None,
+    servicio_id: Optional[int] = None,
+) -> Response:
+    """XLSX "para corregir en Cromo": una hoja por localidad, con tipo, revisión, estado, objeto,
+    ID Cromo, qué falta, servicios afectados y fechas. Mismos filtros que el listado; sin `estado`
+    exporta sólo lo accionable (PENDIENTE, CUARENTENA, REPORTADA). Admin."""
+    from core.services.cromo import inconsistencias_reporte as reporte
+    from core.services.cromo.inconsistencias_cromo import ESTADOS, REVISIONES, TIPOS
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if tipo is not None and tipo not in TIPOS:
+        return JSONResponse({"error": f"tipo inválido. Valores: {list(TIPOS)}"}, status_code=400)
+    if estado is not None and estado not in ESTADOS:
+        return JSONResponse({"error": f"estado inválido. Valores: {list(ESTADOS)}"}, status_code=400)
+    if revision is not None and revision not in REVISIONES:
+        return JSONResponse(
+            {"error": f"revision inválida. Valores: {list(REVISIONES)}"}, status_code=400
+        )
+    try:
+        async with AsyncSessionLocal() as sesion:
+            filas = await reporte.filas_reporte(
+                sesion,
+                tipo=tipo,
+                estado=estado,
+                revision=revision,
+                localidad=localidad or None,
+                servicio=servicio or None,
+                servicio_id=servicio_id,
+            )
+        contenido = await asyncio.to_thread(reporte.generar_xlsx, filas)
+    except Exception as exc:
+        logger.exception("action=inconsistencias_cromo_exportar_error error=%s", exc)
+        return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
+    logger.info("action=inconsistencias_cromo_exportar user=%s filas=%d", username, len(filas))
+    sello = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=contenido,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="inconsistencias_cromo_{sello}.xlsx"'},
+    )
+
+
+class InconsistenciasAvisoSlackRequestModel(BaseModel):
+    """Payload para configurar el aviso de casos nuevos a Slack."""
+
+    slack_channels: str = Field(default="", description="Canales (#nombre o ID C/G/D...) separados por coma")
+    activo: bool = Field(default=False, description="Si el aviso a Slack está encendido")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo/aviso-slack")
+async def inconsistencias_cromo_aviso_slack_get_web(request: Request) -> JSONResponse:
+    """Config del aviso de casos nuevos a Slack (fila "Cromo Inconsistencias"). Admin."""
+    from core.services.cromo.inconsistencias_reporte import leer_config_aviso
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        return JSONResponse(await leer_config_aviso(sesion))
+
+
+@app.post("/api/admin/infra/inconsistencias-cromo/aviso-slack")
+async def inconsistencias_cromo_aviso_slack_post_web(
+    request: Request, body: InconsistenciasAvisoSlackRequestModel
+) -> JSONResponse:
+    """Guarda canales y activación del aviso a Slack. Mismas reglas de formato de canal que el
+    resto de los servicios de Slack. Admin + CSRF."""
+    from core.services.cromo.inconsistencias_reporte import guardar_config_aviso, normalizar_canales
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_aviso_slack", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    canales = normalizar_canales(body.slack_channels)
+    if len(canales) > 512:
+        return JSONResponse({"error": "Los canales no deben superar 512 caracteres"}, status_code=400)
+    if any(not _es_destino_slack_valido(c) for c in canales.split(",") if c):
+        return JSONResponse(
+            {"error": "Cada destino debe ser un nombre de canal con # o un ID de Slack tipo C/G/D..."},
+            status_code=400,
+        )
+    if body.activo and not canales:
+        return JSONResponse({"error": "Para activar el aviso hay que indicar al menos un canal"}, status_code=400)
+    async with AsyncSessionLocal() as sesion:
+        await guardar_config_aviso(sesion, canales, body.activo)
+        await sesion.commit()
+    logger.info(
+        "action=cromo_inconsistencias_aviso_slack user=%s activo=%s canales=%s", username, body.activo, canales
+    )
+    return JSONResponse({"ok": True, "slack_channels": canales, "activo": body.activo})
+
+
+@app.post("/api/admin/infra/inconsistencias-cromo/estado")
+async def inconsistencias_cromo_estado_web(
+    request: Request, body: InconsistenciasEstadoRequestModel
+) -> JSONResponse:
+    """Cambia el estado de los casos elegidos (cuarentena, aceptar, reportar o liberar a
+    PENDIENTE). Las transiciones válidas las decide el servidor (`cambiar_estado`): lo que no se
+    puede vuelve en `rechazados` con su motivo. Admin + CSRF."""
+    from core.services.cromo.inconsistencias_cromo import ESTADOS_DESTINO_MANUAL, cambiar_estado
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_estado", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    if body.estado not in ESTADOS_DESTINO_MANUAL:
+        return JSONResponse(
+            {"error": f"estado inválido. Valores: {sorted(ESTADOS_DESTINO_MANUAL)}"}, status_code=400
+        )
+    async with AsyncSessionLocal() as sesion:
+        resultado = await cambiar_estado(sesion, body.ids, body.estado, username)
+        await sesion.commit()
+    logger.info(
+        "action=cromo_inconsistencias_estado user=%s estado=%s aplicados=%s rechazados=%s",
+        username,
+        body.estado,
+        len(resultado["actualizados"]),
+        len(resultado["rechazados"]),
+    )
+    return JSONResponse(
+        {"ok": True, "aplicados": resultado["actualizados"], "rechazados": resultado["rechazados"]}
+    )
+
+
+@app.get("/api/admin/infra/inconsistencias-cromo/deteccion")
+async def inconsistencias_cromo_deteccion_estado_web(request: Request) -> JSONResponse:
+    """Última corrida del detector (o `null`), para que el Viewer muestre su estado al abrir. Admin."""
+    from core.services.cromo.inconsistencias_cromo import ultima_deteccion
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        corrida = await ultima_deteccion(sesion)
+    return JSONResponse(
+        {"corrida": _serializar_cromo_corrida(corrida) if corrida is not None else None}
+    )
+
+
+@app.post("/api/admin/infra/inconsistencias-cromo/deteccion")
+async def inconsistencias_cromo_deteccion_iniciar_web(
+    request: Request, body: InconsistenciasDeteccionRequestModel
+) -> JSONResponse:
+    """Lanza el detector a mano: corrida sintética que ejecuta el `cromo_worker` (tiene las
+    credenciales de Cromo para confirmar cables en vivo). El progreso se sigue con el SSE de
+    corridas. Una sola a la vez: si hay otra detección o una ingesta EN_CURSO devuelve 409 con su
+    id. Admin + CSRF."""
+    from core.services.cromo.inconsistencias_cromo import iniciar_si_no_hay_otra
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_deteccion", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        corrida, en_curso = await iniciar_si_no_hay_otra(sesion, usuario=username, origen="MANUAL")
+        if corrida is None:
+            return JSONResponse(
+                {"error": "Hay una detección o una ingesta en curso.", "corrida_id": en_curso},
+                status_code=409,
+            )
+        corrida_id = corrida.id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                _CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username}
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        logger.error("action=cromo_inconsistencias_deteccion_error corrida_id=%s error=%s", corrida_id, exc)
+        await _marcar_corrida_fallida(
+            corrida_id, f"No se pudo delegar la detección al worker de Cromo: {exc}"
+        )
+        return JSONResponse(
+            {"error": "El worker de Cromo no está disponible. Intentá nuevamente en unos segundos."},
+            status_code=503,
+        )
+    logger.info("action=cromo_inconsistencias_deteccion user=%s corrida_id=%s", username, corrida_id)
+    return JSONResponse({"corrida_id": corrida_id}, status_code=202)
+
+
+class OdfConfirmadaItemModel(BaseModel):
+    """Una ODF a confirmar para un Servicio, con su rol en el recorrido."""
+
+    odf_n_id: int = Field(description="n_id de la ODF en cromo_odfs")
+    rol: Literal["EXTREMO", "TRANSITO"] = Field(description="Extremo del servicio o ODF de tránsito")
+
+
+class OdfConfirmarRequestModel(BaseModel):
+    """Payload para confirmar ODF de un Servicio en lote."""
+
+    odfs: list[OdfConfirmadaItemModel] = Field(min_length=1, max_length=50)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class OdfDesconfirmarRequestModel(BaseModel):
+    """Payload para quitar la confirmación de una ODF."""
+
+    odf_n_id: int = Field(description="n_id de la ODF a des-confirmar")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class TrackingsEsperadosRequestModel(BaseModel):
+    """Payload para declarar cuántos trackings espera el Servicio (`null` borra la declaración)."""
+
+    cantidad: int | None = Field(default=None, gt=0, le=32767)
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas")
+async def servicios_odf_confirmadas_listar_web(request: Request, servicio_id: int) -> JSONResponse:
+    """ODF confirmadas vigentes del Servicio y los trackings que se esperan. Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        declaradas = await declaraciones_del_servicio(sesion, servicio_id)
+    return JSONResponse(
+        {"odf_confirmadas": declaradas.confirmadas, "trackings_esperados": declaradas.trackings_esperados}
+    )
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas")
+async def servicios_odf_confirmar_web(
+    request: Request, servicio_id: int, body: OdfConfirmarRequestModel
+) -> JSONResponse:
+    """Confirma ODF del Servicio en lote (todo o nada). Un camino que toca una ODF confirmada es
+    siempre TRAMO. Idempotente. 404 si alguna ODF no existe en el inventario. Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import confirmar
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_odf_confirmar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        try:
+            lista = await confirmar(
+                sesion, servicio_id, [(o.odf_n_id, o.rol) for o in body.odfs], usuario=username
+            )
+        except ObjetoNoEncontrado as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+    return JSONResponse({"ok": True, "odf_confirmadas": lista})
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas/desconfirmar")
+async def servicios_odf_desconfirmar_web(
+    request: Request, servicio_id: int, body: OdfDesconfirmarRequestModel
+) -> JSONResponse:
+    """Quita la confirmación de una ODF (queda el historial). Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import desconfirmar, listar
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_odf_desconfirmar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        if not await desconfirmar(sesion, servicio_id, body.odf_n_id):
+            return JSONResponse(
+                {"error": f"La ODF {body.odf_n_id} no estaba confirmada para este Servicio."},
+                status_code=404,
+            )
+        lista = await listar(sesion, servicio_id)
+    return JSONResponse({"ok": True, "odf_confirmadas": lista})
+
+
+@app.post("/api/admin/infra/servicios-odf/{servicio_id}/trackings-esperados")
+async def servicios_trackings_esperados_web(
+    request: Request, servicio_id: int, body: TrackingsEsperadosRequestModel
+) -> JSONResponse:
+    """Declara cuántos trackings espera el Servicio; `cantidad: null` borra la declaración. Admin."""
+    from core.services.cromo.servicio_odf_confirmacion import declarar_trackings_esperados
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_trackings_esperados", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await declarar_trackings_esperados(sesion, servicio_id, body.cantidad):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+    return JSONResponse({"ok": True, "trackings_esperados": body.cantidad})
 
 
 class CaminoNormalizarRequestModel(BaseModel):

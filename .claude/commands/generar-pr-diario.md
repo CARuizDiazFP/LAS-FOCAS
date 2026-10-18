@@ -1,3 +1,8 @@
+---
+description: "Crear o actualizar docs/PR/YYYY-MM-DD.md con cambios, comandos ejecutados, impacto y riesgos"
+argument-hint: "fecha YYYY-MM-DD y/o contexto (por defecto hoy)"
+---
+
 # Nombre de archivo: generar-pr-diario.md
 # Ubicación de archivo: .claude/commands/generar-pr-diario.md
 # Descripción: Comando Claude Code para generar o actualizar el PR diario en docs/PR/

@@ -15,7 +15,7 @@ from core.services.cromo.camino_optico_service import (
     TIPO_CABLE_BAJADA,
     TIPO_CAJA_PON,
     TIPO_FUSION_ODF,
-    TIPO_NODO,
+    TIPO_ODF_NODO,
     TIPO_PUERTO_SPLITTER,
     TIPO_SPLITTER,
     _construir_lado,
@@ -93,7 +93,7 @@ class TestEtiquetado:
         assert nodos[8455773].tipo == TIPO_PUERTO_SPLITTER
         assert nodos[6676208].tipo == TIPO_CAJA_PON
         assert nodos[6617978].tipo == TIPO_CABLE_BAJADA
-        assert nodos[6646668].tipo == TIPO_NODO
+        assert nodos[6646668].tipo == TIPO_ODF_NODO == "ODF_NODO"
         assert nodos[10002472].tipo == TIPO_FUSION_ODF
         assert not any(n.tipo.startswith("CLASE_") for n in nodos.values())
 
@@ -217,3 +217,9 @@ class TestTablasVinculables:
         assert por_tabla["cromo_splitters"] is False
         assert por_tabla["cromo_splitter_puertos"] is False
         assert por_tabla["cromo_pon_elementos"] is True
+
+
+def test_odf_nodo_es_vinculable_contra_cromo_odfs():
+    from core.services.cromo.camino_optico_service import _TABLAS_VINCULABLES
+
+    assert any(t == "cromo_odfs" and tipo == "ODF_NODO" for t, tipo, *_ in _TABLAS_VINCULABLES)

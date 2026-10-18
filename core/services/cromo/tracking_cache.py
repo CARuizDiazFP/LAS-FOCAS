@@ -24,7 +24,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -88,6 +88,9 @@ class TrackingCacheado:
     duracion_ms: Optional[int]
     # `None` = entrada anterior a la columna `pelos_camino`: no sabe qué pelos recorre.
     pelos_camino: Optional[list[int]] = None
+    # `None` = entrada anterior a la columna `extremos`: no se puede clasificar como TRAMO o
+    # RESIDUAL, así que la capa de servicio la regenera (igual que sin `pelos_camino`).
+    extremos: Optional[dict[str, Any]] = None
 
 
 async def leer(sesion: AsyncSession, pelo_n_id: int, *, ahora: Optional[datetime] = None) -> Optional[TrackingCacheado]:
@@ -111,6 +114,7 @@ async def leer(sesion: AsyncSession, pelo_n_id: int, *, ahora: Optional[datetime
         generado_at=fila.generado_at,
         duracion_ms=fila.duracion_ms,
         pelos_camino=list(fila.pelos_camino) if fila.pelos_camino is not None else None,
+        extremos=dict(fila.extremos) if isinstance(fila.extremos, dict) else None,
     )
 
 
@@ -149,6 +153,7 @@ async def guardar(
     contenido: str,
     duracion_ms: Optional[int] = None,
     pelos_camino: Optional[list[int]] = None,
+    extremos: Optional[dict[str, Any]] = None,
     ahora: Optional[datetime] = None,
 ) -> None:
     """Escribe (o pisa) la entrada del pelo y purga las vencidas en el mismo paso.
@@ -165,6 +170,7 @@ async def guardar(
         contenido=contenido,
         duracion_ms=duracion_ms,
         pelos_camino=pelos_camino,
+        extremos=extremos,
         generado_at=ahora,
     )
     await sesion.execute(
@@ -176,6 +182,7 @@ async def guardar(
                 "contenido": sentencia.excluded.contenido,
                 "duracion_ms": sentencia.excluded.duracion_ms,
                 "pelos_camino": sentencia.excluded.pelos_camino,
+                "extremos": sentencia.excluded.extremos,
                 "generado_at": sentencia.excluded.generado_at,
             },
         )

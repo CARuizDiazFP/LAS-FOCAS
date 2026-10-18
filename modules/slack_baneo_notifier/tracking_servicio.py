@@ -14,10 +14,13 @@ en un solo archivo (`trackings_por_camino`). El 42351 da 2: sus dos hilos, cada 
 completo, incluidos los cables de terceros. Se suben todos al hilo (decisiones del usuario,
 2026-09-28 y 2026-09-29).
 
-Cuántos caminos hay lo dice la regla de operaciones: tantos como pelos tiene el Servicio en un
-mismo cable u ODF (`caminos_esperados`). El 94673 no termina en ninguna ODF y antes daba 1 `.txt`
-de sus 2 hilos; un pelo huérfano no genera un `.txt` de más, se avisa para excluirlo desde el
-portal (2026-10-05).
+Tracking por tramos (2026-10-16): se pide un camino por cada semilla no cubierta y cada uno se
+clasifica como TRAMO o RESIDUAL (`tracking_service.clasificar_caminos`). Se sube un `.txt` por
+tramo (`{at62} CROMO T{n} pelo {n_id}.txt`), uno por `files_upload_v2`. Los residuales NO se
+mencionan en el hilo (van a la auditoría de la web). El resumen es una línea por aviso y sólo
+cuando aplica: segmentación (más de un segmento físico), cantidad esperada distinta de la
+generada, semillas que no resolvieron (con sus errores) y, aparte, tope de consultas a Cromo sólo
+si de verdad se tocó.
 """
 
 from __future__ import annotations
@@ -97,58 +100,51 @@ class ResultadoTrack:
     archivos: list[TrackingArchivo] = field(default_factory=list)
     mensaje: str = ""
     errores: list[str] = field(default_factory=list)
-    esperados: int = 0
+    # Cantidad de trackings esperados que declaró el operador en LAS-FOCAS
+    # (`servicios.trackings_esperados`, no es un dato de Cromo); `None` si no declaró.
+    esperados_declarados: Optional[int] = None
     completo: bool = True
-    # Una línea por pelo huérfano, ya formateada para el hilo ("pelo 6799772 · F-VIN-TEC · 21 AM").
-    huerfanos: list[str] = field(default_factory=list)
+    # Semillas que no quedaron en ningún camino (fallaron o no se llegaron a pedir).
+    no_cubiertos: int = 0
+    # Se cortó por el tope de consultas a Cromo (`CROMO_TRACKING_MAX_LLAMADAS`).
+    tope_llamadas: bool = False
+    # Segmentos físicos: grupos de tramos que comparten cables. Dos hilos del mismo recorrido son
+    # uno solo (`tracking_service.contar_segmentos`).
+    segmentos: int = 1
 
 
 ESTADO_OK = "ok"
 ESTADO_ERROR = "error"
 
 
-# Un Servicio largo puede tener decenas de huérfanos; el hilo no es el lugar para listarlos todos.
-_MAX_HUERFANOS_LISTADOS = 15
-
-
-def _describir_pelo(semilla: Any) -> str:
-    """"pelo 6799772 · F-VIN-TEC · 21 AM": lo que el operador necesita para ubicarlo en Cromo."""
-    partes = [f"pelo {semilla.pelo_n_id}"]
-    if semilla.cable_nombre:
-        partes.append(semilla.cable_nombre)
-    numero = " ".join(x for x in (semilla.numero_pelo, semilla.color) if x)
-    if numero:
-        partes.append(numero)
-    return " · ".join(partes)
-
-
 def mensaje_resumen(resultado: ResultadoTrack) -> Optional[str]:
     """Aviso que acompaña a los archivos en el hilo, o `None` si no hay nada que avisar.
 
-    - Faltan caminos: se dice cuántos se esperaban y por qué fallaron. Si no, el operador cuenta 1
-      archivo donde esperaba 2 y no sabe si le faltan datos o si el Servicio es así.
-    - Hay huérfanos: se listan y se indica que se excluyen desde el portal. Sus errores no se
-      repiten aparte: un pelo que falló y quedó fuera de todo camino ya está en esa lista.
+    Sólo las líneas que aplican, en este orden: segmentación (más de un segmento físico; un par
+    de hilos del mismo recorrido no lo es), cantidad esperada distinta de la generada, semillas
+    que no resolvieron con sus errores —aunque el recorrido haya terminado: puede faltar un tramo
+    entero— y el tope de consultas a Cromo sólo si se tocó. Los residuales nunca se mencionan.
     """
     if resultado.estado != ESTADO_OK:
         return None
     partes: list[str] = []
     generados = len(resultado.archivos)
-    if not resultado.completo:
+    if resultado.segmentos > 1:
         partes.append(
-            f":warning: Se esperaban {resultado.esperados} caminos y se generaron {generados}."
+            f"Servicio segmentado en {resultado.segmentos} tramos ({generados} trackings)."
+        )
+    declarados = resultado.esperados_declarados
+    if declarados is not None and declarados != generados:
+        partes.append(f"Se esperaban {declarados} trackings y se generaron {generados}.")
+    sin_resolver = max(resultado.no_cubiertos, len(resultado.errores))
+    if sin_resolver or not resultado.completo:
+        partes.append(
+            f":warning: Tracking incompleto: {sin_resolver} semilla(s) no resolvieron."
         )
         if resultado.errores:
             partes.append("\n".join(f"• {e}" for e in resultado.errores))
-    if resultado.huerfanos:
-        partes.append(
-            f":link: {len(resultado.huerfanos)} pelo(s) con la etiqueta del Servicio no están en "
-            "ninguno de sus caminos (huérfanos). No se generó tracking para ellos; se pueden "
-            "excluir del Servicio desde el portal (Detalle de Servicio → Camino):"
-        )
-        partes.append("\n".join(f"• {h}" for h in resultado.huerfanos[:_MAX_HUERFANOS_LISTADOS]))
-        if len(resultado.huerfanos) > _MAX_HUERFANOS_LISTADOS:
-            partes.append(f"… y {len(resultado.huerfanos) - _MAX_HUERFANOS_LISTADOS} más.")
+    if resultado.tope_llamadas:
+        partes.append("Se alcanzó el tope de consultas a Cromo.")
     return "\n".join(partes) if partes else None
 
 
@@ -159,7 +155,7 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
     from core.services.cromo.camino_optico_service import ESTADO_SIN_SEMILLA, contar_semillas
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
-    from core.services.cromo.tracking_service import nombre_distinguible, trackings_del_servicio
+    from core.services.cromo.tracking_service import trackings_del_servicio
     from db.session import async_engine
 
     # Engine propio con `NullPool` en vez del pool singleton de `db.session`: ese pool queda atado
@@ -195,21 +191,17 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                 )
 
             errores = del_servicio.errores
-            # `distinguir` mira los archivos que efectivamente se suben, ya sin caminos repetidos:
-            # lo que importa es que los N archivos del hilo no se pisen entre sí.
-            distinguir = len(del_servicio.trackings) > 1
+            # Un `.txt` por tramo, ya con su nombre de tramo (`{at62} CROMO T{n} pelo {n_id}.txt`),
+            # que no se pisan entre sí. Los residuales no se suben ni se mencionan.
             archivos = [
                 TrackingArchivo(
-                    nombre=nombre_distinguible(
-                        tracking.nombre_archivo, tracking.pelo_n_id, distinguir=distinguir
-                    ),
+                    nombre=tracking.nombre_archivo,
                     contenido=tracking.contenido,
                     desde_cache=tracking.desde_cache,
                     duracion_ms=tracking.duracion_ms,
                 )
-                for tracking in del_servicio.trackings
+                for tracking in del_servicio.tramos
             ]
-            huerfanos = [_describir_pelo(s) for s in del_servicio.huerfanos]
 
             if not archivos:
                 return ResultadoTrack(
@@ -221,9 +213,11 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
                 estado=ESTADO_OK,
                 archivos=archivos,
                 errores=errores,
-                esperados=del_servicio.esperados,
+                esperados_declarados=del_servicio.esperados_declarados,
                 completo=del_servicio.completo,
-                huerfanos=huerfanos,
+                no_cubiertos=len(del_servicio.no_cubiertos),
+                tope_llamadas=del_servicio.tope_llamadas,
+                segmentos=del_servicio.segmentos,
             )
     finally:
         await engine.dispose()

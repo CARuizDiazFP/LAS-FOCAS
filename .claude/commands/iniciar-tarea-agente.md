@@ -1,3 +1,8 @@
+---
+description: "Crear o confirmar el worktree, la rama efímera y los puertos propios de la sesión antes de tocar el repositorio"
+argument-hint: "agent-id tipo task-slug"
+---
+
 # Nombre de archivo: iniciar-tarea-agente.md
 # Ubicación de archivo: .claude/commands/iniciar-tarea-agente.md
 # Descripción: Comando Claude Code para crear el worktree y la rama efímera propios del agente antes de empezar a trabajar

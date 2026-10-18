@@ -1,6 +1,6 @@
 # Nombre de archivo: sync_agentes_comunes.sh
 # Ubicación de archivo: scripts/sync_agentes_comunes.sh
-# Descripción: Sincroniza skills desde .agentes-comunes hacia mirrors de .github, .gemini y .codex-skills
+# Descripción: Sincroniza skills desde .agentes-comunes hacia mirrors de .github, .claude, .agents, .gemini (adaptadores livianos) y .codex-skills
 
 #!/usr/bin/env bash
 
@@ -25,7 +25,7 @@ while IFS= read -r file; do
   sed -i "2s|^# Ubicación de archivo: .*|# Ubicación de archivo: .github/skills/${rel_path}|" "$file"
 done < <(find .github/skills -type f -name '*.md' | sort)
 
-# Los mirrors de .claude, .gemini y .codex-skills tienen estructura propia (rutas y
+# Los mirrors de .claude, .agents, .gemini y .codex-skills tienen estructura propia (rutas y
 # frontmatter distintos por plataforma), así que los regenera el propagador dedicado.
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then

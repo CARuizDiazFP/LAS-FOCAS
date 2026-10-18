@@ -149,3 +149,21 @@ def test_pelos_por_buffer_ocupado_por_estado_cromo_sin_servicio_mantiene_el_form
         ("4", "libre", None),
         ("5", "ocupado", None),
     ]
+
+
+def test_pelos_por_buffer_pelo_en_cuarentena_sale_ocupado_y_marcado() -> None:
+    """Tarea 3 (2026-10-17): un pelo en cuarentena llega sin servicio (la vista lo oculta) y con
+    at.63 que no dice "Utilizado"; igual tiene que salir `ocupado` en la API v1, nunca `libre`."""
+    p = PeloDetalle(1, 1, "1", 0, "AZ", "CLIENTE", "FO 1 - X", "1", True, en_cuarentena=True)
+    p.estado_cromo = "Libre"
+    libre = PeloDetalle(2, 1, "2", 1, "AZ", "LIBRE", None, None, True)
+    tubos = [TuboDetalle(1, 0, "AZ", True, True, [p, libre])]
+    campos = {f: None for f in DetalleCable.__dataclass_fields__ if f not in ("n_id", "vigente", "tubos")}
+    detalle = DetalleCable(n_id=9, vigente=True, tubos=tubos, **campos)
+    with patch.object(cc, "obtener_detalle_cable", AsyncMock(return_value=detalle)):
+        pelos = asyncio.run(cc.pelos_por_buffer(object(), 9))[0].pelos
+
+    assert [(p.numero, p.estado, p.servicio_id, p.en_cuarentena) for p in pelos] == [
+        ("1", "ocupado", None, True),
+        ("2", "libre", None, False),
+    ]

@@ -105,8 +105,8 @@ export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
   },
   {
     valor: 'SOLO_ODF',
-    etiqueta: 'Sólo ODFs (clase 69)',
-    hint: 'Corre únicamente la fase de ODFs, sin tocar cables, botellas ni fusiones. ~35 min.',
+    etiqueta: 'ODFs y ODF Nodo (clases 69 y 86)',
+    hint: 'Corre únicamente la fase de ODFs y ODF Nodo, sin tocar cables, botellas ni fusiones. ~35 min.',
     usaClasesBotella: false,
   },
   {
@@ -500,6 +500,9 @@ export interface CromoPeloDetalle {
   verificable: boolean | null;
   status: string | null;
   fecha_hora_status: string | null;
+  /** El pelo es de un caso de inconsistencia de Cromo en CUARENTENA: `servicios` viene vacío
+   * porque su uso no cuenta, pero no está libre — se muestra "en cuarentena (inconsistencia Cromo)". */
+  en_cuarentena: boolean;
 }
 
 export interface CromoTuboDetalle {

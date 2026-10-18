@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/alembic-migrations/SKILL.md
-# Descripción: Habilidad para gestionar migraciones Alembic en LAS-FOCAS (mirror de .agentes-comunes/skills/alembic-migrations/SKILL.md — fuente de verdad)
-
 ---
 name: alembic-migrations
 description: "Usar cuando haya que crear, revisar o aplicar migraciones Alembic y validar cambios de esquema en la base de datos"
 argument-hint: "Describe cambio de esquema, por ejemplo: agregar columna email_subject a incidentes_baneo"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/alembic-migrations/SKILL.md
+# Descripción: Habilidad para gestionar migraciones Alembic en LAS-FOCAS (mirror de .agentes-comunes/skills/alembic-migrations/SKILL.md — fuente de verdad)
 
 # Habilidad: Migraciones Alembic
 
@@ -61,3 +61,11 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
    Además `target_metadata = None` en `env.py`: `autogenerate`/`alembic check` no detectan drift
    modelo↔migración, así que nombres de índices y tipos se verifican a mano contra el modelo.
    Hallazgo real (2026-10-05, `20261005_02_sla_consumo_historico`, ver `docs/cierres/2026-10-05.md`).
+6. **Una migración de una rama SIN integrar aplicada al Postgres de dev compartido bloquea a las
+   demás ramas.** El dev DB queda en un head que `dev` (y toda rama que parte de él) no conoce:
+   `alembic upgrade` de otra rama falla ("Can't locate revision"), y si esa rama también encadenó
+   sobre el head anterior, al integrar quedan dos heads. Si hace falta aplicarla para probar en dev,
+   integrar la rama pronto o avisar al agente afectado (`/estado-agentes`, `SendMessage`); quien
+   integra después reencadena su primera migración (`down_revision`) sobre el head ya integrado.
+   Hallazgo real (2026-10-17, ver `docs/cierres/2026-10-17.md`): `20261014_02` (FO Monitor) estuvo
+   3 días aplicada en dev sin integrar y frenó a `claude-tramos` (`20261016_01..04` sobre `20261014_01`).

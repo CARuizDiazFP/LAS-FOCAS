@@ -83,6 +83,7 @@ _FILA_PELO_SIN_SERVICIO = (
     None, None, None, None, None, None, None, None, None, None,  # servicio (todo None)
     None, None, None,  # verificable, status, fecha_hora_status
     None,  # estado_cromo (at.63)
+    False,  # en_cuarentena
 )
 
 _FECHA_STATUS = datetime(2026, 8, 20, 10, 30, tzinfo=timezone.utc)
@@ -92,6 +93,7 @@ _FILA_PELO_CON_SERVICIO = (
     501, "SRV-001", "SRV-001", "Cliente Uno", "Cliente Uno SA", "ACTIVO", 1, "CORPORATIVO", "1234", "REGEX_EXACTO",
     True, "OPERATIVO", _FECHA_STATUS,  # verificable, status, fecha_hora_status
     "Utilizado",  # estado_cromo (at.63)
+    False,  # en_cuarentena
 )
 
 # Pelo con vínculo por at.62 cuyo número no existe en Servicios (id de OLT/PON): LEFT JOIN a
@@ -101,6 +103,7 @@ _FILA_PELO_ATRIBUTO_SIN_SERVICIO = (
     None, None, None, None, None, None, None, None, "120893", "ATRIBUTO_PELO",
     None, None, None,  # verificable, status, fecha_hora_status
     "Utilizado",  # estado_cromo (at.63)
+    False,  # en_cuarentena
 )
 
 

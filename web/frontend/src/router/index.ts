@@ -23,6 +23,7 @@ const EmpalmesBotellaCromoView = () => import('../views/EmpalmesBotellaCromoView
 const ConectoresOdfCromoView = () => import('../views/ConectoresOdfCromoView.vue');
 const ValidarDatosCromoView = () => import('../views/ValidarDatosCromoView.vue');
 const InventarioCablesCromoView = () => import('../views/InventarioCablesCromoView.vue');
+const FoMonitorView = () => import('../views/FoMonitorView.vue');
 const CableDetalleCromoView = () => import('../views/CableDetalleCromoView.vue');
 const InventarioOdfsCromoView = () => import('../views/InventarioOdfsCromoView.vue');
 const InventarioPonCromoView = () => import('../views/InventarioPonCromoView.vue');
@@ -41,6 +42,8 @@ const AdminServiciosViewer = () => import('../admin/views/AdminServiciosViewer.v
 const AdminCamarasViewer = () => import('../admin/views/AdminCamarasViewer.vue');
 const AdminBotellasViewer = () => import('../admin/views/AdminBotellasViewer.vue');
 const AdminServiciosSinOdfViewer = () => import('../admin/views/AdminServiciosSinOdfViewer.vue');
+const AdminHuerfanosViewer = () => import('../admin/views/AdminHuerfanosViewer.vue');
+const AdminInconsistenciasCromoViewer = () => import('../admin/views/AdminInconsistenciasCromoViewer.vue');
 const AdminIngesta = () => import('../admin/views/AdminIngesta.vue');
 const AdminIngestaServicios = () => import('../admin/views/AdminIngestaServicios.vue');
 const AdminIngestaCamaras = () => import('../admin/views/AdminIngestaCamaras.vue');
@@ -205,6 +208,7 @@ const routes: RouteRecordRaw[] = [
         name: 'infra-cromo-verificador-empalmes',
         component: EmpalmesBotellaCromoView,
       },
+      { path: 'infra/fo-monitor', name: 'infra-fo-monitor', component: FoMonitorView },
       { path: 'infra/cromo/cables', name: 'infra-cromo-cables', component: InventarioCablesCromoView },
       {
         path: 'infra/cromo/cables/ID:nId(\\d+)',
@@ -350,6 +354,18 @@ const routes: RouteRecordRaw[] = [
         path: 'servicios/viewer/ServiciosSinOdf',
         name: 'admin-servicios-viewer-sin-odf',
         component: AdminServiciosSinOdfViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/Huerfanos',
+        name: 'admin-servicios-viewer-huerfanos',
+        component: AdminHuerfanosViewer,
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'servicios/viewer/InconsistenciasCromo',
+        name: 'admin-servicios-viewer-inconsistencias-cromo',
+        component: AdminInconsistenciasCromoViewer,
         meta: { requiresAdmin: true },
       },
       {

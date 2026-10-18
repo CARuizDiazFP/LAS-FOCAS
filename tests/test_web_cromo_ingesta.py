@@ -717,3 +717,34 @@ def test_iniciar_acepta_los_modos_de_la_red_pon(monkeypatch, modo):
 
     assert res.status_code == 202
     assert recibido["params_extra"] == {"modo": modo}
+
+
+def test_stream_reanuda_desde_el_ultimo_evento_visto(monkeypatch):
+    """Reconexión manual del Viewer de huérfanos: `?desde=` evita repetir eventos (y con ellos, los
+    `error` de negocio que antes disparaban un bucle de reconexión)."""
+    from web.app import main as web_main
+
+    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    sesion = _AsyncSesionFake(filas_execute=[], escalar=("OK",))
+    vistos: list = []
+
+    async def execute_dispatch(stmt, params=None):
+        texto = str(stmt)
+        if "cromo_ingesta_corridas" in texto:
+            return _ResultadoFake(filas=[("OK",)])
+        vistos.append((params or {}).get("ultimo_id"))
+        return _ResultadoFake(filas=[])
+
+    sesion.execute = execute_dispatch
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    client = TestClient(app)
+    _login(client, "admin", "admin")
+
+    with client.stream("GET", "/api/admin/ingesta/cromo/corridas/1/stream?desde=42") as res:
+        b"".join(res.iter_bytes())
+    with client.stream(
+        "GET", "/api/admin/ingesta/cromo/corridas/1/stream?desde=42", headers={"Last-Event-ID": "50"}
+    ) as res:
+        b"".join(res.iter_bytes())
+
+    assert vistos == [42, 50]

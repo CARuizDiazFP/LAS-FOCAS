@@ -181,7 +181,7 @@ def test_por_cable_happy_path_con_servicios(monkeypatch):
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_cables": [(51, "Cable Troncal", "72-BRUG", "Botella A", "Botella B")],
-            "cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO],
+            "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO],
         }
     )
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
@@ -220,7 +220,7 @@ def test_por_tubo_happy_path(monkeypatch):
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_tubos": [(129001, 51, 3, "AZUL")],
-            "cromo_pelos p\n    JOIN app.cromo_servicio_match": [_FILA_SERVICIO],
+            "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO],
         }
     )
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))

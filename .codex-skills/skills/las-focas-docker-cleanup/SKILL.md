@@ -303,6 +303,10 @@ docker builder prune --filter "until=168h" -f
 
 ### Limpieza Combinada (Todo Excepto Volúmenes)
 
+> **No usar en el host productivo**: `docker system prune -a` borra toda imagen sin contenedor,
+> incluida la imagen `rollback` que exige la política de retención (sección siguiente). En prod,
+> retirar imágenes sólo por ID exacto según esa política.
+
 ```bash
 # ⚠️ IMPORTANTE: Este comando NO incluye volúmenes
 # El flag --volumes está OMITIDO intencionalmente
@@ -364,6 +368,64 @@ else
     echo "❌ Limpieza cancelada"
 fi
 ```
+
+## 🏷️ Recursos efímeros de sesión (agentes)
+
+Todo contenedor, red o volumen **temporal** que un agente cree para probar algo (un Postgres
+descartable, un `docker run` de diagnóstico, una red de prueba) se crea etiquetado con la sesión:
+
+```bash
+docker run -d --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> ...
+docker network create --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> <red>
+docker volume create --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> <vol>
+```
+
+Al cierre (`cierre-sesion`) se eliminan **por ID exacto**, nunca por prune ni por patrón de nombre:
+
+```bash
+# 1. Inventario de la sesión (sólo lectura)
+docker ps -a        --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Names}} {{.Status}}'
+docker network ls   --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Name}}'
+docker volume ls    --filter label=lasfocas.session=<agent-id> --format '{{.Name}}'
+
+# 2. Antes de borrar: mounts del contenedor y consumidores de la red/volumen
+docker inspect -f '{{json .Mounts}}' <container-id>
+docker ps -a --filter volume=<vol> --format '{{.ID}} {{.Names}}'
+docker network inspect -f '{{json .Containers}}' <network-id>
+
+# 3. Borrado por ID exacto (-v sólo quita los volúmenes ANÓNIMOS de ese contenedor)
+docker container rm -v <container-id>
+docker network rm <network-id>
+docker volume rm <vol>
+```
+
+Un recurso sin `lasfocas.session=<agent-id>` **no es de la sesión** y no se toca, aunque parezca
+huérfano. Nunca etiquetar como efímero un recurso del stack (`lasfocas*`, `postgres_data`, etc.).
+
+## ♻️ Retención de imágenes en producción: `current` + 1 `rollback`
+
+En el host productivo se conservan, por servicio, sólo dos imágenes: la activa (`current`, el tag
+`lasfocas-<servicio>:latest` que usa compose) y **un único** `rollback` inmediato y validado
+(`lasfocas-<servicio>:rollback`). Rotación en cada despliegue:
+
+```bash
+SVC=api   # repetir por servicio reconstruido
+# 1. Recordar el rollback que va a quedar desplazado (puede no existir)
+OLD_RB="$(docker image inspect -f '{{.Id}}' lasfocas-$SVC:rollback 2>/dev/null || true)"
+# 2. current -> rollback (la imagen validada que está corriendo hoy)
+docker tag lasfocas-$SVC:latest lasfocas-$SVC:rollback
+# 3. Build + up del nuevo current (ver docker-rebuild) y validar healthchecks/smoke
+# 4. Recién con el current nuevo validado, retirar el rollback desplazado por ID exacto
+NEW_RB="$(docker image inspect -f '{{.Id}}' lasfocas-$SVC:rollback)"
+if [ -n "$OLD_RB" ] && [ "$OLD_RB" != "$NEW_RB" ]; then
+  docker ps -a --filter ancestor="$OLD_RB" --format '{{.ID}} {{.Names}}'   # debe salir vacío
+  docker image rm "$OLD_RB"   # falla solo si algún contenedor todavía la usa: no forzar
+fi
+```
+
+Nunca `docker system prune`, `docker image prune -a` ni `docker volume prune` en prod para esta
+rotación. Si el current nuevo no valida, volver al rollback (`docker tag lasfocas-$SVC:rollback
+lasfocas-$SVC:latest` + `up -d`) **antes** de retirar nada.
 
 ## 🛡️ Comandos Prohibidos
 

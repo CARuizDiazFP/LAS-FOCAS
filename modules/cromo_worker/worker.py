@@ -35,8 +35,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from core.logging import setup_logging
+from core.services.cromo.auditoria_huerfanos_global import TIPO_CORRIDA_AUDITORIA, auditar_global
 from core.services.cromo.client import CromoClient
 from core.services.cromo.config import get_cromo_config
+from core.services.cromo.inconsistencias_cromo import (
+    TIPO_CORRIDA_INCONSISTENCIAS,
+    ejecutar_corrida as ejecutar_deteccion_inconsistencias,
+)
 from core.services.cromo.ingesta import continuar_corrida, iniciar_corrida
 from db.models.cromo import CromoIngestaConfig, CromoIngestaCorrida, CromoIngestaEvento
 from db.session import AsyncSessionLocal
@@ -212,6 +217,7 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
     """Corre las fases de una corrida ya creada, leyendo sus propios params — no depende de que el
     caller (web o el propio worker) los reenvíe: ya quedaron persistidos en `corrida.params`."""
     error: Optional[str] = None
+    es_sintetica = False
     try:
         async with AsyncSessionLocal() as sesion:
             corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
@@ -219,6 +225,34 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
                 logger.error("action=cromo_worker evento=corrida_no_encontrada corrida_id=%s", corrida_id)
                 return
             params = corrida.params or {}
+            if params.get("tipo") == TIPO_CORRIDA_AUDITORIA:
+                # Corrida sintética de auditoría de huérfanos (Viewer admin): no es una ingesta,
+                # así que no toca `ultima_ejecucion`/`ultimo_error` de la config del scheduler.
+                es_sintetica = True
+                async with CromoClient(config=get_cromo_config()) as cliente:
+                    estado = await auditar_global(
+                        cliente, sesion, corrida_id, max_servicios=params.get("max_servicios")
+                    )
+                if estado == "FALLIDA":
+                    error = "La auditoría de huérfanos terminó FALLIDA (ver eventos de la corrida)."
+                return
+            if params.get("tipo") == TIPO_CORRIDA_INCONSISTENCIAS:
+                # Corrida sintética del detector de inconsistencias (manual): tampoco es una
+                # ingesta. Las post-ingesta no pasan por acá: las dispara `continuar_corrida`.
+                es_sintetica = True
+                async with CromoClient(config=get_cromo_config()) as cliente:
+                    estado = await ejecutar_deteccion_inconsistencias(cliente, sesion, corrida_id)
+                if estado == "FALLIDA":
+                    error = "La detección de inconsistencias terminó FALLIDA (ver eventos de la corrida)."
+                return
+            tipo = params.get("tipo")
+            if tipo is not None:
+                # Un tipo sintético que este worker no conoce (p.ej. un web más nuevo que el worker)
+                # NUNCA debe caer en la ingesta: se cierra FALLIDA sin ingerir nada.
+                es_sintetica = True
+                error = f"tipo de corrida desconocido: {tipo}"
+                await _cerrar_corrida_fallida(corrida_id, error)
+                return
             async with CromoClient(config=get_cromo_config()) as cliente:
                 await continuar_corrida(
                     cliente,
@@ -236,19 +270,53 @@ async def _continuar_en_bg(corrida_id: int, config_id: int = 1) -> None:
     except Exception as exc:  # noqa: BLE001 - tarea de background: no hay nadie a quien propagar
         error = str(exc)
         logger.exception("action=cromo_worker evento=error_continuar_corrida corrida_id=%s", corrida_id)
+        if es_sintetica:
+            # Las corridas sintéticas se cierran solas; si fallaron antes (p.ej. Cromo sin configurar) la
+            # corrida quedaría EN_CURSO hasta el próximo reinicio del worker.
+            await _cerrar_corrida_fallida(corrida_id, error)
     finally:
         _worker_status["corrida_en_curso"] = None
         _worker_status["ultima_ejecucion"] = datetime.now(timezone.utc).isoformat()
         _worker_status["ultimo_error"] = error
-        try:
-            async with AsyncSessionLocal() as sesion:
-                config = await sesion.get(CromoIngestaConfig, config_id)
-                if config is not None:
-                    config.ultima_ejecucion = datetime.now(timezone.utc)
-                    config.ultimo_error = error
-                    await sesion.commit()
-        except Exception:  # noqa: BLE001
-            logger.exception("action=cromo_worker evento=error_actualizando_config_post_corrida")
+        if not es_sintetica:
+            try:
+                async with AsyncSessionLocal() as sesion:
+                    config = await sesion.get(CromoIngestaConfig, config_id)
+                    if config is not None:
+                        config.ultima_ejecucion = datetime.now(timezone.utc)
+                        config.ultimo_error = error
+                        await sesion.commit()
+            except Exception:  # noqa: BLE001
+                logger.exception("action=cromo_worker evento=error_actualizando_config_post_corrida")
+
+
+async def _cerrar_corrida_fallida(corrida_id: int, motivo: str) -> None:
+    """Cierra como FALLIDA una corrida que sigue EN_CURSO. Best-effort."""
+    try:
+        async with AsyncSessionLocal() as sesion:
+            corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+            if corrida is None or corrida.estado != "EN_CURSO":
+                return
+            corrida.estado = "FALLIDA"
+            corrida.finalizada_at = datetime.now(timezone.utc)
+            sesion.add(CromoIngestaEvento(corrida_id=corrida_id, accion="ERROR", detalle=motivo[:500]))
+            await sesion.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("action=cromo_worker evento=error_cerrando_corrida corrida_id=%s", corrida_id)
+
+
+TIPOS_CORRIDA_CONOCIDOS = frozenset({TIPO_CORRIDA_AUDITORIA, TIPO_CORRIDA_INCONSISTENCIAS})
+
+
+async def _tipo_de_corrida(corrida_id: int) -> Optional[str]:
+    """Devuelve `params.tipo` de la corrida, o None si no tiene tipo / no se pudo leer (best-effort)."""
+    try:
+        async with AsyncSessionLocal() as sesion:
+            corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+            return ((corrida.params or {}).get("tipo")) if corrida is not None else None
+    except Exception:  # noqa: BLE001 - si no se puede leer, decide `_continuar_en_bg`
+        logger.exception("action=cromo_worker evento=error_leyendo_tipo_corrida corrida_id=%s", corrida_id)
+        return None
 
 
 async def _job_programado() -> None:
@@ -328,6 +396,11 @@ async def reload_config():
 @app.post("/run")
 async def run(body: RunRequest):
     if body.corrida_id is not None:
+        tipo = await _tipo_de_corrida(body.corrida_id)
+        if tipo is not None and tipo not in TIPOS_CORRIDA_CONOCIDOS:
+            motivo = f"tipo de corrida desconocido: {tipo}"
+            await _cerrar_corrida_fallida(body.corrida_id, motivo)
+            return JSONResponse({"ok": False, "error": motivo}, status_code=422)
         _worker_status["corrida_en_curso"] = body.corrida_id
         asyncio.create_task(_continuar_en_bg(body.corrida_id))
         return JSONResponse({"ok": True, "corrida_id": body.corrida_id}, status_code=202)

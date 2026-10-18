@@ -1,6 +1,6 @@
 # Nombre de archivo: test_cromo_tracking_por_camino.py
 # Ubicación de archivo: tests/test_cromo_tracking_por_camino.py
-# Descripción: Pruebas de "un .txt por camino distinto" — pelos del camino, descarte de semillas ya recorridas y caché sin la lista de pelos
+# Descripción: Pruebas de "un .txt por camino distinto" — pelos del camino, descarte de semillas ya recorridas, recorrido sin corte en esperados con tope de llamadas, caché sin pelos o sin extremos y separación en tramos y residuales
 
 from __future__ import annotations
 
@@ -126,6 +126,7 @@ async def test_cache_sin_lista_de_pelos_se_regenera(monkeypatch):
             generado_at=AHORA,
             duracion_ms=1,
             pelos_camino=None,
+            extremos=_RESUMEN_JSON,
         )
 
     guardados: list[dict] = []
@@ -151,6 +152,72 @@ async def test_cache_sin_lista_de_pelos_se_regenera(monkeypatch):
     assert guardados[0]["pelos_camino"] == [10, 77]
 
 
+_RESUMEN_JSON = {
+    "servicio_at62": "42351",
+    "inicio": {"tipo": "CONECTOR_ODF", "id_cromo": 1, "clase": 136, "odf_id": 500,
+               "odf_clase": 69, "odf_nombre": "TASA", "patchera_nombre": "O-1", "conector_numero": "3"},
+    "fin": {"tipo": "PELO", "id_cromo": 77, "clase": 130},
+    "odfs": [500],
+    "cables": [900],
+}
+
+
+@pytest.mark.asyncio
+async def test_cache_sin_extremos_se_regenera_y_guarda_el_resumen(monkeypatch):
+    """Entrada previa a la columna `extremos`: sin ellos no se puede clasificar el camino como
+    TRAMO o RESIDUAL, así que se regenera una vez (mismo patrón que `pelos_camino`)."""
+
+    async def _leer(_sesion, pelo_n_id):
+        return TrackingCacheado(
+            pelo_n_id=pelo_n_id,
+            nombre_archivo="42351 CROMO.txt",
+            contenido="viejo",
+            generado_at=AHORA,
+            duracion_ms=1,
+            pelos_camino=[10, 77],
+            extremos=None,
+        )
+
+    guardados: list[dict] = []
+
+    async def _guardar(_sesion, **kwargs):
+        guardados.append(kwargs)
+
+    conector = NodoCamino(
+        orden=0, lado="B", id_cromo=1, clase=136, tipo="CONECTOR_ODF", odf_id=500, odf_clase=86,
+        odf_nombre="NODO KORN", patchera_nombre="O-1259853-2", conector_numero="3",
+    )
+
+    async def _resolver(_cliente, _sesion, pelo_n_id):
+        return CaminoOptico(
+            estado=ESTADO_OK,
+            pelo_n_id=pelo_n_id,
+            servicio_at62="102452",
+            lado_a=[_nodo(0, 77, 130)],
+            lado_b=[conector],
+        )
+
+    monkeypatch.setattr(tracking_service.tracking_cache, "leer", _leer)
+    monkeypatch.setattr(tracking_service.tracking_cache, "guardar", _guardar)
+    monkeypatch.setattr(tracking_service, "resolver_camino_de_pelo", _resolver)
+    monkeypatch.setattr(tracking_service, "renderizar_tracking_txt", lambda _c, generado_en: "nuevo")
+
+    tracking = await tracking_service.obtener_tracking(
+        object(), _SesionNula(), servicio_id=1, pelo_n_id=10
+    )
+
+    assert tracking.desde_cache is False
+    # secuencia_para_tracking: reversed(lado_b) → raíz → lado_a. El primer nodo es el conector.
+    assert tracking.extremos.inicio.tipo == "CONECTOR_ODF"
+    assert tracking.extremos.inicio.odf_clase == 86
+    assert tracking.extremos.inicio.conector_numero == "3"
+    assert tracking.extremos.fin.id_cromo == 77
+    assert tracking.extremos.odfs == (500,)
+    assert tracking.extremos.servicio_at62 == "102452"
+    guardado = guardados[0]["extremos"]
+    assert guardado["inicio"]["odf_clase"] == 86 and guardado["odfs"] == [500]
+
+
 @pytest.mark.asyncio
 async def test_cache_con_lista_de_pelos_se_sirve_sin_ir_a_cromo(monkeypatch):
     async def _leer(_sesion, pelo_n_id):
@@ -161,6 +228,7 @@ async def test_cache_con_lista_de_pelos_se_sirve_sin_ir_a_cromo(monkeypatch):
             generado_at=AHORA,
             duracion_ms=1,
             pelos_camino=[10, 77],
+            extremos=_RESUMEN_JSON,
         )
 
     async def _resolver(*_a, **_k):
@@ -175,9 +243,52 @@ async def test_cache_con_lista_de_pelos_se_sirve_sin_ir_a_cromo(monkeypatch):
 
     assert tracking.desde_cache is True
     assert tracking.pelos_camino == frozenset({10, 77})
+    assert tracking.extremos.inicio.odf_id == 500
+    assert tracking.extremos.cables == (900,)
+    assert tracking.extremos.servicio_at62 == "42351"
 
 
-# ── Caminos esperados y huérfanos (Servicio 94673, 2026-10-05) ──────────────────────────────
+@pytest.mark.parametrize(
+    "extremos",
+    [
+        {**_RESUMEN_JSON, "odfs": ["no-es-un-id"]},
+        {**_RESUMEN_JSON, "cables": [None]},
+        {**_RESUMEN_JSON, "inicio": {"tipo": "CONECTOR_ODF", "id_cromo": "x"}},
+        ["no", "es", "un", "dict"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_cache_con_extremos_corruptos_es_un_miss(monkeypatch, extremos):
+    """Una fila de caché con `extremos` ilegibles no rompe la descarga: se regenera."""
+    from core.services.cromo.tracking_service import ResumenCamino
+
+    assert ResumenCamino.desde_json(extremos) is None
+
+    async def _leer(_sesion, pelo_n_id):
+        return TrackingCacheado(
+            pelo_n_id=pelo_n_id, nombre_archivo="42351 CROMO.txt", contenido="viejo",
+            generado_at=AHORA, duracion_ms=1, pelos_camino=[10, 77], extremos=extremos,
+        )
+
+    async def _guardar(_sesion, **_kwargs):
+        return None
+
+    async def _resolver(_cliente, _sesion, pelo_n_id):
+        return CaminoOptico(estado=ESTADO_OK, pelo_n_id=pelo_n_id, lado_a=[_nodo(0, 77, 130)])
+
+    monkeypatch.setattr(tracking_service.tracking_cache, "leer", _leer)
+    monkeypatch.setattr(tracking_service.tracking_cache, "guardar", _guardar)
+    monkeypatch.setattr(tracking_service, "resolver_camino_de_pelo", _resolver)
+    monkeypatch.setattr(tracking_service, "renderizar_tracking_txt", lambda _c, generado_en: "nuevo")
+
+    tracking = await tracking_service.obtener_tracking(
+        object(), _SesionNula(), servicio_id=1, pelo_n_id=10
+    )
+
+    assert tracking.desde_cache is False and tracking.contenido == "nuevo"
+
+
+# ── Sin corte en esperados: cubrir todas las semillas (tracking por tramos, 2026-10-16) ─────
 
 
 def test_moda_de_pelos_por_grupo_toma_la_moda_y_no_el_maximo():
@@ -201,8 +312,7 @@ def _hilos_94673():
 
 @pytest.mark.asyncio
 async def test_sin_odf_las_semillas_de_cable_dan_un_txt_por_hilo(monkeypatch):
-    """94673 no termina en ODF: antes se tomaba sólo la primera semilla y salía 1 `.txt` de 2.
-    Con todas las semillas, 2 llamadas a Cromo y 2 caminos."""
+    """94673 no termina en ODF: con todas las semillas, 2 llamadas a Cromo y 2 caminos."""
     c10, c9 = _hilos_94673()
     pedidos: list[int] = []
 
@@ -213,7 +323,7 @@ async def test_sin_odf_las_semillas_de_cable_dan_un_txt_por_hilo(monkeypatch):
     monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
 
     resultado = await trackings_por_camino(
-        object(), object(), servicio_id=1066, pelos_n_id=sorted(c10 | c9), esperados=2
+        object(), object(), servicio_id=1066, pelos_n_id=sorted(c10 | c9)
     )
 
     assert [t.pelo_n_id for t in resultado.trackings] == [6799772, 6799773]
@@ -223,33 +333,101 @@ async def test_sin_odf_las_semillas_de_cable_dan_un_txt_por_hilo(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_un_huerfano_no_genera_un_tercer_txt_ni_se_pide_a_cromo(monkeypatch):
-    c10, c9 = _hilos_94673()
-    huerfano = 9999999  # etiqueta vieja de un pelo movido: no está en ningún camino
+async def test_no_corta_en_los_esperados_y_pide_toda_semilla_no_cubierta(monkeypatch):
+    """Servicio 102452: Cromo corta /path en una ODF Nodo sin patch, así que el servicio tiene
+    más caminos que la moda de pelos por cable. Cortar en los esperados perdía tramos reales:
+    ahora se pide un camino por cada semilla que ningún camino anterior recorrió."""
+    caminos = {1: {1, 2}, 3: {3, 4}, 5: {5}, 6: {6, 7}}
     pedidos: list[int] = []
 
     async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
         pedidos.append(pelo_n_id)
-        return _generado(pelo_n_id, c10 if pelo_n_id in c10 else c9)
+        return _generado(pelo_n_id, caminos[pelo_n_id])
 
     monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
 
     resultado = await trackings_por_camino(
-        object(),
-        object(),
-        servicio_id=1066,
-        pelos_n_id=sorted(c10 | c9) + [huerfano],
-        esperados=2,
+        object(), object(), servicio_id=1168, pelos_n_id=[1, 2, 3, 4, 5, 6, 7]
+    )
+
+    assert pedidos == [1, 3, 5, 6]
+    assert [t.pelo_n_id for t in resultado.trackings] == [1, 3, 5, 6]
+    assert resultado.no_cubiertos == []
+    assert resultado.completo is True
+    assert resultado.llamadas == 4
+
+
+@pytest.mark.asyncio
+async def test_max_llamadas_corta_y_se_informa_como_incompleto(monkeypatch):
+    pedidos: list[int] = []
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        pedidos.append(pelo_n_id)
+        return _generado(pelo_n_id, {pelo_n_id})
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=list(range(1, 11)), max_llamadas=3
+    )
+
+    assert pedidos == [1, 2, 3]
+    assert resultado.completo is False
+    assert resultado.no_cubiertos == list(range(4, 11))
+
+
+@pytest.mark.asyncio
+async def test_llegar_justo_al_tope_con_todo_cubierto_es_completo(monkeypatch):
+    """El tope sólo marca incompleto si quedó una semilla sin cubrir que no se pudo pedir."""
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _generado(pelo_n_id, {1, 2, 3} if pelo_n_id == 1 else {4, 5})
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3, 4, 5], max_llamadas=2
     )
 
     assert len(resultado.trackings) == 2
-    assert huerfano not in pedidos
-    assert resultado.no_cubiertos == [huerfano]
     assert resultado.completo is True
 
 
 @pytest.mark.asyncio
-async def test_faltan_caminos_se_informa_como_incompleto(monkeypatch):
+async def test_lo_servido_del_cache_no_cuenta_contra_el_tope(monkeypatch):
+    """El tope protege a Cromo: un camino que sale del caché no le cuesta nada."""
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        generado = _generado(pelo_n_id, {pelo_n_id})
+        generado.desde_cache = True
+        return generado
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3, 4], max_llamadas=1
+    )
+
+    assert len(resultado.trackings) == 4
+    assert resultado.completo is True
+    assert resultado.llamadas == 0
+
+
+def test_tope_de_llamadas_por_entorno(monkeypatch):
+    from core.services.cromo.config import tracking_max_llamadas
+
+    monkeypatch.delenv("CROMO_TRACKING_MAX_LLAMADAS", raising=False)
+    assert tracking_max_llamadas() == 80
+    monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "120")
+    assert tracking_max_llamadas() == 120
+    monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "cero")
+    assert tracking_max_llamadas() == 80
+    monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "0")
+    assert tracking_max_llamadas() == 80
+
+
+@pytest.mark.asyncio
+async def test_faltan_caminos_por_fallas_se_reportan_como_errores(monkeypatch):
     async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
         if pelo_n_id == 2:
             raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
@@ -258,13 +436,14 @@ async def test_faltan_caminos_se_informa_como_incompleto(monkeypatch):
     monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
 
     resultado = await trackings_por_camino(
-        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3], esperados=2
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3]
     )
 
     assert [t.pelo_n_id for t in resultado.trackings] == [1]
-    assert resultado.completo is False
     assert resultado.no_cubiertos == [2]
     assert resultado.errores == ["Pelo 2: sin camino"]
+    # Una semilla que falla no es un tope: el recorrido terminó.
+    assert resultado.completo is True
 
 
 @pytest.mark.asyncio
@@ -278,8 +457,7 @@ async def test_max_fallidos_corta_antes_de_pedir_cientos_de_pelos(monkeypatch):
     monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
 
     resultado = await trackings_por_camino(
-        object(), object(), servicio_id=1, pelos_n_id=list(range(1, 200)), esperados=2,
-        max_fallidos=3,
+        object(), object(), servicio_id=1, pelos_n_id=list(range(1, 200)), max_fallidos=3,
     )
 
     assert pedidos == [1, 2, 3]
@@ -303,53 +481,170 @@ def _semilla(pelo: int, *, conector: bool = False):
     )
 
 
+def _con_resumen(tracking: TrackingGenerado, resumen) -> TrackingGenerado:
+    tracking.extremos = resumen
+    return tracking
+
+
+@pytest.fixture
+def declaraciones(monkeypatch):
+    """Sin nada declarado por defecto: la sesión de estos tests es un `object()`, sin DB."""
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+
+    estado = {"valor": Declaraciones()}
+
+    async def _leer(_sesion, _servicio_id):
+        return estado["valor"]
+
+    async def _numero(_sesion, _servicio_id):
+        return estado.get("numero")
+
+    monkeypatch.setattr(tracking_service, "declaraciones_del_servicio", _leer)
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
+    return estado
+
+
 @pytest.mark.asyncio
-async def test_trackings_del_servicio_reporta_huerfanos_solo_si_esta_completo(monkeypatch):
-    c10, c9 = _hilos_94673()
-    semillas = [_semilla(p) for p in sorted(c10 | c9)] + [_semilla(9999999)]
+async def test_trackings_del_servicio_lee_confirmadas_y_esperados_de_la_db(monkeypatch, declaraciones):
+    """Un camino sin par que TERMINA en una ODF confirmada (referida por version_id) pasa a TRAMO,
+    y los esperados declarados y la lista de confirmadas viajan en el resultado."""
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=86, patchera_nombre="O-1", conector_numero="1")
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    resumenes = {
+        # El 10 no tiene par y termina en la ODF confirmada (por su version_id 9295436).
+        10: ResumenCamino(servicio_at62="1", inicio=pelo, fin=_odf(9295436), odfs=(9295436,), cables=(1,)),
+        # El 20 y el 30 son un par (mismos cables): el servicio es bifilar.
+        20: ResumenCamino(servicio_at62="1", inicio=pelo, fin=_odf(7000), odfs=(7000,), cables=(2,)),
+        30: ResumenCamino(servicio_at62="1", inicio=pelo, fin=_odf(7000), odfs=(7000,), cables=(2,)),
+    }
+    pelos = {10: set(range(10, 20)), 20: set(range(100, 110)), 30: set(range(200, 210))}
+    declaraciones["valor"] = Declaraciones(
+        odf_ids=frozenset({6646686, 9295436}),
+        confirmadas=[{"odf_n_id": 6646686, "rol": "TRANSITO"}],
+        trackings_esperados=3,
+    )
 
     async def _semillas(_sesion, _servicio_id):
-        return semillas
-
-    async def _esperados(_sesion, _servicio_id):
-        return 2
+        return [_semilla(p) for p in (10, 20, 30)]
 
     async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
-        return _generado(pelo_n_id, c10 if pelo_n_id in c10 else c9)
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
 
     monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
-    monkeypatch.setattr(tracking_service, "caminos_esperados", _esperados)
     monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
 
-    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1066)
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567)
 
-    assert resultado.esperados == 2
-    assert len(resultado.trackings) == 2
-    assert [s.pelo_n_id for s in resultado.huerfanos] == [9999999]
+    assert sorted(t.pelo_n_id for t in resultado.tramos) == [10, 20, 30]
+    assert resultado.esperados_declarados == 3
+    assert resultado.odf_confirmadas == [{"odf_n_id": 6646686, "rol": "TRANSITO"}]
+
+    # El parámetro explícito pisa a las de la DB: sin confirmadas el 10 (sin par) es residual.
+    sin = await tracking_service.trackings_del_servicio(
+        object(), object(), 567, odfs_confirmadas=frozenset()
+    )
+    assert sorted(t.pelo_n_id for t in sin.tramos) == [20, 30]
+    assert sin.esperados_declarados == 3
 
 
 @pytest.mark.asyncio
-async def test_trackings_del_servicio_sin_grupos_espera_un_camino(monkeypatch):
+async def test_trackings_del_servicio_sin_semillas_conserva_lo_declarado(monkeypatch, declaraciones):
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+
+    declaraciones["valor"] = Declaraciones(trackings_esperados=2)
+
     async def _semillas(_sesion, _servicio_id):
-        return [_semilla(1), _semilla(2)]
+        return []
 
-    async def _esperados(_sesion, _servicio_id):
-        return 0
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
 
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.esperados_declarados == 2
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_separa_tramos_y_residuales_y_los_nombra(monkeypatch, declaraciones):
+    """Dos caminos que terminan en conector de ODF son TRAMO; uno chico que no toca ODF es
+    RESIDUAL. Los tramos se numeran por cantidad de pelos descendente y llevan el nombre
+    `{at62} CROMO T{n} pelo {n_id}.txt`."""
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=69, patchera_nombre="O-1", conector_numero="1")
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    resumenes = {
+        10: ResumenCamino(servicio_at62="42351", inicio=_odf(500), fin=_odf(600),
+                          odfs=(500, 600), cables=(1, 2)),
+        20: ResumenCamino(servicio_at62="42351", inicio=_odf(500), fin=_odf(600),
+                          odfs=(500, 600), cables=(1, 2)),
+        30: ResumenCamino(servicio_at62="42351", inicio=pelo, fin=pelo, odfs=(), cables=(7,)),
+    }
+    pelos = {10: {10, 11}, 20: {20, 21, 22}, 30: {30}}
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20, 30)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567)
+
+    assert [t.pelo_n_id for t in resultado.tramos] == [20, 10]
+    assert [t.nombre_archivo for t in resultado.tramos] == [
+        "42351 CROMO T1 pelo 20.txt",
+        "42351 CROMO T2 pelo 10.txt",
+    ]
+    assert all(t.rol == "TRAMO" for t in resultado.tramos)
+    assert [t.pelo_n_id for t in resultado.residuales] == [30]
+    assert resultado.residuales[0].rol == "RESIDUAL"
+    assert resultado.completo is True
+    assert resultado.esperados_declarados is None
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_sin_semillas_devuelve_vacio(monkeypatch, declaraciones):
+    async def _semillas(_sesion, _servicio_id):
+        return []
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.tramos == [] and resultado.residuales == []
+    assert resultado.completo is True
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_respeta_el_tope_del_entorno(monkeypatch, declaraciones):
+    monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "2")
     pedidos: list[int] = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (1, 2, 3, 4)]
 
     async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
         pedidos.append(pelo_n_id)
         return _generado(pelo_n_id, {pelo_n_id})
 
     monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
-    monkeypatch.setattr(tracking_service, "caminos_esperados", _esperados)
     monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
 
     resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
 
-    assert resultado.esperados == 1
-    assert pedidos == [1]
+    assert pedidos == [1, 2]
+    assert resultado.completo is False
 
 
 # ── Exclusión local de pelos huérfanos ──────────────────────────────────────────────────────
@@ -389,3 +684,320 @@ async def test_excluir_pelos_separa_ajenos_y_no_escribe_si_todos_lo_son(monkeypa
     with pytest.raises(pelos_excluidos.PeloNoPerteneceAlServicio):
         await pelos_excluidos.excluir_pelos(sesion, 17, [5], usuario="admin")
     assert sesion.inserts == [] and sesion.commits == 0
+
+
+# ── Auditoría de huérfanos enganchada en trackings_del_servicio ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_audita_residuales_con_el_mismo_resultado(monkeypatch, declaraciones):
+    """Un solo punto de enganche: recibe tramos, residuales, semillas, confirmadas y la corrida."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.servicio_odf_confirmacion import Declaraciones
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    odf = ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=501, clase=136, odf_id=500, odf_clase=69)
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    resumenes = {
+        10: ResumenCamino(servicio_at62="1", inicio=odf, fin=odf, odfs=(500,), cables=(1,)),
+        30: ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, cables=(7,)),
+    }
+    pelos = {10: set(range(10, 20)), 30: {30}}
+    declaraciones["valor"] = Declaraciones(odf_ids=frozenset({777}))
+    llamadas: list[dict] = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 30)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
+
+    async def _auditar(sesion, servicio_id, **kw):
+        llamadas.append({"servicio_id": servicio_id, **kw})
+        return auditoria_huerfanos.ResumenAuditoria(nuevos=1)
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(auditoria_huerfanos, "auditar_sin_romper", _auditar)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567, corrida_id=9)
+
+    assert len(llamadas) == 1
+    llamada = llamadas[0]
+    assert llamada["servicio_id"] == 567 and llamada["corrida_id"] == 9
+    assert [t.pelo_n_id for t in llamada["tramos"]] == [10]
+    assert [t.pelo_n_id for t in llamada["residuales"]] == [30]
+    assert llamada["semillas"] == frozenset({10, 30})
+    assert llamada["odfs_confirmadas"] == frozenset({777})
+    assert resultado.auditoria.nuevos == 1
+
+    llamadas.clear()
+    await tracking_service.trackings_del_servicio(object(), object(), 567, auditar=False)
+    assert llamadas == []
+
+
+class _SesionQueFalla:
+    """Sesión mínima: el savepoint abre, la query revienta, el rollback se registra."""
+
+    def __init__(self) -> None:
+        self.rollbacks = 0
+        self.commits = 0
+
+    def begin_nested(self):
+        sesion = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                return sesion
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+    async def execute(self, *_a, **_k):
+        raise RuntimeError("relation app.cromo_auditoria_huerfanos does not exist")
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+@pytest.mark.asyncio
+async def test_auditar_sin_romper_nunca_levanta():
+    """La auditoría es accesoria: si falla (tabla sin migrar, DB caída), Slack y el portal siguen."""
+    from core.services.cromo.auditoria_huerfanos import auditar_sin_romper
+    from core.services.cromo.tracking_service import ResumenCamino
+
+    residual = _con_resumen(_generado(30, {30}), ResumenCamino(cables=(7,)))
+    sesion = _SesionQueFalla()
+
+    resultado = await auditar_sin_romper(
+        sesion, 1, tramos=[], residuales=[residual], semillas=frozenset({30})
+    )
+
+    assert resultado is None
+    assert sesion.rollbacks == 1 and sesion.commits == 0
+
+
+def test_resumen_camino_conserva_botellas_y_tolera_cache_sin_ellas():
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    resumen = ResumenCamino(
+        inicio=ExtremoCamino(tipo="PELO", id_cromo=1, clase=130),
+        cables=(5,),
+        botellas=(10, 20, 30),
+        botella_inicio=10,
+        botella_fin=30,
+    )
+    assert ResumenCamino.desde_json(resumen.a_json()) == resumen
+
+    viejo = resumen.a_json()
+    for clave in ("botellas", "botella_inicio", "botella_fin"):
+        viejo.pop(clave)
+    leido = ResumenCamino.desde_json(viejo)
+    assert leido.botellas == () and leido.botella_inicio is None and leido.cables == (5,)
+
+
+def test_resumen_del_camino_toma_botellas_extremas_en_orden_del_txt():
+    """Orden del `.txt`: reversed(lado_b) → raíz → lado_a. La primera y la última fusión son los
+    empalmes extremos."""
+    from core.services.cromo.camino_optico_service import CaminoOptico, NodoCamino
+    from core.services.cromo.tracking_service import resumen_del_camino
+
+    def _fusion(orden, lado, botella):
+        return NodoCamino(orden=orden, lado=lado, id_cromo=1000 + botella, clase=131, tipo="FUSION",
+                          botella_id=botella)
+
+    camino = CaminoOptico(
+        estado="OK",
+        pelo_n_id=1,
+        raiz=NodoCamino(orden=0, lado="raiz", id_cromo=1, clase=130, tipo="PELO", cable_id=5),
+        lado_a=[_fusion(1, "a", 30), _fusion(2, "a", 40)],
+        lado_b=[_fusion(1, "b", 20), _fusion(2, "b", 10)],
+    )
+    resumen = resumen_del_camino(camino)
+    assert (resumen.botella_inicio, resumen.botella_fin) == (10, 40)
+    assert resumen.botellas == (10, 20, 30, 40)
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_incompleto_no_audita(monkeypatch, declaraciones):
+    """Con el tope de llamadas tocado quedan semillas sin cubrir: pelos de tramos no resueltos
+    podrían quedar como huérfanos normalizables. No se escribe ni se borra nada."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    llamadas: list = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20, 30)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(
+            _generado(pelo_n_id, {pelo_n_id}),
+            ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, cables=(pelo_n_id,)),
+        )
+
+    async def _auditar(*a, **k):
+        llamadas.append(k)
+
+    monkeypatch.setenv("CROMO_TRACKING_MAX_LLAMADAS", "1")
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(auditoria_huerfanos, "auditar_sin_romper", _auditar)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.completo is False
+    assert llamadas == [] and resultado.auditoria is None
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_con_semilla_fallida_no_audita(monkeypatch, declaraciones):
+    """Una semilla que falla por debajo del tope de fallidas deja `completo=True` pero su pelo no
+    tiene camino: si era de un tramo, auditar lo dejaría como huérfano normalizable."""
+    from core.services.cromo import auditoria_huerfanos
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
+    llamadas: list = []
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        if pelo_n_id == 20:
+            raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
+        return _con_resumen(
+            _generado(pelo_n_id, {pelo_n_id}),
+            ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, cables=(1,)),
+        )
+
+    async def _auditar(*a, **k):
+        llamadas.append(k)
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(auditoria_huerfanos, "auditar_sin_romper", _auditar)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1)
+
+    assert resultado.completo is True and resultado.errores
+    assert llamadas == [] and resultado.auditoria is None
+    assert resultado.auditoria_omitida == "INCOMPLETO"
+
+
+# ── I3: fallas parciales y tope de llamadas, por separado ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tope_de_llamadas_se_distingue_del_tope_de_fallidas(monkeypatch):
+    async def _ok(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _generado(pelo_n_id, {pelo_n_id})
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _ok)
+    por_tope = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3], max_llamadas=1
+    )
+    assert por_tope.completo is False and por_tope.tope_llamadas is True
+
+    async def _falla(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _falla)
+    por_fallidas = await trackings_por_camino(
+        object(), object(), servicio_id=1, pelos_n_id=[1, 2, 3], max_fallidos=1
+    )
+    assert por_fallidas.completo is False and por_fallidas.tope_llamadas is False
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_expone_no_cubiertos_y_tope(monkeypatch, declaraciones):
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        if pelo_n_id == 20:
+            raise TrackingNoDisponible("sin camino", "SIN_CAMINO")
+        return _generado(pelo_n_id, {pelo_n_id})
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1, auditar=False)
+
+    assert resultado.completo is True
+    assert resultado.no_cubiertos == [20]
+    assert resultado.tope_llamadas is False
+
+
+@pytest.mark.asyncio
+async def test_trackings_del_servicio_cuenta_segmentos_por_pares_de_cables(monkeypatch, declaraciones):
+    """I4: dos hilos del mismo camino (mismos cables) son UN segmento; dos pares sobre cables
+    distintos son dos."""
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=69)
+
+    cables = {10: (1, 2, 3), 11: (1, 2, 3), 20: (7, 8, 9), 21: (7, 8, 9)}
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in cables]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(
+            _generado(pelo_n_id, {pelo_n_id, pelo_n_id + 100}),
+            ResumenCamino(servicio_at62="1", inicio=_odf(5), fin=_odf(6), odfs=(5, 6),
+                          cables=cables[pelo_n_id]),
+        )
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 1, auditar=False)
+
+    assert len(resultado.tramos) == 4
+    assert resultado.segmentos == 2
+
+
+@pytest.mark.asyncio
+async def test_los_tramos_se_nombran_con_el_numero_del_servicio_y_no_con_el_at62(monkeypatch, declaraciones):
+    """Medido en dev (2026-10-17): el at.62 de los pelos no es confiable como nombre: el 42351 salía
+    "42352 CROMO", un hilo del 93154 "83254 CROMO" y 4 tramos del 102452 sin número. El parser de
+    trackings legacy toma el servicio del NOMBRE del archivo, así que tiene que ser el de LAS-FOCAS."""
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=69, patchera_nombre="O-1", conector_numero="1")
+
+    resumenes = {
+        10: ResumenCamino(servicio_at62="42352", inicio=_odf(500), fin=_odf(600),
+                          odfs=(500, 600), cables=(1, 2)),
+        20: ResumenCamino(servicio_at62="0", inicio=_odf(500), fin=_odf(600),
+                          odfs=(500, 600), cables=(1, 2)),
+    }
+    pelos = {10: {10, 11}, 20: {20, 21, 22}}
+    declaraciones["numero"] = "42351"
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (10, 20)]
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 567)
+
+    assert [t.nombre_archivo for t in resultado.tramos] == [
+        "42351 CROMO T1 pelo 20.txt",
+        "42351 CROMO T2 pelo 10.txt",
+    ]

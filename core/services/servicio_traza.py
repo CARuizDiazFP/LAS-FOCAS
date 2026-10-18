@@ -166,11 +166,19 @@ _SQL_TRACKINGS_DEL_SERVICIO = text(
     f"""
     SELECT tc.pelo_n_id, tc.contenido, tc.generado_at
     FROM app.cromo_tracking_cache tc
-    WHERE tc.servicio_id = :sid
+    WHERE (tc.servicio_id = :sid
+           -- Misma regla que `v_cromo_servicio_match_vigente`: un pelo semilla en un caso en
+           -- CUARENTENA no sirve su tracking cacheado como uso del Servicio.
+           AND NOT EXISTS (
+                SELECT 1
+                FROM app.cromo_inconsistencia_pelo ip
+                JOIN app.cromo_inconsistencia i ON i.id = ip.inconsistencia_id
+                WHERE ip.pelo_n_id = tc.pelo_n_id AND i.estado = 'CUARENTENA'
+           ))
        OR tc.pelo_n_id IN (
             SELECT m.pelo_n_id
             FROM app.servicios s
-            JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+            JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
             WHERE s.id = :sid
        )
     ORDER BY tc.pelo_n_id
@@ -202,7 +210,7 @@ _SQL_INVENTARIO = text(
     f"""
     SELECT DISTINCT b.nombre
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
     JOIN app.cromo_cables cb ON cb.n_id = p.cable_n_id AND cb.vigente
     JOIN app.cromo_botellas b
@@ -290,7 +298,7 @@ _SQL_CABLES_INVENTARIO = text(
     f"""
     SELECT DISTINCT cb.nombre
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     JOIN app.cromo_pelos p ON p.n_id = m.pelo_n_id AND p.vigente
     JOIN app.cromo_cables cb ON cb.n_id = p.cable_n_id AND cb.vigente
     WHERE s.id = :sid
@@ -360,7 +368,7 @@ _SQL_PELOS_DEL_SERVICIO = text(
     f"""
     SELECT DISTINCT m.pelo_n_id
     FROM app.servicios s
-    JOIN app.cromo_servicio_match m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
+    JOIN app.v_cromo_servicio_match_vigente m ON ({IDENTIDADES_DEL_SERVICIO_SQL})
     WHERE s.id = :sid
     """
 )

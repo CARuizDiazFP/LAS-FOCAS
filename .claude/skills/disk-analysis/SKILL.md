@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/disk-analysis/SKILL.md
-# Descripción: Skill para análisis y diagnóstico de uso de disco en el entorno LAS-FOCAS (mirror de .agentes-comunes/skills/disk-analysis/SKILL.md — fuente de verdad)
-
 ---
 name: disk-analysis
 description: "Usar cuando haya que diagnosticar uso de disco, espacio consumido por Docker, logs, volúmenes o artefactos del proyecto"
 argument-hint: "Describe foco del análisis, por ejemplo: revisar consumo de disco de Docker y Logs"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/disk-analysis/SKILL.md
+# Descripción: Skill para análisis y diagnóstico de uso de disco en el entorno LAS-FOCAS (mirror de .agentes-comunes/skills/disk-analysis/SKILL.md — fuente de verdad)
 
 # Habilidad: Análisis de Disco
 

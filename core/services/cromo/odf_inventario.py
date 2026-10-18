@@ -77,7 +77,7 @@ _FILTROS_SQL = f"""
             WHERE cable_id_texto::bigint IN (
                 SELECT p.cable_n_id
                 FROM app.cromo_pelos p
-                JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+                JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
                 JOIN app.servicios s ON s.id = m.servicio_id
                 WHERE p.vigente
                   AND (s.servicio_id ILIKE CAST(:servicio AS text)
@@ -101,7 +101,7 @@ _SQL_BUSCAR = text(
             SELECT count(DISTINCT m.servicio_id)
             FROM jsonb_array_elements_text({CABLES_ASOCIADOS_ARRAY_SQL}) AS cable_id_texto
             JOIN app.cromo_pelos p ON p.cable_n_id = cable_id_texto::bigint
-            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
             WHERE m.servicio_id IS NOT NULL AND p.vigente
         ) AS cantidad_servicios
     FROM app.cromo_odfs o

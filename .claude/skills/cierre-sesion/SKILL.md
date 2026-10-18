@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/cierre-sesion/SKILL.md
-# Descripción: Skill de cierre de sesión — retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge autónomo de la rama efímera a dev (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
-
 ---
 name: cierre-sesion
 description: "Usar al finalizar una sesión de trabajo, sólo con declaración explícita de cierre, para generar una retrospectiva técnica, evaluar evolución agéntica del entorno y mergear automáticamente la rama efímera activa a dev"
 argument-hint: "Palabra clave de cierre (ej. 'Cerrar sesión') o alcance/fecha"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/cierre-sesion/SKILL.md
+# Descripción: Skill de cierre de sesión — retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge autónomo de la rama efímera a dev (mirror de .agentes-comunes/skills/cierre-sesion/SKILL.md — fuente de verdad)
 
 # Habilidad: Cierre de Sesión
 
@@ -16,12 +16,22 @@ integrar automáticamente la rama efímera de la sesión a `dev`.
 
 ## Cuándo usar
 
-Usar esta skill sólo cuando el usuario declara explícitamente el fin de la sesión:
+Usar esta skill sólo cuando el usuario declara explícitamente el fin de la sesión. Los **únicos
+triggers directos** son (sin distinguir mayúsculas ni puntuación final):
 
-- invoca `/cierre-sesion` explícitamente, o
-- escribe una frase inequívoca de cierre: "Cerrar sesión", "Cerremos sesión", "Cierre chat", "cierre
-  de sesión", "terminamos la sesión", "este es el cierre del chat", "cerrá la sesión con una
-  retrospectiva"
+- `/cierre-sesion`
+- `Cerrar sesión`
+- `Cerremos sesión`
+
+Cualquier otra frase ("terminamos la sesión", "este es el cierre del chat", "Cierre chat", "cierre
+de sesión", "cerrá la sesión con una retrospectiva", "listo por hoy"…) **no** dispara el cierre:
+el cierre termina con un auto-merge a `dev` y un disparo accidental no se deshace. Ante una de esas
+frases, responder en una línea que el cierre se inicia con `/cierre-sesion`, `Cerrar sesión` o
+`Cerremos sesión`.
+
+Aun con un trigger válido, si hay trabajo pendiente ambiguo (cambios sin commitear cuyo destino no
+está claro, una tarea a medio verificar, una pregunta abierta del usuario sin responder), pedir una
+confirmación breve antes de iniciar el paso 2.
 
 **No** activar por sólo nombrar la skill al pasar, completar una tarea, pedir estado o solicitar
 documentación. Si un trigger heurístico dispara esta skill sin ese gate cumplido, no elaborar ni
@@ -90,7 +100,8 @@ reservado para cuando se declare explícitamente.
     guardrails, y deja auditoría en el estado compartido:
     ```bash
     python scripts/agent_worktree.py sync      --agent <agent-id>   # trae origin/dev a la rama
-    # resolver conflictos DENTRO del worktree propio y volver a validar (tests, drift de mirrors)
+    # resolver conflictos DENTRO del worktree propio y volver a validar con PRUEBAS FOCALES
+    # (ver "Validación hacia dev" abajo) + drift de mirrors si se tocaron skills
     python scripts/agent_worktree.py ready     --agent <agent-id>   # exige worktree limpio
     python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
     python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
@@ -100,9 +111,28 @@ reservado para cuando se declare explícitamente.
     el checkout de control y libera el lease. Si `dev` avanzó mientras tanto, el push es rechazado
     por Git y el comando lo informa: repetir `sync` y reintentar. Si la integración falla, el agente
     queda en `blocked` y **el worktree no se elimina**. `cleanup` sólo remueve el worktree si está
-    limpio; si quedó sucio lo informa y lo deja intacto (documentarlo en el checklist final).
-    Verificar además que no queden leases propios abiertos:
+    limpio, si no hay procesos corriendo con `cwd` dentro de él (servidores uvicorn/vite, shells) y
+    si no tiene archivos ignorados fuera del runtime conocido (`.docx`/`.xlsx` generados, dumps
+    `.sql`, backups): en cualquiera de esos casos sale con código 1, lo informa y lo deja intacto
+    (documentarlo en el checklist final). Verificar además que no queden leases propios abiertos:
     `python scripts/agent_lock.py list --agent <agent-id>`.
+
+    **Validación hacia `dev`: sólo pruebas focales.** Entre `sync` e `integrate` correr únicamente
+    los tests de los módulos que la sesión modificó (p. ej. `pytest tests/test_agent_worktree.py
+    -q` si se tocó `scripts/agent_worktree.py`) y, si se tocaron skills,
+    `bash scripts/check_skill_mirror_drift.sh`. La suite regresiva completa, `npm run build` y los
+    builds de imágenes se reservan para el **despliegue productivo**: correrlos acá alarga la ventana
+    de `git:integrate-dev` y bloquea a las demás sesiones sin aportar a la integración en `dev`.
+    Registrar en el cierre qué pruebas focales se corrieron y su resultado real.
+
+    **Recursos Docker efímeros de la sesión.** Antes de `cleanup`, eliminar los contenedores, redes
+    y volúmenes de prueba que la sesión creó. Todo recurso temporal se crea etiquetado
+    (`--label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id>`); se lista con
+    `docker ps -a --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Names}}'`, se
+    verifican sus mounts (`docker inspect -f '{{json .Mounts}}' <id>`) y consumidores, y se borra
+    **por ID exacto** (`docker container rm -v <id>`, `docker network rm <id>`,
+    `docker volume rm <nombre>`). Nunca `docker system prune` ni `docker volume prune`, y nunca
+    tocar recursos sin la etiqueta de la sesión (ver `docker-cleanup`).
 
     **Vía manual** (sesión sin agente registrado, o el tooling no aplica). Antes de
     cualquier operación: confirmar con `git branch --show-current` que la rama activa matchea
@@ -206,6 +236,13 @@ reservado para cuando se declare explícitamente.
 14. El worktree del agente se elimina **únicamente** si la integración terminó bien y
     `git status --porcelain` está vacío. Ante cualquier duda, no se elimina: se documenta como
     pendiente en el checklist. Nunca usar `git worktree remove --force` ni `git branch -D`.
+15. Los únicos triggers directos son `/cierre-sesion`, `Cerrar sesión` y `Cerremos sesión`; ninguna
+    otra frase inicia el cierre.
+16. La validación previa a integrar a `dev` son **pruebas focales** de lo modificado; la suite
+    regresiva completa y los builds integrales quedan para el despliegue productivo.
+17. Al cierre no quedan recursos Docker efímeros de la sesión (`lasfocas.session=<agent-id>`):
+    se eliminan por ID exacto tras revisar mounts y consumidores, junto con la limpieza del
+    worktree.
 
 ## Resultado esperado
 

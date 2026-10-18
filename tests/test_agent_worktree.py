@@ -1,6 +1,6 @@
 # Nombre de archivo: test_agent_worktree.py
 # Ubicación de archivo: tests/test_agent_worktree.py
-# Descripción: Pruebas de aislamiento físico multi-agente por Git worktree, integración serializada a dev y diagnóstico
+# Descripción: Pruebas de aislamiento físico multi-agente por Git worktree (rama, puertos y .env.dev privados), limpieza segura, integración serializada a dev y diagnóstico
 
 """Pruebas del tooling de worktrees por agente.
 
@@ -11,7 +11,10 @@ remoto *bare* local: no dependen de GitHub, de la red ni del repositorio real.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import sqlite3
+import stat
 import subprocess
 from pathlib import Path
 
@@ -43,6 +46,12 @@ def _commit(repo: Path, archivo: str, contenido: str, mensaje: str) -> None:
     ruta.write_text(contenido, encoding="utf-8")
     _git(["add", archivo], repo)
     _git(["commit", "-m", mensaje], repo)
+
+
+@pytest.fixture(autouse=True)
+def _puertos_siempre_libres(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La asignación de offsets no depende de qué escuche el host donde corren los tests."""
+    monkeypatch.setattr(agent_worktree, "puerto_libre", lambda puerto: True)
 
 
 @pytest.fixture()
@@ -658,7 +667,10 @@ def test_los_enlaces_de_entorno_no_ensucian_el_worktree(
     resultado = _iniciar("claude-api", "tarea-a", capsys)
     worktree = Path(resultado["worktree"])
 
-    assert set(resultado["enlaces"]) == {".venv", ".secrets", ".env.dev"}
+    assert set(resultado["enlaces"]) == {".venv", ".secrets"}
+    # `.env.dev` ya no es symlink: es una copia privada con los puertos del agente.
+    assert resultado["copias_privadas"] == [".env.dev"]
+    assert not (worktree / ".env.dev").is_symlink()
     assert (worktree / ".venv").is_symlink()
     assert (worktree / ".venv" / "pyvenv.cfg").is_file()  # el venv se reutiliza, no se copia
     assert gitops.esta_limpio(worktree), gitops.estado_porcelain(worktree)
@@ -719,3 +731,262 @@ def test_cleanup_olvidar_retira_el_registro_solo_si_el_worktree_ya_no_esta(
     assert resultado["registro_retirado"] is True
     assert registro.agente("claude-api") is None
     assert registro.agente("codex-web") is not None  # el otro agente no se toca
+
+
+# ------------------------------------------------- puertos y .env.dev privados
+
+
+def test_puertos_agente_es_determinista() -> None:
+    assert agent_worktree.puertos_agente(3) == {
+        "api": 8014,
+        "web": 8093,
+        "vite": 5176,
+        "office": 8023,
+        "nlp_intent": 8033,
+    }
+
+
+def test_start_asigna_offsets_distintos_a_agentes_simultaneos(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    primero = _iniciar("claude-api", "tarea-a", capsys)
+    segundo = _iniciar("codex-web", "tarea-b", capsys)
+
+    assert primero["offset"] == 1
+    assert segundo["offset"] == 2
+    assert set(primero["puertos"].values()).isdisjoint(segundo["puertos"].values())
+
+
+def test_start_evita_offsets_cuyos_puertos_se_solapan_con_otro_agente(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """api(8011+10) == office(8020+1): comparar sólo el offset no alcanza."""
+    _correr_json(["start", "--agent", "claude-api", "--task", "tarea-a", "--offset", "10"], capsys)
+
+    assert _correr(["start", "--agent", "codex-web", "--task", "tarea-b", "--offset", "1"]) == 1
+    assert "se solapan" in capsys.readouterr().err
+    # Un offset rechazado no deja un worktree ni una rama huérfanos.
+    assert not (control.parent / "LAS-FOCAS-agentes" / "codex-web-tarea-b").exists()
+    assert not gitops.existe_rama_local("feat/codex-web-tarea-b", control)
+    automatico = _iniciar("codex-web", "tarea-b", capsys)
+    assert automatico["offset"] not in (1, 10)
+
+
+def test_start_salta_offsets_con_puertos_ocupados_en_el_host(
+    control: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent_worktree, "puerto_libre", lambda puerto: puerto != 8012)
+
+    resultado = _iniciar("claude-api", "tarea-a", capsys)
+
+    assert resultado["offset"] == 2
+
+
+def test_start_rechaza_un_offset_fuera_de_rango(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _correr(["start", "--agent", "claude-api", "--task", "tarea-a", "--offset", "91"]) == 1
+    assert "entre 1 y 90" in capsys.readouterr().err
+
+
+def test_un_agente_finalizado_libera_su_offset(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _iniciar("claude-api", "tarea-a", capsys)
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+
+    assert _iniciar("codex-web", "tarea-b", capsys)["offset"] == 1
+
+
+def test_env_dev_privada_sobrescribe_puertos_sin_tocar_el_control(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original = "POSTGRES_DB=focas\nAPI_PORT=9999\n# comentario\n"
+    (control / ".env.dev").write_text(original, encoding="utf-8")
+    (control / ".gitignore").write_text(".env\n.env.*\n", encoding="utf-8")
+    _git(["add", ".gitignore"], control)
+    _git(["commit", "-m", "chore: ignorar env"], control)
+
+    resultado = _iniciar("claude-api", "tarea-a", capsys)
+    privada = Path(resultado["worktree"]) / ".env.dev"
+    contenido = privada.read_text(encoding="utf-8")
+
+    assert "POSTGRES_DB=focas" in contenido
+    assert "API_PORT=9999" not in contenido
+    assert "API_PORT=8012" in contenido
+    assert "LAS_FOCAS_AGENT_WORKTREE=1" in contenido
+    assert "LAS_FOCAS_PORT_OFFSET=1" in contenido
+    assert "VITE_API_BASE_URL=http://127.0.0.1:8012" in contenido
+    assert stat.S_IMODE(privada.stat().st_mode) == 0o600
+    # Editar la copia del agente no contamina el control ni a otros worktrees.
+    privada.write_text(contenido + "SOLO_ESTE_AGENTE=1\n", encoding="utf-8")
+    assert (control / ".env.dev").read_text(encoding="utf-8") == original
+    assert gitops.esta_limpio(Path(resultado["worktree"]))
+
+
+def test_env_dev_privada_no_imprime_su_contenido(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (control / ".env.dev").write_text("POSTGRES_PASSWORD=Dev_secreto_no_mostrar\n", encoding="utf-8")
+
+    codigo = _correr(["start", "--agent", "claude-api", "--task", "tarea-a"])
+
+    salida = capsys.readouterr()
+    assert codigo == 0
+    assert "Dev_secreto_no_mostrar" not in salida.out + salida.err
+
+
+def test_start_escribe_metadata_del_worktree_ignorada_por_git(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resultado = _iniciar("claude-api", "tarea-a", capsys)
+    worktree = Path(resultado["worktree"])
+
+    datos = json.loads((worktree / ".agent-worktree.json").read_text(encoding="utf-8"))
+
+    assert datos == {
+        "agent_id": "claude-api",
+        "task_id": "tarea-a",
+        "branch": "feat/claude-api-tarea-a",
+        "offset": 1,
+        "ports": agent_worktree.puertos_agente(1),
+    }
+    assert gitops.esta_limpio(worktree)
+
+
+def test_start_idempotente_conserva_el_offset(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    primero = _iniciar("claude-api", "tarea-a", capsys)
+    segundo = _iniciar("claude-api", "tarea-a", capsys)
+
+    assert segundo["idempotente"] is True
+    assert segundo["offset"] == primero["offset"]
+
+
+def test_status_y_list_exponen_offset_y_puertos(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _iniciar("claude-api", "tarea-a", capsys)
+
+    fila = _correr_json(["status", "--agent", "claude-api"], capsys)
+    listado = json.loads(
+        (agent_worktree.main(["list", "--json"]), capsys.readouterr().out)[1]
+    )
+
+    assert fila["port_offset"] == 1
+    assert fila["puertos"]["api"] == 8012
+    assert listado[0]["port_offset"] == 1
+
+
+def test_el_registro_migra_una_base_sin_port_offset(tmp_path: Path) -> None:
+    """Una base creada antes de la columna nueva se migra al abrirla, sin perder filas."""
+    db = tmp_path / "agent_state.sqlite3"
+    conexion = sqlite3.connect(db)
+    conexion.executescript(
+        """
+        CREATE TABLE agentes (
+            agent_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL,
+            branch TEXT NOT NULL, worktree_path TEXT NOT NULL, base_ref TEXT NOT NULL DEFAULT '',
+            base_sha TEXT NOT NULL DEFAULT '', started_at REAL NOT NULL, heartbeat_at REAL NOT NULL,
+            last_activity_at REAL NOT NULL, host TEXT NOT NULL DEFAULT '',
+            pid INTEGER NOT NULL DEFAULT 0, notas TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO agentes VALUES ('viejo', 't', 'active', 'feat/viejo-t', '/x', '', '', 1, 1, 1, '', 0, '');
+        """
+    )
+    conexion.commit()
+    conexion.close()
+
+    registro = Registro(db)
+    Registro(db)  # idempotente: reabrir no vuelve a alterar la tabla
+
+    agente = registro.agente("viejo")
+    assert agente is not None and agente.port_offset == 0
+
+
+# ----------------------------------------- cleanup: procesos e ignorados no runtime
+
+
+def test_cleanup_aborta_si_hay_ignorados_que_no_son_runtime(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (control / ".gitignore").write_text("*.docx\n__pycache__/\n", encoding="utf-8")
+    _git(["add", ".gitignore"], control)
+    _git(["commit", "-m", "chore: ignorar docx"], control)
+    _git(["push", "origin", "dev"], control)
+    worktree = Path(_iniciar("claude-api", "tarea-a", capsys)["worktree"])
+    (worktree / "informe_generado.docx").write_bytes(b"PK")
+    (worktree / "scripts" / "__pycache__").mkdir(parents=True)
+    (worktree / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+
+    assert _correr(["cleanup", "--agent", "claude-api"]) == 1
+    error = capsys.readouterr().err
+    assert "informe_generado.docx" in error
+    assert "__pycache__" not in error
+    assert (worktree / "informe_generado.docx").is_file()
+
+    (worktree / "informe_generado.docx").unlink()
+    resultado = _correr_json(["cleanup", "--agent", "claude-api"], capsys)
+    assert resultado["worktree_removido"] is True
+
+
+def test_cleanup_descarta_el_runtime_conocido(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (control / ".env.dev").write_text("X=1\n", encoding="utf-8")
+    (control / ".venv").mkdir()
+    worktree = Path(_iniciar("claude-api", "tarea-a", capsys)["worktree"])
+    assert (worktree / ".agent-worktree.json").is_file()
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+
+    resultado = _correr_json(["cleanup", "--agent", "claude-api"], capsys)
+
+    assert resultado["worktree_removido"] is True
+    assert (control / ".venv").is_dir()  # se borró el symlink, no el venv del control
+    assert (control / ".env.dev").read_text(encoding="utf-8") == "X=1\n"
+
+
+def test_cleanup_aborta_si_hay_un_proceso_vivo_dentro_del_worktree(
+    control: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree = Path(_iniciar("claude-api", "tarea-a", capsys)["worktree"])
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+    servidor = subprocess.Popen(["sleep", "60"], cwd=str(worktree))
+    try:
+        assert _correr(["cleanup", "--agent", "claude-api"]) == 1
+        error = capsys.readouterr().err
+        assert f"sleep[{servidor.pid}]" in error
+        assert worktree.is_dir()
+    finally:
+        servidor.kill()
+        servidor.wait()
+
+    assert _correr_json(["cleanup", "--agent", "claude-api"], capsys)["worktree_removido"] is True
+
+
+def test_procesos_en_worktree_excluye_a_la_propia_cli(control: Path, capsys) -> None:
+    worktree = Path(_iniciar("claude-api", "tarea-a", capsys)["worktree"])
+    previo = Path.cwd()
+    os.chdir(worktree)
+    try:
+        assert agent_worktree.procesos_en_worktree(worktree) == []
+    finally:
+        os.chdir(previo)
+
+
+def test_el_registro_tolera_columnas_futuras(tmp_path: Path) -> None:
+    """Una columna agregada por una versión más nueva no rompe a esta versión."""
+    db = tmp_path / "agent_state.sqlite3"
+    registro = Registro(db)
+    registro.registrar_agente("a", task_id="t", branch="feat/a-t", worktree_path="/x")
+    conexion = sqlite3.connect(db)
+    conexion.execute("ALTER TABLE agentes ADD COLUMN columna_del_futuro TEXT DEFAULT ''")
+    conexion.execute("ALTER TABLE leases ADD COLUMN columna_del_futuro TEXT DEFAULT ''")
+    conexion.commit()
+    conexion.close()
+    registro.adquirir("db:migrations", "a")
+
+    assert registro.agente("a") is not None
+    assert [lease.resource for lease in registro.leases()] == ["db:migrations"]

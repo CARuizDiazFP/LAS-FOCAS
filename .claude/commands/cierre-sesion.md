@@ -1,3 +1,8 @@
+---
+description: "Cierre de sesión: retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge de la rama efímera a dev. Sólo con /cierre-sesion, 'Cerrar sesión' o 'Cerremos sesión'"
+argument-hint: "alcance o fecha YYYY-MM-DD (opcional)"
+---
+
 # Nombre de archivo: cierre-sesion.md
 # Ubicación de archivo: .claude/commands/cierre-sesion.md
 # Descripción: Comando Claude Code para cierre de sesión: retrospectiva técnica, evolución agéntica con compuerta de riesgo y auto-merge de la rama efímera a dev
@@ -10,7 +15,7 @@ Cerrar la sesión activa: extraer conocimiento técnico real para retroalimentar
 
 # Contexto
 
-- **Gate de activación**: proceder sólo si el usuario invocó `/cierre-sesion` explícitamente, o declaró de forma inequívoca el fin de la sesión (p.ej. "Cerrar sesión", "Cerremos sesión", "Cierre chat", "cierre de sesión", "terminamos la sesión", "este es el cierre del chat", "cerrá la sesión con una retrospectiva"). Nombrar la skill al pasar, completar una tarea, pedir estado o solicitar documentación sin declarar el cierre NO satisface el gate. Si no se cumple, no elaborar ni persistir la retrospectiva ni ejecutar el auto-merge: continuar con la tarea normal o señalar en una línea que el cierre queda reservado para cuando se declare explícitamente.
+- **Gate de activación**: proceder sólo si el usuario invocó `/cierre-sesion` explícitamente, o escribió uno de los únicos triggers directos: "Cerrar sesión" o "Cerremos sesión" (sin distinguir mayúsculas ni puntuación final). Ninguna otra frase ("Cierre chat", "terminamos la sesión", "este es el cierre del chat", etc.) inicia el cierre: responder en una línea cuáles son los triggers válidos. Con trigger válido pero trabajo pendiente ambiguo (cambios sin commitear de destino incierto, tarea a medio verificar), pedir confirmación breve antes de empezar. Nombrar la skill al pasar, completar una tarea, pedir estado o solicitar documentación sin declarar el cierre NO satisface el gate. Si no se cumple, no elaborar ni persistir la retrospectiva ni ejecutar el auto-merge: continuar con la tarea normal o señalar en una línea que el cierre queda reservado para cuando se declare explícitamente.
 - El análisis debe ser estrictamente técnico y factual: basarse solo en lo que realmente ocurrió en esta conversación (tool calls, resultados, errores, decisiones del usuario). No inventar ni generalizar. No afirmar acceso a mensajes/outputs ausentes (p.ej. contexto truncado por compactación automática) — declarar cualquier límite de evidencia en el reporte.
 - Delimitar la sesión analizada: separar cambios propios de esta conversación, cambios preexistentes del worktree y acciones externas. No atribuir resultados sin evidencia de que ocurrieron en esta conversación.
 - El reporte se guarda en `docs/cierres/YYYY-MM-DD.md`. Si ya existe un cierre para la fecha de hoy, se anexa como sección nueva; nunca se sobrescribe.

@@ -934,6 +934,194 @@ mejora del regex de búsqueda, sin crear ninguna entidad de infraestructura.
   no matchear: el bot de Slack, `upload_tracking_web`, y las acciones de `InfraService` recién
   listadas.
 
+### ODF Nodo (clase 86), tracking por tramos y auditoría de huérfanos (2026-10-16)
+
+**ODF Nodo (clase 86).** Cromo tiene una segunda clase de ODF, "ODF Nodo", que se ingiere junto con
+la 69 (`CLASES_ODF = (69, 86)`; la fase `ODFs` y `SOLO_ODF` piden `"69,86"`). Va a `app.cromo_odfs` con
+`tipo_elemento='ODF_NODO'` (154 en dev). En la UI es el badge "ODF Nodo" y un selector "Tipo" en el
+Inventario de ODFs. Migración `20261016_01`. Además `cromo_odf_conectores` suma
+`patch_conector_n_id`: el `tp[]` de un conector puede traer un pelo (clase 130, `pelo_n_id`) o un
+patch (clase 136, `patch_conector_n_id`); 141 y otros dejan ambos NULL. Antes se guardaba cualquier
+`tp` como pelo y la migración corrige 10.255 `pelo_n_id` erróneos (quedan 731 de pelos de cables de
+terceros no ingeridos, legítimos). Tras migrar hay que reingerir `SOLO_ODF` y correr
+`scripts/cromo_backfill_conectores_odf.py --apply` dentro del contenedor.
+
+**Tracking por tramos.** El tracking del Servicio ya no corta en un número "esperado" (moda). Se
+pide un `/path` por semilla no cubierta (tope `CROMO_TRACKING_MAX_LLAMADAS`, default 80) y
+`tracking_service.clasificar_caminos` clasifica cada camino:
+
+1. Candidatos: caminos con al menos un extremo en un conector de ODF (69) u ODF Nodo (86); un
+   conector sin clase cuenta como ODF. Si ninguno termina en ODF, todos.
+2. Una ODF confirmada del Servicio rescata (TRAMO aunque no tenga par) al camino que TERMINA en
+   ella y pasa el filtro de proporción del punto 3. Pasar por la ODF en el medio no alcanza, y
+   un camino de 2-3 pelos que termina en ella sigue siendo ruido (medido 2026-10-18 en el
+   102452: con la regla anterior, "toca una ODF confirmada", pasaba de 6 a 12 trackings).
+3. Se exige a los candidatos tener al menos el 25% de los pelos del más largo; entre ellos, si
+   alguno tiene par (otro con Jaccard de cables >= 0,8) sólo cuentan los que tienen par. Si ninguno
+   tiene par (monofilar o PON) no se exige.
+4. El resto es RESIDUAL.
+
+La regla se derivó midiendo contra Cromo real (la propuesta original "un extremo en ODF alcanza"
+daba 10/3/7/2 tramos): 102452 = 6, 42351 = 2, 93154 = 2, 94673 = 2 (fixtures en
+`tests/test_cromo_tracking_clasificacion.py`). Cada camino lleva sus extremos (`cromo_tracking_cache.extremos
+JSONB`, migración `20261016_02`; una entrada sin extremos se regenera). `GET
+/api/infra/cromo/servicios/{id}/camino-optico/caminos` devuelve `tramos` y `residuales` (con `rol`),
+`esperados_declarados`, `odf_confirmadas`, `completo`, `errores`, `no_cubiertos` (semillas sin
+camino), `tope_llamadas` (sólo si se tocó `CROMO_TRACKING_MAX_LLAMADAS`) y `segmentos`, y mantiene
+`caminos` (= tramos) y `huerfanos: []` por compatibilidad. "Incompleto" no es sólo el tope: también
+el corte por 10 semillas fallidas y cualquier semilla sin camino aun con `completo=true` (el panel
+avisa "Tracking incompleto: N semilla(s) no resolvieron." y menciona el tope sólo si se tocó). Cada
+camino trae además `odfs` (todas las ODF que toca, extremos e intermedias, con `n_id` de linaje,
+nombre y clase): "ODF del camino" lista las de tramos y residuales más las confirmadas vigentes, con
+rol sugerido EXTREMO sólo para una ODF (69) en un extremo de camino. `tracking.txt?tramo=N` nombra `{at62} CROMO T{n} pelo {n_id}.txt`. Los residuales no
+se descargan: `CromoCaminoPanel` muestra "N caminos residuales" con enlace al Viewer de huérfanos.
+
+**ODF confirmadas y trackings esperados** (migración `20261016_03`). El operador confirma por
+Servicio las ODF del recorrido (tabla `app.servicio_odf_confirmada`, rol `EXTREMO` o `TRANSITO`) y
+puede declarar cuántos trackings espera (`servicios.trackings_esperados`; sólo sirve para avisar
+diferencias, no corta nada). Endpoints admin con CSRF bajo `/api/admin/infra/servicios-odf/{id}/`:
+`GET|POST odf-confirmadas`, `POST odf-confirmadas/desconfirmar`, `POST trackings-esperados`. Acepta
+`n_id` o `version_id` y guarda `n_id`. Desconfirmar pone `vigente=false`.
+
+**Auditoría de huérfanos** (migración `20261016_04`, `core/services/cromo/auditoria_huerfanos.py`).
+Los residuales que son semillas del Servicio (pelos con su etiqueta fuera de todo tramo) se
+registran en `app.cromo_auditoria_huerfanos` (único por servicio+pelo) con una causa sugerida y
+`estado` PENDIENTE / NORMALIZADO / DESCARTADO. Se audita al final de `trackings_del_servicio`
+(Slack, portal y corrida global), sólo si el recorrido fue completo (sin tope tocado, semillas sin
+cubrir ni errores); si no, se omite sin escribir ni borrar. Re-auditar nunca pisa NORMALIZADO ni
+DESCARTADO y retira los PENDIENTE que pasaron a tramo.
+
+| Causa | Señal | ¿Normalizable? |
+|---|---|---|
+| `CABLE_DESUSO` | todos los cables del residual tienen `cromo_cables.tendido` (at.20) = "Sin Uso" y ningún tramo los recorre | **Sí** (única) |
+| `PELO_DANADO`, `CAMBIO_CABLE_DANO`, `MIGRACION_SITIO` | comparación estructural de cables y botellas extremas contra los tramos; sin verdad de campo | No, sólo revisar |
+| `SIN_CLASIFICAR` | ninguna señal | No |
+
+Precedencia: desuso, dañado, paralelo, migración, sin clasificar. Un residual es **protegido** si un
+extremo es conector de ODF (69, 86 o clase desconocida) o su camino toca una ODF confirmada: la
+causa se guarda pero no se normaliza. Un cable compartido con un residual protegido veta el desuso.
+Medido en dev (2026-10-16): CABLE_DESUSO sólo en 42351 (9 residuales); campos descartados por no
+tener respaldo: `estado_cromo` de baja, `status`, `vigente`, `stp` y "sin pelos de servicios activos".
+`normalizar` decide en el servidor, falla cerrado (evidencia incompleta o ODF confirmada posterior =
+rechazo) y excluye el pelo con `cromo_servicio_pelo_excluido.origen='AUDITORIA'`. Restaurar un
+excluido de auditoría devuelve la fila a PENDIENTE.
+
+**Auditoría global.** Corrida sintética del `cromo_worker` (`params.tipo=AUDITORIA_HUERFANOS`):
+recorre los Servicios Activos de más a menos pelos, hasta `CROMO_AUDITORIA_MAX_SERVICIOS` (default
+50), con un evento `PAGINA` por Servicio. Cada Servicio puede costar hasta
+`CROMO_TRACKING_MAX_LLAMADAS` llamadas de 4,6-14 s: 50 Servicios pueden ser horas. Una sola a la vez
+(advisory lock, 409 si hay otra), cancelable entre Servicios, FALLIDA tras 3 errores seguidos de
+Cromo. Endpoints admin (`/api/admin/infra/huerfanos`, `.../normalizar`, `.../descartar`,
+`.../auditoria-global` GET/POST); el progreso usa el SSE de corridas (`?desde=<id>` para reanudar).
+Viewer: `/admin/servicios/viewer/Huerfanos` (`AdminHuerfanosViewer.vue`).
+
+### Inconsistencias de Cromo y cuarentena (2026-10-17)
+
+#### Fusiones de ODF (clase 141) en los conectores
+
+Un conector de ODF (clase 136) puede no apuntar al pelo sino a una fusión de ODF (141) del mismo
+`inner[]`, que lo une con un pelo (130) o con otro conector (136). Antes quedaba con `pelo_n_id`
+NULL. `parse_odf_conectores` ahora indexa las 141 del payload y resuelve el otro extremo:
+`{136,130}` llena `pelo_n_id`, `{136,136}` llena `patch_conector_n_id`, y la 141 se guarda en
+`cromo_odf_conectores.fusion_odf_n_id` (migración `20261017_01`, referencia blanda sin FK). Una 141
+sin `tp` o ausente del payload deja todo en NULL (se loguea el conteo por ODF). El camino óptico
+resuelve `conector -> 141 -> pelo` con la 141 del propio `/path`, para que `REGLA_CONECTOR` no marque
+`DISCREPA`. No hay backfill: la columna y el `pelo_n_id` salen de una corrida `SOLO_ODF`.
+
+#### Detector
+
+`core/services/cromo/inconsistencias_cromo.py` registra casos en `app.cromo_inconsistencia`
+(migración `20261017_02`, `UNIQUE(tipo, objeto_n_id)`) y sus pelos en uso en
+`app.cromo_inconsistencia_pelo`. Tres tipos:
+
+- `ISLA_FUSION` (objeto = fusión 132): ninguno de sus dos pelos tiene otra unión (fusiones vigentes
+  `pelo_a`/`pelo_b` + conectores de ODF vigentes, incluidos los que llegan por una 141), con al menos
+  uno en uso.
+- `CABLE_SIN_EXTREMO` (objeto = cable 51/52/59/60 vigente): algún extremo NULL y pelos en uso.
+- `ELEMENTO_ISLA` (objeto = botella u ODF/ODF Nodo vigente): todos sus cables incidentes terminan sin
+  otro extremo, con pelos en uso.
+
+"En uso" quiere decir que el pelo tiene fila en `cromo_servicio_match`.
+
+**Revisión `AUTO` vs `MANUAL`.** Sólo la isla pura es `AUTO` y entra en `CUARENTENA`: una
+`ISLA_FUSION` dentro de una botella (no ODF ni ODF Nodo), con cada cable llegando a esa botella por
+un extremo y el otro NULL, y confirmado contra Cromo en vivo (`GET /db/objects/{versión}`): la versión
+vigente es la que tiene la base local, el cable no está borrado, tiene un solo extremo y ese extremo
+es el contenedor de la fusión. Todo lo demás es `MANUAL` y entra en `PENDIENTE`: cualquier ODF/ODF
+Nodo, cualquier ambigüedad, Cromo caído o el tope de confirmaciones agotado (falla cerrada). Tope:
+`CROMO_INCONSISTENCIAS_MAX_CONFIRMACIONES` (default 300; 0 = sin llamadas a Cromo, todo MANUAL). Una
+confirmación previa se reutiliza mientras la versión local del cable no cambie, por hasta 7 días.
+
+**Estados y transiciones.** `PENDIENTE`, `CUARENTENA`, `REPORTADA`, `CORREGIDA`, `ACEPTADA`.
+
+- Caso nuevo: `CUARENTENA` si es `AUTO`, `PENDIENTE` si es `MANUAL`.
+- Re-detectar es idempotente. `ACEPTADA` y `REPORTADA` no se tocan mientras el caso siga detectado.
+- Un caso que deja de detectarse pasa a `CORREGIDA` (cierre automático) desde cualquier estado salvo
+  `ACEPTADA`, y libera sus pelos. Si vuelve a aparecer se reabre con el estado inicial de su revisión.
+- Una `CUARENTENA` puesta por el detector que pasa a `MANUAL` se levanta a `PENDIENTE`; una `PENDIENTE`
+  que pasa a `AUTO` entra en `CUARENTENA`. Si el estado lo puso una persona, no se pisa.
+- Una persona puede mover un caso a `CUARENTENA`, `ACEPTADA`, `REPORTADA` o `PENDIENTE` (nunca a
+  `CORREGIDA`, y no desde `CORREGIDA`); lo valida `cambiar_estado`. Mover un caso al estado en el que
+  ya está también se rechaza ("el caso ya está en X").
+
+**Cuarentena.** La migración `20261017_03` crea la vista `app.v_cromo_servicio_match_vigente`: las
+mismas columnas que `cromo_servicio_match`, sin las filas cuyo pelo pertenece a un caso en
+`CUARENTENA`. No se borra nada: los escritores (ingesta, bajas, fusión de servicios, el detector)
+siguen sobre la tabla, y todo lo que consume "qué servicio ocupa este pelo" lee la vista (verificador,
+`servicio_traza`, servicios sin ODF, detalle de cable/tubo, inventarios de cable/ODF, FO Monitor,
+camino óptico y auditoría de huérfanos). Al salir de cuarentena el uso vuelve solo. El test
+`tests/test_cromo_cuarentena_lectores.py` falla si un módulo fuera de su allow-list explícita lee la
+tabla por SQL o por ORM (`CromoServicioMatch`).
+
+**Marcas visibles.**
+
+- Detalle web del cable (`CableDetalleCromoView.vue`): los pelos en cuarentena muestran el chip
+  "en cuarentena (inconsistencia Cromo)" en lugar de Línea/Cliente (`PeloDetalle.en_cuarentena`).
+- Slack "Info cable X BN": `• Pelo N (Color): en cuarentena (inconsistencia Cromo) — <texto crudo>`.
+- API v1 `/pelos`: el pelo sale `ocupado` con `servicio_id: null` y `en_cuarentena: true`.
+- Panel Camino del servicio: aviso con los conteos de inconsistencias y enlace para admins.
+
+#### Viewer, exportación y avisos
+
+Viewer admin `/admin/servicios/viewer/InconsistenciasCromo` (`AdminInconsistenciasCromoViewer.vue`,
+tarjeta en Servicios): filtros por tipo, estado, revisión, localidad y servicio, acciones de estado
+individuales y en lote, y disparo de una corrida con progreso por SSE (`?desde=<id>` para reanudar).
+Endpoints (admin; los POST con CSRF) bajo `/api/admin/infra/inconsistencias-cromo`: `GET` listado,
+`POST /estado`, `GET/POST /deteccion` (202; 409 si hay otra detección o una ingesta en curso; 503 si el `cromo_worker` no responde),
+`GET /exportar.xlsx` y `GET/POST /aviso-slack`.
+
+La exportación XLSX ("para corregir en Cromo") trae una hoja por localidad, con tipo, revisión, estado,
+objeto, ID Cromo, qué falta, servicios afectados y fechas; sin `estado` exporta lo accionable
+(`PENDIENTE`, `CUARENTENA`, `REPORTADA`).
+
+Al terminar una detección aplicada con casos nuevos (`avisar_casos_nuevos`, best-effort: nunca hace
+fallar la corrida):
+
+- WebSocket admin `cromo_inconsistencias_nuevas` siempre; el viewer abierto recarga la lista.
+- Slack sólo si la fila `Cromo Inconsistencias` de `app.config_servicios` está activa y con canales
+  (`20261017_04` la crea inactiva y sin canales; se configura desde el panel plegable del viewer).
+  Mensaje con conteos y el XLSX de los casos nuevos.
+- Guardas: en la primera detección (no había casos antes) Slack recibe sólo el resumen, sin adjunto;
+  después, el XLSX se corta en `CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO` filas (default 500) con una hoja
+  "Aviso" ("y N más").
+- El `cromo_worker` necesita `slack_sdk` (su `requirements.txt`) y el secret `slack_bot_token_v1`
+  (compose dev y prod); sin ellos el aviso a Slack se omite con un warning y el WebSocket sigue.
+
+#### Cuándo corre
+
+Como corrida sintética (`params.tipo=INCONSISTENCIAS_CROMO`):
+
+- Al final de cada ingesta COMPLETA, SOLO_ODF o SOLO_PELOS_INNER cerrada OK, después del commit y en
+  modo best-effort (nunca hace fallar la ingesta).
+- A mano, desde el viewer (POST `/deteccion`), ejecutada por el `cromo_worker`.
+
+Emite un evento `PAGINA` por fase (LECTURA, CONFIRMACION, APLICACION). En dev el SQL tarda ~6-10 s
+gracias a dos tablas temporales indexadas; con CTEs no terminaba en 2 minutos. La medición en modo
+reporte se hace con `scripts/cromo_inconsistencias_medicion.py`.
+
+Variables de entorno: `CROMO_INCONSISTENCIAS_MAX_CONFIRMACIONES` (300) y
+`CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO` (500).
+
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
 - **Vista dedicada por cámara**: `GET /infra/Camaras/:id` dentro de la SPA Vue 3.

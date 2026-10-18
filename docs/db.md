@@ -978,6 +978,61 @@ Cromo contestó un único nodo raíz. Bajar los trackings de un Servicio de 6 pe
 frío; con el caché, 0,00 s en caliente. Al normalizar una inconsistencia se **invalida** la entrada
 del pelo: el `.txt` previo describe un estado de la base que ya cambió.
 
+### Cambios del tracking por tramos y ODF Nodo (2026-10-16)
+
+- **`cromo_odfs`** (`20261016_01`): la clase 86 entra al catálogo `cromo_clases` (ODF_NODO, ingerible)
+  y el CHECK de `tipo_elemento` suma `ODF_NODO`.
+- **`cromo_odf_conectores.patch_conector_n_id`** (`20261016_01`, BigInteger NULL): `tp[]` de clase 136.
+  `pelo_n_id` pasa a llenarse sólo con `tp` de clase 130; el backfill SQL de la migración anula los
+  erróneos (no se revierte en el downgrade). El downgrade de `20261016_01` **borra** las filas
+  `ODF_NODO` de `cromo_odfs` y sus conectores de `cromo_odf_conectores`.
+- **`cromo_tracking_cache.extremos`** (`20261016_02`, JSONB NULL, `none_as_null`): extremos del camino
+  (ODF, clase, patchera, conector, `servicio_at62`) y botellas extremas. `NULL` = entrada previa, se regenera.
+- **`servicio_odf_confirmada`** (`20261016_03`): `id`, `servicio_id` FK `servicios.id` CASCADE,
+  `odf_n_id` BigInteger (referencia blanda a `cromo_odfs.n_id`), `rol` CHECK `EXTREMO`/`TRANSITO`,
+  `confirmado_por`, `confirmado_en`, `vigente` (default true). Único parcial
+  `(servicio_id, odf_n_id) WHERE vigente` e índice por `servicio_id`. No reemplaza a
+  `cromo_servicio_odf_override`.
+- **`servicios.trackings_esperados`** (`20261016_03`, SmallInteger NULL, CHECK `> 0`): cantidad declarada por el operador.
+- **`cromo_auditoria_huerfanos`** (`20261016_04`): `corrida_id` FK `cromo_ingesta_corridas` SET NULL,
+  `servicio_id` FK CASCADE, `pelo_n_id`, `camino_semilla`, `causa` (CHECK: CABLE_DESUSO,
+  PELO_DANADO, CAMBIO_CABLE_DANO, MIGRACION_SITIO, SIN_CLASIFICAR), `evidencia` JSONB, `estado`
+  (CHECK PENDIENTE/NORMALIZADO/DESCARTADO), `revisado_por`, `detectado_at`, `actualizado_at`.
+  UNIQUE `(servicio_id, pelo_n_id)`, índice `(estado, causa)`.
+- **`cromo_servicio_pelo_excluido`** (`20261016_04`): `origen` (Text NOT NULL default `MANUAL`,
+  CHECK MANUAL/AUDITORIA) y `auditoria_id` FK `cromo_auditoria_huerfanos` SET NULL.
+
+Ver `docs/infra.md` ("ODF Nodo, tracking por tramos y auditoría de huérfanos").
+
+### Inconsistencias de Cromo y cuarentena (2026-10-17)
+
+- **`cromo_odf_conectores.fusion_odf_n_id`** (`20261017_01`, BigInteger NULL): n_id de la fusión de ODF
+  (141) por la que el conector llega a su pelo o a otro conector. `NULL` = no pasa por una 141.
+- **`cromo_inconsistencia`** (`20261017_02`): `id`, `tipo` (CHECK `ISLA_FUSION`/`CABLE_SIN_EXTREMO`/
+  `ELEMENTO_ISLA`), `objeto_n_id` (referencia blanda), `objeto_clase`, `nombre`, `localidad`,
+  `revision` (CHECK `AUTO`/`MANUAL`), `estado` (CHECK `PENDIENTE`/`CUARENTENA`/`REPORTADA`/`CORREGIDA`/
+  `ACEPTADA`), `evidencia` JSONB, `primera_vez`, `ultima_vez`, `actualizado_por`, `actualizado_en`.
+  UNIQUE `(tipo, objeto_n_id)`, índice `(estado, tipo)`.
+- **`cromo_inconsistencia_pelo`** (`20261017_02`): PK `(inconsistencia_id, pelo_n_id)`, FK
+  `inconsistencia_id` -> `cromo_inconsistencia.id` ON DELETE CASCADE, índice por `pelo_n_id`.
+- **`v_cromo_servicio_match_vigente`** (`20261017_03`): vista `SELECT m.*` de `cromo_servicio_match`
+  `WHERE NOT EXISTS` (pelo en un caso con `estado = 'CUARENTENA'`). Los lectores del uso leen la vista;
+  los escritores siguen sobre la tabla (guarda: `tests/test_cromo_cuarentena_lectores.py`).
+- **`config_servicios`** (`20261017_04`): fila `Cromo Inconsistencias`, `intervalo_horas=0`,
+  `slack_channels=''`, `activo=false`.
+
+**Orden de despliegue:** `20261017_02` y `20261017_03` deben estar aplicadas **antes** de arrancar el
+código nuevo: los lectores consultan la vista, y sin ella fallan con `UndefinedTable`.
+Orden completo: 1) `alembic upgrade head`; 2) rebuild + recreate de `cromo_worker` (necesita
+`slack_sdk` y el secret de Slack, y conoce los tipos de corrida nuevos: un worker viejo trataría una
+corrida de detección como una ingesta); 3) recién después `web`, `api`, `slack_baneo_worker` y
+`fo_monitor_worker`.
+Ver `docs/infra.md` ("Inconsistencias de Cromo y cuarentena").
+
+**Vista y columnas:** `v_cromo_servicio_match_vigente` usa `SELECT m.*`, y Postgres congela la lista de
+columnas al crear la vista. Toda migración que agregue o quite columnas de `cromo_servicio_match` debe
+hacer `DROP VIEW` antes y recrearla después.
+
 ### `cromo_splitters` y `cromo_splitter_puertos` (2026-09-17)
 
 Splitter óptico (clase 133) y sus puertos (clase 134). **Los dos ya venían en el `inner[]` de cada
@@ -1133,6 +1188,14 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20261005_01` | `20261005_01_cromo_servicio_pelo_excluido.py` | Tabla `app.cromo_servicio_pelo_excluido`: pelos huérfanos que un admin saca del tracking de un Servicio |
 | `20261005_02` | `20261005_02_sla_consumo_historico.py` | Persistencia del informe SLA consumido (reclamos, foto de SLA por línea y corte). **Fix 2026-10-14:** el `UPDATE app.reclamos SET horas_netas = horas_netas / 60.0` pasó a correr **después** del `alter_column` a `Numeric(12,4)`; antes corría sobre la columna vieja y redondeaba a 2 decimales. Dev ya estaba en esta revisión (no se re-ejecuta); prod la corre por primera vez con el orden correcto. Test: `tests/test_sla_consumo_migracion_orden.py` |
 | `20261014_01` | `20261014_01_clientes_categoria.py` | Enum `app.cliente_origen_categoria`, tablas `app.clientes` y `app.clientes_alias`, columnas `servicios.categoria_sla` y `servicios.categoria_excepcion`, y `servicios.categoria` pasa a nullable sin default. Backfill: `categoria_sla = categoria` (1 a 6, con cliente) y `categoria = NULL` donde era 6 sin cliente. No carga clientes: eso lo hace `scripts/clientes_categoria_regularizar.py`. `downgrade()` devuelve los NULL a 6 (con pérdida). Upgrade→downgrade→upgrade verificado en dev |
+| `20261016_01` | `20261016_01_cromo_odf_nodo.py` | Clase 86 (ODF Nodo) en `cromo_clases` + CHECK `tipo_elemento`, columna `cromo_odf_conectores.patch_conector_n_id` y backfill de `pelo_n_id` erróneos |
+| `20261016_02` | `20261016_02_cromo_tracking_cache_extremos.py` | Columna `cromo_tracking_cache.extremos JSONB NULL` |
+| `20261016_03` | `20261016_03_servicio_odf_confirmada.py` | Tabla `app.servicio_odf_confirmada` y columna `servicios.trackings_esperados` |
+| `20261016_04` | `20261016_04_cromo_auditoria_huerfanos.py` | Tabla `app.cromo_auditoria_huerfanos` y columnas `origen`/`auditoria_id` en `cromo_servicio_pelo_excluido` |
+| `20261017_01` | `20261017_01_cromo_odf_fusion_conector.py` | Columna `cromo_odf_conectores.fusion_odf_n_id BIGINT NULL` (fusión de ODF clase 141, referencia blanda sin FK). Sin backfill: se completa con una corrida `SOLO_ODF` |
+| `20261017_02` | `20261017_02_cromo_inconsistencias.py` | Tablas `app.cromo_inconsistencia` (UNIQUE `(tipo, objeto_n_id)`, 3 CHECK de `tipo`/`revision`/`estado`, índice `(estado, tipo)`) y `app.cromo_inconsistencia_pelo` (PK `(inconsistencia_id, pelo_n_id)`, FK CASCADE, índice por pelo) |
+| `20261017_03` | `20261017_03_cromo_servicio_match_vigente.py` | Vista `app.v_cromo_servicio_match_vigente`: `cromo_servicio_match` sin los pelos de casos en `CUARENTENA` |
+| `20261017_04` | `20261017_04_config_cromo_inconsistencias.py` | Fila `Cromo Inconsistencias` en `app.config_servicios` (inactiva, sin canales, idempotente); el downgrade la borra |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

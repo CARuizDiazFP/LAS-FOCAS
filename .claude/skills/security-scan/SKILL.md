@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/security-scan/SKILL.md
-# Descripción: Skill paraguas para escaneos integrales de seguridad en LAS-FOCAS (mirror de .agentes-comunes/skills/security-scan/SKILL.md — fuente de verdad)
-
 ---
 name: security-scan
 description: "Usar cuando haya que ejecutar una revisión integral de seguridad, correlacionar secretos, dependencias, SAST y proponer mitigaciones"
 argument-hint: "Describe el alcance, por ejemplo: escaneo integral de api y deploy con foco en credenciales y red"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/security-scan/SKILL.md
+# Descripción: Skill paraguas para escaneos integrales de seguridad en LAS-FOCAS (mirror de .agentes-comunes/skills/security-scan/SKILL.md — fuente de verdad)
 
 # Habilidad: Security Scan
 

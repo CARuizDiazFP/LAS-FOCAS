@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/dev-workflow/SKILL.md
-# Descripción: Skill para garantizar que los agentes operen siempre sobre ramas efímeras derivadas de dev y el stack lasfocasdev, nunca sobre producción (mirror de .agentes-comunes/skills/dev-workflow/SKILL.md — fuente de verdad)
-
 ---
 name: dev-workflow
 description: "Usar SIEMPRE antes de ejecutar cambios de código, commits, push, operaciones Docker o actualizaciones de repo. Valida rama efímera activa, stack correcto y restricciones del entorno dev."
 argument-hint: "Contexto de la tarea, por ejemplo: implementar feature X en el módulo Y"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/dev-workflow/SKILL.md
+# Descripción: Skill para garantizar que los agentes operen siempre sobre ramas efímeras derivadas de dev y el stack lasfocasdev, nunca sobre producción (mirror de .agentes-comunes/skills/dev-workflow/SKILL.md — fuente de verdad)
 
 # Habilidad: Dev Workflow — Protocolo de Trabajo en Entorno Dev
 

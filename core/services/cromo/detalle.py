@@ -45,6 +45,10 @@ class PeloDetalle:
     # Hay un vínculo por at.62 (`ATRIBUTO_*`) cuyo número no existe en Servicios (id de OLT/red PON):
     # el pelo está en uso aunque no haya Servicio que mostrar.
     vinculo_sin_servicio: bool = False
+    # El pelo pertenece a un caso de inconsistencia de Cromo en CUARENTENA (Tarea 3, 2026-10-17):
+    # `servicios` viene vacío porque el uso se lee de `app.v_cromo_servicio_match_vigente`, pero el
+    # pelo NO está libre — la UI lo muestra como "en cuarentena (inconsistencia Cromo)".
+    en_cuarentena: bool = False
 
 
 @dataclass(slots=True)
@@ -117,20 +121,35 @@ _SQL_TUBOS_DE_CABLE = text(
     """
 )
 
+# Texto con el que se muestra un pelo en cuarentena (web y Slack): mismo literal en todos lados.
+MARCA_CUARENTENA = "en cuarentena (inconsistencia Cromo)"
+
+# Marca de cuarentena por pelo, mismo predicado que la vista `app.v_cromo_servicio_match_vigente`
+# (migración 20261017_03): la vista oculta el match del pelo y esta columna dice por qué, para que un
+# pelo en cuarentena no se muestre como libre. Subselect correlacionado que usa el índice por pelo de
+# `cromo_inconsistencia_pelo`; corre sólo sobre los pelos de un cable o de un tubo.
+PELO_EN_CUARENTENA_SQL = """EXISTS (
+            SELECT 1
+            FROM app.cromo_inconsistencia_pelo ip
+            JOIN app.cromo_inconsistencia i ON i.id = ip.inconsistencia_id
+            WHERE ip.pelo_n_id = p.n_id AND i.estado = 'CUARENTENA'
+        )"""
+
 # Una sola query para TODOS los pelos del cable (no una por tubo): evita N+1. LEFT JOIN doble porque
 # no todo pelo tiene match, y no todo match tiene servicio_id resuelto (`m.servicio_id IS NULL` es un
 # estado válido — número parseado que no matcheó contra `app.servicios`). Si un pelo tiene más de un
 # match, aparece una fila por cada uno; se agrupa por `p.n_id` en Python.
 _SQL_PELOS_DE_CABLE = text(
-    """
+    f"""
     SELECT
         p.n_id, p.tubo_n_id, p.numero_pelo, p.orden, p.color, p.tipo_asociacion,
         p.servicio_raw, p.servicio_numero, p.vigente,
         s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
         s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo,
-        p.verificable, p.status, p.fecha_hora_status, p.estado_cromo
+        p.verificable, p.status, p.fecha_hora_status, p.estado_cromo,
+        {PELO_EN_CUARENTENA_SQL} AS en_cuarentena
     FROM app.cromo_pelos p
-    LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    LEFT JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.cable_n_id = :cable_n_id
     ORDER BY p.orden NULLS LAST, p.n_id
@@ -142,15 +161,16 @@ _SQL_PELOS_DE_CABLE = text(
 # "Info cable <nombre> B<N>" (modules/slack_baneo_notifier/cable_info.py), que necesita el listado
 # completo de pelos de UN buffer puntual, no del cable entero.
 _SQL_PELOS_DE_TUBO = text(
-    """
+    f"""
     SELECT
         p.n_id, p.tubo_n_id, p.numero_pelo, p.orden, p.color, p.tipo_asociacion,
         p.servicio_raw, p.servicio_numero, p.vigente,
         s.id, s.servicio_id, s.numero_primer_servicio, s.nombre_cliente, s.cliente,
         s.estado_servicio, s.categoria, s.tipo_servicio, m.servicio_numero, m.metodo,
-        p.verificable, p.status, p.fecha_hora_status, p.estado_cromo
+        p.verificable, p.status, p.fecha_hora_status, p.estado_cromo,
+        {PELO_EN_CUARENTENA_SQL} AS en_cuarentena
     FROM app.cromo_pelos p
-    LEFT JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+    LEFT JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
     LEFT JOIN app.servicios s ON s.id = m.servicio_id
     WHERE p.tubo_n_id = :tubo_n_id
     ORDER BY p.orden NULLS LAST, p.n_id
@@ -229,6 +249,7 @@ async def obtener_detalle_cable(sesion: AsyncSession, n_id: int) -> DetalleCable
                 status=fila[20],
                 fecha_hora_status=fila[21],
                 estado_cromo=fila[22],
+                en_cuarentena=bool(fila[23]),
             )
             pelos_index[pelo_n_id] = pelo
             pelos_por_tubo.setdefault(pelo.tubo_n_id, []).append(pelo)
@@ -321,6 +342,7 @@ def pelos_de_tubo_sync(session: Session, tubo_n_id: int) -> list[PeloDetalle]:
                 status=fila[20],
                 fecha_hora_status=fila[21],
                 estado_cromo=fila[22],
+                en_cuarentena=bool(fila[23]),
             )
             pelos_index[pelo_n_id] = pelo
             pelos.append(pelo)
@@ -333,4 +355,12 @@ def pelos_de_tubo_sync(session: Session, tubo_n_id: int) -> list[PeloDetalle]:
     return pelos
 
 
-__all__ = ["PeloDetalle", "TuboDetalle", "DetalleCable", "obtener_detalle_cable", "pelos_de_tubo_sync"]
+__all__ = [
+    "MARCA_CUARENTENA",
+    "PELO_EN_CUARENTENA_SQL",
+    "PeloDetalle",
+    "TuboDetalle",
+    "DetalleCable",
+    "obtener_detalle_cable",
+    "pelos_de_tubo_sync",
+]

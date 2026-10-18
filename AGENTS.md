@@ -55,6 +55,11 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" pytest`. El host `postgres` del
   compose no resuelve desde fuera de la red de Docker. Guard: `tests/soporte_postgres_real.py`.
 - Cobertura esperada para módulos nuevos: al menos 60%
+- **Pruebas focales vs. regresión**: durante la tarea y al cerrar hacia `dev` (`ready`/`integrate`
+  de `cierre-sesion`) se corren **sólo las pruebas focales** de los módulos modificados (más
+  `bash scripts/check_skill_mirror_drift.sh` si se tocaron skills), para que la ventana del lease
+  `git:integrate-dev` sea mínima. La suite regresiva completa, `npm run build` y los builds de
+  imágenes se ejecutan **exclusivamente en el despliegue productivo**. Detalle en `pytest-focas`.
 - Migraciones: `ALEMBIC_URL="..." alembic upgrade head`
 
 ## Gotchas
@@ -75,7 +80,33 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `COALESCE` sobre JSONB, medir con `SELECT jsonb_typeof(col), count(*) ... GROUP BY 1`.
 
 - Un `docker exec` cortado (límite de tiempo de una tarea en segundo plano del agente) **no** mata el proceso del contenedor. Las corridas largas se lanzan con `setsid nohup ... &`, y antes de relanzar se confirma en la base que la anterior dejó de escribir (real 2026-10-01: dos altas de PROV en paralelo). Detalle en `docs/despliegue_produccion.md`, paso 7.
-- `Logs/` (y `Logs/dev/`) no se lee por defecto: está fuera del indexado de todos los entornos (`.gitignore`, `.geminiignore`) para no gastar tokens en cientos de MB de logs. Sólo se lee en tareas de diagnóstico o limpieza, vía la skill `logs-cleanup`, y siempre acotado (`tail -n`, `grep -m`, filtro por hora); nunca `cat` completo ni lectura recursiva. Todo servicio Python loguea con `core/logging.py::setup_logging` (archivo `Logs/<servicio>.log` borrable en uso, buffer de ~2 s); tras tocar compose o un entrypoint, verificar con `python scripts/logs_verificar.py --entorno dev`.
+- `Logs/` (y `Logs/dev/`) no se lee por defecto (ver "Contexto y tokens" → Acceso a Logs Bajo Demanda). Todo servicio Python loguea con `core/logging.py::setup_logging` (archivo `Logs/<servicio>.log` borrable en uso, buffer de ~2 s); tras tocar compose o un entrypoint, verificar con `python scripts/logs_verificar.py --entorno dev`.
+
+## Contexto y tokens
+
+- **Mapa canónico primero**: antes de cualquier búsqueda global (grep/glob sobre todo el repo), leer
+  `docs/REPOSITORY_MAP.md` (≤ 8 KiB), identificar el dominio de la tarea y buscar sólo en sus
+  raíces. El mapa se genera desde `config/repository-map.json` con
+  `python scripts/generate_repository_map.py --write`; si se agregan o mueven rutas de un dominio,
+  actualizar el manifiesto y regenerar (`--check` falla si quedó vencido o si una ruta no existe).
+- **Context-Splitting por dominio**: un contexto de trabajo carga un solo dominio a la vez —
+  `api`, `core/services/cromo` (infra FO), `core/sla*` (informes), `web/frontend` (SPA),
+  `bot_telegram`/`modules/slack_baneo_notifier` (bots), `db/alembic` (esquema) y gobernanza
+  (skills, agentes, scripts de agentes). Si la tarea cruza dominios, resolver cada parte por
+  separado (o con un subagente por dominio) en vez de cargar todo junto.
+- **Acceso a Logs Bajo Demanda**: `Logs/` y `*.log` están excluidos del indexado de todos los
+  clientes. Sólo se leen en tareas de diagnóstico o limpieza (skill `logs-cleanup`) y siempre de
+  forma puntual: `tail -n <N>`, `grep -m <N>`, rangos de líneas o filtro por hora. Nunca `cat`
+  completo ni lectura recursiva.
+- **Matriz unificada de exclusión**: `.geminiignore`, `.copilotignore`, `.cursorignore` y
+  `.aiderignore` tienen el mismo contenido (entornos, `node_modules`/`dist`, `Logs/`, secretos y
+  `.env*`, `Templates/*.docx`, `tests/fixtures/`, `docs/cierres/`, `docs/PR/`,
+  `docs/superpowers/plans|specs/`). Al cambiar uno, cambiar los cuatro. Algunos clientes (p. ej.
+  Copilot) aplican además la exclusión desde la configuración de la organización.
+- **Skills bajo demanda**: `.gemini/rules/skill-*.md` son adaptadores de ≤ 15 líneas que apuntan a
+  `.agentes-comunes/skills/<n>/SKILL.md`; la skill completa se lee sólo cuando la tarea activa sus
+  `triggers`/`globs`. Para Superpowers, usar el índice de una línea `docs/superpowers/CATALOG.md`
+  (las skills locales prevalecen) y no cargar los manifiestos completos.
 
 ## Seguridad y Operación
 
@@ -83,6 +114,15 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Preferir `expose` sobre `ports`, salvo interfaces públicas necesarias.
 - No usar tags `latest` ni dependencias sin pin.
 - Aplicar mínimos privilegios y healthchecks cuando corresponda.
+- **Recursos Docker efímeros**: todo contenedor, red o volumen temporal creado en una sesión se
+  etiqueta con `lasfocas.lifecycle=ephemeral` y `lasfocas.session=<agent_id>`, y al cierre se borra
+  **por ID exacto** (`docker container rm -v <id>`, `docker network rm <id>`, `docker volume rm
+  <nombre>`) tras comprobar mounts y consumidores. Nunca `docker system prune` ni
+  `docker volume prune` para esto.
+- **Retención de imágenes en producción**: por servicio se conservan sólo la imagen activa
+  (`current`, `lasfocas-<servicio>:latest`) y un único `rollback` inmediato validado
+  (`lasfocas-<servicio>:rollback`). Cada despliegue rota `current -> rollback` y retira el rollback
+  desplazado por ID exacto, sin `prune`. Procedimiento en la skill `docker-cleanup`.
 - El servicio `api` tiene **dos superficies de autenticación que no se mezclan**: rutas internas con `require_api_key` (`api/app/security.py`, la usa la web) y `/api/v1/*` para otras áreas con OAuth2 `client_credentials` (`require_oauth_token(scope)` de `api/app/oauth.py`, scopes `servicios:read`/`cables:read`). Un endpoint nuevo para terceros va bajo `/api/v1` con su scope, nunca detrás de la API key. Referencia: `docs/api.md`, sección "API v1".
 
 ## Documentación Fuente
@@ -107,7 +147,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 - Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
 - Usar skills de `.agentes-comunes/skills/` como fuente central para workflows repetibles (pytest, alembic, Docker, mantenimiento, sincronización trazable y verificación de arquitectura frontend).
-- Mantener mirrors por plataforma (`.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/`, `.claude/skills/`) sincronizados con `.agentes-comunes/skills/`.
+- Mantener mirrors por plataforma (`.github/skills/`, `.claude/skills/`, `.agents/skills/`, `.gemini/rules/`, `.codex-skills/skills/`) sincronizados con `.agentes-comunes/skills/`.
+- `python scripts/audit_agentic_environment.py` audita de forma determinista los contratos del entorno (archivos de gobernanza y exclusión, mapa vigente, frontmatter de skills, contrato de `cierre-sesion`, drift de mirrors); sale 1 ante un contrato roto y avisa (`warning:stale_lease:*`, `warning:stale_agent:*`) sin bloquear.
 - El flujo recursivo SDD/superpowers se mantiene habilitado; optimizar ejecución acotando rondas redundantes (evitar cadenas abiertas de re-review cuando no hay hallazgos nuevos).
 - La regla operativa de corte de rondas recursivas está formalizada en `docs/politica_recursion_sdd.md`.
 - **Antes de empezar cualquier tarea**, usar la skill `agent-worktree`: crea el worktree y la rama propios del agente, define cuándo hace falta un lease y cómo integrar sin pisar a otras sesiones.
@@ -194,6 +235,18 @@ capas distintas y complementarias; la referencia completa es
   desalineada, integración interrumpida): `python scripts/agent_worktree.py doctor`,
   que diagnostica y **no corrige**.
 
+### Puertos y entorno propios por worktree
+
+- `agent_worktree.py start` reserva un offset de puertos (1..90, `--offset N` o el menor libre)
+  y crea una **copia privada** de `.env.dev` (0600) con `API_PORT`, `WEB_PORT`, `VITE_PORT`,
+  `OFFICE_PORT`, `NLP_PORT` = base + offset, `VITE_API_BASE_URL`, `LAS_FOCAS_AGENT_WORKTREE=1` y
+  `LAS_FOCAS_PORT_OFFSET`. Editar esa copia no afecta a otros worktrees. `.venv`, `.env`,
+  `.secrets` y `Logs` siguen siendo symlinks al control.
+- Los puertos son para procesos locales (uvicorn, vite). El stack compose dev sigue siendo único
+  y compartido (`env:docker-compose`).
+- `cleanup` no remueve un worktree con procesos vivos dentro ni con archivos ignorados que no sean
+  runtime conocido (reportes `.docx`/`.xlsx`, dumps): sale 1 y los lista.
+
 ### Cierre y continuidad
 
 - Al cerrar, todo agente deja su estado en `finished` o `handoff` y libera sus leases.
@@ -208,15 +261,19 @@ capas distintas y complementarias; la referencia completa es
 ## Reglas de sincronización de mirrors
 
 - La fuente de verdad de skills es `.agentes-comunes/skills/`.
-- Los mirrors de `.github/skills/`, `.gemini/rules/`, `.codex-skills/skills/` y
-  `.claude/skills/` se consideran artefactos derivados y deben sincronizarse tras cada
-  cambio relevante.
+- Los mirrors de `.github/skills/`, `.claude/skills/`, `.agents/skills/`, `.gemini/rules/` y
+  `.codex-skills/skills/` se consideran artefactos derivados y deben sincronizarse tras cada
+  cambio relevante. `.gemini/rules/skill-*.md` es un adaptador liviano (≤ 15 líneas, sin cuerpo):
+  sus `triggers`/`globs` se editan ahí y el propagador los preserva. En `.claude/skills/`,
+  `.agents/skills/` y `.codex-skills/skills/` el frontmatter va **antes** del encabezado de 3
+  líneas (excepción a la convención de encabezados): esos clientes sólo leen `name`/`description`
+  si el archivo empieza con `---`. El auditor lo verifica.
 - La ejecución de `scripts/sync_agentes_comunes.sh` es obligatoria en cambios de skills,
   prompts o agentes que impacten a cualquiera de los mirrors. Regenera `.github/skills/` y delega en
-  `scripts/sync_skill_mirrors.py`, que mantiene `.claude/skills/`, `.gemini/rules/` y
-  `.codex-skills/skills/` preservando el frontmatter propio de cada plataforma y reescribiendo los
+  `scripts/sync_skill_mirrors.py`, que mantiene `.claude/skills/`, `.agents/skills/`,
+  `.gemini/rules/` y `.codex-skills/skills/` preservando el frontmatter propio de cada plataforma y reescribiendo los
   enlaces relativos entre skills a la ruta que resuelve en cada una.
-- `scripts/check_skill_mirror_drift.sh` verifica los cuatro mirrors y **falla con código 1** si hay
+- `scripts/check_skill_mirror_drift.sh` verifica todos los mirrors y **falla con código 1** si hay
   drift. Ningún cierre de tarea que toque skills puede terminar con ese check en rojo.
 - Si hay drift entre la fuente y los mirrors, el flujo de trabajo debe detenerse y
   corregirse antes de cerrar la tarea.

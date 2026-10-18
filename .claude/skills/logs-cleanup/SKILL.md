@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/logs-cleanup/SKILL.md
-# Descripción: Skill para leer de forma acotada, verificar la colecta y limpiar los logs de Logs/ y de contenedores Docker (mirror de .agentes-comunes/skills/logs-cleanup/SKILL.md — fuente de verdad)
-
 ---
 name: logs-cleanup
 description: "Usar cuando haya que revisar o limpiar logs del proyecto y de contenedores sin perder información necesaria para diagnóstico"
 argument-hint: "Describe alcance, por ejemplo: limpiar backups de Logs y revisar tamaño de logs Docker"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/logs-cleanup/SKILL.md
+# Descripción: Skill para leer de forma acotada, verificar la colecta y limpiar los logs de Logs/ y de contenedores Docker (mirror de .agentes-comunes/skills/logs-cleanup/SKILL.md — fuente de verdad)
 
 # Habilidad: Logs (lectura acotada, colecta y limpieza)
 

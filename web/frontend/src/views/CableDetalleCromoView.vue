@@ -93,18 +93,25 @@
                   <td>{{ pelo.tipo_asociacion }}</td>
                   <td>{{ pelo.servicio_raw || '—' }}</td>
                   <td>{{ pelo.tipo_servicio }}</td>
-                  <td>
-                    <button
-                      v-if="pelo.linea"
-                      class="cable-detalle-modal__servicio-link"
-                      type="button"
-                      @click="irAServicioPorId(pelo.linea)"
-                    >
-                      {{ pelo.linea }}
-                    </button>
-                    <template v-else>—</template>
+                  <td v-if="pelo.en_cuarentena" colspan="2">
+                    <span class="pelo-cuarentena-chip" title="El uso de este pelo no cuenta hasta resolver el caso">
+                      en cuarentena (inconsistencia Cromo)
+                    </span>
                   </td>
-                  <td>{{ pelo.cliente || '—' }}</td>
+                  <template v-else>
+                    <td>
+                      <button
+                        v-if="pelo.linea"
+                        class="cable-detalle-modal__servicio-link"
+                        type="button"
+                        @click="irAServicioPorId(pelo.linea)"
+                      >
+                        {{ pelo.linea }}
+                      </button>
+                      <template v-else>—</template>
+                    </td>
+                    <td>{{ pelo.cliente || '—' }}</td>
+                  </template>
                   <td>{{ pelo.verificable === null ? '—' : pelo.verificable ? 'Sí' : 'No' }}</td>
                   <td>
                     <span :class="['estado-pelo-chip', `estado-pelo-chip--${estadoPeloClase(pelo.status)}`]">
@@ -406,6 +413,18 @@ onMounted(() => void cargar());
 
 .cable-detalle-modal__servicio-link:hover {
   background: var(--color-brand-primary-soft);
+}
+
+/* Pelo de un caso de inconsistencia de Cromo en CUARENTENA: no muestra servicio, pero no está libre. */
+.pelo-cuarentena-chip {
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
 }
 
 .estado-pelo-chip {

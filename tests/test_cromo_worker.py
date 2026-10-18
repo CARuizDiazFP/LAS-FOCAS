@@ -362,6 +362,141 @@ async def test_continuar_en_bg_default_modo_completa_si_no_esta_en_params(monkey
     assert recibido["modo"] == "COMPLETA"
 
 
+@pytest.mark.asyncio
+async def test_continuar_en_bg_corre_la_auditoria_de_huerfanos_sin_tocar_la_config(monkeypatch):
+    """Corrida sintética `tipo=AUDITORIA_HUERFANOS`: va a `auditar_global` con su tope, nunca a
+    `continuar_corrida`, y no pisa `ultima_ejecucion` de la config del scheduler."""
+    config = _ConfigFake()
+    corrida = _CorridaFake(id=77, params={"tipo": "AUDITORIA_HUERFANOS", "max_servicios": 5})
+    sesion = _SesionFake(config=config, corridas={77: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+    recibido: dict[str, Any] = {}
+
+    async def _auditar(cliente, sesion_arg, corrida_id, *, max_servicios=None):
+        recibido.update(corrida_id=corrida_id, max_servicios=max_servicios)
+        return "OK"
+
+    async def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("una auditoría no es una ingesta")
+
+    monkeypatch.setattr(worker, "auditar_global", _auditar)
+    monkeypatch.setattr(worker, "continuar_corrida", _no_deberia_llamarse)
+
+    await worker._continuar_en_bg(77)
+
+    assert recibido == {"corrida_id": 77, "max_servicios": 5}
+    assert config.ultima_ejecucion is None
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_auditoria_que_falla_al_arrancar_cierra_la_corrida(monkeypatch):
+    corrida = _CorridaFake(id=78, params={"tipo": "AUDITORIA_HUERFANOS"})
+    sesion = _SesionFake(corridas={78: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+
+    def _sin_config():
+        raise RuntimeError("Cromo no está configurado")
+
+    monkeypatch.setattr(worker, "get_cromo_config", _sin_config)
+
+    await worker._continuar_en_bg(78)
+
+    assert corrida.estado == "FALLIDA"
+    assert corrida.finalizada_at is not None
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_corre_la_deteccion_de_inconsistencias_sin_tocar_la_config(monkeypatch):
+    """Corrida sintética `tipo=INCONSISTENCIAS_CROMO`: va a `ejecutar_deteccion_inconsistencias`,
+    nunca a `continuar_corrida` ni a la auditoría, y no pisa la config del scheduler."""
+    config = _ConfigFake()
+    corrida = _CorridaFake(id=79, params={"tipo": "INCONSISTENCIAS_CROMO"})
+    sesion = _SesionFake(config=config, corridas={79: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+    recibido: dict[str, Any] = {}
+
+    async def _detectar(cliente, sesion_arg, corrida_id):
+        recibido.update(corrida_id=corrida_id, cliente=cliente is not None)
+        return "OK"
+
+    async def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("una detección no es una ingesta ni una auditoría")
+
+    monkeypatch.setattr(worker, "ejecutar_deteccion_inconsistencias", _detectar)
+    monkeypatch.setattr(worker, "continuar_corrida", _no_deberia_llamarse)
+    monkeypatch.setattr(worker, "auditar_global", _no_deberia_llamarse)
+
+    await worker._continuar_en_bg(79)
+
+    assert recibido == {"corrida_id": 79, "cliente": True}
+    assert config.ultima_ejecucion is None
+    assert worker._worker_status["ultimo_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_deteccion_que_falla_al_arrancar_cierra_la_corrida(monkeypatch):
+    corrida = _CorridaFake(id=80, params={"tipo": "INCONSISTENCIAS_CROMO"})
+    sesion = _SesionFake(corridas={80: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+
+    def _sin_config():
+        raise RuntimeError("Cromo no está configurado")
+
+    monkeypatch.setattr(worker, "get_cromo_config", _sin_config)
+
+    await worker._continuar_en_bg(80)
+
+    assert corrida.estado == "FALLIDA"
+
+
+@pytest.mark.asyncio
+async def test_continuar_en_bg_tipo_desconocido_no_ingiere_y_cierra_fallida(monkeypatch):
+    """Un `params.tipo` que el worker no conoce jamás cae en `continuar_corrida` (ingesta)."""
+    corrida = _CorridaFake(id=81, params={"tipo": "TIPO_DEL_FUTURO", "clases": [68]})
+    sesion = _SesionFake(corridas={81: corrida})
+    monkeypatch.setattr(worker, "AsyncSessionLocal", _fake_session_local(sesion))
+    monkeypatch.setattr(worker, "get_cromo_config", lambda: object())
+    monkeypatch.setattr(worker, "CromoClient", _CromoClienteFakeCM)
+
+    async def _no_deberia_llamarse(*a, **k):
+        raise AssertionError("un tipo desconocido no es una ingesta")
+
+    monkeypatch.setattr(worker, "continuar_corrida", _no_deberia_llamarse)
+
+    await worker._continuar_en_bg(81)
+
+    assert corrida.estado == "FALLIDA"
+    assert worker._worker_status["ultimo_error"] == "tipo de corrida desconocido: TIPO_DEL_FUTURO"
+
+
+def test_run_con_corrida_id_de_tipo_desconocido_responde_422(monkeypatch):
+    llamados = []
+
+    async def _continuar_fake(corrida_id):
+        llamados.append(corrida_id)
+
+    async def _tipo(corrida_id):
+        return "TIPO_DEL_FUTURO"
+
+    cerradas = []
+
+    async def _cerrar(corrida_id, motivo):
+        cerradas.append((corrida_id, motivo))
+
+    monkeypatch.setattr(worker, "_continuar_en_bg", _continuar_fake)
+    monkeypatch.setattr(worker, "_tipo_de_corrida", _tipo)
+    monkeypatch.setattr(worker, "_cerrar_corrida_fallida", _cerrar)
+    res = TestClient(worker.app).post("/run", json={"corrida_id": 9})
+
+    assert res.status_code == 422
+    assert llamados == []
+    assert cerradas == [(9, "tipo de corrida desconocido: TIPO_DEL_FUTURO")]
+
+
 # ── Endpoints HTTP (FastAPI TestClient) ──────────────────────────────────────
 
 
@@ -398,6 +533,11 @@ def test_run_con_corrida_id_dispara_continuar_en_bg(monkeypatch):
         llamados.append(corrida_id)
 
     monkeypatch.setattr(worker, "_continuar_en_bg", _continuar_fake)
+
+    async def _sin_tipo(corrida_id):
+        return None
+
+    monkeypatch.setattr(worker, "_tipo_de_corrida", _sin_tipo)
     client = TestClient(worker.app)
 
     res = client.post("/run", json={"corrida_id": 7})

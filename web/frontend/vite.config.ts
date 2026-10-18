@@ -10,4 +10,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  // El worker de MapLibre (FO Monitor) es un módulo ES con imports a un chunk compartido.
+  worker: {
+    format: 'es',
+  },
 });

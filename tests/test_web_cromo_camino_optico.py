@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
+
+import pytest
 
 from fastapi.testclient import TestClient  # type: ignore
 
@@ -105,6 +108,17 @@ def _fake_session(monkeypatch, *, existe: bool = True):
         return existe
 
     monkeypatch.setattr(web_main, "_servicio_existe", _existe)
+
+    async def _n_ids(_sesion, ids):
+        return {}
+
+    # La sesión es un `object()`: sin DB, los ids de ODF quedan como vienen.
+    monkeypatch.setattr("core.services.cromo.servicio_odf_confirmacion.n_ids_de_odfs", _n_ids)
+
+    async def _datos(_sesion, n_ids):
+        return {}
+
+    monkeypatch.setattr("core.services.cromo.servicio_odf_confirmacion.datos_de_odfs", _datos)
 
 
 def _fake_cromo_client(monkeypatch):
@@ -430,6 +444,45 @@ def test_tracking_txt_con_varios_pelos_identifica_a_cual_corresponde(monkeypatch
     assert 'filename="93154 CROMO pelo 10006354.txt"' in otro.headers["content-disposition"]
 
 
+def test_tracking_txt_con_tramo_usa_el_nombre_de_tramo(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(10006353), _semilla(10006354)])
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    from core.services.cromo import tracking_service
+
+    async def _numero(_sesion, _servicio_id):
+        return "93154"
+
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
+
+    res = client.get(_url_txt(), params={"pelo_n_id": 10006354, "tramo": 2})
+
+    assert 'filename="93154 CROMO T2 pelo 10006354.txt"' in res.headers["content-disposition"]
+
+
+def test_tracking_txt_con_tramo_usa_el_numero_del_servicio_y_no_el_at62(monkeypatch):
+    """El at.62 del pelo puede venir mal cargado en Cromo (medido: "83254" en un hilo del 93154).
+    El nombre del tramo sale del número del Servicio en LAS-FOCAS."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(10006353), _semilla(10006354)])
+    _fake_tracking(monkeypatch)
+    client = _cliente_user(monkeypatch)
+    from core.services.cromo import tracking_service
+
+    async def _numero(_sesion, _servicio_id):
+        return "77777"
+
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
+
+    res = client.get(_url_txt(), params={"pelo_n_id": 10006354, "tramo": 2})
+
+    assert 'filename="77777 CROMO T2 pelo 10006354.txt"' in res.headers["content-disposition"]
+
+
 def test_tracking_txt_sin_pelo_explicito_usa_la_posicion_de_odf(monkeypatch):
     """Sin `pelo_n_id`, el default es la posición de ODF del Servicio, no el primero del ranking."""
     _fake_session(monkeypatch)
@@ -644,20 +697,40 @@ def _fake_trackings_del_servicio(monkeypatch, resultado):
     )
 
 
-def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
+def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
     from datetime import datetime, timezone
 
-    from core.services.cromo.tracking_service import TrackingGenerado, TrackingsDelServicio
+    from core.services.cromo.tracking_service import (
+        ExtremoCamino,
+        ResumenCamino,
+        TrackingGenerado,
+        TrackingsDelServicio,
+    )
 
-    def _t(pelo: int) -> TrackingGenerado:
+    resumen = ResumenCamino(
+        inicio=ExtremoCamino(
+            tipo="CONECTOR_ODF",
+            id_cromo=1,
+            odf_id=10,
+            odf_clase=69,
+            odf_nombre="ODF X",
+            patchera_nombre="P1",
+            conector_numero="39",
+        ),
+        fin=ExtremoCamino(tipo="pelo", id_cromo=77, clase=130),
+    )
+
+    def _t(pelo: int, nombre: str, rol: str) -> TrackingGenerado:
         return TrackingGenerado(
             pelo_n_id=pelo,
-            nombre_archivo="94673 CROMO.txt",
+            nombre_archivo=nombre,
             contenido="x",
             desde_cache=True,
             generado_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
             duracion_ms=1,
             pelos_camino=frozenset({pelo, pelo + 1000}),
+            extremos=resumen,
+            rol=rol,
         )
 
     _fake_session(monkeypatch)
@@ -665,11 +738,14 @@ def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
     _fake_trackings_del_servicio(
         monkeypatch,
         TrackingsDelServicio(
-            trackings=[_t(6799772), _t(6799773)],
-            esperados=2,
-            huerfanos=[_semilla(9999999)],
+            tramos=[
+                _t(6799772, "94673 CROMO T1 pelo 6799772.txt", "TRAMO"),
+                _t(6799773, "94673 CROMO T2 pelo 6799773.txt", "TRAMO"),
+            ],
+            residuales=[_t(9999999, "94673 CROMO.txt", "RESIDUAL")],
             errores=[],
             completo=True,
+            esperados_declarados=3,
         ),
     )
     client = _cliente_user(monkeypatch)
@@ -678,10 +754,29 @@ def test_caminos_devuelve_un_pelo_por_camino_y_los_huerfanos(monkeypatch):
 
     assert res.status_code == 200
     cuerpo = res.json()
-    assert cuerpo["esperados"] == 2 and cuerpo["completo"] is True
-    assert [c["pelo_n_id"] for c in cuerpo["caminos"]] == [6799772, 6799773]
-    assert cuerpo["caminos"][0]["pelos_en_camino"] == 2
-    assert [h["pelo_n_id"] for h in cuerpo["huerfanos"]] == [9999999]
+    assert set(cuerpo) == {
+        "tramos", "residuales", "esperados_declarados", "odf_confirmadas", "completo", "errores",
+        "no_cubiertos", "tope_llamadas", "segmentos", "inconsistencias",
+    }
+    assert cuerpo["esperados_declarados"] == 3 and cuerpo["completo"] is True
+    assert [c["n"] for c in cuerpo["tramos"]] == [1, 2]
+    assert [c["pelo_n_id"] for c in cuerpo["tramos"]] == [6799772, 6799773]
+    assert cuerpo["tramos"][0]["pelos_en_camino"] == 2
+    assert cuerpo["tramos"][0]["desde_cache"] is True
+    assert cuerpo["tramos"][0]["nombre_archivo"] == "94673 CROMO T1 pelo 6799772.txt"
+    assert cuerpo["tramos"][0]["extremos"]["a"] == {
+        "tipo": "CONECTOR_ODF",
+        "odf_n_id": 10,
+        "odf_nombre": "ODF X",
+        "odf_clase": 69,
+        "patchera_nombre": "P1",
+        "conector": "39",
+        "id_cromo": 1,
+    }
+    assert cuerpo["tramos"][0]["extremos"]["b"]["tipo"] == "pelo"
+    assert [r["pelo_n_id"] for r in cuerpo["residuales"]] == [9999999]
+    assert "n" not in cuerpo["residuales"][0] and "desde_cache" not in cuerpo["residuales"][0]
+    assert "extremos" in cuerpo["residuales"][0]
 
 
 def test_caminos_con_cromo_caido_responde_502(monkeypatch):
@@ -754,3 +849,232 @@ def test_restaurar_pelo_no_excluido_404(monkeypatch):
 
     assert client.post(_url_excluir(True), json={"pelo_n_id": 9999999}).status_code == 200
     assert client.post(_url_excluir(True), json={"pelo_n_id": 5}).status_code == 404
+
+
+# ── ODF confirmadas y trackings esperados (Tarea 4) ─────────────────────────────────────────
+
+
+@pytest.fixture(autouse=False)
+def _testing(monkeypatch):
+    """`_validar_csrf` se saltea con TESTING=true; sin esto estos tests dependen del orden."""
+    monkeypatch.setenv("TESTING", "true")
+
+
+def _url_odf(sufijo: str = "") -> str:
+    return f"/api/admin/infra/servicios-odf/{SERVICIO}/odf-confirmadas{sufijo}"
+
+
+def test_confirmar_odf_exige_admin(monkeypatch, _testing):
+    _fake_session(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}]})
+
+    assert res.status_code == 403
+
+
+def test_confirmar_odf_en_lote_valida_rol_y_mapea_inexistente_a_404(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+    from core.services.cromo.verificador import ObjetoNoEncontrado
+
+    _fake_session(monkeypatch)
+    llamadas: list[tuple] = []
+
+    async def _confirmar(_sesion, servicio_id, odfs, *, usuario):
+        if any(n == 99 for n, _ in odfs):
+            raise ObjetoNoEncontrado("no existe")
+        llamadas.append((servicio_id, odfs, usuario))
+        return [{"odf_n_id": n, "rol": r} for n, r in odfs]
+
+    monkeypatch.setattr(svc, "confirmar", _confirmar)
+    client = _cliente_admin(monkeypatch)
+
+    ok = client.post(
+        _url_odf(),
+        json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}, {"odf_n_id": 2, "rol": "TRANSITO"}]},
+    )
+    inexistente = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 99, "rol": "EXTREMO"}]})
+    rol_malo = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "OTRO"}]})
+    vacio = client.post(_url_odf(), json={"odfs": []})
+
+    assert ok.status_code == 200
+    assert ok.json()["odf_confirmadas"] == [
+        {"odf_n_id": 1, "rol": "EXTREMO"},
+        {"odf_n_id": 2, "rol": "TRANSITO"},
+    ]
+    assert llamadas == [(SERVICIO, [(1, "EXTREMO"), (2, "TRANSITO")], "admin")]
+    assert inexistente.status_code == 404
+    assert rol_malo.status_code == 422 and vacio.status_code == 422
+
+
+def test_confirmar_odf_servicio_inexistente_404(monkeypatch, _testing):
+    _fake_session(monkeypatch, existe=False)
+    client = _cliente_admin(monkeypatch)
+
+    res = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}]})
+
+    assert res.status_code == 404
+
+
+def test_desconfirmar_odf_404_si_no_estaba_vigente(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+
+    _fake_session(monkeypatch)
+
+    async def _desconfirmar(_sesion, _servicio_id, odf_n_id):
+        return odf_n_id == 1
+
+    async def _listar(_sesion, _servicio_id):
+        return []
+
+    monkeypatch.setattr(svc, "desconfirmar", _desconfirmar)
+    monkeypatch.setattr(svc, "listar", _listar)
+    client = _cliente_admin(monkeypatch)
+
+    assert client.post(_url_odf("/desconfirmar"), json={"odf_n_id": 1}).status_code == 200
+    assert client.post(_url_odf("/desconfirmar"), json={"odf_n_id": 2}).status_code == 404
+    assert _cliente_user(monkeypatch).post(
+        _url_odf("/desconfirmar"), json={"odf_n_id": 1}
+    ).status_code == 403
+
+
+def test_declarar_trackings_esperados_valida_y_permite_null(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+
+    _fake_session(monkeypatch)
+    declaradas: list = []
+
+    async def _declarar(_sesion, servicio_id, cantidad):
+        declaradas.append((servicio_id, cantidad))
+        return True
+
+    monkeypatch.setattr(svc, "declarar_trackings_esperados", _declarar)
+    client = _cliente_admin(monkeypatch)
+    url = f"/api/admin/infra/servicios-odf/{SERVICIO}/trackings-esperados"
+
+    assert client.post(url, json={"cantidad": 6}).status_code == 200
+    assert client.post(url, json={"cantidad": None}).status_code == 200
+    assert client.post(url, json={"cantidad": 0}).status_code == 422
+    assert declaradas == [(SERVICIO, 6), (SERVICIO, None)]
+    assert _cliente_user(monkeypatch).post(url, json={"cantidad": 2}).status_code == 403
+
+
+def test_listar_odf_confirmadas_exige_admin_y_devuelve_lo_declarado(monkeypatch, _testing):
+    from core.services.cromo import servicio_odf_confirmacion as svc
+
+    _fake_session(monkeypatch)
+
+    async def _decl(_sesion, _servicio_id):
+        return svc.Declaraciones(confirmadas=[{"odf_n_id": 1, "rol": "EXTREMO"}], trackings_esperados=4)
+
+    monkeypatch.setattr(svc, "declaraciones_del_servicio", _decl)
+
+    assert _cliente_user(monkeypatch).get(_url_odf()).status_code == 403
+    cuerpo = _cliente_admin(monkeypatch).get(_url_odf()).json()
+    assert cuerpo == {"odf_confirmadas": [{"odf_n_id": 1, "rol": "EXTREMO"}], "trackings_esperados": 4}
+
+
+def test_caminos_expone_el_n_id_de_la_odf_aunque_el_camino_traiga_el_version_id(monkeypatch):
+    """Un extremo con el id de versión de la ODF sale con el n_id de linaje, que es el que
+    comparan las ODF confirmadas del mismo response."""
+    from core.services.cromo import servicio_odf_confirmacion as svc
+    from core.services.cromo.tracking_service import (
+        ExtremoCamino,
+        ResumenCamino,
+        TrackingGenerado,
+        TrackingsDelServicio,
+    )
+
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    extremo = ExtremoCamino(
+        tipo="CONECTOR_ODF", id_cromo=5, clase=136, odf_id=9295436, odf_clase=86,
+        odf_nombre="NODO KORN", patchera_nombre="O-1", conector_numero="39",
+    )
+    tramo = TrackingGenerado(
+        pelo_n_id=10, nombre_archivo="1 CROMO T1 pelo 10.txt", contenido="", desde_cache=True,
+        generado_at=datetime(2026, 10, 16, tzinfo=timezone.utc), duracion_ms=None,
+        pelos_camino=frozenset({10}),
+        extremos=ResumenCamino(inicio=extremo, fin=None, odfs=(9295436,)), rol="TRAMO",
+    )
+    _fake_trackings_del_servicio(
+        monkeypatch,
+        TrackingsDelServicio(
+            tramos=[tramo], residuales=[], errores=[], completo=True,
+            odf_confirmadas=[{"odf_n_id": 6646686, "rol": "TRANSITO"}],
+        ),
+    )
+
+    async def _n_ids(_sesion, ids):
+        assert list(ids) == [9295436]
+        return {9295436: 6646686}
+
+    monkeypatch.setattr(svc, "n_ids_de_odfs", _n_ids)
+    cuerpo = _cliente_user(monkeypatch).get(
+        f"/api/infra/cromo/servicios/{SERVICIO}/camino-optico/caminos"
+    ).json()
+
+    assert cuerpo["tramos"][0]["extremos"]["a"]["odf_n_id"] == 6646686
+    assert cuerpo["odf_confirmadas"][0]["odf_n_id"] == 6646686
+
+
+def test_caminos_expone_todas_las_odfs_de_tramos_y_residuales_con_nombre_y_clase(monkeypatch):
+    """I2: la UI tiene que poder confirmar una ODF que sólo toca un residual o que es intermedia.
+    Cada camino trae sus `odfs` normalizadas a n_id, con nombre y clase de `cromo_odfs`; las de los
+    extremos conservan el nombre del payload si la ODF no está ingerida."""
+    from core.services.cromo import servicio_odf_confirmacion as svc
+    from core.services.cromo.tracking_service import (
+        ExtremoCamino,
+        ResumenCamino,
+        TrackingGenerado,
+        TrackingsDelServicio,
+    )
+
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    extremo = ExtremoCamino(
+        tipo="CONECTOR_ODF", id_cromo=5, clase=136, odf_id=9295436, odf_clase=86,
+        odf_nombre="NODO KORN",
+    )
+
+    def _t(pelo, resumen, rol):
+        return TrackingGenerado(
+            pelo_n_id=pelo, nombre_archivo=f"{pelo}.txt", contenido="", desde_cache=True,
+            generado_at=datetime(2026, 10, 16, tzinfo=timezone.utc), duracion_ms=None,
+            pelos_camino=frozenset({pelo}), extremos=resumen, rol=rol,
+        )
+
+    tramo = _t(10, ResumenCamino(inicio=extremo, fin=None, odfs=(777, 9295436)), "TRAMO")
+    residual = _t(20, ResumenCamino(inicio=None, fin=None, odfs=(888,)), "RESIDUAL")
+    _fake_trackings_del_servicio(
+        monkeypatch,
+        TrackingsDelServicio(
+            tramos=[tramo], residuales=[residual], errores=["Pelo 3: sin camino"], completo=True,
+            no_cubiertos=[3], tope_llamadas=False, segmentos=1,
+        ),
+    )
+
+    async def _n_ids(_sesion, ids):
+        assert sorted(ids) == [777, 888, 9295436]
+        return {9295436: 6646686, 777: 777, 888: 888}
+
+    async def _datos(_sesion, n_ids):
+        assert sorted(n_ids) == [777, 888, 6646686]
+        return {777: ("ODF INTERMEDIA", 69), 888: ("ODF DEL RESIDUAL", 69)}
+
+    monkeypatch.setattr(svc, "n_ids_de_odfs", _n_ids)
+    monkeypatch.setattr(svc, "datos_de_odfs", _datos)
+    cuerpo = _cliente_user(monkeypatch).get(
+        f"/api/infra/cromo/servicios/{SERVICIO}/camino-optico/caminos"
+    ).json()
+
+    assert cuerpo["tramos"][0]["odfs"] == [
+        {"odf_n_id": 777, "odf_nombre": "ODF INTERMEDIA", "odf_clase": 69},
+        {"odf_n_id": 6646686, "odf_nombre": "NODO KORN", "odf_clase": 86},
+    ]
+    assert cuerpo["residuales"][0]["odfs"] == [
+        {"odf_n_id": 888, "odf_nombre": "ODF DEL RESIDUAL", "odf_clase": 69}
+    ]
+    assert cuerpo["no_cubiertos"] == 1
+    assert cuerpo["tope_llamadas"] is False
+    assert cuerpo["segmentos"] == 1

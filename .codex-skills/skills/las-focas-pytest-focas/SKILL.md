@@ -64,6 +64,18 @@ pythonpath = .
 
 ## Ejecutar Tests
 
+### Pruebas focales (integración a `dev`) vs. suite regresiva (despliegue)
+
+| Momento | Qué se corre | Por qué |
+|---|---|---|
+| Durante la tarea y al cerrar hacia `dev` (`ready`/`integrate` de `cierre-sesion`) | **Sólo pruebas focales**: los archivos de test de los módulos que la sesión modificó (`pytest tests/test_<modulo>.py -q`, o `-k` acotado) + `bash scripts/check_skill_mirror_drift.sh` si se tocaron skills | Mantiene mínima la ventana del lease `git:integrate-dev` y no bloquea a las otras sesiones |
+| Despliegue productivo | Suite regresiva completa (`pytest`), `npm run build`, builds de imágenes | Es el único punto donde se valida el conjunto integrado |
+
+Elegir los focales por el diff de la sesión (`git diff --name-only origin/dev...HEAD`): por cada
+módulo tocado, su `tests/test_<módulo>*.py` y los tests que lo importan
+(`grep -rln "<módulo>" tests/`). Reportar qué se corrió y el resultado real; un fallo focal
+bloquea la integración, un fallo ajeno al diff se documenta (ver "Diagnóstico de Fallas").
+
 ### Todos los tests
 
 ```bash
@@ -424,6 +436,19 @@ def client():
 
 Disponer desde afuera (después del `with`) no sirve: cierra contra un loop muerto, SQLAlchemy sólo
 loguea `Exception terminating connection` y las conexiones quedan colgadas del lado del servidor.
+
+## Tests real-db: no asumir el estado global de dev (lección 2026-10-14)
+
+Un test contra el Postgres de dev que compara **conteos globales** (`count(*)` de una tabla entera,
+"después >= antes") sólo vale mientras dev está en el estado en que se escribió. **Caso real**:
+`test_apply_persiste_dentro_de_la_transaccion_del_llamador` (`tests/test_clientes_categoria_regularizar.py`)
+asumía `visibles >= antes` sobre `app.clientes`. Pasaba con la tabla vacía. Después de correr la
+regularización real en dev, un alias nuevo absorbió (borró) clientes y el test falló sin bug de código.
+
+- Acotar los asserts a datos sintéticos propios (`ZZTEST ...`, números `9999xxx`), o comparar contra
+  el resumen que devuelve el propio código bajo test, nunca contra una dirección supuesta del conteo global.
+- Si el test necesita correr algo global (un script completo), envolverlo en una transacción externa
+  que se revierte y verificar `despues == antes`.
 
 ## No comparar bytes de XLSX/DOCX regenerados (lección 2026-10-05)
 

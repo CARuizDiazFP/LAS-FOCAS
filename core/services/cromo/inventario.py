@@ -79,7 +79,7 @@ _FILTROS_SQL = """
         OR c.n_id IN (
             SELECT p.cable_n_id
             FROM app.cromo_pelos p
-            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
             JOIN app.servicios s ON s.id = m.servicio_id
             WHERE s.servicio_id ILIKE CAST(:servicio AS text)
                OR s.numero_primer_servicio ILIKE CAST(:servicio AS text)
@@ -106,7 +106,7 @@ _SQL_BUSCAR = text(
         (
             SELECT count(DISTINCT m.servicio_id)
             FROM app.cromo_pelos p
-            JOIN app.cromo_servicio_match m ON m.pelo_n_id = p.n_id
+            JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = p.n_id
             WHERE p.cable_n_id = c.n_id AND m.servicio_id IS NOT NULL
         ) AS cantidad_servicios
     FROM app.cromo_cables c

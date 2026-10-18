@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/db-mcp-postgres/SKILL.md
-# Descripción: Skill para consultar PostgreSQL de LAS-FOCAS mediante servidor MCP (mirror de .agentes-comunes/skills/db-mcp-postgres/SKILL.md — fuente de verdad)
-
 ---
 name: db-mcp-postgres
 description: "Usar cuando haya que consultar PostgreSQL vía MCP para depurar infraestructura, revisar migraciones Alembic o auditar tablas del esquema app"
 argument-hint: "Describe tabla o consulta, por ejemplo: revisar incidentes_baneo y relaciones con camaras"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/db-mcp-postgres/SKILL.md
+# Descripción: Skill para consultar PostgreSQL de LAS-FOCAS mediante servidor MCP (mirror de .agentes-comunes/skills/db-mcp-postgres/SKILL.md — fuente de verdad)
 
 # Skill: MCP PostgreSQL para LAS-FOCAS
 

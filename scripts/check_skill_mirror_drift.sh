@@ -1,6 +1,6 @@
 # Nombre de archivo: check_skill_mirror_drift.sh
 # Ubicación de archivo: scripts/check_skill_mirror_drift.sh
-# Descripción: Verifica drift entre .agentes-comunes/skills y todos sus mirrors (.github, .claude, .gemini, .codex-skills)
+# Descripción: Verifica drift entre .agentes-comunes/skills y todos sus mirrors (.github, .claude, .agents, .gemini, .codex-skills)
 
 #!/usr/bin/env bash
 
@@ -42,7 +42,7 @@ fi
 
 echo "OK: Sin drift semántico entre $SRC_DIR y $MIRROR_DIR"
 
-# Los mirrors de .claude, .gemini y .codex-skills no son copias literales (cada
+# Los mirrors de .claude, .agents, .gemini y .codex-skills no son copias literales (cada
 # plataforma tiene su propia estructura de rutas y su frontmatter), así que su drift lo
 # verifica el propagador, que aplica las mismas transformaciones deterministas.
 PYTHON_BIN="${PYTHON_BIN:-}"

@@ -648,9 +648,9 @@ IDENTIDADES_DEL_SERVICIO_SQL = """
 _SQL_PELOS_Y_CONECTORES = text(
     f"""
     SELECT
-        (SELECT COUNT(*) FROM app.cromo_servicio_match m
+        (SELECT COUNT(*) FROM app.v_cromo_servicio_match_vigente m
           WHERE {IDENTIDADES_DEL_SERVICIO_SQL}) AS pelos_matcheados,
-        (SELECT COUNT(*) FROM app.cromo_servicio_match m
+        (SELECT COUNT(*) FROM app.v_cromo_servicio_match_vigente m
           JOIN app.cromo_odf_conectores c ON c.pelo_n_id = m.pelo_n_id
           WHERE {IDENTIDADES_DEL_SERVICIO_SQL}) AS pelos_con_conector
     FROM app.servicios s
@@ -682,7 +682,7 @@ _SQL_HERMANO_DE_BAJA_CON_PELO = text(
     WHERE actual.id = :servicio_id
       AND btrim(hermano.estado_servicio) ILIKE 'baja'
       AND EXISTS (
-          SELECT 1 FROM app.cromo_servicio_match m WHERE m.servicio_id = hermano.id
+          SELECT 1 FROM app.v_cromo_servicio_match_vigente m WHERE m.servicio_id = hermano.id
       )
     LIMIT 1
     """

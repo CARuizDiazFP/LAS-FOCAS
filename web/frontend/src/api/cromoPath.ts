@@ -23,6 +23,7 @@ export type TipoNodoCamino =
   | 'CAJA_PON'
   | 'CABLE_BAJADA'
   | 'NODO'
+  | 'ODF_NODO'
   | 'FUSION_ODF'
   | string;
 
@@ -45,6 +46,7 @@ const TIPO_NODO_LABELS: Record<string, string> = {
   CAJA_PON: 'Caja PON',
   CABLE_BAJADA: 'Cable de bajada',
   NODO: 'Nodo',
+  ODF_NODO: 'ODF Nodo',
   FUSION_ODF: 'Fusión en ODF',
   ROSETA: 'Roseta',
 };
@@ -65,6 +67,7 @@ const TIPO_NODO_ICONOS: Record<string, string> = {
   CAJA_PON: 'ph-package',
   CABLE_BAJADA: 'ph-line-segment',
   NODO: 'ph-buildings',
+  ODF_NODO: 'ph-buildings',
   FUSION_ODF: 'ph-arrows-merge',
   ROSETA: 'ph-house-line',
 };
@@ -273,25 +276,116 @@ export interface PeloExcluido {
   motivo: string | null;
   excluido_por: string | null;
   created_at: string | null;
+  /** MANUAL (desde este panel) | AUDITORIA (Normalizar en el Viewer de huérfanos). */
+  origen?: string;
 }
 
-export interface CaminoDelServicio {
+/** Extremo de un camino: dónde empieza o termina su `.txt` (conector de ODF o un pelo). */
+export interface ExtremoCamino {
+  tipo: string;
+  id_cromo: number;
+  odf_n_id: number | null;
+  odf_nombre: string | null;
+  /** 69 = ODF, 86 = ODF Nodo. */
+  odf_clase: number | null;
+  patchera_nombre: string | null;
+  conector: string | null;
+}
+
+export interface ExtremosCamino {
+  a: ExtremoCamino | null;
+  b: ExtremoCamino | null;
+}
+
+/** ODF que toca un camino (extremo o intermedia), ya con el `n_id` de linaje. */
+export interface OdfDeCamino {
+  odf_n_id: number;
+  odf_nombre: string | null;
+  /** 69 = ODF, 86 = ODF Nodo; `null` si no está ingerida y no es extremo. */
+  odf_clase: number | null;
+}
+
+/** Camino que es un tramo del Servicio: tiene su propio `.txt` (`{at62} CROMO T{n} pelo {n_id}.txt`). */
+export interface TramoDelServicio {
+  /** Número de tramo, el mismo que lleva el nombre del archivo. */
+  n: number;
   /** Pelo con el que se generó el camino: es el que se pide para bajar su `.txt`. */
   pelo_n_id: number;
   nombre_archivo: string;
   desde_cache: boolean;
   pelos_en_camino: number;
+  extremos: ExtremosCamino;
+  /** Todas las ODF que toca el camino, extremos e intermedias. */
+  odfs: OdfDeCamino[];
+}
+
+/** Camino que no es un tramo del Servicio: no se descarga. */
+export interface CaminoResidual {
+  pelo_n_id: number;
+  nombre_archivo: string;
+  pelos_en_camino: number;
+  extremos: ExtremosCamino;
+  /** Todas las ODF que toca el camino: un residual puede ser la única vía a una ODF del Servicio. */
+  odfs: OdfDeCamino[];
+}
+
+export type RolOdfConfirmada = 'EXTREMO' | 'TRANSITO';
+
+/** ODF que un admin confirmó como parte del recorrido del Servicio. */
+export interface OdfConfirmada {
+  odf_n_id: number;
+  rol: RolOdfConfirmada;
+  odf_nombre: string | null;
+  /** `ODF` u `ODF_NODO` (`cromo_odfs.tipo_elemento`); `null` si la ODF no está ingerida. */
+  odf_tipo: string | null;
+  confirmado_por?: string;
+  confirmado_en?: string | null;
 }
 
 export interface CaminosServicioResponse {
-  servicio_id: number;
-  esperados: number;
-  /** `false` si se generaron menos caminos que los esperados. */
+  tramos: TramoDelServicio[];
+  residuales: CaminoResidual[];
+  /** Trackings esperados que declaró el operador en LAS-FOCAS (no es un dato de Cromo), o `null`. */
+  esperados_declarados: number | null;
+  /** ODF confirmadas vigentes del Servicio. */
+  odf_confirmadas: OdfConfirmada[];
+  /** `false` si se cortó el recorrido: por el tope de consultas o por demasiadas semillas fallidas. */
   completo: boolean;
-  caminos: CaminoDelServicio[];
-  /** Pelos con la etiqueta del Servicio que no están en ninguno de sus caminos. */
-  huerfanos: PeloSemilla[];
   errores: string[];
+  /** Semillas que no quedaron en ningún camino (fallaron o no se llegaron a pedir). */
+  no_cubiertos: number;
+  /** `true` sólo si el corte fue por el tope de consultas a Cromo. */
+  tope_llamadas: boolean;
+  /** Segmentos físicos: grupos de tramos que comparten cables (un par de hilos es uno). */
+  segmentos: number;
+  /** Casos de inconsistencias de Cromo que tocan al Servicio (aviso del panel). */
+  inconsistencias?: ResumenInconsistenciasServicio;
+}
+
+/** Casos de inconsistencias de Cromo del Servicio: en cuarentena (no cuentan como uso) y en revisión. */
+export interface ResumenInconsistenciasServicio {
+  cuarentena: number;
+  en_revision: number;
+}
+
+/** "ODF X P1:39" / "ODF Nodo KORN P1:39" para un conector de ODF; "pelo 123" en cualquier otro caso. */
+export function etiquetaExtremo(extremo: ExtremoCamino | null): string {
+  if (!extremo) return '?';
+  if (extremo.tipo !== 'CONECTOR_ODF' || extremo.odf_n_id == null) {
+    return `pelo ${extremo.id_cromo}`;
+  }
+  const tipoOdf = extremo.odf_clase === 86 ? 'ODF Nodo' : 'ODF';
+  const nombre = extremo.odf_nombre ?? String(extremo.odf_n_id);
+  const posicion = [extremo.patchera_nombre, extremo.conector].filter(Boolean).join(':');
+  return [tipoOdf, nombre, posicion].filter(Boolean).join(' ');
+}
+
+/** "Tramo 1 · ODF X:39 → ODF Nodo KORN O-1259853-1:39 · 24 pelos". */
+export function etiquetaTramo(tramo: TramoDelServicio): string {
+  return (
+    `Tramo ${tramo.n} · ${etiquetaExtremo(tramo.extremos.a)} → ` +
+    `${etiquetaExtremo(tramo.extremos.b)} · ${tramo.pelos_en_camino} pelos`
+  );
 }
 
 // ── Llamadas ──────────────────────────────────────────────────────────────
@@ -337,11 +431,15 @@ export async function resolverCaminoOptico(
 /** Descarga el tracking `.txt` generado desde Cromo. Devuelve el nombre del archivo. */
 export async function descargarTrackingCromo(
   servicioId: number,
-  opciones: { peloNId?: number | null; signal?: AbortSignal } = {},
+  opciones: { peloNId?: number | null; tramo?: number | null; signal?: AbortSignal } = {},
 ): Promise<string> {
   const params = new URLSearchParams();
   if (opciones.peloNId != null) {
     params.set('pelo_n_id', String(opciones.peloNId));
+  }
+  // El número de tramo hace que el archivo se llame igual que el que sube Slack.
+  if (opciones.tramo != null) {
+    params.set('tramo', String(opciones.tramo));
   }
   const query = params.toString();
   return requestDownload(
@@ -351,8 +449,8 @@ export async function descargarTrackingCromo(
 }
 
 /**
- * Resuelve los caminos del Servicio en el backend: un pelo por camino distinto, cortando en los
- * caminos esperados, más los pelos huérfanos. Mismo criterio que `@bot track` en Slack.
+ * Resuelve los caminos del Servicio en el backend: los caminos del Servicio separados en tramos (con
+ * su `.txt`) y residuales (sin él). Mismo criterio que `@bot track` en Slack.
  *
  * **Va a Cromo** (4,6-14 s por camino en frío) y deja cacheado cada tracking, así que bajar los
  * `.txt` después es inmediato. Sin timeout propio del cliente: con 2 caminos en frío puede pasar
@@ -389,6 +487,41 @@ export async function restaurarPeloServicio(
   return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/pelos-excluidos/restaurar`, {
     method: 'POST',
     json: { pelo_n_id: peloNId },
+    csrf: true,
+  });
+}
+
+/** Confirma ODF del Servicio en lote (un camino que termina en una ODF confirmada y no es ruido chico es tramo). Admin. */
+export async function confirmarOdfsServicio(
+  servicioId: number,
+  odfs: { odf_n_id: number; rol: RolOdfConfirmada }[],
+): Promise<{ ok: boolean; odf_confirmadas: OdfConfirmada[] }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/odf-confirmadas`, {
+    method: 'POST',
+    json: { odfs },
+    csrf: true,
+  });
+}
+
+/** Quita la confirmación de una ODF (el historial queda). Admin. */
+export async function desconfirmarOdfServicio(
+  servicioId: number,
+  odfNId: number,
+): Promise<{ ok: boolean; odf_confirmadas: OdfConfirmada[] }> {
+  return requestJson(
+    `/api/admin/infra/servicios-odf/${servicioId}/odf-confirmadas/desconfirmar`,
+    { method: 'POST', json: { odf_n_id: odfNId }, csrf: true },
+  );
+}
+
+/** Declara cuántos trackings espera el Servicio; `null` borra la declaración. Admin. */
+export async function declararTrackingsEsperados(
+  servicioId: number,
+  cantidad: number | null,
+): Promise<{ ok: boolean; trackings_esperados: number | null }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/trackings-esperados`, {
+    method: 'POST',
+    json: { cantidad },
     csrf: true,
   });
 }

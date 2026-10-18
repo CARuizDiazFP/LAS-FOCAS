@@ -62,6 +62,9 @@ class _CorridaCancelada(Exception):
 CLASE_CABLE = 51
 CLASE_FUSION = 132
 CLASE_ODF = 69
+# ODF (69) y ODF Nodo (86): mismo esquema, misma tabla `cromo_odfs`; la 86 se distingue por
+# `tipo_elemento='ODF_NODO'`. Una fase de ODFs barre las dos.
+CLASES_ODF: tuple[int, ...] = (CLASE_ODF, 86)
 CLASES_BOTELLA: tuple[int, ...] = (68, 121, 122, 123, 125)
 
 # Red de acceso PON (submódulo 2026-09-19). Las siete clases de caja PON comparten esquema exacto
@@ -77,7 +80,7 @@ CLASES_CAJA_PON: tuple[int, ...] = (84, 126, 127, 137, 138, 139, 140)
 # la 51; el propietario viaja en at.25 como en cualquier cable.
 CLASES_CABLE_TERCEROS: tuple[int, ...] = (52, 59, 60)
 # Clases con colección propia contable vía stats[].count (fase de conteo).
-CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION, CLASE_ODF)
+CLASES_CONTEO: tuple[int, ...] = (*CLASES_BOTELLA, CLASE_CABLE, CLASE_FUSION, *CLASES_ODF)
 
 BOTELLA_CAMPOS = (
     "version_id",
@@ -201,6 +204,8 @@ CONECTOR_ODF_CAMPOS = (
     "bandeja_modelo",
     "numero_conector",
     "pelo_n_id",
+    "patch_conector_n_id",
+    "fusion_odf_n_id",
     "servicio_numero_atributo",
     "servicio_resuelto",
     "servicio_id_historico",
@@ -1171,7 +1176,7 @@ async def _procesar_odf_directo(
             accion = await upsert_versionado(sesion, CromoOdf, odf, ODF_CAMPOS)
             contadores.leidas += 1
             contadores.contar(accion)
-            await registrar_evento(sesion, corrida_id, odf.n_id, CLASE_ODF, accion)
+            await registrar_evento(sesion, corrida_id, odf.n_id, odf.clase, accion)
 
             conectores: list[ConectorOdf] = []
             if obj.get("inner"):
@@ -1228,8 +1233,8 @@ async def fase_odfs(
         corrida,
         contadores,
         fase="ODFS",
-        descripcion="Barrido directo de ODFs (filter=69)",
-        filtro=str(CLASE_ODF),
+        descripcion="Barrido directo de ODFs y ODF Nodo (filter=69,86)",
+        filtro=",".join(str(c) for c in CLASES_ODF),
         show=["ALL"],
         psize=psize,
         max_paginas=max_paginas,
@@ -2219,7 +2224,7 @@ class _ModoAcotado:
 # NINGUNO de los modos de la red de acceso PON entra en `COMPLETA`, por decisión explícita: sumarlos
 # convertiría una corrida de rutina en uno de varios horas (las cajas PON solas son ~75 minutos).
 MODOS_ACOTADOS: dict[str, _ModoAcotado] = {
-    "SOLO_ODF": _ModoAcotado((CLASE_ODF,), lambda *a, **k: fase_odfs(*a, **k)),
+    "SOLO_ODF": _ModoAcotado(CLASES_ODF, lambda *a, **k: fase_odfs(*a, **k)),
     "SOLO_SPLITTERS": _ModoAcotado((CLASE_SPLITTER,), lambda *a, **k: fase_splitters(*a, **k)),
     "SOLO_PUERTOS_SPLITTER": _ModoAcotado(
         (CLASE_PUERTO_SPLITTER,), lambda *a, **k: fase_puertos_splitter(*a, **k)
@@ -2322,7 +2327,7 @@ async def continuar_corrida(
         clases_a_contar = (
             acotado.clases_objetivo
             if acotado is not None
-            else (*clases_final, CLASE_CABLE, *CLASES_CABLE_TERCEROS, CLASE_FUSION, CLASE_ODF)
+            else (*clases_final, CLASE_CABLE, *CLASES_CABLE_TERCEROS, CLASE_FUSION, *CLASES_ODF)
         )
         # `sesion` habilita el fallback del catálogo, que es lo único que da un total para las
         # clases 133 y 134: su `stats[].count` devuelve 0 aunque la colección pagine perfecto.
@@ -2425,6 +2430,28 @@ async def continuar_corrida(
     if contadores.creadas or contadores.actualizadas:
         await encolar_recalculo_duplicados_botellas(motivo=f"ingesta corrida_id={corrida.id}")
 
+    # Detector de inconsistencias (corrida sintética propia) tras COMPLETA/SOLO_ODF/SOLO_PELOS_INNER
+    # cerradas OK: mismo criterio post-commit y best-effort. `detectar_post_ingesta` filtra el modo
+    # y atrapa sus excepciones; el try de acá es la segunda red, una falla nunca tumba la ingesta.
+    # Si el detector hizo rollback, la sesión expiró `corrida`: se recarga para que el llamador
+    # pueda leerla sin lazy-load async.
+    if estado_final in ("OK", "OK_CON_ERRORES"):
+        corrida_id_final = corrida.id
+        try:
+            from core.services.cromo import inconsistencias_cromo  # import diferido: ciclo
+
+            await inconsistencias_cromo.detectar_post_ingesta(cliente, sesion, corrida_id_final, modo)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "action=cromo_ingesta evento=detector_inconsistencias_fallido corrida_id=%s",
+                corrida_id_final,
+                exc_info=True,
+            )
+        try:
+            await sesion.refresh(corrida)
+        except Exception:  # noqa: BLE001
+            logger.debug("action=cromo_ingesta evento=refresh_post_detector_omitido", exc_info=True)
+
     logger.info(
         "action=cromo_ingesta evento=corrida_finalizada corrida_id=%s estado=%s leidas=%d creadas=%d actualizadas=%d sin_cambios=%d errores=%d refs_colgadas=%d",
         corrida.id,
@@ -2458,6 +2485,7 @@ __all__ = [
     "CABLE_CAMPOS",
     "CLASE_CABLE",
     "CLASE_ODF",
+    "CLASES_ODF",
     "CLASES_BOTELLA",
     "CLASES_CONTEO",
     "ContadoresCorrida",

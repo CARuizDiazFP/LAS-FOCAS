@@ -1,3 +1,8 @@
+---
+description: "Traspasar la tarea a otro agente conservando rama, worktree, leases y contexto, o aceptar un handoff dirigido a esta sesión"
+argument-hint: "origen → destino: siguiente paso | aceptar"
+---
+
 # Nombre de archivo: handoff-agente.md
 # Ubicación de archivo: .claude/commands/handoff-agente.md
 # Descripción: Comando Claude Code para traspasar una tarea a otro agente conservando rama, worktree, leases y contexto de continuidad

@@ -1,12 +1,12 @@
-# Nombre de archivo: SKILL.md
-# Ubicación de archivo: .claude/skills/temp-cleanup/SKILL.md
-# Descripción: Skill para limpieza de archivos temporales, caché Python y archivos de desarrollo (mirror de .agentes-comunes/skills/temp-cleanup/SKILL.md — fuente de verdad)
-
 ---
 name: temp-cleanup
 description: "Usar cuando haya que limpiar archivos temporales, __pycache__, bytecode o caches de desarrollo del repo"
 argument-hint: "Describe objetivo, por ejemplo: limpiar __pycache__ y caches de pytest"
 ---
+
+# Nombre de archivo: SKILL.md
+# Ubicación de archivo: .claude/skills/temp-cleanup/SKILL.md
+# Descripción: Skill para limpieza de archivos temporales, caché Python y archivos de desarrollo (mirror de .agentes-comunes/skills/temp-cleanup/SKILL.md — fuente de verdad)
 
 # Habilidad: Limpieza de Temporales
 
