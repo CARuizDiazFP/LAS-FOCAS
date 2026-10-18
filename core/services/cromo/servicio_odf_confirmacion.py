@@ -5,8 +5,8 @@
 """Lo que un operador declara a mano sobre los trackings de un Servicio:
 
 - Qué ODF son parte de su recorrido (`confirmar`/`desconfirmar`/`listar`), con rol `EXTREMO` o
-  `TRANSITO`. Un camino que toca una ODF confirmada es siempre `TRAMO`
-  (`tracking_service.clasificar_caminos`).
+  `TRANSITO`. Un camino que termina en una ODF confirmada y no es
+  ruido chico es `TRAMO` aunque no tenga par (`tracking_service.clasificar_caminos`).
 - Cuántos trackings espera (`declarar_trackings_esperados`).
 
 `trackings_del_servicio` lee ambas cosas con `declaraciones_del_servicio`; sin nada declarado todo

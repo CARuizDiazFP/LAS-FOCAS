@@ -491,7 +491,7 @@ export async function restaurarPeloServicio(
   });
 }
 
-/** Confirma ODF del Servicio en lote (un camino que toca una ODF confirmada es siempre tramo). Admin. */
+/** Confirma ODF del Servicio en lote (un camino que termina en una ODF confirmada y no es ruido chico es tramo). Admin. */
 export async function confirmarOdfsServicio(
   servicioId: number,
   odfs: { odf_n_id: number; rol: RolOdfConfirmada }[],

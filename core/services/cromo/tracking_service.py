@@ -491,13 +491,23 @@ def _termina_en_odf(resumen: ResumenCamino) -> bool:
     )
 
 
+def _odfs_de_extremos(resumen: ResumenCamino) -> set[int]:
+    """Ids de las ODF donde termina el camino (conectores de ODF en sus extremos)."""
+    return {e.odf_id for e in resumen.extremos if e.es_conector_odf and e.odf_id is not None}
+
+
 def clasificar_caminos(
     caminos: Sequence[TrackingGenerado],
     odfs_confirmadas: frozenset[int] = frozenset(),
 ) -> list[str]:
     """Rol de cada camino (`TRAMO` o `RESIDUAL`), en el mismo orden. Función pura.
 
-    1. Un camino que toca una ODF confirmada del Servicio es `TRAMO`, siempre.
+    1. Una ODF confirmada del Servicio rescata al camino que TERMINA en ella (un extremo en un
+       conector de esa ODF) y no es ruido chico (pasa la proporción del punto 3): es `TRAMO`
+       aunque no tenga par. Pasar por la ODF en el medio no alcanza, y un camino de 2-3 pelos
+       que termina en ella sigue siendo ruido. Medido en dev (2026-10-18, 102452): con la regla
+       anterior ("toca una ODF confirmada") confirmar KORN y los racks de Dixon pasaba de 6 a 12
+       trackings, todos caminos de 2-3 pelos.
     2. Candidatos: los caminos con al menos un extremo en un conector de ODF u ODF Nodo — así
        quedan protegidas las FO que salen de una ODF Nodo y no terminan en otra ODF (102452). Si
        ningún camino termina en ODF (94673, o un servicio cuyas ODFs son sólo intermedias),
@@ -517,22 +527,27 @@ def clasificar_caminos(
     resumenes = [_resumen(c) for c in caminos]
     roles = [ROL_RESIDUAL] * len(caminos)
 
-    confirmados = {
-        i for i, r in enumerate(resumenes) if odfs_confirmadas and set(r.odfs) & odfs_confirmadas
-    }
-    for i in confirmados:
-        roles[i] = ROL_TRAMO
-
-    libres = [i for i in range(len(caminos)) if i not in confirmados]
+    todos = list(range(len(caminos)))
     # Si ningún camino TERMINA en ODF (las ODFs intermedias no cuentan), todos son candidatos.
-    candidatos = [i for i in libres if _termina_en_odf(resumenes[i])] or libres
+    candidatos = [i for i in todos if _termina_en_odf(resumenes[i])] or todos
     if not candidatos:
         return roles
 
     maximo = max(len(caminos[i].pelos_camino) for i in candidatos)
-    largos = [
+    largos_todos = [
         i for i in candidatos if len(caminos[i].pelos_camino) >= maximo * _PROPORCION_PELOS_MINIMA
     ]
+    confirmados = {
+        i
+        for i in largos_todos
+        if odfs_confirmadas and _odfs_de_extremos(resumenes[i]) & odfs_confirmadas
+    }
+    for i in confirmados:
+        roles[i] = ROL_TRAMO
+
+    largos = [i for i in largos_todos if i not in confirmados]
+    if not largos:
+        return roles
     cables = {i: frozenset(resumenes[i].cables) for i in largos}
     con_par = [
         i

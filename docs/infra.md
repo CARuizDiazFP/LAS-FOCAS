@@ -950,9 +950,12 @@ terceros no ingeridos, legítimos). Tras migrar hay que reingerir `SOLO_ODF` y c
 pide un `/path` por semilla no cubierta (tope `CROMO_TRACKING_MAX_LLAMADAS`, default 80) y
 `tracking_service.clasificar_caminos` clasifica cada camino:
 
-1. Si toca una ODF confirmada del Servicio, es TRAMO siempre.
-2. Candidatos: caminos con al menos un extremo en un conector de ODF (69) u ODF Nodo (86); un
-   conector sin clase cuenta como ODF. Si ninguno termina en ODF, todos los no confirmados.
+1. Candidatos: caminos con al menos un extremo en un conector de ODF (69) u ODF Nodo (86); un
+   conector sin clase cuenta como ODF. Si ninguno termina en ODF, todos.
+2. Una ODF confirmada del Servicio rescata (TRAMO aunque no tenga par) al camino que TERMINA en
+   ella y pasa el filtro de proporción del punto 3. Pasar por la ODF en el medio no alcanza, y
+   un camino de 2-3 pelos que termina en ella sigue siendo ruido (medido 2026-10-18 en el
+   102452: con la regla anterior, "toca una ODF confirmada", pasaba de 6 a 12 trackings).
 3. Se exige a los candidatos tener al menos el 25% de los pelos del más largo; entre ellos, si
    alguno tiene par (otro con Jaccard de cables >= 0,8) sólo cuentan los que tienen par. Si ninguno
    tiene par (monofilar o PON) no se exige.

@@ -193,8 +193,9 @@ def test_un_camino_largo_sin_par_no_es_tramo_si_el_servicio_es_bifilar():
     assert roles[7483864] == ROL_RESIDUAL
 
 
-def test_una_odf_confirmada_hace_tramo_al_camino_que_la_toca():
-    """Tarea 4 confirma ODFs del Servicio: un camino que toca una es tramo aunque sea chico."""
+def test_una_odf_confirmada_rescata_al_camino_que_termina_en_ella():
+    """Tarea 4 confirma ODFs del Servicio: un camino que TERMINA en una es tramo aunque no tenga
+    par (93154: 7483864, 36 pelos, termina en la ODF 6641630)."""
     caminos = _caminos("93154")
     roles = dict(
         zip(
@@ -299,3 +300,24 @@ def test_contar_segmentos_agrupa_los_tramos_que_comparten_cables():
     assert contar_segmentos(tres_pares) == 3
     assert contar_segmentos([_camino(1, 5, cables=(1,))]) == 1
     assert contar_segmentos([]) == 0
+
+
+def test_odf_confirmada_no_rescata_al_camino_que_solo_la_toca_en_el_medio():
+    """Medido en dev (2026-10-18, 102452): confirmar KORN y los racks de Dixon volvía tramos a
+    caminos de 2 pelos que sólo pasaban por esas ODF, sin terminar en ellas (6 → 12 trackings)."""
+    largo_a = _camino(1, 40, ini=86, fin=86, odfs=(500, 600), cables=(1, 2))
+    largo_b = _camino(100, 40, ini=86, fin=86, odfs=(500, 600), cables=(1, 2))
+    medio = _camino(200, 2, odfs=(600,), cables=(9,))
+    roles = clasificar_caminos([largo_a, largo_b, medio], odfs_confirmadas=frozenset({600}))
+    assert roles == [ROL_TRAMO, ROL_TRAMO, ROL_RESIDUAL]
+
+
+def test_odf_confirmada_no_rescata_ruido_chico_que_termina_en_ella():
+    """Un camino de 2-3 pelos que termina en una ODF confirmada sigue siendo ruido: la
+    confirmación saltea la exigencia de par, no el filtro de proporción (102452: 7801857/58 y
+    7246874/75 terminaban en ODF confirmadas y duplicaban los trackings)."""
+    largo_a = _camino(1, 40, ini=86, fin=86, odfs=(500, 600), cables=(1, 2))
+    largo_b = _camino(100, 40, ini=86, fin=86, odfs=(500, 600), cables=(1, 2))
+    stub = _camino(200, 3, fin=86, odfs=(600,), cables=(9,))
+    roles = clasificar_caminos([largo_a, largo_b, stub], odfs_confirmadas=frozenset({600}))
+    assert roles == [ROL_TRAMO, ROL_TRAMO, ROL_RESIDUAL]

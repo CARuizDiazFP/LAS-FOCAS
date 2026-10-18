@@ -141,7 +141,7 @@
       </li>
     </ul>
     <!-- Lo que declara el operador sobre el tracking: cuántos espera y qué ODF son del recorrido.
-         Un camino que toca una ODF confirmada es siempre tramo. Sólo un admin escribe. -->
+         Un camino que termina en una ODF confirmada y no es ruido chico es tramo. Sólo un admin escribe. -->
     <div v-if="camino.caminosResueltos.value" class="cromo-camino__declaracion">
       <label class="cromo-camino__esperados">
         <span class="cromo-camino__nota">Trackings esperados</span>

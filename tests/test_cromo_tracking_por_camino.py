@@ -506,18 +506,24 @@ def declaraciones(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_trackings_del_servicio_lee_confirmadas_y_esperados_de_la_db(monkeypatch, declaraciones):
-    """Un camino sin extremo en ODF que toca una ODF confirmada (por version_id) pasa a TRAMO, y
-    los esperados declarados y la lista de confirmadas viajan en el resultado."""
+    """Un camino sin par que TERMINA en una ODF confirmada (referida por version_id) pasa a TRAMO,
+    y los esperados declarados y la lista de confirmadas viajan en el resultado."""
     from core.services.cromo.servicio_odf_confirmacion import Declaraciones
     from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
 
+    def _odf(odf_id):
+        return ExtremoCamino(tipo="CONECTOR_ODF", id_cromo=odf_id + 1, clase=136, odf_id=odf_id,
+                             odf_clase=86, patchera_nombre="O-1", conector_numero="1")
+
     pelo = ExtremoCamino(tipo="PELO", id_cromo=1, clase=130)
     resumenes = {
-        10: ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, odfs=(9295436,), cables=(1,)),
-        20: ResumenCamino(servicio_at62="1", inicio=pelo, fin=pelo, odfs=(), cables=(2,)),
+        # El 10 no tiene par y termina en la ODF confirmada (por su version_id 9295436).
+        10: ResumenCamino(servicio_at62="1", inicio=pelo, fin=_odf(9295436), odfs=(9295436,), cables=(1,)),
+        # El 20 y el 30 son un par (mismos cables): el servicio es bifilar.
+        20: ResumenCamino(servicio_at62="1", inicio=pelo, fin=_odf(7000), odfs=(7000,), cables=(2,)),
+        30: ResumenCamino(servicio_at62="1", inicio=pelo, fin=_odf(7000), odfs=(7000,), cables=(2,)),
     }
-    # El 10 tiene 1 pelo y el 20 tiene 10: sin confirmación el 10 quedaría fuera por proporción.
-    pelos = {10: {10}, 20: set(range(100, 110))}
+    pelos = {10: set(range(10, 20)), 20: set(range(100, 110)), 30: set(range(200, 210))}
     declaraciones["valor"] = Declaraciones(
         odf_ids=frozenset({6646686, 9295436}),
         confirmadas=[{"odf_n_id": 6646686, "rol": "TRANSITO"}],
@@ -525,7 +531,7 @@ async def test_trackings_del_servicio_lee_confirmadas_y_esperados_de_la_db(monke
     )
 
     async def _semillas(_sesion, _servicio_id):
-        return [_semilla(p) for p in (10, 20)]
+        return [_semilla(p) for p in (10, 20, 30)]
 
     async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
         return _con_resumen(_generado(pelo_n_id, pelos[pelo_n_id]), resumenes[pelo_n_id])
@@ -535,15 +541,15 @@ async def test_trackings_del_servicio_lee_confirmadas_y_esperados_de_la_db(monke
 
     resultado = await tracking_service.trackings_del_servicio(object(), object(), 567)
 
-    assert sorted(t.pelo_n_id for t in resultado.tramos) == [10, 20]
+    assert sorted(t.pelo_n_id for t in resultado.tramos) == [10, 20, 30]
     assert resultado.esperados_declarados == 3
     assert resultado.odf_confirmadas == [{"odf_n_id": 6646686, "rol": "TRANSITO"}]
 
-    # El parámetro explícito pisa a las de la DB: sin confirmadas el 10 es residual.
+    # El parámetro explícito pisa a las de la DB: sin confirmadas el 10 (sin par) es residual.
     sin = await tracking_service.trackings_del_servicio(
         object(), object(), 567, odfs_confirmadas=frozenset()
     )
-    assert [t.pelo_n_id for t in sin.tramos] == [20]
+    assert sorted(t.pelo_n_id for t in sin.tramos) == [20, 30]
     assert sin.esperados_declarados == 3
 
 
