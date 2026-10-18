@@ -46,8 +46,11 @@ comm -23 <(grep -oE '^[A-Z_][A-Z0-9_]*' .env.dev | sort -u) <(grep -oE '^[A-Z_][
 ```bash
 source .venv/bin/activate && LLM_PROVIDER=heuristic python -m pytest -q
 docker compose -f deploy/compose.yml --env-file .env build \
-  api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker
+  api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker fo_monitor_worker
 ```
+
+`fo_monitor_worker` existe en prod desde el 2026-10-18. Queda **inactivo** (fila `fo_monitor` de
+`app.config_servicios` con `activo=false`) hasta que el usuario decida habilitarlo.
 
 ## 3. Backup en caliente (~2 min para ~800 MB de base, dump de ~135 MB)
 
@@ -94,16 +97,25 @@ done
 
 ## 5. Ventana
 
+Antes de detener: que no haya una corrida de Cromo en curso. Detener `cromo_worker` la corta (una
+SOLO_ODF tarda ~3,5 h).
+
 ```bash
+docker exec lasfocas-postgres psql -U lasfocas -d lasfocas -tAc \
+  "select id, estado from app.cromo_ingesta_corridas where estado='EN_CURSO'"   # debe salir vacío
 docker compose -f deploy/compose.yml --env-file .env stop \
-  api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker
+  api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker fo_monitor_worker
 # backup final (mismo comando del paso 3, otro nombre)
 source .venv/bin/activate
 export ALEMBIC_URL="postgresql+psycopg://lasfocas:$(python -c 'import urllib.parse;print(urllib.parse.quote(open(".secrets/db_password_v1.txt").read().strip(),safe=""))')@127.0.0.1:5432/lasfocas"
 unset DATABASE_URL
 alembic -c db/alembic.ini upgrade head && alembic -c db/alembic.ini current
+# cromo_worker PRIMERO: un worker viejo trata un tipo de corrida sintético que no conoce (p. ej.
+# la detección de inconsistencias, 2026-10-17) como una ingesta COMPLETA.
 docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
-  postgres redis docker-socket-proxy api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker
+  postgres redis docker-socket-proxy cromo_worker
+docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
+  api web nlp_intent office slack_baneo_worker botellas_recalculo_worker fo_monitor_worker
 ```
 
 `bot` (Telegram) no corre en prod: decisión explícita del usuario, no es un olvido.
@@ -182,6 +194,33 @@ Patrón para cualquier script de datos de este paso (usado por el reproceso, 202
   revisados, 111 sin tocar. En prod los egresos que cierran pueden ser más (ingresos abiertos reales
   que dev no tiene). Idempotente: una segunda corrida no agrega filas. Detalle:
   `docs/relevamiento_ingresos_sin_match_2026-09-28.md`, sección "Reproceso por lote".
+
+## Copiar tablas espejo de Cromo desde dev en vez de re-ingestar
+
+Uso real: 2026-10-18 (`docs/PR/2026-10-18.md`). Evitó una SOLO_ODF de ~3,5 h en prod. Sirve sólo
+para tablas que son **espejo de Cromo** (claves = ids de Cromo, iguales en dev y prod) y que la
+ingesta acotada escribe enteras, como `app.cromo_odfs` y `app.cromo_odf_conectores`. **No** sirve
+para tablas con escrituras propias de prod (ingresos, baneos, incidentes, casos de inconsistencias).
+
+Condiciones, todas medidas antes de aplicar:
+- Las dos bases en la misma revisión de Alembic (columnas idénticas por `information_schema`).
+- Prod es subconjunto de dev: 0 filas sólo en prod y 0 filas de prod con `ultima_ingesta` más nueva.
+- Las columnas que dependen de datos locales se recalculan en prod después (en conectores:
+  `servicio_resuelto`/`servicio_id_historico`, que salen del atributo de Cromo y de
+  `cromo_pelos.servicio_numero` local; el 2026-10-18 cambiaron 31 de 100.733).
+
+Pasos:
+1. Esquema de paso en prod (`CREATE SCHEMA copia_dev`, tablas `LIKE app.<tabla> INCLUDING DEFAULTS`).
+2. Copia binaria por pipe, sin archivos intermedios:
+   `docker exec lasfocasdev-postgres psql ... -c "\copy app.<t> TO STDOUT WITH (FORMAT binary)" |
+   docker exec -i lasfocas-postgres psql ... -c "\copy copia_dev.<t> FROM STDIN WITH (FORMAT binary)"`.
+3. Ensayo: el mismo SQL de conteos (nuevas / a actualizar / sólo en prod / más nuevas en prod) y
+   `INSERT ... ON CONFLICT (n_id) DO UPDATE` (sin tocar `primera_ingesta`) dentro de
+   `BEGIN ... ROLLBACK`. Revisar los conteos post.
+4. El mismo archivo con `COMMIT`.
+5. Recalcular las columnas locales con la función de la ingesta (por stdin en `lasfocas-cromo-worker`,
+   ensayo y `--apply`), y repetir el ensayo hasta que dé 0 cambios.
+6. `DROP SCHEMA copia_dev CASCADE`.
 
 ## Secretos nuevos del lote
 
