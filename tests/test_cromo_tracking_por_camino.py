@@ -1001,3 +1001,51 @@ async def test_los_tramos_se_nombran_con_el_numero_del_servicio_y_no_con_el_at62
         "42351 CROMO T1 pelo 20.txt",
         "42351 CROMO T2 pelo 10.txt",
     ]
+
+
+def test_extremo_de_nodo_copia_at62_y_pelo_conectado():
+    """El conector de ODF trae el at.62 del servicio y el pelo que conecta: el extremo los guarda."""
+    from core.services.cromo.tracking_service import _extremo_de_nodo
+
+    conector = NodoCamino(
+        orden=1,
+        lado="A",
+        id_cromo=500,
+        clase=136,
+        tipo="CONECTOR_ODF",
+        servicio_at62="106180",
+        pelo_conectado=77,
+    )
+    extremo = _extremo_de_nodo(conector)
+    assert extremo.servicio_at62 == "106180"
+    assert extremo.pelo_conectado == 77
+
+
+def test_desde_json_cache_viejo_sin_campos_nuevos():
+    """Un extremo cacheado antes de estos campos se reconstruye con None, sin error."""
+    from core.services.cromo.tracking_service import ResumenCamino
+
+    viejo = {"inicio": {"tipo": "CONECTOR_ODF", "id_cromo": 500, "clase": 136}, "fin": None}
+    leido = ResumenCamino.desde_json(viejo)
+    assert leido is not None
+    assert leido.inicio.servicio_at62 is None
+    assert leido.inicio.pelo_conectado is None
+
+
+def test_round_trip_json_con_campos_nuevos():
+    """`pelo_conectado` sobrevive a `a_json` → `desde_json` como `int`, no como texto."""
+    from core.services.cromo.tracking_service import ExtremoCamino, ResumenCamino
+
+    resumen = ResumenCamino(
+        inicio=ExtremoCamino(
+            tipo="CONECTOR_ODF",
+            id_cromo=500,
+            clase=136,
+            servicio_at62="106180",
+            pelo_conectado=77,
+        ),
+    )
+    leido = ResumenCamino.desde_json(resumen.a_json())
+    assert leido == resumen
+    assert isinstance(leido.inicio.pelo_conectado, int)
+    assert leido.inicio.servicio_at62 == "106180"

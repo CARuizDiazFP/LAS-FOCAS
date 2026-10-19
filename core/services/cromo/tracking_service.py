@@ -82,6 +82,10 @@ class ExtremoCamino:
     odf_nombre: Optional[str] = None
     patchera_nombre: Optional[str] = None
     conector_numero: Optional[str] = None
+    # At.62 del servicio y pelo que conecta el conector (`NodoCamino`). Sólo en extremos de ODF;
+    # las entradas de caché anteriores no los traen y quedan en `None`.
+    servicio_at62: Optional[str] = None
+    pelo_conectado: Optional[int] = None
 
     @property
     def es_conector_odf(self) -> bool:
@@ -148,7 +152,7 @@ class ResumenCamino:
             if campos["tipo"] is None or campos["id_cromo"] is None:
                 return None
             campos["id_cromo"] = int(campos["id_cromo"])
-            for clave in ("clase", "odf_id", "odf_clase"):
+            for clave in ("clase", "odf_id", "odf_clase", "pelo_conectado"):
                 if campos[clave] is not None:
                     campos[clave] = int(campos[clave])
             return ExtremoCamino(**campos)
@@ -198,6 +202,8 @@ def _extremo_de_nodo(nodo: NodoCamino) -> ExtremoCamino:
         odf_nombre=nodo.odf_nombre,
         patchera_nombre=nodo.patchera_nombre,
         conector_numero=nodo.conector_numero,
+        servicio_at62=nodo.servicio_at62,
+        pelo_conectado=nodo.pelo_conectado,
     )
 
 
