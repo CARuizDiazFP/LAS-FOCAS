@@ -54,13 +54,15 @@ async def entorno():
     await engine.dispose()
 
 
-async def _botella(conn, n_id: int, *, nombre: str = _NOMBRE, vigente: bool = True) -> None:
+async def _botella(
+    conn, n_id: int, *, nombre: str = _NOMBRE, vigente: bool = True, clase: int = 68
+) -> None:
     await conn.execute(
         text(
             "INSERT INTO app.cromo_botellas (n_id, version_id, vmax, clase, nombre, payload_raw, vigente) "
-            "VALUES (:n, :n, 1, 68, :nombre, '{}'::jsonb, :v)"
+            "VALUES (:n, :n, 1, :clase, :nombre, '{}'::jsonb, :v)"
         ),
-        {"n": n_id, "nombre": nombre, "v": vigente},
+        {"n": n_id, "nombre": nombre, "v": vigente, "clase": clase},
     )
 
 
@@ -105,6 +107,16 @@ async def test_carga_agrupa_por_nombre_extendido_sin_camara(entorno):
     assert (ev.regla, ev.objeto_id, ev.accion) == (REGLA_GEMELO_VACIO, _VACIA, "FUSIONAR_GEMELO")
     assert dict(ev.parametros) == {"origen": _VACIA, "destino": _OPERATIVA}
     assert not any(s.veto for s in ev.senales)
+
+
+@pytest.mark.asyncio
+async def test_no_mezcla_clases_en_grupo(entorno):
+    sesion, conn = entorno
+    await _botella(conn, _OPERATIVA, clase=68)
+    await _botella(conn, _VACIA, clase=121)  # caja PON homónima
+    await _cable(conn, _OPERATIVA)
+
+    assert await _vacias(sesion) == []
 
 
 @pytest.mark.asyncio

@@ -4,12 +4,13 @@
 
 """Cruce de la detección de homónimos con el detector de islas.
 
-- **Botellas:** `cromo_botellas` vigentes agrupadas por `normalizar_para_agrupar_extendido(nombre)`
-  (sin exigir Cámara padre). Con una sola operativa (con cables), cada vacía (sin cables ni
+- **Botellas:** `cromo_botellas` vigentes agrupadas por `(normalizar_para_agrupar_extendido(nombre),
+  clase)` (sin exigir Cámara padre; nunca se mezclan clases, p. ej. botella 68 con caja PON 121-125). Con una sola operativa (con cables), cada vacía (sin cables ni
   fusiones) se propone fusionar en ella (`GEMELO_VACIO`); un miembro isla se informa en vez de
   fusionarse. Con 2 o más operativas se informa el grupo (`GEMELO_OPERATIVO`).
-- **ODF:** cada caso `ELEMENTO_ISLA` de clase 69/86 contra las `cromo_odfs` vigentes con el mismo
-  `lower(trim(nombre))` (`ODF_GEMELA_ISLA`, sólo informa).
+- **ODF:** cada caso `ELEMENTO_ISLA` de clase 69/86 en estado PENDIENTE o CUARENTENA contra las `cromo_odfs` vigentes con el mismo
+  `lower(trim(nombre))` (`ODF_GEMELA_ISLA`, sólo informa). Una sola evaluación por isla, con la
+  gemela de mayor puntaje (desempate: menor `n_id`).
 
 `puntuar_grupo_botellas` y `puntuar_odf_isla` son puros; las tres reglas comparten la carga vía
 `contexto["gemelos"]`. El árbitro nunca llama a Cromo: todo sale de la base.
@@ -149,8 +150,10 @@ def puntuar_grupo_botellas(miembros: Sequence[MiembroGemelo]) -> list[Evaluacion
 
     - Con exactamente 1 operativa, cada vacía propone `FUSIONAR_GEMELO` en ella.
     - Con exactamente 1 operativa no-isla, cada miembro isla se `INFORMAR` en vez de fusionarse
-      (el índice de propuestas abiertas admite una sola por regla y objeto).
-    - Con 2 o más operativas, una `GEMELO_OPERATIVO` sobre la de menor `n_id`.
+      (el índice de propuestas abiertas admite una sola por regla y objeto). La señal
+      `VACIA_SIN_FUSIONES` se agrega sólo si la isla realmente está vacía (sin cables ni fusiones).
+    - Con 2 o más operativas, una `GEMELO_OPERATIVO` sobre la de menor `n_id`; `miembros` lista sólo
+      las operativas (las vacías de ese grupo no reciben evaluación).
     """
     ordenados = sorted(miembros, key=lambda m: m.n_id)
     operativas = [m for m in ordenados if m.con_cables]
@@ -216,7 +219,7 @@ def puntuar_odf_isla(isla: MiembroGemelo, gemela: MiembroGemelo) -> Evaluacion:
 
 _SQL_NOMBRES_BOTELLAS = text(
     """
-    SELECT n_id, nombre
+    SELECT n_id, nombre, clase
     FROM app.cromo_botellas
     WHERE (vigente OR n_id = ANY(:propios ::bigint[]))
       AND nombre IS NOT NULL AND btrim(nombre) <> ''
@@ -297,11 +300,12 @@ async def _cargar_grupos_botellas(
 ) -> list[list[MiembroGemelo]]:
     propios_lista = sorted(propios)
     filas = (await sesion.execute(_SQL_NOMBRES_BOTELLAS, {"propios": propios_lista})).all()
-    por_clave: dict[str, list[int]] = defaultdict(list)
-    for n_id, nombre in filas:
+    # La clase es parte de la clave: una caja PON nunca es gemela de una botella homónima.
+    por_clave: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for n_id, nombre, clase in filas:
         clave = normalizar_para_agrupar_extendido(nombre)
         if clave:
-            por_clave[clave].append(n_id)
+            por_clave[(clave, clase)].append(n_id)
     grupos_ids = [ids for ids in por_clave.values() if len(ids) >= 2]
     if alcance.tipo == "BOTELLAS":
         pedidos = set(alcance.ids)
