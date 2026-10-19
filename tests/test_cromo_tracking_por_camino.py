@@ -486,6 +486,16 @@ def _con_resumen(tracking: TrackingGenerado, resumen) -> TrackingGenerado:
     return tracking
 
 
+@pytest.fixture(autouse=True)
+def _sin_evidencia(monkeypatch):
+    """Estos tests usan sesiones fake: la evidencia del árbitro (tiene sus propios tests) se anula."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "core.services.cromo.arbitro.evidencia.registrar_y_encolar", AsyncMock(return_value=None)
+    )
+
+
 @pytest.fixture
 def declaraciones(monkeypatch):
     """Sin nada declarado por defecto: la sesión de estos tests es un `object()`, sin DB."""

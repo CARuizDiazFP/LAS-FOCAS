@@ -112,3 +112,55 @@ async def test_trackings_del_servicio_registra_evidencia(monkeypatch, fuente, ha
     await tracking_service.trackings_del_servicio(object(), object(), 7, auditar=False, **kwargs)
 
     assert llamadas == [(7, [10], not hay_errores, fuente)]
+
+
+def _entrada_simple() -> evidencia.EvidenciaEntrada:
+    return evidencia.EvidenciaEntrada(1, ResumenCamino(), frozenset({1}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escritas,encola", [(0, False), (2, True)])
+async def test_registrar_y_encolar_encola_solo_si_escribio(monkeypatch, escritas, encola):
+    encolados = []
+
+    async def _registrar(*_a, **_k):
+        return escritas
+
+    async def _encolar(alcance, disparo, motivo="", **_k):
+        encolados.append((alcance, disparo, motivo))
+
+    monkeypatch.setattr(evidencia, "registrar_evidencia", _registrar)
+    monkeypatch.setattr(evidencia, "encolar_evaluacion", _encolar)
+    await evidencia.registrar_y_encolar(object(), 9, [_entrada_simple()], completo=True, fuente="SLACK")
+    assert encolados == ([(Alcance("SERVICIOS", (9,)), "REGISTRADOR", "evidencia:SLACK")] if encola else [])
+
+
+@pytest.mark.asyncio
+async def test_registrar_y_encolar_auditoria_global_no_encola(monkeypatch):
+    encolados = []
+
+    async def _registrar(*_a, **_k):
+        return 3
+
+    async def _encolar(*a, **k):
+        encolados.append(a)
+
+    monkeypatch.setattr(evidencia, "registrar_evidencia", _registrar)
+    monkeypatch.setattr(evidencia, "encolar_evaluacion", _encolar)
+    await evidencia.registrar_y_encolar(
+        object(), 9, [_entrada_simple()], completo=True, fuente="AUDITORIA_GLOBAL"
+    )
+    assert encolados == []
+
+
+@pytest.mark.asyncio
+async def test_registrar_y_encolar_no_lanza_si_encolar_falla(monkeypatch):
+    async def _registrar(*_a, **_k):
+        return 1
+
+    async def _encolar(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(evidencia, "registrar_evidencia", _registrar)
+    monkeypatch.setattr(evidencia, "encolar_evaluacion", _encolar)
+    await evidencia.registrar_y_encolar(object(), 9, [_entrada_simple()], completo=True, fuente="WEB")

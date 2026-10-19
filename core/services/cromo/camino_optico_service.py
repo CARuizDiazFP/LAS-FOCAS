@@ -143,9 +143,9 @@ _AT_FUSION_TIPO = 85          # "FUSION"
 
 # Cota defensiva: el camino real medido más largo tiene 175 elementos de un lado, así que 500 es
 # ~3x el peor caso observado. Protege de un `a[]` desmedido, no de un camino normal.
+MAX_NODOS_POR_LADO = 500
 # Fragmento fijo de la advertencia de lado truncado; `arbitro.evidencia.camino_truncado` lo busca.
 MARCA_LADO_CORTADO = "se cortó en"
-MAX_NODOS_POR_LADO = 500
 
 
 @dataclass(slots=True)

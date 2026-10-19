@@ -114,12 +114,15 @@ async def registrar_y_encolar(
     completo: bool,
     fuente: str,
 ) -> None:
-    """Registra la evidencia y, si escribió algo, encola la evaluación. Nunca lanza."""
+    """Registra la evidencia y, si escribió algo, encola la evaluación (salvo `AUDITORIA_GLOBAL`).
+    Nunca lanza."""
     try:
         escritas = await registrar_evidencia(
             sesion, servicio_id, entradas, completo=completo, fuente=fuente
         )
-        if escritas > 0:
+        # La corrida global audita miles de Servicios: registra la evidencia pero no encola un job
+        # por cada uno en la cola compartida (la evaluación post-ingesta/normalizador la cubre).
+        if escritas > 0 and fuente != "AUDITORIA_GLOBAL":
             await encolar_evaluacion(
                 Alcance("SERVICIOS", (servicio_id,)), "REGISTRADOR", motivo=f"evidencia:{fuente}"
             )

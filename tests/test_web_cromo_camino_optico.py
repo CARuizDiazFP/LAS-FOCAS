@@ -413,6 +413,60 @@ def test_tracking_txt_devuelve_el_archivo_con_content_disposition(monkeypatch):
     assert "GENERADO desde Cromo" in res.text
 
 
+def _preparar_txt(monkeypatch, *, desde_cache: bool):
+    from core.services.cromo.tracking_service import TrackingGenerado
+
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla()])
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        return TrackingGenerado(
+            pelo_n_id=pelo_n_id,
+            nombre_archivo="93154 CROMO.txt",
+            contenido="GENERADO desde Cromo\r\n",
+            desde_cache=desde_cache,
+            generado_at=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
+            duracion_ms=10,
+        )
+
+    monkeypatch.setattr("core.services.cromo.tracking_service.obtener_tracking", _obtener)
+
+
+def test_tracking_txt_registra_evidencia_y_su_falla_no_cambia_la_respuesta(monkeypatch):
+    _preparar_txt(monkeypatch, desde_cache=False)
+    client = _cliente_user(monkeypatch)
+    base = client.get(_url_txt())
+
+    llamadas = []
+
+    async def _boom(*args, **kwargs):
+        llamadas.append(kwargs.get("fuente"))
+        raise RuntimeError("evidencia rota")
+
+    monkeypatch.setattr("core.services.cromo.arbitro.evidencia.registrar_y_encolar", _boom)
+    res = client.get(_url_txt())
+
+    assert llamadas == ["WEB"]
+    assert res.status_code == base.status_code == 200
+    assert res.content == base.content
+    assert res.headers["content-disposition"] == base.headers["content-disposition"]
+
+
+def test_tracking_txt_desde_cache_no_registra_evidencia(monkeypatch):
+    _preparar_txt(monkeypatch, desde_cache=True)
+    llamadas = []
+
+    async def _registrar(*args, **kwargs):
+        llamadas.append(1)
+
+    monkeypatch.setattr("core.services.cromo.arbitro.evidencia.registrar_y_encolar", _registrar)
+    res = _cliente_user(monkeypatch).get(_url_txt())
+
+    assert res.status_code == 200
+    assert llamadas == []
+
+
 def test_tracking_txt_con_un_solo_pelo_conserva_el_nombre_historico(monkeypatch):
     """Caso PON. Nada de lo que consume ese `.txt` aguas abajo se entera del cambio."""
     _fake_session(monkeypatch)

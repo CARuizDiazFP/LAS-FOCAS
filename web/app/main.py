@@ -8880,6 +8880,7 @@ async def cromo_camino_tracking_txt_web(
                         sesion,
                         servicio_id,
                         entradas_de_trackings([tracking]),
+                        # Un solo tracking de Cromo; TrackingGenerado no informa truncamiento.
                         completo=True,
                         fuente="WEB",
                     )
