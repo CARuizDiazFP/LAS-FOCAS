@@ -1122,6 +1122,41 @@ reporte se hace con `scripts/cromo_inconsistencias_medicion.py`.
 Variables de entorno: `CROMO_INCONSISTENCIAS_MAX_CONFIRMACIONES` (300) y
 `CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO` (500).
 
+#### Árbitro de Cromo en el viewer (2026-10-19)
+
+El viewer tiene tres pestañas (`?tab=propuestas` / `?tab=reglas`; sin `tab` abre Casos):
+
+- **Casos:** el listado de inconsistencias descripto arriba, sin cambios.
+- **Propuestas** (`PropuestasArbitroPanel.vue`):
+  - Arriba, el panel **Análisis retroactivo** (`AnalisisRetroactivoPanel.vue`): chips de reglas
+    ("Todas" o un subconjunto) y el botón "Ejecutar análisis retroactivo", deshabilitado mientras hay
+    una evaluación en curso ("En curso desde HH:MM"). Debajo, el historial de las últimas evaluaciones
+    con estado, disparo, quién la pidió, inicio, duración y resumen por regla. Sigue la corrida por
+    WebSocket.
+  - La tabla de propuestas, filtrable por regla y estado: regla, objeto (enlace al servicio, la
+    botella o la ODF), acción, confianza, señales (expandibles), disparo y estado. Con selección
+    múltiple, los botones Aplicar, Rechazar y Revertir piden `window.confirm`. Las que no se pudieron
+    aplicar se listan con su motivo.
+- **Reglas** (`ReglasArbitroPanel.vue`): modo (`APAGADA`/`SOMBRA`/`AUTO`), umbral y presupuesto por
+  regla, editables, con aceptadas, rechazadas y precisión. La marca "Lista para AUTO" aparece con
+  precisión ≥ 95 % y N ≥ 30.
+
+Endpoints (admin; los POST con CSRF) bajo `/api/admin/infra/arbitro-cromo`, en `web/app/main.py`,
+cliente `web/frontend/src/api/arbitroCromo.ts`:
+
+| Endpoint | Respuesta |
+|---|---|
+| `GET /propuestas?regla=&estado=&limit=&offset=` | Página de propuestas |
+| `POST /propuestas/aplicar` | `{ok, aplicados, rechazados: [{id, motivo}]}` |
+| `POST /propuestas/rechazar` | `{ok, rechazados, omitidos}` |
+| `POST /propuestas/revertir` | `{ok, revertidos, omitidos}` |
+| `GET /reglas` / `POST /reglas` | Configuración y precisión por regla / cambio de modo, umbral y presupuesto |
+| `POST /normalizar` | 202 `{evaluacion_id}`; 409 si hay otra en curso; 503 si no se pudo encolar |
+| `GET /evaluaciones?limit=` | `{items, en_curso}` |
+
+Aplicar, rechazar y revertir encolan una evaluación `VIEWER` de los objetos tocados. Detalle de
+reglas, disparadores y límites: `docs/modulo_ingesta_cromo.md`, sección "Árbitro de Cromo".
+
 ### Vista principal y detalle dedicado
 - **Tarjeta principal resumida**: cada cámara muestra solo nombre canon, ID numérico interno y estado.
 - **Vista dedicada por cámara**: `GET /infra/Camaras/:id` dentro de la SPA Vue 3.
