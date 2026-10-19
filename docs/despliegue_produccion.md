@@ -261,13 +261,25 @@ el pedido es "pasar a prod **este** fix" y `dev` tiene más trabajo que no debe 
      debía ir.
 4. **Publicar en `main`** por fast-forward: `git merge-base --is-ancestor origin/main HEAD` y después
    `git push origin HEAD:refs/heads/main`.
-5. **Recrear sólo los servicios afectados.** El compose resuelve `env_file: ../.env` y
-   `secrets: ../.secrets/...` en relación al propio archivo, así que primero hay que crear symlinks
-   temporales en el worktree:
-   `ln -s <control>/.env .env; ln -s <control>/.secrets .secrets`.
-   Después:
-   `docker compose -f <wt>/deploy/compose.yml --env-file <control>/.env up -d --no-deps --force-recreate web api`,
-   y quitar los symlinks.
+5. **Recrear sólo los servicios afectados, DESDE EL CHECKOUT DE CONTROL y sin rebuild.** Todos los
+   bind mounts del compose son relativos al propio archivo: `../.secrets/*`, `../Logs`,
+   `../Templates` y `../data/fo_monitor`.
+   - **Error real del 2026-10-19**: hacer `up` desde el worktree, con symlinks a `.env`/`.secrets`,
+     dejó a `web`/`api` de prod montando el worktree.
+     - Los secretos quedaron montados a través de un symlink efímero.
+     - Los logs de prod se escribían en el worktree.
+     - `data/fo_monitor` lo creó Docker vacío y como root. Eso bloqueó `git worktree remove`, y el
+       borrado parcial se llevó los logs de esa ventana.
+   - Primero comparar el compose: `git diff origin/main origin/dev -- deploy/compose.yml`. Los
+     servicios a recrear no deben cambiar.
+   - Después recrear desde el checkout de control:
+     ```bash
+     cd <control>   # en dev; sólo se usa su compose y sus rutas, la imagen es la del hotfix
+     docker compose -f deploy/compose.yml --env-file .env up -d --no-deps --no-build --force-recreate web api
+     docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' lasfocas-web   # ninguna ruta del worktree
+     ```
+   - Si el compose de esos servicios sí difiere entre `main` y `dev`, no usar este atajo: hacer el
+     merge `dev`→`main` normal.
 6. **Verificar**: healthy y la imagen nueva en el contenedor. El `/tmp` de los contenedores de prod es
    tmpfs y `docker cp` no lo ve: sacar los artefactos de prueba por stdout
    (`docker exec ... sh -c '...; cat /tmp/x.png' > local.png`) y borrarlos adentro.
