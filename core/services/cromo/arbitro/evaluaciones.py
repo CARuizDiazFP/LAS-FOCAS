@@ -121,3 +121,17 @@ async def alcances_de_propuestas(sesion: AsyncSession, ids: Sequence[int]) -> di
         if tipo is not None:
             alcances.setdefault(tipo, []).append(int(objeto_id))
     return alcances
+
+
+ERROR_NO_ENCOLADA = "no se pudo encolar"
+
+
+async def marcar_fallida(sesion: AsyncSession, evaluacion_id: int, error: str) -> None:
+    """Cierra una evaluación como FALLIDA con `error` y `terminada_en = now()`. No hace commit."""
+    await sesion.execute(
+        text(
+            "UPDATE app.cromo_arbitro_evaluacion SET estado = 'FALLIDA', error = :e, terminada_en = now() "
+            "WHERE id = :i"
+        ),
+        {"e": error, "i": int(evaluacion_id)},
+    )

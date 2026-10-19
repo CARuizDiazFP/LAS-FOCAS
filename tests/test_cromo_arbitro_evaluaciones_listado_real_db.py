@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -87,3 +89,76 @@ async def test_viewer_en_curso_no_bloquea_normalizador(sesion):
     await _insertar(sesion, "EN_CURSO", 0, disparo="VIEWER")
     nuevo, previa = await evaluaciones.crear_evaluacion_normalizador(sesion, "admin", None)
     assert nuevo is not None and previa is None
+
+
+@pytest.mark.asyncio
+async def test_alcances_de_propuestas_agrupa_por_tipo(sesion):
+    ids = []
+    for tipo, objeto in (("SERVICIO", 999_920_101), ("BOTELLA", 999_920_102), ("BOTELLA", 999_920_103)):
+        ids.append(
+            (
+                await sesion.execute(
+                    text(
+                        "INSERT INTO app.cromo_propuesta (regla, objeto_tipo, objeto_id, accion, confianza, "
+                        "evidencia_hash, estado, modo_al_evaluar, disparo) "
+                        "VALUES ('GEMELO_VACIO', :t, :o, 'INFORMAR', 90, 'h', 'PROPUESTA', 'SOMBRA', 'INGESTA') "
+                        "RETURNING id"
+                    ),
+                    {"t": tipo, "o": objeto},
+                )
+            ).scalar_one()
+        )
+    r = await evaluaciones.alcances_de_propuestas(sesion, ids)
+    assert {k: sorted(v) for k, v in r.items()} == {
+        "SERVICIOS": [999_920_101], "BOTELLAS": [999_920_102, 999_920_103]
+    }
+    assert await evaluaciones.alcances_de_propuestas(sesion, []) == {}
+
+
+@pytest.mark.asyncio
+async def test_crear_normalizador_concurrente_deja_una_sola_fila():
+    """Dos sesiones reales: la segunda espera el lock y, tras el commit de la primera, ve la fila."""
+    engine = create_async_engine(
+        async_engine.url.render_as_string(hide_password=False), poolclass=NullPool
+    )
+    marca = "test-concurrencia-t13"
+    try:
+        async with AsyncSession(engine) as limpia:
+            await limpia.execute(text("DELETE FROM app.cromo_arbitro_evaluacion WHERE solicitada_por = :m"), {"m": marca})
+            hay = (
+                await limpia.execute(
+                    text("SELECT count(*) FROM app.cromo_arbitro_evaluacion WHERE disparo='NORMALIZADOR' "
+                         "AND estado IN ('EN_COLA','EN_CURSO') AND encolada_en > now() - interval '6 hours'")
+                )
+            ).scalar_one()
+            await limpia.commit()
+        if hay:
+            pytest.skip("hay un análisis retroactivo real en curso en la DB dev")
+        a = AsyncSession(engine)
+        b = AsyncSession(engine)
+        try:
+            id_a, previa_a = await evaluaciones.crear_evaluacion_normalizador(a, marca, None)
+            tarea = asyncio.create_task(evaluaciones.crear_evaluacion_normalizador(b, marca, None))
+            await asyncio.sleep(0.5)
+            assert not tarea.done()  # bloqueada por el advisory lock de A
+            await a.commit()
+            id_b, previa_b = await asyncio.wait_for(tarea, 10)
+            await b.rollback()
+            assert id_a is not None and previa_a is None
+            assert id_b is None and previa_b == id_a
+            async with AsyncSession(engine) as chequeo:
+                n = (
+                    await chequeo.execute(
+                        text("SELECT count(*) FROM app.cromo_arbitro_evaluacion WHERE solicitada_por = :m AND estado = 'EN_COLA'"),
+                        {"m": marca},
+                    )
+                ).scalar_one()
+            assert n == 1
+        finally:
+            await a.close()
+            await b.close()
+    finally:
+        async with AsyncSession(engine) as limpia:
+            await limpia.execute(text("DELETE FROM app.cromo_arbitro_evaluacion WHERE solicitada_por = :m"), {"m": marca})
+            await limpia.commit()
+        await engine.dispose()

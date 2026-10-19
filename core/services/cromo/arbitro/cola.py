@@ -25,8 +25,9 @@ async def encolar_evaluacion(
     *,
     evaluacion_id: Optional[int] = None,
     reglas: Optional[Sequence[str]] = None,
-) -> None:
-    """Encola una evaluación del árbitro para el worker. Best-effort: nunca lanza.
+) -> bool:
+    """Encola una evaluación del árbitro para el worker. Nunca lanza: devuelve True sólo si el
+    rpush tuvo éxito (los disparadores automáticos pueden ignorar el resultado; best-effort).
 
     `evaluacion_id` lo pasa sólo el análisis retroactivo de la UI (que ya creó la fila `EN_COLA`);
     los disparadores automáticos no lo pasan.
@@ -45,10 +46,12 @@ async def encolar_evaluacion(
                 }
             ),
         )
+        return True
     except Exception:  # noqa: BLE001 - Redis es best-effort
         logger.warning(
             "action=arbitro_encolar result=fail disparo=%s motivo=%s", disparo, motivo, exc_info=True
         )
+        return False
 
 
 __all__ = ["JOB_KIND_ARBITRO", "encolar_evaluacion"]

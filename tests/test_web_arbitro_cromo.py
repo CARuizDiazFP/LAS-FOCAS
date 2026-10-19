@@ -48,6 +48,7 @@ def encolados(monkeypatch) -> list:
             {"alcance": alcance.a_dict(), "disparo": disparo, "motivo": motivo,
              "evaluacion_id": evaluacion_id, "reglas": reglas}
         )
+        return True
 
     monkeypatch.setattr(cola, "encolar_evaluacion", _encolar)
     return registro
@@ -249,3 +250,38 @@ def test_evaluaciones_devuelve_en_curso(monkeypatch, commits):
     assert recibido["limit"] == 10
     assert client.get(f"{URL}/evaluaciones?limit=51").status_code == 422
     assert client.get(f"{URL}/evaluaciones?limit=0").status_code == 422
+
+
+def test_normalizar_reglas_vacias_son_todas(monkeypatch, commits, encolados):
+    recibido: dict[str, Any] = {}
+
+    async def _crear(_s, usuario, reglas):
+        recibido["reglas"] = reglas
+        return 43, None
+
+    monkeypatch.setattr(evaluaciones, "crear_evaluacion_normalizador", _crear)
+    res = _cliente_admin(monkeypatch).post(f"{URL}/normalizar", json={"reglas": []})
+    assert res.status_code == 202
+    assert recibido["reglas"] is None and encolados[0]["reglas"] is None
+
+
+def test_normalizar_falla_encolado_marca_fallida_y_503(monkeypatch, commits):
+    async def _crear(_s, usuario, reglas):
+        return 44, None
+
+    async def _no_encola(*a, **k):
+        return False
+
+    cerradas: list[tuple] = []
+
+    async def _marcar(_s, evaluacion_id, error):
+        cerradas.append((evaluacion_id, error))
+
+    monkeypatch.setattr(evaluaciones, "crear_evaluacion_normalizador", _crear)
+    monkeypatch.setattr(evaluaciones, "marcar_fallida", _marcar)
+    monkeypatch.setattr(cola, "encolar_evaluacion", _no_encola)
+    res = _cliente_admin(monkeypatch).post(f"{URL}/normalizar", json={})
+    assert res.status_code == 503
+    assert res.json()["evaluacion_id"] == 44
+    assert cerradas == [(44, "no se pudo encolar")]
+    assert commits == [1, 1]

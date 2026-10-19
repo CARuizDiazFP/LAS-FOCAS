@@ -55,7 +55,9 @@ class _FakeRedis:
 async def test_encolar_evaluacion_payload(monkeypatch):
     redis = _FakeRedis()
     monkeypatch.setattr(cola, "get_redis", lambda: redis)
-    await cola.encolar_evaluacion(Alcance("SERVICIOS", (5,)), "REGISTRADOR", motivo="evidencia:SLACK")
+    assert await cola.encolar_evaluacion(
+        Alcance("SERVICIOS", (5,)), "REGISTRADOR", motivo="evidencia:SLACK"
+    ) is True
     (clave, valor), = redis.empujados
     assert clave == cola.QUEUE_KEY
     payload = json.loads(valor)
@@ -73,7 +75,7 @@ async def test_encolar_evaluacion_redis_caido_no_lanza(monkeypatch):
             raise ConnectionError("redis caído")
 
     monkeypatch.setattr(cola, "get_redis", lambda: _Caido())
-    await cola.encolar_evaluacion(Alcance("SERVICIOS", (5,)), "REGISTRADOR")
+    assert await cola.encolar_evaluacion(Alcance("SERVICIOS", (5,)), "REGISTRADOR") is False
 
 
 @pytest.mark.asyncio

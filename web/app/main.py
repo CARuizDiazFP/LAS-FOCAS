@@ -9750,12 +9750,13 @@ async def arbitro_cromo_normalizar_web(
     username = _require_admin(request)
     if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_normalizar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-    desconocidas = sorted(set(body.reglas or []) - {r.codigo for r in REGLAS})
+    reglas = body.reglas or None  # lista vacía = todas las reglas
+    desconocidas = sorted(set(reglas or []) - {r.codigo for r in REGLAS})
     if desconocidas:
         return JSONResponse({"error": f"Reglas inexistentes: {desconocidas}"}, status_code=422)
     async with AsyncSessionLocal() as sesion:
         evaluacion_id, en_curso = await evaluaciones.crear_evaluacion_normalizador(
-            sesion, username, body.reglas
+            sesion, username, reglas
         )
         if evaluacion_id is None:
             return JSONResponse(
@@ -9763,10 +9764,19 @@ async def arbitro_cromo_normalizar_web(
                 status_code=409,
             )
         await sesion.commit()
-    await encolar_evaluacion(
+    encolada = await encolar_evaluacion(
         Alcance("TODO"), "NORMALIZADOR", motivo=f"manual:{username}",
-        evaluacion_id=evaluacion_id, reglas=body.reglas,
+        evaluacion_id=evaluacion_id, reglas=reglas,
     )
+    if not encolada:
+        # Sin cola no hay worker que la tome: se cierra la fila para no bloquear con 409 durante 6 h.
+        async with AsyncSessionLocal() as sesion:
+            await evaluaciones.marcar_fallida(sesion, evaluacion_id, evaluaciones.ERROR_NO_ENCOLADA)
+            await sesion.commit()
+        return JSONResponse(
+            {"error": "No se pudo encolar el análisis retroactivo. Intentá nuevamente.", "evaluacion_id": evaluacion_id},
+            status_code=503,
+        )
     logger.info("action=arbitro_cromo_normalizar user=%s evaluacion_id=%s", username, evaluacion_id)
     return JSONResponse({"evaluacion_id": evaluacion_id}, status_code=202)
 
