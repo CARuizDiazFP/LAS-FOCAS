@@ -244,7 +244,8 @@ async def _evaluar_regla(
         logger.exception(
             "action=arbitro_cromo evento=regla_fallida regla=%s error=%s", codigo, type(exc).__name__
         )
-        cuenta["error"] = f"{type(exc).__name__}: {exc}"[:500]
+        # Sólo el tipo: el mensaje puede traer SQL o datos; el traceback completo queda en el log.
+        cuenta["error"] = type(exc).__name__
         return
 
     # Una evaluación por objeto: si la regla repite, gana la de mayor confianza.
@@ -261,7 +262,7 @@ async def _evaluar_regla(
             codigo, len(evaluaciones), len(por_objeto),
         )
 
-    rechazadas = await _ultimos_hash_rechazados(sesion, codigo, [oid for _t, oid in por_objeto])
+    bloqueadas = await _ultimos_hash_bloqueantes(sesion, codigo, [oid for _t, oid in por_objeto])
     ahora = _ahora()
     candidatas: list[CromoPropuesta] = []
 
@@ -269,6 +270,8 @@ async def _evaluar_regla(
         hash_ev = evidencia_hash(ev)
         fila = abiertas.get(clave)
         if fila is not None and fila.estado == "PROPUESTA":
+            if fila.evidencia_hash != hash_ev:
+                fila.nota = None  # evidencia nueva: el último intento fallido ya no aplica
             fila.accion = ev.accion
             fila.parametros = _json(dict(ev.parametros))
             fila.senales = _senales_json(ev)
@@ -293,7 +296,7 @@ async def _evaluar_regla(
             else:
                 await _revertir_observacion(sesion, fila, cuenta, resumen, ahora)
         else:
-            if rechazadas.get(clave) == hash_ev:
+            if bloqueadas.get(clave) == hash_ev:
                 continue
             nueva = CromoPropuesta(
                 regla=codigo,
@@ -330,7 +333,13 @@ async def _evaluar_regla(
     if modo != "AUTO":
         return
     # Sólo lo que esta corrida evaluó: una PROPUESTA vieja fuera del alcance no se aplica a ciegas.
-    aplicables = [p for p in candidatas if p.confianza >= umbral and p.accion != "INFORMAR"]
+    # `nota` en una PROPUESTA sólo la escribe un intento de aplicar fallido (`AccionNoAplicable`) y
+    # se limpia cuando cambia la evidencia: con nota, el mismo hash volvería a fallar, así que no se
+    # reintenta ni consume presupuesto.
+    aplicables = [
+        p for p in candidatas
+        if p.confianza >= umbral and p.accion != "INFORMAR" and p.nota is None
+    ]
     if not aplicables:
         return
     if len(aplicables) > presupuesto:
@@ -397,23 +406,32 @@ async def _revertir_observacion(
     resumen.revertidas.append(fila_id)
 
 
-_SQL_ULTIMOS_RECHAZADOS = text(
+# Decisiones humanas que bloquean re-proponer con la misma evidencia: un rechazo, o una reversión
+# hecha por un operador (las reversiones automáticas del árbitro no cuentan).
+_SQL_ULTIMOS_BLOQUEANTES = text(
     """
     SELECT DISTINCT ON (objeto_tipo, objeto_id) objeto_tipo, objeto_id, evidencia_hash
     FROM app.cromo_propuesta
-    WHERE regla = :regla AND estado = 'RECHAZADA' AND objeto_id = ANY(:ids ::bigint[])
+    WHERE regla = :regla AND objeto_id = ANY(:ids ::bigint[])
+      AND (
+        estado = 'RECHAZADA'
+        OR (estado = 'REVERTIDA' AND decidida_por IS DISTINCT FROM :arbitro)
+      )
     ORDER BY objeto_tipo, objeto_id, decidida_en DESC NULLS LAST, id DESC
     """
 )
 
 
-async def _ultimos_hash_rechazados(
+async def _ultimos_hash_bloqueantes(
     sesion: AsyncSession, regla: str, ids: list[int]
 ) -> dict[tuple[str, int], str]:
     if not ids:
         return {}
     filas = (
-        await sesion.execute(_SQL_ULTIMOS_RECHAZADOS, {"regla": regla, "ids": sorted(set(ids))})
+        await sesion.execute(
+            _SQL_ULTIMOS_BLOQUEANTES,
+            {"regla": regla, "ids": sorted(set(ids)), "arbitro": USUARIO_ARBITRO},
+        )
     ).all()
     return {(f.objeto_tipo, int(f.objeto_id)): f.evidencia_hash for f in filas}
 

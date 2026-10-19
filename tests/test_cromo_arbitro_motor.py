@@ -298,6 +298,36 @@ async def test_auto_no_aplicable_queda_propuesta_con_nota(entorno, sin_ingesta):
 
 @requiere_db
 @pytest.mark.asyncio
+async def test_no_aplicable_mismo_hash_no_consume_presupuesto(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    s1 = await _servicio(conn, _NUMEROS[0])
+    s2 = await _servicio(conn, _NUMEROS[1])
+    await _modo(conn, "AUTO", presupuesto=1)
+    regla = ReglaFake()
+    # s1 apunta a una ODF que no existe en inventario: su aplicación falla (odf_inexistente).
+    regla.evaluaciones = [_ev_odf(s1, odf=_ODF_B)]
+    await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    (fallida,) = await _filas(conn)
+    assert fallida.nota == "odf_inexistente"
+    # Corrida siguiente, misma evidencia para s1 y una candidata nueva aplicable para s2:
+    # la fallida no se reintenta ni cuenta en el presupuesto de 1.
+    await _odf(conn)
+    regla.evaluaciones = [_ev_odf(s1, odf=_ODF_B), _ev_odf(s2)]
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.presupuesto_excedido == []
+    por_id = {f.objeto_id: f for f in await _filas(conn)}
+    assert r.aplicadas_auto == [por_id[s2].id]
+    assert por_id[s1].estado == "PROPUESTA" and por_id[s1].nota == "odf_inexistente"
+    # Si la evidencia cambia, la nota se limpia y vuelve a ser candidata.
+    regla.evaluaciones = [_ev_odf(s1, odf=_ODF)]
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    por_id = {f.objeto_id: f for f in await _filas(conn)}
+    assert r.aplicadas_auto == [por_id[s1].id]
+    assert por_id[s1].estado == "EN_OBSERVACION" and por_id[s1].nota is None
+
+
+@requiere_db
+@pytest.mark.asyncio
 async def test_presupuesto_excedido_no_aplica_ninguna(entorno, sin_ingesta):
     sesion, conn, _ = entorno
     s1 = await _servicio(conn, _NUMEROS[0])
@@ -344,6 +374,58 @@ async def test_rechazada_hash_distinto_se_repropone(entorno, sin_ingesta):
     r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
     assert r.nuevas == 1
     assert [f.estado for f in await _filas(conn)] == ["RECHAZADA", "PROPUESTA"]
+
+
+async def _revertida(sesion, conn, decidida_por: str) -> None:
+    """Deja la única propuesta abierta como REVERTIDA decidida por `decidida_por`."""
+    (fila,) = await _filas(conn)
+    await conn.execute(
+        text(
+            "UPDATE app.cromo_propuesta SET estado = 'REVERTIDA', decidida_por = :u, "
+            "decidida_en = now() WHERE id = :id"
+        ),
+        {"u": decidida_por, "id": fila.id},
+    )
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_revertida_por_humano_mismo_hash_no_se_repropone(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    regla = ReglaFake()
+    regla.evaluaciones = [_ev(999_920_601)]
+    await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    await _revertida(sesion, conn, "operador-qa")
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.nuevas == 0
+    assert [f.estado for f in await _filas(conn)] == ["REVERTIDA"]
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_revertida_por_arbitro_mismo_hash_se_repropone(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    regla = ReglaFake()
+    regla.evaluaciones = [_ev(999_920_601)]
+    await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    await _revertida(sesion, conn, USUARIO_ARBITRO)
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.nuevas == 1
+    assert [f.estado for f in await _filas(conn)] == ["REVERTIDA", "PROPUESTA"]
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_revertida_por_humano_hash_distinto_se_repropone(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    regla = ReglaFake()
+    regla.evaluaciones = [_ev(999_920_601)]
+    await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    await _revertida(sesion, conn, "operador-qa")
+    regla.evaluaciones = [_ev(999_920_601, parametros={"x": 2})]
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.nuevas == 1
+    assert [f.estado for f in await _filas(conn)] == ["REVERTIDA", "PROPUESTA"]
 
 
 async def _aplicada_en_observacion(sesion, conn) -> tuple[ReglaFake, int]:
@@ -500,7 +582,8 @@ async def test_regla_que_falla_no_obsoleta_y_sigue_con_otras(entorno, sin_ingest
     a.falla = True
     b.evaluaciones = [_ev(999_920_601, regla=_REGLA_B)]
     r = await evaluar(sesion, _TODO, "VIEWER", reglas=[a, b])
-    assert "error" in r.a_dict()["por_regla"][_REGLA]
+    # Sólo el tipo de excepción: el mensaje (que puede traer SQL) queda en el log.
+    assert r.a_dict()["por_regla"][_REGLA]["error"] == "RuntimeError"
     assert [f.estado for f in await _filas(conn, _REGLA)] == ["PROPUESTA"]
     assert [f.estado for f in await _filas(conn, _REGLA_B)] == ["PROPUESTA"]
 
