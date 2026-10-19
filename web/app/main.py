@@ -9583,6 +9583,209 @@ async def inconsistencias_cromo_deteccion_iniciar_web(
     return JSONResponse({"corrida_id": corrida_id}, status_code=202)
 
 
+class ArbitroPropuestasRequestModel(BaseModel):
+    """Payload para decidir propuestas del árbitro de Cromo (aplicar, rechazar, revertir), en lote."""
+
+    ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_propuesta")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class ArbitroReglaRequestModel(BaseModel):
+    """Payload para cambiar la configuración de una regla del árbitro."""
+
+    codigo: str
+    modo: str = Field(description="APAGADA | SOMBRA | AUTO")
+    umbral: int
+    presupuesto_por_corrida: int
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class ArbitroNormalizarRequestModel(BaseModel):
+    """Payload del análisis retroactivo: reglas a correr (None = todas)."""
+
+    reglas: Optional[list[str]] = None
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+@app.get("/api/admin/infra/arbitro-cromo/propuestas")
+async def arbitro_cromo_propuestas_web(
+    request: Request,
+    regla: Optional[str] = None,
+    estado: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> JSONResponse:
+    """Lista paginada de propuestas del árbitro de Cromo, filtrable por regla y estado. Admin."""
+    from fastapi.encoders import jsonable_encoder
+    from core.services.cromo.arbitro import motor
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await motor.listar_propuestas(
+            sesion, regla=regla, estado=estado, limit=limit, offset=offset
+        )
+    return JSONResponse(jsonable_encoder(resultado))
+
+
+async def _encolar_arbitro_tras_decision(sesion, ids: Sequence[int], motivo: str) -> None:
+    """Encola una evaluación VIEWER por tipo de objeto tocado. Best-effort: nunca altera la respuesta."""
+    try:
+        from core.services.cromo.arbitro import evaluaciones
+
+        alcances = await evaluaciones.alcances_de_propuestas(sesion, ids)
+        for tipo, objeto_ids in alcances.items():
+            await _encolar_arbitro(tipo, objeto_ids, motivo)
+    except Exception:  # noqa: BLE001
+        logger.warning("action=arbitro_encolar_viewer result=fail motivo=%s", motivo, exc_info=True)
+
+
+@app.post("/api/admin/infra/arbitro-cromo/propuestas/aplicar")
+async def arbitro_cromo_aplicar_web(
+    request: Request, body: ArbitroPropuestasRequestModel
+) -> JSONResponse:
+    """Aplica propuestas a mano. Lo que no se puede vuelve en `rechazados` con su motivo. Admin + CSRF."""
+    from core.services.cromo.arbitro import motor
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await motor.aplicar_manual(sesion, body.ids, username)
+        await sesion.commit()
+        if resultado["aplicados"]:
+            await _encolar_arbitro_tras_decision(sesion, resultado["aplicados"], f"arbitro-aplicar user={username}")
+    return JSONResponse({"ok": True, **resultado})
+
+
+@app.post("/api/admin/infra/arbitro-cromo/propuestas/rechazar")
+async def arbitro_cromo_rechazar_web(
+    request: Request, body: ArbitroPropuestasRequestModel
+) -> JSONResponse:
+    """Rechaza propuestas (la decisión humana bloquea re-proponer con la misma evidencia). Admin + CSRF."""
+    from core.services.cromo.arbitro import motor
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await motor.rechazar(sesion, body.ids, username)
+        await sesion.commit()
+    return JSONResponse({"ok": True, **resultado})
+
+
+@app.post("/api/admin/infra/arbitro-cromo/propuestas/revertir")
+async def arbitro_cromo_revertir_web(
+    request: Request, body: ArbitroPropuestasRequestModel
+) -> JSONResponse:
+    """Revierte propuestas en observación o aplicadas. Lo que no se puede vuelve en `omitidos`. Admin + CSRF."""
+    from core.services.cromo.arbitro import motor
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await motor.revertir_manual(sesion, body.ids, username)
+        await sesion.commit()
+        if resultado["revertidos"]:
+            await _encolar_arbitro_tras_decision(sesion, resultado["revertidos"], f"arbitro-revertir user={username}")
+    return JSONResponse({"ok": True, **resultado})
+
+
+@app.get("/api/admin/infra/arbitro-cromo/reglas")
+async def arbitro_cromo_reglas_web(request: Request) -> JSONResponse:
+    """Configuración de cada regla con su precisión histórica y si conviene pasarla a AUTO. Admin."""
+    from fastapi.encoders import jsonable_encoder
+    from core.services.cromo.arbitro import motor
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        reglas = await motor.precision_por_regla(sesion)
+    return JSONResponse({"reglas": jsonable_encoder(reglas)})
+
+
+@app.post("/api/admin/infra/arbitro-cromo/reglas")
+async def arbitro_cromo_reglas_actualizar_web(
+    request: Request, body: ArbitroReglaRequestModel
+) -> JSONResponse:
+    """Cambia modo, umbral y presupuesto de una regla. 422 ante valores inválidos. Admin + CSRF."""
+    from core.services.cromo.arbitro import motor
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_reglas", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    async with AsyncSessionLocal() as sesion:
+        try:
+            await motor.actualizar_regla(
+                sesion,
+                body.codigo,
+                modo=body.modo,
+                umbral=body.umbral,
+                presupuesto_por_corrida=body.presupuesto_por_corrida,
+                usuario=username,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        await sesion.commit()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/admin/infra/arbitro-cromo/normalizar")
+async def arbitro_cromo_normalizar_web(
+    request: Request, body: ArbitroNormalizarRequestModel
+) -> JSONResponse:
+    """Lanza el análisis retroactivo (alcance TODO) en el worker. 409 si ya hay otro en curso
+    (EN_COLA/EN_CURSO de las últimas 6 h); 422 si alguna regla no existe. Admin + CSRF."""
+    from core.services.cromo.arbitro import evaluaciones
+    from core.services.cromo.arbitro.cola import encolar_evaluacion
+    from core.services.cromo.arbitro.reglas import REGLAS
+    from core.services.cromo.arbitro.senales import Alcance
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_normalizar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    desconocidas = sorted(set(body.reglas or []) - {r.codigo for r in REGLAS})
+    if desconocidas:
+        return JSONResponse({"error": f"Reglas inexistentes: {desconocidas}"}, status_code=422)
+    async with AsyncSessionLocal() as sesion:
+        evaluacion_id, en_curso = await evaluaciones.crear_evaluacion_normalizador(
+            sesion, username, body.reglas
+        )
+        if evaluacion_id is None:
+            return JSONResponse(
+                {"error": "Ya hay un análisis retroactivo en curso.", "evaluacion_id": en_curso},
+                status_code=409,
+            )
+        await sesion.commit()
+    await encolar_evaluacion(
+        Alcance("TODO"), "NORMALIZADOR", motivo=f"manual:{username}",
+        evaluacion_id=evaluacion_id, reglas=body.reglas,
+    )
+    logger.info("action=arbitro_cromo_normalizar user=%s evaluacion_id=%s", username, evaluacion_id)
+    return JSONResponse({"evaluacion_id": evaluacion_id}, status_code=202)
+
+
+@app.get("/api/admin/infra/arbitro-cromo/evaluaciones")
+async def arbitro_cromo_evaluaciones_web(
+    request: Request, limit: int = Query(10, ge=1, le=50)
+) -> JSONResponse:
+    """Últimas evaluaciones del árbitro y el id de la que está en curso (o `null`). Admin."""
+    from fastapi.encoders import jsonable_encoder
+    from core.services.cromo.arbitro import evaluaciones
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        resultado = await evaluaciones.listar_evaluaciones(sesion, limit)
+    return JSONResponse(jsonable_encoder(resultado))
+
+
 class OdfConfirmadaItemModel(BaseModel):
     """Una ODF a confirmar para un Servicio, con su rol en el recorrido."""
 
