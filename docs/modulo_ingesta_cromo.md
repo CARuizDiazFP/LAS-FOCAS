@@ -664,7 +664,7 @@ presupuesto 50). Se cambia desde la pestaña **Reglas** del viewer.
 |---|---|
 | `APAGADA` | La regla no corre. |
 | `SOMBRA` | Registra lo que *haría* como `PROPUESTA`; el operador aplica o rechaza. |
-| `AUTO` | Aplica sola lo que tenga `confianza ≥ umbral` (nunca una `INFORMAR`), dentro del presupuesto. |
+| `AUTO` | Aplica sola lo que tenga `confianza ≥ umbral` (nunca una `INFORMAR` ni una evaluación con veto), dentro del presupuesto. El umbral en AUTO es al menos 1 (`actualizar_regla` responde 422 con 0). |
 
 - **Presupuesto por corrida y por regla.** Si las aplicables superan `presupuesto_por_corrida`, no se
   aplica nada de esa regla y la corrida lo informa (`presupuesto_excedido`), con el mismo criterio que
@@ -680,11 +680,11 @@ presupuesto 50). Se cambia desde la pestaña **Reglas** del viewer.
 
 | Código | Detecta | Señales (peso) | Acción | AUTO |
 |---|---|---|---|---|
-| `ODF_POR_CAMINO` | Servicio del universo "sin ODF" cuyo camino llega a un conector de ODF | camino en vivo completo hacia la ODF objetivo (+45); sólo fusiones locales (+45, tope 60); at62 del conector = identidad del servicio (+25); conector libre (+10); coincide con la ODF sugerida por hermanos (+15); dos extremos en ODF distintas con fila (+5); vetos: ODF sin fila vigente, conector con otro servicio | `ASOCIAR_ODF`: override `origen='AUTO'`, `categoria_causa='EVIDENCIA_CAMINO'` | Sí; revertir borra la fila AUTO |
+| `ODF_POR_CAMINO` | Servicio del universo "sin ODF" cuyo camino llega a un conector de ODF (clase 69 u 86) | camino en vivo completo hacia la ODF objetivo (+45); sólo fusiones locales (+45, tope 60); at62 del conector = identidad del servicio (+25); conector libre (+10); coincide con la ODF sugerida por hermanos (+15); dos extremos en ODF distintas con fila (+5); vetos: ODF sin fila vigente (o de otra clase), conector con otro servicio. Objetivo: el conector con at62 coincidente; entre ellos, primero el que tiene camino en vivo y después la menor ODF | `ASOCIAR_ODF`: override `origen='AUTO'`, `categoria_causa='EVIDENCIA_CAMINO'` | Sí; revertir borra la fila AUTO |
 | `CONTRADICCION_SERVICIO` | El camino llega a un conector cuyo `servicio_resuelto` es otro servicio | lista de conectores en `parametros.conectores` | `INFORMAR` (una por servicio) | No |
-| `GEMELO_VACIO` | Botellas Cromo homónimas de la misma clase: una sin cables ni fusiones y exactamente una operativa | misma localidad (+20); < 50 m (+30), 50-300 m (+10), > 300 m (veto); vacía sin fusiones (+30); misma Cámara (+15); vetos: separada a mano, alias previo | `FUSIONAR_GEMELO` vía `consolidar_grupo_botellas` (alias `fusionar`) | Sí; revertir borra el alias y vuelve `vigente=true` |
+| `GEMELO_VACIO` | Botellas Cromo homónimas de la misma clase: una sin cables ni fusiones y exactamente una operativa | misma localidad (+20); ≤ 50 m (+30), 50-300 m (+10), > 300 m (veto `LEJOS_300M`); vacía sin fusiones (+30); misma Cámara (+15); vetos: separada a mano, alias previo (incluido uno sin `creado_por`) | `FUSIONAR_GEMELO` vía `consolidar_grupo_botellas` (alias `fusionar`); una botella isla con una única gemela operativa no isla da `INFORMAR` | Sí (sólo `FUSIONAR_GEMELO`); revertir borra el alias y vuelve `vigente=true` |
 | `GEMELO_OPERATIVO` | Grupos con 2+ botellas Cromo con cables | comparten cables (+40); distancia; cables disjuntos (−30) | `INFORMAR` | No (fusionar recablea) |
-| `ODF_GEMELA_ISLA` | ODF isla (`ELEMENTO_ISLA`, clase 69/86) con una ODF homónima operativa | igual que `GEMELO_VACIO` | `INFORMAR` | No |
+| `ODF_GEMELA_ISLA` | ODF isla (`ELEMENTO_ISLA`, clase 69/86) con una ODF homónima operativa | sólo cercanía: misma localidad (+20); ≤ 50 m (+30), 50-300 m (+10), > 300 m (veto `LEJOS_300M`) | `INFORMAR` | No |
 
 El universo de `ODF_POR_CAMINO` es el de `servicios_sin_odf`. Un override AUTO saca al servicio del
 listado sin ODF, pero **no** es una ODF confirmada: `clasificar_caminos` y los trackings no cambian.
@@ -700,8 +700,12 @@ del commit). Lo procesa `botellas_recalculo_worker`, que registra cada corrida e
 2. **Registrador y web** (`REGISTRADOR`, alcance = el servicio): `trackings_del_servicio` (Slack
    `@Registrador track`, `/caminos` del portal), `GET …/tracking.txt` en caché miss y el panel
    `/camino-optico` dejan **evidencia de camino** en `app.cromo_evidencia_camino` (upsert por
-   `(servicio_id, pelo_n_id)`, savepoint propio, nunca lanza). Sólo con camino completo y sin errores;
-   la evidencia vale 30 días. La auditoría global (`AUDITORIA_GLOBAL`) registra pero no encola.
+   `(servicio_id, pelo_n_id)`, savepoint propio, nunca lanza). También se registra un camino
+   incompleto o truncado, con `completo=false`: la regla sólo usa la evidencia `completo=true`. La
+   fecha (`generado_at`) es la del tracking (un tracking de caché trae la suya), y la evidencia vale
+   30 días. Sólo se encola si la evidencia es nueva o cambió (extremos, pelos o `completo`); una
+   consulta que repite el mismo camino sólo refresca la fecha. La auditoría global
+   (`AUDITORIA_GLOBAL`) registra pero no encola.
 3. **Viewer** (`VIEWER`, alcance = objetos tocados): asociar ODF, confirmar o desconfirmar ODF,
    apropiar, consolidar, eliminar y separar botellas, cambiar el estado de una inconsistencia y
    aplicar/rechazar/revertir propuestas.
@@ -714,15 +718,17 @@ propio (`omitida=otra_evaluacion`).
 ### Observación
 
 Lo aplicado en AUTO queda `EN_OBSERVACION`. La siguiente evaluación `INGESTA` lo vuelve a puntuar:
-si sigue sobre el umbral y con el mismo objetivo pasa a `APLICADA`; si cae o aparece un veto se
-revierte solo y queda `REVERTIDA`. Las aplicaciones, reversiones y presupuestos excedidos se avisan
-por WebSocket (`admin-notifications`) y por Slack si la fila `Cromo Inconsistencias` de
-`config_servicios` está activa (hoy inactiva en dev y prod).
+si sigue sobre el umbral, sin vetos y con el mismo objetivo pasa a `APLICADA`; si cae o aparece un
+veto se revierte solo y queda `REVERTIDA`. Las aplicaciones, reversiones y presupuestos excedidos se
+avisan por WebSocket (`admin-notifications`) y por Slack si la fila `Cromo Inconsistencias` de
+`config_servicios` está activa (hoy inactiva en dev y prod). `botellas_recalculo_worker` tiene
+`slack_sdk` y el secreto `slack_bot_token_v1` desde la revisión final del 2026-10-19: antes el aviso
+a Slack fallaba en silencio (`slack_error`).
 
 ### Análisis retroactivo desde la UI
 
 `POST /api/admin/infra/arbitro-cromo/normalizar` crea la fila `EN_COLA` y encola. Responde 202 con
-`evaluacion_id`, 409 si ya hay otra en curso (`EN_COLA`/`EN_CURSO` de las últimas 6 h) y 503 si no se
+`evaluacion_id`, 422 si alguna regla pedida no existe, 409 si ya hay otra en curso (`EN_COLA`/`EN_CURSO` de las últimas 6 h) y 503 si no se
 pudo encolar (la fila se cierra `FALLIDA`). El worker la pasa a `EN_CURSO` y después a `OK` (con
 `resumen.por_regla`), `OMITIDA` o `FALLIDA`. Al arrancar, el worker cierra como `FALLIDA`
 (`error="interrumpida"`) las `EN_CURSO` que quedaron de un proceso anterior. Medido en dev el
@@ -743,17 +749,18 @@ nada hasta que haya caminos en vivo.
 
 ### Límites conocidos
 
-- **El Registrador de Slack no encola.** En los dos compose (dev y prod), `slack_baneo_worker` no
-  tiene el secreto `redis_password_v1` ni `REDIS_HOST`. Verificado en dev: la evidencia se guarda, pero el `rpush` falla con
-  `AuthenticationError` (warning `arbitro_encolar result=fail`). Esa evidencia se evalúa en la
-  próxima ingesta o en un análisis retroactivo. El portal web sí encola.
-- **`ODF_POR_CAMINO` prefiere el conector en vivo con at62 coincidente aunque su ODF no sea 69/86.**
-  Caso real 19872 (servicio 102289): el camino en vivo termina en un conector de la ODF 9364398
-  (clase 85, sin fila en `cromo_odfs`), así que se elige como objetivo y la propuesta queda vetada
-  (`ODF_SIN_FILA`, confianza 0). Sin esa evidencia, la regla daba 60 hacia la ODF 6646677 por
-  fusiones locales. Además, el resultado depende del alcance: con alcance SERVICIOS no hay BFS local.
-- **Un umbral 0 intenta aplicar evaluaciones vetadas** (confianza 0 ≥ 0). Lo frena la revalidación
-  de `aplicar` (`odf_inexistente`), que deja la `nota` en la propuesta.
+Corregido en la revisión final (2026-10-19): `slack_baneo_worker` ya tiene `REDIS_HOST`/`REDIS_PORT`
+y el secreto `redis_password_v1` en los dos compose, así que el Registrador de Slack encola;
+`ODF_POR_CAMINO` corre el BFS local con cualquier alcance (mismo `evidencia_hash` con `SERVICIOS` y
+`TODO`), prioriza el conector en vivo y descarta conectores de ODF que no son clase 69/86 (caso real
+19872: el conector en vivo de la ODF 9364398, clase 85, vetaba la propuesta); un veto nunca se
+aplica ni se confirma en AUTO.
+
+- **Costo del BFS local con alcance `SERVICIOS`.** El grafo de fusiones (~1M aristas dirigidas,
+  ~20 MB) se cachea en el proceso del worker con una huella de `cromo_fusiones` (cuenta y sumas de
+  los pelos vigentes, ~0,1 s). Medido en dev el 2026-10-19: la primera evaluación de un servicio
+  tarda unos 4,4 s (carga del grafo); las siguientes, ~0,9 s. Un servicio sin pelos con match no
+  carga el grafo.
 - `GEMELO_VACIO` da 0 casos en dev desde que los gemelos se agrupan por clase: no hay con qué
   calibrarla. `ODF_GEMELA_ISLA` no exige la misma clase (69 vs 86). Un `FUSIONAR_GEMELO` hacia un
   destino que es isla no está vetado.
@@ -762,6 +769,8 @@ nada hasta que haya caminos en vivo.
 - Un worker cortado durante `avisar_en_curso` deja la evaluación `EN_CURSO` hasta el próximo
   arranque. Si fallan Redis y después la base, puede quedar una `EN_COLA` fantasma de hasta 6 h que
   bloquea el botón. La reconciliación al arrancar asume un único worker.
+- Cada cambio de estado de una inconsistencia encola un análisis `TODO` completo (~11 s), aunque
+  toque un solo objeto.
 - `evidencia_hash` ordena las señales sólo por código. `cromo_servicio_odf_override.propuesta_id`
   no tiene índice (tabla chica).
 - La pestaña Propuestas abre 3 WebSockets y pierde la selección al recargar.
