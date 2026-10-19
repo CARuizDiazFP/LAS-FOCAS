@@ -76,7 +76,7 @@ async def _cable(conn, extremo: int) -> None:
     )
 
 
-async def _alias(conn, origen: int, destino: int, creado_por: str) -> None:
+async def _alias(conn, origen: int, destino: int, creado_por: str | None) -> None:
     await conn.execute(
         text(
             "INSERT INTO app.cromo_botella_alias (id_cromo_origen, id_cromo_destino, accion, creado_por) "
@@ -142,6 +142,19 @@ async def test_alias_de_un_operador_veta(entorno):
     await _botella(conn, _VACIA)
     await _cable(conn, _OPERATIVA)
     await _alias(conn, _VACIA, _OPERATIVA, "operador-qa")
+
+    (ev,) = await _vacias(sesion, frozenset({_VACIA}))
+    assert any(s.codigo == "ALIAS_PREVIO" and s.veto for s in ev.senales)
+
+
+@pytest.mark.asyncio
+async def test_alias_sin_creador_de_una_propia_veta(entorno):
+    """`creado_por` NULL no es del árbitro: con lógica trivalente (`=`) el alias se perdía."""
+    sesion, conn = entorno
+    await _botella(conn, _OPERATIVA)
+    await _botella(conn, _VACIA)
+    await _cable(conn, _OPERATIVA)
+    await _alias(conn, _VACIA, _OPERATIVA, None)
 
     (ev,) = await _vacias(sesion, frozenset({_VACIA}))
     assert any(s.codigo == "ALIAS_PREVIO" and s.veto for s in ev.senales)

@@ -240,7 +240,9 @@ _SQL_DETALLE_BOTELLAS = text(
            EXISTS (
                SELECT 1 FROM app.cromo_botella_alias a
                WHERE a.id_cromo_origen = b.n_id
-                 AND NOT (a.creado_por = :usuario AND a.id_cromo_origen = ANY(:propios ::bigint[]))
+                 -- IS NOT DISTINCT FROM: un alias con creado_por NULL no es del árbitro y veta.
+                 AND NOT (a.creado_por IS NOT DISTINCT FROM :usuario
+                          AND a.id_cromo_origen = ANY(:propios ::bigint[]))
            ) AS alias_previo
     FROM app.cromo_botellas b
     WHERE b.n_id = ANY(:ids ::bigint[])
