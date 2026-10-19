@@ -116,6 +116,17 @@
   - Columna `origen text NOT NULL DEFAULT 'MANUAL'`, CHECK `IN ('MANUAL','AUTO')`.
   - Columna `propuesta_id bigint NULL`, FK a `cromo_propuesta.id` con `ON DELETE SET NULL`.
   - El CHECK de `categoria_causa` se recrea agregando `'EVIDENCIA_CAMINO'`. Copiar la lista vigente de `20260908_01_cromo_servicio_odf_override.py:102` o de la migración posterior que lo haya cambiado; verificar con `grep -rn categoria_causa db/alembic/versions`.
+- **Tabla `app.cromo_arbitro_evaluacion`** (pedido del usuario el 2026-10-19: el análisis retroactivo se lanza y se sigue desde la UI):
+  - `id bigserial PK`;
+  - `disparo text NOT NULL`, mismo CHECK que en `cromo_propuesta`;
+  - `alcance jsonb NOT NULL`;
+  - `reglas text[]` (NULL = todas las activas);
+  - `estado text NOT NULL`, CHECK `IN ('EN_COLA','EN_CURSO','OK','OMITIDA','FALLIDA')`;
+  - `resumen jsonb` (un `ResumenEvaluacion.a_dict()`), `error text`;
+  - `solicitada_por varchar(128)`;
+  - `encolada_en timestamptz NOT NULL DEFAULT now()`, `iniciada_en timestamptz`, `terminada_en timestamptz`.
+  - Índice `(encolada_en DESC)`.
+  - Test adicional en el Paso 1: `test_evaluacion_checks`, donde `estado='X'` da `IntegrityError`.
 - **Desvío deliberado de la spec:** no hay columna `truncado`. Un camino truncado se registra con `completo=false` (Task 6) y la regla sólo cuenta los `completo` como camino en vivo.
 - `downgrade()` revierte todo en orden inverso. El CHECK original se restaura después de borrar las filas `EVIDENCIA_CAMINO`, porque son datos del árbitro.
 
@@ -226,7 +237,8 @@
 - `async def registrar_y_encolar(sesion, servicio_id, entradas, *, completo, fuente) -> None`: llama a `registrar_evidencia` y, si escribió más de 0 filas, a `encolar_evaluacion(Alcance("SERVICIOS", (servicio_id,)), "REGISTRADOR", motivo=f"evidencia:{fuente}")`.
 - `cola.py`:
   - `JOB_KIND_ARBITRO = "arbitro_evaluar"`.
-  - `async def encolar_evaluacion(alcance: Alcance, disparo: str, motivo: str = "") -> None` hace `rpush` a `botella_recompute_queue.QUEUE_KEY` de `{"kind","alcance":alcance.a_dict(),"disparo","motivo"}`. Usa `get_redis()` y es best-effort como `encolar_recalculo_duplicados_botellas`.
+  - `async def encolar_evaluacion(alcance: Alcance, disparo: str, motivo: str = "", *, evaluacion_id: Optional[int] = None, reglas: Optional[Sequence[str]] = None) -> None` hace `rpush` a `botella_recompute_queue.QUEUE_KEY` de `{"kind","alcance":alcance.a_dict(),"disparo","motivo","evaluacion_id","reglas"}`. Usa `get_redis()` y es best-effort como `encolar_recalculo_duplicados_botellas`.
+  - `evaluacion_id` lo pasa sólo el análisis retroactivo lanzado desde la UI (Task 13), que ya creó la fila `EN_COLA`. Los disparadores automáticos no lo pasan.
 
 - [ ] **Paso 1: tests que fallan.**
   - `test_entradas_de_trackings_omite_sin_extremos`.
@@ -254,16 +266,27 @@
 - `DISPATCH: dict[str, Callable[[dict], Awaitable[None]]]`. El handler existente queda envuelto como `lambda payload: _recalcular_botellas_duplicados()`.
 - `async def _evaluar_arbitro(payload: dict) -> None`:
   - Valida `Alcance.desde_dict(payload["alcance"])` y que `disparo` esté en `DISPAROS`; si no, loguea `evento=job_invalido` y retorna.
-  - Abre `AsyncSessionLocal()`, llama a `evaluar(sesion, alcance, disparo)` y hace `commit()`.
-  - Al final llama a `avisar_evaluacion(resumen)`.
-- `aviso.py`: `async def avisar_evaluacion(resumen: "ResumenEvaluacion") -> None`. Nunca lanza.
-  - Siempre publica por WS en `ADMIN_NOTIFICATIONS_CHANNEL` con `{"type":"arbitro_cromo_evaluado", "nuevas", "aplicadas_auto", "revertidas", "presupuesto_excedido"}`.
+  - **Registro de la corrida:** con `evaluacion_id`, usa esa fila de `cromo_arbitro_evaluacion`. Sin él, crea una con `estado='EN_CURSO'` y `solicitada_por=USUARIO_ARBITRO`.
+  - La marca `EN_CURSO` con `iniciada_en` y hace commit.
+  - Abre `AsyncSessionLocal()`, llama a `evaluar(sesion, alcance, disparo, codigos=payload.get("reglas"))` y hace `commit()`.
+  - Cierra la fila según el resultado y hace commit:
+    - `OK` con `resumen` y `terminada_en`;
+    - `OMITIDA` si `resumen.omitida`;
+    - `FALLIDA` con `error` si hubo excepción. En ese caso hace rollback de la evaluación antes de cerrar la fila en una transacción nueva.
+  - Al final llama a `avisar_evaluacion(resumen, evaluacion_id)`.
+- `aviso.py`: `async def avisar_evaluacion(resumen: "ResumenEvaluacion", evaluacion_id: Optional[int]) -> None`. Nunca lanza.
+  - Siempre publica por WS en `ADMIN_NOTIFICATIONS_CHANNEL` con `{"type":"arbitro_cromo_evaluado", "evaluacion_id", "nuevas", "aplicadas_auto", "revertidas", "presupuesto_excedido"}`.
+  - Al pasar a `EN_CURSO` publica además `{"type":"arbitro_cromo_en_curso","evaluacion_id"}`.
   - Manda texto a Slack sólo si `aplicadas_auto`, `revertidas` o `presupuesto_excedido` son no vacíos, y con la config de la fila "Cromo Inconsistencias".
   - Reusa `inconsistencias_reporte._leer_config_slack` y `_enviar_slack_sync`. Verificar sus firmas en `inconsistencias_reporte.py:244-360` antes de usarlas.
 
 - [ ] **Paso 1: tests que fallan.**
   - `test_dispatch_arbitro_llama_evaluar`: con `evaluar` mockeado, verifica el alcance y el disparo recibidos y el commit.
   - `test_dispatch_arbitro_payload_invalido_no_llama`: `alcance={"tipo":"X"}`.
+  - `test_dispatch_arbitro_cierra_evaluacion_ok`: la fila `EN_COLA` termina `OK` con `resumen`.
+  - `test_dispatch_arbitro_excepcion_marca_fallida`: la fila termina `FALLIDA` con `error`.
+  - `test_dispatch_arbitro_sin_evaluacion_id_crea_fila`.
+  - Para estos tres tests, sesión fake o `requiere_postgres_real` según convenga.
   - `test_dispatch_botellas_duplicados_sigue_funcionando`.
   - `test_avisar_evaluacion_sin_cambios_no_va_a_slack`.
 - [ ] **Paso 2:** `pytest tests/test_botellas_recalculo_worker.py -q`. Esperado: FAIL.
@@ -420,7 +443,8 @@
 
 **Interfaces que produce:**
 - `@dataclass class ResumenEvaluacion`: `nuevas: int = 0`, `actualizadas: int = 0`, `obsoletas: int = 0`, `aplicadas_auto: list[int]`, `confirmadas: list[int]`, `revertidas: list[int]`, `presupuesto_excedido: list[str]` y `omitida: Optional[str] = None`.
-- `async def evaluar(sesion, alcance: Alcance, disparo: str, *, reglas: Optional[Sequence[Regla]] = None) -> ResumenEvaluacion`. No hace commit. El algoritmo:
+- `ResumenEvaluacion.a_dict() -> dict`, con una entrada `por_regla: dict[str, dict]` de contadores por código. La UI la usa para mostrar el resultado de cada corrida.
+- `async def evaluar(sesion, alcance: Alcance, disparo: str, *, reglas: Optional[Sequence[Regla]] = None, codigos: Optional[Sequence[str]] = None) -> ResumenEvaluacion`. No hace commit. `codigos` limita la corrida a esas reglas: lo usa el análisis retroactivo por regla desde la UI. El algoritmo:
   1. Si `await ingesta_en_curso(sesion)` devuelve algo, sale con `omitida="ingesta_en_curso"`. Si `pg_try_advisory_xact_lock(LOCK_ARBITRO)` da false, sale con `omitida="otra_evaluacion"`. `LOCK_ARBITRO` es una constante int propia, distinta de los locks de `inconsistencias_cromo.py`.
   2. Carga la config de reglas. Las reglas `APAGADA` se saltean.
   3. Por regla: `propios` son los `objeto_id` en `EN_OBSERVACION` de esa regla. Corre `evaluaciones = await regla.evaluar(sesion, alcance, propios=…, contexto=ctx)`.
@@ -510,7 +534,13 @@
 | `POST …/propuestas/revertir` | igual | `revertir_manual` | — | `arbitro_cromo_propuestas` |
 | `GET /api/admin/infra/arbitro-cromo/reglas` | — | `precision_por_regla` | — | — |
 | `POST /api/admin/infra/arbitro-cromo/reglas` | `{codigo, modo, umbral, presupuesto_por_corrida, csrf_token}` | `actualizar_regla` | 422 ante `ValueError` | `arbitro_cromo_reglas` |
-| `POST /api/admin/infra/arbitro-cromo/normalizar` | `{csrf_token}` | `encolar_evaluacion(Alcance("TODO"), "NORMALIZADOR", motivo=f"manual:{user}")` | `202 {"encolado": true}` | `arbitro_cromo_normalizar` |
+| `POST /api/admin/infra/arbitro-cromo/normalizar` (análisis retroactivo) | `{reglas: Optional[list[str]], csrf_token}` | ver abajo | `202 {"evaluacion_id": id}` | `arbitro_cromo_normalizar` |
+| `GET /api/admin/infra/arbitro-cromo/evaluaciones` | `limit` (≤50) | `listar_evaluaciones(sesion, limit)` en `motor.py` | `{"items":[{id, disparo, alcance, reglas, estado, resumen, error, solicitada_por, encolada_en, iniciada_en, terminada_en}], "en_curso": Optional[id]}` | — |
+
+**`POST …/normalizar`:**
+- Responde 409 si ya hay una evaluación `EN_COLA` o `EN_CURSO` de disparo `NORMALIZADOR`.
+- Responde 422 si algún código de `reglas` no existe.
+- Si no, crea una fila en `cromo_arbitro_evaluacion` con `disparo='NORMALIZADOR'`, `alcance={"tipo":"TODO"}`, `reglas`, `estado='EN_COLA'` y `solicitada_por=user`. Hace commit y después `encolar_evaluacion(Alcance("TODO"), "NORMALIZADOR", motivo=f"manual:{user}", evaluacion_id=id, reglas=reglas)`.
 
 Después de aplicar o revertir con éxito se encola `encolar_evaluacion` con el alcance de los objetos tocados y disparo `VIEWER`.
 
@@ -519,7 +549,10 @@ Después de aplicar o revertir con éxito se encola `encolar_evaluacion` con el 
   - `test_aplicar_sin_csrf_403`.
   - `test_aplicar_devuelve_aplicados_y_rechazados`.
   - `test_reglas_post_valor_invalido_422`.
-  - `test_normalizar_encola_y_202`.
+  - `test_normalizar_crea_evaluacion_encola_y_202`.
+  - `test_normalizar_con_otra_en_curso_409`.
+  - `test_normalizar_regla_inexistente_422`.
+  - `test_evaluaciones_devuelve_en_curso`.
 - [ ] **Paso 2:** `pytest tests/test_web_arbitro_cromo.py -q`. Esperado: FAIL.
 - [ ] **Paso 3:** implementar.
 - [ ] **Paso 4:** mismo comando. Esperado: PASS.
@@ -534,14 +567,20 @@ Después de aplicar o revertir con éxito se encola `encolar_evaluacion` con el 
 
 **Interfaces que produce** (en `arbitroCromo.ts`, sobre `requestJson` como en `inconsistenciasCromo.ts`):
 - Tipos `PropuestaArbitro`, `SenalArbitro` y `ReglaArbitro`, con los campos de la Task 13.
-- `listarPropuestas(params)`, `aplicarPropuestas(ids)`, `rechazarPropuestas(ids)`, `revertirPropuestas(ids)`, `listarReglas()`, `actualizarRegla(codigo, {modo, umbral, presupuesto_por_corrida})` y `normalizarTodo()`. Los POST van con `csrf: true`.
+- `listarPropuestas(params)`, `aplicarPropuestas(ids)`, `rechazarPropuestas(ids)`, `revertirPropuestas(ids)`, `listarReglas()`, `actualizarRegla(codigo, {modo, umbral, presupuesto_por_corrida})`, `ejecutarAnalisisRetroactivo(reglas?: string[])` y `listarEvaluaciones(limit)`. Los POST van con `csrf: true`.
+- Tipo `EvaluacionArbitro`.
+- Componente adicional: `web/frontend/src/admin/components/arbitro/AnalisisRetroactivoPanel.vue`.
 
 **UI:**
 - **Propuestas:**
   - Filtros por regla y por estado; el default es estado `PROPUESTA`.
   - Tabla con regla, objeto (con link a la vista existente del servicio o botella si la hay), acción, confianza (barra 0-100), señales (desplegable `codigo +peso`, con los vetos marcados), disparo y estado.
   - Selección múltiple y botones Aplicar, Rechazar y Revertir, cada uno con `window.confirm`; mostrar los `rechazados` con su motivo.
-  - Botón "Normalizar todo".
+- **Panel "Análisis retroactivo"** (arriba de la tabla de Propuestas):
+  - Selector de reglas (todas por defecto) y botón "Ejecutar análisis retroactivo" con `window.confirm`.
+  - El botón se deshabilita mientras `en_curso` no es nulo, o se reciben los WS `arbitro_cromo_en_curso`/`arbitro_cromo_evaluado`, y muestra "En curso desde HH:MM".
+  - Historial de las últimas 10 evaluaciones, de cualquier disparo: estado, disparo, quién la pidió, duración y resumen por regla (nuevas, aplicadas AUTO, obsoletas, revertidas, presupuesto excedido).
+  - Al terminar, refresca la tabla de Propuestas filtrada por las reglas de esa corrida.
 - **Reglas:**
   - Una fila por regla con selector de modo, inputs de umbral y presupuesto, y aceptadas/rechazadas/precisión.
   - Badge "Lista para AUTO" si `sugerir_auto`.
@@ -570,7 +609,7 @@ Después de aplicar o revertir con éxito se encola `encolar_evaluacion` con el 
 - [ ] **Paso 3:** `@Registrador track <uno de los 17 servicios de alta confianza>` en Slack dev. Para sacar la lista, correr la BFS de la regla en modo reporte: `docker exec -e PYTHONPATH=/app lasfocasdev-web python3 -c "..."`, llamando a `ReglaOdfPorCamino._cargar` con `Alcance("TODO")`.
   - Esperado: una fila en `cromo_evidencia_camino`, el job procesado en los logs de `botellas_recalculo_worker` (`evento=job_procesado kind=arbitro_evaluar`) y una propuesta `ODF_POR_CAMINO` en SOMBRA visible en el viewer.
   - El count de overrides no cambia.
-- [ ] **Paso 4:** "Normalizar todo" desde el viewer. Contar por regla con `SELECT regla, accion, count(*) FROM app.cromo_propuesta WHERE estado='PROPUESTA' GROUP BY 1,2;` y comparar con la línea base de la spec: ≈17 `ODF_POR_CAMINO`, ≈31 `CONTRADICCION_SERVICIO`, ≈4 `GEMELO_VACIO`, ≈8 `ODF_GEMELA_ISLA` y ≈28 `GEMELO_OPERATIVO`. Las diferencias se explican en el PR diario.
+- [ ] **Paso 4:** "Ejecutar análisis retroactivo" desde el viewer, con todas las reglas. Verificar en la UI que el botón queda deshabilitado mientras corre, que el historial muestra `EN_CURSO` y luego `OK` con su resumen por regla, y que un segundo click durante la corrida da 409. Contar por regla con `SELECT regla, accion, count(*) FROM app.cromo_propuesta WHERE estado='PROPUESTA' GROUP BY 1,2;` y comparar con la línea base de la spec: ≈17 `ODF_POR_CAMINO`, ≈31 `CONTRADICCION_SERVICIO`, ≈4 `GEMELO_VACIO`, ≈8 `ODF_GEMELA_ISLA` y ≈28 `GEMELO_OPERATIVO`. Las diferencias se explican en el PR diario.
 - [ ] **Paso 5:** pasar `ODF_POR_CAMINO` a AUTO desde el panel de Reglas sólo para la verificación, repetir el track del servicio del Paso 3 y verificar:
   - el override con `origen='AUTO'`;
   - que el servicio no aparece en "Servicios sin ODF";
