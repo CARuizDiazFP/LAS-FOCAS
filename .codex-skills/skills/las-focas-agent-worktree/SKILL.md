@@ -279,6 +279,16 @@ y un checkout de control sucio o fuera de `dev`. **Sólo diagnostica: no corrige
     leer la tabla (pasó con `port_offset`: el código previo construía `Agente(**fila)`).
     Sincronizar con `dev` antes de volver a usar la CLI; desde `port_offset` la carga de
     filas ignora columnas desconocidas.
+13. **Reconexión del IDE = posible sesión duplicada.** Tras un reinicio de conexión (o límite
+    de uso) la misma conversación puede quedar viva en otra sesión que sigue despachando sobre
+    el mismo worktree y el mismo ledger. Antes de despachar subagentes o editar después de
+    cualquier reconexión: `ListAgents` + `git status --porcelain` + `git log -3` del worktree.
+    Si otra sesión opera el mismo worktree, frenar, coordinar por `SendMessage` (qué commiteó,
+    si tiene subagentes vivos) y preguntar al usuario cuál conduce; las demás quedan en pausa
+    permanente. Antes de retomar, auditar residuos: stash, ramas/worktrees nuevos, leases, filas
+    del feature en la DB dev, cola Redis y procesos colgados. Real 2026-10-19: tres copias de la
+    conversación sobre el worktree del árbitro; dos implementadores editaron los mismos archivos
+    sin commitear y hubo que reconciliar (ver `docs/cierres/2026-10-19.md`).
 
 ## Relación con otras skills
 

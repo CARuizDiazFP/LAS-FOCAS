@@ -266,6 +266,13 @@ Los tests `SKIPPED` casi siempre son intencionales y están documentados en `doc
 
 ## Verificación real de cascadas de estado (lecciones 2026-08-10)
 
+## Artefactos versionados que los tests reescriben (lección 2026-10-19)
+
+Correr `tests/test_web_*.py` modifica `web/data/intent_metrics.json` (contadores de intents) y el
+cambio terminó colado en un commit de feature. Antes de comitear: `git status --porcelain`; si aparece
+ese archivo y la tarea no lo tocaba, `git checkout -- web/data/intent_metrics.json`. Nunca incluirlo
+en un commit que no trate de métricas de intents.
+
 Para features que mutan estado en cascada (ej. baneo/desbaneo propagado a un grupo), los tests con
 mocks/fakes NO pueden validar el "blast radius" real de una prueba contra datos reales — ver la skill
 dedicada `.github/skills/baneo-qa-real/SKILL.md` antes de correr cualquier prueba de este tipo contra
