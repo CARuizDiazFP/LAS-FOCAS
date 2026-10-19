@@ -481,3 +481,131 @@ async def test_avisar_evaluacion_nunca_lanza(monkeypatch) -> None:
 
     monkeypatch.setattr(rc, "get_redis", _boom)
     await aviso_mod.avisar_evaluacion(motor_mod.ResumenEvaluacion(aplicadas_auto=[1]), 5)
+
+
+# --- fix round 1: huérfanas, cancelación, WS de fallida, Slack positivo ------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_arranque_cierra_en_curso_huerfanas(monkeypatch) -> None:
+    llamadas = []
+
+    async def _cerrar(sesion, antes_de):
+        llamadas.append(antes_de)
+        return 2
+
+    class _S(_SesionFake):
+        commits = 0
+
+    monkeypatch.setattr(worker_mod, "AsyncSessionLocal", lambda: _S())
+    monkeypatch.setattr(worker_mod, "cerrar_evaluaciones_interrumpidas", _cerrar)
+    inicio = datetime.now(timezone.utc)
+    await worker_mod._cerrar_huerfanas(inicio)
+    assert llamadas == [inicio] and _S.commits == 1
+
+    async def _boom(sesion, antes_de):
+        raise RuntimeError("db caída")
+
+    monkeypatch.setattr(worker_mod, "cerrar_evaluaciones_interrumpidas", _boom)
+    await worker_mod._cerrar_huerfanas(inicio)  # best-effort: no lanza
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_cierra_fila_fallida_y_propaga(monkeypatch, arbitro_env) -> None:
+    fila = _fila_en_cola(arbitro_env.Sesion)
+
+    async def _evaluar(*a, **k):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    with pytest.raises(asyncio.CancelledError):
+        await worker_mod._evaluar_arbitro(_payload(evaluacion_id=7))
+    assert fila.estado == "FALLIDA" and fila.error == "interrumpida"
+    assert fila.terminada_en is not None
+
+
+@pytest.mark.asyncio
+async def test_fallida_publica_fin_por_ws(monkeypatch) -> None:
+    fake = _FakeRedisPublish()
+    import core.cache.redis_client as rc
+
+    monkeypatch.setattr(rc, "get_redis", lambda: fake)
+    await aviso_mod.avisar_fallida(9, "RuntimeError: x")
+    p = json.loads(fake.published[0][1])
+    assert p["type"] == "arbitro_cromo_evaluado" and p["estado"] == "FALLIDA"
+    assert p["evaluacion_id"] == 9 and p["error"] == "RuntimeError: x" and p["nuevas"] == 0
+
+    fake.published.clear()
+    await aviso_mod.avisar_evaluacion(motor_mod.ResumenEvaluacion(omitida="x"), 9)
+    assert json.loads(fake.published[0][1])["estado"] == "OMITIDA"
+
+
+@pytest.mark.asyncio
+async def test_fallida_desde_worker_avisa(monkeypatch, arbitro_env) -> None:
+    _fila_en_cola(arbitro_env.Sesion)
+    vistos = []
+
+    async def _fallida(i, error):
+        vistos.append((i, error))
+
+    async def _evaluar(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(worker_mod, "avisar_fallida", _fallida)
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._evaluar_arbitro(_payload(evaluacion_id=7))
+    assert vistos and vistos[0][0] == 7 and vistos[0][1].startswith("RuntimeError")
+
+
+@pytest.mark.asyncio
+async def test_reusar_fila_resetea_error_y_resumen(monkeypatch, arbitro_env) -> None:
+    fila = _fila_en_cola(arbitro_env.Sesion)
+    fila.error, fila.resumen, fila.terminada_en = "viejo", {"a": 1}, datetime.now(timezone.utc)
+    vistos = []
+
+    async def _evaluar(*a, **k):
+        vistos.append((fila.error, fila.resumen, fila.terminada_en))
+        return motor_mod.ResumenEvaluacion()
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._evaluar_arbitro(_payload(evaluacion_id=7))
+    assert vistos == [(None, None, None)]
+
+
+@pytest.mark.asyncio
+async def test_avisar_evaluacion_con_cambios_va_a_slack(monkeypatch) -> None:
+    import core.cache.redis_client as rc
+    from core.services.cromo import inconsistencias_reporte as rep
+
+    monkeypatch.setattr(rc, "get_redis", lambda: _FakeRedisPublish())
+
+    async def _config(sesion):
+        return ["C1"], True
+
+    enviados = []
+    monkeypatch.setattr(rep, "_leer_config_slack", _config)
+    monkeypatch.setattr(rep, "_token_slack", lambda: "tok")
+    monkeypatch.setattr(rep, "_enviar_slack_sync", lambda *a: enviados.append(a) or 1)
+    import db.session as dbs
+
+    monkeypatch.setattr(dbs, "AsyncSessionLocal", lambda: _SesionFake())
+    resumen = motor_mod.ResumenEvaluacion(aplicadas_auto=[1, 2], revertidas=[3], presupuesto_excedido=["GEMELO_VACIO"])
+    await aviso_mod.avisar_evaluacion(resumen, 5)
+    assert len(enviados) == 1
+    canales, token, texto, xlsx, archivo = enviados[0]
+    assert canales == ["C1"] and token == "tok" and xlsx is None
+    assert texto == (
+        "Árbitro de Cromo: 2 aplicadas en automático, 1 revertidas, presupuesto excedido en: GEMELO_VACIO"
+    )
+
+
+@pytest.mark.asyncio
+async def test_avisar_en_curso_publica_ws(monkeypatch) -> None:
+    fake = _FakeRedisPublish()
+    import core.cache.redis_client as rc
+
+    monkeypatch.setattr(rc, "get_redis", lambda: fake)
+    await aviso_mod.avisar_en_curso(4)
+    assert json.loads(fake.published[0][1]) == {"type": "arbitro_cromo_en_curso", "evaluacion_id": 4}

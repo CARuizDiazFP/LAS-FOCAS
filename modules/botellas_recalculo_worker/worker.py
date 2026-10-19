@@ -25,15 +25,16 @@ from fastapi import FastAPI
 from core.cache.redis_client import get_redis
 from core.logging import setup_logging
 from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
-from core.services.cromo.arbitro.aviso import avisar_en_curso, avisar_evaluacion
-from core.services.cromo.arbitro.cola import JOB_KIND_ARBITRO
-from core.services.cromo.arbitro.senales import DISPAROS, USUARIO_ARBITRO, Alcance
 from core.services.botella_recompute_queue import (
     ADMIN_NOTIFICATIONS_CHANNEL,
     JOB_KIND_BOTELLAS_DUPLICADOS,
     QUEUE_KEY,
     guardar_cache_duplicados,
 )
+from core.services.cromo.arbitro.aviso import avisar_en_curso, avisar_evaluacion, avisar_fallida
+from core.services.cromo.arbitro.cola import JOB_KIND_ARBITRO
+from core.services.cromo.arbitro.evaluaciones import ERROR_INTERRUMPIDA, cerrar_evaluaciones_interrumpidas
+from core.services.cromo.arbitro.senales import DISPAROS, USUARIO_ARBITRO, Alcance
 from db.models.cromo import CromoArbitroEvaluacion
 from db.session import AsyncSessionLocal, SessionLocal
 from modules.botellas_recalculo_worker.config import BLPOP_TIMEOUT_SECONDS, HEALTH_PORT, NOMBRE_SERVICIO
@@ -115,6 +116,9 @@ async def _evaluar_arbitro(payload: dict) -> None:
             sesion.add(fila)
         fila.estado = "EN_CURSO"
         fila.iniciada_en = ahora
+        fila.error = None
+        fila.resumen = None
+        fila.terminada_en = None
         await sesion.flush()
         evaluacion_id = fila.id
         await sesion.commit()
@@ -126,6 +130,14 @@ async def _evaluar_arbitro(payload: dict) -> None:
         try:
             resumen = await evaluar(sesion, alcance, disparo, codigos=reglas)
             await sesion.commit()
+        except asyncio.CancelledError:
+            # Apagado del worker: la fila no puede quedar EN_CURSO para siempre. Best-effort.
+            try:
+                await sesion.rollback()
+                await _cerrar_evaluacion(evaluacion_id, estado="FALLIDA", error=ERROR_INTERRUMPIDA)
+            except Exception:  # noqa: BLE001
+                logger.warning("action=botellas_recalculo_worker evento=arbitro_cierre_cancelado_error", exc_info=True)
+            raise
         except Exception as exc:  # noqa: BLE001 - se registra en la fila, no se propaga
             await sesion.rollback()
             logger.exception("action=botellas_recalculo_worker evento=arbitro_error evaluacion_id=%s", evaluacion_id)
@@ -134,6 +146,7 @@ async def _evaluar_arbitro(payload: dict) -> None:
             )
     if resumen is None:
         await _cerrar_evaluacion(evaluacion_id, estado="FALLIDA", error=error)
+        await avisar_fallida(evaluacion_id, error)
         return
     await _cerrar_evaluacion(
         evaluacion_id, estado="OMITIDA" if resumen.omitida else "OK", resumen=resumen.a_dict()
@@ -180,6 +193,18 @@ async def _procesar_job(raw: str) -> None:
         logger.exception("action=botellas_recalculo_worker evento=job_error kind=%s", kind)
 
 
+async def _cerrar_huerfanas(inicio: datetime) -> None:
+    """Al arrancar: las evaluaciones EN_CURSO de un worker anterior no van a terminar nunca."""
+    try:
+        async with AsyncSessionLocal() as sesion:
+            cerradas = await cerrar_evaluaciones_interrumpidas(sesion, inicio)
+            await sesion.commit()
+        if cerradas:
+            logger.warning("action=botellas_recalculo_worker evento=arbitro_huerfanas_cerradas cantidad=%s", cerradas)
+    except Exception:  # noqa: BLE001 - jamás impide el arranque
+        logger.warning("action=botellas_recalculo_worker evento=arbitro_huerfanas_error", exc_info=True)
+
+
 async def _loop_principal() -> None:
     while True:
         try:
@@ -205,6 +230,7 @@ async def _loop_principal() -> None:
 async def _lifespan(_app: FastAPI):
     global _loop_task
     logger.info("action=botellas_recalculo_worker evento=iniciando")
+    await _cerrar_huerfanas(datetime.now(timezone.utc))
     _loop_task = asyncio.create_task(_loop_principal())
     _worker_status["status"] = "ok"
     try:

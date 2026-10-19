@@ -33,6 +33,25 @@ async def avisar_en_curso(evaluacion_id: Optional[int]) -> None:
         logger.warning("action=arbitro_aviso evento=ws_en_curso_error error=%s", exc)
 
 
+async def avisar_fallida(evaluacion_id: Optional[int], error: str) -> None:
+    """Avisa por WS el fin de una evaluación FALLIDA (la UI deja de esperarla). Nunca lanza."""
+    try:
+        await _publicar(
+            {
+                "type": TIPO_WS_EVALUADO,
+                "evaluacion_id": evaluacion_id,
+                "estado": "FALLIDA",
+                "error": error,
+                "nuevas": 0,
+                "aplicadas_auto": 0,
+                "revertidas": 0,
+                "presupuesto_excedido": [],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=arbitro_aviso evento=ws_fallida_error error=%s", exc)
+
+
 def _texto_slack(resumen: "ResumenEvaluacion") -> str:
     partes = [
         f"{len(resumen.aplicadas_auto)} aplicadas en automático",
@@ -51,6 +70,7 @@ async def avisar_evaluacion(resumen: "ResumenEvaluacion", evaluacion_id: Optiona
                 {
                     "type": TIPO_WS_EVALUADO,
                     "evaluacion_id": evaluacion_id,
+                    "estado": "OMITIDA" if resumen.omitida else "OK",
                     "nuevas": resumen.nuevas,
                     "aplicadas_auto": len(resumen.aplicadas_auto),
                     "revertidas": len(resumen.revertidas),
@@ -83,4 +103,4 @@ async def avisar_evaluacion(resumen: "ResumenEvaluacion", evaluacion_id: Optiona
         logger.warning("action=arbitro_aviso evento=aviso_error error=%s", exc)
 
 
-__all__ = ["avisar_en_curso", "avisar_evaluacion"]
+__all__ = ["avisar_en_curso", "avisar_evaluacion", "avisar_fallida"]
