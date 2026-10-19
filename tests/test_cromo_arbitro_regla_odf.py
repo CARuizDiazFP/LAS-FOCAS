@@ -104,11 +104,11 @@ def test_conector_con_otro_servicio_veta_y_emite_contradiccion():
     (contra,) = _contradicciones(evs)
     assert contra.accion == "INFORMAR" and contra.objeto_id == 7
     assert dict(contra.parametros) == {
-        "conector_n_id": 202,
-        "odf_n_id": 20,
-        "servicio_conector": "9999",
+        "conectores": [{"conector_n_id": 202, "odf_n_id": 20, "servicio_conector": "9999"}]
     }
-    assert [s.codigo for s in contra.senales] == ["CONECTOR_OTRO_SERVICIO"]
+    assert [(s.codigo, s.peso, dict(s.detalle)) for s in contra.senales] == [
+        ("CONECTOR_OTRO_SERVICIO", 0, {"cantidad": 1})
+    ]
     (ev,) = _asociar(evs)
     assert ev.parametros["odf_n_id"] == 20
     assert any(s.codigo == "CONECTOR_OTRO_SERVICIO" and s.veto for s in ev.senales)
@@ -158,3 +158,36 @@ def test_sin_at62_elige_menor_odf():
     (ev,) = _asociar(puntuar_servicio(_SERVICIO, [_c(30), _c(20)], None))
     assert ev.parametros["odf_n_id"] == 20
     assert ev.parametros["odfs_extremo"] == [20, 30]
+
+
+def test_contradiccion_varias_conectores_una_evaluacion():
+    conectores = [
+        _c(30, conector=302, resuelto="8888"),
+        _c(20, conector=202, resuelto="9999"),
+        _c(20, conector=201, resuelto="7777"),
+    ]
+    (contra,) = _contradicciones(puntuar_servicio(_SERVICIO, conectores, None))
+    assert contra.parametros["conectores"] == [
+        {"conector_n_id": 201, "odf_n_id": 20, "servicio_conector": "7777"},
+        {"conector_n_id": 202, "odf_n_id": 20, "servicio_conector": "9999"},
+        {"conector_n_id": 302, "odf_n_id": 30, "servicio_conector": "8888"},
+    ]
+    (senal,) = contra.senales
+    assert senal.codigo == "CONECTOR_OTRO_SERVICIO" and dict(senal.detalle) == {"cantidad": 3}
+
+
+def test_vivo_que_contradice_no_da_confianza_a_otra_odf():
+    conectores = [_c(20, vivo=False), _c(30, resuelto="9999", vivo=True)]
+    (ev,) = _asociar(puntuar_servicio(_SERVICIO, conectores, None))
+    codigos = {s.codigo for s in ev.senales}
+    assert ev.parametros["odf_n_id"] == 20
+    assert "CAMINO_VIVO_COMPLETO" not in codigos and "FUSIONES_LOCALES" in codigos
+    assert ev.tope == TOPE_SOLO_LOCAL
+
+
+def test_vivo_en_otra_odf_valida_no_da_confianza_a_la_objetivo():
+    conectores = [_c(20, at62="1001", vivo=False), _c(30, vivo=True)]
+    (ev,) = _asociar(puntuar_servicio(_SERVICIO, conectores, None))
+    assert ev.parametros["odf_n_id"] == 20
+    assert ev.tope == TOPE_SOLO_LOCAL
+    assert "CAMINO_VIVO_COMPLETO" not in {s.codigo for s in ev.senales}

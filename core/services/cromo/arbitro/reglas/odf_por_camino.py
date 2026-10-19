@@ -105,13 +105,14 @@ def puntuar_servicio(
         return []
 
     evaluaciones: list[Evaluacion] = []
-    validos: list[ConectorVisto] = []
-    odfs_contradichas: set[int] = set()
-    for c in conectores:
-        if not _contradice(servicio, c):
-            validos.append(c)
-            continue
-        odfs_contradichas.add(c.odf_n_id)
+    validos = [c for c in conectores if not _contradice(servicio, c)]
+    contradichos = sorted(
+        (c for c in conectores if _contradice(servicio, c)),
+        key=lambda c: (c.odf_n_id, c.conector_n_id if c.conector_n_id is not None else -1),
+    )
+    odfs_contradichas = {c.odf_n_id for c in contradichos}
+    if contradichos:
+        # Una sola INFORMAR por Servicio: el índice de propuestas abiertas es por objeto.
         evaluaciones.append(
             Evaluacion(
                 REGLA_CONTRADICCION,
@@ -119,22 +120,16 @@ def puntuar_servicio(
                 servicio.id,
                 "INFORMAR",
                 {
-                    "conector_n_id": c.conector_n_id,
-                    "odf_n_id": c.odf_n_id,
-                    "servicio_conector": c.servicio_resuelto,
-                },
-                (
-                    Senal(
-                        VETO_CONECTOR_OTRO_SERVICIO,
-                        0,
+                    "conectores": [
                         {
-                            "servicio_id": servicio.id,
-                            "identidades": sorted(servicio.identidades),
                             "conector_n_id": c.conector_n_id,
+                            "odf_n_id": c.odf_n_id,
                             "servicio_conector": c.servicio_resuelto,
-                        },
-                    ),
-                ),
+                        }
+                        for c in contradichos
+                    ]
+                },
+                (Senal(VETO_CONECTOR_OTRO_SERVICIO, 0, {"cantidad": len(contradichos)}),),
             )
         )
 
@@ -145,7 +140,9 @@ def puntuar_servicio(
     con_at62 = [c for c in validos if c.servicio_at62 and c.servicio_at62 in servicio.identidades]
     objetivo = min(con_at62 or validos, key=lambda c: c.odf_n_id)
 
-    en_vivo = any(c.en_vivo for c in conectores)
+    # La confianza en vivo es de la ODF objetivo: un camino en vivo hacia otra ODF, o hacia un
+    # conector de otro servicio, no respalda esta asociación.
+    en_vivo = any(c.en_vivo and c.odf_n_id == objetivo.odf_n_id for c in validos)
     senales: list[Senal] = []
     if en_vivo:
         senales.append(Senal("CAMINO_VIVO_COMPLETO", CAMINO_VIVO_COMPLETO))

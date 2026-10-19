@@ -201,9 +201,9 @@ async def test_conector_de_otro_servicio_emite_contradiccion(entorno):
         sesion, alcance, propios=frozenset(), contexto=contexto
     )
     assert dict(contra.parametros) == {
-        "conector_n_id": _ODF_A + 5,
-        "odf_n_id": _ODF_A,
-        "servicio_conector": "99992999",
+        "conectores": [
+            {"conector_n_id": _ODF_A + 5, "odf_n_id": _ODF_A, "servicio_conector": "99992999"}
+        ]
     }
     # El único conector es de otro servicio: no hay ODF válida que proponer.
     assert await ReglaOdfPorCamino().evaluar(
