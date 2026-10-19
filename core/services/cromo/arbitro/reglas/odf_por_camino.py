@@ -7,10 +7,16 @@
 Dos fuentes de conectores, leídas sólo de la base (el árbitro nunca llama a Cromo):
 
 - **En vivo:** `app.cromo_evidencia_camino` que dejan las consultas del Registrador/web, completa y
-  con menos de `EVIDENCIA_TTL_DIAS`. Cada extremo de tipo conector con `odf_id` es un conector.
-- **Local:** sólo con alcance `TODO`, un BFS por `cromo_fusiones` vigentes desde los pelos del
+  con menos de `EVIDENCIA_TTL_DIAS`. Cada extremo de tipo conector con `odf_id` de una ODF (clase 69
+  u 86; sin `odf_clase` se asume 69) es un conector.
+- **Local:** con cualquier alcance, un BFS por `cromo_fusiones` vigentes desde los pelos del
   Servicio hasta un pelo conectado a un conector vigente. Sin camino en vivo, el puntaje topa en
   `TOPE_SOLO_LOCAL`.
+
+El mismo Servicio con la misma evidencia da la misma evaluación (mismo `evidencia_hash`) con
+alcance `SERVICIOS` o `TODO`: si dependiera del alcance, cada consulta en vivo y cada corrida
+post-ingesta se pisarían la propuesta una a la otra. El grafo de fusiones (~10 s de carga en dev) se
+cachea a nivel de módulo por una huella barata de `cromo_fusiones` (ver `_cargar_grafo`).
 
 `puntuar_servicio` es puro; las dos reglas comparten la carga vía `contexto["odf_por_camino"]`.
 """
@@ -111,11 +117,12 @@ def _es_libre(c: ConectorVisto) -> bool:
     return c.en_inventario and _resuelto(c) is None
 
 
-def _clave_objetivo(c: ConectorVisto) -> tuple[int, bool, bool, int]:
-    """Desempate determinista: menor ODF; dentro de la misma, en vivo, libre y menor conector."""
+def _clave_objetivo(c: ConectorVisto) -> tuple[bool, int, bool, int]:
+    """Desempate determinista: en vivo primero (es la evidencia más fuerte), luego menor ODF, libre
+    y menor conector."""
     return (
-        c.odf_n_id,
         not c.en_vivo,
+        c.odf_n_id,
         not _es_libre(c),
         c.conector_n_id if c.conector_n_id is not None else -1,
     )
@@ -264,16 +271,21 @@ _SQL_EXTREMOS_VIVOS = text(
       AND e.servicio_id = ANY(:sids ::int[])
       AND x.extremo->>'tipo' = :tipo_conector
       AND x.extremo->>'odf_id' IS NOT NULL
+      -- Sólo conectores de ODF (69) u ODF Nodo (86); evidencia vieja sin `odf_clase` se asume 69.
+      -- Un conector de otra clase (p. ej. 85) no es una ODF asociable: no debe vetar ni proponer.
+      AND COALESCE((x.extremo->>'odf_clase')::int, 69) IN (69, 86)
     ORDER BY e.generado_at, e.pelo_n_id
     """
 )
 
 # `odf_id` de un extremo puede ser el `version_id` de la ODF; se resuelve al `n_id`. Una ODF no
-# vigente cuenta como sin fila (veto `ODF_SIN_FILA`).
+# vigente, o de una clase que no es ODF (69) ni ODF Nodo (86), cuenta como sin fila (veto
+# `ODF_SIN_FILA`).
 _SQL_RESOLVER_ODFS = text(
     """
     SELECT n_id, version_id FROM app.cromo_odfs
-    WHERE vigente AND (n_id = ANY(:ids ::bigint[]) OR version_id = ANY(:ids ::bigint[]))
+    WHERE vigente AND clase IN (69, 86)
+      AND (n_id = ANY(:ids ::bigint[]) OR version_id = ANY(:ids ::bigint[]))
     """
 )
 
@@ -305,6 +317,16 @@ _SQL_ARISTAS = text(
         WHERE vigente AND pelo_a_n_id IS NOT NULL AND pelo_b_n_id IS NOT NULL
     ) t
     ORDER BY a
+    """
+)
+
+# Huella barata (~0,1 s contra ~10 s de leer las aristas) de las fusiones que arman el grafo: si no
+# cambió, el grafo cacheado en el módulo sigue valiendo. Cubre altas, bajas lógicas, borrados y
+# cambios de extremo (cuenta y sumas de los dos pelos).
+_SQL_HUELLA_FUSIONES = text(
+    """
+    SELECT count(*), sum(pelo_a_n_id), sum(pelo_b_n_id) FROM app.cromo_fusiones
+    WHERE vigente AND pelo_a_n_id IS NOT NULL AND pelo_b_n_id IS NOT NULL
     """
 )
 
@@ -349,12 +371,32 @@ class _GrafoFusiones:
 _IndiceConectores = dict[int, list[tuple[int, int, Optional[str], Optional[str]]]]
 
 
-async def _cargar_grafo(sesion: AsyncSession) -> tuple[_GrafoFusiones, _IndiceConectores]:
+# Grafo de la última carga y su huella: {"huella": tuple, "grafo": _GrafoFusiones}. Vive en el
+# proceso (worker) entre corridas; ~20 MB en dev.
+_CACHE_GRAFO: dict[str, Any] = {}
+
+
+async def _leer_fusiones(sesion: AsyncSession) -> _GrafoFusiones:
     grafo = _GrafoFusiones()
     resultado = await sesion.stream(_SQL_ARISTAS)
     async for filas in resultado.partitions(50_000):
         for a, b in filas:
             grafo.agregar(int(a), int(b))
+    return grafo
+
+
+async def _cargar_grafo(sesion: AsyncSession) -> tuple[_GrafoFusiones, _IndiceConectores]:
+    """Grafo de fusiones (cacheado por huella) e índice de conectores (se relee siempre: ~0,5 s y
+    cambia con cada consulta de inventario)."""
+    huella = tuple((await sesion.execute(_SQL_HUELLA_FUSIONES)).one())
+    # La huella se lee ANTES que las aristas: si cambian en el medio, el grafo es más nuevo que la
+    # huella y la próxima corrida lo recarga; nunca queda uno viejo con huella nueva.
+    if _CACHE_GRAFO.get("huella") == huella:
+        grafo = _CACHE_GRAFO["grafo"]
+    else:
+        grafo = await _leer_fusiones(sesion)
+        _CACHE_GRAFO.clear()
+        _CACHE_GRAFO.update(huella=huella, grafo=grafo)
     indice: _IndiceConectores = {}
     for pelo, n_id, odf, resuelto, at62 in (await sesion.execute(_SQL_INDICE_CONECTORES)).all():
         indice.setdefault(int(pelo), []).append((int(n_id), int(odf), resuelto, at62))
@@ -457,17 +499,17 @@ async def _cargar(
         )
     ).all()
 
-    # Local (sólo TODO).
+    # Local: con cualquier alcance, para que la evaluación no dependa de él.
     locales: dict[int, list[tuple[int, tuple[int, int, Optional[str], Optional[str]]]]] = {}
     truncados: set[int] = set()
-    if alcance.tipo == "TODO":
+    semillas: dict[int, list[int]] = {}
+    for sid, pelo in (await sesion.execute(_SQL_SEMILLAS, {"sids": sids})).all():
+        semillas.setdefault(int(sid), []).append(int(pelo))
+    if semillas:
         cache = contexto.setdefault(_CLAVE_CONTEXTO, {}) if contexto is not None else {}
         if "grafo" not in cache:
             cache["grafo"] = await _cargar_grafo(sesion)
         grafo, indice = cache["grafo"]
-        semillas: dict[int, list[int]] = {}
-        for sid, pelo in (await sesion.execute(_SQL_SEMILLAS, {"sids": sids})).all():
-            semillas.setdefault(int(sid), []).append(int(pelo))
         recorridos = await asyncio.to_thread(_bfs_por_servicio, semillas, grafo, indice)
         for sid, (hallados, truncado) in recorridos.items():
             locales[sid] = hallados

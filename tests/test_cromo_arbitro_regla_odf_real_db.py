@@ -2,8 +2,9 @@
 # Ubicación de archivo: tests/test_cromo_arbitro_regla_odf_real_db.py
 # Descripción: Tests contra Postgres real de la carga de las reglas ODF_POR_CAMINO y CONTRADICCION_SERVICIO
 
-"""Corren dentro de una transacción que se revierte. Usan alcance `SERVICIOS`, así que sólo cuenta la
-evidencia en vivo (`cromo_evidencia_camino`); el BFS local corre únicamente con alcance `TODO`."""
+"""Corren dentro de una transacción que se revierte. Usan alcance `SERVICIOS`; el BFS local corre con
+cualquier alcance, pero los pelos sintéticos no tienen fusiones, así que sólo cuenta lo que se siembra
+(evidencia en vivo y, donde se pide, un conector local directo sobre el pelo del Servicio)."""
 
 from __future__ import annotations
 
@@ -249,3 +250,92 @@ async def test_conector_vivo_fuera_de_inventario_no_es_libre(entorno):
     )
     (ev,) = await _evaluar(sesion, sid)
     assert "CONECTOR_LIBRE" not in {s.codigo for s in ev.senales}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Revisión final: alcance y clase de ODF
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PELO_LOCAL = 999_920_302
+_ODF_CLASE_85 = 999_920_330
+
+
+async def _conector_local(conn, sid: int, odf_id: int) -> None:
+    """Pelo del Servicio (match vigente) conectado directo a un conector libre de `odf_id`: el BFS
+    local lo alcanza sin recorrer fusiones."""
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_pelos (n_id, tubo_n_id, cable_n_id, servicio_numero) "
+            "VALUES (:p, :p, :p, '99992001')"
+        ),
+        {"p": _PELO_LOCAL},
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_servicio_match (pelo_n_id, servicio_numero, servicio_id, metodo) "
+            "VALUES (:p, '99992001', :s, 'REGEX_EXACTO')"
+        ),
+        {"p": _PELO_LOCAL, "s": sid},
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_odf_conectores (n_id, odf_n_id, pelo_n_id, payload_raw) "
+            "VALUES (:c, :o, :p, '{}'::jsonb)"
+        ),
+        {"c": odf_id + 7, "o": odf_id, "p": _PELO_LOCAL},
+    )
+
+
+@pytest.mark.asyncio
+async def test_mismo_hash_en_alcance_todo_y_servicios(entorno):
+    from core.services.cromo.arbitro.senales import evidencia_hash
+
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    await _evidencia(conn, sid, _ODF_B)  # en vivo hacia B
+    await _conector_local(conn, sid, _ODF_A)  # local hacia A (menor n_id)
+    (servicios,) = await _evaluar(sesion, sid)
+    todo = [
+        ev
+        for ev in await ReglaOdfPorCamino().evaluar(
+            sesion, Alcance("TODO"), propios=frozenset(), contexto={}
+        )
+        if ev.objeto_id == sid
+    ]
+    assert len(todo) == 1
+    assert evidencia_hash(todo[0]) == evidencia_hash(servicios)
+    assert servicios.parametros["odf_n_id"] == _ODF_B and servicios.tope == 100
+    assert servicios.parametros["odfs_extremo"] == [_ODF_A, _ODF_B]
+
+
+@pytest.mark.asyncio
+async def test_conector_vivo_de_odf_clase_85_no_cuenta(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    extremos = _extremos(_ODF_CLASE_85)
+    extremos[1]["odf_clase"] = 85  # at62 coincide, pero no es una ODF (69/86)
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_evidencia_camino "
+            "(servicio_id, pelo_n_id, completo, extremos, pelos_camino, fuente) "
+            "VALUES (:s, :p, true, CAST(:e AS jsonb), ARRAY[:p ::bigint], 'WEB')"
+        ),
+        {"s": sid, "p": _PELO, "e": json.dumps(extremos)},
+    )
+    await _conector_local(conn, sid, _ODF_A)
+    (ev,) = await _evaluar(sesion, sid)
+    assert ev.parametros["odf_n_id"] == _ODF_A
+    assert ev.parametros["odfs_extremo"] == [_ODF_A]
+    assert not any(s.veto for s in ev.senales)
+
+
+@pytest.mark.asyncio
+async def test_odf_de_otra_clase_en_inventario_cuenta_como_sin_fila(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    await conn.execute(
+        text("UPDATE app.cromo_odfs SET clase = 85 WHERE n_id = :n"), {"n": _ODF_A}
+    )
+    await _evidencia(conn, sid, _ODF_A)
+    (ev,) = await _evaluar(sesion, sid)
+    assert any(s.codigo == "ODF_SIN_FILA" and s.veto for s in ev.senales)

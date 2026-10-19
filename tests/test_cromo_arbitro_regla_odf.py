@@ -360,20 +360,69 @@ async def test_carga_local_resuelve_odf_por_version_id(monkeypatch, grafo_espiad
 
 
 @pytest.mark.asyncio
-async def test_alcance_servicios_no_corre_bfs(monkeypatch, grafo_espiado):
-    def bfs_prohibido(*_a, **_k):
-        raise AssertionError("el BFS local no corre con alcance SERVICIOS")
+async def test_alcance_servicios_corre_bfs_y_da_el_mismo_hash_que_todo(grafo_espiado):
+    # Mismo Servicio y misma evidencia: la evaluación no depende del alcance (revisión final I-1).
+    def sesion():
+        return _SesionFalsa(
+            vivos=[_FilaVivo(7, 905, 30, "1001", 500)], semillas=[(7, 100)],
+            odfs=[(20, 20), (30, 30)], conectores=[(905, None)],
+        )
 
-    monkeypatch.setattr(modulo, "_bfs_por_servicio", bfs_prohibido)
-    sesion = _SesionFalsa(
-        vivos=[_FilaVivo(7, 905, 20, "1001", 500)], semillas=[(7, 100)], conectores=[(905, None)]
+    (todo,) = await ReglaOdfPorCamino().evaluar(
+        sesion(), Alcance("TODO"), propios=frozenset(), contexto={}
     )
-    (ev,) = await ReglaOdfPorCamino().evaluar(
-        sesion, Alcance("SERVICIOS", (7,)), propios=frozenset(), contexto={}
+    (servicios,) = await ReglaOdfPorCamino().evaluar(
+        sesion(), Alcance("SERVICIOS", (7,)), propios=frozenset(), contexto={}
     )
-    assert grafo_espiado == []
-    assert ev.tope == 100
-    assert "CONECTOR_LIBRE" in {s.codigo for s in ev.senales}
+    assert evidencia_hash(todo) == evidencia_hash(servicios)
+    assert servicios.parametros["odfs_extremo"] == [20, 30]  # la 20 sólo llega por BFS local
+    # Los dos coinciden en AT62: el camino en vivo gana el objetivo aunque la ODF local sea menor.
+    assert servicios.parametros["odf_n_id"] == 30 and servicios.tope == 100
+
+
+def test_objetivo_prioriza_conector_en_vivo():
+    (ev,) = _asociar(puntuar_servicio(_SERVICIO, [_c(20, vivo=False), _c(30, vivo=True)], None))
+    assert ev.parametros["odf_n_id"] == 30
+    assert ev.tope == 100 and "CAMINO_VIVO_COMPLETO" in {s.codigo for s in ev.senales}
+
+
+class _SesionHuella:
+    """Sesión falsa para `_cargar_grafo`: huella de fusiones e índice de conectores."""
+
+    def __init__(self, huella):
+        self.huella = huella
+
+    async def execute(self, sql, params=None):
+        if sql is modulo._SQL_HUELLA_FUSIONES:
+            return _ResultadoUno(self.huella)
+        assert sql is modulo._SQL_INDICE_CONECTORES
+        return _Resultado([(102, 902, 20, None, "1001")])
+
+
+class _ResultadoUno:
+    def __init__(self, fila):
+        self._fila = fila
+
+    def one(self):
+        return self._fila
+
+
+@pytest.mark.asyncio
+async def test_grafo_se_reusa_entre_corridas_mientras_no_cambien_las_fusiones(monkeypatch):
+    lecturas: list[int] = []
+
+    async def leer_fusiones(_sesion):
+        lecturas.append(1)
+        return _grafo([(100, 102)])
+
+    monkeypatch.setattr(modulo, "_leer_fusiones", leer_fusiones)
+    monkeypatch.setattr(modulo, "_CACHE_GRAFO", {})
+    g1, i1 = await modulo._cargar_grafo(_SesionHuella((10, 1, 2)))
+    g2, i2 = await modulo._cargar_grafo(_SesionHuella((10, 1, 2)))
+    assert g1 is g2 and lecturas == [1]
+    assert i1 == i2 == {102: [(902, 20, None, "1001")]}  # el índice se relee siempre
+    g3, _ = await modulo._cargar_grafo(_SesionHuella((11, 1, 2)))
+    assert g3 is not g1 and lecturas == [1, 1]
 
 
 @pytest.mark.asyncio
