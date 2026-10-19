@@ -14,6 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import time as now
+from collections.abc import Sequence
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import httpx
@@ -7039,6 +7040,18 @@ async def servicios_sin_odf_senal_direccion_web(
     return JSONResponse({"senal_direccion": senal.value})
 
 
+async def _encolar_arbitro(tipo: str, ids: Sequence[int], motivo: str) -> None:
+    """Encola una evaluación del árbitro de Cromo (disparo VIEWER) tras una acción del operador ya
+    commiteada. Best-effort: import diferido y cualquier falla se traga; nunca altera la respuesta."""
+    try:
+        from core.services.cromo.arbitro.cola import encolar_evaluacion
+        from core.services.cromo.arbitro.senales import Alcance
+
+        await encolar_evaluacion(Alcance(tipo, tuple(dict.fromkeys(ids))), "VIEWER", motivo)
+    except Exception:  # noqa: BLE001
+        logger.warning("action=arbitro_encolar_viewer result=fail motivo=%s", motivo, exc_info=True)
+
+
 class ServicioOdfAsociarRequestModel(BaseModel):
     """Payload para confirmar la asociación manual Servicio→ODF (`crear_override`, Task 4)."""
 
@@ -7095,6 +7108,7 @@ async def servicios_sin_odf_asociar_web(
             except ObjetoNoEncontrado as exc:
                 return JSONResponse({"error": str(exc)}, status_code=404)
 
+            await _encolar_arbitro("SERVICIOS", [servicio_id], f"asociar-odf servicio={servicio_id}")
             logger.info(
                 "action=servicios_sin_odf_asociar user=%s servicio_id=%s odf_n_id=%s "
                 "categoria_causa=%s senal_direccion=%s",
@@ -7423,6 +7437,9 @@ async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestMo
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"apropiar legado_id={resultado.legado_id} cromo_n_id={resultado.cromo_n_id} usuario={username}"
             )
+            await _encolar_arbitro(
+                "BOTELLAS", [resultado.cromo_n_id], f"apropiar cromo_n_id={resultado.cromo_n_id}"
+            )
             return JSONResponse({
                 "ok": True,
                 "legado_id": resultado.legado_id,
@@ -7609,6 +7626,11 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"consolidar destino={resultado.id_destino_cromo} usuario={username}"
             )
+            await _encolar_arbitro(
+                "BOTELLAS",
+                [resultado.id_destino_cromo, *body.ids_origen_cromo],
+                f"consolidar destino={resultado.id_destino_cromo}",
+            )
             return JSONResponse({
                 "ok": True,
                 "id_destino_cromo": resultado.id_destino_cromo,
@@ -7758,6 +7780,8 @@ async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestMo
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"eliminar origen={resultado.origen} id={resultado.id} usuario={username}"
             )
+            if resultado.origen == "cromo":
+                await _encolar_arbitro("BOTELLAS", [resultado.id], f"eliminar cromo_n_id={resultado.id}")
             return JSONResponse({
                 "ok": True,
                 "origen": resultado.origen,
@@ -7827,6 +7851,9 @@ async def botellas_eliminar_grupo_web(
             )
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
+            )
+            await _encolar_arbitro(
+                "BOTELLAS", body.ids_cromo, f"eliminar-grupo botellas={resultado.botellas_eliminadas}"
             )
             return JSONResponse({
                 "ok": True,
@@ -9484,6 +9511,7 @@ async def inconsistencias_cromo_estado_web(
     async with AsyncSessionLocal() as sesion:
         resultado = await cambiar_estado(sesion, body.ids, body.estado, username)
         await sesion.commit()
+    await _encolar_arbitro("TODO", [], f"inconsistencias-estado estado={body.estado}")
     logger.info(
         "action=cromo_inconsistencias_estado user=%s estado=%s aplicados=%s rechazados=%s",
         username,
@@ -9619,6 +9647,7 @@ async def servicios_odf_confirmar_web(
             )
         except ObjetoNoEncontrado as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
+    await _encolar_arbitro("SERVICIOS", [servicio_id], f"odf-confirmar servicio={servicio_id}")
     return JSONResponse({"ok": True, "odf_confirmadas": lista})
 
 
@@ -9643,6 +9672,7 @@ async def servicios_odf_desconfirmar_web(
                 status_code=404,
             )
         lista = await listar(sesion, servicio_id)
+    await _encolar_arbitro("SERVICIOS", [servicio_id], f"odf-desconfirmar servicio={servicio_id}")
     return JSONResponse({"ok": True, "odf_confirmadas": lista})
 
 
@@ -10253,6 +10283,7 @@ async def botella_separar_padre_web(request: Request, n_id: int, body: BotellaSe
         username, resultado.botella_n_id, resultado.camara_anterior_id, resultado.camara_nueva_id,
     )
     await encolar_recalculo_duplicados_botellas(motivo=f"separar-padre n_id={n_id} usuario={username}")
+    await _encolar_arbitro("BOTELLAS", [n_id], f"separar-padre n_id={n_id}")
     return JSONResponse({
         "ok": True,
         "botella_n_id": resultado.botella_n_id,
