@@ -81,7 +81,10 @@
    - Implementar componente que consuma la plantilla via `python-docx` o delegue en `office_service` para conversiones y formateos.
    - Reemplazar la porción COM por macros/estilos predefinidos o post-proceso con LibreOffice headless.
 4. **Mapas**
-   - Consolidado: `core.maps.static_map` genera PNG con `matplotlib` (Agg) y tiles de `contextily` cuando hay conectividad, ajustándolos para no superar media hoja A4 al incrustarse en el DOCX.
+   - Consolidado: `core.maps.static_map` genera PNG con `matplotlib` (Agg) y tiles de `contextily` (OpenStreetMap) cuando hay conectividad.
+   - Maquetación (2026-10-19): **una tabla por hoja** (cada servicio arranca en hoja nueva) y, si el servicio tiene coordenadas, **el mapa ocupa la hoja siguiente** a página completa. El PNG se genera con la proporción del área útil A4 (`MAP_PAGE_STYLE`, 6.9 × 9.8 in, 150 dpi, paleta de 256 colores) y el encuadre se expande en el eje corto (`fit_bounds_to_aspect`) para que el zoom llene la hoja sin deformar ni recortar puntos.
+   - Tiles: OSM bloquea el User-Agent genérico de contextily y responde HTTP 200 con una imagen "Access blocked" (el log igual decía `basemap=True`). `static_map` fija `contextily.tile.USER_AGENT` con un UA identificable (`MAPS_TILE_USER_AGENT` lo sobrescribe).
+   - Descarga: los PNG viven en `REPORTS_DIR/maps_YYYYMM/`; la web y la herramienta MCP publican `/reports/maps_YYYYMM/<archivo>.png` (antes se perdía la subcarpeta y el link daba 404).
    - El worker `repetitividad_worker` mantiene `geopandas` para tareas enfocadas; API/web/bot consumen directamente los PNG almacenados en `REPORTS_DIR`.
 5. **Integraciones**
    - Exponer servicio REST (`POST /reports/repetitividad`) reutilizable por bot y web.

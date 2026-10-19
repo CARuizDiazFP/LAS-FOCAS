@@ -78,3 +78,11 @@ async def test_registry_enforces_roles() -> None:
     with pytest.raises(ToolInvocationError) as exc_info:
         await registry.invoke("AdminEcho", {"texto": "bob"}, user_context)
     assert exc_info.value.code == "TOOL_FORBIDDEN"
+
+
+def test_reports_href_conserva_subcarpeta_de_mapas(tmp_path):
+    from core.mcp.registry import _reports_href
+
+    png = tmp_path / "maps_202409" / "repetitividad_202409_X.png"
+    assert _reports_href(png, tmp_path) == "/reports/maps_202409/repetitividad_202409_X.png"
+    assert _reports_href(tmp_path.parent / "otro.png", tmp_path) == "/reports/otro.png"
