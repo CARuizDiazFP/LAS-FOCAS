@@ -104,11 +104,23 @@ async def _evaluar(sesion, sid: int, propios: frozenset[int] = frozenset()):
     )
 
 
+async def _conector(conn, odf_id: int, resuelto: str | None = None) -> None:
+    """Fila de inventario del conector que reportan los extremos de `_extremos(odf_id)`."""
+    await conn.execute(
+        text(
+            "INSERT INTO app.cromo_odf_conectores (n_id, odf_n_id, servicio_resuelto, payload_raw) "
+            "VALUES (:c, :o, :r, '{}'::jsonb)"
+        ),
+        {"c": odf_id + 5, "o": odf_id, "r": resuelto},
+    )
+
+
 @pytest.mark.asyncio
 async def test_evidencia_fresca_propone_odf(entorno):
     sesion, conn = entorno
     sid = await _servicio(conn)
     await _evidencia(conn, sid, _ODF_A)
+    await _conector(conn, _ODF_A)
     (ev,) = await _evaluar(sesion, sid)
     assert ev.regla == REGLA_ODF and ev.objeto_id == sid
     assert ev.parametros["odf_n_id"] == _ODF_A and ev.parametros["pelo_n_id"] == _PELO
@@ -188,13 +200,7 @@ async def test_conector_de_otro_servicio_emite_contradiccion(entorno):
     sesion, conn = entorno
     sid = await _servicio(conn)
     await _evidencia(conn, sid, _ODF_A)
-    await conn.execute(
-        text(
-            "INSERT INTO app.cromo_odf_conectores (n_id, odf_n_id, servicio_resuelto, payload_raw) "
-            "VALUES (:c, :o, '99992999', '{}'::jsonb)"
-        ),
-        {"c": _ODF_A + 5, "o": _ODF_A},
-    )
+    await _conector(conn, _ODF_A, "99992999")
     contexto: dict = {}
     alcance = Alcance("SERVICIOS", (sid,))
     (contra,) = await ReglaContradiccionServicio().evaluar(
@@ -211,3 +217,35 @@ async def test_conector_de_otro_servicio_emite_contradiccion(entorno):
     ) == []
     # Las dos reglas comparten una sola carga.
     assert len(contexto["odf_por_camino"]["cargas"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_odf_no_vigente_veta(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    await conn.execute(
+        text("UPDATE app.cromo_odfs SET vigente = false WHERE n_id = :n"), {"n": _ODF_B}
+    )
+    for crudo in (_ODF_B, _VERSION_B):  # tanto por n_id como por version_id
+        await _evidencia(conn, sid, crudo)
+        (ev,) = await _evaluar(sesion, sid)
+        assert any(s.codigo == "ODF_SIN_FILA" and s.veto for s in ev.senales)
+        await conn.execute(
+            text("DELETE FROM app.cromo_evidencia_camino WHERE servicio_id = :s"), {"s": sid}
+        )
+
+
+@pytest.mark.asyncio
+async def test_conector_vivo_fuera_de_inventario_no_es_libre(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    await _evidencia(conn, sid, _ODF_A)
+    (ev,) = await _evaluar(sesion, sid)
+    assert "CONECTOR_LIBRE" not in {s.codigo for s in ev.senales}
+    await conn.execute(
+        text("INSERT INTO app.cromo_odf_conectores (n_id, odf_n_id, payload_raw, vigente) "
+             "VALUES (:c, :o, '{}'::jsonb, false)"),
+        {"c": _ODF_A + 5, "o": _ODF_A},
+    )
+    (ev,) = await _evaluar(sesion, sid)
+    assert "CONECTOR_LIBRE" not in {s.codigo for s in ev.senales}

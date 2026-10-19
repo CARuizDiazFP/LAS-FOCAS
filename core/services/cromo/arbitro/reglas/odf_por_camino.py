@@ -73,6 +73,8 @@ _CLAVE_CONTEXTO = "odf_por_camino"
 class ServicioCandidato:
     id: int
     identidades: frozenset[str]
+    # El BFS local se cortó en `MAX_PELOS_BFS`: puede haber conectores que no se vieron.
+    bfs_truncado: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,9 @@ class ConectorVisto:
     pelo_conectado: Optional[int]
     servicio_resuelto: Optional[str]
     en_vivo: bool
+    # Hay fila vigente del conector en `cromo_odf_conectores`. Sólo un conector inventariado con
+    # `servicio_resuelto` vacío es "libre": de uno ausente no se sabe qué servicio tiene.
+    en_inventario: bool = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,8 +96,29 @@ class ConectorVisto:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _resuelto(conector: ConectorVisto) -> Optional[str]:
+    """`servicio_resuelto` sin espacios; vacío o sólo espacios cuenta como conector libre."""
+    valor = (conector.servicio_resuelto or "").strip()
+    return valor or None
+
+
 def _contradice(servicio: ServicioCandidato, conector: ConectorVisto) -> bool:
-    return bool(conector.servicio_resuelto) and conector.servicio_resuelto not in servicio.identidades
+    resuelto = _resuelto(conector)
+    return resuelto is not None and resuelto not in servicio.identidades
+
+
+def _es_libre(c: ConectorVisto) -> bool:
+    return c.en_inventario and _resuelto(c) is None
+
+
+def _clave_objetivo(c: ConectorVisto) -> tuple[int, bool, bool, int]:
+    """Desempate determinista: menor ODF; dentro de la misma, en vivo, libre y menor conector."""
+    return (
+        c.odf_n_id,
+        not c.en_vivo,
+        not _es_libre(c),
+        c.conector_n_id if c.conector_n_id is not None else -1,
+    )
 
 
 def puntuar_servicio(
@@ -138,7 +164,7 @@ def puntuar_servicio(
         return evaluaciones
 
     con_at62 = [c for c in validos if c.servicio_at62 and c.servicio_at62 in servicio.identidades]
-    objetivo = min(con_at62 or validos, key=lambda c: c.odf_n_id)
+    objetivo = min(con_at62 or validos, key=_clave_objetivo)
 
     # La confianza en vivo es de la ODF objetivo: un camino en vivo hacia otra ODF, o hacia un
     # conector de otro servicio, no respalda esta asociación.
@@ -147,10 +173,11 @@ def puntuar_servicio(
     if en_vivo:
         senales.append(Senal("CAMINO_VIVO_COMPLETO", CAMINO_VIVO_COMPLETO))
     else:
-        senales.append(Senal("FUSIONES_LOCALES", FUSIONES_LOCALES))
+        detalle = {"truncado": True} if servicio.bfs_truncado else {}
+        senales.append(Senal("FUSIONES_LOCALES", FUSIONES_LOCALES, detalle))
     if con_at62:
         senales.append(Senal("AT62_COINCIDE", AT62_COINCIDE, {"at62": objetivo.servicio_at62}))
-    if not objetivo.servicio_resuelto:
+    if _es_libre(objetivo):
         senales.append(Senal("CONECTOR_LIBRE", CONECTOR_LIBRE, {"conector_n_id": objetivo.conector_n_id}))
     if odf_hermanos is not None and odf_hermanos == objetivo.odf_n_id:
         senales.append(Senal("HERMANOS_COINCIDEN", HERMANOS_COINCIDEN))
@@ -237,17 +264,21 @@ _SQL_EXTREMOS_VIVOS = text(
       AND e.servicio_id = ANY(:sids ::int[])
       AND x.extremo->>'tipo' = :tipo_conector
       AND x.extremo->>'odf_id' IS NOT NULL
+    ORDER BY e.generado_at, e.pelo_n_id
     """
 )
 
-# `odf_id` de un extremo puede ser el `version_id` de la ODF; se resuelve al `n_id`.
+# `odf_id` de un extremo puede ser el `version_id` de la ODF; se resuelve al `n_id`. Una ODF no
+# vigente cuenta como sin fila (veto `ODF_SIN_FILA`).
 _SQL_RESOLVER_ODFS = text(
     """
     SELECT n_id, version_id FROM app.cromo_odfs
-    WHERE n_id = ANY(:ids ::bigint[]) OR version_id = ANY(:ids ::bigint[])
+    WHERE vigente AND (n_id = ANY(:ids ::bigint[]) OR version_id = ANY(:ids ::bigint[]))
     """
 )
 
+# Un conector en vivo que no está (o no está vigente) en `cromo_odf_conectores` queda con
+# `en_inventario=False`: no contradice, pero tampoco suma `CONECTOR_LIBRE`.
 _SQL_CONECTORES_POR_ID = text(
     """
     SELECT n_id, servicio_resuelto FROM app.cromo_odf_conectores
@@ -341,8 +372,8 @@ def _bfs_conectores(
     grafo: _GrafoFusiones,
     indice: _IndiceConectores,
     limite: int = MAX_PELOS_BFS,
-) -> list[tuple[int, tuple[int, int, Optional[str], Optional[str]]]]:
-    """(pelo, conector) de cada conector alcanzado desde las semillas, cortando en `limite` pelos."""
+) -> tuple[list[tuple[int, tuple[int, int, Optional[str], Optional[str]]]], bool]:
+    """((pelo, conector) alcanzados desde las semillas, si se cortó en `limite` pelos)."""
     visitados: set[int] = set()
     cola: deque[int] = deque()
     for s in semillas:
@@ -357,15 +388,15 @@ def _bfs_conectores(
         for vecino in grafo.de(pelo):
             if vecino not in visitados:
                 if len(visitados) >= limite:
-                    return hallados
+                    return hallados, True
                 visitados.add(vecino)
                 cola.append(vecino)
-    return hallados
+    return hallados, False
 
 
 def _bfs_por_servicio(
     semillas: dict[int, list[int]], grafo: _GrafoFusiones, indice: _IndiceConectores
-) -> dict[int, list[tuple[int, tuple[int, int, Optional[str], Optional[str]]]]]:
+) -> dict[int, tuple[list[tuple[int, tuple[int, int, Optional[str], Optional[str]]]], bool]]:
     return {sid: _bfs_conectores(pelos, grafo, indice) for sid, pelos in semillas.items()}
 
 
@@ -428,6 +459,7 @@ async def _cargar(
 
     # Local (sólo TODO).
     locales: dict[int, list[tuple[int, tuple[int, int, Optional[str], Optional[str]]]]] = {}
+    truncados: set[int] = set()
     if alcance.tipo == "TODO":
         cache = contexto.setdefault(_CLAVE_CONTEXTO, {}) if contexto is not None else {}
         if "grafo" not in cache:
@@ -436,7 +468,16 @@ async def _cargar(
         semillas: dict[int, list[int]] = {}
         for sid, pelo in (await sesion.execute(_SQL_SEMILLAS, {"sids": sids})).all():
             semillas.setdefault(int(sid), []).append(int(pelo))
-        locales = await asyncio.to_thread(_bfs_por_servicio, semillas, grafo, indice)
+        recorridos = await asyncio.to_thread(_bfs_por_servicio, semillas, grafo, indice)
+        for sid, (hallados, truncado) in recorridos.items():
+            locales[sid] = hallados
+            if truncado:
+                truncados.add(sid)
+                logger.info(
+                    "action=arbitro_cromo evento=bfs_truncado servicio_id=%s limite=%s",
+                    sid,
+                    MAX_PELOS_BFS,
+                )
 
     ids_odf = {int(v.odf_id) for v in vivos}
     ids_odf |= {c[1] for hallados in locales.values() for _, c in hallados}
@@ -464,17 +505,22 @@ async def _cargar(
             pelo_conectado=int(v.pelo_conectado) if v.pelo_conectado is not None else None,
             servicio_resuelto=resueltos.get(conector) if conector is not None else None,
             en_vivo=True,
+            en_inventario=conector is not None and conector in resueltos,
         )
+        # Filas ordenadas por `generado_at`: si varias evidencias reportan el mismo conector, gana
+        # la más nueva.
         por_servicio.setdefault(int(v.servicio_id), {})[(conector, visto.odf_n_id)] = visto
     for sid, hallados in locales.items():
         vistos = por_servicio.setdefault(sid, {})
         for pelo, (conector, odf, resuelto, at62) in hallados:
+            # Mismo mapeo que en vivo: el `odf_n_id` del conector se resuelve contra `cromo_odfs`.
+            odf_n_id = odfs.get(odf, odf)
             # El camino en vivo manda: un conector ya visto en vivo no se pisa con el local.
             vistos.setdefault(
-                (conector, odf),
+                (conector, odf_n_id),
                 ConectorVisto(
                     conector_n_id=conector,
-                    odf_n_id=odf,
+                    odf_n_id=odf_n_id,
                     odf_tiene_fila=odf in odfs,
                     servicio_at62=at62,
                     pelo_conectado=pelo,
@@ -485,12 +531,18 @@ async def _cargar(
 
     salida: dict[int, tuple[ServicioCandidato, list[ConectorVisto], Optional[int]]] = {}
     for sid in sids:
-        conectores = list((por_servicio.get(sid) or {}).values())
+        conectores = sorted(
+            (por_servicio.get(sid) or {}).values(),
+            key=lambda c: (c.odf_n_id, c.conector_n_id if c.conector_n_id is not None else -1),
+        )
         hermanos: Optional[int] = None
         if conectores:
             sugerencia = await sugerencia_odf_para_servicio(sesion, sid)
             hermanos = sugerencia.odf_n_id if sugerencia is not None else None
-        salida[sid] = (candidatos[sid], conectores, hermanos)
+        candidato = candidatos[sid]
+        if sid in truncados:
+            candidato = ServicioCandidato(candidato.id, candidato.identidades, bfs_truncado=True)
+        salida[sid] = (candidato, conectores, hermanos)
 
     logger.info(
         "action=arbitro_cromo evento=odf_por_camino_cargado alcance=%s servicios=%s con_conectores=%s",
