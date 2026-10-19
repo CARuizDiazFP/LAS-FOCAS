@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -84,3 +87,43 @@ async def test_registrar_evidencia_error_no_lanza(entorno):
     )
     assert escritas == 0
     assert (await sesion.execute(text("SELECT 1"))).scalar_one() == 1
+
+
+async def _generado_at(conn, sid: int) -> datetime:
+    return (
+        await conn.execute(
+            text("SELECT generado_at FROM app.cromo_evidencia_camino WHERE servicio_id = :s"),
+            {"s": sid},
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_generado_at_es_el_del_tracking(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    cuando = datetime(2026, 10, 1, 8, 30, tzinfo=timezone.utc)
+    entrada = replace(_entrada(111), generado_at=cuando)
+    assert await registrar_evidencia(sesion, sid, [entrada], completo=True, fuente="WEB") == 1
+    assert await _generado_at(conn, sid) == cuando
+
+
+@pytest.mark.asyncio
+async def test_evidencia_sin_cambios_no_cuenta_como_escrita(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    viejo = datetime(2026, 10, 1, 8, 30, tzinfo=timezone.utc)
+    nuevo = datetime(2026, 10, 5, 8, 30, tzinfo=timezone.utc)
+    entrada = replace(_entrada(111), generado_at=viejo)
+    assert await registrar_evidencia(sesion, sid, [entrada], completo=True, fuente="WEB") == 1
+    # Mismos extremos, pelos y `completo`: no hay nada nuevo que evaluar, pero la fecha se refresca
+    # (el TTL de 30 días cuenta desde la última vez que Cromo mostró ese camino).
+    entrada = replace(entrada, generado_at=nuevo)
+    assert await registrar_evidencia(sesion, sid, [entrada], completo=True, fuente="SLACK") == 0
+    assert await _generado_at(conn, sid) == nuevo
+    # Un tracking más viejo (de caché) con la misma evidencia no hace retroceder la fecha.
+    entrada = replace(entrada, generado_at=viejo)
+    assert await registrar_evidencia(sesion, sid, [entrada], completo=True, fuente="WEB") == 0
+    assert await _generado_at(conn, sid) == nuevo
+    # Cambia `completo`: sí es evidencia nueva.
+    assert await registrar_evidencia(sesion, sid, [entrada], completo=False, fuente="WEB") == 1

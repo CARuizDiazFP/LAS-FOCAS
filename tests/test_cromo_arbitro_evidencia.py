@@ -41,6 +41,8 @@ def test_entradas_de_trackings_omite_sin_extremos():
     entradas = evidencia.entradas_de_trackings([_tracking(1, resumen), _tracking(2, None)])
     assert [e.pelo_n_id for e in entradas] == [1]
     assert entradas[0].pelos_camino == frozenset({1, 2})
+    # La evidencia lleva la fecha real del tracking (puede venir de caché), no la de la consulta.
+    assert entradas[0].generado_at == AHORA
 
 
 class _FakeRedis:
