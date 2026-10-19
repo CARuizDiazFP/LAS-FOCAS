@@ -513,9 +513,122 @@ class CromoServicioOdfOverride(Base):
     usuario = Column(String(128), nullable=False)
     notas = Column(Text, nullable=True)
     creado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    # Migración 20261020_01: 'MANUAL' (operador) | 'AUTO' (árbitro de Cromo) — CHECK en la migración.
+    origen = Column(Text, nullable=False, server_default="MANUAL")
+    # Propuesta del árbitro que originó la fila AUTO; FK dura a un maestro propio, SET NULL al borrarla.
+    propuesta_id = Column(BigInteger, ForeignKey("app.cromo_propuesta.id", ondelete="SET NULL"), nullable=True)
 
     def __repr__(self) -> str:
         return f"<CromoServicioOdfOverride servicio_id={self.servicio_id} odf_n_id={self.odf_n_id}>"
+
+
+class CromoReglaCorreccion(Base):
+    """Configuración de una regla del árbitro de Cromo (migración 20261020_01): modo
+    (APAGADA/SOMBRA/AUTO), umbral de confianza y presupuesto de aplicaciones por corrida. `codigo`
+    es el identificador de la regla. Vocabularios como `Text` + `CHECK` (nunca ENUM Postgres).
+    Sin FK dura a Cromo: sólo maestros propios."""
+
+    __tablename__ = "cromo_regla_correccion"
+    __table_args__ = {"schema": "app"}
+
+    codigo = Column(Text, primary_key=True)
+    modo = Column(Text, nullable=False, server_default="SOMBRA")
+    umbral = Column(SmallInteger, nullable=False, server_default="90")
+    presupuesto_por_corrida = Column(Integer, nullable=False, server_default="50")
+    descripcion = Column(Text, nullable=True)
+    actualizado_por = Column(String(128), nullable=True)
+    actualizado_en = Column(DateTime(timezone=True), server_default=text("now()"))
+
+    def __repr__(self) -> str:
+        return f"<CromoReglaCorreccion codigo='{self.codigo}' modo='{self.modo}'>"
+
+
+class CromoPropuesta(Base):
+    """Propuesta de corrección del árbitro de Cromo. `objeto_id` es referencia blanda (sin FK dura a
+    Cromo: puede ser un id de `app.servicios` o un `n_id` de Cromo según `objeto_tipo`). A lo sumo
+    una propuesta abierta (PROPUESTA/EN_OBSERVACION) por (`regla`, `objeto_tipo`, `objeto_id`),
+    garantizado por el índice único parcial `ux_cromo_propuesta_abierta`. La FK a la regla sí es dura
+    (maestro propio)."""
+
+    __tablename__ = "cromo_propuesta"
+    __table_args__ = (
+        Index(
+            "ux_cromo_propuesta_abierta",
+            "regla",
+            "objeto_tipo",
+            "objeto_id",
+            unique=True,
+            postgresql_where=text("estado IN ('PROPUESTA', 'EN_OBSERVACION')"),
+        ),
+        Index("ix_cromo_propuesta_estado_regla", "estado", "regla"),
+        {"schema": "app"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    regla = Column(Text, ForeignKey("app.cromo_regla_correccion.codigo"), nullable=False)
+    objeto_tipo = Column(Text, nullable=False)  # SERVICIO|BOTELLA|ODF|CABLE — CHECK en la migración
+    objeto_id = Column(BigInteger, nullable=False)
+    accion = Column(Text, nullable=False)  # ASOCIAR_ODF|FUSIONAR_GEMELO|INFORMAR — CHECK en la migración
+    parametros = Column(JSONB(astext_type=Text()), nullable=False, server_default=text("'{}'::jsonb"))
+    confianza = Column(SmallInteger, nullable=False)
+    senales = Column(JSONB(astext_type=Text()), nullable=False, server_default=text("'[]'::jsonb"))
+    evidencia_hash = Column(String(64), nullable=False)
+    estado = Column(Text, nullable=False)  # CHECK en la migración
+    modo_al_evaluar = Column(Text, nullable=False)  # CHECK en la migración
+    disparo = Column(Text, nullable=False)  # CHECK en la migración
+    reversion = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    nota = Column(Text, nullable=True)
+    creada_en = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    actualizada_en = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    decidida_por = Column(String(128), nullable=True)
+    decidida_en = Column(DateTime(timezone=True), nullable=True)
+    aplicada_en = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<CromoPropuesta id={self.id} regla='{self.regla}' estado='{self.estado}'>"
+
+
+class CromoEvidenciaCamino(Base):
+    """Último camino observado para un (servicio, pelo). `servicio_id` es FK DURA a `app.servicios.id`
+    (maestro propio, `ondelete="CASCADE"`); `pelo_n_id` y `pelos_camino` son referencias blandas a
+    Cromo (sin FK dura). `completo=False` registra un camino truncado: no cuenta como camino en vivo."""
+
+    __tablename__ = "cromo_evidencia_camino"
+    __table_args__ = {"schema": "app"}
+
+    servicio_id = Column(Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), primary_key=True)
+    pelo_n_id = Column(BigInteger, primary_key=True)
+    completo = Column(Boolean, nullable=False)
+    extremos = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=False, server_default=text("'[]'::jsonb"))
+    pelos_camino = Column(ARRAY(BigInteger), nullable=True)
+    fuente = Column(Text, nullable=False)  # SLACK|WEB|AUDITORIA_GLOBAL — CHECK en la migración
+    generado_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+    def __repr__(self) -> str:
+        return f"<CromoEvidenciaCamino servicio_id={self.servicio_id} pelo_n_id={self.pelo_n_id}>"
+
+
+class CromoArbitroEvaluacion(Base):
+    """Evaluación del árbitro lanzada y seguida desde la UI (cola + resultado). `reglas` NULL = todas
+    las reglas activas. `resumen` guarda un `ResumenEvaluacion.a_dict()`. Sin FK a Cromo."""
+
+    __tablename__ = "cromo_arbitro_evaluacion"
+    __table_args__ = {"schema": "app"}
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    disparo = Column(Text, nullable=False)  # CHECK en la migración
+    alcance = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=False)
+    reglas = Column(ARRAY(Text), nullable=True)
+    estado = Column(Text, nullable=False)  # EN_COLA|EN_CURSO|OK|OMITIDA|FALLIDA — CHECK en la migración
+    resumen = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+    error = Column(Text, nullable=True)
+    solicitada_por = Column(String(128), nullable=True)
+    encolada_en = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    iniciada_en = Column(DateTime(timezone=True), nullable=True)
+    terminada_en = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<CromoArbitroEvaluacion id={self.id} estado='{self.estado}'>"
 
 
 class ServicioOdfConfirmada(Base):
