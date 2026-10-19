@@ -8867,6 +8867,28 @@ async def cromo_camino_tracking_txt_web(
                 tracking = await obtener_tracking(
                     cliente, sesion, servicio_id=servicio_id, pelo_n_id=elegido
                 )
+            if not tracking.desde_cache:
+                # Evidencia para el árbitro, sólo del camino recién traído de Cromo. Nunca cambia
+                # la respuesta HTTP.
+                try:
+                    from core.services.cromo.arbitro.evidencia import (
+                        entradas_de_trackings,
+                        registrar_y_encolar,
+                    )
+
+                    await registrar_y_encolar(
+                        sesion,
+                        servicio_id,
+                        entradas_de_trackings([tracking]),
+                        completo=True,
+                        fuente="WEB",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "action=arbitro_evidencia evento=enganche_fallido servicio_id=%s",
+                        servicio_id,
+                        exc_info=True,
+                    )
             numero_servicio = (
                 await tracking_service.numero_del_servicio(sesion, servicio_id)
                 if tramo is not None and pelo_n_id is not None
@@ -9840,6 +9862,30 @@ async def servicios_sin_odf_camino_optico_web(
                 camino, semillas = await resolver_camino_de_servicio(
                     cliente, sesion, servicio_id, pelo_n_id=pelo_n_id, incluir_raw=raw
                 )
+            if camino.estado == "OK":
+                # Evidencia para el árbitro; nunca cambia la respuesta HTTP.
+                try:
+                    from core.services.cromo.arbitro.evidencia import (
+                        camino_truncado,
+                        entrada_de_camino,
+                        registrar_y_encolar,
+                    )
+
+                    entrada = entrada_de_camino(camino)
+                    if entrada is not None:
+                        await registrar_y_encolar(
+                            sesion,
+                            servicio_id,
+                            [entrada],
+                            completo=not camino_truncado(camino),
+                            fuente="WEB",
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "action=arbitro_evidencia evento=enganche_fallido servicio_id=%s",
+                        servicio_id,
+                        exc_info=True,
+                    )
     except PeloAjenoAlServicio as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except CromoClientError as exc:

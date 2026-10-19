@@ -622,6 +622,7 @@ async def trackings_del_servicio(
     odfs_confirmadas: Optional[frozenset[int]] = None,
     auditar: bool = True,
     corrida_id: Optional[int] = None,
+    fuente_evidencia: str = "WEB",
 ) -> TrackingsDelServicio:
     """Un camino por semilla no cubierta, clasificado en tramos y residuales. Lo usan Slack y web.
 
@@ -706,6 +707,17 @@ async def trackings_del_servicio(
             odfs_confirmadas=frozenset(confirmadas),
             corrida_id=corrida_id,
         )
+    # Evidencia para el árbitro: los caminos ya resueltos no cuestan otra llamada a Cromo. Nunca
+    # levanta (`registrar_y_encolar` traga sus errores).
+    from core.services.cromo.arbitro.evidencia import entradas_de_trackings, registrar_y_encolar
+
+    await registrar_y_encolar(
+        sesion,
+        servicio_id,
+        entradas_de_trackings([*tramos, *residuales]),
+        completo=resuelto_entero,
+        fuente=fuente_evidencia,
+    )
     logger.info(
         "action=cromo_tracking evento=clasificacion servicio_id=%s tramos=%s residuales=%s "
         "completo=%s",
