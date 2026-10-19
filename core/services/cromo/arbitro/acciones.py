@@ -16,7 +16,17 @@ sin nombre nuevo), y por eso qué restaura `revertir`:
   alias lo pisaría; por eso `aplicar` lo rechaza antes);
 - pone `vigente = false` en la botella origen;
 - repunta al destino los alias cuyo destino era el origen (alias dependientes). Sus ids se guardan
-  en la reversión (`alias_dependientes`, sólo si hay) para devolverlos al origen.
+  en la reversión (`alias_dependientes`, sólo si hay) para devolverlos al origen; sólo vuelven los
+  que siguen apuntando al destino (si alguien los repuntó después, no se tocan).
+
+Límite conocido de `revertir`: mientras la propuesta está EN_OBSERVACION, la ingesta remapea al
+destino (vía el alias) los cables y fusiones nuevos que Cromo reporte sobre el origen. `revertir` no
+los devuelve: se autocorrigen en la próxima ingesta, que ya no encuentra el alias.
+
+`revertir` muta por SQL directo, así que al final saca del identity map de la sesión los objetos
+ORM que tocó (expira los modificados, expulsa los borrados). Sin eso, un llamador que retiene esos
+objetos y vuelve a `aplicar` en la misma sesión dejaría la fusión a medias: el ORM ve el valor
+viejo, no detecta cambio y saltea el UPDATE.
 """
 
 from __future__ import annotations
@@ -30,7 +40,12 @@ from core.services.cromo.arbitro.senales import USUARIO_ARBITRO
 from core.services.cromo.consolidacion_service import ACCION_FUSIONAR, consolidar_grupo_botellas
 from core.services.cromo.servicio_odf_override_service import crear_override
 from core.services.cromo.verificador import ObjetoNoEncontrado
-from db.models.cromo import CromoPropuesta
+from db.models.cromo import (
+    CromoBotella,
+    CromoBotellaAlias,
+    CromoPropuesta,
+    CromoServicioOdfOverride,
+)
 
 __all__ = ["AccionNoAplicable", "aplicar", "revertir"]
 
@@ -58,10 +73,10 @@ _SQL_OVERRIDE_MANUAL_POSTERIOR = text(
 )
 
 _SQL_BORRAR_OVERRIDE_AUTO = text(
-    "DELETE FROM app.cromo_servicio_odf_override WHERE id = :id AND origen = 'AUTO'"
+    "DELETE FROM app.cromo_servicio_odf_override WHERE id = :id AND origen = 'AUTO' RETURNING id"
 )
 
-_SQL_ESTADO_ORIGEN = text(
+_SQL_ESTADO_BOTELLA = text(
     """
     SELECT
         b.vigente,
@@ -84,7 +99,7 @@ _SQL_BORRAR_ALIAS_ARBITRO = text(
     """
     DELETE FROM app.cromo_botella_alias
     WHERE id_cromo_origen = :origen AND accion = :accion AND creado_por = :usuario
-    RETURNING id_cromo_destino
+    RETURNING id, id_cromo_destino
     """
 )
 
@@ -130,7 +145,12 @@ async def revertir(sesion: AsyncSession, propuesta: CromoPropuesta) -> None:
 
     if propuesta.accion == "ASOCIAR_ODF":
         # `origen = 'AUTO'` protege una fila MANUAL aunque la reversión trajera su id.
-        await sesion.execute(_SQL_BORRAR_OVERRIDE_AUTO, {"id": reversion["override_id"]})
+        borrado = (
+            await sesion.execute(_SQL_BORRAR_OVERRIDE_AUTO, {"id": reversion["override_id"]})
+        ).first()
+        if borrado is None:
+            raise AccionNoAplicable("override_ausente")
+        _olvidar(sesion, expulsar={CromoServicioOdfOverride: {borrado.id}})
     else:
         await _revertir_fusionar_gemelo(sesion, reversion)
 
@@ -177,8 +197,8 @@ async def _aplicar_fusionar_gemelo(sesion: AsyncSession, propuesta: CromoPropues
     origen = int(parametros["origen"])
     destino = int(parametros["destino"])
 
-    estado_origen = (await sesion.execute(_SQL_ESTADO_ORIGEN, {"n_id": origen})).first()
-    estado_destino = (await sesion.execute(_SQL_ESTADO_ORIGEN, {"n_id": destino})).first()
+    estado_origen = (await sesion.execute(_SQL_ESTADO_BOTELLA, {"n_id": origen})).first()
+    estado_destino = (await sesion.execute(_SQL_ESTADO_BOTELLA, {"n_id": destino})).first()
     origen_valido = (
         estado_origen is not None
         and estado_origen.vigente
@@ -229,9 +249,38 @@ async def _revertir_fusionar_gemelo(sesion: AsyncSession, reversion: dict) -> No
         raise AccionNoAplicable("alias_cambio")
 
     await sesion.execute(_SQL_RESTITUIR_VIGENTE, {"n_id": origen})
-    dependientes = reversion.get("alias_dependientes") or []
+    dependientes = [int(i) for i in reversion.get("alias_dependientes") or []]
     if dependientes:
         await sesion.execute(
             _SQL_RESTITUIR_DEPENDIENTES,
             {"ids": dependientes, "origen": origen, "destino": borrado.id_cromo_destino},
         )
+    _olvidar(
+        sesion,
+        expirar={CromoBotella: {origen}, CromoBotellaAlias: set(dependientes)},
+        expulsar={CromoBotellaAlias: {borrado.id}},
+    )
+
+
+def _olvidar(
+    sesion: AsyncSession,
+    *,
+    expirar: dict[type, set[int]] | None = None,
+    expulsar: dict[type, set[int]] | None = None,
+) -> None:
+    """Saca del identity map lo que el SQL directo cambió: expira los objetos modificados (se
+    recargan de la base al próximo acceso o query) y expulsa los borrados. Por clave de identidad, sin
+    leer atributos (leer un atributo expirado en async no recarga solo). Expirar sólo estos objetos y
+    no todo (`expire_all`) evita expirar la propuesta que el llamador sigue usando."""
+    expirar = expirar or {}
+    expulsar = expulsar or {}
+    mapa = sesion.sync_session.identity_map
+    for clave in list(mapa.keys()):
+        clase, pk = clave[0], clave[1]
+        objeto = mapa.get(clave)
+        if objeto is None or len(pk) != 1:
+            continue
+        if pk[0] in expulsar.get(clase, ()):
+            sesion.expunge(objeto)
+        elif pk[0] in expirar.get(clase, ()):
+            sesion.expire(objeto)

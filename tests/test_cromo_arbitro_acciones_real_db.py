@@ -12,14 +12,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from core.services.cromo.arbitro.acciones import AccionNoAplicable, aplicar, revertir
 from core.services.cromo.arbitro.senales import USUARIO_ARBITRO
 from core.services.cromo.servicios_sin_odf import listar_servicios_sin_odf
-from db.models.cromo import CromoPropuesta
+from db.models.cromo import CromoBotella, CromoBotellaAlias, CromoPropuesta
 from db.session import async_engine
 from tests.soporte_postgres_real import requiere_postgres_real
 from tests.test_cromo_arbitro_migracion_real_db import _correr
@@ -252,7 +252,8 @@ async def test_revertir_asociar_no_borra_manual_aunque_apunte_su_id(entorno):
     propuesta = await _propuesta_asociar(sesion, sid)
     propuesta.reversion = {"override_id": manual_id}
 
-    await revertir(sesion, propuesta)
+    with pytest.raises(AccionNoAplicable, match="override_ausente"):
+        await revertir(sesion, propuesta)
 
     assert [f.origen for f in await _overrides(conn, sid)] == ["MANUAL"]
 
@@ -440,3 +441,84 @@ async def test_informar_no_aplica(entorno):
         await aplicar(sesion, propuesta)
     with pytest.raises(AccionNoAplicable, match="solo_informativa"):
         await revertir(sesion, propuesta)
+
+
+# ── Fix ronda 1: estado ORM tras revertir y filas ausentes ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_aplicar_revertir_aplicar_misma_sesion(entorno):
+    """`revertir` usa SQL directo: sin expirar el identity map, el segundo `aplicar` en la misma
+    sesión vería el origen todavía `vigente=False` y los dependientes ya repuntados, y saltearía los
+    UPDATE (fusión aplicada a medias)."""
+    sesion, conn = entorno
+    await _par_gemelo(conn)
+    await _botella(conn, _DEPENDIENTE, vigente=False)
+    await _alias(conn, _DEPENDIENTE, _ORIGEN, "operador-qa")
+    propuesta = await _propuesta_fusionar(sesion)
+
+    # El identity map es débil: los objetos quedan stale cuando el llamador los retiene (p. ej. los
+    # cargó por ORM antes de aplicar, como un endpoint que muestra la botella). Se reproduce eso.
+    retenidos = [
+        await sesion.get(CromoBotella, _ORIGEN),
+        (
+            await sesion.execute(
+                select(CromoBotellaAlias).where(CromoBotellaAlias.id_cromo_origen == _DEPENDIENTE)
+            )
+        ).scalar_one(),
+    ]
+
+    propuesta.reversion = await aplicar(sesion, propuesta)
+    await revertir(sesion, propuesta)
+    assert await _vigente(conn, _ORIGEN) is True
+    assert (await _alias_de(conn, _DEPENDIENTE)).id_cromo_destino == _ORIGEN
+
+    propuesta.reversion = await aplicar(sesion, propuesta)
+    assert await _vigente(conn, _ORIGEN) is False
+    assert (await _alias_de(conn, _DEPENDIENTE)).id_cromo_destino == _DESTINO
+    assert tuple(await _alias_de(conn, _ORIGEN)) == (_DESTINO, "fusionar", USUARIO_ARBITRO)
+
+    await revertir(sesion, propuesta)
+    assert await _vigente(conn, _ORIGEN) is True
+    assert (await _alias_de(conn, _DEPENDIENTE)).id_cromo_destino == _ORIGEN
+    assert await _alias_de(conn, _ORIGEN) is None
+    assert retenidos
+
+
+@pytest.mark.asyncio
+async def test_revertir_asociar_sin_fila_auto_no_aplica(entorno):
+    sesion, conn = entorno
+    sid = await _servicio(conn)
+    await _odf(conn)
+    propuesta = await _propuesta_asociar(sesion, sid)
+    propuesta.reversion = await aplicar(sesion, propuesta)
+    await conn.execute(
+        text("DELETE FROM app.cromo_servicio_odf_override WHERE id = :id"),
+        {"id": propuesta.reversion["override_id"]},
+    )
+
+    with pytest.raises(AccionNoAplicable, match="override_ausente"):
+        await revertir(sesion, propuesta)
+
+
+@pytest.mark.asyncio
+async def test_revertir_no_devuelve_dependiente_repuntado_por_otro(entorno):
+    sesion, conn = entorno
+    await _par_gemelo(conn)
+    await _botella(conn, _DEPENDIENTE, vigente=False)
+    await _alias(conn, _DEPENDIENTE, _ORIGEN, "operador-qa")
+    otro = 999_920_523
+    await _botella(conn, otro)
+    propuesta = await _propuesta_fusionar(sesion)
+    propuesta.reversion = await aplicar(sesion, propuesta)
+    # Un operador repunta el dependiente a otra botella mientras la propuesta está en observación.
+    await conn.execute(
+        text("UPDATE app.cromo_botella_alias SET id_cromo_destino = :d WHERE id_cromo_origen = :o"),
+        {"d": otro, "o": _DEPENDIENTE},
+    )
+
+    await revertir(sesion, propuesta)
+
+    assert (await _alias_de(conn, _DEPENDIENTE)).id_cromo_destino == otro
+    assert await _alias_de(conn, _ORIGEN) is None
+    assert await _vigente(conn, _ORIGEN) is True
