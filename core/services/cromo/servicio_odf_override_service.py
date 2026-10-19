@@ -59,6 +59,9 @@ async def crear_override(
     usuario: str,
     notas: Optional[str] = None,
     senal_direccion: Optional[SenalDireccion] = None,
+    origen: str = "MANUAL",
+    propuesta_id: Optional[int] = None,
+    confirmar: bool = True,
 ) -> CromoServicioOdfOverride:
     """Inserta un nuevo evento de asociación manual Servicio→ODF.
 
@@ -83,6 +86,10 @@ async def crear_override(
 
     `senal_direccion` recibe el enum `SenalDireccion` (Task 2), no un string suelto — se persiste
     como su `.value` (mismos literales que el CHECK de la migración).
+
+    `origen` ('MANUAL' por defecto | 'AUTO' del árbitro de Cromo) y `propuesta_id` (propuesta que
+    originó la fila AUTO) los valida el CHECK/FK de la migración 20261020_01. Con `confirmar=False`
+    sólo hace `flush()` (sin `commit` ni `refresh`): la transacción queda en manos del llamador.
     """
     existe = (await sesion.execute(_SQL_EXISTE_ODF, {"n_id": odf_n_id})).first()
     if existe is None:
@@ -97,10 +104,17 @@ async def crear_override(
         senal_direccion=senal_direccion.value if senal_direccion is not None else None,
         usuario=usuario,
         notas=notas,
+        origen=origen,
+        propuesta_id=propuesta_id,
     )
     sesion.add(override)
-    await sesion.commit()
-    await sesion.refresh(override)
+    if confirmar:
+        await sesion.commit()
+        await sesion.refresh(override)
+    else:
+        # El llamador (p. ej. el árbitro) controla la transacción: flush deja `id` disponible sin
+        # confirmar, así que un error posterior revierte también esta fila.
+        await sesion.flush()
     return override
 
 
