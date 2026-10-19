@@ -65,7 +65,7 @@ async def test_recalcular_botellas_duplicados_publica_evento(monkeypatch) -> Non
 async def test_procesar_job_kind_valido_actualiza_status(monkeypatch) -> None:
     llamado = {"veces": 0}
 
-    async def _fake_handler():
+    async def _fake_handler(payload):
         llamado["veces"] += 1
 
     monkeypatch.setitem(worker_mod.DISPATCH, JOB_KIND_BOTELLAS_DUPLICADOS, _fake_handler)
@@ -263,3 +263,221 @@ async def test_health_reflects_loop_status(monkeypatch) -> None:
     finally:
         # Limpiar el estado global para aislamiento de pruebas
         worker_mod._loop_task = None
+
+
+# --- árbitro de Cromo: job `arbitro_evaluar` ---------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from core.services.cromo.arbitro import aviso as aviso_mod  # noqa: E402
+from core.services.cromo.arbitro import motor as motor_mod  # noqa: E402
+
+
+class _SesionFake:
+    """Sesión async mínima: `get` devuelve filas por id, `add` las registra, cuenta commits."""
+
+    filas: dict = {}
+    commits = 0
+    rollbacks = 0
+    _seq = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, _modelo, id_):
+        return type(self).filas.get(id_)
+
+    def add(self, fila):
+        type(self)._seq += 1
+        fila.id = 1000 + type(self)._seq
+        type(self).filas[fila.id] = fila
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        type(self).commits += 1
+
+    async def rollback(self):
+        type(self).rollbacks += 1
+
+
+@pytest.fixture
+def arbitro_env(monkeypatch):
+    class Sesion(_SesionFake):
+        filas: dict = {}
+        commits = 0
+        rollbacks = 0
+        _seq = 0
+
+    avisos = []
+
+    async def _en_curso(i):
+        avisos.append(("en_curso", i))
+
+    async def _evaluado(resumen, i):
+        avisos.append(("evaluado", i))
+
+    monkeypatch.setattr(worker_mod, "AsyncSessionLocal", lambda: Sesion())
+    monkeypatch.setattr(worker_mod, "avisar_en_curso", _en_curso)
+    monkeypatch.setattr(worker_mod, "avisar_evaluacion", _evaluado)
+    return SimpleNamespace(Sesion=Sesion, avisos=avisos)
+
+
+def _payload(**extra):
+    base = {
+        "kind": "arbitro_evaluar",
+        "alcance": {"tipo": "TODO"},
+        "disparo": "VIEWER",
+        "motivo": "",
+        "evaluacion_id": None,
+        "reglas": None,
+    }
+    base.update(extra)
+    return base
+
+
+def _fila_en_cola(Sesion, id_=7):
+    from db.models.cromo import CromoArbitroEvaluacion
+
+    fila = CromoArbitroEvaluacion(
+        id=id_, disparo="VIEWER", alcance={"tipo": "TODO"}, estado="EN_COLA"
+    )
+    Sesion.filas[id_] = fila
+    return fila
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_llama_evaluar(monkeypatch, arbitro_env) -> None:
+    llamadas = []
+
+    async def _evaluar(sesion, alcance, disparo, *, reglas=None, codigos=None):
+        llamadas.append((alcance, disparo, codigos))
+        return motor_mod.ResumenEvaluacion()
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload(reglas=["R1"])))
+    assert len(llamadas) == 1
+    assert llamadas[0][0].a_dict() == {"tipo": "TODO", "ids": []}
+    assert llamadas[0][1:] == ("VIEWER", ["R1"])
+    assert arbitro_env.Sesion.commits >= 3  # EN_CURSO, evaluación, cierre
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_payload_invalido_no_llama(monkeypatch, arbitro_env) -> None:
+    async def _evaluar(*a, **k):
+        raise AssertionError("no debía llamarse")
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload(alcance={"tipo": "X"})))
+    await worker_mod._procesar_job(json.dumps(_payload(disparo="NOPE")))
+    assert arbitro_env.Sesion.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_cierra_evaluacion_ok(monkeypatch, arbitro_env) -> None:
+    fila = _fila_en_cola(arbitro_env.Sesion)
+
+    async def _evaluar(sesion, alcance, disparo, *, reglas=None, codigos=None):
+        return motor_mod.ResumenEvaluacion(nuevas=2, aplicadas_auto=[1])
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload(evaluacion_id=7)))
+    assert fila.estado == "OK"
+    assert fila.resumen["nuevas"] == 2
+    assert fila.iniciada_en is not None and fila.terminada_en is not None
+    assert arbitro_env.avisos == [("en_curso", 7), ("evaluado", 7)]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_omitida(monkeypatch, arbitro_env) -> None:
+    fila = _fila_en_cola(arbitro_env.Sesion)
+
+    async def _evaluar(sesion, alcance, disparo, *, reglas=None, codigos=None):
+        return motor_mod.ResumenEvaluacion(omitida="ingesta_en_curso")
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload(evaluacion_id=7)))
+    assert fila.estado == "OMITIDA"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_excepcion_marca_fallida(monkeypatch, arbitro_env) -> None:
+    fila = _fila_en_cola(arbitro_env.Sesion)
+
+    async def _evaluar(*a, **k):
+        raise RuntimeError("SELECT secreto FROM x")
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload(evaluacion_id=7)))
+    assert fila.estado == "FALLIDA"
+    assert fila.error.startswith("RuntimeError")
+    assert "SELECT" not in fila.error
+    assert arbitro_env.Sesion.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_codigos_invalidos(monkeypatch, arbitro_env) -> None:
+    fila = _fila_en_cola(arbitro_env.Sesion)
+
+    async def _evaluar(*a, **k):
+        raise ValueError("código desconocido")
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload(evaluacion_id=7, reglas=["ZZZ"])))
+    assert fila.estado == "FALLIDA" and fila.error == "codigos_invalidos"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arbitro_sin_evaluacion_id_crea_fila(monkeypatch, arbitro_env) -> None:
+    async def _evaluar(*a, **k):
+        return motor_mod.ResumenEvaluacion()
+
+    monkeypatch.setattr(motor_mod, "evaluar", _evaluar)
+    await worker_mod._procesar_job(json.dumps(_payload()))
+    (fila,) = arbitro_env.Sesion.filas.values()
+    assert fila.estado == "OK"
+    assert fila.solicitada_por == "arbitro-cromo"
+    assert fila.disparo == "VIEWER"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_botellas_duplicados_sigue_funcionando(monkeypatch) -> None:
+    llamado = []
+
+    async def _recalcular():
+        llamado.append(True)
+
+    monkeypatch.setattr(worker_mod, "_recalcular_botellas_duplicados", _recalcular)
+    await worker_mod._procesar_job(json.dumps({"kind": JOB_KIND_BOTELLAS_DUPLICADOS}))
+    assert llamado == [True]
+
+
+@pytest.mark.asyncio
+async def test_avisar_evaluacion_sin_cambios_no_va_a_slack(monkeypatch) -> None:
+    fake_redis = _FakeRedisPublish()
+    import core.cache.redis_client as rc
+
+    monkeypatch.setattr(rc, "get_redis", lambda: fake_redis)
+    from core.services.cromo import inconsistencias_reporte as rep
+
+    def _no(*a, **k):
+        raise AssertionError("no debía ir a Slack")
+
+    monkeypatch.setattr(rep, "_enviar_slack_sync", _no)
+    await aviso_mod.avisar_evaluacion(motor_mod.ResumenEvaluacion(nuevas=3), 5)
+    assert json.loads(fake_redis.published[0][1])["type"] == "arbitro_cromo_evaluado"
+
+
+@pytest.mark.asyncio
+async def test_avisar_evaluacion_nunca_lanza(monkeypatch) -> None:
+    import core.cache.redis_client as rc
+
+    def _boom():
+        raise RuntimeError("redis caído")
+
+    monkeypatch.setattr(rc, "get_redis", _boom)
+    await aviso_mod.avisar_evaluacion(motor_mod.ResumenEvaluacion(aplicadas_auto=[1]), 5)

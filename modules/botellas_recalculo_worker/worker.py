@@ -25,13 +25,17 @@ from fastapi import FastAPI
 from core.cache.redis_client import get_redis
 from core.logging import setup_logging
 from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
+from core.services.cromo.arbitro.aviso import avisar_en_curso, avisar_evaluacion
+from core.services.cromo.arbitro.cola import JOB_KIND_ARBITRO
+from core.services.cromo.arbitro.senales import DISPAROS, USUARIO_ARBITRO, Alcance
 from core.services.botella_recompute_queue import (
     ADMIN_NOTIFICATIONS_CHANNEL,
     JOB_KIND_BOTELLAS_DUPLICADOS,
     QUEUE_KEY,
     guardar_cache_duplicados,
 )
-from db.session import SessionLocal
+from db.models.cromo import CromoArbitroEvaluacion
+from db.session import AsyncSessionLocal, SessionLocal
 from modules.botellas_recalculo_worker.config import BLPOP_TIMEOUT_SECONDS, HEALTH_PORT, NOMBRE_SERVICIO
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -75,8 +79,71 @@ async def _recalcular_botellas_duplicados() -> None:
     )
 
 
-DISPATCH: dict[str, Callable[[], Awaitable[None]]] = {
-    JOB_KIND_BOTELLAS_DUPLICADOS: _recalcular_botellas_duplicados,
+async def _cerrar_evaluacion(evaluacion_id: int, **campos) -> None:
+    """Cierra la fila de la corrida en una transacción propia (nueva)."""
+    async with AsyncSessionLocal() as sesion:
+        fila = await sesion.get(CromoArbitroEvaluacion, evaluacion_id)
+        if fila is None:
+            return
+        for nombre, valor in campos.items():
+            setattr(fila, nombre, valor)
+        fila.terminada_en = datetime.now(timezone.utc)
+        await sesion.commit()
+
+
+async def _evaluar_arbitro(payload: dict) -> None:
+    from core.services.cromo.arbitro.motor import evaluar  # diferido: el motor es pesado
+
+    disparo = payload.get("disparo")
+    try:
+        alcance = Alcance.desde_dict(payload["alcance"])
+    except (ValueError, TypeError, KeyError):
+        alcance = None
+    if alcance is None or disparo not in DISPAROS:
+        logger.warning("action=botellas_recalculo_worker evento=job_invalido kind=%s reason=payload_arbitro", JOB_KIND_ARBITRO)
+        return
+
+    reglas = payload.get("reglas")
+    evaluacion_id = payload.get("evaluacion_id")
+    ahora = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as sesion:
+        fila = await sesion.get(CromoArbitroEvaluacion, evaluacion_id) if evaluacion_id else None
+        if fila is None:
+            fila = CromoArbitroEvaluacion(
+                disparo=disparo, alcance=alcance.a_dict(), reglas=reglas, solicitada_por=USUARIO_ARBITRO
+            )
+            sesion.add(fila)
+        fila.estado = "EN_CURSO"
+        fila.iniciada_en = ahora
+        await sesion.flush()
+        evaluacion_id = fila.id
+        await sesion.commit()
+    await avisar_en_curso(evaluacion_id)
+
+    resumen = None
+    error = ""
+    async with AsyncSessionLocal() as sesion:
+        try:
+            resumen = await evaluar(sesion, alcance, disparo, codigos=reglas)
+            await sesion.commit()
+        except Exception as exc:  # noqa: BLE001 - se registra en la fila, no se propaga
+            await sesion.rollback()
+            logger.exception("action=botellas_recalculo_worker evento=arbitro_error evaluacion_id=%s", evaluacion_id)
+            error = "codigos_invalidos" if isinstance(exc, ValueError) and reglas else (
+                f"{type(exc).__name__}: falló la evaluación del árbitro (ver logs del worker)"
+            )
+    if resumen is None:
+        await _cerrar_evaluacion(evaluacion_id, estado="FALLIDA", error=error)
+        return
+    await _cerrar_evaluacion(
+        evaluacion_id, estado="OMITIDA" if resumen.omitida else "OK", resumen=resumen.a_dict()
+    )
+    await avisar_evaluacion(resumen, evaluacion_id)
+
+
+DISPATCH: dict[str, Callable[[dict], Awaitable[None]]] = {
+    JOB_KIND_BOTELLAS_DUPLICADOS: lambda payload: _recalcular_botellas_duplicados(),
+    JOB_KIND_ARBITRO: _evaluar_arbitro,
 }
 
 
@@ -103,7 +170,7 @@ async def _procesar_job(raw: str) -> None:
         return
 
     try:
-        await handler()
+        await handler(payload)
         _worker_status["ultimo_job"] = payload
         _worker_status["jobs_procesados"] += 1
         _worker_status["ultimo_error"] = None
