@@ -11,10 +11,10 @@ import re
 import secrets
 import time
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import time as now
-from collections.abc import Sequence
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import httpx
@@ -7780,6 +7780,7 @@ async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestMo
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"eliminar origen={resultado.origen} id={resultado.id} usuario={username}"
             )
+            # Legado/cámara no tienen n_id Cromo: el alcance BOTELLAS del árbitro sólo habla de n_id.
             if resultado.origen == "cromo":
                 await _encolar_arbitro("BOTELLAS", [resultado.id], f"eliminar cromo_n_id={resultado.id}")
             return JSONResponse({
@@ -7852,9 +7853,10 @@ async def botellas_eliminar_grupo_web(
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
             )
-            await _encolar_arbitro(
-                "BOTELLAS", body.ids_cromo, f"eliminar-grupo botellas={resultado.botellas_eliminadas}"
-            )
+            if resultado.botellas_eliminadas > 0:
+                await _encolar_arbitro(
+                    "BOTELLAS", body.ids_cromo, f"eliminar-grupo botellas={resultado.botellas_eliminadas}"
+                )
             return JSONResponse({
                 "ok": True,
                 "botellas_eliminadas": resultado.botellas_eliminadas,
@@ -9511,7 +9513,8 @@ async def inconsistencias_cromo_estado_web(
     async with AsyncSessionLocal() as sesion:
         resultado = await cambiar_estado(sesion, body.ids, body.estado, username)
         await sesion.commit()
-    await _encolar_arbitro("TODO", [], f"inconsistencias-estado estado={body.estado}")
+    if resultado["actualizados"]:
+        await _encolar_arbitro("TODO", [], f"inconsistencias-estado estado={body.estado}")
     logger.info(
         "action=cromo_inconsistencias_estado user=%s estado=%s aplicados=%s rechazados=%s",
         username,

@@ -166,3 +166,39 @@ def test_estado_inconsistencias_encola_todo_solo_si_ok(monkeypatch, encolados):
     assert encolados == []
     assert client.post(url, json={"ids": [1], "estado": "PENDIENTE"}).status_code == 200
     assert encolados == [(Alcance("TODO"), "VIEWER")]
+
+
+def test_estado_inconsistencias_sin_cambios_no_encola(monkeypatch, encolados):
+    from core.services.cromo import inconsistencias_cromo as inc
+
+    async def _cambiar(_s, ids, estado, usuario):
+        return {"actualizados": [], "rechazados": [{"id": 1, "motivo": "x"}]}
+
+    monkeypatch.setattr(inc, "cambiar_estado", _cambiar)
+    client = _cliente(monkeypatch)
+    monkeypatch.setattr("db.session.AsyncSessionLocal", lambda: _SesionAsync())
+
+    res = client.post(
+        "/api/admin/infra/inconsistencias-cromo/estado", json={"ids": [1], "estado": "PENDIENTE"}
+    )
+
+    assert res.status_code == 200
+    assert encolados == []
+
+
+@pytest.mark.parametrize("eliminadas, esperado", [(2, [(Alcance("BOTELLAS", (4, 5)), "VIEWER")]), (0, [])])
+def test_eliminar_grupo_encola_solo_si_elimino(monkeypatch, encolados, eliminadas, esperado):
+    import core.services.camara_botella_delete_service as svc
+
+    monkeypatch.setattr("db.session.SessionLocal", lambda: _SesionSync())
+    resultado = SimpleNamespace(
+        botellas_eliminadas=eliminadas, cables_eliminados=0, fusiones_eliminadas=0,
+        aliases_registrados=0, no_encontradas=[],
+    )
+    monkeypatch.setattr(svc, "eliminar_y_excluir_grupo_cromo", lambda *a, **k: resultado)
+    client = _cliente(monkeypatch)
+
+    res = client.post("/api/infra/botellas/eliminar-grupo", json={"ids_cromo": [4, 5]})
+
+    assert res.status_code == 200
+    assert encolados == esperado
