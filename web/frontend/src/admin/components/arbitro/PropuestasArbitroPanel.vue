@@ -97,6 +97,18 @@
               <router-link v-if="p.objeto_tipo === 'SERVICIO'" :to="{ name: 'servicios-detail', params: { idServicio: p.objeto_id } }">
                 Servicio {{ p.objeto_id }}
               </router-link>
+              <router-link
+                v-else-if="p.objeto_tipo === 'BOTELLA'"
+                :to="{ name: 'infra-botellas-detalle', params: { id: p.objeto_id } }"
+              >
+                Botella {{ p.objeto_id }}
+              </router-link>
+              <router-link
+                v-else-if="p.objeto_tipo === 'ODF'"
+                :to="{ name: 'infra-cromo-odf-detalle', params: { nId: p.objeto_id } }"
+              >
+                ODF {{ p.objeto_id }}
+              </router-link>
               <template v-else>{{ p.objeto_tipo }} {{ p.objeto_id }}</template>
             </td>
             <td>
@@ -159,7 +171,6 @@ import {
   revertirPropuestas,
   type PropuestaArbitro,
 } from '../../../api/arbitroCromo';
-import { useAdminNotifications } from '../../../composables/useAdminNotifications';
 import AnalisisRetroactivoPanel from './AnalisisRetroactivoPanel.vue';
 
 const LIMIT = 100;
@@ -207,8 +218,10 @@ function porcentaje(confianza: number): number {
   return Math.max(0, Math.min(100, confianza));
 }
 
-async function loadNextPage(): Promise<void> {
-  if (loading.value) return;
+// Cada recarga desde cero invalida las respuestas en vuelo (token): gana siempre la última pedida.
+let tokenCarga = 0;
+
+async function cargarPagina(token: number): Promise<void> {
   loading.value = true;
   error.value = '';
   try {
@@ -218,25 +231,33 @@ async function loadNextPage(): Promise<void> {
       limit: LIMIT,
       offset: offset.value,
     });
+    if (token !== tokenCarga) return;
     total.value = respuesta.total;
     const vistos = new Set(items.value.map((p) => p.id));
     items.value.push(...respuesta.items.filter((p) => !vistos.has(p.id)));
     offset.value += respuesta.items.length;
     hasMore.value = respuesta.items.length === LIMIT && offset.value < respuesta.total;
   } catch (err: unknown) {
+    if (token !== tokenCarga) return;
     error.value = err instanceof Error ? err.message : 'No se pudieron consultar las propuestas';
   } finally {
-    loading.value = false;
+    if (token === tokenCarga) loading.value = false;
   }
 }
 
+async function loadNextPage(): Promise<void> {
+  if (loading.value) return;
+  await cargarPagina(tokenCarga);
+}
+
 async function reloadFromZero(): Promise<void> {
+  tokenCarga += 1;
   items.value = [];
   total.value = 0;
   offset.value = 0;
   hasMore.value = false;
   seleccion.value = new Set();
-  await loadNextPage();
+  await cargarPagina(tokenCarga);
 }
 
 function setEstado(valor: string): void {
@@ -286,16 +307,12 @@ async function ejecutar(accion: Accion): Promise<void> {
   }
 }
 
-/** Al terminar un análisis se muestran sus propuestas: filtro por la regla de la corrida (si fue una sola). */
+/** Único camino de recarga al terminar una evaluación (el panel de análisis escucha el WS): filtra por la regla de la corrida si fue una sola. */
 function onEvaluacionTerminada(reglas: string[]): void {
   filtroRegla.value = reglas.length === 1 ? reglas[0] : '';
   filtroEstado.value = 'PROPUESTA';
   void reloadFromZero();
 }
-
-// Otras corridas (ingesta, viewer) también dejan propuestas: se recarga la lista al terminar cada evaluación.
-const { on } = useAdminNotifications();
-on('arbitro_cromo_evaluado', () => void reloadFromZero());
 
 onMounted(async () => {
   void listarReglas()

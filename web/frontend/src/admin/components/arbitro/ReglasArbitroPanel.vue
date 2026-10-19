@@ -50,9 +50,15 @@
             <td>{{ f.rechazadas }}</td>
             <td>{{ f.precision === null ? '—' : `${(f.precision * 100).toFixed(0)} %` }}</td>
             <td>
-              <button type="button" class="btn" :disabled="guardando === f.codigo || !cambiada(f)" @click="guardar(f)">
+              <button
+                type="button"
+                class="btn"
+                :disabled="guardando === f.codigo || !cambiada(f) || problema(f) !== ''"
+                @click="guardar(f)"
+              >
                 Guardar
               </button>
+              <span v-if="problema(f)" class="reglas__invalido" role="alert">{{ problema(f) }}</span>
             </td>
           </tr>
         </tbody>
@@ -97,7 +103,21 @@ function cambiada(f: ReglaArbitro): boolean {
   );
 }
 
+/** Mensaje de validación (vacío si los valores son guardables). Un input vacío llega como '' y no debe guardar 0. */
+function problema(f: ReglaArbitro): string {
+  const umbral: unknown = f.umbral;
+  const presupuesto: unknown = f.presupuesto_por_corrida;
+  if (typeof umbral !== 'number' || !Number.isInteger(umbral) || umbral < 0 || umbral > 100) {
+    return 'El umbral debe ser un entero entre 0 y 100.';
+  }
+  if (typeof presupuesto !== 'number' || !Number.isInteger(presupuesto) || presupuesto < 0) {
+    return 'El presupuesto debe ser un entero mayor o igual a 0.';
+  }
+  return '';
+}
+
 async function guardar(f: ReglaArbitro): Promise<void> {
+  if (problema(f)) return;
   if (
     f.modo === 'AUTO' &&
     guardadas.value.get(f.codigo)?.modo !== 'AUTO' &&
@@ -180,6 +200,8 @@ onMounted(cargar);
   background: color-mix(in srgb, var(--color-state-ok) 16%, transparent);
   color: var(--color-state-ok);
 }
+
+.reglas__invalido { display: block; margin-top: 4px; font-size: 11px; color: var(--color-state-error); }
 
 .reglas__vacio { font-size: 12.5px; color: color-mix(in srgb, var(--color-text) 60%, transparent); }
 </style>

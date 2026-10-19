@@ -356,7 +356,9 @@ const pestana = ref<Pestana>(
 );
 
 function setPestana(valor: Pestana): void {
+  const vuelveACasos = valor === 'casos' && pestana.value !== 'casos';
   pestana.value = valor;
+  if (vuelveACasos) void reloadFromZero();
   void router.replace({ query: { ...route.query, tab: valor === 'casos' ? undefined : valor } });
 }
 
@@ -548,8 +550,9 @@ on('cromo_inconsistencias_nuevas', (mensajeWs) => {
 });
 
 // Una evaluación del árbitro puede haber corregido casos: la pestaña Casos se recarga igual.
+// Con otra pestaña visible no se recarga: se recarga al volver a Casos (setPestana).
 on('arbitro_cromo_evaluado', () => {
-  void reloadFromZero();
+  if (pestana.value === 'casos') void reloadFromZero();
 });
 
 function refrescar(): void {
