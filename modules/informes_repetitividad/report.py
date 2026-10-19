@@ -15,7 +15,7 @@ from docx.shape import InlineShape
 
 from modules.common.libreoffice_export import convert_to_pdf
 from core.docx_utils.text_replace import replace_title_everywhere
-from core.maps.static_map import build_static_map_png
+from core.maps.static_map import MapStyle, build_static_map_png
 from core.utils.timefmt import minutes_to_hhmm
 from .config import (
     MAPS_ENABLED,
@@ -36,8 +36,15 @@ TABLE_HEADERS = [
     "Descripción",
 ]
 
-MAP_MAX_WIDTH = Inches(6.2)
-MAP_MAX_HEIGHT = Inches(5.6)
+# Área útil de la hoja A4 de la plantilla (8.28 × 11.69 in, márgenes 0.67/0.39 in)
+# descontando el título del mapa y el pie: el mapa ocupa su propia hoja.
+MAP_MAX_WIDTH = Inches(6.9)
+MAP_MAX_HEIGHT = Inches(9.8)
+# Reserva vertical para el título "Mapa georreferenciado — …" y el pie de página.
+MAP_PAGE_RESERVED_HEIGHT = Inches(1.0)
+# El PNG se genera con la misma proporción que el área útil para que el
+# encuadre (zoom) llene la hoja en lugar de salir cuadrado.
+MAP_PAGE_STYLE = MapStyle(figsize=(6.9, 9.8), dpi=150, palette_colors=256)
 
 
 def _header_cell(cell, text: str) -> None:
@@ -116,7 +123,9 @@ def _render_service_block(doc: Document, servicio: ServicioDetalle, with_geo: bo
     heading = " — ".join(filter(None, heading_parts)) or servicio.servicio
     if servicio.nombre_cliente:
         heading = f"{heading} · {servicio.nombre_cliente}"
-    doc.add_heading(heading, level=2)
+    heading_paragraph = doc.add_heading(heading, level=2)
+    # Una tabla por hoja: cada servicio arranca en una hoja nueva.
+    heading_paragraph.paragraph_format.page_break_before = True
 
     table = doc.add_table(rows=1, cols=len(TABLE_HEADERS))
     table.style = "Table Grid"
@@ -139,7 +148,7 @@ def _render_service_block(doc: Document, servicio: ServicioDetalle, with_geo: bo
         image_path = Path(servicio.map_image_path)
         if image_path.exists():
             try:
-                _insert_service_map(doc, image_path)
+                _insert_service_map(doc, image_path, heading)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("action=servicio_block image_failed map=%s error=%s", image_path, exc)
                 doc.add_paragraph(f"No se pudo insertar el mapa ({image_path.name}).")
@@ -149,8 +158,6 @@ def _render_service_block(doc: Document, servicio: ServicioDetalle, with_geo: bo
                 servicio.servicio,
                 image_path,
             )
-
-    doc.add_paragraph()
 
 
 def _render_reclamo_row(table, reclamo: ReclamoDetalle) -> None:
@@ -179,30 +186,58 @@ def _format_horas(value: Any) -> str:
     return minutes_to_hhmm(value)
 
 
-def _insert_service_map(doc: Document, image_path: Path) -> None:
-    doc.add_paragraph()
-    doc.add_paragraph("Mapa georreferenciado:")
+def _insert_service_map(doc: Document, image_path: Path, titulo: str) -> None:
+    """Inserta el mapa del servicio en una hoja propia, ocupando el área útil."""
+
+    title_paragraph = doc.add_paragraph()
+    title_paragraph.paragraph_format.page_break_before = True
+    title_paragraph.paragraph_format.keep_with_next = True
+    title_run = title_paragraph.add_run(f"Mapa georreferenciado — {titulo}")
+    title_run.bold = True
+
     image_paragraph = doc.add_paragraph()
+    image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    image_paragraph.paragraph_format.space_before = Pt(0)
+    image_paragraph.paragraph_format.space_after = Pt(0)
     run = image_paragraph.add_run()
     picture = run.add_picture(str(image_path))
-    _fit_inline_picture(picture)
+    max_width, max_height = _map_area(doc)
+    _fit_inline_picture(picture, max_width, max_height)
 
 
-def _fit_inline_picture(picture: InlineShape) -> None:
+def _map_area(doc: Document) -> tuple[int, int]:
+    """Ancho/alto disponibles para el mapa en la hoja actual del documento."""
+
+    section = doc.sections[-1]
+    try:
+        width = int(section.page_width - section.left_margin - section.right_margin)
+        height = int(
+            section.page_height
+            - section.top_margin
+            - section.bottom_margin
+            - MAP_PAGE_RESERVED_HEIGHT
+        )
+    except TypeError:  # pragma: no cover - sección sin dimensiones explícitas
+        return int(MAP_MAX_WIDTH), int(MAP_MAX_HEIGHT)
+    if width <= 0 or height <= 0:  # pragma: no cover - plantilla inválida
+        return int(MAP_MAX_WIDTH), int(MAP_MAX_HEIGHT)
+    return width, height
+
+
+def _fit_inline_picture(
+    picture: InlineShape,
+    max_width: int = int(MAP_MAX_WIDTH),
+    max_height: int = int(MAP_MAX_HEIGHT),
+) -> None:
+    """Escala la imagen (sube o baja) para llenar el área sin deformarla."""
+
     width = float(picture.width)
     height = float(picture.height)
-
-    if height > float(MAP_MAX_HEIGHT):
-        ratio = float(MAP_MAX_HEIGHT) / height
-        picture.height = int(MAP_MAX_HEIGHT)
-        picture.width = int(width * ratio)
-        width = float(picture.width)
-        height = float(picture.height)
-
-    if width > float(MAP_MAX_WIDTH):
-        ratio = float(MAP_MAX_WIDTH) / width
-        picture.width = int(MAP_MAX_WIDTH)
-        picture.height = int(height * ratio)
+    if width <= 0 or height <= 0:
+        return
+    ratio = min(max_width / width, max_height / height)
+    picture.width = int(width * ratio)
+    picture.height = int(height * ratio)
 
 
 def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
@@ -257,7 +292,11 @@ def generate_service_maps(
         png_path = maps_dir / f"repetitividad_{periodo.periodo_anio}{periodo.periodo_mes:02d}_{safe_name}.png"
 
         try:
-            build_static_map_png([(lat, lon) for lat, lon, _ in coords], png_path)
+            build_static_map_png(
+                [(lat, lon) for lat, lon, _ in coords],
+                png_path,
+                style=MAP_PAGE_STYLE,
+            )
         except ValueError:
             servicio.map_image_path = None
             logger.debug("action=generate_service_maps reason=no_valid_points servicio=%s", servicio.servicio)

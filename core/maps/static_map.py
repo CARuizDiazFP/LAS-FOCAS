@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -27,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 Point = Tuple[float, float]
 
+# Los servidores de tiles de OpenStreetMap bloquean el User-Agent genérico de
+# contextily ("contextily-<uuid>") y devuelven, con HTTP 200, una imagen de
+# "Access blocked" en lugar del tile: el mapa salía tapado por esos avisos.
+# La política de uso de OSM exige un User-Agent que identifique a la aplicación.
+DEFAULT_TILE_USER_AGENT = "LAS-FOCAS/1.0 (Metrotel; informes de infraestructura FO; +https://www.metrotel.com.ar)"
+
+
+def _tile_user_agent() -> str:
+    return (os.getenv("MAPS_TILE_USER_AGENT") or "").strip() or DEFAULT_TILE_USER_AGENT
+
 
 @dataclass(frozen=True)
 class MapStyle:
@@ -46,6 +57,9 @@ class MapStyle:
     min_pad_meters: float = 320.0
     single_point_meters: float = 420.0
     min_pad_degrees: float = 0.05
+    # Si se indica, el PNG se reduce a una paleta de N colores (los tiles de
+    # calles ya son de paleta): baja el peso ~4x sin pérdida visible.
+    palette_colors: int | None = None
 
 
 def build_static_map_png(
@@ -72,6 +86,8 @@ def build_static_map_png(
             import contextily as ctx  # type: ignore
             from pyproj import Transformer  # type: ignore
 
+            ctx.tile.USER_AGENT = _tile_user_agent()
+
             transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
             xs: List[float] = []
             ys: List[float] = []
@@ -93,8 +109,7 @@ def build_static_map_png(
             basemap_was_drawn = True
         else:
             raise RuntimeError("Proveedor deshabilitado")
-    except Exception as e:  # noqa: BLE001
-        print(f"DEBUG: Basemap failed. Exception type: {type(e).__name__}, args: {e.args}")
+    except Exception:  # noqa: BLE001
         logger.exception("action=build_static_map_png stage=basemap_unavailable")
         longitudes = [lon for _, lon in valid_points]
         latitudes = [lat for lat, _ in valid_points]
@@ -102,11 +117,15 @@ def build_static_map_png(
         _configure_bbox_geographic(ax, latitudes, longitudes, style)
 
     _remove_axes(ax)
-    fig.tight_layout(pad=0.05)
+    # El eje ocupa toda la figura: el PNG conserva exactamente la proporción de
+    # ``figsize`` y el encuadre ya fue ajustado a esa misma proporción.
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=style.dpi, bbox_inches="tight", pad_inches=0)
+    fig.savefig(out_path, dpi=style.dpi)
     plt.close(fig)
+    if style.palette_colors:
+        _quantize_png(out_path, style.palette_colors)
 
     logger.info(
         "action=build_static_map_png stage=success path=%s points=%s basemap=%s",
@@ -115,6 +134,20 @@ def build_static_map_png(
         basemap_was_drawn,
     )
     return out_path
+
+
+def _quantize_png(path: Path, colors: int) -> None:
+    try:
+        from PIL import Image
+    except ModuleNotFoundError:  # pragma: no cover - Pillow viene con matplotlib
+        return
+    with Image.open(path) as img:
+        reduced = img.convert("RGB").quantize(
+            colors=colors,
+            method=Image.Quantize.MEDIANCUT,
+            dither=Image.Dither.NONE,
+        )
+    reduced.save(path, optimize=True)
 
 
 def _sanitize_points(points: Iterable[Tuple[float | None, float | None]]) -> List[Point]:
@@ -166,30 +199,64 @@ def _configure_bbox_projected(ax, xs: List[float], ys: List[float], style: MapSt
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     if len(xs) == 1:
-        pad = style.single_point_meters
-        ax.set_xlim(min_x - pad, max_x + pad)
-        ax.set_ylim(min_y - pad, max_y + pad)
-        return
-
-    pad_x = max((max_x - min_x) * style.pad_ratio, style.min_pad_meters)
-    pad_y = max((max_y - min_y) * style.pad_ratio, style.min_pad_meters)
-    ax.set_xlim(min_x - pad_x, max_x + pad_x)
-    ax.set_ylim(min_y - pad_y, max_y + pad_y)
+        pad_x = pad_y = style.single_point_meters
+    else:
+        pad_x = max((max_x - min_x) * style.pad_ratio, style.min_pad_meters)
+        pad_y = max((max_y - min_y) * style.pad_ratio, style.min_pad_meters)
+    _apply_limits(ax, (min_x - pad_x, max_x + pad_x), (min_y - pad_y, max_y + pad_y), style)
 
 
 def _configure_bbox_geographic(ax, latitudes: List[float], longitudes: List[float], style: MapStyle) -> None:
     min_lat, max_lat = min(latitudes), max(latitudes)
     min_lon, max_lon = min(longitudes), max(longitudes)
     if len(latitudes) == 1:
-        pad = style.min_pad_degrees
-        ax.set_xlim(min_lon - pad, max_lon + pad)
-        ax.set_ylim(min_lat - pad, max_lat + pad)
-        return
+        pad_lon = pad_lat = style.min_pad_degrees
+    else:
+        pad_lon = max((max_lon - min_lon) * style.pad_ratio, style.min_pad_degrees)
+        pad_lat = max((max_lat - min_lat) * style.pad_ratio, style.min_pad_degrees)
+    _apply_limits(
+        ax,
+        (min_lon - pad_lon, max_lon + pad_lon),
+        (min_lat - pad_lat, max_lat + pad_lat),
+        style,
+    )
 
-    pad_lon = max((max_lon - min_lon) * style.pad_ratio, style.min_pad_degrees)
-    pad_lat = max((max_lat - min_lat) * style.pad_ratio, style.min_pad_degrees)
-    ax.set_xlim(min_lon - pad_lon, max_lon + pad_lon)
-    ax.set_ylim(min_lat - pad_lat, max_lat + pad_lat)
+
+def fit_bounds_to_aspect(
+    xlim: Tuple[float, float],
+    ylim: Tuple[float, float],
+    aspect: float,
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Expande el eje corto del encuadre para que ancho/alto == ``aspect``.
+
+    Mantiene el centro y nunca recorta: todos los puntos siguen dentro.
+    """
+
+    x0, x1 = xlim
+    y0, y1 = ylim
+    width = x1 - x0
+    height = y1 - y0
+    if width <= 0 or height <= 0 or aspect <= 0:
+        return xlim, ylim
+    if width / height < aspect:
+        new_width = height * aspect
+        cx = (x0 + x1) / 2
+        return (cx - new_width / 2, cx + new_width / 2), ylim
+    new_height = width / aspect
+    cy = (y0 + y1) / 2
+    return xlim, (cy - new_height / 2, cy + new_height / 2)
+
+
+def _apply_limits(
+    ax,
+    xlim: Tuple[float, float],
+    ylim: Tuple[float, float],
+    style: MapStyle,
+) -> None:
+    width_in, height_in = style.figsize
+    xlim, ylim = fit_bounds_to_aspect(xlim, ylim, width_in / height_in)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
 
 
 def _remove_axes(ax) -> None:

@@ -100,7 +100,9 @@ def test_flow_repetitividad_success_excel_with_geo(monkeypatch: pytest.MonkeyPat
 
     docx_path = reports_dir / "reporte.docx"
     docx_path.write_bytes(b"DOCX")
-    map_path_png = reports_dir / "mapa_servicio_a.png"
+    # generate_service_maps guarda los PNG en una subcarpeta maps_YYYYMM/.
+    (reports_dir / "maps_202407").mkdir()
+    map_path_png = reports_dir / "maps_202407" / "mapa_servicio_a.png"
     map_path_png.write_bytes(b"PNG")
 
     async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
@@ -129,9 +131,9 @@ def test_flow_repetitividad_success_excel_with_geo(monkeypatch: pytest.MonkeyPat
     assert body["with_geo"] is True
     assert body["source"] == "excel"
     assert body["maps"] == []
-    assert body["map_images"] == [f"/reports/{map_path_png.name}"]
+    assert body["map_images"] == [f"/reports/maps_202407/{map_path_png.name}"]
     assert body.get("map") is None
-    assert body["map_image"] == f"/reports/{map_path_png.name}"
+    assert body["map_image"] == f"/reports/maps_202407/{map_path_png.name}"
     assert body.get("pdf") is None
 
 

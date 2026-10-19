@@ -183,6 +183,16 @@ class RegistrarNotionArgs(BaseModel):
 # --------------------------------------------------------------------------------------
 
 
+def _reports_href(path: Path, reports_dir: Path) -> str:
+    """URL bajo /reports conservando subcarpetas (p. ej. maps_YYYYMM/)."""
+
+    try:
+        rel = path.resolve().relative_to(Path(reports_dir).resolve())
+    except ValueError:
+        return f"/reports/{path.name}"
+    return f"/reports/{rel.as_posix()}"
+
+
 async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: ToolContext) -> ToolResult:
     uploads_dir = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
     reports_dir = REPORT_CONFIG.reports_dir
@@ -204,7 +214,7 @@ async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: To
         REPORT_CONFIG,
         args.with_geo,
     )
-    map_images = [f"/reports/{Path(m).name}" for m in result.map_images]
+    map_images = [_reports_href(Path(m), reports_dir) for m in result.map_images]
     payload: Dict[str, Any] = {
         "status": "ok",
         "docx": f"/reports/{result.docx.name}" if result.docx else None,

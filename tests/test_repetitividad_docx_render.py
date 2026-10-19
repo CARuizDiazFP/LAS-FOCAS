@@ -10,7 +10,9 @@ from modules.informes_repetitividad.report import (
     TABLE_HEADERS,
     MAP_MAX_HEIGHT,
     MAP_MAX_WIDTH,
+    MAP_PAGE_STYLE,
     _format_horas,
+    _map_area,
     _render_service_block,
 )
 from modules.informes_repetitividad.schemas import ReclamoDetalle, ServicioDetalle
@@ -81,8 +83,47 @@ def test_render_service_block_removes_lat_lon_columns(tmp_path):
     assert any("Mapa georreferenciado" in par.text for par in documento.paragraphs)
     assert len(documento.inline_shapes) == 1
     picture = documento.inline_shapes[0]
-    assert float(picture.width) <= float(MAP_MAX_WIDTH)
-    assert float(picture.height) <= float(MAP_MAX_HEIGHT)
+    max_width, max_height = _map_area(documento)
+    assert float(picture.width) <= max_width + 1
+    assert float(picture.height) <= max_height + 1
+    # La imagen se escala hasta llenar el área útil de su hoja.
+    assert float(picture.width) >= 0.9 * max_width or float(picture.height) >= 0.9 * max_height
+
+
+def test_render_service_block_una_tabla_por_hoja_y_mapa_en_hoja_propia(tmp_path):
+    documento = Document()
+    png_path = tmp_path / "map.png"
+    _create_dummy_png(png_path)
+
+    for nombre, con_mapa in (("Servicio-A", True), ("Servicio-B", False)):
+        servicio = ServicioDetalle(
+            servicio=nombre,
+            casos=1,
+            reclamos=[ReclamoDetalle(numero_reclamo="1", latitud=-34.6, longitud=-58.4)],
+        )
+        servicio.map_image_path = str(png_path) if con_mapa else None
+        _render_service_block(documento, servicio, with_geo=True)
+
+    headings = [p for p in documento.paragraphs if p.style.name.startswith("Heading")]
+    assert [h.text for h in headings] == ["Servicio-A", "Servicio-B"]
+    assert all(h.paragraph_format.page_break_before for h in headings)
+
+    titulos_mapa = [p for p in documento.paragraphs if p.text.startswith("Mapa georreferenciado")]
+    assert [p.text for p in titulos_mapa] == ["Mapa georreferenciado — Servicio-A"]
+    assert titulos_mapa[0].paragraph_format.page_break_before
+    assert len(documento.inline_shapes) == 1
+    # Sin párrafos vacíos sueltos que generen hojas en blanco.
+    assert all(p.text or p._p.xpath(".//w:drawing") for p in documento.paragraphs)
+
+
+def test_map_area_plantilla_a4():
+    from modules.informes_repetitividad.report import _load_template
+
+    max_width, max_height = _map_area(_load_template())
+    assert max_width <= float(MAP_MAX_WIDTH) * 1.01
+    assert max_height <= float(MAP_MAX_HEIGHT) * 1.02
+    estilo = MAP_PAGE_STYLE.figsize
+    assert abs(estilo[0] / estilo[1] - max_width / max_height) < 0.02
 
 
 def test_format_horas_handles_various_inputs():

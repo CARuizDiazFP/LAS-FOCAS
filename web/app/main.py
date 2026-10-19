@@ -1727,7 +1727,8 @@ async def flow_repetitividad(
         _history_error("HTTP_500", "No se pudo generar el informe")
         return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
 
-    image_maps = [f"/reports/{Path(m).name}" for m in result.map_images]
+    # Los PNG viven en subcarpetas (maps_YYYYMM/): la URL debe incluirlas.
+    image_maps = [_report_href(m) for m in result.map_images]
     payload: Dict[str, Any] = {
         "status": "ok",
         "pdf_requested": include_pdf,
