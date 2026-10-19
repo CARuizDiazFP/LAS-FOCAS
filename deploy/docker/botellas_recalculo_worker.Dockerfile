@@ -4,6 +4,10 @@
 
 FROM focas-base:latest
 # curl, tzdata y dependencias Python comunes (fastapi, uvicorn, redis, ...) ya están en focas-base.
+# slack_sdk no: lo trae el requirements propio (aviso a Slack del árbitro de Cromo).
+COPY modules/botellas_recalculo_worker/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 COPY core/ /app/core/
 COPY db/ /app/db/

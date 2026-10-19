@@ -302,6 +302,11 @@ services:
       - ../.env.dev
     environment:
       POSTGRES_HOST: postgres
+      # Las consultas "Info cable"/"track" registran evidencia de camino y encolan la evaluación
+      # del árbitro de Cromo (core/services/cromo/arbitro/cola.py). Redis corre con --requirepass:
+      # sin host/puerto + el secret el encolado falla con NOAUTH y el best-effort lo traga.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
       LOGS_DIR: /app/Logs
       TZ: America/Argentina/Buenos_Aires
       APP_TIMEZONE: America/Argentina/Buenos_Aires
@@ -315,8 +320,11 @@ services:
       # y sin este secreto levanta CromoConfigError en runtime. El resto de la config de Cromo
       # (CROMO_BASE_URL, CROMO_USER, ...) ya llegaba por env_file; sólo faltaba la contraseña.
       - cromo_password_v1
+      - redis_password_v1
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     expose:
@@ -394,6 +402,9 @@ services:
     secrets:
       - db_password_v1
       - redis_password_v1
+      # Aviso a Slack del resumen de cada evaluación del árbitro de Cromo
+      # (core/services/cromo/arbitro/aviso.py, mismo envío que inconsistencias_reporte.py).
+      - slack_bot_token_v1
     depends_on:
       postgres:
         condition: service_healthy
