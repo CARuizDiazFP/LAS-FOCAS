@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+from core.services.cromo.arbitro.reglas.gemelos import (
+    ReglaGemeloOperativo,
+    ReglaGemeloVacio,
+    ReglaOdfGemelaIsla,
+)
 from core.services.cromo.arbitro.reglas.odf_por_camino import (
     ReglaContradiccionServicio,
     ReglaOdfPorCamino,
@@ -13,6 +18,9 @@ from core.services.cromo.arbitro.senales import Regla
 REGLAS: tuple[Regla, ...] = (
     ReglaOdfPorCamino(),
     ReglaContradiccionServicio(),
+    ReglaGemeloVacio(),
+    ReglaGemeloOperativo(),
+    ReglaOdfGemelaIsla(),
 )
 
 __all__ = ["REGLAS"]
