@@ -110,6 +110,9 @@ function problema(f: ReglaArbitro): string {
   if (typeof umbral !== 'number' || !Number.isInteger(umbral) || umbral < 0 || umbral > 100) {
     return 'El umbral debe ser un entero entre 0 y 100.';
   }
+  if (f.modo === 'AUTO' && umbral < 1) {
+    return 'En AUTO el umbral debe ser al menos 1 (con 0 se aplicaría todo).';
+  }
   if (typeof presupuesto !== 'number' || !Number.isInteger(presupuesto) || presupuesto < 0) {
     return 'El presupuesto debe ser un entero mayor o igual a 0.';
   }

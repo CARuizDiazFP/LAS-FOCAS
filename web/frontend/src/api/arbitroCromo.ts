@@ -11,7 +11,8 @@ export type ModoRegla = (typeof MODOS_REGLA)[number];
 export interface SenalArbitro {
   codigo: string;
   peso: number;
-  detalle?: string | null;
+  /** Objeto JSON con el detalle de la señal (p. ej. `{"odf_n_id": 123}`). */
+  detalle?: Record<string, unknown> | null;
   veto?: boolean;
 }
 

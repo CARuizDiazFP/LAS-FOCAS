@@ -125,7 +125,7 @@
               <details class="propuestas__senales">
                 <summary>{{ p.senales.length }} señal(es){{ p.senales.some((s) => s.veto) ? ' · veto' : '' }}</summary>
                 <ul>
-                  <li v-for="(s, i) in p.senales" :key="i" :class="{ 'is-veto': s.veto }" :title="s.detalle ?? ''">
+                  <li v-for="(s, i) in p.senales" :key="i" :class="{ 'is-veto': s.veto }" :title="textoDetalle(s.detalle)">
                     {{ s.codigo }} {{ s.peso >= 0 ? '+' : '' }}{{ s.peso }}<template v-if="s.veto"> (veto)</template>
                   </li>
                 </ul>
@@ -276,11 +276,27 @@ function toggleTodos(): void {
   seleccion.value = todosSeleccionados.value ? new Set() : new Set(items.value.map((p) => p.id));
 }
 
+/** Detalle de una señal como texto para el tooltip (llega como objeto JSON). */
+function textoDetalle(detalle: Record<string, unknown> | null | undefined): string {
+  if (!detalle || !Object.keys(detalle).length) return '';
+  return JSON.stringify(detalle);
+}
+
 async function ejecutar(accion: Accion): Promise<void> {
   const ids = [...seleccion.value];
   if (!ids.length) return;
   const cfg = ACCIONES[accion];
-  if (!window.confirm(cfg.confirmar.replace('{n}', String(ids.length)))) return;
+  let texto = cfg.confirmar.replace('{n}', String(ids.length));
+  if (accion === 'aplicar') {
+    const seleccionados = new Set(ids);
+    const informativas = items.value.filter((p) => seleccionados.has(p.id) && p.accion === 'INFORMAR').length;
+    if (informativas) {
+      texto +=
+        `\n\n${informativas} de ellas son informativas (INFORMAR): aplicarlas sólo registra que ` +
+        'se aceptó el aviso; no cambian el inventario.';
+    }
+  }
+  if (!window.confirm(texto)) return;
   accionando.value = true;
   error.value = '';
   mensaje.value = '';
