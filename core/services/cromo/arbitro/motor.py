@@ -123,6 +123,15 @@ def _senales_json(ev: Evaluacion) -> list[dict]:
     )
 
 
+def _vetada(senales: Any) -> bool:
+    """Alguna señal de veto (en `Senal` o en su forma JSON persistida en `cromo_propuesta.senales`).
+    Un veto nunca se aplica ni se confirma solo, aunque el umbral lo admita."""
+    return any(
+        (s.get("veto") if isinstance(s, Mapping) else getattr(s, "veto", False))
+        for s in (senales or ())
+    )
+
+
 def _objetivo(accion: str, parametros: Mapping[str, Any]) -> Any:
     """Lo que la acción efectivamente cambia: confirmar una observación exige el mismo objetivo."""
     parametros = parametros or {}
@@ -285,8 +294,10 @@ async def _evaluar_regla(
         elif fila is not None:  # EN_OBSERVACION
             if disparo != "INGESTA":
                 continue
-            confirma = confianza >= umbral and _objetivo(ev.accion, ev.parametros) == _objetivo(
-                fila.accion, fila.parametros
+            confirma = (
+                confianza >= umbral
+                and not _vetada(ev.senales)
+                and _objetivo(ev.accion, ev.parametros) == _objetivo(fila.accion, fila.parametros)
             )
             if confirma:
                 fila.estado = "APLICADA"
@@ -338,7 +349,10 @@ async def _evaluar_regla(
     # reintenta ni consume presupuesto.
     aplicables = [
         p for p in candidatas
-        if p.confianza >= umbral and p.accion != "INFORMAR" and p.nota is None
+        if p.confianza >= umbral
+        and p.accion != "INFORMAR"
+        and p.nota is None
+        and not _vetada(p.senales)
     ]
     if not aplicables:
         return
@@ -693,6 +707,9 @@ async def actualizar_regla(
         raise ValueError(f"Modo inválido: {modo!r}")
     if not _entero(umbral) or not 0 <= umbral <= 100:
         raise ValueError(f"Umbral inválido: {umbral!r}")
+    if modo == "AUTO" and umbral < 1:
+        # Con umbral 0 todo pasaría el corte, incluso lo de confianza 0.
+        raise ValueError("Umbral inválido para AUTO: debe ser al menos 1")
     if not _entero(presupuesto_por_corrida) or presupuesto_por_corrida < 0:
         raise ValueError(f"Presupuesto inválido: {presupuesto_por_corrida!r}")
     cfg = (

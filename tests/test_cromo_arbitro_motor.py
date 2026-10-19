@@ -502,6 +502,44 @@ async def test_observacion_revertir_fallido_queda_obsoleta(entorno, sin_ingesta)
     assert fila.estado == "OBSOLETA" and fila.nota == "revertir:override_ausente"
 
 
+def _ev_odf_vetada(sid: int, *, odf: int = _ODF) -> Evaluacion:
+    return Evaluacion(
+        regla=_REGLA, objeto_tipo="SERVICIO", objeto_id=sid, accion="ASOCIAR_ODF",
+        parametros={"odf_n_id": odf, "pelo_n_id": _PELO},
+        senales=(Senal("QA", 100, {"d": 1}), Senal("QA_VETO", 0, {"d": 2}, veto=True)),
+    )
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_auto_umbral_cero_no_aplica_vetada(entorno, sin_ingesta):
+    """Con umbral 0 (sólo por SQL: `actualizar_regla` ya no lo admite en AUTO) una evaluación
+    vetada tiene confianza 0 >= 0, pero un veto nunca se aplica solo."""
+    sesion, conn, _ = entorno
+    sid = await _servicio(conn, _NUMEROS[0])
+    await _odf(conn)
+    await _modo(conn, "AUTO", umbral=0)
+    regla = ReglaFake()
+    regla.evaluaciones = [_ev_odf_vetada(sid)]
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.aplicadas_auto == []
+    assert (await _filas(conn))[0].estado == "PROPUESTA"
+    assert await _overrides(conn, sid) == []
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_observacion_vetada_en_ingesta_se_revierte(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    regla, sid = await _aplicada_en_observacion(sesion, conn)
+    await _modo(conn, "AUTO", umbral=0)
+    regla.evaluaciones = [_ev_odf_vetada(sid)]
+    r = await evaluar(sesion, _TODO, "INGESTA", reglas=[regla])
+    (fila,) = await _filas(conn)
+    assert r.confirmadas == [] and r.revertidas == [fila.id] and fila.estado == "REVERTIDA"
+    assert await _overrides(conn, sid) == []
+
+
 @requiere_db
 @pytest.mark.asyncio
 async def test_observacion_no_se_decide_fuera_de_ingesta(entorno, sin_ingesta):
@@ -749,6 +787,8 @@ async def test_actualizar_regla_valida(entorno):
         {"modo": "AUTO", "umbral": 101, "presupuesto_por_corrida": 1},
         {"modo": "AUTO", "umbral": True, "presupuesto_por_corrida": 1},
         {"modo": "AUTO", "umbral": 90, "presupuesto_por_corrida": -1},
+        # AUTO con umbral 0 aplicaría todo, también lo vetado (confianza 0).
+        {"modo": "AUTO", "umbral": 0, "presupuesto_por_corrida": 1},
     ):
         with pytest.raises(ValueError):
             await actualizar_regla(sesion, _REGLA, usuario="qa", **kwargs)
