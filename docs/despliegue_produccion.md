@@ -236,6 +236,50 @@ cmp -s .secrets/oauth_jwt_secret_v1.txt .secrets/Dev_oauth_jwt_secret_v1.txt && 
 
 Después del `up`, confirmar que el secreto está montado (`docker exec <contenedor> ls /run/secrets/`).
 
+## Hotfix puntual a prod (sin pasar `dev` entero)
+
+Real el 2026-10-19 (`docs/PR/2026-10-19.md`, hotfix de Repetitividad, `main` `11573c8`). Úsese cuando
+el pedido es "pasar a prod **este** fix" y `dev` tiene más trabajo que no debe salir todavía
+(en esa fecha, el árbitro de Cromo con migración propia).
+
+1. **Integrar el fix a `main` sin traer el resto de `dev`.**
+   - Crear un worktree de `main`:
+     `git worktree add -b fix/<agente>-hotfix-<slug> ../LAS-FOCAS-agentes/<agente>-hotfix-main origin/main`.
+   - El hook de pre-commit exige el prefijo `fix/`: `hotfix/` lo bloquea.
+   - Traer el commit con `git cherry-pick -n <sha>`. Excluir `docs/PR/<fecha>.md` si sólo existe en
+     `dev`: `git rm --cached` + `rm`. Si no, `main` queda con un add/add que choca en el próximo
+     merge `dev`→`main`.
+2. **Tests focales** en ese worktree, con un symlink temporal a `.venv`.
+3. **Build desde el worktree de `main`, nunca desde el checkout de control.** El control está en
+   `dev` y es el contexto de build (`context: ..`), así que metería todo `dev` en la imagen.
+   - Antes de buildear, etiquetar las imágenes vigentes para rollback:
+     `docker tag lasfocas-web:latest lasfocas-web:pre-hotfix-<fecha>`.
+   - Buildear sólo los servicios afectados:
+     `docker compose -f <wt>/deploy/compose.yml --env-file <control>/.env build web api`.
+   - Verificar el contenido de la imagen con
+     `docker run --rm --entrypoint sh <img> -c 'grep ...'`: el fix presente y nada de `dev` que no
+     debía ir.
+4. **Publicar en `main`** por fast-forward: `git merge-base --is-ancestor origin/main HEAD` y después
+   `git push origin HEAD:refs/heads/main`.
+5. **Recrear sólo los servicios afectados.** El compose resuelve `env_file: ../.env` y
+   `secrets: ../.secrets/...` en relación al propio archivo, así que primero hay que crear symlinks
+   temporales en el worktree:
+   `ln -s <control>/.env .env; ln -s <control>/.secrets .secrets`.
+   Después:
+   `docker compose -f <wt>/deploy/compose.yml --env-file <control>/.env up -d --no-deps --force-recreate web api`,
+   y quitar los symlinks.
+6. **Verificar**: healthy y la imagen nueva en el contenedor. El `/tmp` de los contenedores de prod es
+   tmpfs y `docker cp` no lo ve: sacar los artefactos de prueba por stdout
+   (`docker exec ... sh -c '...; cat /tmp/x.png' > local.png`) y borrarlos adentro.
+7. **Después**: integrar la rama original del fix a `dev`, como siempre. `main` queda con un commit
+   propio cuyo contenido ya está en `dev`, así que en el próximo despliegue `--is-ancestor` da falso.
+   Verificar con `git diff <commit-hotfix> origin/dev` que sólo aparezca lo que trae `dev` (ninguna
+   reversión del fix) antes de usar el `commit-tree` del paso 4.
+
+Rollback del hotfix:
+`docker tag lasfocas-web:pre-hotfix-<fecha> lasfocas-web:latest` (ídem `api`) y
+`up -d --no-deps --force-recreate` de esos servicios.
+
 ## Rollback
 
 - Código: `docker compose ... up -d` desde el commit anterior de `main`.
