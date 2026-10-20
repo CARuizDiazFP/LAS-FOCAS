@@ -10,6 +10,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 - `api/`: FastAPI orientada a endpoints REST asíncronos y procesos de ingest/reporting. No mezclar UI aquí.
 - `web/`: backend del panel (sesión/autenticación/WebSocket/chat) y frontend SPA en `web/frontend/` con Vue 3 + Vite + TypeScript + CSS modular.
+- Backend de la SPA: `web/app/main.py` (ensamblador: app, middleware, mounts, websockets, `include_router`, catch-all) + `web/app/routers/<dominio>.py` (sesion, informes, chat, admin_datos, servicios, cromo, camaras) + `web/app/comun.py` (auth, CSRF, config y estado compartidos).
+- Regla de routers: importan con `from ..comun import ...` y nunca importan `main`; al mover o parchear nombres en tests, parchear el módulo donde se lee.
 - `bot_telegram/`: bot aiogram que consume flujos y servicios; evitar lógica de negocio duplicada.
 - `core/`: configuración, logging, parsers, repositorios y servicios compartidos.
 - `modules/`: implementación específica de informes SLA, repetitividad y utilidades comunes.

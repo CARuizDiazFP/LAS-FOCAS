@@ -1,6 +1,6 @@
 # Nombre de archivo: Dockerfile
 # Ubicación de archivo: web/Dockerfile
-# Descripción: Imagen del servicio Web (UI) con FastAPI. Stage Python hereda dependencias comunes de focas-base:latest. La app vive en web/app/main.py.
+# Descripción: Imagen del servicio Web (UI) con FastAPI. Stage Python hereda dependencias comunes de focas-base:latest. La app vive en web/app/main.py (ensamblador) y web/app/routers/.
 
 FROM node:20.12.2-slim AS web-build
 WORKDIR /frontend

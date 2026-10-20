@@ -66,7 +66,7 @@
       "title": "Panel web y SPA Vue 3",
       "summary": "Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.",
       "roots": ["web/app/", "web/frontend/src/", "web/tools/"],
-      "entrypoints": ["web/app/main.py", "web/frontend/src/main.ts", "web/frontend/src/router/index.ts"],
+      "entrypoints": ["web/app/main.py", "web/app/routers/", "web/app/comun.py", "web/frontend/src/main.ts", "web/frontend/src/router/index.ts"],
       "docs": ["docs/web.md"],
       "tests": ["tests/test_web*.py"],
       "commands": ["pytest tests/test_web_*.py -q", "cd web/frontend && npm run build  # sólo deploy"],

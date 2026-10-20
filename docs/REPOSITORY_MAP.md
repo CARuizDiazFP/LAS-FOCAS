@@ -1,4 +1,4 @@
-<!-- repository-map: {"source_commit": "685a3b3fc8ab", "generated_at_utc": "2026-10-17T15:48:55Z", "manifest_sha256": "78f97d1c15d903b2d3e46075ca0571022d0bd325eacd0d56647a2831c422d33f"} -->
+<!-- repository-map: {"source_commit": "928e1860568a", "generated_at_utc": "2026-10-20T17:20:03Z", "manifest_sha256": "dd065efcf626da779b6a352b35370a743a279150a0da3a4c3d82fca098541c3e"} -->
 # Nombre de archivo: REPOSITORY_MAP.md
 # Ubicación de archivo: docs/REPOSITORY_MAP.md
 # Descripción: Mapa canónico del repositorio por dominio (generado; no editar a mano)
@@ -59,7 +59,7 @@ Motor SLA, consumo histórico, repetitividad, plantillas DOCX y conversión PDF.
 Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.
 
 - Raíces: `web/app/`, `web/frontend/src/`, `web/tools/`
-- Entradas: `web/app/main.py`, `web/frontend/src/main.ts`, `web/frontend/src/router/index.ts`
+- Entradas: `web/app/main.py`, `web/app/routers/`, `web/app/comun.py`, `web/frontend/src/main.ts`, `web/frontend/src/router/index.ts`
 - Docs: `docs/web.md`
 - Tests: `tests/test_web*.py`
 - Comandos: `pytest tests/test_web_*.py -q`, `cd web/frontend && npm run build  # sólo deploy`
