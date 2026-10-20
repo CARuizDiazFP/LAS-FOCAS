@@ -45,32 +45,29 @@ import json
 import pandas as pd
 
 from core.parsers.lista_clientes import EXTENSIONES_LISTA as EXTENSIONES_LISTA_CLIENTES
+from .comun import (
+    BASE_DIR,
+    DATA_DIR,
+    DB_DSN,
+    INTERNAL_API_BASE_URL,
+    REPORT_HISTORY,
+    REPORTS_DIR,
+    UPLOADS_DIR,
+    _env_int,
+    _internal_api_auth_headers,
+    _require_admin,
+    _require_auth,
+    _validar_csrf,
+    get_current_user,
+)
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
-INTERNAL_API_BASE_URL = os.getenv("INTERNAL_API_BASE_URL", "http://api:8000")
 LOG_RAW_TEXT = os.getenv("LOG_RAW_TEXT", "false").lower() == "true"
-
-# Config DB (usa las variables del .env del stack)
-DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
-DB_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-DB_NAME = os.getenv("POSTGRES_DB", "lasfocas")
-DB_USER = os.getenv("POSTGRES_USER", "lasfocas")
-DB_PASS = get_secret("db_password_v1", "POSTGRES_PASSWORD")
-DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
 logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
-
-
-def _internal_api_auth_headers() -> dict[str, str]:
-    api_key = get_secret("api_key_v1", "LAS_FOCAS_API_KEY").strip()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="API interna sin credenciales")
-    return {
-        "Authorization": f"Bearer {api_key}",
-    }
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -78,14 +75,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        logger.warning("action=config_invalid_int name=%s default=%s", name, default)
-        return default
 
 
 def _detect_build_version() -> str:
@@ -168,17 +157,10 @@ async def log_requests(request, call_next):  # type: ignore
         raise
 
 # Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/app/main.py)
-BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = BASE_DIR / "data"
-UPLOADS_DIR = DATA_DIR / "uploads"
-REPORTS_DIR = DATA_DIR / "reports"
 DIST_DIR = BASE_DIR / "frontend" / "dist"
 SPA_INDEX = DIST_DIR / "index.html"
 DEFAULT_TEMPLATES_PATH = Path(__file__).resolve().parents[2] / "Templates"
 TEMPLATES_ROOT = os.getenv("TEMPLATES_DIR", str(DEFAULT_TEMPLATES_PATH))
-DATA_DIR.mkdir(exist_ok=True)
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_CHAT_UPLOAD_BYTES = int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(15 * 1024 * 1024)))
 ALLOWED_CHAT_EXTENSIONS = {
     ".xlsx",
@@ -214,7 +196,6 @@ from core.services.botella_recompute_queue import (  # noqa: E402
     leer_cache_duplicados,
 )
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db  # noqa: E402
-from core.services.report_history import ReportHistoryBackend, ReportHistoryService  # noqa: E402
 from core.services import sla as sla_service  # noqa: E402
 from core.services import sla_consumo as sla_consumo_service  # noqa: E402
 from modules.informes_repetitividad.service import (  # noqa: E402
@@ -225,7 +206,6 @@ from modules.informes_repetitividad.service import (  # noqa: E402
 )
 
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
-REPORT_HISTORY: ReportHistoryBackend = ReportHistoryService(DB_DSN)
 
 # Montar assets del build Vite si existen
 _vite_assets = DIST_DIR / "assets"
@@ -301,10 +281,6 @@ async def health() -> Dict[str, Any]:
 @app.get("/health/version")
 async def health_version() -> Dict[str, Any]:
     return {"status": "ok", "service": "web", "version": BUILD_VERSION}
-
-
-def get_current_user(request: Request) -> str | None:
-    return request.session.get("username")
 
 
 def _client_ip(request: Request) -> str:
@@ -724,21 +700,6 @@ async def generar_informe_sla_web(  # noqa: C901
             "source": source,
         }
     )
-
-
-def _require_auth(request: Request) -> tuple[str, str]:
-    username = request.session.get("username")
-    role = request.session.get("role", "user")
-    if not username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No autenticado")
-    return username, role
-
-
-def _require_admin(request: Request) -> str:
-    username, role = _require_auth(request)
-    if role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
-    return username
 
 
 @app.post("/api/reports/sla-consumo")
@@ -9929,17 +9890,6 @@ class CaminoRelevarOdfRequestModel(BaseModel):
         default=None, description="ODFs puntuales a relevar. Sin esto se relevan todas las del camino."
     )
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
-
-
-def _validar_csrf(request: Request, token: str | None, accion: str, username: str) -> bool:
-    """CSRF con el mismo criterio que el resto de los POST admin, incluida la excepción de tests."""
-    if os.getenv("TESTING", "false").lower() == "true":
-        return True
-    esperado = request.session.get("csrf")
-    if not token or token != esperado:
-        logger.warning("action=%s result=fail reason=csrf user=%s", accion, username)
-        return False
-    return True
 
 
 @app.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar")
