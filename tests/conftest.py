@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import sys
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -14,10 +16,27 @@ if str(ROOT_DIR) not in sys.path:  # pragma: no cover - inicialización
 
 os.environ.setdefault("LAS_FOCAS_API_KEY", "test-api-key")
 
+# Las métricas de intención se persisten en un archivo versionado (web/data/intent_metrics.json);
+# se apunta a un directorio temporal ANTES de importar la app para no ensuciar el árbol del repo.
+os.environ.setdefault("METRICS_PERSIST_PATH", os.path.join(tempfile.mkdtemp(prefix="focas-tests-"), "intent_metrics.json"))
+
 
 # Directorio ignorado por Git donde la app escribe informes reales; los tests no deben dejar nada ahí.
 _REPORTES_VIGILADOS = ROOT_DIR / "web" / "data" / "reports"
 _snapshot_reportes: set[str] = set()
+_snapshot_git_data: set[str] = set()
+
+
+def _estado_git_web_data() -> set[str]:
+    """Líneas de `git status --porcelain -- web/data` (archivos versionados modificados o nuevos)."""
+    try:
+        salida = subprocess.run(
+            ["git", "status", "--porcelain", "--", "web/data"],
+            cwd=ROOT_DIR, capture_output=True, text=True, timeout=30, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {linea for linea in salida.splitlines() if linea.strip()}
 
 
 def _listar_reportes() -> set[str]:
@@ -28,16 +47,22 @@ def _listar_reportes() -> set[str]:
 
 def pytest_sessionstart(session) -> None:
     """Toma el snapshot inicial de los archivos de informes."""
-    global _snapshot_reportes
+    global _snapshot_reportes, _snapshot_git_data
     _snapshot_reportes = _listar_reportes()
+    _snapshot_git_data = _estado_git_web_data()
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
-    """Falla la sesión si los tests dejaron archivos nuevos en web/data/reports (no borra nada)."""
+    """Falla la sesión si los tests ensuciaron web/data (informes nuevos o cambios git nuevos); no borra nada."""
     nuevos = sorted(_listar_reportes() - _snapshot_reportes)
-    if not nuevos:
-        return
-    print("\nLos tests dejaron archivos en web/data/reports/ (deben usar tmp_path):")
-    for ruta in nuevos:
-        print(f"  - {ruta}")
-    session.exitstatus = 1
+    if nuevos:
+        print("\nLos tests dejaron archivos en web/data/reports/ (deben usar tmp_path):")
+        for ruta in nuevos:
+            print(f"  - {ruta}")
+    cambios = sorted(_estado_git_web_data() - _snapshot_git_data)
+    if cambios:
+        print("\nLos tests modificaron archivos bajo web/data (git status --porcelain):")
+        for linea in cambios:
+            print(f"  - {linea}")
+    if nuevos or cambios:
+        session.exitstatus = 1
