@@ -177,7 +177,7 @@ def test_servicios_baneos_update_recarga_worker(monkeypatch):
 
     assert res.status_code == 303
     assert res.headers["location"] == "/admin/Servicios/Baneos"
-    assert recargas == [web_main._SLACK_WORKER_RELOAD_URL]
+    assert recargas == [web_main.admin_datos._SLACK_WORKER_RELOAD_URL]
 
 
 def test_servicios_baneos_update_rechaza_destino_invalido(monkeypatch):

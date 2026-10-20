@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 
@@ -98,3 +100,57 @@ def _validar_csrf(request: Request, token: str | None, accion: str, username: st
         logger.warning("action=%s result=fail reason=csrf user=%s", accion, username)
         return False
     return True
+
+
+def _es_destino_slack_valido(destino: str) -> bool:
+    """Valida nombres de canal o IDs de destino de Slack."""
+    if not destino:
+        return False
+    valor = destino.strip()
+    if not valor:
+        return False
+    if re.fullmatch(r"#[a-z0-9._-]+", valor):
+        return True
+    if re.fullmatch(r"[CGD][A-Z0-9]{8,}", valor):
+        return True
+    return False
+
+
+# Etapa 7: la ingesta corre en su propio worker Docker (modules/cromo_worker/), no en este proceso.
+_CROMO_WORKER_BASE_URL = os.getenv("CROMO_WORKER_BASE_URL", "http://cromo_worker:8096")
+_CROMO_WORKER_RUN_URL = f"{_CROMO_WORKER_BASE_URL}/run"
+
+
+async def _marcar_corrida_fallida(corrida_id: int, motivo: str) -> None:
+    """La corrida ya se creó como EN_CURSO — si no se pudo delegar al worker, no debe quedar huérfana."""
+    from datetime import datetime, timezone
+
+    from db.models.cromo import CromoIngestaCorrida, CromoIngestaEvento
+    from db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as sesion:
+        corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
+        if corrida is None:
+            return
+        corrida.estado = "FALLIDA"
+        corrida.finalizada_at = datetime.now(timezone.utc)
+        sesion.add(CromoIngestaEvento(corrida_id=corrida_id, accion="ERROR", detalle=motivo))
+        await sesion.commit()
+
+
+def _serializar_cromo_corrida(corrida: Any) -> dict[str, Any]:
+    return {
+        "id": corrida.id,
+        "usuario": corrida.usuario,
+        "estado": corrida.estado,
+        "params": corrida.params,
+        "total_objetivo": corrida.total_objetivo,
+        "leidas": corrida.leidas,
+        "creadas": corrida.creadas,
+        "actualizadas": corrida.actualizadas,
+        "sin_cambios": corrida.sin_cambios,
+        "errores": corrida.errores,
+        "refs_colgadas": corrida.refs_colgadas,
+        "iniciada_at": corrida.iniciada_at.isoformat() if corrida.iniciada_at else None,
+        "finalizada_at": corrida.finalizada_at.isoformat() if corrida.finalizada_at else None,
+    }
