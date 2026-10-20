@@ -13,7 +13,6 @@ Cobertura:
 
 from __future__ import annotations
 
-import hashlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,8 +31,6 @@ from core.services.infra_service import (
 )
 from db.models.infra import (
     Camara,
-    CamaraEstado,
-    CamaraOrigenDatos,
     Empalme,
     IngresoSinMatch,
     RutaServicio,

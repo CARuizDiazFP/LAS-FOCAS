@@ -11,7 +11,7 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, List, Optional
+from typing import TYPE_CHECKING, Iterable, List
 
 if TYPE_CHECKING:  # pragma: no cover - usado solo para type checking
     import pandas as pd

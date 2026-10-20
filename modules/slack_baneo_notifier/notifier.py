@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import io
 import logging
-from datetime import datetime, timezone
 
 import pandas as pd
 
 from core.services.baneos_grupos_service import listar_grupos_baneados
-from core.utils.tz import TZ_ARG, ahora_local, fmt_local
+from core.utils.tz import ahora_local, fmt_local
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.orm import Session

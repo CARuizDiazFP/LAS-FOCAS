@@ -7,7 +7,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import pytest
 from sqlalchemy import text
 
 from tests.soporte_postgres_real import requiere_postgres_real

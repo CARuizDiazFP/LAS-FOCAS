@@ -1,0 +1,17 @@
+# Nombre de archivo: pyproject.toml
+# Ubicación de archivo: pyproject.toml
+# Descripción: Configuración de ruff (lint) del repositorio; la de pytest sigue en pytest.ini
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [".venv", "tmp", "devs", "Logs", "Legacy"]
+
+[tool.ruff.lint]
+# E9: errores de sintaxis · F: pyflakes (imports/variables sin uso, nombres indefinidos,
+# redefiniciones) · C901: complejidad ciclomática.
+# Fuera a propósito: E402 (sys.path antes de imports en scripts/tests), E712 (`col == True` es
+# válido en filtros SQLAlchemy) y E741. Se reevalúan en la Fase 3 del relevamiento técnico.
+select = ["E9", "F", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20

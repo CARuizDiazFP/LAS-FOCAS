@@ -33,7 +33,7 @@ from sqlalchemy.orm import relationship
 from db.base import Base
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 
 class CamaraEstado(str, Enum):

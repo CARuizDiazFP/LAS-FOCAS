@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from .config import settings
 
 RE_REPETITIVIDAD = re.compile(r"(repetitiv|repetitivi|repetitidad|repetitividad)")
 RE_VERB = re.compile(r"\b(gener(ar|á)|arm(ar|á)|crear|creá|producir|emitir|sacar|obtener)\b")

@@ -3,7 +3,6 @@
 # Descripción: Entrypoint del bot (aiogram 3.x) con long polling y Allowlist
 
 import asyncio
-import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties

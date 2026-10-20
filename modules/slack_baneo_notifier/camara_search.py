@@ -458,7 +458,7 @@ def buscar_camara(
     return _buscar_camara_intento(nombre_raw, session, desempate_exacto=desempatar)
 
 
-def _buscar_camara_intento(
+def _buscar_camara_intento(  # noqa: C901
     nombre_raw: str, session: Session, *, desempate_exacto: bool = True
 ) -> tuple["Camara | None", str]:
     """Busca una cámara en DB tolerando abreviaturas, sinónimos y variaciones ortográficas.

@@ -347,7 +347,7 @@ def detectar_ingresos(session: Session, cfg: Config, slack: SlackGateway, ahora:
             for ing in grupo:
                 session.add(FomonIntervencionIngreso(intervencion_id=existente.id, ingreso_id=ing.id))
             continue
-        interv = crear_intervencion(
+        crear_intervencion(
             session,
             origen="INGRESO",
             camara_id=cabeza.camara_id,

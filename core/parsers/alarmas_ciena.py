@@ -18,7 +18,6 @@ from __future__ import annotations
 import io
 import logging
 from enum import Enum
-from typing import BinaryIO
 
 import pandas as pd
 from pandas.api.types import is_object_dtype

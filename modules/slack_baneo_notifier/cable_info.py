@@ -49,13 +49,12 @@ from typing import Optional
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from core.services.cromo.detalle import MARCA_CUARENTENA, PeloDetalle, pelos_de_tubo_sync
+from core.services.cromo.detalle import MARCA_CUARENTENA, PeloDetalle
 from core.services.cromo.parser import extraer_tipo_servicio_display
 from core.services.cromo.verificador import (
     ResultadoServiciosUnicos,
     ResultadoTubo,
     ServicioUnico,
-    servicios_por_tubo_sync,
 )
 from db.models.cromo import CromoBotella, CromoCable, CromoTubo
 

@@ -2,8 +2,6 @@
 # Ubicación de archivo: tests/test_web_admin.py
 # Descripción: Pruebas de endpoints admin y cambio de contraseña
 
-from pathlib import Path
-import sys
 from typing import Any, Optional
 
 import pytest

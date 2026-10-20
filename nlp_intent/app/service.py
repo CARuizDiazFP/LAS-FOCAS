@@ -12,7 +12,6 @@ import os
 from .config import settings
 from .schemas import IntentResponse, IntentionResult
 from .providers import heuristic, ollama_provider, openai_provider
-from .config import settings
 from .action_classifier import classify_action
 from .answer_generator import generate_answer
 

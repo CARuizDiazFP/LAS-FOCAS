@@ -205,7 +205,6 @@ def test_cables_detectados_requiere_autenticacion():
 
 def test_cables_detectados_no_requiere_admin(monkeypatch):
     from web.app import main as web_main
-    from core.services.cromo.client import CromoClientError
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})

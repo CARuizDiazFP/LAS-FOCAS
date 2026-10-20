@@ -2,9 +2,6 @@
 # Ubicación de archivo: tests/test_web_chat.py
 # Descripción: Pruebas básicas del endpoint del chat del servicio Web
 
-import os
-from pathlib import Path
-import sys
 
 
 from fastapi.testclient import TestClient

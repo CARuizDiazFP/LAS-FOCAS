@@ -20,20 +20,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from db.models.infra import (
     Camara,
     CamaraEstado,
     CamaraEstadoAuditoria,
-    Empalme,
     IncidenteBaneo,
     Ingreso,
     IngresoTipo,
     RutaServicio,
     Servicio,
-    ruta_empalme_association,
 )
 
 logger = logging.getLogger(__name__)

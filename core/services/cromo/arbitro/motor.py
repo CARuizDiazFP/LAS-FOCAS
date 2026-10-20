@@ -209,7 +209,7 @@ async def evaluar(
     return resumen
 
 
-async def _evaluar_regla(
+async def _evaluar_regla(  # noqa: C901
     sesion: AsyncSession,
     regla: Regla,
     modo: str,

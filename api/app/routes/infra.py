@@ -14,8 +14,8 @@ from core.utils.tz import TZ_ARG
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import func, or_, select
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,12 +23,8 @@ from core.parsers.tracking_parser import parse_tracking
 from core.services.infra_sync import sync_camaras_from_sheet
 from core.services.infra_service import (
     AnalysisResult,
-    AnalysisStatus,
-    InfraService,
     ResolveAction,
     ResolveResult,
-    StrandInfo,
-    UpgradeInfo,
     _get_or_create_empalme,
     _resolve_camara_o_registrar_sin_match,
     analyze_tracking_file,
@@ -36,15 +32,12 @@ from core.services.infra_service import (
 )
 from core.services.email_service import EmailAttachment, get_email_service, EmailService
 from db.models.infra import (
-    Cable,
     Camara,
     CamaraEstado,
-    CamaraOrigenDatos,
     Empalme,
     RutaServicio,
     RutaTipo,
     Servicio,
-    IncidenteBaneo,
 )
 from db.session import SessionLocal, get_async_db
 
@@ -2202,7 +2195,7 @@ class ExportFormat(str, Enum):
 
 
 @router.get("/api/infra/export/cameras")
-async def export_cameras(
+async def export_cameras(  # noqa: C901
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
     format: ExportFormat = ExportFormat.CSV,

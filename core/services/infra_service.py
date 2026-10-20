@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from core.parsers.tracking_parser import TrackingParseResult, parse_tracking, PuntaTerminal
+from core.parsers.tracking_parser import TrackingParseResult, parse_tracking
 from db.models.infra import (
     Camara,
     Empalme,
@@ -544,7 +544,7 @@ class InfraService:
                 
                 # Verificar si es el mismo camino (mismas puntas) para detectar nuevo pelo
                 if self._routes_have_same_path(ruta, punta_a_sitio, punta_b_sitio):
-                    ruta_mismo_camino = ruta
+                    ruta_mismo_camino = ruta  # noqa: F841 - asignación sin uso; revisar si es un bug (Fase 3)
             
             # ESCENARIO 2: Hash coincide exacto
             if ruta_identica:

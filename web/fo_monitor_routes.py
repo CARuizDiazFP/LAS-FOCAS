@@ -143,7 +143,7 @@ def servir_con_rango(ruta: Path, request: Request) -> Response:
     )
 
 
-def mount_fo_monitor_routes(app: FastAPI) -> None:
+def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901
     @app.get("/api/fo-monitor/intervenciones")
     def fomon_listar(request: Request, estado: Optional[str] = None, desde: Optional[datetime] = None,
                      hasta: Optional[datetime] = None, tecnico: Optional[str] = None, cable: Optional[str] = None,

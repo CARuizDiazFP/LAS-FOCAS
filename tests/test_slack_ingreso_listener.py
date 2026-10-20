@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import unittest
 from typing import Any
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("TESTING", "true")
 

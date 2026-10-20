@@ -2,8 +2,6 @@
 # Ubicación de archivo: tests/test_web_chat_history_metrics.py
 # Descripción: Pruebas de endpoints /api/chat/history y /api/chat/metrics y conversation_id
 
-from pathlib import Path
-import sys
 import os
 
 os.environ.setdefault("TESTING", "true")

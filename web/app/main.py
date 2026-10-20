@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import time as now
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 import httpx
 from fastapi import FastAPI, Form, Query, Request, status, HTTPException, Response
@@ -519,7 +519,7 @@ def _report_href(path: Path) -> str:
 
 
 @app.post("/api/reports/sla")
-async def generar_informe_sla_web(
+async def generar_informe_sla_web(  # noqa: C901
     request: Request,
     mes: str | None = Form(None),
     anio: str | None = Form(None),
@@ -1806,7 +1806,7 @@ async def tool_alarmas_ciena(
     Returns:
         Response con el archivo Excel para descarga
     """
-    from core.parsers.alarmas_ciena import parsear_alarmas_ciena, dataframe_to_excel, FormatoAlarma
+    from core.parsers.alarmas_ciena import parsear_alarmas_ciena, dataframe_to_excel
     
     # Autenticación y CSRF
     _require_auth(request)
@@ -2240,7 +2240,7 @@ async def search_camaras_web(
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto
-        from db.models.infra import Camara, CamaraEstado, Servicio, RutaServicio, ruta_empalme_association
+        from db.models.infra import Camara, CamaraEstado, Servicio
         from db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -2646,7 +2646,6 @@ async def get_servicio_rutas_web(
     username, _ = _require_auth(request)
 
     try:
-        from db.models.infra import Servicio, RutaServicio
         from db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -2947,7 +2946,7 @@ async def get_servicio_ingresos_web(
 
 
 @app.get("/api/infra/rutas/{ruta_id}/tracking")
-async def get_ruta_tracking(
+async def get_ruta_tracking(  # noqa: C901
     request: Request,
     ruta_id: int,
 ) -> JSONResponse:
@@ -2956,7 +2955,7 @@ async def get_ruta_tracking(
     username, _ = _require_auth(request)
     
     try:
-        from db.models.infra import RutaServicio, ruta_empalme_association
+        from db.models.infra import RutaServicio
         from db.session import SessionLocal
         import json as json_module
         
@@ -3789,7 +3788,7 @@ async def generate_eml_file(
     username, _ = _require_auth(request)
     
     try:
-        from db.models.infra import IncidenteBaneo, Servicio
+        from db.models.infra import Servicio
         from db.session import SessionLocal
         from core.config import get_settings
         from core.services.protection_service import ProtectionService
@@ -3960,7 +3959,7 @@ async def generate_eml_file(
 # -----------------------------------------------------------------------------
 
 @app.get("/api/infra/export/cameras")
-async def export_cameras_web(
+async def export_cameras_web(  # noqa: C901
     request: Request,
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
@@ -4119,7 +4118,7 @@ class SearchRequestModel(BaseModel):
 
 
 @app.post("/api/infra/search")
-async def advanced_search_camaras_web(
+async def advanced_search_camaras_web(  # noqa: C901
     request: Request,
     body: SearchRequestModel,
 ) -> JSONResponse:
@@ -4132,7 +4131,7 @@ async def advanced_search_camaras_web(
     username, _ = _require_auth(request)
 
     try:
-        from db.models.infra import Cable, Camara, CamaraEstado, CamaraOrigenDatos, Empalme, Servicio
+        from db.models.infra import Camara
         from db.session import SessionLocal
 
         limit = min(body.limit, 500)
@@ -4937,7 +4936,7 @@ async def camaras_viewer_duplicados_web(request: Request) -> JSONResponse:
 
 
 @app.post("/api/infra/smart-search")
-async def smart_search_camaras_web(
+async def smart_search_camaras_web(  # noqa: C901
     request: Request,
     body: SmartSearchRequestModel,
 ) -> JSONResponse:
@@ -11447,7 +11446,7 @@ async def delete_servicio_empalmes_web(
     username, _ = _require_auth(request)
     
     try:
-        from db.models.infra import Servicio, RutaServicio
+        from db.models.infra import Servicio
         from db.session import SessionLocal
         
         with SessionLocal() as session:

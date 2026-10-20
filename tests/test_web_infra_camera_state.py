@@ -2,9 +2,7 @@
 # Ubicación de archivo: tests/test_web_infra_camera_state.py
 # Descripción: Pruebas del flujo web para consulta y edición manual del estado de cámaras
 
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 

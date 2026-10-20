@@ -7,7 +7,7 @@ from __future__ import annotations
 import io
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 

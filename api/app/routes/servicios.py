@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -247,7 +247,7 @@ async def _buscar_servicio_por_id(db: AsyncSession, id_consultado: str) -> Servi
 
 
 @router.post("/ingest", response_model=IngestServiciosResponse)
-async def ingest_servicios(
+async def ingest_servicios(  # noqa: C901
     file: UploadFile = File(..., description="Archivo XLSX/CSV con servicios SLA"),
     db: AsyncSession = Depends(get_async_db),
 ) -> IngestServiciosResponse:
