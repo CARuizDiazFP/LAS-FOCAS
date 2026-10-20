@@ -27,7 +27,6 @@ from pydantic import BaseModel, Field
 from core.config import get_secret
 from core.logging import setup_logging
 from core.utils.tz import TZ_ARG
-from core.password import hash_password, verify_password
 from core.repositories.conversations import get_or_create_conversation_for_web_user
 from core.repositories.messages import insert_message, get_last_messages
 from core.chatbot import ChatMessage
@@ -44,9 +43,11 @@ import unicodedata
 import json
 import pandas as pd
 
+from .routers import sesion
 from core.parsers.lista_clientes import EXTENSIONES_LISTA as EXTENSIONES_LISTA_CLIENTES
 from .comun import (
     BASE_DIR,
+    BUILD_VERSION,
     DATA_DIR,
     DB_DSN,
     INTERNAL_API_BASE_URL,
@@ -77,23 +78,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _detect_build_version() -> str:
-    for candidate in (
-        os.getenv("WEB_BUILD_VERSION"),
-        os.getenv("BUILD_HASH"),
-        os.getenv("GIT_SHA"),
-    ):
-        if candidate:
-            return candidate.strip()
-    return str(int(time.time()))
-
-
-BUILD_VERSION = _detect_build_version()
 WEB_SESSION_HTTPS_ONLY = _env_bool("WEB_SESSION_HTTPS_ONLY", False)
 WEB_SESSION_MAX_AGE = _env_int("WEB_SESSION_MAX_AGE", 60 * 60 * 8)
-WEB_LOGIN_RATE_LIMIT_MAX = _env_int("WEB_LOGIN_RATE_LIMIT_MAX", 5)
-WEB_LOGIN_RATE_LIMIT_WINDOW = _env_int("WEB_LOGIN_RATE_LIMIT_WINDOW", 60)
-_LOGIN_ATTEMPTS: dict[tuple[str, str], tuple[int, float]] = {}
 
 
 def _session_middleware_options() -> dict[str, Any]:
@@ -271,118 +257,6 @@ async def classify_text(text: str) -> IntentResponse:
         resp.raise_for_status()
         data = resp.json()
         return IntentResponse(**data)
-
-
-@app.get("/health")
-async def health() -> Dict[str, Any]:
-    return {"status": "ok", "service": "web", "time": int(time.time())}
-
-
-@app.get("/health/version")
-async def health_version() -> Dict[str, Any]:
-    return {"status": "ok", "service": "web", "version": BUILD_VERSION}
-
-
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
-
-
-def _login_rate_limit_key(ip: str, username: str) -> tuple[str, str]:
-    user_key = username.strip().lower() or "-"
-    return (ip, user_key)
-
-
-def _login_rate_limit_exceeded(ip: str, username: str) -> bool:
-    timestamp = now()
-    window_start = timestamp - WEB_LOGIN_RATE_LIMIT_WINDOW
-    expired = [key for key, (_, ts) in _LOGIN_ATTEMPTS.items() if ts < window_start]
-    for key in expired:
-        _LOGIN_ATTEMPTS.pop(key, None)
-
-    key = _login_rate_limit_key(ip, username)
-    count, first_ts = _LOGIN_ATTEMPTS.get(key, (0, timestamp))
-    if timestamp - first_ts > WEB_LOGIN_RATE_LIMIT_WINDOW:
-        count = 0
-        first_ts = timestamp
-    count += 1
-    _LOGIN_ATTEMPTS[key] = (count, first_ts)
-    return count > WEB_LOGIN_RATE_LIMIT_MAX
-
-
-def _clear_login_rate_limit(ip: str, username: str) -> None:
-    _LOGIN_ATTEMPTS.pop(_login_rate_limit_key(ip, username), None)
-
-
-@app.get("/api/auth/session")
-async def api_auth_session(request: Request) -> JSONResponse:
-    """Devuelve el estado de la sesión actual (sin autenticación requerida)."""
-    username = request.session.get("username")
-    if not username:
-        return JSONResponse({"authenticated": False, "username": None, "role": None, "csrf": None})
-    return JSONResponse({
-        "authenticated": True,
-        "username": username,
-        "role": request.session.get("role", "user"),
-        "csrf": request.session.get("csrf"),
-    })
-
-
-@app.post("/api/auth/login")
-async def api_auth_login(request: Request) -> JSONResponse:
-    """Login vía JSON. Devuelve sesión o error."""
-    try:
-        body = await request.json()
-        username = str(body.get("username", "")).strip()
-        password = str(body.get("password", ""))
-    except Exception:
-        return JSONResponse({"ok": False, "error": "Body inválido"}, status_code=400)
-
-    ip = _client_ip(request)
-    if _login_rate_limit_exceeded(ip, username):
-        return JSONResponse({"ok": False, "error": "Demasiados intentos. Esperá un minuto."}, status_code=429)
-
-    if not username or not password:
-        return JSONResponse({"ok": False, "error": "Usuario y contraseña requeridos"}, status_code=400)
-
-    try:
-        with psycopg.connect(DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT password_hash, role FROM app.web_users WHERE username=%s", (username,))
-                row = cur.fetchone()
-                password_ok = False
-                if row:
-                    try:
-                        password_ok = verify_password(password, row[0])
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error("action=api_login bcrypt_error username=%s error=%s", username, exc)
-                if not row or not password_ok:
-                    logger.warning("action=api_login result=fail username=%s ip=%s", username, ip)
-                    return JSONResponse({"ok": False, "error": "Credenciales inválidas"}, status_code=401)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("action=api_login result=error username=%s ip=%s error=%s", username, ip, exc)
-        return JSONResponse({"ok": False, "error": "Error de autenticación"}, status_code=500)
-
-    csrf_token = secrets.token_urlsafe(32)
-    request.session["username"] = username
-    request.session["role"] = row[1] if row else "user"
-    request.session["csrf"] = csrf_token
-    _clear_login_rate_limit(ip, username)
-    logger.info("action=api_login result=success username=%s role=%s ip=%s", username, row[1] if row else "user", ip)
-    return JSONResponse({"ok": True, "username": username, "role": row[1] if row else "user", "csrf": csrf_token})
-
-
-@app.post("/api/auth/logout")
-async def api_auth_logout(request: Request) -> JSONResponse:
-    """Cierra la sesión vía API."""
-    request.session.clear()
-    return JSONResponse({"ok": True})
-
-
-@app.get("/logout")
-async def logout(request: Request) -> RedirectResponse:
-    """Compatibilidad hacia atrás — limpia sesión y redirige al SPA."""
-    request.session.clear()
-    return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/reports/index")
@@ -780,79 +654,6 @@ async def generar_informe_sla_consumo_web(
         salida["pdf_omitido"] = informe.pdf_omitido
     REPORT_HISTORY.finish_success(history_id, output_metadata={"source": "excel", **salida})
     return JSONResponse({"ok": True, "message": "Informe de SLA consumido generado", **salida})
-
-
-@app.get("/api/admin/me")
-async def admin_me(request: Request) -> JSONResponse:
-    """Devuelve datos del usuario admin autenticado. Usado por el SPA Vue para validar sesión."""
-    username = _require_admin(request)  # lanza 403 si no es admin
-    return JSONResponse({"username": username, "role": "admin"})
-
-
-@app.post("/api/users/change-password")
-async def change_password(
-    request: Request,
-    current_password: str = Form(...),
-    new_password: str = Form(...),
-    csrf_token: str = Form(...),
-):
-    # Autenticado + CSRF
-    user, _ = _require_auth(request)
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-    try:
-        with psycopg.connect(DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT password_hash FROM app.web_users WHERE username=%s", (user,))
-                row = cur.fetchone()
-                if not row or not verify_password(current_password, row[0]):
-                    return JSONResponse({"error": "Contraseña actual incorrecta"}, status_code=400)
-                new_hash = hash_password(new_password)
-                cur.execute(
-                    "UPDATE app.web_users SET password_hash=%s WHERE username=%s",
-                    (new_hash, user),
-                )
-                conn.commit()
-    except Exception as exc:
-        return JSONResponse({"error": f"Error cambiando contraseña: {exc}"}, status_code=500)
-    return JSONResponse({"status": "ok"})
-
-
-ALLOWED_ROLES = {"admin", "ownergroup", "invitado"}
-
-
-@app.post("/api/admin/users")
-async def admin_create_user(
-    request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    role: str = Form("invitado"),
-    csrf_token: str = Form(...),
-):
-    # Admin + CSRF
-    _, role_sess = _require_auth(request)
-    if role_sess != "admin":
-        return JSONResponse({"error": "Solo admin"}, status_code=403)
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-    # Validación de rol permitido (case-insensitive)
-    role_norm = role.strip().lower()
-    if role_norm not in ALLOWED_ROLES:
-        return JSONResponse({"error": "Rol inválido. Use Admin, OwnerGroup o Invitado."}, status_code=400)
-    try:
-        with psycopg.connect(DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM app.web_users WHERE username=%s", (username,))
-                if cur.fetchone():
-                    return JSONResponse({"error": "Usuario ya existe"}, status_code=409)
-                cur.execute(
-                    "INSERT INTO app.web_users (username, password_hash, role) VALUES (%s,%s,%s)",
-                    (username, hash_password(password), role_norm),
-                )
-                conn.commit()
-    except Exception as exc:
-        return JSONResponse({"error": f"Error creando usuario: {exc}"}, status_code=500)
-    return JSONResponse({"status": "ok"})
 
 
 # ── Servicios Baneos (admin) ────────────────────────────────────
@@ -11451,6 +11252,9 @@ async def delete_servicio_empalmes_web(
             status_code=500
         )
 
+
+# ── Routers por dominio (antes del catch-all SPA) ───────────────────
+app.include_router(sesion.router)
 
 
 # ── SPA Catch-all (DEBE ser la última ruta) ─────────────────────────

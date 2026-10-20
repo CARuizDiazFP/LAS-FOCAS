@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 from fastapi import HTTPException, Request, status
@@ -36,6 +37,20 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 REPORT_HISTORY: ReportHistoryBackend = ReportHistoryService(DB_DSN)
+
+
+def _detect_build_version() -> str:
+    for candidate in (
+        os.getenv("WEB_BUILD_VERSION"),
+        os.getenv("BUILD_HASH"),
+        os.getenv("GIT_SHA"),
+    ):
+        if candidate:
+            return candidate.strip()
+    return str(int(time.time()))
+
+
+BUILD_VERSION = _detect_build_version()
 
 
 def _internal_api_auth_headers() -> dict[str, str]:

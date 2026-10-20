@@ -9,18 +9,19 @@ import asyncio
 from starlette.middleware.sessions import SessionMiddleware
 
 from web.app import main as web_main
+from web.app.routers import sesion
 
 
 def test_rate_limit_login_no_depende_de_cookie(monkeypatch) -> None:
-    monkeypatch.setattr(web_main, "WEB_LOGIN_RATE_LIMIT_MAX", 2)
-    monkeypatch.setattr(web_main, "WEB_LOGIN_RATE_LIMIT_WINDOW", 60)
-    web_main._LOGIN_ATTEMPTS.clear()
+    monkeypatch.setattr(sesion, "WEB_LOGIN_RATE_LIMIT_MAX", 2)
+    monkeypatch.setattr(sesion, "WEB_LOGIN_RATE_LIMIT_WINDOW", 60)
+    sesion._LOGIN_ATTEMPTS.clear()
     ip = "192.0.2.10"
     username = "admin"
 
-    assert web_main._login_rate_limit_exceeded(ip, username) is False
-    assert web_main._login_rate_limit_exceeded(ip, username) is False
-    assert web_main._login_rate_limit_exceeded(ip, username) is True
+    assert sesion._login_rate_limit_exceeded(ip, username) is False
+    assert sesion._login_rate_limit_exceeded(ip, username) is False
+    assert sesion._login_rate_limit_exceeded(ip, username) is True
 
 
 def test_cookie_sesion_declara_flags_seguridad(monkeypatch) -> None:
