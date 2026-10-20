@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import sys
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,7 +19,9 @@ os.environ.setdefault("LAS_FOCAS_API_KEY", "test-api-key")
 
 # Las métricas de intención se persisten en un archivo versionado (web/data/intent_metrics.json);
 # se apunta a un directorio temporal ANTES de importar la app para no ensuciar el árbol del repo.
-os.environ.setdefault("METRICS_PERSIST_PATH", os.path.join(tempfile.mkdtemp(prefix="focas-tests-"), "intent_metrics.json"))
+# Asignación directa: un valor heredado del entorno no debe apuntar al archivo versionado.
+_METRICAS_TMP_DIR = tempfile.mkdtemp(prefix="focas-tests-")
+os.environ["METRICS_PERSIST_PATH"] = os.path.join(_METRICAS_TMP_DIR, "intent_metrics.json")
 
 
 # Directorio ignorado por Git donde la app escribe informes reales; los tests no deben dejar nada ahí.
@@ -64,5 +67,6 @@ def pytest_sessionfinish(session, exitstatus) -> None:
         print("\nLos tests modificaron archivos bajo web/data (git status --porcelain):")
         for linea in cambios:
             print(f"  - {linea}")
+    shutil.rmtree(_METRICAS_TMP_DIR, ignore_errors=True)
     if nuevos or cambios:
         session.exitstatus = 1
