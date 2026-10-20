@@ -17,7 +17,8 @@ from core.services.camara_estado_service import (
 from db.models.infra import CamaraEstado, CamaraOrigenDatos, RutaTipo
 
 
-from web.app.main import _serialize_camara_response, app  # type: ignore  # noqa: E402
+from web.app.main import app  # type: ignore  # noqa: E402
+from web.app.routers.camaras import _serialize_camara_response  # type: ignore  # noqa: E402
 
 
 class _Cur:
