@@ -7854,7 +7854,7 @@ async def botellas_eliminar_grupo_web(
             await encolar_recalculo_duplicados_botellas(
                 motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
             )
-            if resultado.botellas_eliminadas > 0:
+            if resultado.botellas_eliminadas:
                 await _encolar_arbitro(
                     "BOTELLAS", body.ids_cromo, f"eliminar-grupo botellas={resultado.botellas_eliminadas}"
                 )
