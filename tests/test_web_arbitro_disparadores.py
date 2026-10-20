@@ -123,8 +123,8 @@ def test_asociar_odf_encola_servicio(monkeypatch, encolados):
     async def _crear(*a, **k):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _detalle)
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _senal)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _detalle)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _senal)
     monkeypatch.setattr(svc, "crear_override", _crear)
     client = _cliente(monkeypatch)
 
@@ -142,7 +142,7 @@ def test_asociar_odf_servicio_inexistente_no_encola(monkeypatch, encolados):
     async def _detalle(_s, servicio_id):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _detalle)
     client = _cliente(monkeypatch)
 
     res = client.post("/api/admin/infra/servicios-odf/77/asociar", json={"odf_n_id": 5})

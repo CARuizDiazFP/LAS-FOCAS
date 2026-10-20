@@ -272,7 +272,7 @@ def test_sugerencia_requiere_admin(monkeypatch):
     async def _fake_detalle(sesion, servicio_id):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
     _login(client, "user", "userpass")
@@ -290,7 +290,7 @@ def test_sugerencia_404_si_no_existe(monkeypatch):
     async def _fake_detalle(sesion, servicio_id):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -325,7 +325,7 @@ def test_sugerencia_incluye_ambos_extremos_sugerencia_y_senal(monkeypatch):
             "indice_extremo_categorizado": 1,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     async def _fake_sugerencia(sesion, servicio_id):
         return servicios_sin_odf.SugerenciaOdf(
@@ -339,7 +339,7 @@ def test_sugerencia_incluye_ambos_extremos_sugerencia_y_senal(monkeypatch):
         assert odf_n_id == 555
         return SenalDireccion.COINCIDE
 
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -383,7 +383,7 @@ def test_sugerencia_serializa_cantidad_candidatas_mayor_a_uno(monkeypatch):
             "indice_extremo_categorizado": 0,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     async def _fake_sugerencia(sesion, servicio_id):
         return servicios_sin_odf.SugerenciaOdf(
@@ -395,7 +395,7 @@ def test_sugerencia_serializa_cantidad_candidatas_mayor_a_uno(monkeypatch):
     async def _fake_senal(sesion, direccion_prov, odf_n_id):
         return SenalDireccion.NO_SE_PUDO_COMPARAR
 
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -429,7 +429,7 @@ def test_sugerencia_sin_olt_no_ofrece_sugerencia(monkeypatch):
             "indice_extremo_categorizado": 0,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     llamado = {"sugerencia": False}
 
@@ -471,7 +471,7 @@ def test_senal_direccion_requiere_admin(monkeypatch):
     async def _fake_detalle(sesion, servicio_id):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
     _login(client, "user", "userpass")
@@ -500,7 +500,7 @@ def test_senal_direccion_404_si_servicio_no_existe(monkeypatch):
     async def _fake_detalle(sesion, servicio_id):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -529,13 +529,13 @@ def test_senal_direccion_404_si_odf_no_existe(monkeypatch):
             "indice_extremo_categorizado": None,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     async def _fake_existe(sesion, odf_n_id):
         assert odf_n_id == 999999
         return False
 
-    monkeypatch.setattr(web_main, "_existe_odf", _fake_existe)
+    monkeypatch.setattr(web_main.servicios, "_existe_odf", _fake_existe)
 
     llamado_senal = {"veces": 0}
 
@@ -543,7 +543,7 @@ def test_senal_direccion_404_si_odf_no_existe(monkeypatch):
         llamado_senal["veces"] += 1
         raise AssertionError("no debe calcular senal_direccion si la ODF no existe")
 
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -573,13 +573,13 @@ def _mock_senal_direccion_ok(monkeypatch, senal, *, odf_n_id=555, direccion="AV 
             "indice_extremo_categorizado": None,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     async def _fake_existe(sesion, n_id):
         assert n_id == odf_n_id
         return True
 
-    monkeypatch.setattr(web_main, "_existe_odf", _fake_existe)
+    monkeypatch.setattr(web_main.servicios, "_existe_odf", _fake_existe)
 
     llamada = {}
 
@@ -588,7 +588,7 @@ def _mock_senal_direccion_ok(monkeypatch, senal, *, odf_n_id=555, direccion="AV 
         llamada["odf_n_id"] = n_id
         return senal
 
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
     return llamada
 
 
@@ -670,7 +670,7 @@ def test_asociar_404_si_servicio_no_existe(monkeypatch):
     async def _fake_detalle(sesion, servicio_id):
         return None
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")
@@ -701,12 +701,12 @@ def test_asociar_404_si_odf_no_existe(monkeypatch):
             "indice_extremo_categorizado": None,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     async def _fake_senal(sesion, direccion_prov, odf_n_id):
         return SenalDireccion.NO_SE_PUDO_COMPARAR
 
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     async def _fake_crear_override(sesion, **kwargs):
         raise override_service.ObjetoNoEncontrado("No existe un ODF con n_id=999999.")
@@ -743,7 +743,7 @@ def test_asociar_ok_recalcula_senal_contra_odf_del_body(monkeypatch):
             "indice_extremo_categorizado": None,
         }
 
-    monkeypatch.setattr(web_main, "_obtener_servicio_categorizado", _fake_detalle)
+    monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     llamada_senal = {}
 
@@ -752,7 +752,7 @@ def test_asociar_ok_recalcula_senal_contra_odf_del_body(monkeypatch):
         llamada_senal["odf_n_id"] = odf_n_id
         return SenalDireccion.NO_COINCIDE
 
-    monkeypatch.setattr(web_main, "_senal_direccion_contra_odf", _fake_senal)
+    monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     llamada_override = {}
 

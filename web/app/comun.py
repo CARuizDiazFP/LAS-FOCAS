@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -154,3 +155,71 @@ def _serializar_cromo_corrida(corrida: Any) -> dict[str, Any]:
         "iniciada_at": corrida.iniciada_at.isoformat() if corrida.iniciada_at else None,
         "finalizada_at": corrida.finalizada_at.isoformat() if corrida.finalizada_at else None,
     }
+
+
+def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
+    """`botella_label` (Tarea 6, 2026-09-04) resuelve el nombre legible de la Botella intervenida —
+    reemplaza el fallback "Sin botella asociada" del frontend (`ModalRegistros.vue`), que mostraba el
+    `n_id` crudo o ese texto sin distinguir "no se especificó botella" (= la Cámara raíz, "Botella 1"
+    por convención — ver `camara_search.detectar_multi_bot`) de "se especificó una Botella legado sin
+    CromoBotella asociada". `getattr` defensivo: tolera objetos de test (`SimpleNamespace`) sin
+    `.camara`/`.tipo` poblados, cayendo a los defaults más comunes."""
+    if item.cromo_botella_id is not None:
+        cromo_botella = getattr(item, "cromo_botella", None)
+        # `CromoBotella.nombre` es nullable: si la relación existe pero su `nombre` es None/vacío,
+        # el `or` cae al fallback numerado — nunca basta con chequear "la relación existe" (bug real,
+        # revisión final 2026-09-04: `cromo_botella.nombre if cromo_botella is not None else ...`
+        # devolvía `botella_label=None` cuando `cromo_botella.nombre IS NULL`, violando la garantía
+        # documentada de "nunca null" y el tipo TypeScript `botella_label: string`).
+        botella_label = (cromo_botella.nombre if cromo_botella is not None else None) or f"Botella #{item.cromo_botella_id}"
+    elif getattr(getattr(item, "camara", None), "camara_padre_id", None):
+        botella_label = item.camara.nombre
+    else:
+        botella_label = "Botella 1"
+
+    tipo = getattr(item, "tipo", None)
+    return {
+        "id": item.id,
+        "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
+        "fecha_fin": item.fecha_fin.isoformat() if item.fecha_fin else None,
+        "tecnico_id": item.tecnico_id,
+        "cromo_botella_id": item.cromo_botella_id,
+        "botella_label": botella_label,
+        "tipo": tipo.value if tipo else "INGRESO",
+    }
+
+
+async def _encolar_arbitro(tipo: str, ids: Sequence[int], motivo: str) -> None:
+    """Encola una evaluación del árbitro de Cromo (disparo VIEWER) tras una acción del operador ya
+    commiteada. Best-effort: import diferido y cualquier falla se traga; nunca altera la respuesta."""
+    try:
+        from core.services.cromo.arbitro.cola import encolar_evaluacion
+        from core.services.cromo.arbitro.senales import Alcance
+
+        await encolar_evaluacion(Alcance(tipo, tuple(dict.fromkeys(ids))), "VIEWER", motivo)
+    except Exception:  # noqa: BLE001
+        logger.warning("action=arbitro_encolar_viewer result=fail motivo=%s", motivo, exc_info=True)
+
+
+def _serializar_pelo_semilla(semilla: Any) -> dict[str, Any]:
+    return {
+        "pelo_n_id": semilla.pelo_n_id,
+        "servicio_numero": semilla.servicio_numero,
+        "metodo": semilla.metodo,
+        "confianza": semilla.confianza,
+        "numero_pelo": semilla.numero_pelo,
+        "color": semilla.color,
+        "cable_n_id": semilla.cable_n_id,
+        "cable_nombre": semilla.cable_nombre,
+        "tiene_conector_odf": semilla.tiene_conector_odf,
+        "servicio_raw": semilla.servicio_raw,
+    }
+
+
+async def _servicio_existe(sesion: Any, servicio_id: int) -> bool:
+    from sqlalchemy import text as _text
+
+    fila = await sesion.execute(
+        _text("SELECT 1 FROM app.servicios WHERE id = :id"), {"id": servicio_id}
+    )
+    return fila.first() is not None
