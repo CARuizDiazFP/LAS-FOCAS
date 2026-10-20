@@ -1,12 +1,12 @@
 # Nombre de archivo: 2026-10-20-fase2-busqueda-camaras-unica.md
 # Ubicación de archivo: docs/superpowers/plans/2026-10-20-fase2-busqueda-camaras-unica.md
-# Descripción: Plan de implementación de la Fase 2 del relevamiento técnico: una sola búsqueda y exportación de Cámaras (la de la SPA, en core/) y baja de las versiones sin uso
+# Descripción: Plan de implementación de la Fase 2 del relevamiento técnico: la búsqueda y exportación de Cámaras de la SPA pasan a core/; las demás variantes se conservan
 
 # Fase 2: una sola búsqueda y exportación de Cámaras
 
 > **Para agentes:** SUB-SKILL REQUERIDA: usar superpowers:subagent-driven-development (recomendado) o superpowers:executing-plans para implementar tarea por tarea. Los pasos usan checkbox (`- [ ]`).
 
-**Objetivo:** la smart search y la exportación de Cámaras de la SPA pasan a `core/services/` en funciones chicas y testeadas, con resultados idénticos a los de hoy. Se borran las seis variantes que nadie usa.
+**Objetivo:** la smart search y la exportación de Cámaras de la SPA pasan a `core/services/` en funciones chicas y testeadas, con resultados idénticos a los de hoy. Las otras seis variantes (simple y avanzada de la SPA; simple, avanzada, smart y exportación de la API interna) se conservan sin cambios.
 
 **Arquitectura:**
 - Lógica nueva en dos módulos, `core/services/camaras_consulta.py` (smart search) y `core/services/camaras_exportacion.py` (CSV/XLSX).
@@ -16,15 +16,13 @@
 
 **Stack:** FastAPI, SQLAlchemy 2 (sync `SessionLocal`), pandas/openpyxl, pytest.
 
-**Spec:** relevamiento técnico del 2026-10-20 (claude.ai/code/artifact/e0da6f4c-3f37-430c-921a-0b14be712475), sección "Duplicación de lógica", y la decisión del usuario del 2026-10-20 registrada en el hilo del documento: "manda la SPA; las búsquedas de la API interna no tienen uso y se borran; la API v1 no se toca".
+**Spec:** relevamiento técnico del 2026-10-20 (claude.ai/code/artifact/e0da6f4c-3f37-430c-921a-0b14be712475), sección "Duplicación de lógica", y las decisiones del usuario del 2026-10-20: "manda la SPA; la API v1 no se toca" y, después, "conservá las rutas: el portal todavía tiene poco uso y podríamos borrar algo que, aunque no se use, sigue operativo". **No se borra ninguna ruta.**
 
 ## Restricciones globales
 
 - **Mismos resultados.** Para la misma entrada, la smart search devuelve el mismo JSON: mismas claves, mismos `id` en el mismo orden, mismos `total`, `limit`, `offset`, `filters_applied` y `estado_filter`. La exportación devuelve el mismo CSV byte a byte (salvo el timestamp del nombre de archivo) y un XLSX con las mismas filas y columnas. Lo verifica la línea base de la Task 1.
 - **No se toca:** `api/app/routes/v1/` (API v1 de otras áreas, OAuth2), el resto de `api/app/routes/infra.py` (tracking, ban, notify, sync, servicios), `GET /api/infra/camaras/buscar` (lo usan 3 modales del frontend) ni el frontend.
-- **Se borran** (sin uso: 0 llamadas en `Logs/api.log` entre el 1 y el 20 de octubre, y ninguna llamada desde el frontend):
-  - `GET /api/infra/camaras` (`search_camaras_web`) y `POST /api/infra/search` (`advanced_search_camaras_web`) de `web/app/routers/camaras.py`.
-  - `GET /api/infra/camaras` (`search_camaras`), `POST /api/infra/search` (`advanced_search_camaras`), `POST /api/infra/smart-search` (`smart_search_camaras`) y `GET /api/infra/export/cameras` (`export_cameras`) de `api/app/routes/infra.py`.
+- **No se borra ni se cambia el comportamiento de ninguna ruta.** Las variantes duplicadas (`search_camaras_web`, `advanced_search_camaras_web` en la SPA; `search_camaras`, `advanced_search_camaras`, `smart_search_camaras`, `export_cameras` en la API interna) quedan como están: tienen poco uso pero siguen operativas.
 - **Imports en `core/`:** absolutos (`from db.models.infra import ...`). `core/` nunca importa `web.*` ni `api.*`. En el router, `from core.services.camaras_consulta import ...`.
 - **Encabezado** de 3 líneas en archivos nuevos. Nombres, comentarios y logs en español.
 - **Complejidad:** ninguna función nueva supera C901 = 20. Las dos funciones de la SPA que se adelgazan pierden su `# noqa: C901`.
@@ -36,7 +34,7 @@
 2. **Términos vacíos, repetidos o con mayúsculas y espacios.** `"  ruta 5 "`, `""`, `["A","a"]`. El comportamiento actual (strip, minúsculas, AND) se conserva tal cual. Hay tests unitarios para cada caso.
 3. **`incluir_no_operativas` cruzado con `estado = NO_OPERATIVA`.** La regla actual: el chip de estado NO_OPERATIVA trae esas cámaras aunque el toggle esté apagado. Hay tests unitarios del filtro y una consulta en la línea base.
 4. **Exportación sin pandas.** Si `pandas` no está, el XLSX cae a CSV con un warning. Se conserva, con un test que simula el `ImportError`.
-5. **Borrar cosas que algo todavía importa.** Modelos Pydantic (`SearchResponse`, `CamarasListResponse`…) y helpers (`_apply_text_filter`, `_camara_matches_filter`, `_term_matches_camara`) de `api/app/routes/infra.py` pueden estar usados por otros endpoints del mismo archivo o por tests. Se borra sólo lo que queda sin referencias (grep más ruff F821 y F401).
+5. **Helpers movidos que usan otras rutas.** `_collect_camara_rutas_info` y `_collect_camara_servicios_ids` los usan también el detalle, los registros y `search_camaras_web`, que se conservan. Al moverlos a `core/`, todos sus lectores tienen que seguir funcionando, y lo mismo los parches de tests que los apunten.
 
 ---
 
@@ -96,24 +94,17 @@
 - [ ] **Paso 3:** `comparar` contra la línea base. Esperado: exit 0 en todas las consultas de exportación. Contrato de rutas en verde.
 - [ ] **Paso 4:** commit `refactor(camaras): exportación a core/services/camaras_exportacion.py`. Después `ready` e `integrate`.
 
-### Task 4: Baja de las seis variantes sin uso
+### Task 4: Documentar las variantes conservadas
 
 **Archivos:**
-- Modificar: `web/app/routers/camaras.py`, `api/app/routes/infra.py`, `tests/fixtures/web_rutas_contrato.json` (regenerado)
-- Borrar: `tests/test_infra_search.py`, y los tests que ejerciten sólo rutas borradas (buscarlos con grep de los paths y nombres de función).
-- Modificar las docs que listan esas rutas: `.github/agents/infra.agent.md`, `.github/agents/api.agent.md`, `.gemini/rules/agent-infra-agent.md`, `.gemini/rules/agent-api-agent.md`, `docs/Mate_y_Ruta.md` si corresponde. Antes, grep de `/api/infra/search` y `/api/infra/camaras"` en `docs/` y `.github/`.
+- Modificar: `docs/PR/<fecha>.md`, `AGENTS.md` (una línea en Arquitectura).
 
-**Interfaces:**
-- Consume: nada nuevo. Las rutas borradas son las de "Se borran" en Restricciones globales.
-
-- [ ] **Paso 1:** borrar las dos rutas de la SPA y las cuatro de la API interna, con sus modelos y helpers privados que queden sin referencias. Un `grep -n '\b<nombre>\b'` por cada uno en el repo (código y tests). `ruff check web/app api/app tests` en verde.
-- [ ] **Paso 2:** regenerar el contrato (`REGENERAR_CONTRATO_RUTAS=1 pytest tests/test_web_rutas_contrato.py`) y verificar con `git diff` del JSON que sólo desaparecen las entradas de `GET /api/infra/camaras` y `POST /api/infra/search`. Ninguna otra entrada cambia.
-- [ ] **Paso 3:** test nuevo `tests/test_api_infra_rutas_retiradas.py`. En la API interna, con API key válida, las 4 rutas borradas responden 404 (o 405 si queda otra ruta con el mismo path y otro método). Además, `POST /api/v1/oauth/token` y las rutas de `api/app/routes/v1/` siguen registradas en `app.routes`: la API v1 no se tocó. En la SPA, el contrato regenerado del paso 2 ya cubre el efecto: `GET /api/infra/camaras` pasa a resolver al catch-all `spa_fallback` (es GET), y `POST /api/infra/search` deja de resolver (405).
-- [ ] **Paso 4:** `comparar` contra la línea base: smart search y exportación siguen idénticas. Suite completa una vez.
-- [ ] **Paso 5:** actualizar las docs y el PR diario (`docs/PR/<fecha>.md`). Commit `refactor(camaras): baja de búsquedas y exportación sin uso (SPA simple/avanzada, API interna)`. Después `ready` e `integrate`.
+- [ ] **Paso 1:** en `AGENTS.md`, indicar que la búsqueda y la exportación de Cámaras del panel viven en `core/services/camaras_consulta.py` y `core/services/camaras_exportacion.py`. Agregar que las variantes `search_camaras*` y `advanced_search_camaras*` de la SPA y de la API interna, y `smart_search_camaras` y `export_cameras` de la API interna, se conservan a propósito: tienen poco uso pero siguen operativas, así que no se borran sin decisión explícita del usuario.
+- [ ] **Paso 2:** `comparar` contra la línea base, una última vez, y la suite completa.
+- [ ] **Paso 3:** PR diario. Commit `docs(camaras): búsqueda y exportación de Cámaras en core/; variantes conservadas`. Después `ready` e `integrate`.
 
 ## Fuera de alcance
 
-- Las otras 15 rutas de `/api/infra/*` de la API interna. Tampoco registran uso en `Logs/api.log`, pero su baja es una decisión aparte que se le planteará al usuario.
+- Borrar o cambiar cualquier ruta (decisión del usuario: se conservan todas, incluidas las de `/api/infra/*` de la API interna).
 - La búsqueda de Cámaras del listener de Slack (`modules/slack_baneo_notifier/camara_search.py`), que interpreta texto libre y tiene sus propias reglas.
 - Optimizar el N+1 de la smart search (eso es de la Fase 4).
