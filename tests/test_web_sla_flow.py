@@ -93,6 +93,15 @@ def _login_as_user(client: TestClient, monkeypatch, password: str = "userpass") 
     return res.json()["csrf"]
 
 
+@pytest.fixture(autouse=True)
+def _reportes_en_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Aísla los informes: las constantes se calculan al importar, el env no alcanza."""
+    from core.services import sla as sla_service_mod
+
+    monkeypatch.setattr(sla_service_mod, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(web_main, "REPORTS_DIR", tmp_path / "reports")
+
+
 def test_sla_flow_success_with_two_excel_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test del flujo completo: dos archivos Excel -> informe SLA generado."""
     client = TestClient(app)

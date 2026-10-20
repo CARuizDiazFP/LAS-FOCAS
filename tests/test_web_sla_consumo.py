@@ -28,6 +28,12 @@ pytestmark = pytest.mark.filterwarnings("ignore:datetime.datetime.utcnow:Depreca
 _INGESTA = ResultadoIngesta(7, dt.date(2026, 10, 1), False, 10, 2, 5)
 
 
+@pytest.fixture(autouse=True)
+def _reportes_en_tmp(monkeypatch, tmp_path):
+    """Aísla los informes: REPORTS_DIR se calcula al importar, el env no alcanza."""
+    monkeypatch.setattr(web_main, "REPORTS_DIR", tmp_path / "reports")
+
+
 def test_sla_consumo_ok(monkeypatch, tmp_path):
     llamado = {}
 
