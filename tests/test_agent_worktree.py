@@ -336,6 +336,8 @@ def test_integracion_serializada_mientras_el_otro_agente_sigue_trabajando(
     assert sincronizado["resultado"] == "ok"
     assert (worktree_b / "api/a.py").exists()  # ya incorporó el trabajo de A
 
+    # El sync movió el HEAD de B: el gate se corre sobre lo que realmente se integra.
+    _correr_json(["ready", "--agent", "codex-web"], capsys)
     integrado_b = _correr_json(["integrate", "--agent", "codex-web"], capsys)
     assert integrado_b["status"] == "finished"
     assert gitops.es_ancestro(gitops.sha("HEAD", worktree_b), "origin/dev", control)
@@ -382,6 +384,7 @@ def test_integrate_se_bloquea_si_otro_agente_sostiene_la_ventana(
     worktree_a, worktree_b = dos_agentes
     _configurar_identidad(worktree_b)
     _commit(worktree_b, "web/b.ts", "// B\n", "feat(web): trabajo de B")
+    _correr_json(["ready", "--agent", "codex-web"], capsys)
 
     # A está integrando (sostiene el recurso serializado).
     Registro(rutas.contexto(control).db_path).adquirir(
@@ -403,12 +406,100 @@ def test_integrate_exige_sincronizar_si_dev_avanzo(
     _configurar_identidad(worktree_b)
     _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
     _commit(worktree_b, "web/b.ts", "// B\n", "feat(web): trabajo de B")
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    _correr_json(["ready", "--agent", "codex-web"], capsys)
 
     _correr_json(["integrate", "--agent", "claude-api"], capsys)
     capsys.readouterr()
 
     assert _correr(["integrate", "--agent", "codex-web"]) == 1
     assert "sync --agent codex-web" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------ gate de calidad
+
+
+def test_ready_con_gate_fallido_no_cambia_el_estado(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "import os\n", "feat(api): import sin uso")
+    capsys.readouterr()
+
+    assert _correr(["ready", "--agent", "claude-api"]) == 1
+    error = capsys.readouterr().err
+    assert "el gate de calidad falló en 'lint'" in error
+    assert "F401" in error
+
+    agente = Registro(rutas.contexto(control).db_path).agente("claude-api")
+    assert agente is not None and agente.status == "active"
+    assert _correr(["integrate", "--agent", "claude-api"]) == 1
+
+
+def test_ready_con_gate_ok_informa_el_resumen(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "VALOR = 1\n", "feat(api): trabajo de A")
+
+    listo = _correr_json(["ready", "--agent", "claude-api"], capsys)
+
+    assert listo["gate"]["ok"] is True
+    assert listo["gate"]["archivos"] == ["api/a.py"]
+    assert listo["gate"]["sha"] == gitops.sha("HEAD", worktree_a)
+
+
+def test_integrate_sin_ready_es_rechazado(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    capsys.readouterr()
+
+    assert _correr(["integrate", "--agent", "claude-api"]) == 1
+    assert "ready --agent claude-api" in capsys.readouterr().err
+    assert not gitops.es_ancestro(gitops.sha("HEAD", worktree_a), "origin/dev", control)
+
+
+def test_integrate_rechaza_un_head_posterior_al_ready(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    _commit(worktree_a, "api/a2.py", "# A2\n", "feat(api): commit después del ready")
+    capsys.readouterr()
+
+    assert _correr(["integrate", "--agent", "claude-api"]) == 1
+    assert "cambió después de 'ready'" in capsys.readouterr().err
+
+
+def test_sin_gate_exige_motivo_y_queda_auditado(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "import os\n", "feat(api): import sin uso")
+    capsys.readouterr()
+
+    assert _correr(["ready", "--agent", "claude-api", "--sin-gate"]) == 1
+    assert "--sin-gate exige --motivo" in capsys.readouterr().err
+
+    listo = _correr_json(
+        ["ready", "--agent", "claude-api", "--sin-gate", "--motivo", "hotfix de prod caído"], capsys
+    )
+    assert listo["gate"] == "salteado"
+
+    registro = Registro(rutas.contexto(control).db_path)
+    salteado = next(e for e in registro.eventos(agent_id="claude-api") if e["evento"] == "quality_gate_bypassed")
+    assert salteado["detalle"] == f"{gitops.sha('HEAD', worktree_a)} | hotfix de prod caído"
+
+    integrado = _correr_json(["integrate", "--agent", "claude-api"], capsys)
+    assert integrado["status"] == "finished"
 
 
 def test_integrate_rechaza_un_worktree_sucio(
