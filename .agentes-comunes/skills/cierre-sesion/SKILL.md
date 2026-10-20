@@ -106,8 +106,13 @@ reservado para cuando se declare explícitamente.
     python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
     python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
     python scripts/agent_worktree.py cleanup   --agent <agent-id> --borrar-rama
+    # `integrate` publica la rama en origin y `--borrar-rama` sólo borra la local: borrar la
+    # remota, verificando antes que ya está en dev
+    git fetch origin && git merge-base --is-ancestor origin/<rama> origin/dev \
+      && git push origin --delete <rama>
     ```
-    `integrate` adquiere `git:integrate-dev`, publica la rama, hace fast-forward de `dev`, actualiza
+    Sin ese último paso las ramas remotas se acumulan (real: 22 ya mergeadas, borradas a mano el
+    2026-10-20). `integrate` adquiere `git:integrate-dev`, publica la rama, hace fast-forward de `dev`, actualiza
     el checkout de control y libera el lease. Si `dev` avanzó mientras tanto, el push es rechazado
     por Git y el comando lo informa: repetir `sync` y reintentar. Si la integración falla, el agente
     queda en `blocked` y **el worktree no se elimina**. `cleanup` sólo remueve el worktree si está

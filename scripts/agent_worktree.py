@@ -686,7 +686,9 @@ def _actualizar_control(entorno: Entorno) -> str:
     """Deja el checkout de control al día con ``dev`` sin arriesgar trabajo local."""
     control = entorno.control
     try:
-        if not gitops.esta_limpio(control):
+        # Sólo los cambios trackeados bloquean: un archivo sin trackear no impide un --ff-only y,
+        # si el merge fuera a pisarlo, Git aborta solo (el merge de abajo lo reporta como omitido).
+        if gitops.tiene_cambios_trackeados(control):
             return "omitido: el checkout de control tiene cambios sin confirmar"
         if gitops.rama_actual(control) != RAMA_INTEGRACION:
             return f"omitido: el control no está en {RAMA_INTEGRACION}"

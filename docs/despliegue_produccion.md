@@ -49,6 +49,12 @@ docker compose -f deploy/compose.yml --env-file .env build \
   api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker fo_monitor_worker
 ```
 
+Si un test falla, no se publica: el fix va por un worktree propio, se integra a `dev`, se vuelve a
+buildear y se verifica dentro de la imagen (`docker run --rm --entrypoint sh <img> -c 'grep ...'`).
+Real el 2026-10-20: `test_eliminar_grupo_cromo_exitoso_encola_recalculo_duplicados` atrapó un 500
+del árbitro en "Eliminar grupo Cromo" que no había llegado a prod (`bba1863`). Correr la suite sin
+`-x`: con `-x` las demás fallas quedan ocultas hasta la segunda corrida.
+
 `fo_monitor_worker` existe en prod desde el 2026-10-18. Queda **inactivo** (fila `fo_monitor` de
 `app.config_servicios` con `activo=false`) hasta que el usuario decida habilitarlo.
 
@@ -71,6 +77,15 @@ git diff --quiet $C origin/dev && git push origin $C:refs/heads/main
 ```
 
 Si `main` tiene commits propios, **no** usar esto: hacer el merge real en un worktree de `main`.
+
+**Chequeo directo (real 2026-10-20, `main` con el hotfix `11573c8` propio):** si el merge real de
+`main` dentro de `dev` da exactamente el árbol de `dev`, todo el contenido propio de `main` ya está en
+`dev` y el `commit-tree` es seguro. Cubre a la vez los merges de despliegues previos y los hotfixes:
+
+```bash
+[ "$(git merge-tree --write-tree origin/dev origin/main)" = "$(git rev-parse 'origin/dev^{tree}')" ] \
+  && echo "commit-tree seguro"
+```
 
 **Excepción verificada (2026-09-28)**: si el único commit propio de `main` es el merge del
 despliegue anterior (`git log origin/dev..origin/main` = 1 commit de merge) y su árbol es idéntico al

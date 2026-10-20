@@ -341,6 +341,41 @@ def test_integracion_serializada_mientras_el_otro_agente_sigue_trabajando(
     assert gitops.es_ancestro(gitops.sha("HEAD", worktree_b), "origin/dev", control)
 
 
+def test_integrate_actualiza_el_control_aunque_tenga_archivos_sin_trackear(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Un archivo sin trackear en el control (p. ej. ``.claude/settings.json`` de la herramienta) no
+    bloquea el ``merge --ff-only``: Git ya aborta solo si el merge fuera a pisarlo (real 2026-10-20,
+    dos integraciones dejaron el control atrás de ``origin/dev``)."""
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    (control / "local.json").write_text("{}\n", encoding="utf-8")
+
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    integrado = _correr_json(["integrate", "--agent", "claude-api"], capsys)
+
+    assert integrado["control_actualizado"].startswith("actualizado a ")
+    assert gitops.sha("HEAD", control) == gitops.sha("HEAD", worktree_a)
+    assert (control / "local.json").read_text(encoding="utf-8") == "{}\n"
+
+
+def test_integrate_no_toca_el_control_con_cambios_trackeados(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    previo = gitops.sha("HEAD", control)
+    (control / "README.md").write_text("# editado en el control\n", encoding="utf-8")
+
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    integrado = _correr_json(["integrate", "--agent", "claude-api"], capsys)
+
+    assert integrado["control_actualizado"].startswith("omitido:")
+    assert gitops.sha("HEAD", control) == previo
+
+
 def test_integrate_se_bloquea_si_otro_agente_sostiene_la_ventana(
     control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

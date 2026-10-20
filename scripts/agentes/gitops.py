@@ -89,6 +89,11 @@ def esta_limpio(cwd: Path | str) -> bool:
     return estado_porcelain(cwd) == ""
 
 
+def tiene_cambios_trackeados(cwd: Path | str) -> bool:
+    """``True`` si hay cambios en archivos versionados (staged o no); ignora los sin trackear."""
+    return ejecutar(["status", "--porcelain", "--untracked-files=no"], cwd).stdout.strip() != ""
+
+
 def archivos_modificados(cwd: Path | str) -> list[str]:
     return [linea[3:] for linea in ejecutar(["status", "--porcelain"], cwd).stdout.splitlines() if linea]
 
