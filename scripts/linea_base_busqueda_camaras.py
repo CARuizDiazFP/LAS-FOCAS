@@ -22,6 +22,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ))
 
 PUERTO_DEV = "5433"
+BASE_DEV = "focas_dev"
 HOSTS_LOCALES = {"127.0.0.1", "localhost", "::1"}
 _TS = re.compile(r"camaras_\d{8}_\d{6}")
 
@@ -40,8 +41,11 @@ def _verificar_base_dev() -> None:
     from db.session import engine
 
     url = engine.url
-    if str(url.port) != PUERTO_DEV or url.host not in HOSTS_LOCALES:
-        _abortar(f"la URL efectiva apunta a {url.host}:{url.port}; sólo se permite dev local en {PUERTO_DEV}")
+    if str(url.port) != PUERTO_DEV or url.host not in HOSTS_LOCALES or url.database != BASE_DEV:
+        _abortar(
+            f"la URL efectiva apunta a {url.host}:{url.port}/{url.database}; "
+            f"sólo se permite {BASE_DEV} local en {PUERTO_DEV}"
+        )
 
 
 def _combinaciones_smart() -> list[tuple[str, dict]]:
@@ -88,61 +92,77 @@ def _normalizar_ts(texto: str) -> str:
     return _TS.sub("camaras_TS", texto)
 
 
-def _correr_todo() -> dict[str, str]:
-    """Devuelve {nombre: contenido_texto} con todas las respuestas."""
-    import pandas as pd
+def _xlsx_crudo(contenido: bytes) -> str:
+    """Lee el XLSX con openpyxl (celdas crudas, sin inferencia de tipos): encabezado + filas."""
+    from openpyxl import load_workbook
+
+    libro = load_workbook(io.BytesIO(contenido), read_only=True, data_only=True)
+    hojas = {}
+    for hoja in libro.worksheets:
+        filas = [list(fila) for fila in hoja.iter_rows(values_only=True)]
+        hojas[hoja.title] = {"columnas": filas[0] if filas else [], "filas": filas[1:]}
+    libro.close()
+    return json.dumps(hojas, ensure_ascii=False, indent=1, default=repr)
+
+
+def _correr_smart(cliente, resultados: dict[str, str]) -> None:
+    for nombre, cuerpo in _combinaciones_smart():
+        r = cliente.post("/api/infra/smart-search", json=cuerpo)
+        resultados[nombre] = json.dumps({"status": r.status_code, "cuerpo": r.json()}, ensure_ascii=False, indent=1)
+
+
+def _correr_export(cliente, resultados: dict[str, str]) -> None:
+    servicio_id = _servicio_con_camaras()
+    resultados["_servicio_id"] = servicio_id
+    for estado in ("ALL", "LIBRE", "BANEADA"):
+        for formato in ("csv", "xlsx"):
+            base = {"filter_status": estado, "format": formato}
+            for variante, p in (("", base), ("_srv", {**base, "servicio_id": servicio_id})):
+                r = cliente.get("/api/infra/export/cameras", params=p)
+                disp = _normalizar_ts(r.headers.get("content-disposition", ""))
+                cuerpo = _xlsx_crudo(r.content) if formato == "xlsx" and "xlsx" in disp else r.content.decode("utf-8")
+                resultados[f"export_{estado}_{formato}{variante}"] = (
+                    f"status={r.status_code}\ncontent-type={r.headers.get('content-type')}\n"
+                    f"content-disposition={disp}\n---\n{cuerpo}"
+                )
+
+
+def _correr(solo: str | None) -> dict[str, str]:
+    """Devuelve {nombre: contenido_texto}; `solo` limita a 'smart' o 'export'."""
     from fastapi.testclient import TestClient
 
     from web.app.main import app
 
     resultados: dict[str, str] = {}
-    servicio_id = _servicio_con_camaras()
-    resultados["_servicio_id"] = servicio_id
     with patch("web.app.routers.camaras._require_auth", return_value=("linea-base", "admin")):
         cliente = TestClient(app)
-        for nombre, cuerpo in _combinaciones_smart():
-            r = cliente.post("/api/infra/smart-search", json=cuerpo)
-            resultados[nombre] = json.dumps(
-                {"status": r.status_code, "cuerpo": r.json()}, ensure_ascii=False, indent=1, sort_keys=False
-            )
-        for estado in ("ALL", "LIBRE", "BANEADA"):
-            for formato in ("csv", "xlsx"):
-                nombre = f"export_{estado}_{formato}"
-                params = {"filter_status": estado, "servicio_id": servicio_id, "format": formato}
-                for variante, p in (("", {k: v for k, v in params.items() if k != "servicio_id"}), ("_srv", params)):
-                    r = cliente.get("/api/infra/export/cameras", params=p)
-                    disp = _normalizar_ts(r.headers.get("content-disposition", ""))
-                    if formato == "xlsx" and "xlsx" in disp:
-                        filas = pd.read_excel(io.BytesIO(r.content)).fillna("").to_dict(orient="records")
-                        cuerpo = json.dumps(filas, ensure_ascii=False, indent=1, default=str)
-                    else:
-                        cuerpo = r.content.decode("utf-8")
-                    resultados[nombre + variante] = (
-                        f"status={r.status_code}\ncontent-type={r.headers.get('content-type')}\n"
-                        f"content-disposition={disp}\n---\n{cuerpo}"
-                    )
+        if solo in (None, "smart"):
+            _correr_smart(cliente, resultados)
+        if solo in (None, "export"):
+            _correr_export(cliente, resultados)
     return resultados
 
 
-
-def _grabar(salida: Path) -> int:
+def _grabar(salida: Path, solo: str | None) -> int:
     salida.mkdir(parents=True, exist_ok=True)
-    resultados = _correr_todo()
+    resultados = _correr(solo)
     for nombre, contenido in resultados.items():
         with open(salida / f"{nombre}.json", "w", encoding="utf-8", newline="") as f:
             f.write(contenido)
-    print(f"Grabadas {len(resultados) - 1} consultas en {salida} (servicio_id={resultados['_servicio_id']})")
+    print(f"Grabadas {len([n for n in resultados if n[0] != '_'])} consultas en {salida}")
     return 0
 
 
-def _comparar(salida: Path) -> int:
+def _comparar(salida: Path, solo: str | None) -> int:
     if not salida.is_dir():
         _abortar(f"no existe el directorio de línea base {salida}")
-    resultados = _correr_todo()
-    grabados = {p.stem for p in salida.glob("*.json")}
+    resultados = _correr(solo)
+    prefijos = (f"{solo}_",) if solo else ("smart_", "export_")
+    grabados = {p.stem for p in salida.glob("*.json") if p.stem.startswith(prefijos)}
+    actuales = {n for n in resultados if n.startswith(prefijos)}
     diferencias = 0
-    for nombre in sorted(grabados | set(resultados)):
-        if nombre not in resultados or nombre not in grabados:
+    for nombre in sorted(grabados | actuales):
+        if nombre not in actuales or nombre not in grabados:
             print(f"DIFERENCIA {nombre}: presente sólo en {'línea base' if nombre in grabados else 'corrida actual'}")
             diferencias += 1
             continue
@@ -151,14 +171,19 @@ def _comparar(salida: Path) -> int:
         if antes != resultados[nombre]:
             diferencias += 1
             diff = difflib.unified_diff(
-                antes.splitlines(keepends=True), resultados[nombre].splitlines(keepends=True), "linea_base", "actual", lineterm="", n=2
+                antes.splitlines(keepends=True),
+                resultados[nombre].splitlines(keepends=True),
+                "linea_base",
+                "actual",
+                lineterm="",
+                n=2,
             )
             print(f"DIFERENCIA {nombre}:")
             print("".join(repr(linea) + "\n" for linea in list(diff)[:60]))
     if diferencias:
         print(f"FALLA: {diferencias} diferencias", file=sys.stderr)
         return 1
-    print(f"OK: {len(resultados) - 1} consultas idénticas a la línea base")
+    print(f"OK: {len(actuales)} consultas idénticas a la línea base")
     return 0
 
 
@@ -166,9 +191,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("accion", choices=["grabar", "comparar"])
     parser.add_argument("--salida", required=True, type=Path)
+    parser.add_argument("--solo", choices=["smart", "export"], default=None, help="limita a un grupo de consultas")
     args = parser.parse_args()
     _verificar_base_dev()
-    return _grabar(args.salida) if args.accion == "grabar" else _comparar(args.salida)
+    return _grabar(args.salida, args.solo) if args.accion == "grabar" else _comparar(args.salida, args.solo)
 
 
 if __name__ == "__main__":
