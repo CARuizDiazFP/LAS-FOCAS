@@ -156,7 +156,7 @@ def _auditoria_fakes(monkeypatch, *, en_curso=None, falla_worker=False):
         estado["fallidas"].append(corrida_id)
 
     monkeypatch.setattr(auditoria_huerfanos_global, "iniciar_si_no_hay_otra", _iniciar)
-    monkeypatch.setattr(web_main, "_marcar_corrida_fallida", _fallida)
+    monkeypatch.setattr(web_main.cromo, "_marcar_corrida_fallida", _fallida)
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _HttpxFake(falla_worker, estado["enviados"]))
     monkeypatch.setenv("CROMO_AUDITORIA_MAX_SERVICIOS", "30")
     monkeypatch.setenv("TESTING", "true")

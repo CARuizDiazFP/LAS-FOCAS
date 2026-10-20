@@ -107,8 +107,8 @@ def _fake_session(monkeypatch, *, existe: bool = True):
     async def _existe(_sesion, _servicio_id):
         return existe
 
-    monkeypatch.setattr(web_main, "_servicio_existe", _existe)
-    # El nombre vive en comun y lo leen main (camino-optico de Cromo) y el router servicios (camino-optico admin)
+    monkeypatch.setattr(web_main.cromo, "_servicio_existe", _existe)
+    # El nombre vive en comun y lo leen el router cromo (camino-optico de Cromo) y el router servicios (camino-optico admin)
     monkeypatch.setattr(web_main.servicios, "_servicio_existe", _existe)
 
     async def _n_ids(_sesion, ids):

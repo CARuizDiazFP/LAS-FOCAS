@@ -134,7 +134,7 @@ def test_viewer_duplicados_usa_cache_si_hay_hit(monkeypatch):
         llamado["detectar"] = True
         return []
 
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -167,8 +167,8 @@ def test_viewer_duplicados_cache_miss_cae_a_computo_sincrono(monkeypatch):
         llamado["detectar"] = True
         return []
 
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
-    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -206,8 +206,8 @@ def test_viewer_duplicados_refrescar_ignora_la_cache(monkeypatch):
         llamado["detectar"] = True
         return []
 
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
-    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -239,7 +239,7 @@ def test_viewer_duplicados_refrescar_false_sigue_usando_la_cache(monkeypatch):
         llamado["detectar"] = True
         return []
 
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -272,8 +272,8 @@ def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch)
         return []
 
     llamadas_to_thread: list = []
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
-    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -316,7 +316,7 @@ def test_viewer_duplicados_incluye_sugerencia_placeholders_cuando_aplica(monkeyp
     async def _fake_leer_cache():
         return [grupo]
 
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(
         "core.services.cromo.verificador.tiene_cables_asociados_batch_sync",
         lambda session, ids: {200},
@@ -358,7 +358,7 @@ def test_viewer_duplicados_sugerencia_placeholders_null_cuando_no_aplica(monkeyp
     async def _fake_leer_cache():
         return [grupo]
 
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(
         "core.services.cromo.verificador.tiene_cables_asociados_batch_sync",
         lambda session, ids: {200},
@@ -424,7 +424,7 @@ def test_consolidar_exitoso_encola_recalculo_duplicados(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -462,7 +462,7 @@ def test_consolidar_pasa_force_camera_association_al_servicio(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         return None
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -501,7 +501,7 @@ def test_consolidar_fallido_no_encola_recalculo_duplicados(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -535,8 +535,8 @@ def test_apropiar_masivo_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
         return []
 
     llamadas_to_thread: list = []
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
-    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -602,8 +602,8 @@ def test_exportar_inconsistencias_cache_miss_computo_corre_en_hilo_separado(monk
         return []
 
     llamadas_to_thread: list = []
-    monkeypatch.setattr(web_main, "leer_cache_duplicados", _fake_leer_cache)
-    monkeypatch.setattr(web_main, "guardar_cache_duplicados", _fake_guardar_cache)
+    monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
+    monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
@@ -673,7 +673,7 @@ def test_eliminar_botella_exitoso_encola_recalculo_duplicados(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -709,7 +709,7 @@ def test_eliminar_botella_fallido_no_encola_recalculo_duplicados(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -775,7 +775,7 @@ def test_eliminar_grupo_cromo_exitoso_encola_recalculo_duplicados(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -816,7 +816,7 @@ def test_eliminar_grupo_cromo_fallido_no_encola_recalculo_duplicados(monkeypatch
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")

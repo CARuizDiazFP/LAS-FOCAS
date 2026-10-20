@@ -223,3 +223,7 @@ async def _servicio_existe(sesion: Any, servicio_id: int) -> bool:
         _text("SELECT 1 FROM app.servicios WHERE id = :id"), {"id": servicio_id}
     )
     return fila.first() is not None
+
+
+def _serializar_bloqueos(bloqueos: list[Any]) -> list[dict[str, Any]]:
+    return [{"origen": b.origen, "id": b.id, "nombre": b.nombre, "razon": b.razon} for b in bloqueos]

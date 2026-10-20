@@ -286,7 +286,7 @@ def test_iniciar_happy_path_delega_al_worker_y_devuelve_corrida_id(monkeypatch):
 
     assert res.status_code == 202
     assert res.json()["corrida_id"] == 99
-    assert llamadas == [(web_main._CROMO_WORKER_RUN_URL, {"corrida_id": 99, "usuario": "admin"})]
+    assert llamadas == [(web_main.admin_datos._CROMO_WORKER_RUN_URL, {"corrida_id": 99, "usuario": "admin"})]
 
 
 def test_iniciar_propaga_modo_solo_odf_como_params_extra(monkeypatch):

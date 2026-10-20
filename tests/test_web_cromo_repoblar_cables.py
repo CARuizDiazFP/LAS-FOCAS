@@ -306,7 +306,7 @@ def test_repoblar_cables_happy_path_crea_cable_faltante(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")
@@ -363,7 +363,7 @@ def test_repoblar_cables_sin_pendientes_no_encola_recalculo(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")
@@ -410,7 +410,7 @@ def test_repoblar_cables_con_corrida_real_encola_recalculo(monkeypatch):
     async def _fake_encolar(motivo: str) -> None:
         llamadas.append(motivo)
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _fake_encolar)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")

@@ -51,7 +51,7 @@ def encolados(monkeypatch):
     async def _noop(**kw):
         return None
 
-    monkeypatch.setattr(web_main, "encolar_recalculo_duplicados_botellas", _noop)
+    monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _noop)
     monkeypatch.setenv("TESTING", "true")
     return llamadas
 
