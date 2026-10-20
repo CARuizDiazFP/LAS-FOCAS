@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 
 from web.app import main as web_main  # type: ignore  # noqa: E402
+from web.app.routers import informes as web_informes  # type: ignore  # noqa: E402
 from web.app.main import app  # type: ignore  # noqa: E402
 
 from tests.test_web_admin import _connect_user_ok  # noqa: E402
@@ -99,7 +100,7 @@ def _reportes_en_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from core.services import sla as sla_service_mod
 
     monkeypatch.setattr(sla_service_mod, "REPORTS_DIR", tmp_path / "reports")
-    monkeypatch.setattr(web_main, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(web_informes, "REPORTS_DIR", tmp_path / "reports")
 
 
 def test_sla_flow_success_with_two_excel_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from core.sla_consumo.clasificador import GRUPO_FO
 from core.sla_consumo.persistencia import ResultadoIngesta
 from tests.test_sla_consumo_engine import _r, _s
 from tests.test_web_sla_flow import _login_as_user, _reclamos_excel_bytes, _servicios_excel_bytes
-from web.app import main as web_main  # type: ignore
+from web.app.routers import informes as web_informes  # type: ignore
 from web.app.main import app  # type: ignore
 from core.sla_consumo.parser import RECLAMOS_COLS, SERVICIOS_COLS
 
@@ -31,7 +31,7 @@ _INGESTA = ResultadoIngesta(7, dt.date(2026, 10, 1), False, 10, 2, 5)
 @pytest.fixture(autouse=True)
 def _reportes_en_tmp(monkeypatch, tmp_path):
     """Aísla los informes: REPORTS_DIR se calcula al importar, el env no alcanza."""
-    monkeypatch.setattr(web_main, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(web_informes, "REPORTS_DIR", tmp_path / "reports")
 
 
 def test_sla_consumo_ok(monkeypatch, tmp_path):
@@ -49,7 +49,7 @@ def test_sla_consumo_ok(monkeypatch, tmp_path):
             archivo.write_bytes(b"x")
         return InformeSlaConsumo(xlsx, ejecutivo, exhaustivo, pdf, None, _INGESTA, {"reclamos": 12, "horas": 3.5})
 
-    monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
+    monkeypatch.setattr(web_informes.sla_consumo_service, "generar_informe_sla_consumo", falso)
     monkeypatch.setenv("TESTING", "true")
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
@@ -96,8 +96,8 @@ def test_sla_consumo_pasa_history_id_y_reporta_pdf_omitido(monkeypatch, tmp_path
         return InformeSlaConsumo(xlsx, ejecutivo, exhaustivo, None, None, _INGESTA, {},
                                  pdf_omitido="LibreOffice no configurado")
 
-    monkeypatch.setattr(web_main, "REPORT_HISTORY", _Historial())
-    monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
+    monkeypatch.setattr(web_informes, "REPORT_HISTORY", _Historial())
+    monkeypatch.setattr(web_informes.sla_consumo_service, "generar_informe_sla_consumo", falso)
     monkeypatch.setenv("TESTING", "true")
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
@@ -115,7 +115,7 @@ def test_sla_consumo_error_inesperado_sin_mensaje_usa_nombre_de_clase(monkeypatc
     def falso(*_a, **_kw):
         raise RuntimeError()
 
-    monkeypatch.setattr(web_main.sla_consumo_service, "generar_informe_sla_consumo", falso)
+    monkeypatch.setattr(web_informes.sla_consumo_service, "generar_informe_sla_consumo", falso)
     monkeypatch.setenv("TESTING", "true")
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
