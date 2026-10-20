@@ -168,8 +168,24 @@ python scripts/agent_worktree.py sync  --agent claude-api   # trae origin/dev a 
 pytest -q                                                    # o el subconjunto pertinente
 scripts/check_no_plaintext_secrets.sh
 scripts/sync_agentes_comunes.sh && scripts/check_skill_mirror_drift.sh   # si se tocaron skills
-python scripts/agent_worktree.py ready --agent claude-api    # exige worktree limpio
+python scripts/agent_worktree.py ready --agent claude-api    # worktree limpio + gate de calidad
 ```
+
+**`ready` corre el gate de calidad local** (`scripts/agentes/calidad.py`), porque la CI de GitHub
+sólo corre a mano por falta de créditos de Actions:
+
+1. `ruff check` sobre los `.py` que la rama cambió respecto de `origin/dev` (config en `pyproject.toml`).
+2. `pytest` sobre los **tests focales**: los tests cambiados, `tests/test_<módulo>*.py`, los tests
+   que importan un módulo cambiado (incluido `app.*` para `web/app/*`) y el smoke de
+   `config/quality-gate.json`. Si el lint falla, los tests no se corren.
+
+Si el gate falla, `ready` sale con código 1, muestra el paso y su salida, y el agente queda en su
+estado. Si pasa, registra `quality_gate_passed` con el sha del HEAD. **`integrate` rechaza un HEAD
+que no pasó el gate**: un commit o un `sync` posterior a `ready` obliga a correrlo de nuevo.
+
+Salida de emergencia (deliberada y auditada como `quality_gate_bypassed`):
+`ready --agent <id> --sin-gate --motivo "<por qué>"`. Sólo para hotfix con producción caída o un
+fallo del gate ajeno al cambio, ya diagnosticado; dejarlo escrito en el cierre de sesión.
 
 ### 5. Integrar (ventana serializada)
 

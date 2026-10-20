@@ -234,8 +234,22 @@ def test_admin_me_no_admin(monkeypatch):
     assert res.status_code == 403
 
 
+@pytest.fixture()
+def spa_shell(tmp_path, monkeypatch):
+    """Shell SPA mínimo cuando no hay build (`web/frontend/dist` está ignorado por Git).
+
+    Los worktrees de agentes no tienen el build, y el gate de calidad de ``ready`` corre estos tests
+    cada vez que se toca ``web/app/main.py``. Con build presente se usa el real.
+    """
+    from web.app import main as web_main
+    if not web_main.SPA_INDEX.exists():
+        index = tmp_path / "index.html"
+        index.write_text('<!doctype html><div id="app"></div>', encoding="utf-8")
+        monkeypatch.setattr(web_main, "SPA_INDEX", index)
+
+
 @pytest.mark.parametrize("path", ["/admin/usuarios", "/admin/servicios"])
-def test_admin_paths_sirven_spa_shell_sin_gating_server(path, monkeypatch):
+def test_admin_paths_sirven_spa_shell_sin_gating_server(path, monkeypatch, spa_shell):
     """Rutas /admin/* son servidas por el catch-all SPA sin importar la sesión.
 
     El gating por rol vive del lado del cliente (router guard en Vue) y en cada
@@ -252,7 +266,7 @@ def test_admin_paths_sirven_spa_shell_sin_gating_server(path, monkeypatch):
 
 
 @pytest.mark.parametrize("path", ["/admin/usuarios", "/admin/servicios"])
-def test_admin_paths_sirven_spa_shell_sin_sesion(path):
+def test_admin_paths_sirven_spa_shell_sin_sesion(path, spa_shell):
     """Mismo contrato sin sesión: 200 con el shell SPA, no hay redirect server-side."""
     client = TestClient(app)
     res = client.get(path)

@@ -134,7 +134,7 @@ reservado para cuando se declare explícitamente.
     python scripts/agent_worktree.py sync      --agent <agent-id>   # trae origin/dev a la rama
     # resolver conflictos DENTRO del worktree propio y volver a validar con PRUEBAS FOCALES
     # (ver "Validación hacia dev" abajo) + drift de mirrors si se tocaron skills
-    python scripts/agent_worktree.py ready     --agent <agent-id>   # exige worktree limpio
+    python scripts/agent_worktree.py ready     --agent <agent-id>   # worktree limpio + gate de calidad
     python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
     python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
     python scripts/agent_worktree.py cleanup   --agent <agent-id> --borrar-rama
@@ -161,6 +161,12 @@ reservado para cuando se declare explícitamente.
     builds de imágenes se reservan para el **despliegue productivo**: correrlos acá alarga la ventana
     de `git:integrate-dev` y bloquea a las demás sesiones sin aportar a la integración en `dev`.
     Registrar en el cierre qué pruebas focales se corrieron y su resultado real.
+
+    **`ready` ya corre el gate de calidad local** (lint de los `.py` cambiados + tests focales,
+    ver `agent-worktree` §4) e `integrate` rechaza un HEAD que no lo pasó. Copiar al cierre el
+    `resumen` del gate que devuelve `ready`. Si fue necesario `ready --sin-gate --motivo "..."`,
+    el cierre lo declara como riesgo con el motivo; nunca usarlo para esquivar un test que falla
+    por el propio cambio.
 
     **Recursos Docker efímeros de la sesión.** Antes de `cleanup`, eliminar los contenedores, redes
     y volúmenes de prueba que la sesión creó. Todo recurso temporal se crea etiquetado

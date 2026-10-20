@@ -60,6 +60,12 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `bash scripts/check_skill_mirror_drift.sh` si se tocaron skills), para que la ventana del lease
   `git:integrate-dev` sea mínima. La suite regresiva completa, `npm run build` y los builds de
   imágenes se ejecutan **exclusivamente en el despliegue productivo**. Detalle en `pytest-focas`.
+- **Gate de calidad local**: `agent_worktree.py ready` corre `ruff` sobre los `.py` cambiados y
+  `pytest` sobre los tests focales (`scripts/agentes/calidad.py`, smoke en `config/quality-gate.json`);
+  `integrate` rechaza un HEAD que no lo pasó. Reemplaza a la CI de GitHub, que sólo corre a mano
+  (sin créditos de Actions). Emergencia auditada: `ready --sin-gate --motivo "..."`.
+- Lint: `ruff check .` con la config de `pyproject.toml` (E9 + F + C901 ≤ 20). El repo está en 0
+  avisos; las 12 funciones que superan complejidad 20 llevan `# noqa: C901` como deuda explícita.
 - Migraciones: `ALEMBIC_URL="..." alembic upgrade head`
 
 ## Gotchas
