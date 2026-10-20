@@ -12,6 +12,11 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from core.services.camaras_consulta import (
+    _collect_camara_rutas_info,
+    _collect_camara_servicios_ids,
+    buscar_camaras_por_terminos,
+)
 from core.utils.tz import TZ_ARG
 
 from ..comun import (
@@ -140,59 +145,6 @@ def _serialize_cromo_botella_hija(cromo_botella: Any) -> dict[str, Any]:
         "estado": cromo_botella.estado.value if cromo_botella.estado else None,
         "servicios": [],
     }
-
-
-def _collect_camara_rutas_info(camara: Any, *, incluir_botellas: bool = False) -> list[dict[str, Any]]:
-    """Obtiene las rutas asociadas a una cámara a través de sus empalmes.
-
-    `incluir_botellas=True` (Etapa Cámara/Botella) también recorre los empalmes de todas las Botellas
-    de `camara` — para que una cámara-raíz muestre los servicios de todo su grupo físico, no sólo los
-    que pasan por su propia fila (los empalmes reales de un grupo suelen vivir en las botellas, no en
-    la cámara padre sintetizada por el backfill)."""
-
-    camaras_a_recorrer = [camara]
-    if incluir_botellas:
-        camaras_a_recorrer.extend(getattr(camara, "botellas", None) or [])
-
-    rutas_info: list[dict[str, Any]] = []
-    seen_rutas: set[int] = set()
-    for cam in camaras_a_recorrer:
-        for empalme in cam.empalmes:
-            for ruta in empalme.rutas:
-                if ruta.id in seen_rutas:
-                    continue
-                seen_rutas.add(ruta.id)
-                alias_ids = ruta.servicio.alias_ids or []
-                transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
-                punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
-                punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
-                rutas_info.append(
-                    {
-                        "ruta_id": ruta.id,
-                        "servicio_id": ruta.servicio.servicio_id,
-                        "ruta_nombre": ruta.nombre,
-                        "ruta_tipo": ruta.tipo.value,
-                        "alias_ids": alias_ids,
-                        "transitos_count": transitos_count,
-                        "punta_a_sitio": punta_a_sitio,
-                        "punta_b_sitio": punta_b_sitio,
-                    }
-                )
-    return rutas_info
-
-
-def _collect_camara_servicios_ids(camara: Any, rutas_info: list[dict[str, Any]] | None = None) -> list[str]:
-    """Obtiene servicios asociados a una cámara desde rutas o relación legacy."""
-
-    if rutas_info:
-        return sorted({str(ruta["servicio_id"]) for ruta in rutas_info if ruta.get("servicio_id")})
-
-    servicios_ids: list[str] = []
-    for empalme in camara.empalmes:
-        for servicio in empalme.servicios:
-            if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                servicios_ids.append(servicio.servicio_id)
-    return servicios_ids
 
 
 def _serialize_camara_alias(alias: Any) -> dict[str, Any]:
@@ -2328,7 +2280,7 @@ async def camaras_viewer_duplicados_web(request: Request) -> JSONResponse:
 
 
 @router.post("/api/infra/smart-search")
-async def smart_search_camaras_web(  # noqa: C901
+async def smart_search_camaras_web(
     request: Request,
     body: SmartSearchRequestModel,
 ) -> JSONResponse:
@@ -2341,176 +2293,51 @@ async def smart_search_camaras_web(  # noqa: C901
     username, role = _require_auth(request)
 
     try:
-        from sqlalchemy.orm import selectinload
-
         from core.services.camara_estado_service import get_camara_estado_contexto
-        from db.models.infra import Camara
         from db.session import SessionLocal
 
-        limit = min(body.limit, 500)
-        offset = max(body.offset, 0)
-
         with SessionLocal() as session:
-            from db.models.infra import CamaraEstado as _CamaraEstado
-            # Etapa Cámara/Botella: el dashboard sólo muestra cámaras-raíz — sus Botellas viven en el
-            # detalle (GET /api/infra/camaras/{id}/botellas). `selectinload(Camara.botellas)` evita que
-            # `incluir_botellas=True` (abajo) dispare una query lazy por cada cámara de la página
-            # encima del N+1 ya preexistente de este endpoint (empalmes/rutas/cables sin eager load).
-            _query = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).options(
-                selectinload(Camara.botellas)
+            resultado = buscar_camaras_por_terminos(
+                session,
+                body.terms,
+                estado=body.estado,
+                incluir_no_operativas=body.incluir_no_operativas,
+                limit=body.limit,
+                offset=body.offset,
             )
-            estado_filter: Optional[str] = None
-            if body.estado:
-                estado_upper = body.estado.strip().upper()
-                if estado_upper in [e.value for e in _CamaraEstado]:
-                    _query = _query.filter(Camara.estado == _CamaraEstado(estado_upper))
-                    estado_filter = estado_upper
 
-            # Filtro ADICIONAL (AND), independiente del chip de estado de arriba: por defecto nunca
-            # se traen cámaras NO_OPERATIVA (infraestructura fantasma/sin señal real que contamina
-            # el dashboard) salvo que el toggle "Mostrar No operativas" esté activo, o que el chip de
-            # estado ya apunte explícitamente a NO_OPERATIVA.
-            if not body.incluir_no_operativas and estado_filter != _CamaraEstado.NO_OPERATIVA.value:
-                _query = _query.filter(Camara.estado != _CamaraEstado.NO_OPERATIVA)
-
-            def get_camara_rutas(camara: Camara) -> list[dict]:
-                """Rutas del grupo completo (cámara + sus botellas) — reusa la función módulo-level
-                que ya usan `get_camara_detail_web`/`get_camara_registros_web`, sin duplicar lógica."""
-                return _collect_camara_rutas_info(camara, incluir_botellas=True)
-
-            def get_camara_servicios(camara: Camara, rutas_info: list[dict] = None) -> list[str]:
-                """Servicios del grupo completo — idem, reusa la función módulo-level."""
-                return _collect_camara_servicios_ids(camara, rutas_info)
-
-            def get_camara_cables(camara: Camara) -> list[str]:
-                cables_nombres = []
-                for cable in camara.cables:
-                    if cable.nombre and cable.nombre not in cables_nombres:
-                        cables_nombres.append(cable.nombre)
-                return cables_nombres
-
-            def term_matches_camara(term: str, camara, servicios_ids, cables_nombres) -> bool:
-                term_lower = term.lower()
-
-                # Buscar en nombre
-                if camara.nombre and term_lower in camara.nombre.lower():
-                    return True
-
-                # Buscar en dirección
-                if camara.direccion and term_lower in camara.direccion.lower():
-                    return True
-
-                # Buscar en fontine_id
-                if camara.fontine_id and term_lower in camara.fontine_id.lower():
-                    return True
-
-                # Buscar en servicios
-                for svc_id in servicios_ids:
-                    if term_lower in svc_id.lower():
-                        return True
-
-                # Buscar en cables
-                for cable_nombre in cables_nombres:
-                    if term_lower in cable_nombre.lower():
-                        return True
-
-                # Buscar en estado
-                estado_actual = camara.estado.value if camara.estado else "LIBRE"
-                if term_lower in estado_actual.lower():
-                    return True
-
-                # Buscar en origen
-                origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
-                if term_lower in origen_actual.lower():
-                    return True
-
-                return False
-
-            # Si no hay términos, devolver todas — LIMIT/OFFSET real en SQL (no hay términos que
-            # matchear contra servicios/cables computados, así que no hace falta materializar todo
-            # el resultado en memoria como sí requiere la rama con términos, más abajo).
-            if not body.terms:
-                total = _query.count()
-                paginated = _query.order_by(Camara.nombre).offset(offset).limit(limit).all()
-                camaras_response = []
-                for cam in paginated:
-                    rutas_info = get_camara_rutas(cam)
-                    servicios_ids = get_camara_servicios(cam, rutas_info)
-                    camaras_response.append(
-                        _serialize_camara_response(
-                            camara=cam,
-                            rutas_info=rutas_info,
-                            servicios_ids=servicios_ids,
-                            contexto=get_camara_estado_contexto(session, cam.id),
-                            editable=role == "admin",
-                        )
-                    )
-
-                return JSONResponse({
-                    "status": "ok",
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                    "filters_applied": 1 if estado_filter else 0,
-                    "estado_filter": estado_filter,
-                    "incluir_no_operativas": body.incluir_no_operativas,
-                    "camaras": camaras_response,
-                })
-
-            # Aplicar términos con lógica AND — necesita el set completo en memoria porque el match
-            # incluye campos computados (servicios/cables/rutas) que no se pueden filtrar en SQL sin
-            # reescribir esto como un join; a la escala real de cámaras raíz (~10k) es aceptable.
-            all_camaras = _query.order_by(Camara.nombre).all()
-            matching_camaras = []
-            for camara in all_camaras:
-                rutas_info = get_camara_rutas(camara)
-                servicios_ids = get_camara_servicios(camara, rutas_info)
-                cables_nombres = get_camara_cables(camara)
-
-                matches_all = True
-                for term in body.terms:
-                    term_clean = term.strip()
-                    if not term_clean:
-                        continue
-                    if not term_matches_camara(term_clean, camara, servicios_ids, cables_nombres):
-                        matches_all = False
-                        break
-
-                if matches_all:
-                    matching_camaras.append((camara, servicios_ids, rutas_info))
-
-            total = len(matching_camaras)
-            paginated = matching_camaras[offset:offset + limit]
             camaras_response = []
-            for cam, svc_ids, rutas in paginated:
+            for cam in resultado.camaras:
+                rutas_info = _collect_camara_rutas_info(cam, incluir_botellas=True)
+                servicios_ids = _collect_camara_servicios_ids(cam, rutas_info)
                 camaras_response.append(
                     _serialize_camara_response(
                         camara=cam,
-                        rutas_info=rutas,
-                        servicios_ids=svc_ids,
+                        rutas_info=rutas_info,
+                        servicios_ids=servicios_ids,
                         contexto=get_camara_estado_contexto(session, cam.id),
                         editable=role == "admin",
                     )
                 )
 
-            terms_count = len([t for t in body.terms if t.strip()])
-            logger.info(
-                "action=smart_search user=%s terms=%d estado=%s incluir_no_operativas=%s total=%d returned=%d",
-                username,
-                terms_count,
-                estado_filter or "ninguno",
-                body.incluir_no_operativas,
-                total,
-                len(camaras_response),
-            )
+            if body.terms:
+                logger.info(
+                    "action=smart_search user=%s terms=%d estado=%s incluir_no_operativas=%s total=%d returned=%d",
+                    username,
+                    resultado.terminos_aplicados,
+                    resultado.estado_filter or "ninguno",
+                    body.incluir_no_operativas,
+                    resultado.total,
+                    len(camaras_response),
+                )
 
             return JSONResponse({
                 "status": "ok",
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "filters_applied": terms_count + (1 if estado_filter else 0),
-                "estado_filter": estado_filter,
+                "total": resultado.total,
+                "limit": resultado.limit,
+                "offset": resultado.offset,
+                "filters_applied": resultado.terminos_aplicados + (1 if resultado.estado_filter else 0),
+                "estado_filter": resultado.estado_filter,
                 "incluir_no_operativas": body.incluir_no_operativas,
                 "camaras": camaras_response,
             })
