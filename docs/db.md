@@ -1033,6 +1033,54 @@ Ver `docs/infra.md` ("Inconsistencias de Cromo y cuarentena").
 columnas al crear la vista. Toda migración que agregue o quite columnas de `cromo_servicio_match` debe
 hacer `DROP VIEW` antes y recrearla después.
 
+### Árbitro de Cromo (2026-10-19, migración `20261020_01`)
+
+Cuatro tablas nuevas y dos columnas en el override. Vocabularios como Text + CHECK, y sin FK hacia
+objetos de Cromo: sólo hacia maestros propios. Funcionamiento: `docs/modulo_ingesta_cromo.md`,
+sección "Árbitro de Cromo".
+
+- **`cromo_regla_correccion`:**
+  - `codigo` (PK), `modo` (CHECK `APAGADA`/`SOMBRA`/`AUTO`, default `SOMBRA`), `umbral` smallint
+    (CHECK 0-100, default 90), `presupuesto_por_corrida` (CHECK ≥ 0, default 50), `descripcion`,
+    `actualizado_por`, `actualizado_en`.
+  - Sembrada con las 5 reglas en `SOMBRA`/90/50: `ODF_POR_CAMINO`, `CONTRADICCION_SERVICIO`,
+    `GEMELO_VACIO`, `GEMELO_OPERATIVO` y `ODF_GEMELA_ISLA`.
+- **`cromo_propuesta`:**
+  - Columnas: `id` bigint, `regla` (FK → `cromo_regla_correccion.codigo`), `objeto_tipo` (CHECK
+    `SERVICIO`/`BOTELLA`/`ODF`/`CABLE`), `objeto_id` bigint, `accion` (CHECK `ASOCIAR_ODF`/
+    `FUSIONAR_GEMELO`/`INFORMAR`), `parametros` y `senales` JSONB, `confianza` (CHECK 0-100),
+    `evidencia_hash` (sha256).
+  - Estado y trazabilidad: `estado` (CHECK `PROPUESTA`/`EN_OBSERVACION`/`APLICADA`/`RECHAZADA`/
+    `REVERTIDA`/`OBSOLETA`), `modo_al_evaluar`, `disparo` (CHECK `INGESTA`/`REGISTRADOR`/`VIEWER`/
+    `NORMALIZADOR`), `reversion` JSONB, `nota` (motivo del último intento fallido), `creada_en`,
+    `actualizada_en`, `decidida_por`, `decidida_en`, `aplicada_en`.
+  - Índices: único parcial `ux_cromo_propuesta_abierta (regla, objeto_tipo, objeto_id) WHERE estado
+    IN ('PROPUESTA','EN_OBSERVACION')` (una abierta por objeto y regla) y `ix_cromo_propuesta_estado_regla`.
+- **`cromo_evidencia_camino`:**
+  - PK `(servicio_id, pelo_n_id)`, FK `servicio_id` → `servicios.id` ON DELETE CASCADE.
+  - `completo` bool, `extremos` JSONB (por lado: tipo, clase, `id_cromo`, `odf_id`, `odf_clase`,
+    `odf_nombre`, `conector_numero`, `patchera_nombre`, `servicio_at62`, `pelo_conectado`),
+    `pelos_camino` bigint[], `fuente` (CHECK `SLACK`/`WEB`/`AUDITORIA_GLOBAL`), `generado_at`.
+  - El árbitro sólo usa filas `completo` de los últimos 30 días.
+- **`cromo_arbitro_evaluacion`:**
+  - Una fila por corrida del motor: `id`, `disparo`, `alcance` JSONB, `reglas` text[] (NULL = todas),
+    `estado` (CHECK `EN_COLA`/`EN_CURSO`/`OK`/`OMITIDA`/`FALLIDA`), `resumen` JSONB (con `por_regla`),
+    `error`, `solicitada_por`, `encolada_en`, `iniciada_en`, `terminada_en`.
+  - Índice `ix_cromo_arbitro_evaluacion_encolada_en` (DESC).
+- **`cromo_servicio_odf_override`:**
+  - `origen` (CHECK `MANUAL`/`AUTO`, default `MANUAL`).
+  - `propuesta_id` (FK → `cromo_propuesta.id` ON DELETE SET NULL).
+  - `categoria_causa` suma `EVIDENCIA_CAMINO`.
+  - Una fila AUTO es la que escribe el árbitro. Revertir borra sólo filas `origen='AUTO'`, nunca una
+    MANUAL.
+
+`downgrade()` borra las filas `EVIDENCIA_CAMINO` del override, restaura su CHECK original y elimina
+columnas y tablas.
+
+**Despliegue:** `20261020_01` ya está aplicada en la base dev compartida (`focas_dev`) desde la Task 2
+de la rama, antes de integrar. Orden en prod: migración, `cromo_worker`, y después `web`,
+`botellas_recalculo_worker` y `slack_baneo_worker`.
+
 ### `cromo_splitters` y `cromo_splitter_puertos` (2026-09-17)
 
 Splitter óptico (clase 133) y sus puertos (clase 134). **Los dos ya venían en el `inner[]` de cada
@@ -1196,6 +1244,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20261017_02` | `20261017_02_cromo_inconsistencias.py` | Tablas `app.cromo_inconsistencia` (UNIQUE `(tipo, objeto_n_id)`, 3 CHECK de `tipo`/`revision`/`estado`, índice `(estado, tipo)`) y `app.cromo_inconsistencia_pelo` (PK `(inconsistencia_id, pelo_n_id)`, FK CASCADE, índice por pelo) |
 | `20261017_03` | `20261017_03_cromo_servicio_match_vigente.py` | Vista `app.v_cromo_servicio_match_vigente`: `cromo_servicio_match` sin los pelos de casos en `CUARENTENA` |
 | `20261017_04` | `20261017_04_config_cromo_inconsistencias.py` | Fila `Cromo Inconsistencias` en `app.config_servicios` (inactiva, sin canales, idempotente); el downgrade la borra |
+| `20261020_01` | `20261020_01_cromo_arbitro.py` | Árbitro de Cromo: tablas `app.cromo_regla_correccion` (sembrada con 5 reglas en SOMBRA), `app.cromo_propuesta` (índice único parcial de abiertas), `app.cromo_evidencia_camino` y `app.cromo_arbitro_evaluacion`; columnas `origen`/`propuesta_id` y categoría `EVIDENCIA_CAMINO` en `cromo_servicio_odf_override` |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

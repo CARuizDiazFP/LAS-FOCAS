@@ -144,6 +144,8 @@ _AT_FUSION_TIPO = 85          # "FUSION"
 # Cota defensiva: el camino real medido más largo tiene 175 elementos de un lado, así que 500 es
 # ~3x el peor caso observado. Protege de un `a[]` desmedido, no de un camino normal.
 MAX_NODOS_POR_LADO = 500
+# Fragmento fijo de la advertencia de lado truncado; `arbitro.evidencia.camino_truncado` lo busca.
+MARCA_LADO_CORTADO = "se cortó en"
 
 
 @dataclass(slots=True)
@@ -1470,7 +1472,7 @@ async def resolver_camino_de_pelo(
         )
     for lado, secuencia in (("A", raiz.get("a")), ("B", raiz.get("b"))):
         if secuencia and len(list(secuencia)) > MAX_NODOS_POR_LADO:
-            advertencias.append(f"El lado {lado} se cortó en {MAX_NODOS_POR_LADO} elementos.")
+            advertencias.append(f"El lado {lado} {MARCA_LADO_CORTADO} {MAX_NODOS_POR_LADO} elementos.")
 
     if vincular_local:
         await _vincular_local(sesion, lado_a + lado_b)

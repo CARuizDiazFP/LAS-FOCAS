@@ -2441,6 +2441,11 @@ async def continuar_corrida(
             from core.services.cromo import inconsistencias_cromo  # import diferido: ciclo
 
             await inconsistencias_cromo.detectar_post_ingesta(cliente, sesion, corrida_id_final, modo)
+            if modo in inconsistencias_cromo.MODOS_POST_INGESTA:
+                from core.services.cromo.arbitro.cola import encolar_evaluacion  # import diferido
+                from core.services.cromo.arbitro.senales import Alcance
+
+                await encolar_evaluacion(Alcance("TODO"), "INGESTA", motivo=f"corrida:{corrida_id_final}")
         except Exception:  # noqa: BLE001
             logger.warning(
                 "action=cromo_ingesta evento=detector_inconsistencias_fallido corrida_id=%s",

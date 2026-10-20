@@ -11,6 +11,24 @@
       subtitle="Pelos en uso cuyo camino no cierra (fusiones sin continuación, cables sin extremo). Lo seguro entra solo en cuarentena (deja de contar como uso); lo ambiguo o con ODF se revisa acá."
     />
 
+    <nav class="inconsistencias-viewer__tabs" role="tablist" aria-label="Secciones del viewer">
+      <button
+        v-for="t in pestanas"
+        :key="t.valor"
+        type="button"
+        role="tab"
+        :aria-selected="pestana === t.valor"
+        :class="['inconsistencias-viewer__tab', { 'is-active': pestana === t.valor }]"
+        @click="setPestana(t.valor)"
+      >
+        {{ t.label }}
+      </button>
+    </nav>
+
+    <PropuestasArbitroPanel v-if="pestana === 'propuestas'" />
+    <ReglasArbitroPanel v-else-if="pestana === 'reglas'" />
+
+    <template v-else>
     <div class="inconsistencias-viewer__toolbar">
       <div class="inconsistencias-viewer__toolbar-row">
         <label class="inconsistencias-viewer__servicio">
@@ -266,6 +284,7 @@
         <button type="button" class="btn" @click="loadNextPage">Cargar más</button>
       </div>
     </div>
+    </template>
   </section>
 </template>
 
@@ -274,6 +293,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
+import PropuestasArbitroPanel from '../components/arbitro/PropuestasArbitroPanel.vue';
+import ReglasArbitroPanel from '../components/arbitro/ReglasArbitroPanel.vue';
 import {
   TIPOS_INCONSISTENCIA,
   cambiarEstadoInconsistencias,
@@ -292,6 +313,13 @@ import { useAdminNotifications } from '../../composables/useAdminNotifications';
 import { useCorridaSse } from '../../composables/useCorridaSse';
 
 const LIMIT = 100;
+
+type Pestana = 'casos' | 'propuestas' | 'reglas';
+const pestanas: { valor: Pestana; label: string }[] = [
+  { valor: 'casos', label: 'Casos' },
+  { valor: 'propuestas', label: 'Propuestas' },
+  { valor: 'reglas', label: 'Reglas' },
+];
 
 const route = useRoute();
 const router = useRouter();
@@ -322,6 +350,17 @@ const ACCIONES: Record<EstadoDestinoInconsistencia, { verbo: string; confirmar?:
     confirmar: '{n} caso(s) vuelven a pendiente; si estaban en cuarentena sus pelos vuelven a contar como uso. ¿Continuar?',
   },
 };
+
+const pestana = ref<Pestana>(
+  route.query.tab === 'propuestas' || route.query.tab === 'reglas' ? route.query.tab : 'casos',
+);
+
+function setPestana(valor: Pestana): void {
+  const vuelveACasos = valor === 'casos' && pestana.value !== 'casos';
+  pestana.value = valor;
+  if (vuelveACasos) void reloadFromZero();
+  void router.replace({ query: { ...route.query, tab: valor === 'casos' ? undefined : valor } });
+}
 
 const items = ref<InconsistenciaItem[]>([]);
 const total = ref(0);
@@ -510,6 +549,12 @@ on('cromo_inconsistencias_nuevas', (mensajeWs) => {
   void reloadFromZero();
 });
 
+// Una evaluación del árbitro puede haber corregido casos: la pestaña Casos se recarga igual.
+// Con otra pestaña visible no se recarga: se recarga al volver a Casos (setPestana).
+on('arbitro_cromo_evaluado', () => {
+  if (pestana.value === 'casos') void reloadFromZero();
+});
+
 function refrescar(): void {
   void reloadFromZero();
 }
@@ -624,6 +669,30 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+}
+
+.inconsistencias-viewer__tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.inconsistencias-viewer__tab {
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: color-mix(in srgb, var(--color-text) 66%, transparent);
+}
+
+.inconsistencias-viewer__tab:hover { color: var(--color-text); }
+
+.inconsistencias-viewer__tab.is-active {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-accent-200);
 }
 
 .inconsistencias-viewer__aviso {

@@ -349,6 +349,7 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
 8. **UID compartido en `base.Dockerfile`**: verificar colisiones con `useradd`/`USER` de los Dockerfiles hijos antes de tocar la imagen base (ver sección arriba)
 9. **Contenedores `api`/`web`, mismo comando distinto `main.py`**: antes de un curl de verificación contra un endpoint de `web/app/main.py`, confirmar que se apunta a `lasfocasdev-web`, no a `lasfocasdev-api` (ver sección arriba)
 10. **`scripts/` está en la imagen de `api` (desde 2026-08-26), no en la de `web`**: en `web`, tras cualquier rebuild/recreate, `docker cp scripts <contenedor>:/app/scripts` antes de correr un script vía `docker exec` (ver sección arriba)
+11. **`cromo_worker` con una corrida en curso: no recrearlo.** Recrear el contenedor corta la ingesta o detección que esté corriendo (una SOLO_ODF tarda ~3,5 h). Antes de un `up -d` que lo incluya: `SELECT id, estado FROM app.cromo_ingesta_corridas WHERE estado='EN_CURSO'`. Si hay una, reconstruir y recrear el resto con `--no-deps` y dejar `cromo_worker` para cuando termine (real 2026-10-17, corrida 2221 en dev). Si el lote agrega tipos de corrida sintéticos nuevos, `cromo_worker` va **antes** que `web`: un worker viejo trata un tipo que no conoce como ingesta (ver `docs/despliegue_produccion.md`)
 
 
 ## Script contra dev real desde el HOST (fuera de un contenedor)

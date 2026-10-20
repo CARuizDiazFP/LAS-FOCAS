@@ -81,7 +81,7 @@ def entorno(monkeypatch):
     async def _cancelada(_sesion, _corrida_id):
         return estado["cancelar_en"] is not None and len(llamadas) >= estado["cancelar_en"]
 
-    async def _trackings(_cliente, _sesion, servicio_id, *, corrida_id=None):
+    async def _trackings(_cliente, _sesion, servicio_id, *, corrida_id=None, fuente_evidencia="WEB"):
         llamadas.append({"servicio_id": servicio_id, "corrida_id": corrida_id})
         falla = estado["fallas"].get(servicio_id)
         if falla is not None:

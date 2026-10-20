@@ -82,6 +82,10 @@ class ExtremoCamino:
     odf_nombre: Optional[str] = None
     patchera_nombre: Optional[str] = None
     conector_numero: Optional[str] = None
+    # At.62 del servicio y pelo que conecta el conector (`NodoCamino`). Sólo en extremos de ODF;
+    # las entradas de caché anteriores no los traen y quedan en `None`.
+    servicio_at62: Optional[str] = None
+    pelo_conectado: Optional[int] = None
 
     @property
     def es_conector_odf(self) -> bool:
@@ -148,7 +152,7 @@ class ResumenCamino:
             if campos["tipo"] is None or campos["id_cromo"] is None:
                 return None
             campos["id_cromo"] = int(campos["id_cromo"])
-            for clave in ("clase", "odf_id", "odf_clase"):
+            for clave in ("clase", "odf_id", "odf_clase", "pelo_conectado"):
                 if campos[clave] is not None:
                     campos[clave] = int(campos[clave])
             return ExtremoCamino(**campos)
@@ -198,6 +202,8 @@ def _extremo_de_nodo(nodo: NodoCamino) -> ExtremoCamino:
         odf_nombre=nodo.odf_nombre,
         patchera_nombre=nodo.patchera_nombre,
         conector_numero=nodo.conector_numero,
+        servicio_at62=nodo.servicio_at62,
+        pelo_conectado=nodo.pelo_conectado,
     )
 
 
@@ -616,6 +622,7 @@ async def trackings_del_servicio(
     odfs_confirmadas: Optional[frozenset[int]] = None,
     auditar: bool = True,
     corrida_id: Optional[int] = None,
+    fuente_evidencia: str = "WEB",
 ) -> TrackingsDelServicio:
     """Un camino por semilla no cubierta, clasificado en tramos y residuales. Lo usan Slack y web.
 
@@ -700,6 +707,17 @@ async def trackings_del_servicio(
             odfs_confirmadas=frozenset(confirmadas),
             corrida_id=corrida_id,
         )
+    # Evidencia para el árbitro: los caminos ya resueltos no cuestan otra llamada a Cromo. Nunca
+    # levanta (`registrar_y_encolar` traga sus errores).
+    from core.services.cromo.arbitro.evidencia import entradas_de_trackings, registrar_y_encolar
+
+    await registrar_y_encolar(
+        sesion,
+        servicio_id,
+        entradas_de_trackings([*tramos, *residuales]),
+        completo=resuelto_entero,
+        fuente=fuente_evidencia,
+    )
     logger.info(
         "action=cromo_tracking evento=clasificacion servicio_id=%s tramos=%s residuales=%s "
         "completo=%s",

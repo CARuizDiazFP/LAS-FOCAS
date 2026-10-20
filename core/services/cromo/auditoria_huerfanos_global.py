@@ -216,7 +216,7 @@ async def auditar_global(
             }
             try:
                 resultado = await trackings_del_servicio(
-                    cliente, sesion, servicio_id, corrida_id=corrida_id
+                    cliente, sesion, servicio_id, corrida_id=corrida_id, fuente_evidencia="AUDITORIA_GLOBAL"
                 )
                 fallos_cromo_seguidos = 0
                 auditoria = resultado.auditoria

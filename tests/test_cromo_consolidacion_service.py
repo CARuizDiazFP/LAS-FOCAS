@@ -213,6 +213,29 @@ def test_consolidar_actualiza_nombre_destino_si_viene_no_vacio():
     assert resultado.nombre_nuevo == "Nombre Nuevo"
 
 
+def test_consolidar_con_nombre_marca_nombre_editado_manual():
+    destino = CromoBotella(n_id=999, nombre=None, nombre_editado_manual=False)
+    session = _build_session(destino=destino)
+
+    consolidar_grupo_botellas(
+        session, ids_origen_cromo=[], id_destino_cromo=999, nombre_destino="  Nombre Nuevo  ", usuario="admin"
+    )
+
+    assert destino.nombre == "Nombre Nuevo"
+    assert destino.nombre_editado_manual is True
+
+
+def test_consolidar_sin_nombre_no_marca_nombre_editado_manual():
+    destino = CromoBotella(n_id=999, nombre="Golden", nombre_editado_manual=False)
+    session = _build_session(destino=destino, existentes_en_orden=[None])
+
+    consolidar_grupo_botellas(
+        session, ids_origen_cromo=[100], id_destino_cromo=999, nombre_destino="   ", usuario="admin"
+    )
+
+    assert destino.nombre_editado_manual is False
+
+
 def test_consolidar_dedup_origenes_repetidos_no_duplica_alias():
     destino = CromoBotella(n_id=999, nombre="Golden")
     session = _build_session(destino=destino, existentes_en_orden=[None])

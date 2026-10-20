@@ -210,6 +210,8 @@ def consolidar_grupo_botellas(
     nombre_nuevo = None
     if nombre_limpio:
         destino.nombre = nombre_limpio
+        # Sin esta marca la próxima ingesta pisa el nombre corregido con el de Cromo.
+        destino.nombre_editado_manual = True
         nombre_nuevo = nombre_limpio
 
     session.flush()

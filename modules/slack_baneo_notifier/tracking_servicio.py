@@ -182,7 +182,9 @@ async def _generar_async(servicio_pk: int) -> ResultadoTrack:
 
             try:
                 async with CromoClient(config=get_cromo_config()) as cliente:
-                    del_servicio = await trackings_del_servicio(cliente, sesion, servicio_pk)
+                    del_servicio = await trackings_del_servicio(
+                        cliente, sesion, servicio_pk, fuente_evidencia="SLACK"
+                    )
             except CromoClientError as exc:
                 # Cromo caído se lleva puesta la corrida entera, no un pelo: se reporta como tal.
                 return ResultadoTrack(

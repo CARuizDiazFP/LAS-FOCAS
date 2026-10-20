@@ -539,6 +539,46 @@ async def test_continuar_corrida_un_detector_que_rompe_no_hace_fallar_la_ingesta
     assert corrida.estado == "OK"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "modo, encola", [("COMPLETA", True), ("SOLO_ODF", True), ("SOLO_CABLES", False)]
+)
+async def test_post_ingesta_encola_arbitro(monkeypatch, modo, encola):
+    """Tras el detector, una corrida cerrada OK en un modo post-ingesta encola al árbitro (TODO);
+    un modo acotado fuera de `MODOS_POST_INGESTA` no."""
+    from core.services.cromo import inconsistencias_cromo
+    from core.services.cromo.arbitro import cola
+    from core.services.cromo.arbitro.senales import Alcance
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+    monkeypatch.setattr(ingesta, "MODOS_ACOTADOS", {
+        **ingesta.MODOS_ACOTADOS,
+        **{m: ingesta._ModoAcotado((51,), _fase_noop) for m in ("SOLO_ODF", "SOLO_CABLES")},
+    })
+
+    async def _detector(*a, **k):
+        return "OK"
+
+    llamadas: list[tuple] = []
+
+    async def _encolar(alcance, disparo, motivo="", **kw):
+        llamadas.append((alcance, disparo, motivo))
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+    monkeypatch.setattr(cola, "encolar_evaluacion", _encolar)
+
+    corrida = await ingesta.ejecutar_ingesta(
+        cliente=object(), sesion=sesion, usuario="tester", psize=5, modo=modo
+    )
+
+    assert corrida.estado == "OK"
+    if encola:
+        assert llamadas == [(Alcance("TODO"), "INGESTA", f"corrida:{corrida.id}")]
+    else:
+        assert llamadas == []
+
+
 # ── Procesamiento de un objeto (savepoint real, tolerancia a errores) ──────
 
 

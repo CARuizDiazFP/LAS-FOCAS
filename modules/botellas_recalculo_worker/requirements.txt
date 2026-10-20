@@ -1,2 +1,9 @@
-# Sin dependencias propias — todo lo necesario ya está en focas-base:latest (incluye redis, ver
-# Task 1 de docs/superpowers/plans/2026-08-21-botellas-duplicados-redis-ws.md)
+# Nombre de archivo: requirements.txt
+# Ubicación de archivo: modules/botellas_recalculo_worker/requirements.txt
+# Descripción: Dependencias específicas del worker de recálculo de Botellas y evaluaciones del árbitro (las comunes están en focas-base)
+
+# Lo común (redis, sqlalchemy, ...) ya está en focas-base:latest (ver Task 1 de
+# docs/superpowers/plans/2026-08-21-botellas-duplicados-redis-ws.md).
+# Aviso a Slack del árbitro de Cromo (core/services/cromo/arbitro/aviso.py). Mismo rango que
+# modules/slack_baneo_notifier/requirements.txt (una sola versión de slack_sdk en el repo).
+slack_sdk>=3.27.0,<4

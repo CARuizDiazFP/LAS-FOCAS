@@ -264,6 +264,16 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    vieja sin darse cuenta. Al terminar, `rm -rf /tmp/wt`. Es lo que mostró, antes de integrar, que el
    94673 daba 2 caminos y que 42351/93154 tenían 34/63 pelos huérfanos (2026-10-05).
 
+14. **Toda regla que decida qué camino es tramo (`tracking_service.clasificar_caminos`) se mide
+   contra los servicios testigo antes de fijarla, no después.** Esperado hoy: 102452 → 6 tramos
+   (3 segmentos, ODF Nodo KORN y Dixon), 42351/93154/94673 → 2 cada uno (pk de dev 1168, 567, 17 y
+   1066). La regla escrita en el plan falló dos veces contra datos reales: "un extremo en ODF
+   alcanza" daba 10/3/7/2 (2026-10-16), y "toca una ODF confirmada ⇒ tramo" llevó el 102452 de 6 a
+   12 con las ODF que confirmó un usuario en pruebas (2026-10-18). Medir con el patrón de la regla 13
+   (código del worktree en `/tmp/wt`, `trackings_del_servicio` sin auditar) e imprimir por camino:
+   pelos, extremos (tipo, ODF, clase) y si tiene par. Mirar también si el servicio tiene ODF
+   confirmadas (`app.servicio_odf_confirmada`): cambian el resultado.
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)

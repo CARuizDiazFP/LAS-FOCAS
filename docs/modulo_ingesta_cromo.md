@@ -640,6 +640,141 @@ Relevamiento completo en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`
   `scripts/cromo_bajas_cables_fantasma.py`. Este último sigue el orden alta de faltantes →
   pelos `/inner` → baja, con dry-run exacto por defecto.
 
+## Árbitro de Cromo (2026-10-19)
+
+Cruza lo que encuentran los mecanismos que ya existen (servicios sin ODF, tracking, duplicados de
+botellas, inconsistencias) y propone o aplica correcciones con un puntaje de confianza. Diseño:
+`docs/superpowers/specs/2026-10-19-arbitro-cromo-design.md`. Código:
+`core/services/cromo/arbitro/` (`senales`, `motor`, `acciones`, `evidencia`, `cola`, `evaluaciones`,
+`aviso`, `reglas/odf_por_camino.py`, `reglas/gemelos.py`).
+
+- **Nunca llama a Cromo.** Decide con lo ya persistido: inventario ingerido, confirmaciones en vivo
+  del detector de inconsistencias y la evidencia de caminos que dejan las consultas por demanda. Lee
+  el uso de pelos sólo desde `app.v_cromo_servicio_match_vigente` (guarda
+  `tests/test_cromo_cuarentena_lectores.py`).
+- **Confianza:** suma de señales con peso, recortada a 0..100 (o al tope de la regla). Un veto la deja
+  en 0. Cada propuesta guarda sus señales y un `evidencia_hash`.
+
+### Modos y configuración por regla
+
+Tabla `app.cromo_regla_correccion` (una fila por regla, sembradas en `SOMBRA`, umbral 90,
+presupuesto 50). Se cambia desde la pestaña **Reglas** del viewer.
+
+| Modo | Qué hace |
+|---|---|
+| `APAGADA` | La regla no corre. |
+| `SOMBRA` | Registra lo que *haría* como `PROPUESTA`; el operador aplica o rechaza. |
+| `AUTO` | Aplica sola lo que tenga `confianza ≥ umbral` (nunca una `INFORMAR` ni una evaluación con veto), dentro del presupuesto. El umbral en AUTO es al menos 1 (`actualizar_regla` responde 422 con 0). |
+
+- **Presupuesto por corrida y por regla.** Si las aplicables superan `presupuesto_por_corrida`, no se
+  aplica nada de esa regla y la corrida lo informa (`presupuesto_excedido`), con el mismo criterio que
+  el tope de bajas de cables.
+- **Precisión:** aceptadas / decididas desde `cromo_propuesta` (las decisiones del propio árbitro no
+  cuentan). El panel marca "Lista para AUTO" con precisión ≥ 0,95 y N ≥ 30. Pasar a AUTO es decisión
+  del admin.
+- **Las decisiones humanas mandan.** Una propuesta `RECHAZADA`, o `REVERTIDA` por una persona, no se
+  vuelve a proponer mientras el `evidencia_hash` no cambie. Un override MANUAL posterior a la
+  propuesta bloquea su aplicación.
+
+### Reglas iniciales
+
+| Código | Detecta | Señales (peso) | Acción | AUTO |
+|---|---|---|---|---|
+| `ODF_POR_CAMINO` | Servicio del universo "sin ODF" cuyo camino llega a un conector de ODF (clase 69 u 86) | camino en vivo completo hacia la ODF objetivo (+45); sólo fusiones locales (+45, tope 60); at62 del conector = identidad del servicio (+25); conector libre (+10); coincide con la ODF sugerida por hermanos (+15); dos extremos en ODF distintas con fila (+5); vetos: ODF sin fila vigente (o de otra clase), conector con otro servicio. Objetivo: el conector con at62 coincidente; entre ellos, primero el que tiene camino en vivo y después la menor ODF | `ASOCIAR_ODF`: override `origen='AUTO'`, `categoria_causa='EVIDENCIA_CAMINO'` | Sí; revertir borra la fila AUTO |
+| `CONTRADICCION_SERVICIO` | El camino llega a un conector cuyo `servicio_resuelto` es otro servicio | lista de conectores en `parametros.conectores` | `INFORMAR` (una por servicio) | No |
+| `GEMELO_VACIO` | Botellas Cromo homónimas de la misma clase: una sin cables ni fusiones y exactamente una operativa | misma localidad (+20); ≤ 50 m (+30), 50-300 m (+10), > 300 m (veto `LEJOS_300M`); vacía sin fusiones (+30); misma Cámara (+15); vetos: separada a mano, alias previo (incluido uno sin `creado_por`) | `FUSIONAR_GEMELO` vía `consolidar_grupo_botellas` (alias `fusionar`); una botella isla con una única gemela operativa no isla da `INFORMAR` | Sí (sólo `FUSIONAR_GEMELO`); revertir borra el alias y vuelve `vigente=true` |
+| `GEMELO_OPERATIVO` | Grupos con 2+ botellas Cromo con cables | comparten cables (+40); distancia; cables disjuntos (−30) | `INFORMAR` | No (fusionar recablea) |
+| `ODF_GEMELA_ISLA` | ODF isla (`ELEMENTO_ISLA`, clase 69/86) con una ODF homónima operativa | sólo cercanía: misma localidad (+20); ≤ 50 m (+30), 50-300 m (+10), > 300 m (veto `LEJOS_300M`) | `INFORMAR` | No |
+
+El universo de `ODF_POR_CAMINO` es el de `servicios_sin_odf`. Un override AUTO saca al servicio del
+listado sin ODF, pero **no** es una ODF confirmada: `clasificar_caminos` y los trackings no cambian.
+
+### Disparadores
+
+Todos encolan un job `kind=arbitro_evaluar` en `admin:recompute:jobs` (best-effort, siempre después
+del commit). Lo procesa `botellas_recalculo_worker`, que registra cada corrida en
+`app.cromo_arbitro_evaluacion`.
+
+1. **Post-ingesta** (`INGESTA`, alcance TODO): al final de una corrida `COMPLETA`, `SOLO_ODF` o
+   `SOLO_PELOS_INNER` OK, después de `detectar_post_ingesta`.
+2. **Registrador y web** (`REGISTRADOR`, alcance = el servicio): `trackings_del_servicio` (Slack
+   `@Registrador track`, `/caminos` del portal), `GET …/tracking.txt` en caché miss y el panel
+   `/camino-optico` dejan **evidencia de camino** en `app.cromo_evidencia_camino` (upsert por
+   `(servicio_id, pelo_n_id)`, savepoint propio, nunca lanza). También se registra un camino
+   incompleto o truncado, con `completo=false`: la regla sólo usa la evidencia `completo=true`. La
+   fecha (`generado_at`) es la del tracking (un tracking de caché trae la suya), y la evidencia vale
+   30 días. Sólo se encola si la evidencia es nueva o cambió (extremos, pelos o `completo`); una
+   consulta que repite el mismo camino sólo refresca la fecha. La auditoría global
+   (`AUDITORIA_GLOBAL`) registra pero no encola.
+3. **Viewer** (`VIEWER`, alcance = objetos tocados): asociar ODF, confirmar o desconfirmar ODF,
+   apropiar, consolidar, eliminar y separar botellas, cambiar el estado de una inconsistencia y
+   aplicar/rechazar/revertir propuestas.
+4. **Análisis retroactivo** (`NORMALIZADOR`, alcance TODO): botón "Ejecutar análisis retroactivo" de
+   la pestaña Propuestas, con todas las reglas o un subconjunto.
+
+El motor no corre si hay una ingesta en curso (`omitida=ingesta_en_curso`) y toma un advisory lock
+propio (`omitida=otra_evaluacion`).
+
+### Observación
+
+Lo aplicado en AUTO queda `EN_OBSERVACION`. La siguiente evaluación `INGESTA` lo vuelve a puntuar:
+si sigue sobre el umbral, sin vetos y con el mismo objetivo pasa a `APLICADA`; si cae o aparece un
+veto se revierte solo y queda `REVERTIDA`. Las aplicaciones, reversiones y presupuestos excedidos se
+avisan por WebSocket (`admin-notifications`) y por Slack si la fila `Cromo Inconsistencias` de
+`config_servicios` está activa (hoy inactiva en dev y prod). `botellas_recalculo_worker` tiene
+`slack_sdk` y el secreto `slack_bot_token_v1` desde la revisión final del 2026-10-19: antes el aviso
+a Slack fallaba en silencio (`slack_error`).
+
+### Análisis retroactivo desde la UI
+
+`POST /api/admin/infra/arbitro-cromo/normalizar` crea la fila `EN_COLA` y encola. Responde 202 con
+`evaluacion_id`, 422 si alguna regla pedida no existe, 409 si ya hay otra en curso (`EN_COLA`/`EN_CURSO` de las últimas 6 h) y 503 si no se
+pudo encolar (la fila se cierra `FALLIDA`). El worker la pasa a `EN_CURSO` y después a `OK` (con
+`resumen.por_regla`), `OMITIDA` o `FALLIDA`. Al arrancar, el worker cierra como `FALLIDA`
+(`error="interrumpida"`) las `EN_CURSO` que quedaron de un proceso anterior. Medido en dev el
+2026-10-19: el análisis completo tarda unos 11 s.
+
+### Línea base en dev (2026-10-19, todas las reglas en SOMBRA)
+
+| Regla | Propuestas | Confianza |
+|---|---|---|
+| `ODF_POR_CAMINO` | 18 | 11 en 55, 6 en 60, 1 vetada (0) |
+| `CONTRADICCION_SERVICIO` | 31 | — (INFORMAR) |
+| `GEMELO_VACIO` | 0 | — |
+| `GEMELO_OPERATIVO` | 31 | 0..100 |
+| `ODF_GEMELA_ISLA` | 8 | 0..50 |
+
+Ninguna `ODF_POR_CAMINO` llega a 90 sólo con evidencia local (tope 60). AUTO con umbral 90 no aplica
+nada hasta que haya caminos en vivo.
+
+### Límites conocidos
+
+Corregido en la revisión final (2026-10-19): `slack_baneo_worker` ya tiene `REDIS_HOST`/`REDIS_PORT`
+y el secreto `redis_password_v1` en los dos compose, así que el Registrador de Slack encola;
+`ODF_POR_CAMINO` corre el BFS local con cualquier alcance (mismo `evidencia_hash` con `SERVICIOS` y
+`TODO`), prioriza el conector en vivo y descarta conectores de ODF que no son clase 69/86 (caso real
+19872: el conector en vivo de la ODF 9364398, clase 85, vetaba la propuesta); un veto nunca se
+aplica ni se confirma en AUTO.
+
+- **Costo del BFS local con alcance `SERVICIOS`.** El grafo de fusiones (~1M aristas dirigidas,
+  ~20 MB) se cachea en el proceso del worker con una huella de `cromo_fusiones` (cuenta y sumas de
+  los pelos vigentes, ~0,1 s). Medido en dev el 2026-10-19: la primera evaluación de un servicio
+  tarda unos 4,4 s (carga del grafo); las siguientes, ~0,9 s. Un servicio sin pelos con match no
+  carga el grafo.
+- `GEMELO_VACIO` da 0 casos en dev desde que los gemelos se agrupan por clase: no hay con qué
+  calibrarla. `ODF_GEMELA_ISLA` no exige la misma clase (69 vs 86). Un `FUSIONAR_GEMELO` hacia un
+  destino que es isla no está vetado.
+- Una propuesta cuyo último intento AUTO falló (`nota`) no se reintenta hasta que cambie la
+  evidencia, aunque el mundo haya cambiado; hace falta aplicarla a mano.
+- Un worker cortado durante `avisar_en_curso` deja la evaluación `EN_CURSO` hasta el próximo
+  arranque. Si fallan Redis y después la base, puede quedar una `EN_COLA` fantasma de hasta 6 h que
+  bloquea el botón. La reconciliación al arrancar asume un único worker.
+- Cada cambio de estado de una inconsistencia encola un análisis `TODO` completo (~11 s), aunque
+  toque un solo objeto.
+- `evidencia_hash` ordena las señales sólo por código. `cromo_servicio_odf_override.propuesta_id`
+  no tiene índice (tabla chica).
+- La pestaña Propuestas abre 3 WebSockets y pierde la selección al recargar.
+
 ## Principios de diseño
 
 - **Sólo lectura, siempre.** El cliente no expone ningún método de escritura contra el sistema externo.
