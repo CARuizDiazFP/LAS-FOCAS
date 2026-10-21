@@ -1,7 +1,7 @@
 # Nombre de archivo: tracking_service.py
 # Ubicación de archivo: core/services/cromo/tracking_service.py
 # Descripción: Generación del tracking .txt de un pelo de un Servicio, con caché de 24 h, y tracking
-# por tramos: un camino por semilla no cubierta, clasificado como TRAMO o RESIDUAL por sus extremos
+# por tramos: un camino por semilla no cubierta (declaradas, etiquetadas y posiciones), clasificado como VIGENTE, TRAMO, ADICIONAL o RESIDUAL
 
 """Orquesta caché + resolución + render del tracking de un pelo.
 
@@ -38,6 +38,7 @@ from core.services.cromo.camino_optico_service import (
     semillas_para_tracking,
 )
 from core.services.cromo.camino_optico_txt import (
+    nombre_archivo_adicional,
     nombre_archivo_tracking,
     nombre_archivo_tramo,
     renderizar_tracking_txt,
@@ -46,6 +47,21 @@ from core.services.cromo.camino_optico_txt import (
 from core.services.cromo.client import CromoClient
 from core.services.cromo.config import tracking_max_llamadas
 from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
+from core.services.cromo.servicio_posicion_vigente import (
+    AVISO_CAMINO_INCOMPLETO,
+    AVISO_CAMINO_NO_RESUELTO,
+    AvisoPosicion,
+    PosicionDeclarada,
+    PosicionPosible,
+    aplicar_retiros,
+    decidir_retiro,
+    etiqueta_posiciones,
+    listar_declaradas,
+    pelos_de_posiciones,
+    posiciones_posibles,
+    validar_camino,
+    validar_en_db,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +211,8 @@ class TrackingGenerado:
     pelos_camino: frozenset[int] = frozenset()
     # Extremos y resumen del camino. `None` sólo en fakes de tests: se clasifica como sin ODF.
     extremos: Optional[ResumenCamino] = None
-    # TRAMO | RESIDUAL. Lo asigna `trackings_del_servicio` con `clasificar_caminos`.
+    # VIGENTE | TRAMO | ADICIONAL | RESIDUAL. Lo asigna `trackings_del_servicio` con
+    # `clasificar_con_posiciones`.
     rol: Optional[str] = None
 
 
@@ -256,7 +273,7 @@ async def obtener_tracking(
     cliente: CromoClient,
     sesion: AsyncSession,
     *,
-    servicio_id: int,
+    servicio_id: Optional[int],
     pelo_n_id: int,
     forzar: bool = False,
 ) -> TrackingGenerado:
@@ -264,6 +281,10 @@ async def obtener_tracking(
 
     `forzar=True` saltea la lectura del caché pero igual reescribe la entrada — es la vía para
     regenerar a mano un tracking que quedó viejo antes de vencer.
+
+    `servicio_id` es a quién se atribuye la entrada del caché. `None` para un pelo que no es del
+    Servicio por etiqueta ni por declaración (una posición posible, `track odf`): el upsert conserva
+    el servicio que ya tuviera la fila (`tracking_cache.guardar`).
 
     Hace `commit` de la entrada de caché apenas la escribe, para que una descarga de varios pelos
     no pierda lo ya resuelto si un pelo posterior falla.
@@ -666,19 +687,56 @@ def ordenar_tramos(tramos: Iterable[TrackingGenerado]) -> list[TrackingGenerado]
     return sorted(tramos, key=lambda t: (-len(t.pelos_camino), t.pelo_n_id))
 
 
+@dataclass(slots=True, frozen=True)
+class InfoAdicional:
+    """Por qué posición sale un camino adicional y qué etiqueta llevan sus pelos, para el aviso.
+
+    `posiciones` son pares `(patchera, conector)` (`etiqueta_posiciones` los junta en
+    `"O-1252871-1:1,2"`); `etiquetas`, el `servicio_numero` de los pelos de esas posiciones
+    (`"44649"` en el 93150). `origen` es el de `origen_del_camino`.
+    """
+
+    pelo_n_id: int
+    origen: str
+    posiciones: tuple[tuple[str, str], ...] = ()
+    etiquetas: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class EstadoPosicion:
+    """La posición vigente declarada del Servicio en esta corrida.
+
+    `declaradas` son las vigentes después de los retiros de esta corrida; `aplicada` dice si sus
+    caminos se usaron como VIGENTE (si no, la corrida usó el cálculo automático); `etiqueta` es
+    `"O-1252871-1:1,2"` de las declaradas; `avisos`, lo que el operador tiene que saber (retiros,
+    camino no resuelto o incompleto, pelo dañado sin alternativa).
+    """
+
+    declaradas: list[PosicionDeclarada] = field(default_factory=list)
+    aplicada: bool = False
+    etiqueta: str = ""
+    avisos: list[AvisoPosicion] = field(default_factory=list)
+
+
 @dataclass(slots=True)
 class TrackingsDelServicio:
-    """Los caminos de un Servicio separados en tramos y residuales.
+    """Los caminos de un Servicio separados en tramos, adicionales y residuales.
 
-    `tramos` ya vienen ordenados (`ordenar_tramos`) y con su nombre de archivo de tramo;
-    `residuales` conservan el nombre de siempre. `esperados_declarados` es la cantidad de tramos
-    que declaró el operador (`servicios.trackings_esperados`, `None` si no declaró); `odf_confirmadas`
-    son las ODF confirmadas vigentes del Servicio. `completo` = no se tocó el tope de llamadas ni
-    el de fallidos; `tope_llamadas` = se tocó el de llamadas. `no_cubiertos` son las semillas que
-    no quedaron en ningún camino (fallaron o no se llegaron a pedir): con `completo=True` también
-    puede haberlas, y ahí puede faltar un tramo entero. `segmentos` son los grupos de tramos que
-    comparten cables (`contar_segmentos`). `auditoria` es el resumen de la auditoría de huérfanos
-    que corre al final (`None` si no corrió o falló).
+    `tramos` ya vienen ordenados (`ordenar_tramos`) y con su nombre de archivo de tramo: son los
+    VIGENTE si se aplicó una posición declarada, o los TRAMO si no. `adicionales` son recorridos
+    reales del Servicio que no son por donde va (`{n} CROMO A{k} pelo X.txt`), alineados con
+    `info_adicionales`; `caminos_resueltos` = tramos ∪ adicionales (lo que sube `track N full`;
+    nunca descarta un tramo, aunque termine en un pelo). `residuales` conservan el nombre de siempre.
+    `esperados_declarados` es la cantidad de tramos que declaró el operador
+    (`servicios.trackings_esperados`, `None` si no declaró); `odf_confirmadas` son las ODF
+    confirmadas vigentes del Servicio. `completo` = no se tocó el tope de llamadas ni el de fallidos
+    con semillas etiquetadas pendientes; `tope_llamadas` = se tocó el de llamadas. `no_cubiertos` son
+    las semillas etiquetadas que no quedaron en ningún camino (fallaron o no se llegaron a pedir):
+    con `completo=True` también puede haberlas, y ahí puede faltar un tramo entero. Las fallas de
+    los pelos declarados y de las posiciones van aparte (`errores_posiciones`,
+    `no_cubiertos_posiciones`): no hacen al resultado incompleto. `segmentos` son los grupos de
+    tramos que comparten cables (`contar_segmentos`). `auditoria` es el resumen de la auditoría de
+    huérfanos que corre al final (`None` si no corrió o falló).
     """
 
     tramos: list[TrackingGenerado]
@@ -694,6 +752,12 @@ class TrackingsDelServicio:
     # Por qué no se auditó (`"INCOMPLETO"`: tope tocado, semillas fallidas o sin cubrir); `None` si
     # se auditó o si no se pidió auditar.
     auditoria_omitida: Optional[str] = None
+    adicionales: list[TrackingGenerado] = field(default_factory=list)
+    info_adicionales: list[InfoAdicional] = field(default_factory=list)
+    caminos_resueltos: list[TrackingGenerado] = field(default_factory=list)
+    posicion: EstadoPosicion = field(default_factory=EstadoPosicion)
+    errores_posiciones: list[str] = field(default_factory=list)
+    no_cubiertos_posiciones: list[int] = field(default_factory=list)
 
 
 _SQL_NUMERO_SERVICIO = text("SELECT servicio_id FROM app.servicios WHERE id = :servicio_id")
@@ -710,6 +774,212 @@ async def numero_del_servicio(sesion: AsyncSession, servicio_id: int) -> Optiona
     return str(valor).strip() if valor is not None else None
 
 
+# Qué posiciones entran como semillas en `trackings_del_servicio`. Web y Slack usan "todas"; la
+# corrida global de auditoría, "declaradas": de los 50 servicios que recorre sólo 7 sumaban semillas
+# de posiciones (10 pelos, 46-140 s más por corrida) que no aportan nada a la auditoría.
+POSICIONES_TODAS = "todas"
+POSICIONES_DECLARADAS = "declaradas"
+POSICIONES_NINGUNA = "ninguna"
+_MODOS_POSICIONES = (POSICIONES_TODAS, POSICIONES_DECLARADAS, POSICIONES_NINGUNA)
+
+
+async def posiciones_del_servicio(
+    sesion: AsyncSession, servicio_id: int, modo: str
+) -> tuple[list[PosicionPosible], list[PosicionDeclarada]]:
+    """`(posibles, declaradas vigentes)` según el modo. Único punto de lectura de posiciones.
+
+    "declaradas" no consulta las posibles; "ninguna" no lee nada. `ValueError` con otro modo.
+    """
+    if modo not in _MODOS_POSICIONES:
+        raise ValueError(f"Modo de posiciones inválido {modo!r}: debe ser uno de {', '.join(_MODOS_POSICIONES)}.")
+    if modo == POSICIONES_NINGUNA:
+        return [], []
+    declaradas = await listar_declaradas(sesion, servicio_id)
+    posibles = await posiciones_posibles(sesion, servicio_id) if modo == POSICIONES_TODAS else []
+    return posibles, declaradas
+
+
+async def _por_camino_en_fases(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    fases: Sequence[tuple[Optional[int], Sequence[int]]],
+) -> list[TrackingsPorCamino]:
+    """`trackings_por_camino` fase por fase, compartiendo los topes y lo ya recorrido.
+
+    Cada fase es `(servicio_id del caché, pelos)`. Un pelo que ya pidió una fase anterior, o que ya
+    recorrió uno de sus caminos, no se vuelve a pedir. Los topes de llamadas y de fallidas son los
+    de una sola corrida: cada fase recibe lo que dejaron las anteriores. Separar las fases es lo
+    que permite contar aparte las fallas de las semillas declaradas y de las posiciones, y cachear
+    las posiciones sin servicio. Con una sola fase es exactamente `trackings_por_camino`.
+    """
+    max_llamadas = tracking_max_llamadas()
+    llamadas = 0
+    fallidas = 0
+    vistos: set[int] = set()
+    resultados: list[TrackingsPorCamino] = []
+    for servicio_cache, pelos in fases:
+        pendientes = [p for p in dict.fromkeys(pelos) if p not in vistos]
+        vistos.update(pendientes)
+        if not pendientes:
+            resultados.append(TrackingsPorCamino())
+            continue
+        resultado = await trackings_por_camino(
+            cliente,
+            sesion,
+            servicio_id=servicio_cache,
+            pelos_n_id=pendientes,
+            max_fallidos=_MAX_FALLIDOS_TOLERADOS - fallidas,
+            max_llamadas=max_llamadas - llamadas,
+        )
+        llamadas += resultado.llamadas
+        fallidas += len(resultado.errores)
+        for tracking in resultado.trackings:
+            vistos.update(tracking.pelos_camino | {tracking.pelo_n_id})
+        resultados.append(resultado)
+    return resultados
+
+
+def _pelos_de_tracking(t: TrackingGenerado) -> frozenset[int]:
+    return t.pelos_camino | {t.pelo_n_id}
+
+
+def _es_posicion_del_extremo(p: PosicionPosible, e: ExtremoCamino) -> bool:
+    if e.id_cromo == p.conector_n_id:
+        return True
+    # Por nombre sólo dentro de la misma ODF: hay patcheras con el mismo nombre en ODF distintas
+    # (O-1249273-1 en 6644107 y 9193140).
+    return bool(
+        e.patchera_nombre
+        and e.patchera_nombre == p.bandeja_nombre
+        and e.conector_numero == p.numero_conector
+        and (e.odf_id is None or e.odf_id == p.odf_n_id)
+    )
+
+
+def describir_adicionales(
+    adicionales: Sequence[TrackingGenerado],
+    tramos: Sequence[TrackingGenerado],
+    posibles: Sequence[PosicionPosible],
+    origenes: Sequence[str],
+) -> list[InfoAdicional]:
+    """Por qué posición sale cada adicional y con qué etiqueta, alineado con `adicionales`. Pura.
+
+    Se miran los extremos del camino que son conector de ODF, salvo los que están en una ODF donde
+    termina algún tramo (ahí el adicional no se distingue del tramo; si no queda ninguno, se usan
+    todos). Las posiciones son las posibles de esos conectores; si ninguno es posición posible,
+    el propio conector del extremo. Las etiquetas son las `etiqueta_pelo` de esas posiciones.
+    """
+    odfs_de_tramos: set[int] = set()
+    for t in tramos:
+        odfs_de_tramos |= _odfs_de_extremos(_resumen(t))
+    infos: list[InfoAdicional] = []
+    for camino, origen in zip(adicionales, origenes):
+        extremos = [e for e in _resumen(camino).extremos if e.es_conector_odf]
+        propios = [e for e in extremos if e.odf_id not in odfs_de_tramos] or extremos
+        coinciden = [p for e in propios for p in posibles if _es_posicion_del_extremo(p, e)]
+        if coinciden:
+            pares = [(p.bandeja_nombre, p.numero_conector) for p in coinciden]
+        else:
+            pares = [(e.patchera_nombre, e.conector_numero) for e in propios]
+        infos.append(
+            InfoAdicional(
+                pelo_n_id=camino.pelo_n_id,
+                origen=origen,
+                posiciones=tuple(dict.fromkeys((a, b) for a, b in pares if a and b)),
+                etiquetas=tuple(dict.fromkeys(p.etiqueta_pelo for p in coinciden if p.etiqueta_pelo)),
+            )
+        )
+    return infos
+
+
+def _aviso_de_camino(d: PosicionDeclarada, codigo: str, **detalle: Any) -> AvisoPosicion:
+    return AvisoPosicion(
+        conector_n_id=d.conector_n_id,
+        posicion=d.posicion,
+        codigo=codigo,
+        retirada=False,
+        declaracion_id=d.id,
+        pelo_declarado=d.pelo_declarado,
+        detalle=detalle,
+    )
+
+
+async def _validar_caminos_declarados(
+    sesion: AsyncSession,
+    declaradas: Sequence[PosicionDeclarada],
+    caminos: Sequence[TrackingGenerado],
+    errores: Sequence[str],
+) -> list[AvisoPosicion]:
+    """Un aviso por declarada cuyo camino no sirve como VIGENTE en esta corrida.
+
+    `CAMINO_NO_RESUELTO` (Cromo no lo resolvió o no se llegó a pedir) y `CAMINO_INCOMPLETO` (no
+    termina en ODF en los dos extremos) nunca retiran. `PELO_DANADO` y `CABLE_SIN_USO` retiran
+    sólo si hay otro camino completo sano (`decidir_retiro`); como alternativa no cuentan los
+    caminos de las otras declaradas (el otro hilo del mismo par no es "otro camino").
+    """
+    pelos_declarados = {d.pelo_declarado for d in declaradas}
+    alternativos = [c for c in caminos if not _pelos_de_tracking(c) & pelos_declarados]
+    avisos: list[AvisoPosicion] = []
+    for d in declaradas:
+        camino = next((c for c in caminos if d.pelo_declarado in _pelos_de_tracking(c)), None)
+        if camino is None:
+            motivo = next((e for e in errores if e.startswith(f"Pelo {d.pelo_declarado}:")), None)
+            avisos.append(
+                _aviso_de_camino(d, AVISO_CAMINO_NO_RESUELTO, motivo=motivo or "no se llegó a pedir")
+            )
+        elif not es_camino_completo(camino):
+            avisos.append(_aviso_de_camino(d, AVISO_CAMINO_INCOMPLETO, pelo=camino.pelo_n_id))
+        else:
+            aviso = await validar_camino(sesion, d, camino)
+            if aviso is not None:
+                avisos.append(
+                    await decidir_retiro(
+                        sesion,
+                        aviso,
+                        declarado=camino,
+                        caminos=alternativos,
+                        es_completo=es_camino_completo,
+                    )
+                )
+    return avisos
+
+
+def _impide_aplicar(aviso: AvisoPosicion) -> bool:
+    # Un pelo dañado sin alternativa sana se avisa pero se usa: no hay un camino mejor.
+    return aviso.retirada or aviso.codigo in (AVISO_CAMINO_NO_RESUELTO, AVISO_CAMINO_INCOMPLETO)
+
+
+async def _aplicar_retiros_sin_romper(
+    sesion: AsyncSession, servicio_id: int, avisos: Sequence[AvisoPosicion]
+) -> None:
+    """Retira las declaradas marcadas, cada una en su transacción. Nunca levanta: el tracking ya
+    está resuelto y un retiro que falla se vuelve a intentar en la próxima corrida."""
+    if not any(a.retirada for a in avisos):
+        return
+    try:
+        retiradas = await aplicar_retiros(sesion, avisos)
+    except Exception:  # noqa: BLE001 - el retiro es accesorio al tracking
+        logger.exception(
+            "action=cromo_posicion_vigente evento=retiro_fallido servicio_id=%s", servicio_id
+        )
+        await sesion.rollback()
+        return
+    logger.info(
+        "action=cromo_posicion_vigente evento=retiro servicio_id=%s retiradas=%s motivos=%s",
+        servicio_id,
+        retiradas,
+        [a.codigo for a in avisos if a.retirada],
+    )
+
+
+def _etiqueta_de_declaradas(declaradas: Sequence[PosicionDeclarada]) -> str:
+    return etiqueta_posiciones(
+        (d.bandeja_nombre, d.numero_conector)
+        for d in declaradas
+        if d.bandeja_nombre and d.numero_conector
+    )
+
+
 async def trackings_del_servicio(
     cliente: CromoClient,
     sesion: AsyncSession,
@@ -719,26 +989,50 @@ async def trackings_del_servicio(
     auditar: bool = True,
     corrida_id: Optional[int] = None,
     fuente_evidencia: str = "WEB",
+    posiciones: str = POSICIONES_TODAS,
 ) -> TrackingsDelServicio:
-    """Un camino por semilla no cubierta, clasificado en tramos y residuales. Lo usan Slack y web.
+    """Un camino por semilla no cubierta, clasificado en vigentes/tramos, adicionales y residuales.
+    Lo usan Slack, web y la corrida global.
 
-    Semillas: todas, con las posiciones de ODF primero (`semillas_para_tracking`). Tope de
-    llamadas: `CROMO_TRACKING_MAX_LLAMADAS` (default 80).
+    Semillas, en este orden: los pelos de las posiciones declaradas vigentes, las etiquetadas con
+    el Servicio (`semillas_para_tracking`, posiciones de ODF primero) y los pelos de las posiciones
+    posibles (`posiciones_posibles`; sólo con `posiciones="todas"`). Las posiciones no declaradas
+    se cachean sin servicio. Tope de llamadas: `CROMO_TRACKING_MAX_LLAMADAS` (default 80), uno solo
+    para las tres fases; las posiciones van al final, así que nunca le quitan llamadas a las
+    etiquetadas.
+
+    Posición vigente (`servicio_posicion_vigente`): antes de resolver, `validar_en_db` marca para
+    retiro las declaradas que el inventario ya no sostiene (conector inexistente, sin pelo, pelo
+    cambiado); después, `_validar_caminos_declarados` revisa sus caminos. Si alguna declarada
+    tiene un aviso que impide usarla, la corrida entera usa el cálculo automático; los retiros se
+    aplican al final, cada uno en su transacción. Roles: `clasificar_con_posiciones`.
 
     Lo declarado por el operador (ODF confirmadas y trackings esperados) se lee de la DB. Si
     `odfs_confirmadas` se pasa explícito, pisa a las de la DB (tests); los esperados siempre salen
     de la DB.
 
     Al final audita los huérfanos con este mismo resultado, sin volver a Cromo
-    (`auditoria_huerfanos.auditar_sin_romper`: savepoint propio, nunca levanta). Es el único punto
-    de enganche: Slack, el portal y la corrida global (`corrida_id`) pasan por acá.
-    Sólo si el recorrido resolvió todo (`completo`, sin semillas fallidas ni sin cubrir): si no, no
-    se escribe ni se borra nada y `auditoria_omitida = "INCOMPLETO"`.
+    (`auditoria_huerfanos.auditar_sin_romper`: savepoint propio, nunca levanta), con vigentes/tramos
+    y adicionales como tramos y sólo las semillas etiquetadas. Es el único punto de enganche:
+    Slack, el portal y la corrida global (`corrida_id`) pasan por acá. Sólo si las semillas
+    etiquetadas resolvieron todo (`completo`, sin fallidas ni sin cubrir): si no, no se escribe ni
+    se borra nada y `auditoria_omitida = "INCOMPLETO"`. Las fallas de las declaradas y de las
+    posiciones no cuentan.
     """
     declaradas = await declaraciones_del_servicio(sesion, servicio_id)
     confirmadas = declaradas.odf_ids if odfs_confirmadas is None else odfs_confirmadas
     semillas = await semillas_para_tracking(sesion, servicio_id)
-    if not semillas:
+    posibles, declaradas_pos = await posiciones_del_servicio(sesion, servicio_id, posiciones)
+
+    avisos = validar_en_db(declaradas_pos)
+    invalidas = {a.declaracion_id for a in avisos}
+    validas = [d for d in declaradas_pos if d.id not in invalidas]
+    etiquetados = [s.pelo_n_id for s in semillas]
+    pelos_declarados = list(dict.fromkeys(d.pelo_declarado for d in validas))
+    pelos_posiciones = pelos_de_posiciones(posibles)
+
+    if not semillas and not pelos_posiciones and not pelos_declarados:
+        await _aplicar_retiros_sin_romper(sesion, servicio_id, avisos)
         return TrackingsDelServicio(
             tramos=[],
             residuales=[],
@@ -746,20 +1040,47 @@ async def trackings_del_servicio(
             completo=True,
             esperados_declarados=declaradas.trackings_esperados,
             odf_confirmadas=declaradas.confirmadas,
+            posicion=EstadoPosicion(declaradas=validas, etiqueta=_etiqueta_de_declaradas(validas), avisos=avisos),
         )
-    por_camino = await trackings_por_camino(
+
+    por_declarados, por_camino, por_posiciones = await _por_camino_en_fases(
         cliente,
         sesion,
-        servicio_id=servicio_id,
-        pelos_n_id=[s.pelo_n_id for s in semillas],
-        max_fallidos=_MAX_FALLIDOS_TOLERADOS,
-        max_llamadas=tracking_max_llamadas(),
+        [
+            (servicio_id, pelos_declarados),
+            (servicio_id, etiquetados),
+            (None, pelos_posiciones),
+        ],
     )
-    roles = clasificar_caminos(por_camino.trackings, confirmadas)
+    caminos = [*por_declarados.trackings, *por_camino.trackings, *por_posiciones.trackings]
+
+    if validas:
+        avisos = [
+            *avisos,
+            *await _validar_caminos_declarados(sesion, validas, caminos, por_declarados.errores),
+        ]
+    aplicada = bool(validas) and not any(_impide_aplicar(a) for a in avisos)
+    retiradas = {a.declaracion_id for a in avisos if a.retirada}
+    vigentes_tras_retiro = [d for d in declaradas_pos if d.id not in retiradas]
+
+    declarados = frozenset(pelos_declarados) if aplicada else frozenset()
+    etiquetados_set = frozenset(etiquetados)
+    roles = clasificar_con_posiciones(
+        caminos,
+        etiquetados=etiquetados_set,
+        declarados=declarados,
+        odfs_confirmadas=frozenset(confirmadas),
+    )
     tramos: list[TrackingGenerado] = []
+    adicionales: list[TrackingGenerado] = []
     residuales: list[TrackingGenerado] = []
-    for tracking, rol in zip(por_camino.trackings, roles):
-        (tramos if rol == ROL_TRAMO else residuales).append(replace(tracking, rol=rol))
+    for tracking, rol in zip(caminos, roles):
+        destino = (
+            tramos
+            if rol in (ROL_VIGENTE, ROL_TRAMO)
+            else adicionales if rol == ROL_ADICIONAL else residuales
+        )
+        destino.append(replace(tracking, rol=rol))
 
     numero_servicio = await numero_del_servicio(sesion, servicio_id)
     tramos = [
@@ -771,6 +1092,22 @@ async def trackings_del_servicio(
         )
         for numero, tracking in enumerate(ordenar_tramos(tramos), start=1)
     ]
+    # Los adicionales se nombran SIEMPRE con el número del Servicio, nunca con el at.62: el de los
+    # pelos viejos del 93150 es `4649` y el parser legacy lo asignaría a otro servicio.
+    adicionales = [
+        replace(
+            tracking,
+            nombre_archivo=nombre_archivo_adicional(numero_servicio, numero, tracking.pelo_n_id),
+        )
+        for numero, tracking in enumerate(ordenar_tramos(adicionales), start=1)
+    ]
+    info_adicionales = describir_adicionales(
+        adicionales,
+        tramos,
+        posibles,
+        [origen_del_camino(t, etiquetados=etiquetados_set, declarados=declarados) for t in adicionales],
+    )
+
     auditoria = None
     auditoria_omitida: Optional[str] = None
     resuelto_entero = (
@@ -794,12 +1131,14 @@ async def trackings_del_servicio(
         # Import diferido: `auditoria_huerfanos` importa los tipos de este módulo.
         from core.services.cromo.auditoria_huerfanos import auditar_sin_romper
 
+        # Los adicionales son recorridos reales del Servicio: sus pelos no son huérfanos. Las
+        # semillas son sólo las etiquetadas (las de posiciones no tienen la etiqueta del Servicio).
         auditoria = await auditar_sin_romper(
             sesion,
             servicio_id,
-            tramos=tramos,
+            tramos=[*tramos, *adicionales],
             residuales=residuales,
-            semillas=frozenset(s.pelo_n_id for s in semillas),
+            semillas=etiquetados_set,
             odfs_confirmadas=frozenset(confirmadas),
             corrida_id=corrida_id,
         )
@@ -810,17 +1149,21 @@ async def trackings_del_servicio(
     await registrar_y_encolar(
         sesion,
         servicio_id,
-        entradas_de_trackings([*tramos, *residuales]),
+        entradas_de_trackings([*tramos, *adicionales, *residuales]),
         completo=resuelto_entero,
         fuente=fuente_evidencia,
     )
+    await _aplicar_retiros_sin_romper(sesion, servicio_id, avisos)
     logger.info(
         "action=cromo_tracking evento=clasificacion servicio_id=%s tramos=%s residuales=%s "
-        "completo=%s",
+        "completo=%s adicionales=%s posicion_aplicada=%s avisos_posicion=%s",
         servicio_id,
         [t.pelo_n_id for t in tramos],
         len(residuales),
         por_camino.completo,
+        [t.pelo_n_id for t in adicionales],
+        aplicada,
+        [a.codigo for a in avisos],
     )
     return TrackingsDelServicio(
         tramos=tramos,
@@ -834,6 +1177,17 @@ async def trackings_del_servicio(
         no_cubiertos=por_camino.no_cubiertos,
         tope_llamadas=por_camino.tope_llamadas,
         segmentos=contar_segmentos(tramos),
+        adicionales=adicionales,
+        info_adicionales=info_adicionales,
+        caminos_resueltos=[*tramos, *adicionales],
+        posicion=EstadoPosicion(
+            declaradas=vigentes_tras_retiro,
+            aplicada=aplicada,
+            etiqueta=_etiqueta_de_declaradas(vigentes_tras_retiro),
+            avisos=avisos,
+        ),
+        errores_posiciones=[*por_declarados.errores, *por_posiciones.errores],
+        no_cubiertos_posiciones=[*por_declarados.no_cubiertos, *por_posiciones.no_cubiertos],
     )
 
 

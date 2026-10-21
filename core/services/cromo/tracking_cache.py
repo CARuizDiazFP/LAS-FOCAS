@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -161,6 +161,11 @@ async def guardar(
     El upsert va por `ON CONFLICT (pelo_n_id) DO UPDATE` para que dos descargas simultáneas del
     mismo pelo no choquen con una violación de PK. No hace `commit`: la transacción la maneja el
     llamador, que normalmente está sirviendo una descarga.
+
+    `servicio_id=None` (un pelo de una posición no declarada, o `track odf`) conserva el servicio
+    que ya tenía la fila: `servicio_traza._SQL_TRACKINGS_DEL_SERVICIO` (y con ella la API v1) arma
+    la traza del Servicio con esa columna, y pisarla con NULL sacaba el camino vigente del 93150
+    —que va por pelos con etiqueta 44649— de su traza. Un servicio explícito sí la pisa.
     """
     ahora = ahora or datetime.now(timezone.utc)
     sentencia = pg_insert(CromoTrackingCache.__table__).values(
@@ -177,7 +182,9 @@ async def guardar(
         sentencia.on_conflict_do_update(
             index_elements=[CromoTrackingCache.__table__.c.pelo_n_id],
             set_={
-                "servicio_id": sentencia.excluded.servicio_id,
+                "servicio_id": func.coalesce(
+                    sentencia.excluded.servicio_id, CromoTrackingCache.__table__.c.servicio_id
+                ),
                 "nombre_archivo": sentencia.excluded.nombre_archivo,
                 "contenido": sentencia.excluded.contenido,
                 "duracion_ms": sentencia.excluded.duracion_ms,
